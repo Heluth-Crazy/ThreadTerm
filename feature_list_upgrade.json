@@ -1,0 +1,226 @@
+[
+  {
+    "id": "F041",
+    "category": "functional",
+    "priority": "high",
+    "description": "Sidebar - 父项目/子Worktree分组显示，实现父子项目层级关系",
+    "depends_on": [],
+    "steps": [
+      "修改 SidebarProjectList.tsx 添加项目分组逻辑",
+      "识别 isGitWorktree=true 的项目作为子项目",
+      "根据 sourceProjectName 找到父项目",
+      "父项目展开时显示子项目列表",
+      "子项目使用缩进样式显示"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F042",
+    "category": "functional",
+    "priority": "high",
+    "description": "Sidebar - 修复多项目展开状态互斥问题，实现多展开支持",
+    "depends_on": ["F041"],
+    "steps": [
+      "修改 useSidebarController.ts 中的 toggleProject 函数",
+      "从单选模式改为多选模式 (Set add/remove)",
+      "展开子项目不会折叠父项目",
+      "展开一个父项目不会折叠其他父项目",
+      "验证展开/折叠行为正确"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F043",
+    "category": "functional",
+    "priority": "high",
+    "description": "Sidebar - 添加分支创建功能按钮到项目操作菜单",
+    "depends_on": ["F041"],
+    "steps": [
+      "在 SidebarProjectItem.tsx 添加分支图标按钮",
+      "按钮位置：与编辑名称、删除按钮同一行",
+      "显示条件：project.isGitRepo === true",
+      "点击触发分支名称输入对话框",
+      "调用 createBranchWorktree API 创建分支工作区"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F044",
+    "category": "functional",
+    "priority": "high",
+    "description": "Sidebar - 分支Badge显示，在项目名旁边显示当前分支",
+    "depends_on": ["F043"],
+    "steps": [
+      "在项目名旁边添加分支标签",
+      "显示条件：project.branch 存在且非空",
+      "样式：小巧的蓝色徽章，带Git图标",
+      "桌面端和移动端都显示",
+      "文字不换行，紧凑显示"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F045",
+    "category": "functional",
+    "priority": "high",
+    "description": "i18n - 添加Worktree相关国际化字符串",
+    "depends_on": ["F044"],
+    "steps": [
+      "在 en/common.json 添加 worktree 相关 key",
+      "在 zh-CN/common.json 添加中文翻译",
+      "在 ja/common.json 添加日文翻译",
+      "在 ko/common.json 添加韩文翻译",
+      "确保所有新 UI 文本都使用 i18n key"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F046",
+    "category": "functional",
+    "priority": "high",
+    "description": "Worktree - 修改分支创建逻辑，在项目目录下创建而非外部",
+    "depends_on": ["F043"],
+    "steps": [
+      "修改 POST /api/projects/:projectName/create-branch-worktree 逻辑",
+      "使用项目父目录作为 worktree 根目录",
+      "不再需要单独的 worktree root 配置",
+      "验证路径不会跳出父项目目录",
+      "更新 mapping 文档生成逻辑"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F047",
+    "category": "functional",
+    "priority": "high",
+    "description": "多选文件UI - 改进文件选择器显示样式和交互",
+    "depends_on": [],
+    "steps": [
+      "改进文件Chip显示：添加文件图标和移除按钮",
+      "在切换按钮上显示已选文件数量徽章",
+      "添加选中文件列表的平滑动画",
+      "优化选中文件区域布局",
+      "验证视觉效果符合设计"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F048",
+    "category": "functional",
+    "priority": "high",
+    "description": "多选文件UI - 添加键盘导航支持",
+    "depends_on": ["F047"],
+    "steps": [
+      "添加上下箭头键在文件列表中移动焦点",
+      "添加回车键选中/取消选中当前文件",
+      "添加 Tab 键在文件之间循环",
+      "添加 Escape 键关闭文件选择器",
+      "焦点元素添加可视焦点指示器"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F049",
+    "category": "functional",
+    "priority": "high",
+    "description": "设置弹窗 - 精简为3个Tab，保留智能体、Git、外观",
+    "depends_on": [],
+    "steps": [
+      "找到 Settings 组件位置",
+      "删除除智能体、Git、外观之外的所有 Tab",
+      "保留并优化这3个 Tab 的内容",
+      "确保设置能够正确保存和加载",
+      "验证 UI 布局正确"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F050",
+    "category": "functional",
+    "priority": "high",
+    "description": "设置弹窗 - 智能体Tab添加参数设置功能",
+    "depends_on": ["F049"],
+    "steps": [
+      "在智能体 Tab 中添加'参数设置'区域",
+      "添加输入框用于输入自定义 CLI 参数",
+      "示例：--dangerously-enable-native-tool-use-blocks",
+      "将参数保存到 localStorage 或配置文件",
+      "新建会话时将参数附加到 CLI 命令中"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F051",
+    "category": "functional",
+    "priority": "medium",
+    "description": "设置弹窗 - 删除旧的权限相关代码",
+    "depends_on": ["F050"],
+    "steps": [
+      "查找并删除旧的权限设置相关代码",
+      "确保新的参数设置功能替代旧功能",
+      "验证应用启动和会话创建正常工作",
+      "检查控制台无相关错误"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F052",
+    "category": "functional",
+    "priority": "medium",
+    "description": "回归测试 - 验证项目列表和会话功能正常",
+    "depends_on": ["F045", "F048"],
+    "steps": [
+      "打开应用，验证侧边栏正常显示",
+      "测试项目展开/折叠功能",
+      "测试项目选择和会话创建",
+      "测试项目删除功能",
+      "验证无控制台错误"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F053",
+    "category": "functional",
+    "priority": "medium",
+    "description": "回归测试 - 验证设置弹窗功能正常",
+    "depends_on": ["F051"],
+    "steps": [
+      "打开设置弹窗",
+      "验证3个Tab显示正确",
+      "测试智能体参数保存",
+      "测试Git配置保存",
+      "测试外观主题切换"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F054",
+    "category": "functional",
+    "priority": "medium",
+    "description": "回归测试 - 验证聊天和终端功能正常",
+    "depends_on": ["F052"],
+    "steps": [
+      "测试聊天界面发送消息",
+      "测试多文件选择功能",
+      "测试终端执行命令",
+      "测试文件浏览器功能",
+      "验证所有核心功能无回归"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F055",
+    "category": "style",
+    "priority": "medium",
+    "description": "样式调整 - 保持UI一致性，确保新功能样式协调",
+    "depends_on": ["F044", "F047"],
+    "steps": [
+      "检查新添加的按钮图标样式",
+      "检查分支Badge样式",
+      "检查文件选择器样式",
+      "确保与现有UI风格一致",
+      "验证移动端响应式显示"
+    ],
+    "passes": true
+  }
+]

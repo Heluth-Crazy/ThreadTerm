@@ -1,0 +1,423 @@
+# OpenWork Desktop - Desktop GUI Application
+
+## Project Overview
+
+Transform the existing OpenWork web application into a native desktop GUI application using Electron. The goal is to remove authentication/registration and create an "open-and-use" experience.
+
+## Target Platform
+
+- **Primary**: macOS (x64, arm64) - Intel & Apple Silicon
+- **Primary**: Windows (x64) - Windows 10/11
+- **Secondary**: Linux (x64)
+
+### Cross-Platform Requirements (平台无关性)
+
+All code must be platform-agnostic and work identically on macOS and Windows:
+
+#### File Path Handling
+- **ALWAYS** use Node.js `path` module for path operations
+- **NEVER** hardcode forward/backward slashes
+- Use `path.join()`, `path.resolve()`, `path.sep`
+- Store paths in platform-neutral format (forward slashes) in database
+
+```javascript
+// WRONG
+const filePath = folder + '/' + filename;
+
+// CORRECT
+const path = require('path');
+const filePath = path.join(folder, filename);
+```
+
+#### Environment Variables
+- Use `process.env` consistently across platforms
+- Use `path.delimiter` for PATH separators (`:` on Unix, `;` on Windows)
+- Use `os.homedir()` for home directory resolution
+
+#### Shell Commands
+- Use `os.platform()` to detect platform when necessary
+- Windows: Use `cmd.exe` or PowerShell for shell commands
+- macOS/Linux: Use `bash` or `sh`
+- For file operations, prefer Node.js `fs` API over shell commands
+
+#### Native Modules Compilation
+All native modules must provide prebuilt binaries for both platforms:
+- **node-pty**: Prebuild for darwin-x64, darwin-arm64, win32-x64
+- **better-sqlite3**: Prebuild for all target platforms
+- Use `electron-rebuild` in postinstall script
+
+#### Platform-Specific Behaviors
+| Feature | macOS | Windows |
+|---------|-------|---------|
+| App Menu | Top menu bar | Window menu |
+| Shortcuts | Cmd+Key | Ctrl+Key |
+| Window Controls | Left side | Right side |
+| Tray Icon | Template icon | Regular icon |
+| File Dialog | Native macOS dialog | Native Windows dialog |
+| Update Mechanism | dmg + zip | nsis installer |
+
+## Technology Stack
+
+### Desktop Framework
+- **Electron** v33+ (chosen for Node.js ecosystem compatibility, mature tooling, and native module support)
+
+### Build & Packaging
+- **electron-builder** - Cross-platform build tool
+- **electron-forge** (alternative) - Development and packaging
+
+### Frontend (Existing - Preserve)
+- React 18 + TypeScript
+- Vite 7.x
+- Tailwind CSS 3.x
+- CodeMirror (code editor)
+- xterm.js (terminal emulator)
+
+### Backend (Existing - Preserve)
+- Express.js
+- WebSocket (ws)
+- SQLite (better-sqlite3)
+- node-pty (pseudo-terminal)
+
+## Key Changes from Web Version
+
+### 1. Authentication Removal
+- Remove LoginForm component
+- Remove SetupForm component (first-time registration)
+- Remove ProtectedRoute wrapper (direct access to AppContent)
+- Simplify AuthContext to always return authenticated state
+- Remove auth-related API routes from backend
+- Remove user database tables (users, sessions)
+- Keep git configuration flow (part of Onboarding)
+
+### 2. Simplified Onboarding
+- Skip login/registration screens
+- Only show Git Configuration step (optional)
+- Show CLI Authentication step (Claude Code, Cursor, Codex)
+- Make all onboarding steps skippable
+
+### 3. Desktop Integration
+- Native window management (minimize, maximize, close)
+- System tray integration (optional)
+- Native file dialogs for project selection
+- Desktop notifications
+- Auto-update functionality
+- Keyboard shortcuts (Cmd/Ctrl+Q to quit, etc.)
+
+### 4. Single Executable
+- Bundle frontend and backend into one app
+- Auto-start backend server on app launch
+- Load frontend from local server (or file://)
+- Graceful shutdown handling
+
+## Feature Preservation
+
+All existing features must be preserved and functional:
+
+### Core Features
+1. Project Management - Auto-discover Claude Code/Cursor/Codex sessions
+2. Session Management - Resume conversations, manage history
+3. Interactive Chat Interface - Real-time communication with CLIs
+4. Integrated Shell Terminal - Built-in terminal with node-pty
+5. File Browser & Editor - File tree with syntax highlighting
+6. Git Browser - View, stage, commit, branch management
+
+### CLI Support
+- Claude Code CLI
+- Cursor CLI
+- OpenAI Codex
+
+### MCP Integration
+- Add custom MCP servers via UI
+- MCP server management
+
+## File Structure (After Transformation)
+
+```
+openwork-desktop/
+├── electron/
+│   ├── main.js              # Electron main process (platform-agnostic)
+│   ├── preload.js           # Context bridge for IPC
+│   └── utils/
+│       ├── server.js        # Embedded backend server
+│       ├── window.js        # Window management
+│       └── platform.js      # Platform detection utilities
+├── src/                     # React frontend (existing)
+├── server/                  # Express backend (existing, modified)
+│   └── utils/
+│       └── paths.js         # Cross-platform path utilities
+├── resources/
+│   ├── icon.icns           # macOS icon (1024x1024)
+│   ├── icon.ico            # Windows icon (256x256 multi-size)
+│   └── icon.png            # Linux icon (512x512)
+├── scripts/
+│   ├── build-mac.js         # macOS build script
+│   ├── build-win.js         # Windows build script
+│   └── rebuild-native.js    # Rebuild native modules
+├── electron-builder.yml    # Build configuration
+└── package.json            # Updated with electron deps
+```
+
+## API Endpoints to Remove
+
+### Authentication Routes (server/routes/auth.js)
+- DELETE `/api/auth/status`
+- DELETE `/api/auth/register`
+- DELETE `/api/auth/login`
+- DELETE `/api/auth/user`
+- DELETE `/api/auth/logout`
+
+### User Routes (server/routes/user.js)
+- Modify `/api/user/git-config` - Remove authentication requirement
+- Modify `/api/user/onboarding-status` - Always return completed
+- Modify `/api/user/complete-onboarding` - Simplify
+
+## Components to Modify/Remove
+
+### Remove
+- `src/components/LoginForm.jsx`
+- `src/components/SetupForm.jsx`
+- `src/components/ProtectedRoute.jsx` (or simplify to pass-through)
+
+### Modify
+- `src/contexts/AuthContext.jsx` - Return always-authenticated state
+- `src/components/Onboarding.jsx` - Skip auth, keep git config
+- `src/App.tsx` - Remove ProtectedRoute wrapper
+- `src/utils/api.js` - Remove auth token handling
+- `server/index.js` - Remove auth middleware on routes
+- `server/routes/*.js` - Remove authenticateToken calls
+
+## Configuration
+
+### Environment Variables
+```env
+# Desktop mode flag
+VITE_IS_DESKTOP=true
+
+# Backend server (internal)
+PORT=3001
+HOST=localhost
+
+# Database (local file)
+DATABASE_PATH=./data/claude-desktop.db
+```
+
+### Electron Builder Config
+```yaml
+appId: com.openwork.desktop
+productName: OpenWork Desktop
+directories:
+  output: release
+  buildResources: resources
+files:
+  - "dist/**/*"
+  - "electron/**/*"
+  - "server/**/*"
+  - "node_modules/**/*"
+  - "package.json"
+extraResources:
+  - from: "data"
+    to: "data"
+    filter: ["**/*"]
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+  icon: resources/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+win:
+  target:
+    - target: nsis
+      arch: x64
+    - target: portable
+      arch: x64
+  icon: resources/icon.ico
+  publisherName: "OpenWork Desktop"
+linux:
+  target: AppImage
+  icon: resources/icon.png
+  category: Development
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+```
+
+## Success Criteria
+
+1. **Installation**: Single-click install on all platforms
+2. **Launch Time**: App opens within 3 seconds
+3. **Authentication**: No login required, direct access
+4. **Feature Parity**: All web features work in desktop version
+5. **Performance**: Responsive UI, no lag in terminal
+6. **Auto-update**: Seamless background updates
+7. **Offline**: Core features work without internet
+
+## Testing Requirements
+
+### Unit Tests
+- Electron main process functions
+- Modified AuthContext
+- API route changes
+- Cross-platform path utilities
+- Platform detection logic
+
+### Integration Tests
+- Full application startup (macOS & Windows)
+- Window lifecycle
+- Server-client communication
+- Native module loading (node-pty, better-sqlite3)
+- File dialog operations
+
+### Cross-Platform E2E Tests (Playwright + Electron)
+**Must test on both macOS and Windows:**
+- Launch app
+- Create project
+- Use chat interface
+- Use terminal (pty)
+- Edit files
+- Git operations
+- File dialogs (open/save)
+- Keyboard shortcuts (Cmd vs Ctrl)
+- Menu interactions
+
+### Platform-Specific Test Matrix
+| Test Case | macOS Intel | macOS ARM | Windows x64 |
+|-----------|-------------|-----------|-------------|
+| App Launch | ✓ | ✓ | ✓ |
+| Terminal PTY | ✓ | ✓ | ✓ |
+| SQLite Operations | ✓ | ✓ | ✓ |
+| File Path Handling | ✓ | ✓ | ✓ |
+| Native File Dialog | ✓ | ✓ | ✓ |
+| Keyboard Shortcuts | ✓ | ✓ | ✓ |
+| Auto-Update | ✓ | ✓ | ✓ |
+| Installation | ✓ | ✓ | ✓ |
+
+## Timeline Estimate
+
+1. **Phase 1**: Authentication removal (1-2 days)
+2. **Phase 2**: Electron integration (2-3 days)
+3. **Phase 3**: Desktop features (1-2 days)
+4. **Phase 4**: Build & packaging (1-2 days)
+5. **Phase 5**: Testing & polish (2-3 days)
+
+## Risk Assessment
+
+1. **node-pty compatibility**: Native module may need recompilation for Electron
+   - **Mitigation**: Use electron-rebuild, provide prebuilt binaries
+2. **better-sqlite3**: Similar native module concerns
+   - **Mitigation**: Same as node-pty
+3. **Cross-platform path handling**: Windows vs Unix path differences
+   - **Mitigation**: Strict use of path module, comprehensive testing
+4. **Auto-update**: Requires code signing certificates (macOS notarization, Windows cert)
+   - **Mitigation**: Start with manual updates, add auto-update later
+5. **Large bundle size**: May need optimization
+   - **Mitigation**: Exclude dev dependencies, use asar packaging
+6. **Platform-specific CLI discovery**: Different paths for Claude Code/Cursor on macOS vs Windows
+   - **Mitigation**: Platform-specific detection logic in server
+
+## Electron Main Process Specification
+
+### Cross-Platform Window Creation
+```javascript
+// Platform-specific window options
+const isMac = process.platform === 'darwin';
+const isWin = process.platform === 'win32';
+
+const windowOptions = {
+  width: 1400,
+  height: 900,
+  minWidth: 900,
+  minHeight: 600,
+  titleBarStyle: isMac ? 'hiddenInset' : 'default',
+  trafficLightPosition: isMac ? { x: 12, y: 12 } : undefined,
+  webPreferences: {
+    preload: path.join(__dirname, 'preload.js'),
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: false
+  }
+};
+```
+
+### Platform-Specific Menu
+```javascript
+// macOS: App menu with standard items
+// Windows: Window menu
+const template = isMac ? [
+  {
+    label: app.name,
+    submenu: [
+      { role: 'about' },
+      { type: 'separator' },
+      { role: 'quit' }
+    ]
+  },
+  // ... other menus
+] : [
+  // Windows menu structure
+  {
+    label: 'File',
+    submenu: [
+      { role: 'quit' }
+    ]
+  },
+  // ... other menus
+];
+```
+
+### Cross-Platform Shortcuts
+```javascript
+// Use accelerator patterns that work on both platforms
+{
+  label: 'New Project',
+  accelerator: isMac ? 'Cmd+N' : 'Ctrl+N',
+  click: () => { /* ... */ }
+}
+```
+
+## CLI Discovery (Platform-Specific)
+
+### macOS
+- Look in: `/usr/local/bin`, `/opt/homebrew/bin`, `~/.local/bin`
+- Commands: `claude`, `cursor`, `codex`
+
+### Windows
+- Look in: `%LOCALAPPDATA%\Programs\cursor\resources\app\bin`
+- Look in: `%APPDATA%\npm` (for global npm packages)
+- Commands: `claude.cmd`, `cursor.exe`, `codex.cmd`
+
+## Build Scripts
+
+### Development
+```bash
+# macOS
+npm run dev:mac
+
+# Windows
+npm run dev:win
+```
+
+### Production Build
+```bash
+# Build for current platform
+npm run build:electron
+
+# Build for all platforms (CI)
+npm run build:all
+
+# Build specific platform
+npm run build:mac
+npm run build:win
+```
+
+## References
+
+- [Electron Documentation](https://www.electronjs.org/docs)
+- [electron-builder](https://www.electronjs.org/docs/latest/tutorial/electron-builder)
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
+- [Electron Cross-Platform](https://www.electronjs.org/docs/latest/tutorial/windows-linux-mac)

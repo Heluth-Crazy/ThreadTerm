@@ -1,0 +1,373 @@
+{
+  "projects": {
+    "title": "プロジェクト",
+    "newProject": "新規プロジェクト",
+    "deleteProject": "プロジェクトを削除",
+    "renameProject": "プロジェクト名を変更",
+    "noProjects": "プロジェクトが見つかりません",
+    "loadingProjects": "プロジェクトを読み込んでいます...",
+    "searchPlaceholder": "プロジェクトを検索...",
+    "projectNamePlaceholder": "プロジェクト名",
+    "starred": "お気に入り",
+    "all": "すべて",
+    "untitledSession": "無題のセッション",
+    "newSession": "新しいセッション",
+    "codexSession": "Codexセッション",
+    "fetchingProjects": "Claudeのプロジェクトとセッションを取得しています",
+    "projects": "プロジェクト",
+    "noMatchingProjects": "一致するプロジェクトがありません",
+    "tryDifferentSearch": "検索語を変えてお試しください",
+    "runClaudeCli": "プロジェクトディレクトリでClaude CLIを実行して始めましょう"
+  },
+  "app": {
+    "title": "OpenWork",
+    "subtitle": "AIコーディングアシスタント"
+  },
+  "workbench": {
+    "projects": "プロジェクト",
+    "extensions": "拡張",
+    "settings": "設定",
+    "skills": "スキル",
+    "mcp": "MCP",
+    "general": "一般",
+    "account": "アカウント",
+    "credentials": "認証情報",
+    "permissions": "権限",
+    "placeholders": {
+      "skills": "Skills ワークベンチは、SKILL.md の検出、作成、編集、保存をサポートしました。",
+      "mcp": "MCP は設定画面ではなくここに移動し、Claude と Codex の設定を一元管理します。",
+      "settings": "設定ドメインはメインワークベンチ上でアプリとエージェントの設定を管理します。"
+    },
+    "overview": {
+      "nav": "概要",
+      "title": "作業を再開",
+      "subtitle": "最近のセッションに戻るか、今いちばん関連の高いプロジェクトへすぐ入れます。",
+      "continue": "最近のセッション",
+      "continueDescription": "最近の横断プロジェクト会話です。1 回の操作でコンテキストに戻れます。",
+      "sessionCount": "{{count}} 件",
+      "quickStart": "クイックスタート",
+      "quickStartDescription": "今もっとも関連の高いプロジェクトから次の作業へすばやく進みます。",
+      "launchTarget": "既定のプロジェクト",
+      "starred": "スター付きプロジェクト",
+      "starredDescription": "よく使う、または明示的にマークしたプロジェクトへ戻ります。",
+      "recentProjects": "最近のプロジェクト",
+      "recentProjectsDescription": "最新アクティビティ順のプロジェクト入口です。",
+      "noStarredProjects": "スター付きプロジェクトはまだありません。",
+      "emptyProjectsTitle": "まだプロジェクトがありません",
+      "emptyProjects": "サイドバーからプロジェクトを作成または取り込むと、このページがプロジェクトホームになります。",
+      "emptySessionsTitle": "最近のセッションはまだありません",
+      "emptySessions": "プロジェクトの準備はできています。新しい Claude または Codex セッションを開始してください。",
+      "noRecentActivity": "アクティビティなし",
+      "actions": {
+        "claude": "Claude を開始",
+        "claudeHint": "{{project}} で Claude セッションを開始",
+        "codex": "Codex を開始",
+        "codexHint": "{{project}} で Codex セッションを開始",
+        "openProject": "プロジェクトを開く",
+        "openProjectHint": "{{project}} の概要を開く",
+        "settings": "設定を開く",
+        "settingsHint": "エージェント、外観、ワークスペース設定を調整",
+        "noProjectHint": "先にプロジェクトを作成または取り込んでください",
+        "createProject": "プロジェクト作成",
+        "createProjectHint": "プロジェクト作成ウィザードを開いて新しい作業ディレクトリを追加"
+      }
+    },
+    "extensionsOverview": {
+      "title": "Extensions Overview",
+      "subtitle": "ローカルの Skills と MCP の状態を確認し、必要な管理ページへすぐ移動できます。",
+      "actions": {
+        "refresh": "概要を更新",
+        "openSkills": "Skills を開く",
+        "newSkill": "新規 Skill",
+        "openMcp": "MCP を開く",
+        "addMcp": "MCP を追加"
+      },
+      "skills": {
+        "description": "ローカル Skill の管理、最近の更新、作成導線をここから扱います。",
+        "count": "{{count}} skills",
+        "countLabel": "Total Skills",
+        "writableRoots": "{{count}} writable roots",
+        "writableRootsLabel": "Writable Roots",
+        "recentTitle": "Recently Updated",
+        "empty": "まだ Skill はありません。新しい Skill を作成してください。"
+      },
+      "mcp": {
+        "description": "Claude と Codex の MCP 構成状況を確認し、そのまま保守を続けられます。",
+        "total": "Total",
+        "totalLabel": "Total Servers",
+        "summaryTitle": "Configuration Summary",
+        "statusTitle": "Configuration Status",
+        "readyTitle": "管理可能なサービスが見つかりました",
+        "ready": "Claude または Codex に MCP 設定があるため、詳細ページでそのまま保守を続けられます。",
+        "emptyTitle": "MCP サーバーはまだありません",
+        "empty": "MCP サーバーはまだ構成されていません。よく使うサービスを 1 つ追加してください。",
+        "count": "{{count}} servers"
+      },
+      "hints": {
+        "title": "Recommendations",
+        "subtitle": "次に対応する価値が高い拡張タスクをここで素早く判断します。",
+        "empty": "Skills も MCP もまだありません。まずは基本となる 1 つを追加してください。",
+        "mcpMissing": "MCP はまだ未設定です。よく使うサービスを 1 つ追加するのが次の一手です。",
+        "skillsEmpty": "Skills ディレクトリは準備できていますが、Skill はまだありません。テンプレート Skill を作成してください。",
+        "skillsReadOnly": "書き込み可能な Skills ルートがないため、新しい Skill の作成に失敗する可能性があります。",
+        "partial": "概要の一部を読み込めませんでした。詳細ページで現在の状態を確認してください。",
+        "ready": "現在の拡張状態は良好です。変更が必要なときだけ Skills または MCP を開いてください。"
+      },
+      "errors": {
+        "skills": "Failed to load Skills overview",
+        "mcp": "Failed to load MCP overview"
+      }
+    },
+    "skillsPage": {
+      "subtitle": "ローカル Skill をスキャン、編集、管理します。",
+      "searchPlaceholder": "Skill を検索",
+      "newSkill": "新規 Skill",
+      "loading": "Skill を読み込み中...",
+      "noDescription": "説明なし",
+      "noSkillsInRoot": "このディレクトリに Skill はありません",
+      "noMatching": "一致する Skill がありません",
+      "errors": {
+        "loadList": "Skills の読み込みに失敗しました",
+        "loadSkill": "Skill の読み込みに失敗しました",
+        "create": "Skill の作成に失敗しました",
+        "save": "Skill の保存に失敗しました",
+        "delete": "Skill の削除に失敗しました"
+      },
+      "editor": {
+        "loading": "Skill を読み込み中...",
+        "emptyTitle": "スキル",
+        "emptyDescription": "インストール済みの Skill を選択するか、",
+        "emptyDescriptionSuffix": "をクリックして Markdown テンプレートから作成します。",
+        "createEyebrow": "新規 Skill",
+        "skillEyebrow": "スキル",
+        "newSkillName": "new-skill",
+        "createDescription": "選択したディレクトリに新しい SKILL.md を作成します。",
+        "edit": "編集",
+        "preview": "プレビュー",
+        "template": "テンプレート",
+        "save": "保存",
+        "saving": "保存中...",
+        "delete": "削除",
+        "targetRoot": "保存先ディレクトリ",
+        "folderSlug": "フォルダ識別子",
+        "folderSlugPlaceholder": "my-skill",
+        "confirmDelete": "Skill「{{name}}」を削除しますか？"
+      },
+      "template": {
+        "description": "この Skill が何を支援するかを簡潔に説明します",
+        "overviewTitle": "概要",
+        "overviewBody": "この Skill の用途と使うタイミングを説明します。",
+        "workflowTitle": "ワークフロー",
+        "stepInspect": "関連コンテキストを確認する",
+        "stepApply": "Skill 固有の流れを実行する",
+        "stepVerify": "最終結果を確認する"
+      }
+    },
+    "mcpPage": {
+      "subtitle": "Claude と Codex の MCP サーバーを同じページで管理します。",
+      "loading": "MCP 設定を読み込み中...",
+      "empty": "MCP サーバーはまだありません。",
+      "confirmDelete": "MCP サーバー「{{name}}」を削除しますか？",
+      "transport": {
+        "stdio": "stdio",
+        "http": "http",
+        "sse": "sse"
+      },
+      "scope": {
+        "user": "ユーザー",
+        "local": "ローカル"
+      },
+      "actions": {
+        "add": "サーバーを追加",
+        "edit": "編集",
+        "delete": "削除",
+        "close": "閉じる",
+        "save": "MCP サーバーを保存",
+        "saving": "保存中..."
+      },
+      "providers": {
+        "claudeDescription": "Claude 用 MCP サーバー。ユーザー単位またはプロジェクト単位で構成できます。",
+        "codexDescription": "Codex は現在 stdio ベースの MCP サーバーをサポートします。"
+      },
+      "server": {
+        "command": "コマンド",
+        "args": "引数",
+        "url": "URL",
+        "project": "プロジェクト",
+        "env": "環境変数"
+      },
+      "form": {
+        "addTitle": "MCP サーバーを追加",
+        "editTitle": "MCP サーバーを編集",
+        "providerConfig": "{{provider}} 設定",
+        "name": "名前",
+        "transport": "接続方式",
+        "scope": "スコープ",
+        "projectPath": "プロジェクトパス",
+        "command": "コマンド",
+        "commandPlaceholder": "npx",
+        "args": "引数（1 行ごと）",
+        "env": "環境変数（KEY=VALUE）",
+        "url": "URL",
+        "urlPlaceholder": "https://example.com/mcp",
+        "sections": {
+          "identity": "基本情報",
+          "transport": "接続設定",
+          "runtime": "実行パラメータ"
+        }
+      },
+      "errors": {
+        "load": "MCP 設定の読み込みに失敗しました",
+        "loadClaude": "Claude MCP 設定の読み込みに失敗しました",
+        "loadCodex": "Codex MCP 設定の読み込みに失敗しました",
+        "delete": "MCP サーバーの削除に失敗しました",
+        "save": "MCP サーバーの保存に失敗しました",
+        "updateClaude": "Claude MCP サーバーの更新に失敗しました",
+        "saveClaude": "Claude MCP サーバーの保存に失敗しました",
+        "saveCodex": "Codex MCP サーバーの保存に失敗しました",
+        "renameCodex": "Codex MCP サーバー名の変更に失敗しました"
+      }
+    },
+    "projectsPanel": {
+      "description": "概要、プロジェクト、セッションをここで切り替えます。",
+      "overviewHint": "プロジェクトのホームと最近のセッションに戻ります。"
+    },
+    "projectOverview": {
+      "emptyTitle": "プロジェクトを選択",
+      "emptyDescription": "左側からプロジェクトを開くか、新しいプロジェクトを先に作成してください。",
+      "worktreeBadge": "Worktree",
+      "continue": "前回のセッションを再開",
+      "continueDescription": "プロジェクト入口は統一したまま、直近のコンテキストへワンクリックで戻れます。",
+      "sourceProject": "ソースプロジェクト",
+      "sourceProjectDescription": "このプロジェクトが worktree グループに属する場合、ここからソースプロジェクトへ戻れます。",
+      "worktreesTitle": "関連 Worktrees",
+      "worktreesDescription": "左側を軽く保つため、worktree は右側のプロジェクト概要に集約します。",
+      "worktreesEmpty": "このプロジェクトに関連する worktree はまだありません。",
+      "selectedCount": "{{count}} 件を選択中",
+      "stats": {
+        "worktrees": "Worktrees",
+        "activity": "最終アクティビティ"
+      },
+      "actions": {
+        "title": "プロジェクト操作",
+        "star": "スターを付ける",
+        "unstar": "スターを外す",
+        "renamePrompt": "新しいプロジェクト表示名を入力",
+        "deleteConfirm": "プロジェクト {{project}} を削除しますか？ セッションがある場合は {{count}} 件も削除されます。",
+        "deleteSessionsConfirm": "選択した {{count}} 件の {{provider}} セッションを削除しますか？",
+        "manage": "管理",
+        "selectAll": "すべて選択",
+        "clear": "クリア",
+        "deleteSelected": "選択を削除"
+      },
+      "providers": {
+        "claude": {
+          "title": "Claude セッション",
+          "description": "プロジェクト概要から Claude セッションを管理します。",
+          "empty": "Claude セッションはまだありません。"
+        },
+        "codex": {
+          "title": "Codex セッション",
+          "description": "プロジェクト概要から Codex セッションを管理します。",
+          "empty": "Codex セッションはまだありません。"
+        }
+      },
+      "errors": {
+        "rename": "プロジェクト名の変更に失敗しました",
+        "deleteProject": "プロジェクトの削除に失敗しました",
+        "deleteSessions": "セッションの削除に失敗しました"
+      }
+    }
+  },
+  "sessions": {
+    "title": "セッション",
+    "newSession": "新しいセッション",
+    "deleteSession": "セッションを削除",
+    "renameSession": "セッション名を変更",
+    "noSessions": "セッションはまだありません",
+    "loadingSessions": "セッションを読み込んでいます...",
+    "unnamed": "名称未設定",
+    "loading": "読み込み中...",
+    "showMore": "さらにセッションを表示"
+  },
+  "tooltips": {
+    "viewEnvironments": "環境を表示",
+    "hideSidebar": "サイドバーを隠す",
+    "createProject": "新しいプロジェクトを作成",
+    "refresh": "プロジェクトとセッションを更新 (Ctrl+R)",
+    "renameProject": "プロジェクト名を変更 (F2)",
+    "deleteProject": "空のプロジェクトを削除 (Delete)",
+    "addToFavorites": "お気に入りに追加",
+    "removeFromFavorites": "お気に入りから削除",
+    "editSessionName": "セッション名を手動で編集",
+    "deleteSession": "このセッションを完全に削除",
+    "save": "保存",
+    "cancel": "キャンセル"
+  },
+  "navigation": {
+    "chat": "チャット",
+    "files": "ファイル",
+    "git": "Git",
+    "terminal": "ターミナル",
+    "tasks": "タスク"
+  },
+  "actions": {
+    "refresh": "更新",
+    "settings": "設定",
+    "collapseAll": "すべて折りたたむ",
+    "expandAll": "すべて展開",
+    "cancel": "キャンセル",
+    "save": "保存",
+    "delete": "削除",
+    "rename": "名前の変更"
+  },
+  "status": {
+    "active": "アクティブ",
+    "inactive": "非アクティブ",
+    "thinking": "思考中...",
+    "error": "エラー",
+    "aborted": "中断",
+    "unknown": "不明"
+  },
+  "time": {
+    "justNow": "たった今",
+    "oneMinuteAgo": "1分前",
+    "minutesAgo": "{{count}}分前",
+    "oneHourAgo": "1時間前",
+    "hoursAgo": "{{count}}時間前",
+    "oneDayAgo": "1日前",
+    "daysAgo": "{{count}}日前"
+  },
+  "messages": {
+    "deleteConfirm": "本当に削除しますか？",
+    "renameSuccess": "名前を変更しました",
+    "deleteSuccess": "削除しました",
+    "errorOccurred": "エラーが発生しました",
+    "deleteSessionConfirm": "このセッションを削除してもよろしいですか？この操作は取り消せません。",
+    "deleteProjectConfirm": "この空のプロジェクトを削除してもよろしいですか？この操作は取り消せません。",
+    "enterProjectPath": "プロジェクトのパスを入力してください",
+    "deleteSessionFailed": "セッションの削除に失敗しました。もう一度お試しください。",
+    "deleteSessionError": "セッションの削除でエラーが発生しました。もう一度お試しください。",
+    "deleteProjectFailed": "プロジェクトの削除に失敗しました。もう一度お試しください。",
+    "deleteProjectError": "プロジェクトの削除でエラーが発生しました。もう一度お試しください。",
+    "createProjectFailed": "プロジェクトの作成に失敗しました。もう一度お試しください。",
+    "createProjectError": "プロジェクトの作成でエラーが発生しました。もう一度お試しください。",
+    "configureSessionLaunch": "Configure Session Launch",
+    "sessionLaunchArgs": "startup arguments",
+    "profileGroup": "Profile Group",
+    "temporaryArgs": "Temporary Args (one per line)",
+    "finalCommandPreview": "Final Command Preview",
+    "selectProviderForSession": "Select provider for this session"
+  },
+  "version": {
+    "updateAvailable": "アップデートあり"
+  },
+  "deleteConfirmation": {
+    "deleteProject": "プロジェクトを削除",
+    "deleteSession": "セッションを削除",
+    "confirmDelete": "本当に削除しますか？",
+    "sessionCount": "このプロジェクトには{{count}}件の会話があります。",
+    "allConversationsDeleted": "すべての会話が完全に削除されます。",
+    "cannotUndo": "この操作は取り消せません。"
+  }
+}

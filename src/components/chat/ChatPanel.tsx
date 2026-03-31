@@ -1,0 +1,2357 @@
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronDown, ChevronRight, FileText, Files, Folder, Loader2, Send, Sparkles, Square, User, Wrench, XCircle } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { useTranslation } from 'react-i18next';
+import { api } from '../../utils/api';
+import SessionProviderLogo from '../SessionProviderLogo';
+import type { Project, ProjectSession, SessionProvider } from '../../types/app';
+import { loadSessionLaunchProfilesByProvider, mergeSessionLaunchArgs } from '../../utils/sessionLaunchProfiles';
+import { CLAUDE_MODELS, CODEX_MODELS } from '../../../shared/modelConstants.js';
+
+type ChatPanelProps = {
+  selectedProject: Project;
+  selectedSession: ProjectSession | null;
+  sendMessage: (message: unknown) => boolean;
+  latestMessage: any | null;
+  messageSequence: number;
+  getBufferedMessagesSince: (sequence: number) => Array<{ sequence: number; message: any }>;
+  externalMessageUpdate?: number;
+  onSessionActive?: (sessionId?: string | null) => void;
+  onSessionInactive?: (sessionId?: string | null) => void;
+  onSessionProcessing?: (sessionId?: string | null) => void;
+  onSessionNotProcessing?: (sessionId?: string | null) => void;
+  onReplaceTemporarySession?: (sessionId?: string | null) => void;
+  onNavigateToSession?: (targetSessionId: string) => void;
+};
+
+type ChatPhase = 'idle' | 'thinking' | 'tool' | 'writing' | 'done';
+type ChatMessageKind = 'user' | 'assistant' | 'tool' | 'thinking' | 'status' | 'error';
+
+type ReferencedFile = {
+  path: string;
+  loaded: boolean;
+  truncated?: boolean;
+  error?: string;
+};
+
+type ChatMessage = {
+  id: string;
+  kind: ChatMessageKind;
+  text: string;
+  provider: SessionProvider;
+  timestamp: number;
+  files?: ReferencedFile[];
+  streaming?: boolean;
+};
+
+type QueuedOutgoingMessage = {
+  rawInput: string;
+  displayInput: string;
+  referencePaths: string[];
+  userMessageId: string;
+  attachedFiles: string[];
+  provider: SessionProvider;
+  model: string;
+};
+
+type FlatFileNode = {
+  path: string;
+  name: string;
+  type: 'file' | 'directory';
+};
+
+type FileTreeNode = {
+  path: string;
+  name: string;
+  type: 'file' | 'directory';
+  children?: FileTreeNode[];
+};
+
+const MAX_TOOL_RESULT_PREVIEW_CHARS = 3000;
+
+const MODEL_OPTIONS: Record<SessionProvider, Array<{ value: string; label: string }>> = {
+  claude: CLAUDE_MODELS.OPTIONS,
+  codex: CODEX_MODELS.OPTIONS,
+};
+
+const MODEL_DEFAULTS: Record<SessionProvider, string> = {
+  claude: CLAUDE_MODELS.DEFAULT,
+  codex: CODEX_MODELS.DEFAULT,
+};
+
+const PROVIDER_THEME: Record<SessionProvider, {
+  panel: string;
+  header: string;
+  headerTitle: string;
+  headerIcon: string;
+  brandBadge: string;
+  assistantBubble: string;
+  userBubble: string;
+  composer: string;
+  sendButton: string;
+  picker: string;
+  activePickRow: string;
+}> = {
+  claude: {
+    panel: 'bg-gradient-to-b from-orange-50/35 via-background to-amber-50/20 dark:from-orange-950/10 dark:via-background dark:to-amber-950/10',
+    header: 'bg-orange-50/85 border-orange-200/70 dark:bg-orange-950/25 dark:border-orange-900/50',
+    headerTitle: 'text-orange-900 dark:text-orange-100',
+    headerIcon: 'text-orange-500',
+    brandBadge: 'bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-900/40 dark:text-orange-100 dark:border-orange-800',
+    assistantBubble: 'bg-white border-orange-200 text-zinc-900 shadow-sm dark:bg-zinc-900 dark:border-orange-900/40 dark:text-zinc-100',
+    userBubble: 'bg-orange-500 text-white border-orange-500 shadow-sm dark:bg-orange-600 dark:border-orange-600',
+    composer: 'bg-white/85 border-orange-200/70 dark:bg-zinc-900/70 dark:border-orange-900/40',
+    sendButton: 'bg-orange-500 hover:bg-orange-600 text-white',
+    picker: 'border-orange-200/80 dark:border-orange-900/50',
+    activePickRow: 'bg-orange-100/70 dark:bg-orange-900/40',
+  },
+  codex: {
+    panel: 'bg-gradient-to-b from-emerald-50/30 via-background to-teal-50/20 dark:from-emerald-950/10 dark:via-background dark:to-teal-950/10',
+    header: 'bg-emerald-50/85 border-emerald-200/70 dark:bg-emerald-950/25 dark:border-emerald-900/50',
+    headerTitle: 'text-emerald-900 dark:text-emerald-100',
+    headerIcon: 'text-emerald-600',
+    brandBadge: 'bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-100 dark:border-emerald-800',
+    assistantBubble: 'bg-white border-emerald-200 text-zinc-900 shadow-sm dark:bg-zinc-900 dark:border-emerald-900/40 dark:text-zinc-100',
+    userBubble: 'bg-emerald-600 text-white border-emerald-600 shadow-sm dark:bg-emerald-700 dark:border-emerald-700',
+    composer: 'bg-white/85 border-emerald-200/70 dark:bg-zinc-900/70 dark:border-emerald-900/40',
+    sendButton: 'bg-emerald-600 hover:bg-emerald-700 text-white',
+    picker: 'border-emerald-200/80 dark:border-emerald-900/50',
+    activePickRow: 'bg-emerald-100/70 dark:bg-emerald-900/40',
+  },
+};
+
+const makeMessageId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+const flattenFiles = (nodes: FileTreeNode[], bucket: FlatFileNode[] = []): FlatFileNode[] => {
+  for (const node of nodes) {
+    if (!node || typeof node !== 'object') {
+      continue;
+    }
+    if (
+      (node.type === 'file' || node.type === 'directory') &&
+      typeof node.path === 'string' &&
+      typeof node.name === 'string'
+    ) {
+      bucket.push({ path: node.path, name: node.name, type: node.type });
+    }
+    if (node.type === 'directory' && Array.isArray(node.children)) {
+      flattenFiles(node.children, bucket);
+    }
+  }
+  return bucket;
+};
+
+const normalizeTreeNodes = (nodes: any[]): FileTreeNode[] => {
+  if (!Array.isArray(nodes)) {
+    return [];
+  }
+
+  const normalized: FileTreeNode[] = [];
+  for (const node of nodes) {
+    if (!node || typeof node !== 'object') {
+      continue;
+    }
+
+    if ((node.type !== 'file' && node.type !== 'directory') || typeof node.path !== 'string' || typeof node.name !== 'string') {
+      continue;
+    }
+
+    const children = node.type === 'directory' && Array.isArray(node.children)
+      ? normalizeTreeNodes(node.children)
+      : [];
+
+    normalized.push({
+      path: node.path,
+      name: node.name,
+      type: node.type,
+      children,
+    });
+  }
+
+  normalized.sort((a, b) => {
+    if (a.type !== b.type) {
+      return a.type === 'directory' ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  return normalized;
+};
+
+const getFuzzySubsequenceScore = (target: string, query: string): number => {
+  if (!query) return 0;
+
+  let queryIndex = 0;
+  let firstMatch = -1;
+  let lastMatch = -1;
+
+  for (let i = 0; i < target.length && queryIndex < query.length; i += 1) {
+    if (target[i] === query[queryIndex]) {
+      if (firstMatch === -1) firstMatch = i;
+      lastMatch = i;
+      queryIndex += 1;
+    }
+  }
+
+  if (queryIndex !== query.length || firstMatch === -1 || lastMatch === -1) {
+    return -1;
+  }
+
+  const span = lastMatch - firstMatch + 1;
+  const compactnessBonus = Math.max(0, query.length * 10 - (span - query.length) * 2);
+  const earlyMatchBonus = Math.max(0, 40 - firstMatch);
+  return compactnessBonus + earlyMatchBonus;
+};
+
+const scoreMentionCandidate = (entry: FlatFileNode, rawQuery: string): number => {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) {
+    return entry.type === 'directory' ? 12 : 10;
+  }
+
+  const pathLower = entry.path.toLowerCase();
+  const nameLower = entry.name.toLowerCase();
+
+  if (nameLower === query) return 2000;
+  if (pathLower === query) return 1950;
+
+  if (nameLower.startsWith(query)) {
+    return 1700 - Math.min(nameLower.length - query.length, 200);
+  }
+
+  const nameIndex = nameLower.indexOf(query);
+  if (nameIndex >= 0) {
+    return 1500 - Math.min(nameIndex, 400);
+  }
+
+  const pathIndex = pathLower.indexOf(query);
+  if (pathIndex >= 0) {
+    return 1300 - Math.min(pathIndex, 500);
+  }
+
+  const queryParts = query.split(/[\\/\s._-]+/).filter(Boolean);
+  if (queryParts.length > 1 && queryParts.every((part) => pathLower.includes(part))) {
+    return 1100 - queryParts.length;
+  }
+
+  const nameFuzzyScore = getFuzzySubsequenceScore(nameLower, query);
+  if (nameFuzzyScore >= 0) {
+    return 900 + nameFuzzyScore;
+  }
+
+  const pathFuzzyScore = getFuzzySubsequenceScore(pathLower, query);
+  if (pathFuzzyScore >= 0) {
+    return 700 + pathFuzzyScore;
+  }
+
+  return -1;
+};
+
+const extractText = (payload: unknown): string => {
+  if (!payload) return '';
+
+  if (typeof payload === 'string') {
+    return payload;
+  }
+
+  if (Array.isArray(payload)) {
+    return payload.map((item) => extractText(item)).filter(Boolean).join('\n');
+  }
+
+  if (typeof payload === 'object') {
+    const record = payload as Record<string, unknown>;
+
+    if (typeof record.text === 'string') {
+      return record.text;
+    }
+
+    if (typeof record.content === 'string') {
+      return record.content;
+    }
+
+    if (Array.isArray(record.content)) {
+      return extractText(record.content);
+    }
+
+    if (record.message) {
+      return extractText(record.message);
+    }
+
+    if (record.delta) {
+      return extractText(record.delta);
+    }
+
+    if (record.output) {
+      return extractText(record.output);
+    }
+  }
+
+  return '';
+};
+
+const stripKnownXmlArtifacts = (value: string): string => {
+  return value
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '')
+    .replace(/<environment_context>[\s\S]*?<\/environment_context>/gi, '')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/<redacted_thinking>[\s\S]*?<\/redacted_thinking>/gi, '')
+    .replace(/<command-name>([\s\S]*?)<\/command-name>/gi, '$1')
+    .replace(/<command-message>([\s\S]*?)<\/command-message>/gi, '$1')
+    .replace(/<command-args>([\s\S]*?)<\/command-args>/gi, '$1')
+    .replace(/<local-command-stdout>([\s\S]*?)<\/local-command-stdout>/gi, '$1');
+};
+
+const normalizeDisplayText = (payload: unknown): string => {
+  const raw = extractText(payload);
+  if (!raw) return '';
+  return stripKnownXmlArtifacts(raw)
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+};
+
+const shouldSkipNoisyMessage = (text: string): boolean => {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  return (
+    normalized === 'exit' ||
+    normalized === 'bye!' ||
+    normalized === 'goodbye!' ||
+    normalized.startsWith('caveat:') ||
+    normalized.startsWith('this session is being continued from a previous') ||
+    normalized.startsWith('invalid api key')
+  );
+};
+
+const toToolResultPreview = (payload: unknown): string => {
+  const cleaned = normalizeDisplayText(payload);
+  if (!cleaned) {
+    return '';
+  }
+  if (cleaned.length <= MAX_TOOL_RESULT_PREVIEW_CHARS) {
+    return cleaned;
+  }
+  const hiddenChars = cleaned.length - MAX_TOOL_RESULT_PREVIEW_CHARS;
+  return `${cleaned.slice(0, MAX_TOOL_RESULT_PREVIEW_CHARS)}\n[...truncated ${hiddenChars} chars]`;
+};
+
+const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const stripReferencedMentions = (text: string, referencedPaths: string[]): string => {
+  if (!text) return '';
+  if (!referencedPaths.length) return text.trim();
+
+  let output = text;
+  for (const filePath of referencedPaths) {
+    const mentionPattern = new RegExp(`(^|\\s)@${escapeRegex(filePath)}(?=\\s|$)`, 'g');
+    output = output.replace(mentionPattern, '$1');
+  }
+
+  return output
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+};
+
+const stripEmbeddedFileContext = (text: string): string => {
+  if (!text) return '';
+  const markerCandidates = ['\n\nReferenced paths:\n', '\n\nReferenced files:\n'];
+  const markerIndex = markerCandidates
+    .map((marker) => text.indexOf(marker))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0] ?? -1;
+  if (markerIndex === -1) {
+    return text.trim();
+  }
+  return text.slice(0, markerIndex).trim();
+};
+
+const isListItemLine = (line: string): boolean => /^(\s*)([-*+]|\d+\.)\s+/.test(line.trimStart());
+
+const compactMessageText = (text: string): string => {
+  if (!text) return '';
+
+  const normalized = text.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  const compacted: string[] = [];
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].replace(/[ \t]+$/g, '');
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      const prevLine = compacted[compacted.length - 1] || '';
+      const nextLine = lines.slice(i + 1).find((value) => value.trim().length > 0) || '';
+
+      if (!prevLine.trim()) {
+        continue;
+      }
+
+      // Keep list blocks tight: remove empty lines around list items.
+      if (isListItemLine(prevLine) || isListItemLine(nextLine)) {
+        continue;
+      }
+
+      compacted.push('');
+      continue;
+    }
+
+    compacted.push(line);
+  }
+
+  return compacted.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+};
+
+const shouldRenderAsPreformatted = (text: string): boolean => {
+  if (!text) return false;
+  const lines = text.split('\n').filter((line) => line.trim().length > 0);
+  if (lines.length < 2) return false;
+
+  const markdownTableLines = lines.filter((line) => line.includes('|')).length;
+  if (markdownTableLines >= 2) return false;
+
+  const boxDrawingLines = lines.filter((line) => /[閳瑰备鏁╅埞鎰ㄦ晜閳圭补鏁囬埞鍌楁敘]/.test(line)).length;
+  if (boxDrawingLines >= 2) return true;
+
+  const alignedColumnLines = lines.filter((line) => /\S(?: {2,}|\t)\S/.test(line)).length;
+  return alignedColumnLines >= 3;
+};
+
+const getProviderMessageType = (provider: SessionProvider): string => {
+  if (provider === 'codex') return 'codex-command';
+  return 'claude-command';
+};
+
+const CHAT_RESPONSE_TYPES = new Set([
+  'claude-response',
+  'codex-response',
+  'claude-complete',
+  'codex-complete',
+  'claude-error',
+  'codex-error',
+  'error',
+  'token-budget',
+  'claude-permission-request',
+  'claude-permission-cancelled',
+]);
+
+const THINKING_MESSAGE_TYPES = new Set([
+  'thinking',
+  'redacted_thinking',
+  'reasoning',
+  'analysis',
+  'reasoning_summary',
+  'reasoning_content',
+]);
+
+const getStorageKeyForModel = (provider: SessionProvider): string => `chat-model-${provider}`;
+const getProviderDisplayName = (provider: SessionProvider): string => {
+  if (provider === 'codex') return 'OpenAI Codex';
+  return 'Claude';
+};
+
+const getCodexPermissionMode = (): string => {
+  try {
+    const raw = localStorage.getItem('codex-settings');
+    if (!raw) return 'default';
+    const parsed = JSON.parse(raw);
+    return parsed?.permissionMode || 'default';
+  } catch {
+    return 'default';
+  }
+};
+
+const BYPASS_PERMISSION_FLAGS = new Set([
+  '--dangerously-skip-permissions',
+  '--dangerously-bypass-approvals-and-sandbox',
+]);
+
+const normalizeLaunchArgs = (rawArgs: unknown): string[] => {
+  if (!Array.isArray(rawArgs)) {
+    return [];
+  }
+
+  return rawArgs
+    .map((arg) => (typeof arg === 'string' ? arg.trim() : ''))
+    .filter((arg) => arg.length > 0);
+};
+
+const getSessionLaunchArgs = (
+  session: ProjectSession | null,
+  provider: SessionProvider,
+): string[] => {
+  const explicitArgs = normalizeLaunchArgs(session?.__launchArgs);
+  if (explicitArgs.length > 0) {
+    return explicitArgs;
+  }
+
+  if (provider !== 'claude' && provider !== 'codex') {
+    return [];
+  }
+
+  const providerProfiles = loadSessionLaunchProfilesByProvider(provider);
+  const explicitProfileId = typeof session?.__launchProfileId === 'string'
+    ? session.__launchProfileId
+    : '';
+  const fallbackProfileId = explicitProfileId || providerProfiles.defaultProfileId;
+  if (!fallbackProfileId) {
+    return [];
+  }
+
+  return mergeSessionLaunchArgs(providerProfiles.profiles, fallbackProfileId, []);
+};
+
+const hasBypassLaunchArgs = (session: ProjectSession | null, provider?: SessionProvider): boolean => {
+  const launchArgs = provider ? getSessionLaunchArgs(session, provider) : normalizeLaunchArgs(session?.__launchArgs);
+  return launchArgs.some((arg) => BYPASS_PERMISSION_FLAGS.has(arg.trim().toLowerCase()));
+};
+
+const inferCodexPermissionModeFromSession = (session: ProjectSession | null): string => {
+  const permissionModeHint = typeof session?.permissionModeHint === 'string'
+    ? session.permissionModeHint
+    : '';
+  if (permissionModeHint === 'bypassPermissions' || permissionModeHint === 'acceptEdits' || permissionModeHint === 'default') {
+    return permissionModeHint;
+  }
+
+  const approvalPolicy = typeof session?.approvalPolicy === 'string'
+    ? session.approvalPolicy.trim().toLowerCase()
+    : '';
+  const sandboxType = typeof session?.sandboxType === 'string'
+    ? session.sandboxType.trim().toLowerCase()
+    : '';
+
+  if (approvalPolicy === 'never' || sandboxType === 'danger-full-access') {
+    return 'bypassPermissions';
+  }
+
+  if (approvalPolicy || sandboxType) {
+    return 'acceptEdits';
+  }
+
+  return getCodexPermissionMode();
+};
+
+const getInitialProvider = (): SessionProvider => {
+  const saved = localStorage.getItem('selected-provider');
+  if (saved === 'codex') return 'codex';
+  return 'claude';
+};
+
+// Keep a consumer position across ChatPanel unmount/remount so stream chunks that
+// arrive while hidden can be replayed from WebSocketContext buffer.
+let chatLastProcessedMessageSequence = 0;
+
+const inferProviderFromProjectSession = (
+  sessionId: string | null | undefined,
+  project: Project,
+): SessionProvider | null => {
+  if (!sessionId) {
+    return null;
+  }
+
+  if ((project.codexSessions || []).some((session) => session.id === sessionId)) {
+    return 'codex';
+  }
+  if ((project.sessions || []).some((session) => session.id === sessionId)) {
+    return 'claude';
+  }
+  return null;
+};
+
+export default function ChatPanel({
+  selectedProject,
+  selectedSession,
+  sendMessage,
+  latestMessage,
+  messageSequence,
+  getBufferedMessagesSince,
+  externalMessageUpdate = 0,
+  onSessionActive,
+  onSessionInactive,
+  onSessionProcessing,
+  onSessionNotProcessing,
+  onReplaceTemporarySession,
+  onNavigateToSession,
+}: ChatPanelProps) {
+  const { t } = useTranslation('chat');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [phase, setPhase] = useState<ChatPhase>('idle');
+  const [projectFiles, setProjectFiles] = useState<FlatFileNode[]>([]);
+  const [projectFileTree, setProjectFileTree] = useState<FileTreeNode[]>([]);
+  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+  const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
+  const [isFilePickerOpen, setIsFilePickerOpen] = useState(false);
+  const [filePickerQuery, setFilePickerQuery] = useState('');
+  const [filePickerView, setFilePickerView] = useState<'search' | 'tree'>(() => {
+    try {
+      return localStorage.getItem('chat-file-picker-view') === 'search' ? 'search' : 'tree';
+    } catch {
+      return 'tree';
+    }
+  });
+  const [expandedDirectories, setExpandedDirectories] = useState<Record<string, boolean>>({});
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [isMentionOpen, setIsMentionOpen] = useState(false);
+  const [model, setModel] = useState<string>(MODEL_DEFAULTS.claude);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id ?? null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
+
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const filePickerRef = useRef<HTMLDivElement>(null);
+  const filePickerToggleRef = useRef<HTMLButtonElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const activeAssistantMessageIdRef = useRef<string | null>(null);
+  const contentBlockTypeByIndexRef = useRef<Record<number, string>>({});
+  const currentSessionIdRef = useRef<string | null>(selectedSession?.id ?? null);
+  const suppressNextSessionSwitchResetRef = useRef<string | null>(null);
+  const lastSyncedSelectionRef = useRef<{ projectName: string; sessionId: string | null } | null>(null);
+  const queuedOutgoingRef = useRef<QueuedOutgoingMessage[]>([]);
+  const isSendingRef = useRef(false);
+  const isComposingRef = useRef(false);
+  const suppressInputEchoRef = useRef<{ value: string; until: number } | null>(null);
+  const dismissedComposerAssistRef = useRef<{ value: string; cursorPos: number } | null>(null);
+  const lastLocalActivityAtRef = useRef<number>(Date.now());
+  const initialScrollPendingRef = useRef(true);
+  const shouldJumpToBottomRef = useRef(true);
+  const lastProcessedSequenceRef = useRef<number>(chatLastProcessedMessageSequence);
+
+  const [provider, setProvider] = useState<SessionProvider>(getInitialProvider);
+  const resolvedSessionProvider = useMemo<SessionProvider | null>(() => {
+    const inferred = inferProviderFromProjectSession(selectedSession?.id, selectedProject);
+    if (inferred) {
+      return inferred;
+    }
+    const raw = selectedSession?.__provider;
+    if (raw === 'claude' || raw === 'codex') {
+      return raw;
+    }
+    return null;
+  }, [selectedProject, selectedSession?.__provider, selectedSession?.id]);
+  const activeProvider = resolvedSessionProvider || provider;
+
+  const mentionablePathSet = useMemo(() => new Set(projectFiles.map((file) => file.path)), [projectFiles]);
+  const fileOnlyNodes = useMemo(() => projectFiles.filter((node) => node.type === 'file'), [projectFiles]);
+  const allSelectableFilePaths = useMemo(() => fileOnlyNodes.map((node) => node.path), [fileOnlyNodes]);
+
+  const mentionSuggestions = useMemo(() => {
+    if (!isMentionOpen) {
+      return [];
+    }
+    return projectFiles
+      .map((entry) => ({
+        entry,
+        score: scoreMentionCandidate(entry, mentionQuery),
+      }))
+      .filter((item) => item.score >= 0)
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        if (a.entry.type !== b.entry.type) return a.entry.type === 'directory' ? -1 : 1;
+        if (a.entry.path.length !== b.entry.path.length) return a.entry.path.length - b.entry.path.length;
+        return a.entry.path.localeCompare(b.entry.path);
+      })
+      .slice(0, 14)
+      .map((item) => item.entry);
+  }, [isMentionOpen, mentionQuery, projectFiles]);
+
+  const filePickerSuggestions = useMemo(() => {
+    const query = filePickerQuery.trim().toLowerCase();
+    const filtered = query
+      ? fileOnlyNodes.filter((file) => file.path.toLowerCase().includes(query))
+      : fileOnlyNodes;
+    return filtered.slice(0, 300);
+  }, [fileOnlyNodes, filePickerQuery]);
+
+  const phaseLabel = useMemo(() => {
+    if (phase === 'thinking') return t('thinking.title');
+    if (phase === 'tool') return t('tools.settings');
+    if (phase === 'writing') return 'Generating response...';
+    if (phase === 'done') return 'Completed';
+    return '';
+  }, [phase, t]);
+
+  const providerTheme = useMemo(() => PROVIDER_THEME[activeProvider] || PROVIDER_THEME.claude, [activeProvider]);
+  const canSwitchModelInSession = true;
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    if (behavior === 'auto' && messagesContainerRef.current) {
+      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+      return;
+    }
+    messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+  }, []);
+
+  const appendMessage = useCallback((message: ChatMessage) => {
+    setMessages((prev) => [...prev, message]);
+  }, []);
+
+  const patchMessage = useCallback((messageId: string, updater: (msg: ChatMessage) => ChatMessage) => {
+    setMessages((prev) => prev.map((msg) => (msg.id === messageId ? updater(msg) : msg)));
+  }, []);
+
+  const appendAssistantText = useCallback((text: string) => {
+    if (!text) return;
+    lastLocalActivityAtRef.current = Date.now();
+
+    setMessages((prev) => {
+      let assistantId = activeAssistantMessageIdRef.current;
+      if (!assistantId) {
+        assistantId = makeMessageId();
+        activeAssistantMessageIdRef.current = assistantId;
+      }
+
+      const existingIndex = prev.findIndex((msg) => msg.id === assistantId);
+      if (existingIndex === -1) {
+        return [
+          ...prev,
+          {
+            id: assistantId,
+            kind: 'assistant',
+            text,
+            provider: activeProvider,
+            timestamp: Date.now(),
+            streaming: true,
+          },
+        ];
+      }
+
+      const next = [...prev];
+      const existing = next[existingIndex];
+      next[existingIndex] = {
+        ...existing,
+        kind: 'assistant',
+        text: `${existing.text}${text}`,
+        streaming: true,
+        provider: activeProvider,
+      };
+      return next;
+    });
+  }, [activeProvider]);
+
+  const completeAssistant = useCallback(() => {
+    const assistantId = activeAssistantMessageIdRef.current;
+    if (!assistantId) return;
+    setMessages((prev) => {
+      const idx = prev.findIndex((msg) => msg.id === assistantId);
+      if (idx === -1) return prev;
+      const existing = prev[idx];
+      if (!existing.text.trim()) {
+        return prev.filter((msg) => msg.id !== assistantId);
+      }
+      const next = [...prev];
+      next[idx] = { ...existing, streaming: false };
+      return next;
+    });
+    activeAssistantMessageIdRef.current = null;
+  }, []);
+
+  const addSystemEventMessage = useCallback((kind: ChatMessageKind, text: string) => {
+    if (!text) return;
+    appendMessage({
+      id: makeMessageId(),
+      kind,
+      text,
+      provider: activeProvider,
+      timestamp: Date.now(),
+    });
+  }, [activeProvider, appendMessage]);
+
+  const updateComposerAssistState = useCallback((nextValue: string, textarea: HTMLTextAreaElement | null) => {
+    const cursorPos = textarea?.selectionStart ?? nextValue.length;
+    const beforeCursor = nextValue.slice(0, cursorPos);
+    const mentionMatch = beforeCursor.match(/@([^\s@]*)$/);
+    const dismissal = dismissedComposerAssistRef.current;
+
+    if (dismissal && (dismissal.value !== nextValue || dismissal.cursorPos !== cursorPos)) {
+      dismissedComposerAssistRef.current = null;
+    }
+
+    if (mentionMatch) {
+      if (
+        dismissedComposerAssistRef.current &&
+        dismissedComposerAssistRef.current.value === nextValue &&
+        dismissedComposerAssistRef.current.cursorPos === cursorPos
+      ) {
+        setIsMentionOpen(false);
+        setMentionQuery('');
+        return;
+      }
+
+      setMentionQuery(mentionMatch[1] || '');
+      setIsMentionOpen(true);
+      setIsFilePickerOpen(false);
+      return;
+    }
+
+    setIsMentionOpen(false);
+    setMentionQuery('');
+  }, []);
+
+  const clearComposerInput = useCallback((rawValue: string) => {
+    suppressInputEchoRef.current = {
+      value: rawValue,
+      until: Date.now() + 800,
+    };
+
+    const clearIfEcho = () => {
+      const textarea = inputRef.current;
+      if (!textarea) {
+        return;
+      }
+      if (textarea.value === rawValue) {
+        textarea.value = '';
+        setInput('');
+      }
+    };
+
+    dismissedComposerAssistRef.current = null;
+    setInput('');
+    setAttachedFiles([]);
+    setIsFilePickerOpen(false);
+    setFilePickerQuery('');
+    setIsMentionOpen(false);
+    setMentionQuery('');
+
+    const textarea = inputRef.current;
+    if (textarea) {
+      textarea.value = '';
+      textarea.setSelectionRange(0, 0);
+    }
+
+    requestAnimationFrame(clearIfEcho);
+    setTimeout(clearIfEcho, 220);
+  }, []);
+
+  const loadProjectFiles = useCallback(async () => {
+    setIsLoadingFiles(true);
+    try {
+      const response = await api.getFiles(selectedProject.name);
+      if (!response.ok) {
+        setProjectFiles([]);
+        setProjectFileTree([]);
+        setExpandedDirectories({});
+        return;
+      }
+      const data = await response.json();
+      const normalizedTree = normalizeTreeNodes(Array.isArray(data) ? data : []);
+      const flattened = flattenFiles(normalizedTree);
+      const rootExpanded = normalizedTree
+        .filter((node) => node.type === 'directory')
+        .reduce<Record<string, boolean>>((acc, node) => {
+          acc[node.path] = true;
+          return acc;
+        }, {});
+
+      setProjectFiles(flattened);
+      setProjectFileTree(normalizedTree);
+      setExpandedDirectories((prev) => ({ ...rootExpanded, ...prev }));
+    } catch (error) {
+      console.error('[Chat] Failed to load project files:', error);
+      setProjectFiles([]);
+      setProjectFileTree([]);
+      setExpandedDirectories({});
+    } finally {
+      setIsLoadingFiles(false);
+    }
+  }, [selectedProject.name]);
+
+  const normalizeHistoryMessages = useCallback((rawMessages: any[], historyProvider: SessionProvider): ChatMessage[] => {
+    const normalized: ChatMessage[] = [];
+
+    for (const item of rawMessages) {
+      const timestamp = item?.timestamp ? new Date(item.timestamp).getTime() : Date.now();
+
+      if (item?.type && THINKING_MESSAGE_TYPES.has(String(item.type).toLowerCase())) {
+        // Thinking traces are treated as transient state in chat mode.
+        continue;
+      }
+
+      if (item?.type === 'tool_use') {
+        const toolName = item?.toolName || 'Tool';
+        const toolInput = normalizeDisplayText(item?.toolInput);
+        normalized.push({
+          id: makeMessageId(),
+          kind: 'tool',
+          text: `${toolName}${toolInput ? `\n${toolInput}` : ''}`,
+          provider: historyProvider,
+          timestamp,
+        });
+        continue;
+      }
+
+      if (item?.type === 'tool_result') {
+        const output = toToolResultPreview(item?.output || item?.toolResult?.content);
+        normalized.push({
+          id: makeMessageId(),
+          kind: 'tool',
+          text: output ? `Tool result\n${output}` : 'Tool result',
+          provider: historyProvider,
+          timestamp,
+        });
+        continue;
+      }
+
+      const rawContent =
+        item?.message?.content ??
+        item?.content?.content ??
+        item?.content?.message?.content ??
+        item?.content;
+      const role = item?.message?.role || item?.role || item?.content?.role || item?.content?.message?.role;
+
+      if (Array.isArray(rawContent)) {
+        const textChunks: string[] = [];
+
+        for (const block of rawContent) {
+          const blockType = block?.type;
+
+          if (blockType && THINKING_MESSAGE_TYPES.has(String(blockType).toLowerCase())) {
+            // Skip persisted thinking blocks in chat transcript view.
+            continue;
+          }
+
+          if (blockType === 'tool_use') {
+            const toolName = block?.name || 'Tool';
+            const toolInput = normalizeDisplayText(block?.input);
+            normalized.push({
+              id: makeMessageId(),
+              kind: 'tool',
+              text: `${toolName}${toolInput ? `\n${toolInput}` : ''}`,
+              provider: historyProvider,
+              timestamp,
+            });
+            continue;
+          }
+
+          if (blockType === 'tool_result') {
+            const output = toToolResultPreview(block?.content ?? block?.output ?? block);
+            normalized.push({
+              id: makeMessageId(),
+              kind: 'tool',
+              text: output ? `Tool result\n${output}` : 'Tool result',
+              provider: historyProvider,
+              timestamp,
+            });
+            continue;
+          }
+
+          const text = normalizeDisplayText(block);
+          if (text) {
+            textChunks.push(text);
+          }
+        }
+
+        const combinedText = textChunks.join('\n\n').trim();
+        if (!combinedText || shouldSkipNoisyMessage(combinedText)) {
+          continue;
+        }
+
+        const normalizedText = role === 'user' ? stripEmbeddedFileContext(combinedText) : combinedText;
+        if (!normalizedText || shouldSkipNoisyMessage(normalizedText)) {
+          continue;
+        }
+
+        normalized.push({
+          id: makeMessageId(),
+          kind: role === 'user' ? 'user' : 'assistant',
+          text: normalizedText,
+          provider: historyProvider,
+          timestamp,
+        });
+        continue;
+      }
+
+      const content = normalizeDisplayText(rawContent);
+
+      const normalizedText = role === 'user' ? stripEmbeddedFileContext(content) : content;
+
+      if (!normalizedText || shouldSkipNoisyMessage(normalizedText)) {
+        continue;
+      }
+
+      normalized.push({
+        id: makeMessageId(),
+        kind: role === 'user' ? 'user' : 'assistant',
+        text: normalizedText,
+        provider: historyProvider,
+        timestamp,
+      });
+    }
+
+    return normalized;
+  }, []);
+
+  const loadSessionHistory = useCallback(async () => {
+    if (!selectedSession?.id) {
+      setMessages([]);
+      return;
+    }
+
+    const sessionProvider = selectedSession.__provider;
+    const historyProvider: SessionProvider =
+      sessionProvider === 'claude' || sessionProvider === 'codex'
+        ? sessionProvider
+        : activeProvider;
+
+    setHistoryLoading(true);
+    try {
+      const response = await api.sessionMessages(
+        selectedProject.name,
+        selectedSession.id,
+        null,
+        0,
+        historyProvider,
+      );
+
+      if (!response.ok) {
+        setMessages([]);
+        return;
+      }
+
+      const payload = await response.json();
+      const rawMessages = payload?.messages || payload?.session?.messages || [];
+      setMessages(normalizeHistoryMessages(Array.isArray(rawMessages) ? rawMessages : [], historyProvider));
+    } catch (error) {
+      console.error('[Chat] Failed to load session history:', error);
+      setMessages([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [
+    activeProvider,
+    normalizeHistoryMessages,
+    selectedProject.name,
+    selectedSession?.__provider,
+    selectedSession?.id,
+  ]);
+
+  const finishRequest = useCallback((nextPhase: ChatPhase = 'done', sessionIdOverride?: string | null) => {
+    setIsSending(false);
+    isSendingRef.current = false;
+    setPhase(nextPhase);
+    completeAssistant();
+    const targetSessionId = sessionIdOverride || currentSessionIdRef.current;
+    if (targetSessionId) {
+      onSessionNotProcessing?.(targetSessionId);
+      onSessionInactive?.(targetSessionId);
+    }
+  }, [completeAssistant, onSessionInactive, onSessionNotProcessing]);
+
+  const handleLatestMessage = useCallback((message: any) => {
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+
+    const messageType = message.type as string | undefined;
+    if (!messageType) {
+      return;
+    }
+
+    if (messageType === 'session-created' && typeof message.sessionId === 'string') {
+      currentSessionIdRef.current = message.sessionId;
+      suppressNextSessionSwitchResetRef.current = message.sessionId;
+      setCurrentSessionId(message.sessionId);
+      onReplaceTemporarySession?.(message.sessionId);
+      onNavigateToSession?.(message.sessionId);
+      onSessionActive?.(message.sessionId);
+      onSessionProcessing?.(message.sessionId);
+      return;
+    }
+
+    if (messageType === 'claude-permission-request' && typeof message.requestId === 'string') {
+      const toolName = typeof message.toolName === 'string' ? message.toolName : 'tool';
+      addSystemEventMessage(
+        'status',
+        `Permission request auto-denied for ${toolName} (chat panel does not support interactive approvals).`,
+      );
+      sendMessage({
+        type: 'claude-permission-response',
+        requestId: message.requestId,
+        allow: false,
+        message: 'Interactive tool approvals are not supported in this chat panel.',
+      });
+      return;
+    }
+
+    if (messageType === 'claude-permission-cancelled') {
+      const reason = typeof message.reason === 'string' && message.reason
+        ? message.reason
+        : 'unknown';
+      addSystemEventMessage('status', `Permission request cancelled (${reason}).`);
+      return;
+    }
+
+    const activeSessionId = currentSessionIdRef.current;
+    if (
+      message.sessionId &&
+      activeSessionId &&
+      message.sessionId !== activeSessionId
+    ) {
+      const isTemporarySession = activeSessionId.startsWith('new-session-');
+      const canPromoteTemporarySession =
+        isSending &&
+        isTemporarySession &&
+        CHAT_RESPONSE_TYPES.has(messageType);
+
+      if (canPromoteTemporarySession) {
+        currentSessionIdRef.current = message.sessionId;
+        suppressNextSessionSwitchResetRef.current = message.sessionId;
+        setCurrentSessionId(message.sessionId);
+        onReplaceTemporarySession?.(message.sessionId);
+        onNavigateToSession?.(message.sessionId);
+        onSessionActive?.(message.sessionId);
+        onSessionProcessing?.(message.sessionId);
+      } else {
+        return;
+      }
+    }
+
+    if (messageType === 'claude-response') {
+      const payload = message.data;
+      const payloadType = payload?.type;
+
+      if (payloadType === 'content_block_delta') {
+        const blockIndex = typeof payload?.index === 'number' ? payload.index : null;
+        const activeBlockType = blockIndex !== null ? contentBlockTypeByIndexRef.current[blockIndex] : '';
+        const deltaType = payload?.delta?.type;
+        if (
+          activeBlockType === 'thinking' ||
+          activeBlockType === 'redacted_thinking' ||
+          deltaType === 'thinking_delta' ||
+          deltaType === 'signature_delta'
+        ) {
+          setPhase('thinking');
+          return;
+        }
+        const text = extractText(payload?.delta);
+        if (text) {
+          setPhase('writing');
+          appendAssistantText(text);
+        }
+        return;
+      }
+
+      if (payloadType === 'content_block_start') {
+        const blockType = payload?.content_block?.type;
+        const blockIndex = typeof payload?.index === 'number' ? payload.index : null;
+        if (blockIndex !== null && typeof blockType === 'string') {
+          contentBlockTypeByIndexRef.current[blockIndex] = blockType;
+        }
+        if (blockType === 'thinking' || blockType === 'redacted_thinking') {
+          setPhase('thinking');
+          return;
+        }
+        if (blockType === 'tool_use') {
+          setPhase('tool');
+          const toolName = payload?.content_block?.name || 'Tool';
+          const toolInput = extractText(payload?.content_block?.input);
+          addSystemEventMessage('tool', `${toolName}${toolInput ? `\n${toolInput}` : ''}`);
+          return;
+        }
+      }
+
+      if (payloadType === 'content_block_stop') {
+        const blockIndex = typeof payload?.index === 'number' ? payload.index : null;
+        if (blockIndex !== null) {
+          delete contentBlockTypeByIndexRef.current[blockIndex];
+        }
+        return;
+      }
+
+      if (payloadType === 'message_stop') {
+        contentBlockTypeByIndexRef.current = {};
+        return;
+      }
+
+      if (payloadType === 'assistant' || payload?.message?.role === 'assistant') {
+        const text = extractText(payload?.message?.content ?? payload?.content);
+        if (text) {
+          setPhase('writing');
+          appendAssistantText(text);
+        }
+        return;
+      }
+
+      if (payloadType === 'tool_use') {
+        setPhase('tool');
+        addSystemEventMessage('tool', `${payload?.name || 'Tool'}\n${extractText(payload?.input)}`);
+        return;
+      }
+
+      if (payloadType === 'tool_result') {
+        setPhase('tool');
+        addSystemEventMessage('tool', `Tool result\n${extractText(payload?.content)}`);
+        return;
+      }
+
+      // Ignore unknown Claude payload variants in chat view to avoid leaking internal traces.
+      return;
+    }
+
+    if (messageType === 'codex-response') {
+      const payload = message.data;
+      const itemType = payload?.itemType;
+      const normalizedItemType = typeof itemType === 'string' ? itemType.toLowerCase() : '';
+      const normalizedPayloadType = typeof payload?.type === 'string' ? payload.type.toLowerCase() : '';
+
+      if (payload?.type === 'turn_started') {
+        setPhase('thinking');
+        return;
+      }
+
+      if (
+        normalizedItemType.includes('reasoning') ||
+        normalizedItemType.includes('analysis') ||
+        normalizedPayloadType.includes('reasoning') ||
+        normalizedPayloadType.includes('analysis')
+      ) {
+        setPhase('thinking');
+        return;
+      }
+
+      if (itemType === 'agent_message') {
+        setPhase('writing');
+        const text = extractText(payload?.message?.content);
+        if (text) {
+          appendAssistantText(text);
+        }
+        return;
+      }
+
+      if (itemType === 'command_execution' || itemType === 'mcp_tool_call' || itemType === 'file_change') {
+        setPhase('tool');
+        const details = extractText(payload?.output || payload?.result || payload?.changes);
+        addSystemEventMessage('tool', `${itemType}${details ? `\n${details}` : ''}`);
+        return;
+      }
+
+      if (itemType === 'web_search' || itemType === 'todo_list' || itemType === 'error') {
+        setPhase('tool');
+        const details = extractText(payload?.output || payload?.result || payload?.items || payload?.message);
+        addSystemEventMessage('tool', `${itemType}${details ? `\n${details}` : ''}`);
+      }
+
+      // Ignore unknown Codex payload variants in chat view to avoid leaking internal traces.
+      return;
+    }
+
+    if (
+      messageType === 'claude-complete' ||
+      messageType === 'codex-complete'
+    ) {
+      contentBlockTypeByIndexRef.current = {};
+      finishRequest('done', message.sessionId || currentSessionIdRef.current);
+      return;
+    }
+
+    if (
+      messageType === 'claude-error' ||
+      messageType === 'codex-error' ||
+      messageType === 'error'
+    ) {
+      contentBlockTypeByIndexRef.current = {};
+      const text = message.error || message.message || 'Request failed.';
+      addSystemEventMessage('error', String(text));
+      finishRequest('idle', message.sessionId || currentSessionIdRef.current);
+    }
+  }, [
+    addSystemEventMessage,
+    appendAssistantText,
+    finishRequest,
+    onNavigateToSession,
+    onReplaceTemporarySession,
+    onSessionActive,
+    onSessionProcessing,
+    sendMessage,
+  ]);
+
+  const shouldProcessBufferedMessage = useCallback((message: any): boolean => {
+    if (!message || typeof message !== 'object') {
+      return false;
+    }
+
+    const messageType = typeof message.type === 'string' ? message.type : '';
+    if (!messageType) {
+      return false;
+    }
+
+    const messageSessionId = typeof message.sessionId === 'string' ? message.sessionId : null;
+    const activeSessionId = currentSessionIdRef.current;
+
+    if (messageType === 'session-created') {
+      return !activeSessionId || activeSessionId.startsWith('new-session-');
+    }
+
+    if (!messageSessionId) {
+      return true;
+    }
+
+    if (!activeSessionId) {
+      return false;
+    }
+
+    if (messageSessionId === activeSessionId) {
+      return true;
+    }
+
+    return activeSessionId.startsWith('new-session-') && CHAT_RESPONSE_TYPES.has(messageType);
+  }, []);
+
+  const buildPromptWithFileContext = useCallback(async (rawInput: string, references: string[]) => {
+    if (!references.length) {
+      return { prompt: rawInput, files: [] as ReferencedFile[] };
+    }
+
+    const normalizedReferences = Array.from(
+      new Set(
+        references
+          .map((filePath) => filePath.trim())
+          .filter((filePath) => filePath.length > 0),
+      ),
+    );
+
+    if (!normalizedReferences.length) {
+      return { prompt: rawInput, files: [] as ReferencedFile[] };
+    }
+
+    const fileRefs: ReferencedFile[] = normalizedReferences.map((path) => ({ path, loaded: true }));
+    const referenceLines = normalizedReferences.map((path) => `- ${path}`);
+    const prompt = `${rawInput}
+
+Referenced paths:
+${referenceLines.join('\n')}
+
+Use these as file path references only. Read file contents from the workspace when needed.`;
+
+    return { prompt, files: fileRefs };
+  }, []);
+
+  const sendChatMessage = useCallback(async (queuedDraft?: QueuedOutgoingMessage) => {
+    const draftInput = queuedDraft?.rawInput ?? input;
+    if (!draftInput.trim()) {
+      return;
+    }
+
+    const activeMessageProvider = queuedDraft?.provider ?? activeProvider;
+    const activeModel = queuedDraft?.model ?? model;
+    const activeAttachedFiles = queuedDraft?.attachedFiles ?? attachedFiles;
+    lastLocalActivityAtRef.current = Date.now();
+    const rawInput = queuedDraft?.rawInput ?? draftInput.trim();
+    const mentionPaths = queuedDraft
+      ? []
+      : Array.from(rawInput.matchAll(/@([^\s@]+)/g))
+        .map((match) => match[1])
+        .filter((path) => mentionablePathSet.has(path));
+    const referencePaths = queuedDraft
+      ? queuedDraft.referencePaths
+      : Array.from(new Set([...activeAttachedFiles, ...mentionPaths]));
+    const displayInput = queuedDraft?.displayInput || stripReferencedMentions(rawInput, referencePaths) || rawInput;
+    const userMessageId = queuedDraft?.userMessageId || makeMessageId();
+
+    if (!queuedDraft) {
+      appendMessage({
+        id: userMessageId,
+        kind: 'user',
+        text: displayInput,
+        provider: activeMessageProvider,
+        timestamp: Date.now(),
+        files: referencePaths.length
+          ? referencePaths.map((path) => ({ path, loaded: true }))
+          : undefined,
+      });
+    }
+
+    if (!queuedDraft) {
+      // Clear composer immediately to keep send interaction snappy even when file context loading is slow.
+      clearComposerInput(draftInput);
+    }
+
+    if (!queuedDraft && isSending) {
+      queuedOutgoingRef.current.push({
+        rawInput,
+        displayInput,
+        referencePaths,
+        userMessageId,
+        attachedFiles: [...activeAttachedFiles],
+        provider: activeMessageProvider,
+        model: activeModel,
+      });
+      return;
+    }
+
+    const { prompt, files } = await buildPromptWithFileContext(displayInput, referencePaths);
+    patchMessage(userMessageId, (msg) => ({ ...msg, files }));
+
+    const workingDirectory = selectedProject.fullPath || selectedProject.path || '';
+    const options: Record<string, unknown> = {
+      cwd: workingDirectory,
+      projectPath: workingDirectory,
+    };
+
+    if (typeof activeModel === 'string' && activeModel.trim().length > 0) {
+      options.model = activeModel.trim();
+    }
+
+    const activeSessionId = currentSessionIdRef.current;
+    if (activeSessionId && !activeSessionId.startsWith('new-session-')) {
+      options.sessionId = activeSessionId;
+    }
+
+    const sessionLaunchArgs = getSessionLaunchArgs(selectedSession, activeMessageProvider);
+    if (sessionLaunchArgs.length > 0) {
+      options.sessionArgs = sessionLaunchArgs;
+    }
+
+    const forceBypassFromLaunchArgs = hasBypassLaunchArgs(selectedSession, activeMessageProvider);
+    if (forceBypassFromLaunchArgs) {
+      options.permissionMode = 'bypassPermissions';
+    } else if (activeMessageProvider === 'codex') {
+      options.permissionMode = inferCodexPermissionModeFromSession(selectedSession);
+    }
+
+    const sent = sendMessage({
+      type: getProviderMessageType(activeMessageProvider),
+      command: prompt,
+      options,
+    });
+
+    if (!sent) {
+      setPhase('idle');
+      setIsSending(false);
+      isSendingRef.current = false;
+      activeAssistantMessageIdRef.current = null;
+      addSystemEventMessage('error', 'WebSocket disconnected. Please wait for reconnection and try again.');
+      return;
+    }
+
+    setIsSending(true);
+    isSendingRef.current = true;
+    setPhase('thinking');
+
+    const assistantMessageId = makeMessageId();
+    activeAssistantMessageIdRef.current = assistantMessageId;
+    appendMessage({
+      id: assistantMessageId,
+      kind: 'assistant',
+      text: '',
+      provider: activeMessageProvider,
+      timestamp: Date.now(),
+      streaming: true,
+    });
+
+    const sessionForTracking = (options.sessionId as string) || currentSessionIdRef.current;
+    if (sessionForTracking) {
+      onSessionActive?.(sessionForTracking);
+      onSessionProcessing?.(sessionForTracking);
+    }
+  }, [
+    appendMessage,
+    attachedFiles,
+    buildPromptWithFileContext,
+    clearComposerInput,
+    input,
+    isSending,
+    model,
+    addSystemEventMessage,
+    patchMessage,
+    onSessionActive,
+    onSessionProcessing,
+    mentionablePathSet,
+    activeProvider,
+    selectedSession,
+    sendMessage,
+  ]);
+
+  const abortCurrentRequest = useCallback(() => {
+    if (!isSending) return;
+    if (!currentSessionId) {
+      isSendingRef.current = false;
+      finishRequest('idle');
+      return;
+    }
+    sendMessage({
+      type: 'abort-session',
+      sessionId: currentSessionId,
+      provider: activeProvider,
+    });
+    isSendingRef.current = false;
+    finishRequest('idle');
+  }, [activeProvider, currentSessionId, finishRequest, isSending, sendMessage]);
+
+  const handleSelectMention = useCallback((filePath: string) => {
+    setAttachedFiles((prev) => (prev.includes(filePath) ? prev : [...prev, filePath]));
+
+    const textarea = inputRef.current;
+    if (!textarea) {
+      setInput((prev) => prev.replace(/@([^\s@]*)$/, '').trimEnd());
+      setIsMentionOpen(false);
+      return;
+    }
+
+    const cursorPos = textarea.selectionStart ?? input.length;
+    const before = input.slice(0, cursorPos).replace(/@([^\s@]*)$/, '');
+    const after = input.slice(cursorPos);
+    const nextValue = `${before}${after}`
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/^\s+/g, '');
+    dismissedComposerAssistRef.current = null;
+    setInput(nextValue);
+    setIsMentionOpen(false);
+    setMentionQuery('');
+
+    requestAnimationFrame(() => {
+      const nextCursor = before.length;
+      textarea.focus();
+      textarea.setSelectionRange(nextCursor, nextCursor);
+    });
+  }, [input]);
+
+  const toggleAttachedFile = useCallback((filePath: string) => {
+    setAttachedFiles((prev) => (
+      prev.includes(filePath)
+        ? prev.filter((item) => item !== filePath)
+        : [...prev, filePath]
+    ));
+  }, []);
+
+  const toggleDirectoryExpanded = useCallback((directoryPath: string) => {
+    setExpandedDirectories((prev) => ({
+      ...prev,
+      [directoryPath]: !prev[directoryPath],
+    }));
+  }, []);
+
+  const selectAllFromCurrentPickerView = useCallback(() => {
+    const selectable = filePickerView === 'tree'
+      ? allSelectableFilePaths
+      : filePickerSuggestions.map((item) => item.path);
+
+    if (!selectable.length) {
+      return;
+    }
+
+    setAttachedFiles((prev) => Array.from(new Set([...prev, ...selectable])));
+  }, [allSelectableFilePaths, filePickerSuggestions, filePickerView]);
+
+  useEffect(() => {
+    if (resolvedSessionProvider) {
+      setProvider((prev) => (prev === resolvedSessionProvider ? prev : resolvedSessionProvider));
+    }
+  }, [resolvedSessionProvider]);
+
+  useEffect(() => {
+    localStorage.setItem('selected-provider', activeProvider);
+    const storedModel = localStorage.getItem(getStorageKeyForModel(activeProvider));
+    setModel(storedModel || MODEL_DEFAULTS[activeProvider]);
+  }, [activeProvider]);
+
+  useEffect(() => {
+    isSendingRef.current = isSending;
+  }, [isSending]);
+
+  useEffect(() => {
+    localStorage.setItem(getStorageKeyForModel(activeProvider), model);
+  }, [activeProvider, model]);
+
+  useEffect(() => {
+    localStorage.setItem('chat-file-picker-view', filePickerView);
+  }, [filePickerView]);
+
+  useEffect(() => {
+    if (!isFilePickerOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const targetNode = event.target as Node | null;
+      if (!targetNode) {
+        return;
+      }
+      if (filePickerRef.current?.contains(targetNode)) {
+        return;
+      }
+      if (filePickerToggleRef.current?.contains(targetNode)) {
+        return;
+      }
+      setIsFilePickerOpen(false);
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [isFilePickerOpen]);
+
+  useEffect(() => {
+    const options = MODEL_OPTIONS[activeProvider] || [];
+    if (!options.some((item) => item.value === model)) {
+      setModel(MODEL_DEFAULTS[activeProvider]);
+    }
+  }, [activeProvider, model]);
+
+  useEffect(() => {
+    const selectedId = selectedSession?.id ?? null;
+    const selection = { projectName: selectedProject.name, sessionId: selectedId };
+    const previousSelection = lastSyncedSelectionRef.current;
+    const isProjectChanged = !previousSelection || previousSelection.projectName !== selection.projectName;
+    const isSessionChanged = !previousSelection || previousSelection.sessionId !== selection.sessionId;
+
+    if (!isProjectChanged && !isSessionChanged) {
+      return;
+    }
+
+    const isLikelyTransientSessionLoss =
+      !selectedId &&
+      !isProjectChanged &&
+      !!currentSessionIdRef.current &&
+      (isSendingRef.current || activeAssistantMessageIdRef.current !== null);
+
+    if (isLikelyTransientSessionLoss) {
+      return;
+    }
+
+    // Keep current in-flight chat state when route updates to the just-created session.
+    if (selectedId && suppressNextSessionSwitchResetRef.current === selectedId) {
+      suppressNextSessionSwitchResetRef.current = null;
+      currentSessionIdRef.current = selectedId;
+      setCurrentSessionId(selectedId);
+      lastSyncedSelectionRef.current = selection;
+      return;
+    }
+
+    lastSyncedSelectionRef.current = selection;
+    initialScrollPendingRef.current = true;
+    shouldJumpToBottomRef.current = true;
+    currentSessionIdRef.current = selectedId;
+    setCurrentSessionId(selectedId);
+    activeAssistantMessageIdRef.current = null;
+    contentBlockTypeByIndexRef.current = {};
+    queuedOutgoingRef.current = [];
+    setIsSending(false);
+    isSendingRef.current = false;
+    setPhase('idle');
+    setHistoryLoading(Boolean(selectedId));
+    void loadSessionHistory();
+  }, [loadSessionHistory, selectedProject.name, selectedSession?.id]);
+
+  // Do not auto-reload current session history on external project updates.
+  // Streaming state in chat is authoritative while this panel is active; reloading
+  // can race against persistence and temporarily hide local/streamed messages.
+
+  useEffect(() => {
+    void loadProjectFiles();
+  }, [loadProjectFiles]);
+
+  useEffect(() => {
+    if (!isMentionOpen || mentionSuggestions.length === 0) {
+      setMentionActiveIndex(0);
+      return;
+    }
+
+    setMentionActiveIndex((prev) => {
+      if (prev < 0) return 0;
+      if (prev >= mentionSuggestions.length) return mentionSuggestions.length - 1;
+      return prev;
+    });
+  }, [isMentionOpen, mentionSuggestions]);
+
+  useEffect(() => {
+    const normalizedSequence = Number.isFinite(messageSequence) && messageSequence > 0
+      ? Math.floor(messageSequence)
+      : 0;
+
+    if (lastProcessedSequenceRef.current > normalizedSequence) {
+      lastProcessedSequenceRef.current = 0;
+      chatLastProcessedMessageSequence = 0;
+    }
+
+    if (normalizedSequence <= lastProcessedSequenceRef.current) {
+      return;
+    }
+
+    const pendingMessages = getBufferedMessagesSince(lastProcessedSequenceRef.current);
+    if (!pendingMessages.length) {
+      lastProcessedSequenceRef.current = normalizedSequence;
+      chatLastProcessedMessageSequence = normalizedSequence;
+      return;
+    }
+
+    for (const bufferedMessage of pendingMessages) {
+      if (!bufferedMessage || typeof bufferedMessage !== 'object') {
+        continue;
+      }
+
+      const sequence = Number.isFinite(bufferedMessage.sequence)
+        ? Math.floor(bufferedMessage.sequence)
+        : 0;
+      if (sequence <= lastProcessedSequenceRef.current) {
+        continue;
+      }
+
+      if (shouldProcessBufferedMessage(bufferedMessage.message)) {
+        handleLatestMessage(bufferedMessage.message);
+      }
+      lastProcessedSequenceRef.current = sequence;
+    }
+
+    chatLastProcessedMessageSequence = lastProcessedSequenceRef.current;
+  }, [getBufferedMessagesSince, handleLatestMessage, messageSequence, shouldProcessBufferedMessage]);
+
+  useEffect(() => {
+    return () => {
+      if (lastProcessedSequenceRef.current > chatLastProcessedMessageSequence) {
+        chatLastProcessedMessageSequence = lastProcessedSequenceRef.current;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isSending) {
+      return;
+    }
+
+    const queued = queuedOutgoingRef.current.shift();
+    if (!queued) {
+      return;
+    }
+
+    void sendChatMessage(queued);
+  }, [isSending, sendChatMessage]);
+
+  useLayoutEffect(() => {
+    if (initialScrollPendingRef.current || shouldJumpToBottomRef.current || historyLoading) {
+      scrollToBottom('auto');
+      if (!historyLoading) {
+        initialScrollPendingRef.current = false;
+        shouldJumpToBottomRef.current = false;
+      }
+      return;
+    }
+
+    scrollToBottom('auto');
+  }, [historyLoading, isSending, messages, phase, scrollToBottom]);
+
+  useLayoutEffect(() => {
+    if (!historyLoading && initialScrollPendingRef.current) {
+      scrollToBottom('auto');
+      initialScrollPendingRef.current = false;
+      shouldJumpToBottomRef.current = false;
+    }
+  }, [historyLoading, scrollToBottom]);
+
+  const renderFileTreeNodes = (nodes: FileTreeNode[], depth = 0): JSX.Element[] => nodes.map((node) => {
+    const rowPadding = 8 + depth * 16;
+
+    if (node.type === 'directory') {
+      const isExpanded = expandedDirectories[node.path] !== false;
+      const childNodes = Array.isArray(node.children) ? node.children : [];
+
+      return (
+        <div key={node.path}>
+          <button
+            type="button"
+            onClick={() => toggleDirectoryExpanded(node.path)}
+            className="w-full py-1.5 text-left text-xs hover:bg-accent flex items-center gap-1 rounded-sm"
+            style={{ paddingLeft: rowPadding }}
+          >
+            {isExpanded ? (
+              <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+            )}
+            <Folder className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+            <span className="truncate">{node.name}</span>
+          </button>
+          {isExpanded && childNodes.length > 0 ? renderFileTreeNodes(childNodes, depth + 1) : null}
+        </div>
+      );
+    }
+
+    const selected = attachedFiles.includes(node.path);
+    return (
+      <button
+        key={node.path}
+        type="button"
+        onClick={() => toggleAttachedFile(node.path)}
+        className={`w-full py-1.5 text-left text-xs hover:bg-accent flex items-center gap-2 rounded-sm ${
+          selected ? providerTheme.activePickRow : ''
+        }`}
+        style={{ paddingLeft: rowPadding + 16 }}
+      >
+        <span className={`inline-flex h-4 w-4 items-center justify-center rounded border ${
+          selected ? 'border-primary bg-primary text-primary-foreground' : 'border-border'
+        }`}>
+          {selected ? <Check className="w-3 h-3" /> : null}
+        </span>
+        <FileText className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+        <span className="truncate">{node.name}</span>
+      </button>
+    );
+  });
+
+  const renderedMessages = useMemo(() => {
+    if (historyLoading) {
+      return (
+        <div className="text-xs text-muted-foreground flex items-center gap-2">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          {t('session.loading.sessionMessages')}
+        </div>
+      );
+    }
+
+    if (messages.length === 0) {
+      return (
+        <div className="h-full flex items-center justify-center text-center px-6">
+          <div>
+            <p className="text-sm font-medium text-foreground mb-1">{t('session.continue.title')}</p>
+            <p className="text-xs text-muted-foreground">{t('session.continue.description')}</p>
+          </div>
+        </div>
+      );
+    }
+
+    return messages.map((message) => {
+      const isUser = message.kind === 'user';
+      const isAssistant = message.kind === 'assistant';
+      const isError = message.kind === 'error';
+      const isTool = message.kind === 'tool';
+      const isThinking = message.kind === 'thinking';
+      const messageTheme = PROVIDER_THEME[message.provider] || PROVIDER_THEME.claude;
+      const normalizedBody = compactMessageText(message.text || (message.streaming ? t('thinking.emoji') : ''));
+      const usePreformattedBody = (isAssistant || isUser) && shouldRenderAsPreformatted(normalizedBody);
+      const fileCount = message.files?.length || 0;
+      const loadedFileCount = message.files?.filter((file) => file.loaded).length || 0;
+      const failedFileCount = fileCount - loadedFileCount;
+      const truncatedFileCount = message.files?.filter((file) => file.truncated).length || 0;
+
+      return (
+        <div
+          key={message.id}
+          className={`w-full flex ${isUser ? 'justify-end' : 'justify-start'}`}
+        >
+          <div
+            className={`max-w-[86%] rounded-xl border px-3 py-2 ${
+              isUser
+                ? messageTheme.userBubble
+                : isError
+                  ? 'bg-red-50 border-red-200 text-red-700 dark:bg-red-950/30 dark:text-red-200 dark:border-red-900/40'
+                  : isThinking
+                    ? 'bg-amber-50 border-amber-200 text-amber-700 dark:bg-amber-950/30 dark:text-amber-200 dark:border-amber-900/40'
+                    : isTool
+                      ? 'bg-blue-50 border-blue-200 text-blue-700 dark:bg-blue-950/30 dark:text-blue-200 dark:border-blue-900/40'
+                      : messageTheme.assistantBubble
+            }`}
+          >
+            <div className="flex items-center gap-1.5 text-[11px] opacity-80 mb-1">
+              {isUser ? <User className="w-3 h-3" /> : isTool ? <Wrench className="w-3 h-3" /> : <SessionProviderLogo provider={message.provider} className="w-3 h-3" />}
+              <span>
+                {isUser ? 'You' : isThinking ? t('thinking.title') : getProviderDisplayName(message.provider)}
+              </span>
+              {message.streaming && <span className="chat-typing-dots"><i /><i /><i /></span>}
+            </div>
+
+            <div className="text-[14px] break-words leading-6 tracking-normal">
+              {isAssistant || isUser ? (
+                usePreformattedBody ? (
+                  <pre className="m-0 overflow-x-auto rounded-md bg-muted/70 p-2 text-[12px] leading-5 font-mono whitespace-pre">
+                    {normalizedBody}
+                  </pre>
+                ) : (
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      p(props) {
+                        const { children } = props;
+                        return (
+                          <p className="my-0 leading-6">
+                            {children}
+                          </p>
+                        );
+                      },
+                      ul(props) {
+                        const { children } = props;
+                        return (
+                          <ul className="my-1 list-disc pl-4 space-y-0.5">
+                            {children}
+                          </ul>
+                        );
+                      },
+                      ol(props) {
+                        const { children } = props;
+                        return (
+                          <ol className="my-1 list-decimal pl-4 space-y-0.5">
+                            {children}
+                          </ol>
+                        );
+                      },
+                      li(props) {
+                        const { children } = props;
+                        return (
+                          <li className="leading-6">
+                            {children}
+                          </li>
+                        );
+                      },
+                      code(props) {
+                        const { children } = props;
+                        return (
+                          <code className="rounded bg-muted px-1 py-0.5 text-[12px]">
+                            {children}
+                          </code>
+                        );
+                      },
+                      pre(props) {
+                        const { children } = props;
+                        return (
+                          <pre className="m-0 overflow-x-auto rounded-md bg-muted p-2 text-[12px] leading-5">
+                            {children}
+                          </pre>
+                        );
+                      },
+                      table(props) {
+                        const { children } = props;
+                        return (
+                          <div className="my-1.5 overflow-x-auto rounded-md border border-border/70">
+                            <table className="w-full min-w-[420px] border-collapse text-xs">
+                              {children}
+                            </table>
+                          </div>
+                        );
+                      },
+                      thead(props) {
+                        const { children } = props;
+                        return (
+                          <thead className="bg-muted/60">
+                            {children}
+                          </thead>
+                        );
+                      },
+                      tbody(props) {
+                        const { children } = props;
+                        return (
+                          <tbody>
+                            {children}
+                          </tbody>
+                        );
+                      },
+                      tr(props) {
+                        const { children } = props;
+                        return (
+                          <tr className="border-b border-border/60">
+                            {children}
+                          </tr>
+                        );
+                      },
+                      th(props) {
+                        const { children } = props;
+                        return (
+                          <th className="border-r border-border/60 px-2 py-1 text-left font-semibold align-top last:border-r-0">
+                            {children}
+                          </th>
+                        );
+                      },
+                      td(props) {
+                        const { children } = props;
+                        return (
+                          <td className="border-r border-border/40 px-2 py-1 align-top last:border-r-0">
+                            {children}
+                          </td>
+                        );
+                      },
+                    }}
+                  >
+                    {normalizedBody}
+                  </ReactMarkdown>
+                )
+              ) : (
+                <pre className="m-0 whitespace-pre-wrap break-words font-sans text-[14px] leading-6">
+                  {normalizedBody}
+                </pre>
+              )}
+            </div>
+
+            {message.files && message.files.length > 0 && (
+              isUser ? (
+                <div className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-black/10 px-2.5 py-1 text-[11px] text-white/90">
+                  <Files className="w-3 h-3" />
+                  <span>Attached {fileCount} path{fileCount > 1 ? 's' : ''}</span>
+                  {failedFileCount > 0 && <span>· {failedFileCount} failed</span>}
+                  {truncatedFileCount > 0 && <span>· {truncatedFileCount} truncated</span>}
+                </div>
+              ) : (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {message.files.map((file) => (
+                    <span
+                      key={`${message.id}-${file.path}`}
+                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${
+                        file.loaded
+                          ? 'bg-background/70 border-border'
+                          : 'bg-red-100 border-red-300 text-red-700 dark:bg-red-900/40 dark:border-red-800 dark:text-red-200'
+                      }`}
+                    >
+                      <FileText className="w-3 h-3" />
+                      {file.path}
+                      {file.truncated ? ' (truncated)' : ''}
+                      {file.error ? ` (${file.error})` : ''}
+                    </span>
+                  ))}
+                </div>
+              )
+            )}
+          </div>
+        </div>
+      );
+    });
+  }, [historyLoading, messages, t]);
+
+  return (
+    <div className={`h-full flex flex-col ${providerTheme.panel}`}>
+      <div className={`flex flex-wrap items-center gap-2 px-3 py-2 border-b ${providerTheme.header}`}>
+        <div className="flex min-w-0 items-center gap-2">
+          <SessionProviderLogo provider={activeProvider} className="w-4 h-4 shrink-0" />
+          <Sparkles className={`w-4 h-4 shrink-0 ${providerTheme.headerIcon}`} />
+          <span className={`text-sm font-semibold tracking-tight truncate ${providerTheme.headerTitle}`}>
+            {getProviderDisplayName(activeProvider)} Chat
+          </span>
+          <span className={`hidden md:inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${providerTheme.brandBadge}`}>
+            {activeProvider === 'codex' ? 'OpenAI Style' : 'Claude Style'}
+          </span>
+        </div>
+
+        <div className="ml-auto flex min-w-0 items-center gap-2">
+          <select
+            className="mobile-ime-input h-8 w-24 md:w-[116px] rounded-md border border-input bg-background px-2 text-xs"
+            value={activeProvider}
+            onChange={(event) => setProvider(event.target.value as SessionProvider)}
+            disabled={Boolean(selectedSession?.id)}
+          >
+            <option value="claude">Claude</option>
+            <option value="codex">Codex</option>
+          </select>
+          <select
+            className="mobile-ime-input h-8 w-40 md:w-[190px] rounded-md border border-input bg-background px-2 text-xs"
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+            disabled={!canSwitchModelInSession}
+            title="Select model"
+          >
+            {(MODEL_OPTIONS[activeProvider] || []).map((item) => (
+              <option key={item.value} value={item.value}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div ref={messagesContainerRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-2.5 space-y-2.5">
+        {renderedMessages}
+
+        <div ref={messagesEndRef} />
+      </div>
+
+      <div className={`border-t border-border/60 p-3.5 ${providerTheme.composer}`}>
+        {phase !== 'idle' && isSending && (
+          <div className="mb-2 text-xs text-muted-foreground flex items-center gap-2">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            <span>{phaseLabel}</span>
+          </div>
+        )}
+
+        {attachedFiles.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {attachedFiles.map((filePath) => (
+              <button
+                key={filePath}
+                type="button"
+                onClick={() => setAttachedFiles((prev) => prev.filter((item) => item !== filePath))}
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-xs hover:bg-muted"
+              >
+                <FileText className="w-3 h-3" />
+                <span>{filePath}</span>
+                <XCircle className="w-3 h-3" />
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="relative">
+          {isFilePickerOpen && (
+            <div
+              ref={filePickerRef}
+              className={`absolute bottom-full mb-2 left-0 right-0 h-[min(62vh,560px)] min-h-[280px] max-h-[72vh] resize-y rounded-md border bg-popover shadow-md z-30 overflow-hidden flex flex-col ${providerTheme.picker}`}
+              onWheelCapture={(event) => event.stopPropagation()}
+            >
+              <div className="border-b border-border/70 p-2 space-y-2 sticky top-0 bg-popover z-10">
+                <div className="rounded-md border border-border/70 bg-muted/40 p-2">
+                  <div className="mb-1 text-[11px] font-medium text-foreground/90">视图切换</div>
+                  <div className="inline-flex h-9 w-full items-center rounded-md border border-input p-0.5 bg-background">
+                    <button
+                      type="button"
+                      onClick={() => setFilePickerView('tree')}
+                      className={`inline-flex h-7 flex-1 items-center justify-center gap-1 rounded px-2.5 text-xs font-medium ${
+                        filePickerView === 'tree'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:bg-accent'
+                      }`}
+                    >
+                      <Folder className="w-3 h-3" />
+                      {"\u76ee\u5f55"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFilePickerView('search')}
+                      className={`inline-flex h-7 flex-1 items-center justify-center gap-1 rounded px-2.5 text-xs font-medium ${
+                        filePickerView === 'search'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:bg-accent'
+                      }`}
+                    >
+                      <FileText className="w-3 h-3" />
+                      {"\u641c\u7d22"}
+                    </button>
+                  </div>
+                  <div className="mt-1 text-[11px] text-muted-foreground">{"\u76ee\u5f55\u4ec5\u5c55\u5f00\uff0c\u53ea\u80fd\u52fe\u9009\u6587\u4ef6"}</div>
+                </div>
+
+                {filePickerView === 'search' && (
+                  <input
+                    value={filePickerQuery}
+                    onChange={(event) => setFilePickerQuery(event.target.value)}
+                    placeholder={"\u6309\u8def\u5f84\u641c\u7d22\u6587\u4ef6..."}
+                    className="mobile-ime-input h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus:outline-none"
+                  />
+                )}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={selectAllFromCurrentPickerView}
+                    className="h-8 rounded-md border border-input px-2 text-xs hover:bg-accent whitespace-nowrap"
+                  >
+                    {filePickerView === 'tree' ? '\u5168\u9009\u6587\u4ef6' : '\u5168\u9009\u5f53\u524d\u641c\u7d22\u7ed3\u679c'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAttachedFiles([])}
+                    className="h-8 rounded-md border border-input px-2 text-xs hover:bg-accent whitespace-nowrap"
+                  >
+                    {"\u6e05\u7a7a"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsFilePickerOpen(false)}
+                    className="ml-auto h-8 rounded-md border border-input px-2 text-xs hover:bg-accent whitespace-nowrap"
+                  >
+                    {"\u5b8c\u6210"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-1">
+                {filePickerView === 'search' ? (
+                  filePickerSuggestions.length === 0 ? (
+                    <div className="px-2 py-2 text-xs text-muted-foreground">{"\u672a\u627e\u5230\u5339\u914d\u6587\u4ef6"}</div>
+                  ) : (
+                    filePickerSuggestions.map((file) => {
+                      const selected = attachedFiles.includes(file.path);
+                      return (
+                        <button
+                          key={file.path}
+                          type="button"
+                          onClick={() => toggleAttachedFile(file.path)}
+                          className={`w-full px-2 py-1.5 text-left text-xs hover:bg-accent flex items-center gap-2 rounded-sm ${
+                            selected ? providerTheme.activePickRow : ''
+                          }`}
+                        >
+                          <span className={`inline-flex h-4 w-4 items-center justify-center rounded border ${
+                            selected ? 'border-primary bg-primary text-primary-foreground' : 'border-border'
+                          }`}>
+                            {selected ? <Check className="w-3 h-3" /> : null}
+                          </span>
+                          <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+                          <span className="truncate">{file.path}</span>
+                        </button>
+                      );
+                    })
+                  )
+                ) : (
+                  projectFileTree.length === 0 ? (
+                    <div className="px-2 py-2 text-xs text-muted-foreground">{"\u6682\u65e0\u53ef\u7528\u6587\u4ef6"}</div>
+                  ) : (
+                    renderFileTreeNodes(projectFileTree)
+                  )
+                )}
+              </div>
+            </div>
+          )}
+
+          {isMentionOpen && mentionSuggestions.length > 0 && (
+            <div className={`absolute bottom-full mb-2 left-0 right-0 max-h-56 overflow-y-auto rounded-md border bg-popover shadow-md z-30 ${providerTheme.picker}`}>
+              {mentionSuggestions.map((file, index) => (
+                <button
+                  key={file.path}
+                  type="button"
+                  onClick={() => handleSelectMention(file.path)}
+                  className={`w-full px-2 py-1.5 text-left text-xs hover:bg-accent flex items-center gap-2 ${
+                    index === mentionActiveIndex ? providerTheme.activePickRow : ''
+                  }`}
+                >
+                  {file.type === 'directory' ? (
+                    <Folder className="w-3.5 h-3.5 text-muted-foreground" />
+                  ) : (
+                    <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+                  )}
+                  <span className="truncate">{file.path}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={(event) => {
+              const nextValue = event.target.value;
+              const suppression = suppressInputEchoRef.current;
+              if (suppression && Date.now() < suppression.until && nextValue === suppression.value) {
+                return;
+              }
+              suppressInputEchoRef.current = null;
+              setInput(nextValue);
+              updateComposerAssistState(nextValue, event.target);
+            }}
+            onKeyDown={(event) => {
+              if (isComposingRef.current || event.nativeEvent.isComposing) {
+                return;
+              }
+
+              if (event.key === 'Escape' && isMentionOpen) {
+                event.preventDefault();
+                dismissedComposerAssistRef.current = {
+                  value: event.currentTarget.value,
+                  cursorPos: event.currentTarget.selectionStart ?? event.currentTarget.value.length,
+                };
+                setIsMentionOpen(false);
+                setMentionQuery('');
+                return;
+              }
+
+              if (isMentionOpen && mentionSuggestions.length > 0) {
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault();
+                  setMentionActiveIndex((prev) => (prev + 1) % mentionSuggestions.length);
+                  return;
+                }
+
+                if (event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setMentionActiveIndex((prev) => (prev - 1 + mentionSuggestions.length) % mentionSuggestions.length);
+                  return;
+                }
+
+                if (event.key === 'Enter' || event.key === 'Tab') {
+                  event.preventDefault();
+                  const selected = mentionSuggestions[mentionActiveIndex] || mentionSuggestions[0];
+                  if (selected) {
+                    handleSelectMention(selected.path);
+                  }
+                  return;
+                }
+              }
+
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                setIsFilePickerOpen(false);
+                void sendChatMessage();
+              }
+            }}
+            onSelect={(event) => {
+              updateComposerAssistState(event.currentTarget.value, event.currentTarget);
+            }}
+            onFocus={(event) => {
+              setIsFilePickerOpen(false);
+              updateComposerAssistState(event.currentTarget.value, event.currentTarget);
+            }}
+            onBlur={() => {
+              if (typeof window === 'undefined') {
+                return;
+              }
+              requestAnimationFrame(() => {
+                if (window.scrollX !== 0) {
+                  window.scrollTo({ left: 0, top: window.scrollY, behavior: 'auto' });
+                }
+              });
+            }}
+            onCompositionStart={() => {
+              isComposingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              isComposingRef.current = false;
+            }}
+            placeholder={
+              selectedProject
+                ? t('input.placeholder', { provider: activeProvider })
+                : t('projectSelection.startChatWithProvider', { provider: activeProvider })
+            }
+            className="mobile-ime-input w-full min-h-[96px] max-h-56 resize-none sm:resize-y rounded-md border border-input bg-background px-3 py-2.5 text-[14px] leading-6 focus:outline-none focus:ring-2 focus:ring-primary/40"
+          />
+        </div>
+
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <div className="text-[11px] text-muted-foreground flex items-center gap-2">
+            <button
+              ref={filePickerToggleRef}
+              type="button"
+              onClick={() => {
+                setIsFilePickerOpen((prev) => {
+                  const next = !prev;
+                  if (next) {
+                    setFilePickerView('tree');
+                  }
+                  return next;
+                });
+                setIsMentionOpen(false);
+              }}
+              className="inline-flex items-center gap-1 rounded border border-input px-2 py-1 hover:bg-accent text-[11px]"
+            >
+              <Files className="w-3 h-3" />
+              {"\u591a\u9009\u6587\u4ef6"}
+            </button>
+            <span>{"@ \u5feb\u901f\u5f15\u7528"}</span>
+            {isLoadingFiles && <span>{"\u6b63\u5728\u52a0\u8f7d\u6587\u4ef6..."}</span>}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={abortCurrentRequest}
+              disabled={!isSending}
+              className="inline-flex items-center gap-1 rounded-md border border-input px-2.5 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Square className="w-3.5 h-3.5" />
+              {t('input.stop')}
+            </button>
+            <button
+              type="button"
+              onClick={() => void sendChatMessage()}
+              disabled={isSending || !input.trim()}
+              className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed ${providerTheme.sendButton}`}
+            >
+              <Send className="w-3.5 h-3.5" />
+              {t('input.send')}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+

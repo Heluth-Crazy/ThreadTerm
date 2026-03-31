@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenWork Desktop</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 400px;
+      height: 300px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      color: #ffffff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      border-radius: 12px;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 40px;
+      width: 100%;
+    }
+
+    .logo {
+      width: 80px;
+      height: 80px;
+      background: hsl(240 5.9% 10%);
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 8px 32px rgba(15, 23, 42, 0.45);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .logo-image {
+      width: 44px;
+      height: 44px;
+      object-fit: contain;
+      display: none;
+      border-radius: 10px;
+    }
+
+    .logo-fallback {
+      width: 44px;
+      height: 44px;
+      display: block;
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        transform: scale(1);
+        box-shadow: 0 8px 32px rgba(15, 23, 42, 0.45);
+      }
+      50% {
+        transform: scale(1.05);
+        box-shadow: 0 12px 40px rgba(15, 23, 42, 0.55);
+      }
+    }
+
+    .title {
+      font-size: 24px;
+      font-weight: 600;
+      letter-spacing: -0.5px;
+      background: linear-gradient(90deg, #ffffff 0%, #e0e0e0 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .subtitle {
+      font-size: 14px;
+      color: rgba(255, 255, 255, 0.6);
+      margin-top: -16px;
+    }
+
+    .progress-container {
+      width: 100%;
+      max-width: 280px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .progress-bar {
+      width: 100%;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #e94560 0%, #ff6b6b 100%);
+      border-radius: 2px;
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+
+    .progress-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.5);
+      text-align: left;
+      min-height: 16px;
+      flex: 1;
+    }
+
+    .progress-value {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.75);
+      min-width: 36px;
+      text-align: right;
+    }
+
+    .version {
+      position: absolute;
+      bottom: 16px;
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.3);
+    }
+
+    /* Fade out animation */
+    .fade-out {
+      animation: fadeOut 0.3s ease forwards;
+    }
+
+    @keyframes fadeOut {
+      from {
+        opacity: 1;
+        transform: scale(1);
+      }
+      to {
+        opacity: 0;
+        transform: scale(0.95);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container" id="container">
+    <div class="logo" aria-label="OpenWork Logo">
+      <img id="logo-image" class="logo-image" alt="OpenWork Icon" />
+      <svg id="logo-fallback" class="logo-fallback" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="512" height="512" rx="112" fill="#000000" />
+        <circle cx="256" cy="256" r="118" stroke="#FFFFFF" stroke-width="56" fill="none" />
+      </svg>
+    </div>
+    <div class="title">OpenWork</div>
+    <div class="subtitle">Desktop</div>
+
+    <div class="progress-container">
+      <div class="progress-bar">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+      <div class="progress-meta">
+        <div class="status" id="status">Initializing...</div>
+        <div class="progress-value" id="progress-value">0%</div>
+      </div>
+    </div>
+
+    <div class="version" id="version">v1.0.0</div>
+  </div>
+
+  <script>
+    // Get elements
+    const progressFill = document.getElementById('progress-fill');
+    const statusText = document.getElementById('status');
+    const container = document.getElementById('container');
+    const versionText = document.getElementById('version');
+    const progressValue = document.getElementById('progress-value');
+    const logoImage = document.getElementById('logo-image');
+    const logoFallback = document.getElementById('logo-fallback');
+
+    const showFallbackLogo = () => {
+      if (logoImage) {
+        logoImage.style.display = 'none';
+      }
+      if (logoFallback) {
+        logoFallback.style.display = 'block';
+      }
+    };
+
+    if (window.electronAPI && window.electronAPI.getAppIconDataUrl) {
+      window.electronAPI.getAppIconDataUrl().then((dataUrl) => {
+        if (logoImage && dataUrl) {
+          logoImage.src = dataUrl;
+          logoImage.style.display = 'block';
+          if (logoFallback) {
+            logoFallback.style.display = 'none';
+          }
+          return;
+        }
+        showFallbackLogo();
+      }).catch(() => {
+        showFallbackLogo();
+      });
+    } else {
+      showFallbackLogo();
+    }
+
+    // Set version from package.json if available
+    if (window.electronAPI && window.electronAPI.getAppVersion) {
+      window.electronAPI.getAppVersion().then(version => {
+        versionText.textContent = `v${version}`;
+      }).catch(() => {
+        // Keep default version
+      });
+    }
+
+    // Listen for progress updates
+    if (window.electronAPI && window.electronAPI.splash) {
+      window.electronAPI.splash.onUpdate((data) => {
+        if (data.progress !== undefined) {
+          const normalized = Math.min(Math.max(Number(data.progress) || 0, 0), 100);
+          progressFill.style.width = `${normalized}%`;
+          if (progressValue) {
+            progressValue.textContent = `${Math.round(normalized)}%`;
+          }
+        }
+        if (data.message) {
+          statusText.textContent = data.message;
+        }
+      });
+
+      // Listen for fade out
+      window.electronAPI.splash.onFadeOut(() => {
+        container.classList.add('fade-out');
+      });
+    }
+  </script>
+</body>
+</html>

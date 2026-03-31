@@ -1,0 +1,594 @@
+[
+  {
+    "id": "F001",
+    "category": "functional",
+    "priority": "high",
+    "description": "Electron 基础架构 - 创建主进程入口文件，实现窗口创建和生命周期管理",
+    "depends_on": [],
+    "steps": [
+      "创建 electron/main.js 主进程入口",
+      "实现 BrowserWindow 创建函数",
+      "添加 window-all-closed 事件处理",
+      "添加 activate 事件处理（macOS 重新激活）",
+      "实现平台检测工具函数"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F002",
+    "category": "functional",
+    "priority": "high",
+    "description": "跨平台路径工具 - 创建平台无关的路径处理模块",
+    "depends_on": ["F001"],
+    "steps": [
+      "创建 electron/utils/platform.js",
+      "实现 isMac(), isWindows() 检测函数",
+      "创建跨平台路径转换函数",
+      "测试路径处理在 macOS 和 Windows 上的一致性"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F003",
+    "category": "functional",
+    "priority": "high",
+    "description": "预加载脚本 - 创建 preload.js 实现安全的 IPC 通信",
+    "depends_on": ["F001"],
+    "steps": [
+      "创建 electron/preload.js",
+      "暴露安全的 API 给渲染进程",
+      "实现版本信息、平台信息暴露",
+      "添加文件对话框 API 封装"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F004",
+    "category": "functional",
+    "priority": "high",
+    "description": "内嵌后端服务器 - 实现 Express 服务器自动启动和停止",
+    "depends_on": ["F001"],
+    "steps": [
+      "创建 electron/utils/server.js",
+      "实现服务器启动函数",
+      "添加优雅关闭处理",
+      "处理端口冲突（自动寻找可用端口）",
+      "测试服务器启动和关闭"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F005",
+    "category": "functional",
+    "priority": "high",
+    "description": "移除认证中间件 - 删除后端认证路由和中间件",
+    "depends_on": ["F004"],
+    "steps": [
+      "注释/删除 server/routes/auth.js 的所有路由",
+      "从 server/index.js 移除 auth 路由注册",
+      "移除所有路由的 authenticateToken 中间件",
+      "测试后端无需认证即可访问"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F006",
+    "category": "functional",
+    "priority": "high",
+    "description": "简化 AuthContext - 前端认证上下文返回永远已登录状态",
+    "depends_on": ["F005"],
+    "steps": [
+      "修改 src/contexts/AuthContext.jsx",
+      "移除 localStorage token 检查",
+      "始终返回 isAuthenticated: true",
+      "提供空的登录/登出函数",
+      "测试应用直接进入主界面"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F007",
+    "category": "functional",
+    "priority": "high",
+    "description": "移除登录组件 - 删除 LoginForm 和 SetupForm 组件",
+    "depends_on": ["F006"],
+    "steps": [
+      "删除 src/components/LoginForm.jsx",
+      "删除 src/components/SetupForm.jsx",
+      "简化 src/components/ProtectedRoute.jsx 为直接渲染 children",
+      "从 App.tsx 移除 ProtectedRoute 的使用",
+      "验证没有登录界面出现"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F008",
+    "category": "functional",
+    "priority": "high",
+    "description": "简化 Onboarding - 跳过认证步骤，保留 Git 配置",
+    "depends_on": ["F007"],
+    "steps": [
+      "修改 src/components/Onboarding.jsx",
+      "移除用户注册步骤",
+      "保留 Git 配置步骤（可选）",
+      "保留 CLI 认证步骤",
+      "添加跳过所有步骤的选项",
+      "测试直接进入主界面或快速配置"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F009",
+    "category": "functional",
+    "priority": "high",
+    "description": "移除 API Token 处理 - 前端不再发送认证头",
+    "depends_on": ["F006"],
+    "steps": [
+      "修改 src/utils/api.js",
+      "移除 Authorization header 的添加",
+      "移除 localStorage token 读写",
+      "测试所有 API 请求无需 token"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F010",
+    "category": "functional",
+    "priority": "high",
+    "description": "更新 Package.json - 添加 Electron 依赖和脚本",
+    "depends_on": ["F001"],
+    "steps": [
+      "添加 electron 依赖",
+      "添加 electron-builder 依赖",
+      "添加 electron-rebuild 依赖",
+      "添加启动脚本: electron:dev, electron:build",
+      "添加平台构建脚本: build:mac, build:win",
+      "添加 rebuild 脚本用于原生模块"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F011",
+    "category": "functional",
+    "priority": "high",
+    "description": "配置 electron-builder - 创建构建配置文件",
+    "depends_on": ["F010"],
+    "steps": [
+      "创建 electron-builder.yml",
+      "配置 macOS 构建（x64 + arm64）",
+      "配置 Windows 构建（x64）",
+      "配置图标路径",
+      "配置 asar 打包",
+      "配置 extraResources 数据目录"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F012",
+    "category": "functional",
+    "priority": "high",
+    "description": "原生菜单 - 实现平台特定的应用菜单",
+    "depends_on": ["F001", "F002"],
+    "steps": [
+      "创建 electron/utils/menu.js",
+      "实现 macOS 菜单模板（含 App 菜单）",
+      "实现 Windows 菜单模板",
+      "添加常用快捷键（New, Open, Save, Quit）",
+      "测试菜单在两个平台的显示"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F013",
+    "category": "functional",
+    "priority": "medium",
+    "description": "原生文件对话框 - 封装文件选择对话框",
+    "depends_on": ["F003"],
+    "steps": [
+      "在 preload.js 暴露 showOpenDialog",
+      "在 preload.js 暴露 showSaveDialog",
+      "支持选择文件夹（项目目录）",
+      "支持选择文件",
+      "测试在 macOS 和 Windows 的对话框"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F014",
+    "category": "functional",
+    "priority": "medium",
+    "description": "窗口管理 - 实现最小化、最大化、全屏功能",
+    "depends_on": ["F001"],
+    "steps": [
+      "实现窗口最小化恢复",
+      "实现最大化/取消最大化",
+      "实现全屏切换",
+      "保存和恢复窗口位置和大小",
+      "测试窗口状态记忆"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F015",
+    "category": "functional",
+    "priority": "medium",
+    "description": "跨平台 CLI 发现 - 自动检测各平台 CLI 路径",
+    "depends_on": ["F002", "F004"],
+    "steps": [
+      "修改 CLI 检测逻辑",
+      "macOS: 检查 /usr/local/bin, /opt/homebrew/bin",
+      "Windows: 检查 %LOCALAPPDATA%, %APPDATA%",
+      "使用 which/where 命令查找",
+      "测试在两个平台发现 CLI"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F016",
+    "category": "functional",
+    "priority": "medium",
+    "description": "原生模块编译 - 配置 node-pty 和 better-sqlite3",
+    "depends_on": ["F010"],
+    "steps": [
+      "创建 scripts/rebuild-native.js",
+      "配置 electron-rebuild",
+      "为 macOS x64 编译原生模块",
+      "为 macOS arm64 编译原生模块",
+      "为 Windows x64 编译原生模块",
+      "测试原生模块加载"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F017",
+    "category": "functional",
+    "priority": "medium",
+    "description": "终端 PTY 跨平台 - 确保 node-pty 在两个平台正常工作",
+    "depends_on": ["F016"],
+    "steps": [
+      "测试 macOS PTY 创建和交互",
+      "测试 Windows PTY 使用 conpty 或 winpty",
+      "验证 shell 命令执行",
+      "测试终端大小调整",
+      "测试终端颜色输出"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F018",
+    "category": "functional",
+    "priority": "medium",
+    "description": "数据目录管理 - 配置应用数据存储位置",
+    "depends_on": ["F001"],
+    "steps": [
+      "使用 app.getPath('userData') 获取数据目录",
+      "macOS: ~/Library/Application Support/ClaudeCodeDesktop",
+      "Windows: %APPDATA%/ClaudeCodeDesktop",
+      "确保数据目录存在",
+      "配置 SQLite 数据库路径"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F019",
+    "category": "functional",
+    "priority": "medium",
+    "description": "应用图标 - 准备各平台应用图标",
+    "depends_on": ["F011"],
+    "steps": [
+      "创建 1024x1024 源图标",
+      "生成 macOS icon.icns（多种尺寸）",
+      "生成 Windows icon.ico（多种尺寸）",
+      "生成 Linux icon.png",
+      "验证图标在构建中正确显示"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F020",
+    "category": "functional",
+    "priority": "medium",
+    "description": "单实例锁定 - 防止多开应用实例",
+    "depends_on": ["F001"],
+    "steps": [
+      "实现 app.requestSingleInstanceLock()",
+      "处理第二个实例启动",
+      "聚焦到已存在的窗口",
+      "测试重复启动行为"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F021",
+    "category": "functional",
+    "priority": "low",
+    "description": "系统托盘 - 添加托盘图标和菜单（可选）",
+    "depends_on": ["F001", "F019"],
+    "steps": [
+      "创建 Tray 实例",
+      "设置托盘图标（模板图标用于 macOS）",
+      "实现托盘菜单",
+      "点击托盘显示/隐藏窗口",
+      "测试在两个平台的托盘行为"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F022",
+    "category": "functional",
+    "priority": "low",
+    "description": "桌面通知 - 实现原生通知功能",
+    "depends_on": ["F001"],
+    "steps": [
+      "在 preload.js 暴露通知 API",
+      "实现任务完成通知",
+      "实现错误通知",
+      "请求 macOS 通知权限",
+      "测试通知在两个平台的显示"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F023",
+    "category": "functional",
+    "priority": "low",
+    "description": "自动更新 - 配置应用自动更新（可选）",
+    "depends_on": ["F011"],
+    "steps": [
+      "集成 electron-updater",
+      "配置更新服务器地址",
+      "实现检查更新逻辑",
+      "实现下载和安装更新",
+      "添加更新进度 UI"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F024",
+    "category": "functional",
+    "priority": "low",
+    "description": "键盘快捷键 - 注册全局和本地快捷键",
+    "depends_on": ["F001", "F012"],
+    "steps": [
+      "注册全局快捷键（如 Cmd/Ctrl+Shift+C 显示窗口）",
+      "在菜单中定义快捷键",
+      "处理快捷键平台差异",
+      "测试所有快捷键"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F025",
+    "category": "functional",
+    "priority": "medium",
+    "description": "启动画面 - 添加应用启动加载画面",
+    "depends_on": ["F001", "F004"],
+    "steps": [
+      "创建启动窗口（small, frameless）",
+      "显示加载进度",
+      "等待后端服务器启动完成",
+      "关闭启动窗口，显示主窗口",
+      "测试启动流程流畅度"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F026",
+    "category": "functional",
+    "priority": "medium",
+    "description": "应用退出处理 - 确保优雅关闭",
+    "depends_on": ["F001", "F004"],
+    "steps": [
+      "处理 before-quit 事件",
+      "优雅关闭后端服务器",
+      "关闭所有 WebSocket 连接",
+      "保存应用状态",
+      "测试强制退出和数据完整性"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F027",
+    "category": "functional",
+    "priority": "low",
+    "description": "深度链接 - 支持从浏览器打开应用（可选）",
+    "depends_on": ["F001"],
+    "steps": [
+      "注册自定义协议（openwork://）",
+      "处理协议 URL",
+      "实现从浏览器启动应用",
+      "测试 macOS 和 Windows 的深度链接"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F028",
+    "category": "functional",
+    "priority": "low",
+    "description": "开发者工具 - 开发环境调试支持",
+    "depends_on": ["F001"],
+    "steps": [
+      "开发模式自动打开 DevTools",
+      "添加快捷键 F12 切换 DevTools",
+      "实现右键检查元素",
+      "配置 source map 支持"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F029",
+    "category": "style",
+    "priority": "low",
+    "description": "macOS 窗口样式 - 隐藏标题栏，使用内嵌控制按钮",
+    "depends_on": ["F001"],
+    "steps": [
+      "设置 titleBarStyle: 'hiddenInset'",
+      "调整 traffic light 位置",
+      "确保内容区域不覆盖控制按钮",
+      "测试 macOS 窗口外观"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F030",
+    "category": "style",
+    "priority": "low",
+    "description": "Windows 窗口样式 - 使用原生窗口框架",
+    "depends_on": ["F001"],
+    "steps": [
+      "保持默认窗口框架",
+      "确保标题栏颜色匹配系统主题",
+      "测试 Windows 窗口外观"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F031",
+    "category": "functional",
+    "priority": "high",
+    "description": "macOS 构建 - 生成 DMG 和 ZIP 安装包",
+    "depends_on": ["F011", "F016", "F019"],
+    "steps": [
+      "运行 npm run build:mac",
+      "生成 x64 架构应用",
+      "生成 arm64 架构应用",
+      "验证应用签名（如果配置）",
+      "测试生成的 DMG 可安装"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F032",
+    "category": "functional",
+    "priority": "high",
+    "description": "Windows 构建 - 生成 NSIS 安装程序",
+    "depends_on": ["F011", "F016", "F019"],
+    "steps": [
+      "运行 npm run build:win",
+      "生成 x64 架构应用",
+      "生成安装程序（.exe）",
+      "测试安装程序运行",
+      "验证安装后应用启动"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F033",
+    "category": "functional",
+    "priority": "medium",
+    "description": "端到端测试 - 完整应用流程测试",
+    "depends_on": ["F031", "F032"],
+    "steps": [
+      "配置 Playwright Electron 测试",
+      "编写应用启动测试",
+      "编写项目创建测试",
+      "编写聊天功能测试",
+      "编写终端功能测试",
+      "在 macOS 和 Windows 运行测试"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F034",
+    "category": "functional",
+    "priority": "medium",
+    "description": "项目导入 - 使用原生对话框选择项目目录",
+    "depends_on": ["F013"],
+    "steps": [
+      "集成文件对话框到项目导入流程",
+      "移除手动路径输入",
+      "验证选中目录可访问",
+      "测试导入功能在两个平台"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F035",
+    "category": "functional",
+    "priority": "low",
+    "description": "暗黑模式跟随系统 - 监听系统主题变化",
+    "depends_on": ["F001"],
+    "steps": [
+      "监听 nativeTheme 变化",
+      "向渲染进程发送主题变化事件",
+      "前端应用主题切换",
+      "测试 macOS 和 Windows 主题跟随"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F036",
+    "category": "functional",
+    "priority": "medium",
+    "description": "错误处理 - 全局错误捕获和报告",
+    "depends_on": ["F001"],
+    "steps": [
+      "实现 uncaughtException 处理",
+      "实现 unhandledRejection 处理",
+      "显示错误对话框给用户",
+      "记录错误日志到文件",
+      "测试错误处理流程"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F037",
+    "category": "functional",
+    "priority": "medium",
+    "description": "日志系统 - 文件日志记录",
+    "depends_on": ["F001", "F018"],
+    "steps": [
+      "配置 electron-log 或 winston",
+      "设置日志文件路径",
+      "配置日志轮转",
+      "区分主进程和渲染进程日志",
+      "测试日志文件生成"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F038",
+    "category": "functional",
+    "priority": "low",
+    "description": "性能优化 - 减少包体积和启动时间",
+    "depends_on": ["F031", "F032"],
+    "steps": [
+      "分析包体积组成",
+      "排除开发依赖",
+      "配置 asar 压缩",
+      "延迟加载非核心模块",
+      "目标：包体积 < 200MB，启动 < 3s"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F039",
+    "category": "functional",
+    "priority": "low",
+    "description": "安全加固 - 内容安全策略和上下文隔离",
+    "depends_on": ["F001", "F003"],
+    "steps": [
+      "启用 contextIsolation",
+      "禁用 nodeIntegration",
+      "配置 Content Security Policy",
+      "验证 preload 脚本安全",
+      "进行安全审查"
+    ],
+    "passes": true
+  },
+  {
+    "id": "F040",
+    "category": "functional",
+    "priority": "low",
+    "description": "文档编写 - 用户使用和开发文档",
+    "depends_on": ["F033"],
+    "steps": [
+      "编写 README.md 更新",
+      "编写安装指南",
+      "编写开发环境搭建文档",
+      "编写构建发布流程",
+      "添加故障排除指南"
+    ],
+    "passes": true
+  }
+]
