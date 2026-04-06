@@ -230,5 +230,14 @@
     "toolInput": "도구 입력",
     "showMore": "더 보기",
     "showLess": "접기"
+  },
+  "commands": {
+    "clear": "대화 기록 지우기",
+    "compact": "대화 압축 및 요약",
+    "help": "CLI 도움말 보기",
+    "status": "현재 상태 보기",
+    "exit": "이 세션 종료",
+    "title": "명령어",
+    "hint": "/를 입력하여 명령어 보기"
   }
 }

@@ -15,12 +15,16 @@ import MissionControlView from '../overview/MissionControlView';
 import SessionStatusCounts from '../overview/SessionStatusCounts';
 import SessionFocusLayout from '../session-focus/SessionFocusLayout';
 import BottomStatusStrip from '../status-strip/BottomStatusStrip';
+import ProjectListPanel from '../projects/ProjectListPanel';
+import ProjectSessionsPanel from '../projects/ProjectSessionsPanel';
+import KeyboardShortcutsOverlay from '../overlays/KeyboardShortcutsOverlay';
 
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useMobileViewport } from '../../hooks/useMobileViewport';
 import { useWorkbenchNavigation } from '../../hooks/useWorkbenchNavigation';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
+import { useGlobalKeyboardShortcuts } from '../../hooks/useGlobalKeyboardShortcuts';
 import type { Project, ProjectSession } from '../../types/app';
 
 type DesktopViewMode = 'overview' | 'focus' | 'settings' | 'extensions';
@@ -84,6 +88,8 @@ export default function AppContent() {
   // --- New Polaris state ---
   const [viewMode, setViewMode] = useState<DesktopViewMode>('overview');
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   // ⌘K keyboard shortcut
   useEffect(() => {
@@ -271,6 +277,50 @@ export default function AppContent() {
   const handleBackToOverview = useCallback(() => {
     setViewMode('overview');
   }, []);
+
+  // Reset fullscreen when leaving focus mode
+  useEffect(() => {
+    if (viewMode !== 'focus') {
+      setIsFullscreen(false);
+    }
+  }, [viewMode]);
+
+  // Session navigation helpers
+  const allSessionsForProject = useMemo(() => {
+    if (!selectedProject) return [];
+    return [...(selectedProject.sessions || []), ...(selectedProject.codexSessions || [])];
+  }, [selectedProject]);
+
+  const handlePrevSession = useCallback(() => {
+    if (!selectedSession || !selectedProject) return;
+    const sessions = allSessionsForProject;
+    const idx = sessions.findIndex((s) => s.id === selectedSession.id);
+    if (idx > 0) handleSelectSessionWithFocus(selectedProject, sessions[idx - 1]);
+  }, [selectedSession, selectedProject, allSessionsForProject, handleSelectSessionWithFocus]);
+
+  const handleNextSession = useCallback(() => {
+    if (!selectedSession || !selectedProject) return;
+    const sessions = allSessionsForProject;
+    const idx = sessions.findIndex((s) => s.id === selectedSession.id);
+    if (idx < sessions.length - 1) handleSelectSessionWithFocus(selectedProject, sessions[idx + 1]);
+  }, [selectedSession, selectedProject, allSessionsForProject, handleSelectSessionWithFocus]);
+
+  // Global keyboard shortcuts (⌘K handled separately above)
+  useGlobalKeyboardShortcuts({
+    onToggleFullscreen: () => {
+      if (viewMode === 'focus') setIsFullscreen((f) => !f);
+    },
+    onPrevSession: handlePrevSession,
+    onNextSession: handleNextSession,
+    onNewSession: handleOpenProjectCreation,
+    onShowShortcuts: () => setShortcutsOpen(true),
+    onNavigateSession: (index) => {
+      const sessions = allSessionsForProject;
+      if (sessions[index] && selectedProject) {
+        handleSelectSessionWithFocus(selectedProject, sessions[index]);
+      }
+    },
+  });
 
   // --- Sidebar props (still used in focus mode) ---
   const workbenchSidebarProps = useMemo(
@@ -507,7 +557,7 @@ export default function AppContent() {
           />
         ) : viewMode === 'settings' || viewMode === 'extensions' ? (
           <div className="flex min-h-0 flex-1">
-            <div className="w-60 shrink-0 overflow-y-auto border-r border-border/50">
+            <div className="w-64 shrink-0 overflow-hidden border-r border-border/50">
               {secondarySidebar}
             </div>
             <div className="min-w-0 flex-1">{settingsExtensionsContent}</div>
@@ -515,11 +565,29 @@ export default function AppContent() {
         ) : (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex min-h-0 flex-1">
-              {/* Narrow session-list sidebar */}
-              <div className="w-60 shrink-0 overflow-y-auto border-r border-border/50">
-                {secondarySidebar}
-              </div>
-              {/* Session focus: chat + terminal split */}
+              {/* Panel 1: Project list (hidden in fullscreen) */}
+              {!isFullscreen && (
+                <ProjectListPanel
+                  projects={projects}
+                  selectedProject={selectedProject}
+                  onSelectProject={(project) => {
+                    handleSelectProject(project);
+                  }}
+                  onNewProject={handleOpenProjectCreation}
+                />
+              )}
+
+              {/* Panel 2: Session cards for selected project (hidden in fullscreen) */}
+              {!isFullscreen && selectedProject && (
+                <ProjectSessionsPanel
+                  project={selectedProject}
+                  selectedSession={selectedSession}
+                  onSelectSession={handleSelectSessionWithFocus}
+                  onNewSession={() => handleStartSession(selectedProject, undefined)}
+                />
+              )}
+
+              {/* Panel 3: Session focus (Chat + Terminal) */}
               {selectedProject ? (
                 <SessionFocusLayout
                   projects={projects}
@@ -546,7 +614,7 @@ export default function AppContent() {
                 />
               ) : (
                 <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-                  Select a session to begin
+                  Select a project and session to begin
                 </div>
               )}
             </div>
@@ -582,6 +650,12 @@ export default function AppContent() {
           setCmdPaletteOpen(false);
           openExtensionsOverview();
         }}
+      />
+
+      {/* Keyboard shortcuts overlay */}
+      <KeyboardShortcutsOverlay
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
       />
     </div>
   );

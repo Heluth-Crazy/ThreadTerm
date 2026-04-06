@@ -91,6 +91,7 @@ export default function SessionFocusLayout({
 }: SessionFocusLayoutProps) {
   const { t } = useTranslation('common');
   const [overlayPanel, setOverlayPanel] = useState<OverlayPanel>(null);
+  const [focusView, setFocusView] = useState<'chat' | 'split' | 'terminal'>('split');
   const { splitPercent, containerRef, handleMouseDown } = useSplitPanel(55);
   const getStatus = useSessionStatusStore((s) => s.getStatus);
 
@@ -107,6 +108,18 @@ export default function SessionFocusLayout({
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [overlayPanel]);
+
+  // Cycle view mode: Ctrl+` / ⌘+`
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === '`') {
+        e.preventDefault();
+        setFocusView(v => v === 'chat' ? 'split' : v === 'split' ? 'terminal' : 'chat');
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   if (isLoading) {
     return (
@@ -163,6 +176,34 @@ export default function SessionFocusLayout({
         ) : null}
         <div className="flex-1" />
 
+        {/* View mode toggle */}
+        <div className="flex items-center gap-0.5 rounded-md bg-muted/50 p-0.5 text-xs">
+          <button
+            type="button"
+            onClick={() => setFocusView('chat')}
+            className={`rounded px-2 py-0.5 transition-colors ${focusView === 'chat' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            title="Chat only (⌘`)"
+          >
+            💬
+          </button>
+          <button
+            type="button"
+            onClick={() => setFocusView('split')}
+            className={`rounded px-2 py-0.5 transition-colors ${focusView === 'split' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            title="Split view (⌘`)"
+          >
+            ⊙
+          </button>
+          <button
+            type="button"
+            onClick={() => setFocusView('terminal')}
+            className={`rounded px-2 py-0.5 transition-colors ${focusView === 'terminal' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            title="Terminal only (⌘`)"
+          >
+            ⬜
+          </button>
+        </div>
+
         {/* Action buttons */}
         <button
           type="button"
@@ -192,41 +233,50 @@ export default function SessionFocusLayout({
 
       {/* Split content */}
       <div ref={containerRef} className="relative flex min-h-0 flex-1 overflow-hidden">
-        {/* Chat panel */}
-        <div className="min-w-0 overflow-hidden border-r border-border/40" style={{ width: `${splitPercent}%` }}>
-          <ErrorBoundary showDetails>
-            <ChatPanel
-              selectedProject={selectedProject}
-              selectedSession={selectedSession}
-              sendMessage={sendMessage}
-              latestMessage={latestMessage}
-              messageSequence={messageSequence}
-              getBufferedMessagesSince={getBufferedMessagesSince}
-              externalMessageUpdate={externalMessageUpdate}
-              onSessionActive={onSessionActive}
-              onSessionInactive={onSessionInactive}
-              onSessionProcessing={onSessionProcessing}
-              onSessionNotProcessing={onSessionNotProcessing}
-              onReplaceTemporarySession={onReplaceTemporarySession}
-              onNavigateToSession={onNavigateToSession}
-            />
-          </ErrorBoundary>
-        </div>
+        {/* Chat panel - hidden in terminal-only mode */}
+        {focusView !== 'terminal' && (
+          <div
+            className="min-w-0 overflow-hidden border-r border-border/40"
+            style={{ width: focusView === 'chat' ? '100%' : `${splitPercent}%` }}
+          >
+            <ErrorBoundary showDetails>
+              <ChatPanel
+                selectedProject={selectedProject}
+                selectedSession={selectedSession}
+                sendMessage={sendMessage}
+                latestMessage={latestMessage}
+                messageSequence={messageSequence}
+                getBufferedMessagesSince={getBufferedMessagesSince}
+                externalMessageUpdate={externalMessageUpdate}
+                onSessionActive={onSessionActive}
+                onSessionInactive={onSessionInactive}
+                onSessionProcessing={onSessionProcessing}
+                onSessionNotProcessing={onSessionNotProcessing}
+                onReplaceTemporarySession={onReplaceTemporarySession}
+                onNavigateToSession={onNavigateToSession}
+              />
+            </ErrorBoundary>
+          </div>
+        )}
 
-        {/* Draggable divider */}
-        <div
-          className="relative z-10 w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-primary/20 active:bg-primary/30 transition-colors"
-          onMouseDown={handleMouseDown}
-        >
-          <div className="absolute inset-y-0 -left-1 -right-1" />
-        </div>
+        {/* Draggable divider - only in split mode */}
+        {focusView === 'split' && (
+          <div
+            className="relative z-10 w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-primary/20 active:bg-primary/30 transition-colors"
+            onMouseDown={handleMouseDown}
+          >
+            <div className="absolute inset-y-0 -left-1 -right-1" />
+          </div>
+        )}
 
-        {/* Terminal panel */}
-        <div className="min-w-0 flex-1 overflow-hidden">
-          <ErrorBoundary showDetails>
-            <TerminalGrid project={selectedProject} session={selectedSession} />
-          </ErrorBoundary>
-        </div>
+        {/* Terminal panel - hidden in chat-only mode */}
+        {focusView !== 'chat' && (
+          <div className="min-w-0 flex-1 overflow-hidden">
+            <ErrorBoundary showDetails>
+              <TerminalGrid project={selectedProject} session={selectedSession} />
+            </ErrorBoundary>
+          </div>
+        )}
 
         {/* Slide-over overlay for Files / Git */}
         {overlayPanel ? (

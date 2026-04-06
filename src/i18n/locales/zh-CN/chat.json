@@ -230,5 +230,14 @@
     "toolInput": "工具输入",
     "showMore": "展开",
     "showLess": "收起"
+  },
+  "commands": {
+    "clear": "清除对话历史",
+    "compact": "压缩并总结对话",
+    "help": "显示 CLI 帮助",
+    "status": "显示当前状态",
+    "exit": "结束此会话",
+    "title": "命令",
+    "hint": "输入 / 查看命令"
   }
 }

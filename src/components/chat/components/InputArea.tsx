@@ -2,6 +2,7 @@ import { Check, ChevronDown, ChevronRight, FileText, Files, Folder, Loader2, Sen
 import { useTranslation } from 'react-i18next';
 import type { SessionProvider, Project } from '../../../types/app';
 import type { ChatPhase, FlatFileNode, FileTreeNode, ProviderThemeConfig } from '../types/chatTypes';
+import CommandSuggestions from './CommandSuggestions';
 
 type InputAreaProps = {
   // Core state
@@ -35,6 +36,13 @@ type InputAreaProps = {
   mentionActiveIndex: number;
   onSetMentionActiveIndex: React.Dispatch<React.SetStateAction<number>>;
   onSelectMention: (filePath: string) => void;
+
+  // Command suggestions
+  isCmdOpen: boolean;
+  cmdQuery: string;
+  cmdActiveIndex: number;
+  cmdFilteredCount: number;
+  onSelectCommand: (cmd: string) => void;
 
   // Actions
   onSend: () => void;
@@ -143,6 +151,11 @@ export default function InputArea({
   mentionActiveIndex,
   onSetMentionActiveIndex: _onSetMentionActiveIndex,
   onSelectMention,
+  isCmdOpen,
+  cmdQuery,
+  cmdActiveIndex,
+  cmdFilteredCount: _cmdFilteredCount,
+  onSelectCommand,
   onSend,
   onAbort,
   providerTheme,
@@ -318,6 +331,16 @@ export default function InputArea({
               </button>
             ))}
           </div>
+        )}
+
+        {isCmdOpen && (
+          <CommandSuggestions
+            provider={activeProvider}
+            query={cmdQuery}
+            onSelect={onSelectCommand}
+            onClose={() => {/* handled by keydown */}}
+            activeIndex={cmdActiveIndex}
+          />
         )}
 
         <textarea

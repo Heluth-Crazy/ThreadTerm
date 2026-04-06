@@ -241,5 +241,26 @@
     "needs_attention_permission": "Permission Required",
     "needs_attention_aborted": "Aborted",
     "idle": ""
+  },
+  "sessions": {
+    "noSessions": "No sessions yet",
+    "startSession": "Start session",
+    "sortByTime": "Time",
+    "sortByStatus": "Status",
+    "sessions": "sessions"
+  },
+  "shortcuts": {
+    "title": "Keyboard Shortcuts",
+    "navigation": "Navigation",
+    "session": "Session",
+    "view": "View",
+    "cmdPalette": "Open command palette",
+    "fullscreen": "Toggle fullscreen",
+    "prevSession": "Previous session",
+    "nextSession": "Next session",
+    "newSession": "New session",
+    "cycleView": "Cycle chat/split/terminal",
+    "showHelp": "Show this help",
+    "jumpToSession": "Jump to session by position"
   }
 }
