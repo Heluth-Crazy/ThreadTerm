@@ -40,7 +40,11 @@
     "build:all": "npm run build && electron-builder --mac --win --linux",
     "rebuild": "electron-rebuild",
     "rebuild:native:node": "npm rebuild better-sqlite3 sqlite3 node-pty",
-    "rebuild:native:electron": "node scripts/rebuild-native.js"
+    "rebuild:native:electron": "node scripts/rebuild-native.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage"
   },
   "keywords": [
     "openwork",
@@ -66,6 +70,7 @@
     "@openai/codex-sdk": "^0.101.0",
     "@replit/codemirror-minimap": "^0.5.2",
     "@tailwindcss/typography": "^0.5.16",
+    "@types/dompurify": "^3.0.5",
     "@uiw/react-codemirror": "^4.23.13",
     "@xterm/addon-clipboard": "^0.1.0",
     "@xterm/addon-fit": "^0.10.0",
@@ -79,6 +84,7 @@
     "clsx": "^2.1.1",
     "cors": "^2.8.5",
     "cross-spawn": "^7.0.3",
+    "dompurify": "^3.3.3",
     "electron-log": "^5.4.3",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.8.3",
@@ -90,6 +96,7 @@
     "jsonwebtoken": "^9.0.2",
     "katex": "^0.16.25",
     "lucide-react": "^0.515.0",
+    "mermaid": "^11.14.0",
     "mime-types": "^3.0.1",
     "multer": "^2.0.1",
     "node-fetch": "^2.7.0",
@@ -101,6 +108,7 @@
     "react-markdown": "^10.1.0",
     "react-router-dom": "^6.8.1",
     "react-syntax-highlighter": "^15.6.1",
+    "react-virtuoso": "^4.18.4",
     "rehype-katex": "^7.0.1",
     "rehype-raw": "^7.0.0",
     "remark-gfm": "^4.0.0",
@@ -108,20 +116,26 @@
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "tailwind-merge": "^3.3.1",
-    "ws": "^8.14.2"
+    "ws": "^8.14.2",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@release-it/conventional-changelog": "^10.0.5",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^22.19.7",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
     "@vitejs/plugin-react": "^4.6.0",
+    "@vitest/ui": "^4.1.2",
     "auto-changelog": "^2.5.0",
     "autoprefixer": "^10.4.16",
     "concurrently": "^8.2.2",
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8",
     "electron-rebuild": "^3.2.9",
+    "happy-dom": "^20.8.9",
+    "jsdom": "^29.0.1",
     "node-gyp": "^10.0.0",
     "postcss": "^8.4.32",
     "release-it": "^19.0.5",
@@ -129,6 +143,7 @@
     "tailwindcss": "^3.4.0",
     "to-ico": "^1.1.5",
     "typescript": "^5.9.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^4.1.2"
   }
 }

@@ -1,4 +1,5 @@
-import { useMemo } from 'react';
+import React from 'react';
+import { Virtuoso } from 'react-virtuoso';
 import { FileText, Files, Loader2, User, Wrench } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -7,6 +8,7 @@ import SessionProviderLogo from '../../SessionProviderLogo';
 import type { ChatMessage } from '../types/chatTypes';
 import { PROVIDER_THEME } from '../utils/chatConstants';
 import { compactMessageText, shouldRenderAsPreformatted, getProviderDisplayName } from '../utils/chatUtils';
+import { MermaidBlock } from './MermaidBlock';
 
 type MessageListProps = {
   messages: ChatMessage[];
@@ -23,46 +25,47 @@ export default function MessageList({
 }: MessageListProps) {
   const { t } = useTranslation('chat');
 
-  const renderedMessages = useMemo(() => {
-    if (historyLoading) {
-      return (
+  if (historyLoading) {
+    return (
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2.5">
         <div className="text-xs text-muted-foreground flex items-center gap-2">
           <Loader2 className="w-3.5 h-3.5 animate-spin" />
           {t('session.loading.sessionMessages')}
         </div>
-      );
-    }
+      </div>
+    );
+  }
 
-    if (messages.length === 0) {
-      return (
+  if (messages.length === 0) {
+    return (
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2.5">
         <div className="h-full flex items-center justify-center text-center px-6">
           <div>
             <p className="text-sm font-medium text-foreground mb-1">{t('session.continue.title')}</p>
             <p className="text-xs text-muted-foreground">{t('session.continue.description')}</p>
           </div>
         </div>
-      );
-    }
+      </div>
+    );
+  }
 
-    return messages.map((message) => {
-      const isUser = message.kind === 'user';
-      const isAssistant = message.kind === 'assistant';
-      const isError = message.kind === 'error';
-      const isTool = message.kind === 'tool';
-      const isThinking = message.kind === 'thinking';
-      const messageTheme = PROVIDER_THEME[message.provider] || PROVIDER_THEME.claude;
-      const normalizedBody = compactMessageText(message.text || (message.streaming ? t('thinking.emoji') : ''));
-      const usePreformattedBody = (isAssistant || isUser) && shouldRenderAsPreformatted(normalizedBody);
-      const fileCount = message.files?.length || 0;
-      const loadedFileCount = message.files?.filter((file) => file.loaded).length || 0;
-      const failedFileCount = fileCount - loadedFileCount;
-      const truncatedFileCount = message.files?.filter((file) => file.truncated).length || 0;
+  function renderMessage(_index: number, message: ChatMessage) {
+    const isUser = message.kind === 'user';
+    const isAssistant = message.kind === 'assistant';
+    const isError = message.kind === 'error';
+    const isTool = message.kind === 'tool';
+    const isThinking = message.kind === 'thinking';
+    const messageTheme = PROVIDER_THEME[message.provider] || PROVIDER_THEME.claude;
+    const normalizedBody = compactMessageText(message.text || (message.streaming ? t('thinking.emoji') : ''));
+    const usePreformattedBody = (isAssistant || isUser) && shouldRenderAsPreformatted(normalizedBody);
+    const fileCount = message.files?.length || 0;
+    const loadedFileCount = message.files?.filter((file) => file.loaded).length || 0;
+    const failedFileCount = fileCount - loadedFileCount;
+    const truncatedFileCount = message.files?.filter((file) => file.truncated).length || 0;
 
-      return (
-        <div
-          key={message.id}
-          className={`w-full flex ${isUser ? 'justify-end' : 'justify-start'}`}
-        >
+    return (
+      <div className="px-3 pt-2.5">
+        <div className={`w-full flex ${isUser ? 'justify-end' : 'justify-start'}`}>
           <div
             className={`max-w-[86%] rounded-xl border px-3 py-2 ${
               isUser
@@ -94,56 +97,44 @@ export default function MessageList({
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{
-                      p(props) {
-                        const { children } = props;
-                        return (
-                          <p className="my-0 leading-6">
-                            {children}
-                          </p>
-                        );
+                      p({ children }) {
+                        return <p className="my-0 leading-6">{children}</p>;
                       },
-                      ul(props) {
-                        const { children } = props;
-                        return (
-                          <ul className="my-1 list-disc pl-4 space-y-0.5">
-                            {children}
-                          </ul>
-                        );
+                      ul({ children }) {
+                        return <ul className="my-1 list-disc pl-4 space-y-0.5">{children}</ul>;
                       },
-                      ol(props) {
-                        const { children } = props;
-                        return (
-                          <ol className="my-1 list-decimal pl-4 space-y-0.5">
-                            {children}
-                          </ol>
-                        );
+                      ol({ children }) {
+                        return <ol className="my-1 list-decimal pl-4 space-y-0.5">{children}</ol>;
                       },
-                      li(props) {
-                        const { children } = props;
-                        return (
-                          <li className="leading-6">
-                            {children}
-                          </li>
-                        );
+                      li({ children }) {
+                        return <li className="leading-6">{children}</li>;
                       },
-                      code(props) {
-                        const { children } = props;
+                      code({ children, className }) {
+                        const langMatch = /language-(\w+)/.exec(className || '');
+                        if (langMatch?.[1] === 'mermaid') {
+                          return <MermaidBlock code={String(children).replace(/\n$/, '')} />;
+                        }
                         return (
                           <code className="rounded bg-muted px-1 py-0.5 text-[12px]">
                             {children}
                           </code>
                         );
                       },
-                      pre(props) {
-                        const { children } = props;
+                      pre({ children }) {
+                        // When the code component renders a MermaidBlock, unwrap from <pre>
+                        if (
+                          React.isValidElement(children) &&
+                          (children.props as Record<string, unknown>)?.className?.toString().includes('language-mermaid')
+                        ) {
+                          return <>{children}</>;
+                        }
                         return (
                           <pre className="m-0 overflow-x-auto rounded-md bg-muted p-2 text-[12px] leading-5">
                             {children}
                           </pre>
                         );
                       },
-                      table(props) {
-                        const { children } = props;
+                      table({ children }) {
                         return (
                           <div className="my-1.5 overflow-x-auto rounded-md border border-border/70">
                             <table className="w-full min-w-[420px] border-collapse text-xs">
@@ -152,40 +143,23 @@ export default function MessageList({
                           </div>
                         );
                       },
-                      thead(props) {
-                        const { children } = props;
-                        return (
-                          <thead className="bg-muted/60">
-                            {children}
-                          </thead>
-                        );
+                      thead({ children }) {
+                        return <thead className="bg-muted/60">{children}</thead>;
                       },
-                      tbody(props) {
-                        const { children } = props;
-                        return (
-                          <tbody>
-                            {children}
-                          </tbody>
-                        );
+                      tbody({ children }) {
+                        return <tbody>{children}</tbody>;
                       },
-                      tr(props) {
-                        const { children } = props;
-                        return (
-                          <tr className="border-b border-border/60">
-                            {children}
-                          </tr>
-                        );
+                      tr({ children }) {
+                        return <tr className="border-b border-border/60">{children}</tr>;
                       },
-                      th(props) {
-                        const { children } = props;
+                      th({ children }) {
                         return (
                           <th className="border-r border-border/60 px-2 py-1 text-left font-semibold align-top last:border-r-0">
                             {children}
                           </th>
                         );
                       },
-                      td(props) {
-                        const { children } = props;
+                      td({ children }) {
                         return (
                           <td className="border-r border-border/40 px-2 py-1 align-top last:border-r-0">
                             {children}
@@ -234,14 +208,24 @@ export default function MessageList({
             )}
           </div>
         </div>
-      );
-    });
-  }, [historyLoading, messages, t]);
+      </div>
+    );
+  }
 
   return (
-    <div ref={messagesContainerRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-2.5 space-y-2.5">
-      {renderedMessages}
-      <div ref={messagesEndRef} />
-    </div>
+    <Virtuoso
+      data={messages}
+      followOutput="smooth"
+      className="flex-1 min-h-0"
+      scrollerRef={(ref) => {
+        if (ref instanceof HTMLDivElement) {
+          (messagesContainerRef as React.MutableRefObject<HTMLDivElement>).current = ref;
+        }
+      }}
+      itemContent={renderMessage}
+      components={{
+        Footer: () => <div ref={messagesEndRef} className="h-2.5" />,
+      }}
+    />
   );
 }
