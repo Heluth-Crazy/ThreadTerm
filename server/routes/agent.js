@@ -11,6 +11,7 @@ import { queryCodex } from '../openai-codex.js';
 import { Octokit } from '@octokit/rest';
 import { CODEX_MODELS } from '../../shared/modelConstants.js';
 import { IS_PLATFORM } from '../constants/config.js';
+import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 
@@ -37,7 +38,7 @@ const validateExternalApiKey = (req, res, next) => {
       req.user = user;
       return next();
     } catch (error) {
-      console.error('Platform mode error:', error);
+      logger.error('Platform mode error:', error);
       return res.status(500).json({ error: 'Platform mode: Failed to fetch user' });
     }
   }
@@ -287,10 +288,10 @@ async function createRemoteBranch(octokit, owner, repo, branchName, baseBranch =
       sha: baseSha
     });
 
-    console.log(`鉁?Created branch '${branchName}' on source hosting`);
+    logger.debug(`鉁?Created branch '${branchName}' on source hosting`);
   } catch (error) {
     if (error.status === 422 && error.message.includes('Reference already exists')) {
-      console.log(`鈩癸笍 Branch '${branchName}' already exists on source hosting`);
+      logger.debug(`鈩癸笍 Branch '${branchName}' already exists on source hosting`);
     } else {
       throw error;
     }
@@ -318,7 +319,7 @@ async function createRemotePR(octokit, owner, repo, branchName, title, body, bas
     body
   });
 
-  console.log(`鉁?Created pull request #${pr.number}: ${pr.html_url}`);
+  logger.debug(`鉁?Created pull request #${pr.number}: ${pr.html_url}`);
 
   return {
     number: pr.number,
@@ -351,7 +352,7 @@ async function cloneRemoteRepo(githubUrl, githubToken = null, projectPath) {
           const normalizedRequested = normalizeGitUrl(githubUrl);
 
           if (normalizedExisting === normalizedRequested) {
-            console.log('鉁?Repository already exists at path with correct URL');
+            logger.debug('鉁?Repository already exists at path with correct URL');
             return resolve(cloneDir);
           } else {
             throw new Error(`Directory ${cloneDir} already exists with a different repository (${existingUrl}). Expected: ${githubUrl}`);
@@ -378,8 +379,8 @@ async function cloneRemoteRepo(githubUrl, githubToken = null, projectPath) {
         }
       }
 
-      console.log('馃攧 Cloning repository:', githubUrl);
-      console.log('馃搧 Destination:', cloneDir);
+      logger.debug('馃攧 Cloning repository:', githubUrl);
+      logger.debug('馃搧 Destination:', cloneDir);
 
       // Execute git clone
       const gitProcess = spawn('git', ['clone', '--depth', '1', cloneUrl, cloneDir], {
@@ -395,15 +396,15 @@ async function cloneRemoteRepo(githubUrl, githubToken = null, projectPath) {
 
       gitProcess.stderr.on('data', (data) => {
         stderr += data.toString();
-        console.log('Git stderr:', data.toString());
+        logger.debug('Git stderr:', data.toString());
       });
 
       gitProcess.on('close', (code) => {
         if (code === 0) {
-          console.log('鉁?Repository cloned successfully');
+          logger.debug('鉁?Repository cloned successfully');
           resolve(cloneDir);
         } else {
-          console.error('鉂?Git clone failed:', stderr);
+          logger.error('鉂?Git clone failed:', stderr);
           reject(new Error(`Git clone failed: ${stderr}`));
         }
       });
@@ -426,27 +427,27 @@ async function cleanupProject(projectPath, sessionId = null) {
   try {
     // Only clean up projects in the external-projects directory
     if (!projectPath.includes('.claude/external-projects')) {
-      console.warn('鈿狅笍 Refusing to clean up non-external project:', projectPath);
+      logger.warn('鈿狅笍 Refusing to clean up non-external project:', projectPath);
       return;
     }
 
-    console.log('馃Ч Cleaning up project:', projectPath);
+    logger.debug('馃Ч Cleaning up project:', projectPath);
     await fs.rm(projectPath, { recursive: true, force: true });
-    console.log('鉁?Project cleaned up');
+    logger.debug('鉁?Project cleaned up');
 
     // Also clean up the Claude session directory if sessionId provided
     if (sessionId) {
       try {
         const sessionPath = path.join(os.homedir(), '.claude', 'sessions', sessionId);
-        console.log('馃Ч Cleaning up session directory:', sessionPath);
+        logger.debug('馃Ч Cleaning up session directory:', sessionPath);
         await fs.rm(sessionPath, { recursive: true, force: true });
-        console.log('鉁?Session directory cleaned up');
+        logger.debug('鉁?Session directory cleaned up');
       } catch (error) {
-        console.error('鈿狅笍 Failed to clean up session directory:', error.message);
+        logger.error('鈿狅笍 Failed to clean up session directory:', error.message);
       }
     }
   } catch (error) {
-    console.error('鉂?Failed to clean up project:', error);
+    logger.error('鉂?Failed to clean up project:', error);
   }
 }
 
@@ -901,11 +902,11 @@ router.post('/', validateExternalApiKey, async (req, res) => {
     let project;
     try {
       project = await addProjectManually(finalProjectPath);
-      console.log('馃摝 Project registered:', project);
+      logger.debug('馃摝 Project registered:', project);
     } catch (error) {
       // If project already exists, that's fine - continue with the existing registration
       if (error.message && error.message.includes('Project already configured')) {
-        console.log('馃摝 Using existing project registration for:', finalProjectPath);
+        logger.debug('馃摝 Using existing project registration for:', finalProjectPath);
         project = { path: finalProjectPath };
       } else {
         throw error;
@@ -942,7 +943,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
 
     // Start the appropriate session
     if (provider === 'claude') {
-      console.log('馃 Starting Claude SDK session');
+      logger.debug('馃 Starting Claude SDK session');
 
       await queryClaudeSDK(message.trim(), {
         projectPath: finalProjectPath,
@@ -952,7 +953,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
         permissionMode: 'bypassPermissions' // Bypass all permissions for API calls
       }, writer);
     } else if (provider === 'codex') {
-      console.log('馃 Starting Codex SDK session');
+      logger.debug('馃 Starting Codex SDK session');
 
       await queryCodex(message.trim(), {
         projectPath: finalProjectPath,
@@ -969,7 +970,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
 
     if (createBranch || createPR) {
       try {
-        console.log('馃攧 Starting source hosting branch/PR creation workflow...');
+        logger.debug('馃攧 Starting source hosting branch/PR creation workflow...');
 
         // Get source hosting token
         const tokenToUse = githubToken || githubTokensDb.getActiveGithubToken(req.user.id);
@@ -984,11 +985,11 @@ router.post('/', validateExternalApiKey, async (req, res) => {
         // Get source hosting URL - either from parameter or from git remote
         let repoUrl = githubUrl;
         if (!repoUrl) {
-          console.log('馃攳 Getting source hosting URL from git remote...');
+          logger.debug('馃攳 Getting source hosting URL from git remote...');
           try {
             repoUrl = await getGitRemoteUrl(finalProjectPath);
             parseGitUrl(repoUrl);
-            console.log(`鉁?Found source hosting remote: ${repoUrl}`);
+            logger.debug(`鉁?Found source hosting remote: ${repoUrl}`);
           } catch (error) {
             throw new Error(`Failed to get source hosting remote URL: ${error.message}`);
           }
@@ -996,12 +997,12 @@ router.post('/', validateExternalApiKey, async (req, res) => {
 
         // Parse source hosting URL to get owner and repo
         const { host, owner, repo } = parseGitUrl(repoUrl);
-        console.log(`馃摝 Repository: ${owner}/${repo}`);
+        logger.debug(`馃摝 Repository: ${owner}/${repo}`);
 
         // Use provided branch name or auto-generate from message
         const finalBranchName = branchName || autogenerateBranchName(message);
         if (branchName) {
-          console.log(`馃尶 Using provided branch name: ${finalBranchName}`);
+          logger.debug(`馃尶 Using provided branch name: ${finalBranchName}`);
 
           // Validate custom branch name
           const validation = validateBranchName(finalBranchName);
@@ -1009,12 +1010,12 @@ router.post('/', validateExternalApiKey, async (req, res) => {
             throw new Error(`Invalid branch name: ${validation.error}`);
           }
         } else {
-          console.log(`馃尶 Auto-generated branch name: ${finalBranchName}`);
+          logger.debug(`馃尶 Auto-generated branch name: ${finalBranchName}`);
         }
 
         if (createBranch) {
           // Create and checkout the new branch locally
-          console.log('馃攧 Creating local branch...');
+          logger.debug('馃攧 Creating local branch...');
           const checkoutProcess = spawn('git', ['checkout', '-b', finalBranchName], {
             cwd: finalProjectPath,
             stdio: 'pipe'
@@ -1025,19 +1026,19 @@ router.post('/', validateExternalApiKey, async (req, res) => {
             checkoutProcess.stderr.on('data', (data) => { stderr += data.toString(); });
             checkoutProcess.on('close', (code) => {
               if (code === 0) {
-                console.log(`鉁?Created and checked out local branch '${finalBranchName}'`);
+                logger.debug(`鉁?Created and checked out local branch '${finalBranchName}'`);
                 resolve();
               } else {
                 // Branch might already exist locally, try to checkout
                 if (stderr.includes('already exists')) {
-                  console.log(`鈩癸笍 Branch '${finalBranchName}' already exists locally, checking out...`);
+                  logger.debug(`鈩癸笍 Branch '${finalBranchName}' already exists locally, checking out...`);
                   const checkoutExisting = spawn('git', ['checkout', finalBranchName], {
                     cwd: finalProjectPath,
                     stdio: 'pipe'
                   });
                   checkoutExisting.on('close', (checkoutCode) => {
                     if (checkoutCode === 0) {
-                      console.log(`鉁?Checked out existing branch '${finalBranchName}'`);
+                      logger.debug(`鉁?Checked out existing branch '${finalBranchName}'`);
                       resolve();
                     } else {
                       reject(new Error(`Failed to checkout existing branch: ${stderr}`));
@@ -1051,7 +1052,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
           });
 
           // Push the branch to remote
-          console.log('馃攧 Pushing branch to remote...');
+          logger.debug('馃攧 Pushing branch to remote...');
           const pushProcess = spawn('git', ['push', '-u', 'origin', finalBranchName], {
             cwd: finalProjectPath,
             stdio: 'pipe'
@@ -1064,12 +1065,12 @@ router.post('/', validateExternalApiKey, async (req, res) => {
             pushProcess.stderr.on('data', (data) => { stderr += data.toString(); });
             pushProcess.on('close', (code) => {
               if (code === 0) {
-                console.log(`鉁?Pushed branch '${finalBranchName}' to remote`);
+                logger.debug(`鉁?Pushed branch '${finalBranchName}' to remote`);
                 resolve();
               } else {
                 // Check if branch exists on remote but has different commits
                 if (stderr.includes('already exists') || stderr.includes('up-to-date')) {
-                  console.log(`鈩癸笍 Branch '${finalBranchName}' already exists on remote, using existing branch`);
+                  logger.debug(`鈩癸笍 Branch '${finalBranchName}' already exists on remote, using existing branch`);
                   resolve();
                 } else {
                   reject(new Error(`Failed to push branch: ${stderr}`));
@@ -1086,7 +1087,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
 
         if (createPR) {
           // Get commit messages to generate PR description
-          console.log('馃攧 Generating PR title and description...');
+          logger.debug('馃攧 Generating PR title and description...');
           const commitMessages = await getCommitMessages(finalProjectPath, 5);
 
           // Use the first commit message as the PR title, or fallback to the agent message
@@ -1101,10 +1102,10 @@ router.post('/', validateExternalApiKey, async (req, res) => {
           }
           prBody += '\n\n---\n*This pull request was automatically created by OpenWork Agent.*';
 
-          console.log(`馃摑 PR Title: ${prTitle}`);
+          logger.debug(`馃摑 PR Title: ${prTitle}`);
 
           // Create the pull request
-          console.log('馃攧 Creating pull request...');
+          logger.debug('馃攧 Creating pull request...');
           prInfo = await createRemotePR(octokit, owner, repo, finalBranchName, prTitle, prBody, 'main');
         }
 
@@ -1125,7 +1126,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
         }
 
       } catch (error) {
-        console.error('鉂?source hosting branch/PR creation error:', error);
+        logger.error('鉂?source hosting branch/PR creation error:', error);
 
         // Send error but don't fail the entire request
         if (stream) {
@@ -1180,7 +1181,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
     }
 
   } catch (error) {
-    console.error('鉂?External session error:', error);
+    logger.error('鉂?External session error:', error);
 
     // Clean up on error
     if (finalProjectPath && cleanup && githubUrl) {

@@ -1,33 +1,8 @@
 import React, { useCallback, useState, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import Shell from '../Shell.jsx';
 import type { Project } from '../../types/app';
-
-const SESSION_DRAG_FORMATS = ['text/x-openwork-session', 'application/json'];
-
-const hasSessionDragData = (dataTransfer: DataTransfer): boolean => {
-  const types = Array.from(dataTransfer.types || []);
-  return SESSION_DRAG_FORMATS.some((format) => types.includes(format));
-};
-
-const parseSessionDragData = (dataTransfer: DataTransfer): any | null => {
-  for (const format of SESSION_DRAG_FORMATS) {
-    const raw = dataTransfer.getData(format);
-    if (!raw) {
-      continue;
-    }
-
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.sessionId === 'string') {
-        return parsed;
-      }
-    } catch {
-      // Ignore invalid payload and continue with other MIME types.
-    }
-  }
-
-  return null;
-};
+import { hasSessionDragData, parseSessionDragData } from './utils/dragDrop';
 
 export interface HybridTerminalPaneProps {
   id: string;
@@ -37,6 +12,7 @@ export interface HybridTerminalPaneProps {
 }
 
 function HybridTerminalPane({ id, projects, isActive, onActivate }: HybridTerminalPaneProps) {
+  const { t } = useTranslation('terminal');
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [selectedSession, setSelectedSession] = useState<any>(null);
   const [isPlainShell, setIsPlainShell] = useState(true);
@@ -143,10 +119,10 @@ function HybridTerminalPane({ id, projects, isActive, onActivate }: HybridTermin
       : 'ring-1 ring-gray-700 hover:ring-gray-500';
 
   const label = selectedSession
-    ? (selectedSession.name || '会话')
+    ? (selectedSession.name || t('session'))
     : selectedProject
       ? (selectedProject.displayName || selectedProject.name)
-      : `Terminal ${id}`;
+      : t('terminalId', { id });
 
   return (
     <div
@@ -162,7 +138,7 @@ function HybridTerminalPane({ id, projects, isActive, onActivate }: HybridTermin
       {isDragOver && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-green-500/20 backdrop-blur-sm pointer-events-none">
           <div className="bg-gray-800 text-green-400 px-4 py-2 rounded-lg shadow-lg text-sm font-medium">
-            释放以在此终端打开会话
+            {t('dropToOpenSession')}
           </div>
         </div>
       )}
@@ -182,9 +158,9 @@ function HybridTerminalPane({ id, projects, isActive, onActivate }: HybridTermin
             type="button"
             onClick={(e) => { e.stopPropagation(); setDropdownOpen(!dropdownOpen); }}
             className="ml-2 px-1.5 py-0.5 rounded text-[10px] bg-gray-700 hover:bg-gray-600 text-gray-200"
-            title="选择项目"
+            title={t('selectProject')}
           >
-            {selectedProject ? '切换' : '选择项目'} ▾
+            {selectedProject ? t('switchProject') : t('selectProject')} ▾
           </button>
 
           {dropdownOpen && (
@@ -197,7 +173,7 @@ function HybridTerminalPane({ id, projects, isActive, onActivate }: HybridTermin
                   !selectedProject ? 'text-blue-300 font-medium' : 'text-gray-300'
                 }`}
               >
-                纯终端 (无项目)
+                {t('pureTerminal')}
               </button>
               <div className="border-t border-gray-700 my-1" />
               {projects.map((p) => (

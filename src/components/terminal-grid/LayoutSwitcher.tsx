@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import type { GridLayout } from './TerminalGrid';
 
 interface LayoutSwitcherProps {
@@ -41,6 +42,7 @@ const layouts: { id: GridLayout; label: string; icon: React.ReactNode }[] = [
 ];
 
 export default function LayoutSwitcher({ layout, onChange }: LayoutSwitcherProps) {
+  const { t } = useTranslation('terminal');
   return (
     <div className="flex items-center gap-1">
       {layouts.map((l) => {
@@ -49,7 +51,7 @@ export default function LayoutSwitcher({ layout, onChange }: LayoutSwitcherProps
           <button
             key={l.id}
             onClick={() => onChange(l.id)}
-            title={`${l.label} layout`}
+            title={t('layoutLabel', { label: l.label })}
             className={`p-1 rounded transition-colors ${
               isActive
                 ? 'bg-blue-600 text-white'

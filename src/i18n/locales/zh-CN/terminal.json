@@ -1,0 +1,13 @@
+{
+  "dropToOpenSession": "释放以在此终端打开会话",
+  "activatePane": "激活 {{label}}",
+  "session": "会话",
+  "terminalId": "终端 {{id}}",
+  "selectProject": "选择项目",
+  "switchProject": "切换",
+  "pureTerminal": "纯终端 (无项目)",
+  "terminalCount": "{{count}} 个终端",
+  "switchShortcut": "(Ctrl+1~{{count}} 切换)",
+  "hybridTerminalWindows": "混合终端 · {{count}} 窗口",
+  "layoutLabel": "{{label}} 布局"
+}

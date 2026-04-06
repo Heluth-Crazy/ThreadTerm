@@ -1,6 +1,8 @@
 import React, { useState, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import TerminalPane from './TerminalPane';
 import LayoutSwitcher from './LayoutSwitcher';
+import { getVisibleCount, getGridClass } from './utils/gridLayout';
 
 export type GridLayout = '1x1' | '1x2' | '2x2';
 
@@ -10,25 +12,10 @@ export interface TerminalGridProps {
   onNewSession?: (project: any) => void;
 }
 
-function getVisibleCount(layout: GridLayout): number {
-  switch (layout) {
-    case '1x1': return 1;
-    case '1x2': return 2;
-    case '2x2': return 4;
-  }
-}
-
-function getGridClass(layout: GridLayout): string {
-  switch (layout) {
-    case '1x1': return 'grid-cols-1 grid-rows-1';
-    case '1x2': return 'grid-cols-2 grid-rows-1';
-    case '2x2': return 'grid-cols-2 grid-rows-2';
-  }
-}
-
 const PANE_IDS = ['1', '2', '3', '4'];
 
 function TerminalGrid({ project, session }: TerminalGridProps) {
+  const { t } = useTranslation('terminal');
   const [layout, setLayout] = useState<GridLayout>('1x1');
   const [activePane, setActivePane] = useState<string>('1');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -61,8 +48,8 @@ function TerminalGrid({ project, session }: TerminalGridProps) {
     <div ref={containerRef} className="h-full w-full flex flex-col" onKeyDown={handleKeyDown}>
       <div className="flex-shrink-0 flex items-center justify-between px-3 py-1.5 bg-gray-800 border-b border-gray-700">
         <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400 font-medium">{visibleCount} 个终端</span>
-          {layout !== '1x1' && <span className="text-xs text-gray-500">(Ctrl+1~{visibleCount} 切换)</span>}
+          <span className="text-xs text-gray-400 font-medium">{t('terminalCount', { count: visibleCount })}</span>
+          {layout !== '1x1' && <span className="text-xs text-gray-500">{t('switchShortcut', { count: visibleCount })}</span>}
         </div>
         <LayoutSwitcher layout={layout} onChange={handleLayoutChange} />
       </div>
@@ -76,7 +63,7 @@ function TerminalGrid({ project, session }: TerminalGridProps) {
             session={id === '1' ? session : null}
             isActive={id === activePane}
             onActivate={handleActivate}
-            label={id === '1' && session ? (session.summary || session.name || '会话') : `终端 ${id}`}
+            label={id === '1' && session ? (session.summary || session.name || t('session')) : t('terminalId', { id })}
           />
         ))}
       </div>
