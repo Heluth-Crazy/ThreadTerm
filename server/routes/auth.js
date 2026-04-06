@@ -1,4 +1,5 @@
 import express from 'express';
+import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 
@@ -10,7 +11,7 @@ router.get('/status', async (req, res) => {
       isAuthenticated: true
     });
   } catch (error) {
-    console.error('Auth status error:', error);
+    logger.error('Auth status error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -27,7 +28,7 @@ router.post('/register', async (req, res) => {
       token: 'no-auth-required'
     });
   } catch (error) {
-    console.error('Registration error:', error);
+    logger.error('Registration error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -44,7 +45,7 @@ router.post('/login', async (req, res) => {
       token: 'no-auth-required'
     });
   } catch (error) {
-    console.error('Login error:', error);
+    logger.error('Login error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

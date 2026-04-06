@@ -29,6 +29,10 @@ const buildWebSocketUrl = (token: string | null) => {
   return `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
 };
 
+const MAX_PENDING_SEND_QUEUE_SIZE = 50;
+const PING_INTERVAL_MS = 30000;
+const MAX_RECONNECT_DELAY_MS = 30000;
+
 const useWebSocketProviderState = (): WebSocketContextType => {
   const wsRef = useRef<WebSocket | null>(null);
   const unmountedRef = useRef(false); // Track if component is unmounted
@@ -41,6 +45,9 @@ const useWebSocketProviderState = (): WebSocketContextType => {
   const normalMessageQueueRef = useRef<any[]>([]);
   const bufferedMessagesRef = useRef<Array<{ sequence: number; message: any }>>([]);
   const messageSequenceRef = useRef(0);
+  const retryCountRef = useRef(0);
+  const pendingQueueRef = useRef<string[]>([]);
+  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { token } = useAuth();
   const MAX_PRIORITY_QUEUE_SIZE = 2000;
   const MAX_NORMAL_QUEUE_SIZE = 500;
@@ -138,10 +145,16 @@ const useWebSocketProviderState = (): WebSocketContextType => {
         clearTimeout(messageFlushTimeoutRef.current);
         messageFlushTimeoutRef.current = null;
       }
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
       priorityMessageQueueRef.current = [];
       normalMessageQueueRef.current = [];
       bufferedMessagesRef.current = [];
+      pendingQueueRef.current = [];
       messageSequenceRef.current = 0;
+      retryCountRef.current = 0;
       if (wsRef.current) {
         // Use code 1000 (normal closure) for graceful exit
         wsRef.current.close(1000, 'Application quitting');
@@ -158,15 +171,22 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       unmountedRef.current = true;
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
       }
       if (messageFlushTimeoutRef.current) {
         clearTimeout(messageFlushTimeoutRef.current);
         messageFlushTimeoutRef.current = null;
       }
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
       priorityMessageQueueRef.current = [];
       normalMessageQueueRef.current = [];
       bufferedMessagesRef.current = [];
+      pendingQueueRef.current = [];
       messageSequenceRef.current = 0;
+      retryCountRef.current = 0;
       if (wsRef.current) {
         wsRef.current.close();
       }
@@ -184,11 +204,33 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       websocket.onopen = () => {
         setIsConnected(true);
         wsRef.current = websocket;
+        retryCountRef.current = 0;
+
+        // Flush pending send queue
+        const queue = pendingQueueRef.current;
+        pendingQueueRef.current = [];
+        for (const msg of queue) {
+          if (websocket.readyState === WebSocket.OPEN) {
+            websocket.send(msg);
+          }
+        }
+
+        // Start heartbeat ping interval
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+        }
+        pingIntervalRef.current = setInterval(() => {
+          if (websocket.readyState === WebSocket.OPEN) {
+            websocket.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, PING_INTERVAL_MS);
       };
 
       websocket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          // Silently consume pong responses from heartbeat
+          if (data.type === 'pong') return;
           enqueueIncomingMessage(data);
         } catch (error) {
           console.error('Error parsing WebSocket message:', error);
@@ -198,12 +240,20 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       websocket.onclose = () => {
         setIsConnected(false);
         wsRef.current = null;
+
+        // Clear heartbeat interval
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
+        }
         
-        // Attempt to reconnect after 3 seconds
+        // Exponential backoff reconnect: 1s → 2s → 4s → 8s → 16s → 30s cap
+        const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), MAX_RECONNECT_DELAY_MS);
+        retryCountRef.current++;
         reconnectTimeoutRef.current = setTimeout(() => {
-          if (unmountedRef.current) return; // Prevent reconnection if unmounted
+          if (unmountedRef.current) return;
           connect();
-        }, 3000);
+        }, delay);
       };
 
       websocket.onerror = (error) => {
@@ -217,11 +267,17 @@ const useWebSocketProviderState = (): WebSocketContextType => {
 
   const sendMessage = useCallback((message: any) => {
     const socket = wsRef.current;
+    const serialized = JSON.stringify(message);
     if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(message));
+      socket.send(serialized);
       return true;
     } else {
-      console.warn('WebSocket not connected');
+      // Queue message for delivery when connection is re-established
+      if (pendingQueueRef.current.length >= MAX_PENDING_SEND_QUEUE_SIZE) {
+        console.warn('[WebSocket] Pending send queue full, discarding oldest message');
+        pendingQueueRef.current.shift();
+      }
+      pendingQueueRef.current.push(serialized);
       return false;
     }
   }, []);

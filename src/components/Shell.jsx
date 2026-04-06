@@ -110,6 +110,8 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
   const terminal = useRef(null);
   const fitAddon = useRef(null);
   const ws = useRef(null);
+  const retryCountRef = useRef(0);
+  const shellReconnectTimeoutRef = useRef(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
@@ -189,6 +191,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
         setAuthUrl('');
         setAuthUrlCopyStatus('idle');
         setIsAuthPanelDismissed(false);
+        retryCountRef.current = 0;
 
         setTimeout(() => {
           if (fitAddon.current && terminal.current) {
@@ -281,6 +284,15 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
           terminal.current.clear();
           terminal.current.write('\x1b[2J\x1b[H');
         }
+
+        // Exponential backoff reconnect (skip if manually disconnected)
+        if (!manuallyDisconnected.current) {
+          const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
+          retryCountRef.current++;
+          shellReconnectTimeoutRef.current = setTimeout(() => {
+            connectWebSocket();
+          }, delay);
+        }
       };
 
       ws.current.onerror = (error) => {
@@ -302,6 +314,12 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
 
   const disconnectFromShell = useCallback(() => {
     manuallyDisconnected.current = true;
+
+    if (shellReconnectTimeoutRef.current) {
+      clearTimeout(shellReconnectTimeoutRef.current);
+      shellReconnectTimeoutRef.current = null;
+    }
+    retryCountRef.current = 0;
 
     if (ws.current) {
       ws.current.close();
@@ -339,6 +357,12 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
   const restartShell = () => {
     setIsRestarting(true);
     manuallyDisconnected.current = false;
+
+    if (shellReconnectTimeoutRef.current) {
+      clearTimeout(shellReconnectTimeoutRef.current);
+      shellReconnectTimeoutRef.current = null;
+    }
+    retryCountRef.current = 0;
 
     if (ws.current) {
       ws.current.close();
@@ -544,6 +568,12 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
 
     return () => {
       resizeObserver.disconnect();
+
+      if (shellReconnectTimeoutRef.current) {
+        clearTimeout(shellReconnectTimeoutRef.current);
+        shellReconnectTimeoutRef.current = null;
+      }
+      retryCountRef.current = 0;
 
       if (ws.current && (ws.current.readyState === WebSocket.OPEN || ws.current.readyState === WebSocket.CONNECTING)) {
         ws.current.close();

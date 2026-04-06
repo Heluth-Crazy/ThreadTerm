@@ -1,32 +1,7 @@
 import React, { useCallback, useState, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import Shell from '../Shell.jsx';
-
-const SESSION_DRAG_FORMATS = ['text/x-openwork-session', 'application/json'];
-
-const hasSessionDragData = (dataTransfer: DataTransfer): boolean => {
-  const types = Array.from(dataTransfer.types || []);
-  return SESSION_DRAG_FORMATS.some((format) => types.includes(format));
-};
-
-const parseSessionDragData = (dataTransfer: DataTransfer): any | null => {
-  for (const format of SESSION_DRAG_FORMATS) {
-    const raw = dataTransfer.getData(format);
-    if (!raw) {
-      continue;
-    }
-
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.sessionId === 'string') {
-        return parsed;
-      }
-    } catch {
-      // Ignore invalid payload and continue with other MIME types.
-    }
-  }
-
-  return null;
-};
+import { hasSessionDragData, parseSessionDragData } from './utils/dragDrop';
 
 export interface TerminalPaneProps {
   id: string;
@@ -39,6 +14,7 @@ export interface TerminalPaneProps {
 }
 
 function TerminalPane({ id, project, session, isActive, onActivate, label, onDropSession }: TerminalPaneProps) {
+  const { t } = useTranslation('terminal');
   const [localSession, setLocalSession] = useState(session || null);
   const [localProject, setLocalProject] = useState(project);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -157,7 +133,7 @@ function TerminalPane({ id, project, session, isActive, onActivate, label, onDro
       {isDragOver && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-green-500/20 backdrop-blur-sm pointer-events-none">
           <div className="bg-gray-800 text-green-400 px-4 py-2 rounded-lg shadow-lg text-sm font-medium">
-            释放以在此终端打开会话
+            {t('dropToOpenSession')}
           </div>
         </div>
       )}
@@ -171,11 +147,11 @@ function TerminalPane({ id, project, session, isActive, onActivate, label, onDro
         }`}
         onClick={handleClick}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleClick(); }}
-        aria-label={`激活 ${label || `终端 ${id}`}`}
+        aria-label={t('activatePane', { label: label || t('terminalId', { id }) })}
         aria-pressed={isActive}
       >
         <span className="truncate font-medium">
-          {localSession ? localSession.name || '会话' : (localProject?.displayName || localProject?.name || label || `终端 ${id}`)}
+          {localSession ? localSession.name || t('session') : (localProject?.displayName || localProject?.name || label || t('terminalId', { id }))}
         </span>
         <div className="flex items-center gap-1">
           {localSession && (

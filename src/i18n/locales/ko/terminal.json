@@ -1,0 +1,13 @@
+{
+  "dropToOpenSession": "Drop to open session in this terminal",
+  "activatePane": "Activate {{label}}",
+  "session": "Session",
+  "terminalId": "Terminal {{id}}",
+  "selectProject": "Select project",
+  "switchProject": "Switch",
+  "pureTerminal": "Pure terminal (no project)",
+  "terminalCount": "{{count}} terminals",
+  "switchShortcut": "(Ctrl+1~{{count}} to switch)",
+  "hybridTerminalWindows": "Hybrid Terminal · {{count}} windows",
+  "layoutLabel": "{{label}} layout"
+}
