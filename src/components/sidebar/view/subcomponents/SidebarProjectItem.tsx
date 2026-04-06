@@ -4,7 +4,7 @@ import type { TFunction } from 'i18next';
 import { formatTimeAgo } from '../../../../utils/dateUtils';
 import { cn } from '../../../../lib/utils';
 import type { Project, ProjectSession, SessionLaunchOptions, SessionProvider } from '../../../../types/app';
-import type { MCPServerStatus, SessionWithProvider } from '../../types/types';
+import type { SessionWithProvider } from '../../types/types';
 import {
   getProjectDisplayLabel,
   getProjectLastActivityMs,
@@ -28,8 +28,6 @@ type SidebarProjectItemProps = {
   currentTime: Date;
   editingSession: string | null;
   editingSessionName: string;
-  tasksEnabled: boolean;
-  mcpServerStatus: MCPServerStatus;
   worktreeCount: number;
   onEditingNameChange: (name: string) => void;
   onToggleProject: (projectName: string) => void;

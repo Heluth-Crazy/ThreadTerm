@@ -388,7 +388,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
       convertEol: true,
       scrollback: 10000,
       tabStopWidth: 4,
-      windowsMode: false,
+      windowsMode: (typeof window !== 'undefined' && (navigator.platform?.startsWith('Win') || window.electronAPI?.platform === 'win32')),
       macOptionIsMeta: true,
       macOptionClickForcesSelection: true,
       theme: {

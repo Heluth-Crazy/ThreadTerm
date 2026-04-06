@@ -31,7 +31,6 @@ type UseSidebarControllerArgs = {
   onSessionSelect: (session: ProjectSession) => void;
   onSessionDelete?: (projectName: string, sessionId: string, provider: SessionProvider) => void;
   onProjectDelete?: (projectName: string) => void;
-  setCurrentProject: (project: Project) => void;
   setSidebarVisible: (visible: boolean) => void;
   sidebarVisible: boolean;
 };
@@ -47,7 +46,6 @@ export function useSidebarController({
   onSessionSelect,
   onSessionDelete,
   onProjectDelete,
-  setCurrentProject,
   setSidebarVisible,
   sidebarVisible,
 }: UseSidebarControllerArgs) {
@@ -426,9 +424,8 @@ export function useSidebarController({
   const handleProjectSelect = useCallback(
     (project: Project) => {
       onProjectSelect(project);
-      setCurrentProject(project);
     },
-    [onProjectSelect, setCurrentProject],
+    [onProjectSelect],
   );
 
   const createBranchWorkspace = useCallback(
@@ -506,14 +503,13 @@ export function useSidebarController({
 
         if (data?.project) {
           onProjectSelect(data.project);
-          setCurrentProject(data.project);
         }
       } catch (error) {
         console.error('Error creating branch workspace:', error);
         alert(error instanceof Error ? error.message : t('messages.createBranchWorkspaceError', 'Error creating branch workspace'));
       }
     },
-    [onProjectSelect, onRefresh, setCurrentProject, t],
+    [onProjectSelect, onRefresh, t],
   );
 
   const refreshProjects = useCallback(async () => {

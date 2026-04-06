@@ -4,7 +4,7 @@ import path from 'path';
 import os from 'os';
 import { promises as fs } from 'fs';
 import crypto from 'crypto';
-import { userDb, apiKeysDb, githubTokensDb } from '../database/db.js';
+import { userDb, githubTokensDb } from '../database/db.js';
 import { addProjectManually } from '../projects.js';
 import { queryClaudeSDK } from '../claude-sdk.js';
 import { queryCodex } from '../openai-codex.js';
@@ -42,21 +42,8 @@ const validateExternalApiKey = (req, res, next) => {
     }
   }
 
-  // Self-hosted mode: Validate API key from header or query parameter
-  const apiKey = req.headers['x-api-key'] || req.query.apiKey;
-
-  if (!apiKey) {
-    return res.status(401).json({ error: 'API key required' });
-  }
-
-  const user = apiKeysDb.validateApiKey(apiKey);
-
-  if (!user) {
-    return res.status(401).json({ error: 'Invalid or inactive API key' });
-  }
-
-  req.user = user;
-  next();
+  // Self-hosted mode: API key authentication is no longer available
+  return res.status(401).json({ error: 'API key authentication is not configured' });
 };
 
 /**

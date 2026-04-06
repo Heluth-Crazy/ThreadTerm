@@ -51,10 +51,3 @@ export type SessionViewModel = {
   sessionTime: string;
   messageCount: number;
 };
-
-export type MCPServerStatus = {
-  hasMCPServer?: boolean;
-  isConfigured?: boolean;
-} | null;
-
-

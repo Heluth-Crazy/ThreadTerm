@@ -414,6 +414,20 @@ const ANSI_ESCAPE_SEQUENCE_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x0
 const TRAILING_URL_PUNCTUATION_REGEX = /[)\]}>.,;:!?]+$/;
 const IS_WINDOWS = os.platform() === 'win32';
 
+// Periodic PTY session cleanup (runs every 10 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [sessionId, session] of ptySessionsMap.entries()) {
+    if (session.lastDataAt && (now - session.lastDataAt) > PTY_SESSION_TIMEOUT) {
+      console.log(`[PTY GC] Cleaning up stale session: ${sessionId}`);
+      try {
+        session.pty?.kill();
+      } catch (e) { /* ignore */ }
+      ptySessionsMap.delete(sessionId);
+    }
+  }
+}, 10 * 60 * 1000);
+
 function isPtyProcessAlive(ptyProcess) {
     if (!ptyProcess || typeof ptyProcess.pid !== 'number') {
         return false;
@@ -743,7 +757,24 @@ const wss = new WebSocketServer({
 // Make WebSocket server available to routes
 app.locals.wss = wss;
 
-app.use(cors());
+const allowedOrigins = [
+  /^http:\/\/localhost(:\d+)?$/,
+  /^app:\/\//,
+  /^file:\/\//,
+];
+if (process.env.CORS_ORIGIN) {
+  process.env.CORS_ORIGIN.split(',').forEach(o => allowedOrigins.push(o.trim()));
+}
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true); // same-origin / non-browser
+    const allowed = allowedOrigins.some(p =>
+      typeof p === 'string' ? p === origin : p.test(origin)
+    );
+    callback(allowed ? null : new Error('CORS: origin not allowed'), allowed);
+  },
+  credentials: true,
+}));
 app.use(express.json({
   limit: '50mb',
   type: (req) => {
