@@ -77,6 +77,11 @@ export default function ChatPanel(props: ChatPanelProps) {
         mentionActiveIndex={chat.mentionActiveIndex}
         onSetMentionActiveIndex={chat.setMentionActiveIndex}
         onSelectMention={chat.handleSelectMention}
+        isCmdOpen={chat.isCmdOpen}
+        cmdQuery={chat.cmdQuery}
+        cmdActiveIndex={chat.cmdActiveIndex}
+        cmdFilteredCount={chat.cmdFilteredCommands.length}
+        onSelectCommand={chat.handleSelectCommand}
         onSend={() => void chat.sendChatMessage()}
         onAbort={chat.abortCurrentRequest}
         providerTheme={chat.providerTheme}

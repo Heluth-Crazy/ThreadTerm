@@ -241,5 +241,26 @@
     "needs_attention_permission": "권한 필요",
     "needs_attention_aborted": "중단됨",
     "idle": ""
+  },
+  "sessions": {
+    "noSessions": "세션이 없습니다",
+    "startSession": "세션 시작",
+    "sortByTime": "시간",
+    "sortByStatus": "상태",
+    "sessions": "세션"
+  },
+  "shortcuts": {
+    "title": "키보드 단축키",
+    "navigation": "탐색",
+    "session": "세션",
+    "view": "보기",
+    "cmdPalette": "명령 팔레트 열기",
+    "fullscreen": "전체 화면 전환",
+    "prevSession": "이전 세션",
+    "nextSession": "다음 세션",
+    "newSession": "새 세션",
+    "cycleView": "채팅/분할/터미널 전환",
+    "showHelp": "이 도움말 표시",
+    "jumpToSession": "위치별 세션 이동"
   }
 }

@@ -245,5 +245,26 @@
     "needs_attention_permission": "需要授权",
     "needs_attention_aborted": "已中止",
     "idle": ""
+  },
+  "sessions": {
+    "noSessions": "暂无会话",
+    "startSession": "开始会话",
+    "sortByTime": "时间",
+    "sortByStatus": "状态",
+    "sessions": "会话"
+  },
+  "shortcuts": {
+    "title": "键盘快捷键",
+    "navigation": "导航",
+    "session": "会话",
+    "view": "视图",
+    "cmdPalette": "打开命令面板",
+    "fullscreen": "切换全屏",
+    "prevSession": "上一个会话",
+    "nextSession": "下一个会话",
+    "newSession": "新建会话",
+    "cycleView": "切换聊天/分屏/终端",
+    "showHelp": "显示此帮助",
+    "jumpToSession": "按位置跳转到会话"
   }
 }

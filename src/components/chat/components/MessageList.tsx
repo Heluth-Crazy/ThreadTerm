@@ -65,9 +65,9 @@ export default function MessageList({
 
     return (
       <div className="px-3 pt-2.5">
-        <div className={`w-full flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+        <div className={`w-full min-w-0 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
           <div
-            className={`max-w-[86%] rounded-xl border px-3 py-2 ${
+            className={`max-w-[86%] overflow-hidden rounded-xl border px-3 py-2 ${
               isUser
                 ? messageTheme.userBubble
                 : isError

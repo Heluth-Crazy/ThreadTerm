@@ -230,5 +230,14 @@
     "toolInput": "Tool input",
     "showMore": "Show more",
     "showLess": "Show less"
+  },
+  "commands": {
+    "clear": "Clear conversation history",
+    "compact": "Compact & summarize conversation",
+    "help": "Show CLI help",
+    "status": "Show current status",
+    "exit": "End this session",
+    "title": "Commands",
+    "hint": "Type / for commands"
   }
 }

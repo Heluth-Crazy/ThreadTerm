@@ -241,5 +241,26 @@
     "needs_attention_permission": "権限が必要",
     "needs_attention_aborted": "中断",
     "idle": ""
+  },
+  "sessions": {
+    "noSessions": "セッションがありません",
+    "startSession": "セッション開始",
+    "sortByTime": "時間",
+    "sortByStatus": "ステータス",
+    "sessions": "セッション"
+  },
+  "shortcuts": {
+    "title": "キーボードショートカット",
+    "navigation": "ナビゲーション",
+    "session": "セッション",
+    "view": "表示",
+    "cmdPalette": "コマンドパレットを開く",
+    "fullscreen": "フルスクリーン切替",
+    "prevSession": "前のセッション",
+    "nextSession": "次のセッション",
+    "newSession": "新しいセッション",
+    "cycleView": "チャット/分割/ターミナル切替",
+    "showHelp": "このヘルプを表示",
+    "jumpToSession": "位置でセッションに移動"
   }
 }
