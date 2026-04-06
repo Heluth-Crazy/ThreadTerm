@@ -223,6 +223,16 @@
       "closeSidebar": "Close sidebar"
     }
   },
+  "overview": {
+    "title": "Mission Control",
+    "newSession": "New Session",
+    "noSessions": "No active sessions",
+    "noSessionsHint": "Create a project and start your first AI agent session",
+    "backToOverview": "Overview",
+    "sessionCount": "{{count}} sessions",
+    "attentionNeeded": "Needs attention",
+    "processing": "Processing"
+  },
   "sessionStatus": {
     "processing": "In Progress",
     "completed": "Completed",

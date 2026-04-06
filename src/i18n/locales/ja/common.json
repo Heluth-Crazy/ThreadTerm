@@ -223,6 +223,16 @@
       "closeSidebar": "サイドバーを閉じる"
     }
   },
+  "overview": {
+    "title": "ミッションコントロール",
+    "newSession": "新しいセッション",
+    "noSessions": "アクティブなセッションはありません",
+    "noSessionsHint": "プロジェクトを作成して最初のAIエージェントセッションを開始しましょう",
+    "backToOverview": "概要",
+    "sessionCount": "{{count}} セッション",
+    "attentionNeeded": "要対応",
+    "processing": "処理中"
+  },
   "sessionStatus": {
     "processing": "処理中",
     "completed": "完了",

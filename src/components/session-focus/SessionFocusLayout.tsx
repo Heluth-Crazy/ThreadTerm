@@ -1,0 +1,258 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useSessionStatusStore } from '../../stores/sessionStatusStore';
+import ChatPanel from '../chat/ChatPanel';
+import ErrorBoundary from '../ErrorBoundary';
+import FileTree from '../FileTree';
+import GitPanel from '../GitPanel';
+import { TerminalGrid } from '../terminal-grid';
+import type { SessionLifecycleHandler } from '../main-content/types/types';
+import type { AppTab, Project, ProjectSession } from '../../types/app';
+
+const AnyGitPanel = GitPanel as any;
+
+export interface SessionFocusLayoutProps {
+  projects: Project[];
+  selectedProject: Project;
+  selectedSession: ProjectSession | null;
+  activeTab: AppTab;
+  setActiveTab: (tab: AppTab) => void;
+  sendMessage: (message: unknown) => boolean;
+  latestMessage: unknown;
+  messageSequence: number;
+  getBufferedMessagesSince: (seq: number) => Array<{ sequence: number; message: unknown }>;
+  externalMessageUpdate: number;
+  onSessionActive: SessionLifecycleHandler;
+  onSessionInactive: SessionLifecycleHandler;
+  onSessionProcessing: SessionLifecycleHandler;
+  onSessionNotProcessing: SessionLifecycleHandler;
+  processingSessions: Set<string>;
+  onReplaceTemporarySession: SessionLifecycleHandler;
+  onNavigateToSession: (targetSessionId: string) => void;
+  onBackToOverview: () => void;
+  onShowSettings: () => void;
+  ws: WebSocket | null;
+  isLoading: boolean;
+}
+
+type OverlayPanel = null | 'files' | 'git';
+
+function useSplitPanel(initialPercent = 55) {
+  const [splitPercent, setSplitPercent] = useState(initialPercent);
+  const isDragging = useRef(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDragging.current = true;
+
+    const onMove = (ev: MouseEvent) => {
+      if (!isDragging.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const pct = Math.min(80, Math.max(20, (x / rect.width) * 100));
+      setSplitPercent(pct);
+    };
+
+    const onUp = () => {
+      isDragging.current = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, []);
+
+  return { splitPercent, containerRef, handleMouseDown };
+}
+
+export default function SessionFocusLayout({
+  selectedProject,
+  selectedSession,
+  sendMessage,
+  latestMessage,
+  messageSequence,
+  getBufferedMessagesSince,
+  externalMessageUpdate,
+  onSessionActive,
+  onSessionInactive,
+  onSessionProcessing,
+  onSessionNotProcessing,
+  onReplaceTemporarySession,
+  onNavigateToSession,
+  onBackToOverview,
+  onShowSettings,
+  isLoading,
+}: SessionFocusLayoutProps) {
+  const { t } = useTranslation('common');
+  const [overlayPanel, setOverlayPanel] = useState<OverlayPanel>(null);
+  const { splitPercent, containerRef, handleMouseDown } = useSplitPanel(55);
+  const getStatus = useSessionStatusStore((s) => s.getStatus);
+
+  const provider = selectedSession?.__provider ?? 'claude';
+  const statusEntry = selectedSession ? getStatus(selectedSession.id) : null;
+  const sessionTitle = selectedSession?.title || selectedSession?.name || selectedSession?.id?.slice(0, 8) || '';
+
+  // Escape closes overlay
+  useEffect(() => {
+    if (!overlayPanel) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOverlayPanel(null);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [overlayPanel]);
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <div className="h-6 w-6 rounded-full border-2 border-primary border-t-transparent" style={{ animation: 'spin 0.8s linear infinite' }} />
+      </div>
+    );
+  }
+
+  if (!selectedSession) {
+    return (
+      <div className="flex flex-1 items-center justify-center px-6">
+        <div className="text-center">
+          <p className="text-sm text-muted-foreground">Select a session from the sidebar to begin</p>
+          <button
+            type="button"
+            onClick={onBackToOverview}
+            className="mt-3 text-xs text-primary hover:underline"
+          >
+            ← {t('overview.backToOverview', 'Overview')}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Focus header */}
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border/40 bg-card/60 px-3">
+        <button
+          type="button"
+          onClick={onBackToOverview}
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          ← {t('overview.backToOverview', 'Overview')}
+        </button>
+        <div className="h-3.5 w-px bg-border/60" />
+        <span
+          className={`rounded-md px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white ${
+            provider === 'codex' ? 'bg-blue-600' : 'bg-violet-600'
+          }`}
+        >
+          {provider}
+        </span>
+        <span className="truncate text-xs font-medium text-foreground">{sessionTitle}</span>
+        <span className="text-xs text-muted-foreground/60">• {selectedProject.displayName || selectedProject.name}</span>
+        {statusEntry ? (
+          <span className={`inline-block h-1.5 w-1.5 rounded-full ${
+            statusEntry.status === 'needs_attention' ? 'bg-red-500 animate-pulse' :
+            statusEntry.status === 'processing' ? 'bg-blue-500' :
+            statusEntry.status === 'completed' ? 'bg-emerald-500' : 'bg-muted-foreground/40'
+          }`} />
+        ) : null}
+        <div className="flex-1" />
+
+        {/* Action buttons */}
+        <button
+          type="button"
+          onClick={() => setOverlayPanel(overlayPanel === 'files' ? null : 'files')}
+          className={`rounded-md px-2 py-1 text-xs transition-colors ${overlayPanel === 'files' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}
+          title="Files"
+        >
+          📁
+        </button>
+        <button
+          type="button"
+          onClick={() => setOverlayPanel(overlayPanel === 'git' ? null : 'git')}
+          className={`rounded-md px-2 py-1 text-xs transition-colors ${overlayPanel === 'git' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}
+          title="Git"
+        >
+          ⎇
+        </button>
+        <button
+          type="button"
+          onClick={onShowSettings}
+          className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors"
+          title="Settings"
+        >
+          ⚙
+        </button>
+      </div>
+
+      {/* Split content */}
+      <div ref={containerRef} className="relative flex min-h-0 flex-1 overflow-hidden">
+        {/* Chat panel */}
+        <div className="min-w-0 overflow-hidden border-r border-border/40" style={{ width: `${splitPercent}%` }}>
+          <ErrorBoundary showDetails>
+            <ChatPanel
+              selectedProject={selectedProject}
+              selectedSession={selectedSession}
+              sendMessage={sendMessage}
+              latestMessage={latestMessage}
+              messageSequence={messageSequence}
+              getBufferedMessagesSince={getBufferedMessagesSince}
+              externalMessageUpdate={externalMessageUpdate}
+              onSessionActive={onSessionActive}
+              onSessionInactive={onSessionInactive}
+              onSessionProcessing={onSessionProcessing}
+              onSessionNotProcessing={onSessionNotProcessing}
+              onReplaceTemporarySession={onReplaceTemporarySession}
+              onNavigateToSession={onNavigateToSession}
+            />
+          </ErrorBoundary>
+        </div>
+
+        {/* Draggable divider */}
+        <div
+          className="relative z-10 w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-primary/20 active:bg-primary/30 transition-colors"
+          onMouseDown={handleMouseDown}
+        >
+          <div className="absolute inset-y-0 -left-1 -right-1" />
+        </div>
+
+        {/* Terminal panel */}
+        <div className="min-w-0 flex-1 overflow-hidden">
+          <ErrorBoundary showDetails>
+            <TerminalGrid project={selectedProject} session={selectedSession} />
+          </ErrorBoundary>
+        </div>
+
+        {/* Slide-over overlay for Files / Git */}
+        {overlayPanel ? (
+          <div className="absolute inset-y-0 right-0 z-20 flex w-80 flex-col border-l border-border bg-background shadow-xl">
+            <div className="flex h-9 shrink-0 items-center justify-between border-b border-border/60 px-3">
+              <span className="text-xs font-medium text-foreground">
+                {overlayPanel === 'files' ? 'Files' : 'Source Control'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setOverlayPanel(null)}
+                className="rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {overlayPanel === 'files' ? (
+                <FileTree selectedProject={selectedProject} onFileOpen={() => {}} />
+              ) : (
+                <AnyGitPanel selectedProject={selectedProject} onFileOpen={() => {}} />
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
