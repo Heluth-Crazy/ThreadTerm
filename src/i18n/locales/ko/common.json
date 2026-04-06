@@ -223,6 +223,16 @@
       "closeSidebar": "사이드바 닫기"
     }
   },
+  "overview": {
+    "title": "미션 컨트롤",
+    "newSession": "새 세션",
+    "noSessions": "활성 세션 없음",
+    "noSessionsHint": "프로젝트를 만들고 첫 번째 AI 에이전트 세션을 시작하세요",
+    "backToOverview": "개요",
+    "sessionCount": "{{count}}개 세션",
+    "attentionNeeded": "주의 필요",
+    "processing": "처리 중"
+  },
   "sessionStatus": {
     "processing": "진행 중",
     "completed": "완료",
