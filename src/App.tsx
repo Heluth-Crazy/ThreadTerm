@@ -5,6 +5,12 @@ import { AuthProvider } from './contexts/AuthContext';
 import { WebSocketProvider } from './contexts/WebSocketContext';
 import AppContent from './components/app/AppContent';
 import i18n from './i18n/config.js';
+import { useSessionStatusTracker } from './hooks/useSessionStatusTracker';
+
+function AppInitializer() {
+  useSessionStatusTracker();
+  return null;
+}
 
 export default function App() {
   return (
@@ -12,6 +18,7 @@ export default function App() {
       <ThemeProvider>
         <AuthProvider>
           <WebSocketProvider>
+            <AppInitializer />
             <Router basename={window.__ROUTER_BASENAME__ || ''}>
               <Routes>
                 <Route path="/" element={<AppContent />} />

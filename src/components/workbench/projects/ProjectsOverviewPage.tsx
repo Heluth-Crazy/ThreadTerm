@@ -15,6 +15,7 @@ import type { Project, ProjectSession, SessionProvider } from '../../../types/ap
 import { cn } from '../../../lib/utils';
 import { loadStarredProjects } from '../../sidebar/utils/utils';
 import { Badge } from '../../ui/badge';
+import { SessionStatusBadge } from '../../shared/SessionStatusBadge';
 
 type SessionRecord = {
   session: ProjectSession;
@@ -204,6 +205,7 @@ function RecentSessionRow({
               <span className="truncate">{getProjectLabel(item.project)}</span>
               <span className="text-muted-foreground/50">/</span>
               <ProviderBadge provider={item.provider} />
+              <SessionStatusBadge sessionId={item.session.id} />
             </div>
           </div>
           <div className="flex flex-shrink-0 items-center gap-1 pl-2 text-[11px] text-muted-foreground">

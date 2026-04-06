@@ -51,3 +51,5 @@ export type SessionViewModel = {
   sessionTime: string;
   messageCount: number;
 };
+
+export type SidebarView = 'projects' | 'sessions';

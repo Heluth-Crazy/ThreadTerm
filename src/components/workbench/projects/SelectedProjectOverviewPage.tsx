@@ -29,6 +29,7 @@ import {
   type ProjectOverviewSessionRecord,
 } from './projectOverviewModels';
 import { useProjectOverviewState } from './useProjectOverviewState';
+import { SessionStatusBadge } from '../../shared/SessionStatusBadge';
 
 type SelectedProjectOverviewPageProps = {
   projects: Project[];
@@ -128,6 +129,7 @@ function SessionRow({
             <div className="truncate text-[13px] font-medium leading-5 text-foreground">{record.label}</div>
             <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] leading-4 text-muted-foreground">
               <ProviderBadge provider={record.provider} />
+              <SessionStatusBadge sessionId={record.session.id} />
               <span>{timeLabel}</span>
             </div>
           </div>

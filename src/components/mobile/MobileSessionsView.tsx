@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { Project, ProjectSession, SessionProvider } from '../../types/app';
 import { formatTimeAgo } from '../../utils/dateUtils';
 import { cn } from '../../lib/utils';
+import { SessionStatusBadge } from '../shared/SessionStatusBadge';
 
 type SessionRecord = {
   id: string;
@@ -182,6 +183,7 @@ export default function MobileSessionsView({
                 <div className="truncate text-sm font-medium">{item.label}</div>
                 <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
                   <span>{providerLabel}</span>
+                  <SessionStatusBadge sessionId={item.session.id} />
                   <span className="text-muted-foreground/50">/</span>
                   <span>
                     {item.timestampMs

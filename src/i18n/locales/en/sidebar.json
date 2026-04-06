@@ -362,6 +362,8 @@
   "version": {
     "updateAvailable": "Update available"
   },
+  "viewProjects": "Projects",
+  "viewSessions": "Sessions",
   "deleteConfirmation": {
     "deleteProject": "Delete Project",
     "deleteSession": "Delete Session",
