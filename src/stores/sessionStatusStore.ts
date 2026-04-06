@@ -16,8 +16,16 @@ export interface SessionStatusEntry {
   provider?: 'claude' | 'codex';
 }
 
+export interface PendingPermissionRequest {
+  requestId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  sessionId: string;
+}
+
 interface SessionStatusState {
   statuses: Record<string, SessionStatusEntry>;
+  pendingPermissions: Record<string, PendingPermissionRequest>;
   setProcessing: (sessionId: string, provider?: 'claude' | 'codex') => void;
   setCompleted: (sessionId: string) => void;
   setNeedsAttention: (sessionId: string, reason: AttentionReason) => void;
@@ -27,6 +35,8 @@ interface SessionStatusState {
   getStatus: (sessionId: string) => SessionStatusEntry;
   getProcessingSessions: () => string[];
   getAttentionSessions: () => string[];
+  setPendingPermission: (sessionId: string, req: PendingPermissionRequest) => void;
+  clearPendingPermission: (sessionId: string) => void;
 }
 
 const DEFAULT_ENTRY: SessionStatusEntry = { status: 'idle', updatedAt: 0 };
@@ -36,6 +46,7 @@ export const useSessionStatusStore = create<SessionStatusState>()(
   persist(
     (set, get) => ({
       statuses: {},
+      pendingPermissions: {},
       setProcessing: (sessionId, provider) =>
         set((state) => ({
           statuses: {
@@ -97,6 +108,7 @@ export const useSessionStatusStore = create<SessionStatusState>()(
         set((state) => {
           const now = Date.now();
           const pruned: Record<string, SessionStatusEntry> = {};
+          const prunedPermissions: Record<string, PendingPermissionRequest> = {};
           for (const [id, entry] of Object.entries(state.statuses)) {
             if (
               entry.status === 'processing' ||
@@ -104,9 +116,12 @@ export const useSessionStatusStore = create<SessionStatusState>()(
               now - entry.updatedAt < maxAgeMs
             ) {
               pruned[id] = entry;
+              if (state.pendingPermissions[id]) {
+                prunedPermissions[id] = state.pendingPermissions[id];
+              }
             }
           }
-          return { statuses: pruned };
+          return { statuses: pruned, pendingPermissions: prunedPermissions };
         }),
       getStatus: (sessionId) => get().statuses[sessionId] ?? DEFAULT_ENTRY,
       getProcessingSessions: () =>
@@ -117,6 +132,15 @@ export const useSessionStatusStore = create<SessionStatusState>()(
         Object.entries(get().statuses)
           .filter(([, e]) => e.status === 'needs_attention')
           .map(([id]) => id),
+      setPendingPermission: (sessionId, req) =>
+        set((state) => ({
+          pendingPermissions: { ...state.pendingPermissions, [sessionId]: req },
+        })),
+      clearPendingPermission: (sessionId) =>
+        set((state) => {
+          const { [sessionId]: _, ...rest } = state.pendingPermissions;
+          return { pendingPermissions: rest };
+        }),
     }),
     {
       name: 'openwork-session-status',

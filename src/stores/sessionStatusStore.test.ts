@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { useSessionStatusStore } from './sessionStatusStore';
 
 beforeEach(() => {
-  useSessionStatusStore.setState({ statuses: {} });
+  useSessionStatusStore.setState({ statuses: {}, pendingPermissions: {} });
 });
 
 // ─── Group A: State Transitions ──────────────────────────────────────────────
@@ -170,5 +170,51 @@ describe('sessionStatusStore — selectors & persistence', () => {
   it('F1: persist storage key is openwork-session-status', () => {
     const opts = useSessionStatusStore.persist.getOptions();
     expect(opts.name).toBe('openwork-session-status');
+  });
+});
+
+// ─── Group G: Pending Permissions ────────────────────────────────────────────
+
+describe('sessionStatusStore — pendingPermissions', () => {
+  it('G1: setPendingPermission stores the request', () => {
+    const store = useSessionStatusStore.getState();
+    const req = { requestId: 'r1', toolName: 'Bash', input: { command: 'ls' }, sessionId: 's1' };
+    store.setPendingPermission('s1', req);
+    expect(useSessionStatusStore.getState().pendingPermissions['s1']).toEqual(req);
+  });
+
+  it('G2: clearPendingPermission removes it', () => {
+    const store = useSessionStatusStore.getState();
+    store.setPendingPermission('s1', { requestId: 'r1', toolName: 'Bash', input: {}, sessionId: 's1' });
+    store.clearPendingPermission('s1');
+    expect(useSessionStatusStore.getState().pendingPermissions['s1']).toBeUndefined();
+  });
+
+  it('G3: pruneStale removes pendingPermissions for pruned sessions', () => {
+    const oldTs = Date.now() - 25 * 3600 * 1000;
+    useSessionStatusStore.setState({
+      statuses: {
+        completed1: { status: 'completed', updatedAt: oldTs },
+        processing1: { status: 'processing', updatedAt: oldTs, provider: 'claude' },
+      },
+      pendingPermissions: {
+        completed1: { requestId: 'r1', toolName: 'Bash', input: {}, sessionId: 'completed1' },
+        processing1: { requestId: 'r2', toolName: 'Bash', input: {}, sessionId: 'processing1' },
+      },
+    });
+    useSessionStatusStore.getState().pruneStale();
+
+    const state = useSessionStatusStore.getState();
+    expect(state.pendingPermissions['completed1']).toBeUndefined();
+    expect(state.pendingPermissions['processing1']).toBeDefined();
+  });
+
+  it('G4: partialize does not include pendingPermissions', () => {
+    const opts = useSessionStatusStore.persist.getOptions();
+    const partialize = opts.partialize;
+    if (partialize) {
+      const result = partialize(useSessionStatusStore.getState());
+      expect(result).not.toHaveProperty('pendingPermissions');
+    }
   });
 });

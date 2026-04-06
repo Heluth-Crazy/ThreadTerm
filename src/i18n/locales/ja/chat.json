@@ -201,5 +201,22 @@
     "runCommand": "{{projectName}}で{{command}}を実行",
     "startCli": "{{projectName}}でClaude CLIを起動しています",
     "defaultCommand": "コマンド"
+  },
+  "permission": {
+    "requestPending": "Claudeが{{tool}}を実行しようとしています",
+    "askQuestion": "Claudeが質問しています",
+    "toolConfirm": "Claudeが実行しようとしているツール",
+    "planMode": "Claudeがプランを実行しようとしています",
+    "planModeHint": "Claudeは計画を完了し、実行を開始しようとしています",
+    "allow": "許可",
+    "deny": "拒否",
+    "approve": "承認",
+    "cancel": "キャンセル",
+    "submit": "送信",
+    "freeformPlaceholder": "回答を入力してください...",
+    "multiSelectHint": "スペースで選択 · Enterで確定",
+    "toolInput": "ツール入力",
+    "showMore": "もっと見る",
+    "showLess": "閉じる"
   }
 }

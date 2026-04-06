@@ -19,7 +19,7 @@ vi.mock('../contexts/WebSocketContext', () => ({
 
 describe('useSessionStatusTracker — WS message mapping', () => {
   beforeEach(() => {
-    useSessionStatusStore.setState({ statuses: {} });
+    useSessionStatusStore.setState({ statuses: {}, pendingPermissions: {} });
     mockLatestMessage = null;
     mockMessageSequence = 0;
   });
@@ -84,6 +84,46 @@ describe('useSessionStatusTracker — WS message mapping', () => {
     const entry = useSessionStatusStore.getState().getStatus('s1');
     expect(entry.status).toBe('needs_attention');
     expect(entry.attentionReason).toBe('permission');
+  });
+
+  it('C6b: claude-permission-request → stores pendingPermission', async () => {
+    mockLatestMessage = {
+      type: 'claude-permission-request',
+      sessionId: 's1',
+      requestId: 'req-1',
+      toolName: 'Bash',
+      input: { command: 'ls' },
+    };
+    mockMessageSequence = 1;
+    await importAndRender();
+
+    const pending = useSessionStatusStore.getState().pendingPermissions['s1'];
+    expect(pending).toBeDefined();
+    expect(pending.requestId).toBe('req-1');
+    expect(pending.toolName).toBe('Bash');
+    expect(pending.input).toEqual({ command: 'ls' });
+  });
+
+  it('C6c: claude-complete clears pendingPermission', async () => {
+    useSessionStatusStore.getState().setPendingPermission('s1', {
+      requestId: 'r1', toolName: 'Bash', input: {}, sessionId: 's1',
+    });
+    mockLatestMessage = { type: 'claude-complete', sessionId: 's1' };
+    mockMessageSequence = 1;
+    await importAndRender();
+
+    expect(useSessionStatusStore.getState().pendingPermissions['s1']).toBeUndefined();
+  });
+
+  it('C6d: claude-permission-cancelled clears pendingPermission', async () => {
+    useSessionStatusStore.getState().setPendingPermission('s1', {
+      requestId: 'r1', toolName: 'Bash', input: {}, sessionId: 's1',
+    });
+    mockLatestMessage = { type: 'claude-permission-cancelled', sessionId: 's1' };
+    mockMessageSequence = 1;
+    await importAndRender();
+
+    expect(useSessionStatusStore.getState().pendingPermissions['s1']).toBeUndefined();
   });
 
   it('C7: session-aborted → needs_attention(aborted)', async () => {

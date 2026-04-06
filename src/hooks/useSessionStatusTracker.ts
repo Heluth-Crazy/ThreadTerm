@@ -33,17 +33,29 @@ export function useSessionStatusTracker(): void {
         break;
       case 'claude-complete':
       case 'codex-complete':
+        store.clearPendingPermission(sessionId);
         store.setCompleted(sessionId);
         break;
       case 'claude-error':
       case 'codex-error':
       case 'error':
+        store.clearPendingPermission(sessionId);
         store.setNeedsAttention(sessionId, 'error' as AttentionReason);
         break;
       case 'claude-permission-request':
         store.setNeedsAttention(sessionId, 'permission' as AttentionReason);
+        store.setPendingPermission(sessionId, {
+          requestId: typeof msg.requestId === 'string' ? msg.requestId : '',
+          toolName: typeof msg.toolName === 'string' ? msg.toolName : '',
+          input: (typeof msg.input === 'object' && msg.input !== null ? msg.input : {}) as Record<string, unknown>,
+          sessionId,
+        });
+        break;
+      case 'claude-permission-cancelled':
+        store.clearPendingPermission(sessionId);
         break;
       case 'session-aborted':
+        store.clearPendingPermission(sessionId);
         store.setNeedsAttention(sessionId, 'aborted' as AttentionReason);
         break;
     }
