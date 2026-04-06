@@ -336,6 +336,12 @@
     background-color: rgba(156, 163, 175, 0.7);
   }
   
+  /* Standard scrollbar — all browsers that support scrollbar-width (Firefox, Edge, Chrome 121+) */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+
   /* Global scrollbar styles for main content areas */
   .dark::-webkit-scrollbar {
     width: 8px;

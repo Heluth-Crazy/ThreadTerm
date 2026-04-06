@@ -38,6 +38,35 @@ describe('SessionStatusBadge — UI rendering', () => {
     expect(badge!.textContent).toContain('sessionStatus.processing');
   });
 
+  it('D1b: compact processing shows text label', () => {
+    useSessionStatusStore.setState({
+      statuses: {
+        s1: { status: 'processing', updatedAt: Date.now(), provider: 'claude' },
+      },
+    });
+
+    const { container } = render(<SessionStatusBadge sessionId="s1" compact />);
+    const badge = container.querySelector('span');
+    expect(badge).toBeTruthy();
+    expect(badge!.className).toContain('text-blue-400');
+    expect(badge!.textContent).toContain('sessionStatus.processing');
+  });
+
+  it('D1c: compact needs_attention shows text and pulses', () => {
+    useSessionStatusStore.setState({
+      statuses: {
+        s1: { status: 'needs_attention', attentionReason: 'error', updatedAt: Date.now() },
+      },
+    });
+
+    const { container } = render(<SessionStatusBadge sessionId="s1" compact />);
+    const badge = container.querySelector('span');
+    expect(badge).toBeTruthy();
+    expect(badge!.className).toContain('text-red-400');
+    expect(badge!.className).toContain('animate-pulse');
+    expect(badge!.textContent).toContain('sessionStatus.needs_attention');
+  });
+
   it('D2: needs_attention(error) shows red element', () => {
     useSessionStatusStore.setState({
       statuses: {

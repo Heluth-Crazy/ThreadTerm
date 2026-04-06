@@ -38,7 +38,11 @@ function isExecutableFile(filePath) {
   try {
     const stats = fsSync.statSync(filePath);
     if (!stats.isFile()) return false;
-    if (process.platform === 'win32') return true;
+    if (process.platform === 'win32') {
+      // Windows: check executable extensions instead of Unix permission bits
+      const ext = path.extname(filePath).toLowerCase();
+      return ['.exe', '.cmd', '.bat', '.com', '.ps1'].includes(ext);
+    }
     fsSync.accessSync(filePath, fsSync.constants.X_OK);
     return true;
   } catch {

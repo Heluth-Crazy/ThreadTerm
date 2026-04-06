@@ -17,6 +17,46 @@ export function SessionStatusBadge({ sessionId, className, compact = false }: Se
 
   const { status, attentionReason } = entry;
 
+  if (compact) {
+    if (status === 'processing') {
+      return (
+        <span className={cn(
+          'inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-medium leading-none',
+          'bg-blue-500/15 text-blue-400 border border-blue-500/20',
+          className
+        )}>
+          <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />
+          {t('sessionStatus.processing')}
+        </span>
+      );
+    }
+    if (status === 'completed') {
+      return (
+        <span className={cn(
+          'inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-medium leading-none',
+          'bg-green-500/15 text-green-400 border border-green-500/20',
+          className
+        )}>
+          <span className="h-1.5 w-1.5 rounded-full bg-green-400 shrink-0" />
+          {t('sessionStatus.completed')}
+        </span>
+      );
+    }
+    if (status === 'needs_attention') {
+      return (
+        <span className={cn(
+          'inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-medium leading-none',
+          'bg-red-500/15 text-red-400 border border-red-500/20 animate-pulse',
+          className
+        )}>
+          <span className="h-1.5 w-1.5 rounded-full bg-red-400 shrink-0" />
+          {t('sessionStatus.needs_attention')}
+        </span>
+      );
+    }
+    return null;
+  }
+
   if (status === 'processing') {
     return (
       <span className={cn(
@@ -25,7 +65,7 @@ export function SessionStatusBadge({ sessionId, className, compact = false }: Se
         className
       )}>
         <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
-        {!compact && t('sessionStatus.processing')}
+        {t('sessionStatus.processing')}
       </span>
     );
   }
@@ -38,7 +78,7 @@ export function SessionStatusBadge({ sessionId, className, compact = false }: Se
         className
       )}>
         <span className="h-1.5 w-1.5 rounded-full bg-green-400" />
-        {!compact && t('sessionStatus.completed')}
+        {t('sessionStatus.completed')}
       </span>
     );
   }
@@ -57,7 +97,7 @@ export function SessionStatusBadge({ sessionId, className, compact = false }: Se
         className
       )}>
         <span className="h-1.5 w-1.5 rounded-full bg-red-400" />
-        {!compact && label}
+        {label}
       </span>
     );
   }
