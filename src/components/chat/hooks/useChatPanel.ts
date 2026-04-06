@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useTranslation } from 'react-i18next';
 import { api } from '../../../utils/api';
 import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
+import type { PendingPermissionRequest } from '../../../stores/sessionStatusStore';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import type {
   ChatPhase,
@@ -538,6 +539,36 @@ export function useChatPanel({
     }
   }, [completeAssistant, onSessionInactive, onSessionNotProcessing]);
 
+  const [pendingPermission, setPendingPermissionLocal] = useState<PendingPermissionRequest | null>(() => {
+    const sid = selectedSession?.id;
+    return sid ? (useSessionStatusStore.getState().pendingPermissions[sid] ?? null) : null;
+  });
+
+  useEffect(() => {
+    return useSessionStatusStore.subscribe((state) => {
+      const sid = currentSessionIdRef.current;
+      setPendingPermissionLocal(sid ? (state.pendingPermissions[sid] ?? null) : null);
+    });
+  }, []);
+
+  const handlePermissionResponse = useCallback((allow: boolean, answer?: string) => {
+    const sessionId = currentSessionIdRef.current;
+    if (!sessionId) return;
+
+    const pending = useSessionStatusStore.getState().pendingPermissions[sessionId];
+    if (!pending) return;
+
+    useSessionStatusStore.getState().clearPendingPermission(sessionId);
+    useSessionStatusStore.getState().setProcessing(sessionId);
+
+    sendMessage({
+      type: 'claude-permission-response',
+      requestId: pending.requestId,
+      allow,
+      ...(answer !== undefined && { message: answer }),
+    });
+  }, [sendMessage]);
+
   const handleLatestMessage = useCallback((message: any) => {
     if (!message || typeof message !== 'object') {
       return;
@@ -560,24 +591,15 @@ export function useChatPanel({
     }
 
     if (messageType === 'claude-permission-request' && typeof message.requestId === 'string') {
-      // Lock needs_attention before auto-deny so subsequent claude-complete won't overwrite it
       const permSessionId = typeof message.sessionId === 'string'
         ? message.sessionId
         : currentSessionIdRef.current;
-      if (permSessionId) {
-        useSessionStatusStore.getState().setNeedsAttention(permSessionId, 'permission');
-      }
+      // Status + pending permission are handled by useSessionStatusTracker at App level
+      // Just add a chat message so the user sees context in the conversation
       const toolName = typeof message.toolName === 'string' ? message.toolName : 'tool';
-      addSystemEventMessage(
-        'status',
-        `Permission request auto-denied for ${toolName} (chat panel does not support interactive approvals).`,
-      );
-      sendMessage({
-        type: 'claude-permission-response',
-        requestId: message.requestId,
-        allow: false,
-        message: 'Interactive tool approvals are not supported in this chat panel.',
-      });
+      if (toolName !== 'AskUserQuestion') {
+        addSystemEventMessage('status', t('permission.requestPending', { tool: toolName }));
+      }
       return;
     }
 
@@ -1393,5 +1415,9 @@ Use these as file path references only. Read file contents from the workspace wh
     // Shared
     selectedProject,
     selectedSession,
+
+    // Permission request
+    pendingPermission,
+    handlePermissionResponse,
   };
 }

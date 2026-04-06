@@ -213,5 +213,22 @@
   },
   "tasks": {
     "nextTaskPrompt": "다음 작업 시작"
+  },
+  "permission": {
+    "requestPending": "Claude가 {{tool}}을(를) 실행하려 합니다",
+    "askQuestion": "Claude가 질문하고 있습니다",
+    "toolConfirm": "Claude가 실행하려는 도구",
+    "planMode": "Claude가 계획을 실행하려 합니다",
+    "planModeHint": "Claude가 계획을 완료했으며 실행을 시작하려 합니다",
+    "allow": "허용",
+    "deny": "거부",
+    "approve": "승인",
+    "cancel": "취소",
+    "submit": "제출",
+    "freeformPlaceholder": "답변을 입력하세요...",
+    "multiSelectHint": "Space로 선택 · Enter로 확인",
+    "toolInput": "도구 입력",
+    "showMore": "더 보기",
+    "showLess": "접기"
   }
 }

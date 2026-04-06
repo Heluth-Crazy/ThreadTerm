@@ -213,5 +213,22 @@
   },
   "tasks": {
     "nextTaskPrompt": "Start the next task"
+  },
+  "permission": {
+    "requestPending": "Claude wants to run {{tool}}",
+    "askQuestion": "Claude is asking a question",
+    "toolConfirm": "Claude wants to run",
+    "planMode": "Claude wants to execute the plan",
+    "planModeHint": "Claude has finished planning and wants to start executing",
+    "allow": "Allow",
+    "deny": "Deny",
+    "approve": "Approve",
+    "cancel": "Cancel",
+    "submit": "Submit",
+    "freeformPlaceholder": "Type your answer...",
+    "multiSelectHint": "Space to select · Enter to confirm",
+    "toolInput": "Tool input",
+    "showMore": "Show more",
+    "showLess": "Show less"
   }
 }

@@ -3,6 +3,7 @@ import { useChatPanel } from './hooks/useChatPanel';
 import SessionHeader from './components/SessionHeader';
 import MessageList from './components/MessageList';
 import InputArea from './components/InputArea';
+import PermissionRequestCard from './components/PermissionRequestCard';
 
 type ChatPanelProps = {
   selectedProject: Project;
@@ -41,6 +42,15 @@ export default function ChatPanel(props: ChatPanelProps) {
         messagesContainerRef={chat.messagesContainerRef}
         messagesEndRef={chat.messagesEndRef}
       />
+
+      {chat.pendingPermission && (
+        <div className="px-4 pb-2">
+          <PermissionRequestCard
+            permission={chat.pendingPermission}
+            onRespond={chat.handlePermissionResponse}
+          />
+        </div>
+      )}
 
       <InputArea
         input={chat.input}
