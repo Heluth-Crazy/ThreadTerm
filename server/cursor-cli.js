@@ -9,6 +9,23 @@ const spawnFunction = process.platform === 'win32' ? crossSpawn : spawn;
 
 let activeCursorProcesses = new Map(); // Track active processes by session ID
 
+/**
+ * Safely kill a child process across platforms.
+ * Windows does not support POSIX signals, so we call kill() without arguments.
+ */
+function safeKillProcess(proc) {
+  if (!proc) return;
+  try {
+    if (process.platform === 'win32') {
+      proc.kill();
+    } else {
+      proc.kill('SIGTERM');
+    }
+  } catch (e) {
+    // Process may have already exited
+  }
+}
+
 async function spawnCursor(command, options = {}, ws) {
   return new Promise(async (resolve, reject) => {
     const { sessionId, projectPath, cwd, resume, toolsSettings, skipPermissions, model, images } = options;
@@ -249,10 +266,10 @@ async function spawnCursor(command, options = {}, ws) {
 }
 
 function abortCursorSession(sessionId) {
-  const process = activeCursorProcesses.get(sessionId);
-  if (process) {
+  const proc = activeCursorProcesses.get(sessionId);
+  if (proc) {
     console.log(`🛑 Aborting Cursor session: ${sessionId}`);
-    process.kill('SIGTERM');
+    safeKillProcess(proc);
     activeCursorProcesses.delete(sessionId);
     return true;
   }

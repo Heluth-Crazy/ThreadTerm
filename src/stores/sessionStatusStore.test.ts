@@ -84,6 +84,12 @@ describe('sessionStatusStore — state transitions', () => {
     expect(state.getStatus('completed1').status).toBe('idle'); // pruned → default
     expect(state.getStatus('processing1').status).toBe('processing'); // kept
   });
+
+  it('A8b: setCompleted does NOT overwrite needs_attention', () => {
+    useSessionStatusStore.getState().setNeedsAttention('s1', 'error');
+    useSessionStatusStore.getState().setCompleted('s1');
+    expect(useSessionStatusStore.getState().getStatus('s1').status).toBe('needs_attention');
+  });
 });
 
 // ─── Group B: Multi-session Isolation ────────────────────────────────────────

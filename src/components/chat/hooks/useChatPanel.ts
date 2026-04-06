@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../../utils/api';
+import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import type {
   ChatPhase,
@@ -559,6 +560,13 @@ export function useChatPanel({
     }
 
     if (messageType === 'claude-permission-request' && typeof message.requestId === 'string') {
+      // Lock needs_attention before auto-deny so subsequent claude-complete won't overwrite it
+      const permSessionId = typeof message.sessionId === 'string'
+        ? message.sessionId
+        : currentSessionIdRef.current;
+      if (permSessionId) {
+        useSessionStatusStore.getState().setNeedsAttention(permSessionId, 'permission');
+      }
       const toolName = typeof message.toolName === 'string' ? message.toolName : 'tool';
       addSystemEventMessage(
         'status',

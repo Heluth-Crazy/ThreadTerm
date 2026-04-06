@@ -48,17 +48,22 @@ export const useSessionStatusStore = create<SessionStatusState>()(
           },
         })),
       setCompleted: (sessionId) =>
-        set((state) => ({
-          statuses: {
-            ...state.statuses,
-            [sessionId]: {
-              ...state.statuses[sessionId],
-              status: 'completed',
-              attentionReason: undefined,
-              updatedAt: Date.now(),
+        set((state) => {
+          const current = state.statuses[sessionId];
+          // Don't overwrite needs_attention — user must explicitly handle it
+          if (current?.status === 'needs_attention') return state;
+          return {
+            statuses: {
+              ...state.statuses,
+              [sessionId]: {
+                ...current,
+                status: 'completed',
+                attentionReason: undefined,
+                updatedAt: Date.now(),
+              },
             },
-          },
-        })),
+          };
+        }),
       setNeedsAttention: (sessionId, reason) =>
         set((state) => ({
           statuses: {

@@ -16,9 +16,15 @@ const PLATFORM_PACKAGE_BY_TARGET = {
 
 function isExecutableFile(filePath) {
   try {
+    if (!fs.existsSync(filePath)) return false;
     const stats = fs.statSync(filePath);
     if (!stats.isFile()) return false;
-    if (process.platform === 'win32') return true;
+
+    if (process.platform === 'win32') {
+      const ext = path.extname(filePath).toLowerCase();
+      return ['.exe', '.cmd', '.bat', '.com'].includes(ext);
+    }
+
     fs.accessSync(filePath, fs.constants.X_OK);
     return true;
   } catch {
