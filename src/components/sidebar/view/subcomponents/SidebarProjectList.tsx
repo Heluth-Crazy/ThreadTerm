@@ -6,7 +6,7 @@ import type {
   SessionLaunchOptions,
   SessionProvider,
 } from '../../../../types/app';
-import type { MCPServerStatus, SessionWithProvider } from '../../types/types';
+import type { SessionWithProvider } from '../../types/types';
 import SidebarProjectItem from './SidebarProjectItem';
 import SidebarProjectsState from './SidebarProjectsState';
 
@@ -30,8 +30,6 @@ type SidebarProjectListProps = {
   editingSession: string | null;
   editingSessionName: string;
   deletingProjects: Set<string>;
-  tasksEnabled: boolean;
-  mcpServerStatus: MCPServerStatus;
   getProjectSessions: (project: Project) => SessionWithProvider[];
   isProjectStarred: (projectName: string) => boolean;
   onEditingNameChange: (value: string) => void;
@@ -75,8 +73,6 @@ export default function SidebarProjectList({
   editingSession,
   editingSessionName,
   deletingProjects,
-  tasksEnabled,
-  mcpServerStatus,
   getProjectSessions,
   isProjectStarred,
   onEditingNameChange,
@@ -145,8 +141,6 @@ export default function SidebarProjectList({
               currentTime={currentTime}
               editingSession={editingSession}
               editingSessionName={editingSessionName}
-              tasksEnabled={tasksEnabled}
-              mcpServerStatus={mcpServerStatus}
               worktreeCount={project.isGitWorktree ? 0 : worktreeCountByProject.get(project.name) || 0}
               onEditingNameChange={onEditingNameChange}
               onToggleProject={onToggleProject}

@@ -18,22 +18,6 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active);
 
--- API Keys table for external API access
-CREATE TABLE IF NOT EXISTS api_keys (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    key_name TEXT NOT NULL,
-    api_key TEXT UNIQUE NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    last_used DATETIME,
-    is_active BOOLEAN DEFAULT 1,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_api_keys_key ON api_keys(api_key);
-CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
-CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active);
-
 -- User credentials table for storing various tokens/credentials (source hosting, GitLab, etc.)
 CREATE TABLE IF NOT EXISTS user_credentials (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
