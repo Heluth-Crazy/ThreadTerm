@@ -362,6 +362,8 @@
   "version": {
     "updateAvailable": "アップデートあり"
   },
+  "viewProjects": "プロジェクト",
+  "viewSessions": "セッション",
   "deleteConfirmation": {
     "deleteProject": "プロジェクトを削除",
     "deleteSession": "セッションを削除",

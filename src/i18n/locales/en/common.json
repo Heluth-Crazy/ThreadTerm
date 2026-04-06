@@ -222,5 +222,14 @@
       "updateAvailable": "Update available",
       "closeSidebar": "Close sidebar"
     }
+  },
+  "sessionStatus": {
+    "processing": "In Progress",
+    "completed": "Completed",
+    "needs_attention": "Needs Attention",
+    "needs_attention_error": "Error",
+    "needs_attention_permission": "Permission Required",
+    "needs_attention_aborted": "Aborted",
+    "idle": ""
   }
 }

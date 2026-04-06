@@ -21,10 +21,6 @@ const projectDirectoryCache = new Map();
 const projectGitRepoCache = new Map();
 
 // Clear cache when needed (called when project files change)
-const projectDirectoryCache = new Map();
-const projectGitRepoCache = new Map();
-
-// Clear cache when needed (called when project files change)
 function clearProjectDirectoryCache() {
   projectDirectoryCache.clear();
   projectGitRepoCache.clear();

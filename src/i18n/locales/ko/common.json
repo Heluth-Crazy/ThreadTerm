@@ -222,5 +222,14 @@
       "updateAvailable": "업데이트 가능",
       "closeSidebar": "사이드바 닫기"
     }
+  },
+  "sessionStatus": {
+    "processing": "진행 중",
+    "completed": "완료",
+    "needs_attention": "개입 필요",
+    "needs_attention_error": "오류",
+    "needs_attention_permission": "권한 필요",
+    "needs_attention_aborted": "중단됨",
+    "idle": ""
   }
 }

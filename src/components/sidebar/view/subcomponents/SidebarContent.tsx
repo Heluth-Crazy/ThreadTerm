@@ -1,10 +1,15 @@
+import { useState } from 'react';
 import { ScrollArea } from '../../../ui/scroll-area';
 import type { TFunction } from 'i18next';
+import { cn } from '../../../../lib/utils';
+import { useSessionStatusStore } from '../../../../stores/sessionStatusStore';
 import type { Project } from '../../../../types/app';
 import type { ReleaseInfo } from '../../../../types/sharedTypes';
+import type { SidebarView } from '../../types/types';
 import SidebarFooter from './SidebarFooter';
 import SidebarHeader from './SidebarHeader';
 import SidebarProjectList, { type SidebarProjectListProps } from './SidebarProjectList';
+import SidebarRecentSessions from './SidebarRecentSessions';
 
 type SidebarContentProps = {
   isLoading: boolean;
@@ -44,6 +49,11 @@ export default function SidebarContent({
   projectListProps,
   t,
 }: SidebarContentProps) {
+  const [sidebarView, setSidebarView] = useState<SidebarView>('projects');
+  const hasAttention = useSessionStatusStore((s) =>
+    Object.values(s.statuses).some((e) => e.status === 'needs_attention'),
+  );
+
   return (
     <div
       className="h-full flex flex-col bg-background/80 backdrop-blur-sm md:select-none md:w-72"
@@ -63,8 +73,45 @@ export default function SidebarContent({
         t={t}
       />
 
+      <div className="flex items-center gap-1 rounded-lg bg-muted/50 p-0.5 mx-2 mb-2">
+        <button
+          className={cn(
+            'flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors',
+            sidebarView === 'projects'
+              ? 'bg-background text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+          onClick={() => setSidebarView('projects')}
+        >
+          {t('sidebar:viewProjects')}
+        </button>
+        <button
+          className={cn(
+            'relative flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors',
+            sidebarView === 'sessions'
+              ? 'bg-background text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+          onClick={() => setSidebarView('sessions')}
+        >
+          {t('sidebar:viewSessions')}
+          {hasAttention && (
+            <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-red-500" />
+          )}
+        </button>
+      </div>
+
       <ScrollArea className="flex-1 md:px-1.5 md:py-2 overflow-y-auto overscroll-contain">
-        <SidebarProjectList {...projectListProps} />
+        {sidebarView === 'projects' ? (
+          <SidebarProjectList {...projectListProps} />
+        ) : (
+          <SidebarRecentSessions
+            projects={projects}
+            currentSessionId={projectListProps.selectedSession?.id}
+            onSessionSelect={projectListProps.onSessionSelect}
+            onProjectSelect={projectListProps.onProjectSelect}
+          />
+        )}
       </ScrollArea>
 
       <SidebarFooter

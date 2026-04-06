@@ -362,6 +362,8 @@
   "version": {
     "updateAvailable": "有可用更新"
   },
+  "viewProjects": "项目",
+  "viewSessions": "会话",
   "deleteConfirmation": {
     "deleteProject": "删除项目",
     "deleteSession": "删除会话",

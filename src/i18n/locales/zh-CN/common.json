@@ -226,5 +226,14 @@
       "updateAvailable": "有可用更新",
       "closeSidebar": "关闭侧边栏"
     }
+  },
+  "sessionStatus": {
+    "processing": "进行中",
+    "completed": "已完成",
+    "needs_attention": "待介入",
+    "needs_attention_error": "出错",
+    "needs_attention_permission": "需要授权",
+    "needs_attention_aborted": "已中止",
+    "idle": ""
   }
 }
