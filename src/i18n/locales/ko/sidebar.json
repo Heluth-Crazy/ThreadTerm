@@ -277,7 +277,8 @@
         "deleteProject": "프로젝트 삭제 실패",
         "deleteSessions": "세션 삭제 실패"
       }
-    }
+    },
+    "liveGrid": "라이브 그리드"
   },
   "sessions": {
     "title": "세션",

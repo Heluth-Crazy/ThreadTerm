@@ -277,7 +277,8 @@
         "deleteProject": "删除项目失败",
         "deleteSessions": "删除会话失败"
       }
-    }
+    },
+    "liveGrid": "实时卡片流"
   },
   "sessions": {
     "title": "会话",

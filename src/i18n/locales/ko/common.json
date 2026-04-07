@@ -262,5 +262,31 @@
     "cycleView": "채팅/분할/터미널 전환",
     "showHelp": "이 도움말 표시",
     "jumpToSession": "위치별 세션 이동"
+  },
+  "liveGrid": {
+    "title": "라이브 그리드",
+    "newSession": "새 세션",
+    "emptySlot": "세션 추가",
+    "removeCard": "제거",
+    "focusMode": "포커스 모드",
+    "exitFocus": "포커스 종료",
+    "inputPlaceholder": "메시지를 보내세요...",
+    "layout": {
+      "1x2": "1×2",
+      "2x2": "2×2",
+      "2x3": "2×3",
+      "3x3": "3×3"
+    },
+    "filter": {
+      "all": "전체",
+      "claude": "Claude",
+      "codex": "Codex"
+    },
+    "status": {
+      "processing": "처리 중",
+      "needsAttention": "주의 필요",
+      "completed": "완료",
+      "idle": "대기"
+    }
   }
 }

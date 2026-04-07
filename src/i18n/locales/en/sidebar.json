@@ -277,7 +277,8 @@
         "deleteProject": "Failed to delete project",
         "deleteSessions": "Failed to delete sessions"
       }
-    }
+    },
+    "liveGrid": "Live Grid"
   },
   "sessions": {
     "title": "Sessions",

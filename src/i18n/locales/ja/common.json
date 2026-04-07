@@ -262,5 +262,31 @@
     "cycleView": "チャット/分割/ターミナル切替",
     "showHelp": "このヘルプを表示",
     "jumpToSession": "位置でセッションに移動"
+  },
+  "liveGrid": {
+    "title": "ライブグリッド",
+    "newSession": "新しいセッション",
+    "emptySlot": "セッション追加",
+    "removeCard": "削除",
+    "focusMode": "フォーカスモード",
+    "exitFocus": "フォーカス終了",
+    "inputPlaceholder": "メッセージを送信...",
+    "layout": {
+      "1x2": "1×2",
+      "2x2": "2×2",
+      "2x3": "2×3",
+      "3x3": "3×3"
+    },
+    "filter": {
+      "all": "すべて",
+      "claude": "Claude",
+      "codex": "Codex"
+    },
+    "status": {
+      "processing": "処理中",
+      "needsAttention": "要注意",
+      "completed": "完了",
+      "idle": "待機"
+    }
   }
 }

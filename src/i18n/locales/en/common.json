@@ -262,5 +262,31 @@
     "cycleView": "Cycle chat/split/terminal",
     "showHelp": "Show this help",
     "jumpToSession": "Jump to session by position"
+  },
+  "liveGrid": {
+    "title": "Live Grid",
+    "newSession": "New Session",
+    "emptySlot": "Add Session",
+    "removeCard": "Remove",
+    "focusMode": "Focus Mode",
+    "exitFocus": "Exit Focus",
+    "inputPlaceholder": "Send a message...",
+    "layout": {
+      "1x2": "1×2",
+      "2x2": "2×2",
+      "2x3": "2×3",
+      "3x3": "3×3"
+    },
+    "filter": {
+      "all": "All",
+      "claude": "Claude",
+      "codex": "Codex"
+    },
+    "status": {
+      "processing": "Processing",
+      "needsAttention": "Needs Attention",
+      "completed": "Completed",
+      "idle": "Idle"
+    }
   }
 }

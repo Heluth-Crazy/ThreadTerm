@@ -266,5 +266,31 @@
     "cycleView": "切换聊天/分屏/终端",
     "showHelp": "显示此帮助",
     "jumpToSession": "按位置跳转到会话"
+  },
+  "liveGrid": {
+    "title": "实时卡片流",
+    "newSession": "新建会话",
+    "emptySlot": "添加会话",
+    "removeCard": "移除",
+    "focusMode": "聚焦模式",
+    "exitFocus": "退出聚焦",
+    "inputPlaceholder": "发送消息...",
+    "layout": {
+      "1x2": "1×2",
+      "2x2": "2×2",
+      "2x3": "2×3",
+      "3x3": "3×3"
+    },
+    "filter": {
+      "all": "全部",
+      "claude": "Claude",
+      "codex": "Codex"
+    },
+    "status": {
+      "processing": "处理中",
+      "needsAttention": "需要关注",
+      "completed": "已完成",
+      "idle": "空闲"
+    }
   }
 }
