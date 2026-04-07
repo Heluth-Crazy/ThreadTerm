@@ -585,12 +585,12 @@ export default function AppContent() {
       </header>
 
       {/* Main content area */}
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1">
         {/* Activity Bar */}
         <ActivityBar activeNav={navActiveNav} onSelectNav={handleNavSelect} />
 
         {/* Content area */}
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {viewMode === 'overview' ? (
           <MissionControlView
             projects={projects}
@@ -661,29 +661,31 @@ export default function AppContent() {
                     />
                   </div>
                 ) : (
-                  <SessionFocusLayout
-                  projects={projects}
-                  selectedProject={selectedProject}
-                  selectedSession={selectedSession}
-                  activeTab={activeTab}
-                  setActiveTab={setActiveTab}
-                  sendMessage={sendMessage}
-                  latestMessage={latestMessage}
-                  messageSequence={messageSequence}
-                  getBufferedMessagesSince={getBufferedMessagesSince}
-                  externalMessageUpdate={externalMessageUpdate}
-                  onSessionActive={markSessionAsActive}
-                  onSessionInactive={markSessionAsInactive}
-                  onSessionProcessing={markSessionAsProcessing}
-                  onSessionNotProcessing={markSessionAsNotProcessing}
-                  processingSessions={processingSessions}
-                  onReplaceTemporarySession={replaceTemporarySession}
-                  onNavigateToSession={(targetSessionId: string) => navigate(`/session/${targetSessionId}`)}
-                  onBackToOverview={handleBackToOverview}
-                  onShowSettings={() => routeToSettings('agents')}
-                  ws={ws}
-                  isLoading={isLoadingProjects}
-                />
+                  <div className="min-w-0 flex-1 overflow-hidden">
+                    <SessionFocusLayout
+                    projects={projects}
+                    selectedProject={selectedProject}
+                    selectedSession={selectedSession}
+                    activeTab={activeTab}
+                    setActiveTab={setActiveTab}
+                    sendMessage={sendMessage}
+                    latestMessage={latestMessage}
+                    messageSequence={messageSequence}
+                    getBufferedMessagesSince={getBufferedMessagesSince}
+                    externalMessageUpdate={externalMessageUpdate}
+                    onSessionActive={markSessionAsActive}
+                    onSessionInactive={markSessionAsInactive}
+                    onSessionProcessing={markSessionAsProcessing}
+                    onSessionNotProcessing={markSessionAsNotProcessing}
+                    processingSessions={processingSessions}
+                    onReplaceTemporarySession={replaceTemporarySession}
+                    onNavigateToSession={(targetSessionId: string) => navigate(`/session/${targetSessionId}`)}
+                    onBackToOverview={handleBackToOverview}
+                    onShowSettings={() => routeToSettings('agents')}
+                    ws={ws}
+                    isLoading={isLoadingProjects}
+                  />
+                  </div>
                 )
               ) : (
                 <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
