@@ -36,20 +36,17 @@ export default function LiveGridView({ projects, onNewSession }: LiveGridViewPro
     [sendToSession],
   );
 
-  // Count statuses for footer
-  const statuses = useSessionStatusStore((s) => s.statuses);
-  const cardSessionIds = new Set(cards.map((c) => c.sessionId));
-  let processingCount = 0;
-  let attentionCount = 0;
-  let completedCount = 0;
-  let idleCount = 0;
-  for (const sid of cardSessionIds) {
-    const entry = statuses[sid];
-    if (!entry || entry.status === 'idle') idleCount++;
-    else if (entry.status === 'processing') processingCount++;
-    else if (entry.status === 'needs_attention') attentionCount++;
-    else if (entry.status === 'completed') completedCount++;
-  }
+  // Count statuses for footer — avoid subscribing to entire statuses object
+  const processingCount = useSessionStatusStore((s) =>
+    cards.filter((c) => s.statuses[c.sessionId]?.status === 'processing').length,
+  );
+  const attentionCount = useSessionStatusStore((s) =>
+    cards.filter((c) => s.statuses[c.sessionId]?.status === 'needs_attention').length,
+  );
+  const completedCount = useSessionStatusStore((s) =>
+    cards.filter((c) => s.statuses[c.sessionId]?.status === 'completed').length,
+  );
+  const idleCount = cards.length - processingCount - attentionCount - completedCount;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -93,7 +90,7 @@ export default function LiveGridView({ projects, onNewSession }: LiveGridViewPro
                 {idleCount} {t('liveGrid.status.idle')}
               </span>
             )}
-            {cardSessionIds.size === 0 && (
+            {cards.length === 0 && (
               <span>{t('liveGrid.emptySlot')}</span>
             )}
           </div>
