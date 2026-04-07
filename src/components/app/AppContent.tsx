@@ -87,6 +87,7 @@ export default function AppContent() {
 
   // --- New Polaris state ---
   const [viewMode, setViewMode] = useState<DesktopViewMode>('overview');
+  const [previousViewMode, setPreviousViewMode] = useState<DesktopViewMode>('overview');
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -122,11 +123,12 @@ export default function AppContent() {
 
   const routeToSettings = useCallback(
     (tab = 'agents') => {
+      setPreviousViewMode(viewMode);
       openSettings(tab);
       setActiveNav('settings');
       setViewMode('settings');
     },
-    [openSettings, setActiveNav],
+    [viewMode, openSettings, setActiveNav],
   );
 
   useEffect(() => {
@@ -275,8 +277,12 @@ export default function AppContent() {
   );
 
   const handleBackToOverview = useCallback(() => {
-    setViewMode('overview');
-  }, []);
+    if (previousViewMode === 'focus' && selectedSession) {
+      setViewMode('focus');
+    } else {
+      setViewMode('overview');
+    }
+  }, [previousViewMode, selectedSession]);
 
   // Reset fullscreen when leaving focus mode
   useEffect(() => {
@@ -563,7 +569,7 @@ export default function AppContent() {
             <div className="min-w-0 flex-1">{settingsExtensionsContent}</div>
           </div>
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <div className="flex min-h-0 flex-1">
               {/* Panel 1: Project list (hidden in fullscreen) */}
               {!isFullscreen && (
