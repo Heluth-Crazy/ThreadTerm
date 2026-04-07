@@ -10,6 +10,9 @@ import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
 import type { SessionRuntimeStatus } from '../../../stores/sessionStatusStore';
 import type { MessageSnapshot } from '../../../stores/liveGridStore';
 
+// Stable empty array to prevent Zustand selector from creating new references each render
+const EMPTY_SNAPSHOTS: MessageSnapshot[] = [];
+
 type LiveCardProps = {
   sessionId: string;
   projectId: string;
@@ -60,11 +63,13 @@ function LiveCardInner({
   const removeCard = useLiveGridStore((s) => s.removeCard);
   const setFocusedCard = useLiveGridStore((s) => s.setFocusedCard);
   const snapshots: MessageSnapshot[] = useLiveGridStore(
-    (s) => s.messageSnapshots[sessionId] || [],
+    (s) => s.messageSnapshots[sessionId] ?? EMPTY_SNAPSHOTS,
   );
 
-  const statusEntry = useSessionStatusStore((s) => s.getStatus(sessionId));
-  const status = statusEntry.status;
+  // Use direct selector on statuses to avoid calling get() inside a selector (which causes stale refs)
+  const status: SessionRuntimeStatus = useSessionStatusStore(
+    (s) => s.statuses[sessionId]?.status ?? 'idle',
+  );
   const pendingPermission = useSessionStatusStore((s) => s.pendingPermissions[sessionId]);
   const clearPendingPermission = useSessionStatusStore((s) => s.clearPendingPermission);
 
