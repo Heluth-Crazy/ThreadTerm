@@ -11,6 +11,7 @@ import MobileProjectsView from '../mobile/MobileProjectsView';
 import MobileSessionsView from '../mobile/MobileSessionsView';
 
 import LiveGridView from '../live-grid/view/LiveGridView';
+import LiveGridErrorBoundary from '../live-grid/view/LiveGridErrorBoundary';
 import CommandPalette from '../command-palette/CommandPalette';
 import MissionControlView from '../overview/MissionControlView';
 import SessionStatusCounts from '../overview/SessionStatusCounts';
@@ -584,7 +585,7 @@ export default function AppContent() {
       </header>
 
       {/* Main content area */}
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* Activity Bar */}
         <ActivityBar activeNav={navActiveNav} onSelectNav={handleNavSelect} />
 
@@ -599,10 +600,12 @@ export default function AppContent() {
             onCreateProject={handleOpenProjectCreation}
           />
         ) : viewMode === 'livegrid' ? (
-          <LiveGridView
-            projects={projects}
-            onNewSession={handleOpenProjectCreation}
-          />
+          <LiveGridErrorBoundary>
+            <LiveGridView
+              projects={projects}
+              onNewSession={handleOpenProjectCreation}
+            />
+          </LiveGridErrorBoundary>
         ) : viewMode === 'settings' || viewMode === 'extensions' ? (
           <div className="flex min-h-0 flex-1">
             <div className="w-64 shrink-0 overflow-hidden border-r border-border/50">
