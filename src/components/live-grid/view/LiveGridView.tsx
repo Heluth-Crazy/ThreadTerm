@@ -52,7 +52,7 @@ export default function LiveGridView({ projects, onNewSession }: LiveGridViewPro
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {focusedCardId ? (
         <LiveGridFocusedLayout projects={projects} />
       ) : (
