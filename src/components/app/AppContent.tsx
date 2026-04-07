@@ -19,6 +19,8 @@ import BottomStatusStrip from '../status-strip/BottomStatusStrip';
 import ProjectListPanel from '../projects/ProjectListPanel';
 import ProjectSessionsPanel from '../projects/ProjectSessionsPanel';
 import KeyboardShortcutsOverlay from '../overlays/KeyboardShortcutsOverlay';
+import ActivityBar from '../workbench/ActivityBar';
+import SelectedProjectOverviewPage from '../workbench/projects/SelectedProjectOverviewPage';
 
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useMobileViewport } from '../../hooks/useMobileViewport';
@@ -27,6 +29,7 @@ import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
 import { useGlobalKeyboardShortcuts } from '../../hooks/useGlobalKeyboardShortcuts';
 import type { Project, ProjectSession } from '../../types/app';
+import type { WorkbenchNav } from '../../types/workbench';
 
 type DesktopViewMode = 'overview' | 'focus' | 'settings' | 'extensions' | 'livegrid';
 
@@ -92,6 +95,7 @@ export default function AppContent() {
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [showProjectDetail, setShowProjectDetail] = useState(false);
 
   // ⌘K keyboard shortcut
   useEffect(() => {
@@ -291,10 +295,31 @@ export default function AppContent() {
     }
   }, [previousViewMode, selectedSession]);
 
+  // ActivityBar navigation handler
+  const navActiveNav: WorkbenchNav =
+    viewMode === 'livegrid' ? 'livegrid' :
+    viewMode === 'settings' ? 'settings' :
+    viewMode === 'extensions' ? 'extensions' :
+    'projects';
+
+  const handleNavSelect = useCallback((nav: WorkbenchNav) => {
+    if (nav === 'livegrid') {
+      routeToLiveGrid();
+    } else if (nav === 'extensions') {
+      openExtensionsSkills();
+    } else if (nav === 'settings') {
+      routeToSettings('agents');
+    } else {
+      setViewMode('overview');
+      setActiveNav('projects');
+    }
+  }, [routeToLiveGrid, openExtensionsSkills, routeToSettings, setViewMode, setActiveNav]);
+
   // Reset fullscreen when leaving focus mode
   useEffect(() => {
     if (viewMode !== 'focus') {
       setIsFullscreen(false);
+      setShowProjectDetail(false);
     }
   }, [viewMode]);
 
@@ -560,6 +585,11 @@ export default function AppContent() {
 
       {/* Main content area */}
       <div className="flex min-h-0 flex-1">
+        {/* Activity Bar */}
+        <ActivityBar activeNav={navActiveNav} onSelectNav={handleNavSelect} />
+
+        {/* Content area */}
+        <div className="flex min-h-0 flex-1 flex-col">
         {viewMode === 'overview' ? (
           <MissionControlView
             projects={projects}
@@ -602,12 +632,33 @@ export default function AppContent() {
                   selectedSession={selectedSession}
                   onSelectSession={handleSelectSessionWithFocus}
                   onNewSession={() => handleStartSession(selectedProject, undefined)}
+                  onDeleteSession={handleSessionDelete}
+                  onViewProjectDetail={() => setShowProjectDetail(true)}
                 />
               )}
 
-              {/* Panel 3: Session focus (Chat + Terminal) */}
+              {/* Panel 3: Session focus or Project detail */}
               {selectedProject ? (
-                <SessionFocusLayout
+                showProjectDetail ? (
+                  <div className="min-w-0 flex-1 overflow-y-auto">
+                    <SelectedProjectOverviewPage
+                      projects={projects}
+                      selectedProject={selectedProject}
+                      onSelectProject={handleSelectProject}
+                      onSelectSession={(session) => {
+                        setShowProjectDetail(false);
+                        handleSelectSession(session);
+                      }}
+                      onNewSession={handleStartSession}
+                      onCreateProject={handleOpenProjectCreation}
+                      onRefreshProjects={handleSidebarRefresh}
+                      onDeleteSession={handleSessionDelete}
+                      onDeleteProjectState={handleProjectDelete}
+                      onSelectOverview={() => setShowProjectDetail(false)}
+                    />
+                  </div>
+                ) : (
+                  <SessionFocusLayout
                   projects={projects}
                   selectedProject={selectedProject}
                   selectedSession={selectedSession}
@@ -630,6 +681,7 @@ export default function AppContent() {
                   ws={ws}
                   isLoading={isLoadingProjects}
                 />
+                )
               ) : (
                 <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
                   Select a project and session to begin
@@ -644,6 +696,7 @@ export default function AppContent() {
             />
           </div>
         )}
+        </div>
       </div>
 
       {/* Command palette overlay */}

@@ -1,7 +1,8 @@
 import { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Info, Trash2 } from 'lucide-react';
 import { useSessionStatusStore } from '../../stores/sessionStatusStore';
-import type { Project, ProjectSession } from '../../types/app';
+import type { Project, ProjectSession, SessionProvider } from '../../types/app';
 import SessionCard from '../overview/SessionCard';
 
 type SortMode = 'time' | 'status';
@@ -11,6 +12,8 @@ interface ProjectSessionsPanelProps {
   selectedSession: ProjectSession | null;
   onSelectSession: (project: Project, session: ProjectSession) => void;
   onNewSession: (project: Project) => void;
+  onDeleteSession?: (projectName: string, sessionId: string, provider: SessionProvider) => void;
+  onViewProjectDetail?: () => void;
 }
 
 const STATUS_ORDER: Record<string, number> = {
@@ -25,9 +28,12 @@ export default function ProjectSessionsPanel({
   selectedSession,
   onSelectSession,
   onNewSession,
+  onDeleteSession,
+  onViewProjectDetail,
 }: ProjectSessionsPanelProps) {
   const { t } = useTranslation('common');
   const [sortMode, setSortMode] = useState<SortMode>('time');
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const statuses = useSessionStatusStore((s) => s.statuses);
 
   const allSessions = useMemo(() => {
@@ -91,6 +97,16 @@ export default function ProjectSessionsPanel({
           <span className="rounded-full bg-muted px-1.5 text-[10px] text-muted-foreground ml-auto">
             {allSessions.length}
           </span>
+          {onViewProjectDetail && (
+            <button
+              type="button"
+              onClick={onViewProjectDetail}
+              className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+              title={t('buttons.details', 'Details')}
+            >
+              <Info className="h-3.5 w-3.5" />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onNewSession(project)}
@@ -144,14 +160,57 @@ export default function ProjectSessionsPanel({
             </button>
           </div>
         ) : (
-          sortedSessions.map((session) => (
-            <SessionCard
-              key={session.id}
-              session={session}
-              project={project}
-              onClick={() => onSelectSession(project, session)}
-            />
-          ))
+          sortedSessions.map((session) => {
+            const isConfirming = pendingDeleteId === session.id;
+            const provider: SessionProvider = session.__provider ?? 'claude';
+
+            return (
+              <div key={session.id} className="group relative">
+                <SessionCard
+                  session={session}
+                  project={project}
+                  onClick={() => onSelectSession(project, session)}
+                />
+                {/* Delete button (hover) / Confirm (inline) */}
+                {onDeleteSession && (
+                  isConfirming ? (
+                    <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-2 rounded-xl bg-destructive/90 px-2 py-2 text-xs text-destructive-foreground backdrop-blur-sm">
+                      <span className="truncate">{t('buttons.delete', 'Delete')}?</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onDeleteSession(project.name, session.id, provider);
+                          setPendingDeleteId(null);
+                        }}
+                        className="rounded-md bg-background/20 px-2 py-0.5 font-medium transition-colors hover:bg-background/40"
+                      >
+                        {t('buttons.confirm', 'Confirm')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPendingDeleteId(null)}
+                        className="rounded-md bg-background/20 px-2 py-0.5 transition-colors hover:bg-background/40"
+                      >
+                        {t('buttons.cancel', 'Cancel')}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPendingDeleteId(session.id);
+                      }}
+                      className="absolute right-1.5 top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-md bg-muted/80 text-muted-foreground opacity-0 transition-all hover:bg-destructive/90 hover:text-destructive-foreground group-hover:opacity-100"
+                      title={t('buttons.delete', 'Delete')}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  )
+                )}
+              </div>
+            );
+          })
         )}
       </div>
     </div>
