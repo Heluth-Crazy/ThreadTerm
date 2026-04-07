@@ -58,6 +58,9 @@ export function useMultiSessionDispatcher() {
   const cards = useLiveGridStore((s) => s.cards);
 
   const listenersRef = useRef<Map<string, Set<MessageCallback>>>(new Map());
+  const pushSnapshotRef = useRef(pushSnapshot);
+  pushSnapshotRef.current = pushSnapshot;
+  const lastProcessedSeqRef = useRef(0);
 
   const registerListener = useCallback((sessionId: string, cb: MessageCallback) => {
     if (!listenersRef.current.has(sessionId)) {
@@ -92,6 +95,8 @@ export function useMultiSessionDispatcher() {
 
   useEffect(() => {
     if (!latestMessage) return;
+    if (messageSequence <= lastProcessedSeqRef.current) return;
+    lastProcessedSeqRef.current = messageSequence;
 
     const msg = latestMessage;
     const sid = msg.sessionId || msg.data?.sessionId;
@@ -116,9 +121,9 @@ export function useMultiSessionDispatcher() {
         streaming: isStreaming,
         timestamp: Date.now(),
       };
-      pushSnapshot(sid, snap);
+      pushSnapshotRef.current(sid, snap);
     }
-  }, [latestMessage, messageSequence, pushSnapshot]);
+  }, [latestMessage, messageSequence]);
 
   return { registerListener, sendToSession };
 }

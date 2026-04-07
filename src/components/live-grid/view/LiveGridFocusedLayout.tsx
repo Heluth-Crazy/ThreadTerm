@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 
@@ -28,7 +28,7 @@ function ThumbnailCard({
   onClick: () => void;
 }) {
   const status: SessionRuntimeStatus = useSessionStatusStore(
-    (s) => s.getStatus(sessionId).status,
+    (s) => s.statuses[sessionId]?.status ?? 'idle',
   );
 
   return (
@@ -77,7 +77,7 @@ export default function LiveGridFocusedLayout({ projects }: LiveGridFocusedLayou
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setFocusedCard]);
 
-  const projectMap = new Map(projects.map((p) => [p.name, p]));
+  const projectMap = useMemo(() => new Map(projects.map((p) => [p.name, p])), [projects]);
 
   const findProject = useCallback(
     (projectId: string): Project | undefined => projectMap.get(projectId),
