@@ -10,6 +10,7 @@ import type { MobilePrimaryTab } from '../mobile/MobileBottomTabs';
 import MobileProjectsView from '../mobile/MobileProjectsView';
 import MobileSessionsView from '../mobile/MobileSessionsView';
 
+import LiveGridView from '../live-grid/view/LiveGridView';
 import CommandPalette from '../command-palette/CommandPalette';
 import MissionControlView from '../overview/MissionControlView';
 import SessionStatusCounts from '../overview/SessionStatusCounts';
@@ -27,7 +28,7 @@ import { useProjectsState } from '../../hooks/useProjectsState';
 import { useGlobalKeyboardShortcuts } from '../../hooks/useGlobalKeyboardShortcuts';
 import type { Project, ProjectSession } from '../../types/app';
 
-type DesktopViewMode = 'overview' | 'focus' | 'settings' | 'extensions';
+type DesktopViewMode = 'overview' | 'focus' | 'settings' | 'extensions' | 'livegrid';
 
 export default function AppContent() {
   const isMobileViewport = useMobileViewport();
@@ -130,6 +131,12 @@ export default function AppContent() {
     },
     [viewMode, openSettings, setActiveNav],
   );
+
+  const routeToLiveGrid = useCallback(() => {
+    setPreviousViewMode(viewMode);
+    setActiveNav('livegrid');
+    setViewMode('livegrid');
+  }, [viewMode, setActiveNav]);
 
   useEffect(() => {
     window.openSettings = routeToSettings;
@@ -514,7 +521,7 @@ export default function AppContent() {
           >
             ← Overview
           </button>
-        ) : viewMode === 'settings' || viewMode === 'extensions' ? (
+        ) : viewMode === 'settings' || viewMode === 'extensions' || viewMode === 'livegrid' ? (
           <button
             type="button"
             onClick={handleBackToOverview}
@@ -560,6 +567,11 @@ export default function AppContent() {
             onSelectSession={handleSelectSessionWithFocus}
             onNewSession={handleOpenProjectCreation}
             onCreateProject={handleOpenProjectCreation}
+          />
+        ) : viewMode === 'livegrid' ? (
+          <LiveGridView
+            projects={projects}
+            onNewSession={handleOpenProjectCreation}
           />
         ) : viewMode === 'settings' || viewMode === 'extensions' ? (
           <div className="flex min-h-0 flex-1">

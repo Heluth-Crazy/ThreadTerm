@@ -10,7 +10,7 @@ const DEFAULT_STATE: WorkbenchState = {
 };
 
 function isWorkbenchNav(value: unknown): value is WorkbenchNav {
-  return value === 'projects' || value === 'extensions' || value === 'settings';
+  return value === 'projects' || value === 'extensions' || value === 'settings' || value === 'livegrid';
 }
 
 function isProjectsView(value: unknown): value is ProjectsView {

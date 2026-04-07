@@ -277,7 +277,8 @@
         "deleteProject": "プロジェクトの削除に失敗しました",
         "deleteSessions": "セッションの削除に失敗しました"
       }
-    }
+    },
+    "liveGrid": "ライブグリッド"
   },
   "sessions": {
     "title": "セッション",
