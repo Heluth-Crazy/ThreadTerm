@@ -46,15 +46,15 @@ function TerminalGrid({ project, session }: TerminalGridProps) {
 
   return (
     <div ref={containerRef} className="h-full w-full flex flex-col" onKeyDown={handleKeyDown}>
-      <div className="flex-shrink-0 flex items-center justify-between px-3 py-1.5 bg-gray-800 border-b border-gray-700">
+      <div className="flex-shrink-0 flex items-center justify-between px-3 py-1.5 bg-muted border-b border-border">
         <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400 font-medium">{t('terminalCount', { count: visibleCount })}</span>
-          {layout !== '1x1' && <span className="text-xs text-gray-500">{t('switchShortcut', { count: visibleCount })}</span>}
+          <span className="text-xs text-muted-foreground font-medium">{t('terminalCount', { count: visibleCount })}</span>
+          {layout !== '1x1' && <span className="text-xs text-muted-foreground/60">{t('switchShortcut', { count: visibleCount })}</span>}
         </div>
         <LayoutSwitcher layout={layout} onChange={handleLayoutChange} />
       </div>
 
-      <div className={`flex-1 min-h-0 grid gap-1 p-1 bg-gray-900 ${gridClass}`}>
+      <div className={`flex-1 min-h-0 grid gap-1 p-1 bg-background ${gridClass}`}>
         {PANE_IDS.slice(0, visibleCount).map((id) => (
           <TerminalPane
             key={id === '1' && session ? `1-${session.id}` : id}

@@ -114,10 +114,10 @@ function TerminalPane({ id, project, session, isActive, onActivate, label, onDro
   }, [id, onActivate, onDropSession]);
 
   const borderClass = isActive
-    ? 'ring-2 ring-blue-500'
+    ? 'ring-2 ring-primary'
     : isDragOver
       ? 'ring-2 ring-green-500 bg-green-500/10'
-      : 'ring-1 ring-gray-700 hover:ring-gray-500';
+      : 'ring-1 ring-border hover:ring-muted-foreground';
 
   return (
     <div
@@ -132,7 +132,7 @@ function TerminalPane({ id, project, session, isActive, onActivate, label, onDro
       {/* Drag overlay - shown when dragging over */}
       {isDragOver && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-green-500/20 backdrop-blur-sm pointer-events-none">
-          <div className="bg-gray-800 text-green-400 px-4 py-2 rounded-lg shadow-lg text-sm font-medium">
+          <div className="bg-card text-green-400 px-4 py-2 rounded-lg shadow-lg text-sm font-medium">
             {t('dropToOpenSession')}
           </div>
         </div>
@@ -143,7 +143,7 @@ function TerminalPane({ id, project, session, isActive, onActivate, label, onDro
         role="button"
         tabIndex={0}
         className={`flex-shrink-0 flex items-center justify-between px-2 py-1 text-xs cursor-pointer ${
-          isActive ? 'bg-blue-900/40 text-blue-200' : 'bg-gray-800 text-gray-400'
+          isActive ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground'
         }`}
         onClick={handleClick}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleClick(); }}
@@ -155,11 +155,11 @@ function TerminalPane({ id, project, session, isActive, onActivate, label, onDro
         </span>
         <div className="flex items-center gap-1">
           {localSession && (
-            <span className="text-[10px] text-gray-500">
+            <span className="text-[10px] text-muted-foreground/60">
               {localSession.__provider === 'codex' ? 'Codex' : 'Claude'}
             </span>
           )}
-          <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-blue-400' : 'bg-gray-600'}`} />
+          <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-primary' : 'bg-muted-foreground/40'}`} />
         </div>
       </div>
 
