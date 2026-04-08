@@ -20,6 +20,7 @@ import BottomStatusStrip from '../status-strip/BottomStatusStrip';
 import ProjectListPanel from '../projects/ProjectListPanel';
 import ProjectSessionsPanel from '../projects/ProjectSessionsPanel';
 import KeyboardShortcutsOverlay from '../overlays/KeyboardShortcutsOverlay';
+import SessionTemplatesPicker from '../templates/SessionTemplatesPicker';
 import ActivityBar from '../workbench/ActivityBar';
 import SelectedProjectOverviewPage from '../workbench/projects/SelectedProjectOverviewPage';
 import ToastContainer from '../shared/ToastContainer';
@@ -32,6 +33,7 @@ import { useProjectsState } from '../../hooks/useProjectsState';
 import { useGlobalKeyboardShortcuts } from '../../hooks/useGlobalKeyboardShortcuts';
 import { useFileWatcher } from '../../hooks/useFileWatcher';
 import type { Project, ProjectSession } from '../../types/app';
+import type { SessionTemplate } from '../../types/templates';
 import type { WorkbenchNav } from '../../types/workbench';
 
 type DesktopViewMode = 'overview' | 'focus' | 'settings' | 'extensions' | 'livegrid';
@@ -116,6 +118,7 @@ export default function AppContent() {
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [showProjectDetail, setShowProjectDetail] = useState(false);
 
   // ⌘K keyboard shortcut
@@ -280,6 +283,32 @@ export default function AppContent() {
     [handleNewSession, isMobileViewport, setActiveNav, setProjectsView],
   );
 
+  const handleStartSessionWithTemplatePicker = useCallback(
+    (project: Project) => {
+      handleSelectProject(project);
+      setTemplatePickerOpen(true);
+    },
+    [handleSelectProject],
+  );
+
+  const handleTemplateSelect = useCallback(
+    (template: SessionTemplate) => {
+      setTemplatePickerOpen(false);
+      if (!selectedProject) return;
+      if (template.initialMessage) {
+        window.__pendingTemplateMessage = template.initialMessage;
+      }
+      handleStartSession(selectedProject, template.provider);
+    },
+    [selectedProject, handleStartSession],
+  );
+
+  const handleTemplateSkip = useCallback(() => {
+    setTemplatePickerOpen(false);
+    if (!selectedProject) return;
+    handleStartSession(selectedProject, undefined);
+  }, [selectedProject, handleStartSession]);
+
   const handleSelectMobileTab = useCallback(
     (nextTab: MobilePrimaryTab) => {
       if ((nextTab === 'sessions' || nextTab === 'chat') && !selectedProject) {
@@ -374,6 +403,11 @@ export default function AppContent() {
         handleSelectSessionWithFocus(selectedProject, sessions[index]);
       }
     },
+    onOpenSettings: () => routeToSettings('agents'),
+    onToggleSidebar: () => {
+      if (viewMode === 'focus') setIsFullscreen((f) => !f);
+    },
+    onToggleShortcuts: () => setShortcutsOpen((prev) => !prev),
   });
 
   // --- Sidebar props (still used in focus mode) ---
@@ -649,7 +683,7 @@ export default function AppContent() {
                   project={selectedProject}
                   selectedSession={selectedSession}
                   onSelectSession={handleSelectSessionWithFocus}
-                  onNewSession={() => handleStartSession(selectedProject, undefined)}
+                  onNewSession={() => handleStartSessionWithTemplatePicker(selectedProject)}
                   onDeleteSession={handleSessionDelete}
                   onRenameSession={handleSessionRename}
                   onViewProjectDetail={() => setShowProjectDetail(true)}
@@ -749,6 +783,14 @@ export default function AppContent() {
       <KeyboardShortcutsOverlay
         open={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
+      />
+
+      {/* Session template picker */}
+      <SessionTemplatesPicker
+        open={templatePickerOpen}
+        onClose={() => setTemplatePickerOpen(false)}
+        onSelectTemplate={handleTemplateSelect}
+        onSkip={handleTemplateSkip}
       />
     </div>
   );

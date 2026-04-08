@@ -8,6 +8,7 @@ import GitSettings from './GitSettings';
 import AgentListItem from './settings/AgentListItem';
 import PermissionsContent from './settings/PermissionsContent';
 import CustomSlashCommandsEditor from './settings/CustomSlashCommandsEditor';
+import SessionTemplatesEditor from './templates/SessionTemplatesEditor';
 import LanguageSelector from './LanguageSelector';
 import {
   normalizeSessionLaunchProfiles,
@@ -268,6 +269,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
               </div>
 
               <CustomSlashCommandsEditor />
+              <SessionTemplatesEditor />
               </>
             )}
 
