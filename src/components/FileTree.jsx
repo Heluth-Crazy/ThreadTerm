@@ -275,6 +275,15 @@ function FileTree({ selectedProject, onFileOpen }) {
     }
   }, [selectedProject]);
 
+  // Auto-refresh when files change on disk
+  useEffect(() => {
+    const handler = () => {
+      if (selectedProject) fetchFiles();
+    };
+    window.addEventListener('openwork:file-changed', handler);
+    return () => window.removeEventListener('openwork:file-changed', handler);
+  }, [selectedProject]);
+
   useEffect(() => {
     const savedViewMode = localStorage.getItem('file-tree-view-mode');
     if (savedViewMode && ['simple', 'detailed', 'compact'].includes(savedViewMode)) {

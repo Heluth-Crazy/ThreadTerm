@@ -21,7 +21,8 @@ import {
   CHAT_RESPONSE_TYPES,
   THINKING_MESSAGE_TYPES,
 } from '../utils/chatConstants';
-import { SLASH_COMMANDS } from '../components/CommandSuggestions';
+import { buildCommandList } from '../components/CommandSuggestions';
+import { useCustomSlashCommands } from '../../../hooks/useCustomSlashCommands';
 import {
   makeMessageId,
   flattenFiles,
@@ -76,6 +77,7 @@ export function useChatPanel({
   onNavigateToSession,
 }: UseChatPanelProps) {
   const { t } = useTranslation('chat');
+  const { customCommands } = useCustomSlashCommands();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -165,11 +167,11 @@ export function useChatPanel({
 
   const cmdFilteredCommands = useMemo(() => {
     if (!isCmdOpen) return [];
-    const commands = SLASH_COMMANDS[activeProvider] ?? SLASH_COMMANDS.claude;
+    const commands = buildCommandList(activeProvider, customCommands);
     return commands.filter((c) =>
       c.cmd.toLowerCase().startsWith(`/${cmdQuery.toLowerCase()}`),
     );
-  }, [isCmdOpen, cmdQuery, activeProvider]);
+  }, [isCmdOpen, cmdQuery, activeProvider, customCommands]);
 
   const filePickerSuggestions = useMemo(() => {
     const query = filePickerQuery.trim().toLowerCase();
@@ -1157,7 +1159,8 @@ Use these as file path references only. Read file contents from the workspace wh
         event.preventDefault();
         const selected = cmdFilteredCommands[cmdActiveIndex] || cmdFilteredCommands[0];
         if (selected) {
-          handleSelectCommand(selected.cmd);
+          // Custom commands insert their prompt template instead of the /command
+          handleSelectCommand(selected.isCustom && selected.prompt ? selected.prompt : selected.cmd);
         }
         return;
       }

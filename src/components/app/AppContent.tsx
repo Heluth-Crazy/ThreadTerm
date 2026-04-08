@@ -30,6 +30,7 @@ import { useWorkbenchNavigation } from '../../hooks/useWorkbenchNavigation';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
 import { useGlobalKeyboardShortcuts } from '../../hooks/useGlobalKeyboardShortcuts';
+import { useFileWatcher } from '../../hooks/useFileWatcher';
 import type { Project, ProjectSession } from '../../types/app';
 import type { WorkbenchNav } from '../../types/workbench';
 
@@ -85,6 +86,23 @@ export default function AppContent() {
     latestMessage,
     activeSessions,
   });
+
+  // Watch the active project directory for file changes
+  const activeProjectPath = selectedProject?.fullPath ?? selectedProject?.path ?? null;
+  const { lastChangeEvent, gitStatusTrigger } = useFileWatcher(activeProjectPath);
+
+  // Dispatch custom DOM events so FileTree and GitPanel can listen
+  useEffect(() => {
+    if (lastChangeEvent) {
+      window.dispatchEvent(new CustomEvent('openwork:file-changed', { detail: lastChangeEvent }));
+    }
+  }, [lastChangeEvent]);
+
+  useEffect(() => {
+    if (gitStatusTrigger > 0) {
+      window.dispatchEvent(new CustomEvent('openwork:git-status-changed'));
+    }
+  }, [gitStatusTrigger]);
 
   const [extensionsSkillCreateToken, setExtensionsSkillCreateToken] = useState(0);
   const [extensionsMcpCreateToken, setExtensionsMcpCreateToken] = useState(0);
