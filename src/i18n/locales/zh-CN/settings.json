@@ -68,6 +68,7 @@
     "agents": "智能体",
     "appearance": "外观",
     "git": "Git",
+    "shortcuts": "快捷键",
     "apiTokens": "API 和令牌",
     "tasks": "任务"
   },
@@ -332,6 +333,54 @@
       "argsPlaceholder": "每行一个参数，例如 --dangerously-skip-permissions",
       "useDangerPreset": "添加危险模式预设",
       "addProfile": "添加模板"
+    }
+  },
+  "templates": {
+    "title": "会话模板",
+    "description": "为常见任务预配置的会话模板",
+    "add": "添加",
+    "loading": "加载中...",
+    "builtIn": "内置模板",
+    "myTemplates": "我的模板",
+    "picker": {
+      "title": "选择模板",
+      "subtitle": "使用预配置的会话开始，或从头创建",
+      "startBlank": "创建空白会话",
+      "startBlankDescription": "不使用任何模板创建会话",
+      "loading": "正在加载模板..."
+    },
+    "form": {
+      "name": "名称",
+      "description": "描述",
+      "icon": "图标",
+      "provider": "提供商",
+      "initialMessage": "初始消息（可选）",
+      "namePlaceholder": "我的模板",
+      "descriptionPlaceholder": "此模板的用途...",
+      "initialMessagePlaceholder": "使用此模板时自动填充的首条消息...",
+      "nameRequired": "名称为必填项",
+      "descriptionRequired": "描述为必填项",
+      "iconRequired": "图标为必填项"
+    }
+  },
+  "slashCommands": {
+    "title": "自定义斜杠命令",
+    "description": "定义自动插入提示模板的自定义 /命令",
+    "add": "添加",
+    "loading": "加载中...",
+    "empty": "暂无自定义命令。点击“添加”以创建。",
+    "form": {
+      "name": "名称（不含空格）",
+      "description": "描述",
+      "promptTemplate": "提示模板",
+      "provider": "提供商",
+      "namePlaceholder": "deploy",
+      "descriptionPlaceholder": "部署到预发环境",
+      "promptPlaceholder": "运行预发环境的部署流程...",
+      "nameRequired": "名称为必填项",
+      "nameInvalid": "名称须以字母开头，仅包含字母、数字、连字符和下划线",
+      "promptRequired": "提示为必填项",
+      "allProviders": "全部提供商"
     }
   }
 }

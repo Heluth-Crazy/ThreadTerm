@@ -431,7 +431,7 @@ export default function AppContent() {
       activeNav={activeNav}
       projectsView={projectsView}
       extensionsView={extensionsView}
-      settingsTab={settingsInitialTab === 'appearance' || settingsInitialTab === 'git' ? settingsInitialTab : 'agents'}
+      settingsTab={settingsInitialTab === 'appearance' || settingsInitialTab === 'git' || settingsInitialTab === 'shortcuts' ? settingsInitialTab : 'agents'}
       onSelectOverview={openProjectsOverview}
       onSelectExtensionsView={setExtensionsView}
       onSelectSettingsTab={routeToSettings}

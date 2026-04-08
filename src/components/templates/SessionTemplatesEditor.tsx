@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/button';
 import { authenticatedFetch } from '../../utils/api';
 import type { SessionTemplate } from '../../types/templates';
 import TemplateForm from './TemplateForm';
 
 export default function SessionTemplatesEditor() {
+  const { t } = useTranslation('settings');
   const [templates, setTemplates] = useState<SessionTemplate[]>([]);
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -123,9 +125,9 @@ export default function SessionTemplatesEditor() {
     <div className="rounded-[20px] border border-border/60 bg-card/72 p-4 shadow-sm">
       <div className="flex items-center justify-between">
         <div>
-          <div className="font-medium text-foreground">Session Templates</div>
+          <div className="font-medium text-foreground">{t('templates.title')}</div>
           <div className="text-sm text-muted-foreground">
-            Pre-configured session templates for common tasks
+            {t('templates.description')}
           </div>
         </div>
         {!isAdding && (
@@ -139,7 +141,7 @@ export default function SessionTemplatesEditor() {
             className="gap-1.5"
           >
             <Plus className="h-3.5 w-3.5" />
-            Add
+            {t('templates.add')}
           </Button>
         )}
       </div>
@@ -150,14 +152,14 @@ export default function SessionTemplatesEditor() {
         )}
 
         {isLoading && (
-          <p className="py-4 text-center text-sm text-muted-foreground">Loading...</p>
+          <p className="py-4 text-center text-sm text-muted-foreground">{t('templates.loading')}</p>
         )}
 
         {/* User templates */}
         {!isLoading && userTemplates.length > 0 && (
           <div className="space-y-2">
             <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              My Templates
+              {t('templates.myTemplates')}
             </h4>
             {userTemplates.map((tpl) =>
               editingId === tpl.id ? (
@@ -178,7 +180,7 @@ export default function SessionTemplatesEditor() {
         {!isLoading && builtInTemplates.length > 0 && (
           <div className="space-y-2">
             <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Built-in Templates
+              {t('templates.builtIn')}
             </h4>
             {builtInTemplates.map(renderTemplateRow)}
           </div>

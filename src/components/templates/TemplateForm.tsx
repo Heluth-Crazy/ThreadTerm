@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Check, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import type { SessionTemplate } from '../../types/templates';
@@ -19,6 +20,7 @@ interface TemplateFormProps {
 }
 
 export default function TemplateForm({ initial, onSave, onCancel }: TemplateFormProps) {
+  const { t } = useTranslation('settings');
   const [name, setName] = useState(initial?.name ?? '');
   const [description, setDescription] = useState(initial?.description ?? '');
   const [icon, setIcon] = useState(initial?.icon ?? '🔍');
@@ -27,9 +29,9 @@ export default function TemplateForm({ initial, onSave, onCancel }: TemplateForm
   const [error, setError] = useState('');
 
   const validate = () => {
-    if (!name.trim()) return 'Name is required';
-    if (!description.trim()) return 'Description is required';
-    if (!icon.trim()) return 'Icon is required';
+    if (!name.trim()) return t('templates.form.nameRequired');
+    if (!description.trim()) return t('templates.form.descriptionRequired');
+    if (!icon.trim()) return t('templates.form.iconRequired');
     return '';
   };
 
@@ -52,25 +54,25 @@ export default function TemplateForm({ initial, onSave, onCancel }: TemplateForm
   return (
     <div className="space-y-3 rounded-xl border border-border/60 bg-card/50 p-4">
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground">Name</label>
+        <label className="text-xs font-medium text-muted-foreground">{t('templates.form.name')}</label>
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="My Template"
+          placeholder={t('templates.form.namePlaceholder')}
           className="h-9 text-sm"
         />
       </div>
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground">Description</label>
+        <label className="text-xs font-medium text-muted-foreground">{t('templates.form.description')}</label>
         <Input
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="What this template does..."
+          placeholder={t('templates.form.descriptionPlaceholder')}
           className="h-9 text-sm"
         />
       </div>
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground">Icon</label>
+        <label className="text-xs font-medium text-muted-foreground">{t('templates.form.icon')}</label>
         <div className="flex items-center gap-2">
           <Input
             value={icon}
@@ -95,7 +97,7 @@ export default function TemplateForm({ initial, onSave, onCancel }: TemplateForm
         </div>
       </div>
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground">Provider</label>
+        <label className="text-xs font-medium text-muted-foreground">{t('templates.form.provider')}</label>
         <select
           value={provider}
           onChange={(e) => setProvider(e.target.value as SessionTemplate['provider'])}
@@ -109,11 +111,11 @@ export default function TemplateForm({ initial, onSave, onCancel }: TemplateForm
         </select>
       </div>
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground">Initial Message (optional)</label>
+        <label className="text-xs font-medium text-muted-foreground">{t('templates.form.initialMessage')}</label>
         <textarea
           value={initialMessage}
           onChange={(e) => setInitialMessage(e.target.value)}
-          placeholder="Pre-filled first message when using this template..."
+          placeholder={t('templates.form.initialMessagePlaceholder')}
           rows={3}
           className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 resize-y"
         />
@@ -122,11 +124,11 @@ export default function TemplateForm({ initial, onSave, onCancel }: TemplateForm
       <div className="flex items-center gap-2 pt-1">
         <Button size="sm" onClick={handleSubmit} className="gap-1.5">
           <Check className="h-3.5 w-3.5" />
-          Save
+          {t('common:buttons.save')}
         </Button>
         <Button size="sm" variant="ghost" onClick={onCancel} className="gap-1.5">
           <X className="h-3.5 w-3.5" />
-          Cancel
+          {t('common:buttons.cancel')}
         </Button>
       </div>
     </div>

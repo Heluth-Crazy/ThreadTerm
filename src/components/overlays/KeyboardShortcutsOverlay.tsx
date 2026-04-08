@@ -82,7 +82,7 @@ export default function KeyboardShortcutsOverlay({ open, onClose }: KeyboardShor
 
         {/* Platform note */}
         <p className="mb-4 text-[11px] text-muted-foreground">
-          ⌘ = Cmd (Mac) / Ctrl (Windows/Linux)
+          {t('shortcutsSettings.platformNote', '⌘ = Cmd (Mac) / Ctrl (Windows/Linux)')}
         </p>
 
         {/* Sections */}

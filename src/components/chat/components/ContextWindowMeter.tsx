@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 export interface TokenBudget {
   used: number;
@@ -10,6 +11,7 @@ interface ContextWindowMeterProps {
 }
 
 export default function ContextWindowMeter({ tokenBudget }: ContextWindowMeterProps) {
+  const { t } = useTranslation('common');
   const [hovered, setHovered] = useState(false);
 
   const { percentage, colorClass, barColor } = useMemo(() => {
@@ -60,7 +62,7 @@ export default function ContextWindowMeter({ tokenBudget }: ContextWindowMeterPr
             className="absolute -top-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border/60 bg-popover px-2.5 py-1 text-[11px] text-popover-foreground shadow-md"
             style={{ pointerEvents: 'none' }}
           >
-            {formattedUsed} / {formattedTotal} tokens used ({pctDisplay}%)
+            {t('contextWindow.tooltip', { used: formattedUsed, total: formattedTotal, percentage: pctDisplay })}
           </div>
         )}
       </div>
@@ -71,7 +73,7 @@ export default function ContextWindowMeter({ tokenBudget }: ContextWindowMeterPr
           <svg className="h-3 w-3 shrink-0" viewBox="0 0 16 16" fill="currentColor">
             <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm-.75 3.75a.75.75 0 011.5 0v4a.75.75 0 01-1.5 0v-4zm.75 7a.75.75 0 110-1.5.75.75 0 010 1.5z" />
           </svg>
-          <span>Context window almost full. Use <code className="rounded bg-red-500/10 px-1 font-mono text-[10px]">/compact</code> to summarize.</span>
+          <span>{t('contextWindow.warning')}</span>
         </div>
       )}
     </div>

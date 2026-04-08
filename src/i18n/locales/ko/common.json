@@ -261,7 +261,15 @@
     "newSession": "새 세션",
     "cycleView": "채팅/분할/터미널 전환",
     "showHelp": "이 도움말 표시",
-    "jumpToSession": "위치별 세션 이동"
+    "jumpToSession": "위치별 세션 이동",
+    "openSettings": "설정 열기",
+    "toggleSidebar": "사이드바 전환",
+    "toggleShortcuts": "단축키 패널 전환",
+    "closeOverlay": "오버레이 / 모달 닫기"
+  },
+  "shortcutsSettings": {
+    "interface": "인터페이스",
+    "platformNote": "⌘ = Cmd (Mac) / Ctrl (Windows/Linux)"
   },
   "liveGrid": {
     "title": "라이브 그리드",
@@ -297,5 +305,15 @@
     "placeholder": "세션 이름",
     "cancel": "취소",
     "save": "저장"
+  },
+  "errorBoundary": {
+    "title": "{{area}}에서 문제가 발생했습니다",
+    "fallbackArea": "이 섹션",
+    "unknownError": "예기치 않은 오류가 발생했습니다",
+    "retry": "재시도"
+  },
+  "contextWindow": {
+    "tooltip": "{{used}} / {{total}} 토큰 사용 ({{percentage}}%)",
+    "warning": "컨텍스트 창이 거의 가득 찼습니다. /compact를 사용하여 요약하세요."
   }
 }

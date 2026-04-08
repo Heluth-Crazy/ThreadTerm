@@ -1,6 +1,6 @@
 ﻿import { useState, useEffect } from 'react';
 import { Button } from './ui/button';
-import { X, Settings as SettingsIcon, Moon, Sun, GitBranch } from 'lucide-react';
+import { X, Settings as SettingsIcon, Moon, Sun, GitBranch, Keyboard } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/utils';
@@ -9,6 +9,7 @@ import AgentListItem from './settings/AgentListItem';
 import PermissionsContent from './settings/PermissionsContent';
 import CustomSlashCommandsEditor from './settings/CustomSlashCommandsEditor';
 import SessionTemplatesEditor from './templates/SessionTemplatesEditor';
+import KeyboardShortcutsSettings from './settings/KeyboardShortcutsSettings';
 import LanguageSelector from './LanguageSelector';
 import {
   normalizeSessionLaunchProfiles,
@@ -28,7 +29,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
   const [projectSortOrder, setProjectSortOrder] = useState('name');
   const [fileAccessMode, setFileAccessMode] = useState(FILE_ACCESS_MODES.AUTO);
 
-  const normalizeTab = (tab) => (['agents', 'appearance', 'git'].includes(tab) ? tab : 'agents');
+  const normalizeTab = (tab) => (['agents', 'appearance', 'git', 'shortcuts'].includes(tab) ? tab : 'agents');
   const tabButtonClassName = (tab) => cn(
     'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
     activeTab === tab
@@ -218,6 +219,13 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
                   <GitBranch className="h-4 w-4" />
                   {t('mainTabs.git')}
                 </button>
+                <button
+                  onClick={() => setActiveTab('shortcuts')}
+                  className={tabButtonClassName('shortcuts')}
+                >
+                  <Keyboard className="h-4 w-4" />
+                  {t('mainTabs.shortcuts', 'Shortcuts')}
+                </button>
               </div>
             </div>
           )}
@@ -370,6 +378,8 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
             )}
 
             {activeTab === 'git' && <GitSettings />}
+
+            {activeTab === 'shortcuts' && <KeyboardShortcutsSettings />}
 
           </div>
         </div>
