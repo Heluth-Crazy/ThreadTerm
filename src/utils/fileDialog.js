@@ -8,6 +8,7 @@
  * - saveFile(): 保存文件
  * - selectMultipleFiles(): 多文件选择
  */
+import { logger } from '../utils/logger';
 
 /**
  * 获取合理的默认路径
@@ -24,7 +25,7 @@ async function getDefaultPath() {
       const userDataPath = await window.electronAPI.appControl.getPath('userData');
       if (userDataPath) return userDataPath;
     } catch (error) {
-      console.warn('Failed to get default path:', error);
+      logger.warn('Failed to get default path:', error);
     }
   }
   return null;

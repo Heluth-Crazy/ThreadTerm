@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Pencil } from 'lucide-react';
 import { useSessionStatusStore } from '../../stores/sessionStatusStore';
 import ChatPanel from '../chat/ChatPanel';
-import ErrorBoundary from '../ErrorBoundary';
+import ErrorBoundary from '../shared/ErrorBoundary';
 import FileTree from '../FileTree';
 import GitPanel from '../GitPanel';
 import { TerminalGrid } from '../terminal-grid';
@@ -296,7 +296,7 @@ export default function SessionFocusLayout({
             className="min-w-0 overflow-hidden border-r border-border/40"
             style={{ width: focusView === 'chat' ? '100%' : `${splitPercent}%` }}
           >
-            <ErrorBoundary showDetails>
+            <ErrorBoundary area="Chat">
               <ChatPanel
                 selectedProject={selectedProject}
                 selectedSession={selectedSession}
@@ -329,7 +329,7 @@ export default function SessionFocusLayout({
         {/* Terminal panel - hidden in chat-only mode */}
         {focusView !== 'chat' && (
           <div className="min-w-0 flex-1 overflow-hidden">
-            <ErrorBoundary showDetails>
+            <ErrorBoundary area="Terminal">
               <TerminalGrid project={selectedProject} session={selectedSession} />
             </ErrorBoundary>
           </div>
@@ -352,9 +352,13 @@ export default function SessionFocusLayout({
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto">
               {overlayPanel === 'files' ? (
-                <FileTree selectedProject={selectedProject} onFileOpen={() => {}} />
+                <ErrorBoundary area="File Tree">
+                  <FileTree selectedProject={selectedProject} onFileOpen={() => {}} />
+                </ErrorBoundary>
               ) : (
-                <AnyGitPanel selectedProject={selectedProject} onFileOpen={() => {}} />
+                <ErrorBoundary area="Git Panel">
+                  <AnyGitPanel selectedProject={selectedProject} onFileOpen={() => {}} />
+                </ErrorBoundary>
               )}
             </div>
           </div>

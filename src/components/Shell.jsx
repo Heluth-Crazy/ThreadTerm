@@ -7,6 +7,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useTranslation } from 'react-i18next';
 import { IS_PLATFORM } from '../constants/config';
 import { loadSessionLaunchProfilesByProvider, mergeSessionLaunchArgs } from '../utils/sessionLaunchProfiles';
+import { logger } from '../utils/logger';
 
 const xtermStyles = `
   .xterm .xterm-screen {
@@ -461,7 +462,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
     try {
       terminal.current.loadAddon(webglAddon);
     } catch (error) {
-      console.warn('[Shell] WebGL renderer unavailable, using Canvas fallback');
+      logger.warn('[Shell] WebGL renderer unavailable, using Canvas fallback');
     }
 
     terminal.current.open(terminalRef.current);

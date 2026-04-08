@@ -1,3 +1,5 @@
+import { logger } from '../utils/logger';
+
 export const FILE_ACCESS_MODE_STORAGE_KEY = 'openwork-file-access-mode';
 
 export const FILE_ACCESS_MODES = Object.freeze({
@@ -45,7 +47,7 @@ export function getStoredFileAccessMode() {
   try {
     return normalizeFileAccessMode(window.localStorage.getItem(FILE_ACCESS_MODE_STORAGE_KEY));
   } catch (error) {
-    console.warn('[file-access] Failed to read file access mode from localStorage:', error);
+    logger.warn('[file-access] Failed to read file access mode from localStorage:', error);
     return FILE_ACCESS_MODES.AUTO;
   }
 }
