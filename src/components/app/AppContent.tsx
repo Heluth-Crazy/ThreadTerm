@@ -93,7 +93,7 @@ export default function AppContent() {
 
   // --- New Polaris state ---
   const [viewMode, setViewMode] = useState<DesktopViewMode>('overview');
-  const [previousViewMode, setPreviousViewMode] = useState<DesktopViewMode>('overview');
+
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -130,19 +130,17 @@ export default function AppContent() {
 
   const routeToSettings = useCallback(
     (tab = 'agents') => {
-      setPreviousViewMode(viewMode);
       openSettings(tab);
       setActiveNav('settings');
       setViewMode('settings');
     },
-    [viewMode, openSettings, setActiveNav],
+    [openSettings, setActiveNav],
   );
 
   const routeToLiveGrid = useCallback(() => {
-    setPreviousViewMode(viewMode);
     setActiveNav('livegrid');
     setViewMode('livegrid');
-  }, [viewMode, setActiveNav]);
+  }, [setActiveNav]);
 
   useEffect(() => {
     window.openSettings = routeToSettings;
@@ -290,12 +288,9 @@ export default function AppContent() {
   );
 
   const handleBackToOverview = useCallback(() => {
-    if (previousViewMode === 'focus' && selectedSession) {
-      setViewMode('focus');
-    } else {
-      setViewMode('overview');
-    }
-  }, [previousViewMode, selectedSession]);
+    setViewMode('overview');
+    setActiveNav('projects');
+  }, [setActiveNav]);
 
   // ActivityBar navigation handler
   const navActiveNav: WorkbenchNav =
