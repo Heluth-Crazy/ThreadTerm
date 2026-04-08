@@ -226,5 +226,80 @@
       "updateAvailable": "有可用更新",
       "closeSidebar": "关闭侧边栏"
     }
+  },
+  "overview": {
+    "title": "任务中心",
+    "newSession": "新建会话",
+    "noSessions": "暂无活跃会话",
+    "noSessionsHint": "创建项目并启动您的第一个 AI 代理会话",
+    "backToOverview": "概览",
+    "sessionCount": "{{count}} 个会话",
+    "attentionNeeded": "需要关注",
+    "processing": "处理中"
+  },
+  "sessionStatus": {
+    "processing": "进行中",
+    "completed": "已完成",
+    "needs_attention": "待介入",
+    "needs_attention_error": "出错",
+    "needs_attention_permission": "需要授权",
+    "needs_attention_aborted": "已中止",
+    "idle": ""
+  },
+  "sessions": {
+    "noSessions": "暂无会话",
+    "startSession": "开始会话",
+    "sortByTime": "时间",
+    "sortByStatus": "状态",
+    "sessions": "会话"
+  },
+  "shortcuts": {
+    "title": "键盘快捷键",
+    "navigation": "导航",
+    "session": "会话",
+    "view": "视图",
+    "cmdPalette": "打开命令面板",
+    "fullscreen": "切换全屏",
+    "prevSession": "上一个会话",
+    "nextSession": "下一个会话",
+    "newSession": "新建会话",
+    "cycleView": "切换聊天/分屏/终端",
+    "showHelp": "显示此帮助",
+    "jumpToSession": "按位置跳转到会话"
+  },
+  "liveGrid": {
+    "title": "实时卡片流",
+    "newSession": "新建会话",
+    "emptySlot": "添加会话",
+    "removeCard": "移除",
+    "focusMode": "聚焦模式",
+    "exitFocus": "退出聚焦",
+    "inputPlaceholder": "发送消息...",
+    "noMessages": "暂无消息",
+    "layout": {
+      "1x2": "1×2",
+      "2x2": "2×2",
+      "2x3": "2×3",
+      "3x3": "3×3"
+    },
+    "filter": {
+      "all": "全部",
+      "claude": "Claude",
+      "codex": "Codex"
+    },
+    "status": {
+      "processing": "处理中",
+      "needsAttention": "需要关注",
+      "completed": "已完成",
+      "idle": "空闲"
+    },
+    "searchSessions": "搜索会话…",
+    "allProjects": "全部项目",
+    "noAvailableSessions": "没有可用的会话"
+  },
+  "sessionRename": {
+    "placeholder": "会话名称",
+    "cancel": "取消",
+    "save": "保存"
   }
 }

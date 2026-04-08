@@ -38,7 +38,11 @@ function isExecutableFile(filePath) {
   try {
     const stats = fsSync.statSync(filePath);
     if (!stats.isFile()) return false;
-    if (process.platform === 'win32') return true;
+    if (process.platform === 'win32') {
+      // Windows: check executable extensions instead of Unix permission bits
+      const ext = path.extname(filePath).toLowerCase();
+      return ['.exe', '.cmd', '.bat', '.com', '.ps1'].includes(ext);
+    }
     fsSync.accessSync(filePath, fsSync.constants.X_OK);
     return true;
   } catch {
@@ -694,12 +698,22 @@ async function queryClaudeSDK(command, options = {}, ws) {
     const prevStreamTimeout = process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
     process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '300000';
 
+    // If ANTHROPIC_AUTH_TOKEN is present, temporarily remove ANTHROPIC_API_KEY to avoid
+    // "Auth conflict: Both a token and an API key are set" warning from the SDK
+    const savedApiKey = process.env.ANTHROPIC_API_KEY;
+    if (process.env.ANTHROPIC_AUTH_TOKEN && savedApiKey) {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+
     const queryInstance = query({
       prompt: finalCommand,
       options: sdkOptions
     });
 
-    // Restore immediately — Query constructor already captured the value
+    // Restore immediately — Query constructor already captured the env values
+    if (savedApiKey !== undefined) {
+      process.env.ANTHROPIC_API_KEY = savedApiKey;
+    }
     if (prevStreamTimeout !== undefined) {
       process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = prevStreamTimeout;
     } else {
@@ -730,7 +744,8 @@ async function queryClaudeSDK(command, options = {}, ws) {
           sessionCreatedSent = true;
           ws.send({
             type: 'session-created',
-            sessionId: capturedSessionId
+            sessionId: capturedSessionId,
+            originalSessionId: sessionId || null
           });
         } else {
           console.log('Not sending session-created. sessionId:', sessionId, 'sessionCreatedSent:', sessionCreatedSent);

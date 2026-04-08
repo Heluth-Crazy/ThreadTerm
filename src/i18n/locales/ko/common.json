@@ -222,5 +222,80 @@
       "updateAvailable": "업데이트 가능",
       "closeSidebar": "사이드바 닫기"
     }
+  },
+  "overview": {
+    "title": "미션 컨트롤",
+    "newSession": "새 세션",
+    "noSessions": "활성 세션 없음",
+    "noSessionsHint": "프로젝트를 만들고 첫 번째 AI 에이전트 세션을 시작하세요",
+    "backToOverview": "개요",
+    "sessionCount": "{{count}}개 세션",
+    "attentionNeeded": "주의 필요",
+    "processing": "처리 중"
+  },
+  "sessionStatus": {
+    "processing": "진행 중",
+    "completed": "완료",
+    "needs_attention": "개입 필요",
+    "needs_attention_error": "오류",
+    "needs_attention_permission": "권한 필요",
+    "needs_attention_aborted": "중단됨",
+    "idle": ""
+  },
+  "sessions": {
+    "noSessions": "세션이 없습니다",
+    "startSession": "세션 시작",
+    "sortByTime": "시간",
+    "sortByStatus": "상태",
+    "sessions": "세션"
+  },
+  "shortcuts": {
+    "title": "키보드 단축키",
+    "navigation": "탐색",
+    "session": "세션",
+    "view": "보기",
+    "cmdPalette": "명령 팔레트 열기",
+    "fullscreen": "전체 화면 전환",
+    "prevSession": "이전 세션",
+    "nextSession": "다음 세션",
+    "newSession": "새 세션",
+    "cycleView": "채팅/분할/터미널 전환",
+    "showHelp": "이 도움말 표시",
+    "jumpToSession": "위치별 세션 이동"
+  },
+  "liveGrid": {
+    "title": "라이브 그리드",
+    "newSession": "새 세션",
+    "emptySlot": "세션 추가",
+    "removeCard": "제거",
+    "focusMode": "포커스 모드",
+    "exitFocus": "포커스 종료",
+    "inputPlaceholder": "메시지를 보내세요...",
+    "noMessages": "아직 메시지가 없습니다",
+    "layout": {
+      "1x2": "1×2",
+      "2x2": "2×2",
+      "2x3": "2×3",
+      "3x3": "3×3"
+    },
+    "filter": {
+      "all": "전체",
+      "claude": "Claude",
+      "codex": "Codex"
+    },
+    "status": {
+      "processing": "처리 중",
+      "needsAttention": "주의 필요",
+      "completed": "완료",
+      "idle": "대기"
+    },
+    "searchSessions": "세션 검색…",
+    "allProjects": "모든 프로젝트",
+    "noAvailableSessions": "사용 가능한 세션 없음"
+  },
+  "sessionRename": {
+    "placeholder": "세션 이름",
+    "cancel": "취소",
+    "save": "저장"
   }
 }

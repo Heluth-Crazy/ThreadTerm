@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
-import ActivityBar from '../workbench/ActivityBar';
-import AppShell from '../workbench/AppShell';
-import MainContentRouter from '../workbench/MainContentRouter';
 import SecondarySidebarRouter from '../workbench/SecondarySidebarRouter';
+import MainContentRouter from '../workbench/MainContentRouter';
 import ProjectCreationWizard from '../ProjectCreationWizard';
 import ChatPanel from '../chat/ChatPanel';
 import MobileWorkbenchShell from '../mobile/MobileWorkbenchShell';
@@ -12,12 +10,29 @@ import type { MobilePrimaryTab } from '../mobile/MobileBottomTabs';
 import MobileProjectsView from '../mobile/MobileProjectsView';
 import MobileSessionsView from '../mobile/MobileSessionsView';
 
+import LiveGridView from '../live-grid/view/LiveGridView';
+import LiveGridErrorBoundary from '../live-grid/view/LiveGridErrorBoundary';
+import CommandPalette from '../command-palette/CommandPalette';
+import MissionControlView from '../overview/MissionControlView';
+import SessionStatusCounts from '../overview/SessionStatusCounts';
+import SessionFocusLayout from '../session-focus/SessionFocusLayout';
+import BottomStatusStrip from '../status-strip/BottomStatusStrip';
+import ProjectListPanel from '../projects/ProjectListPanel';
+import ProjectSessionsPanel from '../projects/ProjectSessionsPanel';
+import KeyboardShortcutsOverlay from '../overlays/KeyboardShortcutsOverlay';
+import ActivityBar from '../workbench/ActivityBar';
+import SelectedProjectOverviewPage from '../workbench/projects/SelectedProjectOverviewPage';
+
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useMobileViewport } from '../../hooks/useMobileViewport';
 import { useWorkbenchNavigation } from '../../hooks/useWorkbenchNavigation';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
+import { useGlobalKeyboardShortcuts } from '../../hooks/useGlobalKeyboardShortcuts';
 import type { Project, ProjectSession } from '../../types/app';
+import type { WorkbenchNav } from '../../types/workbench';
+
+type DesktopViewMode = 'overview' | 'focus' | 'settings' | 'extensions' | 'livegrid';
 
 export default function AppContent() {
   const isMobileViewport = useMobileViewport();
@@ -60,6 +75,7 @@ export default function AppContent() {
     handleNewSession,
     handleProjectCreated,
     handleSessionDelete,
+    handleSessionRename,
     handleProjectDelete,
     handleSidebarRefresh,
   } = useProjectsState({
@@ -75,6 +91,33 @@ export default function AppContent() {
   const [showProjectCreationWizard, setShowProjectCreationWizard] = useState(false);
   const [mobilePrimaryTab, setMobilePrimaryTab] = useState<MobilePrimaryTab>('projects');
 
+  // --- New Polaris state ---
+  const [viewMode, setViewMode] = useState<DesktopViewMode>('overview');
+
+  const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [showProjectDetail, setShowProjectDetail] = useState(false);
+
+  // ⌘K keyboard shortcut
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setCmdPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Auto-switch to focus mode when session is selected
+  useEffect(() => {
+    if (selectedSession) {
+      setViewMode('focus');
+    }
+  }, [selectedSession?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     window.refreshProjects = fetchProjects;
 
@@ -89,9 +132,15 @@ export default function AppContent() {
     (tab = 'agents') => {
       openSettings(tab);
       setActiveNav('settings');
+      setViewMode('settings');
     },
     [openSettings, setActiveNav],
   );
+
+  const routeToLiveGrid = useCallback(() => {
+    setActiveNav('livegrid');
+    setViewMode('livegrid');
+  }, [setActiveNav]);
 
   useEffect(() => {
     window.openSettings = routeToSettings;
@@ -146,16 +195,19 @@ export default function AppContent() {
   const openExtensionsOverview = useCallback(() => {
     setActiveNav('extensions');
     setExtensionsView('overview');
+    setViewMode('extensions');
   }, [setActiveNav, setExtensionsView]);
 
   const openExtensionsSkills = useCallback(() => {
     setActiveNav('extensions');
     setExtensionsView('skills');
+    setViewMode('extensions');
   }, [setActiveNav, setExtensionsView]);
 
   const openExtensionsMcp = useCallback(() => {
     setActiveNav('extensions');
     setExtensionsView('mcp');
+    setViewMode('extensions');
   }, [setActiveNav, setExtensionsView]);
 
   const handleCreateSkillFromExtensions = useCallback(() => {
@@ -171,20 +223,6 @@ export default function AppContent() {
     },
     [openExtensionsMcp],
   );
-
-  const handleSelectNav = (nav: 'projects' | 'extensions' | 'settings') => {
-    if (nav === 'projects') {
-      openProjectsOverview();
-      return;
-    }
-
-    if (nav === 'extensions') {
-      openExtensionsOverview();
-      return;
-    }
-
-    setActiveNav('settings');
-  };
 
   const handleSelectProject = useCallback(
     (project: Project) => {
@@ -239,6 +277,87 @@ export default function AppContent() {
     [selectedProject, setActiveTab],
   );
 
+  // --- Polaris callbacks ---
+  const handleSelectSessionWithFocus = useCallback(
+    (project: Project, session: ProjectSession) => {
+      handleSelectProject(project);
+      handleSelectSession(session);
+      setViewMode('focus');
+    },
+    [handleSelectProject, handleSelectSession],
+  );
+
+  const handleBackToOverview = useCallback(() => {
+    setViewMode('overview');
+    setActiveNav('projects');
+  }, [setActiveNav]);
+
+  // ActivityBar navigation handler
+  const navActiveNav: WorkbenchNav =
+    viewMode === 'livegrid' ? 'livegrid' :
+    viewMode === 'settings' ? 'settings' :
+    viewMode === 'extensions' ? 'extensions' :
+    'projects';
+
+  const handleNavSelect = useCallback((nav: WorkbenchNav) => {
+    if (nav === 'livegrid') {
+      routeToLiveGrid();
+    } else if (nav === 'extensions') {
+      openExtensionsSkills();
+    } else if (nav === 'settings') {
+      routeToSettings('agents');
+    } else {
+      setViewMode('overview');
+      setActiveNav('projects');
+    }
+  }, [routeToLiveGrid, openExtensionsSkills, routeToSettings, setViewMode, setActiveNav]);
+
+  // Reset fullscreen when leaving focus mode
+  useEffect(() => {
+    if (viewMode !== 'focus') {
+      setIsFullscreen(false);
+      setShowProjectDetail(false);
+    }
+  }, [viewMode]);
+
+  // Session navigation helpers
+  const allSessionsForProject = useMemo(() => {
+    if (!selectedProject) return [];
+    return [...(selectedProject.sessions || []), ...(selectedProject.codexSessions || [])];
+  }, [selectedProject]);
+
+  const handlePrevSession = useCallback(() => {
+    if (!selectedSession || !selectedProject) return;
+    const sessions = allSessionsForProject;
+    const idx = sessions.findIndex((s) => s.id === selectedSession.id);
+    if (idx > 0) handleSelectSessionWithFocus(selectedProject, sessions[idx - 1]);
+  }, [selectedSession, selectedProject, allSessionsForProject, handleSelectSessionWithFocus]);
+
+  const handleNextSession = useCallback(() => {
+    if (!selectedSession || !selectedProject) return;
+    const sessions = allSessionsForProject;
+    const idx = sessions.findIndex((s) => s.id === selectedSession.id);
+    if (idx < sessions.length - 1) handleSelectSessionWithFocus(selectedProject, sessions[idx + 1]);
+  }, [selectedSession, selectedProject, allSessionsForProject, handleSelectSessionWithFocus]);
+
+  // Global keyboard shortcuts (⌘K handled separately above)
+  useGlobalKeyboardShortcuts({
+    onToggleFullscreen: () => {
+      if (viewMode === 'focus') setIsFullscreen((f) => !f);
+    },
+    onPrevSession: handlePrevSession,
+    onNextSession: handleNextSession,
+    onNewSession: handleOpenProjectCreation,
+    onShowShortcuts: () => setShortcutsOpen(true),
+    onNavigateSession: (index) => {
+      const sessions = allSessionsForProject;
+      if (sessions[index] && selectedProject) {
+        handleSelectSessionWithFocus(selectedProject, sessions[index]);
+      }
+    },
+  });
+
+  // --- Sidebar props (still used in focus mode) ---
   const workbenchSidebarProps = useMemo(
     () => ({
       ...sidebarSharedProps,
@@ -249,8 +368,6 @@ export default function AppContent() {
     }),
     [handleSelectProject, handleSelectSession, handleStartSession, routeToSettings, sidebarSharedProps],
   );
-
-  const activityBar = <ActivityBar activeNav={activeNav} onSelectNav={handleSelectNav} />;
 
   const secondarySidebar = (
     <SecondarySidebarRouter
@@ -265,7 +382,8 @@ export default function AppContent() {
     />
   );
 
-  const mainContent = (
+  // --- Settings / Extensions full-page content (reuse MainContentRouter) ---
+  const settingsExtensionsContent = (
     <MainContentRouter
       activeNav={activeNav}
       projectsView={projectsView}
@@ -322,6 +440,7 @@ export default function AppContent() {
     />
   );
 
+  // --- Mobile content (UNCHANGED) ---
   const mobileMainContent = useMemo(() => {
     if (mobilePrimaryTab === 'projects') {
       return (
@@ -407,6 +526,214 @@ export default function AppContent() {
     sendMessage,
   ]);
 
+  // --- Desktop content: new Polaris layout ---
+  const desktopContent = (
+    <div className="fixed inset-0 flex flex-col bg-background">
+      {/* Thin top bar */}
+      <header className="flex h-11 shrink-0 items-center gap-3 border-b border-border/60 bg-card/80 px-4">
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-foreground text-xs font-bold text-background">
+          O
+        </div>
+
+        {viewMode === 'focus' && selectedProject ? (
+          <button
+            type="button"
+            onClick={handleBackToOverview}
+            className="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            ← Overview
+          </button>
+        ) : viewMode === 'settings' || viewMode === 'extensions' || viewMode === 'livegrid' ? (
+          <button
+            type="button"
+            onClick={handleBackToOverview}
+            className="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            ← Overview
+          </button>
+        ) : (
+          <span className="text-sm font-medium text-foreground">OpenWork</span>
+        )}
+
+        <div className="flex-1" />
+
+        {/* Status counts */}
+        <SessionStatusCounts />
+
+        {/* ⌘K trigger */}
+        <button
+          type="button"
+          onClick={() => setCmdPaletteOpen(true)}
+          className="flex items-center gap-1 rounded-md border border-border/60 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/50"
+        >
+          <span>⌘K</span>
+        </button>
+
+        {/* Settings shortcut */}
+        <button
+          type="button"
+          onClick={() => routeToSettings('agents')}
+          className="rounded-md px-2 py-1 text-sm text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+          title="Settings"
+        >
+          ⚙
+        </button>
+      </header>
+
+      {/* Main content area */}
+      <div className="flex min-h-0 flex-1">
+        {/* Activity Bar */}
+        <ActivityBar activeNav={navActiveNav} onSelectNav={handleNavSelect} />
+
+        {/* Content area */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {viewMode === 'overview' ? (
+          <MissionControlView
+            projects={projects}
+            isLoading={isLoadingProjects}
+            onSelectSession={handleSelectSessionWithFocus}
+            onNewSession={handleOpenProjectCreation}
+            onCreateProject={handleOpenProjectCreation}
+          />
+        ) : viewMode === 'livegrid' ? (
+          <LiveGridErrorBoundary>
+            <LiveGridView
+              projects={projects}
+              onNewSession={handleOpenProjectCreation}
+            />
+          </LiveGridErrorBoundary>
+        ) : viewMode === 'settings' || viewMode === 'extensions' ? (
+          <div className="flex min-h-0 flex-1">
+            <div className="w-64 shrink-0 overflow-hidden border-r border-border/50">
+              {secondarySidebar}
+            </div>
+            <div className="min-w-0 flex-1">{settingsExtensionsContent}</div>
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="flex min-h-0 flex-1">
+              {/* Panel 1: Project list (hidden in fullscreen) */}
+              {!isFullscreen && (
+                <ProjectListPanel
+                  projects={projects}
+                  selectedProject={selectedProject}
+                  onSelectProject={(project) => {
+                    handleSelectProject(project);
+                  }}
+                  onNewProject={handleOpenProjectCreation}
+                />
+              )}
+
+              {/* Panel 2: Session cards for selected project (hidden in fullscreen) */}
+              {!isFullscreen && selectedProject && (
+                <ProjectSessionsPanel
+                  project={selectedProject}
+                  selectedSession={selectedSession}
+                  onSelectSession={handleSelectSessionWithFocus}
+                  onNewSession={() => handleStartSession(selectedProject, undefined)}
+                  onDeleteSession={handleSessionDelete}
+                  onRenameSession={handleSessionRename}
+                  onViewProjectDetail={() => setShowProjectDetail(true)}
+                />
+              )}
+
+              {/* Panel 3: Session focus or Project detail */}
+              {selectedProject ? (
+                showProjectDetail ? (
+                  <div className="min-w-0 flex-1 overflow-y-auto">
+                    <SelectedProjectOverviewPage
+                      projects={projects}
+                      selectedProject={selectedProject}
+                      onSelectProject={handleSelectProject}
+                      onSelectSession={(session) => {
+                        setShowProjectDetail(false);
+                        handleSelectSession(session);
+                      }}
+                      onNewSession={handleStartSession}
+                      onCreateProject={handleOpenProjectCreation}
+                      onRefreshProjects={handleSidebarRefresh}
+                      onDeleteSession={handleSessionDelete}
+                      onDeleteProjectState={handleProjectDelete}
+                      onSelectOverview={() => setShowProjectDetail(false)}
+                    />
+                  </div>
+                ) : (
+                  <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
+                    <SessionFocusLayout
+                    projects={projects}
+                    selectedProject={selectedProject}
+                    selectedSession={selectedSession}
+                    activeTab={activeTab}
+                    setActiveTab={setActiveTab}
+                    sendMessage={sendMessage}
+                    latestMessage={latestMessage}
+                    messageSequence={messageSequence}
+                    getBufferedMessagesSince={getBufferedMessagesSince}
+                    externalMessageUpdate={externalMessageUpdate}
+                    onSessionActive={markSessionAsActive}
+                    onSessionInactive={markSessionAsInactive}
+                    onSessionProcessing={markSessionAsProcessing}
+                    onSessionNotProcessing={markSessionAsNotProcessing}
+                    processingSessions={processingSessions}
+                    onReplaceTemporarySession={replaceTemporarySession}
+                    onNavigateToSession={(targetSessionId: string) => navigate(`/session/${targetSessionId}`)}
+                    onBackToOverview={handleBackToOverview}
+                    onShowSettings={() => routeToSettings('agents')}
+                    onRenameSession={handleSessionRename}
+                    ws={ws}
+                    isLoading={isLoadingProjects}
+                  />
+                  </div>
+                )
+              ) : (
+                <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+                  Select a project and session to begin
+                </div>
+              )}
+            </div>
+            {/* Bottom status strip */}
+            <BottomStatusStrip
+              projects={projects}
+              selectedSession={selectedSession}
+              onSelectSession={handleSelectSessionWithFocus}
+            />
+          </div>
+        )}
+        </div>
+      </div>
+
+      {/* Command palette overlay */}
+      <CommandPalette
+        open={cmdPaletteOpen}
+        onClose={() => setCmdPaletteOpen(false)}
+        projects={projects}
+        selectedSession={selectedSession}
+        onSelectSession={(project, session) => {
+          setCmdPaletteOpen(false);
+          handleSelectSessionWithFocus(project, session);
+        }}
+        onNewSession={() => {
+          setCmdPaletteOpen(false);
+          handleOpenProjectCreation();
+        }}
+        onOpenSettings={() => {
+          setCmdPaletteOpen(false);
+          routeToSettings('agents');
+        }}
+        onOpenExtensions={() => {
+          setCmdPaletteOpen(false);
+          openExtensionsOverview();
+        }}
+      />
+
+      {/* Keyboard shortcuts overlay */}
+      <KeyboardShortcutsOverlay
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+      />
+    </div>
+  );
+
   return (
     <>
       {isMobileViewport ? (
@@ -414,12 +741,7 @@ export default function AppContent() {
           {mobileMainContent}
         </MobileWorkbenchShell>
       ) : (
-        <AppShell
-          activityBar={activityBar}
-          secondarySidebar={secondarySidebar}
-          mainContent={mainContent}
-          hideSecondarySidebar={activeNav === 'projects' && activeTab === 'hybrid'}
-        />
+        desktopContent
       )}
       {showProjectCreationWizard ? (
         <ProjectCreationWizard

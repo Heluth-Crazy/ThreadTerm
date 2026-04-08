@@ -8,6 +8,7 @@ import type { Project, ProjectSession, SessionProvider } from '../../../../types
 import type { SessionWithProvider } from '../../types/types';
 import { createSessionViewModel } from '../../utils/utils';
 import SessionProviderLogo from '../../../SessionProviderLogo';
+import { SessionStatusBadge } from '../../../shared/SessionStatusBadge';
 import { useState } from 'react';
 
 type SidebarSessionItemProps = {
@@ -109,7 +110,10 @@ export default function SidebarSessionItem({
         <div className="flex min-w-0 w-full items-start gap-1.5">
           <SessionProviderLogo provider={session.__provider} className="mt-0.5 h-3 w-3 flex-shrink-0" />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[11px] font-medium text-foreground">{sessionView.sessionName}</div>
+            <div className="flex items-center gap-1">
+              <span className="truncate text-[11px] font-medium text-foreground">{sessionView.sessionName}</span>
+              <SessionStatusBadge sessionId={session.id} compact />
+            </div>
             <div className="mt-0.5 flex items-center gap-1 text-[11px]">
               <Clock className="h-2.5 w-2.5 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">

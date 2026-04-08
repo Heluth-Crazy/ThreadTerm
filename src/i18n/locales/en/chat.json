@@ -213,5 +213,57 @@
   },
   "tasks": {
     "nextTaskPrompt": "Start the next task"
+  },
+  "permission": {
+    "requestPending": "Claude wants to run {{tool}}",
+    "askQuestion": "Claude is asking a question",
+    "toolConfirm": "Claude wants to run",
+    "planMode": "Claude wants to execute the plan",
+    "planModeHint": "Claude has finished planning and wants to start executing",
+    "allow": "Allow",
+    "deny": "Deny",
+    "approve": "Approve",
+    "cancel": "Cancel",
+    "submit": "Submit",
+    "freeformPlaceholder": "Type your answer...",
+    "multiSelectHint": "Space to select · Enter to confirm",
+    "toolInput": "Tool input",
+    "showMore": "Show more",
+    "showLess": "Show less"
+  },
+  "commands": {
+    "clear": "Clear conversation history",
+    "compact": "Compact & summarize conversation",
+    "help": "Show CLI help",
+    "status": "Show current status",
+    "exit": "End this session",
+    "init": "Initialize project with CLAUDE.md",
+    "addDir": "Add additional working directory",
+    "memory": "Edit CLAUDE.md memory files",
+    "review": "Request code review",
+    "prComments": "Pull request comments",
+    "model": "Select or change AI model",
+    "config": "View or set configuration",
+    "mcp": "Manage MCP servers",
+    "vim": "Toggle vim keybindings",
+    "doctor": "Check Claude Code health",
+    "releaseNotes": "View recent release notes",
+    "bug": "Report a bug to Anthropic",
+    "logout": "Log out of Claude",
+    "login": "Log in to Claude",
+    "terminalSetup": "Configure terminal integration",
+    "diff": "Show pending file changes",
+    "approve": "Approve pending changes",
+    "new": "Start a new chat",
+    "title": "Commands",
+    "hint": "Type / for commands",
+    "category": {
+      "conversation": "Conversation",
+      "project": "Project",
+      "code": "Code & Review",
+      "config": "Config & Tools",
+      "info": "Info & Help",
+      "session": "Session"
+    }
   }
 }
