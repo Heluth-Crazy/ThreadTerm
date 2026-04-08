@@ -61,4 +61,8 @@ export default {
     },
   },
   plugins: [require('@tailwindcss/typography')],
+  safelist: [
+    'grid-cols-2', 'grid-cols-3',
+    'grid-rows-1', 'grid-rows-2', 'grid-rows-3',
+  ],
 }

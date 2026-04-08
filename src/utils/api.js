@@ -75,6 +75,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ displayName }),
     }),
+  renameSession: (projectName, sessionId, title) =>
+    fetchWrapper(`/api/projects/${encodeProjectParam(projectName)}/sessions/${encodeSessionParam(sessionId)}/rename`, {
+      method: 'PUT',
+      body: JSON.stringify({ title }),
+    }),
   deleteSession: (projectName, sessionId) =>
     fetchWrapper(`/api/projects/${encodeProjectParam(projectName)}/sessions/${encodeSessionParam(sessionId)}`, {
       method: 'DELETE',

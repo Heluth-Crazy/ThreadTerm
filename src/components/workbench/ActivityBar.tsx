@@ -1,4 +1,4 @@
-import { Boxes, FolderKanban, Settings2 } from 'lucide-react';
+import { Boxes, FolderKanban, LayoutGrid, Settings2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../lib/utils';
 import type { WorkbenchNav } from '../../types/workbench';
@@ -10,6 +10,7 @@ type ActivityBarProps = {
 
 const ITEMS = [
   { id: 'projects' as WorkbenchNav, icon: FolderKanban, labelKey: 'workbench.projects' },
+  { id: 'livegrid' as WorkbenchNav, icon: LayoutGrid, labelKey: 'workbench.liveGrid' },
   { id: 'extensions' as WorkbenchNav, icon: Boxes, labelKey: 'workbench.extensions' },
   { id: 'settings' as WorkbenchNav, icon: Settings2, labelKey: 'workbench.settings' },
 ];
@@ -18,10 +19,7 @@ export default function ActivityBar({ activeNav, onSelectNav }: ActivityBarProps
   const { t } = useTranslation('sidebar');
 
   return (
-    <aside className="flex h-full w-16 flex-col items-center border-r border-border/60 bg-card/70 px-2 py-3">
-      <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-2xl bg-foreground text-lg font-semibold text-background">
-        O
-      </div>
+    <aside className="flex h-full w-14 flex-col items-center border-r border-border/60 bg-card/70 px-2 py-3">
       <nav className="flex w-full flex-1 flex-col items-center gap-2">
         {ITEMS.map((item) => {
           const Icon = item.icon;

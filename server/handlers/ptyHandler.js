@@ -26,7 +26,7 @@ setInterval(() => {
     if (session.lastDataAt && (now - session.lastDataAt) > PTY_SESSION_TIMEOUT) {
       logger.debug(`[PTY GC] Cleaning up stale session: ${sessionId}`);
       try {
-        session.pty?.kill();
+        killPtyProcess(session.pty);
       } catch (e) { /* ignore */ }
       ptySessionsMap.delete(sessionId);
     }
@@ -39,6 +39,7 @@ function isPtyProcessAlive(ptyProcess) {
     }
 
     try {
+        // Works on both Windows and Unix; signal 0 checks process existence
         process.kill(ptyProcess.pid, 0);
         return true;
     } catch (error) {
@@ -47,6 +48,24 @@ function isPtyProcessAlive(ptyProcess) {
             return true;
         }
         return false;
+    }
+}
+
+/**
+ * Cross-platform safe PTY process termination.
+ * Windows: node-pty kill() handles process tree termination.
+ * Unix: send SIGHUP for graceful terminal hangup.
+ */
+function killPtyProcess(ptyInstance) {
+    if (!ptyInstance) return;
+    try {
+        if (process.platform === 'win32') {
+            ptyInstance.kill();
+        } else {
+            ptyInstance.kill('SIGHUP');
+        }
+    } catch (e) {
+        // Process may have already exited, ignore errors
     }
 }
 
@@ -397,7 +416,7 @@ function handleShellConnection(ws, getIsServerShuttingDown) {
                     if (oldSession) {
                         logger.debug('Cleaning up existing session:', ptySessionKey);
                         if (oldSession.timeoutId) clearTimeout(oldSession.timeoutId);
-                        if (oldSession.pty && oldSession.pty.kill) oldSession.pty.kill();
+                        if (oldSession.pty && oldSession.pty.kill) killPtyProcess(oldSession.pty);
                         ptySessionsMap.delete(ptySessionKey);
                     }
                 }
@@ -409,8 +428,8 @@ function handleShellConnection(ws, getIsServerShuttingDown) {
                 if (existingSession && !shouldReusePtySession) {
                     logger.debug('Discarding cached PTY for fresh provider shell:', ptySessionKey);
                     if (existingSession.timeoutId) clearTimeout(existingSession.timeoutId);
-                    if (isPtyProcessAlive(existingSession.pty) && existingSession.pty && existingSession.pty.kill) {
-                        existingSession.pty.kill();
+                    if (isPtyProcessAlive(existingSession.pty)) {
+                        killPtyProcess(existingSession.pty);
                     }
                     ptySessionsMap.delete(ptySessionKey);
                 }
@@ -776,7 +795,7 @@ function handleShellConnection(ws, getIsServerShuttingDown) {
                         clearTimeout(session.timeoutId);
                     }
                     if (session.pty && session.pty.kill) {
-                        session.pty.kill();
+                        killPtyProcess(session.pty);
                     }
                     ptySessionsMap.delete(ptySessionKey);
                     return;
@@ -787,9 +806,7 @@ function handleShellConnection(ws, getIsServerShuttingDown) {
 
                 session.timeoutId = setTimeout(() => {
                     logger.debug('PTY session timeout, killing process:', ptySessionKey);
-                    if (session.pty && session.pty.kill) {
-                        session.pty.kill();
-                    }
+                    killPtyProcess(session.pty);
                     ptySessionsMap.delete(ptySessionKey);
                 }, PTY_SESSION_TIMEOUT);
             }
@@ -821,9 +838,7 @@ function terminateAllPtySessions() {
         }
 
         try {
-            if (session.pty && session.pty.kill) {
-                session.pty.kill();
-            }
+            killPtyProcess(session.pty);
         } catch (error) {
             logger.warn(`Failed to kill PTY session ${sessionKey}:`, error);
         }

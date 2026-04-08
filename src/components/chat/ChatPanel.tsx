@@ -3,6 +3,7 @@ import { useChatPanel } from './hooks/useChatPanel';
 import SessionHeader from './components/SessionHeader';
 import MessageList from './components/MessageList';
 import InputArea from './components/InputArea';
+import PermissionRequestCard from './components/PermissionRequestCard';
 
 type ChatPanelProps = {
   selectedProject: Project;
@@ -36,11 +37,21 @@ export default function ChatPanel(props: ChatPanelProps) {
       />
 
       <MessageList
+        key={props.selectedSession?.id ?? 'no-session'}
         messages={chat.messages}
         historyLoading={chat.historyLoading}
         messagesContainerRef={chat.messagesContainerRef}
         messagesEndRef={chat.messagesEndRef}
       />
+
+      {chat.pendingPermission && (
+        <div className="px-4 pb-2">
+          <PermissionRequestCard
+            permission={chat.pendingPermission}
+            onRespond={chat.handlePermissionResponse}
+          />
+        </div>
+      )}
 
       <InputArea
         input={chat.input}
@@ -67,6 +78,11 @@ export default function ChatPanel(props: ChatPanelProps) {
         mentionActiveIndex={chat.mentionActiveIndex}
         onSetMentionActiveIndex={chat.setMentionActiveIndex}
         onSelectMention={chat.handleSelectMention}
+        isCmdOpen={chat.isCmdOpen}
+        cmdQuery={chat.cmdQuery}
+        cmdActiveIndex={chat.cmdActiveIndex}
+        cmdFilteredCount={chat.cmdFilteredCommands.length}
+        onSelectCommand={chat.handleSelectCommand}
         onSend={() => void chat.sendChatMessage()}
         onAbort={chat.abortCurrentRequest}
         providerTheme={chat.providerTheme}

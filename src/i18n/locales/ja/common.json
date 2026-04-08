@@ -222,5 +222,80 @@
       "updateAvailable": "アップデートあり",
       "closeSidebar": "サイドバーを閉じる"
     }
+  },
+  "overview": {
+    "title": "ミッションコントロール",
+    "newSession": "新しいセッション",
+    "noSessions": "アクティブなセッションはありません",
+    "noSessionsHint": "プロジェクトを作成して最初のAIエージェントセッションを開始しましょう",
+    "backToOverview": "概要",
+    "sessionCount": "{{count}} セッション",
+    "attentionNeeded": "要対応",
+    "processing": "処理中"
+  },
+  "sessionStatus": {
+    "processing": "処理中",
+    "completed": "完了",
+    "needs_attention": "対応が必要",
+    "needs_attention_error": "エラー",
+    "needs_attention_permission": "権限が必要",
+    "needs_attention_aborted": "中断",
+    "idle": ""
+  },
+  "sessions": {
+    "noSessions": "セッションがありません",
+    "startSession": "セッション開始",
+    "sortByTime": "時間",
+    "sortByStatus": "ステータス",
+    "sessions": "セッション"
+  },
+  "shortcuts": {
+    "title": "キーボードショートカット",
+    "navigation": "ナビゲーション",
+    "session": "セッション",
+    "view": "表示",
+    "cmdPalette": "コマンドパレットを開く",
+    "fullscreen": "フルスクリーン切替",
+    "prevSession": "前のセッション",
+    "nextSession": "次のセッション",
+    "newSession": "新しいセッション",
+    "cycleView": "チャット/分割/ターミナル切替",
+    "showHelp": "このヘルプを表示",
+    "jumpToSession": "位置でセッションに移動"
+  },
+  "liveGrid": {
+    "title": "ライブグリッド",
+    "newSession": "新しいセッション",
+    "emptySlot": "セッション追加",
+    "removeCard": "削除",
+    "focusMode": "フォーカスモード",
+    "exitFocus": "フォーカス終了",
+    "inputPlaceholder": "メッセージを送信...",
+    "noMessages": "メッセージはまだありません",
+    "layout": {
+      "1x2": "1×2",
+      "2x2": "2×2",
+      "2x3": "2×3",
+      "3x3": "3×3"
+    },
+    "filter": {
+      "all": "すべて",
+      "claude": "Claude",
+      "codex": "Codex"
+    },
+    "status": {
+      "processing": "処理中",
+      "needsAttention": "要注意",
+      "completed": "完了",
+      "idle": "待機"
+    },
+    "searchSessions": "セッション検索…",
+    "allProjects": "すべてのプロジェクト",
+    "noAvailableSessions": "利用可能なセッションがありません"
+  },
+  "sessionRename": {
+    "placeholder": "セッション名",
+    "cancel": "キャンセル",
+    "save": "保存"
   }
 }

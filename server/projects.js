@@ -21,10 +21,6 @@ const projectDirectoryCache = new Map();
 const projectGitRepoCache = new Map();
 
 // Clear cache when needed (called when project files change)
-const projectDirectoryCache = new Map();
-const projectGitRepoCache = new Map();
-
-// Clear cache when needed (called when project files change)
 function clearProjectDirectoryCache() {
   projectDirectoryCache.clear();
   projectGitRepoCache.clear();
@@ -361,6 +357,14 @@ async function getProjects(progressCallback = null) {
             hasMore: sessionResult.hasMore,
             total: sessionResult.total
           };
+
+          // Apply custom session titles from config
+          const sessionTitles = projectConfig.sessionTitles || {};
+          for (const session of project.sessions) {
+            if (sessionTitles[session.id]) {
+              session.title = sessionTitles[session.id];
+            }
+          }
         } catch (e) {
           console.warn(`Could not load sessions for project ${entry.name}:`, e.message);
           project.sessionMeta = {
@@ -374,6 +378,16 @@ async function getProjects(progressCallback = null) {
           project.codexSessions = await getCodexSessions(actualProjectDir, {
             indexRef: codexSessionsIndexRef,
           });
+
+          // Inject custom titles into Codex sessions
+          if (Array.isArray(project.codexSessions)) {
+            const sessionTitles = projectConfig.sessionTitles || {};
+            for (const session of project.codexSessions) {
+              if (sessionTitles[session.id]) {
+                session.title = sessionTitles[session.id];
+              }
+            }
+          }
         } catch (e) {
           console.warn(`Could not load Codex sessions for project ${entry.name}:`, e.message);
           project.codexSessions = [];
@@ -593,7 +607,21 @@ async function getSessions(projectName, limit = 5, offset = 0) {
     const total = visibleSessions.length;
     const paginatedSessions = visibleSessions.slice(offset, offset + limit);
     const hasMore = offset + limit < total;
-    
+
+    // Apply custom session titles from config
+    try {
+      const config = await loadProjectConfig();
+      const projectConfig = config[projectName] || {};
+      const sessionTitles = projectConfig.sessionTitles || {};
+      for (const session of paginatedSessions) {
+        if (sessionTitles[session.id]) {
+          session.title = sessionTitles[session.id];
+        }
+      }
+    } catch {
+      // Ignore — titles are nice-to-have
+    }
+
     return {
       sessions: paginatedSessions,
       hasMore,
@@ -947,6 +975,28 @@ async function renameProject(projectName, newDisplayName) {
       displayName: trimmedDisplayName
     };
   }
+
+  await saveProjectConfig(config);
+  return true;
+}
+
+// Rename a session's display title
+async function renameSession(projectName, sessionId, newTitle) {
+  const config = await loadProjectConfig();
+  const existingConfig = config[projectName] || {};
+  const sessionTitles = existingConfig.sessionTitles || {};
+  const trimmedTitle = typeof newTitle === 'string' ? newTitle.trim() : '';
+
+  if (!trimmedTitle) {
+    delete sessionTitles[sessionId];
+  } else {
+    sessionTitles[sessionId] = trimmedTitle;
+  }
+
+  config[projectName] = {
+    ...existingConfig,
+    sessionTitles,
+  };
 
   await saveProjectConfig(config);
   return true;
@@ -1653,6 +1703,7 @@ export {
   getSessionMessages,
   parseJsonlSessions,
   renameProject,
+  renameSession,
   deleteSession,
   isProjectEmpty,
   deleteProject,

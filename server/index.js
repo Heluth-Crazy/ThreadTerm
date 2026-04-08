@@ -43,7 +43,7 @@ import { spawn } from 'child_process';
 import fetch from 'node-fetch';
 import mime from 'mime-types';
 
-import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory } from './projects.js';
+import { getProjects, getSessions, getSessionMessages, renameProject, renameSession, deleteSession, deleteProject, addProjectManually, extractProjectDirectory } from './projects.js';
 import gitRoutes from './routes/git.js';
 import authRoutes from './routes/auth.js';
 import commandsRoutes from './routes/commands.js';
@@ -465,6 +465,18 @@ app.put('/api/projects/:projectName/rename', authenticateToken, async (req, res)
     try {
         const { displayName } = req.body;
         await renameProject(req.params.projectName, displayName);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Rename session endpoint
+app.put('/api/projects/:projectName/sessions/:sessionId/rename', authenticateToken, async (req, res) => {
+    try {
+        const { projectName, sessionId } = req.params;
+        const { title } = req.body;
+        await renameSession(projectName, sessionId, title);
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: error.message });

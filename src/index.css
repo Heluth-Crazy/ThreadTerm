@@ -58,6 +58,11 @@
   }
 }
 
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;
@@ -93,6 +98,9 @@
     --nav-input-bg: 210 40% 96.1% / 0.5;
     --nav-input-focus-ring: 221.2 83.2% 53.3% / 0.22;
 
+    /* macOS title bar height for hiddenInset style (traffic light buttons area) */
+    --macos-title-bar-height: 38px;
+  }
 
   .dark {
     --background: 222.2 84% 4.9%;
@@ -126,9 +134,6 @@
     --nav-divider-color: 217.2 32.6% 17.5% / 0.5;
     --nav-input-bg: 217.2 32.6% 17.5% / 0.5;
     --nav-input-focus-ring: 217.2 91.2% 59.8% / 0.25;
-
-    /* macOS title bar height for hiddenInset style (traffic light buttons area) */
-    --macos-title-bar-height: 38px;
   }
 }
 
@@ -336,6 +341,12 @@
     background-color: rgba(156, 163, 175, 0.7);
   }
   
+  /* Standard scrollbar — all browsers that support scrollbar-width (Firefox, Edge, Chrome 121+) */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+
   /* Global scrollbar styles for main content areas */
   .dark::-webkit-scrollbar {
     width: 8px;
@@ -553,7 +564,6 @@
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
-}
 
 /* Hide markdown backticks in prose content */
 .prose code::before,

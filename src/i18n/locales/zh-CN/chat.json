@@ -213,5 +213,57 @@
   },
   "tasks": {
     "nextTaskPrompt": "开始下一个任务"
+  },
+  "permission": {
+    "requestPending": "Claude 想要运行 {{tool}}",
+    "askQuestion": "Claude 正在提问",
+    "toolConfirm": "Claude 想要运行",
+    "planMode": "Claude 想要执行计划",
+    "planModeHint": "Claude 已完成规划，想要开始执行",
+    "allow": "允许",
+    "deny": "拒绝",
+    "approve": "批准",
+    "cancel": "取消",
+    "submit": "提交",
+    "freeformPlaceholder": "输入你的回答...",
+    "multiSelectHint": "空格选择 · 回车确认",
+    "toolInput": "工具输入",
+    "showMore": "展开",
+    "showLess": "收起"
+  },
+  "commands": {
+    "clear": "清除对话历史",
+    "compact": "压缩并总结对话",
+    "help": "显示 CLI 帮助",
+    "status": "显示当前状态",
+    "exit": "结束此会话",
+    "init": "使用 CLAUDE.md 初始化项目",
+    "addDir": "添加额外工作目录",
+    "memory": "编辑 CLAUDE.md 记忆文件",
+    "review": "请求代码审查",
+    "prComments": "Pull Request 评论",
+    "model": "选择或更改 AI 模型",
+    "config": "查看或设置配置",
+    "mcp": "管理 MCP 服务器",
+    "vim": "切换 vim 键绑定",
+    "doctor": "检查 Claude Code 运行状况",
+    "releaseNotes": "查看最近的发行说明",
+    "bug": "向 Anthropic 报告错误",
+    "logout": "退出 Claude 登录",
+    "login": "登录 Claude",
+    "terminalSetup": "配置终端集成",
+    "diff": "显示待处理的文件更改",
+    "approve": "批准待处理的更改",
+    "new": "开始新对话",
+    "title": "命令",
+    "hint": "输入 / 查看命令",
+    "category": {
+      "conversation": "对话",
+      "project": "项目",
+      "code": "代码与审查",
+      "config": "配置与工具",
+      "info": "信息与帮助",
+      "session": "会话"
+    }
   }
 }

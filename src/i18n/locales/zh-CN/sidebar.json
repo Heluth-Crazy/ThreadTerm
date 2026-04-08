@@ -277,7 +277,8 @@
         "deleteProject": "删除项目失败",
         "deleteSessions": "删除会话失败"
       }
-    }
+    },
+    "liveGrid": "实时卡片流"
   },
   "sessions": {
     "title": "会话",
@@ -362,6 +363,8 @@
   "version": {
     "updateAvailable": "有可用更新"
   },
+  "viewProjects": "项目",
+  "viewSessions": "会话",
   "deleteConfirmation": {
     "deleteProject": "删除项目",
     "deleteSession": "删除会话",

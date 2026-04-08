@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../../utils/api';
+import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
+import type { PendingPermissionRequest } from '../../../stores/sessionStatusStore';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import type {
   ChatPhase,
@@ -18,6 +20,7 @@ import {
   CHAT_RESPONSE_TYPES,
   THINKING_MESSAGE_TYPES,
 } from '../utils/chatConstants';
+import { SLASH_COMMANDS } from '../components/CommandSuggestions';
 import {
   makeMessageId,
   flattenFiles,
@@ -96,6 +99,9 @@ export function useChatPanel({
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id ?? null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
+  const [isCmdOpen, setIsCmdOpen] = useState(false);
+  const [cmdQuery, setCmdQuery] = useState('');
+  const [cmdActiveIndex, setCmdActiveIndex] = useState(0);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const filePickerRef = useRef<HTMLDivElement>(null);
@@ -154,6 +160,14 @@ export function useChatPanel({
       .slice(0, 14)
       .map((item) => item.entry);
   }, [isMentionOpen, mentionQuery, projectFiles]);
+
+  const cmdFilteredCommands = useMemo(() => {
+    if (!isCmdOpen) return [];
+    const commands = SLASH_COMMANDS[activeProvider] ?? SLASH_COMMANDS.claude;
+    return commands.filter((c) =>
+      c.cmd.toLowerCase().startsWith(`/${cmdQuery.toLowerCase()}`),
+    );
+  }, [isCmdOpen, cmdQuery, activeProvider]);
 
   const filePickerSuggestions = useMemo(() => {
     const query = filePickerQuery.trim().toLowerCase();
@@ -537,6 +551,36 @@ export function useChatPanel({
     }
   }, [completeAssistant, onSessionInactive, onSessionNotProcessing]);
 
+  const [pendingPermission, setPendingPermissionLocal] = useState<PendingPermissionRequest | null>(() => {
+    const sid = selectedSession?.id;
+    return sid ? (useSessionStatusStore.getState().pendingPermissions[sid] ?? null) : null;
+  });
+
+  useEffect(() => {
+    return useSessionStatusStore.subscribe((state) => {
+      const sid = currentSessionIdRef.current;
+      setPendingPermissionLocal(sid ? (state.pendingPermissions[sid] ?? null) : null);
+    });
+  }, []);
+
+  const handlePermissionResponse = useCallback((allow: boolean, answer?: string) => {
+    const sessionId = currentSessionIdRef.current;
+    if (!sessionId) return;
+
+    const pending = useSessionStatusStore.getState().pendingPermissions[sessionId];
+    if (!pending) return;
+
+    useSessionStatusStore.getState().clearPendingPermission(sessionId);
+    useSessionStatusStore.getState().setProcessing(sessionId);
+
+    sendMessage({
+      type: 'claude-permission-response',
+      requestId: pending.requestId,
+      allow,
+      ...(answer !== undefined && { message: answer }),
+    });
+  }, [sendMessage]);
+
   const handleLatestMessage = useCallback((message: any) => {
     if (!message || typeof message !== 'object') {
       return;
@@ -559,17 +603,15 @@ export function useChatPanel({
     }
 
     if (messageType === 'claude-permission-request' && typeof message.requestId === 'string') {
+      const permSessionId = typeof message.sessionId === 'string'
+        ? message.sessionId
+        : currentSessionIdRef.current;
+      // Status + pending permission are handled by useSessionStatusTracker at App level
+      // Just add a chat message so the user sees context in the conversation
       const toolName = typeof message.toolName === 'string' ? message.toolName : 'tool';
-      addSystemEventMessage(
-        'status',
-        `Permission request auto-denied for ${toolName} (chat panel does not support interactive approvals).`,
-      );
-      sendMessage({
-        type: 'claude-permission-response',
-        requestId: message.requestId,
-        allow: false,
-        message: 'Interactive tool approvals are not supported in this chat panel.',
-      });
+      if (toolName !== 'AskUserQuestion') {
+        addSystemEventMessage('status', t('permission.requestPending', { tool: toolName }));
+      }
       return;
     }
 
@@ -1044,11 +1086,69 @@ Use these as file path references only. Read file contents from the workspace wh
     suppressInputEchoRef.current = null;
     setInput(nextValue);
     updateComposerAssistState(nextValue, event.target);
+
+    // Slash command detection: show suggestions when input starts with "/"
+    if (nextValue.startsWith('/')) {
+      const query = nextValue.slice(1).split(/\s/)[0] ?? '';
+      // Only show if user hasn't typed a space yet (still completing the command)
+      if (!nextValue.slice(1).includes(' ')) {
+        setCmdQuery(query);
+        setCmdActiveIndex(0);
+        setIsCmdOpen(true);
+      } else {
+        setIsCmdOpen(false);
+      }
+    } else {
+      setIsCmdOpen(false);
+    }
   }, [updateComposerAssistState]);
+
+  const handleSelectCommand = useCallback((cmd: string) => {
+    setInput(cmd + ' ');
+    setIsCmdOpen(false);
+    setCmdQuery('');
+    setCmdActiveIndex(0);
+    // Focus and move cursor to end
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (el) {
+        el.focus();
+        const len = cmd.length + 1;
+        el.setSelectionRange(len, len);
+      }
+    });
+  }, []);
 
   const handleInputKeyDown = useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (isComposingRef.current || event.nativeEvent.isComposing) {
       return;
+    }
+
+    // Command suggestions keyboard handling
+    if (isCmdOpen && cmdFilteredCommands.length > 0) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setIsCmdOpen(false);
+        return;
+      }
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setCmdActiveIndex((prev) => (prev + 1) % cmdFilteredCommands.length);
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setCmdActiveIndex((prev) => (prev - 1 + cmdFilteredCommands.length) % cmdFilteredCommands.length);
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        const selected = cmdFilteredCommands[cmdActiveIndex] || cmdFilteredCommands[0];
+        if (selected) {
+          handleSelectCommand(selected.cmd);
+        }
+        return;
+      }
     }
 
     if (event.key === 'Escape' && isMentionOpen) {
@@ -1088,9 +1188,10 @@ Use these as file path references only. Read file contents from the workspace wh
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       setIsFilePickerOpen(false);
+      setIsCmdOpen(false);
       void sendChatMessage();
     }
-  }, [handleSelectMention, isMentionOpen, mentionActiveIndex, mentionSuggestions, sendChatMessage]);
+  }, [cmdActiveIndex, cmdFilteredCommands, handleSelectCommand, handleSelectMention, isCmdOpen, isMentionOpen, mentionActiveIndex, mentionSuggestions, sendChatMessage]);
 
   const handleInputSelect = useCallback((event: React.SyntheticEvent<HTMLTextAreaElement>) => {
     updateComposerAssistState(event.currentTarget.value, event.currentTarget);
@@ -1371,6 +1472,11 @@ Use these as file path references only. Read file contents from the workspace wh
     handleSelectMention,
     sendChatMessage,
     abortCurrentRequest,
+    isCmdOpen,
+    cmdQuery,
+    cmdActiveIndex,
+    cmdFilteredCommands,
+    handleSelectCommand,
     inputRef,
     filePickerRef,
     filePickerToggleRef,
@@ -1385,5 +1491,9 @@ Use these as file path references only. Read file contents from the workspace wh
     // Shared
     selectedProject,
     selectedSession,
+
+    // Permission request
+    pendingPermission,
+    handlePermissionResponse,
   };
 }

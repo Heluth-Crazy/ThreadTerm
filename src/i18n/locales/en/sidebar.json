@@ -277,7 +277,8 @@
         "deleteProject": "Failed to delete project",
         "deleteSessions": "Failed to delete sessions"
       }
-    }
+    },
+    "liveGrid": "Live Grid"
   },
   "sessions": {
     "title": "Sessions",
@@ -362,6 +363,8 @@
   "version": {
     "updateAvailable": "Update available"
   },
+  "viewProjects": "Projects",
+  "viewSessions": "Sessions",
   "deleteConfirmation": {
     "deleteProject": "Delete Project",
     "deleteSession": "Delete Session",
