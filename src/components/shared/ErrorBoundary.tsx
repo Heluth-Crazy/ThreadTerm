@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from 'react';
+import i18n from '../../i18n/config';
 
 interface ErrorBoundaryProps {
   /** Label shown in the recovery UI, e.g. "Git Panel" or "Terminal". */
@@ -48,7 +49,7 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
 
   render() {
     if (this.state.hasError) {
-      const area = this.props.area ?? 'this section';
+      const area = this.props.area ?? i18n.t('common:errorBoundary.fallbackArea');
       const icon = (this.props.area && AREA_ICONS[this.props.area]) || '⚠';
 
       return (
@@ -58,10 +59,10 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
           </div>
           <div>
             <p className="text-sm font-medium text-foreground">
-              Something went wrong in {area}
+              {i18n.t('common:errorBoundary.title', { area })}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              {this.state.error?.message || 'An unexpected error occurred'}
+              {this.state.error?.message || i18n.t('common:errorBoundary.unknownError')}
             </p>
           </div>
           <button
@@ -69,7 +70,7 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
             onClick={this.resetErrorBoundary}
             className="rounded-lg border border-border/60 bg-card px-4 py-2 text-xs text-foreground transition-colors hover:bg-muted/60"
           >
-            Retry
+            {i18n.t('common:errorBoundary.retry')}
           </button>
         </div>
       );

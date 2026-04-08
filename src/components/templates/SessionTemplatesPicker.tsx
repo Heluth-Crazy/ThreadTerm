@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { authenticatedFetch } from '../../utils/api';
 import type { SessionTemplate } from '../../types/templates';
 
@@ -16,6 +17,7 @@ export default function SessionTemplatesPicker({
   onSelectTemplate,
   onSkip,
 }: SessionTemplatesPickerProps) {
+  const { t } = useTranslation('settings');
   const [templates, setTemplates] = useState<SessionTemplate[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -93,9 +95,9 @@ export default function SessionTemplatesPicker({
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h2 className="text-base font-semibold text-foreground">Choose a Template</h2>
+            <h2 className="text-base font-semibold text-foreground">{t('templates.picker.title')}</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Start with a pre-configured session or begin from scratch
+              {t('templates.picker.subtitle')}
             </p>
           </div>
           <button
@@ -117,20 +119,20 @@ export default function SessionTemplatesPicker({
             ➕
           </span>
           <div>
-            <span className="text-sm font-medium text-foreground">Start blank session</span>
-            <p className="text-xs text-muted-foreground">Create a session without any template</p>
+            <span className="text-sm font-medium text-foreground">{t('templates.picker.startBlank')}</span>
+            <p className="text-xs text-muted-foreground">{t('templates.picker.startBlankDescription')}</p>
           </div>
         </button>
 
         {isLoading ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">Loading templates...</p>
+          <p className="py-8 text-center text-sm text-muted-foreground">{t('templates.picker.loading')}</p>
         ) : (
           <div className="space-y-4">
             {/* Built-in templates */}
             {builtInTemplates.length > 0 && (
               <div>
                 <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Built-in Templates
+                  {t('templates.builtIn')}
                 </h3>
                 <div className="grid grid-cols-2 gap-2">
                   {builtInTemplates.map(renderTemplateCard)}
@@ -142,7 +144,7 @@ export default function SessionTemplatesPicker({
             {userTemplates.length > 0 && (
               <div>
                 <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  My Templates
+                  {t('templates.myTemplates')}
                 </h3>
                 <div className="grid grid-cols-2 gap-2">
                   {userTemplates.map(renderTemplateCard)}

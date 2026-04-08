@@ -265,7 +265,15 @@
     "newSession": "新建会话",
     "cycleView": "切换聊天/分屏/终端",
     "showHelp": "显示此帮助",
-    "jumpToSession": "按位置跳转到会话"
+    "jumpToSession": "按位置跳转到会话",
+    "openSettings": "打开设置",
+    "toggleSidebar": "切换侧边栏",
+    "toggleShortcuts": "切换快捷键面板",
+    "closeOverlay": "关闭弹窗 / 模态框"
+  },
+  "shortcutsSettings": {
+    "interface": "界面",
+    "platformNote": "⌘ = Cmd (Mac) / Ctrl (Windows/Linux)"
   },
   "liveGrid": {
     "title": "实时卡片流",
@@ -301,5 +309,15 @@
     "placeholder": "会话名称",
     "cancel": "取消",
     "save": "保存"
+  },
+  "errorBoundary": {
+    "title": "{{area}}出现了问题",
+    "fallbackArea": "此区域",
+    "unknownError": "发生了未知错误",
+    "retry": "重试"
+  },
+  "contextWindow": {
+    "tooltip": "已使用 {{used}} / {{total}} 个 token（{{percentage}}%）",
+    "warning": "上下文窗口即将用尽。请使用 /compact 命令进行压缩。"
   }
 }

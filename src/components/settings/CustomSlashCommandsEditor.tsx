@@ -22,6 +22,7 @@ function CommandForm({
   onSave: (cmd: Omit<CustomSlashCommand, 'id'>) => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation('settings');
   const [name, setName] = useState(initial?.name ?? '');
   const [description, setDescription] = useState(initial?.description ?? '');
   const [prompt, setPrompt] = useState(initial?.prompt ?? '');
@@ -31,11 +32,11 @@ function CommandForm({
   const [error, setError] = useState('');
 
   const validate = () => {
-    if (!name.trim()) return 'Name is required';
+    if (!name.trim()) return t('slashCommands.form.nameRequired');
     if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(name.trim())) {
-      return 'Name must start with a letter and contain only letters, numbers, hyphens, underscores';
+      return t('slashCommands.form.nameInvalid');
     }
-    if (!prompt.trim()) return 'Prompt is required';
+    if (!prompt.trim()) return t('slashCommands.form.promptRequired');
     return '';
   };
 
@@ -52,35 +53,35 @@ function CommandForm({
   return (
     <div className="space-y-3 rounded-xl border border-border/60 bg-card/50 p-4">
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground">Name (no spaces)</label>
+        <label className="text-xs font-medium text-muted-foreground">{t('slashCommands.form.name')}</label>
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="deploy"
+          placeholder={t('slashCommands.form.namePlaceholder')}
           className="h-9 text-sm"
         />
       </div>
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground">Description</label>
+        <label className="text-xs font-medium text-muted-foreground">{t('slashCommands.form.description')}</label>
         <Input
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="Deploy to staging"
+          placeholder={t('slashCommands.form.descriptionPlaceholder')}
           className="h-9 text-sm"
         />
       </div>
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground">Prompt template</label>
+        <label className="text-xs font-medium text-muted-foreground">{t('slashCommands.form.promptTemplate')}</label>
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Run the deployment pipeline for staging environment..."
+          placeholder={t('slashCommands.form.promptPlaceholder')}
           rows={3}
           className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 resize-y"
         />
       </div>
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground">Provider</label>
+        <label className="text-xs font-medium text-muted-foreground">{t('slashCommands.form.provider')}</label>
         <select
           value={provider}
           onChange={(e) => setProvider(e.target.value as CustomSlashCommand['provider'])}
@@ -88,7 +89,7 @@ function CommandForm({
         >
           {PROVIDER_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>
-              {opt.label}
+              {opt.value === 'all' ? t('slashCommands.form.allProviders') : opt.label}
             </option>
           ))}
         </select>
@@ -97,11 +98,11 @@ function CommandForm({
       <div className="flex items-center gap-2 pt-1">
         <Button size="sm" onClick={handleSubmit} className="gap-1.5">
           <Check className="h-3.5 w-3.5" />
-          Save
+          {t('common:buttons.save')}
         </Button>
         <Button size="sm" variant="ghost" onClick={onCancel} className="gap-1.5">
           <X className="h-3.5 w-3.5" />
-          Cancel
+          {t('common:buttons.cancel')}
         </Button>
       </div>
     </div>
@@ -183,9 +184,9 @@ export default function CustomSlashCommandsEditor() {
     <div className="rounded-[20px] border border-border/60 bg-card/72 p-4 shadow-sm">
       <div className="flex items-center justify-between">
         <div>
-          <div className="font-medium text-foreground">Custom Slash Commands</div>
+          <div className="font-medium text-foreground">{t('slashCommands.title')}</div>
           <div className="text-sm text-muted-foreground">
-            Define custom /<span className="font-mono">commands</span> that insert prompt templates
+            {t('slashCommands.description')}
           </div>
         </div>
         {!isAdding && (
@@ -199,7 +200,7 @@ export default function CustomSlashCommandsEditor() {
             className="gap-1.5"
           >
             <Plus className="h-3.5 w-3.5" />
-            Add
+            {t('slashCommands.add')}
           </Button>
         )}
       </div>
@@ -210,12 +211,12 @@ export default function CustomSlashCommandsEditor() {
         )}
 
         {isLoading && (
-          <p className="py-4 text-center text-sm text-muted-foreground">Loading...</p>
+          <p className="py-4 text-center text-sm text-muted-foreground">{t('slashCommands.loading')}</p>
         )}
 
         {!isLoading && commands.length === 0 && !isAdding && (
           <p className="py-4 text-center text-sm text-muted-foreground">
-            No custom commands yet. Click "Add" to create one.
+            {t('slashCommands.empty')}
           </p>
         )}
 
