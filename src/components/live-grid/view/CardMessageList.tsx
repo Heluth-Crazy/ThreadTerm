@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { MessageSnapshot } from '../../../stores/liveGridStore';
 
@@ -12,6 +12,40 @@ const animatedIds = new Set<string>();
 
 const CURSOR_CLASS =
   'inline-block w-[2px] h-[1em] bg-current ml-0.5 align-text-bottom animate-[cursor-blink_1s_ease-in-out_infinite]';
+
+/** Extract a short human-readable label from raw tool text. */
+function extractToolLabel(text: string): string {
+  if (text.startsWith('🔧 ')) return text.slice(2).split('\n')[0].slice(0, 30);
+  if (text.startsWith('$ ')) return 'running command…';
+  if (text.toLowerCase().startsWith('command:')) return 'running command…';
+  return text.split('\n')[0].slice(0, 30);
+}
+
+/** Collapse consecutive tool snapshots into a single "working…" indicator. */
+function collapseToolRuns(snaps: MessageSnapshot[]): MessageSnapshot[] {
+  const result: MessageSnapshot[] = [];
+  let toolCount = 0;
+
+  for (const snap of snaps) {
+    if (snap.kind === 'tool') {
+      toolCount++;
+      const toolSnap: MessageSnapshot = {
+        ...snap,
+        id: `tool-group-${snap.timestamp}`,
+        text: toolCount > 1 ? `working… (${toolCount} steps)` : 'working…',
+      };
+      if (result.length > 0 && result[result.length - 1].kind === 'tool') {
+        result[result.length - 1] = toolSnap;
+      } else {
+        result.push(toolSnap);
+      }
+    } else {
+      toolCount = 0;
+      result.push(snap);
+    }
+  }
+  return result;
+}
 
 function TypewriterText({ text, onComplete }: { text: string; onComplete: () => void }) {
   const [displayed, setDisplayed] = useState('');
@@ -79,11 +113,12 @@ function MessageBubble({ snap }: { snap: MessageSnapshot }) {
   const isAssistant = snap.kind === 'assistant' || snap.kind === 'system';
 
   if (isTool) {
+    const label = extractToolLabel(snap.text);
     return (
-      <div className="flex items-center gap-1.5 px-1">
-        <span className="text-[10px] text-muted-foreground/70">⚙</span>
-        <span className="text-[10px] leading-snug text-muted-foreground/70 truncate">
-          {snap.text}
+      <div className="flex items-center gap-1.5 px-1 py-0.5">
+        <span className="shrink-0 text-[9px] text-muted-foreground/50">⚙</span>
+        <span className="truncate text-[9px] text-muted-foreground/50 italic">
+          {label}
         </span>
       </div>
     );
@@ -91,8 +126,8 @@ function MessageBubble({ snap }: { snap: MessageSnapshot }) {
 
   if (isError) {
     return (
-      <div className="rounded-md bg-red-500/8 px-2.5 py-1.5 dark:bg-red-500/10">
-        <p className="text-[11px] leading-relaxed text-red-600 dark:text-red-400 break-words whitespace-pre-wrap">
+      <div className="max-h-24 overflow-hidden rounded-md bg-red-500/8 px-2.5 py-1.5 dark:bg-red-500/10">
+        <p className="text-[11px] leading-relaxed text-red-600 dark:text-red-400 line-clamp-5">
           {snap.text}
         </p>
       </div>
@@ -102,8 +137,8 @@ function MessageBubble({ snap }: { snap: MessageSnapshot }) {
   if (isUser) {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 px-3 py-1.5 dark:bg-primary/80">
-          <p className="text-[11px] leading-relaxed text-primary-foreground break-words whitespace-pre-wrap">
+        <div className="max-w-[85%] max-h-24 overflow-hidden rounded-2xl rounded-br-md bg-primary/90 px-3 py-1.5 dark:bg-primary/80">
+          <p className="text-[11px] leading-relaxed text-primary-foreground line-clamp-5">
             {snap.text}
           </p>
         </div>
@@ -115,8 +150,8 @@ function MessageBubble({ snap }: { snap: MessageSnapshot }) {
   if (isAssistant) {
     return (
       <div className="flex justify-start">
-        <div className="max-w-[92%]">
-          <p className="text-[11px] leading-relaxed text-foreground/85 break-words whitespace-pre-wrap">
+        <div className="max-w-[92%] max-h-32 overflow-hidden">
+          <p className="text-[11px] leading-relaxed text-foreground/85 line-clamp-6">
             <AnimatedAssistantMessage snap={snap} />
           </p>
         </div>
@@ -127,8 +162,8 @@ function MessageBubble({ snap }: { snap: MessageSnapshot }) {
   // Fallback (shouldn't happen)
   return (
     <div className="flex justify-start">
-      <div className="max-w-[92%]">
-        <p className="text-[11px] leading-relaxed text-foreground/85 break-words whitespace-pre-wrap">
+      <div className="max-w-[92%] max-h-32 overflow-hidden">
+        <p className="text-[11px] leading-relaxed text-foreground/85 line-clamp-6">
           {snap.text}
         </p>
       </div>
@@ -140,6 +175,8 @@ export default function CardMessageList({ snapshots }: CardMessageListProps) {
   const { t } = useTranslation('common');
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAutoScrollRef = useRef(true);
+
+  const displaySnapshots = useMemo(() => collapseToolRuns(snapshots), [snapshots]);
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;
@@ -162,7 +199,7 @@ export default function CardMessageList({ snapshots }: CardMessageListProps) {
     if (isAutoScrollRef.current) {
       scrollToBottom();
     }
-  }, [snapshots, scrollToBottom]);
+  }, [displaySnapshots, scrollToBottom]);
 
   if (snapshots.length === 0) {
     return (
@@ -173,13 +210,13 @@ export default function CardMessageList({ snapshots }: CardMessageListProps) {
   }
 
   return (
-    <div className="relative flex-1 min-h-0 overflow-hidden">
+    <div className="relative min-h-0 flex-1 overflow-hidden">
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="h-full overflow-y-auto px-2.5 py-2 space-y-1.5 scroll-smooth"
+        className="absolute inset-0 overflow-y-auto px-2.5 py-2 space-y-1.5 scroll-smooth"
       >
-        {snapshots.map((snap) => (
+        {displaySnapshots.map((snap) => (
           <MessageBubble key={snap.id} snap={snap} />
         ))}
       </div>
