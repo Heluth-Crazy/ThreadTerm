@@ -8,6 +8,7 @@ import MiniInputBar from './MiniInputBar';
 import { useLiveGridStore } from '../../../stores/liveGridStore';
 import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
 import { useCardHistory } from '../../../hooks/useCardHistory';
+import { getProviderBorderClass, getProviderDotClass } from '../../../utils/providerColors';
 import type { SessionRuntimeStatus } from '../../../stores/sessionStatusStore';
 import type { MessageSnapshot } from '../../../stores/liveGridStore';
 
@@ -123,12 +124,13 @@ function LiveCardInner({
 
   return (
     <div
-      className={`flex h-full flex-col overflow-hidden rounded-xl border border-border/60 bg-card/90 transition-shadow ${statusRingClass(status)}`}
+      className={`flex h-full flex-col overflow-hidden rounded-xl border border-border/60 border-l-4 ${getProviderBorderClass(provider)} bg-card/90 transition-shadow ${statusRingClass(status)}`}
       onDoubleClick={handleDoubleClick}
     >
       {/* Header */}
       <div className="flex items-center gap-2 border-b border-border/40 px-2.5 py-1.5">
         <SessionProviderLogo provider={provider} className="h-4 w-4" />
+        <span className={`inline-block h-2 w-2 rounded-full ${getProviderDotClass(provider)}`} />
         <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
           {sessionTitle}
         </span>
