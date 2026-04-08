@@ -67,6 +67,7 @@ import { startProjectWatcher, stopProjectWatcher, stopAllProjectWatchers } from 
 import { setupWsHandler, handleChatConnection } from './handlers/wsHandler.js';
 import { ptySessionsMap, IS_WINDOWS, buildEnhancedPath, sanitizeAgentOptions, isPtyProcessAlive, terminateAllPtySessions, setupShellHandler } from './handlers/ptyHandler.js';
 import slashCommandsRoutes from './routes/slash-commands.js';
+import templatesRoutes from './routes/templates.js';
 
 let isServerShuttingDown = false;
 let shutdownServerResourcesPromise = null;
@@ -317,6 +318,9 @@ app.use('/api/mcp-utils', authenticateToken, mcpUtilsRoutes);
 
 // Custom slash commands API Routes (protected)
 app.use('/api/slash-commands', authenticateToken, slashCommandsRoutes);
+
+// Session templates API Routes (protected)
+app.use('/api/templates', authenticateToken, templatesRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);

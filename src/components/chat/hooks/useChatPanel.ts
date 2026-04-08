@@ -1340,6 +1340,24 @@ Use these as file path references only. Read file contents from the workspace wh
     void loadSessionHistory();
   }, [loadSessionHistory, selectedProject.name, selectedSession?.id]);
 
+  // Pre-fill input from session template if a pending template message exists
+  useEffect(() => {
+    const pending = window.__pendingTemplateMessage;
+    if (!pending) return;
+    delete window.__pendingTemplateMessage;
+    // Small delay to ensure the textarea is mounted
+    const timer = setTimeout(() => {
+      setInput(pending);
+      const textarea = inputRef.current;
+      if (textarea) {
+        textarea.value = pending;
+        textarea.setSelectionRange(pending.length, pending.length);
+        textarea.focus();
+      }
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [selectedSession?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Do not auto-reload current session history on external project updates.
   // Streaming state in chat is authoritative while this panel is active; reloading
   // can race against persistence and temporarily hide local/streamed messages.

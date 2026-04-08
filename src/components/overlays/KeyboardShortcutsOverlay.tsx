@@ -38,23 +38,21 @@ export default function KeyboardShortcutsOverlay({ open, onClose }: KeyboardShor
       title: t('shortcuts.navigation', 'Navigation'),
       entries: [
         { keys: ['⌘', 'K'], label: t('shortcuts.cmdPalette', 'Open command palette') },
-        { keys: ['⌘', 'F'], label: t('shortcuts.fullscreen', 'Toggle fullscreen') },
+        { keys: ['⌘', ','], label: t('shortcuts.openSettings', 'Open settings') },
         { keys: ['⌘', '['], label: t('shortcuts.prevSession', 'Previous session') },
         { keys: ['⌘', ']'], label: t('shortcuts.nextSession', 'Next session') },
         { keys: ['⌘', 'N'], label: t('shortcuts.newSession', 'New session') },
+        { keys: ['⌘', '1–9'], label: t('shortcuts.jumpToSession', 'Jump to session by position') },
       ],
     },
     {
       title: t('shortcuts.view', 'View'),
       entries: [
-        { keys: ['⌘', '`'], label: t('shortcuts.cycleView', 'Cycle chat/split/terminal') },
+        { keys: ['⌘', 'F'], label: t('shortcuts.fullscreen', 'Toggle fullscreen') },
+        { keys: ['⌘', 'B'], label: t('shortcuts.toggleSidebar', 'Toggle sidebar panels') },
+        { keys: ['⌘', '/'], label: t('shortcuts.toggleShortcuts', 'Toggle this shortcuts panel') },
         { keys: ['?'], label: t('shortcuts.showHelp', 'Show this help') },
-      ],
-    },
-    {
-      title: t('shortcuts.session', 'Session'),
-      entries: [
-        { keys: ['⌘', '1–9'], label: t('shortcuts.jumpToSession', 'Jump to session by position') },
+        { keys: ['Esc'], label: t('shortcuts.closeOverlay', 'Close overlay / modal') },
       ],
     },
   ];
@@ -81,6 +79,11 @@ export default function KeyboardShortcutsOverlay({ open, onClose }: KeyboardShor
             ✕
           </button>
         </div>
+
+        {/* Platform note */}
+        <p className="mb-4 text-[11px] text-muted-foreground">
+          ⌘ = Cmd (Mac) / Ctrl (Windows/Linux)
+        </p>
 
         {/* Sections */}
         <div className="space-y-5">
