@@ -271,6 +271,7 @@
     "focusMode": "포커스 모드",
     "exitFocus": "포커스 종료",
     "inputPlaceholder": "메시지를 보내세요...",
+    "noMessages": "아직 메시지가 없습니다",
     "layout": {
       "1x2": "1×2",
       "2x2": "2×2",

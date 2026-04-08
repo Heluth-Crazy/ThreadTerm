@@ -275,6 +275,7 @@
     "focusMode": "聚焦模式",
     "exitFocus": "退出聚焦",
     "inputPlaceholder": "发送消息...",
+    "noMessages": "暂无消息",
     "layout": {
       "1x2": "1×2",
       "2x2": "2×2",

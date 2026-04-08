@@ -7,7 +7,7 @@ type MessageCallback = (message: any) => void;
 
 export function useMultiSessionDispatcher() {
   const { latestMessage, messageSequence, sendMessage } = useWebSocket();
-  const pushSnapshot = useLiveGridStore((s) => s.pushSnapshot);
+  const upsertSnapshot = useLiveGridStore((s) => s.upsertSnapshot);
   const cards = useLiveGridStore((s) => s.cards);
 
   const listenersRef = useRef<Map<string, Set<MessageCallback>>>(new Map());
@@ -39,12 +39,11 @@ export function useMultiSessionDispatcher() {
       const userSnap: MessageSnapshot = {
         id: `${sessionId}-user-${Date.now()}`,
         kind: 'user',
-        textPreview:
-          command.length > 120 ? command.slice(0, 119) + '…' : command,
+        text: command,
         streaming: false,
         timestamp: Date.now(),
       };
-      pushSnapshot(sessionId, userSnap);
+      upsertSnapshot(sessionId, userSnap);
 
       return sendMessage({
         type,
@@ -52,7 +51,7 @@ export function useMultiSessionDispatcher() {
         options: { sessionId, ...options },
       });
     },
-    [cards, sendMessage, pushSnapshot],
+    [cards, sendMessage, upsertSnapshot],
   );
 
   // Dispatch WS messages to per-session listeners (used by focused card, etc.)
