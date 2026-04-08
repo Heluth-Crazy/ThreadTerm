@@ -275,7 +275,7 @@ function transformCodexEvent(event) {
             itemType: 'agent_message',
             message: {
               role: 'assistant',
-              content: item.text
+              content: item.text ?? item.content ?? ''
             }
           };
 
@@ -285,7 +285,7 @@ function transformCodexEvent(event) {
             itemType: 'reasoning',
             message: {
               role: 'assistant',
-              content: item.text,
+              content: item.text ?? item.content ?? '',
               isReasoning: true
             }
           };
@@ -482,6 +482,7 @@ export async function queryCodex(command, options = {}, ws) {
     sendMessage(ws, {
       type: 'session-created',
       sessionId: currentSessionId,
+      originalSessionId: sessionId || null,
       provider: 'codex'
     });
 

@@ -42,6 +42,7 @@ interface LiveGridState {
   setFocusedCard: (id: string | null) => void;
   pushSnapshot: (sessionId: string, snap: MessageSnapshot) => void;
   completeLastStreamingSnapshot: (sessionId: string) => void;
+  updateCardSessionId: (oldSessionId: string, newSessionId: string) => void;
 }
 
 export const useLiveGridStore = create<LiveGridState>()(
@@ -118,6 +119,31 @@ export const useLiveGridStore = create<LiveGridState>()(
               ...state.messageSnapshots,
               [sessionId]: updated,
             },
+          };
+        }),
+
+      updateCardSessionId: (oldSessionId, newSessionId) =>
+        set((state) => {
+          const cardIdx = state.cards.findIndex((c) => c.sessionId === oldSessionId);
+          if (cardIdx === -1) return state;
+          const updatedCards = [...state.cards];
+          updatedCards[cardIdx] = { ...updatedCards[cardIdx], sessionId: newSessionId };
+
+          // Migrate existing snapshots from old ID to new ID
+          const { [oldSessionId]: oldSnaps, ...restSnaps } = state.messageSnapshots;
+          const newSnaps = { ...restSnaps };
+          if (oldSnaps && oldSnaps.length > 0) {
+            newSnaps[newSessionId] = [
+              ...(newSnaps[newSessionId] || []),
+              ...oldSnaps,
+            ];
+          }
+
+          return {
+            cards: updatedCards,
+            focusedCardId:
+              state.focusedCardId === oldSessionId ? newSessionId : state.focusedCardId,
+            messageSnapshots: newSnaps,
           };
         }),
     }),
