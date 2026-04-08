@@ -22,7 +22,7 @@ export default function ProjectListPanel({
       {/* Header */}
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-border/40 px-3">
         <span className="text-xs font-semibold text-foreground">
-          {t('projects', 'Projects')}
+          {t('projects.title', 'Projects')}
         </span>
         <button
           type="button"

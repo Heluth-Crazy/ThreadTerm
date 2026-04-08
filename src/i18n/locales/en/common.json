@@ -287,6 +287,14 @@
       "needsAttention": "Needs Attention",
       "completed": "Completed",
       "idle": "Idle"
-    }
+    },
+    "searchSessions": "Search sessions…",
+    "allProjects": "All Projects",
+    "noAvailableSessions": "No available sessions"
+  },
+  "sessionRename": {
+    "placeholder": "Session name",
+    "cancel": "Cancel",
+    "save": "Save"
   }
 }

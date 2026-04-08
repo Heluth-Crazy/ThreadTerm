@@ -291,6 +291,14 @@
       "needsAttention": "需要关注",
       "completed": "已完成",
       "idle": "空闲"
-    }
+    },
+    "searchSessions": "搜索会话…",
+    "allProjects": "全部项目",
+    "noAvailableSessions": "没有可用的会话"
+  },
+  "sessionRename": {
+    "placeholder": "会话名称",
+    "cancel": "取消",
+    "save": "保存"
   }
 }

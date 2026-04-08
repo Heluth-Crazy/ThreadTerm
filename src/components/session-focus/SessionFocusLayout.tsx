@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Pencil } from 'lucide-react';
 import { useSessionStatusStore } from '../../stores/sessionStatusStore';
 import ChatPanel from '../chat/ChatPanel';
 import ErrorBoundary from '../ErrorBoundary';
@@ -8,6 +9,7 @@ import GitPanel from '../GitPanel';
 import { TerminalGrid } from '../terminal-grid';
 import type { SessionLifecycleHandler } from '../main-content/types/types';
 import type { AppTab, Project, ProjectSession } from '../../types/app';
+import { api } from '../../utils/api';
 
 const AnyGitPanel = GitPanel as any;
 
@@ -31,6 +33,7 @@ export interface SessionFocusLayoutProps {
   onNavigateToSession: (targetSessionId: string) => void;
   onBackToOverview: () => void;
   onShowSettings: () => void;
+  onRenameSession?: (projectName: string, sessionId: string, newTitle: string) => void;
   ws: WebSocket | null;
   isLoading: boolean;
 }
@@ -87,6 +90,7 @@ export default function SessionFocusLayout({
   onNavigateToSession,
   onBackToOverview,
   onShowSettings,
+  onRenameSession,
   isLoading,
 }: SessionFocusLayoutProps) {
   const { t } = useTranslation('common');
@@ -94,10 +98,37 @@ export default function SessionFocusLayout({
   const [focusView, setFocusView] = useState<'chat' | 'split' | 'terminal'>('split');
   const { splitPercent, containerRef, handleMouseDown } = useSplitPanel(55);
   const getStatus = useSessionStatusStore((s) => s.getStatus);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   const provider = selectedSession?.__provider ?? 'claude';
   const statusEntry = selectedSession ? getStatus(selectedSession.id) : null;
   const sessionTitle = selectedSession?.title || selectedSession?.name || selectedSession?.id?.slice(0, 8) || '';
+
+  const startRename = useCallback(() => {
+    setRenameValue(sessionTitle);
+    setIsRenaming(true);
+    setTimeout(() => renameInputRef.current?.focus(), 0);
+  }, [sessionTitle]);
+
+  const commitRename = useCallback(async () => {
+    if (!selectedSession || !renameValue.trim()) {
+      setIsRenaming(false);
+      return;
+    }
+    try {
+      await api.renameSession(selectedProject.name, selectedSession.id, renameValue.trim());
+      onRenameSession?.(selectedProject.name, selectedSession.id, renameValue.trim());
+    } catch (err) {
+      console.error('Failed to rename session:', err);
+    }
+    setIsRenaming(false);
+  }, [selectedSession, selectedProject?.name, renameValue, onRenameSession]);
+
+  const cancelRename = useCallback(() => {
+    setIsRenaming(false);
+  }, []);
 
   // Escape closes overlay
   useEffect(() => {
@@ -165,7 +196,33 @@ export default function SessionFocusLayout({
         >
           {provider}
         </span>
-        <span className="truncate text-xs font-medium text-foreground">{sessionTitle}</span>
+        {isRenaming ? (
+          <input
+            ref={renameInputRef}
+            type="text"
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitRename();
+              if (e.key === 'Escape') cancelRename();
+            }}
+            onBlur={commitRename}
+            className="max-w-[200px] rounded-md border border-primary/50 bg-muted/40 px-2 py-0.5 text-xs font-medium text-foreground outline-none"
+            placeholder={t('sessionRename.placeholder', 'Session name')}
+          />
+        ) : (
+          <span className="group/title flex items-center gap-1 truncate">
+            <span className="truncate text-xs font-medium text-foreground">{sessionTitle}</span>
+            <button
+              type="button"
+              onClick={startRename}
+              className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground/40 opacity-0 transition-all hover:text-foreground group-hover/title:opacity-100"
+              title={t('actions.rename', 'Rename')}
+            >
+              <Pencil className="h-3 w-3" />
+            </button>
+          </span>
+        )}
         <span className="text-xs text-muted-foreground/60">• {selectedProject.displayName || selectedProject.name}</span>
         {statusEntry ? (
           <span className={`inline-block h-1.5 w-1.5 rounded-full ${

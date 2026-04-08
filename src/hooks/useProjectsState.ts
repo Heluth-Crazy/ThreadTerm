@@ -747,10 +747,24 @@ export function useProjectsState({
   );
 
   const handleSessionDelete = useCallback(
-    (projectName: string, sessionIdToDelete: string, provider: SessionProvider) => {
+    async (projectName: string, sessionIdToDelete: string, provider: SessionProvider) => {
       if (selectedSession?.id === sessionIdToDelete) {
         setSelectedSession(null);
         navigate('/');
+      }
+
+      // Call backend API to persist the deletion
+      try {
+        const response =
+          provider === 'codex'
+            ? await api.deleteCodexSession(sessionIdToDelete)
+            : await api.deleteSession(projectName, sessionIdToDelete);
+
+        if (!response.ok) {
+          console.error('Failed to delete session on backend:', await response.text());
+        }
+      } catch (err) {
+        console.error('Error calling delete session API:', err);
       }
 
       setProjects((prevProjects) =>
@@ -784,6 +798,27 @@ export function useProjectsState({
       );
     },
     [navigate, selectedSession?.id],
+  );
+
+  const handleSessionRename = useCallback(
+    (projectName: string, sessionId: string, newTitle: string) => {
+      setProjects((prevProjects) =>
+        prevProjects.map((project) => {
+          if (project.name !== projectName) return project;
+          const updateTitle = (sessions: ProjectSession[] | undefined) =>
+            sessions?.map((s) => (s.id === sessionId ? { ...s, title: newTitle } : s));
+          return {
+            ...project,
+            sessions: updateTitle(project.sessions),
+            codexSessions: updateTitle(project.codexSessions),
+          };
+        }),
+      );
+      if (selectedSession?.id === sessionId) {
+        setSelectedSession((prev) => (prev ? { ...prev, title: newTitle } : prev));
+      }
+    },
+    [selectedSession?.id],
   );
 
   const handleSidebarRefresh = useCallback(async () => {
@@ -900,6 +935,7 @@ export function useProjectsState({
     handleSessionSelect,
     handleNewSession,
     handleSessionDelete,
+    handleSessionRename,
     handleProjectDelete,
     handleProjectCreated,
     handleSidebarRefresh,

@@ -287,6 +287,14 @@
       "needsAttention": "要注意",
       "completed": "完了",
       "idle": "待機"
-    }
+    },
+    "searchSessions": "セッション検索…",
+    "allProjects": "すべてのプロジェクト",
+    "noAvailableSessions": "利用可能なセッションがありません"
+  },
+  "sessionRename": {
+    "placeholder": "セッション名",
+    "cancel": "キャンセル",
+    "save": "保存"
   }
 }
