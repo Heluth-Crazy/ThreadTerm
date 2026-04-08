@@ -63,8 +63,10 @@ import { IS_PLATFORM } from './constants/config.js';
 import { FILE_ACCESS_MODE_HEADER, listProjectFileTree, readTextFileWithMode, readBinaryFileWithMode, writeTextFileWithMode, createDirectoryWithMode, getPathInfoWithMode } from './utils/file-access.js';
 import { logger } from './utils/logger.js';
 import { connectedClients, broadcastProgress, setupProjectsWatcher, closeProjectsWatchers } from './handlers/fileWatcher.js';
+import { startProjectWatcher, stopProjectWatcher, stopAllProjectWatchers } from './handlers/projectFileWatcher.js';
 import { setupWsHandler, handleChatConnection } from './handlers/wsHandler.js';
 import { ptySessionsMap, IS_WINDOWS, buildEnhancedPath, sanitizeAgentOptions, isPtyProcessAlive, terminateAllPtySessions, setupShellHandler } from './handlers/ptyHandler.js';
+import slashCommandsRoutes from './routes/slash-commands.js';
 
 let isServerShuttingDown = false;
 let shutdownServerResourcesPromise = null;
@@ -198,6 +200,7 @@ async function shutdownServerResources(options = {}) {
         logger.info('Shutting down backend server resources...');
 
         await closeProjectsWatchers();
+        await stopAllProjectWatchers();
         closeConnectedChatClients();
         terminateAllPtySessions();
         await closeWebSocketServer(Math.min(1500, timeout));
@@ -311,6 +314,9 @@ app.use('/api/skills', authenticateToken, skillsRoutes);
 app.use('/api/mcp', authenticateToken, mcpRoutes);
 app.use('/api/cursor', authenticateToken, cursorRoutes);
 app.use('/api/mcp-utils', authenticateToken, mcpUtilsRoutes);
+
+// Custom slash commands API Routes (protected)
+app.use('/api/slash-commands', authenticateToken, slashCommandsRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);

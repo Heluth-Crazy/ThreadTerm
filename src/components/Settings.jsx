@@ -7,6 +7,7 @@ import { cn } from '../lib/utils';
 import GitSettings from './GitSettings';
 import AgentListItem from './settings/AgentListItem';
 import PermissionsContent from './settings/PermissionsContent';
+import CustomSlashCommandsEditor from './settings/CustomSlashCommandsEditor';
 import LanguageSelector from './LanguageSelector';
 import {
   normalizeSessionLaunchProfiles,
@@ -225,6 +226,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
             embedded ? 'px-4 py-3.5 sm:px-6 lg:px-8' : 'p-4 md:p-6',
           )}>
             {activeTab === 'agents' && (
+              <>
               <div className="flex min-h-[420px] flex-col overflow-hidden rounded-[24px] border border-border/60 bg-card/72 shadow-sm md:min-h-[500px] md:flex-row">
                 <div className="w-56 flex-shrink-0 border-r border-border/60 bg-card/30">
                   <div className="space-y-1.5 p-3">
@@ -264,6 +266,9 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
                   </div>
                 </div>
               </div>
+
+              <CustomSlashCommandsEditor />
+              </>
             )}
 
             {activeTab === 'appearance' && (

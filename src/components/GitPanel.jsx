@@ -71,6 +71,18 @@ function GitPanel({ selectedProject, onFileOpen }) {
     fetchRemoteStatus();
   }, [selectedProject]);
 
+  // Auto-refresh git status when files change on disk
+  useEffect(() => {
+    const handler = () => {
+      if (selectedProject) {
+        fetchGitStatus();
+        fetchRemoteStatus();
+      }
+    };
+    window.addEventListener('openwork:git-status-changed', handler);
+    return () => window.removeEventListener('openwork:git-status-changed', handler);
+  }, [selectedProject]);
+
   useEffect(() => {
     if (!selectedProject || activeView !== 'history') {
       return;
