@@ -82,11 +82,14 @@ function messageToKind(type: string): MessageSnapshot['kind'] {
 export function useMultiSessionDispatcher() {
   const { latestMessage, messageSequence, sendMessage } = useWebSocket();
   const pushSnapshot = useLiveGridStore((s) => s.pushSnapshot);
+  const completeLastStreamingSnapshot = useLiveGridStore((s) => s.completeLastStreamingSnapshot);
   const cards = useLiveGridStore((s) => s.cards);
 
   const listenersRef = useRef<Map<string, Set<MessageCallback>>>(new Map());
   const pushSnapshotRef = useRef(pushSnapshot);
   pushSnapshotRef.current = pushSnapshot;
+  const completeLastStreamingSnapshotRef = useRef(completeLastStreamingSnapshot);
+  completeLastStreamingSnapshotRef.current = completeLastStreamingSnapshot;
   const lastProcessedSeqRef = useRef(0);
 
   const registerListener = useCallback((sessionId: string, cb: MessageCallback) => {
@@ -139,16 +142,20 @@ export function useMultiSessionDispatcher() {
     const type = msg.type || '';
     const isStreaming = type.includes('response') && !type.includes('complete');
     const text = extractTextFromData(msg.data || msg);
+    const isComplete = type.includes('complete') || type === 'session-aborted';
+    const isError = type.includes('error');
 
-    if (text || type.includes('complete') || type.includes('error') || type === 'session-aborted') {
+    if (text) {
       const snap: MessageSnapshot = {
         id: `${sid}-${messageSequence}`,
         kind: messageToKind(type),
-        textPreview: truncate(text || type, 120),
-        streaming: isStreaming,
+        textPreview: truncate(text, 120),
+        streaming: isStreaming && !isComplete,
         timestamp: Date.now(),
       };
       pushSnapshotRef.current(sid, snap);
+    } else if (isComplete || isError) {
+      completeLastStreamingSnapshotRef.current(sid);
     }
   }, [latestMessage, messageSequence]);
 

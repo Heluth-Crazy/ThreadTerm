@@ -216,6 +216,8 @@ export default function MessageList({
     <Virtuoso
       data={messages}
       followOutput="smooth"
+      alignToBottom
+      initialTopMostItemIndex={Math.max(0, messages.length - 1)}
       className="flex-1 min-h-0"
       scrollerRef={(ref) => {
         if (ref instanceof HTMLDivElement) {

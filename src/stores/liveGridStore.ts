@@ -41,6 +41,7 @@ interface LiveGridState {
   swapCards: (a: number, b: number) => void;
   setFocusedCard: (id: string | null) => void;
   pushSnapshot: (sessionId: string, snap: MessageSnapshot) => void;
+  completeLastStreamingSnapshot: (sessionId: string) => void;
 }
 
 export const useLiveGridStore = create<LiveGridState>()(
@@ -96,6 +97,22 @@ export const useLiveGridStore = create<LiveGridState>()(
           if (updated.length > MAX_SNAPSHOTS_PER_SESSION) {
             updated.splice(0, updated.length - MAX_SNAPSHOTS_PER_SESSION);
           }
+          return {
+            messageSnapshots: {
+              ...state.messageSnapshots,
+              [sessionId]: updated,
+            },
+          };
+        }),
+
+      completeLastStreamingSnapshot: (sessionId) =>
+        set((state) => {
+          const existing = state.messageSnapshots[sessionId];
+          if (!existing || existing.length === 0) return state;
+          const lastIdx = existing.length - 1;
+          if (!existing[lastIdx].streaming) return state;
+          const updated = [...existing];
+          updated[lastIdx] = { ...updated[lastIdx], streaming: false };
           return {
             messageSnapshots: {
               ...state.messageSnapshots,

@@ -37,6 +37,7 @@ export default function ChatPanel(props: ChatPanelProps) {
       />
 
       <MessageList
+        key={props.selectedSession?.id ?? 'no-session'}
         messages={chat.messages}
         historyLoading={chat.historyLoading}
         messagesContainerRef={chat.messagesContainerRef}
