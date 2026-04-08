@@ -7,6 +7,7 @@ import CardMessageList from './CardMessageList';
 import MiniInputBar from './MiniInputBar';
 import { useLiveGridStore } from '../../../stores/liveGridStore';
 import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
+import { useCardHistory } from '../../../hooks/useCardHistory';
 import type { SessionRuntimeStatus } from '../../../stores/sessionStatusStore';
 import type { MessageSnapshot } from '../../../stores/liveGridStore';
 
@@ -53,7 +54,7 @@ function statusRingClass(status: SessionRuntimeStatus): string {
 
 function LiveCardInner({
   sessionId,
-  projectId: _projectId,
+  projectId,
   provider,
   sessionTitle,
   projectPath,
@@ -65,6 +66,9 @@ function LiveCardInner({
   const snapshots: MessageSnapshot[] = useLiveGridStore(
     (s) => s.messageSnapshots[sessionId] ?? EMPTY_SNAPSHOTS,
   );
+
+  // Load session history from API on mount (restores messages after refresh)
+  useCardHistory(sessionId, projectId, provider);
 
   // Use direct selector on statuses to avoid calling get() inside a selector (which causes stale refs)
   const status: SessionRuntimeStatus = useSessionStatusStore(
