@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { MessageSnapshot } from '../../../stores/liveGridStore';
 
@@ -6,10 +6,77 @@ type CardMessageListProps = {
   snapshots: MessageSnapshot[];
 };
 
+// Module-level set to track which snapshot IDs have been fully animated.
+// Persists across re-renders; resets on page reload (intentional).
+const animatedIds = new Set<string>();
+
+const CURSOR_CLASS =
+  'inline-block w-[2px] h-[1em] bg-current ml-0.5 align-text-bottom animate-[cursor-blink_1s_ease-in-out_infinite]';
+
+function TypewriterText({ text, onComplete }: { text: string; onComplete: () => void }) {
+  const [displayed, setDisplayed] = useState('');
+  const indexRef = useRef(0);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
+
+  useEffect(() => {
+    indexRef.current = 0;
+    setDisplayed('');
+
+    // Adapt speed: aim for ~1.3s total regardless of length
+    const charsPerTick = Math.max(1, Math.ceil(text.length / 80));
+
+    function tick() {
+      const next = Math.min(indexRef.current + charsPerTick, text.length);
+      indexRef.current = next;
+      setDisplayed(text.slice(0, next));
+      if (next < text.length) {
+        timeoutRef.current = setTimeout(tick, 16);
+      } else {
+        onCompleteRef.current();
+      }
+    }
+
+    timeoutRef.current = setTimeout(tick, 16);
+    return () => {
+      if (timeoutRef.current !== null) clearTimeout(timeoutRef.current);
+    };
+  }, [text]);
+
+  return (
+    <span>
+      {displayed}
+      {displayed.length < text.length && <span className={CURSOR_CLASS} />}
+    </span>
+  );
+}
+
+function AnimatedAssistantMessage({ snap }: { snap: MessageSnapshot }) {
+  // Streaming message — show text as-is with blinking cursor
+  if (snap.streaming) {
+    return (
+      <span>
+        {snap.text}
+        <span className={CURSOR_CLASS} />
+      </span>
+    );
+  }
+
+  // Already animated — render full text immediately
+  if (animatedIds.has(snap.id)) {
+    return <span>{snap.text}</span>;
+  }
+
+  // New completed message — animate it
+  return <TypewriterText text={snap.text} onComplete={() => animatedIds.add(snap.id)} />;
+}
+
 function MessageBubble({ snap }: { snap: MessageSnapshot }) {
   const isUser = snap.kind === 'user';
   const isTool = snap.kind === 'tool';
   const isError = snap.kind === 'error';
+  const isAssistant = snap.kind === 'assistant' || snap.kind === 'system';
 
   if (isTool) {
     return (
@@ -44,15 +111,25 @@ function MessageBubble({ snap }: { snap: MessageSnapshot }) {
     );
   }
 
-  // Assistant / system
+  // Assistant / system — use animated rendering
+  if (isAssistant) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-[92%]">
+          <p className="text-[11px] leading-relaxed text-foreground/85 break-words whitespace-pre-wrap">
+            <AnimatedAssistantMessage snap={snap} />
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Fallback (shouldn't happen)
   return (
     <div className="flex justify-start">
       <div className="max-w-[92%]">
         <p className="text-[11px] leading-relaxed text-foreground/85 break-words whitespace-pre-wrap">
           {snap.text}
-          {snap.streaming && (
-            <span className="inline-block ml-0.5 w-[5px] h-[13px] align-text-bottom bg-foreground/70 animate-[cursor-blink_1s_steps(2)_infinite]" />
-          )}
         </p>
       </div>
     </div>

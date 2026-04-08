@@ -40,6 +40,7 @@ interface LiveGridState {
   removeCard: (sessionId: string) => void;
   swapCards: (a: number, b: number) => void;
   setFocusedCard: (id: string | null) => void;
+  setSessionSnapshots: (sessionId: string, snaps: MessageSnapshot[]) => void;
   upsertSnapshot: (sessionId: string, snap: MessageSnapshot) => void;
   completeLastStreamingSnapshot: (sessionId: string) => void;
   updateCardSessionId: (oldSessionId: string, newSessionId: string) => void;
@@ -90,6 +91,14 @@ export const useLiveGridStore = create<LiveGridState>()(
         }),
 
       setFocusedCard: (id) => set({ focusedCardId: id }),
+
+      setSessionSnapshots: (sessionId, snaps) =>
+        set((state) => ({
+          messageSnapshots: {
+            ...state.messageSnapshots,
+            [sessionId]: snaps,
+          },
+        })),
 
       upsertSnapshot: (sessionId, snap) =>
         set((state) => {
