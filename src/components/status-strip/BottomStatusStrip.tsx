@@ -37,7 +37,7 @@ export default function BottomStatusStrip({
 
         return (
           <button
-            key={session.id}
+            key={`${project.name}__${session.id}`}
             type="button"
             onClick={() => onSelectSession(project, session)}
             className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] transition-colors ${
