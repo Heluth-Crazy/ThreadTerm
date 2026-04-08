@@ -262,7 +262,7 @@ export default function CardGrid({ projects, filter, onSend }: CardGridProps) {
   // Build a map of projectId (name) → project for quick lookup
   const projectMap = new Map(projects.map((p) => [p.name, p]));
 
-  // Find session title helper
+  // Find session title helper — prefer renamed title from project state, fallback to card title
   const findSessionTitle = (sessionId: string, projectId: string): string => {
     const project = projectMap.get(projectId);
     if (!project) return 'Unknown';
@@ -271,7 +271,10 @@ export default function CardGrid({ projects, filter, onSend }: CardGridProps) {
       ...(project.codexSessions || []),
     ];
     const session = allSessions.find((s) => s.id === sessionId);
-    return session?.title || 'Untitled';
+    if (session?.title) return session.title;
+    // Fallback to card stored title
+    const card = cards.find((c) => c.sessionId === sessionId);
+    return card?.title || sessionId.slice(0, 8);
   };
 
   const findProjectPath = (projectId: string): string => {

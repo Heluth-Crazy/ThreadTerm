@@ -378,6 +378,16 @@ async function getProjects(progressCallback = null) {
           project.codexSessions = await getCodexSessions(actualProjectDir, {
             indexRef: codexSessionsIndexRef,
           });
+
+          // Inject custom titles into Codex sessions
+          if (Array.isArray(project.codexSessions)) {
+            const sessionTitles = projectConfig.sessionTitles || {};
+            for (const session of project.codexSessions) {
+              if (sessionTitles[session.id]) {
+                session.title = sessionTitles[session.id];
+              }
+            }
+          }
         } catch (e) {
           console.warn(`Could not load Codex sessions for project ${entry.name}:`, e.message);
           project.codexSessions = [];

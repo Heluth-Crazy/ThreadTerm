@@ -8,6 +8,7 @@ export interface CardSlot {
   sessionId: string;
   projectId: string;
   provider: string;
+  title?: string;
 }
 
 export interface MessageSnapshot {
@@ -44,6 +45,7 @@ interface LiveGridState {
   setSessionSnapshots: (sessionId: string, snaps: MessageSnapshot[]) => void;
   upsertSnapshot: (sessionId: string, snap: MessageSnapshot) => void;
   completeLastStreamingSnapshot: (sessionId: string) => void;
+  updateCardTitle: (sessionId: string, newTitle: string) => void;
   updateCardSessionId: (oldSessionId: string, newSessionId: string) => void;
 }
 
@@ -148,6 +150,15 @@ export const useLiveGridStore = create<LiveGridState>()(
               [sessionId]: updated,
             },
           };
+        }),
+
+      updateCardTitle: (sessionId, newTitle) =>
+        set((state) => {
+          const cardIdx = state.cards.findIndex((c) => c.sessionId === sessionId);
+          if (cardIdx === -1) return state;
+          const updatedCards = [...state.cards];
+          updatedCards[cardIdx] = { ...updatedCards[cardIdx], title: newTitle };
+          return { cards: updatedCards };
         }),
 
       updateCardSessionId: (oldSessionId, newSessionId) =>

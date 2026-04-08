@@ -2,22 +2,51 @@ import { useTranslation } from 'react-i18next';
 import { useEffect, useRef } from 'react';
 import type { SessionProvider } from '../../../types/app';
 
-export const SLASH_COMMANDS: Record<string, { cmd: string; description: string; descriptionKey: string }[]> = {
+export const SLASH_COMMANDS: Record<string, { cmd: string; description: string; descriptionKey: string; category?: string }[]> = {
   claude: [
-    { cmd: '/clear', description: 'Clear conversation history', descriptionKey: 'commands.clear' },
-    { cmd: '/compact', description: 'Compact & summarize conversation', descriptionKey: 'commands.compact' },
-    { cmd: '/help', description: 'Show Claude Code help', descriptionKey: 'commands.help' },
-    { cmd: '/status', description: 'Show current status', descriptionKey: 'commands.status' },
-    { cmd: '/exit', description: 'End this session', descriptionKey: 'commands.exit' },
+    // Conversation
+    { cmd: '/clear', description: 'Clear conversation history', descriptionKey: 'commands.clear', category: 'conversation' },
+    { cmd: '/compact', description: 'Compact & summarize conversation', descriptionKey: 'commands.compact', category: 'conversation' },
+
+    // Project
+    { cmd: '/init', description: 'Initialize project with CLAUDE.md', descriptionKey: 'commands.init', category: 'project' },
+    { cmd: '/add-dir', description: 'Add additional working directory', descriptionKey: 'commands.addDir', category: 'project' },
+    { cmd: '/memory', description: 'Edit CLAUDE.md memory files', descriptionKey: 'commands.memory', category: 'project' },
+
+    // Code & Review
+    { cmd: '/review', description: 'Request code review', descriptionKey: 'commands.review', category: 'code' },
+    { cmd: '/pr-comments', description: 'Pull request comments', descriptionKey: 'commands.prComments', category: 'code' },
+
+    // Config & Tools
+    { cmd: '/model', description: 'Select or change AI model', descriptionKey: 'commands.model', category: 'config' },
+    { cmd: '/config', description: 'View or set configuration', descriptionKey: 'commands.config', category: 'config' },
+    { cmd: '/mcp', description: 'Manage MCP servers', descriptionKey: 'commands.mcp', category: 'config' },
+    { cmd: '/vim', description: 'Toggle vim keybindings', descriptionKey: 'commands.vim', category: 'config' },
+
+    // Info & Help
+    { cmd: '/help', description: 'Show Claude Code help', descriptionKey: 'commands.help', category: 'info' },
+    { cmd: '/status', description: 'Show current status', descriptionKey: 'commands.status', category: 'info' },
+    { cmd: '/doctor', description: 'Check Claude Code health', descriptionKey: 'commands.doctor', category: 'info' },
+    { cmd: '/release-notes', description: 'View recent release notes', descriptionKey: 'commands.releaseNotes', category: 'info' },
+    { cmd: '/bug', description: 'Report a bug to Anthropic', descriptionKey: 'commands.bug', category: 'info' },
+
+    // Session
+    { cmd: '/exit', description: 'End this session', descriptionKey: 'commands.exit', category: 'session' },
+    { cmd: '/logout', description: 'Log out of Claude', descriptionKey: 'commands.logout', category: 'session' },
+    { cmd: '/login', description: 'Log in to Claude', descriptionKey: 'commands.login', category: 'session' },
+    { cmd: '/terminal-setup', description: 'Configure terminal integration', descriptionKey: 'commands.terminalSetup', category: 'session' },
   ],
   codex: [
     { cmd: '/clear', description: 'Clear conversation history', descriptionKey: 'commands.clear' },
     { cmd: '/help', description: 'Show Codex help', descriptionKey: 'commands.help' },
     { cmd: '/exit', description: 'End this session', descriptionKey: 'commands.exit' },
+    { cmd: '/diff', description: 'Show pending file changes', descriptionKey: 'commands.diff' },
+    { cmd: '/approve', description: 'Approve pending changes', descriptionKey: 'commands.approve' },
   ],
   cursor: [
     { cmd: '/clear', description: 'Clear conversation history', descriptionKey: 'commands.clear' },
     { cmd: '/help', description: 'Show Cursor help', descriptionKey: 'commands.help' },
+    { cmd: '/new', description: 'Start a new chat', descriptionKey: 'commands.new' },
   ],
 };
 
@@ -44,26 +73,26 @@ export default function CommandSuggestions({
     c.cmd.toLowerCase().startsWith(`/${query.toLowerCase()}`),
   );
 
+  // Show category headers only when showing all commands (empty query)
+  const showCategories = query === '' && filtered.some((c) => c.category);
+
   useEffect(() => {
     if (!listRef.current) return;
-    const activeEl = listRef.current.children[activeIndex] as HTMLElement | undefined;
+    // When categories are shown, find by data-index attribute
+    const activeEl = listRef.current.querySelector(`[data-cmd-index="${activeIndex}"]`) as HTMLElement | null;
     activeEl?.scrollIntoView({ block: 'nearest' });
   }, [activeIndex]);
 
   if (filtered.length === 0) return null;
 
-  return (
-    <div
-      ref={listRef}
-      className="absolute bottom-full mb-2 left-0 right-0 max-h-56 overflow-y-auto rounded-xl border border-border bg-popover shadow-lg py-1 z-30"
-    >
-      <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-        {t('commands.title', 'Commands')}
-      </div>
-      {filtered.map((cmd, index) => (
+  // Group commands by category for display
+  const renderCommands = () => {
+    if (!showCategories) {
+      return filtered.map((cmd, index) => (
         <button
           key={cmd.cmd}
           type="button"
+          data-cmd-index={index}
           onMouseDown={(e) => {
             e.preventDefault();
             onSelect(cmd.cmd);
@@ -77,7 +106,62 @@ export default function CommandSuggestions({
             {t(cmd.descriptionKey, cmd.description)}
           </span>
         </button>
-      ))}
+      ));
+    }
+
+    // Group by category
+    const groups: { category: string; items: { cmd: typeof filtered[0]; globalIndex: number }[] }[] = [];
+    let currentCategory = '';
+    for (let i = 0; i < filtered.length; i++) {
+      const cat = filtered[i].category || '';
+      if (cat !== currentCategory) {
+        currentCategory = cat;
+        groups.push({ category: cat, items: [] });
+      }
+      groups[groups.length - 1].items.push({ cmd: filtered[i], globalIndex: i });
+    }
+
+    return groups.map((group) => (
+      <div key={group.category}>
+        {group.category && (
+          <div className="px-3 pt-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+            {t(`commands.category.${group.category}`, group.category)}
+          </div>
+        )}
+        {group.items.map(({ cmd, globalIndex }) => (
+          <button
+            key={cmd.cmd}
+            type="button"
+            data-cmd-index={globalIndex}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              onSelect(cmd.cmd);
+            }}
+            className={`flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer w-full text-left ${
+              globalIndex === activeIndex ? 'bg-accent' : 'hover:bg-accent/50'
+            }`}
+          >
+            <span className="font-mono text-foreground">{cmd.cmd}</span>
+            <span className="text-muted-foreground">
+              {t(cmd.descriptionKey, cmd.description)}
+            </span>
+          </button>
+        ))}
+      </div>
+    ));
+  };
+
+  if (filtered.length === 0) return null;
+
+  return (
+    <div
+      ref={listRef}
+      className="absolute bottom-full mb-2 left-0 right-0 max-h-56 overflow-y-auto rounded-xl border border-border bg-popover shadow-lg py-1 z-30"
+    >
+      <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+        {t('commands.title', 'Commands')}
+      </div>
+      {renderCommands()}
     </div>
   );
 }

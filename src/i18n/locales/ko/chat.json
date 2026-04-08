@@ -237,7 +237,33 @@
     "help": "CLI 도움말 보기",
     "status": "현재 상태 보기",
     "exit": "이 세션 종료",
+    "init": "CLAUDE.md로 프로젝트 초기화",
+    "addDir": "추가 작업 디렉토리 추가",
+    "memory": "CLAUDE.md 메모리 파일 편집",
+    "review": "코드 리뷰 요청",
+    "prComments": "Pull Request 댓글",
+    "model": "AI 모델 선택 또는 변경",
+    "config": "설정 보기 또는 변경",
+    "mcp": "MCP 서버 관리",
+    "vim": "vim 키 바인딩 전환",
+    "doctor": "Claude Code 상태 확인",
+    "releaseNotes": "최근 릴리스 노트 보기",
+    "bug": "Anthropic에 버그 보고",
+    "logout": "Claude 로그아웃",
+    "login": "Claude 로그인",
+    "terminalSetup": "터미널 통합 구성",
+    "diff": "대기 중인 파일 변경 표시",
+    "approve": "대기 중인 변경 승인",
+    "new": "새 채팅 시작",
     "title": "명령어",
-    "hint": "/를 입력하여 명령어 보기"
+    "hint": "/를 입력하여 명령어 보기",
+    "category": {
+      "conversation": "대화",
+      "project": "프로젝트",
+      "code": "코드 & 리뷰",
+      "config": "설정 & 도구",
+      "info": "정보 & 도움말",
+      "session": "세션"
+    }
   }
 }

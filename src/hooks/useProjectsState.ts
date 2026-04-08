@@ -13,6 +13,7 @@ import type {
   SessionProvider,
 } from '../types/app';
 import { loadSessionLaunchProfilesByProvider, mergeSessionLaunchArgs } from '../utils/sessionLaunchProfiles';
+import { useLiveGridStore } from '../stores/liveGridStore';
 
 type UseProjectsStateArgs = {
   sessionId?: string;
@@ -814,6 +815,8 @@ export function useProjectsState({
           };
         }),
       );
+      // Also update the live grid card title so it stays in sync
+      useLiveGridStore.getState().updateCardTitle(sessionId, newTitle);
       if (selectedSession?.id === sessionId) {
         setSelectedSession((prev) => (prev ? { ...prev, title: newTitle } : prev));
       }
