@@ -1,4 +1,5 @@
 import {
+  ArrowLeft,
   ChevronRight,
   Clock3,
   FolderKanban,
@@ -370,6 +371,14 @@ export default function SelectedProjectOverviewPage({
         <section className="rounded-[22px] border border-border/60 bg-card/72 p-3.5 shadow-sm">
           <div className="grid gap-2.5 xl:grid-cols-[minmax(0,1.55fr)_308px]">
             <div className="min-w-0">
+              <button
+                type="button"
+                onClick={onSelectOverview}
+                className="mb-2 inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+                Back
+              </button>
               <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">OpenWork</p>
               <div className="mt-1 flex flex-wrap items-center gap-2">
                 <h1 className="min-w-0 text-xl font-semibold tracking-tight text-foreground">{projectLabel}</h1>
