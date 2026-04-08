@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { X, ShieldCheck, ShieldX } from 'lucide-react';
 
 import SessionProviderLogo from '../../SessionProviderLogo';
-import MiniMessageStream from './MiniMessageStream';
+import CardMessageList from './CardMessageList';
 import MiniInputBar from './MiniInputBar';
 import { useLiveGridStore } from '../../../stores/liveGridStore';
 import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
@@ -141,7 +141,7 @@ function LiveCardInner({
       </div>
 
       {/* Message stream */}
-      <MiniMessageStream snapshots={snapshots} />
+      <CardMessageList snapshots={snapshots} />
 
       {/* Inline permission request */}
       {pendingPermission && (

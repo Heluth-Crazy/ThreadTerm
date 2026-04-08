@@ -47,7 +47,7 @@ export default function MiniMessageStream({ snapshots }: MiniMessageStreamProps)
             <div key={snap.id} className="flex gap-1.5 text-[11px] leading-relaxed">
               <span className={`shrink-0 font-mono ${className}`}>{symbol}</span>
               <span className={`min-w-0 break-words ${snap.kind === 'error' ? 'text-red-500' : 'text-foreground/80'}`}>
-                {snap.textPreview}
+                {snap.text}
                 {snap.streaming && (
                   <span className="inline-block ml-0.5 animate-pulse text-muted-foreground">...</span>
                 )}

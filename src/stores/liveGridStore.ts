@@ -13,12 +13,12 @@ export interface CardSlot {
 export interface MessageSnapshot {
   id: string;
   kind: 'user' | 'assistant' | 'tool' | 'error' | 'system';
-  textPreview: string;
+  text: string;
   streaming?: boolean;
   timestamp: number;
 }
 
-const MAX_SNAPSHOTS_PER_SESSION = 50;
+const MAX_SNAPSHOTS_PER_SESSION = 100;
 
 function getMaxSlots(layout: GridLayout): number {
   switch (layout) {
@@ -40,7 +40,7 @@ interface LiveGridState {
   removeCard: (sessionId: string) => void;
   swapCards: (a: number, b: number) => void;
   setFocusedCard: (id: string | null) => void;
-  pushSnapshot: (sessionId: string, snap: MessageSnapshot) => void;
+  upsertSnapshot: (sessionId: string, snap: MessageSnapshot) => void;
   completeLastStreamingSnapshot: (sessionId: string) => void;
   updateCardSessionId: (oldSessionId: string, newSessionId: string) => void;
 }
@@ -91,9 +91,27 @@ export const useLiveGridStore = create<LiveGridState>()(
 
       setFocusedCard: (id) => set({ focusedCardId: id }),
 
-      pushSnapshot: (sessionId, snap) =>
+      upsertSnapshot: (sessionId, snap) =>
         set((state) => {
           const existing = state.messageSnapshots[sessionId] || [];
+          // If the incoming snapshot is streaming AND the last existing snapshot
+          // shares the same ID (same logical message), update it in-place.
+          if (
+            snap.streaming &&
+            existing.length > 0 &&
+            existing[existing.length - 1].id === snap.id &&
+            existing[existing.length - 1].streaming
+          ) {
+            const updated = [...existing];
+            updated[updated.length - 1] = snap;
+            return {
+              messageSnapshots: {
+                ...state.messageSnapshots,
+                [sessionId]: updated,
+              },
+            };
+          }
+          // Otherwise append as a new message
           const updated = [...existing, snap];
           if (updated.length > MAX_SNAPSHOTS_PER_SESSION) {
             updated.splice(0, updated.length - MAX_SNAPSHOTS_PER_SESSION);

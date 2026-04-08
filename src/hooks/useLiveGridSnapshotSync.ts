@@ -29,11 +29,6 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
-function truncate(text: string, maxLen: number): string {
-  if (text.length <= maxLen) return text;
-  return text.slice(0, maxLen - 1) + '…';
-}
-
 export function extractTextFromData(data: any): string {
   if (!data) return '';
   if (typeof data === 'string') return stripMarkdown(data);
@@ -93,6 +88,11 @@ export function useLiveGridSnapshotSync(): void {
   const { latestMessage, messageSequence } = useWebSocket();
   const lastProcessedSeqRef = useRef(0);
 
+  // Stable ID for the current streaming message per session
+  const streamingMsgIdRef = useRef<Record<string, string | null>>({});
+  // Accumulated text for the current streaming message per session
+  const streamingTextRef = useRef<Record<string, string>>({});
+
   useEffect(() => {
     if (!latestMessage) return;
     if (messageSequence <= lastProcessedSeqRef.current) return;
@@ -130,15 +130,41 @@ export function useLiveGridSnapshotSync(): void {
     const isError = type.includes('error');
 
     if (text) {
-      const snap: MessageSnapshot = {
-        id: `${sid}-${messageSequence}`,
-        kind: messageToKind(type),
-        textPreview: truncate(text, 120),
-        streaming: isStreaming && !isComplete,
-        timestamp: Date.now(),
-      };
-      store.pushSnapshot(sid, snap);
+      if (isStreaming && !isComplete) {
+        // Streaming chunk — accumulate text and upsert with stable ID
+        if (!streamingMsgIdRef.current[sid]) {
+          streamingMsgIdRef.current[sid] = `msg-${sid}-${Date.now()}`;
+          streamingTextRef.current[sid] = '';
+        }
+        streamingTextRef.current[sid] += text;
+
+        const snap: MessageSnapshot = {
+          id: streamingMsgIdRef.current[sid]!,
+          kind: messageToKind(type),
+          text: streamingTextRef.current[sid],
+          streaming: true,
+          timestamp: Date.now(),
+        };
+        store.upsertSnapshot(sid, snap);
+      } else {
+        // Non-streaming message (user echo, complete, tool, error, etc.)
+        // Reset streaming state for this session
+        streamingMsgIdRef.current[sid] = null;
+        streamingTextRef.current[sid] = '';
+
+        const snap: MessageSnapshot = {
+          id: `${sid}-${messageSequence}`,
+          kind: isError ? 'error' : messageToKind(type),
+          text,
+          streaming: false,
+          timestamp: Date.now(),
+        };
+        store.upsertSnapshot(sid, snap);
+      }
     } else if (isComplete || isError) {
+      // No text but complete/error — finalize last streaming snapshot
+      streamingMsgIdRef.current[sid] = null;
+      streamingTextRef.current[sid] = '';
       store.completeLastStreamingSnapshot(sid);
     }
   }, [latestMessage, messageSequence]);

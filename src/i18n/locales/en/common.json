@@ -271,6 +271,7 @@
     "focusMode": "Focus Mode",
     "exitFocus": "Exit Focus",
     "inputPlaceholder": "Send a message...",
+    "noMessages": "No messages yet",
     "layout": {
       "1x2": "1×2",
       "2x2": "2×2",

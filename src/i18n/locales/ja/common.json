@@ -271,6 +271,7 @@
     "focusMode": "フォーカスモード",
     "exitFocus": "フォーカス終了",
     "inputPlaceholder": "メッセージを送信...",
+    "noMessages": "メッセージはまだありません",
     "layout": {
       "1x2": "1×2",
       "2x2": "2×2",
