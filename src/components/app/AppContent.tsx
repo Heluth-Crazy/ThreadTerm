@@ -266,6 +266,7 @@ export default function AppContent() {
     (session: ProjectSession) => {
       setActiveNav('projects');
       setProjectsView('workspace');
+      setShowProjectDetail(false); // always dismiss project detail panel and show chat
       handleSessionSelect(session);
       if (isMobileViewport) {
         setActiveTab('chat');
