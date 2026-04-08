@@ -30,18 +30,45 @@ function truncate(text: string, maxLen: number): string {
 function extractTextFromData(data: any): string {
   if (!data) return '';
   if (typeof data === 'string') return stripMarkdown(data);
-  if (data.text) return stripMarkdown(data.text);
+
+  // Direct text field (Claude text events, tool_result text)
+  if (typeof data.text === 'string') return stripMarkdown(data.text);
+
+  // Claude content array (system, user, or assistant message)
   if (data.content) {
     if (typeof data.content === 'string') return stripMarkdown(data.content);
     if (Array.isArray(data.content)) {
       const textParts = data.content
         .filter((b: any) => b.type === 'text' && b.text)
         .map((b: any) => b.text);
-      return stripMarkdown(textParts.join(' '));
+      if (textParts.length > 0) return stripMarkdown(textParts.join(' '));
     }
   }
-  if (data.message) return stripMarkdown(String(data.message));
+
+  // Claude assistant message: { type: "assistant", message: { content: [...] } }
+  // Codex agent_message: { type: "item", message: { content: "..." } }
+  if (data.message) {
+    if (typeof data.message === 'string') return stripMarkdown(data.message);
+    const inner = extractTextFromData(data.message);
+    if (inner) return inner;
+  }
+
+  // Claude result message: { type: "result", output: "..." }
+  if (typeof data.output === 'string') return stripMarkdown(data.output);
+
+  // Claude tool use: { type: "tool_use", name: "bash", input: {...} }
+  if (data.name && data.input !== undefined) return `🔧 ${data.name}`;
+
+  // Codex command_execution
+  if (data.command) return `$ ${String(data.command).slice(0, 80)}`;
+
+  // Delta text (streaming)
   if (data.delta?.text) return stripMarkdown(data.delta.text);
+
+  // Error messages
+  if (typeof data.error === 'string') return data.error;
+  if (data.error?.message) return String(data.error.message);
+
   return '';
 }
 

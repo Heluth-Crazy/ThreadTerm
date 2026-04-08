@@ -75,6 +75,7 @@ export default function AppContent() {
     handleNewSession,
     handleProjectCreated,
     handleSessionDelete,
+    handleSessionRename,
     handleProjectDelete,
     handleSidebarRefresh,
   } = useProjectsState({
@@ -636,6 +637,7 @@ export default function AppContent() {
                   onSelectSession={handleSelectSessionWithFocus}
                   onNewSession={() => handleStartSession(selectedProject, undefined)}
                   onDeleteSession={handleSessionDelete}
+                  onRenameSession={handleSessionRename}
                   onViewProjectDetail={() => setShowProjectDetail(true)}
                 />
               )}
@@ -661,7 +663,7 @@ export default function AppContent() {
                     />
                   </div>
                 ) : (
-                  <div className="min-w-0 flex-1 overflow-hidden">
+                  <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
                     <SessionFocusLayout
                     projects={projects}
                     selectedProject={selectedProject}
@@ -682,6 +684,7 @@ export default function AppContent() {
                     onNavigateToSession={(targetSessionId: string) => navigate(`/session/${targetSessionId}`)}
                     onBackToOverview={handleBackToOverview}
                     onShowSettings={() => routeToSettings('agents')}
+                    onRenameSession={handleSessionRename}
                     ws={ws}
                     isLoading={isLoadingProjects}
                   />
