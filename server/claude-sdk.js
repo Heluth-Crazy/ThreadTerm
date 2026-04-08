@@ -698,12 +698,22 @@ async function queryClaudeSDK(command, options = {}, ws) {
     const prevStreamTimeout = process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
     process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '300000';
 
+    // If ANTHROPIC_AUTH_TOKEN is present, temporarily remove ANTHROPIC_API_KEY to avoid
+    // "Auth conflict: Both a token and an API key are set" warning from the SDK
+    const savedApiKey = process.env.ANTHROPIC_API_KEY;
+    if (process.env.ANTHROPIC_AUTH_TOKEN && savedApiKey) {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+
     const queryInstance = query({
       prompt: finalCommand,
       options: sdkOptions
     });
 
-    // Restore immediately — Query constructor already captured the value
+    // Restore immediately — Query constructor already captured the env values
+    if (savedApiKey !== undefined) {
+      process.env.ANTHROPIC_API_KEY = savedApiKey;
+    }
     if (prevStreamTimeout !== undefined) {
       process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = prevStreamTimeout;
     } else {
