@@ -597,7 +597,21 @@ async function getSessions(projectName, limit = 5, offset = 0) {
     const total = visibleSessions.length;
     const paginatedSessions = visibleSessions.slice(offset, offset + limit);
     const hasMore = offset + limit < total;
-    
+
+    // Apply custom session titles from config
+    try {
+      const config = await loadProjectConfig();
+      const projectConfig = config[projectName] || {};
+      const sessionTitles = projectConfig.sessionTitles || {};
+      for (const session of paginatedSessions) {
+        if (sessionTitles[session.id]) {
+          session.title = sessionTitles[session.id];
+        }
+      }
+    } catch {
+      // Ignore — titles are nice-to-have
+    }
+
     return {
       sessions: paginatedSessions,
       hasMore,

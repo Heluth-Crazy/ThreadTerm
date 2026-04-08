@@ -97,6 +97,11 @@ function AnimatedAssistantMessage({ snap }: { snap: MessageSnapshot }) {
     );
   }
 
+  // History messages — render immediately without animation
+  if (snap.fromHistory) {
+    return <span>{snap.text}</span>;
+  }
+
   // Already animated — render full text immediately
   if (animatedIds.has(snap.id)) {
     return <span>{snap.text}</span>;
@@ -126,8 +131,8 @@ function MessageBubble({ snap }: { snap: MessageSnapshot }) {
 
   if (isError) {
     return (
-      <div className="max-h-24 overflow-hidden rounded-md bg-red-500/8 px-2.5 py-1.5 dark:bg-red-500/10">
-        <p className="text-[11px] leading-relaxed text-red-600 dark:text-red-400 line-clamp-5">
+      <div className="rounded-md bg-red-500/8 px-2.5 py-1.5 dark:bg-red-500/10">
+        <p className="break-words whitespace-pre-wrap text-[11px] leading-relaxed text-red-600 dark:text-red-400">
           {snap.text}
         </p>
       </div>
@@ -137,8 +142,8 @@ function MessageBubble({ snap }: { snap: MessageSnapshot }) {
   if (isUser) {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] max-h-24 overflow-hidden rounded-2xl rounded-br-md bg-primary/90 px-3 py-1.5 dark:bg-primary/80">
-          <p className="text-[11px] leading-relaxed text-primary-foreground line-clamp-5">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 px-3 py-1.5 dark:bg-primary/80">
+          <p className="break-words whitespace-pre-wrap text-[11px] leading-relaxed text-primary-foreground">
             {snap.text}
           </p>
         </div>
@@ -150,8 +155,8 @@ function MessageBubble({ snap }: { snap: MessageSnapshot }) {
   if (isAssistant) {
     return (
       <div className="flex justify-start">
-        <div className="max-w-[92%] max-h-32 overflow-hidden">
-          <p className="text-[11px] leading-relaxed text-foreground/85 line-clamp-6">
+        <div className="max-w-[92%]">
+          <p className="break-words whitespace-pre-wrap text-[11px] leading-relaxed text-foreground/85">
             <AnimatedAssistantMessage snap={snap} />
           </p>
         </div>
@@ -162,8 +167,8 @@ function MessageBubble({ snap }: { snap: MessageSnapshot }) {
   // Fallback (shouldn't happen)
   return (
     <div className="flex justify-start">
-      <div className="max-w-[92%] max-h-32 overflow-hidden">
-        <p className="text-[11px] leading-relaxed text-foreground/85 line-clamp-6">
+      <div className="max-w-[92%]">
+        <p className="break-words whitespace-pre-wrap text-[11px] leading-relaxed text-foreground/85">
           {snap.text}
         </p>
       </div>

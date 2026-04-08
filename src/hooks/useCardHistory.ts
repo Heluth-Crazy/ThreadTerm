@@ -53,6 +53,7 @@ function normalizeHistoryToSnapshots(
             text: `🔧 ${block.name || 'Tool'}`,
             streaming: false,
             timestamp,
+            fromHistory: true,
           });
           continue;
         }
@@ -70,6 +71,7 @@ function normalizeHistoryToSnapshots(
               text: output.slice(0, 200),
               streaming: false,
               timestamp,
+              fromHistory: true,
             });
           }
           continue;
@@ -96,6 +98,7 @@ function normalizeHistoryToSnapshots(
         text: `🔧 ${item.toolName || item.name || 'Tool'}`,
         streaming: false,
         timestamp,
+        fromHistory: true,
       });
       continue;
     }
@@ -110,6 +113,7 @@ function normalizeHistoryToSnapshots(
           text: output.slice(0, 200),
           streaming: false,
           timestamp,
+          fromHistory: true,
         });
       }
       continue;
@@ -128,6 +132,7 @@ function normalizeHistoryToSnapshots(
       text: text.slice(0, 5000),
       streaming: false,
       timestamp,
+      fromHistory: true,
     });
   }
 

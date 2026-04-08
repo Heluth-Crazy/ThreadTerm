@@ -16,6 +16,7 @@ export interface MessageSnapshot {
   text: string;
   streaming?: boolean;
   timestamp: number;
+  fromHistory?: boolean;
 }
 
 const MAX_SNAPSHOTS_PER_SESSION = 100;
