@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useTranslation } from 'react-i18next';
 import { api } from '../../../utils/api';
 import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
+import { useToastStore } from '../../../stores/toastStore';
 import type { PendingPermissionRequest } from '../../../stores/sessionStatusStore';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import type {
@@ -98,6 +99,7 @@ export function useChatPanel({
   const [model, setModel] = useState<string>(MODEL_DEFAULTS.claude);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id ?? null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [tokenBudget, setTokenBudget] = useState<{ used: number; total: number } | null>(null);
   const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
   const [isCmdOpen, setIsCmdOpen] = useState(false);
   const [cmdQuery, setCmdQuery] = useState('');
@@ -498,6 +500,7 @@ export function useChatPanel({
   const loadSessionHistory = useCallback(async () => {
     if (!selectedSession?.id) {
       setMessages([]);
+      setTokenBudget(null);
       return;
     }
 
@@ -777,6 +780,14 @@ export function useChatPanel({
       return;
     }
 
+    if (messageType === 'token-budget') {
+      const data = message.data;
+      if (data && typeof data.used === 'number' && typeof data.total === 'number') {
+        setTokenBudget({ used: data.used, total: data.total });
+      }
+      return;
+    }
+
     if (
       messageType === 'claude-complete' ||
       messageType === 'codex-complete'
@@ -794,6 +805,7 @@ export function useChatPanel({
       contentBlockTypeByIndexRef.current = {};
       const text = message.error || message.message || 'Request failed.';
       addSystemEventMessage('error', String(text));
+      useToastStore.getState().addToast(String(text), 'error');
       finishRequest('idle', message.sessionId || currentSessionIdRef.current);
     }
   }, [
@@ -1495,5 +1507,8 @@ Use these as file path references only. Read file contents from the workspace wh
     // Permission request
     pendingPermission,
     handlePermissionResponse,
+
+    // Token budget
+    tokenBudget,
   };
 }
