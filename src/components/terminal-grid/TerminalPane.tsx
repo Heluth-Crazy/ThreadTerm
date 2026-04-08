@@ -2,6 +2,7 @@ import React, { useCallback, useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import Shell from '../Shell.jsx';
 import { hasSessionDragData, parseSessionDragData } from './utils/dragDrop';
+import { logger } from '../../utils/logger';
 
 export interface TerminalPaneProps {
   id: string;
@@ -77,7 +78,7 @@ function TerminalPane({ id, project, session, isActive, onActivate, label, onDro
     const sessionData = parseSessionDragData(e.dataTransfer);
     if (sessionData) {
       try {
-        console.log('[TerminalPane] Dropped session:', sessionData);
+        logger.log('[TerminalPane] Dropped session:', sessionData);
 
         // 创建会话对象
         const droppedSession = {

@@ -11,7 +11,7 @@ import MobileProjectsView from '../mobile/MobileProjectsView';
 import MobileSessionsView from '../mobile/MobileSessionsView';
 
 import LiveGridView from '../live-grid/view/LiveGridView';
-import LiveGridErrorBoundary from '../live-grid/view/LiveGridErrorBoundary';
+import ErrorBoundary from '../shared/ErrorBoundary';
 import CommandPalette from '../command-palette/CommandPalette';
 import MissionControlView from '../overview/MissionControlView';
 import SessionStatusCounts from '../overview/SessionStatusCounts';
@@ -22,6 +22,7 @@ import ProjectSessionsPanel from '../projects/ProjectSessionsPanel';
 import KeyboardShortcutsOverlay from '../overlays/KeyboardShortcutsOverlay';
 import ActivityBar from '../workbench/ActivityBar';
 import SelectedProjectOverviewPage from '../workbench/projects/SelectedProjectOverviewPage';
+import ToastContainer from '../shared/ToastContainer';
 
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useMobileViewport } from '../../hooks/useMobileViewport';
@@ -596,12 +597,12 @@ export default function AppContent() {
             onCreateProject={handleOpenProjectCreation}
           />
         ) : viewMode === 'livegrid' ? (
-          <LiveGridErrorBoundary>
+          <ErrorBoundary area="Live Grid">
             <LiveGridView
               projects={projects}
               onNewSession={handleOpenProjectCreation}
             />
-          </LiveGridErrorBoundary>
+          </ErrorBoundary>
         ) : viewMode === 'settings' || viewMode === 'extensions' ? (
           <div className="flex min-h-0 flex-1">
             <div className="w-64 shrink-0 overflow-hidden border-r border-border/50">
@@ -749,6 +750,7 @@ export default function AppContent() {
           onProjectCreated={handleProjectCreatedFromWorkbench}
         />
       ) : null}
+      <ToastContainer />
     </>
   );
 }

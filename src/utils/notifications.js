@@ -8,6 +8,7 @@
  * - macOS permission request
  * - Convenient methods: notifySuccess, notifyError, notifyInfo
  */
+import { logger } from '../utils/logger';
 
 /**
  * Check if running in Electron environment
@@ -71,7 +72,7 @@ export const showNotification = (title, body, options = {}) => {
     // Note: Electron notifications don't support direct callback attachment
     // The main process would need to send back events via IPC for full callback support
     if (onClick) {
-      console.warn('Notification click handlers are not fully supported in Electron mode');
+      logger.warn('Notification click handlers are not fully supported in Electron mode');
     }
     return;
   }
@@ -79,7 +80,7 @@ export const showNotification = (title, body, options = {}) => {
   // Web Notification fallback
   if (isWebNotificationSupported()) {
     if (Notification.permission !== 'granted') {
-      console.warn('Notification permission not granted');
+      logger.warn('Notification permission not granted');
       return;
     }
 
@@ -103,7 +104,7 @@ export const showNotification = (title, body, options = {}) => {
   }
 
   // Final fallback: console log
-  console.log(`[Notification] ${title}: ${body}`);
+  logger.log(`[Notification] ${title}: ${body}`);
 };
 
 /**
