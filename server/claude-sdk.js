@@ -425,7 +425,7 @@ function extractTokenBudget(resultMessage) {
   const cacheReadTokens = modelData.cumulativeCacheReadInputTokens || modelData.cacheReadInputTokens || 0;
   const cacheCreationTokens = modelData.cumulativeCacheCreationInputTokens || modelData.cacheCreationInputTokens || 0;
 
-  // Total used = input + output + cache tokens
+  // Total used = input + output + cache tokens (all consume context window across turns)
   const totalUsed = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
 
   // Use configured context window budget from environment (default 160000)
