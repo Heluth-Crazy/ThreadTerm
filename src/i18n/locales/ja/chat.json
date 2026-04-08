@@ -225,7 +225,33 @@
     "help": "CLIヘルプを表示",
     "status": "現在のステータスを表示",
     "exit": "このセッションを終了",
+    "init": "CLAUDE.mdでプロジェクトを初期化",
+    "addDir": "作業ディレクトリを追加",
+    "memory": "CLAUDE.mdメモリファイルを編集",
+    "review": "コードレビューをリクエスト",
+    "prComments": "プルリクエストのコメント",
+    "model": "AIモデルを選択・変更",
+    "config": "設定の表示・変更",
+    "mcp": "MCPサーバーを管理",
+    "vim": "vimキーバインドの切替",
+    "doctor": "Claude Codeの健全性チェック",
+    "releaseNotes": "最新のリリースノートを表示",
+    "bug": "Anthropicにバグを報告",
+    "logout": "Claudeからログアウト",
+    "login": "Claudeにログイン",
+    "terminalSetup": "ターミナル統合を設定",
+    "diff": "保留中のファイル変更を表示",
+    "approve": "保留中の変更を承認",
+    "new": "新しいチャットを開始",
     "title": "コマンド",
-    "hint": "/ でコマンドを表示"
+    "hint": "/ でコマンドを表示",
+    "category": {
+      "conversation": "会話",
+      "project": "プロジェクト",
+      "code": "コード＆レビュー",
+      "config": "設定＆ツール",
+      "info": "情報＆ヘルプ",
+      "session": "セッション"
+    }
   }
 }
