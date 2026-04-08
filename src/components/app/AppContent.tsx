@@ -340,10 +340,8 @@ export default function AppContent() {
   );
 
   const handleBackToOverview = useCallback(() => {
-    setViewMode('overview');
-    setActiveNav('projects');
-    setProjectsView('project-overview');
-  }, [setActiveNav, setProjectsView]);
+    setShowProjectDetail(true);
+  }, []);
 
   // ActivityBar navigation handler
   const navActiveNav: WorkbenchNav =
