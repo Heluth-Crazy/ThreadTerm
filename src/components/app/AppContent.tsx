@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { ChevronLeft } from 'lucide-react';
+import { Button } from '../ui/button';
 
 import SecondarySidebarRouter from '../workbench/SecondarySidebarRouter';
 import MainContentRouter from '../workbench/MainContentRouter';
@@ -39,6 +42,7 @@ import type { WorkbenchNav } from '../../types/workbench';
 type DesktopViewMode = 'overview' | 'focus' | 'settings' | 'extensions' | 'livegrid';
 
 export default function AppContent() {
+  const { t } = useTranslation('common');
   const isMobileViewport = useMobileViewport();
   const navigate = useNavigate();
   const { sessionId } = useParams<{ sessionId?: string }>();
@@ -338,7 +342,8 @@ export default function AppContent() {
   const handleBackToOverview = useCallback(() => {
     setViewMode('overview');
     setActiveNav('projects');
-  }, [setActiveNav]);
+    setProjectsView('project-overview');
+  }, [setActiveNav, setProjectsView]);
 
   // ActivityBar navigation handler
   const navActiveNav: WorkbenchNav =
@@ -583,30 +588,28 @@ export default function AppContent() {
   const desktopContent = (
     <div className="fixed inset-0 flex flex-col bg-background">
       {/* Thin top bar */}
-      <header className="flex h-11 shrink-0 items-center gap-3 border-b border-border/60 bg-card/80 px-4">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-foreground text-xs font-bold text-background">
-          O
+      <header className="flex h-11 shrink-0 items-center border-b border-border/60 bg-card/80">
+        <div className="flex w-14 shrink-0 items-center justify-center">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-foreground text-xs font-bold text-background">
+            O
+          </div>
         </div>
 
-        {viewMode === 'focus' && selectedProject ? (
-          <button
-            type="button"
+        <div className="flex items-center gap-3 px-2">
+        {viewMode === 'focus' || viewMode === 'settings' || viewMode === 'extensions' || viewMode === 'livegrid' ? (
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={handleBackToOverview}
-            className="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+            className="gap-1 text-muted-foreground hover:text-foreground px-2 h-7"
           >
-            ← Overview
-          </button>
-        ) : viewMode === 'settings' || viewMode === 'extensions' || viewMode === 'livegrid' ? (
-          <button
-            type="button"
-            onClick={handleBackToOverview}
-            className="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
-          >
-            ← Overview
-          </button>
+            <ChevronLeft className="w-4 h-4" />
+            {t('overview.backToOverview', 'Overview')}
+          </Button>
         ) : (
           <span className="text-sm font-medium text-foreground">OpenWork</span>
         )}
+        </div>
 
         <div className="flex-1" />
 

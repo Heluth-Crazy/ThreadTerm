@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pencil } from 'lucide-react';
+import { Pencil, ChevronLeft } from 'lucide-react';
 import { useSessionStatusStore } from '../../stores/sessionStatusStore';
 import ChatPanel from '../chat/ChatPanel';
 import ErrorBoundary from '../shared/ErrorBoundary';
 import FileTree from '../FileTree';
 import GitPanel from '../GitPanel';
 import { TerminalGrid } from '../terminal-grid';
+import { Button } from '../ui/button';
 import type { SessionLifecycleHandler } from '../main-content/types/types';
 import type { AppTab, Project, ProjectSession } from '../../types/app';
 import { api } from '../../utils/api';
@@ -165,13 +166,15 @@ export default function SessionFocusLayout({
       <div className="flex flex-1 items-center justify-center px-6">
         <div className="text-center">
           <p className="text-sm text-muted-foreground">Select a session from the sidebar to begin</p>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onBackToOverview}
-            className="mt-3 text-xs text-primary hover:underline"
+            className="mt-3 gap-1 text-muted-foreground hover:text-foreground px-2 h-7"
           >
-            ← {t('overview.backToOverview', 'Overview')}
-          </button>
+            <ChevronLeft className="w-4 h-4" />
+            {t('overview.backToOverview', 'Overview')}
+          </Button>
         </div>
       </div>
     );
@@ -181,13 +184,15 @@ export default function SessionFocusLayout({
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {/* Focus header */}
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border/40 bg-card/60 px-3">
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onBackToOverview}
-          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          className="h-6 gap-1 rounded-md px-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
         >
-          ← {t('overview.backToOverview', 'Overview')}
-        </button>
+          <ChevronLeft className="h-3.5 w-3.5" />
+          {t('overview.backToOverview', 'Overview')}
+        </Button>
         <div className="h-3.5 w-px bg-border/60" />
         <span
           className={`rounded-md px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white ${
