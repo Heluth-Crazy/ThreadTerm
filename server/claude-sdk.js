@@ -734,7 +734,8 @@ async function queryClaudeSDK(command, options = {}, ws) {
           sessionCreatedSent = true;
           ws.send({
             type: 'session-created',
-            sessionId: capturedSessionId
+            sessionId: capturedSessionId,
+            originalSessionId: sessionId || null
           });
         } else {
           console.log('Not sending session-created. sessionId:', sessionId, 'sessionCreatedSent:', sessionCreatedSent);

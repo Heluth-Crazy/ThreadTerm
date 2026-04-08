@@ -6,9 +6,11 @@ import { WebSocketProvider } from './contexts/WebSocketContext';
 import AppContent from './components/app/AppContent';
 import i18n from './i18n/config.js';
 import { useSessionStatusTracker } from './hooks/useSessionStatusTracker';
+import { useLiveGridSnapshotSync } from './hooks/useLiveGridSnapshotSync';
 
 function AppInitializer() {
   useSessionStatusTracker();
+  useLiveGridSnapshotSync();
   return null;
 }
 
