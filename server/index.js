@@ -367,7 +367,7 @@ app.post('/api/system/update', authenticateToken, async (req, res) => {
             )
             : 'npm install -g @openwork/openwork@latest';
 
-        const shellBinary = isWindows ? 'powershell.exe' : 'sh';
+        const shellBinary = isWindows ? 'powershell.exe' : '/bin/sh';
         const shellArgs = isWindows
             ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', updateCommand]
             : ['-c', updateCommand];
