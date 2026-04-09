@@ -255,7 +255,7 @@ router.get('/status', async (req, res) => {
     });
   } catch (error) {
     console.error('Git status error:', error);
-    res.json({
+    res.status(500).json({
       error: error.message.includes('not a git repository') || error.message.includes('Project directory is not a git repository')
         ? error.message
         : 'Git operation failed',
@@ -326,7 +326,7 @@ router.get('/diff', async (req, res) => {
     res.json({ diff });
   } catch (error) {
     console.error('Git diff error:', error);
-    res.json({ error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -392,7 +392,7 @@ router.get('/file-with-diff', async (req, res) => {
     });
   } catch (error) {
     console.error('Git file-with-diff error:', error);
-    res.json({ error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -507,7 +507,7 @@ router.get('/branches', async (req, res) => {
     res.json({ branches });
   } catch (error) {
     console.error('Git branches error:', error);
-    res.json({ error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -606,7 +606,7 @@ router.get('/commits', async (req, res) => {
     res.json({ commits });
   } catch (error) {
     console.error('Git commits error:', error);
-    res.json({ error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -630,7 +630,7 @@ router.get('/commit-diff', async (req, res) => {
     res.json({ diff: stdout });
   } catch (error) {
     console.error('Git commit diff error:', error);
-    res.json({ error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -910,7 +910,7 @@ router.get('/remote-status', async (req, res) => {
     });
   } catch (error) {
     console.error('Git remote status error:', error);
-    res.json({ error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
