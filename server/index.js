@@ -228,8 +228,27 @@ const wss = new WebSocketServer({
     verifyClient: (info) => {
         logger.debug('WebSocket connection attempt to:', info.req.url);
 
-        // SIMPLIFIED: Always allow WebSocket connections without authentication
-        // Try to get user info if token is provided (backward compatibility)
+        // Validate Origin header to prevent cross-origin WebSocket hijacking (CSWSH).
+        // A malicious webpage could open a WS connection to localhost and issue
+        // commands on behalf of the user. We reuse the same allowedOrigins list
+        // that the CORS middleware enforces for HTTP requests.
+        const origin = info.origin || info.req.headers.origin;
+        if (origin) {
+            const originAllowed = allowedOrigins.some(p =>
+                typeof p === 'string' ? p === origin : p.test(origin)
+            );
+            if (!originAllowed) {
+                logger.warn('WebSocket connection rejected: origin not allowed:', origin);
+                return false;
+            }
+        }
+        // No Origin header = non-browser client (curl, Electron, CLI) — allow.
+
+        // AUTH NOTE: This is a LOCAL desktop app. The auth model is intentionally
+        // permissive for single-user local use. authenticateWebSocket extracts
+        // the user from a token if provided, otherwise falls back to the first
+        // local database user or an anonymous placeholder. This is by design —
+        // the Origin check above is the primary guard against untrusted callers.
         const url = new URL(info.req.url, 'http://localhost');
         const token = url.searchParams.get('token') ||
             info.req.headers.authorization?.split(' ')[1];
