@@ -459,18 +459,29 @@ router.post('/load', async (req, res) => {
       });
     }
 
-    // Security: Prevent path traversal
+    // Security: Only allow loading files within .claude/commands directories.
+    // Accept files under ~/.claude/commands/ (user-level) or under any
+    // project's .claude/commands/ directory. Normalise with path.resolve()
+    // to neutralise ../ traversal sequences, then verify the resolved path
+    // actually falls inside one of the allowed base directories.
     const resolvedPath = path.resolve(commandPath);
-    if (!resolvedPath.startsWith(path.resolve(os.homedir())) &&
-        !resolvedPath.includes('.claude/commands')) {
+    const userCommandsBase = path.join(os.homedir(), '.claude', 'commands');
+    const isInUserCommands = resolvedPath === userCommandsBase ||
+      resolvedPath.startsWith(userCommandsBase + path.sep);
+    // Also allow project-level .claude/commands (the path must contain
+    // the literal segment and still resolve without escaping it).
+    const isInProjectCommands = resolvedPath.includes(path.sep + '.claude' + path.sep + 'commands' + path.sep) ||
+      resolvedPath.endsWith(path.sep + '.claude' + path.sep + 'commands');
+
+    if (!isInUserCommands && !isInProjectCommands) {
       return res.status(403).json({
         error: 'Access denied',
-        message: 'Command must be in .claude/commands directory'
+        message: 'Command must be in a .claude/commands directory'
       });
     }
 
-    // Read and parse the command file
-    const content = await fs.readFile(commandPath, 'utf8');
+    // Read using the resolved (safe) path, not the raw user input
+    const content = await fs.readFile(resolvedPath, 'utf8');
     const { data: metadata, content: commandContent } = matter(content);
 
     res.json({

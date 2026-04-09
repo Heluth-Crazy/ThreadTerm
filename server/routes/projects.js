@@ -711,6 +711,15 @@ router.post('/create-workspace', async (req, res) => {
 
     // Handle new workspace creation
     if (workspaceType === 'new') {
+      // Track whether we created the directory so cleanup only removes
+      // directories this operation created, never pre-existing workspaces.
+      let createdAbsolutePath = false;
+      try {
+        await fs.access(absolutePath);
+        // Directory already exists — don't delete it on cleanup
+      } catch {
+        createdAbsolutePath = true;
+      }
       // Create the directory if it doesn't exist
       await fs.mkdir(absolutePath, { recursive: true });
 
@@ -723,8 +732,10 @@ router.post('/create-workspace', async (req, res) => {
           // Fetch token from database
           const token = await getGithubTokenById(githubTokenId, req.user.id);
           if (!token) {
-            // Clean up created directory
-            await fs.rm(absolutePath, { recursive: true, force: true });
+            // Only clean up if WE created the directory
+            if (createdAbsolutePath) {
+              await fs.rm(absolutePath, { recursive: true, force: true });
+            }
             return res.status(404).json({ error: 'source hosting token not found' });
           }
           githubToken = token.github_token;
@@ -848,13 +859,23 @@ router.get('/clone-progress', async (req, res) => {
 
     const absolutePath = validation.resolvedPath;
 
+    // Track whether we created the directory so cleanup only removes
+    // directories this operation created, never pre-existing workspaces.
+    let createdAbsolutePath = false;
+    try {
+      await fs.access(absolutePath);
+    } catch {
+      createdAbsolutePath = true;
+    }
     await fs.mkdir(absolutePath, { recursive: true });
 
     let githubToken = null;
     if (githubTokenId) {
       const token = await getGithubTokenById(parseInt(githubTokenId), req.user.id);
       if (!token) {
-        await fs.rm(absolutePath, { recursive: true, force: true });
+        if (createdAbsolutePath) {
+          await fs.rm(absolutePath, { recursive: true, force: true });
+        }
         sendEvent('error', { message: 'source hosting token not found' });
         res.end();
         return;
