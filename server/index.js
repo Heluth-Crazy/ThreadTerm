@@ -342,7 +342,7 @@ app.use('/api/slash-commands', authenticateToken, slashCommandsRoutes);
 app.use('/api/templates', authenticateToken, templatesRoutes);
 
 // Agent API Routes (uses API key authentication)
-app.use('/api/agent', agentRoutes);
+app.use('/api/agent', authenticateToken, agentRoutes);
 app.use('/api/cli', cliDiscoveryRoutes);
 
 // Serve public files (like api-docs.html)

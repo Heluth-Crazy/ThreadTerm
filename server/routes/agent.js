@@ -59,8 +59,32 @@ const validateExternalApiKey = (req, res, next) => {
     }
   }
 
-  // Self-hosted mode: API key authentication is no longer available
-  return res.status(401).json({ error: 'API key authentication is not configured' });
+  // Self-hosted mode: Use local auth (the authenticateToken middleware
+  // on the main app already populates req.user for local users). If
+  // req.user was populated by a preceding middleware, allow access.
+  // This makes the agent API usable without API keys in self-hosted mode.
+  if (req.user && req.user.id) {
+    return next();
+  }
+
+  // No user context — check for API key in header as fallback
+  const apiKey = req.headers['x-api-key'];
+  if (apiKey) {
+    try {
+      const keyRecord = userDb.getApiKeyByKey ? userDb.getApiKeyByKey(apiKey) : null;
+      if (keyRecord) {
+        const user = userDb.getUserById(keyRecord.user_id);
+        if (user) {
+          req.user = user;
+          return next();
+        }
+      }
+    } catch (error) {
+      logger.error('API key validation error:', error);
+    }
+  }
+
+  return res.status(401).json({ error: 'Authentication required. Provide a valid session or API key.' });
 };
 
 /**
