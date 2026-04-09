@@ -12,7 +12,9 @@ interface ShortcutEntry {
 }
 
 interface ShortcutSection {
+  icon: string;
   title: string;
+  description: string;
   entries: ShortcutEntry[];
 }
 
@@ -35,24 +37,52 @@ export default function KeyboardShortcutsOverlay({ open, onClose }: KeyboardShor
 
   const sections: ShortcutSection[] = [
     {
-      title: t('shortcuts.navigation', 'Navigation'),
+      icon: '🌐',
+      title: t('shortcuts.contextGlobal', 'Global'),
+      description: t('shortcuts.contextGlobalDesc', 'Works everywhere'),
       entries: [
-        { keys: ['⌘', 'K'], label: t('shortcuts.cmdPalette', 'Open command palette') },
-        { keys: ['⌘', ','], label: t('shortcuts.openSettings', 'Open settings') },
-        { keys: ['⌘', '['], label: t('shortcuts.prevSession', 'Previous session') },
-        { keys: ['⌘', ']'], label: t('shortcuts.nextSession', 'Next session') },
         { keys: ['⌘', 'N'], label: t('shortcuts.newSession', 'New session') },
+        { keys: ['⌘', 'B'], label: t('shortcuts.toggleSidebar', 'Toggle sidebar panels') },
+        { keys: ['⌘', ','], label: t('shortcuts.openSettings', 'Open settings') },
+        { keys: ['⌘', '/'], label: t('shortcuts.toggleShortcuts', 'Toggle this shortcuts panel') },
+        { keys: ['?'], label: t('shortcuts.showHelp', 'Show this help') },
         { keys: ['⌘', '1–9'], label: t('shortcuts.jumpToSession', 'Jump to session by position') },
       ],
     },
     {
-      title: t('shortcuts.view', 'View'),
+      icon: '💬',
+      title: t('shortcuts.contextChat', 'Chat / Session'),
+      description: t('shortcuts.contextChatDesc', 'Active in chat focus'),
       entries: [
+        { keys: ['⌘', 'K'], label: t('shortcuts.cmdPalette', 'Open command palette') },
         { keys: ['⌘', 'F'], label: t('shortcuts.fullscreen', 'Toggle fullscreen') },
-        { keys: ['⌘', 'B'], label: t('shortcuts.toggleSidebar', 'Toggle sidebar panels') },
-        { keys: ['⌘', '/'], label: t('shortcuts.toggleShortcuts', 'Toggle this shortcuts panel') },
-        { keys: ['?'], label: t('shortcuts.showHelp', 'Show this help') },
+        { keys: ['⌘', '['], label: t('shortcuts.prevSession', 'Previous session') },
+        { keys: ['⌘', ']'], label: t('shortcuts.nextSession', 'Next session') },
+        { keys: ['⌘', '`'], label: t('shortcuts.cycleView', 'Cycle chat/split/terminal') },
+        { keys: ['Enter'], label: t('shortcuts.sendMessage', 'Send message') },
+        { keys: ['Shift', 'Enter'], label: t('shortcuts.newLine', 'New line in message') },
         { keys: ['Esc'], label: t('shortcuts.closeOverlay', 'Close overlay / modal') },
+      ],
+    },
+    {
+      icon: '▦',
+      title: t('shortcuts.contextLiveGrid', 'LiveGrid'),
+      description: t('shortcuts.contextLiveGridDesc', 'Card stream view'),
+      entries: [
+        { keys: ['← → ↑ ↓'], label: t('shortcuts.navigateCards', 'Navigate cards') },
+        { keys: ['Enter', '␣'], label: t('shortcuts.expandCard', 'Expand focused card') },
+        { keys: ['Esc'], label: t('shortcuts.collapseCard', 'Collapse / exit focus') },
+        { keys: ['Tab'], label: t('shortcuts.focusNextCard', 'Focus next card') },
+        { keys: ['Shift', 'Tab'], label: t('shortcuts.focusPrevCard', 'Focus previous card') },
+      ],
+    },
+    {
+      icon: '⚙',
+      title: t('shortcuts.contextTerminal', 'Terminal'),
+      description: t('shortcuts.contextTerminalDesc', 'Active in terminal'),
+      entries: [
+        { keys: ['Ctrl', 'C'], label: t('shortcuts.interruptCommand', 'Interrupt running command') },
+        { keys: ['Ctrl', 'L'], label: t('shortcuts.clearTerminal', 'Clear terminal') },
       ],
     },
   ];
@@ -63,7 +93,7 @@ export default function KeyboardShortcutsOverlay({ open, onClose }: KeyboardShor
       onClick={onClose}
     >
       <div
-        className="w-[480px] rounded-2xl border border-border bg-card p-6 shadow-xl"
+        className="w-[520px] max-h-[85vh] overflow-y-auto rounded-2xl border border-border bg-card p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -85,13 +115,19 @@ export default function KeyboardShortcutsOverlay({ open, onClose }: KeyboardShor
           {t('shortcutsSettings.platformNote', '⌘ = Cmd (Mac) / Ctrl (Windows/Linux)')}
         </p>
 
-        {/* Sections */}
+        {/* Context-grouped sections */}
         <div className="space-y-5">
           {sections.map((section) => (
             <div key={section.title}>
-              <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                {section.title}
-              </h3>
+              <div className="mb-2 flex items-center gap-2">
+                <span className="text-sm" role="img" aria-hidden="true">{section.icon}</span>
+                <h3 className="text-[11px] font-semibold uppercase tracking-wider text-foreground">
+                  {section.title}
+                </h3>
+                <span className="rounded-full bg-muted/80 px-2 py-0.5 text-[10px] text-muted-foreground">
+                  {section.description}
+                </span>
+              </div>
               <div className="space-y-1">
                 {section.entries.map((entry) => (
                   <div key={entry.label} className="flex items-center justify-between py-1 text-sm">
