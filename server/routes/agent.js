@@ -2,7 +2,7 @@ import express from 'express';
 import { spawn } from 'child_process';
 import path from 'path';
 import os from 'os';
-import { promises as fs } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 import crypto from 'crypto';
 import { userDb, githubTokensDb } from '../database/db.js';
 import { addProjectManually } from '../projects.js';
@@ -14,6 +14,22 @@ import { IS_PLATFORM } from '../constants/config.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
+
+function resolveGitCommand() {
+  if (process.platform !== 'win32') return 'git';
+  const candidates = [
+    process.env.GIT_PATH,
+    'C:\\Program Files\\Git\\cmd\\git.exe',
+    'C:\\Program Files (x86)\\Git\\cmd\\git.exe',
+    process.env.LOCALAPPDATA && `${process.env.LOCALAPPDATA}\\Programs\\Git\\cmd\\git.exe`,
+  ].filter(Boolean);
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return 'git';
+}
+
+const GIT_CMD = resolveGitCommand();
 
 /**
  * Middleware to authenticate agent API requests.
@@ -54,7 +70,7 @@ const validateExternalApiKey = (req, res, next) => {
  */
 async function getGitRemoteUrl(repoPath) {
   return new Promise((resolve, reject) => {
-    const gitProcess = spawn('git', ['config', '--get', 'remote.origin.url'], {
+    const gitProcess = spawn(GIT_CMD, ['config', '--get', 'remote.origin.url'], {
       cwd: repoPath,
       stdio: ['pipe', 'pipe', 'pipe']
     });
@@ -229,7 +245,7 @@ function validateBranchName(branchName) {
  */
 async function getCommitMessages(projectPath, limit = 5) {
   return new Promise((resolve, reject) => {
-    const gitProcess = spawn('git', ['log', `-${limit}`, '--pretty=format:%s'], {
+    const gitProcess = spawn(GIT_CMD, ['log', `-${limit}`, '--pretty=format:%s'], {
       cwd: projectPath,
       stdio: ['pipe', 'pipe', 'pipe']
     });
@@ -383,7 +399,7 @@ async function cloneRemoteRepo(githubUrl, githubToken = null, projectPath) {
       logger.debug('馃搧 Destination:', cloneDir);
 
       // Execute git clone
-      const gitProcess = spawn('git', ['clone', '--depth', '1', cloneUrl, cloneDir], {
+      const gitProcess = spawn(GIT_CMD, ['clone', '--depth', '1', cloneUrl, cloneDir], {
         stdio: ['pipe', 'pipe', 'pipe']
       });
 
@@ -1016,7 +1032,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
         if (createBranch) {
           // Create and checkout the new branch locally
           logger.debug('馃攧 Creating local branch...');
-          const checkoutProcess = spawn('git', ['checkout', '-b', finalBranchName], {
+          const checkoutProcess = spawn(GIT_CMD, ['checkout', '-b', finalBranchName], {
             cwd: finalProjectPath,
             stdio: 'pipe'
           });
@@ -1032,7 +1048,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
                 // Branch might already exist locally, try to checkout
                 if (stderr.includes('already exists')) {
                   logger.debug(`鈩癸笍 Branch '${finalBranchName}' already exists locally, checking out...`);
-                  const checkoutExisting = spawn('git', ['checkout', finalBranchName], {
+                  const checkoutExisting = spawn(GIT_CMD, ['checkout', finalBranchName], {
                     cwd: finalProjectPath,
                     stdio: 'pipe'
                   });
@@ -1053,7 +1069,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
 
           // Push the branch to remote
           logger.debug('馃攧 Pushing branch to remote...');
-          const pushProcess = spawn('git', ['push', '-u', 'origin', finalBranchName], {
+          const pushProcess = spawn(GIT_CMD, ['push', '-u', 'origin', finalBranchName], {
             cwd: finalProjectPath,
             stdio: 'pipe'
           });

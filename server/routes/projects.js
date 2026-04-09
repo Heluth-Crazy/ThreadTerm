@@ -1,5 +1,5 @@
 import express from 'express';
-import { promises as fs } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
 import os from 'os';
@@ -7,6 +7,22 @@ import crypto from 'crypto';
 import { addProjectManually, extractProjectDirectory, loadProjectConfig, saveProjectConfig } from '../projects.js';
 
 const router = express.Router();
+
+function resolveGitCommand() {
+  if (process.platform !== 'win32') return 'git';
+  const candidates = [
+    process.env.GIT_PATH,
+    'C:\\Program Files\\Git\\cmd\\git.exe',
+    'C:\\Program Files (x86)\\Git\\cmd\\git.exe',
+    process.env.LOCALAPPDATA && `${process.env.LOCALAPPDATA}\\Programs\\Git\\cmd\\git.exe`,
+  ].filter(Boolean);
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return 'git';
+}
+
+const GIT_CMD = resolveGitCommand();
 
 function sanitizeGitError(message, token) {
   if (!message || !token) return message;
@@ -40,13 +56,13 @@ export const FORBIDDEN_PATHS = [
   '/opt',
   '/tmp',
   '/run',
-  // Windows
-  'C:\\Windows',
-  'C:\\Program Files',
-  'C:\\Program Files (x86)',
-  'C:\\ProgramData',
-  'C:\\System Volume Information',
-  'C:\\$Recycle.Bin'
+  // Windows (normalizeForComparison lowercases on win32 – keep these lowercase)
+  'c:\\windows',
+  'c:\\program files',
+  'c:\\program files (x86)',
+  'c:\\programdata',
+  'c:\\system volume information',
+  'c:\\$recycle.bin'
 ];
 
 function encodeProjectNameFromPath(projectPath) {
@@ -114,7 +130,7 @@ function runCommand(command, args, options = {}) {
 }
 
 async function git(commandArgs, cwd) {
-  return runCommand('git', commandArgs, { cwd });
+  return runCommand(GIT_CMD, commandArgs, { cwd });
 }
 
 async function gitRefExists(cwd, ref) {
@@ -876,7 +892,7 @@ router.get('/clone-progress', async (req, res) => {
 
     sendEvent('progress', { message: `Cloning into '${repoName}'...` });
 
-    const gitProcess = spawn('git', ['clone', '--progress', cloneUrl, clonePath], {
+    const gitProcess = spawn(GIT_CMD, ['clone', '--progress', cloneUrl, clonePath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
@@ -968,7 +984,7 @@ function cloneRepository(githubUrl, destinationPath, githubToken = null) {
       }
     }
 
-    const gitProcess = spawn('git', ['clone', '--progress', cloneUrl, destinationPath], {
+    const gitProcess = spawn(GIT_CMD, ['clone', '--progress', cloneUrl, destinationPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,

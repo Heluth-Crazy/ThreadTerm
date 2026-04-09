@@ -29,6 +29,7 @@ import koAuth from './locales/ko/auth.json';
 import koSidebar from './locales/ko/sidebar.json';
 import koChat from './locales/ko/chat.json';
 import koCodeEditor from './locales/ko/codeEditor.json';
+import koTasks from './locales/ko/tasks.json';
 import koTerminal from './locales/ko/terminal.json';
 
 import zhCommon from './locales/zh-CN/common.json';
@@ -37,6 +38,7 @@ import zhAuth from './locales/zh-CN/auth.json';
 import zhSidebar from './locales/zh-CN/sidebar.json';
 import zhChat from './locales/zh-CN/chat.json';
 import zhCodeEditor from './locales/zh-CN/codeEditor.json';
+import zhTasks from './locales/zh-CN/tasks.json';
 import zhTerminal from './locales/zh-CN/terminal.json';
 
 import jaCommon from './locales/ja/common.json';
@@ -95,6 +97,7 @@ i18n
         sidebar: koSidebar,
         chat: koChat,
         codeEditor: koCodeEditor,
+        tasks: koTasks,
         terminal: koTerminal,
       },
       'zh-CN': {
@@ -104,6 +107,7 @@ i18n
         sidebar: zhSidebar,
         chat: zhChat,
         codeEditor: zhCodeEditor,
+        tasks: zhTasks,
         terminal: zhTerminal,
       },
       ja: {
