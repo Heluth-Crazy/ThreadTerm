@@ -12,6 +12,7 @@ type CardGridProps = {
   projects: Project[];
   filter: string;
   onSend: (sessionId: string, text: string, projectPath: string, provider: string) => void;
+  focusedSessionId?: string | null;
 };
 
 function getGridCols(layout: GridLayout): string {
@@ -247,7 +248,7 @@ function EmptyCardSlot({
   );
 }
 
-export default function CardGrid({ projects, filter, onSend }: CardGridProps) {
+export default function CardGrid({ projects, filter, onSend, focusedSessionId }: CardGridProps) {
   const layout = useLiveGridStore((s) => s.layout);
   const cards = useLiveGridStore((s) => s.cards);
 
@@ -300,6 +301,7 @@ export default function CardGrid({ projects, filter, onSend }: CardGridProps) {
             sessionTitle={findSessionTitle(card.sessionId, card.projectId)}
             projectPath={findProjectPath(card.projectId)}
             onSend={onSend}
+            isFocused={card.sessionId === focusedSessionId}
           />
         ) : (
           <EmptyCardSlot

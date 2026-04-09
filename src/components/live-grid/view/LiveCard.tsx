@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, ShieldCheck, ShieldX } from 'lucide-react';
 
@@ -22,6 +22,7 @@ type LiveCardProps = {
   sessionTitle: string;
   projectPath: string;
   onSend: (sessionId: string, text: string, projectPath: string, provider: string) => void;
+  isFocused?: boolean;
 };
 
 function StatusDot({ status }: { status: SessionRuntimeStatus }) {
@@ -60,8 +61,10 @@ function LiveCardInner({
   sessionTitle,
   projectPath,
   onSend,
+  isFocused,
 }: LiveCardProps) {
   const { t } = useTranslation('common');
+  const cardRef = useRef<HTMLDivElement>(null);
   const removeCard = useLiveGridStore((s) => s.removeCard);
   const setFocusedCard = useLiveGridStore((s) => s.setFocusedCard);
   const snapshots: MessageSnapshot[] = useLiveGridStore(
@@ -122,10 +125,19 @@ function LiveCardInner({
       ? 'liveGrid.status.needsAttention'
       : `liveGrid.status.${status}`;
 
+  // Auto-scroll focused card into view
+  useEffect(() => {
+    if (isFocused && cardRef.current) {
+      cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [isFocused]);
+
   return (
     <div
-      className={`flex h-full flex-col overflow-hidden rounded-xl border border-border/60 border-l-4 ${getProviderBorderClass(provider)} bg-card/90 transition-shadow ${statusRingClass(status)}`}
+      ref={cardRef}
+      className={`flex h-full flex-col overflow-hidden rounded-xl border border-border/60 border-l-4 ${getProviderBorderClass(provider)} bg-card/90 transition-shadow ${statusRingClass(status)} ${isFocused ? 'ring-2 ring-primary ring-offset-2 ring-offset-background' : ''}`}
       onDoubleClick={handleDoubleClick}
+      tabIndex={isFocused ? 0 : -1}
     >
       {/* Header */}
       <div className="flex items-center gap-2 border-b border-border/40 px-2.5 py-1.5">
