@@ -14,18 +14,19 @@ import type { MessageSnapshot } from '../stores/liveGridStore';
 
 function stripMarkdown(text: string): string {
   return text
-    .replace(/```[\s\S]*?```/g, '[code]')
-    .replace(/`[^`]+`/g, '[code]')
+    .replace(/```(?:\w*)\n?([\s\S]*?)```/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\*([^*]+)\*/g, '$1')
     .replace(/__([^_]+)__/g, '$1')
     .replace(/_([^_]+)_/g, '$1')
     .replace(/#{1,6}\s/g, '')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '')
     .replace(/>\s/g, '')
     .replace(/[-*+]\s/g, '')
     .replace(/\n+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
     .trim();
 }
 

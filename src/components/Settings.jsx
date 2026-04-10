@@ -1,12 +1,15 @@
 ﻿import { useState, useEffect } from 'react';
 import { Button } from './ui/button';
-import { X, Settings as SettingsIcon, Moon, Sun, GitBranch } from 'lucide-react';
+import { X, Settings as SettingsIcon, Moon, Sun, GitBranch, Keyboard } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/utils';
 import GitSettings from './GitSettings';
 import AgentListItem from './settings/AgentListItem';
 import PermissionsContent from './settings/PermissionsContent';
+import CustomSlashCommandsEditor from './settings/CustomSlashCommandsEditor';
+import SessionTemplatesEditor from './templates/SessionTemplatesEditor';
+import KeyboardShortcutsSettings from './settings/KeyboardShortcutsSettings';
 import LanguageSelector from './LanguageSelector';
 import {
   normalizeSessionLaunchProfiles,
@@ -26,7 +29,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
   const [projectSortOrder, setProjectSortOrder] = useState('name');
   const [fileAccessMode, setFileAccessMode] = useState(FILE_ACCESS_MODES.AUTO);
 
-  const normalizeTab = (tab) => (['agents', 'appearance', 'git'].includes(tab) ? tab : 'agents');
+  const normalizeTab = (tab) => (['agents', 'appearance', 'git', 'shortcuts'].includes(tab) ? tab : 'agents');
   const tabButtonClassName = (tab) => cn(
     'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
     activeTab === tab
@@ -216,6 +219,13 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
                   <GitBranch className="h-4 w-4" />
                   {t('mainTabs.git')}
                 </button>
+                <button
+                  onClick={() => setActiveTab('shortcuts')}
+                  className={tabButtonClassName('shortcuts')}
+                >
+                  <Keyboard className="h-4 w-4" />
+                  {t('mainTabs.shortcuts', 'Shortcuts')}
+                </button>
               </div>
             </div>
           )}
@@ -225,6 +235,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
             embedded ? 'px-4 py-3.5 sm:px-6 lg:px-8' : 'p-4 md:p-6',
           )}>
             {activeTab === 'agents' && (
+              <>
               <div className="flex min-h-[420px] flex-col overflow-hidden rounded-[24px] border border-border/60 bg-card/72 shadow-sm md:min-h-[500px] md:flex-row">
                 <div className="w-56 flex-shrink-0 border-r border-border/60 bg-card/30">
                   <div className="space-y-1.5 p-3">
@@ -264,6 +275,10 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
                   </div>
                 </div>
               </div>
+
+              <CustomSlashCommandsEditor />
+              <SessionTemplatesEditor />
+              </>
             )}
 
             {activeTab === 'appearance' && (
@@ -363,6 +378,8 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
             )}
 
             {activeTab === 'git' && <GitSettings />}
+
+            {activeTab === 'shortcuts' && <KeyboardShortcutsSettings />}
 
           </div>
         </div>

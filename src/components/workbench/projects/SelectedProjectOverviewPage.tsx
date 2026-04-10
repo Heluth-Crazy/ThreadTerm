@@ -1,4 +1,5 @@
 import {
+  ChevronLeft,
   ChevronRight,
   Clock3,
   FolderKanban,
@@ -17,6 +18,7 @@ import { api } from '../../../utils/api';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import { cn } from '../../../lib/utils';
 import { Badge } from '../../ui/badge';
+import { Button } from '../../ui/button';
 import { loadStarredProjects, persistStarredProjects } from '../../sidebar/utils/utils';
 import {
   getProjectDisplayLabel,
@@ -370,6 +372,15 @@ export default function SelectedProjectOverviewPage({
         <section className="rounded-[22px] border border-border/60 bg-card/72 p-3.5 shadow-sm">
           <div className="grid gap-2.5 xl:grid-cols-[minmax(0,1.55fr)_308px]">
             <div className="min-w-0">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onSelectOverview}
+                className="mb-2 gap-1 text-muted-foreground hover:text-foreground px-2 h-7"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                {t('navigation.back', 'Back')}
+              </Button>
               <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">OpenWork</p>
               <div className="mt-1 flex flex-wrap items-center gap-2">
                 <h1 className="min-w-0 text-xl font-semibold tracking-tight text-foreground">{projectLabel}</h1>

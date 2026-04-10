@@ -19,8 +19,8 @@ export default function ActivityBar({ activeNav, onSelectNav }: ActivityBarProps
   const { t } = useTranslation('sidebar');
 
   return (
-    <aside className="flex h-full w-14 flex-col items-center border-r border-border/60 bg-card/70 px-2 py-3">
-      <nav className="flex w-full flex-1 flex-col items-center gap-2">
+    <aside className="flex h-full w-14 flex-col items-center border-r border-border/60 bg-card/70 px-2 pt-2 pb-3">
+      <nav className="flex w-full flex-1 flex-col items-center gap-1.5">
         {ITEMS.map((item) => {
           const Icon = item.icon;
           const isActive = item.id === activeNav;
@@ -31,7 +31,7 @@ export default function ActivityBar({ activeNav, onSelectNav }: ActivityBarProps
               type="button"
               onClick={() => onSelectNav(item.id)}
               className={cn(
-                'flex h-11 w-11 items-center justify-center rounded-xl border transition-colors',
+                'flex h-10 w-10 items-center justify-center rounded-xl border transition-colors',
                 isActive
                   ? 'border-foreground/10 bg-foreground text-background shadow-sm'
                   : 'border-transparent text-muted-foreground hover:border-border hover:bg-muted/70 hover:text-foreground',

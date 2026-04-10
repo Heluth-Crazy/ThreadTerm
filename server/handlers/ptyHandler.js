@@ -387,8 +387,29 @@ function handleShellConnection(ws, getIsServerShuttingDown) {
                 const hasSession = Boolean(wantsResume && sessionId);
                 const provider = data.provider || 'claude';
                 const sessionLaunchArgs = normalizeSessionLaunchArgs(data.sessionArgs);
-                const initialCommand = data.initialCommand;
-                const isPlainShell = data.isPlainShell || (!!initialCommand && !hasSession) || provider === 'plain-shell';
+                const rawInitialCommand = data.initialCommand;
+                const isPlainShell = data.isPlainShell || (!!rawInitialCommand && !hasSession) || provider === 'plain-shell';
+
+                // SECURITY: Validate initialCommand to prevent arbitrary command
+                // execution via WebSocket messages. In plain-shell mode the command
+                // is the user's own terminal input (the WS origin check is the
+                // primary defence). In provider mode, restrict to the provider's
+                // own CLI binary to prevent RCE.
+                let initialCommand = null;
+                if (typeof rawInitialCommand === 'string' && rawInitialCommand.trim()) {
+                    const cmd = rawInitialCommand.trim();
+                    if (isPlainShell) {
+                        initialCommand = cmd;
+                    } else {
+                        const allowedBins = { claude: 'claude', codex: 'codex', cursor: 'cursor' };
+                        const bin = allowedBins[provider];
+                        if (bin && (cmd === bin || cmd.startsWith(bin + ' '))) {
+                            initialCommand = cmd;
+                        } else {
+                            logger.warn(`[PTY] Rejected initialCommand for provider "${provider}": "${cmd.substring(0, 80)}"`);
+                        }
+                    }
+                }
                 const forceNew = data.forceNew || false;
                 urlDetectionBuffer = '';
                 announcedAuthUrls.clear();
@@ -493,7 +514,7 @@ function handleShellConnection(ws, getIsServerShuttingDown) {
 
                 try {
                     // Prepare the shell command adapted to the platform and provider
-                    const shell = IS_WINDOWS ? 'powershell.exe' : (process.env.SHELL || '/bin/zsh');
+                    const shell = IS_WINDOWS ? 'powershell.exe' : (process.env.SHELL || '/bin/bash');
                     const powerShellLaunchArgs = formatPowerShellArgs(sessionLaunchArgs);
                     const posixLaunchArgs = formatPosixArgs(sessionLaunchArgs);
                     let shellCommand;
@@ -561,20 +582,18 @@ function handleShellConnection(ws, getIsServerShuttingDown) {
                         const command = initialCommand || 'claude';
                         if (IS_WINDOWS) {
                             if (hasSession && sessionId) {
-                                const claudeResumeCommand = appendCommandArgs(`claude -r ${toPowerShellSingleQuoted(sessionId)}`, powerShellLaunchArgs);
-                                const claudeLegacyResumeCommand = appendCommandArgs(`claude --resume ${toPowerShellSingleQuoted(sessionId)}`, powerShellLaunchArgs);
+                                const claudeResumeCommand = appendCommandArgs(`claude --resume ${toPowerShellSingleQuoted(sessionId)}`, powerShellLaunchArgs);
                                 const claudeFallbackCommand = appendCommandArgs('claude', powerShellLaunchArgs);
-                                shellCommand = `Set-Location -Path ${toPowerShellSingleQuoted(projectPath)}; ${claudeResumeCommand}; if ($LASTEXITCODE -ne 0) { ${claudeLegacyResumeCommand}; if ($LASTEXITCODE -ne 0) { ${claudeFallbackCommand} } }`;
+                                shellCommand = `Set-Location -Path ${toPowerShellSingleQuoted(projectPath)}; ${claudeResumeCommand}; if ($LASTEXITCODE -ne 0) { ${claudeFallbackCommand} }`;
                             } else {
                                 const commandWithArgs = initialCommand ? command : appendCommandArgs(command, powerShellLaunchArgs);
                                 shellCommand = `Set-Location -Path ${toPowerShellSingleQuoted(projectPath)}; ${commandWithArgs}`;
                             }
                         } else {
                             if (hasSession && sessionId) {
-                                const claudeResumeCommand = appendCommandArgs(`claude -r ${toPosixSingleQuoted(sessionId)}`, posixLaunchArgs);
-                                const claudeLegacyResumeCommand = appendCommandArgs(`claude --resume ${toPosixSingleQuoted(sessionId)}`, posixLaunchArgs);
+                                const claudeResumeCommand = appendCommandArgs(`claude --resume ${toPosixSingleQuoted(sessionId)}`, posixLaunchArgs);
                                 const claudeFallbackCommand = appendCommandArgs('claude', posixLaunchArgs);
-                                shellCommand = `cd ${toPosixSingleQuoted(projectPath)} && (${claudeResumeCommand} || ${claudeLegacyResumeCommand} || ${claudeFallbackCommand})`;
+                                shellCommand = `cd ${toPosixSingleQuoted(projectPath)} && (${claudeResumeCommand} || ${claudeFallbackCommand})`;
                             } else {
                                 const commandWithArgs = initialCommand ? command : appendCommandArgs(command, posixLaunchArgs);
                                 shellCommand = `cd ${toPosixSingleQuoted(projectPath)} && ${commandWithArgs}`;

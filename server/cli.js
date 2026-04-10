@@ -202,7 +202,8 @@ function isNewerVersion(v1, v2) {
 async function checkForUpdates(silent = false) {
     try {
         const { execSync } = await import('child_process');
-        const latestVersion = execSync('npm show @openwork/openwork version', { encoding: 'utf8' }).trim();
+        const execOpts = { encoding: 'utf8', shell: process.platform === 'win32' ? 'cmd.exe' : true };
+        const latestVersion = execSync('npm show @openwork/openwork version', execOpts).trim();
         const currentVersion = packageJson.version;
 
         if (isNewerVersion(latestVersion, currentVersion)) {
@@ -235,7 +236,7 @@ async function updatePackage() {
         }
 
         console.log(`${c.info('[INFO]')} Updating from ${currentVersion} to ${latestVersion}...`);
-        execSync('npm update -g @openwork/openwork', { stdio: 'inherit' });
+        execSync('npm update -g @openwork/openwork', { stdio: 'inherit', shell: process.platform === 'win32' ? 'cmd.exe' : true });
         console.log(`${c.ok('[OK]')} Update complete! Restart openwork to use the new version.`);
     } catch (e) {
         console.error(`${c.error('[ERROR]')} Update failed: ${e.message}`);

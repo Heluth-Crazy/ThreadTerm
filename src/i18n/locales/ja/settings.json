@@ -68,6 +68,7 @@
     "agents": "エージェント",
     "appearance": "外観",
     "git": "Git",
+    "shortcuts": "ショートカット",
     "apiTokens": "API & トークン",
     "tasks": "タスク"
   },
@@ -332,6 +333,54 @@
       "argsPlaceholder": "1行に1引数（例: --dangerously-skip-permissions）",
       "useDangerPreset": "危険モードのプリセットを追加",
       "addProfile": "プロファイルを追加"
+    }
+  },
+  "templates": {
+    "title": "セッションテンプレート",
+    "description": "一般的なタスク用の事前構成済みセッションテンプレート",
+    "add": "追加",
+    "loading": "読み込み中...",
+    "builtIn": "組み込みテンプレート",
+    "myTemplates": "マイテンプレート",
+    "picker": {
+      "title": "テンプレートを選択",
+      "subtitle": "事前構成済みセッションで始めるか、ゼロから始めます",
+      "startBlank": "空白セッションを開始",
+      "startBlankDescription": "テンプレートなしでセッションを作成",
+      "loading": "テンプレートを読み込み中..."
+    },
+    "form": {
+      "name": "名前",
+      "description": "説明",
+      "icon": "アイコン",
+      "provider": "プロバイダー",
+      "initialMessage": "初期メッセージ（任意）",
+      "namePlaceholder": "マイテンプレート",
+      "descriptionPlaceholder": "このテンプレートの用途...",
+      "initialMessagePlaceholder": "このテンプレート使用時に自動入力される最初のメッセージ...",
+      "nameRequired": "名前は必須です",
+      "descriptionRequired": "説明は必須です",
+      "iconRequired": "アイコンは必須です"
+    }
+  },
+  "slashCommands": {
+    "title": "カスタムスラッシュコマンド",
+    "description": "プロンプトテンプレートを挿入するカスタム /コマンドを定義",
+    "add": "追加",
+    "loading": "読み込み中...",
+    "empty": "カスタムコマンドはまだありません。「追加」をクリックして作成してください。",
+    "form": {
+      "name": "名前（スペースなし）",
+      "description": "説明",
+      "promptTemplate": "プロンプトテンプレート",
+      "provider": "プロバイダー",
+      "namePlaceholder": "deploy",
+      "descriptionPlaceholder": "ステージングにデプロイ",
+      "promptPlaceholder": "ステージング環境のデプロイパイプラインを実行...",
+      "nameRequired": "名前は必須です",
+      "nameInvalid": "名前は文字で始まり、文字・数字・ハイフン・アンダースコアのみ使用可能です",
+      "promptRequired": "プロンプトは必須です",
+      "allProviders": "すべてのプロバイダー"
     }
   }
 }

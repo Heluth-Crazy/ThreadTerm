@@ -20,6 +20,7 @@ import rehypeRaw from 'rehype-raw';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark as prismOneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { api } from '../utils/api';
+import { logger } from '../utils/logger';
 import { useTranslation } from 'react-i18next';
 import { Eye, Code2 } from 'lucide-react';
 
@@ -468,7 +469,7 @@ function CodeEditor({ file, onClose, projectPath, isSidebar = false, isExpanded 
   const handleSave = async () => {
     setSaving(true);
     try {
-      console.log('Saving file:', {
+      logger.log('Saving file:', {
         projectName: file.projectName,
         path: file.path,
         contentLength: content?.length
@@ -476,7 +477,7 @@ function CodeEditor({ file, onClose, projectPath, isSidebar = false, isExpanded 
 
       const response = await api.saveFile(file.projectName, file.path, content);
 
-      console.log('Save response:', {
+      logger.log('Save response:', {
         status: response.status,
         ok: response.ok,
         contentType: response.headers.get('content-type')
@@ -495,7 +496,7 @@ function CodeEditor({ file, onClose, projectPath, isSidebar = false, isExpanded 
       }
 
       const result = await response.json();
-      console.log('Save successful:', result);
+      logger.log('Save successful:', result);
 
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2000);

@@ -136,19 +136,18 @@ router.get('/mcp', async (req, res) => {
             type: 'stdio',
             scope: 'cursor',
             config: {},
-            raw: config
+            // raw intentionally omitted — may contain secrets in env/headers
           };
           
           // Determine transport type and extract config
+          // env and headers are stripped — they may contain API keys/tokens
           if (config.command) {
             server.type = 'stdio';
             server.config.command = config.command;
             server.config.args = config.args || [];
-            server.config.env = config.env || {};
           } else if (config.url) {
             server.type = config.transport || 'http';
             server.config.url = config.url;
-            server.config.headers = config.headers || {};
           }
           
           servers.push(server);

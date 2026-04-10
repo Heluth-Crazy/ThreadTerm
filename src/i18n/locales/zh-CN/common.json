@@ -258,6 +258,14 @@
     "navigation": "导航",
     "session": "会话",
     "view": "视图",
+    "contextGlobal": "全局",
+    "contextGlobalDesc": "全局可用",
+    "contextChat": "聊天 / 会话",
+    "contextChatDesc": "聊天焦点时可用",
+    "contextLiveGrid": "实时卡片流",
+    "contextLiveGridDesc": "卡片流视图",
+    "contextTerminal": "终端",
+    "contextTerminalDesc": "终端中可用",
     "cmdPalette": "打开命令面板",
     "fullscreen": "切换全屏",
     "prevSession": "上一个会话",
@@ -265,7 +273,24 @@
     "newSession": "新建会话",
     "cycleView": "切换聊天/分屏/终端",
     "showHelp": "显示此帮助",
-    "jumpToSession": "按位置跳转到会话"
+    "jumpToSession": "按位置跳转到会话",
+    "openSettings": "打开设置",
+    "toggleSidebar": "切换侧边栏",
+    "toggleShortcuts": "切换快捷键面板",
+    "closeOverlay": "关闭弹窗 / 模态框",
+    "sendMessage": "发送消息",
+    "newLine": "消息中换行",
+    "navigateCards": "浏览卡片",
+    "expandCard": "展开聚焦的卡片",
+    "collapseCard": "折叠 / 退出聚焦",
+    "focusNextCard": "聚焦下一个卡片",
+    "focusPrevCard": "聚焦上一个卡片",
+    "interruptCommand": "中断正在运行的命令",
+    "clearTerminal": "清除终端"
+  },
+  "shortcutsSettings": {
+    "interface": "界面",
+    "platformNote": "⌘ = Cmd (Mac) / Ctrl (Windows/Linux)"
   },
   "liveGrid": {
     "title": "实时卡片流",
@@ -301,5 +326,15 @@
     "placeholder": "会话名称",
     "cancel": "取消",
     "save": "保存"
+  },
+  "errorBoundary": {
+    "title": "{{area}}出现了问题",
+    "fallbackArea": "此区域",
+    "unknownError": "发生了未知错误",
+    "retry": "重试"
+  },
+  "contextWindow": {
+    "tooltip": "已使用 {{used}} / {{total}} 个 token（{{percentage}}%）",
+    "warning": "上下文窗口即将用尽。请使用 /compact 命令进行压缩。"
   }
 }

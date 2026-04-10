@@ -63,8 +63,11 @@ import { IS_PLATFORM } from './constants/config.js';
 import { FILE_ACCESS_MODE_HEADER, listProjectFileTree, readTextFileWithMode, readBinaryFileWithMode, writeTextFileWithMode, createDirectoryWithMode, getPathInfoWithMode } from './utils/file-access.js';
 import { logger } from './utils/logger.js';
 import { connectedClients, broadcastProgress, setupProjectsWatcher, closeProjectsWatchers } from './handlers/fileWatcher.js';
+import { startProjectWatcher, stopProjectWatcher, stopAllProjectWatchers } from './handlers/projectFileWatcher.js';
 import { setupWsHandler, handleChatConnection } from './handlers/wsHandler.js';
 import { ptySessionsMap, IS_WINDOWS, buildEnhancedPath, sanitizeAgentOptions, isPtyProcessAlive, terminateAllPtySessions, setupShellHandler } from './handlers/ptyHandler.js';
+import slashCommandsRoutes from './routes/slash-commands.js';
+import templatesRoutes from './routes/templates.js';
 
 let isServerShuttingDown = false;
 let shutdownServerResourcesPromise = null;
@@ -198,6 +201,7 @@ async function shutdownServerResources(options = {}) {
         logger.info('Shutting down backend server resources...');
 
         await closeProjectsWatchers();
+        await stopAllProjectWatchers();
         closeConnectedChatClients();
         terminateAllPtySessions();
         await closeWebSocketServer(Math.min(1500, timeout));
@@ -224,8 +228,27 @@ const wss = new WebSocketServer({
     verifyClient: (info) => {
         logger.debug('WebSocket connection attempt to:', info.req.url);
 
-        // SIMPLIFIED: Always allow WebSocket connections without authentication
-        // Try to get user info if token is provided (backward compatibility)
+        // Validate Origin header to prevent cross-origin WebSocket hijacking (CSWSH).
+        // A malicious webpage could open a WS connection to localhost and issue
+        // commands on behalf of the user. We reuse the same allowedOrigins list
+        // that the CORS middleware enforces for HTTP requests.
+        const origin = info.origin || info.req.headers.origin;
+        if (origin) {
+            const originAllowed = allowedOrigins.some(p =>
+                typeof p === 'string' ? p === origin : p.test(origin)
+            );
+            if (!originAllowed) {
+                logger.warn('WebSocket connection rejected: origin not allowed:', origin);
+                return false;
+            }
+        }
+        // No Origin header = non-browser client (curl, Electron, CLI) — allow.
+
+        // AUTH NOTE: This is a LOCAL desktop app. The auth model is intentionally
+        // permissive for single-user local use. authenticateWebSocket extracts
+        // the user from a token if provided, otherwise falls back to the first
+        // local database user or an anonymous placeholder. This is by design —
+        // the Origin check above is the primary guard against untrusted callers.
         const url = new URL(info.req.url, 'http://localhost');
         const token = url.searchParams.get('token') ||
             info.req.headers.authorization?.split(' ')[1];
@@ -312,8 +335,14 @@ app.use('/api/mcp', authenticateToken, mcpRoutes);
 app.use('/api/cursor', authenticateToken, cursorRoutes);
 app.use('/api/mcp-utils', authenticateToken, mcpUtilsRoutes);
 
+// Custom slash commands API Routes (protected)
+app.use('/api/slash-commands', authenticateToken, slashCommandsRoutes);
+
+// Session templates API Routes (protected)
+app.use('/api/templates', authenticateToken, templatesRoutes);
+
 // Agent API Routes (uses API key authentication)
-app.use('/api/agent', agentRoutes);
+app.use('/api/agent', authenticateToken, agentRoutes);
 app.use('/api/cli', cliDiscoveryRoutes);
 
 // Serve public files (like api-docs.html)
@@ -357,7 +386,7 @@ app.post('/api/system/update', authenticateToken, async (req, res) => {
             )
             : 'npm install -g @openwork/openwork@latest';
 
-        const shellBinary = isWindows ? 'powershell.exe' : 'sh';
+        const shellBinary = isWindows ? 'powershell.exe' : '/bin/sh';
         const shellArgs = isWindows
             ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', updateCommand]
             : ['-c', updateCommand];
