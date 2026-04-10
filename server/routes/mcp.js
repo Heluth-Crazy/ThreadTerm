@@ -116,6 +116,20 @@ router.post('/cli/add', async (req, res) => {
     
     process.stdout.on('data', (data) => {
       stdout += data.toString();
+    });
+
+    process.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    process.on('close', (code) => {
+      if (code === 0) {
+        try {
+          const result = JSON.parse(stdout);
+          res.json(result);
+        } catch (e) {
+          res.json({ success: true, output: stdout });
+        }
       } else {
         console.error('Claude CLI error:', stderr);
         res.status(400).json({ error: 'Claude CLI command failed', details: stderr });
