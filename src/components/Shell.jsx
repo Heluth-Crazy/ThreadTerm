@@ -7,6 +7,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useTranslation } from 'react-i18next';
 import { IS_PLATFORM } from '../constants/config';
 import { loadSessionLaunchProfilesByProvider, mergeSessionLaunchArgs } from '../utils/sessionLaunchProfiles';
+import { logger } from '../utils/logger';
 
 const xtermStyles = `
   .xterm .xterm-screen {
@@ -121,6 +122,10 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
   const [authUrlCopyStatus, setAuthUrlCopyStatus] = useState('idle');
   const [isAuthPanelDismissed, setIsAuthPanelDismissed] = useState(false);
 
+  // Refs mirror state to avoid stale closures in WebSocket event handlers
+  const isConnectingRef = useRef(false);
+  const isConnectedRef = useRef(false);
+
   const selectedProjectRef = useRef(selectedProject);
   const selectedSessionRef = useRef(selectedSession);
   const initialCommandRef = useRef(initialCommand);
@@ -173,20 +178,38 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
     return copied;
   }, []);
 
-  const connectWebSocket = useCallback(async () => {
-    if (isConnecting || isConnected) return;
+  // Helper to update connecting state + ref in sync
+  const setConnecting = useCallback((value) => {
+    isConnectingRef.current = value;
+    setIsConnecting(value);
+  }, []);
+
+  const setConnected = useCallback((value) => {
+    isConnectedRef.current = value;
+    setIsConnected(value);
+  }, []);
+
+  const connectWebSocket = useCallback(() => {
+    // Guard uses refs (always fresh) to avoid stale closure issues
+    if (isConnectingRef.current || isConnectedRef.current) return;
+
+    // Cancel any pending reconnection timer
+    if (shellReconnectTimeoutRef.current) {
+      clearTimeout(shellReconnectTimeoutRef.current);
+      shellReconnectTimeoutRef.current = null;
+    }
+
+    setConnecting(true);
 
     try {
-      let wsUrl;
-
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      wsUrl = `${protocol}//${window.location.host}/shell`;
+      const wsUrl = `${protocol}//${window.location.host}/shell`;
 
       ws.current = new WebSocket(wsUrl);
 
       ws.current.onopen = () => {
-        setIsConnected(true);
-        setIsConnecting(false);
+        setConnected(true);
+        setConnecting(false);
         authUrlRef.current = '';
         setAuthUrl('');
         setAuthUrlCopyStatus('idle');
@@ -194,7 +217,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
         retryCountRef.current = 0;
 
         setTimeout(() => {
-          if (fitAddon.current && terminal.current) {
+          if (fitAddon.current && terminal.current && ws.current && ws.current.readyState === WebSocket.OPEN) {
             fitAddon.current.fit();
 
             const selectedSessionId = isPlainShellRef.current
@@ -225,8 +248,6 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
               paneId: paneId,
               forceNew: !isPlainShellRef.current && shouldForceNewSession,
               sessionLaunchProfileId: shouldResumeSession ? null : launchProfileId,
-              // Keep launch args for both new and resume flows so permission-related flags
-              // are not silently dropped after session id materializes.
               sessionArgs: launchArgsFromSession,
             }));
           }
@@ -270,13 +291,13 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
             }
           }
         } catch (error) {
-          console.error('[Shell] Error handling WebSocket message:', error, event.data);
+          logger.error('[Shell] Error handling WebSocket message:', error);
         }
       };
 
-      ws.current.onclose = (event) => {
-        setIsConnected(false);
-        setIsConnecting(false);
+      ws.current.onclose = () => {
+        setConnected(false);
+        setConnecting(false);
         setAuthUrlCopyStatus('idle');
         setIsAuthPanelDismissed(false);
 
@@ -290,27 +311,27 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
           const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
           retryCountRef.current++;
           shellReconnectTimeoutRef.current = setTimeout(() => {
+            // Re-invoke via refs so we never use a stale closure
             connectWebSocket();
           }, delay);
         }
       };
 
-      ws.current.onerror = (error) => {
-        setIsConnected(false);
-        setIsConnecting(false);
+      ws.current.onerror = () => {
+        setConnected(false);
+        setConnecting(false);
       };
     } catch (error) {
-      setIsConnected(false);
-      setIsConnecting(false);
+      setConnected(false);
+      setConnecting(false);
     }
-  }, [isConnecting, isConnected, openAuthUrlInBrowser]);
+  }, [paneId, setConnecting, setConnected]);
 
   const connectToShell = useCallback(() => {
-    if (!isInitialized || isConnected || isConnecting) return;
+    if (!isInitialized || isConnectedRef.current || isConnectingRef.current) return;
     manuallyDisconnected.current = false;
-    setIsConnecting(true);
     connectWebSocket();
-  }, [isInitialized, isConnected, isConnecting, connectWebSocket]);
+  }, [isInitialized, connectWebSocket]);
 
   const disconnectFromShell = useCallback(() => {
     manuallyDisconnected.current = true;
@@ -331,13 +352,13 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
       terminal.current.write('\x1b[2J\x1b[H');
     }
 
-    setIsConnected(false);
-    setIsConnecting(false);
+    setConnected(false);
+    setConnecting(false);
     authUrlRef.current = '';
     setAuthUrl('');
     setAuthUrlCopyStatus('idle');
     setIsAuthPanelDismissed(false);
-  }, []);
+  }, [setConnected, setConnecting]);
 
   const sessionDisplayName = useMemo(() => {
     if (!selectedSession) return null;
@@ -375,7 +396,8 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
       fitAddon.current = null;
     }
 
-    setIsConnected(false);
+    setConnected(false);
+    setConnecting(false);
     setIsInitialized(false);
     authUrlRef.current = '';
     setAuthUrl('');
@@ -461,7 +483,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
     try {
       terminal.current.loadAddon(webglAddon);
     } catch (error) {
-      console.warn('[Shell] WebGL renderer unavailable, using Canvas fallback');
+      logger.warn('[Shell] WebGL renderer unavailable, using Canvas fallback');
     }
 
     terminal.current.open(terminalRef.current);
@@ -588,7 +610,8 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
   }, [selectedProject?.path || selectedProject?.fullPath, isRestarting, minimal, copyAuthUrlToClipboard]);
 
   useEffect(() => {
-    if (!autoConnect || !isInitialized || isConnecting || isConnected) return;
+    if (!autoConnect || !isInitialized) return;
+    if (isConnectingRef.current || isConnectedRef.current) return;
     if (manuallyDisconnected.current) return;
     connectToShell();
   }, [autoConnect, isInitialized, isConnecting, isConnected, connectToShell]);

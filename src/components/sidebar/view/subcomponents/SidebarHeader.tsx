@@ -67,7 +67,7 @@ export default function SidebarHeader({
       <img
         src={appIconSrc}
         alt="OpenWork"
-        className="w-7 h-7 rounded-lg shadow-sm flex-shrink-0"
+        className="w-8 h-8 rounded-lg shadow-sm flex-shrink-0"
       />
       <h1 className="text-sm font-semibold text-foreground tracking-tight truncate">{t('app.title')}</h1>
     </div>
@@ -89,18 +89,18 @@ export default function SidebarHeader({
             <LogoBlock />
           )}
 
-          <div className="flex items-center gap-0.5 flex-shrink-0">
-            <Button variant="ghost" size="sm" className="h-7 w-7 rounded-md p-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={onRefresh} disabled={isRefreshing} title={t('tooltips.refresh')}>
-              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <Button variant="ghost" size="sm" className="h-8 w-8 rounded-lg p-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={onRefresh} disabled={isRefreshing} title={t('tooltips.refresh')}>
+              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
             </Button>
-            <Button variant="ghost" size="sm" className="h-7 w-7 rounded-md p-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={onCreateProject} title={t('tooltips.createProject')}>
-              <Plus className="w-3.5 h-3.5" />
+            <Button variant="ghost" size="sm" className="h-8 w-8 rounded-lg p-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={onCreateProject} title={t('tooltips.createProject')}>
+              <Plus className="w-4 h-4" />
             </Button>
-            <Button variant="ghost" size="sm" className="h-7 w-7 rounded-md p-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={onShowSettings} title={t('actions.settings')}>
-              <Settings className="w-3.5 h-3.5" />
+            <Button variant="ghost" size="sm" className="h-8 w-8 rounded-lg p-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={onShowSettings} title={t('actions.settings')}>
+              <Settings className="w-4 h-4" />
             </Button>
-            <Button variant="ghost" size="sm" className="h-7 w-7 rounded-md p-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={onCollapseSidebar} title={t('tooltips.hideSidebar')}>
-              <PanelLeftClose className="w-3.5 h-3.5" />
+            <Button variant="ghost" size="sm" className="h-8 w-8 rounded-lg p-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={onCollapseSidebar} title={t('tooltips.hideSidebar')}>
+              <PanelLeftClose className="w-4 h-4" />
             </Button>
           </div>
         </div>

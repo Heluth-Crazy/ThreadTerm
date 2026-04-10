@@ -1,8 +1,19 @@
 import { useTranslation } from 'react-i18next';
 import { useEffect, useRef } from 'react';
 import type { SessionProvider } from '../../../types/app';
+import type { CustomSlashCommand } from '../../../types/slashCommands';
+import { useCustomSlashCommands } from '../../../hooks/useCustomSlashCommands';
 
-export const SLASH_COMMANDS: Record<string, { cmd: string; description: string; descriptionKey: string; category?: string }[]> = {
+export type CommandEntry = {
+  cmd: string;
+  description: string;
+  descriptionKey: string;
+  category?: string;
+  isCustom?: boolean;
+  prompt?: string;
+};
+
+export const SLASH_COMMANDS: Record<string, CommandEntry[]> = {
   claude: [
     // Conversation
     { cmd: '/clear', description: 'Clear conversation history', descriptionKey: 'commands.clear', category: 'conversation' },
@@ -50,6 +61,25 @@ export const SLASH_COMMANDS: Record<string, { cmd: string; description: string; 
   ],
 };
 
+/** Build full command list including custom commands for a given provider. */
+export function buildCommandList(
+  provider: string,
+  customCommands: CustomSlashCommand[],
+): CommandEntry[] {
+  const builtIn = SLASH_COMMANDS[provider] ?? SLASH_COMMANDS.claude;
+  const custom: CommandEntry[] = customCommands
+    .filter((c) => c.provider === 'all' || c.provider === provider)
+    .map((c) => ({
+      cmd: `/${c.name}`,
+      description: c.description || c.prompt.slice(0, 60),
+      descriptionKey: '',
+      category: 'custom',
+      isCustom: true,
+      prompt: c.prompt,
+    }));
+  return [...builtIn, ...custom];
+}
+
 type CommandSuggestionsProps = {
   provider: SessionProvider;
   query: string;
@@ -67,9 +97,10 @@ export default function CommandSuggestions({
 }: CommandSuggestionsProps) {
   const { t } = useTranslation('chat');
   const listRef = useRef<HTMLDivElement>(null);
+  const { customCommands } = useCustomSlashCommands();
 
-  const commands = SLASH_COMMANDS[provider] ?? SLASH_COMMANDS.claude;
-  const filtered = commands.filter((c) =>
+  const allCommands = buildCommandList(provider, customCommands);
+  const filtered = allCommands.filter((c) =>
     c.cmd.toLowerCase().startsWith(`/${query.toLowerCase()}`),
   );
 
@@ -78,39 +109,44 @@ export default function CommandSuggestions({
 
   useEffect(() => {
     if (!listRef.current) return;
-    // When categories are shown, find by data-index attribute
     const activeEl = listRef.current.querySelector(`[data-cmd-index="${activeIndex}"]`) as HTMLElement | null;
     activeEl?.scrollIntoView({ block: 'nearest' });
   }, [activeIndex]);
 
   if (filtered.length === 0) return null;
 
-  // Group commands by category for display
+  const renderCommandButton = (cmd: CommandEntry, index: number) => (
+    <button
+      key={cmd.cmd}
+      type="button"
+      data-cmd-index={index}
+      onMouseDown={(e) => {
+        e.preventDefault();
+        if (cmd.isCustom && cmd.prompt) {
+          onSelect(cmd.prompt);
+        } else {
+          onSelect(cmd.cmd);
+        }
+      }}
+      className={`flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer w-full text-left ${
+        index === activeIndex ? 'bg-accent' : 'hover:bg-accent/50'
+      }`}
+    >
+      {cmd.isCustom && <span className="flex-shrink-0">⭐</span>}
+      <span className="font-mono text-foreground">{cmd.cmd}</span>
+      <span className="text-muted-foreground">
+        {cmd.descriptionKey ? t(cmd.descriptionKey, cmd.description) : cmd.description}
+      </span>
+    </button>
+  );
+
   const renderCommands = () => {
     if (!showCategories) {
-      return filtered.map((cmd, index) => (
-        <button
-          key={cmd.cmd}
-          type="button"
-          data-cmd-index={index}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            onSelect(cmd.cmd);
-          }}
-          className={`flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer w-full text-left ${
-            index === activeIndex ? 'bg-accent' : 'hover:bg-accent/50'
-          }`}
-        >
-          <span className="font-mono text-foreground">{cmd.cmd}</span>
-          <span className="text-muted-foreground">
-            {t(cmd.descriptionKey, cmd.description)}
-          </span>
-        </button>
-      ));
+      return filtered.map((cmd, index) => renderCommandButton(cmd, index));
     }
 
     // Group by category
-    const groups: { category: string; items: { cmd: typeof filtered[0]; globalIndex: number }[] }[] = [];
+    const groups: { category: string; items: { cmd: CommandEntry; globalIndex: number }[] }[] = [];
     let currentCategory = '';
     for (let i = 0; i < filtered.length; i++) {
       const cat = filtered[i].category || '';
@@ -125,33 +161,15 @@ export default function CommandSuggestions({
       <div key={group.category}>
         {group.category && (
           <div className="px-3 pt-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-            {t(`commands.category.${group.category}`, group.category)}
+            {group.category === 'custom'
+              ? '⭐ Custom'
+              : t(`commands.category.${group.category}`, group.category)}
           </div>
         )}
-        {group.items.map(({ cmd, globalIndex }) => (
-          <button
-            key={cmd.cmd}
-            type="button"
-            data-cmd-index={globalIndex}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              onSelect(cmd.cmd);
-            }}
-            className={`flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer w-full text-left ${
-              globalIndex === activeIndex ? 'bg-accent' : 'hover:bg-accent/50'
-            }`}
-          >
-            <span className="font-mono text-foreground">{cmd.cmd}</span>
-            <span className="text-muted-foreground">
-              {t(cmd.descriptionKey, cmd.description)}
-            </span>
-          </button>
-        ))}
+        {group.items.map(({ cmd, globalIndex }) => renderCommandButton(cmd, globalIndex))}
       </div>
     ));
   };
-
-  if (filtered.length === 0) return null;
 
   return (
     <div

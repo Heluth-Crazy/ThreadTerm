@@ -3,6 +3,7 @@ import { GitBranch, GitCommit, Plus, Minus, RefreshCw, Check, X, ChevronDown, Ch
 import { MicButton } from './MicButton.jsx';
 import { authenticatedFetch } from '../utils/api';
 import DiffViewer from './DiffViewer.jsx';
+import { useToastStore } from '../stores/toastStore';
 
 function GitPanel({ selectedProject, onFileOpen }) {
   const [gitStatus, setGitStatus] = useState(null);
@@ -68,6 +69,18 @@ function GitPanel({ selectedProject, onFileOpen }) {
     fetchGitStatus();
     fetchBranches();
     fetchRemoteStatus();
+  }, [selectedProject]);
+
+  // Auto-refresh git status when files change on disk
+  useEffect(() => {
+    const handler = () => {
+      if (selectedProject) {
+        fetchGitStatus();
+        fetchRemoteStatus();
+      }
+    };
+    window.addEventListener('openwork:git-status-changed', handler);
+    return () => window.removeEventListener('openwork:git-status-changed', handler);
   }, [selectedProject]);
 
   useEffect(() => {
@@ -591,11 +604,14 @@ function GitPanel({ selectedProject, onFileOpen }) {
         setSelectedFiles(new Set());
         fetchGitStatus();
         fetchRemoteStatus();
+        useToastStore.getState().addToast('Committed successfully', 'success');
       } else {
         console.error('Commit failed:', data.error);
+        useToastStore.getState().addToast(data.error || 'Commit failed', 'error');
       }
     } catch (error) {
       console.error('Error committing changes:', error);
+      useToastStore.getState().addToast('Error committing changes', 'error');
     } finally {
       setIsCommitting(false);
     }

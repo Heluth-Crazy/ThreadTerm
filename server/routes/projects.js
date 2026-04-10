@@ -1,5 +1,5 @@
 import express from 'express';
-import { promises as fs } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
 import os from 'os';
@@ -7,6 +7,22 @@ import crypto from 'crypto';
 import { addProjectManually, extractProjectDirectory, loadProjectConfig, saveProjectConfig } from '../projects.js';
 
 const router = express.Router();
+
+function resolveGitCommand() {
+  if (process.platform !== 'win32') return 'git';
+  const candidates = [
+    process.env.GIT_PATH,
+    'C:\\Program Files\\Git\\cmd\\git.exe',
+    'C:\\Program Files (x86)\\Git\\cmd\\git.exe',
+    process.env.LOCALAPPDATA && `${process.env.LOCALAPPDATA}\\Programs\\Git\\cmd\\git.exe`,
+  ].filter(Boolean);
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return 'git';
+}
+
+const GIT_CMD = resolveGitCommand();
 
 function sanitizeGitError(message, token) {
   if (!message || !token) return message;
@@ -40,13 +56,13 @@ export const FORBIDDEN_PATHS = [
   '/opt',
   '/tmp',
   '/run',
-  // Windows
-  'C:\\Windows',
-  'C:\\Program Files',
-  'C:\\Program Files (x86)',
-  'C:\\ProgramData',
-  'C:\\System Volume Information',
-  'C:\\$Recycle.Bin'
+  // Windows (normalizeForComparison lowercases on win32 – keep these lowercase)
+  'c:\\windows',
+  'c:\\program files',
+  'c:\\program files (x86)',
+  'c:\\programdata',
+  'c:\\system volume information',
+  'c:\\$recycle.bin'
 ];
 
 function encodeProjectNameFromPath(projectPath) {
@@ -114,7 +130,7 @@ function runCommand(command, args, options = {}) {
 }
 
 async function git(commandArgs, cwd) {
-  return runCommand('git', commandArgs, { cwd });
+  return runCommand(GIT_CMD, commandArgs, { cwd });
 }
 
 async function gitRefExists(cwd, ref) {
@@ -695,6 +711,15 @@ router.post('/create-workspace', async (req, res) => {
 
     // Handle new workspace creation
     if (workspaceType === 'new') {
+      // Track whether we created the directory so cleanup only removes
+      // directories this operation created, never pre-existing workspaces.
+      let createdAbsolutePath = false;
+      try {
+        await fs.access(absolutePath);
+        // Directory already exists — don't delete it on cleanup
+      } catch {
+        createdAbsolutePath = true;
+      }
       // Create the directory if it doesn't exist
       await fs.mkdir(absolutePath, { recursive: true });
 
@@ -707,8 +732,10 @@ router.post('/create-workspace', async (req, res) => {
           // Fetch token from database
           const token = await getGithubTokenById(githubTokenId, req.user.id);
           if (!token) {
-            // Clean up created directory
-            await fs.rm(absolutePath, { recursive: true, force: true });
+            // Only clean up if WE created the directory
+            if (createdAbsolutePath) {
+              await fs.rm(absolutePath, { recursive: true, force: true });
+            }
             return res.status(404).json({ error: 'source hosting token not found' });
           }
           githubToken = token.github_token;
@@ -832,13 +859,23 @@ router.get('/clone-progress', async (req, res) => {
 
     const absolutePath = validation.resolvedPath;
 
+    // Track whether we created the directory so cleanup only removes
+    // directories this operation created, never pre-existing workspaces.
+    let createdAbsolutePath = false;
+    try {
+      await fs.access(absolutePath);
+    } catch {
+      createdAbsolutePath = true;
+    }
     await fs.mkdir(absolutePath, { recursive: true });
 
     let githubToken = null;
     if (githubTokenId) {
       const token = await getGithubTokenById(parseInt(githubTokenId), req.user.id);
       if (!token) {
-        await fs.rm(absolutePath, { recursive: true, force: true });
+        if (createdAbsolutePath) {
+          await fs.rm(absolutePath, { recursive: true, force: true });
+        }
         sendEvent('error', { message: 'source hosting token not found' });
         res.end();
         return;
@@ -876,7 +913,7 @@ router.get('/clone-progress', async (req, res) => {
 
     sendEvent('progress', { message: `Cloning into '${repoName}'...` });
 
-    const gitProcess = spawn('git', ['clone', '--progress', cloneUrl, clonePath], {
+    const gitProcess = spawn(GIT_CMD, ['clone', '--progress', cloneUrl, clonePath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
@@ -968,7 +1005,7 @@ function cloneRepository(githubUrl, destinationPath, githubToken = null) {
       }
     }
 
-    const gitProcess = spawn('git', ['clone', '--progress', cloneUrl, destinationPath], {
+    const gitProcess = spawn(GIT_CMD, ['clone', '--progress', cloneUrl, destinationPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,

@@ -68,6 +68,7 @@
     "agents": "에이전트",
     "appearance": "외관",
     "git": "Git",
+    "shortcuts": "단축키",
     "apiTokens": "API & 토큰",
     "tasks": "작업"
   },
@@ -332,6 +333,54 @@
       "argsPlaceholder": "한 줄에 인자 하나씩, 예: --dangerously-skip-permissions",
       "useDangerPreset": "위험 모드 프리셋 추가",
       "addProfile": "프로필 추가"
+    }
+  },
+  "templates": {
+    "title": "세션 템플릿",
+    "description": "일반적인 작업을 위해 미리 구성된 세션 템플릿",
+    "add": "추가",
+    "loading": "로딩 중...",
+    "builtIn": "기본 제공 템플릿",
+    "myTemplates": "내 템플릿",
+    "picker": {
+      "title": "템플릿 선택",
+      "subtitle": "미리 구성된 세션으로 시작하거나 처음부터 시작하세요",
+      "startBlank": "빈 세션 시작",
+      "startBlankDescription": "템플릿 없이 세션을 생성합니다",
+      "loading": "템플릿 로딩 중..."
+    },
+    "form": {
+      "name": "이름",
+      "description": "설명",
+      "icon": "아이콘",
+      "provider": "제공자",
+      "initialMessage": "초기 메시지 (선택사항)",
+      "namePlaceholder": "내 템플릿",
+      "descriptionPlaceholder": "이 템플릿의 용도...",
+      "initialMessagePlaceholder": "이 템플릿 사용 시 자동 입력되는 첫 메시지...",
+      "nameRequired": "이름은 필수입니다",
+      "descriptionRequired": "설명은 필수입니다",
+      "iconRequired": "아이콘은 필수입니다"
+    }
+  },
+  "slashCommands": {
+    "title": "사용자 정의 슬래시 명령어",
+    "description": "프롬프트 템플릿을 삽입하는 사용자 정의 /명령어를 만드세요",
+    "add": "추가",
+    "loading": "로딩 중...",
+    "empty": "사용자 정의 명령어가 없습니다. \"추가\"를 클릭하여 만드세요.",
+    "form": {
+      "name": "이름 (공백 없이)",
+      "description": "설명",
+      "promptTemplate": "프롬프트 템플릿",
+      "provider": "제공자",
+      "namePlaceholder": "deploy",
+      "descriptionPlaceholder": "스테이징에 배포",
+      "promptPlaceholder": "스테이징 환경의 배포 파이프라인 실행...",
+      "nameRequired": "이름은 필수입니다",
+      "nameInvalid": "이름은 문자로 시작하며 문자, 숫자, 하이픈, 밑줄만 포함해야 합니다",
+      "promptRequired": "프롬프트는 필수입니다",
+      "allProviders": "모든 제공자"
     }
   }
 }

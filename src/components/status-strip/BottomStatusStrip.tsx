@@ -1,4 +1,5 @@
 import { useSessionStatusStore } from '../../stores/sessionStatusStore';
+import { getProviderDotClass } from '../../utils/providerColors';
 import type { Project, ProjectSession } from '../../types/app';
 
 export interface BottomStatusStripProps {
@@ -46,6 +47,8 @@ export default function BottomStatusStrip({
                 : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
             }`}
           >
+            {/* Provider indicator dot */}
+            <span className={`inline-block h-1.5 w-1.5 rounded-full ${getProviderDotClass(provider)}`} />
             {/* Status dot */}
             <span
               className={`inline-block h-1.5 w-1.5 rounded-full ${
@@ -58,7 +61,7 @@ export default function BottomStatusStrip({
                       : 'bg-muted-foreground/40'
               }`}
             />
-            <span className={`font-medium ${provider === 'codex' ? 'text-blue-600 dark:text-blue-400' : 'text-violet-600 dark:text-violet-400'}`}>
+            <span className="font-medium text-muted-foreground">
               {provider === 'codex' ? 'CX' : 'CL'}
             </span>
             <span className="max-w-[120px] truncate">{title}</span>

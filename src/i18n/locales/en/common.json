@@ -254,6 +254,14 @@
     "navigation": "Navigation",
     "session": "Session",
     "view": "View",
+    "contextGlobal": "Global",
+    "contextGlobalDesc": "Works everywhere",
+    "contextChat": "Chat / Session",
+    "contextChatDesc": "Active in chat focus",
+    "contextLiveGrid": "LiveGrid",
+    "contextLiveGridDesc": "Card stream view",
+    "contextTerminal": "Terminal",
+    "contextTerminalDesc": "Active in terminal",
     "cmdPalette": "Open command palette",
     "fullscreen": "Toggle fullscreen",
     "prevSession": "Previous session",
@@ -261,7 +269,24 @@
     "newSession": "New session",
     "cycleView": "Cycle chat/split/terminal",
     "showHelp": "Show this help",
-    "jumpToSession": "Jump to session by position"
+    "jumpToSession": "Jump to session by position",
+    "openSettings": "Open settings",
+    "toggleSidebar": "Toggle sidebar panels",
+    "toggleShortcuts": "Toggle this shortcuts panel",
+    "closeOverlay": "Close overlay / modal",
+    "sendMessage": "Send message",
+    "newLine": "New line in message",
+    "navigateCards": "Navigate cards",
+    "expandCard": "Expand focused card",
+    "collapseCard": "Collapse / exit focus",
+    "focusNextCard": "Focus next card",
+    "focusPrevCard": "Focus previous card",
+    "interruptCommand": "Interrupt running command",
+    "clearTerminal": "Clear terminal"
+  },
+  "shortcutsSettings": {
+    "interface": "Interface",
+    "platformNote": "⌘ = Cmd (Mac) / Ctrl (Windows/Linux)"
   },
   "liveGrid": {
     "title": "Live Grid",
@@ -297,5 +322,15 @@
     "placeholder": "Session name",
     "cancel": "Cancel",
     "save": "Save"
+  },
+  "errorBoundary": {
+    "title": "Something went wrong in {{area}}",
+    "fallbackArea": "this section",
+    "unknownError": "An unexpected error occurred",
+    "retry": "Retry"
+  },
+  "contextWindow": {
+    "tooltip": "{{used}} / {{total}} tokens used ({{percentage}}%)",
+    "warning": "Context window almost full. Use /compact to summarize."
   }
 }

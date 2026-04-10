@@ -4,6 +4,7 @@ import type { SessionProvider } from '../../../types/app';
 import type { ProviderThemeConfig } from '../types/chatTypes';
 import { MODEL_OPTIONS } from '../utils/chatConstants';
 import { getProviderDisplayName } from '../utils/chatUtils';
+import { getProviderDotClass } from '../../../utils/providerColors';
 
 type SessionHeaderProps = {
   activeProvider: SessionProvider;
@@ -28,6 +29,7 @@ export default function SessionHeader({
     <div className={`flex flex-wrap items-center gap-2 px-3 py-2 border-b ${providerTheme.header}`}>
       <div className="flex min-w-0 items-center gap-2">
         <SessionProviderLogo provider={activeProvider} className="w-4 h-4 shrink-0" />
+        <span className={`inline-block h-2 w-2 rounded-full shrink-0 ${getProviderDotClass(activeProvider)}`} />
         <Sparkles className={`w-4 h-4 shrink-0 ${providerTheme.headerIcon}`} />
         <span className={`text-sm font-semibold tracking-tight truncate ${providerTheme.headerTitle}`}>
           {getProviderDisplayName(activeProvider)} Chat

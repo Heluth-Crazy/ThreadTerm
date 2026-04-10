@@ -254,6 +254,14 @@
     "navigation": "ナビゲーション",
     "session": "セッション",
     "view": "表示",
+    "contextGlobal": "グローバル",
+    "contextGlobalDesc": "どこでも使用可能",
+    "contextChat": "チャット / セッション",
+    "contextChatDesc": "チャットフォーカス時に有効",
+    "contextLiveGrid": "ライブグリッド",
+    "contextLiveGridDesc": "カードストリームビュー",
+    "contextTerminal": "ターミナル",
+    "contextTerminalDesc": "ターミナル使用時に有効",
     "cmdPalette": "コマンドパレットを開く",
     "fullscreen": "フルスクリーン切替",
     "prevSession": "前のセッション",
@@ -261,7 +269,24 @@
     "newSession": "新しいセッション",
     "cycleView": "チャット/分割/ターミナル切替",
     "showHelp": "このヘルプを表示",
-    "jumpToSession": "位置でセッションに移動"
+    "jumpToSession": "位置でセッションに移動",
+    "openSettings": "設定を開く",
+    "toggleSidebar": "サイドバー切替",
+    "toggleShortcuts": "ショートカットパネル切替",
+    "closeOverlay": "オーバーレイ / モーダルを閉じる",
+    "sendMessage": "メッセージを送信",
+    "newLine": "メッセージ内で改行",
+    "navigateCards": "カード間を移動",
+    "expandCard": "フォーカス中のカードを展開",
+    "collapseCard": "折りたたむ / フォーカス解除",
+    "focusNextCard": "次のカードにフォーカス",
+    "focusPrevCard": "前のカードにフォーカス",
+    "interruptCommand": "実行中のコマンドを中断",
+    "clearTerminal": "ターミナルをクリア"
+  },
+  "shortcutsSettings": {
+    "interface": "インターフェース",
+    "platformNote": "⌘ = Cmd (Mac) / Ctrl (Windows/Linux)"
   },
   "liveGrid": {
     "title": "ライブグリッド",
@@ -297,5 +322,15 @@
     "placeholder": "セッション名",
     "cancel": "キャンセル",
     "save": "保存"
+  },
+  "errorBoundary": {
+    "title": "{{area}}で問題が発生しました",
+    "fallbackArea": "このセクション",
+    "unknownError": "予期しないエラーが発生しました",
+    "retry": "再試行"
+  },
+  "contextWindow": {
+    "tooltip": "{{used}} / {{total}} トークン使用中（{{percentage}}%）",
+    "warning": "コンテキストウィンドウがほぼ満杯です。/compact で要約してください。"
   }
 }

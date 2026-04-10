@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { ChevronLeft } from 'lucide-react';
+import { Button } from '../ui/button';
 
 import SecondarySidebarRouter from '../workbench/SecondarySidebarRouter';
 import MainContentRouter from '../workbench/MainContentRouter';
@@ -11,7 +14,7 @@ import MobileProjectsView from '../mobile/MobileProjectsView';
 import MobileSessionsView from '../mobile/MobileSessionsView';
 
 import LiveGridView from '../live-grid/view/LiveGridView';
-import LiveGridErrorBoundary from '../live-grid/view/LiveGridErrorBoundary';
+import ErrorBoundary from '../shared/ErrorBoundary';
 import CommandPalette from '../command-palette/CommandPalette';
 import MissionControlView from '../overview/MissionControlView';
 import SessionStatusCounts from '../overview/SessionStatusCounts';
@@ -20,8 +23,10 @@ import BottomStatusStrip from '../status-strip/BottomStatusStrip';
 import ProjectListPanel from '../projects/ProjectListPanel';
 import ProjectSessionsPanel from '../projects/ProjectSessionsPanel';
 import KeyboardShortcutsOverlay from '../overlays/KeyboardShortcutsOverlay';
+import SessionTemplatesPicker from '../templates/SessionTemplatesPicker';
 import ActivityBar from '../workbench/ActivityBar';
 import SelectedProjectOverviewPage from '../workbench/projects/SelectedProjectOverviewPage';
+import ToastContainer from '../shared/ToastContainer';
 
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useMobileViewport } from '../../hooks/useMobileViewport';
@@ -29,12 +34,15 @@ import { useWorkbenchNavigation } from '../../hooks/useWorkbenchNavigation';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
 import { useGlobalKeyboardShortcuts } from '../../hooks/useGlobalKeyboardShortcuts';
+import { useFileWatcher } from '../../hooks/useFileWatcher';
 import type { Project, ProjectSession } from '../../types/app';
+import type { SessionTemplate } from '../../types/templates';
 import type { WorkbenchNav } from '../../types/workbench';
 
 type DesktopViewMode = 'overview' | 'focus' | 'settings' | 'extensions' | 'livegrid';
 
 export default function AppContent() {
+  const { t } = useTranslation('common');
   const isMobileViewport = useMobileViewport();
   const navigate = useNavigate();
   const { sessionId } = useParams<{ sessionId?: string }>();
@@ -85,6 +93,23 @@ export default function AppContent() {
     activeSessions,
   });
 
+  // Watch the active project directory for file changes
+  const activeProjectPath = selectedProject?.fullPath ?? selectedProject?.path ?? null;
+  const { lastChangeEvent, gitStatusTrigger } = useFileWatcher(activeProjectPath);
+
+  // Dispatch custom DOM events so FileTree and GitPanel can listen
+  useEffect(() => {
+    if (lastChangeEvent) {
+      window.dispatchEvent(new CustomEvent('openwork:file-changed', { detail: lastChangeEvent }));
+    }
+  }, [lastChangeEvent]);
+
+  useEffect(() => {
+    if (gitStatusTrigger > 0) {
+      window.dispatchEvent(new CustomEvent('openwork:git-status-changed'));
+    }
+  }, [gitStatusTrigger]);
+
   const [extensionsSkillCreateToken, setExtensionsSkillCreateToken] = useState(0);
   const [extensionsMcpCreateToken, setExtensionsMcpCreateToken] = useState(0);
   const [extensionsMcpCreateProvider, setExtensionsMcpCreateProvider] = useState<'claude' | 'codex'>('claude');
@@ -97,6 +122,7 @@ export default function AppContent() {
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [showProjectDetail, setShowProjectDetail] = useState(false);
 
   // ⌘K keyboard shortcut
@@ -240,6 +266,7 @@ export default function AppContent() {
     (session: ProjectSession) => {
       setActiveNav('projects');
       setProjectsView('workspace');
+      setShowProjectDetail(false); // always dismiss project detail panel and show chat
       handleSessionSelect(session);
       if (isMobileViewport) {
         setActiveTab('chat');
@@ -260,6 +287,32 @@ export default function AppContent() {
     },
     [handleNewSession, isMobileViewport, setActiveNav, setProjectsView],
   );
+
+  const handleStartSessionWithTemplatePicker = useCallback(
+    (project: Project) => {
+      handleSelectProject(project);
+      setTemplatePickerOpen(true);
+    },
+    [handleSelectProject],
+  );
+
+  const handleTemplateSelect = useCallback(
+    (template: SessionTemplate) => {
+      setTemplatePickerOpen(false);
+      if (!selectedProject) return;
+      if (template.initialMessage) {
+        window.__pendingTemplateMessage = template.initialMessage;
+      }
+      handleStartSession(selectedProject, template.provider);
+    },
+    [selectedProject, handleStartSession],
+  );
+
+  const handleTemplateSkip = useCallback(() => {
+    setTemplatePickerOpen(false);
+    if (!selectedProject) return;
+    handleStartSession(selectedProject, undefined);
+  }, [selectedProject, handleStartSession]);
 
   const handleSelectMobileTab = useCallback(
     (nextTab: MobilePrimaryTab) => {
@@ -288,9 +341,8 @@ export default function AppContent() {
   );
 
   const handleBackToOverview = useCallback(() => {
-    setViewMode('overview');
-    setActiveNav('projects');
-  }, [setActiveNav]);
+    setShowProjectDetail(true);
+  }, []);
 
   // ActivityBar navigation handler
   const navActiveNav: WorkbenchNav =
@@ -355,6 +407,11 @@ export default function AppContent() {
         handleSelectSessionWithFocus(selectedProject, sessions[index]);
       }
     },
+    onOpenSettings: () => routeToSettings('agents'),
+    onToggleSidebar: () => {
+      if (viewMode === 'focus') setIsFullscreen((f) => !f);
+    },
+    onToggleShortcuts: () => setShortcutsOpen((prev) => !prev),
   });
 
   // --- Sidebar props (still used in focus mode) ---
@@ -374,7 +431,7 @@ export default function AppContent() {
       activeNav={activeNav}
       projectsView={projectsView}
       extensionsView={extensionsView}
-      settingsTab={settingsInitialTab === 'appearance' || settingsInitialTab === 'git' ? settingsInitialTab : 'agents'}
+      settingsTab={settingsInitialTab === 'appearance' || settingsInitialTab === 'git' || settingsInitialTab === 'shortcuts' ? settingsInitialTab : 'agents'}
       onSelectOverview={openProjectsOverview}
       onSelectExtensionsView={setExtensionsView}
       onSelectSettingsTab={routeToSettings}
@@ -530,30 +587,28 @@ export default function AppContent() {
   const desktopContent = (
     <div className="fixed inset-0 flex flex-col bg-background">
       {/* Thin top bar */}
-      <header className="flex h-11 shrink-0 items-center gap-3 border-b border-border/60 bg-card/80 px-4">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-foreground text-xs font-bold text-background">
-          O
+      <header className="flex h-11 shrink-0 items-center border-b border-border/60 bg-card/80">
+        <div className="flex w-14 shrink-0 items-center justify-center">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-foreground text-xs font-bold text-background">
+            O
+          </div>
         </div>
 
-        {viewMode === 'focus' && selectedProject ? (
-          <button
-            type="button"
+        <div className="flex items-center gap-3 px-2">
+        {viewMode === 'focus' || viewMode === 'settings' || viewMode === 'extensions' || viewMode === 'livegrid' ? (
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={handleBackToOverview}
-            className="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+            className="gap-1 text-muted-foreground hover:text-foreground px-2 h-7"
           >
-            ← Overview
-          </button>
-        ) : viewMode === 'settings' || viewMode === 'extensions' || viewMode === 'livegrid' ? (
-          <button
-            type="button"
-            onClick={handleBackToOverview}
-            className="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
-          >
-            ← Overview
-          </button>
+            <ChevronLeft className="w-4 h-4" />
+            {t('overview.backToOverview', 'Overview')}
+          </Button>
         ) : (
           <span className="text-sm font-medium text-foreground">OpenWork</span>
         )}
+        </div>
 
         <div className="flex-1" />
 
@@ -596,12 +651,12 @@ export default function AppContent() {
             onCreateProject={handleOpenProjectCreation}
           />
         ) : viewMode === 'livegrid' ? (
-          <LiveGridErrorBoundary>
+          <ErrorBoundary area="Live Grid">
             <LiveGridView
               projects={projects}
               onNewSession={handleOpenProjectCreation}
             />
-          </LiveGridErrorBoundary>
+          </ErrorBoundary>
         ) : viewMode === 'settings' || viewMode === 'extensions' ? (
           <div className="flex min-h-0 flex-1">
             <div className="w-64 shrink-0 overflow-hidden border-r border-border/50">
@@ -630,7 +685,7 @@ export default function AppContent() {
                   project={selectedProject}
                   selectedSession={selectedSession}
                   onSelectSession={handleSelectSessionWithFocus}
-                  onNewSession={() => handleStartSession(selectedProject, undefined)}
+                  onNewSession={() => handleStartSessionWithTemplatePicker(selectedProject)}
                   onDeleteSession={handleSessionDelete}
                   onRenameSession={handleSessionRename}
                   onViewProjectDetail={() => setShowProjectDetail(true)}
@@ -731,6 +786,14 @@ export default function AppContent() {
         open={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
       />
+
+      {/* Session template picker */}
+      <SessionTemplatesPicker
+        open={templatePickerOpen}
+        onClose={() => setTemplatePickerOpen(false)}
+        onSelectTemplate={handleTemplateSelect}
+        onSkip={handleTemplateSkip}
+      />
     </div>
   );
 
@@ -749,6 +812,7 @@ export default function AppContent() {
           onProjectCreated={handleProjectCreatedFromWorkbench}
         />
       ) : null}
+      <ToastContainer />
     </>
   );
 }

@@ -2,7 +2,7 @@ import React from 'react';
 
 import FileTree from '../../FileTree';
 import GitPanel from '../../GitPanel';
-import ErrorBoundary from '../../ErrorBoundary';
+import ErrorBoundary from '../../shared/ErrorBoundary';
 import { TerminalGrid, HybridTerminalGrid } from '../../terminal-grid';
 import ChatPanel from '../../chat/ChatPanel';
 
@@ -114,7 +114,7 @@ function MainContent({
     <>
       {activeTab === 'shell' && selectedProject ? (
         <div className="h-full w-full overflow-hidden">
-          <ErrorBoundary showDetails>
+          <ErrorBoundary area="Terminal">
             <TerminalGrid project={selectedProject} session={selectedSession} />
           </ErrorBoundary>
         </div>
@@ -122,7 +122,7 @@ function MainContent({
 
       {activeTab === 'chat' && selectedProject ? (
         <div className="h-full w-full overflow-hidden">
-          <ErrorBoundary showDetails>
+          <ErrorBoundary area="Chat">
             <ChatPanel
               selectedProject={selectedProject}
               selectedSession={selectedSession}
@@ -144,19 +144,23 @@ function MainContent({
 
       {activeTab === 'files' && selectedProject ? (
         <div className="h-full overflow-hidden">
-          <FileTree selectedProject={selectedProject} onFileOpen={() => {}} />
+          <ErrorBoundary area="File Tree">
+            <FileTree selectedProject={selectedProject} onFileOpen={() => {}} />
+          </ErrorBoundary>
         </div>
       ) : null}
 
       {activeTab === 'git' && selectedProject ? (
         <div className="h-full overflow-hidden">
-          <AnyGitPanel selectedProject={selectedProject} onFileOpen={() => {}} />
+          <ErrorBoundary area="Git Panel">
+            <AnyGitPanel selectedProject={selectedProject} onFileOpen={() => {}} />
+          </ErrorBoundary>
         </div>
       ) : null}
 
       {activeTab === 'hybrid' ? (
         <div className="h-full overflow-hidden">
-          <ErrorBoundary showDetails>
+          <ErrorBoundary area="Terminal">
             <HybridTerminalGrid projects={projects} />
           </ErrorBoundary>
         </div>

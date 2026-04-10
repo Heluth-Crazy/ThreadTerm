@@ -8,10 +8,10 @@ type SecondarySidebarRouterProps = {
   activeNav: WorkbenchNav;
   projectsView: ProjectsView;
   extensionsView: ExtensionsView;
-  settingsTab: 'agents' | 'appearance' | 'git';
+  settingsTab: 'agents' | 'appearance' | 'git' | 'shortcuts';
   onSelectOverview: () => void;
   onSelectExtensionsView: (view: ExtensionsView) => void;
-  onSelectSettingsTab: (tab: 'agents' | 'appearance' | 'git') => void;
+  onSelectSettingsTab: (tab: 'agents' | 'appearance' | 'git' | 'shortcuts') => void;
   sidebarProps: SidebarProps;
 };
 

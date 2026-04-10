@@ -1,8 +1,8 @@
-import { GitBranch, Palette, SlidersHorizontal } from 'lucide-react';
+import { GitBranch, Keyboard, Palette, SlidersHorizontal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../../lib/utils';
 
-type SettingsTab = 'agents' | 'appearance' | 'git';
+type SettingsTab = 'agents' | 'appearance' | 'git' | 'shortcuts';
 
 type SettingsSidebarPanelProps = {
   activeTab: SettingsTab;
@@ -13,6 +13,7 @@ const ITEMS = [
   { id: 'agents' as SettingsTab, icon: SlidersHorizontal, labelKey: 'mainTabs.agents' },
   { id: 'appearance' as SettingsTab, icon: Palette, labelKey: 'mainTabs.appearance' },
   { id: 'git' as SettingsTab, icon: GitBranch, labelKey: 'mainTabs.git' },
+  { id: 'shortcuts' as SettingsTab, icon: Keyboard, labelKey: 'mainTabs.shortcuts' },
 ];
 
 export default function SettingsSidebarPanel({ activeTab, onSelectTab }: SettingsSidebarPanelProps) {

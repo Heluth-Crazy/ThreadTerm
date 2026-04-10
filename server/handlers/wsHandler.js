@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger.js';
 import { connectedClients } from './fileWatcher.js';
+import { startProjectWatcher, stopProjectWatcher } from './projectFileWatcher.js';
 import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval } from '../claude-sdk.js';
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions } from '../openai-codex.js';
 
@@ -119,6 +120,18 @@ function handleChatConnection(ws, sanitizeAgentOptions) {
                     type: 'active-sessions',
                     sessions: activeSessions
                 });
+            } else if (data.type === 'start-watching') {
+                if (data.projectPath) {
+                    startProjectWatcher(data.projectPath).catch((err) =>
+                        logger.error('[wsHandler] start-watching error:', err)
+                    );
+                }
+            } else if (data.type === 'stop-watching') {
+                if (data.projectPath) {
+                    stopProjectWatcher(data.projectPath).catch((err) =>
+                        logger.error('[wsHandler] stop-watching error:', err)
+                    );
+                }
             }
         } catch (error) {
             logger.error('Chat WebSocket error:', error.message);

@@ -254,6 +254,14 @@
     "navigation": "탐색",
     "session": "세션",
     "view": "보기",
+    "contextGlobal": "전역",
+    "contextGlobalDesc": "어디서나 사용 가능",
+    "contextChat": "채팅 / 세션",
+    "contextChatDesc": "채팅 포커스 시 활성",
+    "contextLiveGrid": "라이브그리드",
+    "contextLiveGridDesc": "카드 스트림 뷰",
+    "contextTerminal": "터미널",
+    "contextTerminalDesc": "터미널에서 활성",
     "cmdPalette": "명령 팔레트 열기",
     "fullscreen": "전체 화면 전환",
     "prevSession": "이전 세션",
@@ -261,7 +269,24 @@
     "newSession": "새 세션",
     "cycleView": "채팅/분할/터미널 전환",
     "showHelp": "이 도움말 표시",
-    "jumpToSession": "위치별 세션 이동"
+    "jumpToSession": "위치별 세션 이동",
+    "openSettings": "설정 열기",
+    "toggleSidebar": "사이드바 전환",
+    "toggleShortcuts": "단축키 패널 전환",
+    "closeOverlay": "오버레이 / 모달 닫기",
+    "sendMessage": "메시지 보내기",
+    "newLine": "메시지에서 줄바꿈",
+    "navigateCards": "카드 탐색",
+    "expandCard": "포커스된 카드 확장",
+    "collapseCard": "접기 / 포커스 해제",
+    "focusNextCard": "다음 카드 포커스",
+    "focusPrevCard": "이전 카드 포커스",
+    "interruptCommand": "실행 중인 명령 중단",
+    "clearTerminal": "터미널 지우기"
+  },
+  "shortcutsSettings": {
+    "interface": "인터페이스",
+    "platformNote": "⌘ = Cmd (Mac) / Ctrl (Windows/Linux)"
   },
   "liveGrid": {
     "title": "라이브 그리드",
@@ -297,5 +322,15 @@
     "placeholder": "세션 이름",
     "cancel": "취소",
     "save": "저장"
+  },
+  "errorBoundary": {
+    "title": "{{area}}에서 문제가 발생했습니다",
+    "fallbackArea": "이 섹션",
+    "unknownError": "예기치 않은 오류가 발생했습니다",
+    "retry": "재시도"
+  },
+  "contextWindow": {
+    "tooltip": "{{used}} / {{total}} 토큰 사용 ({{percentage}}%)",
+    "warning": "컨텍스트 창이 거의 가득 찼습니다. /compact를 사용하여 요약하세요."
   }
 }

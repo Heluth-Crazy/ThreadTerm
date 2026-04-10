@@ -7,6 +7,9 @@ interface GlobalShortcutsConfig {
   onNewSession: () => void;
   onShowShortcuts: () => void;
   onNavigateSession: (index: number) => void;
+  onOpenSettings: () => void;
+  onToggleSidebar: () => void;
+  onToggleShortcuts: () => void;
 }
 
 function isTextInput(target: EventTarget | null): boolean {
@@ -25,12 +28,36 @@ export function useGlobalKeyboardShortcuts(config: GlobalShortcutsConfig) {
     onNewSession,
     onShowShortcuts,
     onNavigateSession,
+    onOpenSettings,
+    onToggleSidebar,
+    onToggleShortcuts,
   } = config;
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       const inInput = isTextInput(e.target);
+
+      // ⌘, → open settings
+      if (mod && e.key === ',') {
+        e.preventDefault();
+        onOpenSettings();
+        return;
+      }
+
+      // ⌘B → toggle sidebar (skip if in input)
+      if (mod && e.key === 'b' && !inInput) {
+        e.preventDefault();
+        onToggleSidebar();
+        return;
+      }
+
+      // ⌘/ → toggle keyboard shortcuts overlay
+      if (mod && e.key === '/') {
+        e.preventDefault();
+        onToggleShortcuts();
+        return;
+      }
 
       // ⌘F → toggle fullscreen (skip if in input to allow native find)
       if (mod && e.key === 'f' && !inInput) {
@@ -74,7 +101,7 @@ export function useGlobalKeyboardShortcuts(config: GlobalShortcutsConfig) {
         return;
       }
     },
-    [onToggleFullscreen, onPrevSession, onNextSession, onNewSession, onShowShortcuts, onNavigateSession],
+    [onToggleFullscreen, onPrevSession, onNextSession, onNewSession, onShowShortcuts, onNavigateSession, onOpenSettings, onToggleSidebar, onToggleShortcuts],
   );
 
   useEffect(() => {

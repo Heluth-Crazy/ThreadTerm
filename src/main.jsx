@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App from './App.tsx'
 import './index.css'
 import 'katex/dist/katex.min.css'
+import { logger } from './utils/logger'
 
 // Initialize i18n
 import './i18n/config.js'
@@ -14,7 +15,7 @@ if ('serviceWorker' in navigator) {
       registration.unregister();
     });
   }).catch(err => {
-    console.warn('Failed to unregister service workers:', err);
+    logger.warn('Failed to unregister service workers:', err);
   });
 }
 

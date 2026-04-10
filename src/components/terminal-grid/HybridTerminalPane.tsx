@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import Shell from '../Shell.jsx';
 import type { Project } from '../../types/app';
 import { hasSessionDragData, parseSessionDragData } from './utils/dragDrop';
+import { logger } from '../../utils/logger';
 
 export interface HybridTerminalPaneProps {
   id: string;
@@ -89,7 +90,7 @@ function HybridTerminalPane({ id, projects, isActive, onActivate }: HybridTermin
     const sessionData = parseSessionDragData(e.dataTransfer);
     if (sessionData) {
       try {
-        console.log('[HybridTerminalPane] Dropped session:', sessionData);
+        logger.log('[HybridTerminalPane] Dropped session:', sessionData);
 
         // Find the project
         const project = projects.find(p => p.name === sessionData.projectName);

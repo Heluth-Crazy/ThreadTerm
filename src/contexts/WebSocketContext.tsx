@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './AuthContext';
 import { IS_PLATFORM } from '../constants/config';
+import { logger } from '../utils/logger';
 
 type WebSocketContextType = {
   ws: WebSocket | null;
@@ -135,7 +136,7 @@ const useWebSocketProviderState = (): WebSocketContextType => {
 
     // Listen for app quit event from Electron main process
     const handleBeforeQuit = () => {
-      console.log('[WebSocket] App is quitting - closing WebSocket connection gracefully');
+      logger.log('[WebSocket] App is quitting - closing WebSocket connection gracefully');
       unmountedRef.current = true;
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -274,7 +275,7 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     } else {
       // Queue message for delivery when connection is re-established
       if (pendingQueueRef.current.length >= MAX_PENDING_SEND_QUEUE_SIZE) {
-        console.warn('[WebSocket] Pending send queue full, discarding oldest message');
+        logger.warn('[WebSocket] Pending send queue full, discarding oldest message');
         pendingQueueRef.current.shift();
       }
       pendingQueueRef.current.push(serialized);

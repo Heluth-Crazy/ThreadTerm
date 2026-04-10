@@ -1,6 +1,7 @@
 import type { Project, ProjectSession, SessionProvider } from '../../types/app';
 import { useChatPanel } from './hooks/useChatPanel';
 import SessionHeader from './components/SessionHeader';
+import ContextWindowMeter from './components/ContextWindowMeter';
 import MessageList from './components/MessageList';
 import InputArea from './components/InputArea';
 import PermissionRequestCard from './components/PermissionRequestCard';
@@ -35,6 +36,8 @@ export default function ChatPanel(props: ChatPanelProps) {
         onProviderChange={(p: SessionProvider) => chat.setProvider(p)}
         onModelChange={chat.setModel}
       />
+
+      <ContextWindowMeter tokenBudget={chat.tokenBudget} />
 
       <MessageList
         key={props.selectedSession?.id ?? 'no-session'}

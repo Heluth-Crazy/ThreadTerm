@@ -68,6 +68,7 @@
     "agents": "Agents",
     "appearance": "Appearance",
     "git": "Git",
+    "shortcuts": "Shortcuts",
     "apiTokens": "API & Tokens",
     "tasks": "Tasks"
   },
@@ -332,6 +333,54 @@
       "argsPlaceholder": "One argument per line, e.g. --dangerously-skip-permissions",
       "useDangerPreset": "Add Dangerous Mode Preset",
       "addProfile": "Add Profile"
+    }
+  },
+  "templates": {
+    "title": "Session Templates",
+    "description": "Pre-configured session templates for common tasks",
+    "add": "Add",
+    "loading": "Loading...",
+    "builtIn": "Built-in Templates",
+    "myTemplates": "My Templates",
+    "picker": {
+      "title": "Choose a Template",
+      "subtitle": "Start with a pre-configured session or begin from scratch",
+      "startBlank": "Start blank session",
+      "startBlankDescription": "Create a session without any template",
+      "loading": "Loading templates..."
+    },
+    "form": {
+      "name": "Name",
+      "description": "Description",
+      "icon": "Icon",
+      "provider": "Provider",
+      "initialMessage": "Initial Message (optional)",
+      "namePlaceholder": "My Template",
+      "descriptionPlaceholder": "What this template does...",
+      "initialMessagePlaceholder": "Pre-filled first message when using this template...",
+      "nameRequired": "Name is required",
+      "descriptionRequired": "Description is required",
+      "iconRequired": "Icon is required"
+    }
+  },
+  "slashCommands": {
+    "title": "Custom Slash Commands",
+    "description": "Define custom /commands that insert prompt templates",
+    "add": "Add",
+    "loading": "Loading...",
+    "empty": "No custom commands yet. Click \"Add\" to create one.",
+    "form": {
+      "name": "Name (no spaces)",
+      "description": "Description",
+      "promptTemplate": "Prompt template",
+      "provider": "Provider",
+      "namePlaceholder": "deploy",
+      "descriptionPlaceholder": "Deploy to staging",
+      "promptPlaceholder": "Run the deployment pipeline for staging environment...",
+      "nameRequired": "Name is required",
+      "nameInvalid": "Name must start with a letter and contain only letters, numbers, hyphens, underscores",
+      "promptRequired": "Prompt is required",
+      "allProviders": "All Providers"
     }
   }
 }

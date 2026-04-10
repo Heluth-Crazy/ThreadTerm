@@ -35,9 +35,23 @@ function mapCodexMcpServers(config) {
       command: serverConfig.command,
       args: serverConfig.args || [],
       url: serverConfig.url,
-      env: serverConfig.env || {},
+      // env intentionally omitted — may contain secrets (API keys, tokens)
     },
   }));
+}
+
+/**
+ * Strip sensitive fields (env, headers) from MCP server configs before
+ * sending to the frontend. These may contain API keys and tokens.
+ */
+function sanitizeMcpServers(mcpServers) {
+  if (!mcpServers || typeof mcpServers !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(mcpServers).map(([key, server]) => {
+      const { env, headers, ...safe } = server || {};
+      return [key, safe];
+    })
+  );
 }
 
 router.get('/config', async (req, res) => {
@@ -48,7 +62,7 @@ router.get('/config', async (req, res) => {
       success: true,
       config: {
         model: config.model || null,
-        mcpServers: config.mcp_servers || {},
+        mcpServers: sanitizeMcpServers(config.mcp_servers || {}),
         approvalMode: config.approval_mode || 'suggest',
       },
     });

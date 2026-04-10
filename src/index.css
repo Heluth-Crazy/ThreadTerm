@@ -98,6 +98,11 @@
     --nav-input-bg: 210 40% 96.1% / 0.5;
     --nav-input-focus-ring: 221.2 83.2% 53.3% / 0.22;
 
+    /* Provider accent colors */
+    --provider-claude: 265 90% 77%;
+    --provider-codex: 213 93% 68%;
+    --provider-cursor: 160 84% 62%;
+
     /* macOS title bar height for hiddenInset style (traffic light buttons area) */
     --macos-title-bar-height: 38px;
   }
