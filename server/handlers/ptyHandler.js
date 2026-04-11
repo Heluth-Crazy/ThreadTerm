@@ -13,25 +13,34 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const ptySessionsMap = new Map();
-const PTY_SESSION_TIMEOUT = 30 * 60 * 1000;
+const PTY_PLAIN_SHELL_TIMEOUT = 5 * 60 * 1000;
+const PTY_AI_SESSION_TIMEOUT = 10 * 60 * 1000;
+const PTY_SESSION_TIMEOUT = PTY_PLAIN_SHELL_TIMEOUT; // default for GC sweep
 const SHELL_URL_PARSE_BUFFER_LIMIT = 32768;
 const ANSI_ESCAPE_SEQUENCE_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
 const TRAILING_URL_PUNCTUATION_REGEX = /[)\]}>.,;:!?]+$/;
 const IS_WINDOWS = os.platform() === 'win32';
 
-// Periodic PTY session cleanup (runs every 10 minutes)
+// Periodic PTY session cleanup (runs every 5 minutes)
 setInterval(() => {
   const now = Date.now();
   for (const [sessionId, session] of ptySessionsMap.entries()) {
-    if (session.lastDataAt && (now - session.lastDataAt) > PTY_SESSION_TIMEOUT) {
+    const timeout = session.provider === 'plain-shell'
+      ? PTY_PLAIN_SHELL_TIMEOUT
+      : PTY_AI_SESSION_TIMEOUT;
+    if (session.lastDataAt && (now - session.lastDataAt) > timeout) {
       logger.debug(`[PTY GC] Cleaning up stale session: ${sessionId}`);
       try {
+        if (session.timeoutId) {
+          clearTimeout(session.timeoutId);
+          session.timeoutId = null;
+        }
         killPtyProcess(session.pty);
       } catch (e) { /* ignore */ }
       ptySessionsMap.delete(sessionId);
     }
   }
-}, 10 * 60 * 1000);
+}, 5 * 60 * 1000);
 
 function isPtyProcessAlive(ptyProcess) {
     if (!ptyProcess || typeof ptyProcess.pid !== 'number') {
@@ -820,14 +829,17 @@ function handleShellConnection(ws, getIsServerShuttingDown) {
                     return;
                 }
 
-                logger.debug('PTY session kept alive, will timeout in 30 minutes:', ptySessionKey);
+                const sessionTimeout = session.provider === 'plain-shell'
+                    ? PTY_PLAIN_SHELL_TIMEOUT
+                    : PTY_AI_SESSION_TIMEOUT;
+                logger.debug(`PTY session kept alive, will timeout in ${sessionTimeout / 60000} minutes:`, ptySessionKey);
                 session.ws = null;
 
                 session.timeoutId = setTimeout(() => {
                     logger.debug('PTY session timeout, killing process:', ptySessionKey);
                     killPtyProcess(session.pty);
                     ptySessionsMap.delete(ptySessionKey);
-                }, PTY_SESSION_TIMEOUT);
+                }, sessionTimeout);
             }
         }
     });

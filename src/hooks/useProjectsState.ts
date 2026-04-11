@@ -23,6 +23,23 @@ type UseProjectsStateArgs = {
 };
 
 const serialize = (value: unknown) => JSON.stringify(value ?? null);
+
+/** Shallow equality check for Project objects — avoids full JSON.stringify. */
+function shallowProjectEqual(a: Project | null, b: Project | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.name !== b.name || a.displayName !== b.displayName || a.path !== b.path) return false;
+  if (a.branch !== b.branch) return false;
+  const aSessions = a.sessions ?? [];
+  const bSessions = b.sessions ?? [];
+  if (aSessions.length !== bSessions.length) return false;
+  for (let i = 0; i < aSessions.length; i++) {
+    if (aSessions[i].id !== bSessions[i].id) return false;
+  }
+  if (a.sessionMeta?.hasMore !== b.sessionMeta?.hasMore) return false;
+  if (a.sessionMeta?.total !== b.sessionMeta?.total) return false;
+  return true;
+}
 const SESSION_LAUNCH_META_STORAGE_KEY = 'openwork-session-launch-meta-v1';
 
 type StoredSessionLaunchMeta = {
@@ -522,7 +539,7 @@ export function useProjectsState({
       return;
     }
 
-    if (serialize(updatedSelectedProject) !== serialize(selectedProject)) {
+    if (!shallowProjectEqual(updatedSelectedProject, selectedProject)) {
       setSelectedProject(updatedSelectedProject);
     }
 
