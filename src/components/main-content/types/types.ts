@@ -52,7 +52,7 @@ export interface MainContentProps {
   activeTab: AppTab;
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
   projects: Project[];
-  ws: WebSocket | null;
+  ws: null;
   sendMessage: (message: unknown) => boolean;
   latestMessage: unknown;
   messageSequence: number;

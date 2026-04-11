@@ -208,6 +208,24 @@ pub async fn pty_input(id: String, data: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Write to a PTY session whose key matches the given prefix (for session lookup).
+pub fn write_to_session_by_prefix(prefix: &str, data: &str) -> Result<(), String> {
+    for entry in PTY_SESSIONS.iter() {
+        if entry.key() == prefix || entry.key().starts_with(prefix) {
+            let mut writer = entry
+                .writer
+                .lock()
+                .map_err(|e| format!("lock error: {e}"))?;
+            writer
+                .write_all(data.as_bytes())
+                .map_err(|e| format!("write error: {e}"))?;
+            writer.flush().map_err(|e| format!("flush error: {e}"))?;
+            return Ok(());
+        }
+    }
+    Err(format!("No PTY session found for: {prefix}"))
+}
+
 /// Resize a PTY session.
 #[tauri::command]
 pub async fn pty_resize(id: String, rows: u16, cols: u16) -> Result<(), String> {

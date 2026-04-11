@@ -6,7 +6,7 @@ import ChatPanel from '../../chat/ChatPanel';
 import SessionProviderLogo from '../../SessionProviderLogo';
 import { useLiveGridStore } from '../../../stores/liveGridStore';
 import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
-import { useWebSocket } from '../../../contexts/WebSocketContext';
+import { useWebSocket } from '../../../contexts/TauriEventContext';
 import type { Project, ProjectSession } from '../../../types/app';
 import type { SessionRuntimeStatus } from '../../../stores/sessionStatusStore';
 
