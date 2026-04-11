@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api } from '../../../utils/api';
+import { settings } from '../../../lib/tauri-bridge';
 import type { SkillSummary } from './useSkills';
 
 type SkillsCardState = {
@@ -39,9 +39,8 @@ const EMPTY_MCP: McpCardState = {
   error: null,
 };
 
-async function readJson(response: Response) {
-  const data = await response.json();
-  return { response, data };
+async function readJson(data: Record<string, unknown>) {
+  return { response: { ok: true }, data };
 }
 
 function parseSkillsTimestamp(skill: SkillSummary): number {
@@ -58,74 +57,32 @@ export function useExtensionsOverview() {
   const load = useCallback(async () => {
     setIsLoading(true);
 
-    const [skillsResult, claudeResult, codexResult] = await Promise.allSettled([
-      api.skills.list().then(readJson),
-      api.mcp.claudeConfig().then(readJson),
-      api.mcp.codexList().then(readJson),
-    ]);
+    try {
+      const allSettings = await settings.getAll();
+      const skillItems = Array.isArray(allSettings?.skills) ? allSettings.skills as SkillSummary[] : [];
+      const roots = Array.isArray(allSettings?.skillRoots) ? allSettings.skillRoots as Array<{ writable?: boolean }> : [];
 
-    if (skillsResult.status === 'fulfilled') {
-      const { response, data } = skillsResult.value;
-      if (response.ok && data.success !== false) {
-        const skillItems = Array.isArray(data.skills) ? data.skills : [];
-        const roots = Array.isArray(data.roots) ? data.roots : [];
-        setSkills({
-          totalCount: skillItems.length,
-          recentSkills: [...skillItems]
-            .sort((left, right) => parseSkillsTimestamp(right) - parseSkillsTimestamp(left))
-            .slice(0, 3),
-          writableRootCount: roots.filter((root: { writable?: boolean }) => Boolean(root.writable)).length,
-          error: null,
-        });
-      } else {
-        setSkills({
-          ...EMPTY_SKILLS,
-          error: data.error || data.message || t('workbench.extensionsOverview.errors.skills'),
-        });
-      }
-    } else {
       setSkills({
-        ...EMPTY_SKILLS,
-        error: skillsResult.reason instanceof Error ? skillsResult.reason.message : t('workbench.extensionsOverview.errors.skills'),
+        totalCount: skillItems.length,
+        recentSkills: [...skillItems]
+          .sort((left, right) => parseSkillsTimestamp(right) - parseSkillsTimestamp(left))
+          .slice(0, 3),
+        writableRootCount: roots.filter((root) => Boolean(root.writable)).length,
+        error: null,
       });
+
+      // MCP config is stored in Claude/Codex config files, not easily accessible in Tauri mode
+      setMcp({
+        totalCount: 0,
+        claudeCount: 0,
+        codexCount: 0,
+        error: null,
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : t('workbench.extensionsOverview.errors.skills');
+      setSkills({ ...EMPTY_SKILLS, error: errMsg });
+      setMcp({ ...EMPTY_MCP, error: errMsg });
     }
-
-    const claudeServersResult =
-      claudeResult.status === 'fulfilled' && claudeResult.value.response.ok && claudeResult.value.data.success !== false
-        ? Array.isArray(claudeResult.value.data.servers)
-          ? claudeResult.value.data.servers
-          : []
-        : null;
-    const codexServersResult =
-      codexResult.status === 'fulfilled' && codexResult.value.response.ok && codexResult.value.data.success !== false
-        ? Array.isArray(codexResult.value.data.servers)
-          ? codexResult.value.data.servers
-          : []
-        : null;
-
-    const mcpErrorMessages = [
-      claudeServersResult === null
-        ? claudeResult.status === 'fulfilled'
-          ? claudeResult.value.data.error || claudeResult.value.data.message || t('workbench.extensionsOverview.errors.mcp')
-          : claudeResult.reason instanceof Error
-            ? claudeResult.reason.message
-            : t('workbench.extensionsOverview.errors.mcp')
-        : null,
-      codexServersResult === null
-        ? codexResult.status === 'fulfilled'
-          ? codexResult.value.data.error || codexResult.value.data.message || t('workbench.extensionsOverview.errors.mcp')
-          : codexResult.reason instanceof Error
-            ? codexResult.reason.message
-            : t('workbench.extensionsOverview.errors.mcp')
-        : null,
-    ].filter(Boolean);
-
-    setMcp({
-      totalCount: (claudeServersResult?.length || 0) + (codexServersResult?.length || 0),
-      claudeCount: claudeServersResult?.length || 0,
-      codexCount: codexServersResult?.length || 0,
-      error: mcpErrorMessages.length > 0 ? mcpErrorMessages.join(' / ') : null,
-    });
 
     setIsLoading(false);
   }, [t]);

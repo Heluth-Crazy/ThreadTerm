@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SetStateAction } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
-import { api } from '../utils/api';
 import { projects as tauriProjects } from '../lib/tauri-bridge';
 import type {
   AppSocketMessage,

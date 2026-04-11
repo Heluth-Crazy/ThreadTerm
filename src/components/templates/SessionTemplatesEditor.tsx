@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/button';
-import { authenticatedFetch } from '../../utils/api';
+import { settings } from '../../lib/tauri-bridge';
 import type { SessionTemplate } from '../../types/templates';
 import TemplateForm from './TemplateForm';
 
@@ -15,11 +15,9 @@ export default function SessionTemplatesEditor() {
 
   const fetchTemplates = useCallback(async () => {
     try {
-      const res = await authenticatedFetch('/api/templates');
-      if (res.ok) {
-        const data = await res.json();
-        setTemplates(data);
-      }
+      const allSettings = await settings.getAll();
+      const tpls = allSettings?.sessionTemplates;
+      setTemplates(Array.isArray(tpls) ? tpls as SessionTemplate[] : []);
     } catch (err) {
       console.error('Failed to load templates:', err);
     } finally {
@@ -36,17 +34,11 @@ export default function SessionTemplatesEditor() {
 
   const handleCreate = async (tpl: Omit<SessionTemplate, 'id' | 'isBuiltIn'>) => {
     try {
-      const res = await authenticatedFetch('/api/templates', {
-        method: 'POST',
-        body: JSON.stringify(tpl),
-      });
-      if (res.ok) {
-        setIsAdding(false);
-        fetchTemplates();
-      } else {
-        const err = await res.json();
-        console.error('Create failed:', err.error);
-      }
+      const newTpl = { ...tpl, id: crypto.randomUUID(), isBuiltIn: false } as SessionTemplate;
+      const updated = [...templates, newTpl];
+      await settings.set('sessionTemplates', updated);
+      setIsAdding(false);
+      fetchTemplates();
     } catch (err) {
       console.error('Failed to create template:', err);
     }
@@ -54,14 +46,10 @@ export default function SessionTemplatesEditor() {
 
   const handleUpdate = async (id: string, tpl: Omit<SessionTemplate, 'id' | 'isBuiltIn'>) => {
     try {
-      const res = await authenticatedFetch(`/api/templates/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(tpl),
-      });
-      if (res.ok) {
-        setEditingId(null);
-        fetchTemplates();
-      }
+      const updated = templates.map((t) => (t.id === id ? { ...tpl, id, isBuiltIn: t.isBuiltIn } : t));
+      await settings.set('sessionTemplates', updated);
+      setEditingId(null);
+      fetchTemplates();
     } catch (err) {
       console.error('Failed to update template:', err);
     }
@@ -69,12 +57,9 @@ export default function SessionTemplatesEditor() {
 
   const handleDelete = async (id: string) => {
     try {
-      const res = await authenticatedFetch(`/api/templates/${id}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        fetchTemplates();
-      }
+      const updated = templates.filter((t) => t.id !== id);
+      await settings.set('sessionTemplates', updated);
+      fetchTemplates();
     } catch (err) {
       console.error('Failed to delete template:', err);
     }

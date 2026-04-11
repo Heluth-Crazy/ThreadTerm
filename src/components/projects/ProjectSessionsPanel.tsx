@@ -4,7 +4,7 @@ import { Info, Trash2, Pencil } from 'lucide-react';
 import { useSessionStatusStore } from '../../stores/sessionStatusStore';
 import type { Project, ProjectSession, SessionProvider } from '../../types/app';
 import SessionCard from '../overview/SessionCard';
-import { api } from '../../utils/api';
+import { projects as tauriProjects } from '../../lib/tauri-bridge';
 
 type SortMode = 'time' | 'status';
 
@@ -92,7 +92,7 @@ export default function ProjectSessionsPanel({
     }
     try {
       const provider: SessionProvider = allSessions.find((s) => s.id === renamingId)?.__provider ?? 'claude';
-      await api.renameSession(project.name, renamingId, renameValue.trim());
+      await tauriProjects.renameSession(project.name, renamingId, renameValue.trim());
       onRenameSession?.(project.name, renamingId, renameValue.trim());
     } catch (err) {
       console.error('Failed to rename session:', err);

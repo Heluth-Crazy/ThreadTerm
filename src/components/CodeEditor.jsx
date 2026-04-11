@@ -19,7 +19,7 @@ import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark as prismOneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { api } from '../utils/api';
+import { fs as tauriFs } from '../lib/tauri-bridge';
 import { logger } from '../utils/logger';
 import { useTranslation } from 'react-i18next';
 import { Eye, Code2 } from 'lucide-react';
@@ -447,14 +447,8 @@ function CodeEditor({ file, onClose, projectPath, isSidebar = false, isExpanded 
         }
 
         // Otherwise, load from disk
-        const response = await api.readFile(file.projectName, file.path);
-
-        if (!response.ok) {
-          throw new Error(`Failed to load file: ${response.status} ${response.statusText}`);
-        }
-
-        const data = await response.json();
-        setContent(data.content);
+        const fileContent = await tauriFs.readFile(file.path);
+        setContent(fileContent);
       } catch (error) {
         console.error('Error loading file:', error);
         setContent(`// Error loading file: ${error.message}\n// File: ${file.name}\n// Path: ${file.path}`);
@@ -475,28 +469,9 @@ function CodeEditor({ file, onClose, projectPath, isSidebar = false, isExpanded 
         contentLength: content?.length
       });
 
-      const response = await api.saveFile(file.projectName, file.path, content);
+      await tauriFs.writeFile(file.path, content);
 
-      logger.log('Save response:', {
-        status: response.status,
-        ok: response.ok,
-        contentType: response.headers.get('content-type')
-      });
-
-      if (!response.ok) {
-        const contentType = response.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || `Save failed: ${response.status}`);
-        } else {
-          const textError = await response.text();
-          console.error('Non-JSON error response:', textError);
-          throw new Error(`Save failed: ${response.status} ${response.statusText}`);
-        }
-      }
-
-      const result = await response.json();
-      logger.log('Save successful:', result);
+      logger.log('Save successful');
 
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2000);

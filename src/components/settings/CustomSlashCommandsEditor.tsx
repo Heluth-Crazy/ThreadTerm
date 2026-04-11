@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Plus, Pencil, Trash2, X, Check, Star } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
-import { authenticatedFetch } from '../../utils/api';
+import { settings } from '../../lib/tauri-bridge';
 import type { CustomSlashCommand } from '../../types/slashCommands';
 
 const PROVIDER_OPTIONS = [
@@ -118,11 +118,9 @@ export default function CustomSlashCommandsEditor() {
 
   const fetchCommands = useCallback(async () => {
     try {
-      const res = await authenticatedFetch('/api/slash-commands');
-      if (res.ok) {
-        const data = await res.json();
-        setCommands(data);
-      }
+      const allSettings = await settings.getAll();
+      const cmds = allSettings?.customSlashCommands;
+      setCommands(Array.isArray(cmds) ? cmds as CustomSlashCommand[] : []);
     } catch (err) {
       console.error('Failed to load custom slash commands:', err);
     } finally {
@@ -136,17 +134,11 @@ export default function CustomSlashCommandsEditor() {
 
   const handleCreate = async (cmd: Omit<CustomSlashCommand, 'id'>) => {
     try {
-      const res = await authenticatedFetch('/api/slash-commands', {
-        method: 'POST',
-        body: JSON.stringify(cmd),
-      });
-      if (res.ok) {
-        setIsAdding(false);
-        fetchCommands();
-      } else {
-        const err = await res.json();
-        console.error('Create failed:', err.error);
-      }
+      const newCmd = { ...cmd, id: crypto.randomUUID() } as CustomSlashCommand;
+      const updated = [...commands, newCmd];
+      await settings.set('customSlashCommands', updated);
+      setIsAdding(false);
+      fetchCommands();
     } catch (err) {
       console.error('Failed to create command:', err);
     }
@@ -154,14 +146,10 @@ export default function CustomSlashCommandsEditor() {
 
   const handleUpdate = async (id: string, cmd: Omit<CustomSlashCommand, 'id'>) => {
     try {
-      const res = await authenticatedFetch(`/api/slash-commands/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(cmd),
-      });
-      if (res.ok) {
-        setEditingId(null);
-        fetchCommands();
-      }
+      const updated = commands.map((c) => (c.id === id ? { ...cmd, id } : c));
+      await settings.set('customSlashCommands', updated);
+      setEditingId(null);
+      fetchCommands();
     } catch (err) {
       console.error('Failed to update command:', err);
     }
@@ -169,12 +157,9 @@ export default function CustomSlashCommandsEditor() {
 
   const handleDelete = async (id: string) => {
     try {
-      const res = await authenticatedFetch(`/api/slash-commands/${id}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        fetchCommands();
-      }
+      const updated = commands.filter((c) => c.id !== id);
+      await settings.set('customSlashCommands', updated);
+      fetchCommands();
     } catch (err) {
       console.error('Failed to delete command:', err);
     }

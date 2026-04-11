@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import ImageViewer from './ImageViewer';
-import { api } from '../utils/api';
+import { fs as tauriFs } from '../lib/tauri-bridge';
 
 // ─── File Icon Registry ──────────────────────────────────────────────
 // Maps file extensions (and special filenames) to { icon, colorClass } pairs.
@@ -333,17 +333,14 @@ function FileTree({ selectedProject, onFileOpen }) {
   const fetchFiles = async () => {
     setLoading(true);
     try {
-      const response = await api.getFiles(selectedProject.name);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('❌ File fetch failed:', response.status, errorText);
-        setFiles([]);
-        return;
-      }
-
-      const data = await response.json();
-      setFiles(data);
+      const entries = await tauriFs.listDir(selectedProject.fullPath || selectedProject.path || selectedProject.name);
+      const treeData = entries.map((e) => ({
+        name: e.name,
+        path: e.path,
+        type: e.is_dir ? 'directory' : 'file',
+        children: [],
+      }));
+      setFiles(treeData);
     } catch (error) {
       console.error('❌ Error fetching files:', error);
       setFiles([]);

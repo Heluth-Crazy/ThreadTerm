@@ -6,7 +6,7 @@
  * shows previous messages instead of appearing blank.
  */
 import { useEffect, useRef } from 'react';
-import { api } from '../utils/api';
+import { sessions as tauriSessions } from '../lib/tauri-bridge';
 import { useLiveGridStore } from '../stores/liveGridStore';
 import type { MessageSnapshot } from '../stores/liveGridStore';
 
@@ -160,21 +160,13 @@ export function useCardHistory(
 
     async function load() {
       try {
-        const response = await api.sessionMessages(
+        const rawMessages = await tauriSessions.messages(
           projectId,
           sessionId,
-          null,
+          undefined,
           0,
           provider,
         );
-
-        if (!response.ok) return;
-
-        const payload = await response.json();
-        const rawMessages =
-          payload?.messages ||
-          payload?.session?.messages ||
-          [];
 
         if (!Array.isArray(rawMessages) || rawMessages.length === 0) return;
 

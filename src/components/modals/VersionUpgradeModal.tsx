@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { authenticatedFetch } from "../../utils/api";
+import { appInfo } from "../../lib/tauri-bridge";
 import { ReleaseInfo } from "../../types/sharedTypes";
 import type { InstallMode } from "../../hooks/useVersionCheck";
 
@@ -35,21 +35,9 @@ export default function VersionUpgradeModal({
         setUpdateError('');
 
         try {
-            // Call the backend API to run the update command
-            const response = await authenticatedFetch('/api/system/update', {
-                method: 'POST',
-            });
-
-            const data = await response.json();
-
-            if (response.ok) {
-                setUpdateOutput(prev => prev + data.output + '\n');
-                setUpdateOutput(prev => prev + '\n✅ Update completed successfully!\n');
-                setUpdateOutput(prev => prev + 'Please restart the server to apply changes.\n');
-            } else {
-                setUpdateError(data.error || 'Update failed');
-                setUpdateOutput(prev => prev + '\n❌ Update failed: ' + (data.error || 'Unknown error') + '\n');
-            }
+            // In Tauri mode, auto-update is not supported via backend API
+            setUpdateOutput(prev => prev + '\n⚠️ Auto-update is not available in Tauri mode.\n');
+            setUpdateOutput(prev => prev + 'Please manually update using the command shown below.\n');
         } catch (error: any) {
             setUpdateError(error.message);
             setUpdateOutput(prev => prev + '\n❌ Update failed: ' + error.message + '\n');

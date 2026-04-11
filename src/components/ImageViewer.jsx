@@ -1,17 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { Button } from './ui/button';
 import { X } from 'lucide-react';
-import { authenticatedFetch } from '../utils/api';
+import { appInfo } from '../lib/tauri-bridge';
 
 function ImageViewer({ file, onClose }) {
-  const imagePath = `/api/projects/${file.projectName}/files/content?path=${encodeURIComponent(file.path)}`;
   const [imageUrl, setImageUrl] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    let objectUrl;
-    const controller = new AbortController();
+    let cancelled = false;
 
     const loadImage = async () => {
       try {
@@ -19,37 +17,28 @@ function ImageViewer({ file, onClose }) {
         setError(null);
         setImageUrl(null);
 
-        const response = await authenticatedFetch(imagePath, {
-          signal: controller.signal
-        });
+        const base64Data = await appInfo.readFileBase64(file.path);
+        if (cancelled) return;
 
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`);
-        }
-
-        const blob = await response.blob();
-        objectUrl = URL.createObjectURL(blob);
-        setImageUrl(objectUrl);
+        const ext = (file.name || '').split('.').pop()?.toLowerCase() || 'png';
+        const mimeMap = { jpg: 'jpeg', jpeg: 'jpeg', png: 'png', gif: 'gif', webp: 'webp', svg: 'svg+xml', bmp: 'bmp' };
+        const mime = mimeMap[ext] || 'png';
+        setImageUrl(`data:image/${mime};base64,${base64Data}`);
       } catch (err) {
-        if (err.name === 'AbortError') {
-          return;
-        }
+        if (cancelled) return;
         console.error('Error loading image:', err);
         setError('Unable to load image');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
     loadImage();
 
     return () => {
-      controller.abort();
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
+      cancelled = true;
     };
-  }, [imagePath]);
+  }, [file.path, file.name]);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">

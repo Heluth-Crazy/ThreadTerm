@@ -10,7 +10,7 @@ import { TerminalGrid } from '../terminal-grid';
 import { Button } from '../ui/button';
 import type { SessionLifecycleHandler } from '../main-content/types/types';
 import type { AppTab, Project, ProjectSession } from '../../types/app';
-import { api } from '../../utils/api';
+import { projects as tauriProjects } from '../../lib/tauri-bridge';
 
 const AnyGitPanel = GitPanel as any;
 
@@ -119,7 +119,7 @@ export default function SessionFocusLayout({
       return;
     }
     try {
-      await api.renameSession(selectedProject.name, selectedSession.id, renameValue.trim());
+      await tauriProjects.renameSession(selectedProject.name, selectedSession.id, renameValue.trim());
       onRenameSession?.(selectedProject.name, selectedSession.id, renameValue.trim());
     } catch (err) {
       console.error('Failed to rename session:', err);
