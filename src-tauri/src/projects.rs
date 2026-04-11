@@ -28,6 +28,30 @@ pub struct Session {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Encode a project path the way Claude CLI does: expand `~`, then replace
+/// `/` (and `.`) with `-`.  On Windows, also strip `:` and normalize `\\`.
+/// Example: `/Users/foo/bar` → `-Users-foo-bar`
+pub fn encode_project_path(path: &str) -> String {
+    let expanded = if path.starts_with('~') {
+        dirs::home_dir()
+            .map(|h| format!("{}{}", h.display(), &path[1..]))
+            .unwrap_or_else(|| path.to_string())
+    } else {
+        path.to_string()
+    };
+
+    #[cfg(target_os = "windows")]
+    let result = expanded
+        .replace('\\', "-")
+        .replace('/', "-")
+        .replace(':', "")
+        .replace('.', "-");
+    #[cfg(not(target_os = "windows"))]
+    let result = expanded.replace('/', "-").replace('.', "-");
+
+    result
+}
+
 fn projects_file() -> PathBuf {
     dirs::home_dir()
         .expect("Could not determine home directory")
@@ -56,16 +80,40 @@ fn save_projects(projects: &[Project]) -> Result<(), String> {
     std::fs::write(&path, data).map_err(|e| format!("Failed to write projects.json: {e}"))
 }
 
-/// Scan `~/.claude/projects/<encoded_path>/` for Claude JSONL sessions.
+/// Scan `~/.claude/projects/` for the subdirectory whose name matches the
+/// encoded `project_path`, then read Claude JSONL sessions from it.
 fn discover_claude_sessions(project_path: &str) -> Vec<Session> {
-    let encoded = project_path.replace(['/', '\\', ':', ' ', '~', '_'], "-");
-    let sessions_dir = dirs::home_dir()
-        .map(|h| h.join(".claude").join("projects").join(&encoded))
-        .unwrap_or_default();
+    let projects_root = match dirs::home_dir() {
+        Some(h) => h.join(".claude").join("projects"),
+        None => return Vec::new(),
+    };
 
-    if !sessions_dir.is_dir() {
+    if !projects_root.is_dir() {
         return Vec::new();
     }
+
+    let encoded = encode_project_path(project_path);
+
+    // Scan all subdirectories looking for an exact match
+    let sessions_dir = match std::fs::read_dir(&projects_root) {
+        Ok(entries) => {
+            let mut found = None;
+            for entry in entries.flatten() {
+                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                    let dir_name = entry.file_name().to_string_lossy().to_string();
+                    if dir_name == encoded {
+                        found = Some(entry.path());
+                        break;
+                    }
+                }
+            }
+            match found {
+                Some(p) => p,
+                None => return Vec::new(),
+            }
+        }
+        Err(_) => return Vec::new(),
+    };
 
     let mut sessions = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&sessions_dir) {

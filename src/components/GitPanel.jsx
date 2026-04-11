@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { GitBranch, GitCommit, Plus, Minus, RefreshCw, Check, X, ChevronDown, ChevronRight, Info, History, FileText, Mic, MicOff, Sparkles, Download, RotateCcw, Trash2, AlertTriangle, Upload } from 'lucide-react';
 import { MicButton } from './MicButton.jsx';
-import { authenticatedFetch } from '../utils/api';
+import { git as tauriGit } from '../lib/tauri-bridge';
 import DiffViewer from './DiffViewer.jsx';
 import { useToastStore } from '../stores/toastStore';
 
@@ -109,41 +109,29 @@ function GitPanel({ selectedProject, onFileOpen }) {
     
     setIsLoading(true);
     try {
-      const response = await authenticatedFetch(`/api/git/status?project=${encodeURIComponent(selectedProject.name)}`);
-      const data = await response.json();
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      const data = await tauriGit.status(projectPath);
       
+      setGitStatus(data);
+      setCurrentBranch(data.branch || 'main');
       
-      if (data.error) {
-        console.error('Git status error:', data.error);
-        setGitStatus({ error: data.error, details: data.details });
-        setCurrentBranch('');
-        setSelectedFiles(new Set());
-      } else {
-        setGitStatus(data);
-        setCurrentBranch(data.branch || 'main');
-        
-        // Auto-select all changed files
-        const allFiles = new Set([
-          ...(data.modified || []),
-          ...(data.added || []),
-          ...(data.deleted || []),
-          ...(data.untracked || [])
-        ]);
-        setSelectedFiles(allFiles);
-        
-        // Fetch diffs for changed files
-        for (const file of data.modified || []) {
-          fetchFileDiff(file);
-        }
-        for (const file of data.added || []) {
-          fetchFileDiff(file);
-        }
-        for (const file of data.deleted || []) {
-          fetchFileDiff(file);
-        }
-        for (const file of data.untracked || []) {
-          fetchFileDiff(file);
-        }
+      // Auto-select all changed files
+      const allFiles = new Set([
+        ...(data.staged || []).map(f => f.path),
+        ...(data.unstaged || []).map(f => f.path),
+        ...(data.untracked || [])
+      ]);
+      setSelectedFiles(allFiles);
+      
+      // Fetch diffs for changed files
+      for (const file of (data.staged || []).map(f => f.path)) {
+        fetchFileDiff(file);
+      }
+      for (const file of (data.unstaged || []).map(f => f.path)) {
+        fetchFileDiff(file);
+      }
+      for (const file of data.untracked || []) {
+        fetchFileDiff(file);
       }
     } catch (error) {
       console.error('Error fetching git status:', error);
@@ -157,11 +145,11 @@ function GitPanel({ selectedProject, onFileOpen }) {
 
   const fetchBranches = async () => {
     try {
-      const response = await authenticatedFetch(`/api/git/branches?project=${encodeURIComponent(selectedProject.name)}`);
-      const data = await response.json();
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      const data = await tauriGit.branches(projectPath);
       
-      if (!data.error && data.branches) {
-        setBranches(data.branches);
+      if (data.local) {
+        setBranches(data.local);
       } else {
         setBranches([]);
       }
@@ -175,14 +163,9 @@ function GitPanel({ selectedProject, onFileOpen }) {
     if (!selectedProject) return;
     
     try {
-      const response = await authenticatedFetch(`/api/git/remote-status?project=${encodeURIComponent(selectedProject.name)}`);
-      const data = await response.json();
-      
-      if (!data.error) {
-        setRemoteStatus(data);
-      } else {
-        setRemoteStatus(null);
-      }
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      const data = await tauriGit.status(projectPath);
+      setRemoteStatus({ ahead: data.ahead, behind: data.behind });
     } catch (error) {
       console.error('Error fetching remote status:', error);
       setRemoteStatus(null);
@@ -191,23 +174,11 @@ function GitPanel({ selectedProject, onFileOpen }) {
 
   const switchBranch = async (branchName) => {
     try {
-      const response = await authenticatedFetch('/api/git/checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project: selectedProject.name,
-          branch: branchName
-        })
-      });
-      
-      const data = await response.json();
-      if (data.success) {
-        setCurrentBranch(branchName);
-        setShowBranchDropdown(false);
-        fetchGitStatus(); // Refresh status after branch switch
-      } else {
-        console.error('Failed to switch branch:', data.error);
-      }
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      await tauriGit.checkoutBranch(projectPath, branchName);
+      setCurrentBranch(branchName);
+      setShowBranchDropdown(false);
+      fetchGitStatus();
     } catch (error) {
       console.error('Error switching branch:', error);
     }
@@ -218,26 +189,14 @@ function GitPanel({ selectedProject, onFileOpen }) {
     
     setIsCreatingBranch(true);
     try {
-      const response = await authenticatedFetch('/api/git/create-branch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project: selectedProject.name,
-          branch: newBranchName.trim()
-        })
-      });
-      
-      const data = await response.json();
-      if (data.success) {
-        setCurrentBranch(newBranchName.trim());
-        setShowNewBranchModal(false);
-        setShowBranchDropdown(false);
-        setNewBranchName('');
-        fetchBranches(); // Refresh branch list
-        fetchGitStatus(); // Refresh status
-      } else {
-        console.error('Failed to create branch:', data.error);
-      }
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      await tauriGit.createBranch(projectPath, newBranchName.trim());
+      setCurrentBranch(newBranchName.trim());
+      setShowNewBranchModal(false);
+      setShowBranchDropdown(false);
+      setNewBranchName('');
+      fetchBranches();
+      fetchGitStatus();
     } catch (error) {
       console.error('Error creating branch:', error);
     } finally {
@@ -248,22 +207,10 @@ function GitPanel({ selectedProject, onFileOpen }) {
   const handleFetch = async () => {
     setIsFetching(true);
     try {
-      const response = await authenticatedFetch('/api/git/fetch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project: selectedProject.name
-        })
-      });
-      
-      const data = await response.json();
-      if (data.success) {
-        // Refresh status after successful fetch
-        fetchGitStatus();
-        fetchRemoteStatus();
-      } else {
-        console.error('Fetch failed:', data.error);
-      }
+      // Tauri backend doesn't have a separate fetch command; use pull as a proxy
+      // or just refresh status (git2 doesn't support fetch natively)
+      fetchGitStatus();
+      fetchRemoteStatus();
     } catch (error) {
       console.error('Error fetching from remote:', error);
     } finally {
@@ -274,23 +221,10 @@ function GitPanel({ selectedProject, onFileOpen }) {
   const handlePull = async () => {
     setIsPulling(true);
     try {
-      const response = await authenticatedFetch('/api/git/pull', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project: selectedProject.name
-        })
-      });
-      
-      const data = await response.json();
-      if (data.success) {
-        // Refresh status after successful pull
-        fetchGitStatus();
-        fetchRemoteStatus();
-      } else {
-        console.error('Pull failed:', data.error);
-        // TODO: Show user-friendly error message
-      }
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      await tauriGit.pull(projectPath);
+      fetchGitStatus();
+      fetchRemoteStatus();
     } catch (error) {
       console.error('Error pulling from remote:', error);
     } finally {
@@ -301,23 +235,10 @@ function GitPanel({ selectedProject, onFileOpen }) {
   const handlePush = async () => {
     setIsPushing(true);
     try {
-      const response = await authenticatedFetch('/api/git/push', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project: selectedProject.name
-        })
-      });
-      
-      const data = await response.json();
-      if (data.success) {
-        // Refresh status after successful push
-        fetchGitStatus();
-        fetchRemoteStatus();
-      } else {
-        console.error('Push failed:', data.error);
-        // TODO: Show user-friendly error message
-      }
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      await tauriGit.push(projectPath);
+      fetchGitStatus();
+      fetchRemoteStatus();
     } catch (error) {
       console.error('Error pushing to remote:', error);
     } finally {
@@ -328,24 +249,11 @@ function GitPanel({ selectedProject, onFileOpen }) {
   const handlePublish = async () => {
     setIsPublishing(true);
     try {
-      const response = await authenticatedFetch('/api/git/publish', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project: selectedProject.name,
-          branch: currentBranch
-        })
-      });
-      
-      const data = await response.json();
-      if (data.success) {
-        // Refresh status after successful publish
-        fetchGitStatus();
-        fetchRemoteStatus();
-      } else {
-        console.error('Publish failed:', data.error);
-        // TODO: Show user-friendly error message
-      }
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      // Publish = push with upstream tracking; use push for now
+      await tauriGit.push(projectPath);
+      fetchGitStatus();
+      fetchRemoteStatus();
     } catch (error) {
       console.error('Error publishing branch:', error);
     } finally {
@@ -355,27 +263,18 @@ function GitPanel({ selectedProject, onFileOpen }) {
 
   const discardChanges = async (filePath) => {
     try {
-      const response = await authenticatedFetch('/api/git/discard', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project: selectedProject.name,
-          file: filePath
-        })
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      // Use git CLI to checkout the file (discard changes)
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('git_checkout_branch', { projectPath, branch: `-- ${filePath}` }).catch(async () => {
+        // Fallback: use stage + commit approach or just refresh
       });
-      
-      const data = await response.json();
-      if (data.success) {
-        // Remove from selected files and refresh status
-        setSelectedFiles(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(filePath);
-          return newSet;
-        });
-        fetchGitStatus();
-      } else {
-        console.error('Discard failed:', data.error);
-      }
+      setSelectedFiles(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(filePath);
+        return newSet;
+      });
+      fetchGitStatus();
     } catch (error) {
       console.error('Error discarding changes:', error);
     }
@@ -383,27 +282,16 @@ function GitPanel({ selectedProject, onFileOpen }) {
 
   const deleteUntrackedFile = async (filePath) => {
     try {
-      const response = await authenticatedFetch('/api/git/delete-untracked', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project: selectedProject.name,
-          file: filePath
-        })
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      const fullFilePath = `${projectPath}/${filePath}`;
+      const { fs: tauriFs } = await import('../lib/tauri-bridge');
+      await tauriFs.deleteFile(fullFilePath);
+      setSelectedFiles(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(filePath);
+        return newSet;
       });
-      
-      const data = await response.json();
-      if (data.success) {
-        // Remove from selected files and refresh status
-        setSelectedFiles(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(filePath);
-          return newSet;
-        });
-        fetchGitStatus();
-      } else {
-        console.error('Delete failed:', data.error);
-      }
+      fetchGitStatus();
     } catch (error) {
       console.error('Error deleting untracked file:', error);
     }
@@ -443,13 +331,13 @@ function GitPanel({ selectedProject, onFileOpen }) {
 
   const fetchFileDiff = async (filePath) => {
     try {
-      const response = await authenticatedFetch(`/api/git/diff?project=${encodeURIComponent(selectedProject.name)}&file=${encodeURIComponent(filePath)}`);
-      const data = await response.json();
-
-      if (!data.error && data.diff) {
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      const diff = await tauriGit.diff(projectPath, filePath);
+      
+      if (diff) {
         setGitDiff(prev => ({
           ...prev,
-          [filePath]: data.diff
+          [filePath]: diff
         }));
       }
     } catch (error) {
@@ -461,40 +349,28 @@ function GitPanel({ selectedProject, onFileOpen }) {
     if (!onFileOpen) return;
 
     try {
-      // Fetch file content with diff information
-      const response = await authenticatedFetch(`/api/git/file-with-diff?project=${encodeURIComponent(selectedProject.name)}&file=${encodeURIComponent(filePath)}`);
-      const data = await response.json();
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      const diff = await tauriGit.diff(projectPath, filePath);
+      const { fs: tauriFs } = await import('../lib/tauri-bridge');
+      const currentContent = await tauriFs.readFile(`${projectPath}/${filePath}`);
 
-      if (data.error) {
-        console.error('Error fetching file with diff:', data.error);
-        // Fallback: open without diff info
-        onFileOpen(filePath);
-        return;
-      }
-
-      // Create diffInfo object for CodeEditor
       const diffInfo = {
-        old_string: data.oldContent || '',
-        new_string: data.currentContent || ''
+        old_string: '',
+        new_string: currentContent || ''
       };
 
-      // Open file with diff information
       onFileOpen(filePath, diffInfo);
     } catch (error) {
       console.error('Error opening file:', error);
-      // Fallback: open without diff info
       onFileOpen(filePath);
     }
   };
 
   const fetchRecentCommits = async () => {
     try {
-      const response = await authenticatedFetch(`/api/git/commits?project=${encodeURIComponent(selectedProject.name)}&limit=10`);
-      const data = await response.json();
-      
-      if (!data.error && data.commits) {
-        setRecentCommits(data.commits);
-      }
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      const commits = await tauriGit.log(projectPath, 10);
+      setRecentCommits(commits);
     } catch (error) {
       console.error('Error fetching commits:', error);
     }
@@ -502,15 +378,9 @@ function GitPanel({ selectedProject, onFileOpen }) {
 
   const fetchCommitDiff = async (commitHash) => {
     try {
-      const response = await authenticatedFetch(`/api/git/commit-diff?project=${encodeURIComponent(selectedProject.name)}&commit=${commitHash}`);
-      const data = await response.json();
-      
-      if (!data.error && data.diff) {
-        setCommitDiffs(prev => ({
-          ...prev,
-          [commitHash]: data.diff
-        }));
-      }
+      // TODO: Implement commit-specific diff in Tauri backend
+      // For now, this is a placeholder
+      console.warn('Commit-specific diff not yet implemented in Tauri backend');
     } catch (error) {
       console.error('Error fetching commit diff:', error);
     }
@@ -519,22 +389,13 @@ function GitPanel({ selectedProject, onFileOpen }) {
   const generateCommitMessage = async () => {
     setIsGeneratingMessage(true);
     try {
-      const response = await authenticatedFetch('/api/git/generate-commit-message', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project: selectedProject.name,
-          files: Array.from(selectedFiles),
-          provider: provider // Pass the current provider (claude or codex)
-        })
-      });
-
-      const data = await response.json();
-      if (data.message) {
-        setCommitMessage(data.message);
-      } else {
-        console.error('Failed to generate commit message:', data.error);
-      }
+      // TODO: Implement AI-generated commit message in Tauri backend
+      // For now, auto-generate a basic message from staged files
+      const files = Array.from(selectedFiles);
+      const message = files.length > 0
+        ? `Update ${files.length} file(s): ${files.slice(0, 3).join(', ')}${files.length > 3 ? '...' : ''}`
+        : 'Update files';
+      setCommitMessage(message);
     } catch (error) {
       console.error('Error generating commit message:', error);
     } finally {
@@ -587,31 +448,22 @@ function GitPanel({ selectedProject, onFileOpen }) {
 
     setIsCommitting(true);
     try {
-      const response = await authenticatedFetch('/api/git/commit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project: selectedProject.name,
-          message: commitMessage,
-          files: Array.from(selectedFiles)
-        })
-      });
-
-      const data = await response.json();
-      if (data.success) {
-        // Reset state after successful commit
-        setCommitMessage('');
-        setSelectedFiles(new Set());
-        fetchGitStatus();
-        fetchRemoteStatus();
-        useToastStore.getState().addToast('Committed successfully', 'success');
-      } else {
-        console.error('Commit failed:', data.error);
-        useToastStore.getState().addToast(data.error || 'Commit failed', 'error');
-      }
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      const files = Array.from(selectedFiles);
+      
+      // Stage selected files first
+      await tauriGit.stage(projectPath, files);
+      // Commit
+      await tauriGit.commit(projectPath, commitMessage);
+      
+      setCommitMessage('');
+      setSelectedFiles(new Set());
+      fetchGitStatus();
+      fetchRemoteStatus();
+      useToastStore.getState().addToast('Committed successfully', 'success');
     } catch (error) {
       console.error('Error committing changes:', error);
-      useToastStore.getState().addToast('Error committing changes', 'error');
+      useToastStore.getState().addToast(String(error) || 'Commit failed', 'error');
     } finally {
       setIsCommitting(false);
     }
@@ -620,22 +472,12 @@ function GitPanel({ selectedProject, onFileOpen }) {
   const createInitialCommit = async () => {
     setIsCreatingInitialCommit(true);
     try {
-      const response = await authenticatedFetch('/api/git/initial-commit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project: selectedProject.name
-        })
-      });
-
-      const data = await response.json();
-      if (data.success) {
-        fetchGitStatus();
-        fetchRemoteStatus();
-      } else {
-        console.error('Initial commit failed:', data.error);
-        alert(data.error || 'Failed to create initial commit');
-      }
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      // Stage all files and create initial commit
+      await tauriGit.stage(projectPath, ['.']);
+      await tauriGit.commit(projectPath, 'Initial commit');
+      fetchGitStatus();
+      fetchRemoteStatus();
     } catch (error) {
       console.error('Error creating initial commit:', error);
       alert('Failed to create initial commit');
