@@ -97,6 +97,20 @@ pub async fn ai_abort_session(pty_id: String) -> Result<(), String> {
     pty::pty_kill(pty_id).await
 }
 
+/// Approve or deny a tool-use permission request.
+/// Claude CLI receives tool approval via stdin as JSON.
+#[tauri::command]
+pub async fn ai_approve_tool(
+    session_id: String,
+    permission_id: String,
+    approved: bool,
+) -> Result<(), String> {
+    let input = format!(
+        "{{\"type\":\"tool_approval\",\"id\":\"{permission_id}\",\"approved\":{approved}}}\n"
+    );
+    pty::write_to_session_by_prefix(&session_id, &input)
+}
+
 /// List existing Claude sessions for a project by scanning `~/.claude/projects/`.
 #[tauri::command]
 pub async fn ai_list_sessions(

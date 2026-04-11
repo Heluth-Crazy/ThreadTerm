@@ -9,6 +9,7 @@ import { useLiveGridStore } from '../../../stores/liveGridStore';
 import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
 import { useCardHistory } from '../../../hooks/useCardHistory';
 import { getProviderBorderClass, getProviderDotClass } from '../../../utils/providerColors';
+import { invoke } from '../../../lib/tauri-bridge';
 import type { SessionRuntimeStatus } from '../../../stores/sessionStatusStore';
 import type { MessageSnapshot } from '../../../stores/liveGridStore';
 
@@ -104,13 +105,10 @@ function LiveCardInner({
     async (approved: boolean) => {
       if (!pendingPermission) return;
       try {
-        await fetch('/api/tool-approval', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            requestId: pendingPermission.requestId,
-            approved,
-          }),
+        await invoke('ai_approve_tool', {
+          sessionId,
+          permissionId: pendingPermission.requestId,
+          approved,
         });
         clearPendingPermission(sessionId);
       } catch {

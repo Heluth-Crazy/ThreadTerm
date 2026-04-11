@@ -28,7 +28,7 @@ import ActivityBar from '../workbench/ActivityBar';
 import SelectedProjectOverviewPage from '../workbench/projects/SelectedProjectOverviewPage';
 import ToastContainer from '../shared/ToastContainer';
 
-import { useWebSocket } from '../../contexts/WebSocketContext';
+import { useWebSocket } from '../../contexts/TauriEventContext';
 import { useMobileViewport } from '../../hooks/useMobileViewport';
 import { useWorkbenchNavigation } from '../../hooks/useWorkbenchNavigation';
 import { useSessionProtection } from '../../hooks/useSessionProtection';

@@ -8,7 +8,7 @@
  * is on a different tab (chat, settings, overview, etc.).
  */
 import { useEffect, useRef } from 'react';
-import { useWebSocket } from '../contexts/WebSocketContext';
+import { useWebSocket } from '../contexts/TauriEventContext';
 import { useLiveGridStore } from '../stores/liveGridStore';
 import type { MessageSnapshot } from '../stores/liveGridStore';
 

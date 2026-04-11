@@ -2,7 +2,7 @@ import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import { I18nextProvider } from 'react-i18next';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { AuthProvider } from './contexts/AuthContext';
-import { WebSocketProvider } from './contexts/WebSocketContext';
+import { TauriEventProvider } from './contexts/TauriEventContext';
 import AppContent from './components/app/AppContent';
 import i18n from './i18n/config.js';
 import { useSessionStatusTracker } from './hooks/useSessionStatusTracker';
@@ -19,7 +19,7 @@ export default function App() {
     <I18nextProvider i18n={i18n}>
       <ThemeProvider>
         <AuthProvider>
-          <WebSocketProvider>
+          <TauriEventProvider>
             <AppInitializer />
             <Router basename={window.__ROUTER_BASENAME__ || ''}>
               <Routes>
@@ -27,7 +27,7 @@ export default function App() {
                 <Route path="/session/:sessionId" element={<AppContent />} />
               </Routes>
             </Router>
-          </WebSocketProvider>
+          </TauriEventProvider>
         </AuthProvider>
       </ThemeProvider>
     </I18nextProvider>

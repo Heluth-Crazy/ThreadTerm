@@ -3,6 +3,7 @@ mod auth;
 mod db;
 mod fs_commands;
 mod git;
+mod health;
 mod projects;
 mod pty;
 
@@ -45,6 +46,7 @@ pub fn run() {
             ai::ai_start_session,
             ai::ai_send_message,
             ai::ai_abort_session,
+            ai::ai_approve_tool,
             ai::ai_list_sessions,
             ai::settings_get_ai_config,
             // Git
@@ -65,6 +67,8 @@ pub fn run() {
             fs_commands::fs_delete_file,
             fs_commands::settings_get_all,
             fs_commands::settings_set,
+            // Health
+            health::health_check,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

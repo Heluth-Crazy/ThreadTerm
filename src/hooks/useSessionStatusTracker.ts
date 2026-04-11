@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { useWebSocket } from '../contexts/WebSocketContext';
+import { useWebSocket } from '../contexts/TauriEventContext';
 import { useSessionStatusStore } from '../stores/sessionStatusStore';
 import type { AttentionReason } from '../stores/sessionStatusStore';
 
