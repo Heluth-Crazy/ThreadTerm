@@ -1,14 +1,23 @@
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
-use rusqlite::Connection;
-use std::fs;
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
-/// Global database connection protected by a Mutex.
-static DB: Lazy<Mutex<Connection>> = Lazy::new(|| {
-    let conn = open_connection().expect("Failed to open database connection");
-    Mutex::new(conn)
+/// Connection pool (r2d2 + rusqlite).
+static DB_POOL: Lazy<Pool<SqliteConnectionManager>> = Lazy::new(|| {
+    let dir = db_dir();
+    std::fs::create_dir_all(&dir).expect("Failed to create db dir");
+    let manager = SqliteConnectionManager::file(db_path()).with_init(|conn| {
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+        )?;
+        Ok(())
+    });
+    Pool::builder()
+        .max_size(8)
+        .build(manager)
+        .expect("Failed to build DB pool")
 });
 
 /// Returns the database directory: `~/.openwork/`
@@ -23,25 +32,9 @@ fn db_path() -> PathBuf {
     db_dir().join("openwork.db")
 }
 
-/// Opens a new database connection.
-fn open_connection() -> Result<Connection> {
-    let dir = db_dir();
-    fs::create_dir_all(&dir).context("Failed to create database directory")?;
-
-    let path = db_path();
-    let conn = Connection::open(&path)
-        .with_context(|| format!("Failed to open database at {}", path.display()))?;
-
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-        .context("Failed to set PRAGMAs")?;
-
-    Ok(conn)
-}
-
-/// Acquire the global database connection lock.
-/// Panics if the mutex is poisoned.
-pub fn get_db() -> std::sync::MutexGuard<'static, Connection> {
-    DB.lock().expect("Database mutex poisoned")
+/// Acquire a pooled database connection.
+pub fn get_db() -> r2d2::PooledConnection<SqliteConnectionManager> {
+    DB_POOL.get().expect("Failed to get DB connection from pool")
 }
 
 /// Initialize the database schema. Call once at startup.
@@ -88,6 +81,14 @@ pub fn init_database() -> Result<()> {
             key   TEXT PRIMARY KEY,
             value TEXT
         );
+
+        -- Server-side session tracking for logout / expiry
+        CREATE TABLE IF NOT EXISTS sessions (
+            token      TEXT PRIMARY KEY,
+            user_id    INTEGER NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            expires_at DATETIME NOT NULL
+        );
         ",
     )
     .context("Failed to create database tables")?;
@@ -99,7 +100,7 @@ pub fn init_database() -> Result<()> {
 }
 
 /// Run forward-only migrations (add columns that may be missing in older DBs).
-fn run_migrations(conn: &Connection) -> Result<()> {
+fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
     let columns: Vec<String> = conn
         .prepare("PRAGMA table_info(users)")?
         .query_map([], |row| row.get::<_, String>(1))?

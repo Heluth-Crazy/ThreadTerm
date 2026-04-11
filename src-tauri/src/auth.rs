@@ -74,6 +74,17 @@ fn verify_token(token: &str) -> Result<Claims, String> {
     Ok(data.claims)
 }
 
+/// Persist a token into the sessions table.
+fn insert_session(token: &str, user_id: i64) -> Result<(), String> {
+    let conn = db::get_db();
+    conn.execute(
+        "INSERT INTO sessions (token, user_id, expires_at) VALUES (?1, ?2, datetime('now', '+7 days'))",
+        rusqlite::params![token, user_id],
+    )
+    .map_err(|e| format!("Failed to insert session: {e}"))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
@@ -115,6 +126,7 @@ pub async fn auth_login(username: String, password: String) -> Result<LoginRespo
     );
 
     let token = generate_token(id, &uname)?;
+    insert_session(&token, id)?;
 
     Ok(LoginResponse {
         token,
@@ -141,6 +153,7 @@ pub async fn auth_register(username: String, password: String) -> Result<LoginRe
 
     let id = conn.last_insert_rowid();
     let token = generate_token(id, &username)?;
+    insert_session(&token, id)?;
 
     Ok(LoginResponse {
         token,
@@ -158,6 +171,21 @@ pub async fn auth_verify(token: String) -> Result<UserInfo, String> {
     let claims = verify_token(&token)?;
 
     let conn = db::get_db();
+
+    // Verify session exists and is not expired
+    let session_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sessions WHERE token = ?1 AND expires_at > CURRENT_TIMESTAMP",
+            [&token],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .unwrap_or(false);
+
+    if !session_exists {
+        return Err("Session expired or logged out".to_string());
+    }
+
     let user = conn
         .query_row(
             "SELECT id, username, created_at, has_completed_onboarding
@@ -179,9 +207,8 @@ pub async fn auth_verify(token: String) -> Result<UserInfo, String> {
 
 #[tauri::command]
 pub async fn auth_logout(token: String) -> Result<(), String> {
-    // Validate the token is well-formed (optional: could just silently succeed).
-    let _ = verify_token(&token)?;
-    // In a stateless JWT scheme there's no server-side session to delete.
-    // If session tracking is added later, delete the row here.
+    let conn = db::get_db();
+    conn.execute("DELETE FROM sessions WHERE token = ?1", [&token])
+        .map_err(|e| format!("Logout failed: {e}"))?;
     Ok(())
 }

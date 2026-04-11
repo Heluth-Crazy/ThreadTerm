@@ -1,5 +1,9 @@
+mod ai;
 mod auth;
 mod db;
+mod fs_commands;
+mod git;
+mod projects;
 mod pty;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -31,6 +35,36 @@ pub fn run() {
             auth::auth_register,
             auth::auth_verify,
             auth::auth_logout,
+            // Projects
+            projects::projects_list,
+            projects::projects_get,
+            projects::projects_add,
+            projects::projects_remove,
+            projects::projects_update_session_name,
+            // AI
+            ai::ai_start_session,
+            ai::ai_send_message,
+            ai::ai_abort_session,
+            ai::ai_list_sessions,
+            ai::settings_get_ai_config,
+            // Git
+            git::git_status,
+            git::git_diff,
+            git::git_log,
+            git::git_branches,
+            git::git_stage,
+            git::git_commit,
+            git::git_checkout_branch,
+            git::git_create_branch,
+            git::git_pull,
+            git::git_push,
+            // File system & settings
+            fs_commands::fs_list_dir,
+            fs_commands::fs_read_file,
+            fs_commands::fs_write_file,
+            fs_commands::fs_delete_file,
+            fs_commands::settings_get_all,
+            fs_commands::settings_set,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

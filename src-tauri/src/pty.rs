@@ -239,9 +239,81 @@ pub async fn pty_kill(id: String) -> Result<(), String> {
         if let Ok(mut child) = session.child.lock() {
             let _ = child.kill();
         }
+        // Drop the Arc<PtySession> — when the reader thread also drops its
+        // clone the master fd is closed and the reader gets EOF.
+        drop(session);
         tracing::info!(id = %id, "PTY session killed");
         Ok(())
     } else {
         Err(format!("PTY session '{}' not found", id))
     }
+}
+
+/// Create a PTY session running a specific command (used by ai.rs).
+pub fn create_command_pty(
+    id: String,
+    working_dir: String,
+    program: &str,
+    args: &[&str],
+    rows: u16,
+    cols: u16,
+    window: Window,
+) -> Result<String, String> {
+    if PTY_SESSIONS.contains_key(&id) {
+        return Err(format!("PTY session '{}' already exists", id));
+    }
+
+    let pty_system = NativePtySystem::default();
+    let size = PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+
+    let pair = pty_system
+        .openpty(size)
+        .map_err(|e| format!("Failed to open PTY: {e}"))?;
+
+    let mut cmd = CommandBuilder::new(program);
+    for arg in args {
+        cmd.arg(arg);
+    }
+    cmd.cwd(&working_dir);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("FORCE_COLOR", "3");
+
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| format!("Failed to spawn command: {e}"))?;
+
+    drop(pair.slave);
+
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| format!("Failed to get PTY writer: {e}"))?;
+
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("Failed to clone PTY reader: {e}"))?;
+
+    let session = Arc::new(PtySession {
+        writer: Mutex::new(writer),
+        master: Mutex::new(pair.master),
+        child: Mutex::new(child),
+        _working_dir: working_dir,
+    });
+
+    PTY_SESSIONS.insert(id.clone(), session.clone());
+
+    let stream_id = id.clone();
+    std::thread::spawn(move || {
+        stream_pty_output(stream_id, reader, session, window);
+    });
+
+    tracing::info!(id = %id, program = %program, "Command PTY session created");
+    Ok(id)
 }
