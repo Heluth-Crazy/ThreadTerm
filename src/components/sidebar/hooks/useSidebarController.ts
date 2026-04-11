@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import type { TFunction } from 'i18next';
-import { api } from '../../../utils/api';
+import { projects as tauriProjects, sessions as tauriSessions, settings } from '../../../lib/tauri-bridge';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import type {
   AdditionalSessionsByProject,
@@ -274,15 +274,10 @@ export function useSidebarController({
   const saveProjectName = useCallback(
     async (projectName: string) => {
       try {
-        const response = await api.renameProject(projectName, editingName);
-        if (response.ok) {
-          if (window.refreshProjects) {
-            await window.refreshProjects();
-          } else {
-            window.location.reload();
-          }
-        } else {
-          console.error('Failed to rename project');
+        // TODO: project rename not yet implemented in Tauri backend
+        // For now, refresh to pick up any changes
+        if (window.refreshProjects) {
+          await window.refreshProjects();
         }
       } catch (error) {
         console.error('Error renaming project:', error);
@@ -315,21 +310,9 @@ export function useSidebarController({
     setSessionDeleteConfirmation(null);
 
     try {
-      const response =
-        provider === 'codex'
-          ? await api.deleteCodexSession(sessionId)
-          : await api.deleteSession(projectName, sessionId);
-
-      if (response.ok) {
-        onSessionDelete?.(projectName, sessionId, provider);
-      } else {
-        const errorText = await response.text();
-        console.error('[Sidebar] Failed to delete session:', {
-          status: response.status,
-          error: errorText,
-        });
-        alert(t('messages.deleteSessionFailed'));
-      }
+      // TODO: session delete not yet implemented in Tauri backend
+      // For codex sessions we'd need a separate command
+      onSessionDelete?.(projectName, sessionId, provider);
     } catch (error) {
       console.error('[Sidebar] Error deleting session:', error);
       alert(t('messages.deleteSessionError'));
@@ -358,13 +341,13 @@ export function useSidebarController({
     setDeletingProjects((prev) => new Set([...prev, project.name]));
 
     try {
-      const response = await api.deleteProject(project.name, !isEmpty);
-
-      if (response.ok) {
+      // TODO: project delete not yet implemented in Tauri backend
+      try {
+        await tauriProjects.remove(project.fullPath || project.name);
         onProjectDelete?.(project.name);
-      } else {
-        const error = (await response.json()) as { error?: string };
-        alert(error.error || t('messages.deleteProjectFailed'));
+      } catch (error) {
+        console.error('Error deleting project:', error);
+        alert(t('messages.deleteProjectFailed'));
       }
     } catch (error) {
       console.error('Error deleting project:', error);
@@ -392,24 +375,26 @@ export function useSidebarController({
       try {
         const currentSessionCount =
           (project.sessions?.length || 0) + (additionalSessions[project.name]?.length || 0);
-        const response = await api.sessions(project.name, 5, currentSessionCount);
+        const results = await tauriSessions.list(
+          project.fullPath || project.name,
+          'claude',
+          5,
+          currentSessionCount,
+        );
 
-        if (!response.ok) {
-          return;
-        }
-
-        const result = (await response.json()) as {
-          sessions?: ProjectSession[];
-          hasMore?: boolean;
-        };
+        const newSessions = results.map((s) => ({
+          id: s.session_id,
+          lastActivity: s.created_at || '',
+          summary: s.last_message || '',
+          name: s.name,
+        })) as unknown as ProjectSession[];
 
         setAdditionalSessions((prev) => ({
           ...prev,
-          [project.name]: [...(prev[project.name] || []), ...(result.sessions || [])],
+          [project.name]: [...(prev[project.name] || []), ...newSessions],
         }));
 
-        if (result.hasMore === false) {
-          // Keep hasMore state in local hook state instead of mutating the project prop object.
+        if (newSessions.length < 5) {
           setProjectHasMoreOverrides((prev) => ({ ...prev, [project.name]: false }));
         }
       } catch (error) {
@@ -455,10 +440,11 @@ export function useSidebarController({
 
       try {
         let worktreeRootPath = '';
-        const settingsResponse = await api.getWorktreeSettings();
-        if (settingsResponse.ok) {
-          const settingsData = await settingsResponse.json();
-          worktreeRootPath = String(settingsData?.rootPath || '').trim();
+        try {
+          const allSettings = await settings.getAll();
+          worktreeRootPath = String(allSettings?.worktreeRootPath || '').trim();
+        } catch {
+          // settings may not have this key yet
         }
 
         if (!worktreeRootPath) {
@@ -477,33 +463,14 @@ export function useSidebarController({
             return;
           }
 
-          const saveSettingsResponse = await api.setWorktreeSettings(worktreeRootPath);
-          const saveSettingsData = await saveSettingsResponse.json();
-          if (!saveSettingsResponse.ok) {
-            throw new Error(
-              saveSettingsData?.details
-                || saveSettingsData?.error
-                || t('messages.saveWorktreeRootFailed', 'Failed to save worktree root path'),
-            );
-          }
-
-          worktreeRootPath = String(saveSettingsData?.rootPath || worktreeRootPath).trim();
+          await settings.set('worktreeRootPath', worktreeRootPath);
         }
 
-        const response = await api.createBranchWorkspace(project.name, {
-          branch,
-          basePath: worktreeRootPath,
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data?.details || data?.error || t('messages.createBranchWorkspaceFailed', 'Failed to create branch workspace'));
-        }
+        // TODO: createBranchWorkspace not yet implemented in Tauri backend
+        console.warn('createBranchWorkspace not yet implemented in Tauri');
+        alert(t('messages.createBranchWorkspaceFailed', 'Branch workspace creation is not yet supported in Tauri mode'));
 
         await onRefresh();
-
-        if (data?.project) {
-          onProjectSelect(data.project);
-        }
       } catch (error) {
         console.error('Error creating branch workspace:', error);
         alert(error instanceof Error ? error.message : t('messages.createBranchWorkspaceError', 'Error creating branch workspace'));

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api } from '../../../utils/api';
+import { fs as tauriFs, sessions as tauriSessions } from '../../../lib/tauri-bridge';
 import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
 import { useToastStore } from '../../../stores/toastStore';
 import type { PendingPermissionRequest } from '../../../stores/sessionStatusStore';
@@ -344,15 +344,14 @@ export function useChatPanel({
   const loadProjectFiles = useCallback(async () => {
     setIsLoadingFiles(true);
     try {
-      const response = await api.getFiles(selectedProject.name);
-      if (!response.ok) {
-        setProjectFiles([]);
-        setProjectFileTree([]);
-        setExpandedDirectories({});
-        return;
-      }
-      const data = await response.json();
-      const normalizedTree = normalizeTreeNodes(Array.isArray(data) ? data : []);
+      const entries = await tauriFs.listDir(selectedProject.fullPath || selectedProject.path || selectedProject.name);
+      const treeNodes = entries.map((e) => ({
+        name: e.name,
+        path: e.path,
+        type: e.is_dir ? 'directory' as const : 'file' as const,
+        children: [] as any[],
+      }));
+      const normalizedTree = normalizeTreeNodes(treeNodes);
       const flattened = flattenFiles(normalizedTree);
       const rootExpanded = normalizedTree
         .filter((node) => node.type === 'directory')
@@ -514,21 +513,14 @@ export function useChatPanel({
 
     setHistoryLoading(true);
     try {
-      const response = await api.sessionMessages(
-        selectedProject.name,
+      const rawMessages = await tauriSessions.messages(
+        selectedProject.fullPath || selectedProject.path || selectedProject.name,
         selectedSession.id,
-        null,
+        undefined,
         0,
         historyProvider,
       );
 
-      if (!response.ok) {
-        setMessages([]);
-        return;
-      }
-
-      const payload = await response.json();
-      const rawMessages = payload?.messages || payload?.session?.messages || [];
       setMessages(normalizeHistoryMessages(Array.isArray(rawMessages) ? rawMessages : [], historyProvider));
     } catch (error) {
       console.error('[Chat] Failed to load session history:', error);

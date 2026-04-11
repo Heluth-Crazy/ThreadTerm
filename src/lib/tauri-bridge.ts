@@ -113,6 +113,40 @@ export const settings = {
   set: (key: string, value: unknown) => invoke<void>('settings_set', { key, value }),
 };
 
+// ─── Session History ─────────────────────────────────────────────────────────
+
+export interface SessionSummary {
+  session_id: string;
+  project_path: string;
+  provider: string;
+  name?: string;
+  message_count: number;
+  last_message?: string;
+  created_at?: string;
+}
+
+export interface SessionMessage {
+  uuid: string;
+  role: string;
+  content: unknown;
+  timestamp?: string;
+  is_sidechain?: boolean;
+}
+
+export const sessions = {
+  list: (projectPath: string, provider: string, limit?: number, offset?: number) =>
+    invoke<SessionSummary[]>('session_list', { projectPath, provider, limit, offset }),
+  messages: (projectPath: string, sessionId: string, limit?: number, offset?: number, provider?: string) =>
+    invoke<SessionMessage[]>('session_messages', { projectPath, sessionId, limit, offset, provider }),
+};
+
+// ─── App Info ────────────────────────────────────────────────────────────────
+
+export const appInfo = {
+  version: () => invoke<string>('get_app_version'),
+  readFileBase64: (path: string) => invoke<string>('fs_read_file_base64', { path }),
+};
+
 // ─── Type definitions (match Rust structs) ────────────────────────────────────
 
 export interface Project {

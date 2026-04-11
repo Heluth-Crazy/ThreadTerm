@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, FolderPlus, GitBranch, Key, ChevronRight, ChevronLeft, Check, Loader2, AlertCircle, FolderOpen, HardDrive, ArrowUp, Folder } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { api } from '../utils/api';
+import { projects as tauriProjects, fs as tauriFs, settings } from '../lib/tauri-bridge';
 import { useTranslation } from 'react-i18next';
 import { selectProjectDirectory, isFileDialogAvailable } from '../utils/fileDialog';
 
@@ -109,15 +109,13 @@ const ProjectCreationWizard = ({ onClose, onProjectCreated }) => {
   const loadGithubTokens = async () => {
     try {
       setLoadingTokens(true);
-      const response = await api.get('/settings/credentials?type=github_token');
-      const data = await response.json();
-
-      const activeTokens = (data.credentials || []).filter(t => t.is_active);
+      const allSettings = await settings.getAll();
+      const tokens = allSettings?.github_tokens;
+      const activeTokens = Array.isArray(tokens) ? tokens.filter(t => t.is_active) : [];
       setAvailableTokens(activeTokens);
 
-      // Auto-select first token if available
       if (activeTokens.length > 0 && !selectedGithubToken) {
-        setSelectedGithubToken(activeTokens[0].id.toString());
+        setSelectedGithubToken(activeTokens[0].id?.toString());
       }
     } catch (error) {
       console.error('Error loading source hosting tokens:', error);
@@ -131,12 +129,13 @@ const ProjectCreationWizard = ({ onClose, onProjectCreated }) => {
       const dirPath = resolveBrowseBasePath(inputPath) || '~';
       const normalizedInputPath = normalizePathForCompare(inputPath);
 
-      const response = await api.browseFilesystem(dirPath);
-      const data = await response.json();
+      const entries = await tauriFs.listDir(dirPath);
+      const suggestions = entries
+        .filter(e => e.is_dir)
+        .map(e => ({ path: e.path, name: e.name, type: 'directory' }));
 
-      if (data.suggestions) {
-        // Filter suggestions based on the input, excluding exact match
-        const filtered = data.suggestions.filter(s =>
+      if (suggestions.length > 0) {
+        const filtered = suggestions.filter(s =>
           normalizePathForCompare(s.path).startsWith(normalizedInputPath) &&
           normalizePathForCompare(s.path) !== normalizedInputPath
         );
@@ -231,15 +230,10 @@ const ProjectCreationWizard = ({ onClose, onProjectCreated }) => {
         path: workspacePath.trim(),
       };
 
-      const response = await api.createWorkspace(payload);
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.details || data.error || t('projectWizard.errors.failedToCreate'));
-      }
+      const project = await tauriProjects.add(payload.path, payload.path);
 
       if (onProjectCreated) {
-        onProjectCreated(data.project);
+        onProjectCreated(project);
       }
 
       onClose();
@@ -262,28 +256,18 @@ const ProjectCreationWizard = ({ onClose, onProjectCreated }) => {
 
     try {
       if (!isFileDialogAvailable()) {
-        const initialPath = resolveBrowseBasePath(workspacePath) || null;
         setShowWebDirectoryBrowser(true);
         setBrowserError(null);
 
-        const [rootsResponse, browseResponse] = await Promise.all([
-          api.get('/browse-roots'),
-          api.browseFilesystem(initialPath)
-        ]);
-
-        const rootsData = await rootsResponse.json();
-        const browseData = await browseResponse.json();
-
-        if (rootsResponse.ok) {
-          setBrowserRoots(rootsData.roots || []);
+        try {
+          const entries = await tauriFs.listDir(resolveBrowseBasePath(workspacePath) || '~');
+          const dirs = entries.filter(e => e.is_dir).map(e => ({ path: e.path, name: e.name, type: 'directory' }));
+          setBrowserRoots([{ path: '/', label: '/' }]);
+          setBrowserPath(resolveBrowseBasePath(workspacePath) || '~');
+          setBrowserDirectories(dirs);
+        } catch (err) {
+          setBrowserError(err.message || t('projectWizard.errors.directoryNotAccessible', 'Selected directory is not accessible'));
         }
-
-        if (!browseResponse.ok) {
-          throw new Error(browseData.error || t('projectWizard.errors.directoryNotAccessible', 'Selected directory is not accessible'));
-        }
-
-        setBrowserPath(browseData.path || '');
-        setBrowserDirectories((browseData.suggestions || []).filter(item => item.type === 'directory'));
         return;
       }
 
@@ -295,18 +279,9 @@ const ProjectCreationWizard = ({ onClose, onProjectCreated }) => {
       });
 
       if (!result.canceled && result.filePath) {
-        // Verify the directory is accessible by making an API call
-        const response = await api.browseFilesystem(result.filePath);
-        const data = await response.json();
-
-        if (response.ok) {
-          setWorkspacePath(result.filePath);
-          // For existing projects, auto-advance to confirm step
-          if (workspaceType === 'existing') {
-            setStep(3);
-          }
-        } else {
-          throw new Error(data.error || t('projectWizard.errors.directoryNotAccessible', 'Selected directory is not accessible'));
+        setWorkspacePath(result.filePath);
+        if (workspaceType === 'existing') {
+          setStep(3);
         }
       }
     } catch (error) {
@@ -321,13 +296,10 @@ const ProjectCreationWizard = ({ onClose, onProjectCreated }) => {
     setBrowserLoading(true);
     setBrowserError(null);
     try {
-      const response = await api.browseFilesystem(targetPath);
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || t('projectWizard.errors.directoryNotAccessible', 'Selected directory is not accessible'));
-      }
-      setBrowserPath(data.path || '');
-      setBrowserDirectories((data.suggestions || []).filter(item => item.type === 'directory'));
+      const entries = await tauriFs.listDir(targetPath || '~');
+      const dirs = entries.filter(e => e.is_dir).map(e => ({ path: e.path, name: e.name, type: 'directory' }));
+      setBrowserPath(targetPath || '~');
+      setBrowserDirectories(dirs);
     } catch (err) {
       setBrowserError(err.message || t('projectWizard.errors.failedToSelectDirectory', 'Failed to select directory'));
     } finally {

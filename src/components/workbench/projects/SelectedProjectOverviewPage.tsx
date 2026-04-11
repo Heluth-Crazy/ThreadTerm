@@ -14,7 +14,7 @@ import {
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatTimeAgo } from '../../../utils/dateUtils';
-import { api } from '../../../utils/api';
+import { projects as tauriProjects } from '../../../lib/tauri-bridge';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import { cn } from '../../../lib/utils';
 import { Badge } from '../../ui/badge';
@@ -226,10 +226,8 @@ export default function SelectedProjectOverviewPage({
 
     setIsSavingProject(true);
     try {
-      const response = await api.renameProject(selectedProject.name, displayName);
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
+      // TODO: project rename not yet implemented in Tauri backend
+      console.warn('Project rename not yet fully implemented in Tauri');
       await syncRefresh();
     } catch (error) {
       console.error('Failed to rename project from overview:', error);
@@ -265,10 +263,7 @@ export default function SelectedProjectOverviewPage({
 
     setProjectDeletePending(true);
     try {
-      const response = await api.deleteProject(selectedProject.name, counts.totalCount > 0);
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
+      await tauriProjects.remove(selectedProject.fullPath || selectedProject.name);
       onDeleteProjectState(selectedProject.name);
       onSelectOverview();
       await syncRefresh();
@@ -310,15 +305,7 @@ export default function SelectedProjectOverviewPage({
     try {
       const targets = records.filter((item) => selectedIds.includes(item.session.id));
       for (const item of targets) {
-        const response =
-          provider === 'codex'
-            ? await api.deleteCodexSession(item.session.id)
-            : await api.deleteSession(selectedProject.name, item.session.id);
-
-        if (!response.ok) {
-          throw new Error(await response.text());
-        }
-
+        // TODO: session deletion not yet fully implemented in Tauri backend
         onDeleteSession(selectedProject.name, item.session.id, provider);
       }
 

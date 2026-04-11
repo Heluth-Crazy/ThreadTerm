@@ -87,6 +87,19 @@ pub async fn fs_delete_file(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn fs_read_file_base64(path: String) -> Result<String, String> {
+    use base64::Engine;
+    let p = expand_path(&path);
+    let bytes = std::fs::read(&p).map_err(|e| format!("read failed: {e}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
+#[tauri::command]
+pub async fn get_app_version() -> Result<String, String> {
+    Ok(env!("CARGO_PKG_VERSION").to_string())
+}
+
+#[tauri::command]
 pub async fn settings_get_all() -> Result<serde_json::Value, String> {
     let conn = db::get_db();
     let mut stmt = conn

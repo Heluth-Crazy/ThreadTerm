@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api } from '../../../utils/api';
+import { settings } from '../../../lib/tauri-bridge';
 
 export type SkillRoot = {
   id: string;
@@ -45,12 +45,11 @@ type SkillTemplateCopy = {
   workflowSteps: [string, string, string];
 };
 
-async function readJson(response: Response, fallbackMessage: string) {
-  const data = await response.json();
-  if (!response.ok || data.success === false) {
-    throw new Error(data.error || data.message || fallbackMessage);
+async function readJson(response: Record<string, unknown>, fallbackMessage: string) {
+  if (response.success === false) {
+    throw new Error(String(response.error || response.message || fallbackMessage));
   }
-  return data;
+  return response;
 }
 
 export function buildSkillTemplate(
@@ -104,10 +103,12 @@ export function useSkills() {
     setIsLoadingList(true);
     setError(null);
     try {
-      const data = await readJson(await api.skills.list(), t('workbench.skillsPage.errors.loadList'));
-      setSkills(data.skills || []);
-      setRoots(data.roots || []);
-      return data;
+      const allSettings = await settings.getAll();
+      const skillsData = (allSettings?.skills || []) as SkillSummary[];
+      const rootsData = (allSettings?.skillRoots || []) as SkillRoot[];
+      setSkills(skillsData);
+      setRoots(rootsData);
+      return { skills: skillsData, roots: rootsData };
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t('workbench.skillsPage.errors.loadList'));
       throw loadError;
@@ -121,9 +122,11 @@ export function useSkills() {
     setError(null);
     setSelectedSkillId(skillId);
     try {
-      const data = await readJson(await api.skills.get(skillId), t('workbench.skillsPage.errors.loadSkill'));
-      setSelectedSkill(data.skill || null);
-      return data.skill as SkillRecord;
+      const allSettings = await settings.getAll();
+      const allSkills = (allSettings?.skills || []) as SkillRecord[];
+      const skill = allSkills.find((s) => s.id === skillId) || null;
+      setSelectedSkill(skill);
+      return skill;
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t('workbench.skillsPage.errors.loadSkill'));
       throw loadError;
@@ -136,11 +139,28 @@ export function useSkills() {
     setIsSaving(true);
     setError(null);
     try {
-      const data = await readJson(await api.skills.create(payload), t('workbench.skillsPage.errors.create'));
+      const allSettings = await settings.getAll();
+      const existingSkills = (allSettings?.skills || []) as SkillRecord[];
+      const newSkill: SkillRecord = {
+        id: crypto.randomUUID(),
+        name: payload.slug,
+        slug: payload.slug,
+        description: '',
+        provider: 'claude',
+        rootId: payload.rootId,
+        rootLabel: '',
+        rootPath: '',
+        path: payload.slug,
+        filePath: '',
+        updatedAt: new Date().toISOString(),
+        writable: true,
+        content: payload.content,
+      };
+      await settings.set('skills', [...existingSkills, newSkill]);
       await loadSkills();
-      setSelectedSkill(data.skill || null);
-      setSelectedSkillId(data.skill?.id || null);
-      return data.skill as SkillRecord;
+      setSelectedSkill(newSkill);
+      setSelectedSkillId(newSkill.id);
+      return newSkill;
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : t('workbench.skillsPage.errors.create'));
       throw saveError;
@@ -153,11 +173,17 @@ export function useSkills() {
     setIsSaving(true);
     setError(null);
     try {
-      const data = await readJson(await api.skills.update(skillId, { content }), t('workbench.skillsPage.errors.save'));
+      const allSettings = await settings.getAll();
+      const existingSkills = (allSettings?.skills || []) as SkillRecord[];
+      const updated = existingSkills.map((s) =>
+        s.id === skillId ? { ...s, content, updatedAt: new Date().toISOString() } : s,
+      );
+      await settings.set('skills', updated);
       await loadSkills();
-      setSelectedSkill(data.skill || null);
-      setSelectedSkillId(data.skill?.id || skillId);
-      return data.skill as SkillRecord;
+      const skill = updated.find((s) => s.id === skillId) || null;
+      setSelectedSkill(skill);
+      setSelectedSkillId(skillId);
+      return skill;
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : t('workbench.skillsPage.errors.save'));
       throw saveError;
@@ -170,7 +196,9 @@ export function useSkills() {
     setIsSaving(true);
     setError(null);
     try {
-      await readJson(await api.skills.delete(skillId), t('workbench.skillsPage.errors.delete'));
+      const allSettings = await settings.getAll();
+      const existingSkills = (allSettings?.skills || []) as SkillRecord[];
+      await settings.set('skills', existingSkills.filter((s) => s.id !== skillId));
       await loadSkills();
       if (selectedSkillId === skillId) {
         setSelectedSkill(null);

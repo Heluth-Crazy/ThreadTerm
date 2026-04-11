@@ -6,6 +6,7 @@ mod git;
 mod health;
 mod projects;
 mod pty;
+mod session_history;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -67,6 +68,12 @@ pub fn run() {
             fs_commands::fs_delete_file,
             fs_commands::settings_get_all,
             fs_commands::settings_set,
+            // Session history
+            session_history::session_list,
+            session_history::session_messages,
+            // File system extras
+            fs_commands::fs_read_file_base64,
+            fs_commands::get_app_version,
             // Health
             health::health_check,
         ])

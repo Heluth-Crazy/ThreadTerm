@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { authenticatedFetch } from '../utils/api';
+import { settings } from '../lib/tauri-bridge';
 import type { CustomSlashCommand } from '../types/slashCommands';
 
 let cachedCommands: CustomSlashCommand[] = [];
@@ -7,10 +7,9 @@ let fetchPromise: Promise<CustomSlashCommand[]> | null = null;
 
 async function fetchCustomCommands(): Promise<CustomSlashCommand[]> {
   try {
-    const res = await authenticatedFetch('/api/slash-commands');
-    if (res.ok) {
-      cachedCommands = await res.json();
-    }
+    const allSettings = await settings.getAll();
+    const cmds = allSettings?.customSlashCommands;
+    cachedCommands = Array.isArray(cmds) ? cmds as CustomSlashCommand[] : [];
   } catch {
     // silently ignore
   }

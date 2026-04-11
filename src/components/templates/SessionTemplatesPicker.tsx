@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { authenticatedFetch } from '../../utils/api';
+import { settings } from '../../lib/tauri-bridge';
 import type { SessionTemplate } from '../../types/templates';
 
 interface SessionTemplatesPickerProps {
@@ -23,11 +23,9 @@ export default function SessionTemplatesPicker({
 
   const fetchTemplates = useCallback(async () => {
     try {
-      const res = await authenticatedFetch('/api/templates');
-      if (res.ok) {
-        const data = await res.json();
-        setTemplates(data);
-      }
+      const allSettings = await settings.getAll();
+      const tpls = allSettings?.sessionTemplates;
+      setTemplates(Array.isArray(tpls) ? tpls as SessionTemplate[] : []);
     } catch (err) {
       console.error('Failed to load templates:', err);
     } finally {

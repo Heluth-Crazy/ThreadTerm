@@ -3,7 +3,7 @@ import { ChevronRight, ChevronLeft, Check, GitBranch, User, Mail, LogIn, Externa
 import ClaudeLogo from './ClaudeLogo';
 import CodexLogo from './CodexLogo';
 import LoginModal from './LoginModal';
-import { authenticatedFetch } from '../utils/api';
+import { settings } from '../lib/tauri-bridge';
 import { useAuth } from '../contexts/AuthContext';
 import { IS_PLATFORM } from '../constants/config';
 
@@ -42,12 +42,9 @@ const Onboarding = ({ onComplete }) => {
 
   const loadGitConfig = async () => {
     try {
-      const response = await authenticatedFetch('/api/user/git-config');
-      if (response.ok) {
-        const data = await response.json();
-        if (data.gitName) setGitName(data.gitName);
-        if (data.gitEmail) setGitEmail(data.gitEmail);
-      }
+      const allSettings = await settings.getAll();
+      if (allSettings?.gitName) setGitName(String(allSettings.gitName));
+      if (allSettings?.gitEmail) setGitEmail(String(allSettings.gitEmail));
     } catch (error) {
       console.error('Error loading git config:', error);
     }
@@ -68,23 +65,13 @@ const Onboarding = ({ onComplete }) => {
 
   const checkClaudeAuthStatus = async () => {
     try {
-      const response = await authenticatedFetch('/api/cli/claude/status');
-      if (response.ok) {
-        const data = await response.json();
-        setClaudeAuthStatus({
-          authenticated: data.authenticated,
-          email: data.email,
-          loading: false,
-          error: data.error || null
-        });
-      } else {
-        setClaudeAuthStatus({
-          authenticated: false,
-          email: null,
-          loading: false,
-          error: 'Failed to check authentication status'
-        });
-      }
+      // TODO: CLI auth status check not yet implemented in Tauri backend
+      setClaudeAuthStatus({
+        authenticated: false,
+        email: null,
+        loading: false,
+        error: null,
+      });
     } catch (error) {
       console.error('Error checking Claude auth status:', error);
       setClaudeAuthStatus({
@@ -98,23 +85,13 @@ const Onboarding = ({ onComplete }) => {
 
   const checkCodexAuthStatus = async () => {
     try {
-      const response = await authenticatedFetch('/api/cli/codex/status');
-      if (response.ok) {
-        const data = await response.json();
-        setCodexAuthStatus({
-          authenticated: data.authenticated,
-          email: data.email,
-          loading: false,
-          error: data.error || null
-        });
-      } else {
-        setCodexAuthStatus({
-          authenticated: false,
-          email: null,
-          loading: false,
-          error: 'Failed to check authentication status'
-        });
-      }
+      // TODO: CLI auth status check not yet implemented in Tauri backend
+      setCodexAuthStatus({
+        authenticated: false,
+        email: null,
+        loading: false,
+        error: null,
+      });
     } catch (error) {
       console.error('Error checking Codex auth status:', error);
       setCodexAuthStatus({
@@ -166,17 +143,8 @@ const Onboarding = ({ onComplete }) => {
 
       setIsSubmitting(true);
       try {
-        // Save git config to backend (which will also apply git config --global)
-        const response = await authenticatedFetch('/api/user/git-config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ gitName, gitEmail })
-        });
-
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data.error || 'Failed to save git configuration');
-        }
+        await settings.set('gitName', gitName);
+        await settings.set('gitEmail', gitEmail);
 
         setCurrentStep(currentStep + 1);
       } catch (err) {
@@ -201,14 +169,7 @@ const Onboarding = ({ onComplete }) => {
     setIsSubmitting(true);
 
     try {
-      const response = await authenticatedFetch('/api/user/complete-onboarding', {
-        method: 'POST'
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to complete onboarding');
-      }
+      await settings.set('onboardingComplete', true);
 
       if (onComplete) {
         onComplete();
@@ -230,14 +191,7 @@ const Onboarding = ({ onComplete }) => {
     setError('');
 
     try {
-      const response = await authenticatedFetch('/api/user/complete-onboarding', {
-        method: 'POST'
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to complete onboarding');
-      }
+      await settings.set('onboardingComplete', true);
 
       if (onComplete) {
         onComplete();

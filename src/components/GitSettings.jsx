@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Check, GitBranch } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { authenticatedFetch } from '../utils/api';
+import { settings } from '../lib/tauri-bridge';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 
@@ -20,12 +20,9 @@ function GitSettings() {
   const loadGitConfig = async () => {
     try {
       setGitConfigLoading(true);
-      const response = await authenticatedFetch('/api/user/git-config');
-      if (response.ok) {
-        const data = await response.json();
-        setGitName(data.gitName || '');
-        setGitEmail(data.gitEmail || '');
-      }
+      const allSettings = await settings.getAll();
+      setGitName(String(allSettings?.gitName || ''));
+      setGitEmail(String(allSettings?.gitEmail || ''));
     } catch (error) {
       console.error('Error loading git config:', error);
     } finally {
@@ -36,20 +33,10 @@ function GitSettings() {
   const saveGitConfig = async () => {
     try {
       setGitConfigSaving(true);
-      const response = await authenticatedFetch('/api/user/git-config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gitName, gitEmail }),
-      });
-
-      if (response.ok) {
-        setSaveStatus('success');
-        setTimeout(() => setSaveStatus(null), 3000);
-      } else {
-        const data = await response.json();
-        setSaveStatus('error');
-        console.error('Failed to save git config:', data.error);
-      }
+      await settings.set('gitName', gitName);
+      await settings.set('gitEmail', gitEmail);
+      setSaveStatus('success');
+      setTimeout(() => setSaveStatus(null), 3000);
     } catch (error) {
       console.error('Error saving git config:', error);
       setSaveStatus('error');

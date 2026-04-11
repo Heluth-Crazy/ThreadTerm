@@ -3,7 +3,7 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../../lib/utils';
-import { api } from '../../../utils/api';
+import { settings } from '../../../lib/tauri-bridge';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
@@ -296,22 +296,11 @@ export default function ExtensionsMcpPage({
     setIsLoading(true);
     setError(null);
     try {
-      const [claudeResponse, codexResponse] = await Promise.all([
-        api.mcp.claudeConfig(),
-        api.mcp.codexList(),
-      ]);
-      const claudeData = await claudeResponse.json();
-      const codexData = await codexResponse.json();
-
-      if (!claudeResponse.ok || claudeData.success === false) {
-        throw new Error(claudeData.error || claudeData.message || t('workbench.mcpPage.errors.loadClaude'));
-      }
-      if (!codexResponse.ok || codexData.success === false) {
-        throw new Error(codexData.error || t('workbench.mcpPage.errors.loadCodex'));
-      }
-
-      setClaudeServers(Array.isArray(claudeData.servers) ? claudeData.servers : []);
-      setCodexServers(Array.isArray(codexData.servers) ? codexData.servers : []);
+      const allSettings = await settings.getAll();
+      const claudeServersData = Array.isArray((allSettings as any)?.mcpClaudeServers) ? (allSettings as any).mcpClaudeServers : [];
+      const codexServersData = Array.isArray((allSettings as any)?.mcpCodexServers) ? (allSettings as any).mcpCodexServers : [];
+      setClaudeServers(claudeServersData);
+      setCodexServers(codexServersData);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t('workbench.mcpPage.errors.load'));
     } finally {
@@ -341,12 +330,14 @@ export default function ExtensionsMcpPage({
     setIsSaving(true);
     setError(null);
     try {
-      const response = provider === 'claude'
-        ? await api.mcp.claudeDelete(server.id || server.name, server.scope)
-        : await api.mcp.codexDelete(server.name);
-      const data = await response.json();
-      if (!response.ok || data.success === false) {
-        throw new Error(data.error || data.message || t('workbench.mcpPage.errors.delete'));
+      if (provider === 'claude') {
+        const allS = await settings.getAll();
+        const servers = ((allS as any)?.mcpClaudeServers || []).filter((srv: any) => srv.name !== (server.id || server.name));
+        await settings.set('mcpClaudeServers', servers);
+      } else {
+        const allS = await settings.getAll();
+        const servers = ((allS as any)?.mcpCodexServers || []).filter((srv: any) => srv.name !== server.name);
+        await settings.set('mcpCodexServers', servers);
       }
       await loadData();
     } catch (deleteError) {
@@ -366,51 +357,38 @@ export default function ExtensionsMcpPage({
     try {
       if (form.provider === 'claude') {
         if (form.mode === 'edit' && form.originalName) {
-          const removeResponse = await api.mcp.claudeDelete(form.originalName, form.scope);
-          const removeData = await removeResponse.json();
-          if (!removeResponse.ok || removeData.success === false) {
-            throw new Error(removeData.error || removeData.message || t('workbench.mcpPage.errors.updateClaude'));
-          }
+          const allS = await settings.getAll();
+          const servers = ((allS as any)?.mcpClaudeServers || []).filter((srv: any) => srv.name !== form.originalName);
+          await settings.set('mcpClaudeServers', servers);
         }
 
-        const addResponse = await api.mcp.claudeAddJson({
+        const allS2 = await settings.getAll();
+        const existingServers = ((allS2 as any)?.mcpClaudeServers || []) as any[];
+        const newServer = {
           name: form.name,
           scope: form.scope,
-          projectPath: form.scope === 'local' ? form.projectPath : undefined,
-          jsonConfig: {
-            type: form.type,
-            ...(form.type === 'stdio'
-              ? {
-                  command: form.command,
-                  args: toArgs(form.argsText),
-                  env: parseEnv(form.envText),
-                }
-              : { url: form.url }),
-          },
-        });
-        const addData = await addResponse.json();
-        if (!addResponse.ok || addData.success === false) {
-          throw new Error(addData.error || addData.message || t('workbench.mcpPage.errors.saveClaude'));
-        }
+          type: form.type,
+          ...(form.type === 'stdio'
+            ? { command: form.command, args: toArgs(form.argsText), env: parseEnv(form.envText) }
+            : { url: form.url }),
+        };
+        await settings.set('mcpClaudeServers', [...existingServers, newServer]);
       } else {
-        const saveResponse = await api.mcp.codexSave({
+        const allS3 = await settings.getAll();
+        const existingServers = ((allS3 as any)?.mcpCodexServers || []) as any[];
+        const newServer = {
           name: form.name,
           type: 'stdio',
           command: form.command,
           args: toArgs(form.argsText),
           env: parseEnv(form.envText),
-        });
-        const saveData = await saveResponse.json();
-        if (!saveResponse.ok || saveData.success === false) {
-          throw new Error(saveData.error || saveData.message || t('workbench.mcpPage.errors.saveCodex'));
-        }
+        };
 
         if (form.mode === 'edit' && form.originalName && form.originalName !== form.name) {
-          const deleteResponse = await api.mcp.codexDelete(form.originalName);
-          const deleteData = await deleteResponse.json();
-          if (!deleteResponse.ok || deleteData.success === false) {
-            throw new Error(deleteData.error || deleteData.message || t('workbench.mcpPage.errors.renameCodex'));
-          }
+          const filtered = existingServers.filter((srv: any) => srv.name !== form.originalName);
+          await settings.set('mcpCodexServers', [...filtered, newServer]);
+        } else {
+          await settings.set('mcpCodexServers', [...existingServers.filter((srv: any) => srv.name !== form.name), newServer]);
         }
       }
 
