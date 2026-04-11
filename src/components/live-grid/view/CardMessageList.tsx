@@ -8,7 +8,21 @@ type CardMessageListProps = {
 
 // Module-level set to track which snapshot IDs have been fully animated.
 // Persists across re-renders; resets on page reload (intentional).
+// Capped to prevent unbounded growth during long sessions.
+const ANIMATED_IDS_MAX_SIZE = 500;
 const animatedIds = new Set<string>();
+
+function trackAnimatedId(id: string) {
+  if (animatedIds.size >= ANIMATED_IDS_MAX_SIZE) {
+    // Evict oldest entries (first inserted) to stay within budget
+    const iter = animatedIds.values();
+    for (let i = 0; i < ANIMATED_IDS_MAX_SIZE / 2; i++) {
+      const { value } = iter.next();
+      if (value !== undefined) animatedIds.delete(value);
+    }
+  }
+  animatedIds.add(id);
+}
 
 const CURSOR_CLASS =
   'inline-block w-[2px] h-[1em] bg-current ml-0.5 align-text-bottom animate-[cursor-blink_1s_ease-in-out_infinite]';
@@ -108,7 +122,7 @@ function AnimatedAssistantMessage({ snap }: { snap: MessageSnapshot }) {
   }
 
   // New completed message — animate it
-  return <TypewriterText text={snap.text} onComplete={() => animatedIds.add(snap.id)} />;
+  return <TypewriterText text={snap.text} onComplete={() => trackAnimatedId(snap.id)} />;
 }
 
 function MessageBubble({ snap }: { snap: MessageSnapshot }) {

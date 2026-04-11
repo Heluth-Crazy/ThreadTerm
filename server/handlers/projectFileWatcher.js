@@ -56,10 +56,12 @@ export async function startProjectWatcher(projectPath) {
       },
     });
 
-    let debounceTimer = null;
     let pendingEvents = [];
 
+    const watcherEntry = { watcher, debounceTimer: null };
+
     const flushEvents = () => {
+      watcherEntry.debounceTimer = null;
       if (pendingEvents.length === 0) return;
 
       // Deduplicate: keep the last event per filePath
@@ -91,10 +93,10 @@ export async function startProjectWatcher(projectPath) {
       const relativePath = path.relative(normalized, filePath);
       pendingEvents.push({ eventType, filePath: relativePath });
 
-      if (debounceTimer) {
-        clearTimeout(debounceTimer);
+      if (watcherEntry.debounceTimer) {
+        clearTimeout(watcherEntry.debounceTimer);
       }
-      debounceTimer = setTimeout(flushEvents, DEBOUNCE_MS);
+      watcherEntry.debounceTimer = setTimeout(flushEvents, DEBOUNCE_MS);
     };
 
     watcher
@@ -107,7 +109,7 @@ export async function startProjectWatcher(projectPath) {
         logger.error(`[ProjectFileWatcher] Error for ${normalized}:`, error);
       });
 
-    activeWatchers.set(normalized, { watcher, debounceTimer: null });
+    activeWatchers.set(normalized, watcherEntry);
     logger.info(`[ProjectFileWatcher] Started watching: ${normalized}`);
   } catch (error) {
     logger.error(`[ProjectFileWatcher] Failed to start watcher for ${normalized}:`, error);

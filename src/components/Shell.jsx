@@ -432,7 +432,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
       allowProposedApi: true,
       allowTransparency: false,
       convertEol: true,
-      scrollback: 10000,
+      scrollback: 3000,
       tabStopWidth: 4,
       windowsMode: (typeof window !== 'undefined' && (navigator.platform?.startsWith('Win') || window.electronAPI?.platform === 'win32')),
       macOptionIsMeta: true,
@@ -569,9 +569,13 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
       }
     });
 
+    let resizeDebounceTimer = null;
     const resizeObserver = new ResizeObserver(() => {
       if (fitAddon.current && terminal.current) {
-        setTimeout(() => {
+        if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+        resizeDebounceTimer = setTimeout(() => {
+          resizeDebounceTimer = null;
+          if (!fitAddon.current || !terminal.current) return;
           fitAddon.current.fit();
           if (ws.current && ws.current.readyState === WebSocket.OPEN) {
             ws.current.send(JSON.stringify({
@@ -580,7 +584,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
               rows: terminal.current.rows
             }));
           }
-        }, 50);
+        }, 150);
       }
     });
 
@@ -589,6 +593,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
     }
 
     return () => {
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       resizeObserver.disconnect();
 
       if (shellReconnectTimeoutRef.current) {
