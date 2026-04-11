@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { IS_PLATFORM } from '../constants/config';
 import { loadSessionLaunchProfilesByProvider, mergeSessionLaunchArgs } from '../utils/sessionLaunchProfiles';
 import { logger } from '../utils/logger';
+import { pty } from '../lib/tauri-bridge';
 
 const xtermStyles = `
   .xterm .xterm-screen {
@@ -110,7 +111,9 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
   const terminalRef = useRef(null);
   const terminal = useRef(null);
   const fitAddon = useRef(null);
-  const ws = useRef(null);
+  const ptyIdRef = useRef(null);
+  const unlistenOutputRef = useRef(null);
+  const unlistenExitRef = useRef(null);
   const retryCountRef = useRef(0);
   const shellReconnectTimeoutRef = useRef(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -201,68 +204,27 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
 
     setConnecting(true);
 
-    try {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/shell`;
+    const setupPty = async () => {
+      try {
+        const selectedSessionId = isPlainShellRef.current
+          ? null
+          : selectedSessionRef.current?.id || null;
+        const shouldResumeSession = Boolean(selectedSessionId) && !isTemporarySessionId(selectedSessionId);
+        const shellProvider = isPlainShellRef.current
+          ? 'plain-shell'
+          : (selectedSessionRef.current?.__provider || localStorage.getItem('selected-provider') || 'claude');
 
-      ws.current = new WebSocket(wsUrl);
+        const projectPath = selectedProjectRef.current.fullPath || selectedProjectRef.current.path;
+        const ptySessionId = paneId || `shell-${Date.now()}`;
 
-      ws.current.onopen = () => {
-        setConnected(true);
-        setConnecting(false);
-        authUrlRef.current = '';
-        setAuthUrl('');
-        setAuthUrlCopyStatus('idle');
-        setIsAuthPanelDismissed(false);
-        retryCountRef.current = 0;
-
-        setTimeout(() => {
-          if (fitAddon.current && terminal.current && ws.current && ws.current.readyState === WebSocket.OPEN) {
-            fitAddon.current.fit();
-
-            const selectedSessionId = isPlainShellRef.current
-              ? null
-              : selectedSessionRef.current?.id || null;
-            const shouldResumeSession = Boolean(selectedSessionId) && !isTemporarySessionId(selectedSessionId);
-            const shouldForceNewSession = Boolean(selectedSessionId) && isTemporarySessionId(selectedSessionId);
-            const sessionMode = shouldResumeSession ? 'resume' : 'new';
-            const shellProvider = isPlainShellRef.current
-              ? 'plain-shell'
-              : (selectedSessionRef.current?.__provider || localStorage.getItem('selected-provider') || 'claude');
-            const { launchArgs: launchArgsFromSession, launchProfileId } = resolveSessionLaunchConfig(
-              selectedSessionRef.current,
-              shellProvider,
-            );
-
-            ws.current.send(JSON.stringify({
-              type: 'init',
-              projectPath: selectedProjectRef.current.fullPath || selectedProjectRef.current.path,
-              sessionMode,
-              sessionId: shouldResumeSession ? selectedSessionId : null,
-              hasSession: shouldResumeSession,
-              provider: shellProvider,
-              cols: terminal.current.cols,
-              rows: terminal.current.rows,
-              initialCommand: initialCommandRef.current,
-              isPlainShell: isPlainShellRef.current,
-              paneId: paneId,
-              forceNew: !isPlainShellRef.current && shouldForceNewSession,
-              sessionLaunchProfileId: shouldResumeSession ? null : launchProfileId,
-              sessionArgs: launchArgsFromSession,
-            }));
-          }
-        }, 100);
-      };
-
-      ws.current.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-
-          if (data.type === 'output') {
-            let output = data.data;
+        // Set up output listener before creating PTY
+        const unlistenOut = await pty.onOutput(({ id: sid, data }) => {
+          if (sid === ptySessionId && terminal.current) {
+            terminal.current.write(data);
+            terminal.current.scrollToBottom();
 
             if (isPlainShellRef.current && onProcessCompleteRef.current) {
-              const cleanOutput = output.replace(/\x1b\[[0-9;]*m/g, '');
+              const cleanOutput = data.replace(/\x1b\[[0-9;]*m/g, '');
               if (cleanOutput.includes('Process exited with code 0')) {
                 onProcessCompleteRef.current(0);
               } else if (cleanOutput.match(/Process exited with code (\d+)/)) {
@@ -272,59 +234,62 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
                 }
               }
             }
+          }
+        });
+
+        const unlistenExit = await pty.onExit(({ id: sid }) => {
+          if (sid === ptySessionId) {
+            setConnected(false);
+            setConnecting(false);
 
             if (terminal.current) {
-              terminal.current.write(output);
-              terminal.current.scrollToBottom();
+              terminal.current.clear();
+              terminal.current.write('\x1b[2J\x1b[H');
             }
-          } else if (data.type === 'auth_url' && data.url) {
-            authUrlRef.current = data.url;
-            setAuthUrl(data.url);
-            setAuthUrlCopyStatus('idle');
-            setIsAuthPanelDismissed(false);
-          } else if (data.type === 'url_open') {
-            if (data.url) {
-              authUrlRef.current = data.url;
-              setAuthUrl(data.url);
-              setAuthUrlCopyStatus('idle');
-              setIsAuthPanelDismissed(false);
+
+            if (!manuallyDisconnected.current) {
+              const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
+              retryCountRef.current++;
+              shellReconnectTimeoutRef.current = setTimeout(() => {
+                connectWebSocket();
+              }, delay);
             }
           }
-        } catch (error) {
-          logger.error('[Shell] Error handling WebSocket message:', error);
-        }
-      };
+        });
 
-      ws.current.onclose = () => {
+        unlistenOutputRef.current = unlistenOut;
+        unlistenExitRef.current = unlistenExit;
+
+        const rows = terminal.current?.rows || 24;
+        const cols = terminal.current?.cols || 120;
+
+        await pty.create(ptySessionId, projectPath, rows, cols);
+        ptyIdRef.current = ptySessionId;
+
+        setConnected(true);
+        setConnecting(false);
+        retryCountRef.current = 0;
+
+        // Send initial command or session init if needed
+        if (initialCommandRef.current && isPlainShellRef.current) {
+          await pty.input(ptySessionId, initialCommandRef.current + '\n');
+        }
+      } catch (error) {
+        logger.error('[Shell] PTY connection failed:', error);
         setConnected(false);
         setConnecting(false);
-        setAuthUrlCopyStatus('idle');
-        setIsAuthPanelDismissed(false);
 
-        if (terminal.current) {
-          terminal.current.clear();
-          terminal.current.write('\x1b[2J\x1b[H');
-        }
-
-        // Exponential backoff reconnect (skip if manually disconnected)
         if (!manuallyDisconnected.current) {
           const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
           retryCountRef.current++;
           shellReconnectTimeoutRef.current = setTimeout(() => {
-            // Re-invoke via refs so we never use a stale closure
             connectWebSocket();
           }, delay);
         }
-      };
+      }
+    };
 
-      ws.current.onerror = () => {
-        setConnected(false);
-        setConnecting(false);
-      };
-    } catch (error) {
-      setConnected(false);
-      setConnecting(false);
-    }
+    setupPty();
   }, [paneId, setConnecting, setConnected]);
 
   const connectToShell = useCallback(() => {
@@ -342,9 +307,20 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
     }
     retryCountRef.current = 0;
 
-    if (ws.current) {
-      ws.current.close();
-      ws.current = null;
+    // Unlisten Tauri events
+    if (unlistenOutputRef.current) {
+      unlistenOutputRef.current();
+      unlistenOutputRef.current = null;
+    }
+    if (unlistenExitRef.current) {
+      unlistenExitRef.current();
+      unlistenExitRef.current = null;
+    }
+
+    // Kill PTY
+    if (ptyIdRef.current) {
+      pty.kill(ptyIdRef.current).catch(() => {});
+      ptyIdRef.current = null;
     }
 
     if (terminal.current) {
@@ -385,9 +361,20 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
     }
     retryCountRef.current = 0;
 
-    if (ws.current) {
-      ws.current.close();
-      ws.current = null;
+    // Unlisten Tauri events
+    if (unlistenOutputRef.current) {
+      unlistenOutputRef.current();
+      unlistenOutputRef.current = null;
+    }
+    if (unlistenExitRef.current) {
+      unlistenExitRef.current();
+      unlistenExitRef.current = null;
+    }
+
+    // Kill PTY
+    if (ptyIdRef.current) {
+      pty.kill(ptyIdRef.current).catch(() => {});
+      ptyIdRef.current = null;
     }
 
     if (terminal.current) {
@@ -533,11 +520,8 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
         event.stopPropagation();
 
         navigator.clipboard.readText().then(text => {
-          if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-            ws.current.send(JSON.stringify({
-              type: 'input',
-              data: text
-            }));
+          if (ptyIdRef.current) {
+            pty.input(ptyIdRef.current, text).catch(() => {});
           }
         }).catch(() => {});
         return false;
@@ -549,23 +533,16 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
     setTimeout(() => {
       if (fitAddon.current) {
         fitAddon.current.fit();
-        if (terminal.current && ws.current && ws.current.readyState === WebSocket.OPEN) {
-          ws.current.send(JSON.stringify({
-            type: 'resize',
-            cols: terminal.current.cols,
-            rows: terminal.current.rows
-          }));
+        if (terminal.current && ptyIdRef.current) {
+          pty.resize(ptyIdRef.current, terminal.current.rows, terminal.current.cols).catch(() => {});
         }
       }
     }, 100);
 
     setIsInitialized(true);
     terminal.current.onData((data) => {
-      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-        ws.current.send(JSON.stringify({
-          type: 'input',
-          data: data
-        }));
+      if (ptyIdRef.current) {
+        pty.input(ptyIdRef.current, data).catch(() => {});
       }
     });
 
@@ -577,12 +554,8 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
           resizeDebounceTimer = null;
           if (!fitAddon.current || !terminal.current) return;
           fitAddon.current.fit();
-          if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-            ws.current.send(JSON.stringify({
-              type: 'resize',
-              cols: terminal.current.cols,
-              rows: terminal.current.rows
-            }));
+          if (ptyIdRef.current) {
+            pty.resize(ptyIdRef.current, terminal.current.rows, terminal.current.cols).catch(() => {});
           }
         }, 150);
       }
@@ -602,10 +575,21 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
       }
       retryCountRef.current = 0;
 
-      if (ws.current && (ws.current.readyState === WebSocket.OPEN || ws.current.readyState === WebSocket.CONNECTING)) {
-        ws.current.close();
+      // Unlisten Tauri events
+      if (unlistenOutputRef.current) {
+        unlistenOutputRef.current();
+        unlistenOutputRef.current = null;
       }
-      ws.current = null;
+      if (unlistenExitRef.current) {
+        unlistenExitRef.current();
+        unlistenExitRef.current = null;
+      }
+
+      // Kill PTY
+      if (ptyIdRef.current) {
+        pty.kill(ptyIdRef.current).catch(() => {});
+        ptyIdRef.current = null;
+      }
 
       if (terminal.current) {
         terminal.current.dispose();

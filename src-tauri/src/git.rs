@@ -402,23 +402,43 @@ pub async fn git_pull(
     project_path: String,
     window: Window,
 ) -> Result<(), String> {
-    // git2 does not support pull natively — use git CLI
-    let output = std::process::Command::new("git")
-        .args(["pull", "--ff-only"])
+    use std::process::{Command, Stdio};
+    use std::io::{BufRead, BufReader};
+
+    let mut child = Command::new("git")
+        .args(["pull", "--ff-only", "--progress"])
         .current_dir(&project_path)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("git pull failed to start: {e}"))?;
 
-    let _ = window.emit(
-        "git-progress",
-        String::from_utf8_lossy(&output.stdout).to_string(),
-    );
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("git pull failed: {stderr}"));
+    // Stream stderr (git progress goes to stderr)
+    if let Some(stderr) = child.stderr.take() {
+        let reader = BufReader::new(stderr);
+        let win = window.clone();
+        std::thread::spawn(move || {
+            for line in reader.lines().flatten() {
+                let _ = win.emit("git-progress", &line);
+            }
+        });
     }
 
+    // Stream stdout
+    if let Some(stdout) = child.stdout.take() {
+        let reader = BufReader::new(stdout);
+        let win = window.clone();
+        std::thread::spawn(move || {
+            for line in reader.lines().flatten() {
+                let _ = win.emit("git-progress", &line);
+            }
+        });
+    }
+
+    let status = child.wait().map_err(|e| format!("git pull wait failed: {e}"))?;
+    if !status.success() {
+        return Err("git pull failed".to_string());
+    }
     Ok(())
 }
 
@@ -427,21 +447,42 @@ pub async fn git_push(
     project_path: String,
     window: Window,
 ) -> Result<(), String> {
-    let output = std::process::Command::new("git")
-        .args(["push"])
+    use std::process::{Command, Stdio};
+    use std::io::{BufRead, BufReader};
+
+    let mut child = Command::new("git")
+        .args(["push", "--progress"])
         .current_dir(&project_path)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("git push failed to start: {e}"))?;
 
-    let _ = window.emit(
-        "git-progress",
-        String::from_utf8_lossy(&output.stdout).to_string(),
-    );
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("git push failed: {stderr}"));
+    // Stream stderr (git progress goes to stderr)
+    if let Some(stderr) = child.stderr.take() {
+        let reader = BufReader::new(stderr);
+        let win = window.clone();
+        std::thread::spawn(move || {
+            for line in reader.lines().flatten() {
+                let _ = win.emit("git-progress", &line);
+            }
+        });
     }
 
+    // Stream stdout
+    if let Some(stdout) = child.stdout.take() {
+        let reader = BufReader::new(stdout);
+        let win = window.clone();
+        std::thread::spawn(move || {
+            for line in reader.lines().flatten() {
+                let _ = win.emit("git-progress", &line);
+            }
+        });
+    }
+
+    let status = child.wait().map_err(|e| format!("git push wait failed: {e}"))?;
+    if !status.success() {
+        return Err("git push failed".to_string());
+    }
     Ok(())
 }

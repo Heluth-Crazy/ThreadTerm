@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SetStateAction } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 import { api } from '../utils/api';
+import { projects as tauriProjects } from '../lib/tauri-bridge';
 import type {
   AppSocketMessage,
   AppTab,
@@ -413,8 +414,22 @@ export function useProjectsState({
   const fetchProjects = useCallback(async () => {
     try {
       setIsLoadingProjects(true);
-      const response = await api.projects();
-      const projectData = applyStoredLaunchMetaToProjects((await response.json()) as Project[]);
+      const tauriProjectList = await tauriProjects.list();
+      // Map Tauri project shape to the frontend Project type
+      const projectData = applyStoredLaunchMetaToProjects(tauriProjectList.map((p: any) => ({
+        name: p.name,
+        path: p.path,
+        fullPath: p.full_path,
+        displayName: p.name,
+        sessions: (p.sessions || []).map((s: any) => ({
+          id: s.id,
+          provider: s.provider,
+          name: s.name,
+          createdAt: s.created_at,
+          lastMessage: s.last_message,
+        })),
+        sessionMeta: { hasMore: false, total: (p.sessions || []).length },
+      })) as Project[]);
 
       setProjects((prevProjects) => {
         if (prevProjects.length === 0) {
@@ -773,14 +788,9 @@ export function useProjectsState({
 
       // Call backend API to persist the deletion
       try {
-        const response =
-          provider === 'codex'
-            ? await api.deleteCodexSession(sessionIdToDelete)
-            : await api.deleteSession(projectName, sessionIdToDelete);
-
-        if (!response.ok) {
-          console.error('Failed to delete session on backend:', await response.text());
-        }
+        // Session deletion is handled locally; Tauri backend doesn't have a
+        // dedicated delete-session command yet. Just update local state.
+        console.info('Session deleted locally:', sessionIdToDelete);
       } catch (err) {
         console.error('Error calling delete session API:', err);
       }
@@ -843,8 +853,21 @@ export function useProjectsState({
 
   const handleSidebarRefresh = useCallback(async () => {
     try {
-      const response = await api.projects();
-      const freshProjects = applyStoredLaunchMetaToProjects((await response.json()) as Project[]);
+      const tauriProjectList = await tauriProjects.list();
+      const freshProjects = applyStoredLaunchMetaToProjects(tauriProjectList.map((p: any) => ({
+        name: p.name,
+        path: p.path,
+        fullPath: p.full_path,
+        displayName: p.name,
+        sessions: (p.sessions || []).map((s: any) => ({
+          id: s.id,
+          provider: s.provider,
+          name: s.name,
+          createdAt: s.created_at,
+          lastMessage: s.last_message,
+        })),
+        sessionMeta: { hasMore: false, total: (p.sessions || []).length },
+      })) as Project[]);
 
       setProjects((prevProjects) =>
         projectsHaveChanges(prevProjects, freshProjects, true) ? freshProjects : prevProjects,

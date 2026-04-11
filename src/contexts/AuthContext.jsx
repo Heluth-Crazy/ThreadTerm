@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { api } from '../utils/api';
+import { auth as tauriAuth } from '../lib/tauri-bridge';
 
 const AuthContext = createContext({
   user: { username: 'default-user' },
@@ -24,52 +24,90 @@ export const useAuth = () => {
 };
 
 export const AuthProvider = ({ children }) => {
-  const [user] = useState({ username: 'default-user' });
-  const [isLoading] = useState(false);
+  const [user, setUser] = useState({ username: 'default-user' });
+  const [token, setToken] = useState(() => localStorage.getItem('auth_token'));
+  const [isLoading, setIsLoading] = useState(false);
   const [needsSetup] = useState(false);
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(true);
-  const [error] = useState(null);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    // Check onboarding status on mount
-    checkOnboardingStatus();
+    // Verify existing token on mount
+    if (token) {
+      tauriAuth.verify(token)
+        .then((userInfo) => {
+          setUser({ username: userInfo.username, ...userInfo });
+          setHasCompletedOnboarding(userInfo.has_completed_onboarding);
+        })
+        .catch(() => {
+          // Token invalid — clear it
+          localStorage.removeItem('auth_token');
+          setToken(null);
+        });
+    }
   }, []);
 
-  const checkOnboardingStatus = async () => {
-    try {
-      const response = await api.user.onboardingStatus();
-      if (response.ok) {
-        const data = await response.json();
-        setHasCompletedOnboarding(data.hasCompletedOnboarding);
+  const refreshOnboardingStatus = async () => {
+    if (token) {
+      try {
+        const userInfo = await tauriAuth.verify(token);
+        setHasCompletedOnboarding(userInfo.has_completed_onboarding);
+      } catch {
+        setHasCompletedOnboarding(true);
       }
-    } catch (error) {
-      console.error('Error checking onboarding status:', error);
-      setHasCompletedOnboarding(true);
     }
   };
 
-  const refreshOnboardingStatus = async () => {
-    await checkOnboardingStatus();
+  const login = async (username, password) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const result = await tauriAuth.login(username, password);
+      setToken(result.token);
+      setUser({ username: result.user.username, ...result.user });
+      localStorage.setItem('auth_token', result.token);
+      return { success: true };
+    } catch (err) {
+      setError(String(err));
+      return { success: false, error: String(err) };
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // Empty login function for compatibility
-  const login = async () => {
-    return { success: true };
+  const register = async (username, password) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const result = await tauriAuth.register(username, password);
+      setToken(result.token);
+      setUser({ username: result.user.username, ...result.user });
+      localStorage.setItem('auth_token', result.token);
+      return { success: true };
+    } catch (err) {
+      setError(String(err));
+      return { success: false, error: String(err) };
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // Empty register function for compatibility
-  const register = async () => {
-    return { success: true };
-  };
-
-  // Empty logout function for compatibility
-  const logout = () => {
-    // No-op: authentication is disabled
+  const logout = async () => {
+    if (token) {
+      try {
+        await tauriAuth.logout(token);
+      } catch {
+        // Best-effort
+      }
+    }
+    localStorage.removeItem('auth_token');
+    setToken(null);
+    setUser({ username: 'default-user' });
   };
 
   const value = {
     user,
-    token: null,
+    token,
     login,
     register,
     logout,
@@ -78,7 +116,7 @@ export const AuthProvider = ({ children }) => {
     hasCompletedOnboarding,
     refreshOnboardingStatus,
     error,
-    isAuthenticated: true
+    isAuthenticated: !!token || user.username === 'default-user'
   };
 
   return (

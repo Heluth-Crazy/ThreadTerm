@@ -108,16 +108,36 @@ pub async fn ai_list_sessions(
         return Ok(Vec::new());
     }
 
-    let encoded = project_path.replace(['/', '\\', ':', ' ', '~', '_'], "-");
-    let sessions_dir = dirs::home_dir()
+    let projects_root = dirs::home_dir()
         .ok_or("Could not determine home directory")?
         .join(".claude")
-        .join("projects")
-        .join(&encoded);
+        .join("projects");
 
-    if !sessions_dir.is_dir() {
+    if !projects_root.is_dir() {
         return Ok(Vec::new());
     }
+
+    let encoded = crate::projects::encode_project_path(&project_path);
+
+    // Scan all subdirectories to find the matching one
+    let sessions_dir = {
+        let mut found = None;
+        let entries = std::fs::read_dir(&projects_root)
+            .map_err(|e| format!("Failed to read projects dir: {e}"))?;
+        for entry in entries.flatten() {
+            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                let dir_name = entry.file_name().to_string_lossy().to_string();
+                if dir_name == encoded {
+                    found = Some(entry.path());
+                    break;
+                }
+            }
+        }
+        match found {
+            Some(p) => p,
+            None => return Ok(Vec::new()),
+        }
+    };
 
     let mut sessions = Vec::new();
     let entries = std::fs::read_dir(&sessions_dir)

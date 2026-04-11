@@ -13,20 +13,13 @@ export default defineConfig(({ command, mode }) => {
 
   return {
     plugins: [react()],
+    // Ensure Vite clears the port for Tauri
+    clearScreen: false,
     server: {
       host,
       port: parseInt(env.VITE_PORT) || 5173,
-      proxy: {
-        '/api': `http://${proxyHost}:${port}`,
-        '/ws': {
-          target: `ws://${proxyHost}:${port}`,
-          ws: true
-        },
-        '/shell': {
-          target: `ws://${proxyHost}:${port}`,
-          ws: true
-        }
-      }
+      strictPort: true,
+      // Proxy removed — Tauri IPC replaces all /api and /ws calls
     },
     build: {
       outDir: 'dist',
