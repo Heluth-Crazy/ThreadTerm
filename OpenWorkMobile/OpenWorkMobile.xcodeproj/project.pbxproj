@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		01A7A81C232AE29D7C29EB0F /* TokenStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B17610551534DE65A81BD9B /* TokenStorageTests.swift */; };
 		01B798CDFDFCE24C9F4C9785 /* ConnectionSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 343D03F37EC044244B45B943 /* ConnectionSetupView.swift */; };
+		02AA11CC33DD44EE55FF6677 /* CommandPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 174233B2F7F87545C3260678 /* CommandPickerView.swift */; };
 		08ADAFB3B6F66B16106FE6D6 /* HapticManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38E76B24CD8648D7A162E1BC /* HapticManager.swift */; };
 		125F4211A1E16BA5DA359512 /* ProjectsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F904CB9CEC2FCF90D6EEB9B7 /* ProjectsViewModel.swift */; };
 		128B0B472D092B7ED7D9F0B0 /* ChatWebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E1430D1E1C972B0A7CB0B6C /* ChatWebSocketClient.swift */; };
@@ -62,6 +63,7 @@
 /* Begin PBXFileReference section */
 		08FA9D88ACB23B2547963087 /* OpenWorkMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OpenWorkMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		105207F93E1B2C9E6E01A62F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		174233B2F7F87545C3260678 /* CommandPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPickerView.swift; sourceTree = "<group>"; };
 		1ACA37B3E194D9AF19E99AE7 /* SessionsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsViewModel.swift; sourceTree = "<group>"; };
 		1FC80B85349147EE788845BB /* HealthModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthModels.swift; sourceTree = "<group>"; };
 		2477EEF3A41945B6AF8A63C2 /* SessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionViewModel.swift; sourceTree = "<group>"; };
@@ -207,6 +209,7 @@
 			children = (
 				AAFC91E86714E76DBF539169 /* ErrorView.swift */,
 				DDECA2D6986BBC9C09D919F2 /* LoadingView.swift */,
+				174233B2F7F87545C3260678 /* CommandPickerView.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -372,6 +375,7 @@
 				AA9C379CCDFADF2671F8A28B /* AnyCodableValue.swift in Sources */,
 				128B0B472D092B7ED7D9F0B0 /* ChatWebSocketClient.swift in Sources */,
 				7A429FBF0FF5E2636369BB16 /* CommandDiscovery.swift in Sources */,
+				02AA11CC33DD44EE55FF6677 /* CommandPickerView.swift in Sources */,
 				01B798CDFDFCE24C9F4C9785 /* ConnectionSetupView.swift in Sources */,
 				466FA4C43E7EA323038E5DB7 /* ConnectionViewModel.swift in Sources */,
 				1C7B5487F469FF72AC525241 /* ContentView.swift in Sources */,
