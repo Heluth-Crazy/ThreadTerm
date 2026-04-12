@@ -353,4 +353,5 @@ export const loop = {
   start: (config: LoopConfig) => invoke<LoopState>('loop_start', { config }),
   cancel: (loopId: string) => invoke<void>('loop_cancel', { loopId }),
   list: () => invoke<LoopState[]>('loop_list'),
+  cleanup: () => invoke<number>('loop_cleanup'),
 };

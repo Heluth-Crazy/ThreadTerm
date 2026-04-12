@@ -107,6 +107,7 @@ pub fn run() {
             loop_runner::loop_start,
             loop_runner::loop_cancel,
             loop_runner::loop_list,
+            loop_runner::loop_cleanup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

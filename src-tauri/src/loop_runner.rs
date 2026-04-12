@@ -73,13 +73,15 @@ pub async fn loop_start(
     let loop_id = uuid::Uuid::new_v4().to_string();
     let max_iterations = if config.max_iterations == 0 { 3 } else { config.max_iterations };
 
-    // Start worker session
-    let worker_pty_id = ai::start_session_internal(
-        &app,
-        config.project_path.clone(),
-        config.worker_provider.clone(),
-        None,
-    )?;
+    // Start worker session (spawn_blocking: start_session_internal is synchronous)
+    let app_sb = app.clone();
+    let pp = config.project_path.clone();
+    let wp = config.worker_provider.clone();
+    let worker_pty_id = tokio::task::spawn_blocking(move || {
+        ai::start_session_internal(&app_sb, pp, wp, None)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking join error: {e}"))??;
 
     let state = LoopState {
         loop_id: loop_id.clone(),
@@ -132,7 +134,9 @@ pub async fn loop_start(
 async fn run_loop_iteration(app: AppHandle, loop_id: String) {
     let poll_interval = std::time::Duration::from_secs(2);
     let idle_threshold = std::time::Duration::from_secs(5);
+    let poll_timeout = std::time::Duration::from_secs(600); // 10-minute hard cap
     let mut idle_start: Option<std::time::Instant> = None;
+    let poll_start = std::time::Instant::now();
 
     loop {
         tokio::time::sleep(poll_interval).await;
@@ -176,9 +180,17 @@ async fn run_loop_iteration(app: AppHandle, loop_id: String) {
                 idle_start = None;
             }
         }
-    }
 
-    // Get worker output
+        // Hard timeout: abort if worker takes too long
+        if poll_start.elapsed() > poll_timeout {
+            tracing::warn!(loop_id = %loop_id, "Worker polling timed out after 10 minutes");
+            update_loop(&loop_id, |s| s.status = LoopStatus::Failed);
+            if let Some(s) = get_loop(&loop_id) {
+                emit_loop_state(&app, &s);
+            }
+            return;
+        }
+    } // end worker polling loop
     let current = match get_loop(&loop_id) {
         Some(s) => s,
         None => return,
@@ -204,14 +216,18 @@ async fn run_loop_iteration(app: AppHandle, loop_id: String) {
         emit_loop_state(&app, &s);
     }
 
-    // Start verifier session
+    // Start verifier session (spawn_blocking: start_session_internal is synchronous)
     let config = current.config.clone();
-    let verifier_pty_id = match ai::start_session_internal(
-        &app,
-        config.project_path.clone(),
-        config.verifier_provider.clone(),
-        None,
-    ) {
+    let app_sb = app.clone();
+    let pp = config.project_path.clone();
+    let vp = config.verifier_provider.clone();
+    let verifier_pty_id = match tokio::task::spawn_blocking(move || {
+        ai::start_session_internal(&app_sb, pp, vp, None)
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))
+    .and_then(|r| r)
+    {
         Ok(id) => id,
         Err(e) => {
             tracing::error!(loop_id = %loop_id, error = %e, "Failed to start verifier");
@@ -248,6 +264,7 @@ async fn run_loop_iteration(app: AppHandle, loop_id: String) {
     // Poll verifier until complete
     let poll_interval = std::time::Duration::from_secs(2);
     let idle_threshold = std::time::Duration::from_secs(5);
+    let verifier_poll_start = std::time::Instant::now();
     let mut idle_start: Option<std::time::Instant> = None;
 
     loop {
@@ -281,6 +298,16 @@ async fn run_loop_iteration(app: AppHandle, loop_id: String) {
             _ => {
                 idle_start = None;
             }
+        }
+
+        // Hard timeout for verifier
+        if verifier_poll_start.elapsed() > std::time::Duration::from_secs(600) {
+            tracing::warn!(loop_id = %loop_id, "Verifier polling timed out after 10 minutes");
+            update_loop(&loop_id, |s| s.status = LoopStatus::Failed);
+            if let Some(s) = get_loop(&loop_id) {
+                emit_loop_state(&app, &s);
+            }
+            return;
         }
     }
 
@@ -321,13 +348,17 @@ async fn run_loop_iteration(app: AppHandle, loop_id: String) {
                 .unwrap_or("Verifier requested retry.")
                 .to_string();
 
-            // Start a new worker iteration
-            let new_worker = match ai::start_session_internal(
-                &app,
-                config.project_path.clone(),
-                config.worker_provider.clone(),
-                None,
-            ) {
+            // Start a new worker iteration (spawn_blocking: start_session_internal is synchronous)
+            let app_sb = app.clone();
+            let pp = config.project_path.clone();
+            let wp = config.worker_provider.clone();
+            let new_worker = match tokio::task::spawn_blocking(move || {
+                ai::start_session_internal(&app_sb, pp, wp, None)
+            })
+            .await
+            .map_err(|e| format!("join: {e}"))
+            .and_then(|r| r)
+            {
                 Ok(id) => id,
                 Err(e) => {
                     tracing::error!(loop_id = %loop_id, error = %e, "Failed to start new worker");
@@ -396,6 +427,18 @@ pub async fn loop_cancel(loop_id: String) -> Result<(), String> {
 pub async fn loop_list() -> Result<Vec<LoopState>, String> {
     let map = LOOPS.lock().map_err(|e| format!("Lock error: {e}"))?;
     Ok(map.values().cloned().collect())
+}
+
+/// Remove all loops that have reached a terminal state (Passed/Failed/Cancelled).
+/// Returns the number of loops removed.
+#[tauri::command]
+pub fn loop_cleanup() -> Result<usize, String> {
+    let mut map = LOOPS.lock().map_err(|e| format!("Lock error: {e}"))?;
+    let before = map.len();
+    map.retain(|_, v| {
+        !matches!(v.status, LoopStatus::Passed | LoopStatus::Failed | LoopStatus::Cancelled)
+    });
+    Ok(before - map.len())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
