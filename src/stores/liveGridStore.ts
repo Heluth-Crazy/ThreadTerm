@@ -9,6 +9,7 @@ export interface CardSlot {
   projectId: string;
   provider: string;
   title?: string;
+  worktreePath?: string;
 }
 
 export interface MessageSnapshot {

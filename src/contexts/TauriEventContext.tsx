@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { pty, ai, invoke } from '../lib/tauri-bridge';
+import type { SessionState, AttentionRequiredEvent } from '../lib/tauri-bridge';
+import { useSessionStatusStore } from '../stores/sessionStatusStore';
 
 // Match the message types from the old WebSocket protocol
 export type AppMessageType =
@@ -36,6 +38,8 @@ interface TauriEventContextValue {
   messageSequence: number;
   getBufferedMessagesSince: (sequence: number) => Array<{ sequence: number; message: AppMessage }>;
   isConnected: boolean;
+  sessionStates: Map<string, SessionState>;
+  attentionCount: number;
 }
 
 const TauriEventContext = createContext<TauriEventContextValue | null>(null);
@@ -56,6 +60,11 @@ const MAX_BUFFERED = 5000;
 export function TauriEventProvider({ children }: { children: React.ReactNode }) {
   const [latestMessage, setLatestMessage] = useState<AppMessage | null>(null);
   const [messageSequence, setMessageSequence] = useState(0);
+
+  // Session state tracking
+  const sessionStatesRef = useRef<Map<string, SessionState>>(new Map());
+  const [sessionStates, setSessionStates] = useState<Map<string, SessionState>>(new Map());
+  const [attentionCount, setAttentionCount] = useState(0);
 
   // Per-session JSONL line buffers
   const lineBuffers = useRef<Map<string, string>>(new Map());
@@ -161,6 +170,8 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     let unlistenOutput: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
+    let unlistenStateChanged: (() => void) | null = null;
+    let unlistenAttention: (() => void) | null = null;
 
     pty
       .onOutput(({ id, data }) => {
@@ -180,9 +191,51 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
         unlistenExit = u;
       });
 
+    pty
+      .onStateChanged(({ ptyId, state }) => {
+        const sessionId = ptyToSession.current.get(ptyId) ?? ptyId;
+        sessionStatesRef.current.set(sessionId, state);
+        setSessionStates(new Map(sessionStatesRef.current));
+
+        // Map Rust SessionState to the existing sessionStatusStore
+        const statusStore = useSessionStatusStore.getState();
+        if (state === 'Running') {
+          statusStore.setProcessing(sessionId);
+        } else if (state === 'Completed') {
+          statusStore.setCompleted(sessionId);
+        } else if (state === 'Failed') {
+          statusStore.setNeedsAttention(sessionId, 'error');
+        } else if (state === 'WaitingForInput') {
+          statusStore.setNeedsAttention(sessionId, 'permission');
+        } else if (state === 'Idle') {
+          statusStore.setIdle(sessionId);
+        }
+      })
+      .then((u) => {
+        unlistenStateChanged = u;
+      });
+
+    pty
+      .onAttentionRequired((payload: import('../lib/tauri-bridge').AttentionRequiredEvent) => {
+        setAttentionCount((c) => c + 1);
+        // Also update the status store
+        const sessionId = ptyToSession.current.get(payload.ptyId) ?? payload.ptyId;
+        const statusStore = useSessionStatusStore.getState();
+        if (payload.type === 'waiting') {
+          statusStore.setNeedsAttention(sessionId, 'permission');
+        } else if (payload.type === 'error') {
+          statusStore.setNeedsAttention(sessionId, 'error');
+        }
+      })
+      .then((u) => {
+        unlistenAttention = u;
+      });
+
     return () => {
       unlistenOutput?.();
       unlistenExit?.();
+      unlistenStateChanged?.();
+      unlistenAttention?.();
     };
   }, [parsePtyOutput]);
 
@@ -294,8 +347,10 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
       messageSequence,
       getBufferedMessagesSince,
       isConnected: true, // always connected in Tauri
+      sessionStates,
+      attentionCount,
     }),
-    [sendMessage, latestMessage, messageSequence, getBufferedMessagesSince],
+    [sendMessage, latestMessage, messageSequence, getBufferedMessagesSince, sessionStates, attentionCount],
   );
 
   return (
