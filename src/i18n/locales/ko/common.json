@@ -332,5 +332,34 @@
   "contextWindow": {
     "tooltip": "{{used}} / {{total}} 토큰 사용 ({{percentage}}%)",
     "warning": "컨텍스트 창이 거의 가득 찼습니다. /compact를 사용하여 요약하세요."
+  },
+  "localTasks": {
+    "title": "작업",
+    "add": "작업 추가",
+    "noTasks": "아직 작업이 없습니다",
+    "status": {
+      "open": "열림",
+      "in_progress": "진행 중",
+      "done": "완료",
+      "failed": "실패"
+    }
+  },
+  "loop": {
+    "title": "루프 러너",
+    "statusTitle": "활성 루프",
+    "workerProvider": "작업자",
+    "verifierProvider": "검증자",
+    "taskPrompt": "작업 프롬프트",
+    "taskPromptPlaceholder": "작업자에게 줄 작업을 설명하세요...",
+    "verifyPrompt": "검증 프롬프트",
+    "maxIterations": "최대 반복 횟수",
+    "startLoop": "루프 시작",
+    "status": {
+      "running": "실행 중",
+      "waiting_verification": "검증 중",
+      "passed": "통과",
+      "failed": "실패",
+      "cancelled": "취소됨"
+    }
   }
 }

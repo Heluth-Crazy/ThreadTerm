@@ -336,5 +336,34 @@
   "contextWindow": {
     "tooltip": "已使用 {{used}} / {{total}} 个 token（{{percentage}}%）",
     "warning": "上下文窗口即将用尽。请使用 /compact 命令进行压缩。"
+  },
+  "localTasks": {
+    "title": "任务",
+    "add": "添加任务",
+    "noTasks": "暂无任务",
+    "status": {
+      "open": "待处理",
+      "in_progress": "进行中",
+      "done": "已完成",
+      "failed": "失败"
+    }
+  },
+  "loop": {
+    "title": "循环运行器",
+    "statusTitle": "活动循环",
+    "workerProvider": "执行者",
+    "verifierProvider": "验证者",
+    "taskPrompt": "任务提示",
+    "taskPromptPlaceholder": "描述执行者的任务...",
+    "verifyPrompt": "验证提示",
+    "maxIterations": "最大迭代次数",
+    "startLoop": "开始循环",
+    "status": {
+      "running": "运行中",
+      "waiting_verification": "验证中",
+      "passed": "通过",
+      "failed": "失败",
+      "cancelled": "已取消"
+    }
   }
 }

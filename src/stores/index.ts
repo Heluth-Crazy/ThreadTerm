@@ -4,3 +4,4 @@ export { useChatStore } from './chatStore';
 export { useUiStore } from './uiStore';
 export { useSessionStatusStore } from './sessionStatusStore';
 export type { SessionRuntimeStatus, AttentionReason, SessionStatusEntry } from './sessionStatusStore';
+export { useLoopStore } from './loopStore';

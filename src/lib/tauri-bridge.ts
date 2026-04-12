@@ -304,3 +304,53 @@ export interface WorktreeInfo {
   isMain: boolean;
   isLocked: boolean;
 }
+
+// ─── Tasks (Markdown persistence) ────────────────────────────────────────────
+
+export interface Task {
+  id: string;
+  title: string;
+  description?: string;
+  status: 'open' | 'in_progress' | 'done' | 'failed';
+  created_at: string;
+  updated_at: string;
+  deps: string[];
+  session_id?: string;
+}
+
+export const tasks = {
+  list: (projectPath: string) => invoke<Task[]>('task_list', { projectPath }),
+  create: (projectPath: string, title: string, description?: string, deps: string[] = []) =>
+    invoke<Task>('task_create', { projectPath, title, description, deps }),
+  update: (projectPath: string, id: string, updates: Partial<Pick<Task, 'title' | 'description' | 'status' | 'session_id'>>) =>
+    invoke<Task>('task_update', { projectPath, id, ...updates }),
+  delete: (projectPath: string, id: string) =>
+    invoke<void>('task_delete', { projectPath, id }),
+};
+
+// ─── Loop Runner ─────────────────────────────────────────────────────────────
+
+export interface LoopConfig {
+  projectPath: string;
+  workerProvider: string;
+  verifierProvider: string;
+  taskPrompt: string;
+  verifyPrompt: string;
+  maxIterations: number;
+}
+
+export interface LoopState {
+  loopId: string;
+  config: LoopConfig;
+  iteration: number;
+  workerPtyId?: string;
+  verifierPtyId?: string;
+  status: 'running' | 'waiting_verification' | 'passed' | 'failed' | 'cancelled';
+  lastOutput: string;
+}
+
+export const loop = {
+  start: (config: LoopConfig) => invoke<LoopState>('loop_start', { config }),
+  cancel: (loopId: string) => invoke<void>('loop_cancel', { loopId }),
+  list: () => invoke<LoopState[]>('loop_list'),
+};

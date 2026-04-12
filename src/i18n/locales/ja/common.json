@@ -332,5 +332,34 @@
   "contextWindow": {
     "tooltip": "{{used}} / {{total}} トークン使用中（{{percentage}}%）",
     "warning": "コンテキストウィンドウがほぼ満杯です。/compact で要約してください。"
+  },
+  "localTasks": {
+    "title": "タスク",
+    "add": "タスク追加",
+    "noTasks": "タスクはまだありません",
+    "status": {
+      "open": "未着手",
+      "in_progress": "進行中",
+      "done": "完了",
+      "failed": "失敗"
+    }
+  },
+  "loop": {
+    "title": "ループランナー",
+    "statusTitle": "アクティブループ",
+    "workerProvider": "ワーカー",
+    "verifierProvider": "検証者",
+    "taskPrompt": "タスクプロンプト",
+    "taskPromptPlaceholder": "ワーカーへのタスクを記述してください...",
+    "verifyPrompt": "検証プロンプト",
+    "maxIterations": "最大反復回数",
+    "startLoop": "ループ開始",
+    "status": {
+      "running": "実行中",
+      "waiting_verification": "検証中",
+      "passed": "合格",
+      "failed": "失敗",
+      "cancelled": "キャンセル"
+    }
   }
 }
