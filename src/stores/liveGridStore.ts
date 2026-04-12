@@ -10,6 +10,7 @@ export interface CardSlot {
   provider: string;
   title?: string;
   worktreePath?: string;
+  handoffSourceId?: string;
 }
 
 export interface MessageSnapshot {

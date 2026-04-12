@@ -3,6 +3,7 @@ mod auth;
 mod db;
 mod fs_commands;
 mod git;
+mod handoff;
 mod health;
 mod http_server;
 mod projects;
@@ -93,6 +94,8 @@ pub fn run() {
             skills::skills_create,
             skills::skills_update,
             skills::skills_delete,
+            // Handoff
+            handoff::handoff_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
