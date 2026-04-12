@@ -6,10 +6,12 @@ mod git;
 mod handoff;
 mod health;
 mod http_server;
+mod loop_runner;
 mod projects;
 mod pty;
 mod session_history;
 mod skills;
+mod tasks;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -96,6 +98,15 @@ pub fn run() {
             skills::skills_delete,
             // Handoff
             handoff::handoff_session,
+            // Tasks
+            tasks::task_list,
+            tasks::task_create,
+            tasks::task_update,
+            tasks::task_delete,
+            // Loop
+            loop_runner::loop_start,
+            loop_runner::loop_cancel,
+            loop_runner::loop_list,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

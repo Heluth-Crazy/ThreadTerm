@@ -1,7 +1,10 @@
 import React, { createContext, useContext, useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { pty, ai, invoke } from '../lib/tauri-bridge';
-import type { SessionState, AttentionRequiredEvent } from '../lib/tauri-bridge';
+import type { SessionState, AttentionRequiredEvent, LoopState } from '../lib/tauri-bridge';
+import { listen } from '@tauri-apps/api/event';
 import { useSessionStatusStore } from '../stores/sessionStatusStore';
+import { useLoopStore } from '../stores/loopStore';
+import { useTTS } from '../hooks/useTTS';
 
 // Match the message types from the old WebSocket protocol
 export type AppMessageType =
@@ -59,6 +62,24 @@ const MAX_BUFFERED = 5000;
 export function TauriEventProvider({ children }: { children: React.ReactNode }) {
   const [latestMessage, setLatestMessage] = useState<AppMessage | null>(null);
   const [messageSequence, setMessageSequence] = useState(0);
+
+  // TTS for attention notifications
+  const { speak } = useTTS();
+  const ttsEnabledRef = useRef(false);
+
+  // Keep ttsEnabled in sync with localStorage
+  useEffect(() => {
+    const stored = localStorage.getItem('openwork-tts-enabled');
+    ttsEnabledRef.current = stored === 'true';
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'openwork-tts-enabled') {
+        ttsEnabledRef.current = e.newValue === 'true';
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   // Session state tracking
   const sessionStatesRef = useRef<Map<string, SessionState>>(new Map());
@@ -223,16 +244,32 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
         } else if (payload.type === 'error') {
           statusStore.setNeedsAttention(sessionId, 'error');
         }
+
+        // TTS feedback
+        if (ttsEnabledRef.current) {
+          const shortId = sessionId.slice(0, 8);
+          speak(`Session ${shortId} needs your attention`);
+        }
       })
       .then((u) => {
         unlistenAttention = u;
       });
+
+    // Listen for loop-state-changed events
+    let unlistenLoop: (() => void) | null = null;
+    listen<LoopState>('loop-state-changed', (event) => {
+      const loopState = event.payload;
+      useLoopStore.getState().updateLoop(loopState.loopId, loopState);
+    }).then((u) => {
+      unlistenLoop = u;
+    });
 
     return () => {
       unlistenOutput?.();
       unlistenExit?.();
       unlistenStateChanged?.();
       unlistenAttention?.();
+      unlistenLoop?.();
     };
   }, [parsePtyOutput]);
 

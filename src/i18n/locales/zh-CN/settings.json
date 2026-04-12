@@ -115,6 +115,10 @@
       "autoHelp": "自动：Windows 默认优先使用终端访问，macOS 默认优先使用直接访问。",
       "compatibilityHelp": "兼容模式：优先使用终端上下文，适合受企业加密或白名单限制的环境。",
       "directHelp": "高性能模式：优先使用直接文件访问，速度更快，但在受限环境中可能失败。"
+    },
+    "tts": {
+      "label": "语音通知",
+      "description": "当会话需要关注时进行语音提示"
     }
   },
   "saveStatus": {

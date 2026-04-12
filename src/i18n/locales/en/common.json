@@ -332,5 +332,34 @@
   "contextWindow": {
     "tooltip": "{{used}} / {{total}} tokens used ({{percentage}}%)",
     "warning": "Context window almost full. Use /compact to summarize."
+  },
+  "localTasks": {
+    "title": "Tasks",
+    "add": "Add Task",
+    "noTasks": "No tasks yet",
+    "status": {
+      "open": "Open",
+      "in_progress": "In Progress",
+      "done": "Done",
+      "failed": "Failed"
+    }
+  },
+  "loop": {
+    "title": "Loop Runner",
+    "statusTitle": "Active Loops",
+    "workerProvider": "Worker",
+    "verifierProvider": "Verifier",
+    "taskPrompt": "Task Prompt",
+    "taskPromptPlaceholder": "Describe the task for the worker...",
+    "verifyPrompt": "Verification Prompt",
+    "maxIterations": "Max Iterations",
+    "startLoop": "Start Loop",
+    "status": {
+      "running": "Running",
+      "waiting_verification": "Verifying",
+      "passed": "Passed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    }
   }
 }

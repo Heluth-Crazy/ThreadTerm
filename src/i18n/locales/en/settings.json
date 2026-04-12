@@ -115,6 +115,10 @@
       "autoHelp": "Auto: Windows prefers terminal access by default, while macOS prefers direct access.",
       "compatibilityHelp": "Compatibility Mode: prefer terminal-context access for restricted or encrypted environments.",
       "directHelp": "High Performance Mode: prefer direct file access for speed, but it may fail in restricted environments."
+    },
+    "tts": {
+      "label": "Voice Notifications",
+      "description": "Read aloud when a session needs attention"
     }
   },
   "saveStatus": {
