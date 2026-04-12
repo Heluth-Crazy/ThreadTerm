@@ -648,6 +648,32 @@ pub async fn git_worktree_remove(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn git_discard_file(project_path: String, file_path: String) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .args(["checkout", "--", &file_path])
+        .current_dir(&project_path)
+        .output()
+        .map_err(|e| format!("git error: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn git_staged_diff(project_path: String) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--cached"])
+        .current_dir(&project_path)
+        .output()
+        .map_err(|e| format!("git error: {e}"))?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

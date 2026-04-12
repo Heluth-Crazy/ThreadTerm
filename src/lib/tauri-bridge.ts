@@ -184,6 +184,18 @@ export const projects = {
     isTauriEnv()
       ? invoke<void>('projects_remove', { path })
       : httpPost<void>('/api/projects/remove', { path }),
+  rename: (path: string, newName: string): Promise<void> =>
+    isTauriEnv()
+      ? invoke('rename_project', { path, newName })
+      : httpPost('/api/projects/rename', { path, newName }),
+  restore: (path: string): Promise<void> =>
+    isTauriEnv()
+      ? invoke('restore_project', { path })
+      : Promise.resolve(),
+  deleteSession: (sessionId: string, projectPath: string): Promise<void> =>
+    isTauriEnv()
+      ? invoke('delete_session', { sessionId, projectPath })
+      : Promise.resolve(),
   renameSession: (projectPath: string, sessionId: string, name: string) =>
     isTauriEnv()
       ? invoke<void>('projects_update_session_name', { projectPath, sessionId, name })
@@ -252,6 +264,8 @@ export const git = {
     isTauriEnv() ? invoke<GitStatus>('git_status', { projectPath }) : Promise.reject(new Error('Git not available in web mode')),
   diff: (projectPath: string, filePath?: string) =>
     isTauriEnv() ? invoke<string>('git_diff', { projectPath, filePath }) : Promise.resolve(''),
+  stagedDiff: (projectPath: string) =>
+    isTauriEnv() ? invoke<string>('git_staged_diff', { projectPath }) : Promise.resolve(''),
   log: (projectPath: string, limit?: number) =>
     isTauriEnv() ? invoke<GitCommit[]>('git_log', { projectPath, limit }) : Promise.resolve([]),
   branches: (projectPath: string) =>
@@ -264,6 +278,8 @@ export const git = {
     isTauriEnv() ? invoke<void>('git_checkout_branch', { projectPath, branch }) : Promise.resolve(),
   createBranch: (projectPath: string, branch: string) =>
     isTauriEnv() ? invoke<void>('git_create_branch', { projectPath, branch }) : Promise.resolve(),
+  discardFile: (projectPath: string, filePath: string) =>
+    isTauriEnv() ? invoke<void>('git_discard_file', { projectPath, filePath }) : Promise.resolve(),
   pull: (projectPath: string) =>
     isTauriEnv() ? invoke<void>('git_pull', { projectPath }) : Promise.resolve(),
   push: (projectPath: string) =>
@@ -293,9 +309,39 @@ export const fs = {
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 
+export interface CustomSlashCommand {
+  name: string;
+  description?: string;
+  prompt: string;
+  provider: 'all' | 'claude' | 'codex' | 'cursor';
+}
+
+export interface SessionTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  prompt?: string;
+  icon?: string;
+  isBuiltIn?: boolean;
+  systemPrompt?: string;
+  initialMessage?: string;
+  provider?: 'all' | 'claude' | 'codex' | 'cursor';
+}
+
+export interface AppSettings {
+  customSlashCommands?: CustomSlashCommand[];
+  sessionTemplates?: SessionTemplate[];
+  skills?: unknown[];
+  skillRoots?: unknown[];
+  worktreeRootPath?: string;
+  theme?: string;
+  language?: string;
+  [key: string]: unknown;
+}
+
 export const settings = {
-  getAll: () =>
-    isTauriEnv() ? invoke<Record<string, unknown>>('settings_get_all') : Promise.resolve({}),
+  getAll: (): Promise<AppSettings> =>
+    isTauriEnv() ? invoke<AppSettings>('settings_get_all') : Promise.resolve({}),
   set: (key: string, value: unknown) =>
     isTauriEnv() ? invoke<void>('settings_set', { key, value }) : Promise.resolve(),
 };

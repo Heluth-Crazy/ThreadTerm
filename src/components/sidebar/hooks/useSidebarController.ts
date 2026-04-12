@@ -274,8 +274,10 @@ export function useSidebarController({
   const saveProjectName = useCallback(
     async (projectName: string) => {
       try {
-        // TODO: project rename not yet implemented in Tauri backend
-        // For now, refresh to pick up any changes
+        const proj = projects.find((p) => p.name === projectName);
+        if (proj && editingName.trim()) {
+          await tauriProjects.rename(proj.path || proj.fullPath, editingName.trim());
+        }
         if (window.refreshProjects) {
           await window.refreshProjects();
         }
@@ -286,7 +288,7 @@ export function useSidebarController({
         setEditingName('');
       }
     },
-    [editingName],
+    [editingName, projects],
   );
 
   const showDeleteSessionConfirmation = useCallback(
@@ -310,14 +312,16 @@ export function useSidebarController({
     setSessionDeleteConfirmation(null);
 
     try {
-      // TODO: session delete not yet implemented in Tauri backend
-      // For codex sessions we'd need a separate command
+      // Find the project path for this session
+      const proj = projects.find((p) => p.name === projectName);
+      const projectPath = proj?.path || proj?.fullPath || projectName;
+      await tauriProjects.deleteSession(sessionId, projectPath);
       onSessionDelete?.(projectName, sessionId, provider);
     } catch (error) {
       console.error('[Sidebar] Error deleting session:', error);
       alert(t('messages.deleteSessionError'));
     }
-  }, [onSessionDelete, sessionDeleteConfirmation, t]);
+  }, [onSessionDelete, sessionDeleteConfirmation, t, projects]);
 
   const requestProjectDelete = useCallback(
     (project: Project) => {

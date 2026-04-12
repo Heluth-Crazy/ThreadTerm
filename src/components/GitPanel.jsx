@@ -264,11 +264,7 @@ function GitPanel({ selectedProject, onFileOpen }) {
   const discardChanges = async (filePath) => {
     try {
       const projectPath = selectedProject.fullPath || selectedProject.path;
-      // Use git CLI to checkout the file (discard changes)
-      const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('git_checkout_branch', { projectPath, branch: `-- ${filePath}` }).catch(async () => {
-        // Fallback: use stage + commit approach or just refresh
-      });
+      await tauriGit.discardFile(projectPath, filePath);
       setSelectedFiles(prev => {
         const newSet = new Set(prev);
         newSet.delete(filePath);
