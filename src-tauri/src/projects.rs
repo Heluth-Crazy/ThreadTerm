@@ -208,6 +208,162 @@ fn display_name(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+/// Scan `~/.codex/sessions/YYYY/MM/DD/*.jsonl` and return sessions whose
+/// `payload.cwd` matches `project_path`.
+fn discover_codex_sessions_for_path(project_path: &str) -> Vec<Session> {
+    let base = match dirs::home_dir() {
+        Some(h) => h.join(".codex").join("sessions"),
+        None => return Vec::new(),
+    };
+    if !base.is_dir() {
+        return Vec::new();
+    }
+
+    let mut sessions = Vec::new();
+    let year_entries = match std::fs::read_dir(&base) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    for year in year_entries.flatten() {
+        let year_path = year.path();
+        if !year_path.is_dir() { continue; }
+        let Ok(month_entries) = std::fs::read_dir(&year_path) else { continue; };
+        for month in month_entries.flatten() {
+            let month_path = month.path();
+            if !month_path.is_dir() { continue; }
+            let Ok(day_entries) = std::fs::read_dir(&month_path) else { continue; };
+            for day in day_entries.flatten() {
+                let day_path = day.path();
+                if !day_path.is_dir() { continue; }
+                let Ok(file_entries) = std::fs::read_dir(&day_path) else { continue; };
+                for file in file_entries.flatten() {
+                    let fp = file.path();
+                    if fp.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    if let Some((id, cwd, ts)) = extract_codex_session_meta(&fp) {
+                        if cwd == project_path {
+                            sessions.push(Session {
+                                id,
+                                project_path: cwd,
+                                provider: "codex".to_string(),
+                                name: None,
+                                created_at: ts,
+                                last_message: None,
+                                message_count: 0,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    sessions
+}
+
+/// Scan `~/.codex/sessions/` and auto-discover projects by grouping sessions
+/// by their `cwd` value.
+fn auto_discover_codex_projects() -> Vec<Project> {
+    let base = match dirs::home_dir() {
+        Some(h) => h.join(".codex").join("sessions"),
+        None => return Vec::new(),
+    };
+    if !base.is_dir() {
+        return Vec::new();
+    }
+
+    let mut cwd_sessions: std::collections::HashMap<String, Vec<Session>> =
+        std::collections::HashMap::new();
+
+    let year_entries = match std::fs::read_dir(&base) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    for year in year_entries.flatten() {
+        let year_path = year.path();
+        if !year_path.is_dir() { continue; }
+        let Ok(month_entries) = std::fs::read_dir(&year_path) else { continue; };
+        for month in month_entries.flatten() {
+            let month_path = month.path();
+            if !month_path.is_dir() { continue; }
+            let Ok(day_entries) = std::fs::read_dir(&month_path) else { continue; };
+            for day in day_entries.flatten() {
+                let day_path = day.path();
+                if !day_path.is_dir() { continue; }
+                let Ok(file_entries) = std::fs::read_dir(&day_path) else { continue; };
+                for file in file_entries.flatten() {
+                    let fp = file.path();
+                    if fp.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    if let Some((id, cwd, ts)) = extract_codex_session_meta(&fp) {
+                        if cwd.is_empty() {
+                            continue;
+                        }
+                        cwd_sessions.entry(cwd.clone()).or_default().push(Session {
+                            id,
+                            project_path: cwd,
+                            provider: "codex".to_string(),
+                            name: None,
+                            created_at: ts,
+                            last_message: None,
+                            message_count: 0,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let mut discovered = Vec::new();
+    for (cwd, sessions) in cwd_sessions {
+        if !Path::new(&cwd).is_dir() {
+            continue;
+        }
+        let name = display_name(&cwd);
+        discovered.push(Project {
+            name,
+            path: cwd.clone(),
+            full_path: cwd,
+            description: None,
+            sessions,
+            created_at: None,
+            last_accessed: None,
+            config: None,
+        });
+    }
+    discovered
+}
+
+/// Read the first line of a Codex JSONL file and extract `session_meta`
+/// fields: (id, cwd, optional timestamp).
+fn extract_codex_session_meta(path: &Path) -> Option<(String, String, Option<String>)> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+
+    for line in reader.lines().take(5).flatten() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.starts_with('{') {
+            continue;
+        }
+        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if obj["type"].as_str() == Some("session_meta") {
+                let id = obj["payload"]["id"].as_str()?.to_string();
+                let cwd = obj["payload"]["cwd"].as_str().unwrap_or("").to_string();
+                let ts = obj["payload"]["timestamp"].as_str().map(String::from);
+                if cwd.is_empty() {
+                    return None;
+                }
+                return Some((id, cwd, ts));
+            }
+        }
+    }
+    None
+}
+
 /// Scan `~/.claude/projects/` and auto-discover projects by reading the `cwd`
 /// field from the first few lines of each `.jsonl` session file.
 fn auto_discover_all_projects() -> Vec<Project> {
@@ -402,12 +558,13 @@ pub async fn projects_list() -> Result<Vec<Project>, String> {
     let mut projects = pf.projects;
     let excluded: std::collections::HashSet<String> = pf.excluded_paths.into_iter().collect();
 
-    // Attach Claude sessions discovered on disk
+    // Attach Claude and Codex sessions discovered on disk
     for proj in &mut projects {
         let claude_sessions = discover_claude_sessions(&proj.full_path);
+        let codex_sessions = discover_codex_sessions_for_path(&proj.full_path);
         let existing_ids: std::collections::HashSet<String> =
             proj.sessions.iter().map(|s| s.id.clone()).collect();
-        for s in claude_sessions {
+        for s in claude_sessions.into_iter().chain(codex_sessions.into_iter()) {
             if !existing_ids.contains(&s.id) {
                 proj.sessions.push(s);
             }
@@ -416,11 +573,32 @@ pub async fn projects_list() -> Result<Vec<Project>, String> {
 
     // Auto-discover projects from ~/.claude/projects/
     let discovered = auto_discover_all_projects();
-    let existing_paths: std::collections::HashSet<String> =
+    let mut existing_paths: std::collections::HashSet<String> =
         projects.iter().map(|p| p.full_path.clone()).collect();
     for proj in discovered {
         if !existing_paths.contains(&proj.full_path) && !excluded.contains(&proj.full_path) {
+            existing_paths.insert(proj.full_path.clone());
             projects.push(proj);
+        }
+    }
+
+    // Auto-discover Codex projects — merge into existing or add new
+    let codex_discovered = auto_discover_codex_projects();
+    for codex_proj in codex_discovered {
+        if excluded.contains(&codex_proj.full_path) {
+            continue;
+        }
+        if let Some(existing) = projects.iter_mut().find(|p| p.full_path == codex_proj.full_path) {
+            // Attach Codex sessions to the existing project
+            let existing_ids: std::collections::HashSet<String> =
+                existing.sessions.iter().map(|s| s.id.clone()).collect();
+            for s in codex_proj.sessions {
+                if !existing_ids.contains(&s.id) {
+                    existing.sessions.push(s);
+                }
+            }
+        } else {
+            projects.push(codex_proj);
         }
     }
 

@@ -241,11 +241,11 @@ export const projects = {
   deleteSession: (sessionId: string, projectPath: string): Promise<void> =>
     isTauriEnv()
       ? invoke('delete_session', { sessionId, projectPath })
-      : Promise.resolve(),
+      : Promise.reject(new Error('Session delete not available in web/mobile mode')),
   renameSession: (projectPath: string, sessionId: string, name: string) =>
     isTauriEnv()
       ? invoke<void>('projects_update_session_name', { projectPath, sessionId, name })
-      : Promise.resolve(), // not yet implemented in web mode
+      : Promise.reject(new Error('Session rename not available in web/mobile mode')),
 };
 
 // ─── AI ──────────────────────────────────────────────────────────────────────
@@ -350,9 +350,9 @@ export const fs = {
   readFile: (path: string) =>
     isTauriEnv() ? invoke<string>('fs_read_file', { path }) : Promise.resolve(''),
   writeFile: (path: string, content: string) =>
-    isTauriEnv() ? invoke<void>('fs_write_file', { path, content }) : Promise.resolve(),
+    isTauriEnv() ? invoke<void>('fs_write_file', { path, content }) : Promise.reject(new Error('File write not available in web/mobile mode')),
   deleteFile: (path: string) =>
-    isTauriEnv() ? invoke<void>('fs_delete_file', { path }) : Promise.resolve(),
+    isTauriEnv() ? invoke<void>('fs_delete_file', { path }) : Promise.reject(new Error('File delete not available in web/mobile mode')),
 };
 
 // ─── Settings ────────────────────────────────────────────────────────────────
@@ -391,7 +391,7 @@ export const settings = {
   getAll: (): Promise<AppSettings> =>
     isTauriEnv() ? invoke<AppSettings>('settings_get_all') : Promise.resolve({}),
   set: (key: string, value: unknown) =>
-    isTauriEnv() ? invoke<void>('settings_set', { key, value }) : Promise.resolve(),
+    isTauriEnv() ? invoke<void>('settings_set', { key, value }) : Promise.reject(new Error('Settings write not available in web/mobile mode')),
 };
 
 // ─── Session History ─────────────────────────────────────────────────────────
