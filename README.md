@@ -49,7 +49,7 @@ A desktop and mobile UI for [Claude Code](https://docs.anthropic.com/en/docs/cla
 - **File Explorer** - Interactive file tree with syntax highlighting and live editing
 - **Git Explorer** - View, stage and commit your changes. You can also switch branches 
 - **Session Management** - Resume conversations, manage multiple sessions, and track history
-- **TaskMaster AI Integration** *(Optional)* - Advanced project management with AI-powered task planning, PRD parsing, and workflow automation
+- **TaskMaster AI Integration** *(Optional, legacy Node.js version only)* - Advanced project management with AI-powered task planning, PRD parsing, and workflow automation
 - **Model Compatibility** - Works with Claude Sonnet 4.5, Opus 4.5, and GPT-5.2 
 
 
@@ -66,7 +66,8 @@ For comprehensive documentation, see the [docs/](docs/) directory:
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) v22 or higher
+- [Rust toolchain](https://rustup.rs/) (rustup + cargo) for the Tauri backend
+- [Tauri CLI](https://tauri.app/) (`cargo install tauri-cli`)
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and configured, and/or
 - [Cursor CLI](https://docs.cursor.com/en/cli/overview) installed and configured, and/or
 - [Codex](https://developers.openai.com/codex) installed and configured
@@ -79,7 +80,7 @@ No installation required, direct operation:
 npx @openwork/openwork
 ```
 
-The server will start and be accessible at `http://localhost:3001` (or your configured PORT).
+The server will start and be accessible at `http://localhost:3002` (or your configured PORT).
 
 **To restart**: Simply run the same `npx` command again after stopping the server
 ### Global Installation (For Regular Use)
@@ -116,7 +117,7 @@ After global installation, you have access to both `openwork` and `openwork` com
 | `openwork update` | | Update to the latest version |
 | `openwork help` | | Show help information |
 | `openwork version` | | Show version information |
-| `--port <port>` | `-p` | Set server port (default: 3001) |
+| `--port <port>` | `-p` | Set server port (default: 3002) |
 | `--database-path <path>` | | Set custom database location |
 
 **Examples:**
@@ -215,7 +216,7 @@ npm run dev
 The application will start at the port you specified in your .env
 
 5. **Open your browser:**
-   - Development: `http://localhost:3001`
+   - Development: `http://localhost:3002`
 
 ## Security & Tools Configuration
 
@@ -239,6 +240,8 @@ To use Claude Code's full functionality, you'll need to manually enable tools:
 **Recommended approach**: Start with basic tools enabled and add more as needed. You can always adjust these settings later.
 
 ## TaskMaster AI Integration *(Optional)*
+
+> ⚠️ **TaskMaster integration is only available in the legacy Node.js version of OpenWork. The current Tauri version does not include TaskMaster.**
 
 OpenWork supports **[TaskMaster AI](https://source.example.com/eyaltoledano/claude-task-master)** (aka claude-task-master) integration for advanced project management and AI-powered task planning.
 
@@ -303,13 +306,13 @@ session counts
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   Frontend      │    │   Backend       │    │  Agent     │
-│   (React/Vite)  │◄──►│ (Express/WS)    │◄──►│  Integration    │
+│   (React/Vite)  │◄──►│  (Tauri/Rust)   │◄──►│  Integration    │
 │                 │    │                 │    │                │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
-### Backend (Node.js + Express)
-- **Express Server** - RESTful API with static file serving
+### Backend (Tauri + Rust)
+- **Axum HTTP Server** - RESTful API with static file serving
 - **WebSocket Server** - Communication for chats and project refresh
 - **Agent Integration (Claude Code / Cursor CLI / Codex)** - Process spawning and management
 - **File System API** - Exposing file browser for projects
