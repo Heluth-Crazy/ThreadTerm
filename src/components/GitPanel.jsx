@@ -376,9 +376,14 @@ function GitPanel({ selectedProject, onFileOpen }) {
 
   const fetchCommitDiff = async (commitHash) => {
     try {
-      // TODO: Implement commit-specific diff in Tauri backend
-      // For now, this is a placeholder
-      console.warn('Commit-specific diff not yet implemented in Tauri backend');
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      const diff = await tauriGit.showCommit(projectPath, commitHash);
+      if (diff) {
+        setCommitDiffs(prev => ({
+          ...prev,
+          [commitHash]: diff
+        }));
+      }
     } catch (error) {
       console.error('Error fetching commit diff:', error);
     }
@@ -387,15 +392,43 @@ function GitPanel({ selectedProject, onFileOpen }) {
   const generateCommitMessage = async () => {
     setIsGeneratingMessage(true);
     try {
-      // TODO: Implement AI-generated commit message in Tauri backend
-      // For now, auto-generate a basic message from staged files
-      const files = Array.from(selectedFiles);
-      const message = files.length > 0
-        ? `Update ${files.length} file(s): ${files.slice(0, 3).join(', ')}${files.length > 3 ? '...' : ''}`
-        : 'Update files';
-      setCommitMessage(message);
+      const projectPath = selectedProject.fullPath || selectedProject.path;
+      const status = await tauriGit.status(projectPath);
+      const staged = (status.staged || []).map(f => f.path);
+
+      if (staged.length === 0) {
+        setCommitMessage('chore: update files');
+        return;
+      }
+
+      const hasTests = staged.some(f => f.includes('.test.') || f.includes('.spec.') || f.includes('__tests__'));
+      const hasDocs = staged.some(f => /\.(md|txt|rst)$/.test(f) || f.includes('README') || f.includes('docs/'));
+      const hasStyles = staged.some(f => /\.(css|scss|less)$/.test(f));
+      const hasConfig = staged.some(f => /\.(json|yaml|yml|toml|env)$/.test(f) || f.includes('config'));
+
+      const dirs = [...new Set(staged.map(f => f.split('/')[0]))].slice(0, 2);
+      const scope = dirs.length === 1 ? dirs[0] : dirs.join('/');
+
+      let type = 'feat';
+      if (hasTests) type = 'test';
+      else if (hasDocs) type = 'docs';
+      else if (hasStyles) type = 'style';
+      else if (hasConfig) type = 'chore';
+
+      const fileNames = staged.slice(0, 3).map(f => {
+        const base = f.split('/').pop() || f;
+        return base.replace(/\.(ts|tsx|js|jsx|rs)$/, '');
+      });
+      const desc = staged.length === 1
+        ? `update ${fileNames[0]}`
+        : staged.length <= 3
+          ? `update ${fileNames.join(', ')}`
+          : `update ${staged.length} files in ${scope}`;
+
+      setCommitMessage(`${type}(${scope}): ${desc}`);
     } catch (error) {
       console.error('Error generating commit message:', error);
+      setCommitMessage('chore: update files');
     } finally {
       setIsGeneratingMessage(false);
     }

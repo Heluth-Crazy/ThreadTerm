@@ -210,6 +210,13 @@ pub async fn session_list(
             return Ok(vec![]);
         }
         let mut all = parse_codex_sessions_from_dir(&base, &project_path);
+        // Apply custom name overrides from session-names.json
+        let name_overrides = crate::projects::load_session_names();
+        for s in all.iter_mut() {
+            if let Some(custom) = name_overrides.get(&s.session_id) {
+                s.name = Some(custom.clone());
+            }
+        }
         all.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         let total = all.len();
         let end = (offset + limit).min(total);
@@ -243,6 +250,13 @@ pub async fn session_list(
             }
         }
         all.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        // Apply custom name overrides
+        let name_overrides = crate::projects::load_session_names();
+        for s in all.iter_mut() {
+            if let Some(custom) = name_overrides.get(&s.session_id) {
+                s.name = Some(custom.clone());
+            }
+        }
         let end = std::cmp::min(offset + limit, all.len());
         let start = std::cmp::min(offset, all.len());
         return Ok(all[start..end].to_vec());
@@ -251,6 +265,13 @@ pub async fn session_list(
     let mut sessions =
         list_sessions_in_dir(&sessions_dir, &project_path, &provider, limit + offset);
     sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    // Apply custom name overrides
+    let name_overrides = crate::projects::load_session_names();
+    for s in sessions.iter_mut() {
+        if let Some(custom) = name_overrides.get(&s.session_id) {
+            s.name = Some(custom.clone());
+        }
+    }
     let end = std::cmp::min(offset + limit, sessions.len());
     let start = std::cmp::min(offset, sessions.len());
     Ok(sessions[start..end].to_vec())

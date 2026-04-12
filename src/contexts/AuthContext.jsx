@@ -24,7 +24,7 @@ export const useAuth = () => {
 };
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState({ username: 'default-user' });
+  const [user, setUser] = useState({ id: 0, username: 'local', has_completed_onboarding: true, created_at: null });
   const [token, setToken] = useState(() => localStorage.getItem('auth_token'));
   const [isLoading, setIsLoading] = useState(false);
   const [needsSetup] = useState(false);
@@ -32,7 +32,6 @@ export const AuthProvider = ({ children }) => {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    // Verify existing token on mount
     if (token) {
       tauriAuth.verify(token)
         .then((userInfo) => {
@@ -40,9 +39,7 @@ export const AuthProvider = ({ children }) => {
           setHasCompletedOnboarding(userInfo.has_completed_onboarding);
         })
         .catch(() => {
-          // Token invalid — clear it
-          localStorage.removeItem('auth_token');
-          setToken(null);
+          // Token invalid — not critical for local app, keep default user
         });
     }
   }, []);
@@ -102,7 +99,7 @@ export const AuthProvider = ({ children }) => {
     }
     localStorage.removeItem('auth_token');
     setToken(null);
-    setUser({ username: 'default-user' });
+    setUser({ id: 0, username: 'local', has_completed_onboarding: true, created_at: null });
   };
 
   const value = {
@@ -116,7 +113,7 @@ export const AuthProvider = ({ children }) => {
     hasCompletedOnboarding,
     refreshOnboardingStatus,
     error,
-    isAuthenticated: !!token || user.username === 'default-user'
+    isAuthenticated: true
   };
 
   return (

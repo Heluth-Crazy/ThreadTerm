@@ -493,12 +493,19 @@ export function useSidebarController({
   }, [onRefresh]);
 
   const updateSessionSummary = useCallback(
-    async (_projectName: string, _sessionId: string, _summary: string) => {
-      // Session rename endpoint is not currently exposed on the API.
-      setEditingSession(null);
-      setEditingSessionName('');
+    async (projectName: string, sessionId: string, summary: string) => {
+      try {
+        const proj = projects.find((p) => p.name === projectName);
+        const projectPath = proj?.fullPath || proj?.path || projectName;
+        await tauriProjects.renameSession(projectPath, sessionId, summary);
+      } catch (err) {
+        console.error('[Sidebar] Failed to rename session:', err);
+      } finally {
+        setEditingSession(null);
+        setEditingSessionName('');
+      }
     },
-    [],
+    [projects],
   );
 
   const collapseSidebar = useCallback(() => {
