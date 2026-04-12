@@ -7,6 +7,7 @@ mod health;
 mod projects;
 mod pty;
 mod session_history;
+mod skills;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -76,6 +77,12 @@ pub fn run() {
             fs_commands::get_app_version,
             // Health
             health::health_check,
+            // Skills
+            skills::skills_list,
+            skills::skills_read,
+            skills::skills_create,
+            skills::skills_update,
+            skills::skills_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

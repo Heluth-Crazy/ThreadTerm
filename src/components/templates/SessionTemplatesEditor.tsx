@@ -5,6 +5,7 @@ import { Button } from '../ui/button';
 import { settings } from '../../lib/tauri-bridge';
 import type { SessionTemplate } from '../../types/templates';
 import TemplateForm from './TemplateForm';
+import { BUILT_IN_TEMPLATES } from './builtInTemplates';
 
 export default function SessionTemplatesEditor() {
   const { t } = useTranslation('settings');
@@ -16,8 +17,11 @@ export default function SessionTemplatesEditor() {
   const fetchTemplates = useCallback(async () => {
     try {
       const allSettings = await settings.getAll();
-      const tpls = allSettings?.sessionTemplates;
-      setTemplates(Array.isArray(tpls) ? tpls as SessionTemplate[] : []);
+      const userTpls = (Array.isArray(allSettings?.sessionTemplates)
+        ? (allSettings.sessionTemplates as SessionTemplate[])
+        : []
+      ).filter((t) => !t.isBuiltIn);
+      setTemplates([...BUILT_IN_TEMPLATES, ...userTpls]);
     } catch (err) {
       console.error('Failed to load templates:', err);
     } finally {
@@ -35,8 +39,8 @@ export default function SessionTemplatesEditor() {
   const handleCreate = async (tpl: Omit<SessionTemplate, 'id' | 'isBuiltIn'>) => {
     try {
       const newTpl = { ...tpl, id: crypto.randomUUID(), isBuiltIn: false } as SessionTemplate;
-      const updated = [...templates, newTpl];
-      await settings.set('sessionTemplates', updated);
+      const currentUserTpls = templates.filter((t) => !t.isBuiltIn);
+      await settings.set('sessionTemplates', [...currentUserTpls, newTpl]);
       setIsAdding(false);
       fetchTemplates();
     } catch (err) {
@@ -46,8 +50,10 @@ export default function SessionTemplatesEditor() {
 
   const handleUpdate = async (id: string, tpl: Omit<SessionTemplate, 'id' | 'isBuiltIn'>) => {
     try {
-      const updated = templates.map((t) => (t.id === id ? { ...tpl, id, isBuiltIn: t.isBuiltIn } : t));
-      await settings.set('sessionTemplates', updated);
+      const currentUserTpls = templates
+        .filter((t) => !t.isBuiltIn)
+        .map((t) => (t.id === id ? { ...tpl, id, isBuiltIn: false } as SessionTemplate : t));
+      await settings.set('sessionTemplates', currentUserTpls);
       setEditingId(null);
       fetchTemplates();
     } catch (err) {
@@ -57,8 +63,8 @@ export default function SessionTemplatesEditor() {
 
   const handleDelete = async (id: string) => {
     try {
-      const updated = templates.filter((t) => t.id !== id);
-      await settings.set('sessionTemplates', updated);
+      const currentUserTpls = templates.filter((t) => !t.isBuiltIn && t.id !== id);
+      await settings.set('sessionTemplates', currentUserTpls);
       fetchTemplates();
     } catch (err) {
       console.error('Failed to delete template:', err);

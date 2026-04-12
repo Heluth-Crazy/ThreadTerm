@@ -147,6 +147,47 @@ export const appInfo = {
   readFileBase64: (path: string) => invoke<string>('fs_read_file_base64', { path }),
 };
 
+// ─── Skills ──────────────────────────────────────────────────────────────────
+
+export interface SkillRoot {
+  id: string;
+  label: string;
+  provider: string;
+  path: string;
+  exists: boolean;
+  writable: boolean;
+}
+
+export interface SkillSummary {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  provider: string;
+  rootId: string;
+  rootLabel: string;
+  rootPath: string;
+  path: string;
+  filePath: string;
+  updatedAt: string;
+  writable: boolean;
+}
+
+export interface SkillRecord extends SkillSummary {
+  content: string;
+  frontmatter?: Record<string, unknown>;
+}
+
+export const skills = {
+  list: () => invoke<{ roots: SkillRoot[]; skills: SkillSummary[] }>('skills_list'),
+  read: (skillId: string) => invoke<SkillRecord>('skills_read', { skillId }),
+  create: (rootId: string, slug: string, content: string) =>
+    invoke<SkillRecord>('skills_create', { rootId, slug, content }),
+  update: (skillId: string, content: string) =>
+    invoke<SkillRecord>('skills_update', { skillId, content }),
+  delete: (skillId: string) => invoke<void>('skills_delete', { skillId }),
+};
+
 // ─── Type definitions (match Rust structs) ────────────────────────────────────
 
 export interface Project {

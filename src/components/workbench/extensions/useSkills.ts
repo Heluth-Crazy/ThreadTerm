@@ -1,35 +1,9 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { settings } from '../../../lib/tauri-bridge';
+import { skills as skillsBridge } from '../../../lib/tauri-bridge';
+import type { SkillRoot, SkillSummary, SkillRecord } from '../../../lib/tauri-bridge';
 
-export type SkillRoot = {
-  id: string;
-  label: string;
-  provider: string;
-  path: string;
-  exists: boolean;
-  writable: boolean;
-};
-
-export type SkillSummary = {
-  id: string;
-  name: string;
-  slug: string;
-  description: string;
-  provider: string;
-  rootId: string;
-  rootLabel: string;
-  rootPath: string;
-  path: string;
-  filePath: string;
-  updatedAt: string;
-  writable: boolean;
-};
-
-export type SkillRecord = SkillSummary & {
-  content: string;
-  frontmatter?: Record<string, unknown>;
-};
+export type { SkillRoot, SkillSummary, SkillRecord };
 
 type CreatePayload = {
   rootId: string;
@@ -45,12 +19,6 @@ type SkillTemplateCopy = {
   workflowSteps: [string, string, string];
 };
 
-async function readJson(response: Record<string, unknown>, fallbackMessage: string) {
-  if (response.success === false) {
-    throw new Error(String(response.error || response.message || fallbackMessage));
-  }
-  return response;
-}
 
 export function buildSkillTemplate(
   slug = 'my-skill',
@@ -103,12 +71,10 @@ export function useSkills() {
     setIsLoadingList(true);
     setError(null);
     try {
-      const allSettings = await settings.getAll();
-      const skillsData = (allSettings?.skills || []) as SkillSummary[];
-      const rootsData = (allSettings?.skillRoots || []) as SkillRoot[];
-      setSkills(skillsData);
-      setRoots(rootsData);
-      return { skills: skillsData, roots: rootsData };
+      const data = await skillsBridge.list();
+      setSkills(data.skills);
+      setRoots(data.roots);
+      return data;
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t('workbench.skillsPage.errors.loadList'));
       throw loadError;
@@ -122,9 +88,7 @@ export function useSkills() {
     setError(null);
     setSelectedSkillId(skillId);
     try {
-      const allSettings = await settings.getAll();
-      const allSkills = (allSettings?.skills || []) as SkillRecord[];
-      const skill = allSkills.find((s) => s.id === skillId) || null;
+      const skill = await skillsBridge.read(skillId);
       setSelectedSkill(skill);
       return skill;
     } catch (loadError) {
@@ -139,24 +103,7 @@ export function useSkills() {
     setIsSaving(true);
     setError(null);
     try {
-      const allSettings = await settings.getAll();
-      const existingSkills = (allSettings?.skills || []) as SkillRecord[];
-      const newSkill: SkillRecord = {
-        id: crypto.randomUUID(),
-        name: payload.slug,
-        slug: payload.slug,
-        description: '',
-        provider: 'claude',
-        rootId: payload.rootId,
-        rootLabel: '',
-        rootPath: '',
-        path: payload.slug,
-        filePath: '',
-        updatedAt: new Date().toISOString(),
-        writable: true,
-        content: payload.content,
-      };
-      await settings.set('skills', [...existingSkills, newSkill]);
+      const newSkill = await skillsBridge.create(payload.rootId, payload.slug, payload.content);
       await loadSkills();
       setSelectedSkill(newSkill);
       setSelectedSkillId(newSkill.id);
@@ -173,14 +120,8 @@ export function useSkills() {
     setIsSaving(true);
     setError(null);
     try {
-      const allSettings = await settings.getAll();
-      const existingSkills = (allSettings?.skills || []) as SkillRecord[];
-      const updated = existingSkills.map((s) =>
-        s.id === skillId ? { ...s, content, updatedAt: new Date().toISOString() } : s,
-      );
-      await settings.set('skills', updated);
+      const skill = await skillsBridge.update(skillId, content);
       await loadSkills();
-      const skill = updated.find((s) => s.id === skillId) || null;
       setSelectedSkill(skill);
       setSelectedSkillId(skillId);
       return skill;
@@ -196,9 +137,7 @@ export function useSkills() {
     setIsSaving(true);
     setError(null);
     try {
-      const allSettings = await settings.getAll();
-      const existingSkills = (allSettings?.skills || []) as SkillRecord[];
-      await settings.set('skills', existingSkills.filter((s) => s.id !== skillId));
+      await skillsBridge.delete(skillId);
       await loadSkills();
       if (selectedSkillId === skillId) {
         setSelectedSkill(null);
