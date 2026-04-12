@@ -273,6 +273,25 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
         // Send initial command or session init if needed
         if (initialCommandRef.current && isPlainShellRef.current) {
           await pty.input(ptySessionId, initialCommandRef.current + '\n');
+        } else if (!isPlainShellRef.current) {
+          // Auto-launch AI CLI for AI sessions after shell initializes
+          const session = selectedSessionRef.current;
+          const provider = session?.__provider || localStorage.getItem('selected-provider') || 'claude';
+          const sessionId = session?.id || null;
+          const shouldResume = Boolean(sessionId) && !isTemporarySessionId(sessionId);
+
+          if (provider === 'claude' || provider === 'codex') {
+            // Delay briefly to let the shell fully initialize
+            await new Promise((resolve) => setTimeout(resolve, 500));
+
+            let cliCommand;
+            if (provider === 'claude') {
+              cliCommand = shouldResume ? `claude --resume ${sessionId}\n` : 'claude\n';
+            } else {
+              cliCommand = 'codex\n';
+            }
+            await pty.input(ptySessionId, cliCommand);
+          }
         }
       } catch (error) {
         logger.error('[Shell] PTY connection failed:', error);
