@@ -4,6 +4,10 @@
  * Supports both Tauri desktop mode and web/mobile browser mode (LAN access).
  */
 
+// Static imports — safe in all environments; actual calls are gated by isTauriEnv()
+import { invoke as _tauriInvoke } from '@tauri-apps/api/core';
+import { listen as _tauriListen } from '@tauri-apps/api/event';
+
 // ─── Environment Detection ───────────────────────────────────────────────────
 
 /** Returns true when running inside the Tauri webview (desktop app). */
@@ -11,29 +15,14 @@ export const isTauriEnv = (): boolean => {
   return typeof (window as any).__TAURI_INTERNALS__ !== 'undefined';
 };
 
-// Conditional imports: only load Tauri APIs when in Tauri environment
-let invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
-let listen: <T>(event: string, handler: (e: { payload: T }) => void) => Promise<() => void>;
+// Re-export the real Tauri invoke (only works inside the Tauri webview)
+export const invoke = _tauriInvoke;
 
-if (isTauriEnv()) {
-  // Dynamic import would be ideal but these are used synchronously at module init.
-  // The Tauri globals are already available via __TAURI_INTERNALS__.
-  const tauriCore = (window as any).__TAURI_INTERNALS__;
-  invoke = tauriCore.invoke || (async () => { throw new Error('Tauri invoke not available'); });
-
-  // Use Tauri's event system
-  const tauriImport = import('@tauri-apps/api/event');
-  listen = (async (event: string, handler: any) => {
-    const { listen: tauriListen } = await tauriImport;
-    return tauriListen(event, handler);
-  }) as any;
-} else {
-  invoke = async () => { throw new Error('Tauri not available in web mode'); };
-  listen = async () => () => {};
-}
-
-// Re-export invoke for direct use (desktop only)
-export { invoke };
+// listen wrapper — no-op stub in web mode
+const listen = isTauriEnv()
+  ? _tauriListen
+  : async <T>(_event: string, _handler: (e: { payload: T }) => void): Promise<() => void> =>
+      () => {};
 
 // ─── Web Mode HTTP Helpers ───────────────────────────────────────────────────
 
