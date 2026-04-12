@@ -92,7 +92,8 @@ export default function ProjectSessionsPanel({
     }
     try {
       const provider: SessionProvider = allSessions.find((s) => s.id === renamingId)?.__provider ?? 'claude';
-      await tauriProjects.renameSession(project.name, renamingId, renameValue.trim());
+      const projectPath = project.fullPath || project.path || project.name;
+      await tauriProjects.renameSession(projectPath, renamingId, renameValue.trim());
       onRenameSession?.(project.name, renamingId, renameValue.trim());
     } catch (err) {
       console.error('Failed to rename session:', err);

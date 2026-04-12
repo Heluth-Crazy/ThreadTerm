@@ -119,13 +119,14 @@ export default function SessionFocusLayout({
       return;
     }
     try {
-      await tauriProjects.renameSession(selectedProject.name, selectedSession.id, renameValue.trim());
+      const projectPath = selectedProject.fullPath || selectedProject.path || selectedProject.name;
+      await tauriProjects.renameSession(projectPath, selectedSession.id, renameValue.trim());
       onRenameSession?.(selectedProject.name, selectedSession.id, renameValue.trim());
     } catch (err) {
       console.error('Failed to rename session:', err);
     }
     setIsRenaming(false);
-  }, [selectedSession, selectedProject?.name, renameValue, onRenameSession]);
+  }, [selectedSession, selectedProject?.name, selectedProject?.fullPath, selectedProject?.path, renameValue, onRenameSession]);
 
   const cancelRename = useCallback(() => {
     setIsRenaming(false);

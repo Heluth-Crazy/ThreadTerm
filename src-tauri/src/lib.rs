@@ -56,6 +56,7 @@ pub fn run() {
             projects::projects_add,
             projects::projects_remove,
             projects::projects_update_session_name,
+            projects::get_session_name,
             projects::restore_project,
             projects::rename_project,
             projects::delete_session,
@@ -82,6 +83,7 @@ pub fn run() {
             git::git_worktree_remove,
             git::git_discard_file,
             git::git_staged_diff,
+            git::git_show_commit,
             // File system & settings
             fs_commands::fs_list_dir,
             fs_commands::fs_read_file,

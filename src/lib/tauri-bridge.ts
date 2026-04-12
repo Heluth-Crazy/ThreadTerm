@@ -24,18 +24,55 @@ const listen = isTauriEnv()
   : async <T>(_event: string, _handler: (e: { payload: T }) => void): Promise<() => void> =>
       () => {};
 
+// ─── Web Mode Token Storage ──────────────────────────────────────────────────
+
+const WEB_TOKEN_KEY = 'openwork_api_token';
+
+/** Get the stored API token for web/mobile mode. Returns null if not set. */
+export const getWebToken = (): string | null => {
+  try {
+    return localStorage.getItem(WEB_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+};
+
+/** Store the API token for web/mobile mode. */
+export const setWebToken = (token: string): void => {
+  try {
+    localStorage.setItem(WEB_TOKEN_KEY, token);
+  } catch {
+    // ignore
+  }
+};
+
+/** Remove the stored API token. */
+export const clearWebToken = (): void => {
+  try {
+    localStorage.removeItem(WEB_TOKEN_KEY);
+  } catch {
+    // ignore
+  }
+};
+
 // ─── Web Mode HTTP Helpers ───────────────────────────────────────────────────
 
 async function httpGet<T>(path: string): Promise<T> {
-  const res = await fetch(path);
+  const token = getWebToken();
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(path, { headers });
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
   return res.json();
 }
 
 async function httpPost<T>(path: string, body?: unknown): Promise<T> {
+  const token = getWebToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
   const res = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
@@ -56,7 +93,9 @@ export const webPtyConnect = (
   onExit: (code?: number) => void,
 ): (() => void) => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/api/pty/${sessionId}/ws`;
+  const token = getWebToken();
+  const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
+  const wsUrl = `${protocol}//${window.location.host}/api/pty/${sessionId}/ws${tokenParam}`;
   const ws = new WebSocket(wsUrl);
   ptyWsConnections.set(sessionId, ws);
 
@@ -106,22 +145,29 @@ export interface LoginResponse {
 }
 
 export const auth = {
+  /** In Tauri mode: invoke auth_login. In web mode: store token and verify via /api/auth/token-info */
   login: (username: string, password: string) =>
     isTauriEnv()
       ? invoke<LoginResponse>('auth_login', { username, password })
-      : httpPost<LoginResponse>('/api/auth/login', { username, password }),
-  register: (username: string, password: string) =>
+      : (() => {
+          setWebToken(password);
+          return httpGet<{ hint: string }>('/api/auth/token-info')
+            .then(() => ({ token: password, user: { id: 0, username: 'openwork', created_at: undefined, has_completed_onboarding: true } } as LoginResponse))
+            .catch(() => { clearWebToken(); throw new Error('Invalid token'); });
+        })(),
+  register: (_username: string, _password: string) =>
     isTauriEnv()
-      ? invoke<LoginResponse>('auth_register', { username, password })
-      : httpPost<LoginResponse>('/api/auth/register', { username, password }),
+      ? invoke<LoginResponse>('auth_register', { username: _username, password: _password })
+      : Promise.reject(new Error('Registration not supported in web mode')),
   verify: (token: string) =>
     isTauriEnv()
       ? invoke<UserInfo>('auth_verify', { token })
-      : httpPost<UserInfo>('/api/auth/verify', { token }),
-  logout: (token: string) =>
+      : httpGet<{ hint: string }>('/api/auth/token-info')
+          .then(() => ({ id: 0, username: 'openwork', created_at: undefined, has_completed_onboarding: true } as UserInfo)),
+  logout: (_token: string) =>
     isTauriEnv()
-      ? invoke<void>('auth_logout', { token })
-      : httpPost<void>('/api/auth/logout', { token }),
+      ? invoke<void>('auth_logout', { token: _token })
+      : Promise.resolve(clearWebToken()),
 };
 
 // ─── PTY ─────────────────────────────────────────────────────────────────────
@@ -292,6 +338,8 @@ export const git = {
     isTauriEnv() ? invoke<string>('git_worktree_add', { projectPath, worktreeName, baseBranch }) : Promise.resolve(''),
   worktreeRemove: (projectPath: string, worktreePath: string, force?: boolean) =>
     isTauriEnv() ? invoke<void>('git_worktree_remove', { projectPath, worktreePath, force: force ?? false }) : Promise.resolve(),
+  showCommit: (projectPath: string, hash: string): Promise<string> =>
+    isTauriEnv() ? invoke<string>('git_show_commit', { projectPath, hash }) : Promise.resolve(''),
 };
 
 // ─── File System ─────────────────────────────────────────────────────────────

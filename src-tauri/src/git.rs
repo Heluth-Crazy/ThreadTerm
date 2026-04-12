@@ -681,6 +681,21 @@ pub async fn git_staged_diff(project_path: String, file_path: Option<String>) ->
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+#[tauri::command]
+pub async fn git_show_commit(project_path: String, hash: String) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(["show", "--stat", "-p", &hash])
+        .current_dir(&project_path)
+        .output()
+        .map_err(|e| format!("git error: {e}"))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

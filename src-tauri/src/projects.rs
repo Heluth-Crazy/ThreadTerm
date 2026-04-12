@@ -317,6 +317,82 @@ fn extract_cwd_from_jsonl(path: &Path) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Session name overrides (cross-provider, stored in ~/.openwork/session-names.json)
+// ---------------------------------------------------------------------------
+
+fn session_names_file() -> Result<std::path::PathBuf, String> {
+    let home = dirs::home_dir().ok_or_else(|| "No home dir".to_string())?;
+    Ok(home.join(".openwork").join("session-names.json"))
+}
+
+pub fn load_session_names() -> std::collections::HashMap<String, String> {
+    let path = match session_names_file() {
+        Ok(p) => p,
+        Err(_) => return Default::default(),
+    };
+    let data = match std::fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(_) => return Default::default(),
+    };
+    serde_json::from_str(&data).unwrap_or_default()
+}
+
+fn save_session_names(names: &std::collections::HashMap<String, String>) -> Result<(), String> {
+    let path = session_names_file()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let data = serde_json::to_string_pretty(names).map_err(|e| e.to_string())?;
+    std::fs::write(&path, data).map_err(|e| e.to_string())
+}
+
+/// Walk `~/.codex/sessions/YYYY/MM/DD/` looking for a JSONL file whose
+/// `session_meta.id` matches the given `session_id`.
+fn find_codex_session_file(session_id: &str) -> Option<std::path::PathBuf> {
+    let base = dirs::home_dir()?.join(".codex").join("sessions");
+    if !base.exists() {
+        return None;
+    }
+
+    for year in std::fs::read_dir(&base).ok()?.flatten() {
+        let year_path = year.path();
+        if !year_path.is_dir() {
+            continue;
+        }
+        for month in std::fs::read_dir(&year_path).ok()?.flatten() {
+            let month_path = month.path();
+            if !month_path.is_dir() {
+                continue;
+            }
+            for day in std::fs::read_dir(&month_path).ok()?.flatten() {
+                let day_path = day.path();
+                if !day_path.is_dir() {
+                    continue;
+                }
+                for file in std::fs::read_dir(&day_path).ok()?.flatten() {
+                    let fp = file.path();
+                    if fp.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    if let Ok(content) = std::fs::read_to_string(&fp) {
+                        for line in content.lines().take(5) {
+                            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) {
+                                if obj["type"] == "session_meta" {
+                                    if obj["payload"]["id"].as_str() == Some(session_id) {
+                                        return Some(fp);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
 
@@ -448,20 +524,28 @@ pub async fn projects_update_session_name(
     session_id: String,
     name: String,
 ) -> Result<(), String> {
+    // Always write to the universal name override map (works for Codex + Claude)
+    let mut names = load_session_names();
+    names.insert(session_id.clone(), name.clone());
+    save_session_names(&names)?;
+
+    // Also update projects.json for Claude sessions
     let mut projects = load_projects()?;
-    let proj = projects
-        .iter_mut()
-        .find(|p| p.full_path == project_path || p.path == project_path)
-        .ok_or_else(|| format!("Project not found: {project_path}"))?;
-
-    let session = proj
-        .sessions
-        .iter_mut()
-        .find(|s| s.id == session_id)
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
-
-    session.name = Some(name);
+    for proj in projects.iter_mut() {
+        if proj.full_path == project_path || proj.path == project_path {
+            for session in proj.sessions.iter_mut() {
+                if session.id == session_id {
+                    session.name = Some(name.clone());
+                }
+            }
+        }
+    }
     save_projects(&projects)
+}
+
+#[tauri::command]
+pub async fn get_session_name(session_id: String) -> Option<String> {
+    load_session_names().get(&session_id).cloned()
 }
 
 #[tauri::command]
@@ -485,15 +569,48 @@ pub async fn rename_project(path: String, new_name: String) -> Result<(), String
 #[tauri::command]
 pub async fn delete_session(session_id: String, project_path: String) -> Result<(), String> {
     let home = dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string())?;
+
+    // Try Claude path first
     let encoded = encode_project_path(&project_path);
-    let session_file = home
+    let claude_session_file = home
         .join(".claude/projects")
         .join(&encoded)
         .join(format!("{}.jsonl", session_id));
 
-    if session_file.exists() {
-        std::fs::remove_file(&session_file)
-            .map_err(|e| format!("Failed to delete session: {e}"))?;
+    if claude_session_file.exists() {
+        std::fs::remove_file(&claude_session_file)
+            .map_err(|e| format!("Failed to delete Claude session: {e}"))?;
+        if let Ok(mut projects) = load_projects() {
+            for proj in projects.iter_mut() {
+                if proj.full_path == project_path || proj.path == project_path {
+                    proj.sessions.retain(|s| s.id != session_id);
+                }
+            }
+            let _ = save_projects(&projects);
+        }
+        return Ok(());
+    }
+
+    // Try Codex path
+    if let Some(codex_file) = find_codex_session_file(&session_id) {
+        std::fs::remove_file(&codex_file)
+            .map_err(|e| format!("Failed to delete Codex session: {e}"))?;
+        return Ok(());
+    }
+
+    // Session file not found — still remove from projects.json if present
+    if let Ok(mut projects) = load_projects() {
+        let mut changed = false;
+        for proj in projects.iter_mut() {
+            let before = proj.sessions.len();
+            proj.sessions.retain(|s| s.id != session_id);
+            if proj.sessions.len() != before {
+                changed = true;
+            }
+        }
+        if changed {
+            let _ = save_projects(&projects);
+        }
     }
 
     Ok(())
