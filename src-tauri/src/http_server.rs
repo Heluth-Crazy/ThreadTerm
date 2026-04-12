@@ -81,12 +81,14 @@ async fn create_session(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Json<serde_json::Value> {
-    let result = crate::ai::start_session_internal(
-        &state.app_handle,
-        req.project_path,
-        req.provider.unwrap_or_else(|| "claude".to_string()),
-        req.resume_session_id,
-    );
+    let handle = state.app_handle.clone();
+    let provider = req.provider.unwrap_or_else(|| "claude".to_string());
+    // spawn_blocking keeps tokio threads free while process spawning runs
+    let result = tokio::task::spawn_blocking(move || {
+        crate::ai::start_session_internal(&handle, req.project_path, provider, req.resume_session_id)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("task error: {e}")));
 
     match result {
         Ok(pty_id) => Json(serde_json::json!({ "ok": true, "ptyId": pty_id })),
