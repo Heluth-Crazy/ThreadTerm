@@ -122,22 +122,42 @@ fn discover_claude_sessions(project_path: &str) -> Vec<Session> {
                 continue;
             }
             let id = fname.trim_end_matches(".jsonl").to_string();
-            let meta = entry.metadata().ok();
-            let created = meta
-                .as_ref()
-                .and_then(|m| m.created().ok())
-                .map(|t| {
-                    chrono::DateTime::<chrono::Utc>::from(t)
-                        .to_rfc3339()
+            let path = entry.path();
+
+            // Read the JSONL file once and extract both created_at and last_message
+            let (created_at, last_message) = if let Ok(content) = std::fs::read_to_string(&path) {
+                let lines: Vec<&str> = content.lines().collect();
+                let ca = lines.first().and_then(|l| {
+                    serde_json::from_str::<serde_json::Value>(l)
+                        .ok()
+                        .and_then(|v| v["timestamp"].as_str().map(String::from))
                 });
+                let lm = lines.last().and_then(|l| {
+                    serde_json::from_str::<serde_json::Value>(l).ok().and_then(|v| {
+                        v["message"]["content"]
+                            .as_array()
+                            .and_then(|a| a.first())
+                            .and_then(|c| c["text"].as_str().map(|s| s.chars().take(100).collect()))
+                    })
+                });
+                (ca, lm)
+            } else {
+                // Fall back to file metadata for created_at
+                let meta = entry.metadata().ok();
+                let ca = meta
+                    .as_ref()
+                    .and_then(|m| m.created().ok())
+                    .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+                (ca, None)
+            };
 
             sessions.push(Session {
                 id,
                 project_path: project_path.to_string(),
                 provider: "claude".to_string(),
                 name: None,
-                created_at: created,
-                last_message: None,
+                created_at,
+                last_message,
                 message_count: 0,
             });
         }

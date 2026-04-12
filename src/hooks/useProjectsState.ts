@@ -425,7 +425,7 @@ export function useProjectsState({
           provider: s.provider,
           name: s.name,
           createdAt: s.created_at,
-          lastMessage: s.last_message,
+          summary: s.last_message,
         })),
         sessionMeta: { hasMore: false, total: (p.sessions || []).length },
       })) as Project[]);
@@ -863,7 +863,7 @@ export function useProjectsState({
           provider: s.provider,
           name: s.name,
           createdAt: s.created_at,
-          lastMessage: s.last_message,
+          summary: s.last_message,
         })),
         sessionMeta: { hasMore: false, total: (p.sessions || []).length },
       })) as Project[]);
