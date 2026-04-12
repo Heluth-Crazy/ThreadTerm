@@ -1,14 +1,106 @@
 /**
  * tauri-bridge.ts
  * Unified bridge between React frontend and Tauri Rust backend.
- * Replaces all fetch() and WebSocket calls.
+ * Supports both Tauri desktop mode and web/mobile browser mode (LAN access).
  */
 
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+// ─── Environment Detection ───────────────────────────────────────────────────
 
-// Re-export invoke for direct use
+/** Returns true when running inside the Tauri webview (desktop app). */
+export const isTauriEnv = (): boolean => {
+  return typeof (window as any).__TAURI_INTERNALS__ !== 'undefined';
+};
+
+// Conditional imports: only load Tauri APIs when in Tauri environment
+let invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+let listen: <T>(event: string, handler: (e: { payload: T }) => void) => Promise<() => void>;
+
+if (isTauriEnv()) {
+  // Dynamic import would be ideal but these are used synchronously at module init.
+  // The Tauri globals are already available via __TAURI_INTERNALS__.
+  const tauriCore = (window as any).__TAURI_INTERNALS__;
+  invoke = tauriCore.invoke || (async () => { throw new Error('Tauri invoke not available'); });
+
+  // Use Tauri's event system
+  const tauriImport = import('@tauri-apps/api/event');
+  listen = (async (event: string, handler: any) => {
+    const { listen: tauriListen } = await tauriImport;
+    return tauriListen(event, handler);
+  }) as any;
+} else {
+  invoke = async () => { throw new Error('Tauri not available in web mode'); };
+  listen = async () => () => {};
+}
+
+// Re-export invoke for direct use (desktop only)
 export { invoke };
+
+// ─── Web Mode HTTP Helpers ───────────────────────────────────────────────────
+
+async function httpGet<T>(path: string): Promise<T> {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+async function httpPost<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+// ─── Web Mode PTY WebSocket ──────────────────────────────────────────────────
+
+const ptyWsConnections = new Map<string, WebSocket>();
+
+/**
+ * Connect to a PTY session via WebSocket (web/mobile mode).
+ * Returns a cleanup function to close the connection.
+ */
+export const webPtyConnect = (
+  sessionId: string,
+  onOutput: (data: string) => void,
+  onExit: (code?: number) => void,
+): (() => void) => {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${window.location.host}/api/pty/${sessionId}/ws`;
+  const ws = new WebSocket(wsUrl);
+  ptyWsConnections.set(sessionId, ws);
+
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'pty-output' || msg.type === 'pty-history') {
+        onOutput(msg.data);
+      } else if (msg.type === 'pty-exit') {
+        onExit(msg.code);
+      }
+    } catch {
+      // Ignore parse errors
+    }
+  };
+
+  ws.onclose = () => {
+    ptyWsConnections.delete(sessionId);
+  };
+
+  return () => {
+    ws.close();
+    ptyWsConnections.delete(sessionId);
+  };
+};
+
+/** Send input to a PTY session via its WebSocket connection. */
+export const webPtySend = (sessionId: string, data: string): void => {
+  const ws = ptyWsConnections.get(sessionId);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'pty-input', data }));
+  }
+};
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
@@ -26,62 +118,112 @@ export interface LoginResponse {
 
 export const auth = {
   login: (username: string, password: string) =>
-    invoke<LoginResponse>('auth_login', { username, password }),
+    isTauriEnv()
+      ? invoke<LoginResponse>('auth_login', { username, password })
+      : httpPost<LoginResponse>('/api/auth/login', { username, password }),
   register: (username: string, password: string) =>
-    invoke<LoginResponse>('auth_register', { username, password }),
+    isTauriEnv()
+      ? invoke<LoginResponse>('auth_register', { username, password })
+      : httpPost<LoginResponse>('/api/auth/register', { username, password }),
   verify: (token: string) =>
-    invoke<UserInfo>('auth_verify', { token }),
+    isTauriEnv()
+      ? invoke<UserInfo>('auth_verify', { token })
+      : httpPost<UserInfo>('/api/auth/verify', { token }),
   logout: (token: string) =>
-    invoke<void>('auth_logout', { token }),
+    isTauriEnv()
+      ? invoke<void>('auth_logout', { token })
+      : httpPost<void>('/api/auth/logout', { token }),
 };
 
 // ─── PTY ─────────────────────────────────────────────────────────────────────
 
 export const pty = {
-  create: (id: string, workingDir: string, rows: number, cols: number) =>
-    invoke<string>('pty_create', { id, workingDir, rows, cols }),
+  create: (id: string, workingDir: string, rows: number, cols: number): Promise<string> =>
+    isTauriEnv()
+      ? invoke<string>('pty_create', { id, workingDir, rows, cols })
+      : httpPost<{ ok: boolean; ptyId: string }>('/api/sessions', { project_path: workingDir, provider: 'shell' }).then((r) => r.ptyId || id),
   input: (id: string, data: string) =>
-    invoke<void>('pty_input', { id, data }),
+    isTauriEnv()
+      ? invoke<void>('pty_input', { id, data })
+      : (webPtySend(id, data), Promise.resolve()),
   resize: (id: string, rows: number, cols: number) =>
-    invoke<void>('pty_resize', { id, rows, cols }),
+    isTauriEnv()
+      ? invoke<void>('pty_resize', { id, rows, cols })
+      : Promise.resolve(), // resize not supported in web mode
   kill: (id: string) =>
-    invoke<void>('pty_kill', { id }),
+    isTauriEnv()
+      ? invoke<void>('pty_kill', { id })
+      : httpPost<void>(`/api/sessions/${id}/kill`, {}),
   getSessionState: (ptyId: string) =>
-    invoke<SessionState>('pty_get_session_state', { ptyId }),
+    isTauriEnv()
+      ? invoke<SessionState>('pty_get_session_state', { ptyId })
+      : Promise.resolve('Running' as SessionState),
   onOutput: (cb: (payload: { id: string; data: string }) => void) =>
-    listen<{ id: string; data: string }>('pty-output', (e) => cb(e.payload)),
+    isTauriEnv()
+      ? listen<{ id: string; data: string }>('pty-output', (e) => cb(e.payload))
+      : Promise.resolve(() => {}),
   onExit: (cb: (payload: { id: string; code?: number }) => void) =>
-    listen<{ id: string; code?: number }>('pty-exit', (e) => cb(e.payload)),
+    isTauriEnv()
+      ? listen<{ id: string; code?: number }>('pty-exit', (e) => cb(e.payload))
+      : Promise.resolve(() => {}),
   onStateChanged: (cb: (payload: { ptyId: string; state: SessionState }) => void) =>
-    listen<{ ptyId: string; state: SessionState }>('session-state-changed', (e) => cb(e.payload)),
+    isTauriEnv()
+      ? listen<{ ptyId: string; state: SessionState }>('session-state-changed', (e) => cb(e.payload))
+      : Promise.resolve(() => {}),
   onAttentionRequired: (cb: (payload: AttentionRequiredEvent) => void) =>
-    listen<AttentionRequiredEvent>('attention-required', (e) => cb(e.payload)),
+    isTauriEnv()
+      ? listen<AttentionRequiredEvent>('attention-required', (e) => cb(e.payload))
+      : Promise.resolve(() => {}),
 };
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
 export const projects = {
-  list: () => invoke<Project[]>('projects_list'),
-  get: (path: string) => invoke<Project>('projects_get', { path }),
-  add: (name: string, path: string) => invoke<Project>('projects_add', { name, path }),
-  remove: (path: string) => invoke<void>('projects_remove', { path }),
+  list: () =>
+    isTauriEnv()
+      ? invoke<Project[]>('projects_list')
+      : httpGet<Project[]>('/api/projects'),
+  get: (path: string) =>
+    isTauriEnv()
+      ? invoke<Project>('projects_get', { path })
+      : httpGet<Project>(`/api/projects?path=${encodeURIComponent(path)}`),
+  add: (name: string, path: string) =>
+    isTauriEnv()
+      ? invoke<Project>('projects_add', { name, path })
+      : httpPost<Project>('/api/projects', { name, path }),
+  remove: (path: string) =>
+    isTauriEnv()
+      ? invoke<void>('projects_remove', { path })
+      : httpPost<void>('/api/projects/remove', { path }),
   renameSession: (projectPath: string, sessionId: string, name: string) =>
-    invoke<void>('projects_update_session_name', { projectPath, sessionId, name }),
+    isTauriEnv()
+      ? invoke<void>('projects_update_session_name', { projectPath, sessionId, name })
+      : Promise.resolve(), // not yet implemented in web mode
 };
 
 // ─── AI ──────────────────────────────────────────────────────────────────────
 
 export const ai = {
-  startSession: (sessionId: string, provider: string, projectPath: string, resumeSessionId?: string) =>
-    invoke<string>('ai_start_session', { sessionId, provider, projectPath, resumeSessionId }),
-  sendMessage: (ptyId: string, message: string) =>
-    invoke<void>('ai_send_message', { ptyId, message }),
-  abortSession: (ptyId: string) =>
-    invoke<void>('ai_abort_session', { ptyId }),
-  listSessions: (projectPath: string, provider: string) =>
-    invoke<Session[]>('ai_list_sessions', { projectPath, provider }),
-  getConfig: (provider: string) =>
-    invoke<Record<string, string>>('settings_get_ai_config', { provider }),
+  startSession: (sessionId: string, provider: string, projectPath: string, resumeSessionId?: string): Promise<string> =>
+    isTauriEnv()
+      ? invoke<string>('ai_start_session', { sessionId, provider, projectPath, resumeSessionId })
+      : httpPost<{ ok: boolean; ptyId: string }>('/api/sessions', { project_path: projectPath, provider, resume_session_id: resumeSessionId }).then((r) => r.ptyId),
+  sendMessage: (ptyId: string, message: string): Promise<void> =>
+    isTauriEnv()
+      ? invoke<void>('ai_send_message', { ptyId, message })
+      : httpPost<void>(`/api/sessions/${ptyId}/send`, { text: message }),
+  abortSession: (ptyId: string): Promise<void> =>
+    isTauriEnv()
+      ? invoke<void>('ai_abort_session', { ptyId })
+      : httpPost<void>(`/api/sessions/${ptyId}/kill`, {}),
+  listSessions: (projectPath: string, provider: string): Promise<Session[]> =>
+    isTauriEnv()
+      ? invoke<Session[]>('ai_list_sessions', { projectPath, provider })
+      : Promise.resolve([] as Session[]),
+  getConfig: (provider: string): Promise<Record<string, string>> =>
+    isTauriEnv()
+      ? invoke<Record<string, string>>('settings_get_ai_config', { provider })
+      : Promise.resolve({} as Record<string, string>),
 };
 
 // ─── Handoff ─────────────────────────────────────────────────────────────────
@@ -100,55 +242,71 @@ export interface HandoffResult {
 
 export const handoff = {
   session: (req: HandoffRequest) =>
-    invoke<HandoffResult>('handoff_session', {
-      req: {
-        source_pty_id: req.sourcePtyId,
-        target_provider: req.targetProvider,
-        project_path: req.projectPath,
-        task_description: req.taskDescription,
-      },
-    }),
+    isTauriEnv()
+      ? invoke<HandoffResult>('handoff_session', {
+          req: {
+            source_pty_id: req.sourcePtyId,
+            target_provider: req.targetProvider,
+            project_path: req.projectPath,
+            task_description: req.taskDescription,
+          },
+        })
+      : Promise.reject(new Error('Handoff not supported in web mode')),
 };
 
 // ─── Git ─────────────────────────────────────────────────────────────────────
 
 export const git = {
-  status: (projectPath: string) => invoke<GitStatus>('git_status', { projectPath }),
-  diff: (projectPath: string, filePath?: string) => invoke<string>('git_diff', { projectPath, filePath }),
-  log: (projectPath: string, limit?: number) => invoke<GitCommit[]>('git_log', { projectPath, limit }),
-  branches: (projectPath: string) => invoke<GitBranches>('git_branches', { projectPath }),
-  stage: (projectPath: string, files: string[]) => invoke<void>('git_stage', { projectPath, files }),
-  commit: (projectPath: string, message: string) => invoke<string>('git_commit', { projectPath, message }),
+  status: (projectPath: string) =>
+    isTauriEnv() ? invoke<GitStatus>('git_status', { projectPath }) : Promise.reject(new Error('Git not available in web mode')),
+  diff: (projectPath: string, filePath?: string) =>
+    isTauriEnv() ? invoke<string>('git_diff', { projectPath, filePath }) : Promise.resolve(''),
+  log: (projectPath: string, limit?: number) =>
+    isTauriEnv() ? invoke<GitCommit[]>('git_log', { projectPath, limit }) : Promise.resolve([]),
+  branches: (projectPath: string) =>
+    isTauriEnv() ? invoke<GitBranches>('git_branches', { projectPath }) : Promise.resolve({ current: '', local: [], remote: [] } as GitBranches),
+  stage: (projectPath: string, files: string[]) =>
+    isTauriEnv() ? invoke<void>('git_stage', { projectPath, files }) : Promise.resolve(),
+  commit: (projectPath: string, message: string) =>
+    isTauriEnv() ? invoke<string>('git_commit', { projectPath, message }) : Promise.resolve(''),
   checkoutBranch: (projectPath: string, branch: string) =>
-    invoke<void>('git_checkout_branch', { projectPath, branch }),
+    isTauriEnv() ? invoke<void>('git_checkout_branch', { projectPath, branch }) : Promise.resolve(),
   createBranch: (projectPath: string, branch: string) =>
-    invoke<void>('git_create_branch', { projectPath, branch }),
-  pull: (projectPath: string) => invoke<void>('git_pull', { projectPath }),
-  push: (projectPath: string) => invoke<void>('git_push', { projectPath }),
+    isTauriEnv() ? invoke<void>('git_create_branch', { projectPath, branch }) : Promise.resolve(),
+  pull: (projectPath: string) =>
+    isTauriEnv() ? invoke<void>('git_pull', { projectPath }) : Promise.resolve(),
+  push: (projectPath: string) =>
+    isTauriEnv() ? invoke<void>('git_push', { projectPath }) : Promise.resolve(),
   onProgress: (cb: (line: string) => void) =>
-    listen<string>('git-progress', (e) => cb(e.payload)),
+    isTauriEnv() ? listen<string>('git-progress', (e) => cb(e.payload)) : Promise.resolve(() => {}),
   worktreeList: (projectPath: string) =>
-    invoke<WorktreeInfo[]>('git_worktree_list', { projectPath }),
+    isTauriEnv() ? invoke<WorktreeInfo[]>('git_worktree_list', { projectPath }) : Promise.resolve([]),
   worktreeAdd: (projectPath: string, worktreeName: string, baseBranch?: string) =>
-    invoke<string>('git_worktree_add', { projectPath, worktreeName, baseBranch }),
+    isTauriEnv() ? invoke<string>('git_worktree_add', { projectPath, worktreeName, baseBranch }) : Promise.resolve(''),
   worktreeRemove: (projectPath: string, worktreePath: string, force?: boolean) =>
-    invoke<void>('git_worktree_remove', { projectPath, worktreePath, force: force ?? false }),
+    isTauriEnv() ? invoke<void>('git_worktree_remove', { projectPath, worktreePath, force: force ?? false }) : Promise.resolve(),
 };
 
 // ─── File System ─────────────────────────────────────────────────────────────
 
 export const fs = {
-  listDir: (path: string) => invoke<DirEntry[]>('fs_list_dir', { path }),
-  readFile: (path: string) => invoke<string>('fs_read_file', { path }),
-  writeFile: (path: string, content: string) => invoke<void>('fs_write_file', { path, content }),
-  deleteFile: (path: string) => invoke<void>('fs_delete_file', { path }),
+  listDir: (path: string) =>
+    isTauriEnv() ? invoke<DirEntry[]>('fs_list_dir', { path }) : Promise.resolve([]),
+  readFile: (path: string) =>
+    isTauriEnv() ? invoke<string>('fs_read_file', { path }) : Promise.resolve(''),
+  writeFile: (path: string, content: string) =>
+    isTauriEnv() ? invoke<void>('fs_write_file', { path, content }) : Promise.resolve(),
+  deleteFile: (path: string) =>
+    isTauriEnv() ? invoke<void>('fs_delete_file', { path }) : Promise.resolve(),
 };
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 
 export const settings = {
-  getAll: () => invoke<Record<string, unknown>>('settings_get_all'),
-  set: (key: string, value: unknown) => invoke<void>('settings_set', { key, value }),
+  getAll: () =>
+    isTauriEnv() ? invoke<Record<string, unknown>>('settings_get_all') : Promise.resolve({}),
+  set: (key: string, value: unknown) =>
+    isTauriEnv() ? invoke<void>('settings_set', { key, value }) : Promise.resolve(),
 };
 
 // ─── Session History ─────────────────────────────────────────────────────────
@@ -173,16 +331,22 @@ export interface SessionMessage {
 
 export const sessions = {
   list: (projectPath: string, provider: string, limit?: number, offset?: number) =>
-    invoke<SessionSummary[]>('session_list', { projectPath, provider, limit, offset }),
+    isTauriEnv()
+      ? invoke<SessionSummary[]>('session_list', { projectPath, provider, limit, offset })
+      : Promise.resolve([]),
   messages: (projectPath: string, sessionId: string, limit?: number, offset?: number, provider?: string) =>
-    invoke<SessionMessage[]>('session_messages', { projectPath, sessionId, limit, offset, provider }),
+    isTauriEnv()
+      ? invoke<SessionMessage[]>('session_messages', { projectPath, sessionId, limit, offset, provider })
+      : Promise.resolve([]),
 };
 
 // ─── App Info ────────────────────────────────────────────────────────────────
 
 export const appInfo = {
-  version: () => invoke<string>('get_app_version'),
-  readFileBase64: (path: string) => invoke<string>('fs_read_file_base64', { path }),
+  version: () =>
+    isTauriEnv() ? invoke<string>('get_app_version') : Promise.resolve('web'),
+  readFileBase64: (path: string) =>
+    isTauriEnv() ? invoke<string>('fs_read_file_base64', { path }) : Promise.resolve(''),
 };
 
 // ─── Skills ──────────────────────────────────────────────────────────────────
@@ -217,13 +381,18 @@ export interface SkillRecord extends SkillSummary {
 }
 
 export const skills = {
-  list: () => invoke<{ roots: SkillRoot[]; skills: SkillSummary[] }>('skills_list'),
-  read: (skillId: string) => invoke<SkillRecord>('skills_read', { skillId }),
+  list: () =>
+    isTauriEnv()
+      ? invoke<{ roots: SkillRoot[]; skills: SkillSummary[] }>('skills_list')
+      : Promise.resolve({ roots: [] as SkillRoot[], skills: [] as SkillSummary[] }),
+  read: (skillId: string) =>
+    isTauriEnv() ? invoke<SkillRecord>('skills_read', { skillId }) : Promise.reject(new Error('Not available in web mode')),
   create: (rootId: string, slug: string, content: string) =>
-    invoke<SkillRecord>('skills_create', { rootId, slug, content }),
+    isTauriEnv() ? invoke<SkillRecord>('skills_create', { rootId, slug, content }) : Promise.reject(new Error('Not available in web mode')),
   update: (skillId: string, content: string) =>
-    invoke<SkillRecord>('skills_update', { skillId, content }),
-  delete: (skillId: string) => invoke<void>('skills_delete', { skillId }),
+    isTauriEnv() ? invoke<SkillRecord>('skills_update', { skillId, content }) : Promise.reject(new Error('Not available in web mode')),
+  delete: (skillId: string) =>
+    isTauriEnv() ? invoke<void>('skills_delete', { skillId }) : Promise.resolve(),
 };
 
 // ─── Type definitions (match Rust structs) ────────────────────────────────────
@@ -319,13 +488,14 @@ export interface Task {
 }
 
 export const tasks = {
-  list: (projectPath: string) => invoke<Task[]>('task_list', { projectPath }),
+  list: (projectPath: string) =>
+    isTauriEnv() ? invoke<Task[]>('task_list', { projectPath }) : Promise.resolve([]),
   create: (projectPath: string, title: string, description?: string, deps: string[] = []) =>
-    invoke<Task>('task_create', { projectPath, title, description, deps }),
+    isTauriEnv() ? invoke<Task>('task_create', { projectPath, title, description, deps }) : Promise.reject(new Error('Not available in web mode')),
   update: (projectPath: string, id: string, updates: Partial<Pick<Task, 'title' | 'description' | 'status' | 'session_id'>>) =>
-    invoke<Task>('task_update', { projectPath, id, ...updates }),
+    isTauriEnv() ? invoke<Task>('task_update', { projectPath, id, ...updates }) : Promise.reject(new Error('Not available in web mode')),
   delete: (projectPath: string, id: string) =>
-    invoke<void>('task_delete', { projectPath, id }),
+    isTauriEnv() ? invoke<void>('task_delete', { projectPath, id }) : Promise.resolve(),
 };
 
 // ─── Loop Runner ─────────────────────────────────────────────────────────────
@@ -350,8 +520,12 @@ export interface LoopState {
 }
 
 export const loop = {
-  start: (config: LoopConfig) => invoke<LoopState>('loop_start', { config }),
-  cancel: (loopId: string) => invoke<void>('loop_cancel', { loopId }),
-  list: () => invoke<LoopState[]>('loop_list'),
-  cleanup: () => invoke<number>('loop_cleanup'),
+  start: (config: LoopConfig) =>
+    isTauriEnv() ? invoke<LoopState>('loop_start', { config }) : Promise.reject(new Error('Not available in web mode')),
+  cancel: (loopId: string) =>
+    isTauriEnv() ? invoke<void>('loop_cancel', { loopId }) : Promise.resolve(),
+  list: () =>
+    isTauriEnv() ? invoke<LoopState[]>('loop_list') : Promise.resolve([]),
+  cleanup: () =>
+    isTauriEnv() ? invoke<number>('loop_cleanup') : Promise.resolve(0),
 };

@@ -8,6 +8,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Window};
+use tokio::sync::broadcast;
 use tauri_plugin_notification::NotificationExt;
 
 // ── Session state machine ────────────────────────────────────────────────────
@@ -55,6 +56,11 @@ static ANSI_STRIP: Lazy<regex::Regex> = Lazy::new(|| {
 
 /// Global map of active PTY sessions.
 static PTY_SESSIONS: Lazy<DashMap<String, Arc<PtySession>>> = Lazy::new(DashMap::new);
+
+/// Broadcast channels for WebSocket subscribers (web/mobile mode).
+/// Maps session ID → broadcast::Sender so HTTP WS clients can receive PTY output.
+static PTY_WS_BROADCAST: Lazy<DashMap<String, broadcast::Sender<String>>> =
+    Lazy::new(DashMap::new);
 
 /// Represents a live PTY session.
 /// All interior-mutable fields are protected by Mutex so the struct is Sync.
@@ -256,6 +262,12 @@ fn stream_pty_output(
                     },
                 );
 
+                // Relay to WebSocket subscribers (web/mobile mode)
+                if let Some(tx) = PTY_WS_BROADCAST.get(&id) {
+                    let payload = serde_json::json!({ "type": "pty-output", "id": id, "data": data }).to_string();
+                    let _ = tx.send(payload);
+                }
+
                 // Append to output buffer (keep last OUTPUT_BUFFER_MAX_LINES lines)
                 if let Ok(mut buf) = session.output_buffer.write() {
                     for line in data.lines() {
@@ -350,6 +362,12 @@ fn stream_pty_output(
             code,
         },
     );
+
+    // Relay exit to WebSocket subscribers and clean up channel
+    if let Some((_, tx)) = PTY_WS_BROADCAST.remove(&id) {
+        let payload = serde_json::json!({ "type": "pty-exit", "id": id, "code": code }).to_string();
+        let _ = tx.send(payload);
+    }
 
     // Remove session from map.
     PTY_SESSIONS.remove(&id);
@@ -617,6 +635,32 @@ pub fn get_recent_output(pty_id: &str) -> Option<String> {
         None
     } else {
         Some(buf.join("\n"))
+    }
+}
+
+/// Register a WebSocket broadcast channel for a PTY session.
+/// Returns a receiver that will get all future PTY output for this session.
+pub fn register_ws_channel(id: &str) -> broadcast::Receiver<String> {
+    if let Some(existing) = PTY_WS_BROADCAST.get(id) {
+        return existing.subscribe();
+    }
+    let (tx, rx) = broadcast::channel(256);
+    PTY_WS_BROADCAST.insert(id.to_string(), tx);
+    rx
+}
+
+/// Kill a PTY session (non-async, for HTTP server use).
+pub fn pty_kill_internal(id: &str) -> Result<(), String> {
+    if let Some((_, session)) = PTY_SESSIONS.remove(id) {
+        if let Ok(mut child) = session.child.lock() {
+            let _ = child.kill();
+        }
+        PTY_WS_BROADCAST.remove(id);
+        drop(session);
+        tracing::info!(id = %id, "PTY session killed (internal)");
+        Ok(())
+    } else {
+        Err(format!("PTY session '{}' not found", id))
     }
 }
 
