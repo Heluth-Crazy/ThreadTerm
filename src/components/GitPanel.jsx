@@ -125,13 +125,13 @@ function GitPanel({ selectedProject, onFileOpen }) {
       
       // Fetch diffs for changed files
       for (const file of (data.staged || []).map(f => f.path)) {
-        fetchFileDiff(file);
+        fetchFileDiff(file, true);
       }
       for (const file of (data.unstaged || []).map(f => f.path)) {
-        fetchFileDiff(file);
+        fetchFileDiff(file, false);
       }
       for (const file of data.untracked || []) {
-        fetchFileDiff(file);
+        fetchFileDiff(file, false);
       }
     } catch (error) {
       console.error('Error fetching git status:', error);
@@ -325,10 +325,12 @@ function GitPanel({ selectedProject, onFileOpen }) {
     }
   };
 
-  const fetchFileDiff = async (filePath) => {
+  const fetchFileDiff = async (filePath, isStaged = false) => {
     try {
       const projectPath = selectedProject.fullPath || selectedProject.path;
-      const diff = await tauriGit.diff(projectPath, filePath);
+      const diff = isStaged
+        ? await tauriGit.stagedDiff(projectPath, filePath)
+        : await tauriGit.diff(projectPath, filePath);
       
       if (diff) {
         setGitDiff(prev => ({

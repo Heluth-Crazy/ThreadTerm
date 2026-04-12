@@ -304,7 +304,12 @@ export default function SelectedProjectOverviewPage({
     try {
       const targets = records.filter((item) => selectedIds.includes(item.session.id));
       for (const item of targets) {
-        // TODO: session deletion not yet fully implemented in Tauri backend
+        const projectPath = selectedProject.fullPath || selectedProject.path || selectedProject.name;
+        try {
+          await tauriProjects.deleteSession(item.session.id, projectPath);
+        } catch (err) {
+          console.error('[Overview] deleteSession backend error:', err);
+        }
         onDeleteSession(selectedProject.name, item.session.id, provider);
       }
 
