@@ -3,7 +3,8 @@ use axum::{
         ws::{Message, WebSocket},
         Path, Query, State, WebSocketUpgrade,
     },
-    http::{header, StatusCode, Uri},
+    http::{header, HeaderMap, StatusCode, Uri},
+    middleware::{self, Next},
     response::{IntoResponse, Json, Response},
     routing::{get, post},
     Router,
@@ -18,6 +19,7 @@ pub struct AppState {
     pub app_handle: tauri::AppHandle,
     pub lan_ip: String,
     pub dist_path: PathBuf,
+    pub api_token: String,
 }
 
 /// Detect the local LAN IP address by connecting a UDP socket to a public address.
@@ -32,9 +34,74 @@ fn detect_local_ip() -> String {
         .unwrap_or_else(|_| "127.0.0.1".to_string())
 }
 
+/// Token-based authentication middleware for the HTTP API.
+/// Exempt paths: /health, /api/local-ip, /api/auth/token-info, and non-API paths (static files).
+async fn auth_middleware(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let path = request.uri().path().to_string();
+
+    // Exempt paths from auth
+    if path == "/health"
+        || path == "/api/local-ip"
+        || path == "/api/auth/token-info"
+        || !path.starts_with("/api/")
+    {
+        return next.run(request).await;
+    }
+
+    // Also check query params for token
+    let query_token = request
+        .uri()
+        .query()
+        .and_then(|q| {
+            q.split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .find(|(k, _)| *k == "token")
+                .map(|(_, v)| v.to_string())
+        });
+
+    // Check Authorization: Bearer <token> header
+    let header_token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|s| s.to_string());
+
+    let provided = header_token.or(query_token);
+
+    if provided.as_deref() == Some(state.api_token.as_str()) {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "unauthorized" })),
+        )
+            .into_response()
+    }
+}
+
 pub async fn start_http_server(app_handle: tauri::AppHandle) {
     let lan_ip = detect_local_ip();
     tracing::info!("[http-server] Local IP: {}", lan_ip);
+
+    // Generate a random API token for LAN/mobile authentication
+    let api_token = uuid::Uuid::new_v4().to_string();
+
+    // Persist token to ~/.openwork/api-token.txt
+    if let Some(home) = dirs::home_dir() {
+        let token_dir = home.join(".openwork");
+        let _ = std::fs::create_dir_all(&token_dir);
+        let token_path = token_dir.join("api-token.txt");
+        if let Err(e) = std::fs::write(&token_path, &api_token) {
+            tracing::error!("[http-server] Failed to write api-token.txt: {e}");
+        } else {
+            tracing::info!("[http-server] API token written to {}", token_path.display());
+        }
+    }
 
     // Determine the dist path: try multiple candidates for dev and production
     let dist_path = {
@@ -60,6 +127,7 @@ pub async fn start_http_server(app_handle: tauri::AppHandle) {
         app_handle,
         lan_ip: lan_ip.clone(),
         dist_path,
+        api_token,
     });
 
     let cors = CorsLayer::new()
@@ -71,6 +139,7 @@ pub async fn start_http_server(app_handle: tauri::AppHandle) {
         // API routes
         .route("/health", get(health_handler))
         .route("/api/local-ip", get(local_ip_handler))
+        .route("/api/auth/token-info", get(token_info_handler))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions", post(create_session))
         .route("/api/sessions/{id}/send", post(send_to_session))
@@ -85,6 +154,7 @@ pub async fn start_http_server(app_handle: tauri::AppHandle) {
         .route("/ws", get(ws_handler))
         // SPA fallback: serve static files or index.html
         .fallback(get(static_file_handler))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .layer(cors)
         .with_state(state);
 
@@ -179,6 +249,22 @@ async fn local_ip_handler(State(state): State<Arc<AppState>>) -> Json<serde_json
         "ip": state.lan_ip,
         "url": format!("http://{}:3002", state.lan_ip)
     }))
+}
+
+async fn token_info_handler() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "hint": "Token is stored at ~/.openwork/api-token.txt"
+    }))
+}
+
+/// Tauri command: expose the API token to the desktop UI so the user can share it with mobile.
+#[tauri::command]
+pub async fn get_api_token() -> Result<String, String> {
+    let home = dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string())?;
+    let token_path = home.join(".openwork").join("api-token.txt");
+    std::fs::read_to_string(&token_path)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("Failed to read api-token.txt: {e}"))
 }
 
 // ── Sessions ─────────────────────────────────────────────────────────────────

@@ -226,8 +226,7 @@ export default function SelectedProjectOverviewPage({
 
     setIsSavingProject(true);
     try {
-      // TODO: project rename not yet implemented in Tauri backend
-      console.warn('Project rename not yet fully implemented in Tauri');
+      await tauriProjects.rename(selectedProject.path || selectedProject.fullPath, displayName);
       await syncRefresh();
     } catch (error) {
       console.error('Failed to rename project from overview:', error);

@@ -1,6 +1,6 @@
 import type { SessionProvider } from '../../../types/app';
 import type { ProviderThemeConfig } from '../types/chatTypes';
-import { CLAUDE_MODELS, CODEX_MODELS } from '../../../../shared/modelConstants.js';
+import { CLAUDE_MODELS, CODEX_MODELS } from '../../../constants/modelConstants.js';
 
 export const MAX_TOOL_RESULT_PREVIEW_CHARS = 3000;
 

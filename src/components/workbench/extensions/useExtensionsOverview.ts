@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { settings } from '../../../lib/tauri-bridge';
+import { skills as skillsBridge } from '../../../lib/tauri-bridge';
 import type { SkillSummary } from './useSkills';
 
 type SkillsCardState = {
@@ -39,10 +39,6 @@ const EMPTY_MCP: McpCardState = {
   error: null,
 };
 
-async function readJson(data: Record<string, unknown>) {
-  return { response: { ok: true }, data };
-}
-
 function parseSkillsTimestamp(skill: SkillSummary): number {
   const timestamp = new Date(skill.updatedAt || '').getTime();
   return Number.isFinite(timestamp) ? timestamp : 0;
@@ -58,9 +54,9 @@ export function useExtensionsOverview() {
     setIsLoading(true);
 
     try {
-      const allSettings = await settings.getAll();
-      const skillItems = Array.isArray(allSettings?.skills) ? allSettings.skills as SkillSummary[] : [];
-      const roots = Array.isArray(allSettings?.skillRoots) ? allSettings.skillRoots as Array<{ writable?: boolean }> : [];
+      const result = await skillsBridge.list();
+      const skillItems = Array.isArray(result?.skills) ? result.skills as SkillSummary[] : [];
+      const roots = Array.isArray(result?.roots) ? result.roots as Array<{ writable?: boolean }> : [];
 
       setSkills({
         totalCount: skillItems.length,

@@ -55,6 +55,9 @@ pub fn run() {
             projects::projects_add,
             projects::projects_remove,
             projects::projects_update_session_name,
+            projects::restore_project,
+            projects::rename_project,
+            projects::delete_session,
             // AI
             ai::ai_start_session,
             ai::ai_send_message,
@@ -76,6 +79,8 @@ pub fn run() {
             git::git_worktree_list,
             git::git_worktree_add,
             git::git_worktree_remove,
+            git::git_discard_file,
+            git::git_staged_diff,
             // File system & settings
             fs_commands::fs_list_dir,
             fs_commands::fs_read_file,
@@ -91,6 +96,8 @@ pub fn run() {
             fs_commands::get_app_version,
             // Health
             health::health_check,
+            // HTTP server
+            http_server::get_api_token,
             // Skills
             skills::skills_list,
             skills::skills_read,

@@ -52,31 +52,57 @@ pub fn encode_project_path(path: &str) -> String {
     result
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct ProjectsFile {
+    #[serde(default)]
+    projects: Vec<Project>,
+    #[serde(default)]
+    excluded_paths: Vec<String>,
+}
+
 fn projects_file() -> Result<PathBuf, String> {
     let home = dirs::home_dir()
         .ok_or_else(|| "Could not determine home directory".to_string())?;
     Ok(home.join(".openwork").join("projects.json"))
 }
 
-fn load_projects() -> Result<Vec<Project>, String> {
+fn load_projects_file() -> Result<ProjectsFile, String> {
     let path = projects_file()?;
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok(ProjectsFile::default());
     }
     let data = std::fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read projects.json: {e}"))?;
-    serde_json::from_str(&data).map_err(|e| format!("Failed to parse projects.json: {e}"))
+
+    // Try parsing as ProjectsFile first (new format), fall back to Vec<Project> (old format)
+    if let Ok(pf) = serde_json::from_str::<ProjectsFile>(&data) {
+        return Ok(pf);
+    }
+    // Legacy format: bare array of projects
+    let projects: Vec<Project> = serde_json::from_str(&data)
+        .map_err(|e| format!("Failed to parse projects.json: {e}"))?;
+    Ok(ProjectsFile { projects, excluded_paths: Vec::new() })
 }
 
-fn save_projects(projects: &[Project]) -> Result<(), String> {
+fn load_projects() -> Result<Vec<Project>, String> {
+    Ok(load_projects_file()?.projects)
+}
+
+fn save_projects_file(pf: &ProjectsFile) -> Result<(), String> {
     let path = projects_file()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create config dir: {e}"))?;
     }
     let data =
-        serde_json::to_string_pretty(projects).map_err(|e| format!("Failed to serialize: {e}"))?;
+        serde_json::to_string_pretty(pf).map_err(|e| format!("Failed to serialize: {e}"))?;
     std::fs::write(&path, data).map_err(|e| format!("Failed to write projects.json: {e}"))
+}
+
+fn save_projects(projects: &[Project]) -> Result<(), String> {
+    let mut pf = load_projects_file().unwrap_or_default();
+    pf.projects = projects.to_vec();
+    save_projects_file(&pf)
 }
 
 /// Scan `~/.claude/projects/` for the subdirectory whose name matches the
@@ -296,7 +322,9 @@ fn extract_cwd_from_jsonl(path: &Path) -> Option<String> {
 
 #[tauri::command]
 pub async fn projects_list() -> Result<Vec<Project>, String> {
-    let mut projects = load_projects()?;
+    let pf = load_projects_file()?;
+    let mut projects = pf.projects;
+    let excluded: std::collections::HashSet<String> = pf.excluded_paths.into_iter().collect();
 
     // Attach Claude sessions discovered on disk
     for proj in &mut projects {
@@ -315,7 +343,7 @@ pub async fn projects_list() -> Result<Vec<Project>, String> {
     let existing_paths: std::collections::HashSet<String> =
         projects.iter().map(|p| p.full_path.clone()).collect();
     for proj in discovered {
-        if !existing_paths.contains(&proj.full_path) {
+        if !existing_paths.contains(&proj.full_path) && !excluded.contains(&proj.full_path) {
             projects.push(proj);
         }
     }
@@ -387,13 +415,31 @@ pub async fn projects_add(name: String, path: String) -> Result<Project, String>
 
 #[tauri::command]
 pub async fn projects_remove(path: String) -> Result<(), String> {
-    let mut projects = load_projects()?;
-    let before = projects.len();
-    projects.retain(|p| p.full_path != path && p.path != path);
-    if projects.len() == before {
-        return Err(format!("Project not found: {path}"));
+    let mut pf = load_projects_file()?;
+    let before = pf.projects.len();
+    let removed_path = pf.projects.iter()
+        .find(|p| p.full_path == path || p.path == path)
+        .map(|p| p.full_path.clone());
+
+    pf.projects.retain(|p| p.full_path != path && p.path != path);
+
+    // Add to excluded_paths so auto-discovery doesn't re-add it
+    if let Some(full_path) = &removed_path {
+        if !pf.excluded_paths.contains(full_path) {
+            pf.excluded_paths.push(full_path.clone());
+        }
     }
-    save_projects(&projects)
+    // Also add the raw path if different
+    if !pf.excluded_paths.contains(&path) {
+        pf.excluded_paths.push(path.clone());
+    }
+
+    if pf.projects.len() == before && removed_path.is_none() {
+        // Not found in saved projects; still add to excluded_paths to block re-discovery
+        save_projects_file(&pf)?;
+        return Ok(());
+    }
+    save_projects_file(&pf)
 }
 
 #[tauri::command]
@@ -416,4 +462,39 @@ pub async fn projects_update_session_name(
 
     session.name = Some(name);
     save_projects(&projects)
+}
+
+#[tauri::command]
+pub async fn restore_project(path: String) -> Result<(), String> {
+    let mut pf = load_projects_file()?;
+    pf.excluded_paths.retain(|p| p != &path);
+    save_projects_file(&pf)
+}
+
+#[tauri::command]
+pub async fn rename_project(path: String, new_name: String) -> Result<(), String> {
+    let mut projects = load_projects()?;
+    let proj = projects
+        .iter_mut()
+        .find(|p| p.full_path == path || p.path == path)
+        .ok_or_else(|| format!("Project not found: {path}"))?;
+    proj.name = new_name;
+    save_projects(&projects)
+}
+
+#[tauri::command]
+pub async fn delete_session(session_id: String, project_path: String) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string())?;
+    let encoded = encode_project_path(&project_path);
+    let session_file = home
+        .join(".claude/projects")
+        .join(&encoded)
+        .join(format!("{}.jsonl", session_id));
+
+    if session_file.exists() {
+        std::fs::remove_file(&session_file)
+            .map_err(|e| format!("Failed to delete session: {e}"))?;
+    }
+
+    Ok(())
 }
