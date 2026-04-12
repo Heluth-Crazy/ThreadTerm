@@ -257,9 +257,23 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
 
     // Listen for loop-state-changed events
     let unlistenLoop: (() => void) | null = null;
+    const loopCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
     listen<LoopState>('loop-state-changed', (event) => {
       const loopState = event.payload;
-      useLoopStore.getState().updateLoop(loopState.loopId, loopState);
+      const store = useLoopStore.getState();
+      store.updateLoop(loopState.loopId, loopState);
+
+      // Auto-remove loops in terminal state after a delay so the user can see the result
+      const isTerminal = loopState.status === 'passed' || loopState.status === 'failed' || loopState.status === 'cancelled';
+      if (isTerminal) {
+        if (!loopCleanupTimers.has(loopState.loopId)) {
+          const timer = setTimeout(() => {
+            useLoopStore.getState().removeLoop(loopState.loopId);
+            loopCleanupTimers.delete(loopState.loopId);
+          }, 15_000);
+          loopCleanupTimers.set(loopState.loopId, timer);
+        }
+      }
     }).then((u) => {
       unlistenLoop = u;
     });
@@ -270,6 +284,8 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
       unlistenStateChanged?.();
       unlistenAttention?.();
       unlistenLoop?.();
+      loopCleanupTimers.forEach((timer) => clearTimeout(timer));
+      loopCleanupTimers.clear();
     };
   }, [parsePtyOutput]);
 
