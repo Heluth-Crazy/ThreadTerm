@@ -1,7 +1,7 @@
 use crate::db;
 use crate::projects::Session;
 use crate::pty;
-use tauri::Window;
+use tauri::{AppHandle, Manager, Window};
 
 /// Find the path to a CLI executable, checking settings first then PATH.
 fn resolve_cli(provider: &str) -> Result<String, String> {
@@ -76,7 +76,7 @@ pub async fn ai_start_session(
         &arg_refs,
         24,
         120,
-        window,
+        window.app_handle().clone(),
     )?;
 
     tracing::info!(provider = %provider, pty_id = %pty_id, "AI session started");
@@ -207,4 +207,32 @@ pub async fn settings_get_ai_config(provider: String) -> Result<serde_json::Valu
     }
 
     Ok(serde_json::Value::Object(map))
+}
+
+// ── Public helper for HTTP server ────────────────────────────────────────────
+
+/// Start an AI CLI session programmatically (for HTTP server use).
+pub fn start_session_internal(
+    app_handle: &AppHandle,
+    project_path: String,
+    provider: String,
+    resume_session_id: Option<String>,
+) -> Result<String, String> {
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let cli_path = resolve_cli(&provider)?;
+    let args = build_args(&provider, &resume_session_id);
+    let arg_refs: Vec<&str> = args.iter().copied().collect();
+
+    let pty_id = pty::create_command_pty(
+        session_id,
+        project_path,
+        &cli_path,
+        &arg_refs,
+        24,
+        120,
+        app_handle.clone(),
+    )?;
+
+    tracing::info!(provider = %provider, pty_id = %pty_id, "AI session started via HTTP");
+    Ok(pty_id)
 }

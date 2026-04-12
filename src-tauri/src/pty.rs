@@ -7,7 +7,7 @@ use serde::Serialize;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager, Window};
+use tauri::{AppHandle, Emitter, Manager, Window};
 use tauri_plugin_notification::NotificationExt;
 
 // ── Session state machine ────────────────────────────────────────────────────
@@ -218,8 +218,9 @@ pub async fn pty_create(
 
     // Spawn a background thread to read PTY output and emit events.
     let stream_id = id.clone();
+    let handle = window.app_handle().clone();
     std::thread::spawn(move || {
-        stream_pty_output(stream_id, reader, session_for_stream, window);
+        stream_pty_output(stream_id, reader, session_for_stream, handle);
     });
 
     tracing::info!(id = %id, shell = %shell, "PTY session created");
@@ -231,7 +232,7 @@ fn stream_pty_output(
     id: String,
     mut reader: Box<dyn Read + Send>,
     session: Arc<PtySession>,
-    window: Window,
+    app_handle: AppHandle,
 ) {
     let mut buf = [0u8; 8192];
     let mut last_attention_time = Instant::now() - Duration::from_secs(60);
@@ -242,7 +243,7 @@ fn stream_pty_output(
             Ok(0) => break, // EOF – child exited
             Ok(n) => {
                 let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                let _ = window.emit(
+                let _ = app_handle.emit(
                     "pty-output",
                     PtyOutputPayload {
                         id: id.clone(),
@@ -268,7 +269,7 @@ fn stream_pty_output(
 
                     if last_attention_time.elapsed() > attention_debounce {
                         last_attention_time = Instant::now();
-                        let _ = window.emit(
+                        let _ = app_handle.emit(
                             "attention-required",
                             AttentionRequiredPayload {
                                 pty_id: id.clone(),
@@ -291,7 +292,7 @@ fn stream_pty_output(
                 if ERROR_PATTERNS.is_match(&cleaned) {
                     if last_attention_time.elapsed() > attention_debounce {
                         last_attention_time = Instant::now();
-                        let _ = window.emit(
+                        let _ = app_handle.emit(
                             "attention-required",
                             AttentionRequiredPayload {
                                 pty_id: id.clone(),
@@ -327,7 +328,7 @@ fn stream_pty_output(
         None => set_session_state(&session, &id, SessionState::Failed),
     }
 
-    let _ = window.emit(
+    let _ = app_handle.emit(
         "pty-exit",
         PtyExitPayload {
             id: id.clone(),
@@ -466,7 +467,7 @@ pub async fn pty_get_session_state(pty_id: String) -> Result<SessionState, Strin
         .map_err(|e| format!("Failed to read session state: {e}"))
 }
 
-/// Create a PTY session running a specific command (used by ai.rs).
+/// Create a PTY session running a specific command (used by ai.rs and http_server).
 pub fn create_command_pty(
     id: String,
     working_dir: String,
@@ -474,7 +475,7 @@ pub fn create_command_pty(
     args: &[&str],
     rows: u16,
     cols: u16,
-    window: Window,
+    app_handle: AppHandle,
 ) -> Result<String, String> {
     let pty_system = NativePtySystem::default();
     let size = PtySize {
@@ -519,7 +520,7 @@ pub fn create_command_pty(
         child: Mutex::new(child),
         _working_dir: working_dir,
         state: RwLock::new(SessionState::Running),
-        app_handle: window.app_handle().clone(),
+        app_handle: app_handle.clone(),
     });
 
     let session_for_stream = session.clone();
@@ -537,9 +538,57 @@ pub fn create_command_pty(
 
     let stream_id = id.clone();
     std::thread::spawn(move || {
-        stream_pty_output(stream_id, reader, session_for_stream, window);
+        stream_pty_output(stream_id, reader, session_for_stream, app_handle);
     });
 
     tracing::info!(id = %id, program = %program, "Command PTY session created");
     Ok(id)
+}
+
+// ── Public helpers for HTTP server ───────────────────────────────────────────
+
+/// Returns a snapshot of active session IDs and their states.
+pub fn list_sessions_internal() -> Vec<(String, SessionState)> {
+    PTY_SESSIONS
+        .iter()
+        .map(|entry| {
+            let state = entry
+                .state
+                .read()
+                .map(|s| s.clone())
+                .unwrap_or(SessionState::Idle);
+            (entry.key().clone(), state)
+        })
+        .collect()
+}
+
+/// Write text to a PTY session directly (for HTTP/CLI use).
+pub fn pty_write_internal(pty_id: &str, text: String) -> Result<(), String> {
+    let session = PTY_SESSIONS
+        .get(pty_id)
+        .ok_or_else(|| format!("Session {pty_id} not found"))?;
+
+    {
+        let is_waiting = session
+            .state
+            .read()
+            .ok()
+            .map(|s| *s == SessionState::WaitingForInput)
+            .unwrap_or(false);
+        if is_waiting {
+            set_session_state(&session, pty_id, SessionState::Running);
+        }
+    }
+
+    let mut writer = session
+        .writer
+        .lock()
+        .map_err(|e| format!("Failed to lock PTY writer: {e}"))?;
+    writer
+        .write_all(text.as_bytes())
+        .map_err(|e| format!("Failed to write to PTY: {e}"))?;
+    writer
+        .flush()
+        .map_err(|e| format!("Failed to flush PTY: {e}"))?;
+    Ok(())
 }
