@@ -22,6 +22,7 @@ type LiveCardProps = {
   provider: string;
   sessionTitle: string;
   projectPath: string;
+  worktreePath?: string;
   onSend: (sessionId: string, text: string, projectPath: string, provider: string) => void;
   isFocused?: boolean;
 };
@@ -29,18 +30,19 @@ type LiveCardProps = {
 function StatusDot({ status }: { status: SessionRuntimeStatus }) {
   switch (status) {
     case 'needs_attention':
-      return <span className="inline-block h-2 w-2 rounded-full bg-red-500 animate-pulse" />;
+      return <span className="inline-block h-2 w-2 rounded-full bg-red-500 animate-pulse" title="Needs attention" />;
     case 'processing':
       return (
         <span
-          className="inline-block h-2 w-2 rounded-full border-[1.5px] border-blue-500 border-t-transparent"
+          className="inline-block h-2 w-2 rounded-full border-[1.5px] border-emerald-500 border-t-transparent"
           style={{ animation: 'spin 0.8s linear infinite' }}
+          title="Running"
         />
       );
     case 'completed':
-      return <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />;
+      return <span className="inline-block h-2 w-2 rounded-full bg-gray-400" title="Completed" />;
     default:
-      return <span className="inline-block h-2 w-2 rounded-full bg-muted-foreground/40" />;
+      return <span className="inline-block h-2 w-2 rounded-full bg-zinc-600" title="Idle" />;
   }
 }
 
@@ -61,6 +63,7 @@ function LiveCardInner({
   provider,
   sessionTitle,
   projectPath,
+  worktreePath,
   onSend,
   isFocused,
 }: LiveCardProps) {
@@ -144,6 +147,11 @@ function LiveCardInner({
         <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
           {sessionTitle}
         </span>
+        {worktreePath && (
+          <span className="truncate rounded bg-blue-500/10 px-1.5 py-0.5 text-[9px] text-blue-500" title={worktreePath}>
+            🌿 {worktreePath.split('/').pop()}
+          </span>
+        )}
         <StatusDot status={status} />
         <span className="text-[10px] text-muted-foreground">{t(statusKey)}</span>
         <button

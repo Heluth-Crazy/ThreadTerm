@@ -1,10 +1,11 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus, Search, MessageCircle, Code2 } from 'lucide-react';
+import { Plus, Search, MessageCircle, Code2, GitBranch } from 'lucide-react';
 
 import LiveCard from './LiveCard';
 import { useLiveGridStore } from '../../../stores/liveGridStore';
 import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
+import { git } from '../../../lib/tauri-bridge';
 import type { GridLayout } from '../../../stores/liveGridStore';
 import type { Project, ProjectSession } from '../../../types/app';
 
@@ -86,6 +87,8 @@ function EmptyCardSlot({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState('__all__');
+  const [useWorktree, setUseWorktree] = useState(false);
+  const [worktreeName, setWorktreeName] = useState('');
   const addCard = useLiveGridStore((s) => s.addCard);
   const statuses = useSessionStatusStore((s) => s.statuses);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -131,19 +134,34 @@ function EmptyCardSlot({
     if (!open) {
       setSearch('');
       setProjectFilter('__all__');
+      setUseWorktree(false);
+      setWorktreeName('');
     }
   }, [open]);
 
   const handleSelect = useCallback(
-    (opt: SessionOption) => {
+    async (opt: SessionOption) => {
+      let worktreePath: string | undefined;
+      if (useWorktree) {
+        const name = worktreeName.trim() || `wt-${Date.now()}`;
+        const project = projects.find((p) => p.name === opt.projectName);
+        if (project?.path) {
+          try {
+            worktreePath = await git.worktreeAdd(project.path, name);
+          } catch (e) {
+            console.warn('Failed to create worktree:', e);
+          }
+        }
+      }
       addCard({
         sessionId: opt.sessionId,
         projectId: opt.projectId,
         provider: opt.provider,
+        worktreePath,
       });
       setOpen(false);
     },
-    [addCard],
+    [addCard, useWorktree, worktreeName, projects],
   );
 
   const statusDot = (sessionId: string) => {
@@ -206,6 +224,29 @@ function EmptyCardSlot({
               </select>
             </div>
           )}
+
+          {/* Worktree toggle */}
+          <div className="flex items-center gap-2 border-b border-border/40 px-2.5 py-1.5">
+            <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                checked={useWorktree}
+                onChange={(e) => setUseWorktree(e.target.checked)}
+                className="h-3 w-3 rounded"
+              />
+              <GitBranch className="h-3 w-3" />
+              Open in Worktree
+            </label>
+            {useWorktree && (
+              <input
+                type="text"
+                value={worktreeName}
+                onChange={(e) => setWorktreeName(e.target.value)}
+                placeholder={`wt-${Date.now().toString(36)}`}
+                className="flex-1 rounded bg-muted/40 px-1.5 py-0.5 text-[10px] text-foreground placeholder:text-muted-foreground/50 outline-none"
+              />
+            )}
+          </div>
 
           {/* Session list */}
           <div className="flex-1 overflow-y-auto">
@@ -299,7 +340,8 @@ export default function CardGrid({ projects, filter, onSend, focusedSessionId }:
             projectId={card.projectId}
             provider={card.provider}
             sessionTitle={findSessionTitle(card.sessionId, card.projectId)}
-            projectPath={findProjectPath(card.projectId)}
+            projectPath={card.worktreePath || findProjectPath(card.projectId)}
+            worktreePath={card.worktreePath}
             onSend={onSend}
             isFocused={card.sessionId === focusedSessionId}
           />

@@ -33,6 +33,7 @@ pub fn run() {
             pty::pty_input,
             pty::pty_resize,
             pty::pty_kill,
+            pty::pty_get_session_state,
             // Auth
             auth::auth_login,
             auth::auth_register,
@@ -62,6 +63,9 @@ pub fn run() {
             git::git_create_branch,
             git::git_pull,
             git::git_push,
+            git::git_worktree_list,
+            git::git_worktree_add,
+            git::git_worktree_remove,
             // File system & settings
             fs_commands::fs_list_dir,
             fs_commands::fs_read_file,

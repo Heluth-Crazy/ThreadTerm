@@ -41,6 +41,15 @@ pub struct GitBranches {
     pub remote: Vec<String>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeInfo {
+    pub path: String,
+    pub branch: String,
+    pub is_main: bool,
+    pub is_locked: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -490,5 +499,151 @@ pub async fn git_push(
     if !status.success() {
         return Err("git push failed".to_string());
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Worktree commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn git_worktree_list(project_path: String) -> Result<Vec<WorktreeInfo>, String> {
+    use std::process::Command;
+
+    let output = Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(&project_path)
+        .output()
+        .map_err(|e| format!("git worktree list failed: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git worktree list failed: {stderr}"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut worktrees = Vec::new();
+    let mut current_path = String::new();
+    let mut current_branch = String::new();
+    let mut is_locked = false;
+    let mut is_first = true;
+
+    for line in stdout.lines() {
+        if line.starts_with("worktree ") {
+            // Save previous entry if any
+            if !current_path.is_empty() {
+                worktrees.push(WorktreeInfo {
+                    path: current_path.clone(),
+                    branch: current_branch.clone(),
+                    is_main: is_first,
+                    is_locked,
+                });
+                is_first = false;
+            }
+            current_path = line.strip_prefix("worktree ").unwrap_or("").to_string();
+            current_branch = String::new();
+            is_locked = false;
+        } else if line.starts_with("branch ") {
+            let full_ref = line.strip_prefix("branch ").unwrap_or("");
+            current_branch = full_ref
+                .strip_prefix("refs/heads/")
+                .unwrap_or(full_ref)
+                .to_string();
+        } else if line == "locked" {
+            is_locked = true;
+        } else if line.trim().is_empty() {
+            // Block separator — do nothing
+        }
+    }
+
+    // Push last entry
+    if !current_path.is_empty() {
+        worktrees.push(WorktreeInfo {
+            path: current_path,
+            branch: current_branch,
+            is_main: is_first,
+            is_locked,
+        });
+    }
+
+    Ok(worktrees)
+}
+
+#[tauri::command]
+pub async fn git_worktree_add(
+    project_path: String,
+    worktree_name: String,
+    base_branch: Option<String>,
+) -> Result<String, String> {
+    use std::process::Command;
+
+    let project_dir = Path::new(&project_path);
+    let project_name = project_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project");
+
+    let parent_dir = project_dir
+        .parent()
+        .ok_or_else(|| "Cannot determine parent directory".to_string())?;
+
+    let worktree_dir_name = format!("{}-worktree-{}", project_name, worktree_name);
+    let worktree_path = parent_dir.join(&worktree_dir_name);
+    let worktree_path_str = worktree_path
+        .to_str()
+        .ok_or_else(|| "Invalid worktree path".to_string())?
+        .to_string();
+
+    let mut args = vec![
+        "worktree".to_string(),
+        "add".to_string(),
+        "-b".to_string(),
+        worktree_name.clone(),
+        worktree_path_str.clone(),
+    ];
+
+    if let Some(ref base) = base_branch {
+        args.push(base.clone());
+    }
+
+    let output = Command::new("git")
+        .args(&args)
+        .current_dir(&project_path)
+        .output()
+        .map_err(|e| format!("git worktree add failed: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git worktree add failed: {stderr}"));
+    }
+
+    Ok(worktree_path_str)
+}
+
+#[tauri::command]
+pub async fn git_worktree_remove(
+    project_path: String,
+    worktree_path: String,
+    force: bool,
+) -> Result<(), String> {
+    use std::process::Command;
+
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(&worktree_path);
+
+    let output = Command::new("git")
+        .args(&args)
+        .current_dir(&project_path)
+        .output()
+        .map_err(|e| format!("git worktree remove failed: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git worktree remove failed: {stderr}"));
+    }
+
     Ok(())
 }

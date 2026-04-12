@@ -46,10 +46,16 @@ export const pty = {
     invoke<void>('pty_resize', { id, rows, cols }),
   kill: (id: string) =>
     invoke<void>('pty_kill', { id }),
+  getSessionState: (ptyId: string) =>
+    invoke<SessionState>('pty_get_session_state', { ptyId }),
   onOutput: (cb: (payload: { id: string; data: string }) => void) =>
     listen<{ id: string; data: string }>('pty-output', (e) => cb(e.payload)),
   onExit: (cb: (payload: { id: string; code?: number }) => void) =>
     listen<{ id: string; code?: number }>('pty-exit', (e) => cb(e.payload)),
+  onStateChanged: (cb: (payload: { ptyId: string; state: SessionState }) => void) =>
+    listen<{ ptyId: string; state: SessionState }>('session-state-changed', (e) => cb(e.payload)),
+  onAttentionRequired: (cb: (payload: AttentionRequiredEvent) => void) =>
+    listen<AttentionRequiredEvent>('attention-required', (e) => cb(e.payload)),
 };
 
 // ─── Projects ────────────────────────────────────────────────────────────────
@@ -95,6 +101,12 @@ export const git = {
   push: (projectPath: string) => invoke<void>('git_push', { projectPath }),
   onProgress: (cb: (line: string) => void) =>
     listen<string>('git-progress', (e) => cb(e.payload)),
+  worktreeList: (projectPath: string) =>
+    invoke<WorktreeInfo[]>('git_worktree_list', { projectPath }),
+  worktreeAdd: (projectPath: string, worktreeName: string, baseBranch?: string) =>
+    invoke<string>('git_worktree_add', { projectPath, worktreeName, baseBranch }),
+  worktreeRemove: (projectPath: string, worktreePath: string, force?: boolean) =>
+    invoke<void>('git_worktree_remove', { projectPath, worktreePath, force: force ?? false }),
 };
 
 // ─── File System ─────────────────────────────────────────────────────────────
@@ -245,4 +257,24 @@ export interface DirEntry {
   is_dir: boolean;
   size?: number;
   modified?: string;
+}
+
+// ─── Session State ───────────────────────────────────────────────────────────
+
+export type SessionState = 'Idle' | 'Running' | 'WaitingForInput' | 'Completed' | 'Failed';
+
+export interface AttentionRequiredEvent {
+  ptyId: string;
+  sessionId: string;
+  type: 'waiting' | 'error';
+  message: string;
+}
+
+// ─── Git Worktree ────────────────────────────────────────────────────────────
+
+export interface WorktreeInfo {
+  path: string;
+  branch: string;
+  isMain: boolean;
+  isLocked: boolean;
 }

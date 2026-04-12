@@ -2,10 +2,56 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use once_cell::sync::Lazy;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use regex::RegexSet;
 use serde::Serialize;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
-use tauri::{Emitter, Window};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
+use tauri::{Emitter, Manager, Window};
+use tauri_plugin_notification::NotificationExt;
+
+// ── Session state machine ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub enum SessionState {
+    Idle,
+    Running,
+    WaitingForInput,
+    Completed,
+    Failed,
+}
+
+// ── Regex patterns (compiled once) ───────────────────────────────────────────
+
+static WAITING_PATTERNS: Lazy<RegexSet> = Lazy::new(|| {
+    RegexSet::new([
+        r"(?i)\[y/n\]",
+        r"(?i)\(y/n\)",
+        r"(?i)press enter",
+        r"(?i)permission",
+        r"(?i)approve",
+        r"(?i)allow",
+        r"(?i)do you want",
+        r"(?i)continue\?",
+    ])
+    .expect("invalid waiting regex")
+});
+
+static ERROR_PATTERNS: Lazy<RegexSet> = Lazy::new(|| {
+    RegexSet::new([
+        r"(?i)\berror\b",
+        r"(?i)\bfailed\b",
+        r"(?i)permission denied",
+        r"(?i)command not found",
+    ])
+    .expect("invalid error regex")
+});
+
+static ANSI_STRIP: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").expect("invalid ansi regex")
+});
+
+// ── Global session map ───────────────────────────────────────────────────────
 
 /// Global map of active PTY sessions.
 static PTY_SESSIONS: Lazy<DashMap<String, Arc<PtySession>>> = Lazy::new(DashMap::new);
@@ -17,10 +63,14 @@ struct PtySession {
     master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     _working_dir: String,
+    state: RwLock<SessionState>,
+    app_handle: tauri::AppHandle,
 }
 
-// Safety: every non-Sync field is behind a Mutex.
+// Safety: every non-Sync field is behind a Mutex / RwLock.
 unsafe impl Sync for PtySession {}
+
+// ── Event payloads ───────────────────────────────────────────────────────────
 
 /// Payload emitted on `pty-output` events.
 #[derive(Clone, Serialize)]
@@ -34,6 +84,39 @@ struct PtyOutputPayload {
 struct PtyExitPayload {
     id: String,
     code: Option<u32>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionStateChangedPayload {
+    pty_id: String,
+    state: SessionState,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttentionRequiredPayload {
+    pty_id: String,
+    session_id: String,
+    #[serde(rename = "type")]
+    attention_type: String,
+    message: String,
+}
+
+/// Update session state and emit `session-state-changed` if changed.
+fn set_session_state(session: &PtySession, id: &str, new_state: SessionState) {
+    if let Ok(mut state) = session.state.write() {
+        if *state != new_state {
+            *state = new_state.clone();
+            let _ = session.app_handle.emit(
+                "session-state-changed",
+                SessionStateChangedPayload {
+                    pty_id: id.to_string(),
+                    state: new_state,
+                },
+            );
+        }
+    }
 }
 
 /// Returns the default shell for the current platform.
@@ -116,6 +199,8 @@ pub async fn pty_create(
         master: Mutex::new(pair.master),
         child: Mutex::new(child),
         _working_dir: working_dir,
+        state: RwLock::new(SessionState::Running),
+        app_handle: window.app_handle().clone(),
     });
 
     let session_for_stream = session.clone();
@@ -149,6 +234,9 @@ fn stream_pty_output(
     window: Window,
 ) {
     let mut buf = [0u8; 8192];
+    let mut last_attention_time = Instant::now() - Duration::from_secs(60);
+    let attention_debounce = Duration::from_secs(5);
+
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break, // EOF – child exited
@@ -158,9 +246,62 @@ fn stream_pty_output(
                     "pty-output",
                     PtyOutputPayload {
                         id: id.clone(),
-                        data,
+                        data: data.clone(),
                     },
                 );
+
+                // Strip ANSI escape codes for pattern matching
+                let cleaned = ANSI_STRIP.replace_all(&data, "");
+
+                // Detect waiting-for-input patterns
+                if WAITING_PATTERNS.is_match(&cleaned) {
+                    let already_waiting = session
+                        .state
+                        .read()
+                        .ok()
+                        .map(|s| *s == SessionState::WaitingForInput)
+                        .unwrap_or(false);
+
+                    if !already_waiting {
+                        set_session_state(&session, &id, SessionState::WaitingForInput);
+                    }
+
+                    if last_attention_time.elapsed() > attention_debounce {
+                        last_attention_time = Instant::now();
+                        let _ = window.emit(
+                            "attention-required",
+                            AttentionRequiredPayload {
+                                pty_id: id.clone(),
+                                session_id: id.clone(),
+                                attention_type: "waiting".to_string(),
+                                message: "Agent needs your input".to_string(),
+                            },
+                        );
+                        let _ = session
+                            .app_handle
+                            .notification()
+                            .builder()
+                            .title("Agent Needs Attention")
+                            .body(format!("Session {} needs your input", &id))
+                            .show();
+                    }
+                }
+
+                // Detect error patterns (emit attention but don't change state to Failed)
+                if ERROR_PATTERNS.is_match(&cleaned) {
+                    if last_attention_time.elapsed() > attention_debounce {
+                        last_attention_time = Instant::now();
+                        let _ = window.emit(
+                            "attention-required",
+                            AttentionRequiredPayload {
+                                pty_id: id.clone(),
+                                session_id: id.clone(),
+                                attention_type: "error".to_string(),
+                                message: "Agent encountered an error".to_string(),
+                            },
+                        );
+                    }
+                }
             }
             Err(e) => {
                 tracing::warn!(id = %id, error = %e, "PTY read error");
@@ -169,7 +310,7 @@ fn stream_pty_output(
         }
     }
 
-    // Determine exit code.
+    // Determine exit code and update state.
     let code = session
         .child
         .lock()
@@ -179,6 +320,12 @@ fn stream_pty_output(
                 if status.success() { 0u32 } else { 1u32 }
             })
         });
+
+    match code {
+        Some(0) => set_session_state(&session, &id, SessionState::Completed),
+        Some(_) => set_session_state(&session, &id, SessionState::Failed),
+        None => set_session_state(&session, &id, SessionState::Failed),
+    }
 
     let _ = window.emit(
         "pty-exit",
@@ -199,6 +346,19 @@ pub async fn pty_input(id: String, data: String) -> Result<(), String> {
     let session = PTY_SESSIONS
         .get(&id)
         .ok_or_else(|| format!("PTY session '{}' not found", id))?;
+
+    // Transition from WaitingForInput back to Running when user sends input
+    {
+        let is_waiting = session
+            .state
+            .read()
+            .ok()
+            .map(|s| *s == SessionState::WaitingForInput)
+            .unwrap_or(false);
+        if is_waiting {
+            set_session_state(&session, &id, SessionState::Running);
+        }
+    }
 
     let mut writer = session
         .writer
@@ -228,6 +388,19 @@ pub fn write_to_session_by_prefix(prefix: &str, data: &str) -> Result<(), String
 
     let session = PTY_SESSIONS.get(&key)
         .ok_or_else(|| format!("PTY session disappeared: {key}"))?;
+
+    // Transition from WaitingForInput back to Running
+    {
+        let is_waiting = session
+            .state
+            .read()
+            .ok()
+            .map(|s| *s == SessionState::WaitingForInput)
+            .unwrap_or(false);
+        if is_waiting {
+            set_session_state(&session, &key, SessionState::Running);
+        }
+    }
 
     let mut writer = session.writer.lock()
         .map_err(|e| format!("lock error: {e}"))?;
@@ -277,6 +450,20 @@ pub async fn pty_kill(id: String) -> Result<(), String> {
     } else {
         Err(format!("PTY session '{}' not found", id))
     }
+}
+
+/// Get the current state of a PTY session.
+#[tauri::command]
+pub async fn pty_get_session_state(pty_id: String) -> Result<SessionState, String> {
+    let session = PTY_SESSIONS
+        .get(&pty_id)
+        .ok_or_else(|| format!("PTY session '{}' not found", pty_id))?;
+
+    session
+        .state
+        .read()
+        .map(|s| s.clone())
+        .map_err(|e| format!("Failed to read session state: {e}"))
 }
 
 /// Create a PTY session running a specific command (used by ai.rs).
@@ -331,6 +518,8 @@ pub fn create_command_pty(
         master: Mutex::new(pair.master),
         child: Mutex::new(child),
         _working_dir: working_dir,
+        state: RwLock::new(SessionState::Running),
+        app_handle: window.app_handle().clone(),
     });
 
     let session_for_stream = session.clone();
