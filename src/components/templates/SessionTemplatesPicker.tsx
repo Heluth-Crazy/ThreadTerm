@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { settings } from '../../lib/tauri-bridge';
 import type { SessionTemplate } from '../../types/templates';
+import { BUILT_IN_TEMPLATES } from './builtInTemplates';
 
 interface SessionTemplatesPickerProps {
   open: boolean;
@@ -24,8 +25,11 @@ export default function SessionTemplatesPicker({
   const fetchTemplates = useCallback(async () => {
     try {
       const allSettings = await settings.getAll();
-      const tpls = allSettings?.sessionTemplates;
-      setTemplates(Array.isArray(tpls) ? tpls as SessionTemplate[] : []);
+      const userTpls = (Array.isArray(allSettings?.sessionTemplates)
+        ? (allSettings.sessionTemplates as SessionTemplate[])
+        : []
+      ).filter((t) => !t.isBuiltIn);
+      setTemplates([...BUILT_IN_TEMPLATES, ...userTpls]);
     } catch (err) {
       console.error('Failed to load templates:', err);
     } finally {
