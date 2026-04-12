@@ -46,3 +46,13 @@ base64 = "0.22"
 git2 = "0.19"
 shellexpand = "3"
 which = "7"
+
+# ---------------------------------------------------------------------------
+# Release optimisation — reduces binary size and runtime memory significantly
+# ---------------------------------------------------------------------------
+[profile.release]
+opt-level = 3        # Maximum optimisation
+lto = "thin"         # Cross-crate inlining without full LTO link time cost
+codegen-units = 1    # Single codegen unit → better dead-code elimination
+strip = "symbols"    # Strip debug symbols from release binary
+panic = "abort"      # Smaller binary; no unwinding tables needed in prod
