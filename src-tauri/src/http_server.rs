@@ -274,16 +274,18 @@ struct SessionInfo {
     id: String,
     state: String,
     provider: Option<String>,
+    project_path: Option<String>,
 }
 
 async fn list_sessions(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let sessions = crate::pty::list_sessions_internal();
     let result: Vec<SessionInfo> = sessions
         .into_iter()
-        .map(|(id, s)| SessionInfo {
+        .map(|(id, s, working_dir)| SessionInfo {
             id,
             state: format!("{:?}", s),
             provider: None,
+            project_path: Some(working_dir),
         })
         .collect();
     Json(serde_json::json!({ "sessions": result }))
@@ -569,10 +571,11 @@ async fn handle_ws_command(socket: &mut WebSocket, cmd: serde_json::Value) {
             let sessions = crate::pty::list_sessions_internal();
             let result: Vec<_> = sessions
                 .into_iter()
-                .map(|(id, state)| {
+                .map(|(id, state, working_dir)| {
                     serde_json::json!({
                         "id": id,
-                        "state": format!("{:?}", state)
+                        "state": format!("{:?}", state),
+                        "project_path": working_dir
                     })
                 })
                 .collect();

@@ -581,8 +581,8 @@ pub fn create_command_pty(
 
 // ── Public helpers for HTTP server ───────────────────────────────────────────
 
-/// Returns a snapshot of active session IDs and their states.
-pub fn list_sessions_internal() -> Vec<(String, SessionState)> {
+/// Returns a snapshot of active session IDs, their states, and working directories.
+pub fn list_sessions_internal() -> Vec<(String, SessionState, String)> {
     PTY_SESSIONS
         .iter()
         .map(|entry| {
@@ -591,7 +591,8 @@ pub fn list_sessions_internal() -> Vec<(String, SessionState)> {
                 .read()
                 .map(|s| s.clone())
                 .unwrap_or(SessionState::Idle);
-            (entry.key().clone(), state)
+            let working_dir = entry._working_dir.clone();
+            (entry.key().clone(), state, working_dir)
         })
         .collect()
 }
