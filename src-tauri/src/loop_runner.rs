@@ -159,8 +159,8 @@ async fn run_loop_iteration(app: AppHandle, loop_id: String) {
         let sessions = pty::list_sessions_internal();
         let worker_state = sessions
             .iter()
-            .find(|(id, _)| id == &worker_id)
-            .map(|(_, s)| s.clone());
+            .find(|(id, _, _)| id == &worker_id)
+            .map(|(_, s, _)| s.clone());
 
         match worker_state {
             Some(pty::SessionState::Completed) | Some(pty::SessionState::Failed) => {
@@ -282,8 +282,8 @@ async fn run_loop_iteration(app: AppHandle, loop_id: String) {
         let sessions = pty::list_sessions_internal();
         let verifier_state = sessions
             .iter()
-            .find(|(id, _)| id == &verifier_pty_id)
-            .map(|(_, s)| s.clone());
+            .find(|(id, _, _)| id == &verifier_pty_id)
+            .map(|(_, s, _)| s.clone());
 
         match verifier_state {
             Some(pty::SessionState::Completed) | Some(pty::SessionState::Failed) => break,
