@@ -7,6 +7,7 @@ license = "MIT"
 repository = "https://github.com/openwork-dev/OpenWork"
 edition = "2021"
 rust-version = "1.77.2"
+default-run = "openwork"
 
 [lib]
 name = "app_lib"
