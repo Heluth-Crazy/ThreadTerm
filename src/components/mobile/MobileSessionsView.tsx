@@ -1,10 +1,12 @@
 import { ChevronRight, Clock3, FolderKanban, MessageSquarePlus } from 'lucide-react';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Project, ProjectSession, SessionProvider } from '../../types/app';
 import { formatTimeAgo } from '../../utils/dateUtils';
 import { cn } from '../../lib/utils';
 import { SessionStatusBadge } from '../shared/SessionStatusBadge';
+
+type SessionFilter = 'all' | 'claude' | 'codex';
 
 type SessionRecord = {
   id: string;
@@ -60,6 +62,7 @@ export default function MobileSessionsView({
   onNewSession,
 }: MobileSessionsViewProps) {
   const { t } = useTranslation('sidebar');
+  const [activeFilter, setActiveFilter] = useState<SessionFilter>('all');
   const currentTime = new Date();
   const fallbackClaude = t('projects.newSession', { defaultValue: 'New Session' });
   const fallbackCodex = t('projects.codexSession', { defaultValue: 'Codex Session' });
@@ -96,6 +99,11 @@ export default function MobileSessionsView({
     return [...claudeSessions, ...codexSessions].sort((left, right) => right.timestampMs - left.timestampMs);
   }, [fallbackClaude, fallbackCodex, selectedProject]);
 
+  const filteredSessions = useMemo(
+    () => (activeFilter === 'all' ? sessions : sessions.filter((s) => s.provider === activeFilter)),
+    [activeFilter, sessions],
+  );
+
   if (!selectedProject) {
     return (
       <section className="flex h-full items-center justify-center px-6">
@@ -128,6 +136,25 @@ export default function MobileSessionsView({
         </div>
       </header>
 
+      {/* Session type filter tabs */}
+      <div className="mb-3 flex gap-1 rounded-lg border border-border/60 bg-card/70 p-1">
+        {(['all', 'claude', 'codex'] as const).map((filter) => (
+          <button
+            key={filter}
+            type="button"
+            onClick={() => setActiveFilter(filter)}
+            className={cn(
+              'flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors',
+              activeFilter === filter
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {filter === 'all' ? 'All' : filter === 'claude' ? 'Claude' : 'Codex'}
+          </button>
+        ))}
+      </div>
+
       <div className="mb-3 grid grid-cols-2 gap-2">
         <button
           type="button"
@@ -148,13 +175,13 @@ export default function MobileSessionsView({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto space-y-2">
-        {sessions.length === 0 ? (
+        {filteredSessions.length === 0 ? (
           <div className="rounded-xl border border-border/60 bg-card/70 p-4 text-sm text-muted-foreground">
             {t('sessions.noSessions', { defaultValue: 'No sessions yet' })}
           </div>
         ) : null}
 
-        {sessions.map((item) => {
+        {filteredSessions.map((item) => {
           const isActive = selectedSession?.id === item.id;
           const providerLabel = item.provider === 'codex' ? 'Codex' : 'Claude';
 
