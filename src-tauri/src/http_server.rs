@@ -1,7 +1,7 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket},
-        Path, State, WebSocketUpgrade,
+        Path, Query, State, WebSocketUpgrade,
     },
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Json, Response},
@@ -78,6 +78,8 @@ pub async fn start_http_server(app_handle: tauri::AppHandle) {
         .route("/api/projects", get(list_projects))
         .route("/api/projects", post(add_project))
         .route("/api/projects/remove", post(remove_project))
+        .route("/api/session-history", get(list_session_history))
+        .route("/api/session-history/{session_id}/messages", get(get_session_messages))
         .route("/api/pty/{id}/ws", get(pty_ws_handler))
         .route("/ws", get(ws_handler))
         // SPA fallback: serve static files or index.html
@@ -292,7 +294,48 @@ async fn remove_project(Json(req): Json<RemoveProjectRequest>) -> Json<serde_jso
     }
 }
 
-// ── PTY WebSocket (per-session) ──────────────────────────────────────────────
+// ── Session History ──────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct SessionHistoryQuery {
+    project_path: Option<String>,
+    provider: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+async fn list_session_history(
+    Query(q): Query<SessionHistoryQuery>,
+) -> Json<serde_json::Value> {
+    let project_path = q.project_path.unwrap_or_default();
+    let provider = q.provider.unwrap_or_else(|| "claude".to_string());
+    match crate::session_history::session_list(project_path, provider, q.limit, q.offset).await {
+        Ok(sessions) => Json(serde_json::json!(sessions)),
+        Err(e) => Json(serde_json::json!({ "error": e })),
+    }
+}
+
+#[derive(Deserialize)]
+struct SessionMessagesQuery {
+    project_path: Option<String>,
+    provider: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+async fn get_session_messages(
+    Path(session_id): Path<String>,
+    Query(q): Query<SessionMessagesQuery>,
+) -> Json<serde_json::Value> {
+    let project_path = q.project_path.unwrap_or_default();
+    let provider = q.provider.unwrap_or_else(|| "claude".to_string());
+    match crate::session_history::session_messages(project_path, session_id, q.limit, q.offset, Some(provider)).await {
+        Ok(msgs) => Json(serde_json::json!(msgs)),
+        Err(e) => Json(serde_json::json!({ "error": e })),
+    }
+}
+
+
 
 async fn pty_ws_handler(
     ws: WebSocketUpgrade,

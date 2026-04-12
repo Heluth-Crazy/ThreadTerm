@@ -208,7 +208,9 @@ export const ai = {
   listSessions: (projectPath: string, provider: string): Promise<Session[]> =>
     isTauriEnv()
       ? invoke<Session[]>('ai_list_sessions', { projectPath, provider })
-      : Promise.resolve([] as Session[]),
+      : httpGet<Session[]>(`/api/session-history?project_path=${encodeURIComponent(projectPath)}&provider=${encodeURIComponent(provider)}&limit=50`).then(
+          (data) => (Array.isArray(data) ? data : [])
+        ).catch(() => []),
   getConfig: (provider: string): Promise<Record<string, string>> =>
     isTauriEnv()
       ? invoke<Record<string, string>>('settings_get_ai_config', { provider })
@@ -322,11 +324,15 @@ export const sessions = {
   list: (projectPath: string, provider: string, limit?: number, offset?: number) =>
     isTauriEnv()
       ? invoke<SessionSummary[]>('session_list', { projectPath, provider, limit, offset })
-      : Promise.resolve([]),
+      : httpGet<SessionSummary[]>(
+          `/api/session-history?project_path=${encodeURIComponent(projectPath)}&provider=${encodeURIComponent(provider)}${limit != null ? `&limit=${limit}` : ''}${offset != null ? `&offset=${offset}` : ''}`
+        ).then((d) => (Array.isArray(d) ? d : [])).catch(() => []),
   messages: (projectPath: string, sessionId: string, limit?: number, offset?: number, provider?: string) =>
     isTauriEnv()
       ? invoke<SessionMessage[]>('session_messages', { projectPath, sessionId, limit, offset, provider })
-      : Promise.resolve([]),
+      : httpGet<SessionMessage[]>(
+          `/api/session-history/${encodeURIComponent(sessionId)}/messages?project_path=${encodeURIComponent(projectPath)}&provider=${encodeURIComponent(provider ?? 'claude')}${limit != null ? `&limit=${limit}` : ''}${offset != null ? `&offset=${offset}` : ''}`
+        ).then((d) => (Array.isArray(d) ? d : [])).catch(() => []),
 };
 
 // ─── App Info ────────────────────────────────────────────────────────────────
