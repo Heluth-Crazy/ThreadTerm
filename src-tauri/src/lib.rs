@@ -31,7 +31,7 @@ pub fn run() {
 
             // Start the HTTP/WS server in the background (non-blocking).
             let handle = app.handle().clone();
-            tokio::spawn(http_server::start_http_server(handle));
+            tauri::async_runtime::spawn(http_server::start_http_server(handle));
 
             tracing::info!("OpenWork Tauri backend ready");
             Ok(())
