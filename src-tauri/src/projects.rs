@@ -162,6 +162,114 @@ fn display_name(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+/// Scan `~/.claude/projects/` and auto-discover projects by reading the `cwd`
+/// field from the first few lines of each `.jsonl` session file.
+fn auto_discover_all_projects() -> Vec<Project> {
+    let projects_root = match dirs::home_dir() {
+        Some(h) => h.join(".claude").join("projects"),
+        None => return Vec::new(),
+    };
+
+    if !projects_root.is_dir() {
+        return Vec::new();
+    }
+
+    let mut discovered: Vec<Project> = Vec::new();
+    // Track paths we've already added to avoid duplicates within discovery
+    let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let dir_entries = match std::fs::read_dir(&projects_root) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    for entry in dir_entries.flatten() {
+        if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+            continue;
+        }
+
+        let subdir = entry.path();
+        // Try to find a .jsonl file and extract `cwd`
+        let cwd = extract_cwd_from_subdir(&subdir);
+        let cwd = match cwd {
+            Some(c) => c,
+            None => continue,
+        };
+
+        if cwd.is_empty() || seen_paths.contains(&cwd) {
+            continue;
+        }
+
+        // Only add if the directory actually exists on disk
+        if !Path::new(&cwd).is_dir() {
+            continue;
+        }
+
+        seen_paths.insert(cwd.clone());
+
+        let name = display_name(&cwd);
+        let sessions = discover_claude_sessions(&cwd);
+
+        discovered.push(Project {
+            name,
+            path: cwd.clone(),
+            full_path: cwd,
+            description: None,
+            sessions,
+            created_at: None,
+            last_accessed: None,
+            config: None,
+        });
+    }
+
+    discovered
+}
+
+/// Read the first `.jsonl` file in a directory and extract the `cwd` field
+/// from one of the first 10 lines.
+fn extract_cwd_from_subdir(dir: &Path) -> Option<String> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if !fname.ends_with(".jsonl") {
+            continue;
+        }
+        if let Some(cwd) = extract_cwd_from_jsonl(&entry.path()) {
+            return Some(cwd);
+        }
+    }
+    None
+}
+
+/// Parse up to 10 lines of a JSONL file looking for a `cwd` field.
+fn extract_cwd_from_jsonl(path: &Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+
+    for (i, line) in reader.lines().enumerate() {
+        if i >= 10 {
+            break;
+        }
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.starts_with('{') {
+            continue;
+        }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Some(cwd) = val.get("cwd").and_then(|v| v.as_str()) {
+                if !cwd.is_empty() {
+                    return Some(cwd.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
@@ -173,13 +281,22 @@ pub async fn projects_list() -> Result<Vec<Project>, String> {
     // Attach Claude sessions discovered on disk
     for proj in &mut projects {
         let claude_sessions = discover_claude_sessions(&proj.full_path);
-        // Merge: keep existing sessions, add new ones by id
         let existing_ids: std::collections::HashSet<String> =
             proj.sessions.iter().map(|s| s.id.clone()).collect();
         for s in claude_sessions {
             if !existing_ids.contains(&s.id) {
                 proj.sessions.push(s);
             }
+        }
+    }
+
+    // Auto-discover projects from ~/.claude/projects/
+    let discovered = auto_discover_all_projects();
+    let existing_paths: std::collections::HashSet<String> =
+        projects.iter().map(|p| p.full_path.clone()).collect();
+    for proj in discovered {
+        if !existing_paths.contains(&proj.full_path) {
+            projects.push(proj);
         }
     }
 

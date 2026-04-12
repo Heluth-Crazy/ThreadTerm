@@ -203,13 +203,33 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
         if (type === 'claude-command' || type === 'send-message' || type === 'codex-command' || type === 'send-codex-message') {
           const sid: string = message.options?.sessionId ?? '';
           if (!sid) return false;
-          // Find ptyId for this session
-          let ptyId: string | undefined;
+
+          const provider: string = message.options?.provider ?? 'claude';
+          const projectPath: string = message.options?.projectPath ?? '';
+          const resumeId: string | undefined = message.options?.resumeSessionId;
+
+          // Find existing ptyId for this session
+          let existingPtyId: string | undefined;
           for (const [pid, s] of ptyToSession.current) {
-            if (s === sid) { ptyId = pid; break; }
+            if (s === sid) { existingPtyId = pid; break; }
           }
-          if (!ptyId) ptyId = sid; // fallback: ptyId === sessionId
-          ai.sendMessage(ptyId, message.command ?? '').catch(() => {});
+
+          const doSend = async () => {
+            let ptyId = existingPtyId;
+            if (!ptyId) {
+              // Start the session first — spawns the CLI in a PTY
+              try {
+                ptyId = await ai.startSession(sid, provider, projectPath, resumeId);
+                ptyToSession.current.set(ptyId, sid);
+              } catch (e) {
+                console.error('Failed to start AI session:', e);
+                return;
+              }
+            }
+            await ai.sendMessage(ptyId, message.command ?? '');
+          };
+
+          doSend().catch(console.error);
           return true;
         }
 
