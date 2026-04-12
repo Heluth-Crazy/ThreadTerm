@@ -8,14 +8,24 @@ use std::path::PathBuf;
 static DB_POOL: Lazy<Pool<SqliteConnectionManager>> = Lazy::new(|| {
     let dir = db_dir();
     std::fs::create_dir_all(&dir).expect("Failed to create db dir");
+
+    // WAL mode must be set once on a dedicated connection BEFORE the pool
+    // opens multiple connections simultaneously — otherwise they race and lock.
+    // WAL mode is persistent (stored in the DB file) so this is a one-time op.
+    {
+        let conn = rusqlite::Connection::open(db_path())
+            .expect("Failed to open DB for WAL init");
+        conn.execute_batch("PRAGMA journal_mode=WAL;")
+            .expect("Failed to enable WAL mode");
+    }
+
     let manager = SqliteConnectionManager::file(db_path()).with_init(|conn| {
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
-        )?;
+        // WAL already set; only configure per-connection settings here.
+        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
         Ok(())
     });
     Pool::builder()
-        .max_size(8)
+        .max_size(4) // desktop app: 4 is plenty, reduces startup contention
         .build(manager)
         .expect("Failed to build DB pool")
 });

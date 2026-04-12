@@ -6,7 +6,7 @@ import { useSessionStatusStore } from '../stores/sessionStatusStore';
 let mockLatestMessage: unknown = null;
 let mockMessageSequence = 0;
 
-vi.mock('../contexts/WebSocketContext', () => ({
+vi.mock('../contexts/TauriEventContext', () => ({
   useWebSocket: () => ({
     latestMessage: mockLatestMessage,
     messageSequence: mockMessageSequence,
