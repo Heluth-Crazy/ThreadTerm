@@ -4,6 +4,7 @@ mod db;
 mod fs_commands;
 mod git;
 mod health;
+mod http_server;
 mod projects;
 mod pty;
 mod session_history;
@@ -19,11 +20,16 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .setup(|_app| {
+        .setup(|app| {
             db::init_database().map_err(|e| {
                 tracing::error!(error = %e, "Database initialisation failed");
                 e.to_string()
             })?;
+
+            // Start the HTTP/WS server in the background (non-blocking).
+            let handle = app.handle().clone();
+            tokio::spawn(http_server::start_http_server(handle));
+
             tracing::info!("OpenWork Tauri backend ready");
             Ok(())
         })
