@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { useEffect, useRef } from 'react';
 import type { SessionProvider } from '../../../types/app';
 import type { CustomSlashCommand } from '../../../types/slashCommands';
+import type { DiscoveredCommand } from '../../../lib/tauri-bridge';
 import { useCustomSlashCommands } from '../../../hooks/useCustomSlashCommands';
 
 export type CommandEntry = {
@@ -10,6 +11,8 @@ export type CommandEntry = {
   descriptionKey: string;
   category?: string;
   isCustom?: boolean;
+  isDiscovered?: boolean;
+  scope?: 'user' | 'project';
   prompt?: string;
 };
 
@@ -61,12 +64,27 @@ export const SLASH_COMMANDS: Record<string, CommandEntry[]> = {
   ],
 };
 
-/** Build full command list including custom commands for a given provider. */
+/** Build full command list including custom and discovered commands for a given provider. */
 export function buildCommandList(
   provider: string,
   customCommands: CustomSlashCommand[],
+  discoveredCommands: DiscoveredCommand[] = [],
 ): CommandEntry[] {
   const builtIn = SLASH_COMMANDS[provider] ?? SLASH_COMMANDS.claude;
+
+  // Convert discovered commands (CLI file-based) — only for claude
+  const discovered: CommandEntry[] =
+    provider === 'claude'
+      ? discoveredCommands.map((c) => ({
+          cmd: `/${c.name}`,
+          description: c.description || c.name,
+          descriptionKey: '',
+          category: c.scope === 'project' ? 'cli-project' : 'cli-user',
+          isDiscovered: true,
+          scope: c.scope as 'user' | 'project',
+        }))
+      : [];
+
   const custom: CommandEntry[] = customCommands
     .filter((c) => c.provider === 'all' || c.provider === provider)
     .map((c) => ({
@@ -77,7 +95,12 @@ export function buildCommandList(
       isCustom: true,
       prompt: c.prompt,
     }));
-  return [...builtIn, ...custom];
+
+  // Built-in commands always take precedence
+  const builtInNames = new Set(builtIn.map((c) => c.cmd));
+  const filteredDiscovered = discovered.filter((c) => !builtInNames.has(c.cmd));
+
+  return [...builtIn, ...filteredDiscovered, ...custom];
 }
 
 type CommandSuggestionsProps = {
@@ -86,6 +109,7 @@ type CommandSuggestionsProps = {
   onSelect: (cmd: string) => void;
   onClose: () => void;
   activeIndex: number;
+  discoveredCommands?: DiscoveredCommand[];
 };
 
 export default function CommandSuggestions({
@@ -94,12 +118,13 @@ export default function CommandSuggestions({
   onSelect,
   onClose: _onClose,
   activeIndex,
+  discoveredCommands,
 }: CommandSuggestionsProps) {
   const { t } = useTranslation('chat');
   const listRef = useRef<HTMLDivElement>(null);
   const { customCommands } = useCustomSlashCommands();
 
-  const allCommands = buildCommandList(provider, customCommands);
+  const allCommands = buildCommandList(provider, customCommands, discoveredCommands ?? []);
   const filtered = allCommands.filter((c) =>
     c.cmd.toLowerCase().startsWith(`/${query.toLowerCase()}`),
   );
@@ -133,6 +158,8 @@ export default function CommandSuggestions({
       }`}
     >
       {cmd.isCustom && <span className="flex-shrink-0">⭐</span>}
+      {cmd.isDiscovered && cmd.scope === 'user' && <span className="flex-shrink-0">🗂</span>}
+      {cmd.isDiscovered && cmd.scope === 'project' && <span className="flex-shrink-0">📁</span>}
       <span className="font-mono text-foreground">{cmd.cmd}</span>
       <span className="text-muted-foreground">
         {cmd.descriptionKey ? t(cmd.descriptionKey, cmd.description) : cmd.description}
@@ -163,7 +190,11 @@ export default function CommandSuggestions({
           <div className="px-3 pt-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/60">
             {group.category === 'custom'
               ? '⭐ Custom'
-              : t(`commands.category.${group.category}`, group.category)}
+              : group.category === 'cli-user'
+                ? '🗂 CLI Commands'
+                : group.category === 'cli-project'
+                  ? '📁 Project Commands'
+                  : t(`commands.category.${group.category}`, group.category)}
           </div>
         )}
         {group.items.map(({ cmd, globalIndex }) => renderCommandButton(cmd, globalIndex))}

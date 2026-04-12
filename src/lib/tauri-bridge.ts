@@ -346,6 +346,39 @@ export const appInfo = {
 
 // ─── Skills ──────────────────────────────────────────────────────────────────
 
+export interface DiscoveredCommand {
+  name: string;
+  description: string;
+  provider: string;
+  scope: 'user' | 'project';
+  filePath: string;
+}
+
+export interface DiscoveredSkill {
+  name: string;
+  displayName: string;
+  description: string;
+  provider: string;
+  scope: 'user' | 'vendor';
+}
+
+export interface CommandDiscoveryResult {
+  commands: DiscoveredCommand[];
+  skills: DiscoveredSkill[];
+}
+
+export const commandDiscovery = {
+  discover: (provider: string, projectPath?: string): Promise<CommandDiscoveryResult> => {
+    if (isTauriEnv()) {
+      return invoke<CommandDiscoveryResult>('commands_discover', { provider, projectPath });
+    }
+    const params = new URLSearchParams({ provider });
+    if (projectPath) params.set('project_path', projectPath);
+    return httpGet<{ ok: boolean; data: CommandDiscoveryResult }>(`/api/commands/discover?${params}`)
+      .then((r) => r.data);
+  },
+};
+
 export interface SkillRoot {
   id: string;
   label: string;

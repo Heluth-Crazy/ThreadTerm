@@ -1,7 +1,8 @@
 import { Check, ChevronDown, ChevronRight, FileText, Files, Folder, Loader2, Send, Square, XCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { SessionProvider, Project } from '../../../types/app';
-import type { ChatPhase, FlatFileNode, FileTreeNode, ProviderThemeConfig } from '../types/chatTypes';
+import type { ChatPhase, FlatFileNode, FileTreeNode, MentionSuggestionItem, ProviderThemeConfig } from '../types/chatTypes';
+import type { DiscoveredCommand } from '../../../lib/tauri-bridge';
 import CommandSuggestions from './CommandSuggestions';
 
 type InputAreaProps = {
@@ -32,10 +33,10 @@ type InputAreaProps = {
 
   // Mentions
   isMentionOpen: boolean;
-  mentionSuggestions: FlatFileNode[];
+  mentionSuggestions: MentionSuggestionItem[];
   mentionActiveIndex: number;
   onSetMentionActiveIndex: React.Dispatch<React.SetStateAction<number>>;
-  onSelectMention: (filePath: string) => void;
+  onSelectMention: (filePath: string, isSkill?: boolean) => void;
 
   // Command suggestions
   isCmdOpen: boolean;
@@ -43,6 +44,7 @@ type InputAreaProps = {
   cmdActiveIndex: number;
   cmdFilteredCount: number;
   onSelectCommand: (cmd: string) => void;
+  discoveredCommands?: DiscoveredCommand[];
 
   // Actions
   onSend: () => void;
@@ -156,6 +158,7 @@ export default function InputArea({
   cmdActiveIndex,
   cmdFilteredCount: _cmdFilteredCount,
   onSelectCommand,
+  discoveredCommands,
   onSend,
   onAbort,
   providerTheme,
@@ -315,19 +318,24 @@ export default function InputArea({
           <div className={`absolute bottom-full mb-2 left-0 right-0 max-h-56 overflow-y-auto rounded-md border bg-popover shadow-md z-30 ${providerTheme.picker}`}>
             {mentionSuggestions.map((file, index) => (
               <button
-                key={file.path}
+                key={file.isSkill ? `skill:${file.path}` : file.path}
                 type="button"
-                onClick={() => onSelectMention(file.path)}
+                onClick={() => onSelectMention(file.path, file.isSkill)}
                 className={`w-full px-2 py-1.5 text-left text-xs hover:bg-accent flex items-center gap-2 ${
                   index === mentionActiveIndex ? providerTheme.activePickRow : ''
                 }`}
               >
-                {file.type === 'directory' ? (
+                {file.isSkill ? (
+                  <span className="w-3.5 h-3.5 flex-shrink-0 text-center">🧩</span>
+                ) : file.type === 'directory' ? (
                   <Folder className="w-3.5 h-3.5 text-muted-foreground" />
                 ) : (
                   <FileText className="w-3.5 h-3.5 text-muted-foreground" />
                 )}
-                <span className="truncate">{file.path}</span>
+                <span className="truncate">{file.isSkill ? (file.displayName || file.path) : file.path}</span>
+                {file.isSkill && file.description && (
+                  <span className="text-muted-foreground truncate ml-1">{file.description}</span>
+                )}
               </button>
             ))}
           </div>
@@ -340,6 +348,7 @@ export default function InputArea({
             onSelect={onSelectCommand}
             onClose={() => {/* handled by keydown */}}
             activeIndex={cmdActiveIndex}
+            discoveredCommands={discoveredCommands}
           />
         )}
 
