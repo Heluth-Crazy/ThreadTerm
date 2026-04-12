@@ -21,13 +21,38 @@ fn expand_path(p: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
+/// Ensure `path` is within the user's home directory.
+/// Resolves symlinks to prevent traversal attacks.
+fn validate_fs_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let p = std::path::Path::new(path);
+    let absolute = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("Cannot get cwd: {e}"))?
+            .join(p)
+    };
+    // Canonicalize if it exists to resolve symlinks
+    let canonical = if absolute.exists() {
+        absolute.canonicalize().map_err(|e| format!("Cannot canonicalize path: {e}"))?
+    } else {
+        absolute.clone()
+    };
+    // Must be within home directory
+    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
+    if !canonical.starts_with(&home) {
+        return Err("Access denied: path is outside home directory".to_string());
+    }
+    Ok(canonical)
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
 pub async fn fs_list_dir(path: String) -> Result<Vec<DirEntry>, String> {
-    let dir = expand_path(&path);
+    let dir = validate_fs_path(&expand_path(&path).to_string_lossy())?;
     if !dir.is_dir() {
         return Err(format!("Not a directory: {}", dir.display()));
     }
@@ -63,13 +88,13 @@ pub async fn fs_list_dir(path: String) -> Result<Vec<DirEntry>, String> {
 
 #[tauri::command]
 pub async fn fs_read_file(path: String) -> Result<String, String> {
-    let p = expand_path(&path);
+    let p = validate_fs_path(&expand_path(&path).to_string_lossy())?;
     std::fs::read_to_string(&p).map_err(|e| format!("read failed: {e}"))
 }
 
 #[tauri::command]
 pub async fn fs_write_file(path: String, content: String) -> Result<(), String> {
-    let p = expand_path(&path);
+    let p = validate_fs_path(&expand_path(&path).to_string_lossy())?;
     if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
     }
@@ -78,18 +103,17 @@ pub async fn fs_write_file(path: String, content: String) -> Result<(), String> 
 
 #[tauri::command]
 pub async fn fs_delete_file(path: String) -> Result<(), String> {
-    let p = expand_path(&path);
+    let p = validate_fs_path(&expand_path(&path).to_string_lossy())?;
     if p.is_dir() {
-        std::fs::remove_dir_all(&p).map_err(|e| format!("rmdir failed: {e}"))
-    } else {
-        std::fs::remove_file(&p).map_err(|e| format!("rm failed: {e}"))
+        return Err("Cannot delete directories through this API".into());
     }
+    std::fs::remove_file(&p).map_err(|e| format!("rm failed: {e}"))
 }
 
 #[tauri::command]
 pub async fn fs_read_file_base64(path: String) -> Result<String, String> {
     use base64::Engine;
-    let p = expand_path(&path);
+    let p = validate_fs_path(&expand_path(&path).to_string_lossy())?;
     let bytes = std::fs::read(&p).map_err(|e| format!("read failed: {e}"))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
@@ -101,7 +125,7 @@ pub async fn get_app_version() -> Result<String, String> {
 
 #[tauri::command]
 pub async fn settings_get_all() -> Result<serde_json::Value, String> {
-    let conn = db::get_db();
+    let conn = db::get_db()?;
     let mut stmt = conn
         .prepare("SELECT key, value FROM settings")
         .map_err(|e| format!("query failed: {e}"))?;

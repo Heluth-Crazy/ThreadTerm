@@ -33,13 +33,14 @@ pub struct UserInfo {
 const TOKEN_EXPIRY_SECS: i64 = 7 * 24 * 60 * 60;
 
 /// Retrieve (or generate on first run) the JWT secret from the settings table.
-fn jwt_secret() -> String {
-    match db::get_setting("jwt_secret") {
-        Ok(Some(secret)) => secret,
-        _ => {
+fn jwt_secret() -> Result<String, String> {
+    match db::get_setting("jwt_secret").map_err(|e| format!("DB error: {e}"))? {
+        Some(secret) => Ok(secret),
+        None => {
             let secret = uuid::Uuid::new_v4().to_string();
-            let _ = db::set_setting("jwt_secret", &secret);
-            secret
+            db::set_setting("jwt_secret", &secret)
+                .map_err(|e| format!("Failed to persist JWT secret: {e}"))?;
+            Ok(secret)
         }
     }
 }
@@ -53,7 +54,7 @@ fn generate_token(user_id: i64, username: &str) -> Result<String, String> {
         exp: now + TOKEN_EXPIRY_SECS as usize,
         iat: now,
     };
-    let secret = jwt_secret();
+    let secret = jwt_secret()?;
     encode(
         &Header::default(),
         &claims,
@@ -64,7 +65,7 @@ fn generate_token(user_id: i64, username: &str) -> Result<String, String> {
 
 /// Verify a JWT and return its claims.
 fn verify_token(token: &str) -> Result<Claims, String> {
-    let secret = jwt_secret();
+    let secret = jwt_secret()?;
     let data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
@@ -76,7 +77,7 @@ fn verify_token(token: &str) -> Result<Claims, String> {
 
 /// Persist a token into the sessions table.
 fn insert_session(token: &str, user_id: i64) -> Result<(), String> {
-    let conn = db::get_db();
+    let conn = db::get_db()?;
     conn.execute(
         "INSERT INTO sessions (token, user_id, expires_at) VALUES (?1, ?2, datetime('now', '+7 days'))",
         rusqlite::params![token, user_id],
@@ -91,7 +92,7 @@ fn insert_session(token: &str, user_id: i64) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn auth_login(username: String, password: String) -> Result<LoginResponse, String> {
-    let conn = db::get_db();
+    let conn = db::get_db()?;
 
     let row = conn
         .query_row(
@@ -141,10 +142,17 @@ pub async fn auth_login(username: String, password: String) -> Result<LoginRespo
 
 #[tauri::command]
 pub async fn auth_register(username: String, password: String) -> Result<LoginResponse, String> {
+    if password.trim().is_empty() {
+        return Err("Password cannot be empty".into());
+    }
+    if password.len() < 6 {
+        return Err("Password must be at least 6 characters".into());
+    }
+
     let hash =
         bcrypt::hash(&password, bcrypt::DEFAULT_COST).map_err(|e| format!("Hash error: {e}"))?;
 
-    let conn = db::get_db();
+    let conn = db::get_db()?;
     conn.execute(
         "INSERT INTO users (username, password_hash) VALUES (?1, ?2)",
         rusqlite::params![&username, &hash],
@@ -170,7 +178,7 @@ pub async fn auth_register(username: String, password: String) -> Result<LoginRe
 pub async fn auth_verify(token: String) -> Result<UserInfo, String> {
     let claims = verify_token(&token)?;
 
-    let conn = db::get_db();
+    let conn = db::get_db()?;
 
     // Verify session exists and is not expired
     let session_exists: bool = conn
@@ -207,7 +215,7 @@ pub async fn auth_verify(token: String) -> Result<UserInfo, String> {
 
 #[tauri::command]
 pub async fn auth_logout(token: String) -> Result<(), String> {
-    let conn = db::get_db();
+    let conn = db::get_db()?;
     conn.execute("DELETE FROM sessions WHERE token = ?1", [&token])
         .map_err(|e| format!("Logout failed: {e}"))?;
     Ok(())

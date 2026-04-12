@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use once_cell::sync::Lazy;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use serde::Serialize;
@@ -73,10 +74,6 @@ pub async fn pty_create(
     cols: u16,
     window: Window,
 ) -> Result<String, String> {
-    if PTY_SESSIONS.contains_key(&id) {
-        return Err(format!("PTY session '{}' already exists", id));
-    }
-
     let pty_system = NativePtySystem::default();
 
     let size = PtySize {
@@ -121,12 +118,23 @@ pub async fn pty_create(
         _working_dir: working_dir,
     });
 
-    PTY_SESSIONS.insert(id.clone(), session.clone());
+    let session_for_stream = session.clone();
+    match PTY_SESSIONS.entry(id.clone()) {
+        Entry::Occupied(_) => {
+            if let Ok(mut c) = session.child.lock() {
+                let _ = c.kill();
+            }
+            return Err(format!("PTY session '{}' already exists", id));
+        }
+        Entry::Vacant(e) => {
+            e.insert(session);
+        }
+    }
 
     // Spawn a background thread to read PTY output and emit events.
     let stream_id = id.clone();
     std::thread::spawn(move || {
-        stream_pty_output(stream_id, reader, session, window);
+        stream_pty_output(stream_id, reader, session_for_stream, window);
     });
 
     tracing::info!(id = %id, shell = %shell, "PTY session created");
@@ -210,20 +218,24 @@ pub async fn pty_input(id: String, data: String) -> Result<(), String> {
 
 /// Write to a PTY session whose key matches the given prefix (for session lookup).
 pub fn write_to_session_by_prefix(prefix: &str, data: &str) -> Result<(), String> {
-    for entry in PTY_SESSIONS.iter() {
-        if entry.key() == prefix || entry.key().starts_with(prefix) {
-            let mut writer = entry
-                .writer
-                .lock()
-                .map_err(|e| format!("lock error: {e}"))?;
-            writer
-                .write_all(data.as_bytes())
-                .map_err(|e| format!("write error: {e}"))?;
-            writer.flush().map_err(|e| format!("flush error: {e}"))?;
-            return Ok(());
-        }
-    }
-    Err(format!("No PTY session found for: {prefix}"))
+    // Collect key first, drop DashMap read reference before acquiring Mutex
+    let key = PTY_SESSIONS
+        .iter()
+        .find(|e| e.key() == prefix || e.key().starts_with(prefix))
+        .map(|e| e.key().clone());
+
+    let key = key.ok_or_else(|| format!("No PTY session found for: {prefix}"))?;
+
+    let session = PTY_SESSIONS.get(&key)
+        .ok_or_else(|| format!("PTY session disappeared: {key}"))?;
+
+    let mut writer = session.writer.lock()
+        .map_err(|e| format!("lock error: {e}"))?;
+    writer.write_all(data.as_bytes())
+        .map_err(|e| format!("write error: {e}"))?;
+    writer.flush()
+        .map_err(|e| format!("flush error: {e}"))?;
+    Ok(())
 }
 
 /// Resize a PTY session.
@@ -277,10 +289,6 @@ pub fn create_command_pty(
     cols: u16,
     window: Window,
 ) -> Result<String, String> {
-    if PTY_SESSIONS.contains_key(&id) {
-        return Err(format!("PTY session '{}' already exists", id));
-    }
-
     let pty_system = NativePtySystem::default();
     let size = PtySize {
         rows,
@@ -325,11 +333,22 @@ pub fn create_command_pty(
         _working_dir: working_dir,
     });
 
-    PTY_SESSIONS.insert(id.clone(), session.clone());
+    let session_for_stream = session.clone();
+    match PTY_SESSIONS.entry(id.clone()) {
+        Entry::Occupied(_) => {
+            if let Ok(mut c) = session.child.lock() {
+                let _ = c.kill();
+            }
+            return Err(format!("PTY session '{}' already exists", id));
+        }
+        Entry::Vacant(e) => {
+            e.insert(session);
+        }
+    }
 
     let stream_id = id.clone();
     std::thread::spawn(move || {
-        stream_pty_output(stream_id, reader, session, window);
+        stream_pty_output(stream_id, reader, session_for_stream, window);
     });
 
     tracing::info!(id = %id, program = %program, "Command PTY session created");

@@ -52,15 +52,14 @@ pub fn encode_project_path(path: &str) -> String {
     result
 }
 
-fn projects_file() -> PathBuf {
-    dirs::home_dir()
-        .expect("Could not determine home directory")
-        .join(".openwork")
-        .join("projects.json")
+fn projects_file() -> Result<PathBuf, String> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| "Could not determine home directory".to_string())?;
+    Ok(home.join(".openwork").join("projects.json"))
 }
 
 fn load_projects() -> Result<Vec<Project>, String> {
-    let path = projects_file();
+    let path = projects_file()?;
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -70,7 +69,7 @@ fn load_projects() -> Result<Vec<Project>, String> {
 }
 
 fn save_projects(projects: &[Project]) -> Result<(), String> {
-    let path = projects_file();
+    let path = projects_file()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create config dir: {e}"))?;

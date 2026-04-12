@@ -435,7 +435,10 @@ pub async fn git_pull(
         });
     }
 
-    let status = child.wait().map_err(|e| format!("git pull wait failed: {e}"))?;
+    let status = tokio::task::spawn_blocking(move || child.wait())
+        .await
+        .map_err(|e| format!("Thread join error: {e}"))?
+        .map_err(|e| format!("git pull wait failed: {e}"))?;
     if !status.success() {
         return Err("git pull failed".to_string());
     }
@@ -480,7 +483,10 @@ pub async fn git_push(
         });
     }
 
-    let status = child.wait().map_err(|e| format!("git push wait failed: {e}"))?;
+    let status = tokio::task::spawn_blocking(move || child.wait())
+        .await
+        .map_err(|e| format!("Thread join error: {e}"))?
+        .map_err(|e| format!("git push wait failed: {e}"))?;
     if !status.success() {
         return Err("git push failed".to_string());
     }

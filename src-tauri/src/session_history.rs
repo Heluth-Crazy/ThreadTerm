@@ -1,3 +1,4 @@
+use crate::projects::encode_project_path;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -21,13 +22,8 @@ pub struct SessionSummary {
     pub created_at: Option<String>,
 }
 
-fn claude_sessions_dir() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_default();
-    home.join(".claude").join("projects")
-}
-
-fn encode_project_path(path: &str) -> String {
-    path.replace('/', "-").trim_start_matches('-').to_string()
+fn claude_sessions_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".claude").join("projects"))
 }
 
 #[tauri::command]
@@ -44,12 +40,15 @@ pub async fn session_list(
         return Ok(vec![]);
     }
 
+    let base = match claude_sessions_dir() {
+        Some(d) => d,
+        None => return Ok(vec![]),
+    };
+
     let encoded = encode_project_path(&project_path);
-    let sessions_dir = claude_sessions_dir().join(&encoded);
+    let sessions_dir = base.join(&encoded);
 
     if !sessions_dir.exists() {
-        // Try scanning all subdirs for matching path
-        let base = claude_sessions_dir();
         if !base.exists() {
             return Ok(vec![]);
         }
@@ -151,14 +150,17 @@ pub async fn session_messages(
         return Ok(vec![]);
     }
 
+    let base = match claude_sessions_dir() {
+        Some(d) => d,
+        None => return Ok(vec![]),
+    };
+
     let encoded = encode_project_path(&project_path);
-    let session_file = claude_sessions_dir()
+    let session_file = base
         .join(&encoded)
         .join(format!("{session_id}.jsonl"));
 
     if !session_file.exists() {
-        // scan all subdirs
-        let base = claude_sessions_dir();
         if let Ok(entries) = std::fs::read_dir(&base) {
             for entry in entries.flatten() {
                 let candidate = entry.path().join(format!("{session_id}.jsonl"));

@@ -33,7 +33,7 @@ static DB_POOL: Lazy<Pool<SqliteConnectionManager>> = Lazy::new(|| {
 /// Returns the database directory: `~/.openwork/`
 fn db_dir() -> PathBuf {
     dirs::home_dir()
-        .expect("Could not determine home directory")
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".openwork")
 }
 
@@ -43,13 +43,13 @@ fn db_path() -> PathBuf {
 }
 
 /// Acquire a pooled database connection.
-pub fn get_db() -> r2d2::PooledConnection<SqliteConnectionManager> {
-    DB_POOL.get().expect("Failed to get DB connection from pool")
+pub fn get_db() -> Result<r2d2::PooledConnection<SqliteConnectionManager>, String> {
+    DB_POOL.get().map_err(|e| format!("DB connection unavailable: {e}"))
 }
 
 /// Initialize the database schema. Call once at startup.
 pub fn init_database() -> Result<()> {
-    let conn = get_db();
+    let conn = get_db().map_err(|e| anyhow::anyhow!("{e}"))?;
 
     conn.execute_batch(
         "
@@ -135,7 +135,7 @@ fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
 
 /// Retrieve a setting value by key.
 pub fn get_setting(key: &str) -> Result<Option<String>> {
-    let conn = get_db();
+    let conn = get_db().map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
     let result = stmt
         .query_row([key], |row| row.get(0))
@@ -145,7 +145,7 @@ pub fn get_setting(key: &str) -> Result<Option<String>> {
 
 /// Insert or update a setting.
 pub fn set_setting(key: &str, value: &str) -> Result<()> {
-    let conn = get_db();
+    let conn = get_db().map_err(|e| anyhow::anyhow!("{e}"))?;
     conn.execute(
         "INSERT INTO settings (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",

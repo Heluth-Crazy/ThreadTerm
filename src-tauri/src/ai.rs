@@ -105,9 +105,13 @@ pub async fn ai_approve_tool(
     permission_id: String,
     approved: bool,
 ) -> Result<(), String> {
-    let input = format!(
-        "{{\"type\":\"tool_approval\",\"id\":\"{permission_id}\",\"approved\":{approved}}}\n"
-    );
+    let approval_msg = serde_json::json!({
+        "type": "tool_approval",
+        "id": permission_id,
+        "approved": approved,
+    });
+    let input = serde_json::to_string(&approval_msg)
+        .map_err(|e| format!("Failed to serialize approval: {e}"))? + "\n";
     pty::write_to_session_by_prefix(&session_id, &input)
 }
 
