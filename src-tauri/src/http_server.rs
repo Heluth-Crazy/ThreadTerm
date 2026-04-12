@@ -504,7 +504,28 @@ async fn handle_pty_ws(mut socket: WebSocket, session_id: String) {
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    let token_valid = {
+        let provided = params.get("token")
+            .map(|t| t.as_str().to_string())
+            .or_else(|| {
+                headers.get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.strip_prefix("Bearer "))
+                    .map(String::from)
+            });
+        match provided {
+            Some(t) => t == state.api_token,
+            None => false,
+        }
+    };
+
+    if !token_valid {
+        return (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
     ws.on_upgrade(|socket| handle_ws(socket, state))
 }
 

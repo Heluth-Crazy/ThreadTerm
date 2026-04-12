@@ -664,9 +664,16 @@ pub async fn git_discard_file(project_path: String, file_path: String) -> Result
 }
 
 #[tauri::command]
-pub async fn git_staged_diff(project_path: String) -> Result<String, String> {
+pub async fn git_staged_diff(project_path: String, file_path: Option<String>) -> Result<String, String> {
+    let mut args = vec!["diff", "--cached"];
+    let fp_string;
+    if let Some(ref fp) = file_path {
+        args.push("--");
+        fp_string = fp.clone();
+        args.push(&fp_string);
+    }
     let output = std::process::Command::new("git")
-        .args(["diff", "--cached"])
+        .args(&args)
         .current_dir(&project_path)
         .output()
         .map_err(|e| format!("git error: {e}"))?;

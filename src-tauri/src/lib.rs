@@ -49,6 +49,7 @@ pub fn run() {
             auth::auth_register,
             auth::auth_verify,
             auth::auth_logout,
+            auth::get_cli_auth_status,
             // Projects
             projects::projects_list,
             projects::projects_get,

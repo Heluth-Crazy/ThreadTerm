@@ -3,7 +3,7 @@ import { ChevronRight, ChevronLeft, Check, GitBranch, User, Mail, LogIn, Externa
 import ClaudeLogo from './ClaudeLogo';
 import CodexLogo from './CodexLogo';
 import LoginModal from './LoginModal';
-import { settings } from '../lib/tauri-bridge';
+import { settings, cliAuth } from '../lib/tauri-bridge';
 import { useAuth } from '../contexts/AuthContext';
 import { IS_PLATFORM } from '../constants/config';
 
@@ -65,10 +65,10 @@ const Onboarding = ({ onComplete }) => {
 
   const checkClaudeAuthStatus = async () => {
     try {
-      // TODO: CLI auth status check not yet implemented in Tauri backend
+      const status = await cliAuth.getStatus('claude');
       setClaudeAuthStatus({
-        authenticated: false,
-        email: null,
+        authenticated: status.authenticated,
+        email: status.email,
         loading: false,
         error: null,
       });
@@ -85,10 +85,10 @@ const Onboarding = ({ onComplete }) => {
 
   const checkCodexAuthStatus = async () => {
     try {
-      // TODO: CLI auth status check not yet implemented in Tauri backend
+      const status = await cliAuth.getStatus('codex');
       setCodexAuthStatus({
-        authenticated: false,
-        email: null,
+        authenticated: status.authenticated,
+        email: status.email,
         loading: false,
         error: null,
       });

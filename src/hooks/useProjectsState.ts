@@ -787,9 +787,10 @@ export function useProjectsState({
 
       // Call backend API to persist the deletion
       try {
-        // Session deletion is handled locally; Tauri backend doesn't have a
-        // dedicated delete-session command yet. Just update local state.
-        console.info('Session deleted locally:', sessionIdToDelete);
+        const proj = projects.find((p) => p.name === projectName);
+        const projectPath = proj?.fullPath || proj?.path || projectName;
+        await tauriProjects.deleteSession(sessionIdToDelete, projectPath);
+        console.info('Session deleted from backend:', sessionIdToDelete);
       } catch (err) {
         console.error('Error calling delete session API:', err);
       }

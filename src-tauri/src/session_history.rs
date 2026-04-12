@@ -26,6 +26,171 @@ fn claude_sessions_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".claude").join("projects"))
 }
 
+fn codex_sessions_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".codex").join("sessions"))
+}
+
+fn parse_codex_sessions_from_dir(base: &PathBuf, project_path: &str) -> Vec<SessionSummary> {
+    let mut sessions = Vec::new();
+    let Ok(year_entries) = std::fs::read_dir(base) else { return sessions; };
+    for year_entry in year_entries.flatten() {
+        let year_path = year_entry.path();
+        if !year_path.is_dir() { continue; }
+        let Ok(month_entries) = std::fs::read_dir(&year_path) else { continue; };
+        for month_entry in month_entries.flatten() {
+            let month_path = month_entry.path();
+            if !month_path.is_dir() { continue; }
+            let Ok(day_entries) = std::fs::read_dir(&month_path) else { continue; };
+            for day_entry in day_entries.flatten() {
+                let day_path = day_entry.path();
+                if !day_path.is_dir() { continue; }
+                let Ok(file_entries) = std::fs::read_dir(&day_path) else { continue; };
+                for file_entry in file_entries.flatten() {
+                    let file_path = file_entry.path();
+                    if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") { continue; }
+                    if let Some(summary) = parse_codex_session_file(&file_path, project_path) {
+                        sessions.push(summary);
+                    }
+                }
+            }
+        }
+    }
+    sessions
+}
+
+fn parse_codex_session_file(file_path: &PathBuf, filter_project: &str) -> Option<SessionSummary> {
+    let content = std::fs::read_to_string(file_path).ok()?;
+    let mut session_id = None;
+    let mut session_cwd = None;
+    let mut created_at = None;
+    let mut message_count = 0usize;
+    let mut last_message = None;
+
+    for line in content.lines() {
+        let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else { continue; };
+        let line_type = obj["type"].as_str().unwrap_or("");
+        let payload = &obj["payload"];
+
+        match line_type {
+            "session_meta" => {
+                session_id = payload["id"].as_str().map(String::from);
+                session_cwd = payload["cwd"].as_str().map(String::from);
+                created_at = payload["timestamp"].as_str().map(String::from);
+            }
+            "event_msg" => {
+                let pt = payload["type"].as_str().unwrap_or("");
+                if pt == "user_message" || pt == "agent_message" {
+                    message_count += 1;
+                    last_message = payload["message"].as_str().map(String::from);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let session_id = session_id?;
+    if !filter_project.is_empty() {
+        if let Some(ref cwd) = session_cwd {
+            if !cwd.contains(filter_project) && !filter_project.contains(cwd.as_str()) {
+                let cwd_base = std::path::Path::new(cwd).file_name()
+                    .and_then(|n| n.to_str()).unwrap_or("");
+                let filter_base = std::path::Path::new(filter_project).file_name()
+                    .and_then(|n| n.to_str()).unwrap_or("");
+                if cwd_base != filter_base {
+                    return None;
+                }
+            }
+        }
+    }
+
+    Some(SessionSummary {
+        session_id,
+        project_path: session_cwd.unwrap_or_default(),
+        provider: "codex".to_string(),
+        name: None,
+        message_count,
+        last_message,
+        created_at,
+    })
+}
+
+fn parse_codex_session_messages(file_path: &PathBuf, limit: usize, offset: usize) -> Vec<SessionMessage> {
+    let content = match std::fs::read_to_string(file_path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut messages = Vec::new();
+
+    for line in content.lines() {
+        let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else { continue; };
+        if obj["type"].as_str() != Some("event_msg") { continue; }
+        let payload = &obj["payload"];
+        let pt = payload["type"].as_str().unwrap_or("");
+
+        let (role, text) = match pt {
+            "user_message" => {
+                let msg = payload["message"].as_str().unwrap_or("");
+                if msg.is_empty() { continue; }
+                ("user", msg.to_string())
+            }
+            "agent_message" => {
+                let msg = payload["message"].as_str().unwrap_or("");
+                if msg.is_empty() { continue; }
+                ("assistant", msg.to_string())
+            }
+            _ => continue,
+        };
+
+        let timestamp = obj["timestamp"].as_str().map(String::from);
+        messages.push(SessionMessage {
+            uuid: String::new(),
+            role: role.to_string(),
+            content: serde_json::Value::String(text),
+            timestamp,
+            is_sidechain: None,
+        });
+    }
+
+    messages.into_iter().skip(offset).take(limit).collect()
+}
+
+fn find_codex_session_files(base: &PathBuf) -> Vec<(PathBuf, String)> {
+    let mut result = Vec::new();
+    let Ok(year_entries) = std::fs::read_dir(base) else { return result; };
+    for year_entry in year_entries.flatten() {
+        let year_path = year_entry.path();
+        if !year_path.is_dir() { continue; }
+        let Ok(month_entries) = std::fs::read_dir(&year_path) else { continue; };
+        for month_entry in month_entries.flatten() {
+            let month_path = month_entry.path();
+            if !month_path.is_dir() { continue; }
+            let Ok(day_entries) = std::fs::read_dir(&month_path) else { continue; };
+            for day_entry in day_entries.flatten() {
+                let day_path = day_entry.path();
+                if !day_path.is_dir() { continue; }
+                let Ok(file_entries) = std::fs::read_dir(&day_path) else { continue; };
+                for file_entry in file_entries.flatten() {
+                    let fp = file_entry.path();
+                    if fp.extension().and_then(|e| e.to_str()) != Some("jsonl") { continue; }
+                    if let Ok(content) = std::fs::read_to_string(&fp) {
+                        for line in content.lines().take(3) {
+                            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) {
+                                if obj["type"].as_str() == Some("session_meta") {
+                                    if let Some(id) = obj["payload"]["id"].as_str() {
+                                        result.push((fp.clone(), id.to_string()));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
 #[tauri::command]
 pub async fn session_list(
     project_path: String,
@@ -35,6 +200,21 @@ pub async fn session_list(
 ) -> Result<Vec<SessionSummary>, String> {
     let limit = limit.unwrap_or(20);
     let offset = offset.unwrap_or(0);
+
+    if provider == "codex" {
+        let base = match codex_sessions_dir() {
+            Some(d) => d,
+            None => return Ok(vec![]),
+        };
+        if !base.exists() {
+            return Ok(vec![]);
+        }
+        let mut all = parse_codex_sessions_from_dir(&base, &project_path);
+        all.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        let total = all.len();
+        let end = (offset + limit).min(total);
+        return Ok(if offset < total { all[offset..end].to_vec() } else { vec![] });
+    }
 
     if provider != "claude" {
         return Ok(vec![]);
@@ -146,6 +326,23 @@ pub async fn session_messages(
     let offset = offset.unwrap_or(0);
     let provider = provider.unwrap_or_else(|| "claude".to_string());
 
+    if provider == "codex" {
+        let base = match codex_sessions_dir() {
+            Some(d) => d,
+            None => return Ok(vec![]),
+        };
+        if !base.exists() {
+            return Ok(vec![]);
+        }
+        let all_sessions_with_paths = find_codex_session_files(&base);
+        for (file_path, sid) in &all_sessions_with_paths {
+            if sid == &session_id {
+                return Ok(parse_codex_session_messages(file_path, limit, offset));
+            }
+        }
+        return Ok(vec![]);
+    }
+
     if provider != "claude" {
         return Ok(vec![]);
     }
@@ -208,3 +405,5 @@ fn read_session_file(
     let end = std::cmp::min(start + limit, total);
     Ok(messages[start..end].to_vec())
 }
+
+

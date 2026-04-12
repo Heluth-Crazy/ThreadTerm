@@ -220,3 +220,67 @@ pub async fn auth_logout(token: String) -> Result<(), String> {
         .map_err(|e| format!("Logout failed: {e}"))?;
     Ok(())
 }
+
+#[derive(Serialize)]
+pub struct CliAuthStatus {
+    pub authenticated: bool,
+    pub email: Option<String>,
+    pub provider: String,
+}
+
+#[tauri::command]
+pub async fn get_cli_auth_status(provider: String) -> Result<CliAuthStatus, String> {
+    match provider.as_str() {
+        "claude" => {
+            let home = dirs::home_dir().ok_or("no home dir")?;
+            let auth_path = home.join(".claude").join("auth.json");
+            let creds_path = home.join(".claude").join(".credentials.json");
+
+            for p in [&auth_path, &creds_path] {
+                if p.exists() {
+                    if let Ok(content) = std::fs::read_to_string(p) {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                            let email = json["email"].as_str()
+                                .or_else(|| json["account"]["emailAddress"].as_str())
+                                .map(String::from);
+                            let has_token = json["oauthToken"].is_object()
+                                || json["access_token"].is_string()
+                                || json["token"].is_string();
+                            if has_token || email.is_some() {
+                                return Ok(CliAuthStatus {
+                                    authenticated: true,
+                                    email,
+                                    provider,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(CliAuthStatus { authenticated: false, email: None, provider })
+        }
+        "codex" => {
+            let home = dirs::home_dir().ok_or("no home dir")?;
+            let auth_path = home.join(".codex").join("auth.json");
+            if auth_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&auth_path) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                        let email = json["email"].as_str().map(String::from);
+                        let has_token = json["token"].is_string()
+                            || json["access_token"].is_string()
+                            || json["api_key"].is_string();
+                        if has_token || email.is_some() {
+                            return Ok(CliAuthStatus {
+                                authenticated: true,
+                                email,
+                                provider,
+                            });
+                        }
+                    }
+                }
+            }
+            Ok(CliAuthStatus { authenticated: false, email: None, provider })
+        }
+        _ => Ok(CliAuthStatus { authenticated: false, email: None, provider }),
+    }
+}

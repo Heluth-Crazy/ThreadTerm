@@ -264,8 +264,8 @@ export const git = {
     isTauriEnv() ? invoke<GitStatus>('git_status', { projectPath }) : Promise.reject(new Error('Git not available in web mode')),
   diff: (projectPath: string, filePath?: string) =>
     isTauriEnv() ? invoke<string>('git_diff', { projectPath, filePath }) : Promise.resolve(''),
-  stagedDiff: (projectPath: string) =>
-    isTauriEnv() ? invoke<string>('git_staged_diff', { projectPath }) : Promise.resolve(''),
+  stagedDiff: (projectPath: string, filePath?: string): Promise<string> =>
+    isTauriEnv() ? invoke<string>('git_staged_diff', { projectPath, filePath }) : Promise.resolve(''),
   log: (projectPath: string, limit?: number) =>
     isTauriEnv() ? invoke<GitCommit[]>('git_log', { projectPath, limit }) : Promise.resolve([]),
   branches: (projectPath: string) =>
@@ -602,4 +602,13 @@ export const loop = {
     isTauriEnv() ? invoke<LoopState[]>('loop_list') : Promise.resolve([]),
   cleanup: () =>
     isTauriEnv() ? invoke<number>('loop_cleanup') : Promise.resolve(0),
+};
+
+// ─── CLI Auth ────────────────────────────────────────────────────────────────
+
+export const cliAuth = {
+  getStatus: (provider: string): Promise<{ authenticated: boolean; email: string | null; provider: string }> =>
+    isTauriEnv()
+      ? invoke('get_cli_auth_status', { provider })
+      : Promise.resolve({ authenticated: false, email: null, provider }),
 };
