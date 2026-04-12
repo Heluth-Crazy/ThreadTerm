@@ -65,7 +65,11 @@ struct PtySession {
     _working_dir: String,
     state: RwLock<SessionState>,
     app_handle: tauri::AppHandle,
+    /// Circular buffer of the last 200 lines of output (for handoff context).
+    output_buffer: RwLock<Vec<String>>,
 }
+
+const OUTPUT_BUFFER_MAX_LINES: usize = 200;
 
 // Safety: every non-Sync field is behind a Mutex / RwLock.
 unsafe impl Sync for PtySession {}
@@ -201,6 +205,7 @@ pub async fn pty_create(
         _working_dir: working_dir,
         state: RwLock::new(SessionState::Running),
         app_handle: window.app_handle().clone(),
+        output_buffer: RwLock::new(Vec::with_capacity(OUTPUT_BUFFER_MAX_LINES)),
     });
 
     let session_for_stream = session.clone();
@@ -250,6 +255,16 @@ fn stream_pty_output(
                         data: data.clone(),
                     },
                 );
+
+                // Append to output buffer (keep last OUTPUT_BUFFER_MAX_LINES lines)
+                if let Ok(mut buf) = session.output_buffer.write() {
+                    for line in data.lines() {
+                        if buf.len() >= OUTPUT_BUFFER_MAX_LINES {
+                            buf.remove(0);
+                        }
+                        buf.push(line.to_string());
+                    }
+                }
 
                 // Strip ANSI escape codes for pattern matching
                 let cleaned = ANSI_STRIP.replace_all(&data, "");
@@ -521,6 +536,7 @@ pub fn create_command_pty(
         _working_dir: working_dir,
         state: RwLock::new(SessionState::Running),
         app_handle: app_handle.clone(),
+        output_buffer: RwLock::new(Vec::with_capacity(OUTPUT_BUFFER_MAX_LINES)),
     });
 
     let session_for_stream = session.clone();
@@ -591,4 +607,84 @@ pub fn pty_write_internal(pty_id: &str, text: String) -> Result<(), String> {
         .flush()
         .map_err(|e| format!("Failed to flush PTY: {e}"))?;
     Ok(())
+}
+
+/// Read the recent output buffer for a PTY session (for handoff context).
+pub fn get_recent_output(pty_id: &str) -> Option<String> {
+    let session = PTY_SESSIONS.get(pty_id)?;
+    let buf = session.output_buffer.read().ok()?;
+    if buf.is_empty() {
+        None
+    } else {
+        Some(buf.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_state_default() {
+        let state = SessionState::Running;
+        assert_eq!(format!("{:?}", state), "Running");
+    }
+
+    #[test]
+    fn test_session_state_variants() {
+        let states = vec![
+            SessionState::Idle,
+            SessionState::Running,
+            SessionState::WaitingForInput,
+            SessionState::Completed,
+            SessionState::Failed,
+        ];
+        for s in states {
+            let json = serde_json::to_string(&s).expect("serialize failed");
+            assert!(!json.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_ansi_strip_regex() {
+        let input = "\x1b[32mHello\x1b[0m World";
+        let cleaned = ANSI_STRIP.replace_all(input, "");
+        assert_eq!(cleaned, "Hello World");
+    }
+
+    #[test]
+    fn test_waiting_patterns_match() {
+        let test_cases = vec![
+            ("Do you want to continue? [Y/n]", true),
+            ("Press Enter to approve", true),
+            ("Permission denied", true),
+            ("Hello world", false),
+            ("git status output", false),
+        ];
+        for (input, expected) in test_cases {
+            assert_eq!(
+                WAITING_PATTERNS.is_match(input),
+                expected,
+                "Failed for: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_error_patterns_match() {
+        let test_cases = vec![
+            ("Error: file not found", true),
+            ("command not found", true),
+            ("Build failed", true),
+            ("Build succeeded", false),
+            ("Everything is fine", false),
+        ];
+        for (input, expected) in test_cases {
+            assert_eq!(
+                ERROR_PATTERNS.is_match(input),
+                expected,
+                "Failed for: {input}"
+            );
+        }
+    }
 }

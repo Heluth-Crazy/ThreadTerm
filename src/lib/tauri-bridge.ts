@@ -84,6 +84,32 @@ export const ai = {
     invoke<Record<string, string>>('settings_get_ai_config', { provider }),
 };
 
+// ─── Handoff ─────────────────────────────────────────────────────────────────
+
+export interface HandoffRequest {
+  sourcePtyId: string;
+  targetProvider: string;
+  projectPath: string;
+  taskDescription?: string;
+}
+
+export interface HandoffResult {
+  newPtyId: string;
+  handoffPrompt: string;
+}
+
+export const handoff = {
+  session: (req: HandoffRequest) =>
+    invoke<HandoffResult>('handoff_session', {
+      req: {
+        source_pty_id: req.sourcePtyId,
+        target_provider: req.targetProvider,
+        project_path: req.projectPath,
+        task_description: req.taskDescription,
+      },
+    }),
+};
+
 // ─── Git ─────────────────────────────────────────────────────────────────────
 
 export const git = {

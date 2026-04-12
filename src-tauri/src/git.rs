@@ -647,3 +647,43 @@ pub async fn git_worktree_remove(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_worktree_info_serialization() {
+        let info = WorktreeInfo {
+            path: "/path/to/wt".to_string(),
+            branch: "feature-x".to_string(),
+            is_main: false,
+            is_locked: false,
+        };
+        let json = serde_json::to_string(&info).expect("serialize");
+        assert!(json.contains("feature-x"));
+        assert!(json.contains("isMain"));
+    }
+
+    #[test]
+    fn test_worktree_info_fields() {
+        let info = WorktreeInfo {
+            path: String::new(),
+            branch: String::new(),
+            is_main: true,
+            is_locked: false,
+        };
+        assert!(info.is_main);
+        assert!(!info.is_locked);
+    }
+
+    #[test]
+    fn test_status_char_mapping() {
+        assert_eq!(status_char(git2::Status::INDEX_NEW), "A");
+        assert_eq!(status_char(git2::Status::INDEX_MODIFIED), "M");
+        assert_eq!(status_char(git2::Status::INDEX_DELETED), "D");
+        assert_eq!(status_char(git2::Status::INDEX_RENAMED), "R");
+        assert_eq!(status_char(git2::Status::WT_NEW), "A");
+        assert_eq!(status_char(git2::Status::WT_MODIFIED), "M");
+    }
+}
