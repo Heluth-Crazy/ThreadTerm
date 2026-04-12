@@ -39,7 +39,6 @@ interface TauriEventContextValue {
   getBufferedMessagesSince: (sequence: number) => Array<{ sequence: number; message: AppMessage }>;
   isConnected: boolean;
   sessionStates: Map<string, SessionState>;
-  attentionCount: number;
 }
 
 const TauriEventContext = createContext<TauriEventContextValue | null>(null);
@@ -64,7 +63,6 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
   // Session state tracking
   const sessionStatesRef = useRef<Map<string, SessionState>>(new Map());
   const [sessionStates, setSessionStates] = useState<Map<string, SessionState>>(new Map());
-  const [attentionCount, setAttentionCount] = useState(0);
 
   // Per-session JSONL line buffers
   const lineBuffers = useRef<Map<string, string>>(new Map());
@@ -217,8 +215,7 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
 
     pty
       .onAttentionRequired((payload: import('../lib/tauri-bridge').AttentionRequiredEvent) => {
-        setAttentionCount((c) => c + 1);
-        // Also update the status store
+        // Update the status store (UI reads from here)
         const sessionId = ptyToSession.current.get(payload.ptyId) ?? payload.ptyId;
         const statusStore = useSessionStatusStore.getState();
         if (payload.type === 'waiting') {
@@ -348,9 +345,8 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
       getBufferedMessagesSince,
       isConnected: true, // always connected in Tauri
       sessionStates,
-      attentionCount,
     }),
-    [sendMessage, latestMessage, messageSequence, getBufferedMessagesSince, sessionStates, attentionCount],
+    [sendMessage, latestMessage, messageSequence, getBufferedMessagesSince, sessionStates],
   );
 
   return (
