@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { IS_PLATFORM } from '../constants/config';
 import { loadSessionLaunchProfilesByProvider, mergeSessionLaunchArgs } from '../utils/sessionLaunchProfiles';
 import { logger } from '../utils/logger';
-import { pty } from '../lib/tauri-bridge';
+import { pty, isTauriEnv, webPtyConnect } from '../lib/tauri-bridge';
 
 const xtermStyles = `
   .xterm .xterm-screen {
@@ -217,54 +217,85 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
         const projectPath = selectedProjectRef.current.fullPath || selectedProjectRef.current.path;
         const ptySessionId = paneId || `shell-${Date.now()}`;
 
-        // Set up output listener before creating PTY
-        const unlistenOut = await pty.onOutput(({ id: sid, data }) => {
-          if (sid === ptySessionId && terminal.current) {
-            terminal.current.write(data);
-            terminal.current.scrollToBottom();
+        if (isTauriEnv()) {
+          // ── Tauri mode: use Tauri events ──
+          const unlistenOut = await pty.onOutput(({ id: sid, data }) => {
+            if (sid === ptySessionId && terminal.current) {
+              terminal.current.write(data);
+              terminal.current.scrollToBottom();
 
-            if (isPlainShellRef.current && onProcessCompleteRef.current) {
-              const cleanOutput = data.replace(/\x1b\[[0-9;]*m/g, '');
-              if (cleanOutput.includes('Process exited with code 0')) {
-                onProcessCompleteRef.current(0);
-              } else if (cleanOutput.match(/Process exited with code (\d+)/)) {
-                const exitCode = parseInt(cleanOutput.match(/Process exited with code (\d+)/)[1]);
-                if (exitCode !== 0) {
-                  onProcessCompleteRef.current(exitCode);
+              if (isPlainShellRef.current && onProcessCompleteRef.current) {
+                const cleanOutput = data.replace(/\x1b\[[0-9;]*m/g, '');
+                if (cleanOutput.includes('Process exited with code 0')) {
+                  onProcessCompleteRef.current(0);
+                } else if (cleanOutput.match(/Process exited with code (\d+)/)) {
+                  const exitCode = parseInt(cleanOutput.match(/Process exited with code (\d+)/)[1]);
+                  if (exitCode !== 0) {
+                    onProcessCompleteRef.current(exitCode);
+                  }
                 }
               }
             }
-          }
-        });
+          });
 
-        const unlistenExit = await pty.onExit(({ id: sid }) => {
-          if (sid === ptySessionId) {
-            setConnected(false);
-            setConnecting(false);
+          const unlistenExit = await pty.onExit(({ id: sid }) => {
+            if (sid === ptySessionId) {
+              setConnected(false);
+              setConnecting(false);
 
-            if (terminal.current) {
-              terminal.current.clear();
-              terminal.current.write('\x1b[2J\x1b[H');
+              if (terminal.current) {
+                terminal.current.clear();
+                terminal.current.write('\x1b[2J\x1b[H');
+              }
+
+              if (!manuallyDisconnected.current) {
+                const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
+                retryCountRef.current++;
+                shellReconnectTimeoutRef.current = setTimeout(() => {
+                  connectWebSocket();
+                }, delay);
+              }
             }
+          });
 
-            if (!manuallyDisconnected.current) {
-              const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
-              retryCountRef.current++;
-              shellReconnectTimeoutRef.current = setTimeout(() => {
-                connectWebSocket();
-              }, delay);
-            }
-          }
-        });
-
-        unlistenOutputRef.current = unlistenOut;
-        unlistenExitRef.current = unlistenExit;
+          unlistenOutputRef.current = unlistenOut;
+          unlistenExitRef.current = unlistenExit;
+        }
 
         const rows = terminal.current?.rows || 24;
         const cols = terminal.current?.cols || 120;
 
         await pty.create(ptySessionId, projectPath, rows, cols);
         ptyIdRef.current = ptySessionId;
+
+        if (!isTauriEnv()) {
+          // ── Web mode: connect via WebSocket for PTY I/O ──
+          const disconnect = webPtyConnect(
+            ptySessionId,
+            (data) => {
+              if (terminal.current) {
+                terminal.current.write(data);
+                terminal.current.scrollToBottom();
+              }
+            },
+            (_code) => {
+              setConnected(false);
+              setConnecting(false);
+              if (terminal.current) {
+                terminal.current.clear();
+                terminal.current.write('\x1b[2J\x1b[H');
+              }
+              if (!manuallyDisconnected.current) {
+                const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
+                retryCountRef.current++;
+                shellReconnectTimeoutRef.current = setTimeout(() => {
+                  connectWebSocket();
+                }, delay);
+              }
+            },
+          );
+          unlistenOutputRef.current = disconnect;
+        }
 
         setConnected(true);
         setConnecting(false);

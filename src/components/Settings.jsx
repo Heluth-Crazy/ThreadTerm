@@ -1,6 +1,6 @@
-﻿import { useState, useEffect } from 'react';
+﻿import { useState, useEffect, useCallback } from 'react';
 import { Button } from './ui/button';
-import { X, Settings as SettingsIcon, Moon, Sun, GitBranch, Keyboard } from 'lucide-react';
+import { X, Settings as SettingsIcon, Moon, Sun, GitBranch, Keyboard, Smartphone, Copy, Check } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/utils';
@@ -21,6 +21,38 @@ import {
   getStoredFileAccessMode,
 } from '../utils/fileAccessMode';
 
+function LanUrlCopyButton({ url }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // fallback
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  }, [url]);
+
+  return (
+    <button
+      onClick={handleCopy}
+      className="inline-flex items-center gap-1 rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+      title="Copy URL"
+    >
+      {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+      {copied ? 'Copied!' : 'Copy'}
+    </button>
+  );
+}
+
 function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded = false }) {
   const { isDarkMode, toggleDarkMode } = useTheme();
   const { t } = useTranslation('settings');
@@ -28,6 +60,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
   const [saveStatus, setSaveStatus] = useState(null);
   const [projectSortOrder, setProjectSortOrder] = useState('name');
   const [fileAccessMode, setFileAccessMode] = useState(FILE_ACCESS_MODES.AUTO);
+  const [lanUrl, setLanUrl] = useState('');
 
   const normalizeTab = (tab) => (['agents', 'appearance', 'git', 'shortcuts'].includes(tab) ? tab : 'agents');
   const tabButtonClassName = (tab) => cn(
@@ -60,6 +93,15 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
       setActiveTab(normalizeTab(initialTab));
     }
   }, [embedded, isOpen, initialTab]);
+
+  useEffect(() => {
+    if ((isOpen || embedded) && activeTab === 'appearance') {
+      fetch('/api/local-ip')
+        .then(res => res.ok ? res.json() : null)
+        .then(data => { if (data?.url) setLanUrl(data.url); })
+        .catch(() => {});
+    }
+  }, [isOpen, embedded, activeTab]);
 
 
   const loadSettings = async () => {
@@ -373,6 +415,30 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
                     </div>
                   </div>
                 </div>
+
+                {lanUrl && (
+                  <div>
+                    <div className="rounded-[20px] border border-border/60 bg-card/72 p-4 shadow-sm">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 font-medium text-foreground">
+                            <Smartphone className="h-4 w-4" />
+                            Mobile / LAN Access
+                          </div>
+                          <div className="mt-1 text-sm leading-5 text-muted-foreground">
+                            Open this URL on your phone or any device on the same network:
+                          </div>
+                          <div className="mt-2 flex items-center gap-2">
+                            <code className="rounded-lg bg-muted px-3 py-1.5 text-sm font-mono text-foreground select-all">
+                              {lanUrl}
+                            </code>
+                            <LanUrlCopyButton url={lanUrl} />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
               </div>
             )}

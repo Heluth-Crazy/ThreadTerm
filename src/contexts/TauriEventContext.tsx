@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useRef, useState, useEffect, useCallback, useMemo } from 'react';
-import { pty, ai, invoke } from '../lib/tauri-bridge';
+import { pty, ai, invoke, isTauriEnv } from '../lib/tauri-bridge';
 import type { SessionState, AttentionRequiredEvent, LoopState } from '../lib/tauri-bridge';
-import { listen } from '@tauri-apps/api/event';
 import { useSessionStatusStore } from '../stores/sessionStatusStore';
 import { useLoopStore } from '../stores/loopStore';
 import { useTTS } from '../hooks/useTTS';
@@ -258,25 +257,29 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
     // Listen for loop-state-changed events
     let unlistenLoop: (() => void) | null = null;
     const loopCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
-    listen<LoopState>('loop-state-changed', (event) => {
-      const loopState = event.payload;
-      const store = useLoopStore.getState();
-      store.updateLoop(loopState.loopId, loopState);
+    if (isTauriEnv()) {
+      import('@tauri-apps/api/event').then(({ listen }) => {
+        listen<LoopState>('loop-state-changed', (event) => {
+          const loopState = event.payload;
+          const store = useLoopStore.getState();
+          store.updateLoop(loopState.loopId, loopState);
 
-      // Auto-remove loops in terminal state after a delay so the user can see the result
-      const isTerminal = loopState.status === 'passed' || loopState.status === 'failed' || loopState.status === 'cancelled';
-      if (isTerminal) {
-        if (!loopCleanupTimers.has(loopState.loopId)) {
-          const timer = setTimeout(() => {
-            useLoopStore.getState().removeLoop(loopState.loopId);
-            loopCleanupTimers.delete(loopState.loopId);
-          }, 15_000);
-          loopCleanupTimers.set(loopState.loopId, timer);
-        }
-      }
-    }).then((u) => {
-      unlistenLoop = u;
-    });
+          // Auto-remove loops in terminal state after a delay so the user can see the result
+          const isTerminal = loopState.status === 'passed' || loopState.status === 'failed' || loopState.status === 'cancelled';
+          if (isTerminal) {
+            if (!loopCleanupTimers.has(loopState.loopId)) {
+              const timer = setTimeout(() => {
+                useLoopStore.getState().removeLoop(loopState.loopId);
+                loopCleanupTimers.delete(loopState.loopId);
+              }, 15_000);
+              loopCleanupTimers.set(loopState.loopId, timer);
+            }
+          }
+        }).then((u) => {
+          unlistenLoop = u;
+        });
+      });
+    }
 
     return () => {
       unlistenOutput?.();
