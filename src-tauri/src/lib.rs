@@ -1,5 +1,6 @@
 mod ai;
 mod auth;
+mod commands;
 mod db;
 mod fs_commands;
 mod git;
@@ -96,6 +97,8 @@ pub fn run() {
             skills::skills_create,
             skills::skills_update,
             skills::skills_delete,
+            // Command discovery
+            commands::commands_discover,
             // Handoff
             handoff::handoff_session,
             // Tasks

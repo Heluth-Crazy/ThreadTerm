@@ -90,7 +90,7 @@ fn path_from_skill_id(skill_id: &str) -> Result<PathBuf, String> {
 
 /// Parse YAML-ish frontmatter delimited by `---`.
 /// Returns (frontmatter_map, body_content).
-fn parse_frontmatter(raw: &str) -> (serde_json::Map<String, serde_json::Value>, String) {
+pub(crate) fn parse_frontmatter(raw: &str) -> (serde_json::Map<String, serde_json::Value>, String) {
     let mut map = serde_json::Map::new();
 
     let trimmed = raw.trim_start_matches('\u{feff}'); // strip BOM

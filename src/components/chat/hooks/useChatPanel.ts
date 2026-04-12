@@ -23,6 +23,7 @@ import {
 } from '../utils/chatConstants';
 import { buildCommandList } from '../components/CommandSuggestions';
 import { useCustomSlashCommands } from '../../../hooks/useCustomSlashCommands';
+import { useDiscoveredCommands } from '../../../hooks/useDiscoveredCommands';
 import {
   makeMessageId,
   flattenFiles,
@@ -141,6 +142,11 @@ export function useChatPanel({
   }, [selectedProject, selectedSession?.__provider, selectedSession?.id]);
   const activeProvider = resolvedSessionProvider || provider;
 
+  const { discoveredCommands, discoveredSkills } = useDiscoveredCommands({
+    provider: activeProvider,
+    projectPath: selectedProject?.path,
+  });
+
   const mentionablePathSet = useMemo(() => new Set(projectFiles.map((file) => file.path)), [projectFiles]);
   const fileOnlyNodes = useMemo(() => projectFiles.filter((node) => node.type === 'file'), [projectFiles]);
   const allSelectableFilePaths = useMemo(() => fileOnlyNodes.map((node) => node.path), [fileOnlyNodes]);
@@ -149,29 +155,54 @@ export function useChatPanel({
     if (!isMentionOpen) {
       return [];
     }
-    return projectFiles
+
+    // Skills come first in @ picker
+    const skillEntries = discoveredSkills
+      .filter(
+        (s) =>
+          !mentionQuery ||
+          s.name.toLowerCase().includes(mentionQuery.toLowerCase()) ||
+          s.displayName.toLowerCase().includes(mentionQuery.toLowerCase()),
+      )
+      .map((s) => ({
+        path: s.name,
+        name: s.displayName || s.name,
+        type: 'file' as const,
+        isSkill: true,
+        displayName: s.displayName || s.name,
+        description: s.description,
+        score: mentionQuery ? (s.name.toLowerCase().startsWith(mentionQuery.toLowerCase()) ? 2 : 1) : 0,
+      }));
+
+    // Existing file entries
+    const fileEntries = projectFiles
       .map((entry) => ({
-        entry,
+        ...entry,
+        isSkill: false as const,
         score: scoreMentionCandidate(entry, mentionQuery),
       }))
-      .filter((item) => item.score >= 0)
+      .filter((item) => item.score >= 0);
+
+    const sortedSkills = skillEntries.sort((a, b) => b.score - a.score);
+    const sortedFiles = fileEntries
       .sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
-        if (a.entry.type !== b.entry.type) return a.entry.type === 'directory' ? -1 : 1;
-        if (a.entry.path.length !== b.entry.path.length) return a.entry.path.length - b.entry.path.length;
-        return a.entry.path.localeCompare(b.entry.path);
+        if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+        if (a.path.length !== b.path.length) return a.path.length - b.path.length;
+        return a.path.localeCompare(b.path);
       })
-      .slice(0, 14)
-      .map((item) => item.entry);
-  }, [isMentionOpen, mentionQuery, projectFiles]);
+      .map(({ score: _score, ...rest }) => rest);
+
+    return [...sortedSkills, ...sortedFiles].slice(0, 20);
+  }, [isMentionOpen, mentionQuery, projectFiles, discoveredSkills]);
 
   const cmdFilteredCommands = useMemo(() => {
     if (!isCmdOpen) return [];
-    const commands = buildCommandList(activeProvider, customCommands);
+    const commands = buildCommandList(activeProvider, customCommands, discoveredCommands);
     return commands.filter((c) =>
       c.cmd.toLowerCase().startsWith(`/${cmdQuery.toLowerCase()}`),
     );
-  }, [isCmdOpen, cmdQuery, activeProvider, customCommands]);
+  }, [isCmdOpen, cmdQuery, activeProvider, customCommands, discoveredCommands]);
 
   const filePickerSuggestions = useMemo(() => {
     const query = filePickerQuery.trim().toLowerCase();
@@ -1026,19 +1057,38 @@ Use these as file path references only. Read file contents from the workspace wh
     finishRequest('idle');
   }, [activeProvider, currentSessionId, finishRequest, isSending, sendMessage]);
 
-  const handleSelectMention = useCallback((filePath: string) => {
+  const handleSelectMention = useCallback((filePath: string, isSkill?: boolean) => {
+    const textarea = inputRef.current;
+    const cursorPos = textarea?.selectionStart ?? input.length;
+    const before = input.slice(0, cursorPos).replace(/@([^\s@]*)$/, '');
+    const after = input.slice(cursorPos);
+
+    if (isSkill) {
+      // For skills, insert @skill-name inline
+      const nextValue = `${before}@${filePath} ${after}`.replace(/[ \t]{2,}/g, ' ');
+      dismissedComposerAssistRef.current = null;
+      setInput(nextValue);
+      setIsMentionOpen(false);
+      setMentionQuery('');
+      requestAnimationFrame(() => {
+        if (textarea) {
+          const nextCursor = before.length + filePath.length + 2; // "@" + name + " "
+          textarea.focus();
+          textarea.setSelectionRange(nextCursor, nextCursor);
+        }
+      });
+      return;
+    }
+
+    // File mention: attach file and clean up input
     setAttachedFiles((prev) => (prev.includes(filePath) ? prev : [...prev, filePath]));
 
-    const textarea = inputRef.current;
     if (!textarea) {
       setInput((prev) => prev.replace(/@([^\s@]*)$/, '').trimEnd());
       setIsMentionOpen(false);
       return;
     }
 
-    const cursorPos = textarea.selectionStart ?? input.length;
-    const before = input.slice(0, cursorPos).replace(/@([^\s@]*)$/, '');
-    const after = input.slice(cursorPos);
     const nextValue = `${before}${after}`
       .replace(/[ \t]{2,}/g, ' ')
       .replace(/^\s+/g, '');
@@ -1186,7 +1236,7 @@ Use these as file path references only. Read file contents from the workspace wh
         event.preventDefault();
         const selected = mentionSuggestions[mentionActiveIndex] || mentionSuggestions[0];
         if (selected) {
-          handleSelectMention(selected.path);
+          handleSelectMention(selected.path, selected.isSkill);
         }
         return;
       }
@@ -1501,6 +1551,7 @@ Use these as file path references only. Read file contents from the workspace wh
     cmdQuery,
     cmdActiveIndex,
     cmdFilteredCommands,
+    discoveredCommands,
     handleSelectCommand,
     inputRef,
     filePickerRef,

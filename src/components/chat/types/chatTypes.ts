@@ -36,6 +36,12 @@ export type FlatFileNode = {
   type: 'file' | 'directory';
 };
 
+export type MentionSuggestionItem = FlatFileNode & {
+  isSkill?: boolean;
+  displayName?: string;
+  description?: string;
+};
+
 export type FileTreeNode = {
   path: string;
   name: string;

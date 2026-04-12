@@ -85,6 +85,7 @@ export default function ChatPanel(props: ChatPanelProps) {
         cmdQuery={chat.cmdQuery}
         cmdActiveIndex={chat.cmdActiveIndex}
         cmdFilteredCount={chat.cmdFilteredCommands.length}
+        discoveredCommands={chat.discoveredCommands}
         onSelectCommand={chat.handleSelectCommand}
         onSend={() => void chat.sendChatMessage()}
         onAbort={chat.abortCurrentRequest}

@@ -80,6 +80,7 @@ pub async fn start_http_server(app_handle: tauri::AppHandle) {
         .route("/api/projects/remove", post(remove_project))
         .route("/api/session-history", get(list_session_history))
         .route("/api/session-history/{session_id}/messages", get(get_session_messages))
+        .route("/api/commands/discover", get(commands_discover_handler))
         .route("/api/pty/{id}/ws", get(pty_ws_handler))
         .route("/ws", get(ws_handler))
         // SPA fallback: serve static files or index.html
@@ -332,6 +333,22 @@ async fn get_session_messages(
     match crate::session_history::session_messages(project_path, session_id, q.limit, q.offset, Some(provider)).await {
         Ok(msgs) => Json(serde_json::json!(msgs)),
         Err(e) => Json(serde_json::json!({ "error": e })),
+    }
+}
+
+// ── Command Discovery ────────────────────────────────────────────────────────
+
+async fn commands_discover_handler(
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let provider = params
+        .get("provider")
+        .cloned()
+        .unwrap_or_else(|| "claude".to_string());
+    let project_path = params.get("project_path").cloned();
+    match crate::commands::commands_discover(provider, project_path).await {
+        Ok(result) => Json(serde_json::json!({ "ok": true, "data": result })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
     }
 }
 
