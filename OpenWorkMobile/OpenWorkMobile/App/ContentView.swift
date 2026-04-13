@@ -30,8 +30,8 @@ struct MainNavigationView: View {
                 .navigationDestination(for: Project.self) { project in
                     SessionsListView(project: project)
                 }
-                .navigationDestination(for: Session.self) { session in
-                    SessionDetailView(session: session)
+                .navigationDestination(for: SessionDestination.self) { dest in
+                    SessionDetailView(session: dest.session, isActiveSession: dest.isActive)
                 }
                 .toolbar {
                     ToolbarItem(placement: .navigationBarTrailing) {
@@ -51,11 +51,17 @@ struct MainNavigationView: View {
 
 struct SessionDetailView: View {
     let session: Session
+    let isActiveSession: Bool
     @State private var selectedTab = 0
+
+    init(session: Session, isActiveSession: Bool = false) {
+        self.session = session
+        self.isActiveSession = isActiveSession
+    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            SessionView(session: session)
+            SessionView(session: session, isActiveSession: isActiveSession)
                 .tabItem {
                     Label("Chat", systemImage: "bubble.left.and.bubble.right")
                 }

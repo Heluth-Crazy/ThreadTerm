@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SessionView: View {
     let session: Session
+    let isActiveSession: Bool
     @Environment(ConnectionViewModel.self) private var connectionVM
     @State private var viewModel: SessionViewModel
     @State private var inputText = ""
@@ -9,8 +10,9 @@ struct SessionView: View {
     @State private var commandSearchText = ""
     @State private var commands: [DiscoveredCommand] = []
 
-    init(session: Session) {
+    init(session: Session, isActiveSession: Bool = false) {
         self.session = session
+        self.isActiveSession = isActiveSession
         self._viewModel = State(initialValue: SessionViewModel(session: session))
     }
 
@@ -22,7 +24,19 @@ struct SessionView: View {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
                     Text(error).font(.caption).foregroundStyle(.red)
                     Spacer()
-                    Button("Dismiss") { viewModel.errorMessage = nil }
+                    Button("Retry") {
+                        Task {
+                            guard let client = connectionVM.currentAPIClient else { return }
+                            viewModel.errorMessage = nil
+                            if isActiveSession {
+                                await viewModel.attachToExisting(ptyId: session.id, using: client)
+                            } else {
+                                await viewModel.connect(using: client)
+                            }
+                        }
+                    }
+                    .font(.caption.bold())
+                    Button("✕") { viewModel.errorMessage = nil }
                         .font(.caption)
                 }
                 .padding(.horizontal)
@@ -51,7 +65,11 @@ struct SessionView: View {
         }
         .task {
             guard let client = connectionVM.currentAPIClient else { return }
-            await viewModel.connect(using: client)
+            if isActiveSession, !session.id.isEmpty {
+                await viewModel.attachToExisting(ptyId: session.id, using: client)
+            } else {
+                await viewModel.connect(using: client)
+            }
         }
         .onDisappear { viewModel.disconnect() }
         .sheet(isPresented: $showCommandPicker) {
@@ -65,7 +83,6 @@ struct SessionView: View {
             )
             .presentationDetents([.medium, .large])
         }
-        .onTapGesture { hideKeyboard() }
     }
 
     // MARK: - Messages List
@@ -81,6 +98,7 @@ struct SessionView: View {
                 }
                 .padding()
             }
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: viewModel.messages.count) { _, _ in
                 withAnimation {
                     if let last = viewModel.messages.last {

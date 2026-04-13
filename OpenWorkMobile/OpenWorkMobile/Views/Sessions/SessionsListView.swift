@@ -11,7 +11,7 @@ struct SessionsListView: View {
             if !activeSessions.isEmpty {
                 Section("Active Sessions") {
                     ForEach(activeSessions) { session in
-                        NavigationLink(value: sessionFromActive(session)) {
+                        NavigationLink(value: SessionDestination(session: sessionFromActive(session), isActive: true)) {
                             ActiveSessionRow(session: session)
                         }
                     }
@@ -21,7 +21,7 @@ struct SessionsListView: View {
             if !project.sessions.isEmpty {
                 Section("Session History") {
                     ForEach(project.sessions) { session in
-                        NavigationLink(value: session) {
+                        NavigationLink(value: SessionDestination(session: session, isActive: false)) {
                             SessionHistoryRow(session: session)
                         }
                     }

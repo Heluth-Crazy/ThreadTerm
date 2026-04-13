@@ -9,8 +9,8 @@
 /* Begin PBXBuildFile section */
 		01A7A81C232AE29D7C29EB0F /* TokenStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B17610551534DE65A81BD9B /* TokenStorageTests.swift */; };
 		01B798CDFDFCE24C9F4C9785 /* ConnectionSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 343D03F37EC044244B45B943 /* ConnectionSetupView.swift */; };
-		02AA11CC33DD44EE55FF6677 /* CommandPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 174233B2F7F87545C3260678 /* CommandPickerView.swift */; };
 		08ADAFB3B6F66B16106FE6D6 /* HapticManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38E76B24CD8648D7A162E1BC /* HapticManager.swift */; };
+		0DDE5B389DA046A272F60704 /* SessionDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = F91D15A0BA78C1D95819D5AB /* SessionDestination.swift */; };
 		125F4211A1E16BA5DA359512 /* ProjectsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F904CB9CEC2FCF90D6EEB9B7 /* ProjectsViewModel.swift */; };
 		128B0B472D092B7ED7D9F0B0 /* ChatWebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E1430D1E1C972B0A7CB0B6C /* ChatWebSocketClient.swift */; };
 		1389674671422F1D59C81A34 /* SessionMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7AD806E374614360F7FE932 /* SessionMessage.swift */; };
@@ -37,7 +37,9 @@
 		8E264B0B7EDCE67542E8EAA6 /* PTYOutputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B6C817F0EE97F45ABF1827D /* PTYOutputView.swift */; };
 		957D6A6B753AD6650BA46F6D /* Project.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6C39B8272F69C0A4D56EAD5 /* Project.swift */; };
 		A5FF31C09B237CD91119392B /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C604F58B93C85FC07B6FD1B8 /* HistoryView.swift */; };
+		A9CDE8FE288D4BCAE95D5DDD /* ConnectionSetupViewPasteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B62F52A19BB4BACB004F67F /* ConnectionSetupViewPasteTests.swift */; };
 		AA9C379CCDFADF2671F8A28B /* AnyCodableValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D35ECECFF2C3B6B7F4E29F4 /* AnyCodableValue.swift */; };
+		B3E8B4435A9AB6476EB001B7 /* CommandPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D21E7C2CFD878A8FF4A2C7B /* CommandPickerView.swift */; };
 		BD629B69E3BC7874D43566FF /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58D73420B41A9834115507CD /* Session.swift */; };
 		BE49B37C2049366FCA8E2109 /* OpenWorkPTYSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 518FBC9D7284D4168498B733 /* OpenWorkPTYSession.swift */; };
 		C22EDC8B305E4DFF6DBD342F /* HistoryMessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = E402B4ED7C5C0621088E1C3B /* HistoryMessageBubble.swift */; };
@@ -62,11 +64,12 @@
 
 /* Begin PBXFileReference section */
 		08FA9D88ACB23B2547963087 /* OpenWorkMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OpenWorkMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		0D21E7C2CFD878A8FF4A2C7B /* CommandPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPickerView.swift; sourceTree = "<group>"; };
 		105207F93E1B2C9E6E01A62F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		174233B2F7F87545C3260678 /* CommandPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPickerView.swift; sourceTree = "<group>"; };
 		1ACA37B3E194D9AF19E99AE7 /* SessionsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsViewModel.swift; sourceTree = "<group>"; };
 		1FC80B85349147EE788845BB /* HealthModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthModels.swift; sourceTree = "<group>"; };
 		2477EEF3A41945B6AF8A63C2 /* SessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionViewModel.swift; sourceTree = "<group>"; };
+		2B62F52A19BB4BACB004F67F /* ConnectionSetupViewPasteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionSetupViewPasteTests.swift; sourceTree = "<group>"; };
 		343D03F37EC044244B45B943 /* ConnectionSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionSetupView.swift; sourceTree = "<group>"; };
 		34A9FC67021F888D72A8C947 /* ConnectionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionViewModel.swift; sourceTree = "<group>"; };
 		38E76B24CD8648D7A162E1BC /* HapticManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticManager.swift; sourceTree = "<group>"; };
@@ -103,6 +106,7 @@
 		E87452A6D67ACF5172E32AA6 /* OpenWorkAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenWorkAPIClient.swift; sourceTree = "<group>"; };
 		F8D9C4066A09A5AC48CB5D49 /* PTYWebSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PTYWebSocketClient.swift; sourceTree = "<group>"; };
 		F904CB9CEC2FCF90D6EEB9B7 /* ProjectsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectsViewModel.swift; sourceTree = "<group>"; };
+		F91D15A0BA78C1D95819D5AB /* SessionDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDestination.swift; sourceTree = "<group>"; };
 		FBA06B3A5F734626FE73580C /* NewSessionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewSessionSheet.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -118,6 +122,7 @@
 				5D883C041E603327F7B0E5C6 /* PTYMessage.swift */,
 				8F59BC70828078EC948BD7F7 /* ServerConnection.swift */,
 				58D73420B41A9834115507CD /* Session.swift */,
+				F91D15A0BA78C1D95819D5AB /* SessionDestination.swift */,
 				D7AD806E374614360F7FE932 /* SessionMessage.swift */,
 				D758C8EC2E389272CEADC791 /* SessionSummary.swift */,
 			);
@@ -207,9 +212,9 @@
 		6908E4921E9F061FAEF725A4 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				0D21E7C2CFD878A8FF4A2C7B /* CommandPickerView.swift */,
 				AAFC91E86714E76DBF539169 /* ErrorView.swift */,
 				DDECA2D6986BBC9C09D919F2 /* LoadingView.swift */,
-				174233B2F7F87545C3260678 /* CommandPickerView.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -260,6 +265,7 @@
 		B1FCC36F6106763260DBE3F1 /* OpenWorkMobileTests */ = {
 			isa = PBXGroup;
 			children = (
+				2B62F52A19BB4BACB004F67F /* ConnectionSetupViewPasteTests.swift */,
 				4B17610551534DE65A81BD9B /* TokenStorageTests.swift */,
 			);
 			path = OpenWorkMobileTests;
@@ -375,7 +381,7 @@
 				AA9C379CCDFADF2671F8A28B /* AnyCodableValue.swift in Sources */,
 				128B0B472D092B7ED7D9F0B0 /* ChatWebSocketClient.swift in Sources */,
 				7A429FBF0FF5E2636369BB16 /* CommandDiscovery.swift in Sources */,
-				02AA11CC33DD44EE55FF6677 /* CommandPickerView.swift in Sources */,
+				B3E8B4435A9AB6476EB001B7 /* CommandPickerView.swift in Sources */,
 				01B798CDFDFCE24C9F4C9785 /* ConnectionSetupView.swift in Sources */,
 				466FA4C43E7EA323038E5DB7 /* ConnectionViewModel.swift in Sources */,
 				1C7B5487F469FF72AC525241 /* ContentView.swift in Sources */,
@@ -399,6 +405,7 @@
 				125F4211A1E16BA5DA359512 /* ProjectsViewModel.swift in Sources */,
 				ED06DD030371CBC655A9970A /* ServerConnection.swift in Sources */,
 				BD629B69E3BC7874D43566FF /* Session.swift in Sources */,
+				0DDE5B389DA046A272F60704 /* SessionDestination.swift in Sources */,
 				1389674671422F1D59C81A34 /* SessionMessage.swift in Sources */,
 				5CE57BC1926EF25CCB2D920A /* SessionStateBadge.swift in Sources */,
 				210176368667385574863F6D /* SessionSummary.swift in Sources */,
@@ -416,6 +423,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A9CDE8FE288D4BCAE95D5DDD /* ConnectionSetupViewPasteTests.swift in Sources */,
 				01A7A81C232AE29D7C29EB0F /* TokenStorageTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
