@@ -28,7 +28,23 @@ class SessionViewModel {
         self.session = session
     }
 
-    /// Call once when the view appears to create a PTY session and connect its WebSocket.
+    /// For ACTIVE sessions: attach WebSocket to an already-running PTY.
+    /// Does NOT call POST /api/sessions.
+    func attachToExisting(ptyId: String, using client: OpenWorkAPIClient) async {
+        self.apiClient = client
+        errorMessage = nil
+
+        let ptyClient = PTYWebSocketClient(sessionId: ptyId, connection: client.connection)
+        await MainActor.run {
+            self.ptyId = ptyId
+            self.ptyClient = ptyClient
+        }
+
+        configurePTYCallbacks(ptyClient)
+        ptyClient.connect()
+    }
+
+    /// For HISTORY sessions: create a new PTY via POST /api/sessions, then connect WebSocket.
     func connect(using client: OpenWorkAPIClient) async {
         self.apiClient = client
         errorMessage = nil
@@ -44,41 +60,48 @@ class SessionViewModel {
             let ptyClient = PTYWebSocketClient(sessionId: id, connection: client.connection)
             await MainActor.run { self.ptyClient = ptyClient }
 
-            ptyClient.onHistoryReceived = { [weak self] data in
-                Task { @MainActor in
-                    self?.appendAssistantOutput(data, isHistory: true)
-                }
-            }
-            ptyClient.onOutput = { [weak self] data in
-                Task { @MainActor in
-                    self?.appendAssistantOutput(data, isHistory: false)
-                }
-            }
-            ptyClient.onExit = { [weak self] code in
-                Task { @MainActor in
-                    self?.isConnected = false
-                    self?.isStreaming = false
-                    if let code = code, code != 0 {
-                        self?.errorMessage = "Session exited with code \(code)"
-                    }
-                }
-            }
-            ptyClient.onError = { [weak self] error in
-                Task { @MainActor in
-                    self?.isConnected = false
-                    self?.errorMessage = error.localizedDescription
-                }
-            }
-            ptyClient.onConnected = { [weak self] in
-                Task { @MainActor in
-                    self?.isConnected = true
-                }
-            }
-
+            configurePTYCallbacks(ptyClient)
             ptyClient.connect()
+        } catch let apiError as APIError {
+            await MainActor.run {
+                self.errorMessage = apiError.errorDescription ?? apiError.localizedDescription
+            }
         } catch {
             await MainActor.run {
                 self.errorMessage = "Failed to start session: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func configurePTYCallbacks(_ ptyClient: PTYWebSocketClient) {
+        ptyClient.onHistoryReceived = { [weak self] data in
+            Task { @MainActor in
+                self?.appendAssistantOutput(data, isHistory: true)
+            }
+        }
+        ptyClient.onOutput = { [weak self] data in
+            Task { @MainActor in
+                self?.appendAssistantOutput(data, isHistory: false)
+            }
+        }
+        ptyClient.onExit = { [weak self] code in
+            Task { @MainActor in
+                self?.isConnected = false
+                self?.isStreaming = false
+                if let code = code, code != 0 {
+                    self?.errorMessage = "Session exited with code \(code)"
+                }
+            }
+        }
+        ptyClient.onError = { [weak self] error in
+            Task { @MainActor in
+                self?.isConnected = false
+                self?.errorMessage = "Connection error: \(error.localizedDescription)"
+            }
+        }
+        ptyClient.onConnected = { [weak self] in
+            Task { @MainActor in
+                self?.isConnected = true
             }
         }
     }
