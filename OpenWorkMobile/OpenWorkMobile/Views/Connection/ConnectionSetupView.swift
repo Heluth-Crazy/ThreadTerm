@@ -78,15 +78,20 @@ struct ConnectionSetupView: View {
 
                             Button {
                                 #if canImport(UIKit)
-                                if let str = UIPasteboard.general.string {
-                                    token = str.trimmingCharacters(in: .whitespacesAndNewlines)
+                                let str = UIPasteboard.general.string ?? ""
+                                let cleaned = str.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !cleaned.isEmpty {
+                                    token = cleaned
+                                    showToken = true   // show what was pasted
                                 }
                                 #endif
                             } label: {
-                                Image(systemName: "doc.on.clipboard")
-                                    .foregroundStyle(.secondary)
+                                Label("粘贴", systemImage: "doc.on.clipboard")
+                                    .font(.caption)
+                                    .foregroundStyle(Color.accentColor)
                             }
-                            .buttonStyle(.borderless)
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
 
                             Button {} label: {
                                 Image(systemName: "qrcode.viewfinder")
@@ -155,6 +160,7 @@ struct ConnectionSetupView: View {
                 }
             }
             .navigationTitle("Connect to OpenWork")
+            .scrollDismissesKeyboard(.interactively)
             .overlay {
                 if showSuccessCheck {
                     successOverlay
@@ -170,7 +176,6 @@ struct ConnectionSetupView: View {
                 }
             }
         }
-        .onTapGesture { hideKeyboard() }
     }
 
     // MARK: - Subviews
