@@ -30,6 +30,7 @@ struct PTYOutputView: View {
             }
         }
         .task { await connectTerminal() }
+        .onDisappear { viewModel.disconnect() }
         .gesture(
             MagnifyGesture()
                 .onChanged { value in
@@ -48,7 +49,10 @@ struct PTYOutputView: View {
                     ForEach(viewModel.outputLines) { line in
                         Text(line.text)
                             .font(.system(size: fontSize, design: .monospaced))
-                            .foregroundStyle(line.isHistory ? .secondary : .primary)
+                            .foregroundStyle(
+                                line.isError ? .red :
+                                line.isHistory ? .secondary : .primary
+                            )
                             .textSelection(.enabled)
                             .id(line.id)
                     }
@@ -61,6 +65,16 @@ struct PTYOutputView: View {
                     if let last = viewModel.outputLines.last {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
+                }
+            }
+            .overlay(alignment: .top) {
+                if let error = viewModel.connectionError {
+                    Text(error)
+                        .font(.caption.bold())
+                        .foregroundStyle(.white)
+                        .padding(8)
+                        .background(.red.opacity(0.8), in: RoundedRectangle(cornerRadius: 8))
+                        .padding()
                 }
             }
             .overlay(alignment: .bottom) {
@@ -115,6 +129,12 @@ struct PTYOutputView: View {
         let text = inputText
         guard !text.isEmpty else { return }
         inputText = ""
-        Task { try? await viewModel.sendInput(text + "\n") }
+        Task {
+            do {
+                try await viewModel.sendInput(text + "\n")
+            } catch {
+                viewModel.appendError("Input error: \(error.localizedDescription)")
+            }
+        }
     }
 }

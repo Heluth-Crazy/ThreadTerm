@@ -6,7 +6,18 @@ struct ProjectsListView: View {
 
     var body: some View {
         Group {
-            if viewModel.projects.isEmpty && !viewModel.isLoading {
+            if let error = viewModel.error, viewModel.projects.isEmpty {
+                ContentUnavailableView {
+                    Label("Connection Error", systemImage: "wifi.slash")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("Retry") {
+                        Task { await refresh() }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            } else if viewModel.projects.isEmpty && !viewModel.isLoading {
                 emptyState
             } else {
                 projectList

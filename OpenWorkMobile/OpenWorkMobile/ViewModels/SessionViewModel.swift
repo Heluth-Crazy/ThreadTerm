@@ -1,97 +1,137 @@
 import Foundation
 
+/// PTY-based session view model. Chat/AI interaction flows through:
+/// 1. POST /api/sessions → creates and starts a PTY → returns ptyId
+/// 2. WS /api/pty/{ptyId}/ws → streams AI output (pty-output messages)
+/// 3. POST /api/sessions/{ptyId}/send → sends user text input to the AI
 @Observable
 class SessionViewModel {
-    private(set) var messages: [ChatMessage] = []
-    private(set) var isStreaming = false
-    private(set) var error: String?
-    private(set) var streamingContent = ""
-
-    let session: Session
-    private weak var chatClient: ChatWebSocketClient?
-
     struct ChatMessage: Identifiable {
         let id = UUID()
-        let role: String  // "user" or "assistant"
+        let role: String          // "user" or "assistant"
         var content: String
         let timestamp: Date
         var isStreaming: Bool
     }
 
-    init(session: Session, chatClient: ChatWebSocketClient) {
+    private(set) var messages: [ChatMessage] = []
+    private(set) var isStreaming = false
+    var errorMessage: String?
+    private(set) var ptyId: String?
+    private(set) var isConnected = false
+
+    let session: Session
+    private var ptyClient: PTYWebSocketClient?
+    private var apiClient: OpenWorkAPIClient?
+
+    init(session: Session) {
         self.session = session
-        self.chatClient = chatClient
-        setupCallbacks()
     }
 
-    func sendMessage(_ text: String, projectPath: String, provider: String) async throws {
-        let userMessage = ChatMessage(
-            role: "user",
-            content: text,
-            timestamp: Date(),
-            isStreaming: false
-        )
-        await MainActor.run {
-            messages.append(userMessage)
-            isStreaming = true
-            streamingContent = ""
+    /// Call once when the view appears to create a PTY session and connect its WebSocket.
+    func connect(using client: OpenWorkAPIClient) async {
+        self.apiClient = client
+        errorMessage = nil
 
-            let assistantMessage = ChatMessage(
-                role: "assistant",
-                content: "",
-                timestamp: Date(),
-                isStreaming: true
+        do {
+            let id = try await client.createAndStartSession(
+                projectPath: session.projectPath,
+                provider: session.provider,
+                resumeSessionId: session.id
             )
-            messages.append(assistantMessage)
-        }
+            await MainActor.run { self.ptyId = id }
 
-        try await chatClient?.sendMessage(
-            sessionId: session.id,
-            projectPath: projectPath,
-            message: text,
-            provider: provider
-        )
+            let ptyClient = PTYWebSocketClient(sessionId: id, connection: client.connection)
+            await MainActor.run { self.ptyClient = ptyClient }
+
+            ptyClient.onHistoryReceived = { [weak self] data in
+                Task { @MainActor in
+                    self?.appendAssistantOutput(data, isHistory: true)
+                }
+            }
+            ptyClient.onOutput = { [weak self] data in
+                Task { @MainActor in
+                    self?.appendAssistantOutput(data, isHistory: false)
+                }
+            }
+            ptyClient.onExit = { [weak self] code in
+                Task { @MainActor in
+                    self?.isConnected = false
+                    self?.isStreaming = false
+                    if let code = code, code != 0 {
+                        self?.errorMessage = "Session exited with code \(code)"
+                    }
+                }
+            }
+            ptyClient.onError = { [weak self] error in
+                Task { @MainActor in
+                    self?.isConnected = false
+                    self?.errorMessage = error.localizedDescription
+                }
+            }
+            ptyClient.onConnected = { [weak self] in
+                Task { @MainActor in
+                    self?.isConnected = true
+                }
+            }
+
+            ptyClient.connect()
+        } catch {
+            await MainActor.run {
+                self.errorMessage = "Failed to start session: \(error.localizedDescription)"
+            }
+        }
     }
 
-    func abort() async throws {
-        try await chatClient?.abortSession(sessionId: session.id)
-        await MainActor.run {
+    func disconnect() {
+        ptyClient?.disconnect()
+        ptyClient = nil
+        isConnected = false
+        isStreaming = false
+    }
+
+    func sendMessage(_ text: String) async {
+        guard let apiClient, let ptyId, isConnected else {
+            errorMessage = "Not connected. Please wait for the session to start."
+            return
+        }
+
+        let userMsg = ChatMessage(role: "user", content: text, timestamp: Date(), isStreaming: false)
+        messages.append(userMsg)
+        isStreaming = true
+        errorMessage = nil
+
+        do {
+            try await apiClient.sendToSession(ptyId: ptyId, text: text + "\n")
+        } catch {
             isStreaming = false
-            if !messages.isEmpty {
-                messages[messages.count - 1].isStreaming = false
-            }
+            messages.removeLast()
+            errorMessage = "Failed to send: \(error.localizedDescription)"
         }
     }
 
-    private func setupCallbacks() {
-        chatClient?.onChatResponse = { [weak self] sessionId, content, done in
-            guard let self = self, sessionId == self.session.id else { return }
-            Task { @MainActor in
-                if done {
-                    self.isStreaming = false
-                    if !self.messages.isEmpty {
-                        self.messages[self.messages.count - 1].isStreaming = false
-                        self.messages[self.messages.count - 1].content = self.streamingContent
-                    }
-                    self.streamingContent = ""
-                } else {
-                    self.streamingContent += content
-                    if !self.messages.isEmpty {
-                        self.messages[self.messages.count - 1].content = self.streamingContent
-                    }
-                }
-            }
+    func abort() async {
+        guard let apiClient, let ptyId else { return }
+        do {
+            try await apiClient.killSession(ptyId: ptyId)
+            isStreaming = false
+        } catch {
+            errorMessage = "Failed to abort: \(error.localizedDescription)"
         }
+    }
 
-        chatClient?.onChatError = { [weak self] sessionId, error in
-            guard let self = self, sessionId == self.session.id else { return }
-            Task { @MainActor in
-                self.error = error
-                self.isStreaming = false
-                if !self.messages.isEmpty {
-                    self.messages[self.messages.count - 1].isStreaming = false
-                }
+    private func appendAssistantOutput(_ data: String, isHistory: Bool) {
+        if isHistory {
+            let msg = ChatMessage(role: "assistant", content: data, timestamp: Date(), isStreaming: false)
+            messages.append(msg)
+        } else {
+            if let last = messages.last, last.role == "assistant", last.isStreaming {
+                messages[messages.count - 1].content += data
+            } else {
+                let msg = ChatMessage(role: "assistant", content: data, timestamp: Date(), isStreaming: true)
+                messages.append(msg)
             }
+            isStreaming = true
         }
     }
 }

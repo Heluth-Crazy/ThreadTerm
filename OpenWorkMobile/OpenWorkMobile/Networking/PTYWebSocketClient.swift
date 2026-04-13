@@ -19,6 +19,8 @@ class PTYWebSocketClient: NSObject, @unchecked Sendable {
     var onOutput: ((String) -> Void)?
     var onHistoryReceived: ((String) -> Void)?
     var onExit: ((UInt32?) -> Void)?
+    var onError: ((Error) -> Void)?
+    var onConnected: (() -> Void)?
 
     init(sessionId: String, connection: ServerConnection) {
         self.sessionId = sessionId
@@ -32,7 +34,9 @@ class PTYWebSocketClient: NSObject, @unchecked Sendable {
 
         let urlString = "ws://\(connection.host):\(connection.port)/api/pty/\(sessionId)/ws?token=\(connection.token)"
         guard let url = URL(string: urlString) else {
-            state = .failed(URLError(.badURL))
+            let error = URLError(.badURL)
+            state = .failed(error)
+            onError?(error)
             return
         }
 
@@ -88,6 +92,7 @@ class PTYWebSocketClient: NSObject, @unchecked Sendable {
                 } catch {
                     await MainActor.run {
                         self.state = .failed(error)
+                        self.onError?(error)
                     }
                     break
                 }
@@ -102,9 +107,10 @@ class PTYWebSocketClient: NSObject, @unchecked Sendable {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
 
-            // Mark as connected on first message
+            // Fire onConnected only once, on first message received
             if case .connecting = self.state {
                 self.state = .connected
+                self.onConnected?()
             }
 
             switch msg {
