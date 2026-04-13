@@ -24,18 +24,21 @@ enum APIError: Error, LocalizedError {
 
 // MARK: - Response Wrappers
 
-struct APIResponse<T: Decodable>: Decodable {
+/// Used for endpoints returning { ok: true, ptyId?: "..." }
+struct OkResponse: Decodable {
     let ok: Bool
-    let data: T?
     let error: String?
+    let ptyId: String?
 }
 
-struct SessionsWrapper: Decodable {
+/// GET /api/sessions → { sessions: [...] }
+private struct SessionsWrapper: Decodable {
     let sessions: [ActiveSessionInfo]
 }
 
-struct PTYCreateData: Decodable {
-    let id: String
+/// GET /api/commands/discover → { commands: [...] }
+private struct CommandsWrapper: Decodable {
+    let commands: [DiscoveredCommand]
 }
 
 // MARK: - API Client
@@ -58,47 +61,117 @@ class OpenWorkAPIClient {
     // MARK: - Health
 
     func healthCheck() async throws -> HealthResponse {
-        let request = makeRequest("/api/health")
+        let request = makeRequest("/health")
         let (data, response) = try await session.data(for: request)
         try checkResponse(response)
         return try decode(HealthResponse.self, from: data)
     }
 
-    // MARK: - Projects
+    // MARK: - Projects (direct array response)
 
     func fetchProjects() async throws -> [Project] {
-        return try await fetchData("/api/projects")
-    }
-
-    func fetchProjectSessions(projectPath: String) async throws -> [Session] {
-        var components = URLComponents(string: "\(baseURL)/api/sessions/project")!
-        components.queryItems = [
-            URLQueryItem(name: "project_path", value: projectPath),
-        ]
-        let request = makeRequest(url: components.url!)
+        let request = makeRequest("/api/projects")
         let (data, response) = try await session.data(for: request)
         try checkResponse(response)
-        return try decode([Session].self, from: data)
+        return try decode([Project].self, from: data)
     }
 
     // MARK: - Active Sessions
 
     func fetchActiveSessions() async throws -> [ActiveSessionInfo] {
-        let wrapper: SessionsWrapper = try await fetchData("/api/sessions")
+        let request = makeRequest("/api/sessions")
+        let (data, response) = try await session.data(for: request)
+        try checkResponse(response)
+        let wrapper = try decode(SessionsWrapper.self, from: data)
         return wrapper.sessions
+    }
+
+    // MARK: - Session Lifecycle
+
+    /// POST /api/sessions — creates AND starts a PTY session. Returns the ptyId.
+    func createAndStartSession(
+        projectPath: String,
+        provider: String,
+        resumeSessionId: String? = nil
+    ) async throws -> String {
+        var body: [String: Any] = [
+            "project_path": projectPath,
+            "provider": provider,
+        ]
+        if let resumeId = resumeSessionId {
+            body["resume_session_id"] = resumeId
+        }
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let request = makeRequest("/api/sessions", method: "POST", body: bodyData)
+        let (data, response) = try await session.data(for: request)
+        try checkResponse(response)
+        let result = try decode(OkResponse.self, from: data)
+        guard result.ok, let ptyId = result.ptyId else {
+            throw APIError.serverError(result.error ?? "Failed to create session")
+        }
+        return ptyId
+    }
+
+    /// POST /api/sessions/{ptyId}/send — sends text input to a running PTY session.
+    func sendToSession(ptyId: String, text: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["text": text])
+        let request = makeRequest("/api/sessions/\(ptyId)/send", method: "POST", body: body)
+        let (data, response) = try await session.data(for: request)
+        try checkResponse(response)
+        let result = try decode(OkResponse.self, from: data)
+        guard result.ok else {
+            throw APIError.serverError(result.error ?? "Failed to send to session")
+        }
+    }
+
+    /// POST /api/sessions/{ptyId}/kill — kills a running PTY session.
+    func killSession(ptyId: String) async throws {
+        let request = makeRequest("/api/sessions/\(ptyId)/kill", method: "POST")
+        let (data, response) = try await session.data(for: request)
+        try checkResponse(response)
+        let result = try decode(OkResponse.self, from: data)
+        guard result.ok else {
+            throw APIError.serverError(result.error ?? "Failed to kill session")
+        }
+    }
+
+    /// Returns the PTY WebSocket URL for a given ptyId.
+    func ptyWebSocketURL(ptyId: String) -> URL {
+        URL(string: "\(wsBaseURL)/api/pty/\(ptyId)/ws?token=\(connection.token)")!
     }
 
     // MARK: - Session History
 
-    func fetchSessionHistory(
+    /// GET /api/session-history?project_path=&provider= — returns direct array.
+    func fetchSessionSummaries(
         projectPath: String,
+        provider: String = "claude",
+        limit: Int? = nil,
+        offset: Int? = nil
+    ) async throws -> [SessionSummary] {
+        var components = URLComponents(string: "\(baseURL)/api/session-history")!
+        var items = [
+            URLQueryItem(name: "project_path", value: projectPath),
+            URLQueryItem(name: "provider", value: provider),
+        ]
+        if let limit { items.append(URLQueryItem(name: "limit", value: "\(limit)")) }
+        if let offset { items.append(URLQueryItem(name: "offset", value: "\(offset)")) }
+        components.queryItems = items
+        let request = makeRequest(url: components.url!)
+        let (data, response) = try await session.data(for: request)
+        try checkResponse(response)
+        return try decode([SessionSummary].self, from: data)
+    }
+
+    /// GET /api/session-history/{sessionId}/messages — returns direct array.
+    func fetchSessionMessages(
         sessionId: String,
-        provider: String
+        projectPath: String,
+        provider: String = "claude"
     ) async throws -> [SessionMessage] {
-        var components = URLComponents(string: "\(baseURL)/api/session_history")!
+        var components = URLComponents(string: "\(baseURL)/api/session-history/\(sessionId)/messages")!
         components.queryItems = [
             URLQueryItem(name: "project_path", value: projectPath),
-            URLQueryItem(name: "session_id", value: sessionId),
             URLQueryItem(name: "provider", value: provider),
         ]
         let request = makeRequest(url: components.url!)
@@ -109,52 +182,13 @@ class OpenWorkAPIClient {
 
     // MARK: - Commands
 
+    /// GET /api/commands/discover → { commands: [...] }
     func discoverCommands() async throws -> [DiscoveredCommand] {
         let request = makeRequest("/api/commands/discover")
         let (data, response) = try await session.data(for: request)
         try checkResponse(response)
-        let result = try decode(CommandDiscoveryResponse.self, from: data)
-        guard result.ok, let discovery = result.data else {
-            throw APIError.serverError(result.error ?? "Command discovery failed")
-        }
-        return discovery.commands
-    }
-
-    // MARK: - PTY Management
-
-    func createPTYSession(projectPath: String, provider: String) async throws -> String {
-        let body = try JSONSerialization.data(withJSONObject: [
-            "project_path": projectPath,
-            "provider": provider,
-        ])
-        let request = makeRequest("/api/pty/create", method: "POST", body: body)
-        let (data, response) = try await session.data(for: request)
-        try checkResponse(response)
-        let apiResp = try decode(APIResponse<PTYCreateData>.self, from: data)
-        guard apiResp.ok, let ptyData = apiResp.data else {
-            throw APIError.serverError(apiResp.error ?? "Failed to create PTY session")
-        }
-        return ptyData.id
-    }
-
-    func startPTYSession(id: String) async throws {
-        let request = makeRequest("/api/pty/\(id)/start", method: "POST")
-        let (data, response) = try await session.data(for: request)
-        try checkResponse(response)
-        let result = try decode(OkResponse.self, from: data)
-        guard result.ok else {
-            throw APIError.serverError(result.error ?? "Failed to start PTY session")
-        }
-    }
-
-    func deletePTYSession(id: String) async throws {
-        let request = makeRequest("/api/pty/\(id)", method: "DELETE")
-        let (data, response) = try await session.data(for: request)
-        try checkResponse(response)
-        let result = try decode(OkResponse.self, from: data)
-        guard result.ok else {
-            throw APIError.serverError(result.error ?? "Failed to delete PTY session")
-        }
+        let wrapper = try decode(CommandsWrapper.self, from: data)
+        return wrapper.commands
     }
 
     // MARK: - Private Helpers
@@ -186,23 +220,6 @@ class OpenWorkAPIClient {
         return request
     }
 
-    private func fetchData<T: Decodable>(_ path: String) async throws -> T {
-        let request = makeRequest(path)
-        let (data, response) = try await session.data(for: request)
-        try checkResponse(response)
-        // Try to unwrap from APIResponse<T> envelope
-        if let apiResp = try? JSONDecoder().decode(APIResponse<T>.self, from: data) {
-            guard apiResp.ok else {
-                throw APIError.serverError(apiResp.error ?? "Server error")
-            }
-            if let result = apiResp.data {
-                return result
-            }
-        }
-        // Fall back to direct decode
-        return try decode(T.self, from: data)
-    }
-
     private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         do {
             return try JSONDecoder().decode(T.self, from: data)
@@ -219,10 +236,5 @@ class OpenWorkAPIClient {
         if http.statusCode >= 400 {
             throw APIError.serverError("Server returned status \(http.statusCode)")
         }
-    }
-
-    private struct OkResponse: Decodable {
-        let ok: Bool
-        let error: String?
     }
 }

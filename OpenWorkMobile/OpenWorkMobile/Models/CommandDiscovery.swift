@@ -1,16 +1,7 @@
 import Foundation
 
-/// Wrapper for `GET /api/commands/discover` response.
-struct CommandDiscoveryResponse: Codable, Sendable {
-    let ok: Bool
-    let data: CommandDiscoveryResult?
-    let error: String?
-}
-
-struct CommandDiscoveryResult: Codable, Sendable {
-    let commands: [DiscoveredCommand]
-    let skills: [DiscoveredSkill]
-}
+/// GET /api/commands/discover → { commands: [...] }
+/// NOTE: The response is { commands: [...] }, decoded via CommandsWrapper in OpenWorkAPIClient.
 
 /// A slash command. Uses camelCase JSON keys (Rust `rename_all = "camelCase"`).
 struct DiscoveredCommand: Codable, Identifiable, Sendable {

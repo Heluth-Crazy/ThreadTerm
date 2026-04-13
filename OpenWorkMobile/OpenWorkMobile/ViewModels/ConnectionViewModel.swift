@@ -47,7 +47,7 @@ class ConnectionViewModel {
             await MainActor.run {
                 state = .connected(client)
                 didJustConnect = true
-                TokenStorage.save(token: connection.token, for: connection.host)
+                TokenStorage.save(token: connection.token, for: connection.host, port: connection.port)
                 saveConnection(connection)
             }
         } catch let error as APIError where error.errorDescription?.contains("Unauthorized") == true {
@@ -76,7 +76,7 @@ class ConnectionViewModel {
     func deleteConnection(_ connection: ServerConnection) {
         savedConnections.removeAll { $0.id == connection.id }
         ConnectionStorage.saveConnections(savedConnections)
-        TokenStorage.delete(for: connection.host)
+        TokenStorage.delete(for: connection.host, port: connection.port)
         if case .connected(let client) = state,
            client.connection.id == connection.id {
             disconnect()

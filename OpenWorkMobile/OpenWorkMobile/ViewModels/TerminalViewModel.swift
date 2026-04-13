@@ -5,11 +5,13 @@ class TerminalViewModel {
     private(set) var outputLines: [TerminalLine] = []
     private(set) var isConnected = false
     private(set) var exitCode: UInt32?
+    private(set) var connectionError: String?
 
     struct TerminalLine: Identifiable {
         let id = UUID()
         var text: String
         var isHistory: Bool
+        var isError: Bool = false
     }
 
     private var ptyClient: PTYWebSocketClient?
@@ -38,8 +40,21 @@ class TerminalViewModel {
             }
         }
 
+        client.onConnected = { [weak self] in
+            Task { @MainActor in
+                self?.isConnected = true
+                self?.connectionError = nil
+            }
+        }
+
+        client.onError = { [weak self] error in
+            Task { @MainActor in
+                self?.isConnected = false
+                self?.connectionError = error.localizedDescription
+            }
+        }
+
         client.connect()
-        await MainActor.run { isConnected = true }
     }
 
     func disconnect() {
@@ -54,6 +69,12 @@ class TerminalViewModel {
 
     func sendResize(cols: Int, rows: Int) async throws {
         try await ptyClient?.sendResize(cols: cols, rows: rows)
+    }
+
+    /// Append an error message to the terminal output.
+    func appendError(_ text: String) {
+        outputLines.append(TerminalLine(text: text, isHistory: false, isError: true))
+        trimIfNeeded()
     }
 
     /// Incremental append — does NOT re-parse full buffer.

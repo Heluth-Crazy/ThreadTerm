@@ -3,18 +3,19 @@ import Security
 
 // MARK: - TokenStorage (Keychain)
 
-/// Keychain-based storage for API tokens, keyed by host.
+/// Keychain-based storage for API tokens, keyed by host:port.
 struct TokenStorage {
     static let service = "com.openwork.ios"
 
     @discardableResult
-    static func save(token: String, for host: String) -> Bool {
+    static func save(token: String, for host: String, port: Int) -> Bool {
         guard let data = token.data(using: .utf8) else { return false }
+        let key = "\(host):\(port)"
 
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: host,
+            kSecAttrAccount as String: key,
         ]
         // Delete existing before adding
         SecItemDelete(query as CFDictionary)
@@ -27,11 +28,12 @@ struct TokenStorage {
         return status == errSecSuccess
     }
 
-    static func load(for host: String) -> String? {
+    static func load(for host: String, port: Int) -> String? {
+        let key = "\(host):\(port)"
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: host,
+            kSecAttrAccount as String: key,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -43,11 +45,12 @@ struct TokenStorage {
     }
 
     @discardableResult
-    static func delete(for host: String) -> Bool {
+    static func delete(for host: String, port: Int) -> Bool {
+        let key = "\(host):\(port)"
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: host,
+            kSecAttrAccount as String: key,
         ]
         let status = SecItemDelete(query as CFDictionary)
         return status == errSecSuccess

@@ -3,15 +3,41 @@ import SwiftUI
 struct SessionView: View {
     let session: Session
     @Environment(ConnectionViewModel.self) private var connectionVM
-    @State private var viewModel: SessionViewModel?
-    @State private var chatClient: ChatWebSocketClient?
+    @State private var viewModel: SessionViewModel
     @State private var inputText = ""
     @State private var showCommandPicker = false
     @State private var commandSearchText = ""
     @State private var commands: [DiscoveredCommand] = []
 
+    init(session: Session) {
+        self.session = session
+        self._viewModel = State(initialValue: SessionViewModel(session: session))
+    }
+
     var body: some View {
         VStack(spacing: 0) {
+            // Error banner
+            if let error = viewModel.errorMessage {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                    Text(error).font(.caption).foregroundStyle(.red)
+                    Spacer()
+                    Button("Dismiss") { viewModel.errorMessage = nil }
+                        .font(.caption)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+                .background(Color.red.opacity(0.1))
+            }
+
+            if !viewModel.isConnected && viewModel.errorMessage == nil {
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.8)
+                    Text("Connecting…").font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 8)
+            }
+
             messagesList
             Divider()
             inputBar
@@ -23,7 +49,11 @@ struct SessionView: View {
                 ProviderBadge(provider: session.provider)
             }
         }
-        .task { setupChat() }
+        .task {
+            guard let client = connectionVM.currentAPIClient else { return }
+            await viewModel.connect(using: client)
+        }
+        .onDisappear { viewModel.disconnect() }
         .sheet(isPresented: $showCommandPicker) {
             CommandPickerView(
                 commands: commands,
@@ -44,18 +74,16 @@ struct SessionView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 12) {
-                    if let vm = viewModel {
-                        ForEach(vm.messages) { msg in
-                            ChatBubble(message: msg)
-                                .id(msg.id)
-                        }
+                    ForEach(viewModel.messages) { msg in
+                        ChatBubble(message: msg)
+                            .id(msg.id)
                     }
                 }
                 .padding()
             }
-            .onChange(of: viewModel?.messages.count) { _, _ in
+            .onChange(of: viewModel.messages.count) { _, _ in
                 withAnimation {
-                    if let last = viewModel?.messages.last {
+                    if let last = viewModel.messages.last {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
                 }
@@ -80,9 +108,9 @@ struct SessionView: View {
                 .lineLimit(1...5)
                 .textFieldStyle(.roundedBorder)
 
-            if viewModel?.isStreaming == true {
+            if viewModel.isStreaming {
                 Button {
-                    Task { try? await viewModel?.abort() }
+                    Task { await viewModel.abort() }
                 } label: {
                     Image(systemName: "stop.circle.fill")
                         .font(.title2)
@@ -94,7 +122,7 @@ struct SessionView: View {
                         .font(.title2)
                         .foregroundStyle(inputText.isEmpty ? .gray : .accentColor)
                 }
-                .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !viewModel.isConnected)
             }
         }
         .padding(.horizontal)
@@ -104,24 +132,12 @@ struct SessionView: View {
 
     // MARK: - Helpers
 
-    private func setupChat() {
-        guard let connection = connectionVM.currentAPIClient?.connection else { return }
-        let client = ChatWebSocketClient(connection: connection)
-        client.connect()
-        self.chatClient = client
-        self.viewModel = SessionViewModel(session: session, chatClient: client)
-    }
-
     private func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let vm = viewModel else { return }
+        guard !text.isEmpty else { return }
         inputText = ""
         Task {
-            try? await vm.sendMessage(
-                text,
-                projectPath: session.projectPath,
-                provider: session.provider
-            )
+            await viewModel.sendMessage(text)
         }
     }
 

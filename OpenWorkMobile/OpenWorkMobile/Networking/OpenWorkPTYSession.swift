@@ -1,5 +1,6 @@
 import Foundation
 
+// DEPRECATED — not used. PTY sessions are managed via OpenWorkAPIClient.
 @Observable
 final class OpenWorkPTYSession {
     let ptyId: String

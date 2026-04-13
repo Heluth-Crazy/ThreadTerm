@@ -12,9 +12,9 @@ class HistoryViewModel {
             error = nil
         }
         do {
-            let result = try await client.fetchSessionHistory(
-                projectPath: session.projectPath,
+            let result = try await client.fetchSessionMessages(
                 sessionId: session.id,
+                projectPath: session.projectPath,
                 provider: session.provider
             )
             await MainActor.run {
