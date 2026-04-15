@@ -88,6 +88,8 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
   const lineBuffers = useRef<Map<string, string>>(new Map());
   // ptyId → sessionId mapping (they may differ)
   const ptyToSession = useRef<Map<string, string>>(new Map());
+  // originalSessionId → Codex thread_id for multi-turn resume
+  const codexThreadIds = useRef<Map<string, string>>(new Map());
 
   // Buffered messages for replay
   const bufferedRef = useRef<Array<{ sequence: number; message: AppMessage }>>([]);
@@ -135,6 +137,8 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
             ptyToSession.current.set(ptyId, sessionId);
             lineBuffers.current.delete(originalSessionId);
             lineBuffers.current.set(sessionId, lines[lines.length - 1]);
+            // Track originalSessionId → thread_id for Codex resume
+            codexThreadIds.current.set(originalSessionId, parsed.thread_id);
             pushMessage({
               type: 'session-created',
               sessionId,
@@ -389,7 +393,19 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
           const projectPath: string = message.options?.projectPath ?? '';
           const resumeId: string | undefined = message.options?.resumeSessionId;
 
-          // Find existing ptyId for this session
+          if (provider === 'codex') {
+            // Codex uses exec mode: codex exec --json [resume <thread_id>] <prompt>
+            // This outputs structured JSON events that parsePtyOutput can handle
+            const doCodexSend = async () => {
+              const threadId = codexThreadIds.current.get(sid);
+              const ptyId = await ai.runCodexExec(sid, projectPath, message.command ?? '', threadId || resumeId);
+              ptyToSession.current.set(ptyId, sid);
+            };
+            doCodexSend().catch(console.error);
+            return true;
+          }
+
+          // Claude/Cursor: interactive PTY mode
           let existingPtyId: string | undefined;
           for (const [pid, s] of ptyToSession.current) {
             if (s === sid) { existingPtyId = pid; break; }
@@ -398,7 +414,6 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
           const doSend = async () => {
             let ptyId = existingPtyId;
             if (!ptyId) {
-              // Start the session first — spawns the CLI in a PTY
               try {
                 ptyId = await ai.startSession(sid, provider, projectPath, resumeId);
                 ptyToSession.current.set(ptyId, sid);

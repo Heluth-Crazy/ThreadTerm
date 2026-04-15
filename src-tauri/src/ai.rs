@@ -113,9 +113,9 @@ pub async fn ai_start_session(
 /// Send a message to the running AI CLI session via PTY input.
 #[tauri::command]
 pub async fn ai_send_message(pty_id: String, message: String) -> Result<(), String> {
-    // Send \n: canonical-mode PTYs (Claude) pass it through unchanged;
-    // raw-mode PTYs (Codex TUI) need \n since ICRNL translation is disabled.
-    let input = format!("{message}\n");
+    // Send \r (CR): in raw-mode PTYs this is the Enter key.
+    // Claude and Codex TUI both run in raw mode where \r triggers input.
+    let input = format!("{message}\r");
     pty::pty_input(pty_id, input).await
 }
 

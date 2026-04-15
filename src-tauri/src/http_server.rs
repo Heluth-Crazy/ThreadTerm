@@ -490,12 +490,12 @@ async fn send_to_session(
     State(_state): State<Arc<AppState>>,
     Json(req): Json<SendRequest>,
 ) -> Json<serde_json::Value> {
-    // Send \n: matches ai_send_message. Canonical-mode PTYs pass through;
-    // raw-mode PTYs (Codex TUI) need \n since ICRNL translation is disabled.
+    // Send \r (CR): in raw-mode PTYs this is the Enter key.
+    // Matches ai_send_message which also uses \r.
     let text = if req.text.ends_with('\r') || req.text.ends_with('\n') {
         req.text
     } else {
-        format!("{}\n", req.text)
+        format!("{}\r", req.text)
     };
     let result = crate::pty::pty_write_internal(&id, text);
     match result {

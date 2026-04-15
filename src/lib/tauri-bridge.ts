@@ -273,6 +273,10 @@ export const ai = {
     isTauriEnv()
       ? invoke<Record<string, string>>('settings_get_ai_config', { provider })
       : Promise.resolve({} as Record<string, string>),
+  runCodexExec: (sessionId: string, projectPath: string, prompt: string, resumeSessionId?: string): Promise<string> =>
+    isTauriEnv()
+      ? invoke<string>('ai_run_codex_exec', { sessionId, projectPath, prompt, resumeSessionId })
+      : Promise.reject(new Error('Codex exec not available in web mode')),
 };
 
 // ─── Handoff ─────────────────────────────────────────────────────────────────
