@@ -39,7 +39,15 @@ fn build_args<'a>(
             }
             args
         }
-        "codex" => Vec::new(),
+        "codex" => {
+            let mut args = Vec::new();
+            if let Some(sid) = resume_session_id {
+                args.push("resume");
+                args.push(sid.as_str());
+            }
+            args.push("--no-alt-screen");
+            args
+        }
         "cursor" => {
             let mut args = Vec::new();
             if let Some(sid) = resume_session_id {
@@ -65,6 +73,25 @@ pub async fn ai_start_session(
     resume_session_id: Option<String>,
     window: Window,
 ) -> Result<String, String> {
+    if provider == "codex" {
+        let cli_path = resolve_cli(&provider)?;
+        let args = build_args(&provider, &resume_session_id);
+        let arg_refs: Vec<&str> = args.iter().copied().collect();
+
+        let pty_id = pty::create_command_pty(
+            session_id.clone(),
+            project_path,
+            &cli_path,
+            &arg_refs,
+            24,
+            120,
+            window.app_handle().clone(),
+        )?;
+
+        tracing::info!(provider = %provider, pty_id = %pty_id, "AI session started in direct command PTY");
+        return Ok(pty_id);
+    }
+
     let cli_path = resolve_cli(&provider)?;
     let args = build_args(&provider, &resume_session_id);
     let arg_refs: Vec<&str> = args.iter().copied().collect();
@@ -86,9 +113,47 @@ pub async fn ai_start_session(
 /// Send a message to the running AI CLI session via PTY input.
 #[tauri::command]
 pub async fn ai_send_message(pty_id: String, message: String) -> Result<(), String> {
-    // Write the message followed by a newline to the PTY
+    // Send \n: canonical-mode PTYs (Claude) pass it through unchanged;
+    // raw-mode PTYs (Codex TUI) need \n since ICRNL translation is disabled.
     let input = format!("{message}\n");
     pty::pty_input(pty_id, input).await
+}
+
+#[tauri::command]
+pub async fn ai_run_codex_exec(
+    session_id: String,
+    project_path: String,
+    prompt: String,
+    resume_session_id: Option<String>,
+    window: Window,
+) -> Result<String, String> {
+    let cli_path = resolve_cli("codex")?;
+
+    let mut args: Vec<&str> = vec![
+        "exec",
+        "--skip-git-repo-check",
+        "--json",
+    ];
+
+    if let Some(ref resume_id) = resume_session_id {
+        args.push("resume");
+        args.push(resume_id.as_str());
+    }
+
+    args.push(prompt.as_str());
+
+    let pty_id = pty::create_command_pty(
+        session_id.clone(),
+        project_path,
+        &cli_path,
+        &args,
+        24,
+        120,
+        window.app_handle().clone(),
+    )?;
+
+    tracing::info!(session_id = %session_id, pty_id = %pty_id, "Codex exec session started");
+    Ok(pty_id)
 }
 
 /// Abort a running AI session by killing its PTY.
