@@ -1,11 +1,12 @@
 import SwiftUI
 
 struct PTYOutputView: View {
-    let session: Session
+    let ptyId: String
     @Environment(ConnectionViewModel.self) private var connectionVM
     @State private var viewModel = TerminalViewModel()
     @State private var inputText = ""
     @State private var fontSize: CGFloat = 12
+    @State private var hasAttemptedConnection = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,8 +30,11 @@ struct PTYOutputView: View {
                 .disabled(!viewModel.isConnected)
             }
         }
-        .task { await connectTerminal() }
-        .onDisappear { viewModel.disconnect() }
+        .task { await connectTerminalIfNeeded() }
+        .onDisappear {
+            hasAttemptedConnection = false
+            viewModel.disconnect()
+        }
         .gesture(
             MagnifyGesture()
                 .onChanged { value in
@@ -122,7 +126,13 @@ struct PTYOutputView: View {
 
     private func connectTerminal() async {
         guard let connection = connectionVM.currentAPIClient?.connection else { return }
-        await viewModel.connect(sessionId: session.id, using: connection)
+        await viewModel.connect(sessionId: ptyId, using: connection)
+    }
+
+    private func connectTerminalIfNeeded() async {
+        guard !hasAttemptedConnection else { return }
+        hasAttemptedConnection = true
+        await connectTerminal()
     }
 
     private func sendInput() {

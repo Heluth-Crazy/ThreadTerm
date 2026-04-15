@@ -601,10 +601,13 @@ const ProjectCreationWizard = ({ onClose, onProjectCreated }) => {
                                 {t('projectWizard.step2.newToken')}
                               </label>
                               <Input
-                                type="password"
+                                type="text"
                                 value={newGithubToken}
                                 onChange={(e) => setNewGithubToken(e.target.value)}
                                 placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                                autoCapitalize="none"
+                                autoCorrect="off"
+                                spellCheck={false}
                                 className="w-full"
                               />
                               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -626,10 +629,13 @@ const ProjectCreationWizard = ({ onClose, onProjectCreated }) => {
                               {t('projectWizard.step2.optionalTokenPublic')}
                             </label>
                             <Input
-                              type="password"
+                              type="text"
                               value={newGithubToken}
                               onChange={(e) => setNewGithubToken(e.target.value)}
                               placeholder={t('projectWizard.step2.tokenPublicPlaceholder')}
+                              autoCapitalize="none"
+                              autoCorrect="off"
+                              spellCheck={false}
                               className="w-full"
                             />
                             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">

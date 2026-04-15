@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		01A7A81C232AE29D7C29EB0F /* TokenStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B17610551534DE65A81BD9B /* TokenStorageTests.swift */; };
 		01B798CDFDFCE24C9F4C9785 /* ConnectionSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 343D03F37EC044244B45B943 /* ConnectionSetupView.swift */; };
+		0A1B2C3D4E5F60718293A4B5 /* SessionViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F708192A3B4C5 /* SessionViewModelTests.swift */; };
+		0B1C2D3E4F5061728394A5B6 /* SessionIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C1D2E3F405162738495A6B7 /* SessionIntegrationTests.swift */; };
 		08ADAFB3B6F66B16106FE6D6 /* HapticManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38E76B24CD8648D7A162E1BC /* HapticManager.swift */; };
 		0DDE5B389DA046A272F60704 /* SessionDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = F91D15A0BA78C1D95819D5AB /* SessionDestination.swift */; };
 		125F4211A1E16BA5DA359512 /* ProjectsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F904CB9CEC2FCF90D6EEB9B7 /* ProjectsViewModel.swift */; };
@@ -64,8 +66,10 @@
 
 /* Begin PBXFileReference section */
 		08FA9D88ACB23B2547963087 /* OpenWorkMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OpenWorkMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		0C1D2E3F405162738495A6B7 /* SessionIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionIntegrationTests.swift; sourceTree = "<group>"; };
 		0D21E7C2CFD878A8FF4A2C7B /* CommandPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPickerView.swift; sourceTree = "<group>"; };
 		105207F93E1B2C9E6E01A62F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F708192A3B4C5 /* SessionViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionViewModelTests.swift; sourceTree = "<group>"; };
 		1ACA37B3E194D9AF19E99AE7 /* SessionsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsViewModel.swift; sourceTree = "<group>"; };
 		1FC80B85349147EE788845BB /* HealthModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthModels.swift; sourceTree = "<group>"; };
 		2477EEF3A41945B6AF8A63C2 /* SessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionViewModel.swift; sourceTree = "<group>"; };
@@ -266,6 +270,8 @@
 			isa = PBXGroup;
 			children = (
 				2B62F52A19BB4BACB004F67F /* ConnectionSetupViewPasteTests.swift */,
+				0C1D2E3F405162738495A6B7 /* SessionIntegrationTests.swift */,
+				1A2B3C4D5E6F708192A3B4C5 /* SessionViewModelTests.swift */,
 				4B17610551534DE65A81BD9B /* TokenStorageTests.swift */,
 			);
 			path = OpenWorkMobileTests;
@@ -424,6 +430,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A9CDE8FE288D4BCAE95D5DDD /* ConnectionSetupViewPasteTests.swift in Sources */,
+				0B1C2D3E4F5061728394A5B6 /* SessionIntegrationTests.swift in Sources */,
+				0A1B2C3D4E5F60718293A4B5 /* SessionViewModelTests.swift in Sources */,
 				01A7A81C232AE29D7C29EB0F /* TokenStorageTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

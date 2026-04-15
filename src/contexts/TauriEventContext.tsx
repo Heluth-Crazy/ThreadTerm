@@ -137,8 +137,9 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
             ptyToSession.current.set(ptyId, sessionId);
             lineBuffers.current.delete(originalSessionId);
             lineBuffers.current.set(sessionId, lines[lines.length - 1]);
-            // Track originalSessionId → thread_id for Codex resume
+            // Track originalSessionId → thread_id and thread_id → thread_id for Codex resume
             codexThreadIds.current.set(originalSessionId, parsed.thread_id);
+            codexThreadIds.current.set(parsed.thread_id, parsed.thread_id);
             pushMessage({
               type: 'session-created',
               sessionId,
@@ -383,7 +384,6 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
       try {
         if (type === 'claude-command' || type === 'send-message' || type === 'codex-command' || type === 'send-codex-message') {
           const sid: string = message.options?.sessionId ?? '';
-          if (!sid) return false;
 
           const inferredProvider =
             type === 'codex-command' || type === 'send-codex-message'
@@ -395,15 +395,19 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
 
           if (provider === 'codex') {
             // Codex uses exec mode: codex exec --json [resume <thread_id>] <prompt>
-            // This outputs structured JSON events that parsePtyOutput can handle
+            // New sessions won't have a sid yet — generate a temporary tracking key.
+            const codexSid = sid || `codex-${Date.now()}`;
             const doCodexSend = async () => {
-              const threadId = codexThreadIds.current.get(sid);
-              const ptyId = await ai.runCodexExec(sid, projectPath, message.command ?? '', threadId || resumeId);
-              ptyToSession.current.set(ptyId, sid);
+              const threadId = codexThreadIds.current.get(codexSid);
+              const ptyId = await ai.runCodexExec(codexSid, projectPath, message.command ?? '', threadId || resumeId);
+              ptyToSession.current.set(ptyId, codexSid);
             };
             doCodexSend().catch(console.error);
             return true;
           }
+
+          // Claude/Cursor: need a pre-existing or resolvable session ID
+          if (!sid) return false;
 
           // Claude/Cursor: interactive PTY mode
           let existingPtyId: string | undefined;

@@ -6,10 +6,6 @@ import UIKit
 struct ConnectionSetupView: View {
     @Environment(ConnectionViewModel.self) private var connectionVM
     @Environment(\.dismiss) private var dismiss
-    @State private var host = ""
-    @State private var port = "3002"
-    @State private var token = ""
-    @State private var connectionName = ""
     @State private var showToken = false
     @State private var showSuccessCheck = false
 
@@ -28,13 +24,7 @@ struct ConnectionSetupView: View {
                                     .foregroundStyle(.red)
                             }
                             Button {
-                                let conn = ServerConnection(
-                                    name: connectionName.isEmpty ? host : connectionName,
-                                    host: host,
-                                    port: Int(port) ?? 3002,
-                                    token: token
-                                )
-                                Task { await connectionVM.connect(to: conn) }
+                                Task { await connectionVM.connect(to: connectionVM.draftConnection()) }
                             } label: {
                                 Label("Retry", systemImage: "arrow.clockwise")
                                     .font(.subheadline.bold())
@@ -45,28 +35,25 @@ struct ConnectionSetupView: View {
                 }
 
                 Section("Server") {
-                    TextField("192.168.1.x", text: $host)
+                    TextField("192.168.1.x", text: hostBinding)
                         .keyboardType(.URL)
                         .textContentType(.URL)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
 
-                    TextField("Port", text: $port)
+                    TextField("Port", text: portBinding)
                         .keyboardType(.numberPad)
 
                     // Token field with show/hide + paste
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Group {
-                                if showToken {
-                                    TextField("API Token", text: $token)
-                                        .font(.system(.caption, design: .monospaced))
-                                } else {
-                                    SecureField("API Token", text: $token)
-                                }
-                            }
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
+                            TokenTextField(
+                                text: tokenBinding,
+                                isSecure: !showToken,
+                                placeholder: "API Token"
+                            )
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: 22)
 
                             Button {
                                 showToken.toggle()
@@ -81,7 +68,7 @@ struct ConnectionSetupView: View {
                                 let str = UIPasteboard.general.string ?? ""
                                 let cleaned = str.trimmingCharacters(in: .whitespacesAndNewlines)
                                 if !cleaned.isEmpty {
-                                    token = cleaned
+                                    connectionVM.draft.token = cleaned
                                     showToken = true   // show what was pasted
                                 }
                                 #endif
@@ -102,7 +89,7 @@ struct ConnectionSetupView: View {
                         }
                     }
 
-                    TextField("My Mac (optional)", text: $connectionName)
+                    TextField("My Mac (optional)", text: connectionNameBinding)
                 }
 
                 Section {
@@ -141,7 +128,7 @@ struct ConnectionSetupView: View {
                 // Hint
                 Section {
                     Label {
-                        Text("Find your Mac's IP in **System Settings → Network**, or run `ifconfig` in Terminal. Token is in `~/.openwork/api-token.txt`.")
+                        Text("Find your Mac's IP in **System Settings → Network**, or run `ifconfig` in Terminal. Token is in `~/.openwork/api-token.txt`. On a real iPhone, do not use `localhost`.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } icon: {
@@ -185,18 +172,12 @@ struct ConnectionSetupView: View {
         if case .connecting = connectionVM.state {
             HStack {
                 Spacer()
-                ProgressView("Connecting to \(host):\(port)…")
+                ProgressView("Connecting to \(connectionVM.draft.host):\(connectionVM.draft.port)…")
                 Spacer()
             }
         } else {
             Button {
-                let conn = ServerConnection(
-                    name: connectionName.isEmpty ? host : connectionName,
-                    host: host,
-                    port: Int(port) ?? 3002,
-                    token: token
-                )
-                Task { await connectionVM.connect(to: conn) }
+                Task { await connectionVM.connect(to: connectionVM.draftConnection()) }
             } label: {
                 HStack {
                     Spacer()
@@ -205,7 +186,7 @@ struct ConnectionSetupView: View {
                     Spacer()
                 }
             }
-            .disabled(host.isEmpty || token.isEmpty)
+            .disabled(connectionVM.draft.host.isEmpty || connectionVM.draft.token.isEmpty)
         }
     }
 
@@ -226,11 +207,10 @@ struct ConnectionSetupView: View {
 
     private func savedConnectionRow(_ conn: ServerConnection) -> some View {
         Button {
-            host = conn.host
-            port = String(conn.port)
-            token = conn.token
-            connectionName = conn.name
-            Task { await connectionVM.connect(to: conn) }
+            let resolved = connectionVM.selectSavedConnection(conn)
+
+            guard !resolved.token.isEmpty else { return }
+            Task { await connectionVM.connect(to: resolved) }
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 Text(conn.name.isEmpty ? conn.host : conn.name)
@@ -253,7 +233,105 @@ struct ConnectionSetupView: View {
         if line.contains("✗") { return .red }
         return .white
     }
+
+    private var hostBinding: Binding<String> {
+        Binding(
+            get: { connectionVM.draft.host },
+            set: { connectionVM.draft.host = $0 }
+        )
+    }
+
+    private var portBinding: Binding<String> {
+        Binding(
+            get: { connectionVM.draft.port },
+            set: { connectionVM.draft.port = $0 }
+        )
+    }
+
+    private var tokenBinding: Binding<String> {
+        Binding(
+            get: { connectionVM.draft.token },
+            set: { connectionVM.draft.token = $0 }
+        )
+    }
+
+    private var connectionNameBinding: Binding<String> {
+        Binding(
+            get: { connectionVM.draft.name },
+            set: { connectionVM.draft.name = $0 }
+        )
+    }
 }
+
+#if canImport(UIKit)
+private struct TokenTextField: UIViewRepresentable {
+    @Binding var text: String
+    let isSecure: Bool
+    let placeholder: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeUIView(context: Context) -> UITextField {
+        let textField = UITextField(frame: .zero)
+        textField.delegate = context.coordinator
+        textField.placeholder = placeholder
+        textField.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        textField.autocorrectionType = .no
+        textField.autocapitalizationType = .none
+        textField.smartDashesType = .no
+        textField.smartQuotesType = .no
+        textField.spellCheckingType = .no
+        textField.keyboardType = .asciiCapable
+        // API tokens are not account passwords; using one-time-code semantics
+        // suppresses iOS password autofill/save prompts that block the flow.
+        textField.textContentType = .oneTimeCode
+        textField.passwordRules = nil
+        textField.clearButtonMode = .whileEditing
+        textField.borderStyle = .none
+        textField.isSecureTextEntry = isSecure
+        textField.addTarget(
+            context.coordinator,
+            action: #selector(Coordinator.textChanged(_:)),
+            for: .editingChanged
+        )
+        return textField
+    }
+
+    func updateUIView(_ textField: UITextField, context: Context) {
+        if textField.text != text {
+            textField.text = text
+        }
+
+        if textField.isSecureTextEntry != isSecure {
+            let wasFirstResponder = textField.isFirstResponder
+            let currentText = textField.text
+            textField.isSecureTextEntry = isSecure
+
+            // Re-assign text after toggling secure entry so iOS keeps the current value
+            // and the edit menu remains available.
+            textField.text = currentText
+
+            if wasFirstResponder {
+                textField.becomeFirstResponder()
+            }
+        }
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        private var text: Binding<String>
+
+        init(text: Binding<String>) {
+            self.text = text
+        }
+
+        @objc func textChanged(_ sender: UITextField) {
+            text.wrappedValue = sender.text ?? ""
+        }
+    }
+}
+#endif
 
 // MARK: - Keyboard Dismissal
 

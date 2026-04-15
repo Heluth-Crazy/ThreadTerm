@@ -2,6 +2,15 @@ import Foundation
 
 @Observable
 class ConnectionViewModel {
+    typealias APIClientFactory = (ServerConnection) -> OpenWorkAPIClient
+
+    struct ConnectionDraft: Equatable {
+        var host = ""
+        var port = "3002"
+        var token = ""
+        var name = ""
+    }
+
     enum ConnectionState: Equatable {
         case disconnected
         case connecting
@@ -22,6 +31,7 @@ class ConnectionViewModel {
     private(set) var state: ConnectionState = .disconnected
     var savedConnections: [ServerConnection] = []
     var connectionLog: [String] = []
+    var draft = ConnectionDraft()
     /// Set after a successful connection to allow auto-dismiss in the view.
     var didJustConnect = false
 
@@ -31,24 +41,47 @@ class ConnectionViewModel {
         return nil
     }
 
-    init() {
-        savedConnections = ConnectionStorage.loadConnections()
+    private let clientFactory: APIClientFactory
+
+    init(clientFactory: @escaping APIClientFactory = OpenWorkAPIClient.init) {
+        self.clientFactory = clientFactory
+        savedConnections = ConnectionStorage.loadConnections().map { connection in
+            resolvedSavedConnection(connection)
+        }
     }
 
     func connect(to connection: ServerConnection) async {
         await MainActor.run {
+            self.populateDraft(from: connection)
+        }
+
+        let normalizedConnection: ServerConnection
+        do {
+            normalizedConnection = try normalize(connection)
+        } catch {
+            await MainActor.run {
+                connectionLog.removeAll()
+                didJustConnect = false
+                state = .failed(error.localizedDescription)
+            }
+            await appendLog("✗ \(error.localizedDescription)")
+            return
+        }
+
+        await MainActor.run {
+            self.populateDraft(from: normalizedConnection)
             connectionLog.removeAll()
             didJustConnect = false
             state = .connecting
         }
-        await appendLog("→ Connecting to \(connection.host):\(connection.port)...")
+        await appendLog("→ Connecting to \(normalizedConnection.host):\(normalizedConnection.port)...")
         do {
-            let client = try await attemptConnection(connection)
+            let client = try await attemptConnection(normalizedConnection)
             await MainActor.run {
                 state = .connected(client)
                 didJustConnect = true
-                TokenStorage.save(token: connection.token, for: connection.host, port: connection.port)
-                saveConnection(connection)
+                TokenStorage.save(token: normalizedConnection.token, for: normalizedConnection.host, port: normalizedConnection.port)
+                saveConnection(normalizedConnection)
             }
         } catch let error as APIError where error.errorDescription?.contains("Unauthorized") == true {
             await appendLog("✗ Unauthorized — check your API token")
@@ -64,11 +97,21 @@ class ConnectionViewModel {
         didJustConnect = false
     }
 
+    func draftConnection() -> ServerConnection {
+        ServerConnection(
+            name: draft.name.isEmpty ? draft.host : draft.name,
+            host: draft.host,
+            port: Int(draft.port) ?? 3002,
+            token: draft.token
+        )
+    }
+
     func saveConnection(_ connection: ServerConnection) {
-        if let idx = savedConnections.firstIndex(where: { $0.id == connection.id }) {
-            savedConnections[idx] = connection
+        let resolved = resolvedSavedConnection(connection)
+        if let idx = savedConnections.firstIndex(where: { $0.id == resolved.id }) {
+            savedConnections[idx] = resolved
         } else {
-            savedConnections.append(connection)
+            savedConnections.append(resolved)
         }
         ConnectionStorage.saveConnections(savedConnections)
     }
@@ -83,14 +126,88 @@ class ConnectionViewModel {
         }
     }
 
+    func resolvedSavedConnection(_ connection: ServerConnection) -> ServerConnection {
+        var resolved = connection
+        resolved.token = TokenStorage.load(for: connection.host, port: connection.port) ?? connection.token
+        return resolved
+    }
+
+    @discardableResult
+    func selectSavedConnection(_ connection: ServerConnection) -> ServerConnection {
+        let resolved = resolvedSavedConnection(connection)
+        populateDraft(from: resolved)
+        return resolved
+    }
+
     // MARK: - Private
 
+    private func populateDraft(from connection: ServerConnection) {
+        draft.host = connection.host
+        draft.port = String(connection.port)
+        draft.token = connection.token
+        draft.name = connection.name
+    }
+
     private func attemptConnection(_ connection: ServerConnection) async throws -> OpenWorkAPIClient {
-        let client = OpenWorkAPIClient(connection: connection)
+        let client = clientFactory(connection)
         await appendLog("→ Sending health check...")
         let health = try await client.healthCheck()
+        await appendLog("✓ Server reachable — \(health.app)")
+        await appendLog("→ Validating API token...")
+        try await client.validateAuthentication()
+        await appendLog("✓ API token accepted")
         await appendLog("✓ Connected — \(health.app)")
         return client
+    }
+
+    private func normalize(_ connection: ServerConnection) throws -> ServerConnection {
+        var normalized = connection
+        normalized.name = connection.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        normalized.token = connection.token.trimmingCharacters(in: .whitespacesAndNewlines)
+        normalized.host = try normalizeHost(connection.host, defaultPort: connection.port)
+
+        guard !normalized.host.isEmpty else {
+            throw APIError.serverError("Server host is required")
+        }
+        guard !normalized.token.isEmpty else {
+            throw APIError.serverError("API token is required")
+        }
+
+        #if !targetEnvironment(simulator)
+        if isLoopbackHost(normalized.host) {
+            throw APIError.serverError(
+                "localhost only works in Simulator. On iPhone, use your Mac's LAN IP, for example 192.168.x.x."
+            )
+        }
+        #endif
+
+        return normalized
+    }
+
+    private func normalizeHost(_ rawHost: String, defaultPort: Int) throws -> String {
+        let trimmed = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        if let url = URL(string: trimmed), let host = url.host {
+            return host
+        }
+
+        if let url = URL(string: "http://\(trimmed)"), let host = url.host {
+            if let pastedPort = url.port, pastedPort != defaultPort {
+                throw APIError.serverError("Host already contains port \(pastedPort). Please keep the port field consistent.")
+            }
+            return host
+        }
+
+        return trimmed
+            .replacingOccurrences(of: "http://", with: "")
+            .replacingOccurrences(of: "https://", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private func isLoopbackHost(_ host: String) -> Bool {
+        let value = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return value == "localhost" || value == "127.0.0.1" || value == "::1"
     }
 
     @MainActor
