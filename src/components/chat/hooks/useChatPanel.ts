@@ -121,6 +121,7 @@ export function useChatPanel({
   const queuedOutgoingRef = useRef<QueuedOutgoingMessage[]>([]);
   const isSendingRef = useRef(false);
   const isComposingRef = useRef(false);
+  const isEndingCompositionRef = useRef(false);
   const suppressInputEchoRef = useRef<{ value: string; until: number } | null>(null);
   const dismissedComposerAssistRef = useRef<{ value: string; cursorPos: number } | null>(null);
   const lastLocalActivityAtRef = useRef<number>(Date.now());
@@ -965,6 +966,7 @@ Use these as file path references only. Read file contents from the workspace wh
     const options: Record<string, unknown> = {
       cwd: workingDirectory,
       projectPath: workingDirectory,
+      provider: activeMessageProvider,
     };
 
     if (typeof activeModel === 'string' && activeModel.trim().length > 0) {
@@ -1243,6 +1245,9 @@ Use these as file path references only. Read file contents from the workspace wh
     }
 
     if (event.key === 'Enter' && !event.shiftKey) {
+      if (isComposingRef.current || event.nativeEvent.isComposing || isEndingCompositionRef.current) {
+        return;
+      }
       event.preventDefault();
       setIsFilePickerOpen(false);
       setIsCmdOpen(false);
@@ -1276,6 +1281,10 @@ Use these as file path references only. Read file contents from the workspace wh
 
   const handleCompositionEnd = useCallback(() => {
     isComposingRef.current = false;
+    isEndingCompositionRef.current = true;
+    requestAnimationFrame(() => {
+      isEndingCompositionRef.current = false;
+    });
   }, []);
 
   // --- Effects ---

@@ -490,11 +490,12 @@ async fn send_to_session(
     State(_state): State<Arc<AppState>>,
     Json(req): Json<SendRequest>,
 ) -> Json<serde_json::Value> {
-    // AI CLIs require carriage return to process input, same as ai_send_message Tauri command
+    // Send \n: matches ai_send_message. Canonical-mode PTYs pass through;
+    // raw-mode PTYs (Codex TUI) need \n since ICRNL translation is disabled.
     let text = if req.text.ends_with('\r') || req.text.ends_with('\n') {
         req.text
     } else {
-        format!("{}\r", req.text)
+        format!("{}\n", req.text)
     };
     let result = crate::pty::pty_write_internal(&id, text);
     match result {
