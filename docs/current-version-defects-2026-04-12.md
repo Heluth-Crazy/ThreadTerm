@@ -13,21 +13,41 @@
 - 遗留旧代码建议标记为待删除，不应继续作为主线能力维护
 
 验证基线：
-- `cargo test`：通过，21/21
-- `npm run typecheck`：失败
+- `npm run typecheck`：通过
+- `cargo test`：本轮复审环境仍未安装 `cargo`，未复跑
 - 当前运行中的核心监听进程：
   - `5173`：Vite
   - `3002`：Tauri 后端 HTTP 服务
 
+复审更新：
+- 以下状态以本轮代码复审为准
+- 已确认修复：
+  - Web / mobile bridge 已接入新的 token 鉴权链路
+  - 会话重命名链路已闭环
+  - Codex 会话删除与名称覆盖已落地
+  - 前端类型检查失败
+  - 项目删除后被自动发现重新加入
+  - 项目重命名后端接口缺失
+  - Extensions 总览读取错误数据源
+  - Git 的 discard changes、staged diff 与历史 diff 错误/缺失实现
+- 仍然成立或新暴露的问题：
+  - Web 模式仍有部分写操作是空实现
+  - 多 Provider 支持仍不对称
+  - 登录状态与鉴权状态仍不可信
+  - 分支工作区创建入口在 Tauri 主线仍未实现
+  - README / 文档 / public API docs / i18n 中仍保留大量旧主线叙事
+  - 旧兼容 API 封装与测试仍保留 Node / Express 时代的接口形状
+
 ## 1. 结论摘要
 
-当前版本的核心问题不是“功能太少”，而是“主线存在一批已经暴露出来的断裂点”：
+当前版本的核心问题已经不再是最初那几条 P0 断裂，而是“主线能力仍然不完全对称，且若干状态语义仍不可信”：
 
-- 前端类型系统未通过
-- Tauri 主线存在多处未闭环功能
-- 多 Provider 支持表面完整，底层不对称
-- 项目/会话/Git 的部分能力是伪实现或半实现
-- HTTP 暴露边界过大
+- Web / mobile token 鉴权链路已经接上，但 web 模式仍有若干写操作空实现
+- 会话重命名、Codex 删除/命名覆盖已经补齐，不再是当前版本主断点
+- 多 Provider 支持比上轮更完整，但底层能力仍然明显不对称
+- 登录状态、受保护路由、鉴权语义仍不可信
+- 文档、public API docs、i18n 与遗留兼容层仍混杂旧的 3001 / TaskMaster / server 模式
+- 侧边栏里的 branch workspace 入口仍未在 Tauri 主线实现
 
 同时，仓库中的 `Node / Electron` 已经不应再视为当前版本的一部分，而应标记为：
 
@@ -51,7 +71,7 @@
 
 - `server/`
 - `electron/`
-- `package.json` 中与 `server`、`electron:*`、旧 web 启动相关的部分
+- README / docs / i18n 中围绕旧 Node/Electron 主线的叙事
 
 判断依据：
 
@@ -65,35 +85,72 @@
 - 可以删除
 - 至少应先在文档中明确标注为“遗留代码，待清理”
 
-## 3. P0 缺陷
+## 3. P0 缺陷（本轮无未关闭项）
 
-### 3.1 前端类型检查失败
+### 3.1 [已修复] Web / Mobile Bridge 与 Tauri token 鉴权脱节
 
-当前版本无法通过 `npm run typecheck`。
+本项已关闭。
 
-报错集中在：
+复审结果：
 
-- `src/components/settings/CustomSlashCommandsEditor.tsx`
+- `src/lib/tauri-bridge.ts` 的 web 模式已经：
+  - 为 HTTP 请求附加 `Authorization: Bearer <token>`
+  - 为 PTY WebSocket 附加 `?token=...`
+  - 不再调用旧的 `/api/auth/login`，而是按 token 配对方式校验
+- `src-tauri/src/http_server.rs` 的 token 中间件与 web/mobile bridge 已形成可工作的最小闭环
+
+剩余问题已不再是“整条链路无法鉴权”，而是“web 模式仍有若干能力空实现”，详见后文。
+
+关键文件：
+
+- `src/lib/tauri-bridge.ts`
+- `src-tauri/src/http_server.rs`
+
+### 3.2 [已修复] 会话重命名链路未真正闭环
+
+本项已关闭。
+
+复审结果：
+
+- 侧边栏、Session Focus、Project Sessions 面板都已实际调用 `renameSession`
+- 前端传给后端的已是 `projectPath`，不再是错误的 `project.name`
+- 后端会将名称写入 `~/.openwork/session-names.json`
+- 前端本地状态也会同步更新 Claude / Codex 会话标题
+
+关键文件：
+
 - `src/components/sidebar/hooks/useSidebarController.ts`
-- `src/components/templates/SessionTemplatesEditor.tsx`
-- `src/components/templates/SessionTemplatesPicker.tsx`
-- `src/components/workbench/extensions/useExtensionsOverview.ts`
-- `src/hooks/useCustomSlashCommands.ts`
+- `src/components/sidebar/view/Sidebar.tsx`
+- `src/components/session-focus/SessionFocusLayout.tsx`
+- `src/components/projects/ProjectSessionsPanel.tsx`
+- `src-tauri/src/projects.rs`
 
-核心问题：
+### 3.3 [已修复] Codex 会话删除 / 重命名未真实落地
 
-- `settings.getAll()` 返回类型过宽
-- 调用方直接访问：
-  - `customSlashCommands`
-  - `sessionTemplates`
-  - `skills`
-  - `skillRoots`
-  - `worktreeRootPath`
+本项已关闭。
 
-这意味着：
+复审结果：
 
-- 当前主线在静态检查层面就不稳定
-- 设置、模板、扩展、Slash Commands 这几块存在明确断裂
+- `delete_session` 已会回退查找并删除 Codex 会话文件
+- `projects_update_session_name` 已引入跨 provider 的 `session-names.json`
+- `session_list` 已对 Claude / Codex 都应用名称覆盖
+
+剩余问题不再是“Codex 删除/重命名不生效”，而是“项目主数据与 provider 能力仍不对称”，详见 `4.3`。
+
+关键文件：
+
+- `src-tauri/src/session_history.rs`
+- `src-tauri/src/projects.rs`
+- `src/components/workbench/projects/SelectedProjectOverviewPage.tsx`
+
+### 3.4 [已修复] 前端类型检查失败
+
+本项已关闭。
+
+复审结果：
+
+- `npm run typecheck` 已通过
+- `settings.getAll()` 调用点已经补上类型兜底，至少不再构成当前版本的 P0 缺陷
 
 关键文件：
 
@@ -103,160 +160,112 @@
 - `src/components/templates/SessionTemplatesPicker.tsx`
 - `src/components/workbench/extensions/useExtensionsOverview.ts`
 - `src/hooks/useCustomSlashCommands.ts`
-- `src/components/sidebar/hooks/useSidebarController.ts`
 
-### 3.2 Tauri HTTP 服务暴露边界过大
+### 3.5 [已修复] 项目删除与项目发现机制冲突
 
-当前 Tauri 主线会启动一个内置 HTTP 服务：
+本项已关闭。
 
-- 监听：`0.0.0.0:3002`
-- CORS：`allow_origin(Any)`
+复审结果：
 
-而该服务暴露的不是只读信息，而是：
+- `projects_remove` 已将被删除路径加入 `excluded_paths`
+- 自动发现逻辑不会再把已删除项目直接加回主列表
 
-- 项目管理
-- 会话创建/发送/终止
-- PTY WebSocket
-- 会话历史
+关键文件：
 
-当前实现中未见明确鉴权边界。
+- `src-tauri/src/projects.rs`
 
-这意味着：
+## 4. P1 缺陷
 
-- 当前版本存在明显的暴露面过大问题
-- 即便它最初只是兼容层，也已经具备高风险接口集合
+### 4.1 [部分修复] Tauri HTTP 服务暴露边界仍偏大
+
+本项不再是“完全无鉴权”，但问题没有彻底结束。
+
+现状：
+
+- 已新增 token 鉴权中间件
+- 但服务仍然：
+  - 监听 `0.0.0.0:3002`
+  - `allow_origin(Any)`
+  - 暴露项目、会话、PTY、历史、命令发现等多类能力
+- 同时还保留：
+  - `/api/auth/token-info`
+  - `/api/local-ip`
+
+结果：
+
+- 暴露面依然偏大
+- 旧的“鉴权收紧后兼容链路直接断裂”结论已不再成立；当前更现实的问题是 web 模式能力仍不完整
 
 关键文件：
 
 - `src-tauri/src/http_server.rs`
 
-### 3.3 项目删除与项目发现机制冲突
+### 4.2 [已修复] 项目重命名未实现
 
-当前版本的项目删除并不可靠。
+本项已关闭。
 
-现状：
+复审结果：
 
-- 前端执行删除项目
-- Tauri 后端只会把项目从 `.openwork/projects.json` 中移除
-- 但项目列表又会从 `~/.claude/projects` 自动发现项目
-
-结果：
-
-- 用户“删除”的项目，后续仍可能再次出现
-- 删除语义和用户预期不一致
-
-这属于真实的功能错误，不是单纯未实现。
+- `rename_project` 已存在
+- 项目总览页已经调用该后端接口
 
 关键文件：
 
-- `src/components/workbench/projects/SelectedProjectOverviewPage.tsx`
-- `src/components/sidebar/hooks/useSidebarController.ts`
 - `src-tauri/src/projects.rs`
-
-## 4. P1 缺陷
-
-### 4.1 项目重命名未实现
-
-项目详情页与侧边栏都保留了重命名入口，但 Tauri 主线没有对应完整实现。
-
-现状：
-
-- 前端弹出输入框
-- 实际只打印 warning 或刷新
-- 不会真正完成重命名
-
-影响：
-
-- 用户可见按钮存在，但没有兑现行为
-
-关键文件：
-
 - `src/components/workbench/projects/SelectedProjectOverviewPage.tsx`
-- `src/components/sidebar/hooks/useSidebarController.ts`
 
-### 4.2 会话删除未真正落地
+### 4.3 [部分修复] 多 Provider 支持仍不对称
 
-当前版本中的会话删除仍主要是本地状态层操作。
+相比上次复审，这一项已有进展，但还不能算闭环。
 
 现状：
 
-- UI 上允许删除会话
-- 状态中会移除该会话
-- Tauri 主线没有完整的真实删除命令
+- `session_list` 已支持 Codex
+- `session_messages` 已支持 Codex
+- `delete_session` 与会话命名覆盖已支持 Codex
+- `ai_list_sessions` 仍然只支持 Claude
+- `projects_list` / `projects_get` 仍只自动挂载 Claude 会话
+- Cursor 仍没有成体系的历史 / 恢复 / 浏览能力
+- Cursor 仍没有 commands / skills discovery
 
 结果：
 
-- 删除结果不可靠
-- 一旦重新拉取历史或重新发现数据，状态可能不一致
-
-关键文件：
-
-- `src/hooks/useProjectsState.ts`
-- `src/components/workbench/projects/SelectedProjectOverviewPage.tsx`
-- `src/components/sidebar/hooks/useSidebarController.ts`
-
-### 4.3 多 Provider 支持不对称
-
-当前 UI 显示支持：
-
-- Claude
-- Codex
-- Cursor
-
-但底层历史/会话能力明显偏 Claude。
-
-现状：
-
-- `session_list` 对非 Claude 返回空
-- `session_messages` 对非 Claude 返回空
-- `ai_list_sessions` 对非 Claude 返回空
-
-结果：
-
-- UI 层“多 Provider 一致体验”不成立
-- Codex/Cursor 在恢复、历史、浏览等核心体验上缺失
+- UI 层“Claude / Codex / Cursor 一致体验”仍不成立
+- Codex 已不再是“完全不可维护”，但仍未达到与 Claude 对齐的程度
 
 关键文件：
 
 - `src-tauri/src/session_history.rs`
 - `src-tauri/src/ai.rs`
+- `src-tauri/src/projects.rs`
+- `src-tauri/src/commands.rs`
 
-### 4.4 Git 面板存在真实行为错误
+### 4.4 [部分修复] Git 面板存在剩余未闭环项
 
-当前 Git 面板不是只有“没做完”，而是已经有错误实现。
+本项不再包含之前的 discard / staged diff 错误，但仍有缺口。
 
-#### 4.4.1 Discard changes 实现错误
+#### 4.4.1 [已修复] Discard changes 实现错误
 
-前端把文件路径伪装成 branch 参数传给 `git_checkout_branch`。
+复审结果：
 
-但后端 `git_checkout_branch` 的语义是：
+- 前端已改为调用 `git_discard_file`
+- 后端已按单文件 discard 语义实现
 
-- checkout branch / rev
+#### 4.4.2 [已修复] staged diff 语义不一致
 
-不是：
+复审结果：
 
-- checkout 单个文件
+- 前端已调用 `git_staged_diff`
+- 后端已使用 `git diff --cached`
 
-因此当前 discard changes 逻辑是错误的。
-
-#### 4.4.2 staged diff 语义不一致
-
-前端会为 staged、unstaged、untracked 文件统一请求 diff。
-
-但后端当前的 `git_diff` 主要是：
-
-- `index -> workdir`
-
-这会导致：
-
-- staged-only 变更的 diff 不准确或为空
-
-#### 4.4.3 历史 diff 与 AI commit message 未实现
+#### 4.4.3 [部分修复] 历史 diff 已补齐，但 AI commit message 仍未落到后端能力
 
 现状：
 
-- commit history diff 明确未实现
-- AI commit message 是占位逻辑
+- commit history diff 已有真实后端能力：
+  - `GitPanel` 已调用 `showCommit`
+  - Rust 侧已实现 `git_show_commit`
+- AI commit message 仍是前端基于 staged 文件名和目录的启发式拼装，不是后端真实 AI 能力
 
 关键文件：
 
@@ -265,38 +274,39 @@
 
 ### 4.5 登录状态与鉴权状态不可信
 
-当前版本在登录与权限感知上存在多处“伪状态”。
+当前版本在登录与权限感知上仍存在明显的“伪状态”。
 
 现状：
 
-- Onboarding 里 Claude/Codex 登录状态是写死未登录
-- `ProtectedRoute` 直接返回 children
-- `AuthContext` 的默认态和 `isAuthenticated` 判定宽松
+- Onboarding 的 Claude / Codex 登录状态已经不是写死值，而是改成真实 `cliAuth.getStatus`
+- 但 `ProtectedRoute` 仍直接返回 children
+- `AuthContext` 默认态仍然把 `default-user` / `local` 视为已认证
+- `isAuthenticated` 仍然是硬编码 `true`
+- web 模式 token 还存在双存储：
+  - `AuthContext` 读的是 `auth_token`
+  - `tauri-bridge` 读的是 `openwork_api_token`
+  - 刷新后的校验链路仍不统一
 
 结果：
 
-- 用户看到的认证状态不可靠
-- 代码中关于“是否已认证”的判断也不可靠
+- 用户看到的认证状态仍不可靠
+- 代码中关于“是否已认证”的判断仍然不可信
 
 关键文件：
 
 - `src/components/Onboarding.jsx`
 - `src/components/ProtectedRoute.jsx`
 - `src/contexts/AuthContext.jsx`
+- `src/lib/tauri-bridge.ts`
 
-### 4.6 Extensions 总览数据源错误
+### 4.6 [已修复] Extensions 总览数据源错误
 
-当前版本的技能总览页没有用真实技能 API。
+本项已关闭。
 
-现状：
+复审结果：
 
-- 总览页从 `settings.getAll()` 中读取 `skills` 和 `skillRoots`
-- 真实技能数据来自 `skills_list`
-
-结果：
-
-- 总览页和真实技能系统脱节
-- 这不是简单的 UI 偏差，而是数据层接错
+- 总览页已经改为读取 `skills_list`
+- 不再依赖 `settings.getAll()` 中的 `skills` / `skillRoots`
 
 关键文件：
 
@@ -304,6 +314,30 @@
 - `src/components/workbench/extensions/useSkills.ts`
 - `src-tauri/src/skills.rs`
 - `src/lib/tauri-bridge.ts`
+
+### 4.7 [新增] 分支工作区创建入口在 Tauri 主线仍未实现
+
+这不是底层 Git worktree 能力完全缺失，而是“用户可见入口”仍没有真正接上主线。
+
+现状：
+
+- 侧边栏 `createBranchWorkspace` 仍然直接 `TODO + alert`
+- Git 低层已经有：
+  - `git_worktree_list`
+  - `git_worktree_add`
+  - `git_worktree_remove`
+- 但侧边栏项目流转并没有真正接到这些能力上
+
+结果：
+
+- 用户能看到相关交互入口或文案
+- 但当前 Tauri 主线下该链路仍不能真正完成 branch workspace 创建
+
+关键文件：
+
+- `src/components/sidebar/hooks/useSidebarController.ts`
+- `src/lib/tauri-bridge.ts`
+- `src-tauri/src/git.rs`
 
 ## 5. P2 缺陷
 
@@ -342,15 +376,15 @@
 
 - `src-tauri/src/fs_commands.rs`
 
-### 5.3 README 与当前版本不一致
+### 5.3 README / docs / public API docs 与当前版本不一致
 
-README 仍然保留较多旧主线叙事：
+README 与周边文档仍然保留较多旧主线叙事：
 
 - Node server
 - 3001 端口
 - TaskMaster 集成
 
-而当前版本实际主线更接近：
+而当前代码实际更接近：
 
 - Tauri
 - 3002
@@ -360,10 +394,38 @@ README 仍然保留较多旧主线叙事：
 
 - 文档对当前版本描述不准确
 - 新接手的人会建立错误认知
+- `package.json` 中旧启动链已基本清理，但 README / docs / public API docs / i18n 仍未同步
 
 关键文件：
 
 - `README.md`
+- `docs/development.md`
+- `docs/installation.md`
+- `docs/troubleshooting.md`
+- `public/api-docs.html`
+- `src/i18n/locales/*/settings.json`
+
+### 5.4 [新增] 旧兼容 API 封装与测试仍保留旧 REST/Auth 路径
+
+当前主线 bridge 已切到 `src/lib/tauri-bridge.ts`，但仓库里仍保留一套旧的 fetch 封装与测试样例。
+
+现状：
+
+- `src/utils/api.js` 仍保留：
+  - `/api/auth/status`
+  - `/api/auth/login`
+  - 旧版项目 / 会话 REST 路径
+- 当前看起来主要是兼容残留和测试样例，不像主线调用
+
+结果：
+
+- 它不一定直接影响当前主线运行
+- 但会继续污染接口认知，未来如果有人误用，会重新引入旧链路
+
+关键文件：
+
+- `src/utils/api.js`
+- `src/utils/api.test.ts`
 
 ## 6. 当前版本不应继续保留的旧代码
 
@@ -377,47 +439,42 @@ README 仍然保留较多旧主线叙事：
 
 原因：
 
-- 属于旧 Node/Express 后端
-- 当前 Tauri 主线已经承担核心桌面服务能力
-- 继续保留会加重维护负担和认知混乱
+- 当前工作区中已不存在该目录
+- 但 README / docs / 历史计划文档里仍大量保留对 `server/` 的引用
+- 这些叙事应继续清理，避免让人误以为当前仓库仍以 Node server 为主线
 
 ### 6.2 `electron/`
 
 原因：
 
-- 属于旧桌面壳
-- 当前桌面主线已经切到 Tauri
-- 没有继续保留为主路径的必要
+- 当前工作区中已不存在该目录
+- 但文档与历史说明中仍保留 Electron 时代的描述
+- 这些叙事应继续清理
 
 ### 6.3 `package.json` 中旧启动链
 
-需要标注为旧链路的内容包括：
+复审结果：
 
-- `server`
-- `start`
-- `electron:dev`
-- `electron:build`
-- 其他围绕旧 Node/Electron 主线的脚本
+- `package.json` 中旧启动链已基本清理
+- 当前保留的主脚本已主要围绕：
+  - `vite`
+  - `tauri:dev`
+  - `tauri:build`
 
 结论：
 
-- 这些代码可以删除
-- 至少应先在文档中明确标为遗留代码
+- 当前更需要清理的是 README / docs / public API docs / i18n 中的旧叙事，而不是 `package.json` 脚本本身
 
 ## 7. 当前运行状态补充
 
 当前核心监听进程的运行内存：
 
-- `5173` Vite RSS 约 `197936 KB`
-- `3002` `openwork` RSS 约 `165888 KB`
+- `5173` Vite RSS 约 `202272 KB`
+- `3002` `openwork` RSS 约 `158224 KB`
 
 两者合计约：
 
-- `355 MB`
-
-如果把开发链父进程一起计入，整条开发链常驻约：
-
-- `531 MB`
+- `352 MB`
 
 ## 8. 最终结论
 
@@ -425,14 +482,13 @@ README 仍然保留较多旧主线叙事：
 
 优先顺序应理解为：
 
-1. 修复主线类型错误
-2. 收紧 Tauri HTTP 暴露边界
-3. 补齐项目/会话/Git 的真实闭环
-4. 统一多 Provider 的底层能力
-5. 明确把 `Node / Electron` 标为旧代码并清理
+1. 收口登录状态、受保护路由与鉴权语义
+2. 继续补齐多 Provider 的底层能力边界
+3. 补齐 web 模式仍为空实现的写操作
+4. 清理 README / docs / public API docs / i18n / 旧兼容 API 封装中的旧主线叙事
+5. 决定是否保留并真正实现 branch workspace 入口
 
 当前仓库里最容易造成误判的一点是：
 
 - 看起来功能很多
-- 但真正稳定、闭环、可信的当前版本能力还没有完全收口
-
+- 但真正稳定、闭环、可信的当前版本能力仍然还没有完全收口

@@ -1,8 +1,8 @@
 import Foundation
 
-/// Manages a single PTY WebSocket connection to `/api/pty/{id}/ws?token=<token>`.
+/// Manages a single PTY WebSocket connection to `/pty/ws?id={id}&token=<token>`.
 @Observable
-class PTYWebSocketClient: NSObject, @unchecked Sendable {
+class PTYWebSocketClient: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
     enum State {
         case disconnected
         case connecting
@@ -11,6 +11,7 @@ class PTYWebSocketClient: NSObject, @unchecked Sendable {
     }
 
     private(set) var state: State = .disconnected
+    private var session: URLSession?
     private var task: URLSessionWebSocketTask?
     let sessionId: String
     let connection: ServerConnection
@@ -32,7 +33,7 @@ class PTYWebSocketClient: NSObject, @unchecked Sendable {
         guard task == nil else { return }
         state = .connecting
 
-        let urlString = "ws://\(connection.host):\(connection.port)/api/pty/\(sessionId)/ws?token=\(connection.token)"
+        let urlString = "ws://\(connection.host):\(connection.port)/pty/ws?id=\(sessionId)&token=\(connection.token)"
         guard let url = URL(string: urlString) else {
             let error = URLError(.badURL)
             state = .failed(error)
@@ -40,7 +41,8 @@ class PTYWebSocketClient: NSObject, @unchecked Sendable {
             return
         }
 
-        let session = URLSession(configuration: .default)
+        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        self.session = session
         task = session.webSocketTask(with: url)
         task?.resume()
         receiveLoop()
@@ -49,6 +51,8 @@ class PTYWebSocketClient: NSObject, @unchecked Sendable {
     func disconnect() {
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
+        session?.invalidateAndCancel()
+        session = nil
         state = .disconnected
     }
 
@@ -107,12 +111,6 @@ class PTYWebSocketClient: NSObject, @unchecked Sendable {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
 
-            // Fire onConnected only once, on first message received
-            if case .connecting = self.state {
-                self.state = .connected
-                self.onConnected?()
-            }
-
             switch msg {
             case .history(_, let data):
                 self.onHistoryReceived?(data)
@@ -122,6 +120,18 @@ class PTYWebSocketClient: NSObject, @unchecked Sendable {
                 self.onExit?(code)
                 self.state = .disconnected
             }
+        }
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol protocol: String?
+    ) {
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            self.state = .connected
+            self.onConnected?()
         }
     }
 }

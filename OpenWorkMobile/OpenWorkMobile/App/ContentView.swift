@@ -31,7 +31,7 @@ struct MainNavigationView: View {
                     SessionsListView(project: project)
                 }
                 .navigationDestination(for: SessionDestination.self) { dest in
-                    SessionDetailView(session: dest.session, isActiveSession: dest.isActive)
+                    SessionDetailView(destination: dest)
                 }
                 .toolbar {
                     ToolbarItem(placement: .navigationBarTrailing) {
@@ -50,36 +50,63 @@ struct MainNavigationView: View {
 // MARK: - Session Detail (Tab View for Chat / Terminal / History)
 
 struct SessionDetailView: View {
-    let session: Session
-    let isActiveSession: Bool
-    @State private var selectedTab = 0
-
-    init(session: Session, isActiveSession: Bool = false) {
-        self.session = session
-        self.isActiveSession = isActiveSession
+    enum Tab: Int {
+        case chat
+        case terminal
+        case history
     }
+
+    let destination: SessionDestination
+    @State private var selectedTab: Tab = .chat
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            SessionView(session: session, isActiveSession: isActiveSession)
+            tabContent(for: .chat)
                 .tabItem {
                     Label("Chat", systemImage: "bubble.left.and.bubble.right")
                 }
-                .tag(0)
+                .tag(Tab.chat)
 
-            PTYOutputView(session: session)
+            tabContent(for: .terminal)
                 .tabItem {
                     Label("Terminal", systemImage: "terminal")
                 }
-                .tag(1)
+                .tag(Tab.terminal)
 
-            HistoryView(session: session)
+            tabContent(for: .history)
                 .tabItem {
                     Label("History", systemImage: "clock")
                 }
-                .tag(2)
+                .tag(Tab.history)
         }
-        .navigationTitle(session.name ?? "Session")
+        .navigationTitle(destination.session.name ?? "Session")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private func tabContent(for tab: Tab) -> some View {
+        if selectedTab == tab {
+            switch tab {
+            case .chat:
+                SessionView(
+                    session: destination.session,
+                    isActiveSession: destination.isActive
+                )
+            case .terminal:
+                if let ptyId = destination.terminalPTYId {
+                    PTYOutputView(ptyId: ptyId)
+                } else {
+                    ContentUnavailableView {
+                        Label("Terminal Unavailable", systemImage: "terminal")
+                    } description: {
+                        Text("This item is saved session history, not a live PTY session.")
+                    }
+                }
+            case .history:
+                HistoryView(session: destination.session)
+            }
+        } else {
+            Color.clear
+        }
     }
 }

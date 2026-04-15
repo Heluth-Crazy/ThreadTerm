@@ -15,9 +15,20 @@ class TerminalViewModel {
     }
 
     private var ptyClient: PTYWebSocketClient?
+    private var connectedSessionId: String?
     private let maxLines = 5000
 
     func connect(sessionId: String, using connection: ServerConnection) async {
+        if connectedSessionId == sessionId, ptyClient != nil {
+            return
+        }
+
+        ptyClient?.disconnect()
+        connectedSessionId = sessionId
+        isConnected = false
+        exitCode = nil
+        connectionError = nil
+
         let client = PTYWebSocketClient(sessionId: sessionId, connection: connection)
         self.ptyClient = client
 
@@ -60,15 +71,22 @@ class TerminalViewModel {
     func disconnect() {
         ptyClient?.disconnect()
         ptyClient = nil
+        connectedSessionId = nil
         isConnected = false
     }
 
     func sendInput(_ text: String) async throws {
-        try await ptyClient?.sendInput(text)
+        guard let ptyClient else {
+            throw APIError.serverError("Terminal is not connected")
+        }
+        try await ptyClient.sendInput(text)
     }
 
     func sendResize(cols: Int, rows: Int) async throws {
-        try await ptyClient?.sendResize(cols: cols, rows: rows)
+        guard let ptyClient else {
+            throw APIError.serverError("Terminal is not connected")
+        }
+        try await ptyClient.sendResize(cols: cols, rows: rows)
     }
 
     /// Append an error message to the terminal output.

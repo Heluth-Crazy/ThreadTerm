@@ -6,4 +6,8 @@ import Foundation
 struct SessionDestination: Hashable {
     let session: Session
     let isActive: Bool
+
+    var terminalPTYId: String? {
+        isActive ? session.id : nil
+    }
 }

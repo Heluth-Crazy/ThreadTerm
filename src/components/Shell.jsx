@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { IS_PLATFORM } from '../constants/config';
 import { loadSessionLaunchProfilesByProvider, mergeSessionLaunchArgs } from '../utils/sessionLaunchProfiles';
 import { logger } from '../utils/logger';
-import { pty, isTauriEnv, webPtyConnect } from '../lib/tauri-bridge';
+import { ai, pty, isTauriEnv, webPtyConnect } from '../lib/tauri-bridge';
 
 const xtermStyles = `
   .xterm .xterm-screen {
@@ -104,6 +104,17 @@ function isCodexLoginCommand(command) {
 
 function isTemporarySessionId(sessionId) {
   return typeof sessionId === 'string' && sessionId.startsWith('new-session-');
+}
+
+function registerPtySession(ptyId, sessionId) {
+  if (
+    typeof window !== 'undefined' &&
+    ptyId &&
+    sessionId &&
+    typeof window.__registerPtySession === 'function'
+  ) {
+    window.__registerPtySession(ptyId, sessionId);
+  }
 }
 
 function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell = false, onProcessComplete, minimal = false, autoConnect = false, paneId, onDisconnect }) {
@@ -213,6 +224,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
         const shellProvider = isPlainShellRef.current
           ? 'plain-shell'
           : (selectedSessionRef.current?.__provider || localStorage.getItem('selected-provider') || 'claude');
+        const { launchArgs } = resolveSessionLaunchConfig(selectedSessionRef.current, shellProvider);
 
         const projectPath = selectedProjectRef.current.fullPath || selectedProjectRef.current.path;
         const ptySessionId = paneId || `shell-${Date.now()}`;
@@ -265,13 +277,33 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
         const rows = terminal.current?.rows || 24;
         const cols = terminal.current?.cols || 120;
 
-        await pty.create(ptySessionId, projectPath, rows, cols);
-        ptyIdRef.current = ptySessionId;
+        let connectedPtyId = ptySessionId;
+
+        if (isPlainShellRef.current) {
+          connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
+        } else if (shellProvider === 'claude') {
+          connectedPtyId = await ai.startSession(
+            ptySessionId,
+            shellProvider,
+            projectPath,
+            shouldResumeSession ? selectedSessionId : undefined,
+          );
+        } else if (shellProvider === 'codex') {
+          connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
+        } else {
+          connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
+        }
+
+        if (!isPlainShellRef.current && selectedSessionId) {
+          registerPtySession(connectedPtyId, selectedSessionId);
+        }
+
+        ptyIdRef.current = connectedPtyId;
 
         if (!isTauriEnv()) {
           // ── Web mode: connect via WebSocket for PTY I/O ──
           const disconnect = webPtyConnect(
-            ptySessionId,
+            connectedPtyId,
             (data) => {
               if (terminal.current) {
                 terminal.current.write(data);
@@ -303,26 +335,11 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
 
         // Send initial command or session init if needed
         if (initialCommandRef.current && isPlainShellRef.current) {
-          await pty.input(ptySessionId, initialCommandRef.current + '\n');
-        } else if (!isPlainShellRef.current) {
-          // Auto-launch AI CLI for AI sessions after shell initializes
-          const session = selectedSessionRef.current;
-          const provider = session?.__provider || localStorage.getItem('selected-provider') || 'claude';
-          const sessionId = session?.id || null;
-          const shouldResume = Boolean(sessionId) && !isTemporarySessionId(sessionId);
-
-          if (provider === 'claude' || provider === 'codex') {
-            // Delay briefly to let the shell fully initialize
-            await new Promise((resolve) => setTimeout(resolve, 500));
-
-            let cliCommand;
-            if (provider === 'claude') {
-              cliCommand = shouldResume ? `claude --resume ${sessionId}\n` : 'claude\n';
-            } else {
-              cliCommand = 'codex\n';
-            }
-            await pty.input(ptySessionId, cliCommand);
-          }
+          await pty.input(connectedPtyId, initialCommandRef.current + '\r');
+        } else if (!isPlainShellRef.current && shellProvider === 'codex') {
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          const codexCommand = ['codex', ...launchArgs].join(' ');
+          await pty.input(connectedPtyId, codexCommand + '\r');
         }
       } catch (error) {
         logger.error('[Shell] PTY connection failed:', error);

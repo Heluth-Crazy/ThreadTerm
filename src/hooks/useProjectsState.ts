@@ -36,6 +36,12 @@ function shallowProjectEqual(a: Project | null, b: Project | null): boolean {
   for (let i = 0; i < aSessions.length; i++) {
     if (aSessions[i].id !== bSessions[i].id) return false;
   }
+  const aCodexSessions = a.codexSessions ?? [];
+  const bCodexSessions = b.codexSessions ?? [];
+  if (aCodexSessions.length !== bCodexSessions.length) return false;
+  for (let i = 0; i < aCodexSessions.length; i++) {
+    if (aCodexSessions[i].id !== bCodexSessions[i].id) return false;
+  }
   if (a.sessionMeta?.hasMore !== b.sessionMeta?.hasMore) return false;
   if (a.sessionMeta?.total !== b.sessionMeta?.total) return false;
   return true;
@@ -141,6 +147,147 @@ const getFallbackLaunchMeta = (provider?: SessionProvider) => {
   return { profileId, args };
 };
 
+const inferSessionProvider = (
+  session: Partial<ProjectSession> & Record<string, unknown>,
+  fallbackProvider: SessionProvider,
+): SessionProvider => {
+  const rawProvider = session.__provider || session.provider;
+  return rawProvider === 'codex' ? 'codex' : rawProvider === 'claude' ? 'claude' : fallbackProvider;
+};
+
+const normalizeBackendSession = (
+  session: Partial<ProjectSession> & Record<string, unknown>,
+  fallbackProvider: SessionProvider,
+  projectName?: string,
+): ProjectSession | null => {
+  const id = typeof session.id === 'string' ? session.id : '';
+  if (!id) {
+    return null;
+  }
+
+  const provider = inferSessionProvider(session, fallbackProvider);
+  const createdAt = typeof session.createdAt === 'string'
+    ? session.createdAt
+    : typeof session.created_at === 'string'
+      ? session.created_at
+      : undefined;
+  const updatedAt = typeof session.updated_at === 'string' ? session.updated_at : undefined;
+  const summary = typeof session.summary === 'string'
+    ? session.summary
+    : typeof session.last_message === 'string'
+      ? session.last_message
+      : undefined;
+
+  return {
+    ...session,
+    id,
+    provider,
+    __provider: provider,
+    ...(projectName ? { __projectName: projectName } : {}),
+    name: typeof session.name === 'string' ? session.name : undefined,
+    title: typeof session.title === 'string'
+      ? session.title
+      : typeof session.name === 'string'
+        ? session.name
+        : undefined,
+    createdAt,
+    created_at: createdAt,
+    updated_at: updatedAt,
+    summary,
+    lastActivity: typeof session.lastActivity === 'string'
+      ? session.lastActivity
+      : updatedAt || createdAt,
+    messageCount: typeof session.messageCount === 'number'
+      ? session.messageCount
+      : typeof session.message_count === 'number'
+        ? session.message_count
+        : undefined,
+  };
+};
+
+const splitProjectSessionsByProvider = (
+  project: Partial<Project> & Record<string, unknown>,
+): { sessions: ProjectSession[]; codexSessions: ProjectSession[] } => {
+  const sessions: ProjectSession[] = [];
+  const codexSessions: ProjectSession[] = [];
+  const seen = new Set<string>();
+  const projectName = typeof project.name === 'string' ? project.name : undefined;
+
+  const pushSession = (
+    session: Partial<ProjectSession> & Record<string, unknown>,
+    fallbackProvider: SessionProvider,
+  ) => {
+    const normalized = normalizeBackendSession(session, fallbackProvider, projectName);
+    if (!normalized) {
+      return;
+    }
+
+    const provider = normalized.__provider === 'codex' ? 'codex' : 'claude';
+    const key = `${provider}:${normalized.id}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+
+    if (provider === 'codex') {
+      codexSessions.push(normalized);
+      return;
+    }
+
+    sessions.push(normalized);
+  };
+
+  for (const session of Array.isArray(project.sessions) ? project.sessions : []) {
+    pushSession(session as Partial<ProjectSession> & Record<string, unknown>, 'claude');
+  }
+
+  for (const session of Array.isArray(project.codexSessions) ? project.codexSessions : []) {
+    pushSession(session as Partial<ProjectSession> & Record<string, unknown>, 'codex');
+  }
+
+  return { sessions, codexSessions };
+};
+
+const normalizeProjectFromBackend = (
+  project: Partial<Project> & Record<string, unknown>,
+): Project => {
+  const { sessions, codexSessions } = splitProjectSessionsByProvider(project);
+  const name = typeof project.name === 'string' && project.name.trim().length > 0
+    ? project.name
+    : typeof project.displayName === 'string' && project.displayName.trim().length > 0
+      ? project.displayName
+      : '';
+  const fullPath = typeof project.fullPath === 'string' && project.fullPath.trim().length > 0
+    ? project.fullPath
+    : typeof project.full_path === 'string' && project.full_path.trim().length > 0
+      ? project.full_path
+      : typeof project.path === 'string'
+        ? project.path
+        : '';
+  const total = sessions.length + codexSessions.length;
+
+  return {
+    ...project,
+    name,
+    displayName: typeof project.displayName === 'string' && project.displayName.trim().length > 0
+      ? project.displayName
+      : name,
+    fullPath,
+    path: typeof project.path === 'string' && project.path.trim().length > 0
+      ? project.path
+      : fullPath,
+    sessions,
+    codexSessions,
+    sessionMeta: {
+      ...(project.sessionMeta || {}),
+      hasMore: project.sessionMeta?.hasMore === true,
+      total: typeof project.sessionMeta?.total === 'number'
+        ? project.sessionMeta.total
+        : total,
+    },
+  } as Project;
+};
+
 const applyStoredLaunchMetaToSession = (
   session: ProjectSession,
   provider?: SessionProvider,
@@ -203,17 +350,20 @@ const applyStoredLaunchMetaToSession = (
 };
 
 const applyStoredLaunchMetaToProjects = (
-  projects: Project[],
+  projects: unknown[],
   storedMap?: StoredSessionLaunchMetaMap,
-): Project[] => projects.map((project) => ({
-  ...project,
-  sessions: (project.sessions || []).map((session) =>
-    applyStoredLaunchMetaToSession(session, 'claude', project.name, storedMap),
-  ),
-  codexSessions: (project.codexSessions || []).map((session) =>
-    applyStoredLaunchMetaToSession(session, 'codex', project.name, storedMap),
-  ),
-}));
+): Project[] => projects.map((project) => {
+  const normalizedProject = normalizeProjectFromBackend(project as Partial<Project> & Record<string, unknown>);
+  return {
+    ...normalizedProject,
+    sessions: (normalizedProject.sessions || []).map((session) =>
+      applyStoredLaunchMetaToSession(session, 'claude', normalizedProject.name, storedMap),
+    ),
+    codexSessions: (normalizedProject.codexSessions || []).map((session) =>
+      applyStoredLaunchMetaToSession(session, 'codex', normalizedProject.name, storedMap),
+    ),
+  };
+});
 
 const persistSessionLaunchMeta = (
   session: ProjectSession | null,
@@ -414,21 +564,7 @@ export function useProjectsState({
     try {
       setIsLoadingProjects(true);
       const tauriProjectList = await tauriProjects.list();
-      // Map Tauri project shape to the frontend Project type
-      const projectData = applyStoredLaunchMetaToProjects(tauriProjectList.map((p: any) => ({
-        name: p.name,
-        path: p.path,
-        fullPath: p.full_path,
-        displayName: p.name,
-        sessions: (p.sessions || []).map((s: any) => ({
-          id: s.id,
-          provider: s.provider,
-          name: s.name,
-          createdAt: s.created_at,
-          summary: s.last_message,
-        })),
-        sessionMeta: { hasMore: false, total: (p.sessions || []).length },
-      })) as Project[]);
+      const projectData = applyStoredLaunchMetaToProjects(tauriProjectList as unknown[]);
 
       setProjects((prevProjects) => {
         if (prevProjects.length === 0) {
@@ -818,7 +954,7 @@ export function useProjectsState({
               ...project.sessionMeta,
               total: Math.max(
                 0,
-                (project.sessionMeta?.total as number | undefined ?? 0) - (provider === 'claude' ? 1 : 0),
+                (project.sessionMeta?.total as number | undefined ?? 0) - 1,
               ),
             },
           };
@@ -854,20 +990,7 @@ export function useProjectsState({
   const handleSidebarRefresh = useCallback(async () => {
     try {
       const tauriProjectList = await tauriProjects.list();
-      const freshProjects = applyStoredLaunchMetaToProjects(tauriProjectList.map((p: any) => ({
-        name: p.name,
-        path: p.path,
-        fullPath: p.full_path,
-        displayName: p.name,
-        sessions: (p.sessions || []).map((s: any) => ({
-          id: s.id,
-          provider: s.provider,
-          name: s.name,
-          createdAt: s.created_at,
-          summary: s.last_message,
-        })),
-        sessionMeta: { hasMore: false, total: (p.sessions || []).length },
-      })) as Project[]);
+      const freshProjects = applyStoredLaunchMetaToProjects(tauriProjectList as unknown[]);
 
       setProjects((prevProjects) =>
         projectsHaveChanges(prevProjects, freshProjects, true) ? freshProjects : prevProjects,

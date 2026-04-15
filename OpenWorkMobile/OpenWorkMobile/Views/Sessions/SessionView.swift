@@ -9,6 +9,7 @@ struct SessionView: View {
     @State private var showCommandPicker = false
     @State private var commandSearchText = ""
     @State private var commands: [DiscoveredCommand] = []
+    @State private var hasAttemptedConnection = false
 
     init(session: Session, isActiveSession: Bool = false) {
         self.session = session
@@ -52,6 +53,17 @@ struct SessionView: View {
                 .padding(.vertical, 8)
             }
 
+            if let activityLabel = viewModel.activityPhase.label, viewModel.isStreaming {
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.8)
+                    Text(activityLabel).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+                .background(Color(.systemGray6))
+            }
+
             messagesList
             Divider()
             inputBar
@@ -63,15 +75,11 @@ struct SessionView: View {
                 ProviderBadge(provider: session.provider)
             }
         }
-        .task {
-            guard let client = connectionVM.currentAPIClient else { return }
-            if isActiveSession, !session.id.isEmpty {
-                await viewModel.attachToExisting(ptyId: session.id, using: client)
-            } else {
-                await viewModel.connect(using: client)
-            }
+        .task { await connectIfNeeded() }
+        .onDisappear {
+            hasAttemptedConnection = false
+            viewModel.disconnect()
         }
-        .onDisappear { viewModel.disconnect() }
         .sheet(isPresented: $showCommandPicker) {
             CommandPickerView(
                 commands: commands,
@@ -159,6 +167,17 @@ struct SessionView: View {
         }
     }
 
+    private func connectIfNeeded() async {
+        guard !hasAttemptedConnection else { return }
+        hasAttemptedConnection = true
+        guard let client = connectionVM.currentAPIClient else { return }
+        if isActiveSession, !session.id.isEmpty {
+            await viewModel.attachToExisting(ptyId: session.id, using: client)
+        } else {
+            await viewModel.connect(using: client)
+        }
+    }
+
     private func loadCommands() async {
         guard let client = connectionVM.currentAPIClient else { return }
         commands = (try? await client.discoverCommands()) ?? []
@@ -172,16 +191,19 @@ private struct ChatBubble: View {
 
     var body: some View {
         HStack {
-            if message.role == "user" { Spacer(minLength: 60) }
+            if message.kind == .user { Spacer(minLength: 60) }
 
-            VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 4) {
+            VStack(alignment: message.kind == .user ? .trailing : .leading, spacing: 4) {
+                if let caption = captionText {
+                    Text(caption)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
                 Text(message.content.isEmpty && message.isStreaming ? "…" : message.content)
+                    .font(message.kind == .tool || message.kind == .status ? .footnote.monospaced() : .body)
                     .padding(12)
-                    .background(
-                        message.role == "user"
-                            ? Color.accentColor.opacity(0.15)
-                            : Color(.systemGray6)
-                    )
+                    .background(backgroundColor)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .contextMenu {
                         Button {
@@ -202,7 +224,39 @@ private struct ChatBubble: View {
                 }
             }
 
-            if message.role != "user" { Spacer(minLength: 60) }
+            if message.kind != .user { Spacer(minLength: 60) }
+        }
+    }
+
+    private var backgroundColor: Color {
+        switch message.kind {
+        case .user:
+            return Color.accentColor.opacity(0.15)
+        case .assistant:
+            return Color(.systemGray6)
+        case .tool:
+            return Color.blue.opacity(0.10)
+        case .thinking, .status:
+            return Color.orange.opacity(0.10)
+        case .error:
+            return Color.red.opacity(0.12)
+        }
+    }
+
+    private var captionText: String? {
+        switch message.kind {
+        case .user:
+            return nil
+        case .assistant:
+            return "Assistant"
+        case .tool:
+            return "Tool Activity"
+        case .thinking:
+            return "Thinking"
+        case .status:
+            return "Status"
+        case .error:
+            return "Error"
         }
     }
 }

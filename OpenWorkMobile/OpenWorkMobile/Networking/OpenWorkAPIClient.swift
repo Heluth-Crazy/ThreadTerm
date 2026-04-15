@@ -67,6 +67,12 @@ class OpenWorkAPIClient {
         return try decode(HealthResponse.self, from: data)
     }
 
+    /// Uses an authenticated endpoint so invalid tokens fail before the app
+    /// transitions into the connected navigation state.
+    func validateAuthentication() async throws {
+        _ = try await fetchProjects()
+    }
+
     // MARK: - Projects (direct array response)
 
     func fetchProjects() async throws -> [Project] {
@@ -137,7 +143,7 @@ class OpenWorkAPIClient {
 
     /// Returns the PTY WebSocket URL for a given ptyId.
     func ptyWebSocketURL(ptyId: String) -> URL {
-        URL(string: "\(wsBaseURL)/api/pty/\(ptyId)/ws?token=\(connection.token)")!
+        URL(string: "\(wsBaseURL)/pty/ws?id=\(ptyId)&token=\(connection.token)")!
     }
 
     // MARK: - Session History

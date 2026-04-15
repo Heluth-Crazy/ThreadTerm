@@ -63,6 +63,7 @@ pub fn run() {
             // AI
             ai::ai_start_session,
             ai::ai_send_message,
+            ai::ai_run_codex_exec,
             ai::ai_abort_session,
             ai::ai_approve_tool,
             ai::ai_list_sessions,
