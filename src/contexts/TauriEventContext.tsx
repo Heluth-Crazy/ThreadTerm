@@ -112,7 +112,7 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
   // ── Parse raw PTY output into structured messages ────────────────────────
   const parsePtyOutput = useCallback(
     (ptyId: string, rawData: string) => {
-      const sessionId = ptyToSession.current.get(ptyId) ?? ptyId;
+      let sessionId = ptyToSession.current.get(ptyId) ?? ptyId;
 
       const existing = lineBuffers.current.get(sessionId) ?? '';
       const combined = existing + rawData;
@@ -128,6 +128,77 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
         try {
           const parsed = JSON.parse(line);
           const ptype: string = parsed.type ?? '';
+
+          if (ptype === 'thread.started' && typeof parsed.thread_id === 'string') {
+            const originalSessionId = sessionId;
+            sessionId = parsed.thread_id;
+            ptyToSession.current.set(ptyId, sessionId);
+            lineBuffers.current.delete(originalSessionId);
+            lineBuffers.current.set(sessionId, lines[lines.length - 1]);
+            pushMessage({
+              type: 'session-created',
+              sessionId,
+              originalSessionId,
+            });
+            continue;
+          }
+
+          if (ptype === 'turn.started') {
+            pushMessage({
+              type: 'codex-response',
+              sessionId,
+              data: { type: 'turn_started' },
+            });
+            continue;
+          }
+
+          if (ptype === 'item.completed' && parsed.item && typeof parsed.item === 'object') {
+            const item = parsed.item;
+            const itemType = typeof item.type === 'string' ? item.type : '';
+            const data =
+              itemType === 'agent_message'
+                ? {
+                    itemType,
+                    message: {
+                      content:
+                        typeof item.text === 'string'
+                          ? item.text
+                          : typeof item.message === 'string'
+                            ? item.message
+                            : '',
+                    },
+                  }
+                : {
+                    itemType,
+                    ...item,
+                  };
+
+            pushMessage({
+              type: 'codex-response',
+              sessionId,
+              data,
+            });
+            continue;
+          }
+
+          if (ptype === 'turn.completed') {
+            pushMessage({
+              type: 'codex-complete',
+              sessionId,
+              data: parsed,
+            });
+            continue;
+          }
+
+          if (ptype === 'error') {
+            pushMessage({
+              type: 'codex-error',
+              sessionId,
+              data: parsed,
+              error: parsed.message ?? parsed.error?.message ?? 'Unknown error',
+            });
+            continue;
+          }
 
           if (ptype === 'assistant' || ptype === 'content_block_delta' || ptype === 'content_block_start') {
             pushMessage({
@@ -310,7 +381,11 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
           const sid: string = message.options?.sessionId ?? '';
           if (!sid) return false;
 
-          const provider: string = message.options?.provider ?? 'claude';
+          const inferredProvider =
+            type === 'codex-command' || type === 'send-codex-message'
+              ? 'codex'
+              : 'claude';
+          const provider: string = message.options?.provider ?? inferredProvider;
           const projectPath: string = message.options?.projectPath ?? '';
           const resumeId: string | undefined = message.options?.resumeSessionId;
 

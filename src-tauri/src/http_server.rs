@@ -1,4 +1,5 @@
 use axum::{
+    body::Bytes,
     extract::{
         ws::{Message, WebSocket},
         Path, Query, State, WebSocketUpgrade,
@@ -10,8 +11,9 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
-use std::net::UdpSocket;
+use std::net::{Ipv4Addr, UdpSocket};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -25,6 +27,10 @@ pub struct AppState {
 /// Detect the local LAN IP address by connecting a UDP socket to a public address.
 /// This doesn't actually send any data, just lets the OS pick the right interface.
 fn detect_local_ip() -> String {
+    if let Some(ip) = detect_local_ip_from_interfaces() {
+        return ip;
+    }
+
     UdpSocket::bind("0.0.0.0:0")
         .and_then(|socket| {
             socket.connect("8.8.8.8:80")?;
@@ -34,8 +40,135 @@ fn detect_local_ip() -> String {
         .unwrap_or_else(|_| "127.0.0.1".to_string())
 }
 
+fn detect_local_ip_from_interfaces() -> Option<String> {
+    let output = Command::new("ifconfig").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    detect_local_ip_from_ifconfig(&stdout)
+}
+
+fn detect_local_ip_from_ifconfig(stdout: &str) -> Option<String> {
+    let mut current_interface = String::new();
+    let mut candidates = Vec::new();
+
+    for line in stdout.lines() {
+        if !line.starts_with('\t') && !line.starts_with(' ') {
+            current_interface = line
+                .split_once(':')
+                .map(|(name, _)| name.trim().to_string())
+                .unwrap_or_default();
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if !trimmed.starts_with("inet ") {
+            continue;
+        }
+
+        let Some(ip_str) = trimmed.split_whitespace().nth(1) else {
+            continue;
+        };
+        let Ok(ip) = ip_str.parse::<Ipv4Addr>() else {
+            continue;
+        };
+        if !is_viable_lan_ipv4(ip) {
+            continue;
+        }
+
+        candidates.push((score_interface(&current_interface, ip), ip));
+    }
+
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.first().map(|(_, ip)| ip.to_string())
+}
+
+fn is_viable_lan_ipv4(ip: Ipv4Addr) -> bool {
+    if ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() {
+        return false;
+    }
+
+    match ip.octets() {
+        [10, ..] => true,
+        [172, second, ..] => (16..=31).contains(&second),
+        [192, 168, ..] => true,
+        _ => false,
+    }
+}
+
+fn score_interface(name: &str, ip: Ipv4Addr) -> i32 {
+    let mut score = match ip.octets() {
+        [192, 168, ..] => 300,
+        [10, ..] => 250,
+        [172, second, ..] if (16..=31).contains(&second) => 200,
+        _ => 100,
+    };
+
+    let lower = name.to_ascii_lowercase();
+
+    if lower.starts_with("en") || lower.starts_with("eth") || lower.starts_with("wl") {
+        score += 200;
+    }
+
+    if lower.starts_with("utun")
+        || lower.starts_with("tun")
+        || lower.starts_with("tap")
+        || lower.starts_with("bridge")
+        || lower.starts_with("docker")
+        || lower.starts_with("veth")
+        || lower.starts_with("awdl")
+        || lower.starts_with("llw")
+        || lower.starts_with("anpi")
+        || lower.starts_with("gif")
+        || lower.starts_with("stf")
+        || lower.starts_with("ap")
+    {
+        score -= 500;
+    }
+
+    score
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{detect_local_ip_from_ifconfig, is_viable_lan_ipv4, score_interface};
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn prefers_private_wifi_interface_over_tunnel_interface() {
+        let lan_ip = Ipv4Addr::new(192, 168, 1, 118);
+        let tunnel_ip = Ipv4Addr::new(172, 18, 0, 1);
+
+        assert!(is_viable_lan_ipv4(lan_ip));
+        assert!(is_viable_lan_ipv4(tunnel_ip));
+        assert!(score_interface("en1", lan_ip) > score_interface("utun28", tunnel_ip));
+    }
+
+    #[test]
+    fn rejects_loopback_and_link_local_addresses() {
+        assert!(!is_viable_lan_ipv4(Ipv4Addr::new(127, 0, 0, 1)));
+        assert!(!is_viable_lan_ipv4(Ipv4Addr::new(169, 254, 10, 20)));
+        assert!(!is_viable_lan_ipv4(Ipv4Addr::new(8, 8, 8, 8)));
+    }
+
+    #[test]
+    fn parses_ifconfig_and_skips_tunnel_address() {
+        let sample = r#"
+en1: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+	inet 192.168.1.118 netmask 0xffffff00 broadcast 192.168.1.255
+utun28: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 9000
+	inet 172.18.0.1 --> 172.18.0.1 netmask 0xfffffffc
+"#;
+
+        assert_eq!(detect_local_ip_from_ifconfig(sample).as_deref(), Some("192.168.1.118"));
+    }
+}
+
 /// Token-based authentication middleware for the HTTP API.
-/// Exempt paths: /health, /api/local-ip, /api/auth/token-info, and non-API paths (static files).
+/// Exempt paths: /health, /api/local-ip, /api/auth/token-info, PTY WebSocket routes,
+/// and non-API paths (static files).
 async fn auth_middleware(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -48,6 +181,7 @@ async fn auth_middleware(
     if path == "/health"
         || path == "/api/local-ip"
         || path == "/api/auth/token-info"
+        || path.starts_with("/api/pty/")
         || !path.starts_with("/api/")
     {
         return next.run(request).await;
@@ -82,6 +216,25 @@ async fn auth_middleware(
         )
             .into_response()
     }
+}
+
+fn validate_api_token(
+    state: &AppState,
+    params: &std::collections::HashMap<String, String>,
+    headers: &HeaderMap,
+) -> bool {
+    let provided = params
+        .get("token")
+        .map(|t| t.as_str().to_string())
+        .or_else(|| {
+            headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .map(String::from)
+        });
+
+    matches!(provided, Some(token) if token == state.api_token)
 }
 
 pub async fn start_http_server(app_handle: tauri::AppHandle) {
@@ -144,6 +297,10 @@ pub async fn start_http_server(app_handle: tauri::AppHandle) {
         .route("/api/sessions", post(create_session))
         .route("/api/sessions/{id}/send", post(send_to_session))
         .route("/api/sessions/{id}/kill", post(kill_session))
+        // Keep a wildcard POST fallback for session actions. In the current runtime,
+        // some clients hit /api/sessions/{id}/send|kill without matching the typed
+        // path-param routes and fall through to the SPA GET fallback as 405.
+        .route("/api/sessions/{*rest}", post(session_action_fallback))
         .route("/api/projects", get(list_projects))
         .route("/api/projects", post(add_project))
         .route("/api/projects/remove", post(remove_project))
@@ -151,6 +308,8 @@ pub async fn start_http_server(app_handle: tauri::AppHandle) {
         .route("/api/session-history/{session_id}/messages", get(get_session_messages))
         .route("/api/commands/discover", get(commands_discover_handler))
         .route("/api/pty/{id}/ws", get(pty_ws_handler))
+        .route("/pty/{id}/ws", get(pty_ws_handler))
+        .route("/pty/ws", get(pty_ws_query_handler))
         .route("/ws", get(ws_handler))
         // SPA fallback: serve static files or index.html
         .fallback(get(static_file_handler))
@@ -331,7 +490,13 @@ async fn send_to_session(
     State(_state): State<Arc<AppState>>,
     Json(req): Json<SendRequest>,
 ) -> Json<serde_json::Value> {
-    let result = crate::pty::pty_write_internal(&id, req.text);
+    // AI CLIs require carriage return to process input, same as ai_send_message Tauri command
+    let text = if req.text.ends_with('\r') || req.text.ends_with('\n') {
+        req.text
+    } else {
+        format!("{}\r", req.text)
+    };
+    let result = crate::pty::pty_write_internal(&id, text);
     match result {
         Ok(()) => Json(serde_json::json!({ "ok": true })),
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
@@ -346,6 +511,56 @@ async fn kill_session(
     match result {
         Ok(()) => Json(serde_json::json!({ "ok": true })),
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
+async fn session_action_fallback(
+    Path(rest): Path<String>,
+    State(_state): State<Arc<AppState>>,
+    body: Bytes,
+) -> Response {
+    let segments: Vec<&str> = rest.split('/').filter(|segment| !segment.is_empty()).collect();
+    let [id, action] = segments.as_slice() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "ok": false, "error": "unknown session action" })),
+        )
+            .into_response();
+    };
+
+    match *action {
+        "send" => {
+            let req: SendRequest = match serde_json::from_slice(&body) {
+                Ok(req) => req,
+                Err(err) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({ "ok": false, "error": format!("invalid send payload: {err}") })),
+                    )
+                        .into_response();
+                }
+            };
+
+            let result = crate::pty::pty_write_internal(id, req.text);
+            Json(match result {
+                Ok(()) => serde_json::json!({ "ok": true }),
+                Err(e) => serde_json::json!({ "ok": false, "error": e }),
+            })
+            .into_response()
+        }
+        "kill" => {
+            let result = crate::pty::pty_kill_internal(id);
+            Json(match result {
+                Ok(()) => serde_json::json!({ "ok": true }),
+                Err(e) => serde_json::json!({ "ok": false, "error": e }),
+            })
+            .into_response()
+        }
+        _ => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "ok": false, "error": "unknown session action" })),
+        )
+            .into_response(),
     }
 }
 
@@ -445,9 +660,32 @@ async fn commands_discover_handler(
 async fn pty_ws_handler(
     ws: WebSocketUpgrade,
     Path(id): Path<String>,
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    if !validate_api_token(&state, &params, &headers) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
     ws.on_upgrade(move |socket| handle_pty_ws(socket, id))
+}
+
+async fn pty_ws_query_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    if !validate_api_token(&state, &params, &headers) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let Some(id) = params.get("id").cloned() else {
+        return (StatusCode::BAD_REQUEST, "Missing PTY session id").into_response();
+    };
+
+    ws.on_upgrade(move |socket| handle_pty_ws(socket, id)).into_response()
 }
 
 async fn handle_pty_ws(mut socket: WebSocket, session_id: String) {
@@ -509,22 +747,7 @@ async fn ws_handler(
     Query(params): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Response {
-    let token_valid = {
-        let provided = params.get("token")
-            .map(|t| t.as_str().to_string())
-            .or_else(|| {
-                headers.get("authorization")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.strip_prefix("Bearer "))
-                    .map(String::from)
-            });
-        match provided {
-            Some(t) => t == state.api_token,
-            None => false,
-        }
-    };
-
-    if !token_valid {
+    if !validate_api_token(&state, &params, &headers) {
         return (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
