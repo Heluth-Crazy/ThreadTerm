@@ -1,4 +1,4 @@
-export type WorkbenchNav = 'projects' | 'extensions' | 'settings' | 'livegrid';
+export type WorkbenchNav = 'projects' | 'extensions' | 'settings' | 'livegrid' | 'queue';
 
 export type ProjectsView = 'overview' | 'project-overview' | 'workspace';
 

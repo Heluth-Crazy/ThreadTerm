@@ -39,7 +39,7 @@ import type { Project, ProjectSession } from '../../types/app';
 import type { SessionTemplate } from '../../types/templates';
 import type { WorkbenchNav } from '../../types/workbench';
 
-type DesktopViewMode = 'overview' | 'focus' | 'settings' | 'extensions' | 'livegrid';
+type DesktopViewMode = 'overview' | 'focus' | 'settings' | 'extensions' | 'livegrid' | 'queue';
 
 export default function AppContent() {
   const { t } = useTranslation('common');
@@ -349,6 +349,7 @@ export default function AppContent() {
     viewMode === 'livegrid' ? 'livegrid' :
     viewMode === 'settings' ? 'settings' :
     viewMode === 'extensions' ? 'extensions' :
+    viewMode === 'queue' ? 'queue' :
     'projects';
 
   const handleNavSelect = useCallback((nav: WorkbenchNav) => {
@@ -358,6 +359,9 @@ export default function AppContent() {
       openExtensionsSkills();
     } else if (nav === 'settings') {
       routeToSettings('agents');
+    } else if (nav === 'queue') {
+      setViewMode('queue');
+      setActiveNav('queue');
     } else {
       setViewMode('overview');
       setActiveNav('projects');
@@ -595,7 +599,7 @@ export default function AppContent() {
         </div>
 
         <div className="flex items-center gap-3 px-2">
-        {viewMode === 'focus' || viewMode === 'settings' || viewMode === 'extensions' || viewMode === 'livegrid' ? (
+        {viewMode === 'focus' || viewMode === 'settings' || viewMode === 'extensions' || viewMode === 'livegrid' || viewMode === 'queue' ? (
           <Button
             variant="ghost"
             size="sm"
@@ -664,6 +668,8 @@ export default function AppContent() {
             </div>
             <div className="min-w-0 flex-1">{settingsExtensionsContent}</div>
           </div>
+        ) : viewMode === 'queue' ? (
+          <div className="min-w-0 flex-1">{settingsExtensionsContent}</div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <div className="flex min-h-0 flex-1">

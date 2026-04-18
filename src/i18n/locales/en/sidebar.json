@@ -278,7 +278,8 @@
         "deleteSessions": "Failed to delete sessions"
       }
     },
-    "liveGrid": "Live Grid"
+    "liveGrid": "Live Grid",
+    "queue": "Task Queue"
   },
   "sessions": {
     "title": "Sessions",

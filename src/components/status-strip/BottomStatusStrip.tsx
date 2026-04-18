@@ -1,4 +1,5 @@
 import { useSessionStatusStore } from '../../stores/sessionStatusStore';
+import { useTaskQueueStore } from '../../stores/taskQueueStore';
 import { getProviderDotClass } from '../../utils/providerColors';
 import type { Project, ProjectSession } from '../../types/app';
 
@@ -14,6 +15,9 @@ export default function BottomStatusStrip({
   onSelectSession,
 }: BottomStatusStripProps) {
   const statuses = useSessionStatusStore((s) => s.statuses);
+  const taskRunning = useTaskQueueStore((s) => s.queue.filter((t) => t.status === 'running').length);
+  const taskQueued = useTaskQueueStore((s) => s.queue.filter((t) => t.status === 'queued').length);
+  const attentionCount = Object.values(statuses).filter((e) => e.status === 'needs_attention').length;
 
   // Flatten all sessions
   const allSessions: { project: Project; session: ProjectSession }[] = [];
@@ -26,10 +30,33 @@ export default function BottomStatusStrip({
     }
   }
 
-  if (allSessions.length === 0) return null;
+  if (allSessions.length === 0 && taskRunning === 0 && taskQueued === 0) return null;
 
   return (
     <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-t border-border/60 bg-card/80 px-3">
+      {/* Task queue summary */}
+      {(taskRunning > 0 || taskQueued > 0 || attentionCount > 0) && (
+        <div className="flex shrink-0 items-center gap-2 rounded-lg bg-muted/50 px-2.5 py-1 text-[10px] font-medium text-muted-foreground mr-1">
+          {taskRunning > 0 && (
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
+              {taskRunning} running
+            </span>
+          )}
+          {taskQueued > 0 && (
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-400" />
+              {taskQueued} queued
+            </span>
+          )}
+          {attentionCount > 0 && (
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
+              {attentionCount} attention
+            </span>
+          )}
+        </div>
+      )}
       {allSessions.map(({ project, session }) => {
         const isSelected = selectedSession?.id === session.id;
         const provider = session.__provider ?? 'claude';
