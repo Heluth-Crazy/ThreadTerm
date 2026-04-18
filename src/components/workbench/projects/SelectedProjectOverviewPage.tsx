@@ -358,7 +358,7 @@ export default function SelectedProjectOverviewPage({
   const codexSelected = overviewState.selectedIdsByProvider.codex;
 
   return (
-    <div className="h-full overflow-y-auto bg-background">
+    <div className="h-full overflow-y-auto overflow-x-hidden bg-background">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-2.5 px-5 py-3.5 lg:px-6">
         <section className="rounded-[22px] border border-border/60 bg-card/72 p-3.5 shadow-sm">
           <div className="grid gap-2.5 xl:grid-cols-[minmax(0,1.55fr)_308px]">
@@ -407,7 +407,7 @@ export default function SelectedProjectOverviewPage({
               </div>
             </div>
 
-            <div className="rounded-[20px] border border-border/60 bg-background/90 p-3 shadow-sm">
+            <div className="rounded-[20px] border border-border/60 bg-background/90 p-3 shadow-sm overflow-hidden">
               <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                 {t('workbench.projectOverview.actions.title', { defaultValue: '项目操作' })}
               </div>
@@ -430,16 +430,16 @@ export default function SelectedProjectOverviewPage({
                     <div className="text-[11px] leading-4 text-muted-foreground">{t('workbench.overview.actions.codexHint', { project: projectLabel })}</div>
                   </div>
                 </button>
-                <div className="grid gap-1.5 sm:grid-cols-3">
-                  <button type="button" onClick={handleToggleStar} className="rounded-xl border border-border/60 bg-card px-2.5 py-1.5 text-[12px] font-medium text-foreground transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
+                <div className="flex flex-wrap gap-1.5">
+                  <button type="button" onClick={handleToggleStar} className="flex-1 min-w-[80px] rounded-xl border border-border/60 bg-card px-2.5 py-1.5 text-[12px] font-medium text-foreground transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
                     {isStarred
                       ? t('workbench.projectOverview.actions.unstar', { defaultValue: '取消星标' })
                       : t('workbench.projectOverview.actions.star', { defaultValue: '星标项目' })}
                   </button>
-                  <button type="button" onClick={() => void handleRenameProject()} disabled={isSavingProject} className="rounded-xl border border-border/60 bg-card px-2.5 py-1.5 text-[12px] font-medium text-foreground transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:opacity-60">
+                  <button type="button" onClick={() => void handleRenameProject()} disabled={isSavingProject} className="flex-1 min-w-[80px] rounded-xl border border-border/60 bg-card px-2.5 py-1.5 text-[12px] font-medium text-foreground transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:opacity-60">
                     <span className="inline-flex items-center gap-1.5"><PencilLine className="h-3.5 w-3.5" />{t('projects.renameProject')}</span>
                   </button>
-                  <button type="button" onClick={() => void handleDeleteProject()} disabled={projectDeletePending} className="rounded-xl border border-red-500/20 bg-red-500/5 px-2.5 py-1.5 text-[12px] font-medium text-red-700 transition-colors hover:bg-red-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/20 dark:text-red-300 disabled:opacity-60">
+                  <button type="button" onClick={() => void handleDeleteProject()} disabled={projectDeletePending} className="flex-1 min-w-[80px] rounded-xl border border-red-500/20 bg-red-500/5 px-2.5 py-1.5 text-[12px] font-medium text-red-700 transition-colors hover:bg-red-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/20 dark:text-red-300 disabled:opacity-60">
                     <span className="inline-flex items-center gap-1.5"><Trash2 className="h-3.5 w-3.5" />{t('projects.deleteProject')}</span>
                   </button>
                 </div>

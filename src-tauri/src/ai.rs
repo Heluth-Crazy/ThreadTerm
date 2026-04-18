@@ -111,10 +111,13 @@ pub async fn ai_start_session(
 }
 
 /// Send a message to the running AI CLI session via PTY input.
+/// Writes `message` + CR (\r) to the PTY stdin, which is equivalent to
+/// the user typing the text then pressing Enter.
+/// Works for all providers (Claude, Codex, Cursor) running in interactive TUI mode.
 #[tauri::command]
-pub async fn ai_send_message(pty_id: String, message: String) -> Result<(), String> {
-    // Send \r (CR): in raw-mode PTYs this is the Enter key.
-    // Claude and Codex TUI both run in raw mode where \r triggers input.
+pub async fn ai_send_message(pty_id: String, message: String, provider: Option<String>) -> Result<(), String> {
+    let _provider = provider.as_deref().unwrap_or("claude");
+    // All interactive TUIs (Claude, Codex, Cursor): write text + CR
     let input = format!("{message}\r");
     pty::pty_input(pty_id, input).await
 }
@@ -129,16 +132,15 @@ pub async fn ai_run_codex_exec(
 ) -> Result<String, String> {
     let cli_path = resolve_cli("codex")?;
 
-    let mut args: Vec<&str> = vec![
-        "exec",
-        "--skip-git-repo-check",
-        "--json",
-    ];
+    let mut args: Vec<&str> = vec!["exec"];
 
     if let Some(ref resume_id) = resume_session_id {
         args.push("resume");
         args.push(resume_id.as_str());
     }
+
+    args.push("--skip-git-repo-check");
+    args.push("--json");
 
     args.push(prompt.as_str());
 

@@ -58,6 +58,26 @@ export const useTauriEvents = useWebSocket;
 
 const MAX_BUFFERED = 5000;
 
+function loadCodexThreadIds(): Map<string, string> {
+  try {
+    const stored = localStorage.getItem('codex_thread_ids');
+    if (stored) {
+      const obj = JSON.parse(stored);
+      if (obj && typeof obj === 'object') {
+        return new Map(Object.entries(obj));
+      }
+    }
+  } catch { /* ignore corrupt data */ }
+  return new Map();
+}
+
+function saveCodexThreadIds(map: Map<string, string>): void {
+  try {
+    const obj = Object.fromEntries(map);
+    localStorage.setItem('codex_thread_ids', JSON.stringify(obj));
+  } catch { /* ignore */ }
+}
+
 export function TauriEventProvider({ children }: { children: React.ReactNode }) {
   const [latestMessage, setLatestMessage] = useState<AppMessage | null>(null);
   const [messageSequence, setMessageSequence] = useState(0);
@@ -88,8 +108,8 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
   const lineBuffers = useRef<Map<string, string>>(new Map());
   // ptyId → sessionId mapping (they may differ)
   const ptyToSession = useRef<Map<string, string>>(new Map());
-  // originalSessionId → Codex thread_id for multi-turn resume
-  const codexThreadIds = useRef<Map<string, string>>(new Map());
+  // originalSessionId → Codex thread_id for multi-turn resume (persisted to localStorage)
+  const codexThreadIds = useRef<Map<string, string>>(loadCodexThreadIds());
 
   // Buffered messages for replay
   const bufferedRef = useRef<Array<{ sequence: number; message: AppMessage }>>([]);
@@ -140,6 +160,7 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
             // Track originalSessionId → thread_id and thread_id → thread_id for Codex resume
             codexThreadIds.current.set(originalSessionId, parsed.thread_id);
             codexThreadIds.current.set(parsed.thread_id, parsed.thread_id);
+            saveCodexThreadIds(codexThreadIds.current);
             pushMessage({
               type: 'session-created',
               sessionId,
@@ -394,22 +415,40 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
           const resumeId: string | undefined = message.options?.resumeSessionId;
 
           if (provider === 'codex') {
-            // Codex uses exec mode: codex exec --json [resume <thread_id>] <prompt>
-            // New sessions won't have a sid yet — generate a temporary tracking key.
+            // Always use exec mode for chat messages — this produces structured
+            // JSON output that parsePtyOutput can handle → chat panel gets real responses.
             const codexSid = sid || `codex-${Date.now()}`;
             const doCodexSend = async () => {
               const threadId = codexThreadIds.current.get(codexSid);
               const ptyId = await ai.runCodexExec(codexSid, projectPath, message.command ?? '', threadId || resumeId);
               ptyToSession.current.set(ptyId, codexSid);
+
+              // If there is also an interactive PTY for this session (split-view),
+              // mirror the message there so it appears in the terminal too.
+              if (sid) {
+                for (const [pid, s] of ptyToSession.current) {
+                  if (s === sid && pid !== ptyId) {
+                    // Found the interactive TUI PTY (not the exec PTY we just created)
+                    const cmdText = message.command ?? '';
+                    try {
+                      await pty.input(pid, cmdText);
+                      await new Promise((r) => setTimeout(r, 100));
+                      await pty.input(pid, '\r');
+                    } catch {
+                      // Interactive PTY write failed — non-fatal, exec response still works
+                    }
+                    break;
+                  }
+                }
+              }
             };
             doCodexSend().catch(console.error);
             return true;
           }
 
-          // Claude/Cursor: need a pre-existing or resolvable session ID
+          // Claude/Cursor: interactive PTY mode
           if (!sid) return false;
 
-          // Claude/Cursor: interactive PTY mode
           let existingPtyId: string | undefined;
           for (const [pid, s] of ptyToSession.current) {
             if (s === sid) { existingPtyId = pid; break; }
@@ -426,7 +465,7 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
                 return;
               }
             }
-            await ai.sendMessage(ptyId, message.command ?? '');
+            await ai.sendMessage(ptyId, message.command ?? '', provider);
           };
 
           doSend().catch(console.error);

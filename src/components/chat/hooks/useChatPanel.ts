@@ -62,7 +62,8 @@ type UseChatPanelProps = {
 
 // Keep a consumer position across ChatPanel unmount/remount so stream chunks that
 // arrive while hidden can be replayed from WebSocketContext buffer.
-let chatLastProcessedMessageSequence = 0;
+// NOTE: This was previously a module-level variable shared by all hook instances,
+// causing cross-panel pollution. Now each instance tracks its own sequence via useRef.
 
 export function useChatPanel({
   selectedProject,
@@ -127,7 +128,7 @@ export function useChatPanel({
   const lastLocalActivityAtRef = useRef<number>(Date.now());
   const initialScrollPendingRef = useRef(true);
   const shouldJumpToBottomRef = useRef(true);
-  const lastProcessedSequenceRef = useRef<number>(chatLastProcessedMessageSequence);
+  const lastProcessedSequenceRef = useRef<number>(0);
 
   const [provider, setProvider] = useState<SessionProvider>(getInitialProvider);
   const resolvedSessionProvider = useMemo<SessionProvider | null>(() => {
@@ -621,6 +622,13 @@ export function useChatPanel({
     }
 
     if (messageType === 'session-created' && typeof message.sessionId === 'string') {
+      const myCurrentId = currentSessionIdRef.current;
+      // Only accept if this session-created matches our session OR we're in new-session state
+      const isForMe = !myCurrentId
+        || myCurrentId.startsWith('new-session-')
+        || message.originalSessionId === myCurrentId;
+      if (!isForMe) return;
+
       currentSessionIdRef.current = message.sessionId;
       suppressNextSessionSwitchResetRef.current = message.sessionId;
       setCurrentSessionId(message.sessionId);
@@ -1437,7 +1445,6 @@ Use these as file path references only. Read file contents from the workspace wh
 
     if (lastProcessedSequenceRef.current > normalizedSequence) {
       lastProcessedSequenceRef.current = 0;
-      chatLastProcessedMessageSequence = 0;
     }
 
     if (normalizedSequence <= lastProcessedSequenceRef.current) {
@@ -1447,7 +1454,6 @@ Use these as file path references only. Read file contents from the workspace wh
     const pendingMessages = getBufferedMessagesSince(lastProcessedSequenceRef.current);
     if (!pendingMessages.length) {
       lastProcessedSequenceRef.current = normalizedSequence;
-      chatLastProcessedMessageSequence = normalizedSequence;
       return;
     }
 
@@ -1468,16 +1474,11 @@ Use these as file path references only. Read file contents from the workspace wh
       }
       lastProcessedSequenceRef.current = sequence;
     }
-
-    chatLastProcessedMessageSequence = lastProcessedSequenceRef.current;
   }, [getBufferedMessagesSince, handleLatestMessage, messageSequence, shouldProcessBufferedMessage]);
 
+  // Cleanup effect — no-op now that sequence tracking is per-instance via useRef
   useEffect(() => {
-    return () => {
-      if (lastProcessedSequenceRef.current > chatLastProcessedMessageSequence) {
-        chatLastProcessedMessageSequence = lastProcessedSequenceRef.current;
-      }
-    };
+    return () => {};
   }, []);
 
   useEffect(() => {
