@@ -283,31 +283,34 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
 
   // ── Listen to PTY events ─────────────────────────────────────────────────
   useEffect(() => {
-    let unlistenOutput: (() => void) | null = null;
-    let unlistenExit: (() => void) | null = null;
-    let unlistenStateChanged: (() => void) | null = null;
-    let unlistenAttention: (() => void) | null = null;
+    // `cancelled` guards against React StrictMode's double-mount: if cleanup runs
+    // before an async listener Promise resolves, the resolved unlisten fn is called
+    // immediately so no stale listener survives the remount cycle.
+    let cancelled = false;
+    const cleanupFns: Array<() => void> = [];
 
-    pty
-      .onOutput(({ id, data }) => {
-        parsePtyOutput(id, data);
-      })
-      .then((u) => {
-        unlistenOutput = u;
+    const register = (promise: Promise<() => void>) => {
+      promise.then((u) => {
+        if (cancelled) { u(); } else { cleanupFns.push(u); }
       });
+    };
 
-    pty
-      .onExit(({ id }) => {
+    register(
+      pty.onOutput(({ id, data }) => {
+        parsePtyOutput(id, data);
+      }),
+    );
+
+    register(
+      pty.onExit(({ id }) => {
         const sessionId = ptyToSession.current.get(id) ?? id;
         lineBuffers.current.delete(sessionId);
         ptyToSession.current.delete(id);
-      })
-      .then((u) => {
-        unlistenExit = u;
-      });
+      }),
+    );
 
-    pty
-      .onStateChanged(({ ptyId, state }) => {
+    register(
+      pty.onStateChanged(({ ptyId, state }) => {
         const sessionId = ptyToSession.current.get(ptyId) ?? ptyId;
         sessionStatesRef.current.set(sessionId, state);
         setSessionStates(new Map(sessionStatesRef.current));
@@ -325,14 +328,11 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
         } else if (state === 'Idle') {
           statusStore.setIdle(sessionId);
         }
-      })
-      .then((u) => {
-        unlistenStateChanged = u;
-      });
+      }),
+    );
 
-    pty
-      .onAttentionRequired((payload: import('../lib/tauri-bridge').AttentionRequiredEvent) => {
-        // Update the status store (UI reads from here)
+    register(
+      pty.onAttentionRequired((payload: import('../lib/tauri-bridge').AttentionRequiredEvent) => {
         const sessionId = ptyToSession.current.get(payload.ptyId) ?? payload.ptyId;
         const statusStore = useSessionStatusStore.getState();
         if (payload.type === 'waiting') {
@@ -341,27 +341,22 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
           statusStore.setNeedsAttention(sessionId, 'error');
         }
 
-        // TTS feedback
         if (ttsEnabledRef.current) {
           const shortId = sessionId.slice(0, 8);
           speak(`Session ${shortId} needs your attention`);
         }
-      })
-      .then((u) => {
-        unlistenAttention = u;
-      });
+      }),
+    );
 
     // Listen for loop-state-changed events
-    let unlistenLoop: (() => void) | null = null;
     const loopCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
     if (isTauriEnv()) {
       import('@tauri-apps/api/event').then(({ listen }) => {
-        listen<LoopState>('loop-state-changed', (event) => {
+        return listen<LoopState>('loop-state-changed', (event) => {
           const loopState = event.payload;
           const store = useLoopStore.getState();
           store.updateLoop(loopState.loopId, loopState);
 
-          // Auto-remove loops in terminal state after a delay so the user can see the result
           const isTerminal = loopState.status === 'passed' || loopState.status === 'failed' || loopState.status === 'cancelled';
           if (isTerminal) {
             if (!loopCleanupTimers.has(loopState.loopId)) {
@@ -372,18 +367,16 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
               loopCleanupTimers.set(loopState.loopId, timer);
             }
           }
-        }).then((u) => {
-          unlistenLoop = u;
         });
+      }).then((u) => {
+        if (cancelled) { u(); } else { cleanupFns.push(u); }
       });
     }
 
     return () => {
-      unlistenOutput?.();
-      unlistenExit?.();
-      unlistenStateChanged?.();
-      unlistenAttention?.();
-      unlistenLoop?.();
+      cancelled = true;
+      cleanupFns.forEach((f) => f());
+      cleanupFns.length = 0;
       loopCleanupTimers.forEach((timer) => clearTimeout(timer));
       loopCleanupTimers.clear();
     };
