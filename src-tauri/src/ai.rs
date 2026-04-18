@@ -25,34 +25,31 @@ fn resolve_cli(provider: &str) -> Result<String, String> {
         .map_err(|_| format!("CLI not found in PATH: {binary}"))
 }
 
-/// Build the argument list for each provider.
-fn build_args<'a>(
-    provider: &str,
-    resume_session_id: &'a Option<String>,
-) -> Vec<&'a str> {
+/// Build the base argument list for each provider (owned Strings).
+fn build_args(provider: &str, resume_session_id: &Option<String>) -> Vec<String> {
     match provider {
         "claude" => {
             let mut args = Vec::new();
             if let Some(sid) = resume_session_id {
-                args.push("--resume");
-                args.push(sid.as_str());
+                args.push("--resume".to_string());
+                args.push(sid.clone());
             }
             args
         }
         "codex" => {
             let mut args = Vec::new();
             if let Some(sid) = resume_session_id {
-                args.push("resume");
-                args.push(sid.as_str());
+                args.push("resume".to_string());
+                args.push(sid.clone());
             }
-            args.push("--no-alt-screen");
+            args.push("--no-alt-screen".to_string());
             args
         }
         "cursor" => {
             let mut args = Vec::new();
             if let Some(sid) = resume_session_id {
-                args.push("--resume");
-                args.push(sid.as_str());
+                args.push("--resume".to_string());
+                args.push(sid.clone());
             }
             args
         }
@@ -71,30 +68,16 @@ pub async fn ai_start_session(
     provider: String,
     project_path: String,
     resume_session_id: Option<String>,
+    extra_args: Option<Vec<String>>,
     window: Window,
 ) -> Result<String, String> {
-    if provider == "codex" {
-        let cli_path = resolve_cli(&provider)?;
-        let args = build_args(&provider, &resume_session_id);
-        let arg_refs: Vec<&str> = args.iter().copied().collect();
-
-        let pty_id = pty::create_command_pty(
-            session_id.clone(),
-            project_path,
-            &cli_path,
-            &arg_refs,
-            24,
-            120,
-            window.app_handle().clone(),
-        )?;
-
-        tracing::info!(provider = %provider, pty_id = %pty_id, "AI session started in direct command PTY");
-        return Ok(pty_id);
-    }
-
     let cli_path = resolve_cli(&provider)?;
-    let args = build_args(&provider, &resume_session_id);
-    let arg_refs: Vec<&str> = args.iter().copied().collect();
+    let mut args = build_args(&provider, &resume_session_id);
+    // Append custom profile args after the base (resume) flags
+    if let Some(extra) = extra_args {
+        args.extend(extra);
+    }
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
     let pty_id = pty::create_command_pty(
         session_id.clone(),
@@ -288,7 +271,7 @@ pub fn start_session_internal(
     let session_id = uuid::Uuid::new_v4().to_string();
     let cli_path = resolve_cli(&provider)?;
     let args = build_args(&provider, &resume_session_id);
-    let arg_refs: Vec<&str> = args.iter().copied().collect();
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
     let pty_id = pty::create_command_pty(
         session_id,

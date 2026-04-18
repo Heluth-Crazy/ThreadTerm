@@ -248,6 +248,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
             shellProvider,
             projectPath,
             shouldResumeSession ? selectedSessionId : undefined,
+            launchArgs.length > 0 ? launchArgs : undefined,
           );
         } else if (shellProvider === 'codex') {
           connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
@@ -344,7 +345,14 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
           await pty.input(connectedPtyId, initialCommandRef.current + '\r');
         } else if (!isPlainShellRef.current && shellProvider === 'codex') {
           await new Promise((resolve) => setTimeout(resolve, 300));
-          const codexCommand = ['codex', ...launchArgs].join(' ');
+          // Build codex command: `codex resume <id>` if resuming, otherwise `codex [launchArgs]`
+          const codexParts = ['codex'];
+          if (shouldResumeSession && selectedSessionId) {
+            codexParts.push('resume', selectedSessionId);
+          } else {
+            codexParts.push(...launchArgs);
+          }
+          const codexCommand = codexParts.join(' ');
           await pty.input(connectedPtyId, codexCommand + '\r');
         }
       } catch (error) {
