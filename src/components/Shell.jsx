@@ -230,48 +230,9 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
         const ptySessionId = paneId || `shell-${Date.now()}`;
 
         if (isTauriEnv()) {
-          // ── Tauri mode: use Tauri events ──
-          const unlistenOut = await pty.onOutput(({ id: sid, data }) => {
-            if (sid === ptySessionId && terminal.current) {
-              terminal.current.write(data);
-              terminal.current.scrollToBottom();
-
-              if (isPlainShellRef.current && onProcessCompleteRef.current) {
-                const cleanOutput = data.replace(/\x1b\[[0-9;]*m/g, '');
-                if (cleanOutput.includes('Process exited with code 0')) {
-                  onProcessCompleteRef.current(0);
-                } else if (cleanOutput.match(/Process exited with code (\d+)/)) {
-                  const exitCode = parseInt(cleanOutput.match(/Process exited with code (\d+)/)[1]);
-                  if (exitCode !== 0) {
-                    onProcessCompleteRef.current(exitCode);
-                  }
-                }
-              }
-            }
-          });
-
-          const unlistenExit = await pty.onExit(({ id: sid }) => {
-            if (sid === ptySessionId) {
-              setConnected(false);
-              setConnecting(false);
-
-              if (terminal.current) {
-                terminal.current.clear();
-                terminal.current.write('\x1b[2J\x1b[H');
-              }
-
-              if (!manuallyDisconnected.current) {
-                const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
-                retryCountRef.current++;
-                shellReconnectTimeoutRef.current = setTimeout(() => {
-                  connectWebSocket();
-                }, delay);
-              }
-            }
-          });
-
-          unlistenOutputRef.current = unlistenOut;
-          unlistenExitRef.current = unlistenExit;
+          // Clean up old listeners before registering new ones
+          unlistenOutputRef.current?.();
+          unlistenExitRef.current?.();
         }
 
         const rows = terminal.current?.rows || 24;
@@ -299,6 +260,51 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
         }
 
         ptyIdRef.current = connectedPtyId;
+
+        if (isTauriEnv()) {
+          // ── Tauri mode: register listeners AFTER pty.create so ptyIdRef.current is set ──
+          const unlistenOut = await pty.onOutput(({ id: sid, data }) => {
+            if (sid === ptyIdRef.current && terminal.current) {
+              terminal.current.write(data);
+              terminal.current.scrollToBottom();
+
+              if (isPlainShellRef.current && onProcessCompleteRef.current) {
+                const cleanOutput = data.replace(/\x1b\[[0-9;]*m/g, '');
+                if (cleanOutput.includes('Process exited with code 0')) {
+                  onProcessCompleteRef.current(0);
+                } else if (cleanOutput.match(/Process exited with code (\d+)/)) {
+                  const exitCode = parseInt(cleanOutput.match(/Process exited with code (\d+)/)[1]);
+                  if (exitCode !== 0) {
+                    onProcessCompleteRef.current(exitCode);
+                  }
+                }
+              }
+            }
+          });
+
+          const unlistenExit = await pty.onExit(({ id: sid }) => {
+            if (sid === ptyIdRef.current) {
+              setConnected(false);
+              setConnecting(false);
+
+              if (terminal.current) {
+                terminal.current.clear();
+                terminal.current.write('\x1b[2J\x1b[H');
+              }
+
+              if (!manuallyDisconnected.current) {
+                const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
+                retryCountRef.current++;
+                shellReconnectTimeoutRef.current = setTimeout(() => {
+                  connectWebSocket();
+                }, delay);
+              }
+            }
+          });
+
+          unlistenOutputRef.current = unlistenOut;
+          unlistenExitRef.current = unlistenExit;
+        }
 
         if (!isTauriEnv()) {
           // ── Web mode: connect via WebSocket for PTY I/O ──
