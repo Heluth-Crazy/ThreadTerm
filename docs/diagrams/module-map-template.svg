@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2048" height="1365" viewBox="0 0 2048 1365">
+  <!-- 模块关系图模板 / 中文优先 -->
+  <!-- 结构建议：左中右三栏或两层分组，不要把所有依赖都堆成蜘蛛网。 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#020617"/><stop offset="100%" stop-color="#0f172a"/></linearGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0L0 0 0 48" fill="none" stroke="#1e293b" stroke-width="0.8" opacity="0.42"/></pattern>
+  </defs>
+  <rect width="2048" height="1365" fill="url(#bg)"/>
+  <rect width="2048" height="1365" fill="url(#grid)" opacity="0.72"/>
+  <!-- 建议分区：核心模块 / 支撑模块 / 外部依赖 -->
+</svg>

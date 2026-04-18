@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2048" height="1365" viewBox="0 0 2048 1365">
+  <!-- Workflow template for high-quality dark swimlane diagrams -->
+  <!-- Use 4 horizontal stages, 4-5 nodes per stage, and keep fan-out limited to one dense area max. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#030712"/><stop offset="100%" stop-color="#111827"/></linearGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0L0 0 0 48" fill="none" stroke="#1f2937" stroke-width="0.8" opacity="0.40"/></pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#020617" flood-opacity="0.62"/></filter>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto"><path d="M0,0 L14,7 L0,14 z" fill="#60a5fa"/></marker>
+    <marker id="arrowGreen" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto"><path d="M0,0 L14,7 L0,14 z" fill="#34d399"/></marker>
+    <marker id="arrowRose" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto"><path d="M0,0 L14,7 L0,14 z" fill="#fb7185"/></marker>
+  </defs>
+  <rect width="2048" height="1365" fill="url(#bg)"/>
+  <rect width="2048" height="1365" fill="url(#grid)" opacity="0.84"/>
+
+  <!-- Recommended swimlane frames -->
+  <!-- lane1: 70,176,1908,192 -->
+  <!-- lane2: 70,406,1908,242 -->
+  <!-- lane3: 70,686,1908,252 -->
+  <!-- lane4: 70,976,1908,248 -->
+  <!-- legend: 70,1250,1908,66 -->
+
+  <!-- Keep stage subtitles short. Use max 1 body line if node count > 4. -->
+</svg>
