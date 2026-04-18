@@ -251,13 +251,13 @@ export const projects = {
 // ─── AI ──────────────────────────────────────────────────────────────────────
 
 export const ai = {
-  startSession: (sessionId: string, provider: string, projectPath: string, resumeSessionId?: string): Promise<string> =>
+  startSession: (sessionId: string, provider: string, projectPath: string, resumeSessionId?: string, extraArgs?: string[]): Promise<string> =>
     isTauriEnv()
-      ? invoke<string>('ai_start_session', { sessionId, provider, projectPath, resumeSessionId })
+      ? invoke<string>('ai_start_session', { sessionId, provider, projectPath, resumeSessionId: resumeSessionId ?? null, extraArgs: extraArgs?.length ? extraArgs : null })
       : httpPost<{ ok: boolean; ptyId: string }>('/api/sessions', { project_path: projectPath, provider, resume_session_id: resumeSessionId }).then((r) => r.ptyId),
-  sendMessage: (ptyId: string, message: string): Promise<void> =>
+  sendMessage: (ptyId: string, message: string, provider?: string): Promise<void> =>
     isTauriEnv()
-      ? invoke<void>('ai_send_message', { ptyId, message })
+      ? invoke<void>('ai_send_message', { ptyId, message, provider: provider ?? null })
       : httpPost<void>(`/api/sessions/${ptyId}/send`, { text: message }),
   abortSession: (ptyId: string): Promise<void> =>
     isTauriEnv()
