@@ -869,7 +869,15 @@ export function useChatPanel({
     const activeSessionId = currentSessionIdRef.current;
 
     if (messageType === 'session-created') {
-      return !activeSessionId || activeSessionId.startsWith('new-session-');
+      // Claude never sets originalSessionId — always let it through so handleLatestMessage
+      // can update currentSessionIdRef to the new PTY session ID. Without this, resumed
+      // Claude sessions can't match incoming claude-response messages (different sessionIds).
+      if (!message.originalSessionId) return true;
+      // Codex sets originalSessionId — only allow through if it's for our session
+      // (prevents cross-panel contamination when multiple Codex sessions are open).
+      return !activeSessionId
+        || activeSessionId.startsWith('new-session-')
+        || message.originalSessionId === activeSessionId;
     }
 
     if (!messageSessionId) {

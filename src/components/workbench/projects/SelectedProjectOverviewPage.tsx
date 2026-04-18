@@ -416,18 +416,18 @@ export default function SelectedProjectOverviewPage({
                   <div className="flex h-[30px] w-[30px] items-center justify-center rounded-[14px] bg-amber-500/10 text-amber-700 dark:text-amber-300">
                     <Plus className="h-4 w-4" />
                   </div>
-                  <div className="min-w-0">
+                  <div className="min-w-0 overflow-hidden">
                     <div className="text-[13px] font-medium leading-5 text-foreground">{t('workbench.overview.actions.claude')}</div>
-                    <div className="text-[11px] leading-4 text-muted-foreground">{t('workbench.overview.actions.claudeHint', { project: projectLabel })}</div>
+                    <div className="truncate text-[11px] leading-4 text-muted-foreground">{t('workbench.overview.actions.claudeHint', { project: projectLabel })}</div>
                   </div>
                 </button>
                 <button type="button" onClick={() => onNewSession(selectedProject, 'codex')} className="flex items-start gap-2 rounded-[16px] border border-border/60 bg-card px-2.5 py-2 text-left transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30">
                   <div className="flex h-[30px] w-[30px] items-center justify-center rounded-[14px] bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
                     <Sparkles className="h-4 w-4" />
                   </div>
-                  <div className="min-w-0">
+                  <div className="min-w-0 overflow-hidden">
                     <div className="text-[13px] font-medium leading-5 text-foreground">{t('workbench.overview.actions.codex')}</div>
-                    <div className="text-[11px] leading-4 text-muted-foreground">{t('workbench.overview.actions.codexHint', { project: projectLabel })}</div>
+                    <div className="truncate text-[11px] leading-4 text-muted-foreground">{t('workbench.overview.actions.codexHint', { project: projectLabel })}</div>
                   </div>
                 </button>
                 <div className="flex flex-wrap gap-1.5">
