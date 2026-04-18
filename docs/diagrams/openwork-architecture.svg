@@ -1,0 +1,213 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2048" height="1365" viewBox="0 0 2048 1365" role="img" aria-labelledby="title desc">
+  <title id="title">OpenWork Architecture Diagram</title>
+  <desc id="desc">OpenWork architecture showing clients, React workbench shell, Tauri bridge, Rust backend modules, persistence, and external AI CLI integrations.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#020617"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="accentTitle" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="50%" stop-color="#60a5fa"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0L0 0 0 48" fill="none" stroke="#1e293b" stroke-width="0.8" opacity="0.42"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#020617" flood-opacity="0.62"/>
+    </filter>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrowCyan" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto"><path d="M0,0 L14,7 L0,14 z" fill="#38bdf8"/></marker>
+    <marker id="arrowGreen" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto"><path d="M0,0 L14,7 L0,14 z" fill="#34d399"/></marker>
+    <marker id="arrowAmber" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto"><path d="M0,0 L14,7 L0,14 z" fill="#fbbf24"/></marker>
+    <style>
+      .title{font:700 48px 'Inter','SF Pro Display',sans-serif;fill:#f8fafc}
+      .subtitle{font:500 20px 'Inter',sans-serif;fill:#94a3b8}
+      .section{font:700 24px 'Inter',sans-serif;fill:#f8fafc}
+      .section-sub{font:500 14px 'Inter',sans-serif;fill:#94a3b8}
+      .pill{font:700 11px 'JetBrains Mono',monospace;letter-spacing:1.1px;text-transform:uppercase}
+      .card-title{font:700 20px 'Inter',sans-serif;fill:#f8fafc}
+      .card-body{font:500 13px 'Inter',sans-serif;fill:#cbd5e1}
+      .note{font:600 11px 'JetBrains Mono',monospace;fill:#93c5fd}
+      .legend{font:600 12px 'Inter',sans-serif;fill:#cbd5e1}
+    </style>
+  </defs>
+
+  <rect width="2048" height="1365" fill="url(#bg)"/>
+  <rect width="2048" height="1365" fill="url(#grid)" opacity="0.72"/>
+  <circle cx="1740" cy="160" r="250" fill="#0ea5e9" opacity="0.08" filter="url(#glow)"/>
+  <circle cx="1660" cy="1110" r="280" fill="#8b5cf6" opacity="0.08" filter="url(#glow)"/>
+  <circle cx="260" cy="1110" r="280" fill="#10b981" opacity="0.05" filter="url(#glow)"/>
+
+  <text x="88" y="92" class="title" fill="url(#accentTitle)">OpenWork — Unified AI Workspace Architecture</text>
+  <text x="88" y="128" class="subtitle">Desktop, browser, and mobile access to Claude Code, Cursor CLI, and Codex through a React/Tauri shell and a Rust PTY + LAN backend.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="178" rx="28" width="410" height="370" fill="rgba(15,23,42,0.82)" stroke="#38bdf8" stroke-width="1.8"/>
+    <text x="100" y="216" class="section">Client Surfaces</text>
+    <text x="100" y="240" class="section-sub">One project/session model spans desktop, browser, and mobile access.</text>
+
+    <rect x="100" y="278" rx="18" width="354" height="84" fill="rgba(8,51,68,0.42)" stroke="#22d3ee" stroke-width="1.4"/>
+    <text x="124" y="306" class="pill" fill="#67e8f9">desktop</text>
+    <text x="124" y="334" class="card-title">Tauri Desktop App</text>
+    <text x="124" y="358" class="card-body">Local shell, native files, notifications, and the embedded LAN server.</text>
+
+    <rect x="100" y="382" rx="18" width="354" height="84" fill="rgba(8,51,68,0.34)" stroke="#38bdf8" stroke-width="1.4"/>
+    <text x="124" y="410" class="pill" fill="#7dd3fc">browser</text>
+    <text x="124" y="438" class="card-title">Responsive Web / LAN Client</text>
+    <text x="124" y="462" class="card-body">Uses token-authenticated REST + PTY WebSockets over the local network.</text>
+
+    <rect x="100" y="486" rx="18" width="354" height="42" fill="rgba(30,41,59,0.55)" stroke="#94a3b8" stroke-width="1.2"/>
+    <text x="124" y="514" class="card-body">Mobile shell + iOS wrapper reuse the same workbench model.</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="522" y="178" rx="28" width="730" height="370" fill="rgba(15,23,42,0.84)" stroke="#22d3ee" stroke-width="1.8"/>
+    <text x="550" y="216" class="section">React Workbench Shell</text>
+    <text x="550" y="240" class="section-sub">Vite + React + Tailwind orchestrate projects, sessions, chat, terminals, settings, skills, and live-grid views.</text>
+
+    <rect x="550" y="280" rx="18" width="300" height="100" fill="rgba(8,51,68,0.36)" stroke="#22d3ee" stroke-width="1.4"/>
+    <text x="574" y="308" class="pill" fill="#67e8f9">composition</text>
+    <text x="574" y="338" class="card-title">App.tsx / AppContent.tsx</text>
+    <text x="574" y="362" class="card-body">Theme + Auth + TauriEvent providers</text>
+
+    <rect x="878" y="280" rx="18" width="346" height="100" fill="rgba(8,51,68,0.28)" stroke="#38bdf8" stroke-width="1.4"/>
+    <text x="902" y="308" class="pill" fill="#93c5fd">navigation</text>
+    <text x="902" y="338" class="card-title">Workbench Routers</text>
+    <text x="902" y="362" class="card-body">Projects / Extensions / Settings / LiveGrid / Focus modes</text>
+
+    <rect x="550" y="406" rx="18" width="300" height="108" fill="rgba(8,51,68,0.28)" stroke="#38bdf8" stroke-width="1.4"/>
+    <text x="574" y="434" class="pill" fill="#93c5fd">session ux</text>
+    <text x="574" y="464" class="card-title">Chat + Terminal + Editor</text>
+    <text x="574" y="488" class="card-body">Message stream, PTY panes, file watch, and git sync</text>
+
+    <rect x="878" y="406" rx="18" width="346" height="108" fill="rgba(8,51,68,0.28)" stroke="#38bdf8" stroke-width="1.4"/>
+    <text x="902" y="434" class="pill" fill="#93c5fd">state</text>
+    <text x="902" y="464" class="card-title">Hooks + Zustand Stores</text>
+    <text x="902" y="488" class="card-body">ProjectsState, session protection, loop store, live-grid store</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="1292" y="178" rx="28" width="316" height="370" fill="rgba(15,23,42,0.84)" stroke="#34d399" stroke-width="1.8"/>
+    <text x="1320" y="216" class="section">Bridge Layer</text>
+    <text x="1320" y="240" class="section-sub">One frontend API abstracts desktop and browser/LAN modes.</text>
+
+    <rect x="1320" y="280" rx="18" width="260" height="100" fill="rgba(6,78,59,0.34)" stroke="#34d399" stroke-width="1.4"/>
+    <text x="1344" y="308" class="pill" fill="#86efac">unified api</text>
+    <text x="1344" y="338" class="card-title">tauri-bridge.ts</text>
+    <text x="1344" y="362" class="card-body">invoke() on desktop, fetch()/WebSocket in web mode</text>
+
+    <rect x="1320" y="406" rx="18" width="260" height="108" fill="rgba(6,78,59,0.28)" stroke="#10b981" stroke-width="1.4"/>
+    <text x="1344" y="434" class="pill" fill="#86efac">events</text>
+    <text x="1344" y="464" class="card-title">TauriEventContext</text>
+    <text x="1344" y="488" class="card-body">Turns PTY JSONL into Claude/Codex UI events + replay buffers</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="1652" y="178" rx="28" width="324" height="918" fill="rgba(15,23,42,0.84)" stroke="#fbbf24" stroke-width="1.8"/>
+    <text x="1680" y="216" class="section">Persistence + Integrations</text>
+    <text x="1680" y="240" class="section-sub">Local services and external CLI ecosystems orchestrated by OpenWork.</text>
+
+    <rect x="1680" y="280" rx="18" width="268" height="98" fill="rgba(76,29,149,0.34)" stroke="#a78bfa" stroke-width="1.4"/>
+    <text x="1704" y="308" class="pill" fill="#c4b5fd">state</text>
+    <text x="1704" y="338" class="card-title">SQLite + ~/.openwork</text>
+    <text x="1704" y="362" class="card-body">Auth, settings, token file, projects.json, and cached metadata.</text>
+
+    <rect x="1680" y="400" rx="18" width="268" height="110" fill="rgba(120,53,15,0.28)" stroke="#fbbf24" stroke-width="1.4"/>
+    <text x="1704" y="428" class="pill" fill="#fde68a">os integration</text>
+    <text x="1704" y="458" class="card-title">Local Filesystem &amp; Git Repos</text>
+    <text x="1704" y="482" class="card-body">Project worktrees, package.json metadata, and branch/worktree operations.</text>
+
+    <rect x="1680" y="534" rx="18" width="268" height="124" fill="rgba(6,78,59,0.26)" stroke="#34d399" stroke-width="1.4"/>
+    <text x="1704" y="562" class="pill" fill="#86efac">clis</text>
+    <text x="1704" y="592" class="card-title">Claude · Codex · Cursor</text>
+    <text x="1704" y="616" class="card-body">Spawned inside PTYs; output becomes chat events, approvals, and history.</text>
+
+    <rect x="1680" y="682" rx="18" width="268" height="104" fill="rgba(136,19,55,0.30)" stroke="#fb7185" stroke-width="1.4"/>
+    <text x="1704" y="710" class="pill" fill="#fda4af">notifications</text>
+    <text x="1704" y="740" class="card-title">Desktop Attention + TTS</text>
+    <text x="1704" y="764" class="card-body">Waiting prompts and session state changes surface to the user.</text>
+
+    <rect x="1680" y="810" rx="18" width="268" height="120" fill="rgba(30,41,59,0.55)" stroke="#94a3b8" stroke-width="1.4"/>
+    <text x="1704" y="838" class="pill" fill="#cbd5e1">distribution</text>
+    <text x="1704" y="868" class="card-title">Desktop + Browser + iOS</text>
+    <text x="1704" y="892" class="card-body">Same workspace model available locally or remotely across device classes.</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="598" rx="30" width="1536" height="498" fill="rgba(15,23,42,0.86)" stroke="#34d399" stroke-width="1.9"/>
+    <text x="100" y="638" class="section">Rust/Tauri Backend Core</text>
+    <text x="100" y="662" class="section-sub">Tauri commands + an embedded Axum server expose session control, projects, files, skills, auth, git, loops, and tasks.</text>
+
+    <rect x="100" y="708" rx="20" width="300" height="148" fill="rgba(6,78,59,0.34)" stroke="#34d399" stroke-width="1.4"/>
+    <text x="124" y="736" class="pill" fill="#86efac">session runtime</text>
+    <text x="124" y="766" class="card-title">pty.rs + ai.rs</text>
+    <text x="124" y="790" class="card-body">Portable PTYs, command spawning, session state, approvals, and attention events.</text>
+    <text x="124" y="822" class="note">providers: claude / codex / cursor</text>
+
+    <rect x="432" y="708" rx="20" width="300" height="148" fill="rgba(6,78,59,0.28)" stroke="#10b981" stroke-width="1.4"/>
+    <text x="456" y="736" class="pill" fill="#86efac">workspace model</text>
+    <text x="456" y="766" class="card-title">projects.rs + session_history.rs</text>
+    <text x="456" y="790" class="card-body">Project registry, session discovery, recents, restore, delete, and rename flows.</text>
+
+    <rect x="764" y="708" rx="20" width="300" height="148" fill="rgba(6,78,59,0.28)" stroke="#10b981" stroke-width="1.4"/>
+    <text x="788" y="736" class="pill" fill="#86efac">developer ops</text>
+    <text x="788" y="766" class="card-title">git.rs + fs_commands.rs</text>
+    <text x="788" y="790" class="card-body">Git status/diff/branches/worktrees plus direct file read/write/delete commands.</text>
+
+    <rect x="1096" y="708" rx="20" width="484" height="148" fill="rgba(6,78,59,0.28)" stroke="#10b981" stroke-width="1.4"/>
+    <text x="1120" y="736" class="pill" fill="#86efac">config &amp; extensions</text>
+    <text x="1120" y="766" class="card-title">db.rs + auth.rs + skills.rs + commands.rs</text>
+    <text x="1120" y="790" class="card-body">SQLite-backed settings/auth plus skill CRUD and command discovery.</text>
+
+    <rect x="100" y="880" rx="20" width="300" height="170" fill="rgba(6,78,59,0.22)" stroke="#22c55e" stroke-width="1.4"/>
+    <text x="124" y="908" class="pill" fill="#bbf7d0">workflow automation</text>
+    <text x="124" y="938" class="card-title">tasks.rs + loop_runner.rs</text>
+    <text x="124" y="962" class="card-body">Task CRUD, autonomous loops, cleanup jobs, and session orchestration.</text>
+
+    <rect x="432" y="880" rx="20" width="300" height="170" fill="rgba(6,78,59,0.22)" stroke="#22c55e" stroke-width="1.4"/>
+    <text x="456" y="908" class="pill" fill="#bbf7d0">handoff &amp; health</text>
+    <text x="456" y="938" class="card-title">handoff.rs + health.rs</text>
+    <text x="456" y="962" class="card-body">Cross-session transfer plus heartbeat/health endpoints for local and LAN clients.</text>
+
+    <rect x="764" y="880" rx="20" width="816" height="170" fill="rgba(120,53,15,0.26)" stroke="#fbbf24" stroke-width="1.4"/>
+    <text x="788" y="908" class="pill" fill="#fde68a">lan gateway</text>
+    <text x="788" y="938" class="card-title">http_server.rs (Axum)</text>
+    <text x="788" y="962" class="card-body">Starts on boot, detects the LAN IP, writes the API token, serves SPA assets, and exposes REST + PTY WebSocket endpoints.</text>
+    <text x="788" y="994" class="note">key routes: /api/projects · /api/sessions · /api/session-history · /api/pty/{id}/ws</text>
+  </g>
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M482 342 C510 342 518 330 550 330" stroke="#38bdf8" stroke-width="4" marker-end="url(#arrowCyan)"/>
+    <path d="M1252 334 C1270 334 1282 330 1320 330" stroke="#22d3ee" stroke-width="4" marker-end="url(#arrowCyan)"/>
+    <path d="M1252 458 C1270 458 1282 460 1320 460" stroke="#22d3ee" stroke-width="4" marker-end="url(#arrowCyan)"/>
+    <path d="M1450 548 C1450 612 1450 664 1450 708" stroke="#34d399" stroke-width="4" marker-end="url(#arrowGreen)"/>
+    <path d="M704 548 C704 620 580 668 250 708" stroke="#34d399" stroke-width="4" marker-end="url(#arrowGreen)"/>
+    <path d="M1030 548 C1030 620 980 666 914 708" stroke="#34d399" stroke-width="4" marker-end="url(#arrowGreen)"/>
+    <path d="M1580 936 C1628 936 1660 896 1680 870" stroke="#fbbf24" stroke-width="4" marker-end="url(#arrowAmber)"/>
+    <path d="M1580 964 C1620 964 1660 760 1680 740" stroke="#fbbf24" stroke-width="4" marker-end="url(#arrowAmber)"/>
+    <path d="M1580 992 C1624 992 1660 620 1680 598" stroke="#fbbf24" stroke-width="4" marker-end="url(#arrowAmber)"/>
+    <path d="M1608 438 C1634 438 1650 438 1680 438" stroke="#fbbf24" stroke-width="4" marker-end="url(#arrowAmber)"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="1140" rx="18" width="1904" height="88" fill="rgba(15,23,42,0.88)" stroke="#334155" stroke-width="1.2"/>
+    <text x="96" y="1174" class="section" font-size="18">Legend</text>
+    <rect x="210" y="1158" width="18" height="18" rx="6" fill="rgba(8,51,68,0.42)" stroke="#22d3ee"/>
+    <text x="238" y="1172" class="legend">Frontend / UI shell</text>
+    <rect x="430" y="1158" width="18" height="18" rx="6" fill="rgba(6,78,59,0.34)" stroke="#34d399"/>
+    <text x="458" y="1172" class="legend">Backend / runtime services</text>
+    <rect x="688" y="1158" width="18" height="18" rx="6" fill="rgba(120,53,15,0.26)" stroke="#fbbf24"/>
+    <text x="716" y="1172" class="legend">LAN / external integration</text>
+    <rect x="984" y="1158" width="18" height="18" rx="6" fill="rgba(76,29,149,0.34)" stroke="#a78bfa"/>
+    <text x="1012" y="1172" class="legend">Persistence / state</text>
+    <line x1="1292" y1="1168" x2="1352" y2="1168" stroke="#38bdf8" stroke-width="4" marker-end="url(#arrowCyan)"/>
+    <text x="1364" y="1172" class="legend">UI/data flow</text>
+    <line x1="1540" y1="1168" x2="1600" y2="1168" stroke="#fbbf24" stroke-width="4" marker-end="url(#arrowAmber)"/>
+    <text x="1612" y="1172" class="legend">Runtime integration flow</text>
+  </g>
+</svg>
