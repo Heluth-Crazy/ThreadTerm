@@ -278,7 +278,8 @@
         "deleteSessions": "删除会话失败"
       }
     },
-    "liveGrid": "实时卡片流"
+    "liveGrid": "实时卡片流",
+    "queue": "任务队列"
   },
   "sessions": {
     "title": "会话",

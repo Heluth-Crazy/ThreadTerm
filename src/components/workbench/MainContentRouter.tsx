@@ -8,6 +8,7 @@ import ExtensionsSkillsPage from './extensions/ExtensionsSkillsPage';
 import ProjectsOverviewPage from './projects/ProjectsOverviewPage';
 import SelectedProjectOverviewPage from './projects/SelectedProjectOverviewPage';
 import SettingsPage from './settings/SettingsPage';
+import { TaskQueuePanel } from '../task-queue/TaskQueuePanel';
 
 type MainContentRouterProps = {
   activeNav: WorkbenchNav;
@@ -86,6 +87,14 @@ export default function MainContentRouter({
 
   if (activeNav === 'settings') {
     return <SettingsPage initialTab={settingsInitialTab} />;
+  }
+
+  if (activeNav === 'queue') {
+    return (
+      <div className="flex h-full flex-col overflow-y-auto p-4">
+        <TaskQueuePanel projectPath={selectedProject?.fullPath || selectedProject?.path} />
+      </div>
+    );
   }
 
   if (projectsView === 'overview') {

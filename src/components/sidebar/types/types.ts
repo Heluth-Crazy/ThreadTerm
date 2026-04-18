@@ -52,4 +52,4 @@ export type SessionViewModel = {
   messageCount: number;
 };
 
-export type SidebarView = 'projects' | 'sessions';
+export type SidebarView = 'projects' | 'sessions' | 'queue';

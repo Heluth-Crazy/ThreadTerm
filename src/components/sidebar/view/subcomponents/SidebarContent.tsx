@@ -10,6 +10,8 @@ import SidebarFooter from './SidebarFooter';
 import SidebarHeader from './SidebarHeader';
 import SidebarProjectList, { type SidebarProjectListProps } from './SidebarProjectList';
 import SidebarRecentSessions from './SidebarRecentSessions';
+import { TaskQueuePanel } from '../../../task-queue/TaskQueuePanel';
+import { useTaskQueueStore } from '../../../../stores/taskQueueStore';
 
 type SidebarContentProps = {
   isLoading: boolean;
@@ -52,6 +54,9 @@ export default function SidebarContent({
   const [sidebarView, setSidebarView] = useState<SidebarView>('projects');
   const hasAttention = useSessionStatusStore((s) =>
     Object.values(s.statuses).some((e) => e.status === 'needs_attention'),
+  );
+  const queuedCount = useTaskQueueStore((s) =>
+    s.queue.filter((t) => t.status === 'queued' || t.status === 'running').length,
   );
 
   return (
@@ -99,17 +104,35 @@ export default function SidebarContent({
             <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-red-500" />
           )}
         </button>
+        <button
+          className={cn(
+            'relative flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors',
+            sidebarView === 'queue'
+              ? 'bg-background text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+          onClick={() => setSidebarView('queue')}
+        >
+          Queue
+          {queuedCount > 0 && (
+            <span className="ml-1 text-[10px] text-muted-foreground">({queuedCount})</span>
+          )}
+        </button>
       </div>
 
       <ScrollArea className="flex-1 md:px-1.5 md:py-2 overflow-y-auto overscroll-contain">
         {sidebarView === 'projects' ? (
           <SidebarProjectList {...projectListProps} />
-        ) : (
+        ) : sidebarView === 'sessions' ? (
           <SidebarRecentSessions
             projects={projects}
             currentSessionId={projectListProps.selectedSession?.id}
             onSessionSelect={projectListProps.onSessionSelect}
             onProjectSelect={projectListProps.onProjectSelect}
+          />
+        ) : (
+          <TaskQueuePanel
+            projectPath={projectListProps.selectedProject?.path || projectListProps.selectedProject?.fullPath}
           />
         )}
       </ScrollArea>

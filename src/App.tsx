@@ -7,10 +7,16 @@ import AppContent from './components/app/AppContent';
 import i18n from './i18n/config.js';
 import { useSessionStatusTracker } from './hooks/useSessionStatusTracker';
 import { useLiveGridSnapshotSync } from './hooks/useLiveGridSnapshotSync';
+import { useAttentionRouter } from './hooks/useAttentionRouter';
+import { useAutoExecutor } from './hooks/useAutoExecutor';
+import { useWebSocket } from './contexts/TauriEventContext';
 
 function AppInitializer() {
   useSessionStatusTracker();
   useLiveGridSnapshotSync();
+  useAttentionRouter();
+  const { sendMessage } = useWebSocket();
+  useAutoExecutor(sendMessage);
   return null;
 }
 
