@@ -83,7 +83,7 @@ function SectionCard({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-[20px] border border-border/60 bg-card/72 p-3.5 shadow-sm">
+    <section className="overflow-hidden rounded-[20px] border border-border/60 bg-card/72 p-3.5 shadow-sm">
       <div className="mb-2.5 flex items-start justify-between gap-2.5">
         <div className="min-w-0">
           <h2 className="text-sm font-semibold text-foreground">{title}</h2>
@@ -359,8 +359,8 @@ export default function SelectedProjectOverviewPage({
 
   return (
     <div className="h-full overflow-y-auto overflow-x-hidden bg-background">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-2.5 px-5 py-3.5 lg:px-6">
-        <section className="rounded-[22px] border border-border/60 bg-card/72 p-3.5 shadow-sm">
+      <div className="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-2.5 px-5 py-3.5 lg:px-6">
+        <section className="overflow-hidden rounded-[22px] border border-border/60 bg-card/72 p-3.5 shadow-sm">
           <div className="grid gap-2.5 xl:grid-cols-[minmax(0,1.55fr)_308px]">
             <div className="min-w-0">
               <Button
@@ -478,7 +478,7 @@ export default function SelectedProjectOverviewPage({
         ) : null}
 
         <div className="grid gap-2.5 xl:grid-cols-[minmax(0,1.16fr)_minmax(0,0.84fr)]">
-          <div className="space-y-2.5">
+          <div className="min-w-0 space-y-2.5">
             {(['claude', 'codex'] as SessionProvider[]).map((provider) => {
               const providerRecords = provider === 'claude' ? claudeSessions : codexSessions;
               const isManaging = overviewState.manageProvider === provider;
@@ -563,7 +563,7 @@ export default function SelectedProjectOverviewPage({
             })}
           </div>
 
-          <div className="space-y-3">
+          <div className="min-w-0 space-y-3">
             {worktreeContext.sourceProject ? (
               <SectionCard
                 title={t('workbench.projectOverview.sourceProject', { defaultValue: '源项目' })}

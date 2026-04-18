@@ -624,8 +624,10 @@ export function useChatPanel({
     if (messageType === 'session-created' && typeof message.sessionId === 'string') {
       const myCurrentId = currentSessionIdRef.current;
       // Only accept if this session-created matches our session OR we're in new-session state
+      const hasOriginalSessionId = message.originalSessionId != null;
       const isForMe = !myCurrentId
         || myCurrentId.startsWith('new-session-')
+        || !hasOriginalSessionId
         || message.originalSessionId === myCurrentId;
       if (!isForMe) return;
 
