@@ -78,6 +78,26 @@ function saveCodexThreadIds(map: Map<string, string>): void {
   } catch { /* ignore */ }
 }
 
+function loadClaudeResumeIds(): Map<string, string> {
+  try {
+    const stored = localStorage.getItem('claude_resume_ids');
+    if (stored) {
+      const obj = JSON.parse(stored);
+      if (obj && typeof obj === 'object') {
+        return new Map(Object.entries(obj));
+      }
+    }
+  } catch { /* ignore corrupt data */ }
+  return new Map();
+}
+
+function saveClaudeResumeIds(map: Map<string, string>): void {
+  try {
+    const obj = Object.fromEntries(map);
+    localStorage.setItem('claude_resume_ids', JSON.stringify(obj));
+  } catch { /* ignore */ }
+}
+
 export function TauriEventProvider({ children }: { children: React.ReactNode }) {
   const [latestMessage, setLatestMessage] = useState<AppMessage | null>(null);
   const [messageSequence, setMessageSequence] = useState(0);
@@ -110,6 +130,8 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
   const ptyToSession = useRef<Map<string, string>>(new Map());
   // originalSessionId → Codex thread_id for multi-turn resume (persisted to localStorage)
   const codexThreadIds = useRef<Map<string, string>>(loadCodexThreadIds());
+  // panelSessionId → Claude real session_id for multi-turn resume (persisted to localStorage)
+  const claudeResumeIds = useRef<Map<string, string>>(loadClaudeResumeIds());
 
   // Buffered messages for replay
   const bufferedRef = useRef<Array<{ sequence: number; message: AppMessage }>>([]);
@@ -136,12 +158,14 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
     (ptyId: string, rawData: string) => {
       let sessionId = ptyToSession.current.get(ptyId) ?? ptyId;
 
-      const existing = lineBuffers.current.get(sessionId) ?? '';
+      // Key line buffers by ptyId (not sessionId) to prevent cross-PTY corruption
+      // when multiple PTYs map to the same logical session.
+      const existing = lineBuffers.current.get(ptyId) ?? '';
       const combined = existing + rawData;
       const lines = combined.split('\n');
 
       // Keep last partial line
-      lineBuffers.current.set(sessionId, lines[lines.length - 1]);
+      lineBuffers.current.set(ptyId, lines[lines.length - 1]);
 
       for (let i = 0; i < lines.length - 1; i++) {
         const line = lines[i].trim();
@@ -155,8 +179,6 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
             const originalSessionId = sessionId;
             sessionId = parsed.thread_id;
             ptyToSession.current.set(ptyId, sessionId);
-            lineBuffers.current.delete(originalSessionId);
-            lineBuffers.current.set(sessionId, lines[lines.length - 1]);
             // Track originalSessionId → thread_id and thread_id → thread_id for Codex resume
             codexThreadIds.current.set(originalSessionId, parsed.thread_id);
             codexThreadIds.current.set(parsed.thread_id, parsed.thread_id);
@@ -226,7 +248,11 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
             continue;
           }
 
-          if (ptype === 'assistant' || ptype === 'content_block_delta' || ptype === 'content_block_start') {
+          if (
+            ptype === 'assistant' || ptype === 'content_block_delta' ||
+            ptype === 'content_block_start' || ptype === 'content_block_stop' ||
+            ptype === 'message_stop' || ptype === 'message_delta'
+          ) {
             pushMessage({
               type: 'claude-response',
               sessionId,
@@ -240,13 +266,6 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
               data: parsed,
               content: parsed.result,
             });
-          } else if (ptype === 'error') {
-            pushMessage({
-              type: 'claude-error',
-              sessionId,
-              data: parsed,
-              error: parsed.error?.message ?? 'Unknown error',
-            });
           } else if (ptype === 'permission_request' || ptype === 'tool_approval_request') {
             pushMessage({
               type: 'claude-permission-request',
@@ -258,10 +277,21 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
               permissionId: parsed.permission_id ?? parsed.id ?? '',
             });
           } else if (ptype === 'system' && parsed.session_id) {
+            // Store Claude session ID for resume in subsequent chat messages
+            const realClaudeId: string = parsed.session_id;
+            claudeResumeIds.current.set(sessionId, realClaudeId);
+            claudeResumeIds.current.set(realClaudeId, realClaudeId);
+            saveClaudeResumeIds(claudeResumeIds.current);
+
+            const originalSessionId = sessionId !== realClaudeId ? sessionId : undefined;
+            ptyToSession.current.set(ptyId, realClaudeId);
+            sessionId = realClaudeId;
+
             pushMessage({
               type: 'session-created',
-              sessionId,
-              claudeSessionId: parsed.session_id,
+              sessionId: realClaudeId,
+              originalSessionId,
+              claudeSessionId: realClaudeId,
             });
           } else if (ptype === 'token_budget' || ptype === 'usage') {
             pushMessage({
@@ -298,8 +328,7 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
 
     pty
       .onExit(({ id }) => {
-        const sessionId = ptyToSession.current.get(id) ?? id;
-        lineBuffers.current.delete(sessionId);
+        lineBuffers.current.delete(id);
         ptyToSession.current.delete(id);
       })
       .then((u) => {
@@ -444,7 +473,62 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
             return true;
           }
 
-          // Claude/Cursor: interactive PTY mode
+          if (provider === 'claude') {
+            // Use print + stream-json mode for chat messages — this produces structured
+            // JSON output that parsePtyOutput can handle → chat panel gets real responses.
+            // The interactive TUI PTY (Shell.jsx) remains separate for terminal rendering.
+            const claudeSid = sid || `claude-${Date.now()}`;
+            const doClaudeSend = async () => {
+              // Resolve the real Claude session ID for multi-turn resume
+              const effectiveResumeId = claudeResumeIds.current.get(claudeSid) || resumeId || sid || undefined;
+              const streamArgs: string[] = ['-p', '--output-format', 'stream-json'];
+              if (message.options?.model) {
+                streamArgs.push('--model', message.options.model);
+              }
+              if (message.options?.permissionMode) {
+                streamArgs.push('--permission-mode', message.options.permissionMode);
+              }
+              const sessionArgs = message.options?.sessionArgs;
+              if (Array.isArray(sessionArgs)) {
+                streamArgs.push(...sessionArgs);
+              }
+              streamArgs.push(message.command ?? '');
+
+              const ptyId = await ai.startSession(
+                `claude-chat-${Date.now()}`,
+                'claude',
+                projectPath,
+                effectiveResumeId,
+                streamArgs,
+              );
+              ptyToSession.current.set(ptyId, claudeSid);
+
+              // Mirror the message to the interactive TUI PTY so it appears in the terminal too
+              if (sid) {
+                for (const [pid, s] of ptyToSession.current) {
+                  if (s === sid && pid !== ptyId) {
+                    try {
+                      await pty.input(pid, (message.command ?? '') + '\r');
+                    } catch {
+                      // Interactive PTY write failed — non-fatal
+                    }
+                    break;
+                  }
+                }
+              }
+            };
+            doClaudeSend().catch((err) => {
+              console.error('Claude stream failed:', err);
+              pushMessage({
+                type: 'claude-error',
+                sessionId: claudeSid,
+                error: String(err),
+              });
+            });
+            return true;
+          }
+
+          // Cursor and other providers: interactive PTY mode
           if (!sid) return false;
 
           let existingPtyId: string | undefined;
