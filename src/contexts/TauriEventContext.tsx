@@ -449,25 +449,6 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
               const threadId = codexThreadIds.current.get(codexSid);
               const ptyId = await ai.runCodexExec(codexSid, projectPath, message.command ?? '', threadId || resumeId);
               ptyToSession.current.set(ptyId, codexSid);
-
-              // If there is also an interactive PTY for this session (split-view),
-              // mirror the message there so it appears in the terminal too.
-              if (sid) {
-                for (const [pid, s] of ptyToSession.current) {
-                  if (s === sid && pid !== ptyId) {
-                    // Found the interactive TUI PTY (not the exec PTY we just created)
-                    const cmdText = message.command ?? '';
-                    try {
-                      await pty.input(pid, cmdText);
-                      await new Promise((r) => setTimeout(r, 100));
-                      await pty.input(pid, '\r');
-                    } catch {
-                      // Interactive PTY write failed — non-fatal, exec response still works
-                    }
-                    break;
-                  }
-                }
-              }
             };
             doCodexSend().catch(console.error);
             return true;
@@ -502,20 +483,6 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
                 streamArgs,
               );
               ptyToSession.current.set(ptyId, claudeSid);
-
-              // Mirror the message to the interactive TUI PTY so it appears in the terminal too
-              if (sid) {
-                for (const [pid, s] of ptyToSession.current) {
-                  if (s === sid && pid !== ptyId) {
-                    try {
-                      await pty.input(pid, (message.command ?? '') + '\r');
-                    } catch {
-                      // Interactive PTY write failed — non-fatal
-                    }
-                    break;
-                  }
-                }
-              }
             };
             doClaudeSend().catch((err) => {
               console.error('Claude stream failed:', err);

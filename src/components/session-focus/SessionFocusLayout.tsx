@@ -41,40 +41,6 @@ export interface SessionFocusLayoutProps {
 
 type OverlayPanel = null | 'files' | 'git';
 
-function useSplitPanel(initialPercent = 55) {
-  const [splitPercent, setSplitPercent] = useState(initialPercent);
-  const isDragging = useRef(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    isDragging.current = true;
-
-    const onMove = (ev: MouseEvent) => {
-      if (!isDragging.current || !containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      const x = ev.clientX - rect.left;
-      const pct = Math.min(80, Math.max(20, (x / rect.width) * 100));
-      setSplitPercent(pct);
-    };
-
-    const onUp = () => {
-      isDragging.current = false;
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  }, []);
-
-  return { splitPercent, containerRef, handleMouseDown };
-}
-
 export default function SessionFocusLayout({
   selectedProject,
   selectedSession,
@@ -96,8 +62,8 @@ export default function SessionFocusLayout({
 }: SessionFocusLayoutProps) {
   const { t } = useTranslation('common');
   const [overlayPanel, setOverlayPanel] = useState<OverlayPanel>(null);
-  const [focusView, setFocusView] = useState<'chat' | 'split' | 'terminal'>('split');
-  const { splitPercent, containerRef, handleMouseDown } = useSplitPanel(55);
+  const [focusView, setFocusView] = useState<'chat' | 'terminal'>('chat');
+  const containerRef = useRef<HTMLDivElement>(null);
   const getStatus = useSessionStatusStore((s) => s.getStatus);
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState('');
@@ -147,7 +113,7 @@ export default function SessionFocusLayout({
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === '`') {
         e.preventDefault();
-        setFocusView(v => v === 'chat' ? 'split' : v === 'split' ? 'terminal' : 'chat');
+        setFocusView(v => v === 'chat' ? 'terminal' : 'chat');
       }
     };
     window.addEventListener('keydown', handler);
@@ -245,23 +211,15 @@ export default function SessionFocusLayout({
             type="button"
             onClick={() => setFocusView('chat')}
             className={`rounded px-2 py-0.5 transition-colors ${focusView === 'chat' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            title="Chat only (⌘`)"
+            title="Chat (⌘`)"
           >
             💬
           </button>
           <button
             type="button"
-            onClick={() => setFocusView('split')}
-            className={`rounded px-2 py-0.5 transition-colors ${focusView === 'split' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            title="Split view (⌘`)"
-          >
-            ⊙
-          </button>
-          <button
-            type="button"
             onClick={() => setFocusView('terminal')}
             className={`rounded px-2 py-0.5 transition-colors ${focusView === 'terminal' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            title="Terminal only (⌘`)"
+            title="Terminal (⌘`)"
           >
             ⬜
           </button>
@@ -294,14 +252,11 @@ export default function SessionFocusLayout({
         </button>
       </div>
 
-      {/* Split content */}
+      {/* Content area */}
       <div ref={containerRef} className="relative flex min-h-0 flex-1 overflow-hidden">
-        {/* Chat panel - hidden in terminal-only mode */}
-        {focusView !== 'terminal' && (
-          <div
-            className="min-w-0 overflow-hidden border-r border-border/40"
-            style={{ width: focusView === 'chat' ? '100%' : `${splitPercent}%` }}
-          >
+        {/* Chat panel */}
+        {focusView === 'chat' && (
+          <div className="min-w-0 flex-1 overflow-hidden">
             <ErrorBoundary area="Chat">
               <ChatPanel
                 selectedProject={selectedProject}
@@ -322,18 +277,8 @@ export default function SessionFocusLayout({
           </div>
         )}
 
-        {/* Draggable divider - only in split mode */}
-        {focusView === 'split' && (
-          <div
-            className="relative z-10 w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-primary/20 active:bg-primary/30 transition-colors"
-            onMouseDown={handleMouseDown}
-          >
-            <div className="absolute inset-y-0 -left-1 -right-1" />
-          </div>
-        )}
-
-        {/* Terminal panel - hidden in chat-only mode */}
-        {focusView !== 'chat' && (
+        {/* Terminal panel */}
+        {focusView === 'terminal' && (
           <div className="min-w-0 flex-1 overflow-hidden">
             <ErrorBoundary area="Terminal">
               <TerminalGrid project={selectedProject} session={selectedSession} />
