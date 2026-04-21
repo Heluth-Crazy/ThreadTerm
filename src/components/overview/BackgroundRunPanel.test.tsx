@@ -202,8 +202,8 @@ describe('BackgroundRunPanel', () => {
     );
 
     const activeRegion = screen.getByRole('region', { name: 'Active Background Runs' });
-    expect(within(activeRegion).getByText('Role · Review')).toBeInTheDocument();
-    expect(within(activeRegion).getByText('Exec · Handoff')).toBeInTheDocument();
+    expect(within(activeRegion).getByText('Review')).toBeInTheDocument();
+    expect(within(activeRegion).getByText('Handoff')).toBeInTheDocument();
     expect(within(activeRegion).getByText('review-a worktree')).toBeInTheDocument();
     expect(within(activeRegion).getByText('Source session · OpenWork · Claude · Planning session')).toBeInTheDocument();
     expect(within(activeRegion).getByRole('button', { name: 'Open Handoff Session for Review API patch' })).toBeInTheDocument();
@@ -277,7 +277,7 @@ describe('BackgroundRunPanel', () => {
     );
 
     const activeRegion = screen.getByRole('region', { name: 'Active Background Runs' });
-    expect(within(activeRegion).getByText('Surface · Approval Inbox')).toBeInTheDocument();
+    expect(within(activeRegion).getByText('Approval Inbox')).toBeInTheDocument();
 
     fireEvent.click(within(activeRegion).getByRole('button', { name: 'Open Approval Inbox for Approval-gated run' }));
     expect(onFocusSurface).toHaveBeenCalledWith('approval-inbox', { sessionId: 'runtime-session' });
@@ -338,8 +338,8 @@ describe('BackgroundRunPanel', () => {
     );
 
     const recentRegion = screen.getByRole('region', { name: 'Recently Finished' });
-    expect(within(recentRegion).getByText('Surface · Review Queue')).toBeInTheDocument();
-    expect(within(recentRegion).getByText('Surface · Result Inbox')).toBeInTheDocument();
+    expect(within(recentRegion).getByText('Review Queue')).toBeInTheDocument();
+    expect(within(recentRegion).getByText('Result Inbox')).toBeInTheDocument();
 
     fireEvent.click(within(recentRegion).getByRole('button', { name: 'Open Review Queue for Pending review run' }));
     expect(onFocusSurface).toHaveBeenCalledWith('review-queue', { taskId: 'task-review' });

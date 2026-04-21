@@ -442,9 +442,9 @@
     "providerClaude": "Claude",
     "providerCodex": "Codex",
     "addToQueue": "대기열에 추가",
-    "adding": "추가 중\u2026",
-    "worktreePlaceholder": "선택적 새 작업 트리 이름\u2026",
-    "selectSourceSession": "소스 세션 선택\u2026",
+    "adding": "추가 중…",
+    "worktreePlaceholder": "선택적 새 작업 트리 이름…",
+    "selectSourceSession": "소스 세션 선택…",
     "noSessionsAvailable": "사용 가능한 세션 없음",
     "failedToDispatch": "작업 파견 준비에 실패했습니다."
   },
@@ -459,12 +459,38 @@
   "handoffMenu": {
     "queueHandoff": "핸드오프 작업 대기열에 추가",
     "taskContextPlaceholder": "대기 중인 핸드오프의 작업 컨텍스트 (선택 사항)",
-    "optionalWorktree": "선택적 핸드오프 대상 작업 트리\u2026",
+    "optionalWorktree": "선택적 핸드오프 대상 작업 트리…",
     "defaultWorktree": "핸드오프는 이 프로젝트에서 유지됩니다",
-    "newWorktreePlaceholder": "선택적 새 작업 트리 이름\u2026",
+    "newWorktreePlaceholder": "선택적 새 작업 트리 이름…",
     "handoffLabel": "핸드오프"
   },
   "sessionCard": {
-    "handoffLabel": "핸드오프"
+    "handoffLabel": "핸드오프",
+    "taskLabel": "작업",
+    "approvalPending": "승인 대기 중",
+    "chat": "💬 채팅",
+    "terminal": "🖥 터미널"
+  },
+  "taskQueue": {
+    "title": "작업 대기열",
+    "selectProject": "작업 대기열을 관리할 프로젝트를 선택하세요.",
+    "running": "실행 중",
+    "queued": "대기 중",
+    "review": "검토 중",
+    "add": "+ 추가",
+    "subtitle": "작업을 추가하고, 실행 위치를 선택하고, 검토와 결과를 추적하세요.",
+    "autoExecute": "자동 실행",
+    "max": "최대 동시 실행:",
+    "clearCompleted": "완료된 항목 지우기",
+    "loading": "작업 불러오는 중…",
+    "empty": "대기열에 작업이 없습니다."
+  },
+  "overviewSections": {
+    "addProject": "프로젝트 추가",
+    "activeSessions": "활성 세션",
+    "activeSessionsSubtitle": "주의가 필요하거나 처리 중인 세션.",
+    "allSessions": "전체 세션",
+    "allSessionsSubtitle": "모든 프로젝트의 세션 개요.",
+    "subtitle": "주의 필요 항목이 우선입니다. {{total}}개 세션, {{active}}개 활성 중."
   }
 }

@@ -48,8 +48,8 @@ describe('TaskQueueItem', () => {
       />,
     );
 
-    expect(screen.getByText((content) => content.includes('Codex') && content.includes('Exec Handoff'))).toBeInTheDocument();
-    expect(screen.getByText('Surface · Background Runs')).toBeInTheDocument();
+    expect(screen.getByText((content) => content.includes('Codex') && content.includes('Handoff'))).toBeInTheDocument();
+    expect(screen.getByText('Background Runs')).toBeInTheDocument();
     expect(screen.getByText((content) => content.includes('Dispatch target · review-a worktree'))).toBeInTheDocument();
     expect(screen.getByText('Source session · OpenWork · Claude · Source Session')).toBeInTheDocument();
     expect(screen.getByText('Runtime session · OpenWork · Codex · Runtime Session')).toBeInTheDocument();

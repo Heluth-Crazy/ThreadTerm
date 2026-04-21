@@ -291,12 +291,12 @@ function LiveCardInner({
             </span>
             {linkedTaskRoleLabel ? (
               <span className="rounded-full bg-blue-500/10 px-2 py-0.5 font-medium text-blue-600">
-                Role · {linkedTaskRoleLabel}
+                {linkedTaskRoleLabel}
               </span>
             ) : null}
             {linkedTaskExecutionStrategyLabel ? (
               <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-600">
-                Exec · {linkedTaskExecutionStrategyLabel}
+                {linkedTaskExecutionStrategyLabel}
               </span>
             ) : null}
             {taskSessionBindingLabel ? (

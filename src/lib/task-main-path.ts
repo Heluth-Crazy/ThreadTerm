@@ -136,7 +136,7 @@ function toSurfaceBadgeLabel(label: string) {
 
 export function formatTaskMainPathBadgeLabel(badge?: TaskMainPathBadge | null) {
   if (!badge) return null;
-  return `${badge.kind === 'surface' ? 'Surface' : 'Path'} · ${badge.label}`;
+  return badge.label;
 }
 
 export function describeTaskMainPath(

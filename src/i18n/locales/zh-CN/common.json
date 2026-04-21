@@ -446,9 +446,9 @@
     "providerClaude": "Claude",
     "providerCodex": "Codex",
     "addToQueue": "添加到队列",
-    "adding": "添加中\u2026",
-    "worktreePlaceholder": "可选的新工作区名称\u2026",
-    "selectSourceSession": "选择源会话\u2026",
+    "adding": "添加中…",
+    "worktreePlaceholder": "可选的新工作区名称…",
+    "selectSourceSession": "选择源会话…",
     "noSessionsAvailable": "无可用会话",
     "failedToDispatch": "准备任务派发失败。"
   },
@@ -463,12 +463,38 @@
   "handoffMenu": {
     "queueHandoff": "排队交接任务",
     "taskContextPlaceholder": "排队交接的任务上下文（可选）",
-    "optionalWorktree": "可选的交接目标工作区\u2026",
+    "optionalWorktree": "可选的交接目标工作区…",
     "defaultWorktree": "交接将在此项目中进行",
-    "newWorktreePlaceholder": "可选的新工作区名称\u2026",
+    "newWorktreePlaceholder": "可选的新工作区名称…",
     "handoffLabel": "交接"
   },
   "sessionCard": {
-    "handoffLabel": "交接"
+    "handoffLabel": "交接",
+    "taskLabel": "任务",
+    "approvalPending": "待审批",
+    "chat": "💬 对话",
+    "terminal": "🖥 终端"
+  },
+  "taskQueue": {
+    "title": "任务队列",
+    "selectProject": "选择项目以管理任务队列。",
+    "running": "运行中",
+    "queued": "待运行",
+    "review": "待审核",
+    "add": "+ 新增",
+    "subtitle": "添加任务，指定运行方式，跟踪审核和结果。",
+    "autoExecute": "自动执行",
+    "max": "最大并发:",
+    "clearCompleted": "清除已完成",
+    "loading": "加载任务中…",
+    "empty": "队列中没有任务。"
+  },
+  "overviewSections": {
+    "addProject": "添加项目",
+    "activeSessions": "活跃会话",
+    "activeSessionsSubtitle": "正在处理或需要关注的会话。",
+    "allSessions": "全部会话",
+    "allSessionsSubtitle": "跨项目的所有会话概览。",
+    "subtitle": "优先处理需要关注的内容。共 {{total}} 个会话，{{active}} 个正在活跃。"
   }
 }

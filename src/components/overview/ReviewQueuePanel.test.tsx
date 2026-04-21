@@ -135,8 +135,8 @@ describe('ReviewQueuePanel', () => {
     );
 
     expect(screen.getByText('Accepted')).toBeInTheDocument();
-    expect(screen.getByText('Role · Verify')).toBeInTheDocument();
-    expect(screen.getByText('Exec · Handoff')).toBeInTheDocument();
+    expect(screen.getByText('Verify')).toBeInTheDocument();
+    expect(screen.getByText('Handoff')).toBeInTheDocument();
     expect(screen.getByText('Dispatch target · review-dispatch worktree')).toBeInTheDocument();
     expect(
       screen.getByText((content, element) =>

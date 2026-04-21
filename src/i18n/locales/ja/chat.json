@@ -106,7 +106,9 @@
       "enter": "Enterで送信 • Shift+Enterで改行 • Tabでモード切替 • / でスラッシュコマンド"
     },
     "clickToChangeMode": "クリックで権限モードを変更（または入力欄でTab）",
-    "showAllCommands": "すべてのコマンドを表示"
+    "showAllCommands": "すべてのコマンドを表示",
+    "clearInput": "入力をクリア",
+    "scrollToBottom": "最下部にスクロール"
   },
   "thinkingMode": {
     "selector": {
@@ -173,7 +175,11 @@
       "showingOf": "{{total}}件中{{shown}}件を表示",
       "scrollToLoad": "上にスクロールしてさらに読み込む",
       "showingLast": "最新{{count}}件を表示（全{{total}}件）",
-      "loadEarlier": "過去のメッセージを読み込む"
+      "loadEarlier": "過去のメッセージを読み込む",
+      "allLoaded": "すべてのメッセージを読み込みました",
+      "loadAll": "すべてのメッセージを読み込む",
+      "loadingAll": "すべてのメッセージを読み込み中...",
+      "perfWarning": "すべてのメッセージを読み込みました — スクロールが遅くなる可能性があります。\"最下部にスクロール\"をクリックしてパフォーマンスを回復してください。"
     }
   },
   "shell": {
@@ -253,5 +259,11 @@
       "info": "情報＆ヘルプ",
       "session": "セッション"
     }
+  },
+  "projectSelection": {
+    "startChatWithProvider": "{{provider}}とチャットを開始するプロジェクトを選択してください"
+  },
+  "tasks": {
+    "nextTaskPrompt": "次のタスクを開始"
   }
 }

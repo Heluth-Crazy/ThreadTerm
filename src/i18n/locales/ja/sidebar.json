@@ -278,7 +278,8 @@
         "deleteSessions": "セッションの削除に失敗しました"
       }
     },
-    "liveGrid": "ライブグリッド"
+    "liveGrid": "ライブグリッド",
+    "queue": "タスクキュー"
   },
   "sessions": {
     "title": "セッション",
@@ -371,6 +372,8 @@
     "confirmDelete": "本当に削除しますか？",
     "sessionCount": "このプロジェクトには{{count}}件の会話があります。",
     "allConversationsDeleted": "すべての会話が完全に削除されます。",
-    "cannotUndo": "この操作は取り消せません。"
+    "cannotUndo": "この操作は取り消せません。",
+    "sessionCount_one": "このプロジェクトには{{count}}件の会話が含まれています。",
+    "sessionCount_other": "このプロジェクトには{{count}}件の会話が含まれています。"
   }
 }

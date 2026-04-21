@@ -118,7 +118,7 @@ describe('LiveCard handoff flow', () => {
     await waitFor(() => {
       expect(screen.getByText('Task · Handoff Source Session to Codex')).toBeInTheDocument();
     });
-    expect(screen.getByText('Exec · Handoff')).toBeInTheDocument();
+    expect(screen.getAllByText('Handoff').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Handoff Source')).toBeInTheDocument();
     expect(screen.getByText('Dispatch target · review-dispatch worktree')).toBeInTheDocument();
     expect(screen.getByText('Source session · This session')).toBeInTheDocument();
@@ -161,7 +161,7 @@ describe('LiveCard handoff flow', () => {
       />,
     );
 
-    expect(screen.getByText('Surface · Review Queue')).toBeInTheDocument();
+    expect(screen.getByText('Review Queue')).toBeInTheDocument();
     expect(screen.getByText('Review')).toBeInTheDocument();
   });
 
@@ -193,7 +193,7 @@ describe('LiveCard handoff flow', () => {
       />,
     );
 
-    expect(screen.getByText('Path · Handoff')).toBeInTheDocument();
+    expect(screen.getAllByText('Handoff').length).toBeGreaterThanOrEqual(1);
     fireEvent.click(screen.getByRole('button', { name: 'Open Handoff Task' }));
 
     expect(onOpenTaskQueue).toHaveBeenCalledWith('/repo-a');
@@ -273,7 +273,7 @@ describe('LiveCard handoff flow', () => {
       />,
     );
 
-    expect(screen.getByText('Surface · Background Runs')).toBeInTheDocument();
+    expect(screen.getByText('Background Runs')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open Background Runs' }));
     expect(onOpenMissionControlSurface).toHaveBeenCalledWith('background-runs', { runId: 'run-bootstrap' });
   });

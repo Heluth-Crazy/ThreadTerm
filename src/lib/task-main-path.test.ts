@@ -214,11 +214,11 @@ describe('task main-path helpers', () => {
       kind: 'surface',
       label: 'Background Runs',
       surfaceTarget: 'background-runs',
-    })).toBe('Surface · Background Runs');
+    })).toBe('Background Runs');
 
     expect(formatTaskMainPathBadgeLabel({
       kind: 'path',
       label: 'Handoff',
-    })).toBe('Path · Handoff');
+    })).toBe('Handoff');
   });
 });

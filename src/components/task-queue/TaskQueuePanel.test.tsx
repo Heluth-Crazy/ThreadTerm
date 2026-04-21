@@ -319,7 +319,7 @@ describe('TaskQueuePanel', () => {
       />,
     );
 
-    expect(screen.getByText('Surface · Background Runs')).toBeInTheDocument();
+    expect(screen.getByText('Background Runs')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open Background Runs' }));
     expect(onOpenMissionControlSurface).toHaveBeenCalledWith('background-runs', { runId: 'run-background' });
   });
@@ -363,7 +363,7 @@ describe('TaskQueuePanel', () => {
       />,
     );
 
-    expect(screen.getByText('Surface · Background Runs')).toBeInTheDocument();
+    expect(screen.getByText('Background Runs')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open Background Runs' }));
     expect(onOpenMissionControlSurface).toHaveBeenCalledWith('background-runs', { runId: 'run-worktree-starting' });
     expect(onOpenSessionById).not.toHaveBeenCalled();

@@ -619,7 +619,7 @@ export default function MissionControlView({
               onClick={onCreateProject}
               className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border/60 bg-background px-4 text-sm font-medium text-foreground transition-colors hover:bg-muted/60"
             >
-              Add Project
+              {t('overviewSections.addProject', 'Add Project')}
             </button>
             <button
               type="button"
@@ -643,7 +643,7 @@ export default function MissionControlView({
               {t('overview.title', 'Mission Control')}
             </h1>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              Structured attention first. {sortedSessions.length} sessions, {activeSessions.length} currently active.
+              {t('overviewSections.subtitle', 'Structured attention first. {{total}} sessions, {{active}} currently active.', { total: sortedSessions.length, active: activeSessions.length })}
             </p>
           </div>
           <button
@@ -684,8 +684,8 @@ export default function MissionControlView({
             <section className="rounded-2xl border border-border/60 bg-card/80 p-4 shadow-sm">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
-                  <h2 className="text-sm font-semibold text-foreground">Active Sessions</h2>
-                  <p className="text-xs text-muted-foreground">Sessions needing attention or actively processing, ranked first in the mainline path.</p>
+                  <h2 className="text-sm font-semibold text-foreground">{t('overviewSections.activeSessions', 'Active Sessions')}</h2>
+                  <p className="text-xs text-muted-foreground">{t('overviewSections.activeSessionsSubtitle', 'Sessions needing attention or actively processing.')}</p>
                 </div>
                 <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">{activeSessions.length}</span>
               </div>
@@ -826,8 +826,8 @@ export default function MissionControlView({
         <section className="rounded-2xl border border-border/60 bg-card/80 p-4 shadow-sm">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-sm font-semibold text-foreground">All Sessions</h2>
-              <p className="text-xs text-muted-foreground">Mission Control remains the sortable overview, but now with structured attention above the fold.</p>
+              <h2 className="text-sm font-semibold text-foreground">{t('overviewSections.allSessions', 'All Sessions')}</h2>
+              <p className="text-xs text-muted-foreground">{t('overviewSections.allSessionsSubtitle', 'Overview of all sessions across projects.')}</p>
             </div>
             <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">{sortedSessions.length}</span>
           </div>
