@@ -2,6 +2,7 @@ import MainContent from '../main-content/view/MainContent';
 import type { MainContentProps } from '../main-content/types/types';
 import type { ExtensionsView, ProjectsView, WorkbenchNav } from '../../types/workbench';
 import type { Project, ProjectSession, SessionProvider } from '../../types/app';
+import type { MissionControlSurfaceLocator, MissionControlSurfaceTarget } from '../../lib/mission-control';
 import ExtensionsMcpPage from './extensions/ExtensionsMcpPage';
 import ExtensionsOverviewPage from './extensions/ExtensionsOverviewPage';
 import ExtensionsSkillsPage from './extensions/ExtensionsSkillsPage';
@@ -25,6 +26,8 @@ type MainContentRouterProps = {
   onSelectProjectsOverview: () => void;
   onNewSession: (project: Project, provider?: string) => void;
   onCreateProject: () => void;
+  onOpenSessionByIdFromQueue?: (sessionId: string) => void;
+  onOpenMissionControlSurfaceFromQueue?: (target: MissionControlSurfaceTarget, locator?: MissionControlSurfaceLocator) => void;
   onOpenSkills: () => void;
   onCreateSkill: () => void;
   onOpenMcp: () => void;
@@ -55,6 +58,8 @@ export default function MainContentRouter({
   onSelectProjectsOverview,
   onNewSession,
   onCreateProject,
+  onOpenSessionByIdFromQueue,
+  onOpenMissionControlSurfaceFromQueue,
   onOpenSkills,
   onCreateSkill,
   onOpenMcp,
@@ -92,7 +97,13 @@ export default function MainContentRouter({
   if (activeNav === 'queue') {
     return (
       <div className="flex h-full flex-col overflow-y-auto p-4">
-        <TaskQueuePanel projectPath={selectedProject?.fullPath || selectedProject?.path} />
+        <TaskQueuePanel
+          projectPath={selectedProject?.fullPath || selectedProject?.path}
+          selectedProject={selectedProject ?? undefined}
+          projects={projects}
+          onOpenSessionById={onOpenSessionByIdFromQueue}
+          onOpenMissionControlSurface={onOpenMissionControlSurfaceFromQueue}
+        />
       </div>
     );
   }

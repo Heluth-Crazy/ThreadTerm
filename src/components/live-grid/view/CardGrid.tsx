@@ -6,6 +6,7 @@ import LiveCard from './LiveCard';
 import { useLiveGridStore } from '../../../stores/liveGridStore';
 import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
 import { git } from '../../../lib/tauri-bridge';
+import type { MissionControlSurfaceLocator, MissionControlSurfaceTarget } from '../../../lib/mission-control';
 import type { GridLayout } from '../../../stores/liveGridStore';
 import type { Project, ProjectSession } from '../../../types/app';
 
@@ -14,6 +15,9 @@ type CardGridProps = {
   filter: string;
   onSend: (sessionId: string, text: string, projectPath: string, provider: string) => void;
   focusedSessionId?: string | null;
+  onOpenTaskQueue?: (projectPath?: string) => void;
+  onOpenSessionById?: (sessionId: string) => void;
+  onOpenMissionControlSurface?: (target: MissionControlSurfaceTarget, locator?: MissionControlSurfaceLocator) => void;
 };
 
 function getGridCols(layout: GridLayout): string {
@@ -289,7 +293,15 @@ function EmptyCardSlot({
   );
 }
 
-export default function CardGrid({ projects, filter, onSend, focusedSessionId }: CardGridProps) {
+export default function CardGrid({
+  projects,
+  filter,
+  onSend,
+  focusedSessionId,
+  onOpenTaskQueue,
+  onOpenSessionById,
+  onOpenMissionControlSurface,
+}: CardGridProps) {
   const layout = useLiveGridStore((s) => s.layout);
   const cards = useLiveGridStore((s) => s.cards);
 
@@ -342,7 +354,12 @@ export default function CardGrid({ projects, filter, onSend, focusedSessionId }:
             sessionTitle={findSessionTitle(card.sessionId, card.projectId)}
             projectPath={card.worktreePath || findProjectPath(card.projectId)}
             worktreePath={card.worktreePath}
+            selectedProject={projectMap.get(card.projectId)}
+            availableProjects={projects}
             onSend={onSend}
+            onOpenTaskQueue={onOpenTaskQueue}
+            onOpenSessionById={onOpenSessionById}
+            onOpenMissionControlSurface={onOpenMissionControlSurface}
             isFocused={card.sessionId === focusedSessionId}
           />
         ) : (

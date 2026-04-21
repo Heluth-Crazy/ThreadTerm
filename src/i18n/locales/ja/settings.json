@@ -202,22 +202,22 @@
     }
   },
   "tasks": {
-    "checking": "TaskMasterのインストールを確認しています...",
+    "checking": "レガシー TaskMaster 連携を確認しています...",
     "notInstalled": {
-      "title": "TaskMaster AI CLIがインストールされていません",
-      "description": "タスク管理機能を使用するにはTaskMaster CLIが必要です。以下のコマンドでインストールしてください:",
+      "title": "レガシー TaskMaster CLIがインストールされていません",
+      "description": "TaskMaster は現在、旧来互換のための連携としてのみ扱われます。以前の TaskMaster タスク画面がまだ必要な場合にだけ CLI をインストールしてください:",
       "installCommand": "npm install -g task-master-ai",
       "viewOnSource": "source hostingで見る",
       "afterInstallation": "インストール後:",
       "steps": {
         "restart": "このアプリケーションを再起動してください",
-        "autoAvailable": "TaskMaster機能が自動的に利用可能になります",
+        "autoAvailable": "レガシー TaskMaster の画面が自動的に再度利用可能になります",
         "initCommand": "プロジェクトディレクトリで task-master init を実行してください"
       }
     },
     "settings": {
-      "enableLabel": "TaskMaster統合を有効にする",
-      "enableDescription": "インターフェース全体でTaskMasterのタスク、バナー、サイドバーインジケータを表示します"
+      "enableLabel": "レガシー TaskMaster 連携を有効にする",
+      "enableDescription": "過去互換のために、インターフェース全体でレガシー TaskMaster のタスク、バナー、サイドバー表示を有効にします"
     }
   },
   "agents": {

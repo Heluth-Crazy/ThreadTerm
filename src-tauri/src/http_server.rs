@@ -304,6 +304,10 @@ pub async fn start_http_server(app_handle: tauri::AppHandle) {
         .route("/api/projects", get(list_projects))
         .route("/api/projects", post(add_project))
         .route("/api/projects/remove", post(remove_project))
+        .route("/api/tasks", get(list_tasks))
+        .route("/api/tasks", post(create_task))
+        .route("/api/tasks/update", post(update_task))
+        .route("/api/tasks/delete", post(delete_task))
         .route("/api/session-history", get(list_session_history))
         .route("/api/session-history/{session_id}/messages", get(get_session_messages))
         .route("/api/commands/discover", get(commands_discover_handler))
@@ -597,6 +601,147 @@ async fn remove_project(Json(req): Json<RemoveProjectRequest>) -> Json<serde_jso
         Ok(()) => Json(serde_json::json!({ "ok": true })),
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
     }
+}
+
+// ── Tasks ────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct TaskListQuery {
+    project_path: String,
+}
+
+#[derive(Deserialize)]
+struct CreateTaskRequest {
+    project_path: String,
+    title: String,
+    description: Option<String>,
+    prompt: Option<String>,
+    provider: Option<String>,
+    role: Option<crate::tasks::TaskRole>,
+    execution_strategy: Option<crate::tasks::TaskExecutionStrategy>,
+    worktree_path: Option<String>,
+    session_id: Option<String>,
+    source_session_id: Option<String>,
+    review_required: Option<bool>,
+    status: Option<crate::tasks::TaskStatus>,
+    deps: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct UpdateTaskRequest {
+    project_path: String,
+    id: String,
+    title: Option<String>,
+    description: Option<String>,
+    prompt: Option<String>,
+    status: Option<crate::tasks::TaskStatus>,
+    provider: Option<String>,
+    role: Option<crate::tasks::TaskRole>,
+    execution_strategy: Option<crate::tasks::TaskExecutionStrategy>,
+    worktree_path: Option<String>,
+    session_id: Option<String>,
+    source_session_id: Option<String>,
+    review_required: Option<bool>,
+    result_summary: Option<String>,
+    result_changed_files: Option<Vec<String>>,
+    result_verification_summary: Option<String>,
+    result_risk_summary: Option<String>,
+    result_suggested_next_step: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DeleteTaskRequest {
+    project_path: String,
+    id: String,
+}
+
+async fn list_tasks(
+    Query(query): Query<TaskListQuery>,
+) -> Result<Json<Vec<crate::tasks::Task>>, (StatusCode, Json<serde_json::Value>)> {
+    crate::tasks::task_list(query.project_path)
+        .await
+        .map(Json)
+        .map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+        })
+}
+
+async fn create_task(
+    Json(req): Json<CreateTaskRequest>,
+) -> Result<Json<crate::tasks::Task>, (StatusCode, Json<serde_json::Value>)> {
+    crate::tasks::task_create(
+        req.project_path,
+        req.title,
+        req.description,
+        req.prompt,
+        req.provider,
+        req.role,
+        req.execution_strategy,
+        req.worktree_path,
+        req.session_id,
+        req.source_session_id,
+        req.review_required,
+        req.status,
+        req.deps.unwrap_or_default(),
+    )
+    .await
+    .map(Json)
+    .map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error })),
+        )
+    })
+}
+
+async fn update_task(
+    Json(req): Json<UpdateTaskRequest>,
+) -> Result<Json<crate::tasks::Task>, (StatusCode, Json<serde_json::Value>)> {
+    crate::tasks::task_update(
+        req.project_path,
+        req.id,
+        req.title,
+        req.description,
+        req.prompt,
+        req.status,
+        req.provider,
+        req.role,
+        req.execution_strategy,
+        req.worktree_path,
+        req.session_id,
+        req.source_session_id,
+        req.review_required,
+        req.result_summary,
+        req.result_changed_files,
+        req.result_verification_summary,
+        req.result_risk_summary,
+        req.result_suggested_next_step,
+    )
+    .await
+    .map(Json)
+    .map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error })),
+        )
+    })
+}
+
+async fn delete_task(
+    Json(req): Json<DeleteTaskRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    crate::tasks::task_delete(req.project_path, req.id)
+        .await
+        .map(|_| Json(serde_json::json!({ "ok": true })))
+        .map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+        })
 }
 
 // ── Session History ──────────────────────────────────────────────────────────

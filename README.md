@@ -49,7 +49,7 @@ A desktop and mobile UI for [Claude Code](https://docs.anthropic.com/en/docs/cla
 - **File Explorer** - Interactive file tree with syntax highlighting and live editing
 - **Git Explorer** - View, stage and commit your changes. You can also switch branches 
 - **Session Management** - Resume conversations, manage multiple sessions, and track history
-- **TaskMaster AI Integration** *(Optional, legacy Node.js version only)* - Advanced project management with AI-powered task planning, PRD parsing, and workflow automation
+- **Mission Control + Task Queue** - The Tauri mainline centers on Attention Inbox, Approval Inbox, durable Rust-backed tasks, and staged Claude/Codex dispatch for terminal-native agent workflows
 - **Model Compatibility** - Works with Claude Sonnet 4.5, Opus 4.5, and GPT-5.2 
 
 
@@ -209,8 +209,11 @@ cp .env.example .env
 
 4. **Start the application:**
 ```bash
-# Development mode (with hot reload)
-npm run dev
+# Frontend-only development (Vite)
+npm run client
+
+# Full desktop development (frontend + Tauri/Rust)
+npm run tauri:dev
 
 ```
 The application will start at the port you specified in your .env
@@ -239,19 +242,16 @@ To use Claude Code's full functionality, you'll need to manually enable tools:
 
 **Recommended approach**: Start with basic tools enabled and add more as needed. You can always adjust these settings later.
 
-## TaskMaster AI Integration *(Optional)*
+## Legacy TaskMaster Note
 
-> ⚠️ **TaskMaster integration is only available in the legacy Node.js version of OpenWork. The current Tauri version does not include TaskMaster.**
+> ⚠️ **TaskMaster belongs to the legacy Node.js build and is not part of the current Tauri control-plane mainline.**
 
-OpenWork supports **[TaskMaster AI](https://source.example.com/eyaltoledano/claude-task-master)** (aka claude-task-master) integration for advanced project management and AI-powered task planning.
+Today's OpenWork focuses on a terminal-native control plane:
+- Mission Control for active sessions, approvals, reviews, and results
+- Durable Rust-backed tasks with queue projection in the UI
+- Attention-first orchestration for Claude Code, Cursor, and Codex sessions
 
-It provides
-- AI-powered task generation from PRDs (Product Requirements Documents)
-- Smart task breakdown and dependency management  
-- Visual task boards and progress tracking
-
-**Setup & Documentation**: Visit the [TaskMaster AI source hosting repository](https://source.example.com/eyaltoledano/claude-task-master) for installation instructions, configuration guides, and usage examples.
-After installing it you should be able to enable it from the Settings
+If you still need the old TaskMaster integration for historical reference, see the archived upstream project: [TaskMaster AI](https://source.example.com/eyaltoledano/claude-task-master).
 
 
 ## Usage Guide
@@ -281,10 +281,10 @@ session counts
 #### Git Explorer
 
 
-#### TaskMaster AI Integration *(Optional)*
-- **Visual Task Board** - Kanban-style interface for managing development tasks
-- **PRD Parser** - Create Product Requirements Documents and parse them into structured tasks
-- **Progress Tracking** - Real-time status updates and completion tracking
+#### Mission Control & Task Queue
+- **Attention Inbox** - Surface approvals, failures, and blocked sessions without scanning every terminal
+- **Durable Task Queue** - Stage Claude/Codex work with Rust-backed tasks and UI projection controls
+- **Review / Result Flow** - Collect completed work into review and result surfaces for structured follow-up
 
 #### Session Management
 - **Session Persistence** - All conversations automatically saved
@@ -305,8 +305,8 @@ session counts
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Frontend      │    │   Backend       │    │  Agent     │
-│   (React/Vite)  │◄──►│  (Tauri/Rust)   │◄──►│  Integration    │
+│   Frontend      │    │   Backend       │    │  Agent           │
+│   (React/Vite)  │◄──►│  (Tauri/Rust)   │◄──►│  Integration     │
 │                 │    │                 │    │                │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
@@ -364,7 +364,7 @@ OpenWork is proprietary software. Internal use and distribution are governed by 
 - **[Vite](https://vitejs.dev/)** - Fast build tool and dev server
 - **[Tailwind CSS](https://tailwindcss.com/)** - Utility-first CSS framework
 - **[CodeMirror](https://codemirror.net/)** - Advanced code editor
-- **[TaskMaster AI](https://source.example.com/eyaltoledano/claude-task-master)** *(Optional)* - AI-powered project management and task planning
+
 
 ## Support & Community
 

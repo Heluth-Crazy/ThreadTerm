@@ -1764,3 +1764,109 @@ fn build_recovery_prompt(task: &Task, prior_session: &SessionSnapshot) -> String
 ---
 
 > **结论**：Multica 的以任务为核心的 Agent 管理架构是一套成熟的设计，其 Daemon + 任务队列 + Skills 的组合有效解决了 AI Agent 自主执行的核心问题。对于 OpenWork 而言，**方案 A（渐进式增强）**是最优选择——它允许在保持现有架构优势（Tauri 轻量、LoopRunner 迭代、PTY 交互）的同时，引入 Multica 的关键理念（任务排队、自动认领、技能复用）。预计经过 4-8 周的开发，即可实现 80% 以上的核心痛点解决，同时保持代码自主权和架构简洁性。
+
+---
+
+# 第六部分：方案 A 实施记录
+
+> 选定方案 A（渐进式增强），在 `feat/paseo-iteration` 分支上实施。
+
+## 6.1 P0：Codex CLI 通信优化（已完成）
+
+### 问题
+
+Codex CLI 的交互式 TUI 模式中，Enter 键是换行而非提交消息。OpenWork 原先的 `ai_send_message` 统一发送 `{message}\r`，对 Codex 无效。
+
+### 解决方案：双模式通信
+
+**交互模式（Shell 终端）**：
+
+修改 `src-tauri/src/ai.rs` 的 `ai_send_message`，新增 `provider` 参数：
+- **Claude/Cursor**：发送 `{message}\r`（CR 触发提交）
+- **Codex**：先写入消息文本，延迟 50ms 等待 TUI 处理，再发送 `\x1b\r`（Escape + Enter 序列提交）
+
+**exec 模式（Chat 面板）**：
+
+保留现有 `ai_run_codex_exec` 的 `codex exec --json` 模式，通过 `thread_id` 追踪实现多轮会话连续性。
+
+### 变更文件
+
+| 文件 | 变更内容 |
+|------|---------|
+| `src-tauri/src/ai.rs` | `ai_send_message` 增加 `provider` 参数，Codex 用 Escape+Enter 提交 |
+| `src/lib/tauri-bridge.ts` | `ai.sendMessage()` 增加可选 `provider` 参数透传到 Rust |
+| `src/contexts/TauriEventContext.tsx` | `doSend()` 中 `ai.sendMessage` 调用传入 `provider` |
+
+## 6.2 P1：前端任务队列（已完成，对应 Milestone 1.1）
+
+### 架构
+
+```
+┌─────────────────────────────────────────────┐
+│  taskQueueStore (Zustand + persist)         │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐    │
+│  │ queued   │→ │ running │→ │  done   │    │
+│  │         │  │         │  │ / failed │    │
+│  └─────────┘  └─────────┘  └─────────┘    │
+│       ↑            ↑                        │
+│  TaskQuickAdd  useAutoExecutor              │
+│  (UI 手动添加)  (session 完成时自动认领)      │
+└─────────────────────────────────────────────┘
+```
+
+### 核心组件
+
+| 文件 | 职责 |
+|------|------|
+| `src/stores/taskQueueStore.ts` | Zustand store，管理任务队列状态（queued/running/done/failed/cancelled），持久化到 localStorage |
+| `src/hooks/useAutoExecutor.ts` | 监听 sessionStatusStore 状态变化，session 完成时自动认领下一个排队任务 |
+| `src/components/task-queue/TaskQueuePanel.tsx` | 任务队列主面板，显示所有任务及控制项（autoExecute 开关、maxConcurrent 设置） |
+| `src/components/task-queue/TaskQueueItem.tsx` | 单任务卡片，支持取消/重试/删除操作 |
+| `src/components/task-queue/TaskQuickAdd.tsx` | 快速添加任务，支持选择 provider（claude/codex/cursor） |
+| `src/stores/index.ts` | 导出 taskQueueStore |
+
+### 侧边栏集成
+
+在 `SidebarContent.tsx` 的视图切换器中新增 "Queue" 标签页：
+- `SidebarView` 类型扩展为 `'projects' | 'sessions' | 'queue'`
+- Queue 标签显示当前排队/运行中的任务数量徽标
+- 点击展示 `TaskQueuePanel`
+
+## 6.3 P2：智能注意力路由（已完成，对应 Milestone 1.2）
+
+### 注意力路由器
+
+| 文件 | 职责 |
+|------|------|
+| `src/hooks/useAttentionRouter.ts` | 监听 session 状态变化，当 session 进入 `needs_attention` 时自动将 LiveGrid 焦点切换到对应卡片 |
+
+### 状态栏任务摘要
+
+在 `BottomStatusStrip.tsx` 左侧新增全局摘要徽标：
+- 🔵 `N running` — 当前正在执行的任务数
+- ⚪ `N queued` — 排队等待的任务数
+- 🔴 `N attention` — 需要用户注意的会话数（脉冲动画）
+
+### LiveCard 视觉增强
+
+增强 `LiveCard.tsx` 的 `statusRingClass`：
+- `needs_attention` → 红色光晕 ring + box-shadow（`ring-2 ring-red-500/60 shadow-[0_0_8px_rgba(239,68,68,0.3)]`）
+- `processing` → 蓝色半透明 ring（`ring-1 ring-blue-500/40`）
+- `completed` → 绿色半透明 ring（`ring-1 ring-emerald-500/40`）
+
+## 6.4 全局初始化
+
+在 `App.tsx` 的 `AppInitializer` 中接入：
+- `useAttentionRouter()` — 注意力自动路由
+- `useAutoExecutor(sendMessage)` — 任务队列自动执行
+
+## 6.5 已知限制与后续计划
+
+| 项目 | 状态 | 后续方向 |
+|------|------|---------|
+| SQLite 持久化任务队列 | 未实施 | 当前用 localStorage，后续迁移到 Rust 侧 SQLite |
+| Skills 注入系统 | 已有基础（`skills.rs`） | 需实现自动注入到 Agent 提示词 |
+| Autopilot V1 (Cron) | 未实施 | Milestone 2.1 |
+| Session Recovery (Git Worktree) | 未实施 | Milestone 2.2 |
+| 进程内事件总线 | 未实施 | Milestone 3.2 |
+| Codex 交互模式 Escape+Enter 序列 | 已实施但需验证 | 不同版本 Codex CLI 可能有差异，需实际测试确认 |

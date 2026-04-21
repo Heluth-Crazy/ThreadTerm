@@ -19,7 +19,7 @@ function getTabTitle(activeTab: AppTab, shouldShowTasksTab: boolean, t: (key: st
   }
 
   if (activeTab === 'tasks' && shouldShowTasksTab) {
-    return 'TaskMaster';
+    return 'Task Queue';
   }
 
   return 'Project';

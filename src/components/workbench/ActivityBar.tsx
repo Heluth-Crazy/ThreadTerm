@@ -1,7 +1,7 @@
 import { Boxes, FolderKanban, LayoutGrid, ListTodo, Settings2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../lib/utils';
-import { useTaskQueueStore } from '../../stores/taskQueueStore';
+import { countActiveDurableTasks, useTaskStore } from '../../stores/taskStore';
 import type { WorkbenchNav } from '../../types/workbench';
 
 type ActivityBarProps = {
@@ -19,8 +19,8 @@ const ITEMS = [
 
 export default function ActivityBar({ activeNav, onSelectNav }: ActivityBarProps) {
   const { t } = useTranslation('sidebar');
-  const queuedCount = useTaskQueueStore((s) =>
-    s.queue.filter((t) => t.status === 'queued' || t.status === 'running').length,
+  const queuedCount = useTaskStore((s) =>
+    countActiveDurableTasks(Object.values(s.tasksByProject).flatMap((tasksForProject) => tasksForProject)),
   );
 
   return (

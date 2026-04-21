@@ -7,6 +7,7 @@ import LiveGridFocusedLayout from './LiveGridFocusedLayout';
 import { useLiveGridStore } from '../../../stores/liveGridStore';
 import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
 import { useMultiSessionDispatcher } from '../../../hooks/useMultiSessionDispatcher';
+import type { MissionControlSurfaceLocator, MissionControlSurfaceTarget } from '../../../lib/mission-control';
 import type { Project } from '../../../types/app';
 import type { GridLayout } from '../../../stores/liveGridStore';
 
@@ -30,9 +31,18 @@ function getColCount(layout: GridLayout): number {
 type LiveGridViewProps = {
   projects: Project[];
   onNewSession: () => void;
+  onOpenTaskQueue?: (projectPath?: string) => void;
+  onOpenSessionById?: (sessionId: string) => void;
+  onOpenMissionControlSurface?: (target: MissionControlSurfaceTarget, locator?: MissionControlSurfaceLocator) => void;
 };
 
-export default function LiveGridView({ projects, onNewSession }: LiveGridViewProps) {
+export default function LiveGridView({
+  projects,
+  onNewSession,
+  onOpenTaskQueue,
+  onOpenSessionById,
+  onOpenMissionControlSurface,
+}: LiveGridViewProps) {
   const { t } = useTranslation('common');
   const layout = useLiveGridStore((s) => s.layout);
   const setLayout = useLiveGridStore((s) => s.setLayout);
@@ -193,7 +203,15 @@ export default function LiveGridView({ projects, onNewSession }: LiveGridViewPro
             onNewSession={onNewSession}
           />
 
-          <CardGrid projects={projects} filter={filter} onSend={handleSend} focusedSessionId={focusedSessionId} />
+          <CardGrid
+            projects={projects}
+            filter={filter}
+            onSend={handleSend}
+            focusedSessionId={focusedSessionId}
+            onOpenTaskQueue={onOpenTaskQueue}
+            onOpenSessionById={onOpenSessionById}
+            onOpenMissionControlSurface={onOpenMissionControlSurface}
+          />
 
           {/* Status footer */}
           <div className="flex items-center gap-4 border-t border-border/60 bg-card/70 px-4 py-1.5 text-[11px] text-muted-foreground">

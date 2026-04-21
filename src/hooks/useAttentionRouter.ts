@@ -1,45 +1,62 @@
 import { useEffect, useRef } from 'react';
-import { useSessionStatusStore } from '../stores/sessionStatusStore';
+import { useAttentionStore } from '../stores/attentionStore';
 import { useLiveGridStore } from '../stores/liveGridStore';
+import { useToastStore } from '../stores/toastStore';
+
+const WORKBENCH_STORAGE_KEY = 'openwork.workbench';
+
+function getActiveWorkbenchNav(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(WORKBENCH_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as { activeNav?: string };
+    return typeof parsed.activeNav === 'string' ? parsed.activeNav : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
- * Attention router: watches for sessions that need attention
- * and auto-focuses the corresponding LiveGrid card.
- *
- * Also plays a notification sound when a session transitions
- * to needs_attention state.
+ * Phase 1 batch 1: Mission Control / Attention Inbox is now the primary surface.
+ * This hook is intentionally demoted to a narrow Live Grid convenience bridge:
+ * it only emits a lightweight toast when a newly-arrived high-risk approval item
+ * already has a corresponding Live Grid card and the user is already in Live Grid.
+ * It must not hijack navigation or force-focus a card from Mission Control.
  */
 export function useAttentionRouter() {
-  const previousStatuses = useRef<Record<string, string>>({});
+  const previousActiveIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    const unsubscribe = useSessionStatusStore.subscribe((state) => {
-      const currentStatuses = state.statuses;
+    const unsubscribe = useAttentionStore.subscribe((state) => {
+      const activeItems = Object.values(state.attentionItems)
+        .filter((item) => item.status === 'active');
+      const currentIds = new Set(activeItems.map((item) => item.id));
       const cards = useLiveGridStore.getState().cards;
-      const setFocusedCard = useLiveGridStore.getState().setFocusedCard;
+      const focusedCardId = useLiveGridStore.getState().focusedCardId;
+      const addToast = useToastStore.getState().addToast;
+      const activeNav = getActiveWorkbenchNav();
 
-      for (const [sessionId, entry] of Object.entries(currentStatuses)) {
-        const prevStatus = previousStatuses.current[sessionId];
+      for (const item of activeItems) {
+        const isNew = !previousActiveIds.current.has(item.id);
+        const shouldNudgeLiveGrid = isNew && item.kind === 'approval' && item.riskLevel === 'high';
+        if (!shouldNudgeLiveGrid || activeNav !== 'livegrid') continue;
 
-        // Detect transition INTO needs_attention
-        if (
-          entry.status === 'needs_attention' &&
-          prevStatus !== 'needs_attention'
-        ) {
-          // Auto-focus the card if it exists in the grid
-          const card = cards.find((c) => c.sessionId === sessionId);
-          if (card) {
-            setFocusedCard(card.sessionId);
-          }
+        const card = cards.find((candidate) => candidate.sessionId === item.sessionId);
+        if (!card || focusedCardId === card.sessionId) {
+          continue;
         }
+
+        addToast(`Session ${card.title ?? card.sessionId} requires approval in Live Grid.`, 'warning', 3000);
       }
 
-      // Snapshot current statuses
-      const snapshot: Record<string, string> = {};
-      for (const [id, entry] of Object.entries(currentStatuses)) {
-        snapshot[id] = entry.status;
-      }
-      previousStatuses.current = snapshot;
+      previousActiveIds.current = currentIds;
     });
 
     return unsubscribe;

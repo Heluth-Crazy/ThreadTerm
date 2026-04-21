@@ -49,7 +49,7 @@
 - **文件浏览器** - 交互式文件树,支持语法高亮和实时编辑
 - **Git 浏览器** - 查看、暂存和提交您的更改。您还可以切换分支
 - **会话管理** - 恢复对话、管理多个会话并跟踪历史记录
-- **TaskMaster AI 集成** *(可选)* - 通过 AI 驱动的任务规划、PRD 解析和工作流自动化实现高级项目管理
+- **Mission Control + Task Queue** - 当前 Tauri 主线围绕 Attention Inbox、Approval Inbox、Rust 持久化任务与分阶段 Claude/Codex 派发展开
 - **模型兼容性** - 适用于 Claude Sonnet 4.5、Opus 4.5 和 GPT-5.2
 
 
@@ -70,7 +70,7 @@
 npx @openwork/openwork
 ```
 
-服务器将启动并可通过 `http://localhost:3001`(或您配置的 PORT)访问。
+服务器将启动并可通过 `http://localhost:3002`(或您配置的 PORT)访问。
 
 **重启**: 停止服务器后只需再次运行相同的 `npx` 命令
 
@@ -108,7 +108,7 @@ openwork update
 | `openwork update` | | 更新到最新版本 |
 | `openwork help` | | 显示帮助信息 |
 | `openwork version` | | 显示版本信息 |
-| `--port <port>` | `-p` | 设置服务器端口(默认: 3001) |
+| `--port <port>` | `-p` | 设置服务器端口(默认: 3002) |
 | `--database-path <path>` | | 设置自定义数据库位置 |
 
 **示例:**
@@ -176,14 +176,17 @@ cp .env.example .env
 
 4. **启动应用程序:**
 ```bash
-# 开发模式(支持热重载)
-npm run dev
+# 仅前端开发(Vite)
+npm run client
+
+# 完整桌面开发(前端 + Tauri/Rust)
+npm run tauri:dev
 
 ```
 应用程序将在您在 .env 中指定的端口启动
 
 5. **打开浏览器:**
-   - 开发环境: `http://localhost:3001`
+   - 开发环境: `http://localhost:3002`
 
 ## 安全与工具配置
 
@@ -206,17 +209,16 @@ npm run dev
 
 **推荐方法**: 首先启用基本工具,然后根据需要添加更多。您可以随时调整这些设置。
 
-## TaskMaster AI 集成 *(可选)*
+## Legacy TaskMaster 说明
 
-OpenWork 支持 **[TaskMaster AI](https://source.example.com/eyaltoledano/claude-task-master)**(aka claude-task-master)集成,用于高级项目管理和 AI 驱动的任务规划。
+> ⚠️ **TaskMaster 仅属于旧版 Node.js 构建，不属于当前 Tauri 控制平面主线。**
 
-它提供
-- 从 PRD(产品需求文档)生成 AI 驱动的任务
-- 智能任务分解和依赖管理
-- 可视化任务板和进度跟踪
+当前 OpenWork 的重点是：
+- Mission Control：统一查看活跃 session、审批、review 与结果回收
+- Rust 持久化任务：由后端 tasks 提供 durable truth，前端 queue 仅做 UI 投影
+- 面向 Claude Code / Cursor / Codex 的 attention-first 调度体验
 
-**设置与文档**: 访问 [TaskMaster AI source hosting 仓库](https://source.example.com/eyaltoledano/claude-task-master)获取安装说明、配置指南和使用示例。
-安装后,您应该能够从设置中启用它
+如果你需要查阅历史 TaskMaster 能力，请参考归档项目：[TaskMaster AI](https://source.example.com/eyaltoledano/claude-task-master)。
 
 
 ## 使用指南
@@ -245,10 +247,10 @@ OpenWork 支持 **[TaskMaster AI](https://source.example.com/eyaltoledano/claude
 #### Git 浏览器
 
 
-#### TaskMaster AI 集成 *(可选)*
-- **可视化任务板** - 用于管理开发任务的看板风格界面
-- **PRD 解析器** - 创建产品需求文档并将其解析为结构化任务
-- **进度跟踪** - 实时状态更新和完成跟踪
+#### Mission Control 与任务队列
+- **Attention Inbox** - 把审批、失败和阻塞 session 集中到高信号入口
+- **持久化任务队列** - 使用 Rust-backed tasks 管理分阶段 Claude/Codex 工作
+- **Review / Result 流程** - 把完成结果汇总到 review 与 result surface，便于后续收口
 
 #### 会话管理
 - **会话持久化** - 所有对话自动保存
@@ -269,17 +271,17 @@ OpenWork 支持 **[TaskMaster AI](https://source.example.com/eyaltoledano/claude
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Frontend      │    │   Backend       │    │  Agent     │
-│   (React/Vite)  │◄──►│ (Express/WS)    │◄──►│  Integration    │
+│   Frontend      │    │   Backend       │    │  Agent           │
+│   (React/Vite)  │◄──►│  (Tauri/Rust)   │◄──►│  Integration     │
 │                 │    │                 │    │                │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
-### 后端 (Node.js + Express)
-- **Express 服务器** - 具有静态文件服务的 RESTful API
-- **WebSocket 服务器** - 用于聊天和项目刷新的通信
-- **Agent 集成 (Claude Code / Cursor CLI / Codex)** - 进程生成和管理
-- **文件系统 API** - 为项目公开文件浏览器
+### 后端 (Tauri + Rust)
+- **内嵌 HTTP Server** - 提供静态资源与 LAN/Web fallback
+- **Tauri IPC + WebSocket 事件桥** - 承接聊天、PTY、任务与状态更新
+- **Agent 集成 (Claude Code / Cursor CLI / Codex)** - 负责运行时会话与命令执行
+- **文件系统 / Git / Tasks API** - 为控制平面提供项目、worktree 与任务能力
 
 ### 前端 (React + Vite)
 - **React 18** - 带有 hooks 的现代组件架构
@@ -327,7 +329,7 @@ OpenWork 为专有软件，使用与分发请遵循你所在组织的内部条�
 - **[Vite](https://vitejs.dev/)** - 快速构建工具和开发服务器
 - **[Tailwind CSS](https://tailwindcss.com/)** - 实用优先的 CSS 框架
 - **[CodeMirror](https://codemirror.net/)** - 高级代码编辑器
-- **[TaskMaster AI](https://source.example.com/eyaltoledano/claude-task-master)** *(可选)* - AI 驱动的项目管理和任务规划
+
 
 ## 支持与社区
 

@@ -202,22 +202,22 @@
     }
   },
   "tasks": {
-    "checking": "正在检查 TaskMaster 安装...",
+    "checking": "正在检查旧版 TaskMaster 集成...",
     "notInstalled": {
-      "title": "未安装 TaskMaster AI CLI",
-      "description": "需要 TaskMaster CLI 才能使用任务管理功能。安装它以开始使用：",
+      "title": "未安装旧版 TaskMaster CLI",
+      "description": "TaskMaster 现已降级为历史兼容集成。只有仍需旧版 TaskMaster 任务入口时，才需要安装该 CLI：",
       "installCommand": "npm install -g task-master-ai",
       "viewOnSource": "在 source hosting 上查看",
       "afterInstallation": "安装后：",
       "steps": {
         "restart": "重启此应用程序",
-        "autoAvailable": "TaskMaster 功能将自动可用",
+        "autoAvailable": "旧版 TaskMaster 相关入口将自动恢复可用",
         "initCommand": "在项目目录中使用 task-master init"
       }
     },
     "settings": {
-      "enableLabel": "启用 TaskMaster 集成",
-      "enableDescription": "在整个界面中显示 TaskMaster 任务、横幅和侧边栏指示器"
+      "enableLabel": "启用旧版 TaskMaster 集成",
+      "enableDescription": "出于历史兼容性，在界面中显示旧版 TaskMaster 任务、横幅和侧边栏指示器"
     }
   },
   "agents": {

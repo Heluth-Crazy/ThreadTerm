@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useRef, useState, useEffect, useCallback, useMemo } from 'react';
-import { pty, ai, invoke, isTauriEnv } from '../lib/tauri-bridge';
+import { pty, ai, isTauriEnv } from '../lib/tauri-bridge';
+import { respondToApprovalRequest } from '../lib/approval-actions';
 import type { SessionState, AttentionRequiredEvent, LoopState } from '../lib/tauri-bridge';
 import { useSessionStatusStore } from '../stores/sessionStatusStore';
 import { useLoopStore } from '../stores/loopStore';
@@ -14,6 +15,8 @@ export type AppMessageType =
   | 'codex-complete'
   | 'codex-error'
   | 'session-created'
+  | 'session-state-changed'
+  | 'attention-required'
   | 'claude-permission-request'
   | 'claude-permission-cancelled'
   | 'token-budget'
@@ -21,7 +24,7 @@ export type AppMessageType =
   | 'projects-updated'
   | 'file-changed'
   | 'git-status-changed'
-  | 'error';
+  | 'error'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AppMessage = Record<string, any> & {
@@ -341,12 +344,19 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
         sessionStatesRef.current.set(sessionId, state);
         setSessionStates(new Map(sessionStatesRef.current));
 
-        // Map Rust SessionState to the existing sessionStatusStore
+        pushMessage({
+          type: 'session-state-changed',
+          sessionId,
+          state,
+        });
+
+        // Keep the direct projection updates for compatibility while
+        // useSessionStatusTracker gradually becomes the main normalizer.
         const statusStore = useSessionStatusStore.getState();
         if (state === 'Running') {
           statusStore.setProcessing(sessionId);
         } else if (state === 'Completed') {
-          statusStore.setCompleted(sessionId);
+          statusStore.setCompleted(sessionId, { force: true });
         } else if (state === 'Failed') {
           statusStore.setNeedsAttention(sessionId, 'error');
         } else if (state === 'WaitingForInput') {
@@ -368,6 +378,13 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
         } else if (payload.type === 'error') {
           statusStore.setNeedsAttention(sessionId, 'error');
         }
+
+        pushMessage({
+          type: 'attention-required',
+          sessionId,
+          attentionType: payload.type,
+          message: payload.message,
+        });
 
         if (ttsEnabledRef.current) {
           const shortId = sessionId.slice(0, 8);
@@ -417,6 +434,9 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
   }, [parsePtyOutput]);
 
   // ── sendMessage (same shape as WebSocketContext) ─────────────────────────
+  // Phase 0 note: keep this transport-compatible compatibility layer stable.
+  // Queue auto-execution now passes its own sessionId in options rather than
+  // expanding this API into a new dispatcher return contract yet.
   // The consumers send objects like:
   //   { type: 'claude-command', command: '...', options: { sessionId, ... } }
   //   { type: 'claude-permission-response', requestId, allow }
@@ -441,6 +461,11 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
           const projectPath: string = message.options?.projectPath ?? '';
           const resumeId: string | undefined = message.options?.resumeSessionId;
 
+          const startErrorCallback =
+            typeof message.options?.onRuntimeStartError === 'function'
+              ? message.options.onRuntimeStartError as (error: unknown) => void
+              : undefined;
+
           if (provider === 'codex') {
             // Always use exec mode for chat messages — this produces structured
             // JSON output that parsePtyOutput can handle → chat panel gets real responses.
@@ -450,7 +475,15 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
               const ptyId = await ai.runCodexExec(codexSid, projectPath, message.command ?? '', threadId || resumeId);
               ptyToSession.current.set(ptyId, codexSid);
             };
-            doCodexSend().catch(console.error);
+            doCodexSend().catch((err) => {
+              console.error('Codex exec failed:', err);
+              startErrorCallback?.(err);
+              pushMessage({
+                type: 'codex-error',
+                sessionId: codexSid,
+                error: String(err),
+              });
+            });
             return true;
           }
 
@@ -486,6 +519,7 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
             };
             doClaudeSend().catch((err) => {
               console.error('Claude stream failed:', err);
+              startErrorCallback?.(err);
               pushMessage({
                 type: 'claude-error',
                 sessionId: claudeSid,
@@ -511,13 +545,27 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
                 ptyToSession.current.set(ptyId, sid);
               } catch (e) {
                 console.error('Failed to start AI session:', e);
+                startErrorCallback?.(e);
+                pushMessage({
+                  type: `${provider}-error`,
+                  sessionId: sid,
+                  error: String(e),
+                });
                 return;
               }
             }
             await ai.sendMessage(ptyId, message.command ?? '', provider);
           };
 
-          doSend().catch(console.error);
+          doSend().catch((err) => {
+            console.error('Failed to send AI message:', err);
+            startErrorCallback?.(err);
+            pushMessage({
+              type: `${provider}-error`,
+              sessionId: sid,
+              error: String(err),
+            });
+          });
           return true;
         }
 
@@ -535,11 +583,8 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
         if (type === 'claude-permission-response') {
           const { requestId, allow } = message;
           const sid = message.sessionId ?? '';
-          invoke('ai_approve_tool', {
-            sessionId: sid,
-            permissionId: requestId ?? '',
-            approved: !!allow,
-          }).catch(() => {});
+          if (!sid || !requestId) return false;
+          respondToApprovalRequest(sid, requestId, !!allow).catch(() => {});
           return true;
         }
 

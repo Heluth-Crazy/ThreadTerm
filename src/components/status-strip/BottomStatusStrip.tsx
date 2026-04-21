@@ -1,5 +1,10 @@
+import { useEffect, useMemo } from 'react';
+import { getStandaloneAttentionItems } from '../../lib/attention-actions';
+import { getTaskTimelineStage, isAcceptedResultTask } from '../../lib/control-plane';
+import type { MissionControlSurfaceTarget } from '../../lib/mission-control';
+import { useAttentionStore } from '../../stores/attentionStore';
 import { useSessionStatusStore } from '../../stores/sessionStatusStore';
-import { useTaskQueueStore } from '../../stores/taskQueueStore';
+import { countQueuedDurableTasks, countRunningDurableTasks, useTaskStore } from '../../stores/taskStore';
 import { getProviderDotClass } from '../../utils/providerColors';
 import type { Project, ProjectSession } from '../../types/app';
 
@@ -7,17 +12,61 @@ export interface BottomStatusStripProps {
   projects: Project[];
   selectedSession: ProjectSession | null;
   onSelectSession: (project: Project, session: ProjectSession) => void;
+  onOpenMissionControlSurface?: (target: MissionControlSurfaceTarget) => void;
 }
 
 export default function BottomStatusStrip({
   projects,
   selectedSession,
   onSelectSession,
+  onOpenMissionControlSurface,
 }: BottomStatusStripProps) {
   const statuses = useSessionStatusStore((s) => s.statuses);
-  const taskRunning = useTaskQueueStore((s) => s.queue.filter((t) => t.status === 'running').length);
-  const taskQueued = useTaskQueueStore((s) => s.queue.filter((t) => t.status === 'queued').length);
-  const attentionCount = Object.values(statuses).filter((e) => e.status === 'needs_attention').length;
+  const attentionItems = useAttentionStore((s) => s.attentionItems);
+  const approvalRequests = useAttentionStore((s) => s.approvalRequests);
+  const refreshTasks = useTaskStore((s) => s.refresh);
+  const loadedTasksByProject = useTaskStore((s) => s.tasksByProject);
+  const projectPaths = useMemo(
+    () => [...new Set(projects.map((project) => project.path || project.fullPath).filter((projectPath): projectPath is string => Boolean(projectPath)))],
+    [projects],
+  );
+  const visibleTasks = useMemo(
+    () => projectPaths.flatMap((projectPath) => loadedTasksByProject[projectPath] ?? []),
+    [loadedTasksByProject, projectPaths],
+  );
+  const activeAttentionItems = useMemo(
+    () =>
+      Object.values(attentionItems)
+        .filter((item) => item.status === 'active')
+        .sort((a, b) => b.updatedAt - a.updatedAt),
+    [attentionItems],
+  );
+  const pendingApprovals = useMemo(
+    () =>
+      Object.values(approvalRequests)
+        .filter((request) => request.status === 'pending')
+        .sort((a, b) => b.updatedAt - a.updatedAt),
+    [approvalRequests],
+  );
+  const standaloneAttentionCount = useMemo(
+    () => getStandaloneAttentionItems(activeAttentionItems, pendingApprovals).length,
+    [activeAttentionItems, pendingApprovals],
+  );
+  const taskRunning = useMemo(() => countRunningDurableTasks(visibleTasks), [visibleTasks]);
+  const taskBacklog = useMemo(() => countQueuedDurableTasks(visibleTasks), [visibleTasks]);
+  const reviewCount = useMemo(
+    () => visibleTasks.filter((task) => getTaskTimelineStage(task) === 'review').length,
+    [visibleTasks],
+  );
+  const resultCount = useMemo(
+    () => visibleTasks.filter((task) => isAcceptedResultTask(task)).length,
+    [visibleTasks],
+  );
+
+  useEffect(() => {
+    if (projectPaths.length === 0) return;
+    void Promise.allSettled(projectPaths.map((projectPath) => refreshTasks(projectPath)));
+  }, [projectPaths, refreshTasks]);
 
   // Flatten all sessions
   const allSessions: { project: Project; session: ProjectSession }[] = [];
@@ -30,31 +79,38 @@ export default function BottomStatusStrip({
     }
   }
 
-  if (allSessions.length === 0 && taskRunning === 0 && taskQueued === 0) return null;
+  const controlPlaneTargets = [
+    { label: 'Approval', count: pendingApprovals.length, target: 'approval-inbox' },
+    { label: 'Attention', count: standaloneAttentionCount, target: 'attention-inbox' },
+    { label: 'Running', count: taskRunning, target: 'task-running' },
+    { label: 'Backlog', count: taskBacklog, target: 'task-backlog' },
+    { label: 'Review', count: reviewCount, target: 'review-queue' },
+    { label: 'Results', count: resultCount, target: 'result-inbox' },
+  ] satisfies Array<{ label: string; count: number; target: MissionControlSurfaceTarget }>;
+  const hasControlPlaneCounts = controlPlaneTargets.some((item) => item.count > 0);
+
+  if (allSessions.length === 0 && !hasControlPlaneCounts) return null;
 
   return (
     <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-t border-border/60 bg-card/80 px-3">
-      {/* Task queue summary */}
-      {(taskRunning > 0 || taskQueued > 0 || attentionCount > 0) && (
-        <div className="flex shrink-0 items-center gap-2 rounded-lg bg-muted/50 px-2.5 py-1 text-[10px] font-medium text-muted-foreground mr-1">
-          {taskRunning > 0 && (
-            <span className="flex items-center gap-1">
-              <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
-              {taskRunning} running
-            </span>
-          )}
-          {taskQueued > 0 && (
-            <span className="flex items-center gap-1">
-              <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-400" />
-              {taskQueued} queued
-            </span>
-          )}
-          {attentionCount > 0 && (
-            <span className="flex items-center gap-1">
-              <span className="inline-block h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
-              {attentionCount} attention
-            </span>
-          )}
+      {hasControlPlaneCounts && (
+        <div className="mr-1 flex shrink-0 items-center gap-1.5 rounded-lg bg-muted/50 px-2 py-1">
+          {controlPlaneTargets
+            .filter((item) => item.count > 0)
+            .map((item) => (
+              <button
+                key={item.target}
+                type="button"
+                onClick={() => onOpenMissionControlSurface?.(item.target)}
+                disabled={!onOpenMissionControlSurface}
+                aria-label={`Open ${item.label}`}
+                className="inline-flex items-center gap-1 rounded-md bg-background px-2 py-1 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground disabled:cursor-default"
+                title={`Open ${item.label}`}
+              >
+                <span>{item.count}</span>
+                <span>{item.label}</span>
+              </button>
+            ))}
         </div>
       )}
       {allSessions.map(({ project, session }) => {

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fs as tauriFs, sessions as tauriSessions } from '../../../lib/tauri-bridge';
+import { useAttentionStore } from '../../../stores/attentionStore';
 import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
 import { useToastStore } from '../../../stores/toastStore';
-import type { PendingPermissionRequest } from '../../../stores/sessionStatusStore';
+import type { ApprovalRequest } from '../../../stores/attentionStore';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import type {
   ChatPhase,
@@ -581,15 +582,17 @@ export function useChatPanel({
     }
   }, [completeAssistant, onSessionInactive, onSessionNotProcessing]);
 
-  const [pendingPermission, setPendingPermissionLocal] = useState<PendingPermissionRequest | null>(() => {
+  const [pendingPermission, setPendingPermissionLocal] = useState<ApprovalRequest | null>(() => {
     const sid = selectedSession?.id;
-    return sid ? (useSessionStatusStore.getState().pendingPermissions[sid] ?? null) : null;
+    const request = sid ? useAttentionStore.getState().approvalRequests[sid] : null;
+    return request?.status === 'pending' ? request : null;
   });
 
   useEffect(() => {
-    return useSessionStatusStore.subscribe((state) => {
+    return useAttentionStore.subscribe((state) => {
       const sid = currentSessionIdRef.current;
-      setPendingPermissionLocal(sid ? (state.pendingPermissions[sid] ?? null) : null);
+      const request = sid ? state.approvalRequests[sid] : null;
+      setPendingPermissionLocal(request?.status === 'pending' ? request : null);
     });
   }, []);
 
@@ -597,14 +600,18 @@ export function useChatPanel({
     const sessionId = currentSessionIdRef.current;
     if (!sessionId) return;
 
-    const pending = useSessionStatusStore.getState().pendingPermissions[sessionId];
-    if (!pending) return;
+    const attentionStore = useAttentionStore.getState();
+    const pending = attentionStore.approvalRequests[sessionId];
+    if (!pending || pending.status !== 'pending') return;
 
-    useSessionStatusStore.getState().clearPendingPermission(sessionId);
+    attentionStore.clearApprovalRequest(sessionId);
+    attentionStore.resolveAttentionItemsForSession(sessionId);
     useSessionStatusStore.getState().setProcessing(sessionId);
+    setPendingPermissionLocal(null);
 
     sendMessage({
       type: 'claude-permission-response',
+      sessionId,
       requestId: pending.requestId,
       allow,
       ...(answer !== undefined && { message: answer }),
