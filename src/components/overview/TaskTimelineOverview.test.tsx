@@ -116,7 +116,7 @@ describe('TaskTimelineOverview', () => {
 
     fireEvent.click(within(screen.getByRole('region', { name: 'Task flow Completed' })).getByRole('button', { name: 'Open Result Inbox' }));
     expect(onFocusSurface).toHaveBeenCalledWith('result-inbox', { taskId: 'task-done' });
-    expect(within(screen.getByRole('region', { name: 'Task flow Completed' })).getByText('Surface · Result Inbox')).toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: 'Task flow Completed' })).getByText('Result Inbox')).toBeInTheDocument();
   });
 
   it('collapses additional tasks behind a simple more-count affordance', () => {
@@ -182,7 +182,7 @@ describe('TaskTimelineOverview', () => {
     );
 
     const backlogRegion = screen.getByRole('region', { name: 'Task flow Backlog' });
-    expect(within(backlogRegion).getAllByText('Path · Handoff')).toHaveLength(1);
+    expect(within(backlogRegion).getAllByText('Handoff')).toHaveLength(2);
     expect(within(backlogRegion).getByText('Source session · Repo A · Claude · Source Session')).toBeInTheDocument();
     expect(within(backlogRegion).getByText('Runtime session · Starts when dispatch begins')).toBeInTheDocument();
     fireEvent.click(within(backlogRegion).getByRole('button', { name: 'Open Handoff Task' }));
@@ -233,9 +233,9 @@ describe('TaskTimelineOverview', () => {
     );
 
     const runningRegion = screen.getByRole('region', { name: 'Task flow Running' });
-    expect(within(runningRegion).getByText('Surface · Approval Inbox')).toBeInTheDocument();
-    expect(within(runningRegion).getByText('Role · Review')).toBeInTheDocument();
-    expect(within(runningRegion).getByText('Exec · Handoff')).toBeInTheDocument();
+    expect(within(runningRegion).getByText('Approval Inbox')).toBeInTheDocument();
+    expect(within(runningRegion).getByText('Review')).toBeInTheDocument();
+    expect(within(runningRegion).getByText('Handoff')).toBeInTheDocument();
     expect(within(runningRegion).getByText('Dispatch target · review-dispatch worktree')).toBeInTheDocument();
     expect(
       within(runningRegion).getAllByText((content, element) =>
@@ -244,9 +244,9 @@ describe('TaskTimelineOverview', () => {
     ).toBeInTheDocument();
 
     const reviewRegion = screen.getByRole('region', { name: 'Task flow Pending Review' });
-    expect(within(reviewRegion).getByText('Surface · Review Queue')).toBeInTheDocument();
-    expect(within(reviewRegion).getByText('Role · Verify')).toBeInTheDocument();
-    expect(within(reviewRegion).getByText('Exec · Worktree')).toBeInTheDocument();
+    expect(within(reviewRegion).getByText('Review Queue')).toBeInTheDocument();
+    expect(within(reviewRegion).getByText('Verify')).toBeInTheDocument();
+    expect(within(reviewRegion).getByText('Worktree')).toBeInTheDocument();
     expect(within(reviewRegion).getByText('Dispatch target · review-worktree worktree')).toBeInTheDocument();
     expect(
       within(reviewRegion).getAllByText((content, element) =>
@@ -396,7 +396,7 @@ describe('TaskTimelineOverview', () => {
     );
 
     const runningRegion = screen.getByRole('region', { name: 'Task flow Running' });
-    expect(within(runningRegion).getByText('Surface · Approval Inbox')).toBeInTheDocument();
+    expect(within(runningRegion).getByText('Approval Inbox')).toBeInTheDocument();
     fireEvent.click(within(runningRegion).getByRole('button', { name: 'Open Approval Inbox' }));
 
     expect(onFocusSurface).toHaveBeenCalledWith('approval-inbox', { sessionId: 'session-approval-visible' });
@@ -444,7 +444,7 @@ describe('TaskTimelineOverview', () => {
     );
 
     const runningRegion = screen.getByRole('region', { name: 'Task flow Running' });
-    expect(within(runningRegion).getByText('Surface · Background Runs')).toBeInTheDocument();
+    expect(within(runningRegion).getByText('Background Runs')).toBeInTheDocument();
     expect(within(runningRegion).getByText('Source session · Repo A · Claude · Source Session')).toBeInTheDocument();
     expect(within(runningRegion).getByText('Runtime session · Starting in background')).toBeInTheDocument();
     fireEvent.click(within(runningRegion).getByRole('button', { name: 'Open Background Runs' }));
@@ -572,7 +572,7 @@ describe('TaskTimelineOverview', () => {
     );
 
     const completedRegion = screen.getByRole('region', { name: 'Task flow Completed' });
-    expect(within(completedRegion).queryByText('Surface · Result Inbox')).not.toBeInTheDocument();
+    expect(within(completedRegion).queryByText('Result Inbox')).not.toBeInTheDocument();
     fireEvent.click(within(completedRegion).getByRole('button', { name: 'Open Session' }));
 
     expect(onOpenSession).toHaveBeenCalledWith('session-hidden-result');
@@ -612,7 +612,7 @@ describe('TaskTimelineOverview', () => {
     );
 
     const runningRegion = screen.getByRole('region', { name: 'Task flow Running' });
-    expect(within(runningRegion).queryByText('Surface · Approval Inbox')).not.toBeInTheDocument();
+    expect(within(runningRegion).queryByText('Approval Inbox')).not.toBeInTheDocument();
     fireEvent.click(within(runningRegion).getByRole('button', { name: 'Open Session' }));
 
     expect(onOpenSession).toHaveBeenCalledWith('session-stale-approval');

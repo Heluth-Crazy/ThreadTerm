@@ -55,9 +55,9 @@ describe('SessionCard', () => {
     );
 
     expect(screen.getByText((content) => content.includes('Refine Mission Control handoff state'))).toBeInTheDocument();
-    expect(screen.getByText('Role · Verify')).toBeInTheDocument();
-    expect(screen.getByText('Exec · Handoff')).toBeInTheDocument();
-    expect(screen.getByText('Surface · Review Queue')).toBeInTheDocument();
+    expect(screen.getByText('Verify')).toBeInTheDocument();
+    expect(screen.getByText('Handoff')).toBeInTheDocument();
+    expect(screen.getByText('Review Queue')).toBeInTheDocument();
     expect(screen.getByText('Review')).toBeInTheDocument();
     expect(screen.getByText('Dispatch target · dispatch-a worktree')).toBeInTheDocument();
   });
@@ -99,8 +99,7 @@ describe('SessionCard', () => {
     );
 
     expect(screen.getByText((content) => content.includes('Queue durable handoff'))).toBeInTheDocument();
-    expect(screen.getByText('Exec · Handoff')).toBeInTheDocument();
-    expect(screen.getByText('Path · Handoff')).toBeInTheDocument();
+    expect(screen.getAllByText('Handoff')).toHaveLength(2);
     expect(screen.getByText('Handoff Source')).toBeInTheDocument();
     expect(screen.getByText('Queued')).toBeInTheDocument();
     expect(screen.getByText('Dispatch target · review-a worktree')).toBeInTheDocument();
@@ -176,7 +175,7 @@ describe('SessionCard', () => {
       />,
     );
 
-    expect(screen.getByText('Exec · This Project')).toBeInTheDocument();
+    expect(screen.getByText('This Project')).toBeInTheDocument();
     expect(screen.getByText('Dispatch target · This project')).toBeInTheDocument();
   });
 });

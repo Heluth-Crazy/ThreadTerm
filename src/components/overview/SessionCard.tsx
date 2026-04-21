@@ -213,17 +213,17 @@ export default function SessionCard({
           <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
             {resolvedTaskTitle ? (
               <span className="max-w-full rounded-full bg-primary/8 px-2 py-0.5 font-medium text-primary">
-                <span className="text-primary/70">Task</span> · {resolvedTaskTitle}
+                <span className="text-primary/70">{t('sessionCard.taskLabel', 'Task')}</span> · {resolvedTaskTitle}
               </span>
             ) : null}
             {resolvedTaskRole ? (
               <span className="rounded-full bg-blue-500/10 px-2 py-0.5 font-medium text-blue-600">
-                Role · {resolvedTaskRole}
+                {resolvedTaskRole}
               </span>
             ) : null}
             {resolvedTaskExecutionStrategy ? (
               <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-600">
-                Exec · {resolvedTaskExecutionStrategy}
+                {resolvedTaskExecutionStrategy}
               </span>
             ) : null}
             {handoffBindingLabel ? (
@@ -275,7 +275,7 @@ export default function SessionCard({
         <div className="flex items-center gap-2 text-muted-foreground">
           {pendingApproval ? (
             <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600">
-              Approval pending
+              {t('sessionCard.approvalPending', 'Approval pending')}
             </span>
           ) : activeAttentionItem ? (
             <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-medium text-red-500">
@@ -283,8 +283,8 @@ export default function SessionCard({
             </span>
           ) : (
             <>
-              <span className="text-[10px]">💬 Chat</span>
-              <span className="text-[10px]">🖥 Terminal</span>
+              <span className="text-[10px]">{t('sessionCard.chat', '💬 Chat')}</span>
+              <span className="text-[10px]">{t('sessionCard.terminal', '🖥 Terminal')}</span>
             </>
           )}
           <span className="ml-auto text-[10px]">{timeLabel}</span>

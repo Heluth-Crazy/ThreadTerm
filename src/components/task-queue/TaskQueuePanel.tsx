@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/button';
 import { useWebSocket } from '../../contexts/TauriEventContext';
 import type { MissionControlSurfaceLocator, MissionControlSurfaceTarget } from '../../lib/mission-control';
@@ -30,6 +31,7 @@ export function TaskQueuePanel({
   onOpenSessionById,
   onOpenMissionControlSurface,
 }: TaskQueuePanelProps) {
+  const { t } = useTranslation('common');
   const { sendMessage } = useWebSocket();
   const autoExecute = useTaskQueueStore((s) => s.autoExecute);
   const maxConcurrent = useTaskQueueStore((s) => s.maxConcurrent);
@@ -217,8 +219,8 @@ export function TaskQueuePanel({
   if (!projectPath) {
     return (
       <div className="flex flex-col gap-2 p-2">
-        <h3 className="text-sm font-semibold">Task Queue</h3>
-        <p className="text-xs text-muted-foreground">Select a project to manage the task queue.</p>
+        <h3 className="text-sm font-semibold">{t('taskQueue.title', 'Task Queue')}</h3>
+        <p className="text-xs text-muted-foreground">{t('taskQueue.selectProject', 'Select a project to manage the task queue.')}</p>
       </div>
     );
   }
@@ -227,10 +229,10 @@ export function TaskQueuePanel({
     <div className="flex flex-col gap-2 p-2">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold">
-          Task Queue
+          {t('taskQueue.title', 'Task Queue')}
           {orderedTasks.length > 0 && (
             <span className="ml-1 text-xs text-muted-foreground font-normal">
-              ({runningCount} running · {queuedCount} queued{reviewCount > 0 ? ` · ${reviewCount} review` : ''})
+              ({runningCount} {t('taskQueue.running', 'running')} · {queuedCount} {t('taskQueue.queued', 'queued')}{reviewCount > 0 ? ` · ${reviewCount} ${t('taskQueue.review', 'review')}` : ''})
             </span>
           )}
         </h3>
@@ -240,12 +242,12 @@ export function TaskQueuePanel({
           className="h-6 px-2 text-xs"
           onClick={() => setShowAdd(!showAdd)}
         >
-          + Add
+          {t('taskQueue.add', '+ Add')}
         </Button>
       </div>
 
       <p className="px-2 text-[11px] text-muted-foreground">
-        Queue work, choose where it should run, and follow it through review or results.
+        {t('taskQueue.subtitle', 'Queue work, choose where it should run, and follow it through review or results.')}
       </p>
 
       {showAdd && (
@@ -265,10 +267,10 @@ export function TaskQueuePanel({
             onChange={(e) => setAutoExecute(e.target.checked)}
             className="w-3 h-3 rounded border-input"
           />
-          Auto-execute
+          {t('taskQueue.autoExecute', 'Auto-execute')}
         </label>
         <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          Max:
+          {t('taskQueue.max', 'Max:')}
           <select
             className="h-5 px-1 text-xs rounded border border-input bg-background"
             value={maxConcurrent}
@@ -286,15 +288,15 @@ export function TaskQueuePanel({
             className="h-5 px-1.5 text-[10px] ml-auto"
             onClick={() => void handleClearCompleted()}
           >
-            Clear completed
+            {t('taskQueue.clearCompleted', 'Clear completed')}
           </Button>
         )}
       </div>
 
-      {isLoading && <p className="text-xs text-muted-foreground px-2">Loading tasks…</p>}
+      {isLoading && <p className="text-xs text-muted-foreground px-2">{t('taskQueue.loading', 'Loading tasks…')}</p>}
       {!isLoading && error && <p className="text-xs text-destructive px-2">{error}</p>}
       {!isLoading && !error && orderedTasks.length === 0 && (
-        <p className="text-xs text-muted-foreground px-2">No tasks in queue.</p>
+        <p className="text-xs text-muted-foreground px-2">{t('taskQueue.empty', 'No tasks in queue.')}</p>
       )}
 
       <div className="flex flex-col gap-0.5">

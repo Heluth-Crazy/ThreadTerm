@@ -442,9 +442,9 @@
     "providerClaude": "Claude",
     "providerCodex": "Codex",
     "addToQueue": "キューに追加",
-    "adding": "追加中\u2026",
-    "worktreePlaceholder": "オプションの新しいワークツリー名\u2026",
-    "selectSourceSession": "ソースセッションを選択\u2026",
+    "adding": "追加中…",
+    "worktreePlaceholder": "オプションの新しいワークツリー名…",
+    "selectSourceSession": "ソースセッションを選択…",
     "noSessionsAvailable": "利用可能なセッションなし",
     "failedToDispatch": "タスクディスパッチの準備に失敗しました。"
   },
@@ -459,12 +459,38 @@
   "handoffMenu": {
     "queueHandoff": "ハンドオフタスクをキューに追加",
     "taskContextPlaceholder": "キューに入ったハンドオフのタスクコンテキスト（オプション）",
-    "optionalWorktree": "オプションのハンドオフターゲットワークツリー\u2026",
+    "optionalWorktree": "オプションのハンドオフターゲットワークツリー…",
     "defaultWorktree": "ハンドオフはこのプロジェクトに留まります",
-    "newWorktreePlaceholder": "オプションの新しいワークツリー名\u2026",
+    "newWorktreePlaceholder": "オプションの新しいワークツリー名…",
     "handoffLabel": "ハンドオフ"
   },
   "sessionCard": {
-    "handoffLabel": "ハンドオフ"
+    "handoffLabel": "ハンドオフ",
+    "taskLabel": "タスク",
+    "approvalPending": "承認待ち",
+    "chat": "💬 チャット",
+    "terminal": "🖥 ターミナル"
+  },
+  "taskQueue": {
+    "title": "タスクキュー",
+    "selectProject": "タスクキューを管理するプロジェクトを選択してください。",
+    "running": "実行中",
+    "queued": "待機中",
+    "review": "レビュー中",
+    "add": "+ 追加",
+    "subtitle": "タスクを追加し、実行場所を選択して、レビューと結果を追跡します。",
+    "autoExecute": "自動実行",
+    "max": "最大同時実行:",
+    "clearCompleted": "完了済みをクリア",
+    "loading": "タスクを読み込み中…",
+    "empty": "キューにタスクがありません。"
+  },
+  "overviewSections": {
+    "addProject": "プロジェクトを追加",
+    "activeSessions": "アクティブセッション",
+    "activeSessionsSubtitle": "注意が必要または処理中のセッション。",
+    "allSessions": "全セッション",
+    "allSessionsSubtitle": "全プロジェクトのセッション概要。",
+    "subtitle": "要注意項目が優先です。{{total}}セッション中、{{active}}が現在アクティブ。"
   }
 }

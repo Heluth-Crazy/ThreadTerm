@@ -278,7 +278,8 @@
         "deleteSessions": "세션 삭제 실패"
       }
     },
-    "liveGrid": "라이브 그리드"
+    "liveGrid": "라이브 그리드",
+    "queue": "작업 대기열"
   },
   "sessions": {
     "title": "세션",

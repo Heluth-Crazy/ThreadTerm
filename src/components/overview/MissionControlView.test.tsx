@@ -484,7 +484,7 @@ describe('MissionControlView', () => {
       />,
     );
 
-    expect(screen.getAllByText('Path · Handoff').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Handoff').length).toBeGreaterThan(0);
     expect(
       consoleError.mock.calls.some((args) =>
         args.some((value) => typeof value === 'string' && value.includes('validateDOMNesting')),

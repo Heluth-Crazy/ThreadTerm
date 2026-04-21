@@ -92,7 +92,7 @@ export function TaskQueueItem({
         <span className="text-[10px] text-muted-foreground truncate block">
           {formatProviderLabel(task.provider)}
           {roleLabel && ` · ${roleLabel}`}
-          {` · Exec ${executionStrategyLabel}`}
+          {` · ${executionStrategyLabel}`}
           {elapsed && ` · ${elapsed}`}
         </span>
         {mainPathBadgeLabel ? (

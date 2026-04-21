@@ -292,12 +292,12 @@ function TaskFlowCard({
         </span>
         {roleLabel ? (
           <span className="rounded-full bg-blue-500/10 px-2 py-0.5 font-medium text-blue-700">
-            Role · {roleLabel}
+            {roleLabel}
           </span>
         ) : null}
         {executionStrategyLabel ? (
           <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-700">
-            Exec · {executionStrategyLabel}
+            {executionStrategyLabel}
           </span>
         ) : null}
         {dispatchTargetLabel ? (

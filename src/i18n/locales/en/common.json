@@ -442,9 +442,9 @@
     "providerClaude": "Claude",
     "providerCodex": "Codex",
     "addToQueue": "Add to Queue",
-    "adding": "Adding\u2026",
-    "worktreePlaceholder": "Optional new worktree name\u2026",
-    "selectSourceSession": "Select source session\u2026",
+    "adding": "Adding…",
+    "worktreePlaceholder": "Optional new worktree name…",
+    "selectSourceSession": "Select source session…",
     "noSessionsAvailable": "No sessions available",
     "failedToDispatch": "Failed to prepare task dispatch."
   },
@@ -459,12 +459,38 @@
   "handoffMenu": {
     "queueHandoff": "Queue handoff task",
     "taskContextPlaceholder": "Task context for the queued handoff (optional)",
-    "optionalWorktree": "Optional handoff target worktree\u2026",
+    "optionalWorktree": "Optional handoff target worktree…",
     "defaultWorktree": "Handoff stays in this project by default",
-    "newWorktreePlaceholder": "Optional new worktree name\u2026",
+    "newWorktreePlaceholder": "Optional new worktree name…",
     "handoffLabel": "Handoff"
   },
   "sessionCard": {
-    "handoffLabel": "Handoff"
+    "handoffLabel": "Handoff",
+    "taskLabel": "Task",
+    "approvalPending": "Approval pending",
+    "chat": "💬 Chat",
+    "terminal": "🖥 Terminal"
+  },
+  "taskQueue": {
+    "title": "Task Queue",
+    "selectProject": "Select a project to manage the task queue.",
+    "running": "running",
+    "queued": "queued",
+    "review": "review",
+    "add": "+ Add",
+    "subtitle": "Queue work, choose where it should run, and follow it through review or results.",
+    "autoExecute": "Auto-execute",
+    "max": "Max:",
+    "clearCompleted": "Clear completed",
+    "loading": "Loading tasks…",
+    "empty": "No tasks in queue."
+  },
+  "overviewSections": {
+    "addProject": "Add Project",
+    "activeSessions": "Active Sessions",
+    "activeSessionsSubtitle": "Sessions needing attention or actively processing.",
+    "allSessions": "All Sessions",
+    "allSessionsSubtitle": "Overview of all sessions across projects.",
+    "subtitle": "Structured attention first. {{total}} sessions, {{active}} currently active."
   }
 }

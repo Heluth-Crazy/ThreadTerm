@@ -160,12 +160,12 @@ function ResultExecutionContext({
       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
         {roleLabel ? (
           <span className="rounded-full bg-blue-500/10 px-2 py-0.5 font-medium text-blue-600">
-            Role · {roleLabel}
+            {roleLabel}
           </span>
         ) : null}
         {executionStrategyLabel ? (
           <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-600">
-            Exec · {executionStrategyLabel}
+            {executionStrategyLabel}
           </span>
         ) : null}
         {dispatchTargetLabel ? (
