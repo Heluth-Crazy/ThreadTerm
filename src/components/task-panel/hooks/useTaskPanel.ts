@@ -32,7 +32,13 @@ export function useTaskPanel(projectPath: string | undefined) {
     async (title: string, description?: string, deps: string[] = []) => {
       if (!projectPath) return;
       try {
-        await tasksApi.create(projectPath, title, description, deps);
+        await tasksApi.create(projectPath, {
+          title,
+          description,
+          prompt: description ?? title,
+          status: 'queued',
+          deps,
+        });
         await refresh();
       } catch (e) {
         setError(String(e));
@@ -42,7 +48,7 @@ export function useTaskPanel(projectPath: string | undefined) {
   );
 
   const updateTask = useCallback(
-    async (id: string, updates: Partial<Pick<Task, 'title' | 'description' | 'status' | 'session_id'>>) => {
+    async (id: string, updates: Partial<Pick<Task, 'title' | 'description' | 'prompt' | 'status' | 'provider' | 'execution_strategy' | 'session_id' | 'source_session_id' | 'review_required' | 'result_summary'>>) => {
       if (!projectPath) return;
       try {
         await tasksApi.update(projectPath, id, updates);

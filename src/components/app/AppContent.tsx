@@ -35,6 +35,8 @@ import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
 import { useGlobalKeyboardShortcuts } from '../../hooks/useGlobalKeyboardShortcuts';
 import { useFileWatcher } from '../../hooks/useFileWatcher';
+import type { MissionControlSurfaceLocator, MissionControlSurfaceTarget } from '../../lib/mission-control';
+import { useMissionControlStore } from '../../stores/missionControlStore';
 import type { Project, ProjectSession } from '../../types/app';
 import type { SessionTemplate } from '../../types/templates';
 import type { WorkbenchNav } from '../../types/workbench';
@@ -344,6 +346,38 @@ export default function AppContent() {
     setShowProjectDetail(true);
   }, []);
 
+  const handleOpenTaskQueueFromOverview = useCallback((projectPath?: string) => {
+    if (projectPath) {
+      const targetProject = projects.find((project) => (project.path || project.fullPath) === projectPath);
+      if (targetProject) {
+        handleSelectProject(targetProject);
+      }
+    }
+
+    setViewMode('queue');
+    setActiveNav('queue');
+  }, [projects, handleSelectProject, setViewMode, setActiveNav]);
+
+  const handleOpenSessionByIdFromQueue = useCallback((targetSessionId: string) => {
+    for (const project of projects) {
+      const matchedSession = [...(project.sessions ?? []), ...(project.codexSessions ?? [])]
+        .find((session) => session.id === targetSessionId);
+      if (!matchedSession) {
+        continue;
+      }
+
+      handleSelectSessionWithFocus(project, matchedSession);
+      setActiveNav('projects');
+      return;
+    }
+  }, [handleSelectSessionWithFocus, projects, setActiveNav]);
+
+  const handleOpenMissionControlSurfaceFromQueue = useCallback((target: MissionControlSurfaceTarget, locator?: MissionControlSurfaceLocator) => {
+    useMissionControlStore.getState().requestSurfaceFocus(target, locator);
+    setViewMode('overview');
+    setActiveNav('projects');
+  }, [setActiveNav, setViewMode]);
+
   // ActivityBar navigation handler
   const navActiveNav: WorkbenchNav =
     viewMode === 'livegrid' ? 'livegrid' :
@@ -426,8 +460,9 @@ export default function AppContent() {
       onSessionSelect: handleSelectSession,
       onNewSession: handleStartSession,
       onShowSettings: () => routeToSettings('agents'),
+      onOpenMissionControlSurface: handleOpenMissionControlSurfaceFromQueue,
     }),
-    [handleSelectProject, handleSelectSession, handleStartSession, routeToSettings, sidebarSharedProps],
+    [handleOpenMissionControlSurfaceFromQueue, handleSelectProject, handleSelectSession, handleStartSession, routeToSettings, sidebarSharedProps],
   );
 
   const secondarySidebar = (
@@ -459,6 +494,8 @@ export default function AppContent() {
       onSelectProjectsOverview={openProjectsOverview}
       onNewSession={handleStartSession}
       onCreateProject={handleOpenProjectCreation}
+      onOpenSessionByIdFromQueue={handleOpenSessionByIdFromQueue}
+      onOpenMissionControlSurfaceFromQueue={handleOpenMissionControlSurfaceFromQueue}
       onOpenSkills={openExtensionsSkills}
       onCreateSkill={handleCreateSkillFromExtensions}
       onOpenMcp={openExtensionsMcp}
@@ -653,12 +690,16 @@ export default function AppContent() {
             onSelectSession={handleSelectSessionWithFocus}
             onNewSession={handleOpenProjectCreation}
             onCreateProject={handleOpenProjectCreation}
+            onOpenTaskQueue={handleOpenTaskQueueFromOverview}
           />
         ) : viewMode === 'livegrid' ? (
           <ErrorBoundary area="Live Grid">
             <LiveGridView
               projects={projects}
               onNewSession={handleOpenProjectCreation}
+              onOpenTaskQueue={handleOpenTaskQueueFromOverview}
+              onOpenSessionById={handleOpenSessionByIdFromQueue}
+              onOpenMissionControlSurface={handleOpenMissionControlSurfaceFromQueue}
             />
           </ErrorBoundary>
         ) : viewMode === 'settings' || viewMode === 'extensions' ? (
@@ -757,6 +798,7 @@ export default function AppContent() {
               projects={projects}
               selectedSession={selectedSession}
               onSelectSession={handleSelectSessionWithFocus}
+              onOpenMissionControlSurface={handleOpenMissionControlSurfaceFromQueue}
             />
           </div>
         )}

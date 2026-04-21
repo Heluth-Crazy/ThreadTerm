@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ScrollArea } from '../../../ui/scroll-area';
 import type { TFunction } from 'i18next';
 import { cn } from '../../../../lib/utils';
+import type { MissionControlSurfaceLocator, MissionControlSurfaceTarget } from '../../../../lib/mission-control';
 import { useSessionStatusStore } from '../../../../stores/sessionStatusStore';
 import type { Project } from '../../../../types/app';
 import type { ReleaseInfo } from '../../../../types/sharedTypes';
@@ -11,7 +12,8 @@ import SidebarHeader from './SidebarHeader';
 import SidebarProjectList, { type SidebarProjectListProps } from './SidebarProjectList';
 import SidebarRecentSessions from './SidebarRecentSessions';
 import { TaskQueuePanel } from '../../../task-queue/TaskQueuePanel';
-import { useTaskQueueStore } from '../../../../stores/taskQueueStore';
+import { countActiveDurableTasks, useTaskStore } from '../../../../stores/taskStore';
+import type { SessionWithProvider } from '../../types/types';
 
 type SidebarContentProps = {
   isLoading: boolean;
@@ -28,6 +30,7 @@ type SidebarContentProps = {
   latestVersion: string | null;
   onShowVersionModal: () => void;
   onShowSettings: () => void;
+  onOpenMissionControlSurface?: (target: MissionControlSurfaceTarget, locator?: MissionControlSurfaceLocator) => void;
   projectListProps: SidebarProjectListProps;
   t: TFunction;
 };
@@ -48,6 +51,7 @@ export default function SidebarContent({
   latestVersion,
   onShowVersionModal,
   onShowSettings,
+  onOpenMissionControlSurface,
   projectListProps,
   t,
 }: SidebarContentProps) {
@@ -55,9 +59,34 @@ export default function SidebarContent({
   const hasAttention = useSessionStatusStore((s) =>
     Object.values(s.statuses).some((e) => e.status === 'needs_attention'),
   );
-  const queuedCount = useTaskQueueStore((s) =>
-    s.queue.filter((t) => t.status === 'queued' || t.status === 'running').length,
+  const refreshTasks = useTaskStore((s) => s.refresh);
+  const queuedCount = useTaskStore((s) =>
+    countActiveDurableTasks(Object.values(s.tasksByProject).flatMap((tasksForProject) => tasksForProject)),
   );
+  const selectedProjectPath = projectListProps.selectedProject?.fullPath || projectListProps.selectedProject?.path;
+
+  useEffect(() => {
+    if (sidebarView !== 'queue' || !selectedProjectPath) return;
+    void refreshTasks(selectedProjectPath);
+  }, [refreshTasks, selectedProjectPath, sidebarView]);
+
+  const handleOpenSessionById = (targetSessionId: string) => {
+    for (const project of projects) {
+      const matchedClaudeSession = (project.sessions ?? []).find((session) => session.id === targetSessionId);
+      if (matchedClaudeSession) {
+        projectListProps.onProjectSelect(project);
+        projectListProps.onSessionSelect({ ...matchedClaudeSession, __provider: 'claude' } as SessionWithProvider, project.name);
+        return;
+      }
+
+      const matchedCodexSession = (project.codexSessions ?? []).find((session) => session.id === targetSessionId);
+      if (matchedCodexSession) {
+        projectListProps.onProjectSelect(project);
+        projectListProps.onSessionSelect({ ...matchedCodexSession, __provider: 'codex' } as SessionWithProvider, project.name);
+        return;
+      }
+    }
+  };
 
   return (
     <div
@@ -132,7 +161,11 @@ export default function SidebarContent({
           />
         ) : (
           <TaskQueuePanel
-            projectPath={projectListProps.selectedProject?.path || projectListProps.selectedProject?.fullPath}
+            projectPath={projectListProps.selectedProject?.fullPath || projectListProps.selectedProject?.path}
+            selectedProject={projectListProps.selectedProject ?? undefined}
+            projects={projects}
+            onOpenSessionById={handleOpenSessionById}
+            onOpenMissionControlSurface={onOpenMissionControlSurface}
           />
         )}
       </ScrollArea>

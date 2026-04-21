@@ -6,6 +6,7 @@ import type {
   SessionLaunchOptions,
   SessionProvider,
 } from '../../../types/app';
+import type { MissionControlSurfaceLocator, MissionControlSurfaceTarget } from '../../../lib/mission-control';
 
 export type ProjectSortOrder = 'name' | 'date';
 
@@ -42,6 +43,7 @@ export type SidebarProps = {
   loadingProgress: LoadingProgress | null;
   onRefresh: () => Promise<void> | void;
   onShowSettings: () => void;
+  onOpenMissionControlSurface?: (target: MissionControlSurfaceTarget, locator?: MissionControlSurfaceLocator) => void;
 };
 
 export type SessionViewModel = {

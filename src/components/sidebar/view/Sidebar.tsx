@@ -23,6 +23,7 @@ function Sidebar({
   loadingProgress,
   onRefresh,
   onShowSettings,
+  onOpenMissionControlSurface,
 }: SidebarProps) {
   const { t } = useTranslation(['sidebar', 'common']);
   const { updateAvailable, latestVersion, currentVersion, releaseInfo, installMode } = useVersionCheck(
@@ -204,6 +205,7 @@ function Sidebar({
             latestVersion={latestVersion}
             onShowVersionModal={() => setShowVersionModal(true)}
             onShowSettings={onShowSettings}
+            onOpenMissionControlSurface={onOpenMissionControlSurface}
             projectListProps={projectListProps}
             t={t}
           />

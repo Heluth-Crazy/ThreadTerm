@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { useSessionStatusStore } from './sessionStatusStore';
 
 beforeEach(() => {
-  useSessionStatusStore.setState({ statuses: {}, pendingPermissions: {} });
+  useSessionStatusStore.setState({ statuses: {} });
 });
 
 // ─── Group A: State Transitions ──────────────────────────────────────────────
@@ -64,10 +64,43 @@ describe('sessionStatusStore — state transitions', () => {
   it('A7: removeSession returns default idle entry', () => {
     const store = useSessionStatusStore.getState();
     store.setProcessing('s1', 'claude');
+    store.setRuntimeProjection('s1', {
+      taskId: 'task-1',
+      taskTitle: 'Refine mission control',
+      taskStatus: 'in_progress',
+      projectPath: '/tmp/project',
+      worktreePath: '/tmp/project',
+    });
     store.removeSession('s1');
     const entry = useSessionStatusStore.getState().getStatus('s1');
     expect(entry.status).toBe('idle');
     expect(entry.updatedAt).toBe(0);
+    expect(entry.taskId).toBeUndefined();
+  });
+
+  it('A7b: rebindSession preserves runtime projection when a synthetic session id is replaced', () => {
+    const store = useSessionStatusStore.getState();
+    store.setProcessing('synthetic', 'claude');
+    store.setRuntimeProjection('synthetic', {
+      taskId: 'task-1',
+      taskTitle: 'Refine mission control',
+      taskStatus: 'in_progress',
+      projectPath: '/tmp/project',
+      worktreePath: '/tmp/project-wt',
+    });
+
+    store.rebindSession('synthetic', 'real-session', 'claude');
+
+    expect(store.statuses.synthetic).toBeUndefined();
+    expect(store.getStatus('real-session')).toMatchObject({
+      status: 'processing',
+      provider: 'claude',
+      taskId: 'task-1',
+      taskTitle: 'Refine mission control',
+      taskStatus: 'in_progress',
+      projectPath: '/tmp/project',
+      worktreePath: '/tmp/project-wt',
+    });
   });
 
   it('A8: pruneStale removes old completed but keeps old processing', () => {
@@ -89,6 +122,14 @@ describe('sessionStatusStore — state transitions', () => {
     useSessionStatusStore.getState().setNeedsAttention('s1', 'error');
     useSessionStatusStore.getState().setCompleted('s1');
     expect(useSessionStatusStore.getState().getStatus('s1').status).toBe('needs_attention');
+  });
+
+  it('A8c: setCompleted(force) overwrites transient needs_attention', () => {
+    useSessionStatusStore.getState().setNeedsAttention('s1', 'permission');
+    useSessionStatusStore.getState().setCompleted('s1', { force: true });
+    const entry = useSessionStatusStore.getState().getStatus('s1');
+    expect(entry.status).toBe('completed');
+    expect(entry.attentionReason).toBeUndefined();
   });
 });
 
@@ -173,48 +214,5 @@ describe('sessionStatusStore — selectors & persistence', () => {
   });
 });
 
-// ─── Group G: Pending Permissions ────────────────────────────────────────────
 
-describe('sessionStatusStore — pendingPermissions', () => {
-  it('G1: setPendingPermission stores the request', () => {
-    const store = useSessionStatusStore.getState();
-    const req = { requestId: 'r1', toolName: 'Bash', input: { command: 'ls' }, sessionId: 's1' };
-    store.setPendingPermission('s1', req);
-    expect(useSessionStatusStore.getState().pendingPermissions['s1']).toEqual(req);
-  });
 
-  it('G2: clearPendingPermission removes it', () => {
-    const store = useSessionStatusStore.getState();
-    store.setPendingPermission('s1', { requestId: 'r1', toolName: 'Bash', input: {}, sessionId: 's1' });
-    store.clearPendingPermission('s1');
-    expect(useSessionStatusStore.getState().pendingPermissions['s1']).toBeUndefined();
-  });
-
-  it('G3: pruneStale removes pendingPermissions for pruned sessions', () => {
-    const oldTs = Date.now() - 25 * 3600 * 1000;
-    useSessionStatusStore.setState({
-      statuses: {
-        completed1: { status: 'completed', updatedAt: oldTs },
-        processing1: { status: 'processing', updatedAt: oldTs, provider: 'claude' },
-      },
-      pendingPermissions: {
-        completed1: { requestId: 'r1', toolName: 'Bash', input: {}, sessionId: 'completed1' },
-        processing1: { requestId: 'r2', toolName: 'Bash', input: {}, sessionId: 'processing1' },
-      },
-    });
-    useSessionStatusStore.getState().pruneStale();
-
-    const state = useSessionStatusStore.getState();
-    expect(state.pendingPermissions['completed1']).toBeUndefined();
-    expect(state.pendingPermissions['processing1']).toBeDefined();
-  });
-
-  it('G4: partialize does not include pendingPermissions', () => {
-    const opts = useSessionStatusStore.persist.getOptions();
-    const partialize = opts.partialize;
-    if (partialize) {
-      const result = partialize(useSessionStatusStore.getState());
-      expect(result).not.toHaveProperty('pendingPermissions');
-    }
-  });
-});

@@ -602,26 +602,166 @@ export interface WorktreeInfo {
 
 // ─── Tasks (Markdown persistence) ────────────────────────────────────────────
 
+export type TaskStatus =
+  | 'open'
+  | 'queued'
+  | 'dispatched'
+  | 'in_progress'
+  | 'pending_approval'
+  | 'pending_review'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  | 'archived';
+
+export type TaskProvider = 'claude' | 'codex' | 'cursor' | string;
+export type TaskRole = 'implement' | 'review' | 'verify' | 'research';
+export type TaskExecutionStrategy = 'current_project' | 'worktree' | 'handoff';
+
 export interface Task {
   id: string;
   title: string;
   description?: string;
-  status: 'open' | 'in_progress' | 'done' | 'failed';
+  prompt: string;
+  status: TaskStatus;
+  provider: TaskProvider;
+  role?: TaskRole;
+  execution_strategy: TaskExecutionStrategy;
+  worktree_path?: string;
+  project_path: string;
   created_at: string;
   updated_at: string;
   deps: string[];
   session_id?: string;
+  source_session_id?: string;
+  review_required: boolean;
+  result_summary?: string;
+  result_changed_files?: string[];
+  result_verification_summary?: string;
+  result_risk_summary?: string;
+  result_suggested_next_step?: string;
 }
+
+export interface CreateTaskInput {
+  title: string;
+  description?: string;
+  prompt?: string;
+  provider?: TaskProvider;
+  role?: TaskRole;
+  execution_strategy?: TaskExecutionStrategy;
+  worktree_path?: string;
+  session_id?: string;
+  source_session_id?: string;
+  review_required?: boolean;
+  status?: TaskStatus;
+  deps?: string[];
+}
+
+export type TaskUpdateInput = Partial<
+  Pick<
+    Task,
+    | 'title'
+    | 'description'
+    | 'prompt'
+    | 'status'
+    | 'provider'
+    | 'role'
+    | 'execution_strategy'
+    | 'worktree_path'
+    | 'session_id'
+    | 'source_session_id'
+    | 'review_required'
+    | 'result_summary'
+    | 'result_changed_files'
+    | 'result_verification_summary'
+    | 'result_risk_summary'
+    | 'result_suggested_next_step'
+  >
+>;
 
 export const tasks = {
   list: (projectPath: string) =>
-    isTauriEnv() ? invoke<Task[]>('task_list', { projectPath }) : Promise.resolve([]),
-  create: (projectPath: string, title: string, description?: string, deps: string[] = []) =>
-    isTauriEnv() ? invoke<Task>('task_create', { projectPath, title, description, deps }) : Promise.reject(new Error('Not available in web mode')),
-  update: (projectPath: string, id: string, updates: Partial<Pick<Task, 'title' | 'description' | 'status' | 'session_id'>>) =>
-    isTauriEnv() ? invoke<Task>('task_update', { projectPath, id, ...updates }) : Promise.reject(new Error('Not available in web mode')),
+    isTauriEnv()
+      ? invoke<Task[]>('task_list', { projectPath })
+      : httpGet<Task[]>(`/api/tasks?project_path=${encodeURIComponent(projectPath)}`),
+  create: (projectPath: string, input: CreateTaskInput) =>
+    isTauriEnv()
+      ? invoke<Task>('task_create', {
+          projectPath,
+          title: input.title,
+          description: input.description,
+          prompt: input.prompt,
+          provider: input.provider,
+          role: input.role,
+          executionStrategy: input.execution_strategy,
+          worktreePath: input.worktree_path,
+          sessionId: input.session_id,
+          sourceSessionId: input.source_session_id,
+          reviewRequired: input.review_required,
+          status: input.status,
+          deps: input.deps ?? [],
+        })
+      : httpPost<Task>('/api/tasks', {
+          project_path: projectPath,
+          title: input.title,
+          description: input.description,
+          prompt: input.prompt,
+          provider: input.provider,
+          role: input.role,
+          execution_strategy: input.execution_strategy,
+          worktree_path: input.worktree_path,
+          session_id: input.session_id,
+          source_session_id: input.source_session_id,
+          review_required: input.review_required,
+          status: input.status,
+          deps: input.deps ?? [],
+        }),
+  update: (projectPath: string, id: string, updates: TaskUpdateInput) =>
+    isTauriEnv()
+      ? invoke<Task>('task_update', {
+          projectPath,
+          id,
+          title: updates.title,
+          description: updates.description,
+          prompt: updates.prompt,
+          status: updates.status,
+          provider: updates.provider,
+          role: updates.role,
+          executionStrategy: updates.execution_strategy,
+          worktreePath: updates.worktree_path,
+          sessionId: updates.session_id,
+          sourceSessionId: updates.source_session_id,
+          reviewRequired: updates.review_required,
+          resultSummary: updates.result_summary,
+          resultChangedFiles: updates.result_changed_files,
+          resultVerificationSummary: updates.result_verification_summary,
+          resultRiskSummary: updates.result_risk_summary,
+          resultSuggestedNextStep: updates.result_suggested_next_step,
+        })
+      : httpPost<Task>('/api/tasks/update', {
+          project_path: projectPath,
+          id,
+          title: updates.title,
+          description: updates.description,
+          prompt: updates.prompt,
+          status: updates.status,
+          provider: updates.provider,
+          role: updates.role,
+          execution_strategy: updates.execution_strategy,
+          worktree_path: updates.worktree_path,
+          session_id: updates.session_id,
+          source_session_id: updates.source_session_id,
+          review_required: updates.review_required,
+          result_summary: updates.result_summary,
+          result_changed_files: updates.result_changed_files,
+          result_verification_summary: updates.result_verification_summary,
+          result_risk_summary: updates.result_risk_summary,
+          result_suggested_next_step: updates.result_suggested_next_step,
+        }),
   delete: (projectPath: string, id: string) =>
-    isTauriEnv() ? invoke<void>('task_delete', { projectPath, id }) : Promise.resolve(),
+    isTauriEnv()
+      ? invoke<void>('task_delete', { projectPath, id })
+      : httpPost<void>('/api/tasks/delete', { project_path: projectPath, id }),
 };
 
 // ─── Loop Runner ─────────────────────────────────────────────────────────────

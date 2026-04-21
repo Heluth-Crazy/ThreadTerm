@@ -1,5 +1,8 @@
 export type SessionProvider = 'claude' | 'codex';
 
+// Historical compatibility tab id. Keep 'tasks' stable in Phase 0 and limit
+// visible naming cleanup to labels like “Task Queue” until the control-plane
+// migration can safely rename internal routes in a later phase.
 export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'preview' | 'hybrid';
 export type SessionLaunchProvider = 'claude' | 'codex';
 

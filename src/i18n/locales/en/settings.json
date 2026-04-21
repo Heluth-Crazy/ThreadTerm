@@ -202,22 +202,22 @@
     }
   },
   "tasks": {
-    "checking": "Checking TaskMaster installation...",
+    "checking": "Checking legacy TaskMaster integration...",
     "notInstalled": {
-      "title": "TaskMaster AI CLI Not Installed",
-      "description": "TaskMaster CLI is required to use task management features. Install it to get started:",
+      "title": "Legacy TaskMaster CLI Not Installed",
+      "description": "TaskMaster is now treated as a legacy integration. Install the CLI only if you still need the old TaskMaster task surface:",
       "installCommand": "npm install -g task-master-ai",
       "viewOnSource": "View on source hosting",
       "afterInstallation": "After installation:",
       "steps": {
         "restart": "Restart this application",
-        "autoAvailable": "TaskMaster features will automatically become available",
+        "autoAvailable": "Legacy TaskMaster surfaces will automatically become available",
         "initCommand": "Use task-master init in your project directory"
       }
     },
     "settings": {
-      "enableLabel": "Enable TaskMaster Integration",
-      "enableDescription": "Show TaskMaster tasks, banners, and sidebar indicators across the interface"
+      "enableLabel": "Enable Legacy TaskMaster Integration",
+      "enableDescription": "Show legacy TaskMaster tasks, banners, and sidebar indicators for historical compatibility"
     }
   },
   "agents": {

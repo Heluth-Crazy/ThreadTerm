@@ -49,7 +49,7 @@
 - **ファイルエクスプローラー** - シンタックスハイライトとライブ編集対応のインタラクティブファイルツリー
 - **Git エクスプローラー** - 変更の確認、ステージング、コミット。ブランチの切り替えも可能
 - **セッション管理** - 会話の再開、複数セッションの管理、履歴の追跡
-- **TaskMaster AI 統合** *（オプション）* - AI 駆動のタスク計画、PRD 解析、ワークフロー自動化による高度なプロジェクト管理
+- **Mission Control + Task Queue** - 現在の Tauri メインラインは Attention Inbox、Approval Inbox、Rust 永続タスク、段階的な Claude/Codex ディスパッチを中心に構成されています
 - **モデル互換性** - Claude Sonnet 4.5、Opus 4.5、GPT-5.2 に対応
 
 
@@ -70,7 +70,7 @@
 npx @openwork/openwork
 ```
 
-サーバーが起動し、`http://localhost:3001`（または設定した PORT）でアクセスできます。
+サーバーが起動し、`http://localhost:3002`（または設定した PORT）でアクセスできます。
 
 **再起動**: サーバーを停止した後、同じ `npx` コマンドを再度実行するだけです
 ### グローバルインストール（定期的に使用する場合）
@@ -107,7 +107,7 @@ openwork update
 | `openwork update` | | 最新バージョンに更新 |
 | `openwork help` | | ヘルプ情報を表示 |
 | `openwork version` | | バージョン情報を表示 |
-| `--port <port>` | `-p` | サーバーポートを設定（デフォルト: 3001） |
+| `--port <port>` | `-p` | サーバーポートを設定（デフォルト: 3002） |
 | `--database-path <path>` | | カスタムデータベースの場所を設定 |
 
 **例:**
@@ -175,14 +175,17 @@ cp .env.example .env
 
 4. **アプリケーションを起動:**
 ```bash
-# 開発モード（ホットリロード付き）
-npm run dev
+# フロントエンドのみの開発（Vite）
+npm run client
+
+# 完全なデスクトップ開発（フロントエンド + Tauri/Rust）
+npm run tauri:dev
 
 ```
 アプリケーションは .env で指定したポートで起動します
 
 5. **ブラウザを開く:**
-   - 開発: `http://localhost:3001`
+   - 開発: `http://localhost:3002`
 
 ## セキュリティとツール設定
 
@@ -205,17 +208,16 @@ Claude Code の全機能を使用するには、手動でツールを有効に�
 
 **推奨アプローチ**: 基本的なツールから有効にし、必要に応じて追加してください。これらの設定はいつでも調整できます。
 
-## TaskMaster AI 統合 *（オプション）*
+## Legacy TaskMaster について
 
-OpenWork は、高度なプロジェクト管理と AI 駆動のタスク計画のための **[TaskMaster AI](https://source.example.com/eyaltoledano/claude-task-master)**（別名 claude-task-master）統合をサポートしています。
+> ⚠️ **TaskMaster は旧 Node.js ビルド向けの機能であり、現在の Tauri コントロールプレーンの主線には含まれていません。**
 
-提供機能
-- PRD（製品要件ドキュメント）からの AI 駆動タスク生成
-- スマートなタスク分解と依存関係管理
-- ビジュアルタスクボードと進捗追跡
+現在の OpenWork は次を重視しています：
+- Mission Control によるアクティブ session、承認、review、結果回収の集約
+- Rust 永続タスクを真実のソースとし、UI queue は投影レイヤーとして扱う構成
+- Claude Code / Cursor / Codex 向けの attention-first な実行フロー
 
-**セットアップとドキュメント**: インストール手順、設定ガイド、使用例は [TaskMaster AI source hosting リポジトリ](https://source.example.com/eyaltoledano/claude-task-master)をご覧ください。
-インストール後、設定から有効にできます
+履歴目的で旧 TaskMaster 連携を参照したい場合は、アーカイブされた上流プロジェクト [TaskMaster AI](https://source.example.com/eyaltoledano/claude-task-master) を確認してください。
 
 
 ## 使用ガイド
@@ -244,10 +246,10 @@ Claude Code、Cursor、Codex のセッションが利用可能な場合、自動
 #### Git エクスプローラー
 
 
-#### TaskMaster AI 統合 *（オプション）*
-- **ビジュアルタスクボード** - 開発タスク管理のためのカンバンスタイルインターフェース
-- **PRD パーサー** - 製品要件ドキュメントを作成し、構造化されたタスクに変換
-- **進捗追跡** - リアルタイムのステータス更新と完了追跡
+#### Mission Control と Task Queue
+- **Attention Inbox** - 承認、失敗、ブロック中の session を高シグナルな入口に集約
+- **永続 Task Queue** - Rust-backed tasks で段階的な Claude/Codex 作業を管理
+- **Review / Result フロー** - 完了した作業を review と result surface に集約し、後続判断をしやすくします
 
 #### セッション管理
 - **セッション永続化** - すべての会話を自動保存
@@ -268,17 +270,17 @@ Claude Code、Cursor、Codex のセッションが利用可能な場合、自動
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Frontend      │    │   Backend       │    │  Agent     │
-│   (React/Vite)  │◄──►│ (Express/WS)    │◄──►│  Integration    │
+│   Frontend      │    │   Backend       │    │  Agent           │
+│   (React/Vite)  │◄──►│  (Tauri/Rust)   │◄──►│  Integration     │
 │                 │    │                 │    │                │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
-### バックエンド (Node.js + Express)
-- **Express サーバー** - 静的ファイル配信付きの RESTful API
-- **WebSocket サーバー** - チャットとプロジェクト更新のための通信
-- **エージェント統合 (Claude Code / Cursor CLI / Codex)** - プロセスの生成と管理
-- **ファイルシステム API** - プロジェクト向けファイルブラウザの公開
+### バックエンド (Tauri + Rust)
+- **組み込み HTTP サーバー** - 静的アセットと LAN/Web fallback を提供
+- **Tauri IPC + WebSocket イベントブリッジ** - チャット、PTY、タスク、状態更新を中継
+- **エージェント統合 (Claude Code / Cursor CLI / Codex)** - ランタイム session とコマンド実行を管理
+- **ファイルシステム / Git / Tasks API** - control plane 向けに project、worktree、task 機能を提供
 
 ### フロントエンド (React + Vite)
 - **React 18** - hooks を使用したモダンなコンポーネントアーキテクチャ
@@ -326,7 +328,7 @@ OpenWork はプロプライエタリソフトウェアです。利用と配布�
 - **[Vite](https://vitejs.dev/)** - 高速ビルドツールと開発サーバー
 - **[Tailwind CSS](https://tailwindcss.com/)** - ユーティリティファースト CSS フレームワーク
 - **[CodeMirror](https://codemirror.net/)** - 高度なコードエディター
-- **[TaskMaster AI](https://source.example.com/eyaltoledano/claude-task-master)** *（オプション）* - AI 駆動のプロジェクト管理とタスク計画
+
 
 ## サポートとコミュニティ
 

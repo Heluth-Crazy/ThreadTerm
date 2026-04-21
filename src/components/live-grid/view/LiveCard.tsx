@@ -1,89 +1,33 @@
-import React, { useCallback, useRef, useEffect, useState } from 'react';
+import React, { useCallback, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, ShieldCheck, ShieldX, ArrowUpRight } from 'lucide-react';
+import { X, ShieldCheck, ShieldX } from 'lucide-react';
 
 import SessionProviderLogo from '../../SessionProviderLogo';
 import CardMessageList from './CardMessageList';
 import MiniInputBar from './MiniInputBar';
-import { useLiveGridStore } from '../../../stores/liveGridStore';
-import { useSessionStatusStore } from '../../../stores/sessionStatusStore';
+import HandoffTaskMenu from '../../shared/HandoffTaskMenu';
+import { useLiveGridStore, type MessageSnapshot } from '../../../stores/liveGridStore';
+import { useSessionStatusStore, type SessionRuntimeStatus } from '../../../stores/sessionStatusStore';
+import { useAttentionStore } from '../../../stores/attentionStore';
+import { useBackgroundRunStore } from '../../../stores/backgroundRunStore';
+import { useTaskStore } from '../../../stores/taskStore';
 import { useCardHistory } from '../../../hooks/useCardHistory';
 import { getProviderBorderClass, getProviderDotClass } from '../../../utils/providerColors';
-import { invoke, handoff } from '../../../lib/tauri-bridge';
-import type { SessionRuntimeStatus } from '../../../stores/sessionStatusStore';
-import type { MessageSnapshot } from '../../../stores/liveGridStore';
+import { respondToApprovalRequest } from '../../../lib/approval-actions';
+import { describeTaskMainPath, formatTaskMainPathBadgeLabel } from '../../../lib/task-main-path';
+import type { MissionControlSurfaceLocator, MissionControlSurfaceTarget } from '../../../lib/mission-control';
+import {
+  buildTaskDispatchPresentation,
+  findTaskSessionLink,
+  formatTaskExecutionStrategyLabel,
+  formatTaskRoleLabel,
+  formatTaskStatusLabel,
+  getTaskSessionBindingLabel,
+} from '../../../lib/task-dispatch';
+import type { Project } from '../../../types/app';
 
 // Stable empty array to prevent Zustand selector from creating new references each render
 const EMPTY_SNAPSHOTS: MessageSnapshot[] = [];
-
-const HANDOFF_PROVIDERS = ['claude', 'codex', 'cursor'] as const;
-
-type HandoffDropdownProps = {
-  currentProvider: string;
-  sessionId: string;
-  projectPath: string;
-  onComplete: (newPtyId: string, provider: string) => void;
-  onClose: () => void;
-};
-
-function HandoffDropdown({ currentProvider, sessionId, projectPath, onComplete, onClose }: HandoffDropdownProps) {
-  const [taskDesc, setTaskDesc] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const targets = HANDOFF_PROVIDERS.filter((p) => p !== currentProvider);
-
-  const handleHandoff = async (target: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await handoff.session({
-        sourcePtyId: sessionId,
-        targetProvider: target,
-        projectPath,
-        taskDescription: taskDesc || undefined,
-      });
-      onComplete(result.newPtyId, target);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-lg border border-border bg-popover p-2 shadow-lg" onClick={(e) => e.stopPropagation()}>
-      <textarea
-        className="mb-2 w-full rounded border border-border bg-background px-2 py-1 text-[11px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-        placeholder="Task context (optional)"
-        rows={2}
-        value={taskDesc}
-        onChange={(e) => setTaskDesc(e.target.value)}
-      />
-      <div className="flex flex-col gap-1">
-        {targets.map((target) => (
-          <button
-            key={target}
-            type="button"
-            disabled={loading}
-            onClick={() => handleHandoff(target)}
-            className="flex items-center gap-2 rounded px-2 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
-          >
-            <ArrowUpRight className="h-3 w-3" />
-            Handoff to {target}
-          </button>
-        ))}
-      </div>
-      {error && <p className="mt-1 text-[10px] text-red-500">{error}</p>}
-      <button
-        type="button"
-        onClick={onClose}
-        className="mt-1 w-full text-center text-[10px] text-muted-foreground hover:text-foreground"
-      >
-        Cancel
-      </button>
-    </div>
-  );
-}
 
 type LiveCardProps = {
   sessionId: string;
@@ -92,7 +36,12 @@ type LiveCardProps = {
   sessionTitle: string;
   projectPath: string;
   worktreePath?: string;
+  selectedProject?: Project;
+  availableProjects?: Project[];
   onSend: (sessionId: string, text: string, projectPath: string, provider: string) => void;
+  onOpenTaskQueue?: (projectPath?: string) => void;
+  onOpenSessionById?: (sessionId: string) => void;
+  onOpenMissionControlSurface?: (target: MissionControlSurfaceTarget, locator?: MissionControlSurfaceLocator) => void;
   isFocused?: boolean;
 };
 
@@ -118,9 +67,11 @@ function StatusDot({ status }: { status: SessionRuntimeStatus }) {
 function statusRingClass(status: SessionRuntimeStatus): string {
   switch (status) {
     case 'needs_attention':
-      return 'ring-2 ring-red-500/50 animate-pulse';
+      return 'ring-2 ring-red-500/60 shadow-[0_0_8px_rgba(239,68,68,0.3)]';
     case 'processing':
-      return 'ring-1 ring-blue-500/30';
+      return 'ring-1 ring-blue-500/40';
+    case 'completed':
+      return 'ring-1 ring-emerald-500/40';
     default:
       return '';
   }
@@ -133,13 +84,17 @@ function LiveCardInner({
   sessionTitle,
   projectPath,
   worktreePath,
+  selectedProject,
+  availableProjects = [],
   onSend,
+  onOpenTaskQueue,
+  onOpenSessionById,
+  onOpenMissionControlSurface,
   isFocused,
 }: LiveCardProps) {
   const { t } = useTranslation('common');
   const cardRef = useRef<HTMLDivElement>(null);
   const removeCard = useLiveGridStore((s) => s.removeCard);
-  const addCard = useLiveGridStore((s) => s.addCard);
   const setFocusedCard = useLiveGridStore((s) => s.setFocusedCard);
   const snapshots: MessageSnapshot[] = useLiveGridStore(
     (s) => s.messageSnapshots[sessionId] ?? EMPTY_SNAPSHOTS,
@@ -152,8 +107,96 @@ function LiveCardInner({
   const status: SessionRuntimeStatus = useSessionStatusStore(
     (s) => s.statuses[sessionId]?.status ?? 'idle',
   );
-  const pendingPermission = useSessionStatusStore((s) => s.pendingPermissions[sessionId]);
-  const clearPendingPermission = useSessionStatusStore((s) => s.clearPendingPermission);
+  const pendingPermission = useAttentionStore((s) => {
+    const request = s.approvalRequests[sessionId];
+    return request?.status === 'pending' ? request : undefined;
+  });
+  const backgroundRuns = useBackgroundRunStore((s) => s.runs);
+  const tasksByProject = useTaskStore((s) => s.tasksByProject);
+  const linkedTaskSession = useMemo(
+    () =>
+      findTaskSessionLink(
+        Object.values(tasksByProject).flatMap((tasksForProject) => tasksForProject),
+        sessionId,
+      ),
+    [sessionId, tasksByProject],
+  );
+  const linkedTask = linkedTaskSession?.task;
+  const taskSessionBindingLabel = linkedTask?.execution_strategy === 'handoff'
+    ? getTaskSessionBindingLabel(linkedTaskSession?.binding)
+    : null;
+  const linkedTaskRoleLabel = formatTaskRoleLabel(linkedTask?.role);
+  const linkedTaskExecutionStrategyLabel = formatTaskExecutionStrategyLabel(linkedTask?.execution_strategy);
+  const linkedTaskStatusLabel = formatTaskStatusLabel(linkedTask?.status);
+  const linkedTaskDispatchPresentation = linkedTask
+    ? buildTaskDispatchPresentation(linkedTask, {
+      taskSessionBinding: linkedTaskSession?.binding,
+      fallbackWorktreePath: worktreePath,
+    })
+    : null;
+  const linkedTaskDispatchContextLines = linkedTaskDispatchPresentation?.dispatchDetailLines ?? [];
+  const linkedTaskDispatchTargetLabel = linkedTaskDispatchPresentation?.dispatchTargetLabel;
+  const pendingApprovalSessionIds = useMemo(
+    () => new Set(pendingPermission ? [sessionId] : []),
+    [pendingPermission, sessionId],
+  );
+  const linkedTaskBackgroundRunId = useMemo(() => {
+    if (!linkedTask) return undefined;
+
+    const latestRun = Object.values(backgroundRuns)
+      .filter((run) => run.taskId === linkedTask.id)
+      .sort((a, b) => (b.startedAt ?? b.finishedAt ?? '').localeCompare(a.startedAt ?? a.finishedAt ?? ''))[0];
+
+    return latestRun?.id;
+  }, [backgroundRuns, linkedTask]);
+  const linkedTaskMainPathDescriptor = useMemo(() => {
+    if (!linkedTask) return undefined;
+
+    return describeTaskMainPath(linkedTask, {
+      pendingApprovalSessionIds,
+      backgroundRunId: linkedTaskBackgroundRunId,
+    });
+  }, [
+    linkedTask,
+    linkedTaskBackgroundRunId,
+    pendingApprovalSessionIds,
+  ]);
+  const linkedTaskMainPathAction = useMemo(() => {
+    if (!linkedTaskMainPathDescriptor) return undefined;
+
+    const { action } = linkedTaskMainPathDescriptor;
+
+    if (action.kind === 'surface' && action.surfaceTarget && onOpenMissionControlSurface) {
+      return {
+        label: action.label,
+        onClick: () => onOpenMissionControlSurface(action.surfaceTarget!, action.focusLocator),
+      };
+    }
+
+    if (action.kind === 'task-queue' && onOpenTaskQueue && linkedTask) {
+      return {
+        label: action.label,
+        onClick: () => onOpenTaskQueue(linkedTask.project_path),
+      };
+    }
+
+    if (action.kind === 'session' && action.sessionId && action.sessionId !== sessionId && onOpenSessionById) {
+      return {
+        label: action.label,
+        onClick: () => onOpenSessionById(action.sessionId!),
+      };
+    }
+
+    return undefined;
+  }, [
+    linkedTask,
+    linkedTaskMainPathDescriptor,
+    onOpenMissionControlSurface,
+    onOpenSessionById,
+    onOpenTaskQueue,
+    sessionId,
+  ]);
+  const linkedTaskMainPathBadgeLabel = formatTaskMainPathBadgeLabel(linkedTaskMainPathDescriptor?.badge);
 
   const handleDoubleClick = useCallback(() => {
     setFocusedCard(sessionId);
@@ -178,33 +221,12 @@ function LiveCardInner({
     async (approved: boolean) => {
       if (!pendingPermission) return;
       try {
-        await invoke('ai_approve_tool', {
-          sessionId,
-          permissionId: pendingPermission.requestId,
-          approved,
-        });
-        clearPendingPermission(sessionId);
+        await respondToApprovalRequest(sessionId, pendingPermission.requestId, approved);
       } catch {
         // Silently fail — status store will handle retry
       }
     },
-    [pendingPermission, sessionId, clearPendingPermission],
-  );
-
-  const [showHandoff, setShowHandoff] = useState(false);
-
-  const handleHandoffComplete = useCallback(
-    (newPtyId: string, targetProvider: string) => {
-      addCard({
-        sessionId: newPtyId,
-        projectId,
-        provider: targetProvider,
-        title: `Handoff from ${provider}`,
-        handoffSourceId: sessionId,
-      });
-      setShowHandoff(false);
-    },
-    [addCard, projectId, provider, sessionId],
+    [pendingPermission, sessionId],
   );
 
   const statusKey =
@@ -240,25 +262,17 @@ function LiveCardInner({
         )}
         <StatusDot status={status} />
         <span className="text-[10px] text-muted-foreground">{t(statusKey)}</span>
-        <div className="relative">
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); setShowHandoff(!showHandoff); }}
-            className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-foreground"
-            title="Handoff to another provider"
-          >
-            <ArrowUpRight className="h-3.5 w-3.5" />
-          </button>
-          {showHandoff && (
-            <HandoffDropdown
-              currentProvider={provider}
-              sessionId={sessionId}
-              projectPath={projectPath}
-              onComplete={handleHandoffComplete}
-              onClose={() => setShowHandoff(false)}
-            />
-          )}
-        </div>
+        <HandoffTaskMenu
+          currentProvider={provider}
+          sessionId={sessionId}
+          sessionTitle={sessionTitle}
+          projectPath={projectPath}
+          worktreePath={worktreePath}
+          selectedProject={selectedProject}
+          availableProjects={availableProjects}
+          onQueuedTask={onOpenTaskQueue}
+          buttonTitle="Queue handoff task"
+        />
         <button
           type="button"
           onClick={handleRemove}
@@ -268,6 +282,67 @@ function LiveCardInner({
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
+
+      {linkedTask ? (
+        <div className="border-b border-border/40 bg-muted/20 px-2.5 py-1.5">
+          <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+            <span className="rounded-full bg-primary/8 px-2 py-0.5 font-medium text-primary">
+              Task · {linkedTask.title}
+            </span>
+            {linkedTaskRoleLabel ? (
+              <span className="rounded-full bg-blue-500/10 px-2 py-0.5 font-medium text-blue-600">
+                Role · {linkedTaskRoleLabel}
+              </span>
+            ) : null}
+            {linkedTaskExecutionStrategyLabel ? (
+              <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-600">
+                Exec · {linkedTaskExecutionStrategyLabel}
+              </span>
+            ) : null}
+            {taskSessionBindingLabel ? (
+              <span className="rounded-full bg-sky-500/10 px-2 py-0.5 font-medium text-sky-700">
+                {taskSessionBindingLabel}
+              </span>
+            ) : null}
+            {linkedTaskMainPathBadgeLabel ? (
+              <span className="rounded-full bg-amber-500/10 px-2 py-0.5 font-medium text-amber-700">
+                {linkedTaskMainPathBadgeLabel}
+              </span>
+            ) : null}
+            {linkedTaskStatusLabel ? (
+              <span className="rounded-full bg-muted px-2 py-0.5 font-medium text-muted-foreground">
+                {linkedTaskStatusLabel}
+              </span>
+            ) : null}
+            {linkedTaskDispatchTargetLabel ? (
+              <span className="rounded-full bg-muted px-2 py-0.5 font-medium text-muted-foreground">
+                {linkedTaskDispatchTargetLabel}
+              </span>
+            ) : null}
+          </div>
+          {linkedTaskDispatchContextLines.length > 1 ? (
+            <div className="mt-1 space-y-0.5 text-[11px] text-muted-foreground">
+              {linkedTaskDispatchPresentation?.contextDetailLines.map((line) => (
+                <p key={line} className="truncate">{line}</p>
+              ))}
+            </div>
+          ) : null}
+          {linkedTaskMainPathAction ? (
+            <div className="mt-1 flex items-center">
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  linkedTaskMainPathAction.onClick();
+                }}
+                className="inline-flex h-6 items-center rounded-md border border-border/60 bg-background px-2 text-[10px] font-medium text-foreground transition-colors hover:bg-muted/60"
+              >
+                {linkedTaskMainPathAction.label}
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Message stream */}
       <CardMessageList snapshots={snapshots} />
