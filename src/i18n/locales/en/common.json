@@ -361,5 +361,110 @@
       "failed": "Failed",
       "cancelled": "Cancelled"
     }
+  },
+  "approvalInbox": {
+    "title": "Approval Inbox",
+    "approvalRequired": "Approval required",
+    "failedToRespond": "Failed to respond to approval request."
+  },
+  "attentionInbox": {
+    "title": "Attention Inbox",
+    "description": "Active runtime events that need review, recovery, or a quick check.",
+    "noExtraContext": "No extra context attached yet."
+  },
+  "backgroundRun": {
+    "summary": "Summary",
+    "lastOutput": "Last output",
+    "noExtraContext": "No extra context attached yet.",
+    "providerCodex": "Codex",
+    "providerClaude": "Claude",
+    "providerCustom": "Custom",
+    "openSession": "Open Session"
+  },
+  "reviewQueue": {
+    "changedFiles": "Changed files",
+    "verification": "Verification",
+    "risk": "Risk",
+    "nextStep": "Next step",
+    "hideCompare": "Hide Compare",
+    "compare": "Compare",
+    "accepted": "Accepted",
+    "unknownError": "Unknown error"
+  },
+  "taskTimeline": {
+    "title": "Task Timeline",
+    "subtitle": "Durable task flow from backlog through running, review, and completion.",
+    "backlogTitle": "Backlog",
+    "backlogDesc": "Open and queued durable tasks waiting to be dispatched.",
+    "backlogEmpty": "No backlog tasks.",
+    "runningTitle": "Running",
+    "runningDesc": "Dispatched work that is actively executing or blocked on approval.",
+    "runningEmpty": "No running tasks.",
+    "pendingReviewTitle": "Pending Review",
+    "pendingReviewDesc": "Completed runs waiting for a human accept or rework decision.",
+    "pendingReviewEmpty": "Nothing is waiting for review.",
+    "completedTitle": "Completed",
+    "completedDesc": "Recently finished durable tasks, including accepted results and terminal failures or cancellations.",
+    "completedEmpty": "No recently completed tasks.",
+    "waitingApproval": "Waiting for approval before this run can continue.",
+    "executing": "Task is currently executing.",
+    "awaitingReview": "Awaiting human review before this result is accepted.",
+    "executionFailed": "Execution failed before this task reached review or result inbox.",
+    "cancelled": "This task was cancelled before it completed.",
+    "completedNoMeta": "Completed without extra structured result metadata yet.",
+    "queuedBacklog": "Queued in the durable task backlog."
+  },
+  "summaryStrip": {
+    "pendingApprovals": "Pending approvals",
+    "attentionItems": "Attention items",
+    "runningTasks": "Running tasks",
+    "queuedTasks": "Queued tasks",
+    "pendingReview": "Pending review",
+    "resultInbox": "Result inbox"
+  },
+  "taskStatus": {
+    "open": "Open",
+    "queued": "Queued",
+    "dispatched": "Dispatched",
+    "in_progress": "Running",
+    "pending_approval": "Pending Approval",
+    "pending_review": "Pending Review",
+    "done": "Done",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+    "archived": "Archived",
+    "cancelAction": "Cancel",
+    "retryAction": "Retry",
+    "removeAction": "Remove"
+  },
+  "taskQuickAdd": {
+    "promptPlaceholder": "Add a task prompt...",
+    "providerClaude": "Claude",
+    "providerCodex": "Codex",
+    "addToQueue": "Add to Queue",
+    "adding": "Adding\u2026",
+    "worktreePlaceholder": "Optional new worktree name\u2026",
+    "selectSourceSession": "Select source session\u2026",
+    "noSessionsAvailable": "No sessions available",
+    "failedToDispatch": "Failed to prepare task dispatch."
+  },
+  "statusStrip": {
+    "approval": "Approval",
+    "attention": "Attention",
+    "running": "Running",
+    "backlog": "Backlog",
+    "review": "Review",
+    "results": "Results"
+  },
+  "handoffMenu": {
+    "queueHandoff": "Queue handoff task",
+    "taskContextPlaceholder": "Task context for the queued handoff (optional)",
+    "optionalWorktree": "Optional handoff target worktree\u2026",
+    "defaultWorktree": "Handoff stays in this project by default",
+    "newWorktreePlaceholder": "Optional new worktree name\u2026",
+    "handoffLabel": "Handoff"
+  },
+  "sessionCard": {
+    "handoffLabel": "Handoff"
   }
 }

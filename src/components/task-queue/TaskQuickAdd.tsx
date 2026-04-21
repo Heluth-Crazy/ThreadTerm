@@ -1,4 +1,5 @@
 import React, { useMemo, useState, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/button';
 import { useTaskStore } from '../../stores/taskStore';
 import type { TaskExecutionStrategy, TaskProvider, TaskRole } from '../../lib/tauri-bridge';
@@ -28,6 +29,7 @@ export function TaskQuickAdd({
   selectedProject,
   availableProjects = [],
 }: TaskQuickAddProps) {
+  const { t } = useTranslation('common');
   const [prompt, setPrompt] = useState('');
   const [provider, setProvider] = useState<TaskProvider>(() => getDefaultDurableDispatchProvider(defaultProvider));
   const [role, setRole] = useState<TaskRole>('implement');
@@ -109,7 +111,7 @@ export function TaskQuickAdd({
       setErrorMessage(null);
       onAdded?.();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to prepare task dispatch.');
+      setErrorMessage(error instanceof Error ? error.message : t('taskQuickAdd.failedToDispatch', 'Failed to prepare task dispatch.'));
     } finally {
       setIsSubmitting(false);
     }
@@ -126,7 +128,7 @@ export function TaskQuickAdd({
     <div className="flex flex-col gap-1.5 px-2">
       <textarea
         className="w-full h-16 px-2 py-1.5 text-xs rounded-md border border-input bg-background resize-none"
-        placeholder="Add a task prompt..."
+        placeholder={t('taskQuickAdd.promptPlaceholder', 'Add a task prompt...')}
         value={prompt}
         onChange={(e) => {
           setPrompt(e.target.value);
@@ -143,7 +145,7 @@ export function TaskQuickAdd({
         >
           {DURABLE_DISPATCH_PROVIDERS.map((providerOption) => (
             <option key={providerOption} value={providerOption}>
-              {providerOption === 'claude' ? 'Claude' : 'Codex'}
+              {providerOption === 'claude' ? t('taskQuickAdd.providerClaude', 'Claude') : t('taskQuickAdd.providerCodex', 'Codex')}
             </option>
           ))}
         </select>
@@ -165,7 +167,7 @@ export function TaskQuickAdd({
           onClick={() => void handleAdd()}
           disabled={!prompt.trim() || isSubmitting}
         >
-          {isSubmitting ? 'Adding…' : 'Add to Queue'}
+          {isSubmitting ? t('taskQuickAdd.adding', 'Adding…') : t('taskQuickAdd.addToQueue', 'Add to Queue')}
         </Button>
       </div>
       <div className="flex items-center gap-2">
@@ -219,7 +221,7 @@ export function TaskQuickAdd({
             setNewWorktreeName(e.target.value);
             setErrorMessage(null);
           }}
-          placeholder="Optional new worktree name…"
+          placeholder={t('taskQuickAdd.worktreePlaceholder', 'Optional new worktree name…')}
         />
       ) : null}
       <div className="rounded-md border border-border/60 bg-muted/30 px-2.5 py-2 text-[11px] text-muted-foreground">
@@ -259,7 +261,7 @@ export function TaskQuickAdd({
               }}
             >
               <option value="">
-                {sessionOptions.length > 0 ? 'Select source session…' : 'No sessions available'}
+                {sessionOptions.length > 0 ? t('taskQuickAdd.selectSourceSession', 'Select source session…') : t('taskQuickAdd.noSessionsAvailable', 'No sessions available')}
               </option>
               {sessionOptions.map((option) => (
                 <option key={option.id} value={option.id}>{option.label}</option>

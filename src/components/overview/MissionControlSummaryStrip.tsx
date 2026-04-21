@@ -1,4 +1,5 @@
 import { AlertCircle, Bot, CheckCircle2, PauseCircle, ShieldCheck } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { MissionControlSurfaceTarget } from '../../lib/mission-control';
 
 interface MissionControlSummaryStripProps {
@@ -11,49 +12,13 @@ interface MissionControlSummaryStripProps {
   onFocusSurface?: (target: MissionControlSurfaceTarget) => void;
 }
 
-const CARDS = [
-  {
-    key: 'approvals',
-    label: 'Pending approvals',
-    target: 'approval-inbox',
-    icon: PauseCircle,
-    tone: 'text-amber-600 bg-amber-500/10',
-  },
-  {
-    key: 'attention',
-    label: 'Attention items',
-    target: 'attention-inbox',
-    icon: AlertCircle,
-    tone: 'text-red-500 bg-red-500/10',
-  },
-  {
-    key: 'running',
-    label: 'Running tasks',
-    target: 'task-running',
-    icon: Bot,
-    tone: 'text-blue-500 bg-blue-500/10',
-  },
-  {
-    key: 'queued',
-    label: 'Queued tasks',
-    target: 'task-backlog',
-    icon: CheckCircle2,
-    tone: 'text-emerald-600 bg-emerald-500/10',
-  },
-  {
-    key: 'review',
-    label: 'Pending review',
-    target: 'review-queue',
-    icon: ShieldCheck,
-    tone: 'text-purple-600 bg-purple-500/10',
-  },
-  {
-    key: 'results',
-    label: 'Result inbox',
-    target: 'result-inbox',
-    icon: CheckCircle2,
-    tone: 'text-emerald-600 bg-emerald-500/10',
-  },
+const CARDS_META = [
+  { key: 'approvals' as const, labelKey: 'summaryStrip.pendingApprovals', labelFallback: 'Pending approvals', target: 'approval-inbox' as const, icon: PauseCircle, tone: 'text-amber-600 bg-amber-500/10' },
+  { key: 'attention' as const, labelKey: 'summaryStrip.attentionItems', labelFallback: 'Attention items', target: 'attention-inbox' as const, icon: AlertCircle, tone: 'text-red-500 bg-red-500/10' },
+  { key: 'running' as const, labelKey: 'summaryStrip.runningTasks', labelFallback: 'Running tasks', target: 'task-running' as const, icon: Bot, tone: 'text-blue-500 bg-blue-500/10' },
+  { key: 'queued' as const, labelKey: 'summaryStrip.queuedTasks', labelFallback: 'Queued tasks', target: 'task-backlog' as const, icon: CheckCircle2, tone: 'text-emerald-600 bg-emerald-500/10' },
+  { key: 'review' as const, labelKey: 'summaryStrip.pendingReview', labelFallback: 'Pending review', target: 'review-queue' as const, icon: ShieldCheck, tone: 'text-purple-600 bg-purple-500/10' },
+  { key: 'results' as const, labelKey: 'summaryStrip.resultInbox', labelFallback: 'Result inbox', target: 'result-inbox' as const, icon: CheckCircle2, tone: 'text-emerald-600 bg-emerald-500/10' },
 ] as const;
 
 export default function MissionControlSummaryStrip({
@@ -65,6 +30,7 @@ export default function MissionControlSummaryStrip({
   acceptedResults,
   onFocusSurface,
 }: MissionControlSummaryStripProps) {
+  const { t } = useTranslation('common');
   const values = {
     approvals: pendingApprovals,
     attention: activeAttentionItems,
@@ -76,8 +42,9 @@ export default function MissionControlSummaryStrip({
 
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
-      {CARDS.map(({ key, label, target, icon: Icon, tone }) => {
+      {CARDS_META.map(({ key, labelKey, labelFallback, target, icon: Icon, tone }) => {
         const count = values[key];
+        const label = t(labelKey, labelFallback);
         const isActionable = count > 0 && Boolean(onFocusSurface);
 
         return (

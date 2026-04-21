@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getStandaloneAttentionItems } from '../../lib/attention-actions';
 import { getTaskTimelineStage, isAcceptedResultTask } from '../../lib/control-plane';
 import type { MissionControlSurfaceTarget } from '../../lib/mission-control';
@@ -21,6 +22,7 @@ export default function BottomStatusStrip({
   onSelectSession,
   onOpenMissionControlSurface,
 }: BottomStatusStripProps) {
+  const { t } = useTranslation('common');
   const statuses = useSessionStatusStore((s) => s.statuses);
   const attentionItems = useAttentionStore((s) => s.attentionItems);
   const approvalRequests = useAttentionStore((s) => s.approvalRequests);
@@ -80,12 +82,12 @@ export default function BottomStatusStrip({
   }
 
   const controlPlaneTargets = [
-    { label: 'Approval', count: pendingApprovals.length, target: 'approval-inbox' },
-    { label: 'Attention', count: standaloneAttentionCount, target: 'attention-inbox' },
-    { label: 'Running', count: taskRunning, target: 'task-running' },
-    { label: 'Backlog', count: taskBacklog, target: 'task-backlog' },
-    { label: 'Review', count: reviewCount, target: 'review-queue' },
-    { label: 'Results', count: resultCount, target: 'result-inbox' },
+    { label: t('statusStrip.approval', 'Approval'), count: pendingApprovals.length, target: 'approval-inbox' },
+    { label: t('statusStrip.attention', 'Attention'), count: standaloneAttentionCount, target: 'attention-inbox' },
+    { label: t('statusStrip.running', 'Running'), count: taskRunning, target: 'task-running' },
+    { label: t('statusStrip.backlog', 'Backlog'), count: taskBacklog, target: 'task-backlog' },
+    { label: t('statusStrip.review', 'Review'), count: reviewCount, target: 'review-queue' },
+    { label: t('statusStrip.results', 'Results'), count: resultCount, target: 'result-inbox' },
   ] satisfies Array<{ label: string; count: number; target: MissionControlSurfaceTarget }>;
   const hasControlPlaneCounts = controlPlaneTargets.some((item) => item.count > 0);
 

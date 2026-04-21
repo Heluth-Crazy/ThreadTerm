@@ -361,5 +361,110 @@
       "failed": "失敗",
       "cancelled": "キャンセル"
     }
+  },
+  "approvalInbox": {
+    "title": "承認受信箱",
+    "approvalRequired": "承認が必要",
+    "failedToRespond": "承認リクエストへの応答に失敗しました。"
+  },
+  "attentionInbox": {
+    "title": "注意受信箱",
+    "description": "レビュー、復旧、または確認が必要なアクティブなランタイムイベント。",
+    "noExtraContext": "追加のコンテキストはまだありません。"
+  },
+  "backgroundRun": {
+    "summary": "概要",
+    "lastOutput": "最後の出力",
+    "noExtraContext": "追加のコンテキストはまだありません。",
+    "providerCodex": "Codex",
+    "providerClaude": "Claude",
+    "providerCustom": "カスタム",
+    "openSession": "セッションを開く"
+  },
+  "reviewQueue": {
+    "changedFiles": "変更ファイル",
+    "verification": "検証",
+    "risk": "リスク",
+    "nextStep": "次のステップ",
+    "hideCompare": "比較を非表示",
+    "compare": "比較",
+    "accepted": "承認済み",
+    "unknownError": "不明なエラー"
+  },
+  "taskTimeline": {
+    "title": "タスクタイムライン",
+    "subtitle": "バックログから実行、レビュー、完了までの永続タスクフロー。",
+    "backlogTitle": "バックログ",
+    "backlogDesc": "ディスパッチを待つオープンおよびキューに入った永続タスク。",
+    "backlogEmpty": "バックログタスクはありません。",
+    "runningTitle": "実行中",
+    "runningDesc": "アクティブに実行中または承認待ちのディスパッチされた作業。",
+    "runningEmpty": "実行中のタスクはありません。",
+    "pendingReviewTitle": "レビュー待ち",
+    "pendingReviewDesc": "人間の承認または修正決定を待つ完了した実行。",
+    "pendingReviewEmpty": "レビュー待ちの項目はありません。",
+    "completedTitle": "完了",
+    "completedDesc": "承認された結果、ターミナル失敗、またはキャンセルを含む最近完了した永続タスク。",
+    "completedEmpty": "最近完了したタスクはありません。",
+    "waitingApproval": "この実行を続けるための承認を待っています。",
+    "executing": "タスクは現在実行中です。",
+    "awaitingReview": "この結果が承認される前に人間のレビューを待っています。",
+    "executionFailed": "タスクがレビューまたは結果受信箱に到達する前に実行が失敗しました。",
+    "cancelled": "このタスクは完了前にキャンセルされました。",
+    "completedNoMeta": "追加の構造化された結果メタデータなしで完了しました。",
+    "queuedBacklog": "永続タスクバックログにキューに入りました。"
+  },
+  "summaryStrip": {
+    "pendingApprovals": "承認待ち",
+    "attentionItems": "注意項目",
+    "runningTasks": "実行中タスク",
+    "queuedTasks": "キュータスク",
+    "pendingReview": "レビュー待ち",
+    "resultInbox": "結果受信箱"
+  },
+  "taskStatus": {
+    "open": "オープン",
+    "queued": "キュー済み",
+    "dispatched": "ディスパッチ済み",
+    "in_progress": "実行中",
+    "pending_approval": "承認待ち",
+    "pending_review": "レビュー待ち",
+    "done": "完了",
+    "failed": "失敗",
+    "cancelled": "キャンセル済み",
+    "archived": "アーカイブ済み",
+    "cancelAction": "キャンセル",
+    "retryAction": "再試行",
+    "removeAction": "削除"
+  },
+  "taskQuickAdd": {
+    "promptPlaceholder": "タスクプロンプトを追加...",
+    "providerClaude": "Claude",
+    "providerCodex": "Codex",
+    "addToQueue": "キューに追加",
+    "adding": "追加中\u2026",
+    "worktreePlaceholder": "オプションの新しいワークツリー名\u2026",
+    "selectSourceSession": "ソースセッションを選択\u2026",
+    "noSessionsAvailable": "利用可能なセッションなし",
+    "failedToDispatch": "タスクディスパッチの準備に失敗しました。"
+  },
+  "statusStrip": {
+    "approval": "承認",
+    "attention": "注意",
+    "running": "実行",
+    "backlog": "バックログ",
+    "review": "レビュー",
+    "results": "結果"
+  },
+  "handoffMenu": {
+    "queueHandoff": "ハンドオフタスクをキューに追加",
+    "taskContextPlaceholder": "キューに入ったハンドオフのタスクコンテキスト（オプション）",
+    "optionalWorktree": "オプションのハンドオフターゲットワークツリー\u2026",
+    "defaultWorktree": "ハンドオフはこのプロジェクトに留まります",
+    "newWorktreePlaceholder": "オプションの新しいワークツリー名\u2026",
+    "handoffLabel": "ハンドオフ"
+  },
+  "sessionCard": {
+    "handoffLabel": "ハンドオフ"
   }
 }

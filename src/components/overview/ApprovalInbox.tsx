@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { ApprovalRequest } from '../../stores/attentionStore';
 import { respondToApprovalRequest } from '../../lib/approval-actions';
 
@@ -26,6 +27,7 @@ export default function ApprovalInbox({
   sessionLabels = {},
   focusedSessionId,
 }: ApprovalInboxProps) {
+  const { t } = useTranslation('common');
   const [busySessionId, setBusySessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,7 +37,7 @@ export default function ApprovalInbox({
     try {
       await respondToApprovalRequest(sessionId, requestId, approved);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to respond to approval request.');
+      setError(err instanceof Error ? err.message : t('approvalInbox.failedToRespond', 'Failed to respond to approval request.'));
     } finally {
       setBusySessionId(null);
     }
@@ -99,7 +101,7 @@ export default function ApprovalInbox({
                       </div>
                     ) : null}
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-medium text-foreground">{request.toolName || 'Approval required'}</span>
+                      <span className="text-sm font-medium text-foreground">{request.toolName || t('approvalInbox.approvalRequired', 'Approval required')}</span>
                       <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600">
                         pending
                       </span>

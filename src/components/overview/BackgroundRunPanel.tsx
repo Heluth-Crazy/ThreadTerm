@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import type { Task } from '../../lib/tauri-bridge';
 import {
   buildTaskDispatchPresentation,
@@ -76,24 +77,26 @@ function mapRunStatusToTaskStatus(run: BackgroundRun): Task['status'] {
   }
 }
 
-function getRunDetail(run: BackgroundRun): { label: string; body: string } {
+type TFunc = (key: string, fallback: string) => string;
+
+function getRunDetail(run: BackgroundRun, t: TFunc): { label: string; body: string } {
   if (run.summary) {
     return {
-      label: 'Summary',
+      label: t('backgroundRun.summary', 'Summary'),
       body: run.summary,
     };
   }
 
   if (run.lastOutputExcerpt) {
     return {
-      label: 'Last output',
+      label: t('backgroundRun.lastOutput', 'Last output'),
       body: run.lastOutputExcerpt,
     };
   }
 
   return {
-    label: 'Summary',
-    body: 'No extra context attached yet.',
+    label: t('backgroundRun.summary', 'Summary'),
+    body: t('backgroundRun.noExtraContext', 'No extra context attached yet.'),
   };
 }
 
@@ -124,7 +127,8 @@ function BackgroundRunCard({
   onOpenTaskQueue?: (projectPath: string) => void;
   onFocusSurface?: (target: MissionControlSurfaceTarget, locator?: MissionControlSurfaceLocator) => void;
 }) {
-  const detail = getRunDetail(run);
+  const { t } = useTranslation('common');
+  const detail = getRunDetail(run, t);
   const sessionId = run.sessionId;
   const isCompletedCard = variant === 'completed';
   const roleLabel = formatTaskRoleLabel(run.taskRole);
@@ -150,7 +154,7 @@ function BackgroundRunCard({
   const contextDetailLines = dispatchPresentation?.contextDetailLines ?? [];
   const openSessionAction = dispatchPresentation?.openSessionAction;
   const openSessionId = openSessionAction?.sessionId ?? sessionId;
-  const openSessionLabel = openSessionAction?.label ?? 'Open Session';
+  const openSessionLabel = openSessionAction?.label ?? t('backgroundRun.openSession', 'Open Session');
   const mainPathDescriptor = linkedTask
     ? describeTaskMainPath(linkedTask, {
       pendingApprovalSessionIds,
@@ -223,7 +227,7 @@ function BackgroundRunCard({
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium text-foreground">{run.title}</span>
             <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-              {PROVIDER_LABEL[run.provider]}
+              {run.provider === 'codex' ? t('backgroundRun.providerCodex', 'Codex') : run.provider === 'claude' ? t('backgroundRun.providerClaude', 'Claude') : t('backgroundRun.providerCustom', 'Custom')}
             </span>
             <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_BADGE_CLASS[run.status]}`}>
               {formatStatus(run.status)}

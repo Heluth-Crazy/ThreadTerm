@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import type { AttentionItem } from '../../stores/attentionStore';
 import { acknowledgeAttentionItem } from '../../lib/attention-actions';
 import type { InboxSessionLabel } from './ApprovalInbox';
@@ -15,12 +16,13 @@ const RISK_TONE: Record<AttentionItem['riskLevel'], string> = {
 };
 
 export default function AttentionInbox({ items, onOpenSession, sessionLabels = {} }: AttentionInboxProps) {
+  const { t } = useTranslation('common');
   return (
     <section className="rounded-2xl border border-border/60 bg-card/80 p-4 shadow-sm">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-foreground">Attention Inbox</h2>
-          <p className="text-xs text-muted-foreground">Active runtime events that need review, recovery, or a quick check.</p>
+          <h2 className="text-sm font-semibold text-foreground">{t('attentionInbox.title', 'Attention Inbox')}</h2>
+          <p className="text-xs text-muted-foreground">{t('attentionInbox.description', 'Active runtime events that need review, recovery, or a quick check.')}</p>
         </div>
         <div className="flex items-center gap-2">
           {items.length > 0 ? (
@@ -64,7 +66,7 @@ export default function AttentionInbox({ items, onOpenSession, sessionLabels = {
                         {item.reason}
                       </span>
                     </div>
-                    <p className="mt-1 text-xs text-muted-foreground">{item.message || 'No extra context attached yet.'}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{item.message || t('attentionInbox.noExtraContext', 'No extra context attached yet.')}</p>
                     {!sessionLabel ? (
                       <div className="mt-2 text-[11px] text-muted-foreground">Session {item.sessionId.slice(0, 12)}</div>
                     ) : null}
