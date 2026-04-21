@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import DiffViewer from '../DiffViewer.jsx';
 import { git, type Task } from '../../lib/tauri-bridge';
 import { hasStructuredTaskResultDetails } from '../../lib/control-plane';
@@ -68,10 +69,10 @@ function getCompareProjectPath(task: Task) {
   return task.worktree_path || task.project_path;
 }
 
-function getErrorMessage(error: unknown) {
+function getErrorMessage(error: unknown, unknownFallback: string) {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === 'string' && error) return error;
-  return 'Unknown error';
+  return unknownFallback;
 }
 
 function ResultDetailRow({
@@ -90,6 +91,7 @@ function ResultDetailRow({
 }
 
 function ResultMetadata({ task }: { task: Task }) {
+  const { t } = useTranslation('common');
   const changedFiles = getChangedFiles(task);
 
   if (!hasStructuredTaskResultDetails(task)) {
@@ -99,7 +101,7 @@ function ResultMetadata({ task }: { task: Task }) {
   return (
     <dl className="mt-3 space-y-2 rounded-xl border border-border/60 bg-muted/30 px-3 py-3">
       {changedFiles.length > 0 ? (
-        <ResultDetailRow label="Changed files">
+        <ResultDetailRow label={t('reviewQueue.changedFiles', 'Changed files')}>
           <div className="flex flex-wrap gap-1.5">
             {changedFiles.map((file) => (
               <code
@@ -114,19 +116,19 @@ function ResultMetadata({ task }: { task: Task }) {
       ) : null}
 
       {task.result_verification_summary ? (
-        <ResultDetailRow label="Verification">
+        <ResultDetailRow label={t('reviewQueue.verification', 'Verification')}>
           <span className="text-muted-foreground">{task.result_verification_summary}</span>
         </ResultDetailRow>
       ) : null}
 
       {task.result_risk_summary ? (
-        <ResultDetailRow label="Risk">
+        <ResultDetailRow label={t('reviewQueue.risk', 'Risk')}>
           <span className="text-muted-foreground">{task.result_risk_summary}</span>
         </ResultDetailRow>
       ) : null}
 
       {task.result_suggested_next_step ? (
-        <ResultDetailRow label="Next step">
+        <ResultDetailRow label={t('reviewQueue.nextStep', 'Next step')}>
           <span className="text-muted-foreground">{task.result_suggested_next_step}</span>
         </ResultDetailRow>
       ) : null}
@@ -223,6 +225,7 @@ function TaskCompareInline({
   task: Task;
   buttonClassName: string;
 }) {
+  const { t } = useTranslation('common');
   const changedFiles = getChangedFiles(task);
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -250,7 +253,7 @@ function TaskCompareInline({
           return {
             filePath,
             status: 'error',
-            message: getErrorMessage(result.reason),
+            message: getErrorMessage(result.reason, t('reviewQueue.unknownError', 'Unknown error')),
           } satisfies CompareFileDiffState;
         }
 
@@ -292,7 +295,7 @@ function TaskCompareInline({
         aria-expanded={isOpen}
         className={buttonClassName}
       >
-        {isOpen ? 'Hide Compare' : 'Compare'}
+        {isOpen ? t('reviewQueue.hideCompare', 'Hide Compare') : t('reviewQueue.compare', 'Compare')}
       </button>
 
       {isOpen ? (
@@ -462,9 +465,10 @@ function ResultItem({
   onOpenSession: (sessionId: string) => void;
   isFocused?: boolean;
 }) {
+  const { t } = useTranslation('common');
   const sessionLabel = task.session_id ? sessionLabels[task.session_id] : null;
   const tone = 'text-emerald-600 bg-emerald-500/10';
-  const statusLabel = 'Accepted';
+  const statusLabel = t('reviewQueue.accepted', 'Accepted');
   const openSessionAction = buildTaskDispatchPresentation(task, {
     sessionLabelsById: sessionLabels,
   }).openSessionAction;

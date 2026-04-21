@@ -361,5 +361,110 @@
       "failed": "실패",
       "cancelled": "취소됨"
     }
+  },
+  "approvalInbox": {
+    "title": "승인 알림함",
+    "approvalRequired": "승인 필요",
+    "failedToRespond": "승인 요청 응답에 실패했습니다."
+  },
+  "attentionInbox": {
+    "title": "주의 알림함",
+    "description": "검토, 복구 또는 빠른 확인이 필요한 활성 런타임 이벤트.",
+    "noExtraContext": "추가 컨텍스트가 없습니다."
+  },
+  "backgroundRun": {
+    "summary": "요약",
+    "lastOutput": "마지막 출력",
+    "noExtraContext": "추가 컨텍스트가 없습니다.",
+    "providerCodex": "Codex",
+    "providerClaude": "Claude",
+    "providerCustom": "사용자 정의",
+    "openSession": "세션 열기"
+  },
+  "reviewQueue": {
+    "changedFiles": "변경된 파일",
+    "verification": "검증",
+    "risk": "위험",
+    "nextStep": "다음 단계",
+    "hideCompare": "비교 숨기기",
+    "compare": "비교",
+    "accepted": "승인됨",
+    "unknownError": "알 수 없는 오류"
+  },
+  "taskTimeline": {
+    "title": "작업 타임라인",
+    "subtitle": "백로그에서 실행, 검토, 완료까지의 지속적 작업 흐름.",
+    "backlogTitle": "백로그",
+    "backlogDesc": "파견 대기 중인 열린 및 대기 중인 지속적 작업.",
+    "backlogEmpty": "백로그 작업이 없습니다.",
+    "runningTitle": "실행 중",
+    "runningDesc": "활성 실행 중이거나 승인 대기 중인 파견된 작업.",
+    "runningEmpty": "실행 중인 작업이 없습니다.",
+    "pendingReviewTitle": "검토 대기",
+    "pendingReviewDesc": "인간의 승인 또는 재작업 결정을 기다리는 완료된 실행.",
+    "pendingReviewEmpty": "검토 대기 중인 항목이 없습니다.",
+    "completedTitle": "완료됨",
+    "completedDesc": "승인된 결과, 터미널 실패 또는 취소를 포함한 최근 완료된 지속적 작업.",
+    "completedEmpty": "최근 완료된 작업이 없습니다.",
+    "waitingApproval": "이 실행을 계속하기 전에 승인을 기다리고 있습니다.",
+    "executing": "작업이 현재 실행 중입니다.",
+    "awaitingReview": "이 결과가 승인되기 전에 인간 검토를 기다리고 있습니다.",
+    "executionFailed": "이 작업이 검토 또는 결과 받은 편지함에 도달하기 전에 실행이 실패했습니다.",
+    "cancelled": "이 작업은 완료 전에 취소되었습니다.",
+    "completedNoMeta": "추가 구조화된 결과 메타데이터 없이 완료되었습니다.",
+    "queuedBacklog": "지속적 작업 백로그에 대기 중입니다."
+  },
+  "summaryStrip": {
+    "pendingApprovals": "승인 대기",
+    "attentionItems": "주의 항목",
+    "runningTasks": "실행 중인 작업",
+    "queuedTasks": "대기 중인 작업",
+    "pendingReview": "검토 대기",
+    "resultInbox": "결과 받은 편지함"
+  },
+  "taskStatus": {
+    "open": "열림",
+    "queued": "대기 중",
+    "dispatched": "파견됨",
+    "in_progress": "실행 중",
+    "pending_approval": "승인 대기",
+    "pending_review": "검토 대기",
+    "done": "완료",
+    "failed": "실패",
+    "cancelled": "취소됨",
+    "archived": "보관됨",
+    "cancelAction": "취소",
+    "retryAction": "재시도",
+    "removeAction": "제거"
+  },
+  "taskQuickAdd": {
+    "promptPlaceholder": "작업 프롬프트 추가...",
+    "providerClaude": "Claude",
+    "providerCodex": "Codex",
+    "addToQueue": "대기열에 추가",
+    "adding": "추가 중\u2026",
+    "worktreePlaceholder": "선택적 새 작업 트리 이름\u2026",
+    "selectSourceSession": "소스 세션 선택\u2026",
+    "noSessionsAvailable": "사용 가능한 세션 없음",
+    "failedToDispatch": "작업 파견 준비에 실패했습니다."
+  },
+  "statusStrip": {
+    "approval": "승인",
+    "attention": "주의",
+    "running": "실행",
+    "backlog": "백로그",
+    "review": "검토",
+    "results": "결과"
+  },
+  "handoffMenu": {
+    "queueHandoff": "핸드오프 작업 대기열에 추가",
+    "taskContextPlaceholder": "대기 중인 핸드오프의 작업 컨텍스트 (선택 사항)",
+    "optionalWorktree": "선택적 핸드오프 대상 작업 트리\u2026",
+    "defaultWorktree": "핸드오프는 이 프로젝트에서 유지됩니다",
+    "newWorktreePlaceholder": "선택적 새 작업 트리 이름\u2026",
+    "handoffLabel": "핸드오프"
+  },
+  "sessionCard": {
+    "handoffLabel": "핸드오프"
   }
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowUpRight } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import type { TaskRole } from '../../lib/tauri-bridge';
 import {
@@ -55,9 +56,10 @@ export default function HandoffTaskMenu({
   selectedProject,
   availableProjects = [],
   onQueuedTask,
-  buttonTitle = 'Queue handoff task',
+  buttonTitle,
   buttonClassName = 'rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-foreground',
 }: HandoffTaskMenuProps) {
+  const { t } = useTranslation('common');
   const [taskDesc, setTaskDesc] = useState('');
   const [targetProvider, setTargetProvider] = useState<string>('');
   const [role, setRole] = useState<TaskRole>('implement');
@@ -172,7 +174,7 @@ export default function HandoffTaskMenu({
           setIsOpen((current) => !current);
         }}
         className={buttonClassName}
-        title={buttonTitle}
+        title={buttonTitle ?? t('handoffMenu.queueHandoff', 'Queue handoff task')}
       >
         <ArrowUpRight className="h-3.5 w-3.5" />
       </button>
@@ -182,15 +184,15 @@ export default function HandoffTaskMenu({
           onClick={(event) => event.stopPropagation()}
         >
           <div className="mb-2">
-            <p className="text-[11px] font-medium text-foreground">Queue handoff task</p>
+            <p className="text-[11px] font-medium text-foreground">{t('handoffMenu.queueHandoff', 'Queue handoff task')}</p>
             <p className="mt-0.5 text-[10px] text-muted-foreground">
-              Keep this session as the source context, then pick the target provider, worktree, and review path for the follow-up.
+              {t('handoffMenu.handoffLabel', 'Keep this session as the source context, then pick the target provider, worktree, and review path for the follow-up.')}
             </p>
           </div>
 
           <textarea
             className="mb-2 w-full rounded border border-border bg-background px-2 py-1 text-[11px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-            placeholder="Task context for the queued handoff (optional)"
+            placeholder={t('handoffMenu.taskContextPlaceholder', 'Task context for the queued handoff (optional)')}
             rows={2}
             value={taskDesc}
             onChange={(event) => setTaskDesc(event.target.value)}
@@ -236,7 +238,9 @@ export default function HandoffTaskMenu({
             }}
           >
             <option value="">
-              {worktreeOptions.length > 0 ? 'Optional handoff target worktree…' : 'Handoff stays in this project by default'}
+              {worktreeOptions.length > 0
+                ? t('handoffMenu.optionalWorktree', 'Optional handoff target worktree…')
+                : t('handoffMenu.defaultWorktree', 'Handoff stays in this project by default')}
             </option>
             {worktreeOptions.map((option) => (
               <option key={option.path} value={option.path}>
@@ -255,7 +259,7 @@ export default function HandoffTaskMenu({
                 setNewWorktreeName(event.target.value);
                 setError(null);
               }}
-              placeholder="Optional new worktree name…"
+              placeholder={t('handoffMenu.newWorktreePlaceholder', 'Optional new worktree name…')}
             />
           ) : null}
 

@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import type { Task } from '../../lib/tauri-bridge';
 import type { MissionControlSurfaceLocator, MissionControlSurfaceTarget, TaskTimelineStage } from '../../lib/mission-control';
 import {
@@ -41,36 +42,60 @@ interface StageConfig {
 
 const VISIBLE_TASK_COUNT = 3;
 
-const STAGES: StageConfig[] = [
+type TFunc = (key: string, fallback: string) => string;
+
+const STAGES_KEYS = [
   {
-    key: 'backlog',
-    title: 'Backlog',
-    description: 'Open and queued durable tasks waiting to be dispatched.',
+    key: 'backlog' as const,
+    titleKey: 'taskTimeline.backlogTitle',
+    titleFallback: 'Backlog',
+    descKey: 'taskTimeline.backlogDesc',
+    descFallback: 'Open and queued durable tasks waiting to be dispatched.',
     badgeClassName: 'bg-slate-500/10 text-slate-700',
-    emptyMessage: 'No backlog tasks.',
+    emptyKey: 'taskTimeline.backlogEmpty',
+    emptyFallback: 'No backlog tasks.',
   },
   {
-    key: 'running',
-    title: 'Running',
-    description: 'Dispatched work that is actively executing or blocked on approval.',
+    key: 'running' as const,
+    titleKey: 'taskTimeline.runningTitle',
+    titleFallback: 'Running',
+    descKey: 'taskTimeline.runningDesc',
+    descFallback: 'Dispatched work that is actively executing or blocked on approval.',
     badgeClassName: 'bg-sky-500/10 text-sky-700',
-    emptyMessage: 'No running tasks.',
+    emptyKey: 'taskTimeline.runningEmpty',
+    emptyFallback: 'No running tasks.',
   },
   {
-    key: 'review',
-    title: 'Pending Review',
-    description: 'Completed runs waiting for a human accept or rework decision.',
+    key: 'review' as const,
+    titleKey: 'taskTimeline.pendingReviewTitle',
+    titleFallback: 'Pending Review',
+    descKey: 'taskTimeline.pendingReviewDesc',
+    descFallback: 'Completed runs waiting for a human accept or rework decision.',
     badgeClassName: 'bg-violet-500/10 text-violet-700',
-    emptyMessage: 'Nothing is waiting for review.',
+    emptyKey: 'taskTimeline.pendingReviewEmpty',
+    emptyFallback: 'Nothing is waiting for review.',
   },
   {
-    key: 'completed',
-    title: 'Completed',
-    description: 'Recently finished durable tasks, including accepted results and terminal failures or cancellations.',
+    key: 'completed' as const,
+    titleKey: 'taskTimeline.completedTitle',
+    titleFallback: 'Completed',
+    descKey: 'taskTimeline.completedDesc',
+    descFallback: 'Recently finished durable tasks, including accepted results and terminal failures or cancellations.',
     badgeClassName: 'bg-emerald-500/10 text-emerald-700',
-    emptyMessage: 'No recently completed tasks.',
+    emptyKey: 'taskTimeline.completedEmpty',
+    emptyFallback: 'No recently completed tasks.',
   },
 ];
+
+function getStages(t: TFunc): StageConfig[] {
+  return STAGES_KEYS.map(({ key, titleKey, titleFallback, descKey, descFallback, badgeClassName, emptyKey, emptyFallback }) => ({
+    key,
+    title: t(titleKey, titleFallback),
+    description: t(descKey, descFallback),
+    badgeClassName,
+    emptyMessage: t(emptyKey, emptyFallback),
+  }));
+}
 
 function formatRunStatus(status: BackgroundRun['status']) {
   return status.replace(/_/g, ' ');
@@ -98,30 +123,30 @@ function findLinkedRun(task: Task, backgroundRuns: BackgroundRun[]) {
   return backgroundRuns.find((run) => run.sessionId === task.session_id);
 }
 
-function getTaskSummary(stage: TaskFlowStage, task: Task, linkedRun?: BackgroundRun) {
+function getTaskSummary(stage: TaskFlowStage, task: Task, t: TFunc, linkedRun?: BackgroundRun) {
   if (stage === 'running') {
     if (linkedRun?.summary) return linkedRun.summary;
     if (linkedRun?.lastOutputExcerpt) return linkedRun.lastOutputExcerpt;
     if (task.result_summary) return task.result_summary;
-    if (task.status === 'pending_approval') return 'Waiting for approval before this run can continue.';
-    return task.description || 'Task is currently executing.';
+    if (task.status === 'pending_approval') return t('taskTimeline.waitingApproval', 'Waiting for approval before this run can continue.');
+    return task.description || t('taskTimeline.executing', 'Task is currently executing.');
   }
 
   if (stage === 'review') {
-    return task.result_summary || 'Awaiting human review before this result is accepted.';
+    return task.result_summary || t('taskTimeline.awaitingReview', 'Awaiting human review before this result is accepted.');
   }
 
   if (stage === 'completed') {
     if (task.status === 'failed') {
-      return task.result_summary || 'Execution failed before this task reached review or result inbox.';
+      return task.result_summary || t('taskTimeline.executionFailed', 'Execution failed before this task reached review or result inbox.');
     }
     if (task.status === 'cancelled') {
-      return task.result_summary || 'This task was cancelled before it completed.';
+      return task.result_summary || t('taskTimeline.cancelled', 'This task was cancelled before it completed.');
     }
-    return task.result_summary || 'Completed without extra structured result metadata yet.';
+    return task.result_summary || t('taskTimeline.completedNoMeta', 'Completed without extra structured result metadata yet.');
   }
 
-  return task.description || 'Queued in the durable task backlog.';
+  return task.description || t('taskTimeline.queuedBacklog', 'Queued in the durable task backlog.');
 }
 
 function getPrimaryAction(
@@ -195,7 +220,8 @@ function TaskFlowCard({
   onOpenTaskQueue: (projectPath: string) => void;
   onFocusSurface: (target: TaskTimelineSurfaceTarget, locator?: TaskTimelineSurfaceFocusLocator) => void;
 }) {
-  const summary = getTaskSummary(stage, task, linkedRun);
+  const { t } = useTranslation('common');
+  const summary = getTaskSummary(stage, task, t, linkedRun);
   const changedFileCount = task.result_changed_files?.length ?? 0;
   const availableSessionIds = new Set(Object.keys(sessionLabels));
   const primaryAction = getPrimaryAction(
@@ -313,6 +339,8 @@ function TaskFlowCard({
 }
 
 export default function TaskTimelineOverview(props: TaskTimelineOverviewProps) {
+  const { t } = useTranslation('common');
+  const STAGES = getStages(t);
   const counts = {
     backlog: props.backlogTasks.length,
     running: props.runningTasks.length,
@@ -324,8 +352,8 @@ export default function TaskTimelineOverview(props: TaskTimelineOverviewProps) {
     <section className="rounded-2xl border border-border/60 bg-card/80 p-4 shadow-sm">
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-foreground">Task Timeline</h2>
-          <p className="text-xs text-muted-foreground">Durable task flow from backlog through running, review, and completion.</p>
+          <h2 className="text-sm font-semibold text-foreground">{t('taskTimeline.title', 'Task Timeline')}</h2>
+          <p className="text-xs text-muted-foreground">{t('taskTimeline.subtitle', 'Durable task flow from backlog through running, review, and completion.')}</p>
         </div>
         <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
           {counts.backlog + counts.running + counts.review + counts.completed}

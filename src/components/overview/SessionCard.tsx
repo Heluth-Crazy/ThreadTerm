@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import HandoffTaskMenu from '../shared/HandoffTaskMenu';
 import { useAttentionStore } from '../../stores/attentionStore';
 import { useSessionStatusStore, type SessionRuntimeStatus } from '../../stores/sessionStatusStore';
@@ -76,6 +77,7 @@ export default function SessionCard({
   showHandoffAction = false,
   onQueueHandoffTask,
 }: SessionCardProps) {
+  const { t } = useTranslation('common');
   const getStatus = useSessionStatusStore((s) => s.getStatus);
   const pendingApproval = useAttentionStore((s) => s.approvalRequests[session.id]);
   const activeAttentionItem = useAttentionStore((s) =>
@@ -114,7 +116,7 @@ export default function SessionCard({
     : !mainPathBadge && linkedTask?.execution_strategy === 'handoff'
       ? {
         kind: 'path',
-        label: 'Handoff',
+        label: t('sessionCard.handoffLabel', 'Handoff'),
       } satisfies TaskMainPathBadge
       : null;
   const effectiveMainPathBadge = mainPathBadge ?? fallbackMainPathBadge;

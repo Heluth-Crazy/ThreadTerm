@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import type { Task, TaskStatus } from '../../lib/tauri-bridge';
@@ -24,17 +25,17 @@ const STATUS_COLORS: Record<TaskStatus, string> = {
   archived: 'bg-slate-500/20 text-slate-400 border-slate-500/30',
 };
 
-const STATUS_LABELS: Record<TaskStatus, string> = {
-  open: 'Open',
-  queued: 'Queued',
-  dispatched: 'Dispatched',
-  in_progress: 'Running',
-  pending_approval: 'Pending Approval',
-  pending_review: 'Pending Review',
-  done: 'Done',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
-  archived: 'Archived',
+const STATUS_LABELS_KEYS: Record<TaskStatus, [string, string]> = {
+  open: ['taskStatus.open', 'Open'],
+  queued: ['taskStatus.queued', 'Queued'],
+  dispatched: ['taskStatus.dispatched', 'Dispatched'],
+  in_progress: ['taskStatus.in_progress', 'Running'],
+  pending_approval: ['taskStatus.pending_approval', 'Pending Approval'],
+  pending_review: ['taskStatus.pending_review', 'Pending Review'],
+  done: ['taskStatus.done', 'Done'],
+  failed: ['taskStatus.failed', 'Failed'],
+  cancelled: ['taskStatus.cancelled', 'Cancelled'],
+  archived: ['taskStatus.archived', 'Archived'],
 };
 
 interface TaskQueueItemProps {
@@ -61,6 +62,7 @@ export function TaskQueueItem({
   sourceSessionLabel,
   runtimeSessionLabel,
 }: TaskQueueItemProps) {
+  const { t } = useTranslation('common');
   const colorClass = STATUS_COLORS[task.status];
   const createdAt = Date.parse(task.created_at);
   const updatedAt = Date.parse(task.updated_at);
@@ -81,7 +83,7 @@ export function TaskQueueItem({
   return (
     <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent/50 group">
       <Badge className={`text-[10px] px-1.5 py-0 shrink-0 ${colorClass}`}>
-        {STATUS_LABELS[task.status]}
+        {t(...STATUS_LABELS_KEYS[task.status])}
       </Badge>
       <div className="flex-1 min-w-0">
         <span className="text-sm truncate block" title={task.title}>
@@ -131,7 +133,7 @@ export function TaskQueueItem({
             size="sm"
             className="h-6 px-1.5 text-[10px]"
             onClick={() => onCancel(task)}
-            title="Cancel"
+            title={t('taskStatus.cancelAction', 'Cancel')}
           >
             ■
           </Button>
@@ -142,7 +144,7 @@ export function TaskQueueItem({
             size="sm"
             className="h-6 px-1.5 text-[10px]"
             onClick={() => onRetry(task)}
-            title="Retry"
+            title={t('taskStatus.retryAction', 'Retry')}
           >
             ↻
           </Button>
@@ -153,7 +155,7 @@ export function TaskQueueItem({
             size="sm"
             className="h-6 px-1.5 text-[10px] text-destructive"
             onClick={() => onRemove(task)}
-            title="Remove"
+            title={t('taskStatus.removeAction', 'Remove')}
           >
             ✕
           </Button>

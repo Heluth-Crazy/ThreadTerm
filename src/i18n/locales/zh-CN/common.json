@@ -365,5 +365,110 @@
       "failed": "失败",
       "cancelled": "已取消"
     }
+  },
+  "approvalInbox": {
+    "title": "审批收件箱",
+    "approvalRequired": "需要审批",
+    "failedToRespond": "响应审批请求失败。"
+  },
+  "attentionInbox": {
+    "title": "注意事项收件箱",
+    "description": "需要审查、恢复或快速检查的活动运行时事件。",
+    "noExtraContext": "暂无附加上下文。"
+  },
+  "backgroundRun": {
+    "summary": "摘要",
+    "lastOutput": "最后输出",
+    "noExtraContext": "暂无附加上下文。",
+    "providerCodex": "Codex",
+    "providerClaude": "Claude",
+    "providerCustom": "自定义",
+    "openSession": "打开会话"
+  },
+  "reviewQueue": {
+    "changedFiles": "变更文件",
+    "verification": "验证",
+    "risk": "风险",
+    "nextStep": "下一步",
+    "hideCompare": "隐藏对比",
+    "compare": "对比",
+    "accepted": "已接受",
+    "unknownError": "未知错误"
+  },
+  "taskTimeline": {
+    "title": "任务时间线",
+    "subtitle": "持久任务从积压到运行、审核和完成的流程。",
+    "backlogTitle": "积压",
+    "backlogDesc": "等待派发的已打开和已排队的持久任务。",
+    "backlogEmpty": "暂无积压任务。",
+    "runningTitle": "运行中",
+    "runningDesc": "正在执行或等待审批的已派发工作。",
+    "runningEmpty": "暂无运行中任务。",
+    "pendingReviewTitle": "待审核",
+    "pendingReviewDesc": "等待人工接受或返工决定的已完成运行。",
+    "pendingReviewEmpty": "暂无等待审核的任务。",
+    "completedTitle": "已完成",
+    "completedDesc": "最近完成的持久任务，包括已接受的结果以及终止失败或取消。",
+    "completedEmpty": "暂无最近完成的任务。",
+    "waitingApproval": "等待审批后此运行才能继续。",
+    "executing": "任务正在执行中。",
+    "awaitingReview": "等待人工审核后此结果才能被接受。",
+    "executionFailed": "任务在到达审核或结果收件箱之前执行失败。",
+    "cancelled": "此任务在完成之前已被取消。",
+    "completedNoMeta": "已完成，尚无额外的结构化结果元数据。",
+    "queuedBacklog": "已排入持久任务积压队列。"
+  },
+  "summaryStrip": {
+    "pendingApprovals": "待审批",
+    "attentionItems": "注意事项",
+    "runningTasks": "运行中任务",
+    "queuedTasks": "排队任务",
+    "pendingReview": "待审核",
+    "resultInbox": "结果收件箱"
+  },
+  "taskStatus": {
+    "open": "待处理",
+    "queued": "已排队",
+    "dispatched": "已派发",
+    "in_progress": "运行中",
+    "pending_approval": "待审批",
+    "pending_review": "待审核",
+    "done": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+    "archived": "已归档",
+    "cancelAction": "取消",
+    "retryAction": "重试",
+    "removeAction": "移除"
+  },
+  "taskQuickAdd": {
+    "promptPlaceholder": "添加任务提示...",
+    "providerClaude": "Claude",
+    "providerCodex": "Codex",
+    "addToQueue": "添加到队列",
+    "adding": "添加中\u2026",
+    "worktreePlaceholder": "可选的新工作区名称\u2026",
+    "selectSourceSession": "选择源会话\u2026",
+    "noSessionsAvailable": "无可用会话",
+    "failedToDispatch": "准备任务派发失败。"
+  },
+  "statusStrip": {
+    "approval": "审批",
+    "attention": "注意",
+    "running": "运行",
+    "backlog": "积压",
+    "review": "审核",
+    "results": "结果"
+  },
+  "handoffMenu": {
+    "queueHandoff": "排队交接任务",
+    "taskContextPlaceholder": "排队交接的任务上下文（可选）",
+    "optionalWorktree": "可选的交接目标工作区\u2026",
+    "defaultWorktree": "交接将在此项目中进行",
+    "newWorktreePlaceholder": "可选的新工作区名称\u2026",
+    "handoffLabel": "交接"
+  },
+  "sessionCard": {
+    "handoffLabel": "交接"
   }
 }
