@@ -331,6 +331,29 @@ export function TauriEventProvider({ children }: { children: React.ReactNode }) 
 
     pty
       .onExit(({ id }) => {
+        // Flush any remaining partial line in the buffer before discarding it.
+        // Codex may emit `turn.completed` as its last line without a trailing newline,
+        // which leaves the JSON in the buffer and never gets processed otherwise.
+        const remaining = lineBuffers.current.get(id)?.trim();
+        if (remaining && remaining.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(remaining);
+            const ptype: string = parsed.type ?? '';
+            const sessionId = ptyToSession.current.get(id) ?? id;
+            if (ptype === 'turn.completed') {
+              pushMessage({ type: 'codex-complete', sessionId, data: parsed });
+            } else if (ptype === 'error') {
+              pushMessage({
+                type: 'codex-error',
+                sessionId,
+                data: parsed,
+                error: parsed.message ?? parsed.error?.message ?? 'Unknown error',
+              });
+            }
+          } catch {
+            // Not valid JSON — ignore
+          }
+        }
         lineBuffers.current.delete(id);
         ptyToSession.current.delete(id);
       })
