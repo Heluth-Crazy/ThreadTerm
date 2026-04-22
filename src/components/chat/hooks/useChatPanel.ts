@@ -840,6 +840,19 @@ export function useChatPanel({
       return;
     }
 
+    // Fallback: if the PTY process exits (Completed/Failed) but codex-complete was never
+    // emitted (e.g. Codex CLI didn't output turn.completed), clear the loading state.
+    if (messageType === 'session-state-changed') {
+      if (message.state === 'Completed' && isSendingRef.current) {
+        contentBlockTypeByIndexRef.current = {};
+        finishRequest('done', message.sessionId || currentSessionIdRef.current);
+      } else if (message.state === 'Failed' && isSendingRef.current) {
+        contentBlockTypeByIndexRef.current = {};
+        finishRequest('idle', message.sessionId || currentSessionIdRef.current);
+      }
+      return;
+    }
+
     if (
       messageType === 'claude-error' ||
       messageType === 'codex-error' ||
