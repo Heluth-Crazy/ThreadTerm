@@ -1,40 +1,34 @@
-import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import { I18nextProvider } from 'react-i18next';
 import { ThemeProvider } from './contexts/ThemeContext';
-import { AuthProvider } from './contexts/AuthContext';
-import { TauriEventProvider } from './contexts/TauriEventContext';
-import AppContent from './components/app/AppContent';
 import i18n from './i18n/config.js';
-import { useSessionStatusTracker } from './hooks/useSessionStatusTracker';
-import { useLiveGridSnapshotSync } from './hooks/useLiveGridSnapshotSync';
-import { useAttentionRouter } from './hooks/useAttentionRouter';
-import { useAutoExecutor } from './hooks/useAutoExecutor';
-import { useWebSocket } from './contexts/TauriEventContext';
+import { TerminalManager } from './components/terminal/TerminalManager';
+import { TerminalEventBridge } from './components/terminal/TerminalEventBridge';
+import { NotificationBridge } from './components/terminal/NotificationBridge';
+import { KeyboardBridge } from './components/terminal/KeyboardBridge';
+import { RadialSwitcher } from './components/terminal/RadialSwitcher';
+import { NotificationCenter } from './components/terminal/NotificationCenter';
 
-function AppInitializer() {
-  useSessionStatusTracker();
-  useLiveGridSnapshotSync();
-  useAttentionRouter();
-  const { sendMessage } = useWebSocket();
-  useAutoExecutor(sendMessage);
-  return null;
-}
-
+/**
+ * Terminal Manager Lite — lightweight terminal orchestrator.
+ *
+ * Responsibilities:
+ *   • render the terminal card grid / full-screen terminal view
+ *   • bridge PTY events from Rust into the in-memory store
+ *   • dispatch OS notifications and populate the in-app notification center
+ *   • handle global keyboard shortcuts and the radial switcher overlay
+ */
 export default function App() {
   return (
     <I18nextProvider i18n={i18n}>
       <ThemeProvider>
-        <AuthProvider>
-          <TauriEventProvider>
-            <AppInitializer />
-            <Router basename={window.__ROUTER_BASENAME__ || ''}>
-              <Routes>
-                <Route path="/" element={<AppContent />} />
-                <Route path="/session/:sessionId" element={<AppContent />} />
-              </Routes>
-            </Router>
-          </TauriEventProvider>
-        </AuthProvider>
+        <TerminalEventBridge />
+        <NotificationBridge />
+        <KeyboardBridge />
+        <div className="h-screen w-screen overflow-hidden bg-background text-foreground">
+          <TerminalManager />
+          <RadialSwitcher />
+          <NotificationCenter />
+        </div>
       </ThemeProvider>
     </I18nextProvider>
   );
