@@ -10,6 +10,8 @@
 import { useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { Plus, TerminalSquare } from 'lucide-react';
+import { open as shellOpen } from '@tauri-apps/plugin-shell';
+import { isTauriEnv } from '../../lib/tauri-bridge';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { TerminalCardComponent } from './TerminalCard';
 
@@ -40,9 +42,12 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
     });
   }, []);
 
-  const handleOpenDir = useCallback((_path: string) => {
-    // Best effort; Tauri shell plugin is optional.
-    // TODO(phase-8): wire up to `@tauri-apps/plugin-shell` open() if available.
+  const handleOpenDir = useCallback((path: string) => {
+    if (!isTauriEnv()) return;
+    shellOpen(path).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn('[CardGrid] Failed to open directory:', err);
+    });
   }, []);
 
   if (cards.length === 0) {

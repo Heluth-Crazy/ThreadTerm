@@ -54,6 +54,23 @@ export function TerminalEventBridge(): null {
   const bufferRef = useRef<Map<string, string>>(new Map());
   const attentionDebounceRef = useRef<Map<string, number>>(new Map());
 
+  // On first mount, any cards that were persisted as `running`, `waiting`,
+  // or `failed` are stale — their PTY died when the app was closed. Reset
+  // them to `idle` so the UI reflects reality, and record a timeline event
+  // so the user can see why the state changed.
+  useEffect(() => {
+    const store = useTerminalStore.getState();
+    for (const card of store.cards) {
+      if (card.status === 'running' || card.status === 'waiting') {
+        store.updateCardStatus(card.id, 'idle');
+        store.appendEvent(card.id, {
+          kind: 'status',
+          summary: 'session reset on app restart',
+        });
+      }
+    }
+  }, []);
+
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
     let cancelled = false;
