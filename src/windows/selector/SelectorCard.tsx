@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next';
 import type { TerminalCard } from '../../types/terminal';
 import { getTerminalTypeMeta } from '../../components/terminal/terminalTypeMeta';
 import { getStatusMeta } from '../../components/terminal/statusMeta';
+import { buildCardPreview, isTechnicalPreviewLine } from '../../components/terminal/cardPreview';
 
 export interface SelectorCardProps {
   card: TerminalCard;
@@ -31,15 +32,6 @@ export interface SelectorCardProps {
   size?: 'tile' | 'lead' | 'thumb';
   onClick?: () => void;
   onDoubleClick?: () => void;
-}
-
-function tailLines(input: string, n: number): string[] {
-  if (!input) return [];
-  return input
-    .split('\n')
-    .map((l) => l.trimEnd())
-    .filter((l) => l.length > 0)
-    .slice(-n);
 }
 
 export const SelectorCard = memo(function SelectorCard({
@@ -53,13 +45,18 @@ export const SelectorCard = memo(function SelectorCard({
   const { t } = useTranslation('terminal');
   const typeMeta = getTerminalTypeMeta(card.terminalType);
   const statusInfo = getStatusMeta(card.status);
-  const StatusIcon = statusInfo.Icon;
   const TypeIcon = typeMeta.Icon;
 
   const preview = useMemo(
-    () => tailLines(card.lastReplyPreview || card.lastOutput, size === 'lead' ? 6 : 3),
-    [card.lastReplyPreview, card.lastOutput, size],
+    () => buildCardPreview(card, {
+      maxLines: size === 'lead' ? 8 : 4,
+      maxLineLength: size === 'lead' ? 520 : 320,
+    }),
+    [card.lastReplyPreview, card.lastOutput, card.status, card.terminalType, size],
   );
+  const previewText = preview.bodyLines.join('\n\n');
+  const previewIsProse = preview.source === 'reply' && !preview.bodyLines.some(isTechnicalPreviewLine);
+  const previewLineClamp = size === 'lead' ? 10 : size === 'thumb' ? 3 : 5;
 
   const dims =
     size === 'lead'
@@ -83,29 +80,6 @@ export const SelectorCard = memo(function SelectorCard({
           : 'border-border/70 hover:border-primary/50',
       ].join(' ')}
     >
-      {/* Index badge (1-9 shortcut hint) */}
-      {typeof indexLabel === 'number' && (
-        <span
-          className={[
-            'absolute left-2 top-2 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full',
-            'text-[11px] font-mono font-semibold',
-            selected
-              ? 'bg-primary text-primary-foreground'
-              : 'bg-black/50 text-white/90',
-          ].join(' ')}
-        >
-          {indexLabel}
-        </span>
-      )}
-
-      {/* Unread dot */}
-      {card.unread && (
-        <span className="absolute right-3 top-3 z-10 flex h-2.5 w-2.5">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-70" />
-          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500" />
-        </span>
-      )}
-
       {/* Header */}
       <div className="flex items-center gap-2 border-b border-border/60 px-3 pb-2 pt-3">
         <div className={`flex h-8 w-8 items-center justify-center rounded-lg bg-muted ${typeMeta.accent}`}>
@@ -114,9 +88,21 @@ export const SelectorCard = memo(function SelectorCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="truncate font-semibold">{card.projectName}</span>
-            <span className="shrink-0 text-[10px] text-muted-foreground">
+            <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">
               · {t(`types.${card.terminalType}`, typeMeta.label)}
             </span>
+            {typeof indexLabel === 'number' && size === 'tile' && (
+              <kbd
+                className={[
+                  'ml-auto shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none',
+                  selected
+                    ? 'border-primary/30 bg-primary/10 text-primary'
+                    : 'border-border/70 bg-muted text-muted-foreground',
+                ].join(' ')}
+              >
+                {indexLabel}
+              </kbd>
+            )}
           </div>
           <div className="truncate text-[10px] text-muted-foreground">{card.projectPath}</div>
         </div>
@@ -125,25 +111,51 @@ export const SelectorCard = memo(function SelectorCard({
       {/* Preview
        *
        * Rendering rules:
-       *   • Use a <pre> block with `whitespace-pre-wrap` so long lines
-       *     actually wrap instead of being truncated mid-word.
-       *   • Clamp by total visual lines, not by per-row truncation, so a
-       *     single long sentence can consume several visual lines and
-       *     remain readable end-to-end.
-       *   • `break-words` handles the CLI token-soup case (long paths,
-       *     JSON blobs) without overflowing the card horizontally.
-       */}
+       *   • Reuse the main card preview filter so selector cards do not
+       *     expose shell prompts, startup noise, or raw TUI redraw text.
+       *   • Render prose as one wrapped block so a single long reply can
+       *     use the available preview area; keep shell-like output row based.
+      */}
       <div className="flex-1 overflow-hidden px-3 py-2">
-        {preview.length > 0 ? (
-          <pre
+        {preview.bodyLines.length > 0 ? (
+          <div
             className={[
-              'font-mono leading-snug text-muted-foreground',
-              'whitespace-pre-wrap break-words',
-              size === 'lead' ? 'line-clamp-[10]' : 'line-clamp-6',
+              'leading-snug text-muted-foreground',
+              size === 'lead' ? 'text-sm' : 'text-xs',
             ].join(' ')}
           >
-            {preview.join('\n')}
-          </pre>
+            {previewIsProse ? (
+              <p
+                className="whitespace-pre-wrap break-words"
+                style={{
+                  display: '-webkit-box',
+                  WebkitBoxOrient: 'vertical',
+                  WebkitLineClamp: previewLineClamp,
+                  overflow: 'hidden',
+                }}
+              >
+                {previewText}
+              </p>
+            ) : (
+              <div className="space-y-1">
+                {preview.bodyLines.map((line, index) => {
+                  const technical = isTechnicalPreviewLine(line);
+                  return (
+                    <div
+                      key={`${line}-${index}`}
+                      className={[
+                        'break-words',
+                        size === 'lead' ? 'line-clamp-2' : 'line-clamp-1',
+                        technical ? 'font-mono' : '',
+                      ].join(' ')}
+                    >
+                      {line}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         ) : (
           <div className="italic text-muted-foreground/70">{t('card.noOutput')}</div>
         )}
@@ -152,16 +164,11 @@ export const SelectorCard = memo(function SelectorCard({
       {/* Footer */}
       <div className="flex items-center gap-2 border-t border-border/40 bg-muted/30 px-3 py-1.5 text-[10px] text-muted-foreground">
         <span
-          className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-medium ${statusInfo.chip}`}
+          className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${statusInfo.chip}`}
         >
-          <StatusIcon
-            className={`h-2.5 w-2.5 ${statusInfo.animate ? 'animate-spin' : ''}`}
-          />
           {t(`status.${card.status}`, statusInfo.label)}
         </span>
-        <span className="ml-auto">
-          #{card.messageCount} · {new Date(card.lastActivity).toLocaleTimeString()}
-        </span>
+        <span className="ml-auto">#{card.messageCount}</span>
       </div>
     </motion.div>
   );

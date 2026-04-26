@@ -127,7 +127,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   }
 
   return (
-    <div className="grid h-full auto-rows-[205px] grid-cols-1 items-start gap-3 overflow-auto p-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+    <div className="grid h-full auto-rows-[260px] grid-cols-1 items-start gap-3 overflow-auto p-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {visibleCards.map((card) => (
         <div key={card.id} className="h-full self-start">
           <TerminalCardComponent

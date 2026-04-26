@@ -11,10 +11,11 @@ export interface CardPreview {
 
 interface BuildCardPreviewOptions {
   maxLines?: number;
+  maxLineLength?: number;
 }
 
 const DEFAULT_MAX_LINES = 5;
-const MAX_LINE_LENGTH = 180;
+const DEFAULT_MAX_LINE_LENGTH = 320;
 
 /* eslint-disable no-control-regex */
 const ANSI_RE = new RegExp(
@@ -39,19 +40,26 @@ const STATUS_PATTERNS: RegExp[] = [
   /\b(press|type)\b.+\b(to|for)\b.+\b(continue|cancel|quit|submit|send)\b/i,
   /\b(model|tokens?|context|cost|cwd|working directory|auto-?accept)\s*[:=]/i,
   /\b(claude code|codex|gemini)\b\s*$/i,
+  /\.openclaw\/completions\//i,
+  /\bcommand not found:\s+compdef\b/i,
   /\S*(?:\.zsh|\.zshrc|\.zprofile|\.bashrc|\.bash_profile|\.profile):\d+:\s+command not found:\s+compdef\b/i,
+  /^(?:[%$>#]\s+)?(printf|echo)\b/i,
+  /^[%$>#]\s+[^\s@]+@[^\s]+\s+/,
   /^[-_=\s]{6,}$/,
 ];
+
+const SHELL_PROMPT_RE = /^[^\s@]+@[^\s]+\s+.+?\s([%$#>])(?:\s+(.*))?$/;
 
 export function buildCardPreview(
   card: Pick<TerminalCard, 'lastReplyPreview' | 'lastOutput' | 'status' | 'terminalType'>,
   options: BuildCardPreviewOptions = {},
 ): CardPreview {
   const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
-  const replyLines = cleanPreviewLines(card.lastReplyPreview, maxLines);
+  const maxLineLength = options.maxLineLength ?? DEFAULT_MAX_LINE_LENGTH;
+  const replyLines = cleanPreviewLines(card.lastReplyPreview, maxLines, maxLineLength);
   const outputLines = replyLines.lines.length > 0
     ? replyLines
-    : cleanPreviewLines(card.lastOutput, maxLines);
+    : cleanPreviewLines(card.lastOutput, maxLines, maxLineLength);
   const source = replyLines.lines.length > 0 ? 'reply' : outputLines.lines.length > 0 ? 'output' : 'none';
 
   return {
@@ -64,7 +72,7 @@ export function buildCardPreview(
 
 export function isTechnicalPreviewLine(line: string): boolean {
   return (
-    /^\s*[$>#]\s+/.test(line) ||
+    /^\s*[%$>#]\s+/.test(line) ||
     /^(\w+:)?[~/./\\][^\s]*[/:\\]/.test(line) ||
     /\b(error|failed|exception|traceback|panic|warning)\b/i.test(line) ||
     /^[A-Z_][A-Z0-9_]*=/.test(line)
@@ -86,7 +94,11 @@ function resolvePreviewKind(
   return 'shell';
 }
 
-function cleanPreviewLines(raw: string | undefined, maxLines: number): { lines: string[]; hiddenLineCount: number } {
+function cleanPreviewLines(
+  raw: string | undefined,
+  maxLines: number,
+  maxLineLength: number,
+): { lines: string[]; hiddenLineCount: number } {
   const sourceLines = splitCandidateLines(raw);
   const cleaned = sourceLines
     .map(normalizePreviewLine)
@@ -95,11 +107,11 @@ function cleanPreviewLines(raw: string | undefined, maxLines: number): { lines: 
   const deduped = dedupePreviewLines(cleaned);
   const lines = deduped
     .slice(-maxLines)
-    .map((line) => (line.length > MAX_LINE_LENGTH ? `${line.slice(0, MAX_LINE_LENGTH - 1)}…` : line));
+    .map((line) => (line.length > maxLineLength ? `${line.slice(0, maxLineLength - 1)}…` : line));
 
   return {
     lines,
-    hiddenLineCount: Math.max(0, sourceLines.length - lines.length),
+    hiddenLineCount: Math.max(0, deduped.length - lines.length),
   };
 }
 
@@ -118,6 +130,13 @@ function normalizePreviewLine(input: string): string | null {
   let line = input.trim();
   if (!line) return null;
   if (BORDER_ONLY_RE.test(line)) return null;
+
+  const shellPrompt = line.match(SHELL_PROMPT_RE);
+  if (shellPrompt) {
+    const command = shellPrompt[2]?.trim();
+    if (!command) return null;
+    line = `${shellPrompt[1]} ${command}`;
+  }
 
   line = line.replace(EDGE_RE, '').trim();
   line = line.replace(SPINNER_RE, '').trim();
@@ -149,7 +168,7 @@ function dedupePreviewLines(lines: string[]): string[] {
     const key = signature(line);
     const prev = out[out.length - 1];
 
-    if (prev && (signature(prev) === key || sharedSuffixLen(prev, line) >= 12)) {
+    if (prev && signature(prev) === key) {
       out[out.length - 1] = line;
       continue;
     }
@@ -174,11 +193,4 @@ function signature(line: string): string {
     .replace(/[•·●○◦▪▫■□◆◇✦✧✶✷✸✹✺✻✼✽✾✿]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function sharedSuffixLen(a: string, b: string): number {
-  const limit = Math.min(a.length, b.length);
-  let i = 0;
-  while (i < limit && a[a.length - 1 - i] === b[b.length - 1 - i]) i++;
-  return i;
 }

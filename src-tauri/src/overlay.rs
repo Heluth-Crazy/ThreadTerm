@@ -41,7 +41,7 @@ tauri_nspanel::tauri_panel! {
     panel!(OverlayFloatPanel {
         config: {
             can_become_key_window: true,
-            can_become_main_window: true,
+            can_become_main_window: false,
             is_floating_panel: true
         }
     })
@@ -323,17 +323,17 @@ fn configure_float_window_for_current_space(window: &WebviewWindow) {
     ns_window.setCanBecomeVisibleWithoutLogin(true);
     ns_window.setLevel(NSScreenSaverWindowLevel);
 
-    // Critical difference from the selector: the terminal must NOT be a
-    // NonactivatingPanel. If it is, macOS keeps keyboard focus on the app
-    // underneath the floating terminal, so typing affects the lower window.
-    let mut style = ns_window.styleMask() | NSWindowStyleMask::UtilityWindow;
-    style.remove(NSWindowStyleMask::NonactivatingPanel);
+    // Keep the float as a non-activating panel so selecting a card from the
+    // global overlay does not switch Spaces or pull the main ThreadTerm
+    // window/desktop to the foreground. The custom panel subclass above can
+    // still become key, so the webview can receive terminal input.
+    let style =
+        ns_window.styleMask() | NSWindowStyleMask::UtilityWindow | NSWindowStyleMask::NonactivatingPanel;
     ns_window.setStyleMask(style);
 }
 
 #[cfg(target_os = "macos")]
 fn activate_float_window_for_keyboard(window: &WebviewWindow) {
-    use objc2::MainThreadMarker;
     use objc2_app_kit::NSWindow;
 
     let Ok(ns_window_ptr) = window.ns_window() else {
@@ -343,14 +343,10 @@ fn activate_float_window_for_keyboard(window: &WebviewWindow) {
         return;
     };
 
-    if let Some(mtm) = MainThreadMarker::new() {
-        let ns_app = objc2_app_kit::NSApp(mtm);
-        #[allow(deprecated)]
-        ns_app.activateIgnoringOtherApps(true);
-    }
-
+    // Do not call NSApp.activateIgnoringOtherApps(true) here: that was the
+    // regression that made Cmd+Shift+Space selections jump back to the Space
+    // hosting ThreadTerm. Ordering the non-activating panel front is enough.
     ns_window.makeKeyAndOrderFront(None);
-    ns_window.makeMainWindow();
     ns_window.orderFrontRegardless();
 }
 
@@ -760,16 +756,13 @@ pub fn overlay_show_float(app: AppHandle, card_id: String) -> Result<(), String>
             if let Ok(panel) = app.get_webview_panel(FLOAT_LABEL) {
                 tracing::info!(card_id = %card_id, "overlay float panel show_and_make_key");
                 panel.show_and_make_key();
-                panel.make_main_window();
                 panel.order_front_regardless();
                 activate_float_window_for_keyboard(&w);
-                let _ = w.set_focus();
             } else {
                 tracing::warn!("overlay float panel missing; falling back to WebviewWindow show");
                 let _ = w.show();
                 order_overlay_window_front(&w);
                 activate_float_window_for_keyboard(&w);
-                let _ = w.set_focus();
             }
         }
 

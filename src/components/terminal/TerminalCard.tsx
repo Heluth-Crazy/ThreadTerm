@@ -115,13 +115,16 @@ export function TerminalCardComponent({
   );
 
   const preview = useMemo(
-    () => buildCardPreview(card, { maxLines: 5 }),
+    () => buildCardPreview(card, { maxLines: 6, maxLineLength: 420 }),
     [card.lastReplyPreview, card.lastOutput, card.status, card.terminalType],
   );
   const compactPreview = useMemo(
     () => buildCardPreview(card, { maxLines: 3 }),
     [card.lastReplyPreview, card.lastOutput, card.status, card.terminalType],
   );
+  const previewText = preview.bodyLines.join('\n\n');
+  const previewIsProse = preview.source === 'reply' && !preview.bodyLines.some(isTechnicalPreviewLine);
+  const previewLineClamp = preview.bodyLines.length <= 1 ? 8 : preview.bodyLines.length <= 2 ? 7 : 6;
 
   const recentEvents = useMemo(() => card.events.slice(-5).reverse(), [card.events]);
 
@@ -203,10 +206,10 @@ export function TerminalCardComponent({
     >
       {/* Unread dot */}
       {card.unread && (
-        <span className="absolute right-3 top-3 flex h-2 w-2">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-70" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
-        </span>
+        <span
+          aria-hidden="true"
+          className="absolute right-3 top-3 h-2 w-2 rounded-full border border-amber-200 bg-amber-500 shadow-[0_0_0_3px_rgba(245,158,11,0.14)]"
+        />
       )}
 
       {/* Header */}
@@ -217,7 +220,7 @@ export function TerminalCardComponent({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="truncate text-sm font-semibold">{card.projectName}</span>
-            <span className="text-[10px] text-muted-foreground">
+            <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">
               · {t(`types.${card.terminalType}`, typeMeta.label)}
             </span>
           </div>
@@ -280,24 +283,38 @@ export function TerminalCardComponent({
               )}
             </div>
             <div className="min-h-0 flex-1 overflow-hidden px-2.5 py-2">
-              <div className="space-y-1">
-                {preview.bodyLines.map((line, index) => {
-                  const technical = isTechnicalPreviewLine(line);
-                  return (
-                    <div
-                      key={`${line}-${index}`}
-                      className={[
-                        'line-clamp-2 break-words rounded-md text-[11px] leading-snug',
-                        technical
-                          ? 'bg-background/70 px-1.5 py-1 font-mono text-[10.5px] text-foreground/80'
-                          : 'text-muted-foreground',
-                      ].join(' ')}
-                    >
-                      {line}
-                    </div>
-                  );
-                })}
-              </div>
+              {previewIsProse ? (
+                <p
+                  className="whitespace-pre-wrap break-words text-[11.5px] leading-[1.45] text-foreground/75"
+                  style={{
+                    display: '-webkit-box',
+                    WebkitBoxOrient: 'vertical',
+                    WebkitLineClamp: previewLineClamp,
+                    overflow: 'hidden',
+                  }}
+                >
+                  {previewText}
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {preview.bodyLines.map((line, index) => {
+                    const technical = isTechnicalPreviewLine(line);
+                    return (
+                      <div
+                        key={`${line}-${index}`}
+                        className={[
+                          'line-clamp-2 break-words rounded-md text-[11px] leading-snug',
+                          technical
+                            ? 'bg-background/70 px-1.5 py-1 font-mono text-[10.5px] text-foreground/80'
+                            : 'text-muted-foreground',
+                        ].join(' ')}
+                      >
+                        {line}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         ) : (
@@ -377,7 +394,9 @@ export function TerminalCardComponent({
           </button>
         </div>
         {aiSessionBadge && (
-          <AiIntentSelect cardId={card.id} value={card.aiIntent} compact />
+          <div className="shrink-0">
+            <AiIntentSelect cardId={card.id} value={card.aiIntent} compact />
+          </div>
         )}
         <button
           type="button"
