@@ -73,6 +73,20 @@
       "more": "+{{count}} 行已过滤"
     }
   },
+  "aiSession": {
+    "missingCli": "缺少 {{cli}} CLI",
+    "missingCliDescription": "{{cli}} 未安装，或当前 PATH 中不可见。",
+    "resumeReady": "可恢复会话",
+    "resumeReadyDescription": "{{cli}} 会话 {{id}} 已绑定，可继续恢复。",
+    "newSession": "新会话",
+    "newSessionDescription": "{{cli}} 将使用 ThreadTerm 管理的会话 ID 启动。",
+    "discovery": "会话发现",
+    "discoveryDescription": "{{cli}} 写入历史后，ThreadTerm 会尝试发现会话 ID。",
+    "cliOnly": "CLI 会话",
+    "cliOnlyDescription": "{{cli}} 当前作为 CLI 会话运行，暂未跟踪原生恢复绑定。",
+    "customCommand": "自定义命令",
+    "customCommandDescription": "这张 AI 卡片运行自定义命令，而不是默认 provider 命令。"
+  },
   "view": {
     "backToGrid": "返回网格（⌘/Ctrl+Shift+M）",
     "worktree": "worktree：{{path}}",
@@ -100,6 +114,8 @@
     "sessionClosed": "会话已关闭",
     "errorTitle": "⚠ {{project}} 报告了错误",
     "inputTitle": "• {{project}} 需要你输入",
+    "missingCliTitle": "缺少 {{cli}} CLI",
+    "missingCliBody": "请安装 {{cli}}，或确认它已加入 PATH，然后重启这张卡片。",
     "errorBodyFallback": "输出中检测到错误",
     "inputBodyFallback": "正在等待输入"
   },

@@ -41,7 +41,15 @@ Non-goals for v0.2:
 
 Goal: make ThreadTerm especially good at managing multiple AI CLI threads.
 
-Planned themes:
+v0.3 starts with session visibility before adding heavier workflow controls:
+
+| Slice | Scope | Acceptance |
+| --- | --- | --- |
+| v0.3.0 Session visibility | Show AI session badges for Claude, Codex, and Gemini cards; distinguish new session ids, resume-ready sessions, CLI-only sessions, custom commands, and missing CLIs. | Grid cards, focused terminal headers, and missing-CLI notifications explain the same state. |
+| v0.3.1 Session organization | Add lightweight card notes or intent labels such as `review`, `fix`, and `research`. | Users can label AI cards and scan multiple sessions without relying only on project names. |
+| v0.3.2 Return paths | Improve notification click-through and recovery fallback when a provider session cannot be resumed. | Clicking AI session notifications consistently returns to the right card or floating terminal on macOS and Windows. |
+
+Planned themes after v0.3.0:
 
 - clearer Claude/Codex/Gemini session resume flows
 - project-level grouping for AI sessions and shell tasks

@@ -22,6 +22,7 @@ import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard, TerminalStatus } from '../../types/terminal';
 import { feedHeadless, disposeHeadless, disposeAllHeadless } from './headlessPreview';
 import { buildCardPreview } from './cardPreview';
+import { getMissingAiCliName } from './providerSession';
 import i18n from '../../i18n/config.js';
 
 // Map Rust SessionState → UI TerminalStatus.
@@ -328,8 +329,10 @@ export function TerminalEventBridge(): null {
         const store = useTerminalStore.getState();
 
         const kind = type === 'error' ? 'failed' : 'waiting';
-        const title =
-          kind === 'failed'
+        const missingCli = kind === 'failed' ? getMissingAiCliName(card, message) : null;
+        const title = missingCli
+          ? i18n.t('terminal:notifications.missingCliTitle', { cli: missingCli })
+          : kind === 'failed'
             ? i18n.t('terminal:notifications.errorTitle', { project: card.projectName })
             : i18n.t('terminal:notifications.inputTitle', { project: card.projectName });
 
@@ -337,11 +340,12 @@ export function TerminalEventBridge(): null {
           cardId,
           kind,
           title,
-          body:
-            message ||
-            (kind === 'failed'
-              ? i18n.t('terminal:notifications.errorBodyFallback')
-              : i18n.t('terminal:notifications.inputBodyFallback')),
+          body: missingCli
+            ? i18n.t('terminal:notifications.missingCliBody', { cli: missingCli })
+            : message ||
+              (kind === 'failed'
+                ? i18n.t('terminal:notifications.errorBodyFallback')
+                : i18n.t('terminal:notifications.inputBodyFallback')),
         });
         store.markUnread(cardId, true);
         store.appendEvent(cardId, { kind: 'notification', summary: title });

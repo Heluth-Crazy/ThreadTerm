@@ -75,7 +75,7 @@ the floating terminal.
 
 | Symptom | Check |
 | --- | --- |
-| AI CLI card exits immediately | Confirm the CLI is installed and visible in `PATH`. |
+| AI CLI card exits immediately | Confirm the CLI is installed and visible in `PATH`. ThreadTerm marks Claude, Codex, and Gemini cards with a missing-CLI badge when output indicates the command was not found. |
 | Global shortcut does not open the selector | Rebind the shortcut in Settings, then retry outside the main window. macOS shortcuts may conflict with Spotlight. |
 | No desktop notification appears | Check OS notification permission and test from Settings. |
 | Folder picker is unavailable | Make sure you are running the Tauri desktop app, not the frontend-only preview. |

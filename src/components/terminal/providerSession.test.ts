@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { TerminalCard } from '../../types/terminal';
-import { buildTerminalLaunchCommand, shellQuote } from './providerSession';
+import {
+  buildTerminalLaunchCommand,
+  getAiCliSessionBadge,
+  getMissingAiCliName,
+  shellQuote,
+} from './providerSession';
 
 function card(overrides: Partial<TerminalCard>): TerminalCard {
   return {
@@ -99,3 +104,51 @@ describe('providerSession launch command builder', () => {
   });
 });
 
+describe('providerSession AI CLI state badge', () => {
+  it('does not render a badge for non-AI terminal types', () => {
+    expect(getAiCliSessionBadge(card({ terminalType: 'shell' }))).toBeNull();
+  });
+
+  it('describes a new Claude session id before it is bound', () => {
+    const result = getAiCliSessionBadge(
+      card({
+        terminalType: 'claude',
+        providerSessionId: '11111111-1111-4111-8111-111111111111',
+        providerSessionState: 'unbound',
+      }),
+    );
+    expect(result?.labelKey).toBe('aiSession.newSession');
+    expect(result?.tone).toBe('info');
+  });
+
+  it('describes a bound Codex session as resume-ready', () => {
+    const result = getAiCliSessionBadge(
+      card({
+        terminalType: 'codex',
+        providerSessionId: '019dc22d-aa3f-7982-a872-4a862cb8588f',
+        providerSessionState: 'bound',
+      }),
+    );
+    expect(result?.labelKey).toBe('aiSession.resumeReady');
+    expect(result?.tone).toBe('success');
+    expect(result?.values?.id).toBe('...8588f');
+  });
+
+  it('describes Gemini as CLI-only until native resume support exists', () => {
+    const result = getAiCliSessionBadge(card({ terminalType: 'gemini' }));
+    expect(result?.labelKey).toBe('aiSession.cliOnly');
+    expect(result?.values?.cli).toBe('Gemini');
+  });
+
+  it('detects missing AI CLI output', () => {
+    const missing = card({
+      terminalType: 'codex',
+      lastOutput: 'zsh: command not found: codex\n',
+    });
+    expect(getMissingAiCliName(missing)).toBe('Codex');
+
+    const result = getAiCliSessionBadge(missing);
+    expect(result?.labelKey).toBe('aiSession.missingCli');
+    expect(result?.tone).toBe('danger');
+  });
+});
