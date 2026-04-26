@@ -36,7 +36,7 @@ src/windows/          Secondary Vite window entries
 src/stores/           Zustand stores for terminal and overlay state
 src-tauri/src/        Tauri backend modules: db, notification, overlay, provider_sessions, pty
 src-tauri/icons/      Tauri bundle icons, including Windows assets
-docs/                 Build, packaging, and manual regression notes
+docs/                 Public guides, packaging notes, media, and manual regression steps
 ```
 
 The retained runtime entries are:
@@ -51,7 +51,18 @@ The retained runtime entries are:
 - Preserve Windows desktop support when touching PTY startup, Tauri config, icons, or launch scripts.
 - Include screenshots or recordings for UI changes.
 - Update README or docs when user-facing behavior changes.
+- Keep generated review media and local QA scratch files out of commits.
 - Run the checks above before requesting review.
+
+Use the pull request template and include the exact verification commands you ran.
+
+## Reporting Issues
+
+Use the GitHub issue templates when possible:
+
+- Bug reports should include platform, app mode, reproduction steps, expected behavior, actual behavior, and logs or screenshots when available.
+- Feature requests should describe the workflow, not just the UI control.
+- Packaging issues should state whether the app was run through `npm run tauri:dev`, `npm run tauri:build`, or a downloaded bundle.
 
 ## Commit Convention
 
