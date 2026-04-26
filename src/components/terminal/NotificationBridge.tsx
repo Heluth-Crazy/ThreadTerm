@@ -20,8 +20,10 @@ import {
   onAction,
 } from '@tauri-apps/plugin-notification';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { useOverlayStore } from '../../stores/overlayStore';
 import type { NotificationEntry } from '../../types/terminal';
-import { isTauriEnv } from '../../lib/tauri-bridge';
+import { invoke, isTauriEnv } from '../../lib/tauri-bridge';
+import { logger } from '../../utils/logger';
 
 // Encodes a cardId into a numeric notification id that Tauri accepts.
 // We use a hash so repeated notifications for the same card share an id
@@ -40,7 +42,6 @@ export function NotificationBridge(): null {
   // Track which notification ids we've already sent so we don't replay them
   // on React effect re-runs (StrictMode, fast refresh, persistence rehydrate).
   const sentIdsRef = useRef<Set<string>>(new Set());
-  const permissionReadyRef = useRef<boolean>(false);
 
   // 1. Request permission once on mount.
   useEffect(() => {
@@ -53,7 +54,9 @@ export function NotificationBridge(): null {
           const result = await requestPermission();
           granted = result === 'granted';
         }
-        if (!cancelled) permissionReadyRef.current = granted;
+        if (!cancelled && !granted) {
+          logger.warn('[NotificationBridge] OS notification permission was not granted on mount');
+        }
       } catch {
         /* ignore — bell still works */
       }
@@ -77,7 +80,15 @@ export function NotificationBridge(): null {
             extractCardIdFromTitle(options.title ?? '');
           if (!cardId) return;
           const store = useTerminalStore.getState();
-          if (store.getCardById(cardId)) {
+          const card = store.getCardById(cardId);
+          if (!card) return;
+
+          // Pinned cards jump straight into the floating-terminal window
+          // so the user can reply without breaking their main focus; all
+          // other cards fall back to focusing the main grid.
+          if (store.isPinned(cardId)) {
+            useOverlayStore.getState().openFloat(cardId);
+          } else {
             store.setPendingFocusCardId(cardId);
             store.focusCard(cardId);
           }
@@ -108,14 +119,44 @@ export function NotificationBridge(): null {
     return unsub;
   }, []);
 
+  // 4. Periodic purge of read notifications older than 2 hours so the bell
+  //    doesn't accumulate noise across long sessions. We run this every
+  //    minute, which is cheap (a single `filter` over a bounded array).
+  useEffect(() => {
+    const TWO_HOURS_MS = 2 * 60 * 60_000;
+    // Kick once on mount to catch leftovers from a previous session.
+    useTerminalStore.getState().purgeReadNotifications(TWO_HOURS_MS);
+    const handle = setInterval(() => {
+      useTerminalStore.getState().purgeReadNotifications(TWO_HOURS_MS);
+    }, 60_000);
+    return () => clearInterval(handle);
+  }, []);
+
   return null;
 }
 
 async function dispatchOsNotification(n: NotificationEntry): Promise<void> {
   if (!isTauriEnv()) return;
   try {
+    await invoke('notification_send_os', {
+      title: n.title,
+      body: n.body,
+      cardId: n.cardId,
+    });
+    return;
+  } catch (error) {
+    logger.warn('[NotificationBridge] Rust OS notification failed; falling back to Web Notification', error);
+  }
+
+  try {
     const granted = await isPermissionGranted();
-    if (!granted) return;
+    if (!granted) {
+      const permission = await requestPermission();
+      if (permission !== 'granted') {
+        logger.warn('[NotificationBridge] OS notification permission was not granted', permission);
+        return;
+      }
+    }
     sendNotification({
       id: hashCardIdToNotifId(n.cardId),
       title: n.title,
@@ -125,8 +166,8 @@ async function dispatchOsNotification(n: NotificationEntry): Promise<void> {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ...( { extra: { cardId: n.cardId } } as any ),
     });
-  } catch {
-    /* ignore — permission may have been revoked mid-session */
+  } catch (error) {
+    logger.warn('[NotificationBridge] Web Notification fallback failed', error);
   }
 }
 

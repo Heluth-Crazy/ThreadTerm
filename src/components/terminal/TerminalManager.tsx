@@ -10,16 +10,20 @@
  * The actual keyboard shortcuts and radial switcher live in their own
  * sibling components so this file stays focused on view composition.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
-import { Bell, BellDot, Plus } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { motion } from 'framer-motion';
+import { Bell, BellDot, Plus, Settings as SettingsIcon } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { CardGrid } from './CardGrid';
 import { TerminalView } from './TerminalView';
 import { CreateTerminalDialog } from './CreateTerminalDialog';
+import { ProjectSidebar } from './ProjectSidebar';
+import Settings from '../Settings';
 import type { TerminalCreateOptions } from '../../types/terminal';
 
 type ViewMode = 'grid' | 'focus';
+type SettingsTab = 'appearance' | 'shortcuts';
 
 declare global {
   interface Window {
@@ -27,25 +31,75 @@ declare global {
       openCreate: () => void;
       closeCreate: () => void;
       focusMode: (mode: ViewMode) => void;
+      openSettings: (tab?: SettingsTab) => void;
     };
   }
 }
 
 export function TerminalManager() {
+  const { t } = useTranslation('terminal');
   const cards = useTerminalStore((s) => s.cards);
   const focusedCardId = useTerminalStore((s) => s.focusedCardId);
   const focusCard = useTerminalStore((s) => s.focusCard);
   const createCard = useTerminalStore((s) => s.createCard);
+  const selectProject = useTerminalStore((s) => s.selectProject);
   const toggleNotificationCentre = useTerminalStore((s) => s.toggleNotificationCentre);
   const unreadCount = useTerminalStore((s) => s.notifications.filter((n) => !n.read).length);
+  const selectedProjectPath = useTerminalStore((s) => s.selectedProjectPath);
+
+  const selectedProjectName = useMemo(() => {
+    if (!selectedProjectPath) return null;
+    const card = cards.find((c) => c.projectPath === selectedProjectPath);
+    return card?.projectName ?? selectedProjectPath;
+  }, [cards, selectedProjectPath]);
+
+  // Cards visible with the current project filter applied.
+  const visibleCards = useMemo(
+    () =>
+      selectedProjectPath
+        ? cards.filter((c) => c.projectPath === selectedProjectPath)
+        : cards,
+    [cards, selectedProjectPath],
+  );
 
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [createOpen, setCreateOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Jump the Settings modal straight to a particular tab on open.
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('shortcuts');
+
+  // Set of card ids whose TerminalView should be kept mounted. A view is
+  // added the first time the user focuses the card and is only removed when
+  // the card itself is deleted. Using a Set ref (plus forceRender counter)
+  // avoids re-mounting when cards array refs change.
+  const mountedIdsRef = useRef<Set<string>>(new Set());
+  const [, bumpRender] = useState(0);
 
   const focusedCard = useMemo(
     () => (focusedCardId ? cards.find((c) => c.id === focusedCardId) : undefined),
     [focusedCardId, cards],
   );
+
+  // Ensure the focused card is marked as "ever mounted".
+  useEffect(() => {
+    if (!focusedCardId) return;
+    if (mountedIdsRef.current.has(focusedCardId)) return;
+    mountedIdsRef.current.add(focusedCardId);
+    bumpRender((n) => n + 1);
+  }, [focusedCardId]);
+
+  // Drop mount entries for cards that no longer exist (user removed them).
+  useEffect(() => {
+    const ids = new Set(cards.map((c) => c.id));
+    let changed = false;
+    for (const id of mountedIdsRef.current) {
+      if (!ids.has(id)) {
+        mountedIdsRef.current.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) bumpRender((n) => n + 1);
+  }, [cards]);
 
   // Automatically enter focus mode when a card is focused, back to grid when cleared.
   useEffect(() => {
@@ -72,11 +126,14 @@ export function TerminalManager() {
   const handleCreate = useCallback(
     (options: TerminalCreateOptions) => {
       const id = createCard(options);
+      if (selectedProjectPath && selectedProjectPath !== options.projectPath) {
+        selectProject(options.projectPath);
+      }
       setCreateOpen(false);
       focusCard(id);
       setViewMode('focus');
     },
-    [createCard, focusCard],
+    [createCard, focusCard, selectProject, selectedProjectPath],
   );
 
   // Expose imperative API.
@@ -85,6 +142,10 @@ export function TerminalManager() {
       openCreate: () => setCreateOpen(true),
       closeCreate: () => setCreateOpen(false),
       focusMode: (mode) => setViewMode(mode),
+      openSettings: (tab) => {
+        setSettingsTab(tab ?? 'shortcuts');
+        setSettingsOpen(true);
+      },
     };
     return () => {
       delete window.__terminalManager;
@@ -95,30 +156,55 @@ export function TerminalManager() {
     () => cards.map((c) => ({ path: c.projectPath, name: c.projectName })),
     [cards],
   );
+  const gridVisible = viewMode === 'grid' || !focusedCard;
 
   return (
-    <div className="relative flex h-full w-full flex-col">
+    <div className="relative flex h-full w-full">
+      <ProjectSidebar />
+      <div className="relative flex min-w-0 flex-1 flex-col">
       {/* Top bar */}
       <div className="flex items-center justify-between border-b border-border bg-background/80 px-3 py-2 backdrop-blur">
-        <div className="flex items-center gap-2">
-          <div className="text-sm font-semibold">Terminal Manager</div>
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="text-sm font-semibold shrink-0">{t('app.title')}</div>
+          {selectedProjectName && (
+            <>
+              <span className="text-muted-foreground">/</span>
+              <span
+                className="truncate rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary"
+                title={selectedProjectPath ?? undefined}
+              >
+                {selectedProjectName}
+              </span>
+            </>
+          )}
           <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-            {cards.length} {cards.length === 1 ? 'terminal' : 'terminals'}
+            {t('app.count', { visible: visibleCards.length, total: cards.length, count: cards.length })}
           </span>
         </div>
         <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={() => setCreateOpen(true)}
-            title="New terminal (Ctrl+N)"
+            title={t('app.newTerminalTitle')}
             className="inline-flex items-center gap-1 rounded-lg bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
           >
-            <Plus className="h-3.5 w-3.5" /> New
+            <Plus className="h-3.5 w-3.5" /> {t('app.new')}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setSettingsTab('shortcuts');
+              setSettingsOpen(true);
+            }}
+            title={t('app.settingsTitle')}
+            className="rounded-lg p-1.5 hover:bg-accent hover:text-accent-foreground"
+          >
+            <SettingsIcon className="h-4 w-4" />
           </button>
           <button
             type="button"
             onClick={() => toggleNotificationCentre()}
-            title="Notifications (Ctrl+B)"
+            title={t('app.notificationsTitle')}
             className="relative rounded-lg p-1.5 hover:bg-accent hover:text-accent-foreground"
           >
             {unreadCount > 0 ? (
@@ -135,43 +221,62 @@ export function TerminalManager() {
         </div>
       </div>
 
-      {/* Main body */}
+      {/* Main body — grid + all ever-mounted terminal views share the same
+          container; only the focused one is visible. This is what keeps the
+          PTY alive across navigation so CLIs don't re-initialise. */}
       <div className="relative flex-1 min-h-0 overflow-hidden">
-        <AnimatePresence mode="wait" initial={false}>
-          {viewMode === 'grid' || !focusedCard ? (
-            <motion.div
-              key="grid"
-              initial={{ opacity: 0, x: -16 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -16 }}
-              transition={{ type: 'spring', damping: 26, stiffness: 280 }}
-              className="absolute inset-0"
-            >
-              <CardGrid
-                onCreateTerminal={() => setCreateOpen(true)}
-                onOpenTerminal={handleOpenTerminal}
-              />
-            </motion.div>
-          ) : (
-            <motion.div
-              key={`focus-${focusedCard.id}`}
-              initial={{ opacity: 0, x: 16 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 16 }}
-              transition={{ type: 'spring', damping: 26, stiffness: 280 }}
-              className="absolute inset-0"
-            >
-              <TerminalView card={focusedCard} onBack={handleBackToGrid} />
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {/* Grid layer */}
+        <motion.div
+          animate={{ opacity: gridVisible ? 1 : 0 }}
+          transition={{ duration: 0.18, ease: 'easeOut' }}
+          aria-hidden={!gridVisible}
+          style={{ visibility: gridVisible ? 'visible' : 'hidden' }}
+          className={[
+            'absolute inset-0',
+            gridVisible
+              ? ''
+              : 'pointer-events-none',
+          ].join(' ')}
+        >
+          <CardGrid
+            onCreateTerminal={() => setCreateOpen(true)}
+            onOpenTerminal={handleOpenTerminal}
+          />
+        </motion.div>
+
+        {/* Persistent terminal views */}
+        {cards
+          .filter((c) => mountedIdsRef.current.has(c.id))
+          .map((c) => {
+            const isCurrent = viewMode === 'focus' && focusedCardId === c.id;
+            return (
+              <div
+                key={c.id}
+                aria-hidden={!isCurrent}
+                style={{ visibility: isCurrent ? 'visible' : 'hidden' }}
+                className={[
+                  'absolute inset-0 transition-opacity duration-150 ease-out',
+                  isCurrent
+                    ? 'opacity-100 pointer-events-auto'
+                    : 'opacity-0 pointer-events-none',
+                ].join(' ')}
+              >
+                <TerminalView
+                  card={c}
+                  active={isCurrent}
+                  onBack={handleBackToGrid}
+                />
+              </div>
+            );
+          })}
       </div>
 
       {/* Shortcut hint */}
       {cards.length > 0 && (
         <div className="pointer-events-none absolute bottom-3 right-3 z-10 select-none rounded-lg border border-border/60 bg-background/80 px-2.5 py-1 text-[10px] text-muted-foreground backdrop-blur">
-          <span className="font-mono">Ctrl+`</span> switch · <span className="font-mono">Ctrl+Tab</span> next ·{' '}
-          <span className="font-mono">Ctrl+1-9</span> jump
+          <span className="font-mono">⌘/Ctrl+`</span> {t('app.shortcutHint').split(' · ')[0]} ·{' '}
+          <span className="font-mono">⌘/Ctrl+Tab</span> {t('app.shortcutHint').split(' · ')[1]} ·{' '}
+          <span className="font-mono">⌘/Ctrl+1-9</span> {t('app.shortcutHint').split(' · ')[2]}
         </div>
       )}
 
@@ -182,6 +287,14 @@ export function TerminalManager() {
         onCreate={handleCreate}
         recentProjects={recentProjects}
       />
+
+      {/* Settings modal — opened via the gear button in the top bar */}
+      <Settings
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        initialTab={settingsTab}
+      />
+      </div>
     </div>
   );
 }

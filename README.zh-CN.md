@@ -1,347 +1,107 @@
 <div align="center">
-  <img src="public/logo.svg" alt="OpenWork" width="64" height="64">
-  <h1>OpenWork</h1>
+  <img src="public/logo.svg" alt="ThreadTerm" width="64" height="64">
+  <h1>ThreadTerm</h1>
+  <p>简体中文 | <a href="README.md">English</a></p>
 </div>
 
+ThreadTerm 是一个桌面端终端管理器，用于管理绑定到项目目录的 Shell 和 AI CLI 会话。它可以把多个终端会话以卡片形式常驻展示，支持将重要会话固定到全局选择器，并能把选中的会话打开为置顶浮动终端。
 
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code)、[Cursor CLI](https://docs.cursor.com/en/cli/overview) 和 [Codex](https://developers.openai.com/codex) 的桌面端和移动端界面。您可以在本地或远程使用它来查看 Claude Code、Cursor 或 Codex 中的活跃项目和会话,并从任何地方(移动端或桌面端)对它们进行修改。这为您提供了一个在任何地方都能正常使用的合适界面。
+## 当前范围
 
-<div align="right"><i><a href="./README.md">English</a> · <a href="./README.ko.md">한국어</a> · <a href="./README.ja.md">日本語</a></i></div>
+ThreadTerm 当前聚焦于 Tauri 桌面应用：
 
-## 截图
+- **终端卡片**：创建绑定到项目目录的终端，运行 Shell、Claude、Codex、Gemini、Python、Node、Docker 或自定义命令。
+- **项目侧边栏**：按项目路径分组会话卡片，并在不打断终端工作流的情况下过滤卡片网格。
+- **聚焦终端视图**：双击卡片进入完整终端视图，同时保持卡片和会话状态存活。
+- **全局选择器**：按 `Cmd/Ctrl + Shift + Space` 在当前应用上方显示已固定会话。
+- **浮动终端**：选择一个已固定卡片后，在始终置顶的浮动终端窗口中继续输入。
+- **通知**：ThreadTerm 跟踪 PTY 状态变化，并在等待输入、错误或回复完成时显示通知。
+- **跨平台桌面支持**：macOS 和 Windows 是一等支持目标；Linux 取决于具体桌面环境对全局快捷键的支持情况。
 
-<div align="center">
+## 环境要求
 
-<table>
-<tr>
-<td align="center">
-<h3>桌面视图</h3>
-<img src="public/screenshots/desktop-main.png" alt="Desktop Interface" width="400">
-<br>
-<em>显示项目概览和聊天界面的主界面</em>
-</td>
-<td align="center">
-<h3>移动端体验</h3>
-<img src="public/screenshots/mobile-chat.png" alt="Mobile Interface" width="250">
-<br>
-<em>具有触摸导航的响应式移动设计</em>
-</td>
-</tr>
-<tr>
-<td align="center" colspan="2">
-<h3>CLI 选择</h3>
-<img src="public/screenshots/cli-selection.png" alt="CLI Selection" width="400">
-<br>
-<em>在 Claude Code、Cursor CLI 和 Codex 之间选择</em>
-</td>
-</tr>
-</table>
+- Node.js 22 LTS 和 npm 10+
+- Rust 工具链：<https://rustup.rs>
+- Tauri CLI：`cargo install tauri-cli`
+- 可选 AI CLI 已加入 `PATH`：`claude`、`codex`、`gemini` 等
 
+## 开发
 
+安装依赖：
 
-</div>
-
-## 功能特性
-
-- **响应式设计** - 在桌面、平板和移动设备上无缝运行,您也可以在移动端使用 Claude Code、Cursor 或 Codex
-- **交互式聊天界面** - 内置聊天界面,与 Claude Code、Cursor 或 Codex 无缝通信
-- **集成 Shell 终端** - 通过内置 shell 功能直接访问 Claude Code、Cursor CLI 或 Codex
-- **文件浏览器** - 交互式文件树,支持语法高亮和实时编辑
-- **Git 浏览器** - 查看、暂存和提交您的更改。您还可以切换分支
-- **会话管理** - 恢复对话、管理多个会话并跟踪历史记录
-- **Mission Control + Task Queue** - 当前 Tauri 主线围绕 Attention Inbox、Approval Inbox、Rust 持久化任务与分阶段 Claude/Codex 派发展开
-- **模型兼容性** - 适用于 Claude Sonnet 4.5、Opus 4.5 和 GPT-5.2
-
-
-## 快速开始
-
-### 前置要求
-
-- [Node.js](https://nodejs.org/) v22 或更高版本
-- 已安装并配置 [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code),和/或
-- 已安装并配置 [Cursor CLI](https://docs.cursor.com/en/cli/overview),和/或
-- 已安装并配置 [Codex](https://developers.openai.com/codex)
-
-### 一键操作(推荐)
-
-无需安装,直接运行:
-
-```bash
-npx @openwork/openwork
-```
-
-服务器将启动并可通过 `http://localhost:3002`(或您配置的 PORT)访问。
-
-**重启**: 停止服务器后只需再次运行相同的 `npx` 命令
-
-### 全局安装(供常规使用)
-
-为了频繁使用,一次性全局安装:
-
-```bash
-npm install -g @openwork/openwork
-```
-
-然后使用简单命令启动:
-
-```bash
-openwork
-```
-
-
-**重启**: 使用 Ctrl+C 停止,然后再次运行 `openwork`。
-
-**更新**:
-```bash
-openwork update
-```
-
-### CLI 使用方法
-
-全局安装后,您可以访问 `openwork` 和 `openwork` 命令:
-
-| 命令 / 选项 | 简写 | 描述 |
-|------------------|-------|-------------|
-| `openwork` 或 `openwork` | | 启动服务器(默认) |
-| `openwork start` | | 显式启动服务器 |
-| `openwork status` | | 显示配置和数据位置 |
-| `openwork update` | | 更新到最新版本 |
-| `openwork help` | | 显示帮助信息 |
-| `openwork version` | | 显示版本信息 |
-| `--port <port>` | `-p` | 设置服务器端口(默认: 3002) |
-| `--database-path <path>` | | 设置自定义数据库位置 |
-
-**示例:**
-```bash
-openwork                          # 使用默认设置启动
-openwork -p 8080              # 在自定义端口启动
-openwork status                   # 显示当前配置
-```
-
-### 作为后台服务运行(推荐用于生产环境)
-
-在生产环境中,使用 PM2(Process Manager 2)将 OpenWork 作为后台服务运行:
-
-#### 安装 PM2
-
-```bash
-npm install -g pm2
-```
-
-#### 作为后台服务启动
-
-```bash
-# 在后台启动服务器
-pm2 start openwork --name "openwork"
-
-# 或使用更短的别名
-pm2 start openwork --name "openwork"
-
-# 在自定义端口启动
-pm2 start openwork --name "openwork" -- --port 8080
-```
-
-
-#### 系统启动时自动启动
-
-要使 OpenWork 在系统启动时自动启动:
-
-```bash
-# 为您的平台生成启动脚本
-pm2 startup
-
-# 保存当前进程列表
-pm2 save
-```
-
-
-### 本地开发安装
-
-1. **克隆仓库:**
-```bash
-git clone https://source.example.com/openwork/openwork.git
-cd openwork
-```
-
-2. **安装依赖:**
 ```bash
 npm install
 ```
 
-3. **配置环境:**
-```bash
-cp .env.example .env
-# 使用您喜欢的设置编辑 .env
-```
+启动桌面应用：
 
-4. **启动应用程序:**
 ```bash
-# 仅前端开发(Vite)
-npm run client
-
-# 完整桌面开发(前端 + Tauri/Rust)
 npm run tauri:dev
-
 ```
-应用程序将在您在 .env 中指定的端口启动
 
-5. **打开浏览器:**
-   - 开发环境: `http://localhost:3002`
+仅启动前端 Vite 预览：
 
-## 安全与工具配置
+```bash
+npm run client
+```
 
-**🔒 重要提示**: 所有 Claude Code 工具**默认禁用**。这可以防止潜在的有害操作自动运行。
+构建桌面应用：
 
-### 启用工具
+```bash
+npm run tauri:build
+```
 
-要使用 Claude Code 的完整功能,您需要手动启用工具:
+## 验证
 
-1. **打开工具设置** - 点击侧边栏中的齿轮图标
-3. **选择性启用** - 仅打开您需要的工具
-4. **应用设置** - 您的偏好设置将保存在本地
+当前分支使用的核心检查：
 
-<div align="center">
+```bash
+npm run typecheck
+npx vitest run src/components/terminal/TerminalEventBridge.test.tsx src/components/terminal/providerSession.test.ts src/components/terminal/useProjectGroups.test.ts src/stores/overlayStore.test.ts src/stores/terminalStore.test.ts src/theme/themePacks.test.ts
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml pty::tests
+```
 
-![工具设置模态框](public/screenshots/tools-modal.png)
-*工具设置界面 - 仅启用您需要的内容*
-
-</div>
-
-**推荐方法**: 首先启用基本工具,然后根据需要添加更多。您可以随时调整这些设置。
-
-## Legacy TaskMaster 说明
-
-> ⚠️ **TaskMaster 仅属于旧版 Node.js 构建，不属于当前 Tauri 控制平面主线。**
-
-当前 OpenWork 的重点是：
-- Mission Control：统一查看活跃 session、审批、review 与结果回收
-- Rust 持久化任务：由后端 tasks 提供 durable truth，前端 queue 仅做 UI 投影
-- 面向 Claude Code / Cursor / Codex 的 attention-first 调度体验
-
-如果你需要查阅历史 TaskMaster 能力，请参考归档项目：[TaskMaster AI](https://source.example.com/eyaltoledano/claude-task-master)。
-
-
-## 使用指南
-
-### 核心功能
-
-#### 项目管理
-当可用时,它会自动发现 Claude Code、Cursor 或 Codex 会话并将它们分组到项目中
-- **项目操作** - 重命名、删除和组织项目
-- **智能导航** - 快速访问最近的项目和会话
-- **MCP 支持** - 通过 UI 添加您自己的 MCP 服务器
-
-#### 聊天界面
-- **使用响应式聊天或 Claude Code/Cursor CLI/Codex CLI** - 您可以使用自适应聊天界面或使用 shell 按钮连接到您选择的 CLI
-- **实时通信** - 通过 WebSocket 连接从您选择的 CLI(Claude Code/Cursor/Codex)流式传输响应
-- **会话管理** - 恢复之前的对话或启动新会话
-- **消息历史** - 带有时间戳和元数据的完整对话历史
-- **多格式支持** - 文本、代码块和文件引用
-
-#### 文件浏览器与编辑器
-- **交互式文件树** - 使用展开/折叠导航浏览项目结构
-- **实时文件编辑** - 直接在界面中读取、修改和保存文件
-- **语法高亮** - 支持多种编程语言
-- **文件操作** - 创建、重命名、删除文件和目录
-
-#### Git 浏览器
-
-
-#### Mission Control 与任务队列
-- **Attention Inbox** - 把审批、失败和阻塞 session 集中到高信号入口
-- **持久化任务队列** - 使用 Rust-backed tasks 管理分阶段 Claude/Codex 工作
-- **Review / Result 流程** - 把完成结果汇总到 review 与 result surface，便于后续收口
-
-#### 会话管理
-- **会话持久化** - 所有对话自动保存
-- **会话组织** - 按项目和 timestamp 分组会话
-- **会话操作** - 重命名、删除和导出对话历史
-- **跨设备同步** - 从任何设备访问会话
-
-### 移动应用
-- **响应式设计** - 针对所有屏幕尺寸进行优化
-- **触摸友好界面** - 滑动手势和触摸导航
-- **移动导航** - 底部选项卡栏,方便拇指导航
-- **自适应布局** - 可折叠侧边栏和智能内容优先级
-- **添加到主屏幕快捷方式** - 添加快捷方式到主屏幕,应用程序将像 PWA 一样运行
+全局浮窗的手动回归步骤见 [docs/global-overlay-manual-test.md](docs/global-overlay-manual-test.md)。
 
 ## 架构
 
-### 系统概览
+运行入口：
 
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Frontend      │    │   Backend       │    │  Agent           │
-│   (React/Vite)  │◄──►│  (Tauri/Rust)   │◄──►│  Integration     │
-│                 │    │                 │    │                │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-```
+- `index.html` -> 主终端管理窗口。
+- `selector.html` -> 全局选择器浮窗。
+- `float.html` -> 浮动终端窗口。
 
-### 后端 (Tauri + Rust)
-- **内嵌 HTTP Server** - 提供静态资源与 LAN/Web fallback
-- **Tauri IPC + WebSocket 事件桥** - 承接聊天、PTY、任务与状态更新
-- **Agent 集成 (Claude Code / Cursor CLI / Codex)** - 负责运行时会话与命令执行
-- **文件系统 / Git / Tasks API** - 为控制平面提供项目、worktree 与任务能力
+保留的后端模块：
 
-### 前端 (React + Vite)
-- **React 18** - 带有 hooks 的现代组件架构
-- **CodeMirror** - 具有语法高亮的高级代码编辑器
+- `src-tauri/src/pty.rs`：本地 PTY 生命周期、输出事件、会话状态、最近输出回放。
+- `src-tauri/src/overlay.rs`：全局快捷键、选择器/浮动终端窗口、macOS 全屏 Space 处理、非 macOS 窗口回退。
+- `src-tauri/src/db.rs`：用于浮窗快捷键和浮动终端位置的小型 SQLite 设置表。
+- `src-tauri/src/notification.rs`：正式桌面包中的系统通知分发。
+- `src-tauri/src/provider_sessions.rs`：Claude/Codex 原生会话的轻量发现，用于懒恢复。
 
+## Windows 说明
 
+Windows 支持已保留：
 
+- Release 构建保留 `windows_subsystem = "windows"`，避免额外控制台窗口。
+- PTY 启动优先使用 `powershell.exe`，不可用时回退到 `cmd.exe`。
+- Windows 图标和 Tauri 打包配置保留在 `src-tauri/icons/` 和 `src-tauri/tauri.conf.json`。
 
-### 贡献
+## 主题来源
 
-我们欢迎贡献！有关提交规范、开发流程和发布流程的详细信息,请参阅 [Contributing Guide](CONTRIBUTING.md)。
+ThreadTerm 包含原创主题和受第三方主题启发的主题包。第三方主题会在应用的外观设置中标明来源，这里也同步列出：
 
-## 故障排除
+- **ThreadTerm Default**：ThreadTerm 原创主题。
+- **Catppuccin**：基于 [Catppuccin](https://catppuccin.com/palette/)（[许可证](https://github.com/catppuccin/catppuccin/blob/main/LICENSE)）。
+- **Tokyo Night**：基于 [tokyonight.nvim](https://github.com/folke/tokyonight.nvim)（[许可证](https://github.com/folke/tokyonight.nvim/blob/main/LICENSE)）。
+- **Gruvbox**：基于 [gruvbox](https://github.com/morhetz/gruvbox)（[许可证](https://github.com/morhetz/gruvbox#license)）。
+- **Everforest**：基于 [everforest](https://github.com/sainnhe/everforest)（[许可证](https://github.com/sainnhe/everforest/blob/master/LICENSE)）。
+- **Dracula**：基于 [Dracula Theme](https://draculatheme.com/spec)（[许可证](https://github.com/dracula/dracula-theme/blob/main/LICENSE)）。
 
-### 常见问题与解决方案
-
-
-#### "未找到 Claude 项目"
-**问题**: UI 显示没有项目或项目列表为空
-**解决方案**:
-- 确保已正确安装 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-- 至少在一个项目目录中运行 `claude` 命令以进行初始化
-- 验证 `~/.claude/projects/` 目录存在并具有适当的权限
-
-#### 文件浏览器问题
-**问题**: 文件无法加载、权限错误、空目录
-**解决方案**:
-- 检查项目目录权限(在终端中使用 `ls -la`)
-- 验证项目路径存在且可访问
-- 查看服务器控制台日志以获取详细错误消息
-- 确保您未尝试访问项目范围之外的系统目录
-
+上述上游项目并不为 ThreadTerm 背书；这里保留署名是为了尊重原主题作者和对应许可证。
 
 ## 许可证
 
-OpenWork 为专有软件，使用与分发请遵循你所在组织的内部条款。
-
-## 致谢
-
-### 构建工具
-- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** - Anthropic 的官方 CLI
-- **[Cursor CLI](https://docs.cursor.com/en/cli/overview)** - Cursor 的官方 CLI
-- **[Codex](https://developers.openai.com/codex)** - OpenAI Codex
-- **[React](https://react.dev/)** - 用户界面库
-- **[Vite](https://vitejs.dev/)** - 快速构建工具和开发服务器
-- **[Tailwind CSS](https://tailwindcss.com/)** - 实用优先的 CSS 框架
-- **[CodeMirror](https://codemirror.net/)** - 高级代码编辑器
-
-
-## 支持与社区
-
-### 保持更新
-- **Star** 此仓库以表示支持
-- **Watch** 以获取更新和新版本
-- **Follow** 项目以获取公告
-
-### 赞助商
-- [Siteboon - AI powered website builder](https://openwork.ai)
----
-
-<div align="center">
-  <strong>为 Claude Code、Cursor 和 Codex 社区精心打造。</strong>
-</div>
+ThreadTerm 是专有软件。内部使用和分发遵循你所在组织的相关条款。

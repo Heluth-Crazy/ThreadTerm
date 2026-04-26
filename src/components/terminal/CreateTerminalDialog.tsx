@@ -10,10 +10,20 @@
  * verbatim (no FS existence check here — PTY spawn will surface errors).
  */
 import { useMemo, useState, type FormEvent } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Folder, Terminal, X } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Folder, FolderOpen, Terminal, X } from 'lucide-react';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { useTranslation } from 'react-i18next';
 import { terminalTypeMeta } from './terminalTypeMeta';
+import { isTauriEnv } from '../../lib/tauri-bridge';
 import type { TerminalCreateOptions, TerminalType } from '../../types/terminal';
+
+/** Extract the last path segment (works for both POSIX and Windows paths). */
+function pathBasename(p: string): string {
+  const trimmed = p.replace(/[\\/]+$/, '');
+  const segs = trimmed.split(/[\\/]/);
+  return segs[segs.length - 1] ?? '';
+}
 
 export interface RecentProject {
   path: string;
@@ -35,6 +45,7 @@ export function CreateTerminalDialog({
   onCreate,
   recentProjects = [],
 }: CreateTerminalDialogProps) {
+  const { t } = useTranslation('terminal');
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
   const [type, setType] = useState<TerminalType>('shell');
@@ -72,35 +83,72 @@ export function CreateTerminalDialog({
     setPath(p.path);
   };
 
-  return (
-    <AnimatePresence>
-      {open && (
-        <>
-          {/* Backdrop */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={onClose}
-            className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
-          />
+  const nameWasManuallyEdited = useMemo(
+    () => name.trim().length > 0 && name.trim() !== pathBasename(path),
+    [name, path],
+  );
 
-          {/* Dialog */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.96, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.96, y: 20 }}
-            transition={{ type: 'spring', damping: 24, stiffness: 300 }}
-            className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-2xl"
-          >
-            <form onSubmit={handleSubmit}>
+  /** Apply a new path, auto-deriving the project name from its last segment
+   *  unless the user has already typed a name that doesn't match. */
+  const applyPath = (nextPath: string) => {
+    setPath(nextPath);
+    const derived = pathBasename(nextPath);
+    if (!derived) return;
+    if (!name.trim() || !nameWasManuallyEdited) {
+      setName(derived);
+    }
+  };
+
+  const handleBrowse = async () => {
+    if (!isTauriEnv()) return;
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: t('dialog.chooseProjectDirectory'),
+        defaultPath: path.trim() || undefined,
+      });
+      if (typeof picked === 'string' && picked) {
+        applyPath(picked);
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[CreateTerminalDialog] folder picker failed:', err);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <>
+      {/* Backdrop */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        onClick={onClose}
+        className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
+      />
+
+      {/* Dialog — flex-centered wrapper, motion only handles scale/opacity
+          so framer's transform doesn't overwrite translate-x/y */}
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.96, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ type: 'spring', damping: 24, stiffness: 300 }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-terminal-title"
+          className="pointer-events-auto w-full max-w-md overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-2xl"
+        >
+              <form onSubmit={handleSubmit}>
               {/* Header */}
               <div className="flex items-center justify-between border-b border-border px-5 py-3">
                 <div className="flex items-center gap-2">
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <Terminal className="h-4 w-4" />
                   </div>
-                  <h2 className="text-base font-semibold">New terminal</h2>
+                  <h2 id="create-terminal-title" className="text-base font-semibold">{t('dialog.title')}</h2>
                 </div>
                 <button
                   type="button"
@@ -117,7 +165,7 @@ export function CreateTerminalDialog({
                 {uniqueProjects.length > 0 && (
                   <div>
                     <label className="text-xs font-medium text-muted-foreground">
-                      Recent projects
+                      {t('dialog.recentProjects')}
                     </label>
                     <div className="mt-1 flex flex-wrap gap-1.5">
                       {uniqueProjects.slice(0, 6).map((p) => (
@@ -137,25 +185,37 @@ export function CreateTerminalDialog({
 
                 {/* Project name + path */}
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium">Project</label>
+                  <label className="text-xs font-medium">{t('dialog.project')}</label>
                   <input
                     autoFocus
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="Project name"
+                    placeholder={t('dialog.projectNamePlaceholder')}
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                   />
-                  <input
-                    value={path}
-                    onChange={(e) => setPath(e.target.value)}
-                    placeholder="/absolute/path/to/project"
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-[12px] outline-none focus:ring-2 focus:ring-primary/30"
-                  />
+                  <div className="flex gap-1.5">
+                    <input
+                      value={path}
+                      onChange={(e) => applyPath(e.target.value)}
+                      placeholder={t('dialog.projectPathPlaceholder')}
+                      className="flex-1 rounded-lg border border-border bg-background px-3 py-2 font-mono text-[12px] outline-none focus:ring-2 focus:ring-primary/30"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleBrowse}
+                      disabled={!isTauriEnv()}
+                      title={isTauriEnv() ? t('dialog.browseTitle') : t('dialog.browseDesktopOnly')}
+                      className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-2 text-[11px] font-medium hover:bg-accent hover:text-accent-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <FolderOpen className="h-3.5 w-3.5" />
+                      {t('dialog.browse')}
+                    </button>
+                  </div>
                 </div>
 
                 {/* Type grid */}
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium">Type</label>
+                  <label className="text-xs font-medium">{t('dialog.type')}</label>
                   <div className="grid grid-cols-4 gap-1.5">
                     {typeList.map(([key, meta]) => {
                       const Icon = meta.Icon;
@@ -173,7 +233,7 @@ export function CreateTerminalDialog({
                           ].join(' ')}
                         >
                           <Icon className={`h-4 w-4 ${meta.accent}`} />
-                          {meta.label}
+                          {t(`types.${key}`, meta.label)}
                         </button>
                       );
                     })}
@@ -183,16 +243,17 @@ export function CreateTerminalDialog({
                 {/* Initial command */}
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium">
-                    Initial command <span className="text-muted-foreground">(optional)</span>
+                    {t('dialog.initialCommand')}{' '}
+                    <span className="text-muted-foreground">({t('dialog.optional')})</span>
                   </label>
                   <input
                     value={command}
                     onChange={(e) => setCommand(e.target.value)}
-                    placeholder="e.g. npm run dev"
+                    placeholder={t('dialog.initialCommandPlaceholder')}
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-[12px] outline-none focus:ring-2 focus:ring-primary/30"
                   />
                   <p className="text-[10px] text-muted-foreground">
-                    Leave empty to use the type&apos;s default command
+                    {t('dialog.defaultCommandHint')}
                     {terminalTypeMeta[type].defaultCommand && (
                       <>
                         {' '}
@@ -211,20 +272,19 @@ export function CreateTerminalDialog({
                   onClick={onClose}
                   className="rounded-lg px-3 py-1.5 text-sm hover:bg-accent"
                 >
-                  Cancel
+                  {t('dialog.cancel')}
                 </button>
                 <button
                   type="submit"
                   disabled={!canSubmit}
                   className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
-                  Create
+                  {t('dialog.create')}
                 </button>
               </div>
-            </form>
-          </motion.div>
-        </>
-      )}
-    </AnimatePresence>
+              </form>
+        </motion.div>
+      </div>
+    </>
   );
 }

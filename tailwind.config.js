@@ -3,6 +3,8 @@ export default {
   darkMode: ["class"],
   content: [
     "./index.html",
+    "./selector.html",
+    "./float.html",
     "./src/**/*.{js,ts,jsx,tsx}",
   ],
   theme: {
@@ -54,15 +56,7 @@ export default {
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
       },
-      spacing: {
-        'safe-area-inset-bottom': 'env(safe-area-inset-bottom)',
-        'mobile-nav': 'var(--mobile-nav-total)',
-      },
     },
   },
-  plugins: [require('@tailwindcss/typography')],
-  safelist: [
-    'grid-cols-2', 'grid-cols-3',
-    'grid-rows-1', 'grid-rows-2', 'grid-rows-3',
-  ],
+  plugins: [],
 }

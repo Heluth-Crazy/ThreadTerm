@@ -1,200 +1,50 @@
-﻿import { useState, useEffect, useCallback } from 'react';
-import { Button } from './ui/button';
-import { X, Settings as SettingsIcon, Moon, Sun, GitBranch, Keyboard, Smartphone, Copy, Check } from 'lucide-react';
-import { useTheme } from '../contexts/ThemeContext';
+import { useEffect, useRef, useState } from 'react';
+import {
+  Check,
+  Download,
+  ExternalLink,
+  Keyboard,
+  Monitor,
+  Moon,
+  Palette,
+  Settings as SettingsIcon,
+  Sun,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { cn } from '../lib/utils';
-import GitSettings from './GitSettings';
-import AgentListItem from './settings/AgentListItem';
-import PermissionsContent from './settings/PermissionsContent';
-import CustomSlashCommandsEditor from './settings/CustomSlashCommandsEditor';
-import SessionTemplatesEditor from './templates/SessionTemplatesEditor';
-import KeyboardShortcutsSettings from './settings/KeyboardShortcutsSettings';
+import { useTheme } from '../contexts/ThemeContext';
 import LanguageSelector from './LanguageSelector';
-import {
-  normalizeSessionLaunchProfiles,
-  resolveDefaultSessionLaunchProfileId,
-} from '../utils/sessionLaunchProfiles';
-import {
-  FILE_ACCESS_MODE_STORAGE_KEY,
-  FILE_ACCESS_MODES,
-  getStoredFileAccessMode,
-} from '../utils/fileAccessMode';
+import KeyboardShortcutsSettings from './settings/KeyboardShortcutsSettings';
+import { NotificationSettings } from './settings/NotificationSettings';
+import OverlayHotkeysSettings from './settings/OverlayHotkeysSettings';
 
-function LanUrlCopyButton({ url }) {
-  const [copied, setCopied] = useState(false);
-  const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // fallback
-      const ta = document.createElement('textarea');
-      ta.value = url;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  }, [url]);
+const TABS = ['appearance', 'shortcuts'];
 
-  return (
-    <button
-      onClick={handleCopy}
-      className="inline-flex items-center gap-1 rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-      title="Copy URL"
-    >
-      {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
-      {copied ? 'Copied!' : 'Copy'}
-    </button>
-  );
-}
-
-function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded = false }) {
-  const { isDarkMode, toggleDarkMode } = useTheme();
+function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedded = false }) {
+  const {
+    themeMode,
+    themePackId,
+    resolvedMode,
+    themePacks,
+    setThemeMode,
+    setThemePackId,
+    importCustomThemePack,
+    deleteCustomThemePack,
+    exportThemePack,
+  } = useTheme();
   const { t } = useTranslation('settings');
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveStatus, setSaveStatus] = useState(null);
-  const [projectSortOrder, setProjectSortOrder] = useState('name');
-  const [fileAccessMode, setFileAccessMode] = useState(FILE_ACCESS_MODES.AUTO);
-  const [lanUrl, setLanUrl] = useState('');
-
-  const normalizeTab = (tab) => (['agents', 'appearance', 'git', 'shortcuts'].includes(tab) ? tab : 'agents');
-  const tabButtonClassName = (tab) => cn(
-    'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-    activeTab === tab
-      ? 'bg-background text-foreground shadow-sm'
-      : 'text-muted-foreground hover:text-foreground',
-  );
+  const normalizeTab = (tab) => (TABS.includes(tab) ? tab : 'shortcuts');
   const [activeTab, setActiveTab] = useState(normalizeTab(initialTab));
-  const [selectedAgent, setSelectedAgent] = useState('claude');
-
-  const [claudeSessionLaunchProfiles, setClaudeSessionLaunchProfiles] = useState(() =>
-    normalizeSessionLaunchProfiles([], 'claude')
-  );
-  const [claudeDefaultSessionLaunchProfileId, setClaudeDefaultSessionLaunchProfileId] = useState(() => {
-    const defaults = normalizeSessionLaunchProfiles([], 'claude');
-    return defaults[0]?.id || '';
-  });
-  const [codexSessionLaunchProfiles, setCodexSessionLaunchProfiles] = useState(() =>
-    normalizeSessionLaunchProfiles([], 'codex')
-  );
-  const [codexDefaultSessionLaunchProfileId, setCodexDefaultSessionLaunchProfileId] = useState(() => {
-    const defaults = normalizeSessionLaunchProfiles([], 'codex');
-    return defaults[0]?.id || '';
-  });
+  const [themeImportStatus, setThemeImportStatus] = useState(null);
+  const themeFileInputRef = useRef(null);
 
   useEffect(() => {
     if (isOpen || embedded) {
-      loadSettings();
       setActiveTab(normalizeTab(initialTab));
     }
   }, [embedded, isOpen, initialTab]);
-
-  useEffect(() => {
-    if ((isOpen || embedded) && activeTab === 'appearance') {
-      fetch('/api/local-ip')
-        .then(res => res.ok ? res.json() : null)
-        .then(data => { if (data?.url) setLanUrl(data.url); })
-        .catch(() => {});
-    }
-  }, [isOpen, embedded, activeTab]);
-
-
-  const loadSettings = async () => {
-    try {
-      const savedSettings = localStorage.getItem('claude-settings');
-      if (savedSettings) {
-        const settings = JSON.parse(savedSettings);
-        setProjectSortOrder(settings.projectSortOrder || 'name');
-
-        const claudeProfiles = normalizeSessionLaunchProfiles(settings.sessionLaunchProfiles, 'claude');
-        setClaudeSessionLaunchProfiles(claudeProfiles);
-        setClaudeDefaultSessionLaunchProfileId(
-          resolveDefaultSessionLaunchProfileId(settings.defaultSessionLaunchProfileId, claudeProfiles)
-        );
-      } else {
-        const defaultClaudeProfiles = normalizeSessionLaunchProfiles([], 'claude');
-        setProjectSortOrder('name');
-        setClaudeSessionLaunchProfiles(defaultClaudeProfiles);
-        setClaudeDefaultSessionLaunchProfileId(defaultClaudeProfiles[0]?.id || '');
-      }
-
-      setFileAccessMode(getStoredFileAccessMode());
-
-      const savedCodexSettings = localStorage.getItem('codex-settings');
-      if (savedCodexSettings) {
-        const codexSettings = JSON.parse(savedCodexSettings);
-        const codexProfiles = normalizeSessionLaunchProfiles(codexSettings.sessionLaunchProfiles, 'codex');
-        setCodexSessionLaunchProfiles(codexProfiles);
-        setCodexDefaultSessionLaunchProfileId(
-          resolveDefaultSessionLaunchProfileId(codexSettings.defaultSessionLaunchProfileId, codexProfiles)
-        );
-      } else {
-        const defaultCodexProfiles = normalizeSessionLaunchProfiles([], 'codex');
-        setCodexSessionLaunchProfiles(defaultCodexProfiles);
-        setCodexDefaultSessionLaunchProfileId(defaultCodexProfiles[0]?.id || '');
-      }
-    } catch (error) {
-      console.error('Error loading tool settings:', error);
-      setProjectSortOrder('name');
-      setFileAccessMode(FILE_ACCESS_MODES.AUTO);
-      const fallbackClaudeProfiles = normalizeSessionLaunchProfiles([], 'claude');
-      const fallbackCodexProfiles = normalizeSessionLaunchProfiles([], 'codex');
-      setClaudeSessionLaunchProfiles(fallbackClaudeProfiles);
-      setClaudeDefaultSessionLaunchProfileId(fallbackClaudeProfiles[0]?.id || '');
-      setCodexSessionLaunchProfiles(fallbackCodexProfiles);
-      setCodexDefaultSessionLaunchProfileId(fallbackCodexProfiles[0]?.id || '');
-    }
-  };
-
-  const saveSettings = () => {
-    setIsSaving(true);
-    setSaveStatus(null);
-
-    try {
-      const normalizedClaudeProfiles = normalizeSessionLaunchProfiles(claudeSessionLaunchProfiles, 'claude');
-      const normalizedCodexProfiles = normalizeSessionLaunchProfiles(codexSessionLaunchProfiles, 'codex');
-
-      const claudeSettings = {
-        projectSortOrder,
-        sessionLaunchProfiles: normalizedClaudeProfiles,
-        defaultSessionLaunchProfileId: resolveDefaultSessionLaunchProfileId(
-          claudeDefaultSessionLaunchProfileId,
-          normalizedClaudeProfiles
-        ),
-        lastUpdated: new Date().toISOString(),
-      };
-
-      const codexSettings = {
-        sessionLaunchProfiles: normalizedCodexProfiles,
-        defaultSessionLaunchProfileId: resolveDefaultSessionLaunchProfileId(
-          codexDefaultSessionLaunchProfileId,
-          normalizedCodexProfiles
-        ),
-        lastUpdated: new Date().toISOString(),
-      };
-
-      localStorage.setItem('claude-settings', JSON.stringify(claudeSettings));
-      localStorage.setItem('codex-settings', JSON.stringify(codexSettings));
-      localStorage.setItem(FILE_ACCESS_MODE_STORAGE_KEY, fileAccessMode);
-
-      setSaveStatus('success');
-      if (!embedded) {
-        setTimeout(() => {
-          onClose();
-        }, 1000);
-      }
-    } catch (error) {
-      console.error('Error saving tool settings:', error);
-      setSaveStatus('error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
 
   if (!isOpen && !embedded) {
     return null;
@@ -202,302 +52,379 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'agents', embedded 
 
   const containerClassName = embedded
     ? 'h-full overflow-y-auto bg-background'
-    : 'modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/95 md:p-4';
+    : 'modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/95 p-4';
   const panelClassName = embedded
-    ? 'mx-auto flex h-full w-full max-w-6xl flex-col bg-background'
-    : 'flex h-full w-full flex-col bg-background border border-border shadow-xl md:max-w-4xl md:h-[90vh] md:rounded-lg';
+    ? 'mx-auto flex h-full w-full max-w-5xl flex-col bg-background'
+    : 'flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-2xl md:h-[86vh]';
+  const contentPadding = embedded ? 'px-4 py-4 sm:px-6 lg:px-8' : 'p-4 md:p-6';
+
+  const tabButtonClassName = (tab) => [
+    'inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-colors',
+    activeTab === tab
+      ? 'bg-background text-foreground shadow-sm'
+      : 'text-muted-foreground hover:text-foreground',
+  ].join(' ');
+
+  const modeOptions = [
+    { id: 'system', icon: Monitor },
+    { id: 'light', icon: Sun },
+    { id: 'dark', icon: Moon },
+  ];
+
+  const downloadThemePack = (packId) => {
+    const { filename, content } = exportThemePack(packId);
+    const blob = new Blob([content], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    setThemeImportStatus({
+      type: 'success',
+      message: t('appearanceSettings.themePack.exportSuccess'),
+    });
+  };
+
+  const handleThemeFileChange = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const content = await file.text();
+      const pack = importCustomThemePack(content);
+      setThemeImportStatus({
+        type: 'success',
+        message: t('appearanceSettings.themePack.importSuccess', { name: pack.name }),
+      });
+    } catch (error) {
+      setThemeImportStatus({
+        type: 'error',
+        message: t('appearanceSettings.themePack.importFailed', {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      });
+    } finally {
+      event.target.value = '';
+    }
+  };
+
+  const handleDeleteCustomTheme = (event, pack) => {
+    event.stopPropagation();
+    if (!window.confirm(t('appearanceSettings.themePack.deleteConfirm', { name: pack.name }))) {
+      return;
+    }
+    deleteCustomThemePack(pack.id);
+    setThemeImportStatus({
+      type: 'success',
+      message: t('appearanceSettings.themePack.deleteSuccess', { name: pack.name }),
+    });
+  };
 
   return (
     <div className={containerClassName}>
       <div className={panelClassName}>
-        <div className={cn(
-          'flex flex-shrink-0 items-center justify-between border-b border-border/60',
-          embedded ? 'px-4 py-3.5 sm:px-6 lg:px-8' : 'p-4 md:p-6',
-        )}>
+        <div className="flex shrink-0 items-center justify-between border-b border-border/60 p-4 md:p-6">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-muted text-foreground">
               <SettingsIcon className="h-5 w-5" />
             </div>
             <div>
-              {embedded ? <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">OpenWork</p> : null}
-              <h2 className="mt-1 text-lg font-semibold text-foreground md:text-xl">{t('title')}</h2>
+              <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                ThreadTerm
+              </p>
+              <h2 className="mt-1 text-lg font-semibold text-foreground md:text-xl">
+                {t('title')}
+              </h2>
             </div>
           </div>
           {!embedded && (
-            <Button
-              variant="ghost"
-              size="sm"
+            <button
+              type="button"
               onClick={onClose}
-              className="text-muted-foreground hover:text-foreground"
+              className="rounded-xl p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-label={t('close', 'Close settings')}
             >
-              <X className="w-5 h-5" />
-            </Button>
+              <X className="h-5 w-5" />
+            </button>
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto">
-          {!embedded && (
-            <div className={cn(
-              'border-b border-border/60',
-              embedded ? 'px-4 py-3 sm:px-6 lg:px-8' : 'px-4 py-2 md:px-6',
-            )}>
-              <div className="inline-flex rounded-xl border border-border/70 bg-card/70 p-1">
-                <button
-                  onClick={() => setActiveTab('agents')}
-                  className={tabButtonClassName('agents')}
-                >
-                  {t('mainTabs.agents')}
-                </button>
-                <button
-                  onClick={() => setActiveTab('appearance')}
-                  className={tabButtonClassName('appearance')}
-                >
-                  {t('mainTabs.appearance')}
-                </button>
-                <button
-                  onClick={() => setActiveTab('git')}
-                  className={tabButtonClassName('git')}
-                >
-                  <GitBranch className="h-4 w-4" />
-                  {t('mainTabs.git')}
-                </button>
-                <button
-                  onClick={() => setActiveTab('shortcuts')}
-                  className={tabButtonClassName('shortcuts')}
-                >
-                  <Keyboard className="h-4 w-4" />
-                  {t('mainTabs.shortcuts', 'Shortcuts')}
-                </button>
-              </div>
-            </div>
-          )}
+        <div className="border-b border-border/60 px-4 py-2 md:px-6">
+          <div className="inline-flex rounded-2xl border border-border/70 bg-card/70 p-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab('appearance')}
+              className={tabButtonClassName('appearance')}
+            >
+              <Palette className="h-4 w-4" />
+              {t('mainTabs.appearance')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('shortcuts')}
+              className={tabButtonClassName('shortcuts')}
+            >
+              <Keyboard className="h-4 w-4" />
+              {t('mainTabs.shortcuts', 'Shortcuts')}
+            </button>
+          </div>
+        </div>
 
-          <div className={cn(
-            'space-y-4 ',
-            embedded ? 'px-4 py-3.5 sm:px-6 lg:px-8' : 'p-4 md:p-6',
-          )}>
-            {activeTab === 'agents' && (
-              <>
-              <div className="flex min-h-[420px] flex-col overflow-hidden rounded-[24px] border border-border/60 bg-card/72 shadow-sm md:min-h-[500px] md:flex-row">
-                <div className="w-56 flex-shrink-0 border-r border-border/60 bg-card/30">
-                  <div className="space-y-1.5 p-3">
-                    <AgentListItem
-                      agentId="claude"
-                      isSelected={selectedAgent === 'claude'}
-                      onClick={() => setSelectedAgent('claude')}
-                    />
-                    <AgentListItem
-                      agentId="codex"
-                      isSelected={selectedAgent === 'codex'}
-                      onClick={() => setSelectedAgent('codex')}
-                    />
-                  </div>
-                </div>
-
-                <div className="flex flex-1 flex-col overflow-hidden bg-background">
-                  <div className="flex-1 overflow-y-auto p-3.5 md:p-4">
-                    {selectedAgent === 'claude' && (
-                      <PermissionsContent
-                        agent="claude"
-                        launchProfiles={claudeSessionLaunchProfiles}
-                        setLaunchProfiles={setClaudeSessionLaunchProfiles}
-                        defaultLaunchProfileId={claudeDefaultSessionLaunchProfileId}
-                        setDefaultLaunchProfileId={setClaudeDefaultSessionLaunchProfileId}
-                      />
-                    )}
-                    {selectedAgent === 'codex' && (
-                      <PermissionsContent
-                        agent="codex"
-                        launchProfiles={codexSessionLaunchProfiles}
-                        setLaunchProfiles={setCodexSessionLaunchProfiles}
-                        defaultLaunchProfileId={codexDefaultSessionLaunchProfileId}
-                        setDefaultLaunchProfileId={setCodexDefaultSessionLaunchProfileId}
-                      />
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <CustomSlashCommandsEditor />
-              <SessionTemplatesEditor />
-              </>
-            )}
-
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className={contentPadding}>
             {activeTab === 'appearance' && (
-              <div className="space-y-4">
-                <div>
-                  <div className="rounded-[20px] border border-border/60 bg-card/72 p-4 shadow-sm">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <div className="font-medium text-foreground">
-                          {t('appearanceSettings.darkMode.label')}
-                        </div>
-                        <div className="text-sm leading-5 text-muted-foreground">
-                          {t('appearanceSettings.darkMode.description')}
-                        </div>
+              <div className="space-y-5">
+                <section className="rounded-[20px] border border-border/60 bg-card/72 p-4 shadow-sm">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <div className="font-medium text-foreground">
+                        {t('appearanceSettings.mode.label')}
                       </div>
-                      <button
-                        onClick={toggleDarkMode}
-                        className="relative inline-flex h-8 w-14 items-center rounded-full bg-muted transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-ring/40 focus:ring-offset-2"
-                        role="switch"
-                        aria-checked={isDarkMode}
-                        aria-label="Toggle dark mode"
-                      >
-                        <span className="sr-only">Toggle dark mode</span>
-                        <span
-                          className={`${
-                            isDarkMode ? 'translate-x-7' : 'translate-x-1'
-                          } inline-block h-6 w-6 transform rounded-full bg-white shadow-lg transition-transform duration-200 flex items-center justify-center`}
+                      <div className="text-sm leading-5 text-muted-foreground">
+                        {t('appearanceSettings.mode.description')}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 rounded-2xl border border-border/70 bg-muted/50 p-1">
+                      {modeOptions.map(({ id, icon: Icon }) => (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => setThemeMode(id)}
+                          className={[
+                            'inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-colors',
+                            themeMode === id
+                              ? 'bg-background text-foreground shadow-sm'
+                              : 'text-muted-foreground hover:text-foreground',
+                          ].join(' ')}
+                          aria-pressed={themeMode === id}
                         >
-                          {isDarkMode ? (
-                            <Moon className="w-3.5 h-3.5 text-gray-700" />
-                          ) : (
-                            <Sun className="w-3.5 h-3.5 text-yellow-500" />
-                          )}
-                        </span>
+                          <Icon className="h-4 w-4" />
+                          {t(`appearanceSettings.mode.options.${id}`)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+
+                <section className="rounded-[20px] border border-border/60 bg-card/72 p-4 shadow-sm">
+                  <div className="mb-4 flex flex-col gap-3 md:flex-row md:flex-wrap md:items-start md:justify-between">
+                    <div>
+                      <div className="font-medium text-foreground">
+                        {t('appearanceSettings.themePack.label')}
+                      </div>
+                      <div className="text-sm leading-5 text-muted-foreground">
+                        {t('appearanceSettings.themePack.description')}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <input
+                        ref={themeFileInputRef}
+                        type="file"
+                        accept="application/json,.json"
+                        className="hidden"
+                        onChange={handleThemeFileChange}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => themeFileInputRef.current?.click()}
+                        className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
+                      >
+                        <Upload className="h-4 w-4" />
+                        {t('appearanceSettings.themePack.importJson')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => downloadThemePack(themePackId)}
+                        className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
+                      >
+                        <Download className="h-4 w-4" />
+                        {t('appearanceSettings.themePack.exportCurrent')}
                       </button>
                     </div>
-                  </div>
-                </div>
-
-                <div>
-                  <LanguageSelector />
-                </div>
-
-                <div>
-                  <div className="rounded-[20px] border border-border/60 bg-card/72 p-4 shadow-sm">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="font-medium text-foreground">
-                          {t('appearanceSettings.projectSorting.label')}
-                        </div>
-                        <div className="text-sm text-muted-foreground">
-                          {t('appearanceSettings.projectSorting.description')}
-                        </div>
-                      </div>
-                      <select
-                        value={projectSortOrder}
-                        onChange={(e) => setProjectSortOrder(e.target.value)}
-                        className="h-10 w-36 rounded-xl border border-input bg-background px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+                    {themeImportStatus && (
+                      <div
+                        className={[
+                          'basis-full rounded-xl border px-3 py-2 text-sm',
+                          themeImportStatus.type === 'error'
+                            ? 'border-destructive/40 bg-destructive/10 text-destructive'
+                            : 'border-primary/30 bg-primary/10 text-foreground',
+                        ].join(' ')}
                       >
-                        <option value="name">{t('appearanceSettings.projectSorting.alphabetical')}</option>
-                        <option value="date">{t('appearanceSettings.projectSorting.recentActivity')}</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <div className="rounded-[20px] border border-border/60 bg-card/72 p-4 shadow-sm">
-                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                      <div className="space-y-2">
-                        <div className="font-medium text-foreground">
-                          {t('appearanceSettings.fileAccessMode.label')}
-                        </div>
-                        <div className="max-w-2xl text-sm leading-5 text-muted-foreground">
-                          {t('appearanceSettings.fileAccessMode.description')}
-                        </div>
-                        <div className="space-y-1 text-xs leading-5 text-muted-foreground/90">
-                          <div>{t('appearanceSettings.fileAccessMode.autoHelp')}</div>
-                          <div>{t('appearanceSettings.fileAccessMode.compatibilityHelp')}</div>
-                          <div>{t('appearanceSettings.fileAccessMode.directHelp')}</div>
-                        </div>
+                        {themeImportStatus.message}
                       </div>
-                      <select
-                        value={fileAccessMode}
-                        onChange={(e) => setFileAccessMode(e.target.value)}
-                        className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 lg:w-52"
-                      >
-                        <option value={FILE_ACCESS_MODES.AUTO}>{t('appearanceSettings.fileAccessMode.auto')}</option>
-                        <option value={FILE_ACCESS_MODES.TERMINAL_FIRST}>{t('appearanceSettings.fileAccessMode.compatibility')}</option>
-                        <option value={FILE_ACCESS_MODES.DIRECT}>{t('appearanceSettings.fileAccessMode.direct')}</option>
-                      </select>
-                    </div>
+                    )}
                   </div>
-                </div>
 
-                {lanUrl && (
-                  <div>
-                    <div className="rounded-[20px] border border-border/60 bg-card/72 p-4 shadow-sm">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 font-medium text-foreground">
-                            <Smartphone className="h-4 w-4" />
-                            Mobile / LAN Access
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {themePacks.map((pack) => {
+                      const previewMode = pack.modes[resolvedMode]
+                        ? resolvedMode
+                        : pack.modes.dark
+                          ? 'dark'
+                          : 'light';
+                      const tokens = pack.modes[previewMode];
+                      const isActive = themePackId === pack.id;
+                      const attributionLabel =
+                        pack.attribution.kind === 'original'
+                          ? t('appearanceSettings.themePack.original')
+                          : pack.attribution.kind === 'based-on'
+                            ? t('appearanceSettings.themePack.basedOn', {
+                                source: pack.attribution.sourceName,
+                              })
+                            : t('appearanceSettings.themePack.inspiredBy', {
+                                source: pack.attribution.sourceName,
+                              });
+
+                      return (
+                        <div
+                          key={pack.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setThemePackId(pack.id)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              setThemePackId(pack.id);
+                            }
+                          }}
+                          className={[
+                            'group flex h-full min-h-[320px] flex-col rounded-2xl border p-3 text-left transition-all',
+                            isActive
+                              ? 'border-primary bg-primary/10 shadow-sm ring-2 ring-primary/20'
+                              : 'border-border/70 bg-background/60 hover:border-primary/50 hover:bg-background',
+                          ].join(' ')}
+                          aria-pressed={isActive}
+                        >
+                          <div className="flex min-h-[76px] items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-semibold text-foreground">{pack.name}</span>
+                                {!pack.modes.light && (
+                                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                                    {t('appearanceSettings.themePack.darkOnly')}
+                                  </span>
+                                )}
+                                {pack.isCustom && (
+                                  <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-primary">
+                                    {t('appearanceSettings.themePack.custom')}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                                {pack.isCustom
+                                  ? pack.description
+                                  : t(`appearanceSettings.themePack.descriptions.${pack.id}`, pack.description)}
+                              </p>
+                            </div>
+                            <span
+                              className={[
+                                'flex h-6 w-6 shrink-0 items-center justify-center rounded-full border',
+                                isActive
+                                  ? 'border-primary bg-primary text-primary-foreground'
+                                  : 'border-border bg-card text-transparent',
+                              ].join(' ')}
+                            >
+                              <Check className="h-3.5 w-3.5" />
+                            </span>
                           </div>
-                          <div className="mt-1 text-sm leading-5 text-muted-foreground">
-                            Open this URL on your phone or any device on the same network:
+
+                          <div className="mt-auto overflow-hidden rounded-xl border border-border/60">
+                            <div
+                              className="flex h-12 items-center gap-2 px-3"
+                              style={{ backgroundColor: tokens.app.background, color: tokens.app.foreground }}
+                            >
+                              <span
+                                className="h-6 w-10 rounded-lg border"
+                                style={{
+                                  backgroundColor: tokens.app.card,
+                                  borderColor: tokens.app.border,
+                                }}
+                              />
+                              <span
+                                className="h-6 w-6 rounded-full"
+                                style={{ backgroundColor: tokens.app.primary }}
+                              />
+                              <span
+                                className="h-6 w-6 rounded-full"
+                                style={{ backgroundColor: tokens.app.accent }}
+                              />
+                              <span className="ml-auto text-[10px] font-medium opacity-80">
+                                {previewMode === 'dark'
+                                  ? t('appearanceSettings.mode.options.dark')
+                                  : t('appearanceSettings.mode.options.light')}
+                              </span>
+                            </div>
+                            <div
+                              className="flex h-9 items-center gap-1.5 px-3"
+                              style={{
+                                backgroundColor: tokens.terminal.background,
+                                color: tokens.terminal.foreground,
+                              }}
+                            >
+                              {[
+                                tokens.terminal.red,
+                                tokens.terminal.green,
+                                tokens.terminal.yellow,
+                                tokens.terminal.blue,
+                                tokens.terminal.magenta,
+                                tokens.terminal.cyan,
+                              ].map((color) => (
+                                <span
+                                  key={color}
+                                  className="h-3 w-3 rounded-full"
+                                  style={{ backgroundColor: color }}
+                                />
+                              ))}
+                              <span className="ml-auto font-mono text-[10px] opacity-80">xterm</span>
+                            </div>
                           </div>
-                          <div className="mt-2 flex items-center gap-2">
-                            <code className="rounded-lg bg-muted px-3 py-1.5 text-sm font-mono text-foreground select-all">
-                              {lanUrl}
-                            </code>
-                            <LanUrlCopyButton url={lanUrl} />
-                          </div>
+
+                          <span className="mt-3 flex min-h-[32px] items-start gap-1 text-[11px] leading-4 text-muted-foreground">
+                            {attributionLabel}
+                            {pack.attribution.kind !== 'original' && (
+                              <a
+                                href={pack.attribution.sourceUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={(event) => event.stopPropagation()}
+                                className="inline-flex items-center gap-0.5 text-primary hover:underline"
+                              >
+                                {t('appearanceSettings.themePack.source')}
+                                <ExternalLink className="h-3 w-3" />
+                              </a>
+                            )}
+                          </span>
+
+                          {pack.isCustom && (
+                            <button
+                              type="button"
+                              onClick={(event) => handleDeleteCustomTheme(event, pack)}
+                              className="mt-2 inline-flex w-fit items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/10"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                              {t('appearanceSettings.themePack.delete')}
+                            </button>
+                          )}
                         </div>
-                      </div>
-                    </div>
+                      );
+                    })}
                   </div>
-                )}
+                </section>
 
+                <LanguageSelector />
               </div>
             )}
 
-            {activeTab === 'git' && <GitSettings />}
-
-            {activeTab === 'shortcuts' && <KeyboardShortcutsSettings />}
-
-          </div>
-        </div>
-
-        <div className={cn(
-          'flex flex-shrink-0 flex-col gap-3 border-t border-border/60  sm:flex-row sm:items-center sm:justify-between',
-          embedded ? 'px-4 py-3.5 sm:px-6 lg:px-8' : 'p-4 md:p-6',
-        )}>
-          <div className="order-2 flex items-center justify-center gap-2 sm:order-1 sm:justify-start">
-            {saveStatus === 'success' && (
-              <div className="inline-flex items-center gap-2 rounded-full border border-green-500/20 bg-green-500/10 px-3 py-1.5 text-sm text-green-700 dark:text-green-300">
-                <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                </svg>
-                {t('saveStatus.success')}
+            {activeTab === 'shortcuts' && (
+              <div className="space-y-6">
+                <NotificationSettings />
+                <OverlayHotkeysSettings />
+                <KeyboardShortcutsSettings />
               </div>
             )}
-            {saveStatus === 'error' && (
-              <div className="inline-flex items-center gap-2 rounded-full border border-red-500/20 bg-red-500/10 px-3 py-1.5 text-sm text-red-700 dark:text-red-300">
-                <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                </svg>
-                {t('saveStatus.error')}
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center gap-3 order-1 sm:order-2">
-            {!embedded && (
-              <Button
-                variant="outline"
-                onClick={onClose}
-                disabled={isSaving}
-                className="h-10 flex-1 rounded-xl sm:flex-none"
-              >
-                {t('footerActions.cancel')}
-              </Button>
-            )}
-            <Button
-              onClick={saveSettings}
-              disabled={isSaving}
-              className="h-10 flex-1 rounded-xl disabled:opacity-50 sm:flex-none"
-            >
-              {isSaving ? (
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                  {t('saveStatus.saving')}
-                </div>
-              ) : (
-                t('footerActions.save')
-              )}
-            </Button>
           </div>
         </div>
       </div>

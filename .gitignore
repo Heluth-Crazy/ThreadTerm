@@ -107,12 +107,13 @@ temp/
 
 # AI specific
 .claude/
-.cursor/
+.claude_settings.json
 .roo/
 .taskmaster/
 .cline/
 .windsurf/
 .serena/
+.threadterm/
 CLAUDE.md
 .mcp.json
 

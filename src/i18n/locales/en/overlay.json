@@ -1,0 +1,39 @@
+{
+  "selector": {
+    "title": "Selector",
+    "tileMode": "Tile mode",
+    "carouselMode": "Carousel mode",
+    "help": "← → navigate · Enter select · 1-9 jump · M switch mode · Esc close",
+    "emptyTitle": "No pinned sessions yet",
+    "emptyDescription": "Pin up to 6 cards from the main window to see them here.",
+    "counter": "{{current}} / {{total}}"
+  },
+  "float": {
+    "title": "ThreadTerm · Floating Terminal",
+    "disableAlwaysOnTop": "Disable always-on-top",
+    "enableAlwaysOnTop": "Always on top",
+    "recycleToMain": "Send back to main window (Cmd/Ctrl+Shift+O)",
+    "minimize": "Minimize",
+    "close": "Close (hide — keeps session alive)",
+    "emptyTitle": "No session attached to the floating window yet.",
+    "emptyDescription": "Press <kbd>{{shortcut}}</kbd> on the main window to pick a pinned session."
+  },
+  "hotkeys": {
+    "slotA": {
+      "title": "Overlay selector",
+      "description": "Open / close the card-picker overlay."
+    },
+    "slotB": {
+      "title": "Recycle floating terminal",
+      "description": "Send the floating session back into the main window."
+    },
+    "capture": "Press keys… (Esc to cancel)",
+    "rebind": "Rebind",
+    "resetTitle": "Reset to default",
+    "title": "Overlay hotkeys",
+    "scope": "OS-level · works when ThreadTerm is in the background",
+    "bound": "Bound to {{accelerator}}",
+    "reset": "Reset to {{accelerator}}",
+    "tips": "Tips: use a combination that's unlikely to clash with your OS / other apps (e.g. add Shift + Alt). If the OS refuses to register a binding (for example when another app already owns it), the old accelerator stays active."
+  }
+}

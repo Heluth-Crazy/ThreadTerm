@@ -1,106 +1,97 @@
-# Windows x64 EXE 打包指南
+# Windows x64 打包指南
 
-本文用于在 Windows 机器上打包 OpenWork 的桌面安装包（`.exe`）。
+本文用于在 Windows 机器上打包当前 ThreadTerm Tauri 桌面应用。
 
 ## 1. 环境要求
 
 1. Windows 10/11 x64
-2. Node.js 22 LTS（建议 22.x）
-3. npm 10+
-4. Visual Studio Build Tools 2022（安装 `Desktop development with C++` 工作负载）
+2. Node.js 22 LTS 和 npm 10+
+3. Rust toolchain
+4. Tauri CLI: `cargo install tauri-cli`
+5. Visual Studio Build Tools 2022，安装 `Desktop development with C++` 工作负载
+6. Windows 10/11 SDK
 
-建议不要使用 Node 25+ 打包，以免触发 `better-sqlite3/sqlite3/node-pty` 的原生模块兼容问题。
+建议固定使用 Node 22 LTS，避免前端工具链或原生依赖在更新版本上出现兼容问题。
 
-## 2. 首次准备
+## 2. 获取项目
 
-在 PowerShell 中执行：
+在 PowerShell 中进入项目根目录：
+
+```powershell
+cd D:\path\to\ThreadTerm
+```
+
+如果目录里带有从其他系统拷贝来的 `node_modules`，先删除：
+
+```powershell
+rmdir /s /q node_modules
+```
+
+## 3. 安装依赖
+
+```powershell
+npm install
+```
+
+## 4. 构建前验证
+
+```powershell
+npm run typecheck
+npx vitest run src/components/terminal/TerminalEventBridge.test.tsx src/components/terminal/providerSession.test.ts src/components/terminal/useProjectGroups.test.ts src/stores/overlayStore.test.ts src/stores/terminalStore.test.ts src/theme/themePacks.test.ts
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml pty::tests
+```
+
+## 5. 打 Windows 包
+
+```powershell
+npm run tauri:build
+```
+
+产物位于：
+
+```text
+src-tauri\target\release\bundle\
+```
+
+实际文件类型取决于 Tauri bundler 在本机可用的 Windows 目标配置。
+
+## 6. 常见问题排查
+
+### Visual Studio 或 MSBuild 报错
+
+修复或重新安装 Visual Studio Build Tools 2022，并确认已勾选：
+
+1. `Desktop development with C++`
+2. Windows 10/11 SDK
+
+### Rust 工具链不可用
+
+确认 PowerShell 中可以执行：
+
+```powershell
+rustc --version
+cargo --version
+```
+
+如果不可用，重新安装 Rust 并重启 PowerShell。
+
+### Node 或 npm 版本异常
+
+确认版本：
 
 ```powershell
 node -v
 npm -v
 ```
 
-确认 Node 为 `v22.x` 后再继续。
+推荐 Node `v22.x` 和 npm `10.x`。
 
-## 3. 获取项目
+### 应用启动后找不到默认 Shell
 
-把项目目录拷到 Windows 本机（或重新拉取代码）后，进入项目根目录：
+后端会优先启动 `powershell.exe`，失败时回退到 `cmd.exe`。如果两者都不可用，检查系统 `PATH` 和 Windows 安装完整性。
 
-```powershell
-cd D:\path\to\claudecodeui-main
-```
+## 7. 交付建议
 
-如果目录里带有从 macOS 拷过来的 `node_modules`，先删除：
-
-```powershell
-rmdir /s /q node_modules
-```
-
-## 4. 安装依赖
-
-```powershell
-npm ci
-```
-
-## 5. 构建前建议（原生模块重建）
-
-```powershell
-npm run rebuild:native:electron
-```
-
-## 6. 打 Windows 包
-
-```powershell
-npm run build:win
-```
-
-当前配置会产出两个 x64 文件：
-
-1. NSIS 安装包（`Setup.exe`）
-2. 便携版（`Portable ... .exe`）
-
-产物目录：
-
-```text
-release\
-```
-
-## 7. 常见问题排查
-
-### 7.1 `module ... was compiled against a different Node.js version`
-
-先执行：
-
-```powershell
-npm run rebuild:native:node
-npm run rebuild:native:electron
-```
-
-不行就删除 `node_modules` 后重新 `npm ci`。
-
-### 7.2 `failed to spawn ... spawn node ENOENT`
-
-说明运行时找不到 `node`：
-
-1. 确认 `node -v` 在 PowerShell 可用
-2. 确认 Node 安装目录在系统 `PATH`
-3. 重新打开终端/重启系统后再打包
-
-### 7.3 `spawn ENOTDIR`
-
-通常是可执行路径配置异常或缓存脏数据导致：
-
-1. 删除应用配置目录后重试  
-   `C:\Users\<你的用户名>\AppData\Roaming\OpenWork`
-2. 重新安装最新包再测试
-
-### 7.4 构建时报 C++/MSBuild 相关错误
-
-安装或修复 Visual Studio Build Tools 2022，并确保已勾选：
-
-1. `Desktop development with C++`
-2. Windows 10/11 SDK
-
-## 8. 交付建议
-
-给测试同学优先发 NSIS 安装包（`Setup.exe`）；便携版可用于免安装调试。
+优先交付 Tauri bundler 生成的安装包；如需便携版或签名发布，在 `src-tauri/tauri.conf.json` 中调整 bundle 配置后重新执行 `npm run tauri:build`。

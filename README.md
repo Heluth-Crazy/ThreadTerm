@@ -1,382 +1,109 @@
 <div align="center">
-  <img src="public/logo.svg" alt="OpenWork" width="64" height="64">
-  <h1>OpenWork</h1>
+  <img src="public/logo.svg" alt="ThreadTerm" width="64" height="64">
+  <h1>ThreadTerm</h1>
+  <p><a href="README.zh-CN.md">简体中文</a> | English</p>
 </div>
 
+ThreadTerm is a desktop terminal manager for project-bound shell and AI CLI sessions. It keeps multiple terminal sessions visible as cards, lets you pin important sessions to a global selector, and can open a selected session in an always-on-top floating terminal.
 
-A desktop and mobile UI for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Cursor CLI](https://docs.cursor.com/en/cli/overview) and [Codex](https://developers.openai.com/codex). You can use it locally or remotely to view your active projects and sessions in Claude Code, Cursor, or Codex and make changes to them from everywhere (mobile or desktop). This gives you a proper interface that works everywhere. 
+## Current Scope
 
-<div align="right"><i><b>English</b> · <a href="./README.ko.md">한국어</a> · <a href="./README.zh-CN.md">中文</a> · <a href="./README.ja.md">日本語</a></i></div>
+ThreadTerm currently focuses on the Tauri desktop app:
 
-## Screenshots
+- **Terminal cards**: create terminals bound to project directories and run a shell, Claude, Codex, Gemini, Python, Node, Docker, or a custom command.
+- **Project sidebar**: group cards by project path and filter the grid without leaving the terminal workflow.
+- **Focused terminal view**: double-click a card to expand it into a full terminal view while keeping the card/session state alive.
+- **Global selector**: press `Cmd/Ctrl + Shift + Space` to show pinned sessions over the current app.
+- **Floating terminal**: pick a pinned card and continue typing in an always-on-top terminal window.
+- **Notifications**: ThreadTerm tracks PTY state changes and can surface waiting/error/reply notifications.
+- **Cross-platform desktop**: macOS and Windows are first-class targets; Linux may work depending on desktop-environment support for global shortcuts.
 
-<div align="center">
-  
-<table>
-<tr>
-<td align="center">
-<h3>Desktop View</h3>
-<img src="public/screenshots/desktop-main.png" alt="Desktop Interface" width="400">
-<br>
-<em>Main interface showing project overview and chat</em>
-</td>
-<td align="center">
-<h3>Mobile Experience</h3>
-<img src="public/screenshots/mobile-chat.png" alt="Mobile Interface" width="250">
-<br>
-<em>Responsive mobile design with touch navigation</em>
-</td>
-</tr>
-<tr>
-<td align="center" colspan="2">
-<h3>CLI Selection</h3>
-<img src="public/screenshots/cli-selection.png" alt="CLI Selection" width="400">
-<br>
-<em>Select between Claude Code, Cursor CLI and Codex</em>
-</td>
-</tr>
-</table>
+## Requirements
 
+- Node.js 22 LTS and npm 10+
+- Rust toolchain from <https://rustup.rs>
+- Tauri CLI: `cargo install tauri-cli`
+- Optional AI CLIs available in `PATH`: `claude`, `codex`, `gemini`, etc.
 
+## Development
 
-</div>
+Install dependencies:
 
-## Features
-
-- **Responsive Design** - Works seamlessly across desktop, tablet, and mobile so you can also use Claude Code, Cursor, or Codex from mobile 
-- **Interactive Chat Interface** - Built-in chat interface for seamless communication with Claude Code, Cursor, or Codex
-- **Integrated Shell Terminal** - Direct access to Claude Code, Cursor CLI, or Codex through built-in shell functionality
-- **File Explorer** - Interactive file tree with syntax highlighting and live editing
-- **Git Explorer** - View, stage and commit your changes. You can also switch branches 
-- **Session Management** - Resume conversations, manage multiple sessions, and track history
-- **Mission Control + Task Queue** - The Tauri mainline centers on Attention Inbox, Approval Inbox, durable Rust-backed tasks, and staged Claude/Codex dispatch for terminal-native agent workflows
-- **Model Compatibility** - Works with Claude Sonnet 4.5, Opus 4.5, and GPT-5.2 
-
-
-## Documentation
-
-For comprehensive documentation, see the [docs/](docs/) directory:
-
-- [Installation Guide](docs/installation.md) - Installation for macOS and Windows
-- [Development Guide](docs/development.md) - Local development setup
-- [Build & Release Guide](docs/build-release.md) - Building desktop applications
-- [Troubleshooting Guide](docs/troubleshooting.md) - Common issues and solutions
-
-## Desktop Application
-
-### Prerequisites
-
-- [Rust toolchain](https://rustup.rs/) (rustup + cargo) for the Tauri backend
-- [Tauri CLI](https://tauri.app/) (`cargo install tauri-cli`)
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and configured, and/or
-- [Cursor CLI](https://docs.cursor.com/en/cli/overview) installed and configured, and/or
-- [Codex](https://developers.openai.com/codex) installed and configured
-
-### One-click Operation (Recommended)
-
-No installation required, direct operation:
-
-```bash
-npx @openwork/openwork
-```
-
-The server will start and be accessible at `http://localhost:3002` (or your configured PORT).
-
-**To restart**: Simply run the same `npx` command again after stopping the server
-### Global Installation (For Regular Use)
-
-For frequent use, install globally once:
-
-```bash
-npm install -g @openwork/openwork
-```
-
-Then start with a simple command:
-
-```bash
-openwork
-```
-
-
-**To restart**: Stop with Ctrl+C and run `openwork` again.
-
-**To update**:
-```bash
-openwork update
-```
-
-### CLI Usage
-
-After global installation, you have access to both `openwork` and `openwork` commands:
-
-| Command / Option | Short | Description |
-|------------------|-------|-------------|
-| `openwork` or `openwork` | | Start the server (default) |
-| `openwork start` | | Start the server explicitly |
-| `openwork status` | | Show configuration and data locations |
-| `openwork update` | | Update to the latest version |
-| `openwork help` | | Show help information |
-| `openwork version` | | Show version information |
-| `--port <port>` | `-p` | Set server port (default: 3002) |
-| `--database-path <path>` | | Set custom database location |
-
-**Examples:**
-```bash
-openwork                          # Start with defaults
-openwork -p 8080              # Start on custom port
-openwork status                   # Show current configuration
-```
-
-### Download Desktop Application
-
-Pre-built desktop applications are available from the [Releases](https://source.example.com/openwork/openwork/releases) page:
-
-| Platform | File | Description |
-|----------|------|-------------|
-| macOS | `.dmg` or `.zip` | Apple Disk Image or ZIP archive |
-| Windows | `.exe` (NSIS) | Windows installer |
-| Linux | `.AppImage` or `.deb` | AppImage or Debian package |
-
-#### Installing on macOS
-
-1. Download `ClaudeCodeDesktop-{version}.dmg` from releases
-2. Open the DMG file
-3. Drag the application to Applications folder
-4. Launch from Applications or Spotlight
-
-#### Installing on Windows
-
-1. Download `ClaudeCodeDesktop-{version}-Setup.exe` from releases
-2. Run the installer
-3. Follow the installation wizard
-4. Launch from Start Menu
-
-### Run as Background Service (Recommended for Production)
-
-For production use, run OpenWork as a background service using PM2 (Process Manager 2):
-
-#### Install PM2
-
-```bash
-npm install -g pm2
-```
-
-#### Start as Background Service
-
-```bash
-# Start the server in background
-pm2 start openwork --name "openwork"
-
-# Or using the shorter alias
-pm2 start openwork --name "openwork"
-
-# Start on a custom port
-pm2 start openwork --name "openwork" -- --port 8080
-```
-
-
-#### Auto-Start on System Boot
-
-To make OpenWork start automatically when your system boots:
-
-```bash
-# Generate startup script for your platform
-pm2 startup
-
-# Save current process list
-pm2 save
-```
-
-
-### Local Development Installation
-
-1. **Clone the repository:**
-```bash
-git clone https://source.example.com/openwork/openwork.git
-cd openwork
-```
-
-2. **Install dependencies:**
 ```bash
 npm install
 ```
 
-3. **Configure environment:**
-```bash
-cp .env.example .env
-# Edit .env with your preferred settings
-```
+Run the desktop app:
 
-4. **Start the application:**
 ```bash
-# Frontend-only development (Vite)
-npm run client
-
-# Full desktop development (frontend + Tauri/Rust)
 npm run tauri:dev
-
 ```
-The application will start at the port you specified in your .env
 
-5. **Open your browser:**
-   - Development: `http://localhost:3002`
+Run frontend-only Vite preview:
 
-## Security & Tools Configuration
+```bash
+npm run client
+```
 
-**🔒 Important Notice**: All Claude Code tools are **disabled by default**. This prevents potentially harmful operations from running automatically.
+Build the desktop app:
 
-### Enabling Tools
+```bash
+npm run tauri:build
+```
 
-To use Claude Code's full functionality, you'll need to manually enable tools:
+## Verification
 
-1. **Open Tools Settings** - Click the gear icon in the sidebar
-3. **Enable Selectively** - Turn on only the tools you need
-4. **Apply Settings** - Your preferences are saved locally
+Core checks used for this branch:
 
-<div align="center">
+```bash
+npm run typecheck
+npx vitest run src/components/terminal/TerminalEventBridge.test.tsx src/components/terminal/providerSession.test.ts src/components/terminal/useProjectGroups.test.ts src/stores/overlayStore.test.ts src/stores/terminalStore.test.ts src/theme/themePacks.test.ts
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml pty::tests
+```
 
-![Tools Settings Modal](public/screenshots/tools-modal.png)
-*Tools Settings interface - enable only what you need*
-
-</div>
-
-**Recommended approach**: Start with basic tools enabled and add more as needed. You can always adjust these settings later.
-
-## Legacy TaskMaster Note
-
-> ⚠️ **TaskMaster belongs to the legacy Node.js build and is not part of the current Tauri control-plane mainline.**
-
-Today's OpenWork focuses on a terminal-native control plane:
-- Mission Control for active sessions, approvals, reviews, and results
-- Durable Rust-backed tasks with queue projection in the UI
-- Attention-first orchestration for Claude Code, Cursor, and Codex sessions
-
-If you still need the old TaskMaster integration for historical reference, see the archived upstream project: [TaskMaster AI](https://source.example.com/eyaltoledano/claude-task-master).
-
-
-## Usage Guide
-
-### Core Features
-
-#### Project Management
-It automatically discovers Claude Code, Cursor or Codex sessions when available and groups them together into projects
-session counts
-- **Project Actions** - Rename, delete, and organize projects
-- **Smart Navigation** - Quick access to recent projects and sessions
-- **MCP support** - Add your own MCP servers through the UI 
-
-#### Chat Interface
-- **Use responsive chat or Claude Code/Cursor CLI/Codex CLI** - You can either use the adapted chat interface or use the shell button to connect to your selected CLI. 
-- **Real-time Communication** - Stream responses from your selected CLI (Claude Code/Cursor/Codex) with WebSocket connection
-- **Session Management** - Resume previous conversations or start fresh sessions
-- **Message History** - Complete conversation history with timestamps and metadata
-- **Multi-format Support** - Text, code blocks, and file references
-
-#### File Explorer & Editor
-- **Interactive File Tree** - Browse project structure with expand/collapse navigation
-- **Live File Editing** - Read, modify, and save files directly in the interface
-- **Syntax Highlighting** - Support for multiple programming languages
-- **File Operations** - Create, rename, delete files and directories
-
-#### Git Explorer
-
-
-#### Mission Control & Task Queue
-- **Attention Inbox** - Surface approvals, failures, and blocked sessions without scanning every terminal
-- **Durable Task Queue** - Stage Claude/Codex work with Rust-backed tasks and UI projection controls
-- **Review / Result Flow** - Collect completed work into review and result surfaces for structured follow-up
-
-#### Session Management
-- **Session Persistence** - All conversations automatically saved
-- **Session Organization** - Group sessions by project and timestamp
-- **Session Actions** - Rename, delete, and export conversation history
-- **Cross-device Sync** - Access sessions from any device
-
-### Mobile App
-- **Responsive Design** - Optimized for all screen sizes
-- **Touch-friendly Interface** - Swipe gestures and touch navigation
-- **Mobile Navigation** - Bottom tab bar for easy thumb navigation
-- **Adaptive Layout** - Collapsible sidebar and smart content prioritization
-- **Add shortcut to Home Screen** - Add a shortcut to your home screen and the app will behave like a PWA
+Manual overlay regression steps are in [docs/global-overlay-manual-test.md](docs/global-overlay-manual-test.md).
 
 ## Architecture
 
-### System Overview
+Runtime entries:
 
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Frontend      │    │   Backend       │    │  Agent           │
-│   (React/Vite)  │◄──►│  (Tauri/Rust)   │◄──►│  Integration     │
-│                 │    │                 │    │                │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-```
+- `index.html` -> main Terminal Manager window.
+- `selector.html` -> global selector overlay window.
+- `float.html` -> floating terminal window.
 
-### Backend (Tauri + Rust)
-- **Axum HTTP Server** - RESTful API with static file serving
-- **WebSocket Server** - Communication for chats and project refresh
-- **Agent Integration (Claude Code / Cursor CLI / Codex)** - Process spawning and management
-- **File System API** - Exposing file browser for projects
+Retained backend modules:
 
-### Frontend (React + Vite)
-- **React 18** - Modern component architecture with hooks
-- **CodeMirror** - Advanced code editor with syntax highlighting
+- `src-tauri/src/pty.rs`: local PTY lifecycle, output events, session state, recent-output replay.
+- `src-tauri/src/overlay.rs`: global shortcuts, selector/float windows, macOS full-screen Space handling, non-macOS window fallback.
+- `src-tauri/src/db.rs`: small SQLite settings table for overlay hotkeys and float bounds.
+- `src-tauri/src/notification.rs`: OS notification dispatch for packaged desktop builds.
+- `src-tauri/src/provider_sessions.rs`: lightweight Claude/Codex session discovery for lazy resume.
 
+## Windows Notes
 
+Windows support is preserved:
 
+- Release builds keep `windows_subsystem = "windows"` to avoid an extra console window.
+- PTY startup uses `powershell.exe` when available, falling back to `cmd.exe`.
+- Windows icons and Tauri bundle configuration remain in `src-tauri/icons/` and `src-tauri/tauri.conf.json`.
 
+## Theme Credits
 
-### Contributing
+ThreadTerm includes original and third-party-inspired theme packs. Third-party
+themes are credited in the app's Appearance settings and here:
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details on commit conventions, development workflow, and release process.
+- **ThreadTerm Default**: original ThreadTerm theme.
+- **Catppuccin**: based on [Catppuccin](https://catppuccin.com/palette/) ([license](https://github.com/catppuccin/catppuccin/blob/main/LICENSE)).
+- **Tokyo Night**: based on [tokyonight.nvim](https://github.com/folke/tokyonight.nvim) ([license](https://github.com/folke/tokyonight.nvim/blob/main/LICENSE)).
+- **Gruvbox**: based on [gruvbox](https://github.com/morhetz/gruvbox) ([license](https://github.com/morhetz/gruvbox#license)).
+- **Everforest**: based on [everforest](https://github.com/sainnhe/everforest) ([license](https://github.com/sainnhe/everforest/blob/master/LICENSE)).
+- **Dracula**: based on [Dracula Theme](https://draculatheme.com/spec) ([license](https://github.com/dracula/dracula-theme/blob/main/LICENSE)).
 
-## Troubleshooting
-
-### Common Issues & Solutions
-
-
-#### "No Claude projects found"
-**Problem**: The UI shows no projects or empty project list
-**Solutions**:
-- Ensure [Claude Code](https://docs.anthropic.com/en/docs/claude-code) is properly installed
-- Run `claude` command in at least one project directory to initialize
-- Verify `~/.claude/projects/` directory exists and has proper permissions
-
-#### File Explorer Issues
-**Problem**: Files not loading, permission errors, empty directories
-**Solutions**:
-- Check project directory permissions (`ls -la` in terminal)
-- Verify the project path exists and is accessible
-- Review server console logs for detailed error messages
-- Ensure you're not trying to access system directories outside project scope
-
+The upstream projects do not endorse ThreadTerm; attribution is included to
+respect the original theme authors and their licenses.
 
 ## License
 
-OpenWork is proprietary software. Internal use and distribution are governed by your organization's terms.
-
-## Acknowledgments
-
-### Built With
-- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** - Anthropic's official CLI
-- **[Cursor CLI](https://docs.cursor.com/en/cli/overview)** - Cursor's official CLI
-- **[Codex](https://developers.openai.com/codex)** - OpenAI Codex
-- **[React](https://react.dev/)** - User interface library
-- **[Vite](https://vitejs.dev/)** - Fast build tool and dev server
-- **[Tailwind CSS](https://tailwindcss.com/)** - Utility-first CSS framework
-- **[CodeMirror](https://codemirror.net/)** - Advanced code editor
-
-
-## Support & Community
-
-### Stay Updated
-- **Star** this repository to show support
-- **Watch** for updates and new releases
-- **Follow** the project for announcements
-
-### Sponsors
-- [Siteboon - AI powered website builder](https://openwork.ai)
----
-
-<div align="center">
-  <strong>Made with care for the Claude Code, Cursor and Codex community.</strong>
-</div>
+ThreadTerm is proprietary software. Internal use and distribution are governed by your organization's terms.

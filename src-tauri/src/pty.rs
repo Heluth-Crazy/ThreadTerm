@@ -5,11 +5,12 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use regex::RegexSet;
 use serde::Serialize;
 use std::io::{Read, Write};
+#[cfg(target_os = "macos")]
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Window};
-use tokio::sync::broadcast;
-use tauri_plugin_notification::NotificationExt;
 
 // ── Session state machine ────────────────────────────────────────────────────
 
@@ -38,15 +39,39 @@ static WAITING_PATTERNS: Lazy<RegexSet> = Lazy::new(|| {
     .expect("invalid waiting regex")
 });
 
+// Error detection: require line-start anchors or high-confidence signals.
+// The previous `\berror\b`/`\bfailed\b` matched every time a CLI mentioned
+// the words "error" or "failed" anywhere — including help text, log prefixes
+// and tool descriptions — which fired the attention bell continuously.
+//
+// Patterns below only match things the user almost certainly needs to see.
 static ERROR_PATTERNS: Lazy<RegexSet> = Lazy::new(|| {
     RegexSet::new([
-        r"(?i)\berror\b",
-        r"(?i)\bfailed\b",
-        r"(?i)permission denied",
-        r"(?i)command not found",
+        r"(?im)^\s*error[:\s]",            // line starts with "Error:" / "ERROR "
+        r"(?im)^\s*\[error\]",             // log prefix "[ERROR] ..."
+        r"(?im)^\s*\[fatal\]",             // log prefix "[FATAL] ..."
+        r"(?i)fatal error:",               // compiler-style "fatal error:"
+        r"(?i)permission denied",          // shell / FS
+        r"(?i)command not found",          // bash / zsh
+        r"(?i)segmentation fault",         // SIGSEGV
+        r"(?im)^\s*panic(?:ked)?[:\s]",    // Rust/Go panic lines
+        r"(?i)traceback \(most recent",    // Python traceback
+        r"(?i)unhandled exception",        // .NET / node-style
     ])
     .expect("invalid error regex")
 });
+
+/// Duration during which we suppress ERROR_PATTERNS firing after a session
+/// starts. CLIs commonly print banners/help containing the word "error" during
+/// bootstrap (e.g. --help output, schema descriptions), and those should not
+/// trigger attention notifications.
+const STARTUP_ERROR_SUPPRESS: Duration = Duration::from_secs(2);
+
+/// How long a PTY can be quiet before the UI-level state falls back to Idle.
+/// Running means "output is currently flowing", not merely "the process exists".
+const OUTPUT_IDLE_GRACE: Duration = Duration::from_secs(2);
+const OUTPUT_IDLE_POLL: Duration = Duration::from_millis(250);
+const RESIZE_OUTPUT_ACTIVITY_SUPPRESS: Duration = Duration::from_millis(800);
 
 static ANSI_STRIP: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").expect("invalid ansi regex")
@@ -57,11 +82,6 @@ static ANSI_STRIP: Lazy<regex::Regex> = Lazy::new(|| {
 /// Global map of active PTY sessions.
 static PTY_SESSIONS: Lazy<DashMap<String, Arc<PtySession>>> = Lazy::new(DashMap::new);
 
-/// Broadcast channels for WebSocket subscribers (web/mobile mode).
-/// Maps session ID → broadcast::Sender so HTTP WS clients can receive PTY output.
-static PTY_WS_BROADCAST: Lazy<DashMap<String, broadcast::Sender<String>>> =
-    Lazy::new(DashMap::new);
-
 /// Represents a live PTY session.
 /// All interior-mutable fields are protected by Mutex so the struct is Sync.
 struct PtySession {
@@ -71,11 +91,15 @@ struct PtySession {
     _working_dir: String,
     state: RwLock<SessionState>,
     app_handle: tauri::AppHandle,
-    /// Circular buffer of the last 200 lines of output (for handoff context).
-    output_buffer: RwLock<Vec<String>>,
+    /// Raw circular buffer used when a second webview attaches to the same PTY.
+    output_buffer: RwLock<String>,
+    last_output_at: Mutex<Option<Instant>>,
+    last_size: Mutex<(u16, u16)>,
+    suppress_output_activity_until: Mutex<Option<Instant>>,
+    killed: AtomicBool,
 }
 
-const OUTPUT_BUFFER_MAX_LINES: usize = 200;
+const OUTPUT_BUFFER_MAX_BYTES: usize = 256 * 1024;
 
 // Safety: every non-Sync field is behind a Mutex / RwLock.
 unsafe impl Sync for PtySession {}
@@ -129,6 +153,82 @@ fn set_session_state(session: &PtySession, id: &str, new_state: SessionState) {
     }
 }
 
+fn get_session_state_snapshot(session: &PtySession) -> Option<SessionState> {
+    session.state.read().ok().map(|s| s.clone())
+}
+
+fn should_idle_after_quiet(
+    state: &SessionState,
+    last_output_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    *state == SessionState::Running
+        && last_output_at
+            .map(|last| now.duration_since(last) >= OUTPUT_IDLE_GRACE)
+            .unwrap_or(false)
+}
+
+fn resize_output_activity_suppressed(session: &PtySession, now: Instant) -> bool {
+    session
+        .suppress_output_activity_until
+        .lock()
+        .ok()
+        .and_then(|until| *until)
+        .map(|until| now <= until)
+        .unwrap_or(false)
+}
+
+fn mark_output_activity(session: &PtySession, id: &str) {
+    let now = Instant::now();
+    let current_state = get_session_state_snapshot(session);
+
+    // Full-screen TUIs often redraw immediately after SIGWINCH/resize. That
+    // redraw is not user work and must not flip an idle card to Running.
+    if resize_output_activity_suppressed(session, now)
+        && !matches!(current_state, Some(SessionState::Running))
+    {
+        return;
+    }
+
+    if let Ok(mut last_output_at) = session.last_output_at.lock() {
+        *last_output_at = Some(now);
+    }
+
+    match current_state {
+        Some(SessionState::Completed | SessionState::Failed | SessionState::WaitingForInput) => {}
+        _ => set_session_state(session, id, SessionState::Running),
+    }
+}
+
+fn spawn_output_idle_watcher(id: String, session: Arc<PtySession>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(OUTPUT_IDLE_POLL);
+
+        if session.killed.load(Ordering::SeqCst) {
+            break;
+        }
+
+        let state = match get_session_state_snapshot(&session) {
+            Some(state) => state,
+            None => continue,
+        };
+
+        if matches!(state, SessionState::Completed | SessionState::Failed) {
+            break;
+        }
+
+        let last_output_at = session
+            .last_output_at
+            .lock()
+            .ok()
+            .and_then(|last| *last);
+
+        if should_idle_after_quiet(&state, last_output_at, Instant::now()) {
+            set_session_state(&session, &id, SessionState::Idle);
+        }
+    });
+}
+
 /// Returns the default shell for the current platform.
 fn default_shell() -> String {
     #[cfg(target_os = "windows")]
@@ -149,6 +249,94 @@ fn default_shell() -> String {
     }
 }
 
+#[cfg(target_os = "macos")]
+static LOGIN_SHELL_PATH: Lazy<Option<String>> = Lazy::new(resolve_macos_login_shell_path);
+
+#[cfg(target_os = "macos")]
+const MACOS_FALLBACK_PATH: &str =
+    "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
+#[cfg(target_os = "macos")]
+fn resolve_macos_login_shell_path() -> Option<String> {
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "/bin/zsh".to_string());
+
+    let output = Command::new(&shell)
+        .arg("-l")
+        .arg("-c")
+        .arg("printf '__THREADTERM_PATH_BEGIN__%s__THREADTERM_PATH_END__\\n' \"$PATH\"")
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let path = stdout
+        .split("__THREADTERM_PATH_BEGIN__")
+        .nth(1)?
+        .split("__THREADTERM_PATH_END__")
+        .next()?
+        .trim();
+
+    if path.is_empty() {
+        None
+    } else {
+        Some(path.to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn merge_path_values(values: &[&str]) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut parts = Vec::new();
+
+    for value in values {
+        for part in value.split(':') {
+            let trimmed = part.trim();
+            if trimmed.is_empty() || !seen.insert(trimmed.to_string()) {
+                continue;
+            }
+            parts.push(trimmed.to_string());
+        }
+    }
+
+    parts.join(":")
+}
+
+fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        if shell.ends_with("/zsh")
+            || shell == "zsh"
+            || shell.ends_with("/bash")
+            || shell == "bash"
+        {
+            cmd.arg("-l");
+        }
+
+        let process_path = std::env::var("PATH").unwrap_or_default();
+        let login_path = LOGIN_SHELL_PATH.as_deref().unwrap_or("");
+        let home = std::env::var("HOME").unwrap_or_default();
+        let user_bin_path = format!("{home}/.local/bin:{home}/.cargo/bin:{home}/.bun/bin");
+        let path = merge_path_values(&[
+            login_path,
+            &process_path,
+            MACOS_FALLBACK_PATH,
+            &user_bin_path,
+        ]);
+        cmd.env("PATH", path);
+    }
+
+    cmd.env("SHELL", shell);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("FORCE_COLOR", "3");
+}
+
 #[cfg(target_os = "windows")]
 fn which_exists(name: &str) -> bool {
     std::process::Command::new("where")
@@ -167,6 +355,11 @@ pub async fn pty_create(
     cols: u16,
     window: Window,
 ) -> Result<String, String> {
+    if PTY_SESSIONS.contains_key(&id) {
+        tracing::debug!(id = %id, "pty_create: id already bound, returning existing session");
+        return Ok(id);
+    }
+
     let pty_system = NativePtySystem::default();
 
     let size = PtySize {
@@ -183,8 +376,7 @@ pub async fn pty_create(
     let shell = default_shell();
     let mut cmd = CommandBuilder::new(&shell);
     cmd.cwd(&working_dir);
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("FORCE_COLOR", "3");
+    configure_shell_command(&mut cmd, &shell);
 
     let child = pair
         .slave
@@ -209,25 +401,41 @@ pub async fn pty_create(
         master: Mutex::new(pair.master),
         child: Mutex::new(child),
         _working_dir: working_dir,
-        state: RwLock::new(SessionState::Running),
+        state: RwLock::new(SessionState::Idle),
         app_handle: window.app_handle().clone(),
-        output_buffer: RwLock::new(Vec::with_capacity(OUTPUT_BUFFER_MAX_LINES)),
+        output_buffer: RwLock::new(String::with_capacity(
+            OUTPUT_BUFFER_MAX_BYTES.min(8192),
+        )),
+        last_output_at: Mutex::new(None),
+        last_size: Mutex::new((rows, cols)),
+        suppress_output_activity_until: Mutex::new(None),
+        killed: AtomicBool::new(false),
     });
 
     let session_for_stream = session.clone();
     match PTY_SESSIONS.entry(id.clone()) {
         Entry::Occupied(_) => {
+            // Idempotent: if a PTY with this id already exists (e.g. a
+            // second webview — typically the floating-terminal overlay —
+            // mounted xterm for the same card while the main window's
+            // Shell was still alive), kill the redundant child we just
+            // spawned (avoids a fork leak) and return Ok(id). The caller
+            // attaches to the existing session's `pty-output` broadcast
+            // via the listen API, so no state is lost.
             if let Ok(mut c) = session.child.lock() {
                 let _ = c.kill();
             }
-            return Err(format!("PTY session '{}' already exists", id));
+            tracing::debug!(id = %id, "pty_create: id already bound, returning existing session");
+            return Ok(id);
         }
         Entry::Vacant(e) => {
             e.insert(session);
         }
     }
 
-    // Spawn a background thread to read PTY output and emit events.
+    // Spawn a background thread to read PTY output and emit events. The
+    // session remains Idle until bytes actually flow from the PTY.
+    spawn_output_idle_watcher(id.clone(), session_for_stream.clone());
     let stream_id = id.clone();
     let handle = window.app_handle().clone();
     std::thread::spawn(move || {
@@ -248,6 +456,7 @@ fn stream_pty_output(
     let mut buf = [0u8; 8192];
     let mut last_attention_time = Instant::now() - Duration::from_secs(60);
     let attention_debounce = Duration::from_secs(5);
+    let session_start = Instant::now();
 
     loop {
         match reader.read(&mut buf) {
@@ -262,27 +471,23 @@ fn stream_pty_output(
                     },
                 );
 
-                // Relay to WebSocket subscribers (web/mobile mode)
-                if let Some(tx) = PTY_WS_BROADCAST.get(&id) {
-                    let payload = serde_json::json!({ "type": "pty-output", "id": id, "data": data }).to_string();
-                    let _ = tx.send(payload);
-                }
-
-                // Append to output buffer (keep last OUTPUT_BUFFER_MAX_LINES lines)
-                if let Ok(mut buf) = session.output_buffer.write() {
-                    for line in data.lines() {
-                        if buf.len() >= OUTPUT_BUFFER_MAX_LINES {
-                            buf.remove(0);
-                        }
-                        buf.push(line.to_string());
-                    }
+                // Keep raw PTY bytes so a second webview can replay the same
+                // terminal control stream instead of looking like a fresh shell.
+                if let Ok(mut out) = session.output_buffer.write() {
+                    out.push_str(&data);
+                    trim_recent_output_buffer(&mut out);
                 }
 
                 // Strip ANSI escape codes for pattern matching
                 let cleaned = ANSI_STRIP.replace_all(&data, "");
+                let waiting_for_input = WAITING_PATTERNS.is_match(&cleaned);
+
+                if !waiting_for_input {
+                    mark_output_activity(&session, &id);
+                }
 
                 // Detect waiting-for-input patterns
-                if WAITING_PATTERNS.is_match(&cleaned) {
+                if waiting_for_input {
                     let already_waiting = session
                         .state
                         .read()
@@ -305,18 +510,16 @@ fn stream_pty_output(
                                 message: "Agent needs your input".to_string(),
                             },
                         );
-                        let _ = session
-                            .app_handle
-                            .notification()
-                            .builder()
-                            .title("Agent Needs Attention")
-                            .body(format!("Session {} needs your input", &id))
-                            .show();
                     }
                 }
 
-                // Detect error patterns (emit attention but don't change state to Failed)
-                if ERROR_PATTERNS.is_match(&cleaned) {
+                // Detect error patterns (emit attention but don't change state to Failed).
+                //
+                // Skip during STARTUP_ERROR_SUPPRESS to avoid false positives from
+                // CLI banners/help output that legitimately mention "error".
+                if session_start.elapsed() > STARTUP_ERROR_SUPPRESS
+                    && ERROR_PATTERNS.is_match(&cleaned)
+                {
                     if last_attention_time.elapsed() > attention_debounce {
                         last_attention_time = Instant::now();
                         let _ = app_handle.emit(
@@ -339,7 +542,7 @@ fn stream_pty_output(
     }
 
     // Determine exit code and update state.
-    let code = session
+    let wait_code = session
         .child
         .lock()
         .ok()
@@ -348,11 +551,16 @@ fn stream_pty_output(
                 if status.success() { 0u32 } else { 1u32 }
             })
         });
+    let code = if session.killed.load(Ordering::SeqCst) {
+        None
+    } else {
+        wait_code
+    };
 
     match code {
         Some(0) => set_session_state(&session, &id, SessionState::Completed),
         Some(_) => set_session_state(&session, &id, SessionState::Failed),
-        None => set_session_state(&session, &id, SessionState::Failed),
+        None => set_session_state(&session, &id, SessionState::Idle),
     }
 
     let _ = app_handle.emit(
@@ -362,12 +570,6 @@ fn stream_pty_output(
             code,
         },
     );
-
-    // Relay exit to WebSocket subscribers and clean up channel
-    if let Some((_, tx)) = PTY_WS_BROADCAST.remove(&id) {
-        let payload = serde_json::json!({ "type": "pty-exit", "id": id, "code": code }).to_string();
-        let _ = tx.send(payload);
-    }
 
     // Remove session from map.
     PTY_SESSIONS.remove(&id);
@@ -381,7 +583,8 @@ pub async fn pty_input(id: String, data: String) -> Result<(), String> {
         .get(&id)
         .ok_or_else(|| format!("PTY session '{}' not found", id))?;
 
-    // Transition from WaitingForInput back to Running when user sends input
+    // User input clears the waiting state; the session becomes Running only
+    // once the PTY emits output again.
     {
         let is_waiting = session
             .state
@@ -390,7 +593,7 @@ pub async fn pty_input(id: String, data: String) -> Result<(), String> {
             .map(|s| *s == SessionState::WaitingForInput)
             .unwrap_or(false);
         if is_waiting {
-            set_session_state(&session, &id, SessionState::Running);
+            set_session_state(&session, &id, SessionState::Idle);
         }
     }
 
@@ -410,47 +613,27 @@ pub async fn pty_input(id: String, data: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Write to a PTY session whose key matches the given prefix (for session lookup).
-pub fn write_to_session_by_prefix(prefix: &str, data: &str) -> Result<(), String> {
-    // Collect key first, drop DashMap read reference before acquiring Mutex
-    let key = PTY_SESSIONS
-        .iter()
-        .find(|e| e.key() == prefix || e.key().starts_with(prefix))
-        .map(|e| e.key().clone());
-
-    let key = key.ok_or_else(|| format!("No PTY session found for: {prefix}"))?;
-
-    let session = PTY_SESSIONS.get(&key)
-        .ok_or_else(|| format!("PTY session disappeared: {key}"))?;
-
-    // Transition from WaitingForInput back to Running
-    {
-        let is_waiting = session
-            .state
-            .read()
-            .ok()
-            .map(|s| *s == SessionState::WaitingForInput)
-            .unwrap_or(false);
-        if is_waiting {
-            set_session_state(&session, &key, SessionState::Running);
-        }
-    }
-
-    let mut writer = session.writer.lock()
-        .map_err(|e| format!("lock error: {e}"))?;
-    writer.write_all(data.as_bytes())
-        .map_err(|e| format!("write error: {e}"))?;
-    writer.flush()
-        .map_err(|e| format!("flush error: {e}"))?;
-    Ok(())
-}
-
 /// Resize a PTY session.
 #[tauri::command]
 pub async fn pty_resize(id: String, rows: u16, cols: u16) -> Result<(), String> {
     let session = PTY_SESSIONS
         .get(&id)
         .ok_or_else(|| format!("PTY session '{}' not found", id))?;
+
+    {
+        let mut last_size = session
+            .last_size
+            .lock()
+            .map_err(|e| format!("Failed to lock PTY size: {e}"))?;
+        if *last_size == (rows, cols) {
+            return Ok(());
+        }
+        *last_size = (rows, cols);
+    }
+
+    if let Ok(mut until) = session.suppress_output_activity_until.lock() {
+        *until = Some(Instant::now() + RESIZE_OUTPUT_ACTIVITY_SUPPRESS);
+    }
 
     let master = session
         .master
@@ -473,6 +656,7 @@ pub async fn pty_resize(id: String, rows: u16, cols: u16) -> Result<(), String> 
 #[tauri::command]
 pub async fn pty_kill(id: String) -> Result<(), String> {
     if let Some((_, session)) = PTY_SESSIONS.remove(&id) {
+        session.killed.store(true, Ordering::SeqCst);
         if let Ok(mut child) = session.child.lock() {
             let _ = child.kill();
         }
@@ -500,169 +684,36 @@ pub async fn pty_get_session_state(pty_id: String) -> Result<SessionState, Strin
         .map_err(|e| format!("Failed to read session state: {e}"))
 }
 
-/// Create a PTY session running a specific command (used by ai.rs and http_server).
-pub fn create_command_pty(
-    id: String,
-    working_dir: String,
-    program: &str,
-    args: &[&str],
-    rows: u16,
-    cols: u16,
-    app_handle: AppHandle,
-) -> Result<String, String> {
-    let pty_system = NativePtySystem::default();
-    let size = PtySize {
-        rows,
-        cols,
-        pixel_width: 0,
-        pixel_height: 0,
-    };
-
-    let pair = pty_system
-        .openpty(size)
-        .map_err(|e| format!("Failed to open PTY: {e}"))?;
-
-    let mut cmd = CommandBuilder::new(program);
-    for arg in args {
-        cmd.arg(arg);
-    }
-    cmd.cwd(&working_dir);
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("FORCE_COLOR", "3");
-
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| format!("Failed to spawn command: {e}"))?;
-
-    drop(pair.slave);
-
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| format!("Failed to get PTY writer: {e}"))?;
-
-    let reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| format!("Failed to clone PTY reader: {e}"))?;
-
-    let session = Arc::new(PtySession {
-        writer: Mutex::new(writer),
-        master: Mutex::new(pair.master),
-        child: Mutex::new(child),
-        _working_dir: working_dir,
-        state: RwLock::new(SessionState::Running),
-        app_handle: app_handle.clone(),
-        output_buffer: RwLock::new(Vec::with_capacity(OUTPUT_BUFFER_MAX_LINES)),
-    });
-
-    let session_for_stream = session.clone();
-    match PTY_SESSIONS.entry(id.clone()) {
-        Entry::Occupied(_) => {
-            if let Ok(mut c) = session.child.lock() {
-                let _ = c.kill();
-            }
-            return Err(format!("PTY session '{}' already exists", id));
-        }
-        Entry::Vacant(e) => {
-            e.insert(session);
-        }
-    }
-
-    let stream_id = id.clone();
-    std::thread::spawn(move || {
-        stream_pty_output(stream_id, reader, session_for_stream, app_handle);
-    });
-
-    tracing::info!(id = %id, program = %program, "Command PTY session created");
-    Ok(id)
+/// Read recent output for a live PTY session so a second webview can render
+/// context immediately after attaching instead of looking like a fresh shell.
+#[tauri::command]
+pub async fn pty_get_recent_output(pty_id: String) -> Result<Option<String>, String> {
+    Ok(get_recent_output(&pty_id))
 }
 
-// ── Public helpers for HTTP server ───────────────────────────────────────────
-
-/// Returns a snapshot of active session IDs, their states, and working directories.
-pub fn list_sessions_internal() -> Vec<(String, SessionState, String)> {
-    PTY_SESSIONS
-        .iter()
-        .map(|entry| {
-            let state = entry
-                .state
-                .read()
-                .map(|s| s.clone())
-                .unwrap_or(SessionState::Idle);
-            let working_dir = entry._working_dir.clone();
-            (entry.key().clone(), state, working_dir)
-        })
-        .collect()
-}
-
-/// Write text to a PTY session directly (for HTTP/CLI use).
-pub fn pty_write_internal(pty_id: &str, text: String) -> Result<(), String> {
-    let session = PTY_SESSIONS
-        .get(pty_id)
-        .ok_or_else(|| format!("Session {pty_id} not found"))?;
-
-    {
-        let is_waiting = session
-            .state
-            .read()
-            .ok()
-            .map(|s| *s == SessionState::WaitingForInput)
-            .unwrap_or(false);
-        if is_waiting {
-            set_session_state(&session, pty_id, SessionState::Running);
-        }
-    }
-
-    let mut writer = session
-        .writer
-        .lock()
-        .map_err(|e| format!("Failed to lock PTY writer: {e}"))?;
-    writer
-        .write_all(text.as_bytes())
-        .map_err(|e| format!("Failed to write to PTY: {e}"))?;
-    writer
-        .flush()
-        .map_err(|e| format!("Failed to flush PTY: {e}"))?;
-    Ok(())
-}
-
-/// Read the recent output buffer for a PTY session (for handoff context).
+/// Read the recent output buffer for a PTY session.
 pub fn get_recent_output(pty_id: &str) -> Option<String> {
     let session = PTY_SESSIONS.get(pty_id)?;
     let buf = session.output_buffer.read().ok()?;
     if buf.is_empty() {
         None
     } else {
-        Some(buf.join("\n"))
+        Some(buf.clone())
     }
 }
 
-/// Register a WebSocket broadcast channel for a PTY session.
-/// Returns a receiver that will get all future PTY output for this session.
-pub fn register_ws_channel(id: &str) -> broadcast::Receiver<String> {
-    if let Some(existing) = PTY_WS_BROADCAST.get(id) {
-        return existing.subscribe();
+fn trim_recent_output_buffer(buffer: &mut String) {
+    if buffer.len() <= OUTPUT_BUFFER_MAX_BYTES {
+        return;
     }
-    let (tx, rx) = broadcast::channel(256);
-    PTY_WS_BROADCAST.insert(id.to_string(), tx);
-    rx
-}
 
-/// Kill a PTY session (non-async, for HTTP server use).
-pub fn pty_kill_internal(id: &str) -> Result<(), String> {
-    if let Some((_, session)) = PTY_SESSIONS.remove(id) {
-        if let Ok(mut child) = session.child.lock() {
-            let _ = child.kill();
-        }
-        PTY_WS_BROADCAST.remove(id);
-        drop(session);
-        tracing::info!(id = %id, "PTY session killed (internal)");
-        Ok(())
-    } else {
-        Err(format!("PTY session '{}' not found", id))
-    }
+    let target_start = buffer.len() - OUTPUT_BUFFER_MAX_BYTES;
+    let start = buffer
+        .char_indices()
+        .map(|(idx, _)| idx)
+        .find(|idx| *idx >= target_start)
+        .unwrap_or(buffer.len());
+    buffer.drain(..start);
 }
 
 #[cfg(test)]
@@ -688,6 +739,26 @@ mod tests {
             let json = serde_json::to_string(&s).expect("serialize failed");
             assert!(!json.is_empty());
         }
+    }
+
+    #[test]
+    fn test_running_goes_idle_after_output_quiets() {
+        let last_output_at = Instant::now() - OUTPUT_IDLE_GRACE - Duration::from_millis(1);
+        assert!(should_idle_after_quiet(
+            &SessionState::Running,
+            Some(last_output_at),
+            Instant::now()
+        ));
+    }
+
+    #[test]
+    fn test_waiting_does_not_idle_after_output_quiets() {
+        let last_output_at = Instant::now() - OUTPUT_IDLE_GRACE - Duration::from_millis(1);
+        assert!(!should_idle_after_quiet(
+            &SessionState::WaitingForInput,
+            Some(last_output_at),
+            Instant::now()
+        ));
     }
 
     #[test]
@@ -718,17 +789,34 @@ mod tests {
     #[test]
     fn test_error_patterns_match() {
         let test_cases = vec![
+            // Real errors (should match)
             ("Error: file not found", true),
+            ("ERROR  something bad", true),
+            ("[ERROR] invalid config", true),
+            ("  [Fatal] db unreachable", true),
+            ("fatal error: cannot find <stdio.h>", true),
             ("command not found", true),
-            ("Build failed", true),
+            ("bash: cd: permission denied", true),
+            ("Segmentation fault (core dumped)", true),
+            ("panic: runtime error", true),
+            ("panicked at 'assertion failed'", true),
+            ("Traceback (most recent call last):", true),
+            ("Unhandled exception in thread", true),
+
+            // Previously false-positive, now correctly ignored
             ("Build succeeded", false),
             ("Everything is fine", false),
+            ("The --error flag is optional", false),
+            ("Errors (0)", false),
+            ("help: see `cli errors` for details", false),
+            ("Build failed", false), // too generic without a prefix anchor
+            ("No errors detected", false),
         ];
         for (input, expected) in test_cases {
             assert_eq!(
                 ERROR_PATTERNS.is_match(input),
                 expected,
-                "Failed for: {input}"
+                "Failed for: {input:?}"
             );
         }
     }

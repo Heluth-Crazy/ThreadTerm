@@ -7,17 +7,23 @@
  * on Windows/Linux/macOS stays consistent.
  *
  * Shortcuts (cross-platform, Ctrl=Cmd on macOS):
- *   Ctrl+`                  toggle radial switcher
+ *   Ctrl+`                  toggle inline overlay selector
  *   Ctrl+1..9               jump directly to that card
  *   Ctrl+Tab / Shift+Tab    cycle forward / backward
  *   double-tap Ctrl (<300ms) switch to last active card
  *   Ctrl+N                  open "create terminal" dialog
  *   Ctrl+W                  close the currently focused card
  *   Ctrl+B                  toggle notification centre
- *   Escape                  close drawers / return to grid
+ *   Ctrl+Shift+M            return focused terminal to grid
+ *   Escape                  close non-terminal drawers only; terminal Esc is reserved for CLIs
+ *
+ * The *global* overlay hotkeys (default Cmd/Ctrl+Shift+Space and
+ * Cmd/Ctrl+Shift+O) are registered on the Rust side via
+ * `tauri-plugin-global-shortcut` and dispatched through `OverlayBridge`.
  */
 import { useEffect, useRef } from 'react';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { useOverlayStore } from '../../stores/overlayStore';
 
 const DOUBLE_TAP_WINDOW_MS = 300;
 
@@ -38,20 +44,21 @@ export function KeyboardBridge(): null {
         ctrlComboUsedRef.current = true;
       }
 
-      // Ctrl+`  (or Ctrl+Backquote / physical backquote key)
+      // Ctrl+`  (or Ctrl+Backquote / physical backquote key) — toggle the
+      // inline overlay selector inside the main window.
       if (mod && (e.key === '`' || e.code === 'Backquote')) {
         e.preventDefault();
         e.stopPropagation();
-        const st = s.getState();
-        if (st.switcherVisible) st.closeSwitcher();
-        else st.openSwitcher();
+        const ov = useOverlayStore.getState();
+        if (ov.selectorOpen) ov.closeSelector();
+        else ov.openSelector('inline');
         return;
       }
 
-      // If the switcher is open it owns navigation keys (handled inside the
-      // component). We still need to let Ctrl-release double-tap through,
-      // so do nothing here.
-      if (s.getState().switcherVisible) return;
+      // If the selector is open it owns navigation keys (handled by
+      // SelectorKeyboardBridge inside the overlay). Let Ctrl-release
+      // double-tap fall through without any terminal-store mutation.
+      if (useOverlayStore.getState().selectorOpen) return;
 
       // Ctrl+1-9 — jump to card
       if (mod && /^[1-9]$/.test(e.key)) {
@@ -95,19 +102,36 @@ export function KeyboardBridge(): null {
         return;
       }
 
-      // Escape — return to grid / close drawers
+      // Ctrl/Cmd+Shift+M — return the focused terminal view to the card grid.
+      // Escape must stay available to terminal CLIs such as Codex/Claude.
+      if (mod && e.shiftKey && (e.key === 'm' || e.key === 'M')) {
+        const st = s.getState();
+        if (st.focusedCardId) {
+          e.preventDefault();
+          e.stopPropagation();
+          st.focusCard(null);
+        }
+        return;
+      }
+
+      // Ctrl+, (comma) — open Settings (shortcuts tab by default so users
+      // can immediately discover / rebind overlay hotkeys).
+      if (mod && e.key === ',') {
+        e.preventDefault();
+        e.stopPropagation();
+        window.__terminalManager?.openSettings('shortcuts');
+        return;
+      }
+
+      // Escape — close non-terminal drawers only.
+      // Do not use Escape for focused terminal navigation: CLIs rely on it
+      // to cancel prompts, leave alternate modes, or dismiss inline UIs.
       if (e.key === 'Escape') {
         const st = s.getState();
         if (st.notificationCentreOpen) {
           e.preventDefault();
           e.stopPropagation();
           st.toggleNotificationCentre(false);
-          return;
-        }
-        if (st.focusedCardId) {
-          e.preventDefault();
-          e.stopPropagation();
-          st.focusCard(null);
           return;
         }
       }

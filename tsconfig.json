@@ -16,5 +16,5 @@
     // "checkJs": true, 
     "types": ["vite/client"]
   },
-  "include": ["src", "shared", "vite.config.js"]
+  "include": ["src", "vite.config.js", "vitest.config.ts"]
 }

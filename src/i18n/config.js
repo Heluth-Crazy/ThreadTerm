@@ -1,59 +1,25 @@
-/**
- * i18n Configuration
- *
- * Configures i18next for internationalization support.
- * Features:
- * - Lazy-loading of translation namespaces
- * - Language detection from localStorage
- * - Fallback to English for missing translations
- * - Development mode warnings for missing keys
- */
-
 import i18n from 'i18next';
-import { initReactI18next } from 'react-i18next';
 import LanguageDetector from 'i18next-browser-languagedetector';
-
-// Import translation resources
-import enCommon from './locales/en/common.json';
-import enSettings from './locales/en/settings.json';
-import enAuth from './locales/en/auth.json';
-import enSidebar from './locales/en/sidebar.json';
-import enChat from './locales/en/chat.json';
-import enCodeEditor from './locales/en/codeEditor.json';
-import enTasks from './locales/en/tasks.json';
-import enTerminal from './locales/en/terminal.json';
-
-import koCommon from './locales/ko/common.json';
-import koSettings from './locales/ko/settings.json';
-import koAuth from './locales/ko/auth.json';
-import koSidebar from './locales/ko/sidebar.json';
-import koChat from './locales/ko/chat.json';
-import koCodeEditor from './locales/ko/codeEditor.json';
-import koTasks from './locales/ko/tasks.json';
-import koTerminal from './locales/ko/terminal.json';
-
-import zhCommon from './locales/zh-CN/common.json';
-import zhSettings from './locales/zh-CN/settings.json';
-import zhAuth from './locales/zh-CN/auth.json';
-import zhSidebar from './locales/zh-CN/sidebar.json';
-import zhChat from './locales/zh-CN/chat.json';
-import zhCodeEditor from './locales/zh-CN/codeEditor.json';
-import zhTasks from './locales/zh-CN/tasks.json';
-import zhTerminal from './locales/zh-CN/terminal.json';
-
-import jaCommon from './locales/ja/common.json';
-import jaSettings from './locales/ja/settings.json';
-import jaAuth from './locales/ja/auth.json';
-import jaSidebar from './locales/ja/sidebar.json';
-import jaChat from './locales/ja/chat.json';
-import jaCodeEditor from './locales/ja/codeEditor.json';
-import jaTasks from './locales/ja/tasks.json';
-import jaTerminal from './locales/ja/terminal.json';
-
-// Import supported languages configuration
+import { initReactI18next } from 'react-i18next';
 import { languages } from './languages.js';
 
-// Get saved language preference from localStorage
+import enCommon from './locales/en/common.json';
+import enSettings from './locales/en/settings.json';
+import enTerminal from './locales/en/terminal.json';
+import enOverlay from './locales/en/overlay.json';
+import koCommon from './locales/ko/common.json';
+import koSettings from './locales/ko/settings.json';
+import koTerminal from './locales/ko/terminal.json';
+import koOverlay from './locales/ko/overlay.json';
+import zhCommon from './locales/zh-CN/common.json';
+import zhSettings from './locales/zh-CN/settings.json';
+import zhTerminal from './locales/zh-CN/terminal.json';
+import zhOverlay from './locales/zh-CN/overlay.json';
+import jaCommon from './locales/ja/common.json';
+import jaSettings from './locales/ja/settings.json';
+import jaTerminal from './locales/ja/terminal.json';
+import jaOverlay from './locales/ja/overlay.json';
+
 const getSavedLanguage = () => {
   if (typeof window === 'undefined') {
     return 'zh-CN';
@@ -62,7 +28,6 @@ const getSavedLanguage = () => {
   try {
     const saved = window.localStorage.getItem('userLanguage');
     const supported = new Set(languages.map((language) => language.value));
-
     if (saved && supported.has(saved)) {
       return saved;
     }
@@ -73,103 +38,59 @@ const getSavedLanguage = () => {
   return 'zh-CN';
 };
 
-// Initialize i18next
 i18n
-  .use(LanguageDetector) // Detect user language
-  .use(initReactI18next) // Pass i18n instance to react-i18next
+  .use(LanguageDetector)
+  .use(initReactI18next)
   .init({
-    // Resources containing all translations
     resources: {
       en: {
         common: enCommon,
         settings: enSettings,
-        auth: enAuth,
-        sidebar: enSidebar,
-        chat: enChat,
-        codeEditor: enCodeEditor,
-        tasks: enTasks,
         terminal: enTerminal,
+        overlay: enOverlay,
       },
       ko: {
         common: koCommon,
         settings: koSettings,
-        auth: koAuth,
-        sidebar: koSidebar,
-        chat: koChat,
-        codeEditor: koCodeEditor,
-        tasks: koTasks,
         terminal: koTerminal,
+        overlay: koOverlay,
       },
       'zh-CN': {
         common: zhCommon,
         settings: zhSettings,
-        auth: zhAuth,
-        sidebar: zhSidebar,
-        chat: zhChat,
-        codeEditor: zhCodeEditor,
-        tasks: zhTasks,
         terminal: zhTerminal,
+        overlay: zhOverlay,
       },
       ja: {
         common: jaCommon,
         settings: jaSettings,
-        auth: jaAuth,
-        sidebar: jaSidebar,
-        chat: jaChat,
-        codeEditor: jaCodeEditor,
-        tasks: jaTasks,
         terminal: jaTerminal,
+        overlay: jaOverlay,
       },
     },
-
-    // Default language
     lng: getSavedLanguage(),
-
-    // Fallback language when a translation is missing
     fallbackLng: 'zh-CN',
-
-    // Enable debug mode in development (logs missing keys to console)
     debug: import.meta.env.DEV,
-
-    // Namespaces - load only what's needed
-    ns: ['common', 'settings', 'auth', 'sidebar', 'chat', 'codeEditor', 'tasks', 'terminal'],
+    ns: ['common', 'settings', 'terminal', 'overlay'],
     defaultNS: 'common',
-
-    // Key separator for nested keys (default: '.')
     keySeparator: '.',
-
-    // Namespace separator (default: ':')
     nsSeparator: ':',
-
-    // Save missing translations (disabled - requires manual review)
     saveMissing: false,
-
-    // Interpolation settings
     interpolation: {
-      escapeValue: false, // React already escapes values
+      escapeValue: false,
     },
-
-    // React-specific settings
     react: {
-      useSuspense: true, // Use Suspense for lazy-loading
-      bindI18n: 'languageChanged', // Re-render on language change
-      bindI18nStore: false, // Don't re-render on resource changes
+      useSuspense: true,
+      bindI18n: 'languageChanged',
+      bindI18nStore: false,
     },
-
-    // Detection options
     detection: {
-      // Order of language detection (local storage first, then browser)
       order: ['localStorage', 'navigator'],
-
-      // Keys to look for in localStorage
       lookupLocalStorage: 'userLanguage',
-
-      // Cache user language
       caches: ['localStorage'],
     },
   });
 
-// Save language preference when it changes
 i18n.on('languageChanged', (lng) => {
   try {
     localStorage.setItem('userLanguage', lng);
