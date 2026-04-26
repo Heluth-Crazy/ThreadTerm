@@ -73,6 +73,20 @@
       "more": "+{{count}}줄 필터됨"
     }
   },
+  "aiSession": {
+    "missingCli": "{{cli}} CLI 없음",
+    "missingCliDescription": "{{cli}}가 설치되어 있지 않거나 현재 PATH에서 보이지 않습니다.",
+    "resumeReady": "재개 가능",
+    "resumeReadyDescription": "{{cli}} 세션 {{id}}가 연결되어 다시 시작할 수 있습니다.",
+    "newSession": "새 세션",
+    "newSessionDescription": "{{cli}}가 ThreadTerm이 관리하는 세션 ID로 시작됩니다.",
+    "discovery": "세션 검색",
+    "discoveryDescription": "{{cli}}가 기록을 쓴 뒤 ThreadTerm이 세션 ID를 찾습니다.",
+    "cliOnly": "CLI 세션",
+    "cliOnlyDescription": "{{cli}}는 CLI 세션으로 실행되며 네이티브 재개 연결은 아직 추적하지 않습니다.",
+    "customCommand": "사용자 지정 명령",
+    "customCommandDescription": "이 AI 카드는 기본 provider 명령 대신 사용자 지정 명령을 실행합니다."
+  },
   "view": {
     "backToGrid": "그리드로 돌아가기 (⌘/Ctrl+Shift+M)",
     "worktree": "worktree: {{path}}",
@@ -100,6 +114,8 @@
     "sessionClosed": "세션 닫힘",
     "errorTitle": "⚠ {{project}}에서 오류 보고",
     "inputTitle": "• {{project}} 입력 필요",
+    "missingCliTitle": "{{cli}} CLI 없음",
+    "missingCliBody": "{{cli}}를 설치하거나 PATH에서 사용할 수 있게 한 뒤 이 카드를 다시 시작하세요.",
     "errorBodyFallback": "출력에서 오류가 감지되었습니다",
     "inputBodyFallback": "입력을 기다리는 중"
   },

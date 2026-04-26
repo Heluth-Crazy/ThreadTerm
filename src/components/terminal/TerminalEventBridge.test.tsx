@@ -59,11 +59,11 @@ function resetStore() {
   });
 }
 
-function createCard() {
+function createCard(terminalType: 'shell' | 'codex' = 'shell') {
   return useTerminalStore.getState().createCard({
     projectName: 'repo',
     projectPath: '/tmp/repo',
-    terminalType: 'shell',
+    terminalType,
   });
 }
 
@@ -170,5 +170,29 @@ describe('TerminalEventBridge status reconciliation', () => {
     expect(state.notifications[0]?.kind).toBe('completed');
     expect(state.notifications[0]?.body).toContain('done from agent');
     expect(state.getCardById(id)?.unread).toBe(true);
+  });
+
+  it('uses provider-specific copy when an AI CLI is missing', async () => {
+    const id = createCard('codex');
+
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(bridgeMocks.listeners.attention).toBeDefined();
+    });
+
+    act(() => {
+      bridgeMocks.listeners.attention?.({
+        ptyId: id,
+        type: 'error',
+        message: 'zsh: command not found: codex',
+      });
+    });
+
+    const notification = useTerminalStore.getState().notifications[0];
+    expect(notification?.title).toContain('Codex');
+    expect(notification?.title).toContain('CLI');
+    expect(notification?.body).toContain('PATH');
+    expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(true);
   });
 });

@@ -73,6 +73,20 @@
       "more": "+{{count}} 行をフィルター"
     }
   },
+  "aiSession": {
+    "missingCli": "{{cli}} CLI が見つかりません",
+    "missingCliDescription": "{{cli}} がインストールされていないか、PATH から見えていません。",
+    "resumeReady": "再開可能",
+    "resumeReadyDescription": "{{cli}} セッション {{id}} は紐づけ済みで再開できます。",
+    "newSession": "新規セッション",
+    "newSessionDescription": "{{cli}} は ThreadTerm 管理のセッション ID で起動します。",
+    "discovery": "セッション検出",
+    "discoveryDescription": "{{cli}} が履歴を書き込んだ後にセッション ID を検出します。",
+    "cliOnly": "CLI セッション",
+    "cliOnlyDescription": "{{cli}} は CLI セッションとして実行されます。ネイティブ再開の紐づけはまだ追跡しません。",
+    "customCommand": "カスタムコマンド",
+    "customCommandDescription": "この AI カードは既定の provider コマンドではなくカスタムコマンドを実行します。"
+  },
   "view": {
     "backToGrid": "グリッドへ戻る (⌘/Ctrl+Shift+M)",
     "worktree": "worktree: {{path}}",
@@ -100,6 +114,8 @@
     "sessionClosed": "セッション終了",
     "errorTitle": "⚠ {{project}} がエラーを報告しました",
     "inputTitle": "• {{project}} は入力待ちです",
+    "missingCliTitle": "{{cli}} CLI が見つかりません",
+    "missingCliBody": "{{cli}} をインストールするか PATH から見えるようにして、このカードを再起動してください。",
     "errorBodyFallback": "出力でエラーを検出しました",
     "inputBodyFallback": "入力待ちです"
   },

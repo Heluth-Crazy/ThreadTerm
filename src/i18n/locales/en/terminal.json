@@ -73,6 +73,20 @@
       "more": "+{{count}} filtered"
     }
   },
+  "aiSession": {
+    "missingCli": "{{cli}} CLI missing",
+    "missingCliDescription": "{{cli}} is not installed or is not visible in PATH.",
+    "resumeReady": "Resume ready",
+    "resumeReadyDescription": "{{cli}} session {{id}} is bound and can be resumed.",
+    "newSession": "New session",
+    "newSessionDescription": "{{cli}} will start with a ThreadTerm-managed session id.",
+    "discovery": "Session discovery",
+    "discoveryDescription": "{{cli}} session id will be discovered after the CLI writes its history.",
+    "cliOnly": "CLI session",
+    "cliOnlyDescription": "{{cli}} runs as a CLI session; native resume binding is not tracked yet.",
+    "customCommand": "Custom command",
+    "customCommandDescription": "This AI card runs a custom command instead of the default provider command."
+  },
   "view": {
     "backToGrid": "Back to grid (⌘/Ctrl+Shift+M)",
     "worktree": "worktree: {{path}}",
@@ -100,6 +114,8 @@
     "sessionClosed": "session closed",
     "errorTitle": "⚠ {{project}} reported an error",
     "inputTitle": "• {{project}} needs your input",
+    "missingCliTitle": "{{cli}} CLI missing",
+    "missingCliBody": "Install {{cli}} or make sure it is available in PATH, then restart this card.",
     "errorBodyFallback": "Error detected in output",
     "inputBodyFallback": "Awaiting input"
   },

@@ -16,7 +16,11 @@ import type { TerminalCard } from '../../types/terminal';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { getStatusMeta } from './statusMeta';
 import { getTerminalTypeMeta } from './terminalTypeMeta';
-import { buildTerminalLaunchCommand } from './providerSession';
+import {
+  AI_CLI_SESSION_BADGE_CLASS,
+  buildTerminalLaunchCommand,
+  getAiCliSessionBadge,
+} from './providerSession';
 import { useProviderSessionLifecycle } from './useProviderSessionLifecycle';
 
 interface TerminalViewProps {
@@ -41,6 +45,16 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
   const StatusIcon = statusInfo.Icon;
   const TypeIcon = typeMeta.Icon;
   const paneId = card.ptyId || card.id;
+  const aiSessionBadge = useMemo(
+    () => getAiCliSessionBadge(card),
+    [
+      card.command,
+      card.lastOutput,
+      card.providerSessionId,
+      card.providerSessionState,
+      card.terminalType,
+    ],
+  );
 
   // Treat the card's optional `command` as an initial command to execute
   // in the PTY right after spawn.
@@ -110,6 +124,25 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
         </div>
 
         <div className="flex items-center gap-2">
+          {aiSessionBadge && (
+            <span
+              title={t(aiSessionBadge.descriptionKey, {
+                ...aiSessionBadge.values,
+                defaultValue: aiSessionBadge.fallbackDescription,
+              })}
+              className={[
+                'hidden max-w-[190px] items-center rounded-full border px-2 py-0.5 text-[10px] font-medium leading-none sm:inline-flex',
+                AI_CLI_SESSION_BADGE_CLASS[aiSessionBadge.tone],
+              ].join(' ')}
+            >
+              <span className="truncate">
+                {t(aiSessionBadge.labelKey, {
+                  ...aiSessionBadge.values,
+                  defaultValue: aiSessionBadge.fallbackLabel,
+                })}
+              </span>
+            </span>
+          )}
           <span
             className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusInfo.chip}`}
           >
