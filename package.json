@@ -33,7 +33,7 @@
     "desktop"
   ],
   "author": "ThreadTerm Contributors",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-dialog": "^2.7.0",
