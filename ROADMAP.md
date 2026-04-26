@@ -1,34 +1,72 @@
 # ThreadTerm Roadmap
 
-This roadmap tracks the current Tauri desktop terminal manager.
+ThreadTerm is moving toward a stable desktop workbench for developers who keep
+shells and AI CLI agents running across multiple projects.
 
-## Current Product
+## Product Direction
 
-- Project-bound terminal cards with shell and AI CLI launch presets.
-- Project sidebar for grouping and filtering sessions.
-- Focused terminal view that keeps PTY state alive.
-- Global selector shown with `Cmd/Ctrl + Shift + Space`.
-- Always-on-top floating terminal sharing the selected card PTY.
-- PTY status tracking, attention detection, notifications, and recent-output replay.
-- macOS and Windows desktop support.
+The next product bet is simple: ThreadTerm should not feel like another terminal
+window. It should feel like a command center for long-running project work and
+AI-assisted coding sessions.
 
-## Near-Term Priorities
+That means the near-term roadmap prioritizes:
 
-- Harden overlay focus behavior across macOS full-screen Spaces and Windows topmost windows.
-- Improve selector carousel animation and keyboard navigation predictability.
-- Expand automated coverage for overlay store, PTY event reconciliation, and card status transitions.
-- Add manual smoke scripts for macOS and Windows packaging.
-- Keep stale references and generated artifacts out of the retained desktop scope.
+- a trustworthy first run on macOS and Windows
+- clear AI CLI session state
+- reliable notifications and one-click return paths
+- small, well-documented workflows contributors can test
 
-## Technical Direction
+## v0.2 - Stable AI CLI Workbench
 
-- Keep backend invoke surface limited to PTY, overlay, notifications, provider-session discovery, and minimal settings persistence.
-- Keep Windows PTY fallback behavior: `powershell.exe`, then `cmd.exe`.
-- Keep macOS overlay behavior implemented in `src-tauri/src/overlay.rs` with `tauri-nspanel`.
-- Prefer small Zustand stores and direct Tauri invokes over additional service layers.
-- Keep documentation synchronized with `README.md`, `docs/build-release.md`, and `docs/windows-exe-build.md`.
+Goal: a new user can install ThreadTerm, create a project card, pin it, open the
+selector, use carousel mode, receive notifications, and return to the right
+session without reading source code.
+
+| Track | Scope | Acceptance |
+| --- | --- | --- |
+| First-run experience | Document the first five minutes and keep the empty state focused on creating the first card. | README links to the guide; the guide covers card creation, pinning, selector modes, floating terminal, and notifications. |
+| Release readiness | Harden macOS and Windows packaging instructions, including permissions and smoke tests. | A maintainer can follow the docs from clean checkout to packaged app on each platform. |
+| AI CLI state | Make Claude, Codex, Gemini, and custom command cards clearly show running, waiting, completed, failed, and unread states. | Card status, notification copy, and click-through behavior all agree on the same session state. |
+| Notification loop | Keep in-app and desktop OS notifications predictable. | Clicking a notification returns to the relevant card or floating terminal. |
+| Open-source hygiene | Keep generated artifacts out, improve issue/PR templates, and keep README screenshots current. | New contributors have clear templates and do not need private context to report or reproduce issues. |
+
+Non-goals for v0.2:
+
+- plugin marketplaces
+- a full task runner
+- team sync or cloud accounts
+- replacing the user's normal shell configuration
+
+## v0.3 - AI Session Workflow
+
+Goal: make ThreadTerm especially good at managing multiple AI CLI threads.
+
+Planned themes:
+
+- clearer Claude/Codex/Gemini session resume flows
+- project-level grouping for AI sessions and shell tasks
+- card notes or labels for intent, such as `review`, `fix`, `research`
+- richer notification summaries for "waiting for input" and "reply ready"
+- better handling when an AI CLI is missing from `PATH`
+
+## v0.4 - Extensibility and Power Use
+
+Goal: let advanced users adapt ThreadTerm without turning the app into a broad
+IDE or project management suite.
+
+Possible themes:
+
+- import/export for app settings and theme packs
+- reusable command templates
+- configurable terminal card presets
+- optional workspace-level defaults
+- stronger Linux compatibility notes if contributors validate real desktop
+  environments
 
 ## Verification Baseline
+
+Run this before merging changes that touch terminal lifecycle, overlay behavior,
+notifications, packaging, or public docs:
 
 ```bash
 npm run typecheck
@@ -37,3 +75,6 @@ npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml pty::tests
 ```
+
+Manual overlay regression steps are maintained in
+[docs/global-overlay-manual-test.md](docs/global-overlay-manual-test.md).

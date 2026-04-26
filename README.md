@@ -28,6 +28,8 @@ ThreadTerm is a desktop terminal manager for developers who keep several project
   ·
   <a href="#quick-start">Quick Start</a>
   ·
+  <a href="#first-run">First Run</a>
+  ·
   <a href="#pinned-sessions-and-selector-modes">Selector Modes</a>
   ·
   <a href="#notifications">Notifications</a>
@@ -171,6 +173,12 @@ npm run client
 npm run tauri:build
 ```
 
+## First Run
+
+New to ThreadTerm? Follow the [first-run guide](docs/first-run.md) to create a
+card, pin it, switch selector modes, open a floating terminal, and verify
+notifications.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
@@ -193,7 +201,7 @@ src/                  React UI for the main window
 src/windows/          Selector and floating-terminal window entries
 src/stores/           Zustand stores for terminal and overlay state
 src-tauri/src/        Tauri backend: PTY, overlay, notification, settings, provider sessions
-docs/                 Build, packaging, and public media
+docs/                 Public guides, packaging notes, and media
 ```
 
 ## Architecture
@@ -245,6 +253,7 @@ Windows support is preserved:
 ## Documentation
 
 - [Contributing](CONTRIBUTING.md)
+- [First-run guide](docs/first-run.md)
 - [Roadmap](ROADMAP.md)
 - [Build and release](docs/build-release.md)
 - [Windows EXE build](docs/windows-exe-build.md)

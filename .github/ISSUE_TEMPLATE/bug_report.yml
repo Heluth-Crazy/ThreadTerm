@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a reproducible ThreadTerm problem.
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve ThreadTerm. Please include enough context for someone else to reproduce the issue.
+  - type: input
+    id: version
+    attributes:
+      label: ThreadTerm version or commit
+      placeholder: "v0.1.0 or commit SHA"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: dropdown
+    id: app-mode
+    attributes:
+      label: App mode
+      options:
+        - npm run tauri:dev
+        - npm run tauri:build output
+        - Downloaded release bundle
+        - Frontend-only preview
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List exact steps, shortcuts, and terminal/card types involved.
+      placeholder: |
+        1. Create a Codex card in ...
+        2. Pin it ...
+        3. Press ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or recordings
+      description: Drag files here or paste relevant terminal/app output. Remove secrets first.
+    validations:
+      required: false

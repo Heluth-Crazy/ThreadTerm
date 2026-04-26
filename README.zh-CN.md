@@ -28,6 +28,8 @@ ThreadTerm 是一个桌面端终端管理器，适合同时运行多个项目 Sh
   ·
   <a href="#快速开始">快速开始</a>
   ·
+  <a href="#首次使用">首次使用</a>
+  ·
   <a href="#固定会话与选择器模式">选择器模式</a>
   ·
   <a href="#通知">通知</a>
@@ -171,6 +173,11 @@ npm run client
 npm run tauri:build
 ```
 
+## 首次使用
+
+第一次使用 ThreadTerm？可以按 [首次使用指南](docs/first-run.zh-CN.md)
+创建卡片、固定卡片、切换选择器模式、打开浮动终端，并验证通知链路。
+
 ## 快捷键
 
 | 快捷键 | 操作 |
@@ -193,7 +200,7 @@ src/                  主窗口 React UI
 src/windows/          选择器和浮动终端窗口入口
 src/stores/           终端和浮窗状态的 Zustand store
 src-tauri/src/        Tauri 后端：PTY、浮窗、通知、设置、原生会话发现
-docs/                 构建、打包和公开媒体
+docs/                 公开指南、打包说明和媒体
 ```
 
 ## 架构
@@ -245,6 +252,7 @@ Windows 支持已保留：
 ## 文档
 
 - [贡献指南](CONTRIBUTING.md)
+- [首次使用指南](docs/first-run.zh-CN.md)
 - [路线图](ROADMAP.md)
 - [构建和发布](docs/build-release.md)
 - [Windows EXE 构建](docs/windows-exe-build.md)
