@@ -193,7 +193,7 @@ src/                  React UI for the main window
 src/windows/          Selector and floating-terminal window entries
 src/stores/           Zustand stores for terminal and overlay state
 src-tauri/src/        Tauri backend: PTY, overlay, notification, settings, provider sessions
-docs/                 Build, packaging, media, and manual QA notes
+docs/                 Build, packaging, and public media
 ```
 
 ## Architecture
