@@ -1,7 +1,7 @@
 /**
- * Supported Languages Configuration
+ * ThreadTerm supported language configuration.
  *
- * This file contains the list of supported languages for the application.
+ * This file contains the languages exposed by the settings UI.
  * Each language includes:
  * - value: Language code (e.g., 'en', 'zh-CN')
  * - label: Display name in English
@@ -37,7 +37,7 @@ export const languages = [
  * @returns {Object|undefined} Language object or undefined if not found
  */
 export const getLanguage = (value) => {
-  return languages.find(lang => lang.value === value);
+  return languages.find((lang) => lang.value === value);
 };
 
 /**
@@ -45,7 +45,7 @@ export const getLanguage = (value) => {
  * @returns {string[]} Array of language codes
  */
 export const getLanguageValues = () => {
-  return languages.map(lang => lang.value);
+  return languages.map((lang) => lang.value);
 };
 
 /**
@@ -54,5 +54,5 @@ export const getLanguageValues = () => {
  * @returns {boolean} True if language is supported
  */
 export const isLanguageSupported = (value) => {
-  return languages.some(lang => lang.value === value);
+  return languages.some((lang) => lang.value === value);
 };
