@@ -1,60 +1,40 @@
-#!/bin/bash
-# OpenWork Desktop - Development Environment Setup
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "🚀 OpenWork Desktop - Setting up development environment..."
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$PROJECT_DIR"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+required_node_major=22
 
-# Check Node.js version
-echo -e "${YELLOW}Checking Node.js version...${NC}"
-NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-if [ "$NODE_VERSION" -lt 18 ]; then
-    echo -e "${RED}Error: Node.js 18+ required. Current: $(node -v)${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✓ Node.js $(node -v)${NC}"
+echo "ThreadTerm Tauri desktop setup"
 
-# Check if running on macOS or Linux
-PLATFORM=$(uname -s)
-if [ "$PLATFORM" == "Darwin" ]; then
-    echo -e "${GREEN}✓ Platform: macOS${NC}"
-elif [ "$PLATFORM" == "Linux" ]; then
-    echo -e "${GREEN}✓ Platform: Linux${NC}"
-else
-    echo -e "${YELLOW}⚠ Platform: $PLATFORM (some features may not work)${NC}"
+if ! command -v node >/dev/null 2>&1; then
+  echo "Node.js $required_node_major LTS is required."
+  exit 1
 fi
 
-# Install dependencies
-echo -e "${YELLOW}Installing npm dependencies...${NC}"
+node_major="$(node -v | sed 's/^v//' | cut -d. -f1)"
+if [ "$node_major" -lt "$required_node_major" ]; then
+  echo "Node.js $required_node_major+ is required; found $(node -v)."
+  exit 1
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "Rust/Cargo is required. Install from https://rustup.rs"
+  exit 1
+fi
+
+if [[ "$(uname -s)" == "Darwin" ]] && ! xcode-select -p >/dev/null 2>&1; then
+  echo "Xcode Command Line Tools are required. Run: xcode-select --install"
+  exit 1
+fi
+
 npm install
-
-# Rebuild native modules for Electron
-echo -e "${YELLOW}Rebuilding native modules for Electron...${NC}"
-npm run rebuild
-
-# Create data directory
-echo -e "${YELLOW}Creating data directory...${NC}"
-mkdir -p data
-
-# Build frontend
-echo -e "${YELLOW}Building frontend...${NC}"
+npm run typecheck
 npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
 
-echo ""
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}✓ Setup complete!${NC}"
-echo -e "${GREEN}========================================${NC}"
-echo ""
-echo "Development commands:"
-echo "  npm run electron:dev     - Start in development mode"
-echo "  npm run electron:build   - Build for production"
-echo "  npm run build:mac        - Build for macOS"
-echo "  npm run build:win        - Build for Windows"
-echo ""
-echo "Starting development server..."
-npm run electron:dev
+echo
+echo "Setup complete."
+echo "Run the desktop app with: npm run tauri:dev"
+echo "Build packages with:     npm run tauri:build"

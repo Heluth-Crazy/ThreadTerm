@@ -16,6 +16,7 @@
  */
 import { useMemo, useState, type MouseEvent } from 'react';
 import { motion } from 'framer-motion';
+import { useTranslation } from 'react-i18next';
 import {
   AlertCircle,
   BellRing,
@@ -23,13 +24,17 @@ import {
   ExternalLink,
   FolderGit2,
   MessageSquareText,
+  Pin,
+  PinOff,
   Timer,
   Trash2,
   X,
 } from 'lucide-react';
 import type { TerminalCard as TerminalCardType } from '../../types/terminal';
+import { MAX_PINNED_CARDS, useTerminalStore } from '../../stores/terminalStore';
 import { getTerminalTypeMeta } from './terminalTypeMeta';
 import { getStatusMeta } from './statusMeta';
+import { buildCardPreview, isTechnicalPreviewLine } from './cardPreview';
 
 export interface TerminalCardProps {
   card: TerminalCardType;
@@ -53,10 +58,13 @@ function formatDuration(ms: number): string {
   return rem === 0 ? `${h}h` : `${h}h${rem}m`;
 }
 
-function formatRelative(at: number): string {
+function formatRelative(
+  at: number,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
   const d = Date.now() - at;
-  if (d < 60_000) return 'just now';
-  return `${formatDuration(d)} ago`;
+  if (d < 60_000) return t('card.justNow');
+  return t('card.ago', { time: formatDuration(d) });
 }
 
 export function TerminalCardComponent({
@@ -70,7 +78,20 @@ export function TerminalCardComponent({
   onCopyCwd,
   onOpenDir,
 }: TerminalCardProps) {
+  const { t } = useTranslation('terminal');
   const [timelineOpen, setTimelineOpen] = useState(false);
+
+  // Pin state for the global overlay selector (max MAX_PINNED_CARDS).
+  const pinned = useTerminalStore((s) => s.pinnedCardIds.includes(card.id));
+  const pinFull = useTerminalStore(
+    (s) => !s.pinnedCardIds.includes(card.id) && s.pinnedCardIds.length >= MAX_PINNED_CARDS,
+  );
+  const pinCard = useTerminalStore((s) => s.pinCard);
+  const unpinCard = useTerminalStore((s) => s.unpinCard);
+  const togglePin = () => {
+    if (pinned) unpinCard(card.id);
+    else pinCard(card.id);
+  };
   const typeMeta = getTerminalTypeMeta(card.terminalType);
   const statusInfo = getStatusMeta(card.status);
   const StatusIcon = statusInfo.Icon;
@@ -81,24 +102,24 @@ export function TerminalCardComponent({
     [card.lastActivity, card.createdAt],
   );
 
-  const replyLines = useMemo(() => {
-    if (!card.lastReplyPreview) return [] as string[];
-    return card.lastReplyPreview
-      .split('\n')
-      .map((l) => l.trimEnd())
-      .filter((l) => l.length > 0)
-      .slice(-5);
-  }, [card.lastReplyPreview]);
+  const preview = useMemo(
+    () => buildCardPreview(card, { maxLines: 5 }),
+    [card.lastReplyPreview, card.lastOutput, card.status, card.terminalType],
+  );
+  const compactPreview = useMemo(
+    () => buildCardPreview(card, { maxLines: 3 }),
+    [card.lastReplyPreview, card.lastOutput, card.status, card.terminalType],
+  );
 
   const recentEvents = useMemo(() => card.events.slice(-5).reverse(), [card.events]);
 
   const attentionHint =
     card.status === 'waiting'
-      ? '需人工介入'
+      ? t('card.needsAttention')
       : card.status === 'failed'
-        ? '发生错误'
+        ? t('card.errorOccurred')
         : card.unread
-          ? '有新活动'
+          ? t('card.newActivity')
           : null;
 
   const stopPropagation = (fn?: () => void) => (e: MouseEvent) => {
@@ -128,12 +149,24 @@ export function TerminalCardComponent({
             className={`ml-auto h-3 w-3 ${statusInfo.tone} ${statusInfo.animate ? 'animate-spin' : ''}`}
           />
         </div>
-        <div className="flex-1 overflow-hidden px-2 py-1 text-[10px] font-mono text-muted-foreground leading-tight">
-          {card.lastOutput
-            .split('\n')
-            .filter((l) => l.trim())
-            .slice(-3)
-            .join('\n') || '—'}
+        <div className="flex-1 overflow-hidden px-2 py-1 text-[10px] text-muted-foreground leading-tight">
+          {compactPreview.bodyLines.length > 0 ? (
+            <div className="space-y-1">
+              {compactPreview.bodyLines.map((line, index) => (
+                <div
+                  key={`${line}-${index}`}
+                  className={[
+                    'line-clamp-1 rounded-sm',
+                    isTechnicalPreviewLine(line) ? 'font-mono text-[9.5px]' : '',
+                  ].join(' ')}
+                >
+                  {line}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <span className="italic opacity-70">—</span>
+          )}
         </div>
       </motion.div>
     );
@@ -142,14 +175,14 @@ export function TerminalCardComponent({
   // ── grid layout (default) ─────────────────────────────────────────────────
   return (
     <motion.div
-      layoutId={`terminal-card-${card.id}`}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       whileHover={{ y: -2 }}
+      transition={{ type: 'tween', duration: 0.15 }}
       onMouseEnter={() => setTimelineOpen(true)}
       onMouseLeave={() => setTimelineOpen(false)}
       className={[
-        'relative flex flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm transition-shadow cursor-pointer',
+        'relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm transition-shadow cursor-pointer',
         isFocused
           ? 'border-primary/60 ring-2 ring-primary/30 shadow-md'
           : 'border-border hover:shadow-md',
@@ -165,14 +198,16 @@ export function TerminalCardComponent({
       )}
 
       {/* Header */}
-      <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-2">
         <div className={`flex h-7 w-7 items-center justify-center rounded-lg bg-muted ${typeMeta.accent}`}>
           <TypeIcon className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="truncate text-sm font-semibold">{card.projectName}</span>
-            <span className="text-[10px] text-muted-foreground">· {typeMeta.label}</span>
+            <span className="text-[10px] text-muted-foreground">
+              · {t(`types.${card.terminalType}`, typeMeta.label)}
+            </span>
           </div>
           <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
             <span className="truncate">{card.projectPath}</span>
@@ -184,39 +219,63 @@ export function TerminalCardComponent({
           <StatusIcon
             className={`h-2.5 w-2.5 ${statusInfo.animate ? 'animate-spin' : ''}`}
           />
-          {statusInfo.label}
+          {t(`status.${card.status}`, statusInfo.label)}
         </span>
       </div>
 
       {/* Worktree badge */}
       {card.worktreePath && (
-        <div className="flex items-center gap-1.5 border-b border-border/40 bg-muted/40 px-3 py-1 text-[10px] text-muted-foreground">
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-border/40 bg-muted/40 px-3 py-1 text-[10px] text-muted-foreground">
           <FolderGit2 className="h-3 w-3" />
-          <span className="truncate">worktree: {card.worktreePath}</span>
+          <span className="truncate">
+            {t('card.worktree', { path: card.worktreePath })}
+          </span>
         </div>
       )}
 
-      {/* Reply preview */}
-      <div className="min-h-[88px] flex-1 px-3 py-2">
-        {replyLines.length > 0 ? (
-          <div className="space-y-0.5 font-mono text-[11px] leading-snug text-muted-foreground">
-            {replyLines.map((line, i) => (
-              <div key={i} className="truncate">
-                {line}
+      <div className="min-h-0 flex-1 overflow-hidden px-3 py-2">
+        {preview.bodyLines.length > 0 ? (
+          <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border/40 bg-muted/20">
+            <div className="flex shrink-0 items-center justify-between border-b border-border/30 px-2.5 py-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80">
+                {t(`card.preview.${preview.kind}`, preview.kind)}
+              </span>
+              {preview.hiddenLineCount > 0 && (
+                <span className="text-[9px] text-muted-foreground/60">
+                  {t('card.preview.more', { count: preview.hiddenLineCount })}
+                </span>
+              )}
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden px-2.5 py-2">
+              <div className="space-y-1">
+                {preview.bodyLines.map((line, index) => {
+                  const technical = isTechnicalPreviewLine(line);
+                  return (
+                    <div
+                      key={`${line}-${index}`}
+                      className={[
+                        'line-clamp-2 break-words rounded-md text-[11px] leading-snug',
+                        technical
+                          ? 'bg-background/70 px-1.5 py-1 font-mono text-[10.5px] text-foreground/80'
+                          : 'text-muted-foreground',
+                      ].join(' ')}
+                    >
+                      {line}
+                    </div>
+                  );
+                })}
               </div>
-            ))}
+            </div>
           </div>
-        ) : card.lastOutput ? (
-          <pre className="whitespace-pre-wrap break-all text-[11px] leading-snug text-muted-foreground line-clamp-4">
-            {card.lastOutput.slice(-320)}
-          </pre>
         ) : (
-          <div className="text-[11px] italic text-muted-foreground/70">No output yet.</div>
+          <div className="text-[11px] italic text-muted-foreground/70">
+            {t('card.noOutput')}
+          </div>
         )}
       </div>
 
       {/* Stats row */}
-      <div className="flex items-center gap-3 border-t border-border/40 bg-muted/30 px-3 py-1.5 text-[10px] text-muted-foreground">
+      <div className="flex shrink-0 items-center gap-3 border-t border-border/40 bg-muted/30 px-3 py-1.5 text-[10px] text-muted-foreground">
         <span className="inline-flex items-center gap-1">
           <Timer className="h-3 w-3" /> {activeFor}
         </span>
@@ -244,11 +303,11 @@ export function TerminalCardComponent({
       </div>
 
       {/* Quick actions + mini timeline (slide up on hover) */}
-      <div className="flex items-center justify-between gap-1 border-t border-border/40 px-2 py-1">
+      <div className="flex shrink-0 items-center justify-between gap-1 border-t border-border/40 px-2 py-1">
         <div className="flex gap-1">
           <button
             type="button"
-            title="Copy path"
+            title={t('card.copyPath')}
             onClick={stopPropagation(onCopyCwd)}
             className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
           >
@@ -256,16 +315,37 @@ export function TerminalCardComponent({
           </button>
           <button
             type="button"
-            title="Reveal project"
+            title={t('card.revealProject')}
             onClick={stopPropagation(onOpenDir)}
             className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
           >
             <ExternalLink className="h-3 w-3" />
           </button>
+          <button
+            type="button"
+            title={
+              pinned
+                ? t('card.unpin')
+                : pinFull
+                  ? t('card.pinFull', { max: MAX_PINNED_CARDS })
+                  : t('card.pin')
+            }
+            disabled={pinFull && !pinned}
+            onClick={stopPropagation(togglePin)}
+            className={`rounded p-1 ${
+              pinned
+                ? 'text-primary hover:bg-primary/10'
+                : pinFull
+                  ? 'text-muted-foreground/40 cursor-not-allowed'
+                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+            }`}
+          >
+            {pinned ? <Pin className="h-3 w-3" /> : <PinOff className="h-3 w-3" />}
+          </button>
         </div>
         <button
           type="button"
-          title="Close terminal"
+          title={t('card.close')}
           onClick={stopPropagation(onClose)}
           className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
         >
@@ -278,16 +358,16 @@ export function TerminalCardComponent({
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.15 }}
-          className="border-t border-border/40 bg-background/80 px-3 py-1.5 text-[10px] text-muted-foreground"
+          className="pointer-events-none absolute inset-x-0 bottom-8 z-20 border-t border-border/40 bg-background/95 px-3 py-1.5 text-[10px] text-muted-foreground shadow-[0_-10px_24px_rgba(0,0,0,0.08)] backdrop-blur"
         >
           <div className="mb-0.5 flex items-center gap-1 font-medium">
-            <span>Recent</span>
+            <span>{t('card.recent')}</span>
           </div>
           <ul className="space-y-0.5">
             {recentEvents.map((ev, i) => (
               <li key={i} className="flex items-baseline gap-2">
                 <span className="shrink-0 text-[9px] text-muted-foreground/70">
-                  {formatRelative(ev.at)}
+                  {formatRelative(ev.at, t)}
                 </span>
                 <span className="truncate">{ev.summary}</span>
               </li>

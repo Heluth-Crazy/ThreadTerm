@@ -15,7 +15,7 @@ fn configure_windows_resource_compiler() -> Result<(), Box<dyn Error>> {
   let host = env::var("HOST")?;
   let target_os = env::var("CARGO_CFG_TARGET_OS")?;
   let target_env = env::var("CARGO_CFG_TARGET_ENV")?;
-  let allow_external_manifest = env::var_os("OPENWORK_ALLOW_MISSING_WINDOWS_RC")
+  let allow_external_manifest = env::var_os("THREADTERM_ALLOW_MISSING_WINDOWS_RC")
     .map(|value| value == "1")
     .unwrap_or(false);
 
@@ -48,7 +48,7 @@ fn configure_windows_resource_compiler() -> Result<(), Box<dyn Error>> {
       );
       if allow_external_manifest {
         println!(
-          "cargo:warning={message} Falling back to external .manifest packaging because OPENWORK_ALLOW_MISSING_WINDOWS_RC=1."
+          "cargo:warning={message} Falling back to external .manifest packaging because THREADTERM_ALLOW_MISSING_WINDOWS_RC=1."
         );
         return Ok(());
       }

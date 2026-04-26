@@ -6,10 +6,6 @@ export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
 
   const host = env.HOST || '0.0.0.0'
-  // When binding to all interfaces (0.0.0.0), proxy should connect to localhost
-  // Otherwise, proxy to the specific host the backend is bound to
-  const proxyHost = host === '0.0.0.0' ? 'localhost' : host
-  const port = env.PORT || 3001
 
   return {
     plugins: [react()],
@@ -26,20 +22,19 @@ export default defineConfig(({ command, mode }) => {
       chunkSizeWarningLimit: 1000,
       sourcemap: true,
       rollupOptions: {
+        // Multi-page build — each HTML entry becomes its own bundle served
+        // by Tauri. `main` is the primary window; `selector` and `float`
+        // are the secondary overlay windows created on demand by
+        // `src-tauri/src/overlay.rs`.
+        input: {
+          main: 'index.html',
+          selector: 'selector.html',
+          float: 'float.html',
+        },
         output: {
           manualChunks: {
-            'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-            'vendor-codemirror': [
-              '@uiw/react-codemirror',
-              '@codemirror/lang-css',
-              '@codemirror/lang-html',
-              '@codemirror/lang-javascript',
-              '@codemirror/lang-json',
-              '@codemirror/lang-markdown',
-              '@codemirror/lang-python',
-              '@codemirror/theme-one-dark'
-            ],
-            'vendor-xterm': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-clipboard', '@xterm/addon-webgl']
+            'vendor-react': ['react', 'react-dom'],
+            'vendor-xterm': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links']
           }
         }
       }

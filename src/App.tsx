@@ -5,7 +5,7 @@ import { TerminalManager } from './components/terminal/TerminalManager';
 import { TerminalEventBridge } from './components/terminal/TerminalEventBridge';
 import { NotificationBridge } from './components/terminal/NotificationBridge';
 import { KeyboardBridge } from './components/terminal/KeyboardBridge';
-import { RadialSwitcher } from './components/terminal/RadialSwitcher';
+import { OverlayBridge } from './components/overlays/OverlayBridge';
 import { NotificationCenter } from './components/terminal/NotificationCenter';
 
 /**
@@ -15,7 +15,8 @@ import { NotificationCenter } from './components/terminal/NotificationCenter';
  *   • render the terminal card grid / full-screen terminal view
  *   • bridge PTY events from Rust into the in-memory store
  *   • dispatch OS notifications and populate the in-app notification center
- *   • handle global keyboard shortcuts and the radial switcher overlay
+ *   • handle global keyboard shortcuts and the inline overlay selector
+ *   • relay Rust-owned overlay windows (selector / float) via OverlayBridge
  */
 export default function App() {
   return (
@@ -26,7 +27,7 @@ export default function App() {
         <KeyboardBridge />
         <div className="h-screen w-screen overflow-hidden bg-background text-foreground">
           <TerminalManager />
-          <RadialSwitcher />
+          <OverlayBridge />
           <NotificationCenter />
         </div>
       </ThemeProvider>

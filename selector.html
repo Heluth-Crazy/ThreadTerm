@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ThreadTerm · Selector</title>
+    <style>
+      /*
+       * Solid near-black background: the selector window runs with
+       * `decorations(false)` but NOT `transparent(true)` (see overlay.rs
+       * for why), so anything behind the clip-path reveal is opaque.
+       * We mimic an overlay feel by keeping it very dark so the backdrop
+       * animation has visual continuity with the dimmed Tailwind shell.
+       */
+      html, body, #root { background: #050507; margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/windows/selector/main.tsx"></script>
+  </body>
+</html>

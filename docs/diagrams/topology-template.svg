@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="2048" height="1365" viewBox="0 0 2048 1365">
-  <!-- 拓扑图模板 / 中文优先 -->
-  <!-- 结构建议：按环境、区域、接入层、服务层分组；减少跨区长连线。 -->
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#020617"/><stop offset="100%" stop-color="#0f172a"/></linearGradient>
-  </defs>
-  <rect width="2048" height="1365" fill="url(#bg)"/>
-  <!-- 建议布局：入口 / 网关 / 节点 / 存储 / 外部系统 -->
-</svg>

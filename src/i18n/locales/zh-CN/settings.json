@@ -1,390 +1,75 @@
 {
   "title": "设置",
-  "tabs": {
-    "account": "账户",
-    "permissions": "权限",
-    "appearance": "外观"
-  },
-  "account": {
-    "title": "账户",
-    "language": "语言",
-    "languageLabel": "显示语言",
-    "languageDescription": "选择您偏好的界面语言",
-    "username": "用户名",
-    "email": "邮箱",
-    "profile": "个人资料",
-    "changePassword": "修改密码"
-  },
-  "appearance": {
-    "title": "外观",
-    "theme": "主题",
-    "codeEditor": "代码编辑器",
-    "editorTheme": "编辑器主题",
-    "wordWrap": "自动换行",
-    "showMinimap": "显示缩略图",
-    "lineNumbers": "行号",
-    "fontSize": "字体大小"
-  },
-  "actions": {
-    "saveChanges": "保存更改",
-    "resetToDefaults": "重置为默认值",
-    "cancelChanges": "取消更改"
-  },
-  "quickSettings": {
-    "title": "快速设置",
-    "sections": {
-      "appearance": "外观",
-      "toolDisplay": "工具显示",
-      "viewOptions": "视图选项",
-      "inputSettings": "输入设置",
-      "whisperDictation": "Whisper 听写"
-    },
-    "darkMode": "深色模式",
-    "autoExpandTools": "自动展开工具",
-    "showRawParameters": "显示原始参数",
-    "showThinking": "显示思考过程",
-    "autoScrollToBottom": "自动滚动到底部",
-    "sendByCtrlEnter": "使用 Ctrl+Enter 发送",
-    "sendByCtrlEnterDescription": "启用后，按 Ctrl+Enter 发送消息，而不是仅按 Enter。这对于使用输入法的用户可以避免意外发送。",
-    "dragHandle": {
-      "dragging": "正在拖拽手柄",
-      "closePanel": "关闭设置面板",
-      "openPanel": "打开设置面板",
-      "draggingStatus": "正在拖拽...",
-      "toggleAndMove": "点击切换，拖拽移动"
-    },
-    "whisper": {
-      "modes": {
-        "default": "默认模式",
-        "defaultDescription": "直接转录您的语音",
-        "prompt": "提示词增强",
-        "promptDescription": "将粗略的想法转化为清晰、详细的 AI 提示词",
-        "vibe": "Vibe 模式",
-        "vibeDescription": "将想法格式化为带有详细说明的清晰智能体指令"
-      }
-    }
-  },
   "mainTabs": {
-    "agents": "智能体",
     "appearance": "外观",
-    "git": "Git",
-    "shortcuts": "快捷键",
-    "apiTokens": "API 和令牌",
-    "tasks": "任务"
+    "shortcuts": "快捷键"
   },
   "appearanceSettings": {
     "darkMode": {
       "label": "深色模式",
-      "description": "切换浅色和深色主题"
+      "description": "在浅色和深色界面主题之间切换。",
+      "toggle": "切换深色模式"
     },
-    "projectSorting": {
-      "label": "项目排序",
-      "description": "项目在侧边栏中的排列方式",
-      "alphabetical": "按字母顺序",
-      "recentActivity": "最近活动"
-    },
-    "codeEditor": {
-      "title": "代码编辑器",
-      "theme": {
-        "label": "编辑器主题",
-        "description": "代码编辑器的默认主题"
-      },
-      "wordWrap": {
-        "label": "自动换行",
-        "description": "在编辑器中默认启用自动换行"
-      },
-      "showMinimap": {
-        "label": "显示缩略图",
-        "description": "在差异视图中显示缩略图以便于导航"
-      },
-      "lineNumbers": {
-        "label": "显示行号",
-        "description": "在编辑器中显示行号"
-      },
-      "fontSize": {
-        "label": "字体大小",
-        "description": "编辑器字体大小（px）"
+    "mode": {
+      "label": "明暗模式",
+      "description": "选择跟随系统、浅色或深色。部分终端主题可能只提供深色版本。",
+      "options": {
+        "system": "跟随系统",
+        "light": "浅色",
+        "dark": "深色"
       }
     },
-    "fileAccessMode": {
-      "label": "文件访问模式",
-      "description": "控制项目文件在 OpenWork 中优先通过终端访问，还是直接由应用进程访问。",
-      "auto": "自动",
-      "compatibility": "兼容模式",
-      "direct": "高性能模式",
-      "autoHelp": "自动：Windows 默认优先使用终端访问，macOS 默认优先使用直接访问。",
-      "compatibilityHelp": "兼容模式：优先使用终端上下文，适合受企业加密或白名单限制的环境。",
-      "directHelp": "高性能模式：优先使用直接文件访问，速度更快，但在受限环境中可能失败。"
-    },
-    "tts": {
-      "label": "语音通知",
-      "description": "当会话需要关注时进行语音提示"
-    }
-  },
-  "saveStatus": {
-    "success": "设置保存成功！",
-    "error": "保存设置失败",
-    "saving": "保存中..."
-  },
-  "footerActions": {
-    "save": "保存设置",
-    "cancel": "取消"
-  },
-  "git": {
-    "title": "Git 配置",
-    "description": "配置您的 git 提交身份。这些设置将通过 git config --global 全局应用",
-    "name": {
-      "label": "Git 名称",
-      "help": "您的 git 提交名称"
-    },
-    "email": {
-      "label": "Git 邮箱",
-      "help": "您的 git 提交邮箱"
-    },
-    "actions": {
-      "save": "保存配置",
-      "saving": "保存中..."
-    },
-    "status": {
-      "success": "保存成功"
-    }
-  },
-  "apiKeys": {
-    "title": "API 密钥",
-    "description": "生成 API 密钥以从其他应用访问外部 API。",
-    "newKey": {
-      "alertTitle": "⚠️ 保存您的 API 密钥",
-      "alertMessage": "这是您唯一一次看到此密钥。请妥善保存。",
-      "iveSavedIt": "我已保存"
-    },
-    "form": {
-      "placeholder": "API 密钥名称（例如：生产服务器）",
-      "createButton": "创建",
-      "cancelButton": "取消"
-    },
-    "newButton": "新建 API 密钥",
-    "empty": "尚未创建 API 密钥。",
-    "list": {
-      "created": "创建时间：",
-      "lastUsed": "最后使用："
-    },
-    "confirmDelete": "确定要删除此 API 密钥吗？",
-    "status": {
-      "active": "激活",
-      "inactive": "未激活"
-    },
-    "github": {
-      "title": "source hosting 令牌",
-      "description": "添加 source hosting 个人访问令牌以通过外部 API 克隆私有仓库。",
-      "descriptionAlt": "添加 source hosting 个人访问令牌以克隆私有仓库。您也可以直接在 API 请求中传递令牌而无需存储。",
-      "addButton": "添加令牌",
-      "form": {
-        "namePlaceholder": "令牌名称（例如：个人仓库）",
-        "tokenPlaceholder": "source hosting 个人访问令牌（ghp_...）",
-        "descriptionPlaceholder": "描述（可选）",
-        "addButton": "添加令牌",
-        "cancelButton": "取消",
-        "howToCreate": "如何创建 source hosting 个人访问令牌 →"
-      },
-      "empty": "尚未添加 source hosting 令牌。",
-      "added": "添加时间：",
-      "confirmDelete": "确定要删除此 source hosting 令牌吗？"
-    },
-    "apiDocsLink": "API 文档",
-    "documentation": {
-      "title": "外部 API 文档",
-      "description": "了解如何使用外部 API 从您的应用程序触发 Claude/Codex 会话。",
-      "viewLink": "查看 API 文档 →"
-    },
-    "loading": "加载中...",
-    "version": {
-      "updateAvailable": "有可用更新：v{{version}}"
-    }
-  },
-  "tasks": {
-    "checking": "正在检查旧版 TaskMaster 集成...",
-    "notInstalled": {
-      "title": "未安装旧版 TaskMaster CLI",
-      "description": "TaskMaster 现已降级为历史兼容集成。只有仍需旧版 TaskMaster 任务入口时，才需要安装该 CLI：",
-      "installCommand": "npm install -g task-master-ai",
-      "viewOnSource": "在 source hosting 上查看",
-      "afterInstallation": "安装后：",
-      "steps": {
-        "restart": "重启此应用程序",
-        "autoAvailable": "旧版 TaskMaster 相关入口将自动恢复可用",
-        "initCommand": "在项目目录中使用 task-master init"
+    "themePack": {
+      "label": "主题配色",
+      "description": "同时应用到 ThreadTerm 界面、会话卡片、浮动终端和 xterm 终端色板。",
+      "original": "ThreadTerm 原创主题",
+      "basedOn": "基于 {{source}}",
+      "inspiredBy": "灵感来自 {{source}}",
+      "source": "来源",
+      "darkOnly": "仅深色",
+      "custom": "自定义",
+      "importJson": "导入 JSON",
+      "exportCurrent": "导出当前",
+      "exportSuccess": "主题 JSON 已导出。",
+      "importSuccess": "已导入 {{name}}。",
+      "importFailed": "主题导入失败：{{message}}",
+      "delete": "删除",
+      "deleteConfirm": "删除自定义主题 {{name}}？",
+      "deleteSuccess": "已删除 {{name}}。",
+      "descriptions": {
+        "threadterm-default": "ThreadTerm 默认蓝色主题，作为稳定回退。",
+        "catppuccin": "柔和的粉彩界面与低刺激终端色板。",
+        "tokyo-night": "清爽的蓝黑开发者主题。",
+        "gruvbox": "暖色复古配色，适合长时间终端会话。",
+        "everforest": "绿色低对比表面，减少视觉疲劳。",
+        "dracula": "紫色与粉色强调的高辨识度深色主题。",
+        "github-primer": "参考 GitHub Primer 的中性色，并加强终端可读性。",
+        "one-dark": "参考 Atom One Dark 的深色编辑器配色，ANSI 色板更均衡。",
+        "night-owl": "蓝色夜间主题，针对长时间终端阅读做了调整。",
+        "ayu": "暖色极简界面，终端颜色做了对比度增强。",
+        "nord": "北欧蓝灰色界面，强调柔和但清晰的可读性。",
+        "rose-pine": "玫瑰与松木色调，终端前景对比更清楚。",
+        "kanagawa": "水墨感配色，适配会话卡片和终端阅读。",
+        "solarized-contrast": "Solarized 灵感配色，增强前景文字对比度。"
       }
-    },
-    "settings": {
-      "enableLabel": "启用旧版 TaskMaster 集成",
-      "enableDescription": "出于历史兼容性，在界面中显示旧版 TaskMaster 任务、横幅和侧边栏指示器"
     }
   },
-  "agents": {
-    "authStatus": {
-      "checking": "检查中...",
-      "connected": "已连接",
-      "notConnected": "未连接",
-      "disconnected": "已断开",
-      "checkingAuth": "正在检查认证状态...",
-      "loggedInAs": "登录为 {{email}}",
-      "authenticatedUser": "已认证用户"
-    },
-    "account": {
-      "claude": {
-        "description": "Anthropic Claude AI 助手"
-      },
-      "cursor": {
-        "description": "Cursor AI 驱动的代码编辑器"
-      },
-      "codex": {
-        "description": "OpenAI Codex AI 助手"
-      }
-    },
-    "connectionStatus": "连接状态",
-    "login": {
-      "title": "登录",
-      "reAuthenticate": "重新认证",
-      "description": "登录您的 {{agent}} 账户以启用 AI 功能",
-      "reAuthDescription": "使用其他账户登录或刷新凭据",
-      "button": "登录",
-      "reLoginButton": "重新登录"
-    },
-    "error": "错误：{{error}}"
+  "close": "关闭设置",
+  "notifications": {
+    "title": "系统通知",
+    "description": "ThreadTerm 会在会话需要输入、发生错误或回复完成时发送系统通知。",
+    "devModeHint": "开发模式下 macOS 可能不会把通知来源显示为 ThreadTerm；正式打包后会使用 ThreadTerm 应用身份。",
+    "desktopOnly": "系统通知只在 Tauri 桌面应用中可用。",
+    "sendTest": "发送测试通知",
+    "sending": "发送中…",
+    "sent": "已发送到系统通知服务。如果没有看到横幅，请检查专注模式或使用正式包验证。",
+    "failed": "发送失败，详情请查看开发日志。",
+    "testTitle": "ThreadTerm 测试通知",
+    "testBody": "如果你看到这条通知，说明系统通知链路可用。"
   },
-  "permissions": {
-    "title": "权限设置",
-    "skipPermissions": {
-      "label": "跳过权限提示（请谨慎使用）",
-      "claudeDescription": "等同于 --dangerously-skip-permissions 标志",
-      "cursorDescription": "等同于 Cursor CLI 中的 -f 标志"
-    },
-    "allowedTools": {
-      "title": "允许的工具",
-      "description": "无需权限提示即可自动使用的工具",
-      "placeholder": "例如：\"Bash(git log:*)\" 或 \"Write\"",
-      "quickAdd": "快速添加常用工具：",
-      "empty": "未配置允许的工具"
-    },
-    "blockedTools": {
-      "title": "禁用的工具",
-      "description": "无需权限提示即可自动禁用的工具",
-      "placeholder": "例如：\"Bash(rm:*)\"",
-      "empty": "未配置禁用的工具"
-    },
-    "allowedCommands": {
-      "title": "允许的 Shell 命令",
-      "description": "无需权限提示即可自动执行的 Shell 命令",
-      "placeholder": "例如：\"Shell(ls)\" 或 \"Shell(git status)\"",
-      "quickAdd": "快速添加常用命令：",
-      "empty": "未配置允许的命令"
-    },
-    "blockedCommands": {
-      "title": "阻止的 Shell 命令",
-      "description": "自动阻止的 Shell 命令",
-      "placeholder": "例如：\"Shell(rm -rf)\" 或 \"Shell(sudo)\"",
-      "empty": "未配置阻止的命令"
-    },
-    "toolExamples": {
-      "title": "工具模式示例：",
-      "bashGitLog": "- 允许所有 git log 命令",
-      "bashGitDiff": "- 允许所有 git diff 命令",
-      "write": "- 允许所有 Write 工具使用",
-      "bashRm": "- 阻止所有 rm 命令（危险）"
-    },
-    "shellExamples": {
-      "title": "Shell 命令示例：",
-      "ls": "- 允许 ls 命令",
-      "gitStatus": "- 允许 git status",
-      "npmInstall": "- 允许 npm install",
-      "rmRf": "- 阻止递归删除"
-    },
-    "codex": {
-      "permissionMode": "权限模式",
-      "description": "控制 Codex 如何处理文件修改和命令执行",
-      "modes": {
-        "default": {
-          "title": "默认",
-          "description": "只有受信任的命令（ls、cat、grep、git status 等）会自动运行。其他命令将被跳过。可以写入工作区。"
-        },
-        "acceptEdits": {
-          "title": "接受编辑",
-          "description": "所有命令在工作区内自动运行。具有沙箱执行的全自动模式。"
-        },
-        "bypassPermissions": {
-          "title": "绕过权限",
-          "description": "完全系统访问，无任何限制。所有命令自动运行，具有完整的磁盘和网络访问权限。请谨慎使用。"
-        }
-      },
-      "technicalDetails": "技术详情",
-      "technicalInfo": {
-        "default": "sandboxMode=workspace-write, approvalPolicy=untrusted。受信任的命令：cat、cd、grep、head、ls、pwd、tail、git status/log/diff/show、find（不带 -exec）等。",
-        "acceptEdits": "sandboxMode=workspace-write, approvalPolicy=never。所有命令在项目目录内自动执行。",
-        "bypassPermissions": "sandboxMode=danger-full-access, approvalPolicy=never。完全系统访问权限，仅在可信环境中使用。",
-        "overrideNote": "您可以使用聊天界面中的模式按钮按会话覆盖此设置。"
-      }
-    },
-    "actions": {
-      "add": "添加"
-    },
-    "sessionLaunchProfiles": {
-      "title": "会话启动参数模板",
-      "description": "为新会话创建可复用的启动参数模板，并选择一个默认模板。",
-      "defaultClaudeName": "Claude 模板",
-      "defaultCodexName": "Codex 模板",
-      "noArgs": "（无附加参数）",
-      "namePlaceholder": "模板名称（可选）",
-      "argsPlaceholder": "每行一个参数，例如 --dangerously-skip-permissions",
-      "useDangerPreset": "添加危险模式预设",
-      "addProfile": "添加模板"
-    }
-  },
-  "templates": {
-    "title": "会话模板",
-    "description": "为常见任务预配置的会话模板",
-    "add": "添加",
-    "loading": "加载中...",
-    "builtIn": "内置模板",
-    "myTemplates": "我的模板",
-    "picker": {
-      "title": "选择模板",
-      "subtitle": "使用预配置的会话开始，或从头创建",
-      "startBlank": "创建空白会话",
-      "startBlankDescription": "不使用任何模板创建会话",
-      "loading": "正在加载模板..."
-    },
-    "form": {
-      "name": "名称",
-      "description": "描述",
-      "icon": "图标",
-      "provider": "提供商",
-      "initialMessage": "初始消息（可选）",
-      "namePlaceholder": "我的模板",
-      "descriptionPlaceholder": "此模板的用途...",
-      "initialMessagePlaceholder": "使用此模板时自动填充的首条消息...",
-      "nameRequired": "名称为必填项",
-      "descriptionRequired": "描述为必填项",
-      "iconRequired": "图标为必填项"
-    }
-  },
-  "slashCommands": {
-    "title": "自定义斜杠命令",
-    "description": "定义自动插入提示模板的自定义 /命令",
-    "add": "添加",
-    "loading": "加载中...",
-    "empty": "暂无自定义命令。点击“添加”以创建。",
-    "form": {
-      "name": "名称（不含空格）",
-      "description": "描述",
-      "promptTemplate": "提示模板",
-      "provider": "提供商",
-      "namePlaceholder": "deploy",
-      "descriptionPlaceholder": "部署到预发环境",
-      "promptPlaceholder": "运行预发环境的部署流程...",
-      "nameRequired": "名称为必填项",
-      "nameInvalid": "名称须以字母开头，仅包含字母、数字、连字符和下划线",
-      "promptRequired": "提示为必填项",
-      "allProviders": "全部提供商"
-    }
+  "account": {
+    "language": "语言",
+    "languageLabel": "语言",
+    "languageDescription": "选择 ThreadTerm 的显示语言。"
   }
 }

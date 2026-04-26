@@ -7,10 +7,10 @@
  *   • empty state invites the user to create the first terminal
  *   • always includes a "+ new terminal" tile at the end
  */
-import { useCallback } from 'react';
-import { motion } from 'framer-motion';
-import { Plus, TerminalSquare } from 'lucide-react';
+import { useCallback, useMemo } from 'react';
+import { FolderOpen, Plus, TerminalSquare } from 'lucide-react';
 import { open as shellOpen } from '@tauri-apps/plugin-shell';
+import { useTranslation } from 'react-i18next';
 import { isTauriEnv } from '../../lib/tauri-bridge';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { TerminalCardComponent } from './TerminalCard';
@@ -20,21 +20,28 @@ interface CardGridProps {
   onOpenTerminal?: (cardId: string) => void;
 }
 
-const container = {
-  hidden: { opacity: 0 },
-  visible: { opacity: 1, transition: { staggerChildren: 0.04 } },
-};
-
-const item = {
-  hidden: { opacity: 0, y: 16 },
-  visible: { opacity: 1, y: 0 },
-};
-
 export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
+  const { t } = useTranslation('terminal');
   const cards = useTerminalStore((s) => s.cards);
   const focusedCardId = useTerminalStore((s) => s.focusedCardId);
   const focusCard = useTerminalStore((s) => s.focusCard);
   const removeCard = useTerminalStore((s) => s.removeCard);
+  const selectedProjectPath = useTerminalStore((s) => s.selectedProjectPath);
+  const selectProject = useTerminalStore((s) => s.selectProject);
+
+  const visibleCards = useMemo(
+    () =>
+      selectedProjectPath
+        ? cards.filter((c) => c.projectPath === selectedProjectPath)
+        : cards,
+    [cards, selectedProjectPath],
+  );
+
+  const selectedProjectLabel = useMemo(() => {
+    if (!selectedProjectPath) return null;
+    const c = cards.find((x) => x.projectPath === selectedProjectPath);
+    return c?.projectName ?? selectedProjectPath;
+  }, [cards, selectedProjectPath]);
 
   const handleCopyCwd = useCallback((path: string) => {
     void navigator.clipboard?.writeText(path).catch(() => {
@@ -50,21 +57,17 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
     });
   }, []);
 
+  // No cards at all → onboarding empty state.
   if (cards.length === 0) {
     return (
-      <motion.div
-        initial={{ opacity: 0, scale: 0.96 }}
-        animate={{ opacity: 1, scale: 1 }}
-        className="flex h-full w-full flex-col items-center justify-center gap-6 p-8"
-      >
+      <div className="flex h-full w-full flex-col items-center justify-center gap-6 p-8">
         <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-muted">
           <TerminalSquare className="h-10 w-10 text-muted-foreground" />
         </div>
         <div className="text-center">
-          <h2 className="text-lg font-semibold">No terminals yet</h2>
+          <h2 className="text-lg font-semibold">{t('grid.emptyTitle')}</h2>
           <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-            Create your first terminal. Each one is bound to a project directory and can
-            run a shell, Claude, Codex, or any command you like.
+            {t('grid.emptyDescription')}
           </p>
         </div>
         <button
@@ -72,29 +75,61 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
           onClick={onCreateTerminal}
           className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
-          <Plus className="h-4 w-4" /> New terminal
+          <Plus className="h-4 w-4" /> {t('grid.createFirst')}
         </button>
         <p className="text-[11px] text-muted-foreground/70">
-          Tip — press <kbd className="rounded border border-border px-1">Ctrl</kbd>
+          {t('grid.tipPrefix')} <kbd className="rounded border border-border px-1">⌘/Ctrl</kbd>
           {' '}
           +
           {' '}
           <kbd className="rounded border border-border px-1">N</kbd>
-          {' '}to create one.
+          {' '}{t('grid.tipSuffix')}
         </p>
-      </motion.div>
+      </div>
+    );
+  }
+
+  // A project is selected but has no matching cards (shouldn't normally
+  // happen because removeCard clears the filter, but render a clean state
+  // anyway if the user filtered and then somehow all disappear).
+  if (visibleCards.length === 0 && selectedProjectPath) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-8 text-center">
+        <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-muted">
+          <FolderOpen className="h-7 w-7 text-muted-foreground" />
+        </div>
+        <div>
+          <h2 className="text-sm font-semibold">
+            {t('grid.noProjectTitle', { project: selectedProjectLabel })}
+          </h2>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {t('grid.noProjectDescription')}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onCreateTerminal}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            <Plus className="h-3.5 w-3.5" /> {t('grid.newHere')}
+          </button>
+          <button
+            type="button"
+            onClick={() => selectProject(null)}
+            className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent"
+          >
+            {t('grid.showAll')}
+          </button>
+        </div>
+      </div>
     );
   }
 
   return (
-    <motion.div
-      variants={container}
-      initial="hidden"
-      animate="visible"
-      className="grid h-full auto-rows-max grid-cols-1 gap-3 overflow-auto p-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
-    >
-      {cards.map((card) => (
-        <motion.div key={card.id} variants={item}>
+    <div className="grid h-full auto-rows-[205px] grid-cols-1 items-start gap-3 overflow-auto p-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      {visibleCards.map((card) => (
+        <div key={card.id} className="h-full self-start">
           <TerminalCardComponent
             card={card}
             isFocused={card.id === focusedCardId}
@@ -104,24 +139,21 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
             onCopyCwd={() => handleCopyCwd(card.projectPath)}
             onOpenDir={() => handleOpenDir(card.projectPath)}
           />
-        </motion.div>
+        </div>
       ))}
 
       {/* Add new tile */}
-      <motion.button
-        variants={item}
+      <button
         type="button"
         onClick={onCreateTerminal}
-        whileHover={{ scale: 1.01 }}
-        whileTap={{ scale: 0.98 }}
-        className="flex min-h-[220px] flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-border text-muted-foreground hover:border-primary/60 hover:bg-accent/30 hover:text-primary"
+        className="flex h-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border text-muted-foreground hover:border-primary/60 hover:bg-accent/30 hover:text-primary"
       >
         <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
           <Plus className="h-6 w-6" />
         </div>
-        <span className="text-sm font-medium">New terminal</span>
-        <span className="text-[10px] text-muted-foreground/70">Ctrl + N</span>
-      </motion.button>
-    </motion.div>
+        <span className="text-sm font-medium">{t('app.newTerminal')}</span>
+        <span className="text-[10px] text-muted-foreground/70">⌘/Ctrl + N</span>
+      </button>
+    </div>
   );
 }

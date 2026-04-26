@@ -9,6 +9,7 @@
  */
 import { useMemo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { useTranslation } from 'react-i18next';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -36,15 +37,19 @@ const kindToneMap: Record<NotificationKind, string> = {
   attention: 'text-muted-foreground',
 };
 
-function formatTime(ts: number): string {
+function formatTime(
+  ts: number,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
   const d = Date.now() - ts;
-  if (d < 60_000) return 'just now';
-  if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`;
-  if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h ago`;
+  if (d < 60_000) return t('card.justNow');
+  if (d < 3_600_000) return t('card.ago', { time: `${Math.floor(d / 60_000)}m` });
+  if (d < 86_400_000) return t('card.ago', { time: `${Math.floor(d / 3_600_000)}h` });
   return new Date(ts).toLocaleString();
 }
 
 export function NotificationCenter() {
+  const { t } = useTranslation('terminal');
   const open = useTerminalStore((s) => s.notificationCentreOpen);
   const notifications = useTerminalStore((s) => s.notifications);
   const toggle = useTerminalStore((s) => s.toggleNotificationCentre);
@@ -99,17 +104,17 @@ export function NotificationCenter() {
             <div className="flex items-center justify-between border-b border-border px-4 py-3">
               <div className="flex items-center gap-2">
                 <Inbox className="h-4 w-4 text-muted-foreground" />
-                <h2 className="text-sm font-semibold">Notifications</h2>
+                <h2 className="text-sm font-semibold">{t('notifications.title')}</h2>
                 {unreadCount > 0 && (
                   <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600">
-                    {unreadCount} unread
+                    {t('notifications.unread', { count: unreadCount })}
                   </span>
                 )}
               </div>
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  title="Mark all as read"
+                  title={t('notifications.markAllRead')}
                   onClick={markAll}
                   disabled={unreadCount === 0}
                   className="rounded-lg p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-40"
@@ -118,7 +123,7 @@ export function NotificationCenter() {
                 </button>
                 <button
                   type="button"
-                  title="Clear all"
+                  title={t('notifications.clearAll')}
                   onClick={clearAll}
                   disabled={notifications.length === 0}
                   className="rounded-lg p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
@@ -140,9 +145,9 @@ export function NotificationCenter() {
               {notifications.length === 0 ? (
                 <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center text-muted-foreground">
                   <Inbox className="h-10 w-10 opacity-50" />
-                  <p className="text-sm">All caught up.</p>
+                  <p className="text-sm">{t('notifications.emptyTitle')}</p>
                   <p className="text-[11px] opacity-70">
-                    Notifications will appear here when a terminal needs attention.
+                    {t('notifications.emptyDescription')}
                   </p>
                 </div>
               ) : (
@@ -175,9 +180,9 @@ export function NotificationCenter() {
                             </p>
                           )}
                           <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
-                            <span>{formatTime(n.at)}</span>
+                            <span>{formatTime(n.at, t)}</span>
                             {missing ? (
-                              <span className="italic opacity-70">(card closed)</span>
+                              <span className="italic opacity-70">{t('notifications.cardClosed')}</span>
                             ) : (
                               <span className="truncate">· {projectName}</span>
                             )}
@@ -185,7 +190,7 @@ export function NotificationCenter() {
                         </div>
                         <button
                           type="button"
-                          title="Dismiss"
+                          title={t('notifications.dismiss')}
                           onClick={(e) => {
                             e.stopPropagation();
                             removeOne(n.id);

@@ -25,12 +25,26 @@ import {
   MAX_NOTIFICATIONS,
   MAX_TIMELINE_EVENTS,
 } from '../types/terminal';
+import i18n from '../i18n/config.js';
+import { isTauriEnv, pty } from '../lib/tauri-bridge';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function uid(): string {
   // Not security-sensitive; time + random is plenty.
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function uuid(): string {
+  const randomUUID = globalThis.crypto?.randomUUID?.bind(globalThis.crypto);
+  if (randomUUID) return randomUUID();
+
+  // RFC 4122 v4 fallback for older webviews/test environments.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+    const r = Math.floor(Math.random() * 16);
+    const v = ch === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 function appendEvent(card: TerminalCard, event: TerminalEvent): TerminalCard {
@@ -48,13 +62,45 @@ function tailJoin(buffer: string, chunk: string, limit: number): string {
   return next.slice(next.length - limit);
 }
 
-// Strip ANSI escape sequences + carriage returns for preview purposes.
-const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g; // eslint-disable-line no-control-regex
+// Strip ANSI escape sequences and non-printable control characters so the
+// preview on cards stays readable. Handles:
+//   • CSI  ESC [ ... final-byte         (cursor moves, SGR, erase, DECSET/DECRST...)
+//   • OSC  ESC ] ... (BEL | ESC \)      (titles, hyperlinks)
+//   • DCS / SOS / PM / APC              (similar structure to OSC)
+//   • 2-byte ESC sequences  ESC <single>
+//   • single-char C0 controls           (keeping \t \n)
+//   • DEL (0x7f) and all C1 controls (0x80-0x9f)
+/* eslint-disable no-control-regex */
+const ANSI_RE = new RegExp(
+  [
+    // CSI sequences (ESC [ ... with optional private markers + intermediates + final)
+    '\\x1b\\[[0-?]*[ -/]*[@-~]',
+    // OSC / DCS / SOS / PM / APC — terminated by BEL or ST (ESC \)
+    '\\x1b[\\]PX^_][^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)',
+    // Escape sequences per VT100 spec: ESC (intermediate 0x20-0x2F)* (final 0x30-0x7E)
+    '\\x1b[\\x20-\\x2f]*[\\x30-\\x7e]',
+  ].join('|'),
+  'g',
+);
+const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
+/* eslint-enable no-control-regex */
+
 function stripAnsi(input: string): string {
-  return input.replace(ANSI_RE, '').replace(/\r/g, '');
+  return input.replace(ANSI_RE, '').replace(CONTROL_RE, '').replace(/\r/g, '');
+}
+
+function isProviderSessionType(type: TerminalCard['terminalType']): boolean {
+  return type === 'claude' || type === 'codex';
+}
+
+function isTransientStatus(status: TerminalStatus): boolean {
+  return status === 'running' || status === 'waiting';
 }
 
 // ── store shape ──────────────────────────────────────────────────────────────
+
+/** Maximum number of user-pinned cards eligible for the global selector overlay. */
+export const MAX_PINNED_CARDS = 6;
 
 interface TerminalStore {
   // Cards
@@ -62,9 +108,15 @@ interface TerminalStore {
   focusedCardId: string | null;
   lastActiveCardId: string | null;
 
-  // Switcher (volatile)
-  switcherVisible: boolean;
-  switcherSelectedIndex: number;
+  /** Selected project path for the left sidebar filter. `null` = "All". */
+  selectedProjectPath: string | null;
+
+  /**
+   * Ordered list of card ids that the user has pinned to the global overlay
+   * selector. Capped at `MAX_PINNED_CARDS` (6). Order is the preferred
+   * presentation order before the lastActivity re-sort in the selector.
+   */
+  pinnedCardIds: string[];
 
   // Notification centre
   notifications: NotificationEntry[];
@@ -80,7 +132,10 @@ interface TerminalStore {
   updateCardReplyPreview: (id: string, preview: string) => void;
   appendEvent: (id: string, event: Omit<TerminalEvent, 'at'> & { at?: number }) => void;
   incrementMessageCount: (id: string) => void;
+  recordUserSubmit: (id: string, summary: string) => void;
   markUnread: (id: string, unread: boolean) => void;
+  markCardRead: (id: string) => void;
+  markProviderSessionBound: (id: string, providerSessionId: string) => void;
 
   // ─── focus / switching ───────────────────────────────────────────────────
   focusCard: (id: string | null) => void;
@@ -89,11 +144,15 @@ interface TerminalStore {
   prevCard: () => void;
   jumpToIndex: (i: number) => void;
 
-  // ─── switcher overlay ────────────────────────────────────────────────────
-  openSwitcher: () => void;
-  closeSwitcher: () => void;
-  confirmSwitcher: () => void;
-  setSwitcherSelectedIndex: (i: number) => void;
+  // ─── project sidebar ────────────────────────────────────────────────────
+  selectProject: (path: string | null) => void;
+
+  // ─── pinned cards (global overlay) ───────────────────────────────────────
+  pinCard: (id: string) => boolean;
+  unpinCard: (id: string) => void;
+  movePinned: (id: string, toIndex: number) => void;
+  isPinned: (id: string) => boolean;
+  getPinnedCards: () => TerminalCard[];
 
   // ─── notifications ───────────────────────────────────────────────────────
   pushNotification: (n: Omit<NotificationEntry, 'id' | 'at' | 'read'> & { at?: number }) => NotificationEntry;
@@ -101,6 +160,8 @@ interface TerminalStore {
   markAllNotificationsRead: () => void;
   clearNotifications: () => void;
   removeNotification: (id: string) => void;
+  /** Remove read notifications older than `olderThanMs` (default 2h). */
+  purgeReadNotifications: (olderThanMs?: number) => number;
   toggleNotificationCentre: (open?: boolean) => void;
   setPendingFocusCardId: (id: string | null) => void;
 
@@ -117,9 +178,9 @@ export const useTerminalStore = create<TerminalStore>()(
       cards: [],
       focusedCardId: null,
       lastActiveCardId: null,
+      selectedProjectPath: null,
 
-      switcherVisible: false,
-      switcherSelectedIndex: 0,
+      pinnedCardIds: [],
 
       notifications: [],
       notificationCentreOpen: false,
@@ -136,6 +197,8 @@ export const useTerminalStore = create<TerminalStore>()(
           worktreePath: options.worktreePath,
           terminalType: options.terminalType,
           command: options.command,
+          providerSessionId: options.terminalType === 'claude' ? uuid() : undefined,
+          providerSessionState: isProviderSessionType(options.terminalType) ? 'unbound' : undefined,
           status: 'idle',
           createdAt: now,
           lastActivity: now,
@@ -146,7 +209,10 @@ export const useTerminalStore = create<TerminalStore>()(
             {
               at: now,
               kind: 'created',
-              summary: `Created ${options.terminalType} in ${options.projectName}`,
+              summary: i18n.t('terminal:events.created', {
+                type: i18n.t(`terminal:types.${options.terminalType}`, options.terminalType),
+                project: options.projectName,
+              }),
             },
           ],
           unread: false,
@@ -155,7 +221,12 @@ export const useTerminalStore = create<TerminalStore>()(
         return id;
       },
 
-      removeCard: (id) =>
+      removeCard: (id) => {
+        const target = get().cards.find((c) => c.id === id);
+        if (target && isTauriEnv()) {
+          void pty.kill(target.ptyId || target.id);
+        }
+
         set((state) => {
           const cards = state.cards.filter((c) => c.id !== id);
           const focusedCardId = state.focusedCardId === id ? null : state.focusedCardId;
@@ -163,8 +234,28 @@ export const useTerminalStore = create<TerminalStore>()(
             state.lastActiveCardId === id ? null : state.lastActiveCardId;
           // also drop notifications targeting this card
           const notifications = state.notifications.filter((n) => n.cardId !== id);
-          return { cards, focusedCardId, lastActiveCardId, notifications };
-        }),
+          // if the removed card was the last one for its project and the project
+          // was selected, fall back to "All"
+          let selectedProjectPath = state.selectedProjectPath;
+          if (
+            target &&
+            selectedProjectPath === target.projectPath &&
+            !cards.some((c) => c.projectPath === target.projectPath)
+          ) {
+            selectedProjectPath = null;
+          }
+          // Also drop from the pinned list so it doesn't linger as a dead entry.
+          const pinnedCardIds = state.pinnedCardIds.filter((p) => p !== id);
+          return {
+            cards,
+            focusedCardId,
+            lastActiveCardId,
+            notifications,
+            selectedProjectPath,
+            pinnedCardIds,
+          };
+        });
+      },
 
       updateCardOutput: (id, chunk) =>
         set((state) => {
@@ -191,7 +282,13 @@ export const useTerminalStore = create<TerminalStore>()(
           const now = Date.now();
           cards[idx] = appendEvent(
             { ...existing, status, lastActivity: now },
-            { at: now, kind: 'status', summary: `status → ${status}` },
+            {
+              at: now,
+              kind: 'status',
+              summary: i18n.t('terminal:events.status', {
+                status: i18n.t(`terminal:status.${status}`, status),
+              }),
+            },
           );
           return { cards };
         }),
@@ -223,6 +320,28 @@ export const useTerminalStore = create<TerminalStore>()(
           return { cards };
         }),
 
+      recordUserSubmit: (id, summary) =>
+        set((state) => {
+          const idx = state.cards.findIndex((c) => c.id === id);
+          if (idx === -1) return state;
+          const now = Date.now();
+          const cards = [...state.cards];
+          const existing = cards[idx];
+          cards[idx] = appendEvent(
+            {
+              ...existing,
+              messageCount: existing.messageCount + 1,
+              lastActivity: now,
+            },
+            {
+              at: now,
+              kind: 'user-input',
+              summary,
+            },
+          );
+          return { cards };
+        }),
+
       markUnread: (id, unread) =>
         set((state) => {
           const idx = state.cards.findIndex((c) => c.id === id);
@@ -232,10 +351,57 @@ export const useTerminalStore = create<TerminalStore>()(
           return { cards };
         }),
 
+      markCardRead: (id) =>
+        set((state) => {
+          let changed = false;
+          const cards = state.cards.map((card) => {
+            if (card.id !== id || !card.unread) return card;
+            changed = true;
+            return { ...card, unread: false };
+          });
+          const notifications = state.notifications.map((notification) => {
+            if (notification.cardId !== id || notification.read) return notification;
+            changed = true;
+            return { ...notification, read: true };
+          });
+          return changed ? { cards, notifications } : state;
+        }),
+
+      markProviderSessionBound: (id, providerSessionId) =>
+        set((state) => {
+          const idx = state.cards.findIndex((c) => c.id === id);
+          if (idx === -1) return state;
+          const now = Date.now();
+          const cards = [...state.cards];
+          const existing = cards[idx];
+          cards[idx] = {
+            ...existing,
+            providerSessionId,
+            providerSessionState: 'bound',
+            providerSessionBoundAt: existing.providerSessionBoundAt ?? now,
+            providerSessionLastResumeAt: now,
+          };
+          return { cards };
+        }),
+
       // ─── focus / switching ────────────────────────────────────────────────
       focusCard: (id) =>
         set((state) => {
-          if (state.focusedCardId === id) return state;
+          if (state.focusedCardId === id) {
+            if (!id) return state;
+            let changed = false;
+            const cards = state.cards.map((card) => {
+              if (card.id !== id || !card.unread) return card;
+              changed = true;
+              return { ...card, unread: false };
+            });
+            const notifications = state.notifications.map((notification) => {
+              if (notification.cardId !== id || notification.read) return notification;
+              changed = true;
+              return { ...notification, read: true };
+            });
+            return changed ? { cards, notifications } : state;
+          }
           // when leaving a card, remember it as last-active for double-ctrl switching
           const lastActiveCardId =
             state.focusedCardId && state.focusedCardId !== id
@@ -243,14 +409,20 @@ export const useTerminalStore = create<TerminalStore>()(
               : state.lastActiveCardId;
           // mark the newly focused card as read
           let cards = state.cards;
+          let notifications = state.notifications;
           if (id) {
             const idx = state.cards.findIndex((c) => c.id === id);
             if (idx !== -1 && state.cards[idx].unread) {
               cards = [...state.cards];
               cards[idx] = { ...cards[idx], unread: false };
             }
+            if (state.notifications.some((n) => n.cardId === id && !n.read)) {
+              notifications = state.notifications.map((n) =>
+                n.cardId === id && !n.read ? { ...n, read: true } : n,
+              );
+            }
           }
-          return { focusedCardId: id, lastActiveCardId, cards };
+          return { focusedCardId: id, lastActiveCardId, cards, notifications };
         }),
 
       switchToLast: () => {
@@ -282,33 +454,51 @@ export const useTerminalStore = create<TerminalStore>()(
         get().focusCard(cards[i].id);
       },
 
-      // ─── switcher overlay ─────────────────────────────────────────────────
-      openSwitcher: () =>
+      // ─── project sidebar ─────────────────────────────────────────────────
+      selectProject: (path) =>
         set((state) => {
-          if (state.switcherVisible) return state;
-          const focusIndex = state.focusedCardId
-            ? Math.max(0, state.cards.findIndex((c) => c.id === state.focusedCardId))
-            : 0;
-          return { switcherVisible: true, switcherSelectedIndex: focusIndex };
+          if (state.selectedProjectPath === path) return state;
+          // When switching projects, exit focus mode so the user sees the
+          // filtered grid of the newly-selected project.
+          return {
+            selectedProjectPath: path,
+            focusedCardId: null,
+          };
         }),
 
-      closeSwitcher: () =>
-        set((state) => (state.switcherVisible ? { switcherVisible: false } : state)),
-
-      confirmSwitcher: () => {
-        const { switcherVisible, switcherSelectedIndex, cards } = get();
-        if (!switcherVisible) return;
-        const card = cards[switcherSelectedIndex];
-        if (card) get().focusCard(card.id);
-        set({ switcherVisible: false });
+      // ─── pinned cards (global overlay) ───────────────────────────────────
+      pinCard: (id) => {
+        const state = get();
+        if (state.pinnedCardIds.includes(id)) return true;
+        if (state.pinnedCardIds.length >= MAX_PINNED_CARDS) return false;
+        set({ pinnedCardIds: [...state.pinnedCardIds, id] });
+        return true;
       },
 
-      setSwitcherSelectedIndex: (i) =>
+      unpinCard: (id) =>
+        set((state) => ({
+          pinnedCardIds: state.pinnedCardIds.filter((p) => p !== id),
+        })),
+
+      movePinned: (id, toIndex) =>
         set((state) => {
-          if (state.cards.length === 0) return state;
-          const idx = ((i % state.cards.length) + state.cards.length) % state.cards.length;
-          return { switcherSelectedIndex: idx };
+          const from = state.pinnedCardIds.indexOf(id);
+          if (from === -1) return state;
+          const next = state.pinnedCardIds.slice();
+          next.splice(from, 1);
+          const target = Math.max(0, Math.min(next.length, toIndex));
+          next.splice(target, 0, id);
+          return { pinnedCardIds: next };
         }),
+
+      isPinned: (id) => get().pinnedCardIds.includes(id),
+
+      getPinnedCards: () => {
+        const { cards, pinnedCardIds } = get();
+        return pinnedCardIds
+          .map((id) => cards.find((c) => c.id === id))
+          .filter((c): c is TerminalCard => !!c);
+      },
 
       // ─── notifications ────────────────────────────────────────────────────
       pushNotification: (input) => {
@@ -339,21 +529,69 @@ export const useTerminalStore = create<TerminalStore>()(
       },
 
       markNotificationRead: (id) =>
-        set((state) => ({
-          notifications: state.notifications.map((n) => (n.id === id ? { ...n, read: true } : n)),
-        })),
+        set((state) => {
+          const target = state.notifications.find((n) => n.id === id);
+          if (!target) return state;
+
+          const notifications = state.notifications.map((n) =>
+            n.id === id ? { ...n, read: true } : n,
+          );
+          const cardStillHasUnread = notifications.some(
+            (n) => n.cardId === target.cardId && !n.read,
+          );
+          if (cardStillHasUnread) return { notifications };
+
+          const cards = state.cards.map((card) =>
+            card.id === target.cardId && card.unread ? { ...card, unread: false } : card,
+          );
+          return { notifications, cards };
+        }),
 
       markAllNotificationsRead: () =>
         set((state) => ({
           notifications: state.notifications.map((n) => (n.read ? n : { ...n, read: true })),
+          cards: state.cards.map((card) => (card.unread ? { ...card, unread: false } : card)),
         })),
 
-      clearNotifications: () => set({ notifications: [] }),
+      clearNotifications: () =>
+        set((state) => ({
+          notifications: [],
+          cards: state.cards.map((card) => (card.unread ? { ...card, unread: false } : card)),
+        })),
 
       removeNotification: (id) =>
-        set((state) => ({
-          notifications: state.notifications.filter((n) => n.id !== id),
-        })),
+        set((state) => {
+          const target = state.notifications.find((n) => n.id === id);
+          const notifications = state.notifications.filter((n) => n.id !== id);
+          if (!target) return { notifications };
+          const cardStillHasUnread = notifications.some(
+            (n) => n.cardId === target.cardId && !n.read,
+          );
+          if (cardStillHasUnread) return { notifications };
+          return {
+            notifications,
+            cards: state.cards.map((card) =>
+              card.id === target.cardId && card.unread ? { ...card, unread: false } : card,
+            ),
+          };
+        }),
+
+      purgeReadNotifications: (olderThanMs = 2 * 60 * 60_000) => {
+        const cutoff = Date.now() - olderThanMs;
+        let removed = 0;
+        set((state) => {
+          const notifications = state.notifications.filter((n) => {
+            if (n.read && n.at < cutoff) {
+              removed += 1;
+              return false;
+            }
+            return true;
+          });
+          if (removed === 0) return state;
+          return { notifications };
+        });
+        return removed;
+      },
 
       toggleNotificationCentre: (open) =>
         set((state) => ({
@@ -367,16 +605,35 @@ export const useTerminalStore = create<TerminalStore>()(
       getUnreadCount: () => get().notifications.filter((n) => !n.read).length,
     }),
     {
-      name: 'terminal-manager-lite',
+      name: 'threadterm-terminal-store',
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
-        cards: state.cards,
-        focusedCardId: state.focusedCardId,
+        cards: state.cards.map((card) => ({
+          ...card,
+          status: isTransientStatus(card.status) ? 'idle' : card.status,
+        })),
+        focusedCardId: null,
         lastActiveCardId: state.lastActiveCardId,
+        selectedProjectPath: state.selectedProjectPath,
+        pinnedCardIds: state.pinnedCardIds,
         notifications: state.notifications,
         notificationCentreOpen: state.notificationCentreOpen,
       }),
-      version: 1,
+      version: 4,
+      migrate: (persisted) => {
+        const state = persisted as Partial<TerminalStore>;
+        return {
+          ...state,
+          focusedCardId: null,
+          cards: state.cards?.map((card) => ({
+            ...card,
+            status: isTransientStatus(card.status) ? 'idle' : card.status,
+            providerSessionState:
+              card.providerSessionState ??
+              (isProviderSessionType(card.terminalType) ? 'unbound' : undefined),
+          })),
+        };
+      },
     },
   ),
 );

@@ -1,0 +1,39 @@
+{
+  "selector": {
+    "title": "セレクター",
+    "tileMode": "タイルモード",
+    "carouselMode": "カルーセルモード",
+    "help": "← → 移動 · Enter 選択 · 1-9 ジャンプ · M モード切替 · Esc 閉じる",
+    "emptyTitle": "ピン留めされたセッションはまだありません",
+    "emptyDescription": "メインウィンドウで最大 6 枚のカードをピン留めすると、ここに表示されます。",
+    "counter": "{{current}} / {{total}}"
+  },
+  "float": {
+    "title": "ThreadTerm · フローティングターミナル",
+    "disableAlwaysOnTop": "常に手前を無効化",
+    "enableAlwaysOnTop": "常に手前",
+    "recycleToMain": "メインウィンドウへ戻す (Cmd/Ctrl+Shift+O)",
+    "minimize": "最小化",
+    "close": "閉じる（非表示、セッションは保持）",
+    "emptyTitle": "フローティングウィンドウにセッションはまだ接続されていません。",
+    "emptyDescription": "メインウィンドウで <kbd>{{shortcut}}</kbd> を押してピン留めセッションを選択します。"
+  },
+  "hotkeys": {
+    "slotA": {
+      "title": "オーバーレイセレクター",
+      "description": "カード選択オーバーレイを開く / 閉じる。"
+    },
+    "slotB": {
+      "title": "フローティングターミナルを戻す",
+      "description": "フローティングセッションをメインウィンドウへ戻します。"
+    },
+    "capture": "キーを押してください…（Esc でキャンセル）",
+    "rebind": "再割り当て",
+    "resetTitle": "既定に戻す",
+    "title": "オーバーレイホットキー",
+    "scope": "OS レベル · ThreadTerm がバックグラウンドでも動作",
+    "bound": "{{accelerator}} に割り当てました",
+    "reset": "{{accelerator}} に戻しました",
+    "tips": "ヒント: OS や他のアプリと競合しにくい組み合わせを使用してください（例: Shift + Alt を追加）。OS が登録を拒否した場合（他のアプリが使用中など）、以前のショートカットが引き続き有効です。"
+  }
+}

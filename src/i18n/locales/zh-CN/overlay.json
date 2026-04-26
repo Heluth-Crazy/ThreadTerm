@@ -1,0 +1,39 @@
+{
+  "selector": {
+    "title": "选择器",
+    "tileMode": "平铺模式",
+    "carouselMode": "轮播模式",
+    "help": "← → 导航 · Enter 选择 · 1-9 跳转 · M 切换模式 · Esc 关闭",
+    "emptyTitle": "还没有固定会话",
+    "emptyDescription": "在主窗口固定最多 6 张卡片后，会显示在这里。",
+    "counter": "{{current}} / {{total}}"
+  },
+  "float": {
+    "title": "ThreadTerm · 浮动终端",
+    "disableAlwaysOnTop": "关闭置顶",
+    "enableAlwaysOnTop": "保持置顶",
+    "recycleToMain": "送回主窗口（Cmd/Ctrl+Shift+O）",
+    "minimize": "最小化",
+    "close": "关闭（隐藏窗口，保留会话）",
+    "emptyTitle": "浮动窗口还没有绑定会话。",
+    "emptyDescription": "在主窗口按 <kbd>{{shortcut}}</kbd> 选择一个已固定会话。"
+  },
+  "hotkeys": {
+    "slotA": {
+      "title": "浮层选择器",
+      "description": "打开 / 关闭卡片选择浮层。"
+    },
+    "slotB": {
+      "title": "收回浮动终端",
+      "description": "将浮动会话送回主窗口。"
+    },
+    "capture": "按下快捷键…（Esc 取消）",
+    "rebind": "重新绑定",
+    "resetTitle": "恢复默认",
+    "title": "浮层快捷键",
+    "scope": "系统级 · ThreadTerm 在后台时也生效",
+    "bound": "已绑定到 {{accelerator}}",
+    "reset": "已恢复为 {{accelerator}}",
+    "tips": "建议使用不容易与系统或其他应用冲突的组合键（例如加入 Shift + Alt）。如果系统拒绝注册某个快捷键（例如已被其他应用占用），旧快捷键会继续生效。"
+  }
+}

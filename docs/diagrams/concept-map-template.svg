@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="2048" height="1365" viewBox="0 0 2048 1365">
-  <!-- 概念图模板 / 中文优先 -->
-  <!-- 结构建议：中心主题 + 3~6 个概念簇，避免节点说明过长。 -->
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#030712"/><stop offset="100%" stop-color="#111827"/></linearGradient>
-  </defs>
-  <rect width="2048" height="1365" fill="url(#bg)"/>
-  <!-- 建议布局：中心节点 + 外围概念簇 + 连线标签 -->
-</svg>

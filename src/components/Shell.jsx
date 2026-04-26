@@ -1,14 +1,12 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useTranslation } from 'react-i18next';
-import { IS_PLATFORM } from '../constants/config';
-import { loadSessionLaunchProfilesByProvider, mergeSessionLaunchArgs } from '../utils/sessionLaunchProfiles';
 import { logger } from '../utils/logger';
-import { ai, pty, isTauriEnv, webPtyConnect } from '../lib/tauri-bridge';
+import { isTauriEnv, pty } from '../lib/tauri-bridge';
+import { useTheme } from '../contexts/ThemeContext';
 
 const xtermStyles = `
   .xterm .xterm-screen {
@@ -20,55 +18,32 @@ const xtermStyles = `
   .xterm-screen:focus {
     outline: none !important;
   }
+  .threadterm-xterm-host {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+  }
+  .threadterm-xterm-host .xterm {
+    width: 100%;
+    height: 100%;
+  }
+  .threadterm-xterm-host .xterm-viewport {
+    background-color: var(--terminal-background, #1e1e1e) !important;
+  }
 `;
 
-if (typeof document !== 'undefined') {
+if (typeof document !== 'undefined' && !document.getElementById('threadterm-xterm-styles')) {
   const styleSheet = document.createElement('style');
+  styleSheet.id = 'threadterm-xterm-styles';
   styleSheet.type = 'text/css';
   styleSheet.innerText = xtermStyles;
   document.head.appendChild(styleSheet);
 }
 
-function normalizeLaunchArgs(rawArgs) {
-  if (!Array.isArray(rawArgs)) {
-    return [];
-  }
+const CODEX_DEVICE_AUTH_URL = 'https://auth.openai.com/codex/device';
 
-  return rawArgs
-    .map((arg) => (typeof arg === 'string' ? arg.trim() : ''))
-    .filter((arg) => arg.length > 0);
-}
-
-function resolveSessionLaunchConfig(session, provider) {
-  const explicitArgs = normalizeLaunchArgs(session?.__launchArgs);
-  const explicitProfileId = typeof session?.__launchProfileId === 'string'
-    ? session.__launchProfileId
-    : null;
-
-  if (explicitArgs.length > 0) {
-    return {
-      launchArgs: explicitArgs,
-      launchProfileId: explicitProfileId,
-    };
-  }
-
-  if (provider !== 'claude' && provider !== 'codex') {
-    return {
-      launchArgs: [],
-      launchProfileId: explicitProfileId,
-    };
-  }
-
-  const providerProfiles = loadSessionLaunchProfilesByProvider(provider);
-  const fallbackProfileId = explicitProfileId || providerProfiles.defaultProfileId || null;
-  const fallbackArgs = fallbackProfileId
-    ? mergeSessionLaunchArgs(providerProfiles.profiles, fallbackProfileId, [])
-    : [];
-
-  return {
-    launchArgs: fallbackArgs,
-    launchProfileId: fallbackProfileId,
-  };
+function isCodexLoginCommand(command) {
+  return typeof command === 'string' && /\bcodex\s+login\b/i.test(command);
 }
 
 function fallbackCopyToClipboard(text) {
@@ -96,83 +71,344 @@ function fallbackCopyToClipboard(text) {
   return copied;
 }
 
-const CODEX_DEVICE_AUTH_URL = 'https://auth.openai.com/codex/device';
-
-function isCodexLoginCommand(command) {
-  return typeof command === 'string' && /\bcodex\s+login\b/i.test(command);
-}
-
-function isTemporarySessionId(sessionId) {
-  return typeof sessionId === 'string' && sessionId.startsWith('new-session-');
-}
-
-function registerPtySession(ptyId, sessionId) {
-  if (
-    typeof window !== 'undefined' &&
-    ptyId &&
-    sessionId &&
-    typeof window.__registerPtySession === 'function'
-  ) {
-    window.__registerPtySession(ptyId, sessionId);
-  }
-}
-
-function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell = false, onProcessComplete, minimal = false, autoConnect = false, paneId, onDisconnect }) {
-  const { t } = useTranslation('chat');
+function Shell({
+  selectedProject,
+  initialCommand,
+  onProcessComplete,
+  minimal = false,
+  autoConnect = false,
+  paneId,
+  onDisconnect,
+  active = true,
+  preservePtyOnUnmount = false,
+  replayRecentOutput = false,
+  suppressInitialCommandWhenPtyExists = false,
+  onInitialCommandSent,
+  onUserSubmit,
+}) {
+  const { t } = useTranslation('terminal');
+  const { terminalTheme, activeThemeTokens } = useTheme();
   const terminalRef = useRef(null);
   const terminal = useRef(null);
+  const terminalThemeRef = useRef(terminalTheme);
   const fitAddon = useRef(null);
   const ptyIdRef = useRef(null);
   const unlistenOutputRef = useRef(null);
   const unlistenExitRef = useRef(null);
   const retryCountRef = useRef(0);
-  const shellReconnectTimeoutRef = useRef(null);
+  const reconnectTimeoutRef = useRef(null);
+  const surfaceRecoveryTimersRef = useRef([]);
+  const manuallyDisconnected = useRef(false);
+  const replayedPtyIdRef = useRef(null);
+  const lastPtySizeRef = useRef(null);
+
   const [isConnected, setIsConnected] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
-  const [lastSessionId, setLastSessionId] = useState(null);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [authUrl, setAuthUrl] = useState('');
-  const [authUrlCopyStatus, setAuthUrlCopyStatus] = useState('idle');
   const [isAuthPanelDismissed, setIsAuthPanelDismissed] = useState(false);
-
-  // Refs mirror state to avoid stale closures in WebSocket event handlers
-  const isConnectingRef = useRef(false);
-  const isConnectedRef = useRef(false);
+  const [authUrlCopyStatus, setAuthUrlCopyStatus] = useState('idle');
 
   const selectedProjectRef = useRef(selectedProject);
-  const selectedSessionRef = useRef(selectedSession);
   const initialCommandRef = useRef(initialCommand);
-  const isPlainShellRef = useRef(isPlainShell);
   const onProcessCompleteRef = useRef(onProcessComplete);
-  const authUrlRef = useRef('');
-  const manuallyDisconnected = useRef(false);
+  const onInitialCommandSentRef = useRef(onInitialCommandSent);
+  const onUserSubmitRef = useRef(onUserSubmit);
+  const activeRef = useRef(active);
+  const preservePtyOnUnmountRef = useRef(preservePtyOnUnmount);
+  const replayRecentOutputRef = useRef(replayRecentOutput);
+  const suppressInitialCommandWhenPtyExistsRef = useRef(suppressInitialCommandWhenPtyExists);
+  const isConnectingRef = useRef(false);
+  const isConnectedRef = useRef(false);
+  const terminalShellStyle = useMemo(
+    () => ({
+      backgroundColor: activeThemeTokens.terminal.background,
+      color: activeThemeTokens.terminal.foreground,
+    }),
+    [activeThemeTokens.terminal.background, activeThemeTokens.terminal.foreground],
+  );
 
   useEffect(() => {
     selectedProjectRef.current = selectedProject;
-    selectedSessionRef.current = selectedSession;
     initialCommandRef.current = initialCommand;
-    isPlainShellRef.current = isPlainShell;
     onProcessCompleteRef.current = onProcessComplete;
+    onInitialCommandSentRef.current = onInitialCommandSent;
+    onUserSubmitRef.current = onUserSubmit;
+    activeRef.current = active;
+    preservePtyOnUnmountRef.current = preservePtyOnUnmount;
+    replayRecentOutputRef.current = replayRecentOutput;
+    suppressInitialCommandWhenPtyExistsRef.current = suppressInitialCommandWhenPtyExists;
   });
 
-  const openAuthUrlInBrowser = useCallback((url = authUrlRef.current) => {
-    if (!url) return false;
+  useEffect(() => {
+    terminalThemeRef.current = terminalTheme;
+    if (!terminal.current) return;
 
-    const popup = window.open(url, '_blank', 'noopener,noreferrer');
-    if (popup) {
-      try {
-        popup.opener = null;
-      } catch {
-        // Ignore cross-origin restrictions when trying to null opener
-      }
-      return true;
+    terminal.current.options.theme = terminalTheme;
+    try {
+      terminal.current.refresh(0, Math.max(0, terminal.current.rows - 1));
+    } catch {
+      // Best-effort repaint when xterm is hidden during a theme switch.
     }
+  }, [terminalTheme]);
 
-    return false;
+  const setConnecting = useCallback((value) => {
+    isConnectingRef.current = value;
+    setIsConnecting(value);
   }, []);
 
-  const copyAuthUrlToClipboard = useCallback(async (url = authUrlRef.current) => {
+  const setConnected = useCallback((value) => {
+    isConnectedRef.current = value;
+    setIsConnected(value);
+  }, []);
+
+  const resizePtyIfNeeded = useCallback((rows, cols) => {
+    const id = ptyIdRef.current;
+    if (!id || !rows || !cols) return;
+
+    const last = lastPtySizeRef.current;
+    if (last && last.rows === rows && last.cols === cols) return;
+
+    lastPtySizeRef.current = { rows, cols };
+    pty.resize(id, rows, cols).catch(() => {});
+  }, []);
+
+  const recoverTerminalSurface = useCallback((shouldFocus = false) => {
+    if (!activeRef.current) return;
+
+    const run = () => {
+      const term = terminal.current;
+      const fit = fitAddon.current;
+      const host = terminalRef.current;
+      if (!term || !fit || !host) return;
+
+      const rect = host.getBoundingClientRect();
+      if (rect.width < 20 || rect.height < 20) return;
+
+      try {
+        fit.fit();
+      } catch {
+        // xterm fit can throw while a hidden webview is becoming visible.
+      }
+
+      resizePtyIfNeeded(term.rows, term.cols);
+
+      try {
+        term.refresh(0, Math.max(0, term.rows - 1));
+      } catch {
+        // Best-effort renderer recovery.
+      }
+
+      if (shouldFocus) {
+        try {
+          term.focus();
+        } catch {
+          // Focus can fail before the webview becomes key; later passes retry.
+        }
+      }
+    };
+
+    requestAnimationFrame(run);
+    for (const delay of [60, 180]) {
+      const timer = window.setTimeout(() => {
+        run();
+        surfaceRecoveryTimersRef.current = surfaceRecoveryTimersRef.current.filter((id) => id !== timer);
+      }, delay);
+      surfaceRecoveryTimersRef.current.push(timer);
+    }
+  }, [resizePtyIfNeeded]);
+
+  const cleanupListeners = useCallback(() => {
+    unlistenOutputRef.current?.();
+    unlistenExitRef.current?.();
+    unlistenOutputRef.current = null;
+    unlistenExitRef.current = null;
+  }, []);
+
+  const scheduleReconnect = useCallback((connectPty) => {
+    if (manuallyDisconnected.current) return;
+    const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
+    retryCountRef.current += 1;
+    reconnectTimeoutRef.current = setTimeout(() => {
+      connectPty();
+    }, delay);
+  }, []);
+
+  const connectPty = useCallback(() => {
+    if (isConnectingRef.current || isConnectedRef.current) return;
+    const project = selectedProjectRef.current;
+    if (!project || !terminal.current) return;
+
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    setConnecting(true);
+
+    const setup = async () => {
+      try {
+        if (!isTauriEnv()) {
+          throw new Error(t('shell.ptyDesktopOnly'));
+        }
+
+        const projectPath = project.fullPath || project.path;
+        const ptySessionId = paneId || `shell-${Date.now()}`;
+        let sessionAlreadyExists = false;
+
+        try {
+          await pty.getSessionState(ptySessionId);
+          sessionAlreadyExists = true;
+        } catch {
+          sessionAlreadyExists = false;
+        }
+
+        cleanupListeners();
+
+        const rows = terminal.current?.rows || 24;
+        const cols = terminal.current?.cols || 120;
+        const connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
+        ptyIdRef.current = connectedPtyId;
+
+        if (
+          replayRecentOutputRef.current &&
+          terminal.current &&
+          connectedPtyId &&
+          replayedPtyIdRef.current !== connectedPtyId
+        ) {
+          try {
+            const recentOutput = await pty.getRecentOutput(connectedPtyId);
+            if (recentOutput) {
+              terminal.current.write(recentOutput);
+              terminal.current.scrollToBottom();
+            }
+            replayedPtyIdRef.current = connectedPtyId;
+          } catch {
+            // Best-effort context replay; live output still streams normally.
+          }
+        }
+
+        const unlistenOut = await pty.onOutput(({ id: sid, data }) => {
+          if (sid !== ptyIdRef.current || !terminal.current) return;
+          terminal.current.write(data);
+          terminal.current.scrollToBottom();
+
+          if (onProcessCompleteRef.current) {
+            const cleanOutput = data.replace(/\x1b\[[0-9;]*m/g, '');
+            if (cleanOutput.includes('Process exited with code 0')) {
+              onProcessCompleteRef.current(0);
+            } else {
+              const match = cleanOutput.match(/Process exited with code (\d+)/);
+              if (match) {
+                const exitCode = Number.parseInt(match[1], 10);
+                if (exitCode !== 0) onProcessCompleteRef.current(exitCode);
+              }
+            }
+          }
+        });
+
+        const unlistenExit = await pty.onExit(({ id: sid }) => {
+          if (sid !== ptyIdRef.current) return;
+          setConnected(false);
+          setConnecting(false);
+          if (terminal.current) {
+            terminal.current.clear();
+            terminal.current.write('\x1b[2J\x1b[H');
+          }
+          scheduleReconnect(connectPty);
+        });
+
+        unlistenOutputRef.current = unlistenOut;
+        unlistenExitRef.current = unlistenExit;
+
+        setConnected(true);
+        setConnecting(false);
+        retryCountRef.current = 0;
+        recoverTerminalSurface(true);
+
+        const command = initialCommandRef.current?.trim();
+        const shouldSendInitialCommand =
+          command &&
+          !(suppressInitialCommandWhenPtyExistsRef.current && sessionAlreadyExists);
+
+        if (shouldSendInitialCommand) {
+          await pty.input(connectedPtyId, `${command}\r`);
+          onInitialCommandSentRef.current?.();
+        }
+      } catch (error) {
+        logger.error('[Shell] PTY connection failed:', error);
+        setConnected(false);
+        setConnecting(false);
+        scheduleReconnect(connectPty);
+      }
+    };
+
+    setup();
+  }, [cleanupListeners, paneId, recoverTerminalSurface, scheduleReconnect, setConnected, setConnecting, t]);
+
+  const connectToShell = useCallback(() => {
+    if (!isInitialized || isConnectedRef.current || isConnectingRef.current) return;
+    manuallyDisconnected.current = false;
+    connectPty();
+  }, [connectPty, isInitialized]);
+
+  const disconnectFromShell = useCallback(() => {
+    manuallyDisconnected.current = true;
+
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    retryCountRef.current = 0;
+    cleanupListeners();
+
+    if (ptyIdRef.current && !preservePtyOnUnmountRef.current) {
+      pty.kill(ptyIdRef.current).catch(() => {});
+    }
+    ptyIdRef.current = null;
+    lastPtySizeRef.current = null;
+
+    if (terminal.current) {
+      terminal.current.clear();
+      terminal.current.write('\x1b[2J\x1b[H');
+    }
+
+    setConnected(false);
+    setConnecting(false);
+    setAuthUrlCopyStatus('idle');
+    setIsAuthPanelDismissed(false);
+  }, [cleanupListeners, setConnected, setConnecting]);
+
+  const restartShell = useCallback(() => {
+    setIsRestarting(true);
+    disconnectFromShell();
+    manuallyDisconnected.current = false;
+
+    if (terminal.current) {
+      terminal.current.dispose();
+      terminal.current = null;
+      fitAddon.current = null;
+    }
+
+    setIsInitialized(false);
+    setTimeout(() => {
+      setIsRestarting(false);
+    }, 200);
+  }, [disconnectFromShell]);
+
+  const openAuthUrlInBrowser = useCallback((url) => {
+    if (!url) return false;
+    const popup = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!popup) return false;
+    try {
+      popup.opener = null;
+    } catch {
+      // Ignore cross-origin restrictions when trying to null opener.
+    }
+    return true;
+  }, []);
+
+  const copyAuthUrlToClipboard = useCallback(async (url) => {
     if (!url) return false;
 
     let copied = false;
@@ -185,313 +421,14 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
       copied = false;
     }
 
-    if (!copied) {
-      copied = fallbackCopyToClipboard(url);
-    }
-
+    if (!copied) copied = fallbackCopyToClipboard(url);
     return copied;
   }, []);
-
-  // Helper to update connecting state + ref in sync
-  const setConnecting = useCallback((value) => {
-    isConnectingRef.current = value;
-    setIsConnecting(value);
-  }, []);
-
-  const setConnected = useCallback((value) => {
-    isConnectedRef.current = value;
-    setIsConnected(value);
-  }, []);
-
-  const connectWebSocket = useCallback(() => {
-    // Guard uses refs (always fresh) to avoid stale closure issues
-    if (isConnectingRef.current || isConnectedRef.current) return;
-
-    // Cancel any pending reconnection timer
-    if (shellReconnectTimeoutRef.current) {
-      clearTimeout(shellReconnectTimeoutRef.current);
-      shellReconnectTimeoutRef.current = null;
-    }
-
-    setConnecting(true);
-
-    const setupPty = async () => {
-      try {
-        const selectedSessionId = isPlainShellRef.current
-          ? null
-          : selectedSessionRef.current?.id || null;
-        const shouldResumeSession = Boolean(selectedSessionId) && !isTemporarySessionId(selectedSessionId);
-        const shellProvider = isPlainShellRef.current
-          ? 'plain-shell'
-          : (selectedSessionRef.current?.__provider || localStorage.getItem('selected-provider') || 'claude');
-        const { launchArgs } = resolveSessionLaunchConfig(selectedSessionRef.current, shellProvider);
-
-        const projectPath = selectedProjectRef.current.fullPath || selectedProjectRef.current.path;
-        const ptySessionId = paneId || `shell-${Date.now()}`;
-
-        if (isTauriEnv()) {
-          // Clean up old listeners before registering new ones
-          unlistenOutputRef.current?.();
-          unlistenExitRef.current?.();
-        }
-
-        const rows = terminal.current?.rows || 24;
-        const cols = terminal.current?.cols || 120;
-
-        let connectedPtyId = ptySessionId;
-
-        if (isPlainShellRef.current) {
-          connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
-        } else if (shellProvider === 'claude') {
-          connectedPtyId = await ai.startSession(
-            ptySessionId,
-            shellProvider,
-            projectPath,
-            shouldResumeSession ? selectedSessionId : undefined,
-            launchArgs.length > 0 ? launchArgs : undefined,
-          );
-        } else if (shellProvider === 'codex') {
-          connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
-        } else {
-          connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
-        }
-
-        if (!isPlainShellRef.current && selectedSessionId) {
-          registerPtySession(connectedPtyId, selectedSessionId);
-        }
-
-        ptyIdRef.current = connectedPtyId;
-
-        if (isTauriEnv()) {
-          // ── Tauri mode: register listeners AFTER pty.create so ptyIdRef.current is set ──
-          const unlistenOut = await pty.onOutput(({ id: sid, data }) => {
-            if (sid === ptyIdRef.current && terminal.current) {
-              terminal.current.write(data);
-              terminal.current.scrollToBottom();
-
-              if (isPlainShellRef.current && onProcessCompleteRef.current) {
-                const cleanOutput = data.replace(/\x1b\[[0-9;]*m/g, '');
-                if (cleanOutput.includes('Process exited with code 0')) {
-                  onProcessCompleteRef.current(0);
-                } else if (cleanOutput.match(/Process exited with code (\d+)/)) {
-                  const exitCode = parseInt(cleanOutput.match(/Process exited with code (\d+)/)[1]);
-                  if (exitCode !== 0) {
-                    onProcessCompleteRef.current(exitCode);
-                  }
-                }
-              }
-            }
-          });
-
-          const unlistenExit = await pty.onExit(({ id: sid }) => {
-            if (sid === ptyIdRef.current) {
-              setConnected(false);
-              setConnecting(false);
-
-              if (terminal.current) {
-                terminal.current.clear();
-                terminal.current.write('\x1b[2J\x1b[H');
-              }
-
-              if (!manuallyDisconnected.current) {
-                const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
-                retryCountRef.current++;
-                shellReconnectTimeoutRef.current = setTimeout(() => {
-                  connectWebSocket();
-                }, delay);
-              }
-            }
-          });
-
-          unlistenOutputRef.current = unlistenOut;
-          unlistenExitRef.current = unlistenExit;
-        }
-
-        if (!isTauriEnv()) {
-          // ── Web mode: connect via WebSocket for PTY I/O ──
-          const disconnect = webPtyConnect(
-            connectedPtyId,
-            (data) => {
-              if (terminal.current) {
-                terminal.current.write(data);
-                terminal.current.scrollToBottom();
-              }
-            },
-            (_code) => {
-              setConnected(false);
-              setConnecting(false);
-              if (terminal.current) {
-                terminal.current.clear();
-                terminal.current.write('\x1b[2J\x1b[H');
-              }
-              if (!manuallyDisconnected.current) {
-                const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
-                retryCountRef.current++;
-                shellReconnectTimeoutRef.current = setTimeout(() => {
-                  connectWebSocket();
-                }, delay);
-              }
-            },
-          );
-          unlistenOutputRef.current = disconnect;
-        }
-
-        setConnected(true);
-        setConnecting(false);
-        retryCountRef.current = 0;
-
-        // Send initial command or session init if needed
-        if (initialCommandRef.current && isPlainShellRef.current) {
-          await pty.input(connectedPtyId, initialCommandRef.current + '\r');
-        } else if (!isPlainShellRef.current && shellProvider === 'codex') {
-          await new Promise((resolve) => setTimeout(resolve, 300));
-          // Build codex command: `codex resume <id>` if resuming, otherwise `codex [launchArgs]`
-          const codexParts = ['codex'];
-          if (shouldResumeSession && selectedSessionId) {
-            codexParts.push('resume', selectedSessionId);
-          } else {
-            codexParts.push(...launchArgs);
-          }
-          const codexCommand = codexParts.join(' ');
-          await pty.input(connectedPtyId, codexCommand + '\r');
-        }
-      } catch (error) {
-        logger.error('[Shell] PTY connection failed:', error);
-        setConnected(false);
-        setConnecting(false);
-
-        if (!manuallyDisconnected.current) {
-          const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
-          retryCountRef.current++;
-          shellReconnectTimeoutRef.current = setTimeout(() => {
-            connectWebSocket();
-          }, delay);
-        }
-      }
-    };
-
-    setupPty();
-  }, [paneId, setConnecting, setConnected]);
-
-  const connectToShell = useCallback(() => {
-    if (!isInitialized || isConnectedRef.current || isConnectingRef.current) return;
-    manuallyDisconnected.current = false;
-    connectWebSocket();
-  }, [isInitialized, connectWebSocket]);
-
-  const disconnectFromShell = useCallback(() => {
-    manuallyDisconnected.current = true;
-
-    if (shellReconnectTimeoutRef.current) {
-      clearTimeout(shellReconnectTimeoutRef.current);
-      shellReconnectTimeoutRef.current = null;
-    }
-    retryCountRef.current = 0;
-
-    // Unlisten Tauri events
-    if (unlistenOutputRef.current) {
-      unlistenOutputRef.current();
-      unlistenOutputRef.current = null;
-    }
-    if (unlistenExitRef.current) {
-      unlistenExitRef.current();
-      unlistenExitRef.current = null;
-    }
-
-    // Kill PTY
-    if (ptyIdRef.current) {
-      pty.kill(ptyIdRef.current).catch(() => {});
-      ptyIdRef.current = null;
-    }
-
-    if (terminal.current) {
-      terminal.current.clear();
-      terminal.current.write('\x1b[2J\x1b[H');
-    }
-
-    setConnected(false);
-    setConnecting(false);
-    authUrlRef.current = '';
-    setAuthUrl('');
-    setAuthUrlCopyStatus('idle');
-    setIsAuthPanelDismissed(false);
-  }, [setConnected, setConnecting]);
-
-  const sessionDisplayName = useMemo(() => {
-    if (!selectedSession) return null;
-    return selectedSession.summary || selectedSession.name || 'New Session';
-  }, [selectedSession]);
-
-  const sessionDisplayNameShort = useMemo(() => {
-    if (!sessionDisplayName) return null;
-    return sessionDisplayName.slice(0, 30);
-  }, [sessionDisplayName]);
-
-  const sessionDisplayNameLong = useMemo(() => {
-    if (!sessionDisplayName) return null;
-    return sessionDisplayName.slice(0, 50);
-  }, [sessionDisplayName]);
-
-  const restartShell = () => {
-    setIsRestarting(true);
-    manuallyDisconnected.current = false;
-
-    if (shellReconnectTimeoutRef.current) {
-      clearTimeout(shellReconnectTimeoutRef.current);
-      shellReconnectTimeoutRef.current = null;
-    }
-    retryCountRef.current = 0;
-
-    // Unlisten Tauri events
-    if (unlistenOutputRef.current) {
-      unlistenOutputRef.current();
-      unlistenOutputRef.current = null;
-    }
-    if (unlistenExitRef.current) {
-      unlistenExitRef.current();
-      unlistenExitRef.current = null;
-    }
-
-    // Kill PTY
-    if (ptyIdRef.current) {
-      pty.kill(ptyIdRef.current).catch(() => {});
-      ptyIdRef.current = null;
-    }
-
-    if (terminal.current) {
-      terminal.current.dispose();
-      terminal.current = null;
-      fitAddon.current = null;
-    }
-
-    setConnected(false);
-    setConnecting(false);
-    setIsInitialized(false);
-    authUrlRef.current = '';
-    setAuthUrl('');
-    setAuthUrlCopyStatus('idle');
-    setIsAuthPanelDismissed(false);
-
-    setTimeout(() => {
-      setIsRestarting(false);
-    }, 200);
-  };
-
-  useEffect(() => {
-    const currentSessionId = selectedSession?.id || null;
-
-    if (lastSessionId !== null && lastSessionId !== currentSessionId && isInitialized) {
-      disconnectFromShell();
-    }
-
-    setLastSessionId(currentSessionId);
-  }, [selectedSession?.id, isInitialized, disconnectFromShell]);
 
   useEffect(() => {
     if (!terminalRef.current || !selectedProject || isRestarting || terminal.current) {
       return;
     }
-
 
     terminal.current = new Terminal({
       cursorBlink: true,
@@ -502,73 +439,30 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
       convertEol: true,
       scrollback: 3000,
       tabStopWidth: 4,
-      windowsMode: (typeof window !== 'undefined' && (navigator.platform?.startsWith('Win') || window.electronAPI?.platform === 'win32')),
+      windowsMode:
+        typeof window !== 'undefined' &&
+        navigator.platform?.startsWith('Win'),
       macOptionIsMeta: true,
       macOptionClickForcesSelection: true,
-      theme: {
-        background: '#1e1e1e',
-        foreground: '#d4d4d4',
-        cursor: '#ffffff',
-        cursorAccent: '#1e1e1e',
-        selection: '#264f78',
-        selectionForeground: '#ffffff',
-        black: '#000000',
-        red: '#cd3131',
-        green: '#0dbc79',
-        yellow: '#e5e510',
-        blue: '#2472c8',
-        magenta: '#bc3fbc',
-        cyan: '#11a8cd',
-        white: '#e5e5e5',
-        brightBlack: '#666666',
-        brightRed: '#f14c4c',
-        brightGreen: '#23d18b',
-        brightYellow: '#f5f543',
-        brightBlue: '#3b8eea',
-        brightMagenta: '#d670d6',
-        brightCyan: '#29b8db',
-        brightWhite: '#ffffff',
-        extendedAnsi: [
-          '#000000', '#800000', '#008000', '#808000',
-          '#000080', '#800080', '#008080', '#c0c0c0',
-          '#808080', '#ff0000', '#00ff00', '#ffff00',
-          '#0000ff', '#ff00ff', '#00ffff', '#ffffff'
-        ]
-      }
+      theme: terminalThemeRef.current,
     });
 
     fitAddon.current = new FitAddon();
-    const webglAddon = new WebglAddon();
-    const webLinksAddon = new WebLinksAddon();
-
     terminal.current.loadAddon(fitAddon.current);
-    // Disable xterm link auto-detection in minimal (login) mode to avoid partial wrapped URL links.
     if (!minimal) {
-      terminal.current.loadAddon(webLinksAddon);
-    }
-    // Note: ClipboardAddon removed - we handle clipboard operations manually in attachCustomKeyEventHandler
-
-    try {
-      terminal.current.loadAddon(webglAddon);
-    } catch (error) {
-      logger.warn('[Shell] WebGL renderer unavailable, using Canvas fallback');
+      terminal.current.loadAddon(new WebLinksAddon());
     }
 
     terminal.current.open(terminalRef.current);
 
-    requestAnimationFrame(() => {
-      terminal.current?.scrollToBottom();
-    });
-
     terminal.current.attachCustomKeyEventHandler((event) => {
       const activeAuthUrl = isCodexLoginCommand(initialCommandRef.current)
         ? CODEX_DEVICE_AUTH_URL
-        : authUrlRef.current;
+        : '';
 
       if (
         event.type === 'keydown' &&
         minimal &&
-        isPlainShellRef.current &&
         activeAuthUrl &&
         !event.ctrlKey &&
         !event.metaKey &&
@@ -595,14 +489,15 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
         (event.ctrlKey || event.metaKey) &&
         event.key?.toLowerCase() === 'v'
       ) {
-        // Block native browser/xterm paste so clipboard data is only sent after
-        // the explicit clipboard-read flow resolves (avoids duplicate pastes).
         event.preventDefault();
         event.stopPropagation();
 
-        navigator.clipboard.readText().then(text => {
+        navigator.clipboard.readText().then((text) => {
           if (ptyIdRef.current) {
             pty.input(ptyIdRef.current, text).catch(() => {});
+            if (/[\r\n]/.test(text)) {
+              onUserSubmitRef.current?.();
+            }
           }
         }).catch(() => {});
         return false;
@@ -611,73 +506,94 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
       return true;
     });
 
-    setTimeout(() => {
-      if (fitAddon.current) {
-        fitAddon.current.fit();
-        if (terminal.current && ptyIdRef.current) {
-          pty.resize(ptyIdRef.current, terminal.current.rows, terminal.current.cols).catch(() => {});
-        }
-      }
-    }, 100);
-
-    setIsInitialized(true);
     terminal.current.onData((data) => {
       if (ptyIdRef.current) {
         pty.input(ptyIdRef.current, data).catch(() => {});
+        if (/[\r\n]/.test(data)) {
+          onUserSubmitRef.current?.();
+        }
       }
     });
+
+    requestAnimationFrame(() => {
+      recoverTerminalSurface(activeRef.current);
+      terminal.current?.scrollToBottom();
+    });
+
+    setIsInitialized(true);
 
     let resizeDebounceTimer = null;
     const resizeObserver = new ResizeObserver(() => {
-      if (fitAddon.current && terminal.current) {
-        if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
-        resizeDebounceTimer = setTimeout(() => {
-          resizeDebounceTimer = null;
-          if (!fitAddon.current || !terminal.current) return;
-          fitAddon.current.fit();
-          if (ptyIdRef.current) {
-            pty.resize(ptyIdRef.current, terminal.current.rows, terminal.current.cols).catch(() => {});
-          }
-        }, 150);
-      }
+      if (!fitAddon.current || !terminal.current) return;
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      resizeDebounceTimer = setTimeout(() => {
+        resizeDebounceTimer = null;
+        if (!fitAddon.current || !terminal.current) return;
+        fitAddon.current.fit();
+        resizePtyIfNeeded(terminal.current.rows, terminal.current.cols);
+      }, 150);
     });
 
-    if (terminalRef.current) {
-      resizeObserver.observe(terminalRef.current);
-    }
+    resizeObserver.observe(terminalRef.current);
 
     return () => {
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       resizeObserver.disconnect();
+      for (const timer of surfaceRecoveryTimersRef.current) clearTimeout(timer);
+      surfaceRecoveryTimersRef.current = [];
 
-      if (shellReconnectTimeoutRef.current) {
-        clearTimeout(shellReconnectTimeoutRef.current);
-        shellReconnectTimeoutRef.current = null;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
       }
       retryCountRef.current = 0;
+      cleanupListeners();
 
-      // Unlisten Tauri events
-      if (unlistenOutputRef.current) {
-        unlistenOutputRef.current();
-        unlistenOutputRef.current = null;
-      }
-      if (unlistenExitRef.current) {
-        unlistenExitRef.current();
-        unlistenExitRef.current = null;
-      }
-
-      // Kill PTY
-      if (ptyIdRef.current) {
+      if (ptyIdRef.current && !preservePtyOnUnmountRef.current) {
         pty.kill(ptyIdRef.current).catch(() => {});
-        ptyIdRef.current = null;
       }
+      ptyIdRef.current = null;
+      lastPtySizeRef.current = null;
 
       if (terminal.current) {
         terminal.current.dispose();
         terminal.current = null;
       }
+      fitAddon.current = null;
     };
-  }, [selectedProject?.path || selectedProject?.fullPath, isRestarting, minimal, copyAuthUrlToClipboard]);
+  }, [
+    selectedProject?.path,
+    selectedProject?.fullPath,
+    isRestarting,
+    minimal,
+    copyAuthUrlToClipboard,
+    cleanupListeners,
+    recoverTerminalSurface,
+    resizePtyIfNeeded,
+  ]);
+
+  useEffect(() => {
+    if (!active || !isInitialized) return;
+    recoverTerminalSurface(true);
+  }, [active, isInitialized, recoverTerminalSurface]);
+
+  useEffect(() => {
+    const handleSurfaceShown = () => recoverTerminalSurface(true);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        recoverTerminalSurface(true);
+      }
+    };
+
+    window.addEventListener('focus', handleSurfaceShown);
+    window.addEventListener('threadterm-terminal-surface-shown', handleSurfaceShown);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('focus', handleSurfaceShown);
+      window.removeEventListener('threadterm-terminal-surface-shown', handleSurfaceShown);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [recoverTerminalSurface]);
 
   useEffect(() => {
     if (!autoConnect || !isInitialized) return;
@@ -688,42 +604,43 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
 
   if (!selectedProject) {
     return (
-      <div className="h-full flex items-center justify-center">
-        <div className="text-center text-gray-500 dark:text-gray-400">
-          <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 dark:bg-gray-800 rounded-full flex items-center justify-center">
-            <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <div className="flex h-full items-center justify-center">
+        <div className="text-center text-gray-400">
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-800">
+            <svg className="h-8 w-8 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z" />
             </svg>
           </div>
-          <h3 className="text-lg font-semibold mb-2">{t('shell.selectProject.title')}</h3>
-          <p>{t('shell.selectProject.description')}</p>
+          <h3 className="mb-2 text-lg font-semibold">{t('shell.selectProject')}</h3>
+          <p>{t('shell.selectProjectDescription')}</p>
         </div>
       </div>
     );
   }
 
-  if (minimal) {
-    const displayAuthUrl = isCodexLoginCommand(initialCommand)
-      ? CODEX_DEVICE_AUTH_URL
-      : authUrl;
-    const hasAuthUrl = Boolean(displayAuthUrl);
-    const showAuthPanel = hasAuthUrl && !isAuthPanelDismissed;
-    const showAuthPanelToggle = hasAuthUrl && isAuthPanelDismissed;
+  const displayAuthUrl = isCodexLoginCommand(initialCommand) ? CODEX_DEVICE_AUTH_URL : '';
+  const showAuthPanel = Boolean(displayAuthUrl) && !isAuthPanelDismissed;
+  const showAuthPanelToggle = Boolean(displayAuthUrl) && isAuthPanelDismissed;
 
+  if (minimal) {
     return (
-      <div className="h-full w-full bg-gray-900 relative">
-        <div ref={terminalRef} className="h-full w-full focus:outline-none" style={{ outline: 'none' }} />
+      <div
+        className="relative h-full w-full"
+        style={terminalShellStyle}
+        onMouseDown={() => recoverTerminalSurface(true)}
+      >
+        <div ref={terminalRef} className="threadterm-xterm-host focus:outline-none" style={{ outline: 'none' }} />
         {showAuthPanel && (
           <div className="absolute bottom-3 right-3 z-20 w-[min(420px,calc(100%-1.5rem))] rounded-xl border border-gray-700/80 bg-gray-900/95 p-3 shadow-xl backdrop-blur-sm">
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs text-gray-300">Open or copy the login URL:</p>
+                <p className="text-xs text-gray-300">{t('shell.authPrompt')}</p>
                 <button
                   type="button"
                   onClick={() => setIsAuthPanelDismissed(true)}
                   className="rounded bg-gray-700 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-gray-100 hover:bg-gray-600"
                 >
-                  Hide
+                  {t('shell.dismiss')}
                 </button>
               </div>
               <input
@@ -732,17 +649,15 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
                 readOnly
                 onClick={(event) => event.currentTarget.select()}
                 className="w-full rounded border border-gray-600 bg-gray-800 px-2 py-1 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                aria-label="Authentication URL"
+                aria-label={t('shell.authUrlLabel')}
               />
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    openAuthUrlInBrowser(displayAuthUrl);
-                  }}
+                  onClick={() => openAuthUrlInBrowser(displayAuthUrl)}
                   className="flex-1 rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700"
                 >
-                  Open URL
+                  {t('shell.openInBrowser')}
                 </button>
                 <button
                   type="button"
@@ -752,7 +667,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
                   }}
                   className="flex-1 rounded bg-gray-700 px-3 py-2 text-xs font-medium text-white hover:bg-gray-600"
                 >
-                  {authUrlCopyStatus === 'copied' ? 'Copied' : 'Copy URL'}
+                  {authUrlCopyStatus === 'copied' ? t('shell.copied') : t('shell.copyUrl')}
                 </button>
               </div>
             </div>
@@ -765,7 +680,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
               onClick={() => setIsAuthPanelDismissed(false)}
               className="rounded bg-gray-800/95 px-3 py-2 text-xs font-medium text-gray-100 shadow-lg backdrop-blur-sm hover:bg-gray-700"
             >
-              Show login URL
+              {t('shell.showLoginUrl')}
             </button>
           </div>
         )}
@@ -774,104 +689,96 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
   }
 
   return (
-    <div className="h-full flex flex-col bg-gray-900 w-full">
-      <div className="flex-shrink-0 bg-gray-800 border-b border-gray-700 px-4 py-2">
+    <div
+      className="flex h-full w-full flex-col"
+      style={terminalShellStyle}
+      onMouseDown={() => recoverTerminalSurface(true)}
+    >
+      <div className="flex-shrink-0 border-b border-gray-700 bg-gray-800 px-4 py-2">
         <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
-            {selectedSession && (
-              <span className="text-xs text-blue-300">
-                ({sessionDisplayNameShort}...)
-              </span>
-            )}
-            {!selectedSession && (
-              <span className="text-xs text-gray-400">{t('shell.status.newSession')}</span>
-            )}
-            {!isInitialized && (
-              <span className="text-xs text-yellow-400">{t('shell.status.initializing')}</span>
-            )}
-            {isRestarting && (
-              <span className="text-xs text-blue-400">{t('shell.status.restarting')}</span>
-            )}
+          <div className="flex items-center gap-2">
+            <div className={`h-2 w-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+            <span className="text-xs text-gray-400">
+              {!isInitialized
+                ? t('shell.initializing')
+                : isConnecting
+                  ? t('shell.connecting')
+                  : isConnected
+                    ? t('shell.connected')
+                    : t('shell.disconnected')}
+            </span>
+            {isRestarting && <span className="text-xs text-blue-400">{t('shell.restarting')}</span>}
           </div>
-          <div className="flex items-center space-x-3">
+          <div className="flex items-center gap-3">
             {isConnected && (
               <button
+                type="button"
                 onClick={() => {
-                  if (onDisconnect) onDisconnect();
+                  onDisconnect?.();
                   restartShell();
                 }}
-                className="px-3 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 flex items-center space-x-1"
-                title={t('shell.actions.disconnectTitle')}
+                className="rounded bg-red-600 px-3 py-1 text-xs text-white hover:bg-red-700"
               >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-                <span>{t('shell.actions.disconnect')}</span>
+                {t('shell.disconnect')}
               </button>
             )}
-
             <button
+              type="button"
               onClick={restartShell}
               disabled={isRestarting || isConnected}
-              className="text-xs text-gray-400 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1"
-              title={t('shell.actions.restartTitle')}
+              className="text-xs text-gray-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              <span>{t('shell.actions.restart')}</span>
+              {t('shell.restart')}
             </button>
           </div>
         </div>
       </div>
 
-      <div className="flex-1 p-2 overflow-hidden relative">
-        <div ref={terminalRef} className="h-full w-full focus:outline-none" style={{ outline: 'none' }} />
+      <div className="relative flex-1 overflow-hidden p-2">
+        <div ref={terminalRef} className="threadterm-xterm-host focus:outline-none" style={{ outline: 'none' }} />
 
         {!isInitialized && (
-          <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-90">
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-900/90">
             <div className="text-white">{t('shell.loading')}</div>
           </div>
         )}
 
         {isInitialized && !isConnected && !isConnecting && (
-          <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-90 p-4">
-            <div className="text-center max-w-sm w-full">
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-900/90 p-4">
+            <div className="w-full max-w-sm text-center">
               <button
+                type="button"
                 onClick={restartShell}
-                className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center space-x-2 text-base font-medium w-full sm:w-auto"
-                title={t('shell.actions.connectTitle')}
+                className="rounded-lg bg-green-600 px-6 py-3 text-base font-medium text-white transition-colors hover:bg-green-700"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-                <span>{t('shell.actions.connect')}</span>
+                {t('shell.connect')}
               </button>
-              <p className="text-gray-400 text-sm mt-3 px-2">
-                {isPlainShell ?
-                  t('shell.runCommand', { command: initialCommand || t('shell.defaultCommand'), projectName: selectedProject.displayName }) :
-                  (selectedSession && !isTemporarySessionId(selectedSession.id)) ?
-                    t('shell.resumeSession', { displayName: sessionDisplayNameLong }) :
-                    t('shell.startSession')
-                }
+              <p className="mt-3 text-sm text-gray-400">
+                {t('shell.runInProject', {
+                  action: initialCommand
+                    ? t('shell.runCommand', { command: initialCommand })
+                    : t('shell.startShell'),
+                  project: selectedProject.name,
+                })}
               </p>
             </div>
           </div>
         )}
 
         {isConnecting && (
-          <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-90 p-4">
-            <div className="text-center max-w-sm w-full">
-              <div className="flex items-center justify-center space-x-3 text-yellow-400">
-                <div className="w-6 h-6 animate-spin rounded-full border-2 border-yellow-400 border-t-transparent"></div>
-                <span className="text-base font-medium">{t('shell.connecting')}</span>
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-900/90 p-4">
+            <div className="text-center">
+              <div className="flex items-center justify-center gap-3 text-yellow-400">
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-yellow-400 border-t-transparent" />
+                <span className="text-base font-medium">{t('shell.connecting')}...</span>
               </div>
-              <p className="text-gray-400 text-sm mt-3 px-2">
-                {isPlainShell ?
-                  t('shell.runCommand', { command: initialCommand || t('shell.defaultCommand'), projectName: selectedProject.displayName }) :
-                  t('shell.startCli', { projectName: selectedProject.displayName })
-                }
+              <p className="mt-3 text-sm text-gray-400">
+                {t('shell.runInProject', {
+                  action: initialCommand
+                    ? t('shell.runCommand', { command: initialCommand })
+                    : t('shell.startShell'),
+                  project: selectedProject.name,
+                })}
               </p>
             </div>
           </div>

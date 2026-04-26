@@ -15,6 +15,9 @@
 /** Frontend-facing status; mirrors (simplified) SessionState from pty.rs. */
 export type TerminalStatus = 'idle' | 'running' | 'waiting' | 'completed' | 'failed';
 
+/** Native CLI session binding state for providers that support resume. */
+export type ProviderSessionState = 'unbound' | 'bound';
+
 /** Terminal type identifier; drives icon / colour / default launch command. */
 export type TerminalType =
   | 'shell'
@@ -60,6 +63,14 @@ export interface TerminalCard {
   terminalType: TerminalType;
   /** Optional initial command executed after PTY spawn. */
   command?: string;
+  /** Native provider session id, e.g. Claude/Codex UUID. */
+  providerSessionId?: string;
+  /** Whether `providerSessionId` is known to exist in the provider's own history. */
+  providerSessionState?: ProviderSessionState;
+  /** Last time ThreadTerm bound this card to a provider-native session id. */
+  providerSessionBoundAt?: number;
+  /** Last time ThreadTerm launched this card with a provider-native session id. */
+  providerSessionLastResumeAt?: number;
   status: TerminalStatus;
   /** Creation timestamp (epoch ms). */
   createdAt: number;

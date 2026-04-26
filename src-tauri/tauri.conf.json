@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpenWork",
+  "productName": "ThreadTerm",
   "version": "0.1.0",
-  "identifier": "com.openwork.app",
+  "identifier": "com.Heluth-Crazy.threadterm",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "OpenWork",
+        "title": "ThreadTerm",
         "label": "main",
         "width": 1280,
         "height": 800,
