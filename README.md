@@ -6,6 +6,22 @@
 
 ThreadTerm is a desktop terminal manager for project-bound shell and AI CLI sessions. It keeps multiple terminal sessions visible as cards, lets you pin important sessions to a global selector, and can open a selected session in an always-on-top floating terminal.
 
+## Preview
+
+![ThreadTerm terminal grid](./docs/media/threadterm-grid.png)
+
+![ThreadTerm usage demo](./docs/media/threadterm-usage-demo.gif)
+
+[Download the MP4 demo](./docs/media/threadterm-usage-demo.mp4)
+
+| New terminal | Global selector |
+| --- | --- |
+| ![Create a new terminal](./docs/media/threadterm-create-terminal.png) | ![Pinned session selector](./docs/media/threadterm-selector.png) |
+
+| Notifications | Appearance settings |
+| --- | --- |
+| ![Notification centre](./docs/media/threadterm-notifications.png) | ![Theme settings](./docs/media/threadterm-settings.png) |
+
 ## Current Scope
 
 ThreadTerm currently focuses on the Tauri desktop app:

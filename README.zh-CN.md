@@ -6,6 +6,22 @@
 
 ThreadTerm 是一个桌面端终端管理器，用于管理绑定到项目目录的 Shell 和 AI CLI 会话。它可以把多个终端会话以卡片形式常驻展示，支持将重要会话固定到全局选择器，并能把选中的会话打开为置顶浮动终端。
 
+## 预览
+
+![ThreadTerm 终端网格](./docs/media/threadterm-grid.png)
+
+![ThreadTerm 使用演示](./docs/media/threadterm-usage-demo.gif)
+
+[下载 MP4 演示视频](./docs/media/threadterm-usage-demo.mp4)
+
+| 新建终端 | 全局选择器 |
+| --- | --- |
+| ![创建新终端](./docs/media/threadterm-create-terminal.png) | ![固定会话选择器](./docs/media/threadterm-selector.png) |
+
+| 通知中心 | 外观设置 |
+| --- | --- |
+| ![通知中心](./docs/media/threadterm-notifications.png) | ![主题设置](./docs/media/threadterm-settings.png) |
+
 ## 当前范围
 
 ThreadTerm 当前聚焦于 Tauri 桌面应用：
