@@ -98,8 +98,8 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
   return (
     <div className="flex h-full w-full flex-col bg-background">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <div className="flex items-center gap-2 min-w-0">
+      <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <button
             type="button"
             onClick={onBack}
@@ -111,10 +111,10 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
           <div className={`flex h-8 w-8 items-center justify-center rounded-lg bg-muted ${typeMeta.accent}`}>
             <TypeIcon className="h-4 w-4" />
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <span className="truncate text-sm font-semibold">{card.projectName}</span>
-              <span className="text-[10px] text-muted-foreground">
+              <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">
                 · {t(`types.${card.terminalType}`, typeMeta.label)}
               </span>
             </div>
@@ -124,9 +124,9 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center justify-end gap-1.5">
           {aiSessionBadge && (
-            <AiIntentSelect cardId={card.id} value={card.aiIntent} />
+            <AiIntentSelect cardId={card.id} value={card.aiIntent} compact />
           )}
           {aiSessionBadge && (
             <span
@@ -148,7 +148,7 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
             </span>
           )}
           <span
-            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusInfo.chip}`}
+            className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-medium ${statusInfo.chip}`}
           >
             <StatusIcon className={`h-3 w-3 ${statusInfo.animate ? 'animate-spin' : ''}`} />
             {t(`status.${card.status}`, statusInfo.label)}
