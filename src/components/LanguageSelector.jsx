@@ -4,6 +4,9 @@ import { languages } from '../i18n/languages';
 
 function LanguageSelector({ compact = false }) {
   const { i18n, t } = useTranslation('settings');
+  const selectedLanguage = languages.some((lang) => lang.value === i18n.language)
+    ? i18n.language
+    : 'zh-CN';
 
   const handleLanguageChange = (event) => {
     const newLanguage = event.target.value;
@@ -18,7 +21,7 @@ function LanguageSelector({ compact = false }) {
           {t('account.language')}
         </span>
         <select
-          value={i18n.language}
+          value={selectedLanguage}
           onChange={handleLanguageChange}
           className="h-9 w-[108px] rounded-xl border border-input bg-background px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
         >
@@ -45,7 +48,7 @@ function LanguageSelector({ compact = false }) {
           </div>
         </div>
         <select
-          value={i18n.language}
+          value={selectedLanguage}
           onChange={handleLanguageChange}
           className="h-10 w-36 rounded-xl border border-input bg-background px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
         >
