@@ -87,6 +87,15 @@
     "customCommand": "Custom command",
     "customCommandDescription": "This AI card runs a custom command instead of the default provider command."
   },
+  "aiIntent": {
+    "label": "AI intent",
+    "none": "No intent",
+    "review": "Review",
+    "fix": "Fix",
+    "research": "Research",
+    "test": "Test",
+    "docs": "Docs"
+  },
   "view": {
     "backToGrid": "Back to grid (⌘/Ctrl+Shift+M)",
     "worktree": "worktree: {{path}}",

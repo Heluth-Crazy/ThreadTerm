@@ -18,6 +18,7 @@ import type {
   TerminalCard,
   TerminalCreateOptions,
   TerminalEvent,
+  TerminalAiIntent,
   TerminalStatus,
 } from '../types/terminal';
 import {
@@ -136,6 +137,7 @@ interface TerminalStore {
   markUnread: (id: string, unread: boolean) => void;
   markCardRead: (id: string) => void;
   markProviderSessionBound: (id: string, providerSessionId: string) => void;
+  updateCardAiIntent: (id: string, intent: TerminalAiIntent | null) => void;
 
   // ─── focus / switching ───────────────────────────────────────────────────
   focusCard: (id: string | null) => void;
@@ -384,6 +386,17 @@ export const useTerminalStore = create<TerminalStore>()(
           return { cards };
         }),
 
+      updateCardAiIntent: (id, intent) =>
+        set((state) => {
+          const idx = state.cards.findIndex((c) => c.id === id);
+          if (idx === -1) return state;
+          const nextIntent = intent ?? undefined;
+          if (state.cards[idx].aiIntent === nextIntent) return state;
+          const cards = [...state.cards];
+          cards[idx] = { ...cards[idx], aiIntent: nextIntent };
+          return { cards };
+        }),
+
       // ─── focus / switching ────────────────────────────────────────────────
       focusCard: (id) =>
         set((state) => {
@@ -619,7 +632,7 @@ export const useTerminalStore = create<TerminalStore>()(
         notifications: state.notifications,
         notificationCentreOpen: state.notificationCentreOpen,
       }),
-      version: 4,
+      version: 5,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         return {

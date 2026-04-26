@@ -20,10 +20,10 @@ import {
   onAction,
 } from '@tauri-apps/plugin-notification';
 import { useTerminalStore } from '../../stores/terminalStore';
-import { useOverlayStore } from '../../stores/overlayStore';
 import type { NotificationEntry } from '../../types/terminal';
 import { invoke, isTauriEnv } from '../../lib/tauri-bridge';
 import { logger } from '../../utils/logger';
+import { openNotificationTarget } from './notificationTarget';
 
 // Encodes a cardId into a numeric notification id that Tauri accepts.
 // We use a hash so repeated notifications for the same card share an id
@@ -79,19 +79,7 @@ export function NotificationBridge(): null {
             (options as { extra?: { cardId?: string } }).extra?.cardId ??
             extractCardIdFromTitle(options.title ?? '');
           if (!cardId) return;
-          const store = useTerminalStore.getState();
-          const card = store.getCardById(cardId);
-          if (!card) return;
-
-          // Pinned cards jump straight into the floating-terminal window
-          // so the user can reply without breaking their main focus; all
-          // other cards fall back to focusing the main grid.
-          if (store.isPinned(cardId)) {
-            useOverlayStore.getState().openFloat(cardId);
-          } else {
-            store.setPendingFocusCardId(cardId);
-            store.focusCard(cardId);
-          }
+          openNotificationTarget(cardId);
         });
         unsub = () => listener.unregister();
       } catch {

@@ -1,6 +1,6 @@
 {
   "name": "threadterm",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "A desktop terminal manager for project-bound shell and AI CLI sessions",
   "type": "module",
   "files": [

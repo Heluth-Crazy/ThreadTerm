@@ -87,6 +87,15 @@
     "customCommand": "사용자 지정 명령",
     "customCommandDescription": "이 AI 카드는 기본 provider 명령 대신 사용자 지정 명령을 실행합니다."
   },
+  "aiIntent": {
+    "label": "AI 의도",
+    "none": "의도 없음",
+    "review": "리뷰",
+    "fix": "수정",
+    "research": "조사",
+    "test": "테스트",
+    "docs": "문서"
+  },
   "view": {
     "backToGrid": "그리드로 돌아가기 (⌘/Ctrl+Shift+M)",
     "worktree": "worktree: {{path}}",

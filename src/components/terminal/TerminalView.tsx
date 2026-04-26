@@ -22,6 +22,7 @@ import {
   getAiCliSessionBadge,
 } from './providerSession';
 import { useProviderSessionLifecycle } from './useProviderSessionLifecycle';
+import { AiIntentSelect } from './AiIntentSelect';
 
 interface TerminalViewProps {
   card: TerminalCard;
@@ -124,6 +125,9 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
         </div>
 
         <div className="flex items-center gap-2">
+          {aiSessionBadge && (
+            <AiIntentSelect cardId={card.id} value={card.aiIntent} />
+          )}
           {aiSessionBadge && (
             <span
               title={t(aiSessionBadge.descriptionKey, {

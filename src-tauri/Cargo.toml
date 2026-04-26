@@ -1,6 +1,6 @@
 [package]
 name = "threadterm"
-version = "0.1.0"
+version = "0.3.0"
 description = "ThreadTerm – desktop terminal manager for shell and AI CLI sessions"
 authors = ["ThreadTerm Contributors"]
 license = "MIT"

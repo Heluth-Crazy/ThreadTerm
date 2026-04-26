@@ -38,6 +38,10 @@ to return to the grid.
 
 Up to six cards can be pinned at once.
 
+AI CLI cards also include an intent menu. Use it to mark parallel sessions as
+review, fix, research, test, or docs work so the grid stays readable when
+several agents are running.
+
 ## 4. Use Tile and Carousel Modes
 
 Open the selector with:
@@ -68,8 +72,8 @@ ThreadTerm has two notification layers:
 - desktop OS notifications in packaged Tauri builds
 
 When a session needs attention or produces a reply, click the notification to
-return to the relevant card. If the card is pinned, ThreadTerm can open it in
-the floating terminal.
+return to the relevant card. If the card is pinned, ThreadTerm opens it in the
+floating terminal; otherwise it focuses the card in the main window.
 
 ## Troubleshooting
 

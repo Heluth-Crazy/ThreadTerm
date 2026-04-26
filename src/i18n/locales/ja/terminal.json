@@ -87,6 +87,15 @@
     "customCommand": "カスタムコマンド",
     "customCommandDescription": "この AI カードは既定の provider コマンドではなくカスタムコマンドを実行します。"
   },
+  "aiIntent": {
+    "label": "AI の目的",
+    "none": "目的なし",
+    "review": "レビュー",
+    "fix": "修正",
+    "research": "調査",
+    "test": "テスト",
+    "docs": "ドキュメント"
+  },
   "view": {
     "backToGrid": "グリッドへ戻る (⌘/Ctrl+Shift+M)",
     "worktree": "worktree: {{path}}",
