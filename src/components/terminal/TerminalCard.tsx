@@ -36,6 +36,7 @@ import { getTerminalTypeMeta } from './terminalTypeMeta';
 import { getStatusMeta } from './statusMeta';
 import { buildCardPreview, isTechnicalPreviewLine } from './cardPreview';
 import { AI_CLI_SESSION_BADGE_CLASS, getAiCliSessionBadge } from './providerSession';
+import { AiIntentSelect } from './AiIntentSelect';
 
 export interface TerminalCardProps {
   card: TerminalCardType;
@@ -375,6 +376,9 @@ export function TerminalCardComponent({
             {pinned ? <Pin className="h-3 w-3" /> : <PinOff className="h-3 w-3" />}
           </button>
         </div>
+        {aiSessionBadge && (
+          <AiIntentSelect cardId={card.id} value={card.aiIntent} compact />
+        )}
         <button
           type="button"
           title={t('card.close')}

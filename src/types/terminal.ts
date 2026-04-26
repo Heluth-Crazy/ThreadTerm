@@ -18,6 +18,9 @@ export type TerminalStatus = 'idle' | 'running' | 'waiting' | 'completed' | 'fai
 /** Native CLI session binding state for providers that support resume. */
 export type ProviderSessionState = 'unbound' | 'bound';
 
+/** Lightweight intent labels for AI CLI cards. */
+export type TerminalAiIntent = 'review' | 'fix' | 'research' | 'test' | 'docs';
+
 /** Terminal type identifier; drives icon / colour / default launch command. */
 export type TerminalType =
   | 'shell'
@@ -71,6 +74,8 @@ export interface TerminalCard {
   providerSessionBoundAt?: number;
   /** Last time ThreadTerm launched this card with a provider-native session id. */
   providerSessionLastResumeAt?: number;
+  /** User-selected intent label for quickly scanning AI CLI cards. */
+  aiIntent?: TerminalAiIntent;
   status: TerminalStatus;
   /** Creation timestamp (epoch ms). */
   createdAt: number;

@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { useTerminalStore } from '../../stores/terminalStore';
 import type { NotificationEntry, NotificationKind } from '../../types/terminal';
+import { openNotificationTarget } from './notificationTarget';
 
 const kindIconMap: Record<NotificationKind, typeof AlertTriangle> = {
   waiting: Clock,
@@ -54,10 +55,8 @@ export function NotificationCenter() {
   const notifications = useTerminalStore((s) => s.notifications);
   const toggle = useTerminalStore((s) => s.toggleNotificationCentre);
   const markAll = useTerminalStore((s) => s.markAllNotificationsRead);
-  const markOne = useTerminalStore((s) => s.markNotificationRead);
   const removeOne = useTerminalStore((s) => s.removeNotification);
   const clearAll = useTerminalStore((s) => s.clearNotifications);
-  const focusCard = useTerminalStore((s) => s.focusCard);
   const cards = useTerminalStore((s) => s.cards);
 
   const unreadCount = useMemo(
@@ -72,9 +71,7 @@ export function NotificationCenter() {
   }, [cards]);
 
   const handleClick = (n: NotificationEntry) => {
-    markOne(n.id);
-    if (cardNameById[n.cardId]) {
-      focusCard(n.cardId);
+    if (openNotificationTarget(n.cardId)) {
       toggle(false);
     }
   };

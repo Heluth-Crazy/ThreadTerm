@@ -77,6 +77,17 @@ describe('terminalStore — card lifecycle', () => {
     );
   });
 
+  it('updates and clears an AI intent label', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'foo', projectPath: '/tmp/foo', terminalType: 'codex' });
+
+    s.updateCardAiIntent(id, 'review');
+    expect(useTerminalStore.getState().getCardById(id)?.aiIntent).toBe('review');
+
+    useTerminalStore.getState().updateCardAiIntent(id, null);
+    expect(useTerminalStore.getState().getCardById(id)?.aiIntent).toBeUndefined();
+  });
+
   it('updateCardOutput strips ANSI and retains only the tail', () => {
     const id = useTerminalStore.getState().createCard({
       projectName: 'foo',

@@ -46,14 +46,14 @@ v0.3 starts with session visibility before adding heavier workflow controls:
 | Slice | Scope | Acceptance |
 | --- | --- | --- |
 | v0.3.0 Session visibility | Show AI session badges for Claude, Codex, and Gemini cards; distinguish new session ids, resume-ready sessions, CLI-only sessions, custom commands, and missing CLIs. | Grid cards, focused terminal headers, and missing-CLI notifications explain the same state. |
-| v0.3.1 Session organization | Add lightweight card notes or intent labels such as `review`, `fix`, and `research`. | Users can label AI cards and scan multiple sessions without relying only on project names. |
-| v0.3.2 Return paths | Improve notification click-through and recovery fallback when a provider session cannot be resumed. | Clicking AI session notifications consistently returns to the right card or floating terminal on macOS and Windows. |
+| v0.3.1 Session organization | Add lightweight intent labels such as `review`, `fix`, and `research`. | Users can label AI cards and scan multiple sessions without relying only on project names. |
+| v0.3.2 Return paths | Improve notification click-through and recovery fallback when a provider session cannot be resumed. | Clicking AI session notifications uses one shared return path: pinned cards open in the float, unpinned cards focus in the main window. |
 
-Planned themes after v0.3.0:
+Completed v0.3 themes:
 
 - clearer Claude/Codex/Gemini session resume flows
 - project-level grouping for AI sessions and shell tasks
-- card notes or labels for intent, such as `review`, `fix`, `research`
+- card intent labels such as `review`, `fix`, `research`, `test`, and `docs`
 - richer notification summaries for "waiting for input" and "reply ready"
 - better handling when an AI CLI is missing from `PATH`
 

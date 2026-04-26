@@ -87,6 +87,15 @@
     "customCommand": "自定义命令",
     "customCommandDescription": "这张 AI 卡片运行自定义命令，而不是默认 provider 命令。"
   },
+  "aiIntent": {
+    "label": "AI 意图",
+    "none": "无意图",
+    "review": "审查",
+    "fix": "修复",
+    "research": "研究",
+    "test": "测试",
+    "docs": "文档"
+  },
   "view": {
     "backToGrid": "返回网格（⌘/Ctrl+Shift+M）",
     "worktree": "worktree：{{path}}",

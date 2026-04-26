@@ -46,6 +46,8 @@ export function TerminalManager() {
   const toggleNotificationCentre = useTerminalStore((s) => s.toggleNotificationCentre);
   const unreadCount = useTerminalStore((s) => s.notifications.filter((n) => !n.read).length);
   const selectedProjectPath = useTerminalStore((s) => s.selectedProjectPath);
+  const pendingFocusCardId = useTerminalStore((s) => s.pendingFocusCardId);
+  const setPendingFocusCardId = useTerminalStore((s) => s.setPendingFocusCardId);
 
   const selectedProjectName = useMemo(() => {
     if (!selectedProjectPath) return null;
@@ -109,6 +111,17 @@ export function TerminalManager() {
       setViewMode('grid');
     }
   }, [focusedCardId, focusedCard]);
+
+  useEffect(() => {
+    if (!pendingFocusCardId) return;
+    if (!cards.some((card) => card.id === pendingFocusCardId)) {
+      setPendingFocusCardId(null);
+      return;
+    }
+    focusCard(pendingFocusCardId);
+    setViewMode('focus');
+    setPendingFocusCardId(null);
+  }, [cards, focusCard, pendingFocusCardId, setPendingFocusCardId]);
 
   const handleOpenTerminal = useCallback(
     (cardId: string) => {
