@@ -193,7 +193,7 @@ src/                  主窗口 React UI
 src/windows/          选择器和浮动终端窗口入口
 src/stores/           终端和浮窗状态的 Zustand store
 src-tauri/src/        Tauri 后端：PTY、浮窗、通知、设置、原生会话发现
-docs/                 构建、打包、媒体和手动 QA 文档
+docs/                 构建、打包和公开媒体
 ```
 
 ## 架构
