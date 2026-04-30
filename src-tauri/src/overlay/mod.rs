@@ -58,7 +58,7 @@ mod window;
 
 // ── Public surface for `lib.rs` ─────────────────────────────────────────────
 
-pub use hotkey::{PluginShortcutState, dispatch_hotkey, register_default_shortcuts};
+pub use hotkey::{dispatch_hotkey, register_default_shortcuts, PluginShortcutState};
 pub use state::load_settings;
 pub use window::prewarm_windows;
 

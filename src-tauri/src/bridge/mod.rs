@@ -17,7 +17,7 @@ use protocol::{
     TerminalStatus,
 };
 
-const DEFAULT_BRIDGE_HOST: &str = "0.0.0.0";
+const DEFAULT_BRIDGE_HOST: &str = "127.0.0.1";
 const DEFAULT_BRIDGE_PORT: u16 = 5174;
 const PREVIEW_MAX_LINES: usize = 8;
 const PREVIEW_CHANNEL_CAPACITY: usize = 1024;
@@ -65,7 +65,9 @@ impl BridgeRuntime {
 
     fn status(&self) -> BridgeStatus {
         match self.server.lock().ok().and_then(|guard| {
-            guard.as_ref().map(|handle| (handle.host.clone(), handle.port))
+            guard
+                .as_ref()
+                .map(|handle| (handle.host.clone(), handle.port))
         }) {
             Some((host, port)) => BridgeStatus {
                 running: true,
@@ -87,14 +89,15 @@ impl BridgeRuntime {
 pub async fn bridge_start(host: Option<String>, port: Option<u16>) -> Result<BridgeStatus, String> {
     let runtime = BRIDGE_RUNTIME.clone();
 
-    {
-        let guard = runtime
+    let already_running = {
+        runtime
             .server
             .lock()
-            .map_err(|e| format!("Bridge state unavailable: {e}"))?;
-        if guard.is_some() {
-            return Ok(runtime.status());
-        }
+            .map_err(|e| format!("Bridge state unavailable: {e}"))?
+            .is_some()
+    };
+    if already_running {
+        return Ok(runtime.status());
     }
 
     let bind_host = host
@@ -103,11 +106,13 @@ pub async fn bridge_start(host: Option<String>, port: Option<u16>) -> Result<Bri
     let bind_port = port.unwrap_or(DEFAULT_BRIDGE_PORT);
     let handle = server::start(runtime.clone(), bind_host, bind_port).await?;
 
-    let mut guard = runtime
-        .server
-        .lock()
-        .map_err(|e| format!("Bridge state unavailable: {e}"))?;
-    *guard = Some(handle);
+    {
+        let mut guard = runtime
+            .server
+            .lock()
+            .map_err(|e| format!("Bridge state unavailable: {e}"))?;
+        *guard = Some(handle);
+    }
 
     let status = runtime.status();
     tracing::info!(
@@ -240,6 +245,7 @@ fn public_host_for_url(host: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{sync::mpsc, time::Duration};
 
     #[test]
     fn preview_strips_ansi_and_reports_hidden_lines() {
@@ -256,5 +262,27 @@ mod tests {
     fn wildcard_bind_host_uses_loopback_for_display_url() {
         assert_eq!(public_host_for_url("0.0.0.0"), "127.0.0.1");
         assert_eq!(public_host_for_url("192.168.1.2"), "192.168.1.2");
+    }
+
+    #[test]
+    fn bridge_start_returns_after_binding() {
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+            let result = runtime.block_on(bridge_start(Some("127.0.0.1".to_string()), Some(0)));
+            let _ = tx.send(result);
+        });
+
+        let status = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("bridge_start should not deadlock")
+            .expect("bridge_start should succeed");
+        assert!(status.running);
+
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        runtime
+            .block_on(bridge_stop())
+            .expect("bridge_stop should succeed");
     }
 }

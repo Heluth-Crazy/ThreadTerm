@@ -135,7 +135,8 @@ pub(super) fn order_overlay_window_front(window: &WebviewWindow) {
     let Ok(ns_window_ptr) = window.ns_window() else {
         return;
     };
-    let Some(ns_window) = (unsafe { (ns_window_ptr as *mut objc2_app_kit::NSWindow).as_ref() }) else {
+    let Some(ns_window) = (unsafe { (ns_window_ptr as *mut objc2_app_kit::NSWindow).as_ref() })
+    else {
         return;
     };
 

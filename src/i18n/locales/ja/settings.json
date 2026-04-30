@@ -75,10 +75,23 @@
     "stopped": "停止中",
     "start": "起動",
     "stop": "停止",
-    "refresh": "更新",
-    "error": "操作に失敗しました: {{message}}",
-    "pairingTitle": "ペアリング入口",
-    "pairingDescription": "5 分で期限切れになる一回限りのペアリングコードを生成します。後で QR 表示に置き換えます。",
+  "refresh": "更新",
+  "error": "操作に失敗しました: {{message}}",
+  "bind": {
+    "label": "ブリッジの待ち受けアドレス",
+    "loopback": "この端末のみ",
+    "lan": "LAN / すべてのインターフェイス"
+  },
+  "lanConfirm": "モバイルアクセスを 0.0.0.0 にバインドすると、ThreadTerm ブリッジの通信が現在のネットワークに公開されます。続行しますか？",
+  "confirmLanStart": "LAN 起動を確認",
+  "cancelLanStart": "キャンセル",
+  "listeningAddress": "待ち受け:",
+  "docs": {
+    "tailscale": "Tailscale ドキュメント",
+    "cloudflare": "Cloudflare Tunnel ドキュメント"
+  },
+  "pairingTitle": "ペアリング入口",
+  "pairingDescription": "5 分で期限切れになる一回限りのペアリングコードを生成します。後で QR 表示に置き換えます。",
     "newPairCode": "ペアリングコードを生成",
     "copyUrl": "URL をコピー",
     "devicesTitle": "ペアリング済みデバイス",

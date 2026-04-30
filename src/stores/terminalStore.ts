@@ -15,6 +15,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import type {
   NotificationEntry,
   NotificationKind,
+  Block,
   TerminalCard,
   TerminalCreateOptions,
   TerminalEvent,
@@ -106,6 +107,7 @@ export const MAX_PINNED_CARDS = 6;
 interface TerminalStore {
   // Cards
   cards: TerminalCard[];
+  blocks: Record<string, Block[]>;
   focusedCardId: string | null;
   lastActiveCardId: string | null;
 
@@ -138,6 +140,23 @@ interface TerminalStore {
   markCardRead: (id: string) => void;
   markProviderSessionBound: (id: string, providerSessionId: string) => void;
   updateCardAiIntent: (id: string, intent: TerminalAiIntent | null) => void;
+  recordBlockStarted: (input: {
+    cardId: string;
+    blockId: string;
+    command: string;
+    cwd: string;
+    startedAt: number;
+    bufferStart?: number;
+  }) => void;
+  recordBlockFinished: (input: {
+    cardId: string;
+    blockId: string;
+    exitCode?: number | null;
+    finishedAt: number;
+    durationMs?: number | null;
+    bufferEnd?: number;
+  }) => void;
+  ensureBlocksState: () => void;
 
   // ─── focus / switching ───────────────────────────────────────────────────
   focusCard: (id: string | null) => void;
@@ -178,6 +197,7 @@ export const useTerminalStore = create<TerminalStore>()(
   persist(
     (set, get) => ({
       cards: [],
+      blocks: {},
       focusedCardId: null,
       lastActiveCardId: null,
       selectedProjectPath: null,
@@ -248,6 +268,8 @@ export const useTerminalStore = create<TerminalStore>()(
           }
           // Also drop from the pinned list so it doesn't linger as a dead entry.
           const pinnedCardIds = state.pinnedCardIds.filter((p) => p !== id);
+          const blocks = { ...(state.blocks ?? {}) };
+          delete blocks[id];
           return {
             cards,
             focusedCardId,
@@ -255,6 +277,7 @@ export const useTerminalStore = create<TerminalStore>()(
             notifications,
             selectedProjectPath,
             pinnedCardIds,
+            blocks,
           };
         });
       },
@@ -396,6 +419,69 @@ export const useTerminalStore = create<TerminalStore>()(
           cards[idx] = { ...cards[idx], aiIntent: nextIntent };
           return { cards };
         }),
+
+      recordBlockStarted: (input) =>
+        set((state) => {
+          const blocksByCard = state.blocks ?? {};
+          const existing = blocksByCard[input.cardId] ?? [];
+          const block: Block = {
+            id: input.blockId,
+            cardId: input.cardId,
+            cwd: input.cwd,
+            command: input.command,
+            startedAt: input.startedAt,
+            bufferStart: input.bufferStart ?? 0,
+            state: 'running',
+          };
+
+          return {
+            blocks: {
+              ...blocksByCard,
+              [input.cardId]: [
+                ...existing.filter((candidate) => candidate.id !== input.blockId),
+                block,
+              ],
+            },
+          };
+        }),
+
+      recordBlockFinished: (input) =>
+        set((state) => {
+          const blocksByCard = state.blocks ?? {};
+          const existing = blocksByCard[input.cardId];
+          if (!existing) return state;
+
+          let changed = false;
+          const blocks = existing.map((block) => {
+            if (block.id !== input.blockId) return block;
+            changed = true;
+            const exitCode = input.exitCode ?? undefined;
+            return {
+              ...block,
+              finishedAt: input.finishedAt,
+              exitCode,
+              durationMs: input.durationMs ?? undefined,
+              bufferEnd: input.bufferEnd,
+              state:
+                exitCode === undefined
+                  ? 'aborted'
+                  : exitCode === 0
+                    ? 'success'
+                    : 'failed',
+            } satisfies Block;
+          });
+
+          if (!changed) return state;
+          return {
+            blocks: {
+              ...blocksByCard,
+              [input.cardId]: blocks,
+            },
+          };
+        }),
+
+      ensureBlocksState: () =>
+        set((state) => (state.blocks === undefined ? { blocks: {} } : state)),
 
       // ─── focus / switching ────────────────────────────────────────────────
       focusCard: (id) =>
@@ -625,6 +711,7 @@ export const useTerminalStore = create<TerminalStore>()(
           ...card,
           status: isTransientStatus(card.status) ? 'idle' : card.status,
         })),
+        blocks: state.blocks ?? {},
         focusedCardId: null,
         lastActiveCardId: state.lastActiveCardId,
         selectedProjectPath: state.selectedProjectPath,
@@ -638,6 +725,7 @@ export const useTerminalStore = create<TerminalStore>()(
         return {
           ...state,
           focusedCardId: null,
+          blocks: state.blocks ?? {},
           cards: state.cards?.map((card) => ({
             ...card,
             status: isTransientStatus(card.status) ? 'idle' : card.status,

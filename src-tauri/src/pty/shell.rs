@@ -86,10 +86,7 @@ fn merge_path_values(values: &[&str]) -> String {
 pub(super) fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str) {
     #[cfg(target_os = "macos")]
     {
-        if shell.ends_with("/zsh")
-            || shell == "zsh"
-            || shell.ends_with("/bash")
-            || shell == "bash"
+        if shell.ends_with("/zsh") || shell == "zsh" || shell.ends_with("/bash") || shell == "bash"
         {
             cmd.arg("-l");
         }

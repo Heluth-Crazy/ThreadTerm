@@ -10,9 +10,7 @@ use tauri::{AppHandle, Emitter};
 use crate::bridge;
 
 use super::registry;
-use super::session::{
-    self, OUTPUT_IDLE_POLL, PtySession, SessionState, STARTUP_ERROR_SUPPRESS,
-};
+use super::session::{self, PtySession, SessionState, OUTPUT_IDLE_POLL, STARTUP_ERROR_SUPPRESS};
 
 // ── Regex patterns (compiled once) ───────────────────────────────────────────
 
@@ -38,23 +36,22 @@ pub(super) static WAITING_PATTERNS: Lazy<RegexSet> = Lazy::new(|| {
 // Patterns below only match things the user almost certainly needs to see.
 pub(super) static ERROR_PATTERNS: Lazy<RegexSet> = Lazy::new(|| {
     RegexSet::new([
-        r"(?im)^\s*error[:\s]",            // line starts with "Error:" / "ERROR "
-        r"(?im)^\s*\[error\]",             // log prefix "[ERROR] ..."
-        r"(?im)^\s*\[fatal\]",             // log prefix "[FATAL] ..."
-        r"(?i)fatal error:",               // compiler-style "fatal error:"
-        r"(?i)permission denied",          // shell / FS
-        r"(?i)command not found",          // bash / zsh
-        r"(?i)segmentation fault",         // SIGSEGV
-        r"(?im)^\s*panic(?:ked)?[:\s]",    // Rust/Go panic lines
-        r"(?i)traceback \(most recent",    // Python traceback
-        r"(?i)unhandled exception",        // .NET / node-style
+        r"(?im)^\s*error[:\s]",         // line starts with "Error:" / "ERROR "
+        r"(?im)^\s*\[error\]",          // log prefix "[ERROR] ..."
+        r"(?im)^\s*\[fatal\]",          // log prefix "[FATAL] ..."
+        r"(?i)fatal error:",            // compiler-style "fatal error:"
+        r"(?i)permission denied",       // shell / FS
+        r"(?i)command not found",       // bash / zsh
+        r"(?i)segmentation fault",      // SIGSEGV
+        r"(?im)^\s*panic(?:ked)?[:\s]", // Rust/Go panic lines
+        r"(?i)traceback \(most recent", // Python traceback
+        r"(?i)unhandled exception",     // .NET / node-style
     ])
     .expect("invalid error regex")
 });
 
-pub(super) static ANSI_STRIP: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").expect("invalid ansi regex")
-});
+pub(super) static ANSI_STRIP: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").expect("invalid ansi regex"));
 
 // ── Event payloads ───────────────────────────────────────────────────────────
 
@@ -115,6 +112,7 @@ pub(super) fn stream_pty_output(
     app_handle: AppHandle,
 ) {
     let mut buf = [0u8; 8192];
+    let mut block_parser = super::blocks::BlockParser::new(id.clone());
     let mut last_attention_time = Instant::now() - Duration::from_secs(60);
     let attention_debounce = Duration::from_secs(5);
     let session_start = Instant::now();
@@ -124,6 +122,9 @@ pub(super) fn stream_pty_output(
             Ok(0) => break, // EOF – child exited
             Ok(n) => {
                 let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                for event in block_parser.ingest(&data) {
+                    event.emit(&app_handle);
+                }
                 let _ = app_handle.emit(
                     "pty-output",
                     PtyOutputPayload {
@@ -206,16 +207,12 @@ pub(super) fn stream_pty_output(
     }
 
     // Determine exit code and update state.
-    let wait_code = ses
-        .child
-        .lock()
-        .ok()
-        .and_then(|mut child| {
-            child
-                .wait()
-                .ok()
-                .map(|status| if status.success() { 0u32 } else { 1u32 })
-        });
+    let wait_code = ses.child.lock().ok().and_then(|mut child| {
+        child
+            .wait()
+            .ok()
+            .map(|status| if status.success() { 0u32 } else { 1u32 })
+    });
     let code = if session::is_killed(&ses) {
         None
     } else {

@@ -189,4 +189,3 @@ fn path_matches(candidate: &str, requested: &str) -> bool {
     candidate_path.file_name().and_then(|v| v.to_str())
         == requested_path.file_name().and_then(|v| v.to_str())
 }
-

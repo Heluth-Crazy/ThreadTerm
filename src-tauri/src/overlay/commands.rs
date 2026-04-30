@@ -7,9 +7,9 @@ use super::platform::{
     restore_regular_activation_policy, restore_regular_activation_policy_if_no_overlay_visible,
     set_overlay_activation_policy,
 };
-use super::state::{FloatBounds, OVERLAY_SETTINGS, OverlaySettings};
+use super::state::{FloatBounds, OverlaySettings, OVERLAY_SETTINGS};
 use super::window::{
-    FLOAT_LABEL, MAIN_LABEL, SELECTOR_LABEL, ensure_float, ensure_selector, primary_monitor_bounds,
+    ensure_float, ensure_selector, primary_monitor_bounds, FLOAT_LABEL, MAIN_LABEL, SELECTOR_LABEL,
 };
 
 #[tauri::command]

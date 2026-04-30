@@ -9,6 +9,8 @@ const bridgeMocks = vi.hoisted(() => {
     state: undefined as undefined | ((payload: { ptyId: string; state: string }) => void),
     exit: undefined as undefined | ((payload: { id: string; code?: number }) => void),
     attention: undefined as undefined | ((payload: unknown) => void),
+    blockStarted: undefined as undefined | ((payload: unknown) => void),
+    blockFinished: undefined as undefined | ((payload: unknown) => void),
   };
 
   return {
@@ -31,6 +33,14 @@ const bridgeMocks = vi.hoisted(() => {
         listeners.attention = cb;
         return Promise.resolve(() => {});
       }),
+      onBlockStarted: vi.fn((cb) => {
+        listeners.blockStarted = cb;
+        return Promise.resolve(() => {});
+      }),
+      onBlockFinished: vi.fn((cb) => {
+        listeners.blockFinished = cb;
+        return Promise.resolve(() => {});
+      }),
     },
   };
 });
@@ -49,6 +59,7 @@ vi.mock('./headlessPreview', () => ({
 function resetStore() {
   useTerminalStore.setState({
     cards: [],
+    blocks: {},
     focusedCardId: null,
     lastActiveCardId: null,
     selectedProjectPath: null,
@@ -75,6 +86,8 @@ describe('TerminalEventBridge status reconciliation', () => {
     bridgeMocks.listeners.state = undefined;
     bridgeMocks.listeners.exit = undefined;
     bridgeMocks.listeners.attention = undefined;
+    bridgeMocks.listeners.blockStarted = undefined;
+    bridgeMocks.listeners.blockFinished = undefined;
     bridgeMocks.pty.getSessionState.mockResolvedValue('Idle');
   });
 
@@ -194,5 +207,42 @@ describe('TerminalEventBridge status reconciliation', () => {
     expect(notification?.title).toContain('CLI');
     expect(notification?.body).toContain('PATH');
     expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(true);
+  });
+
+  it('records block events against the matching card', async () => {
+    const id = createCard();
+
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(bridgeMocks.listeners.blockStarted).toBeDefined();
+      expect(bridgeMocks.listeners.blockFinished).toBeDefined();
+    });
+
+    act(() => {
+      bridgeMocks.listeners.blockStarted?.({
+        sessionId: id,
+        blockId: 'block-1',
+        command: 'npm test',
+        cwd: '/tmp/repo',
+        startedAt: 1_000,
+      });
+      bridgeMocks.listeners.blockFinished?.({
+        sessionId: id,
+        blockId: 'block-1',
+        exitCode: 0,
+        finishedAt: 1_500,
+        durationMs: 500,
+      });
+    });
+
+    expect(useTerminalStore.getState().blocks[id]?.[0]).toMatchObject({
+      id: 'block-1',
+      command: 'npm test',
+      cwd: '/tmp/repo',
+      state: 'success',
+      exitCode: 0,
+      durationMs: 500,
+    });
   });
 });

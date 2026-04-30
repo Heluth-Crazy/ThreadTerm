@@ -1,7 +1,8 @@
 use std::time::{Duration, Instant};
 
+use super::blocks::{BlockEvent, BlockParser};
 use super::events::{ANSI_STRIP, ERROR_PATTERNS, WAITING_PATTERNS};
-use super::session::{OUTPUT_IDLE_GRACE, SessionState, should_idle_after_quiet};
+use super::session::{should_idle_after_quiet, SessionState, OUTPUT_IDLE_GRACE};
 
 #[test]
 fn test_session_state_default() {
@@ -85,7 +86,6 @@ fn test_error_patterns_match() {
         ("panicked at 'assertion failed'", true),
         ("Traceback (most recent call last):", true),
         ("Unhandled exception in thread", true),
-
         // Previously false-positive, now correctly ignored
         ("Build succeeded", false),
         ("Everything is fine", false),
@@ -101,5 +101,72 @@ fn test_error_patterns_match() {
             expected,
             "Failed for: {input:?}"
         );
+    }
+}
+
+#[test]
+fn block_parser_detects_osc133_command_lifecycle() {
+    let mut parser = BlockParser::new("pty-1".to_string());
+    let mut events = Vec::new();
+
+    events.extend(parser.ingest("\x1b]133;A\x07prompt> \x1b]133;B\x07"));
+    events.extend(parser.ingest("echo hello\r\n\x1b]6973;cmd_id=cmd-1;cwd=L3RtcC9yZXBv\x07"));
+    events
+        .extend(parser.ingest("\x1b]133;C\x07hello\r\n\x1b]133;D;0\x07\x1b]6973;duration=42\x07"));
+
+    assert_eq!(events.len(), 2);
+    match &events[0] {
+        BlockEvent::Started(payload) => {
+            assert_eq!(payload.session_id, "pty-1");
+            assert_eq!(payload.block_id, "cmd-1");
+            assert_eq!(payload.command, "echo hello");
+            assert_eq!(payload.cwd, "/tmp/repo");
+            assert!(payload.started_at > 0);
+        }
+        other => panic!("expected started event, got {other:?}"),
+    }
+
+    match &events[1] {
+        BlockEvent::Finished(payload) => {
+            assert_eq!(payload.session_id, "pty-1");
+            assert_eq!(payload.block_id, "cmd-1");
+            assert_eq!(payload.exit_code, 0);
+            assert_eq!(payload.duration_ms, Some(42));
+            assert!(payload.finished_at > 0);
+        }
+        other => panic!("expected finished event, got {other:?}"),
+    }
+}
+
+#[test]
+fn block_parser_handles_split_osc_sequences_without_modifying_stream() {
+    let mut parser = BlockParser::new("pty-1".to_string());
+
+    assert!(parser.ingest("\x1b]133;B").is_empty());
+    assert!(parser.ingest("\x07git status\r").is_empty());
+    let events = parser.ingest("\x1b]133;C\x1b\\\x1b]133;D;1\x1b\\");
+
+    assert_eq!(events.len(), 2);
+    assert!(matches!(events[0], BlockEvent::Started(_)));
+    match &events[1] {
+        BlockEvent::Finished(payload) => assert_eq!(payload.exit_code, 1),
+        other => panic!("expected finished event, got {other:?}"),
+    }
+}
+
+#[test]
+fn block_parser_fuzz_does_not_panic_on_random_control_streams() {
+    let mut parser = BlockParser::new("pty-fuzz".to_string());
+
+    for byte in 0u8..=255 {
+        let chunk = format!(
+            "\x1b]{};{};D;{}\x07\x1b[{}mtext{}\x1b\\",
+            byte % 200,
+            byte,
+            byte % 3,
+            byte % 8,
+            char::from(byte)
+        );
+        let _ = parser.ingest(&chunk);
     }
 }

@@ -286,7 +286,12 @@ export function TerminalManager() {
 
       {/* Shortcut hint */}
       {cards.length > 0 && (
-        <div className="pointer-events-none absolute bottom-3 right-3 z-10 select-none rounded-lg border border-border/60 bg-background/80 px-2.5 py-1 text-[10px] text-muted-foreground backdrop-blur">
+        <div
+          className={[
+            'pointer-events-none absolute right-3 z-10 select-none rounded-lg border border-border/60 bg-background/80 px-2.5 py-1 text-[10px] text-muted-foreground backdrop-blur',
+            viewMode === 'focus' && focusedCard ? 'bottom-10' : 'bottom-3',
+          ].join(' ')}
+        >
           <span className="font-mono">⌘/Ctrl+`</span> {t('app.shortcutHint').split(' · ')[0]} ·{' '}
           <span className="font-mono">⌘/Ctrl+Tab</span> {t('app.shortcutHint').split(' · ')[1]} ·{' '}
           <span className="font-mono">⌘/Ctrl+1-9</span> {t('app.shortcutHint').split(' · ')[2]}
