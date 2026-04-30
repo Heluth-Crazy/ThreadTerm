@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
+use dashmap::DashMap;
 use once_cell::sync::Lazy;
 
 use super::session::{LivePtySessionSnapshot, PtySession};

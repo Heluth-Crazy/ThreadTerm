@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { BRIDGE_PROTOCOL_VERSION } from './protocol';
 import { BridgeWsClient, buildBridgeWsUrl } from './wsClient';
 
 class FakeWebSocket {
@@ -61,10 +62,21 @@ describe('mobile bridge ws client', () => {
 
     socket.emitOpen();
     expect(onStateChange).toHaveBeenCalledWith('open');
-    expect(JSON.parse(socket.sent[0])).toEqual({ kind: 'subscribe' });
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'subscribe',
+    });
 
-    socket.emitMessage({ kind: 'pong', t: 123 });
-    expect(onMessage).toHaveBeenCalledWith({ kind: 'pong', t: 123 });
+    socket.emitMessage({
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'pong',
+      t: 123,
+    });
+    expect(onMessage).toHaveBeenCalledWith({
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'pong',
+      t: 123,
+    });
   });
 
   it('rejects sends before connection opens', () => {
@@ -75,5 +87,45 @@ describe('mobile bridge ws client', () => {
     });
 
     expect(() => client.send({ kind: 'ping' })).toThrow(/not open/i);
+  });
+
+  it('adds the protocol version to every outbound message', () => {
+    FakeWebSocket.instances = [];
+    const client = new BridgeWsClient({
+      baseUrl: 'http://127.0.0.1:5174',
+      token: 'device-token',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    });
+
+    client.connect();
+    const socket = FakeWebSocket.instances[0];
+    socket.emitOpen();
+    client.send({ kind: 'ping' });
+
+    expect(JSON.parse(socket.sent[1])).toEqual({
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'ping',
+    });
+  });
+
+  it('rejects inbound messages with a missing or mismatched protocol version', () => {
+    FakeWebSocket.instances = [];
+    const onError = vi.fn();
+    const client = new BridgeWsClient({
+      baseUrl: 'http://127.0.0.1:5174',
+      token: 'device-token',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    });
+
+    client.connect({ onError });
+    const socket = FakeWebSocket.instances[0];
+
+    socket.emitMessage({ kind: 'pong', t: 123 });
+    socket.emitMessage({ protocol_version: 2, kind: 'pong', t: 123 });
+
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(onError.mock.calls[0]?.[0]).toMatchObject({
+      message: expect.stringContaining('protocol version'),
+    });
   });
 });

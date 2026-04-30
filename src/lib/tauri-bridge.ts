@@ -22,6 +22,22 @@ export interface AttentionRequiredEvent {
   message: string;
 }
 
+export interface BlockStartedEvent {
+  sessionId: string;
+  blockId: string;
+  command: string;
+  cwd: string;
+  startedAt: number;
+}
+
+export interface BlockFinishedEvent {
+  sessionId: string;
+  blockId: string;
+  exitCode: number | null;
+  finishedAt: number;
+  durationMs?: number | null;
+}
+
 export const pty = {
   create: (id: string, workingDir: string, rows: number, cols: number): Promise<string> =>
     invoke<string>('pty_create', { id, workingDir, rows, cols }),
@@ -54,6 +70,12 @@ export const pty = {
 
   onAttentionRequired: (cb: (payload: AttentionRequiredEvent) => void): Promise<() => void> =>
     listen<AttentionRequiredEvent>('attention-required', (e) => cb(e.payload)),
+
+  onBlockStarted: (cb: (payload: BlockStartedEvent) => void): Promise<() => void> =>
+    listen<BlockStartedEvent>('pty://block-started', (e) => cb(e.payload)),
+
+  onBlockFinished: (cb: (payload: BlockFinishedEvent) => void): Promise<() => void> =>
+    listen<BlockFinishedEvent>('pty://block-finished', (e) => cb(e.payload)),
 };
 
 export interface ProviderSessionInfo {

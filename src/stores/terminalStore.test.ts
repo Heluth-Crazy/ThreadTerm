@@ -4,6 +4,7 @@ import { MAX_PINNED_CARDS, useTerminalStore } from './terminalStore';
 function resetStore() {
   useTerminalStore.setState({
     cards: [],
+    blocks: {},
     focusedCardId: null,
     lastActiveCardId: null,
     selectedProjectPath: null,
@@ -152,6 +153,80 @@ describe('terminalStore — card lifecycle', () => {
     expect(useTerminalStore.getState().notifications).toHaveLength(1);
     useTerminalStore.getState().removeCard(id);
     expect(useTerminalStore.getState().notifications).toHaveLength(0);
+  });
+
+  it('removeCard drops related command blocks', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({
+      projectName: 'foo',
+      projectPath: '/tmp/foo',
+      terminalType: 'shell',
+    });
+    s.recordBlockStarted({
+      cardId: id,
+      blockId: 'block-1',
+      command: 'npm test',
+      cwd: '/tmp/foo',
+      startedAt: 1_000,
+      bufferStart: 4,
+    });
+
+    useTerminalStore.getState().removeCard(id);
+
+    expect(useTerminalStore.getState().blocks[id]).toBeUndefined();
+  });
+});
+
+describe('terminalStore command blocks', () => {
+  it('starts and finishes command blocks by card id', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'foo', projectPath: '/tmp/foo', terminalType: 'shell' });
+
+    s.recordBlockStarted({
+      cardId: id,
+      blockId: 'block-1',
+      command: 'npm test',
+      cwd: '/tmp/foo',
+      startedAt: 1_000,
+      bufferStart: 12,
+    });
+
+    expect(useTerminalStore.getState().blocks[id]).toEqual([
+      {
+        id: 'block-1',
+        cardId: id,
+        command: 'npm test',
+        cwd: '/tmp/foo',
+        startedAt: 1_000,
+        bufferStart: 12,
+        state: 'running',
+      },
+    ]);
+
+    s.recordBlockFinished({
+      cardId: id,
+      blockId: 'block-1',
+      exitCode: 1,
+      finishedAt: 1_250,
+      durationMs: 250,
+      bufferEnd: 18,
+    });
+
+    expect(useTerminalStore.getState().blocks[id]?.[0]).toMatchObject({
+      finishedAt: 1_250,
+      exitCode: 1,
+      durationMs: 250,
+      bufferEnd: 18,
+      state: 'failed',
+    });
+  });
+
+  it('defaults missing legacy blocks state to an empty record', () => {
+    useTerminalStore.setState({ blocks: undefined as never });
+
+    useTerminalStore.getState().ensureBlocksState();
+
+    expect(useTerminalStore.getState().blocks).toEqual({});
   });
 });
 

@@ -5,6 +5,12 @@ export type TerminalStatus =
   | 'completed'
   | 'failed';
 
+export const BRIDGE_PROTOCOL_VERSION = 1;
+
+export interface VersionedBridgeMessage {
+  protocol_version: typeof BRIDGE_PROTOCOL_VERSION;
+}
+
 export interface CardMeta {
   id: string;
   status: TerminalStatus;
@@ -21,7 +27,7 @@ export interface NotificationEntry {
   createdAt: number;
 }
 
-export type ClientMessage =
+export type ClientCommand =
   | { kind: 'subscribe'; card_ids?: string[] }
   | { kind: 'input'; card_id: string; data: string }
   | { kind: 'resize'; card_id: string; cols: number; rows: number }
@@ -37,7 +43,9 @@ export type ClientMessage =
   | { kind: 'mark_read'; card_id: string }
   | { kind: 'ping' };
 
-export type ServerMessage =
+export type ClientMessage = VersionedBridgeMessage & ClientCommand;
+
+export type ServerCommand =
   | { kind: 'snapshot'; cards: CardMeta[]; notifications: NotificationEntry[] }
   | { kind: 'card_added' | 'card_updated' | 'card_removed'; card: CardMeta }
   | {
@@ -57,3 +65,5 @@ export type ServerMessage =
   | { kind: 'notification'; entry: NotificationEntry }
   | { kind: 'pong'; t: number }
   | { kind: 'error'; code: string; message: string };
+
+export type ServerMessage = VersionedBridgeMessage & ServerCommand;

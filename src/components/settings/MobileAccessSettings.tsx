@@ -1,5 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Copy, Power, QrCode, RefreshCw, Smartphone, Trash2 } from 'lucide-react';
+import {
+  Copy,
+  ExternalLink,
+  Power,
+  QrCode,
+  RefreshCw,
+  Smartphone,
+  Trash2,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   isTauriEnv,
@@ -10,6 +18,10 @@ import {
 } from '../../lib/tauri-bridge';
 
 type ActionState = 'idle' | 'busy' | 'failed';
+type BindHost = '127.0.0.1' | '0.0.0.0';
+
+const DEFAULT_BIND_HOST: BindHost = '127.0.0.1';
+const LAN_BIND_HOST: BindHost = '0.0.0.0';
 
 const stoppedStatus: BridgeStatus = {
   running: false,
@@ -23,19 +35,45 @@ export function MobileAccessSettings() {
   const [status, setStatus] = useState<BridgeStatus>(stoppedStatus);
   const [pairQr, setPairQr] = useState<PairQrResponse | null>(null);
   const [devices, setDevices] = useState<BridgeDevice[]>([]);
+  const [bindHost, setBindHost] = useState<BindHost>(DEFAULT_BIND_HOST);
+  const [lanConfirmVisible, setLanConfirmVisible] = useState(false);
   const [actionState, setActionState] = useState<ActionState>('idle');
   const [error, setError] = useState<string | null>(null);
+
+  const createPairQrForStatus = async (
+    nextStatus: BridgeStatus,
+    fallbackHost?: string,
+  ) => {
+    if (!nextStatus.running) {
+      setPairQr(null);
+      return;
+    }
+
+    try {
+      setPairQr(await mobileBridge.pairQr(nextStatus.host ?? fallbackHost));
+    } catch (err) {
+      setPairQr(null);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const loadDevices = async () => {
+    try {
+      setDevices(await mobileBridge.devices());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const refresh = async () => {
     if (!isTauriEnv()) return;
 
+    setError(null);
     try {
-      const [nextStatus, nextDevices] = await Promise.all([
-        mobileBridge.status(),
-        mobileBridge.devices(),
-      ]);
+      const nextStatus = await mobileBridge.status();
       setStatus(nextStatus);
-      setDevices(nextDevices);
+      await createPairQrForStatus(nextStatus);
+      await loadDevices();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -45,20 +83,29 @@ export function MobileAccessSettings() {
     refresh();
   }, []);
 
-  const startBridge = async () => {
+  const runStartBridge = async (host: BindHost) => {
+    setLanConfirmVisible(false);
     setActionState('busy');
     setError(null);
     try {
-      const nextStatus = await mobileBridge.start();
-      const nextPairQr = await mobileBridge.pairQr(nextStatus.host ?? undefined);
+      const nextStatus = await mobileBridge.start(host);
       setStatus(nextStatus);
-      setPairQr(nextPairQr);
-      setDevices(await mobileBridge.devices());
+      await createPairQrForStatus(nextStatus, host);
+      await loadDevices();
       setActionState('idle');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setActionState('failed');
     }
+  };
+
+  const startBridge = async () => {
+    if (bindHost === LAN_BIND_HOST) {
+      setLanConfirmVisible(true);
+      return;
+    }
+
+    await runStartBridge(bindHost);
   };
 
   const stopBridge = async () => {
@@ -67,6 +114,7 @@ export function MobileAccessSettings() {
     try {
       setStatus(await mobileBridge.stop());
       setPairQr(null);
+      setLanConfirmVisible(false);
       setActionState('idle');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -135,9 +183,36 @@ export function MobileAccessSettings() {
             </p>
           )}
           {status.running && (
-            <p className="mt-2 font-mono text-xs text-muted-foreground">
-              {status.url ?? `${status.host}:${status.port}`}
-            </p>
+            <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+              <p>
+                <span className="font-medium text-foreground">
+                  {t('mobileAccess.listeningAddress')}
+                </span>{' '}
+                <span className="font-mono">
+                  {`${status.host ?? DEFAULT_BIND_HOST}:${status.port ?? ''}`}
+                </span>
+              </p>
+              <p className="flex flex-wrap gap-x-3 gap-y-1">
+                <a
+                  href="https://tailscale.com/kb/1017/install"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-primary hover:underline"
+                >
+                  {t('mobileAccess.docs.tailscale')}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+                <a
+                  href="https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-primary hover:underline"
+                >
+                  {t('mobileAccess.docs.cloudflare')}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              </p>
+            </div>
           )}
           {error && (
             <p className="mt-2 text-xs text-destructive">
@@ -146,7 +221,38 @@ export function MobileAccessSettings() {
           )}
         </div>
 
-        <div className="flex shrink-0 flex-wrap gap-2">
+        <div className="flex shrink-0 flex-col gap-2 md:items-end">
+          <div
+            role="radiogroup"
+            aria-label={t('mobileAccess.bind.label')}
+            className="grid gap-1 rounded-lg border border-border/70 bg-background/70 p-1 text-xs"
+          >
+            {[
+              { value: DEFAULT_BIND_HOST, label: t('mobileAccess.bind.loopback') },
+              { value: LAN_BIND_HOST, label: t('mobileAccess.bind.lan') },
+            ].map((option) => (
+              <label
+                key={option.value}
+                className="inline-flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
+              >
+                <input
+                  type="radio"
+                  name="mobile-bridge-bind-host"
+                  value={option.value}
+                  checked={bindHost === option.value}
+                  disabled={status.running || isBusy}
+                  onChange={() => {
+                    setBindHost(option.value as BindHost);
+                    setLanConfirmVisible(false);
+                  }}
+                  aria-label={option.label}
+                  className="h-3 w-3"
+                />
+                {option.label}
+              </label>
+            ))}
+          </div>
+          <div className="flex flex-wrap justify-end gap-2">
           <button
             type="button"
             onClick={status.running ? stopBridge : startBridge}
@@ -165,8 +271,36 @@ export function MobileAccessSettings() {
             <RefreshCw className="h-3.5 w-3.5" />
             {t('mobileAccess.refresh')}
           </button>
+          </div>
         </div>
       </div>
+
+      {lanConfirmVisible && !status.running && (
+        <div className="mt-4 rounded-xl border border-amber-500/35 bg-amber-500/10 p-3">
+          <p className="text-xs leading-5 text-foreground">
+            {t('mobileAccess.lanConfirm')}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => runStartBridge(LAN_BIND_HOST)}
+              disabled={isBusy}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Power className="h-3.5 w-3.5" />
+              {t('mobileAccess.confirmLanStart')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setLanConfirmVisible(false)}
+              disabled={isBusy}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t('mobileAccess.cancelLanStart')}
+            </button>
+          </div>
+        </div>
+      )}
 
       {status.running && (
         <div className="mt-4 rounded-xl border border-border/60 bg-background/70 p-3">

@@ -75,10 +75,23 @@
     "stopped": "중지됨",
     "start": "시작",
     "stop": "중지",
-    "refresh": "새로고침",
-    "error": "작업 실패: {{message}}",
-    "pairingTitle": "페어링 항목",
-    "pairingDescription": "5분 후 만료되는 일회용 페어링 코드를 생성합니다. 이후 QR 표시로 교체됩니다.",
+  "refresh": "새로고침",
+  "error": "작업 실패: {{message}}",
+  "bind": {
+    "label": "브리지 수신 주소",
+    "loopback": "이 기기만",
+    "lan": "LAN / 모든 인터페이스"
+  },
+  "lanConfirm": "모바일 접근을 0.0.0.0에 바인딩하면 ThreadTerm 브리지 트래픽이 현재 네트워크에 노출됩니다. 계속하시겠습니까?",
+  "confirmLanStart": "LAN 시작 확인",
+  "cancelLanStart": "취소",
+  "listeningAddress": "수신 주소:",
+  "docs": {
+    "tailscale": "Tailscale 문서",
+    "cloudflare": "Cloudflare Tunnel 문서"
+  },
+  "pairingTitle": "페어링 항목",
+  "pairingDescription": "5분 후 만료되는 일회용 페어링 코드를 생성합니다. 이후 QR 표시로 교체됩니다.",
     "newPairCode": "페어링 코드 생성",
     "copyUrl": "URL 복사",
     "devicesTitle": "페어링된 기기",

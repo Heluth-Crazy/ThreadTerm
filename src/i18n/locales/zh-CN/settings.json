@@ -75,10 +75,23 @@
     "stopped": "未启动",
     "start": "启动",
     "stop": "停止",
-    "refresh": "刷新",
-    "error": "操作失败：{{message}}",
-    "pairingTitle": "配对入口",
-    "pairingDescription": "生成 5 分钟有效的一次性配对码。后续会替换为二维码展示。",
+  "refresh": "刷新",
+  "error": "操作失败：{{message}}",
+  "bind": {
+    "label": "桥接监听地址",
+    "loopback": "仅本机",
+    "lan": "局域网 / 所有接口"
+  },
+  "lanConfirm": "将移动端访问绑定到 0.0.0.0 会把 ThreadTerm 桥接流量暴露给当前网络。是否继续？",
+  "confirmLanStart": "确认启动局域网访问",
+  "cancelLanStart": "取消",
+  "listeningAddress": "监听地址：",
+  "docs": {
+    "tailscale": "Tailscale 文档",
+    "cloudflare": "Cloudflare Tunnel 文档"
+  },
+  "pairingTitle": "配对入口",
+  "pairingDescription": "生成 5 分钟有效的一次性配对码。后续会替换为二维码展示。",
     "newPairCode": "生成配对码",
     "copyUrl": "复制链接",
     "devicesTitle": "已配对设备",

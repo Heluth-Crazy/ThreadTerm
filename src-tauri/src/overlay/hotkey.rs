@@ -66,7 +66,10 @@ pub(super) fn register_hotkey(app: &AppHandle, label: &str, accel: &str) -> Resu
 
     *slot.lock().unwrap() = Some(accel.to_string());
 
-    HOTKEY_MAP.lock().unwrap().insert(shortcut_id, label.to_string());
+    HOTKEY_MAP
+        .lock()
+        .unwrap()
+        .insert(shortcut_id, label.to_string());
     Ok(())
 }
 

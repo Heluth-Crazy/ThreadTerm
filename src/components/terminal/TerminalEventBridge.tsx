@@ -17,7 +17,12 @@
  */
 import { useEffect, useRef } from 'react';
 import { isTauriEnv, pty } from '../../lib/tauri-bridge';
-import type { AttentionRequiredEvent, SessionState } from '../../lib/tauri-bridge';
+import type {
+  AttentionRequiredEvent,
+  BlockFinishedEvent,
+  BlockStartedEvent,
+  SessionState,
+} from '../../lib/tauri-bridge';
 import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard, TerminalStatus } from '../../types/terminal';
 import { feedHeadless, disposeHeadless, disposeAllHeadless } from './headlessPreview';
@@ -355,6 +360,40 @@ export function TerminalEventBridge(): null {
         return;
       }
       unlisteners.push(unsubAttention);
+
+      const unsubBlockStarted = await pty.onBlockStarted((payload: BlockStartedEvent) => {
+        const card = getCardForPtyId(payload.sessionId);
+        if (!card) return;
+        useTerminalStore.getState().recordBlockStarted({
+          cardId: card.id,
+          blockId: payload.blockId,
+          command: payload.command,
+          cwd: payload.cwd,
+          startedAt: payload.startedAt,
+        });
+      });
+      if (cancelled) {
+        unsubBlockStarted?.();
+        return;
+      }
+      unlisteners.push(unsubBlockStarted);
+
+      const unsubBlockFinished = await pty.onBlockFinished((payload: BlockFinishedEvent) => {
+        const card = getCardForPtyId(payload.sessionId);
+        if (!card) return;
+        useTerminalStore.getState().recordBlockFinished({
+          cardId: card.id,
+          blockId: payload.blockId,
+          exitCode: payload.exitCode,
+          finishedAt: payload.finishedAt,
+          durationMs: payload.durationMs,
+        });
+      });
+      if (cancelled) {
+        unsubBlockFinished?.();
+        return;
+      }
+      unlisteners.push(unsubBlockFinished);
     })().catch((err) => {
       // Surfacing the error is not critical — the bridge simply won't update
       // the store. Log for diagnosis.

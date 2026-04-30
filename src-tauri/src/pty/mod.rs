@@ -10,6 +10,7 @@
 //!
 //! Only the items re-exported here form ThreadTerm's public PTY surface.
 
+mod blocks;
 mod events;
 mod registry;
 mod session;
@@ -26,8 +27,8 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tauri::{Manager, Window};
 
 use session::{
-    OUTPUT_BUFFER_MAX_BYTES, PtySession, RESIZE_OUTPUT_ACTIVITY_SUPPRESS,
-    clear_waiting_for_input, mark_killed, suppress_output_activity_for,
+    clear_waiting_for_input, mark_killed, suppress_output_activity_for, PtySession,
+    OUTPUT_BUFFER_MAX_BYTES, RESIZE_OUTPUT_ACTIVITY_SUPPRESS,
 };
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
@@ -89,9 +90,7 @@ pub async fn pty_create(
         _working_dir: working_dir,
         state: RwLock::new(SessionState::Idle),
         app_handle: window.app_handle().clone(),
-        output_buffer: RwLock::new(String::with_capacity(
-            OUTPUT_BUFFER_MAX_BYTES.min(8192),
-        )),
+        output_buffer: RwLock::new(String::with_capacity(OUTPUT_BUFFER_MAX_BYTES.min(8192))),
         last_output_at: Mutex::new(None),
         last_size: Mutex::new((rows, cols)),
         suppress_output_activity_until: Mutex::new(None),
@@ -130,8 +129,7 @@ pub async fn pty_create(
 /// Write data (keystrokes) to a PTY session.
 #[tauri::command]
 pub async fn pty_input(id: String, data: String) -> Result<(), String> {
-    let session = registry::get(&id)
-        .ok_or_else(|| format!("PTY session '{}' not found", id))?;
+    let session = registry::get(&id).ok_or_else(|| format!("PTY session '{}' not found", id))?;
 
     // User input clears the waiting state; the session becomes Running only
     // once the PTY emits output again.
@@ -156,8 +154,7 @@ pub async fn pty_input(id: String, data: String) -> Result<(), String> {
 /// Resize a PTY session.
 #[tauri::command]
 pub async fn pty_resize(id: String, rows: u16, cols: u16) -> Result<(), String> {
-    let session = registry::get(&id)
-        .ok_or_else(|| format!("PTY session '{}' not found", id))?;
+    let session = registry::get(&id).ok_or_else(|| format!("PTY session '{}' not found", id))?;
 
     {
         let mut last_size = session
@@ -210,8 +207,8 @@ pub async fn pty_kill(id: String) -> Result<(), String> {
 /// Get the current state of a PTY session.
 #[tauri::command]
 pub async fn pty_get_session_state(pty_id: String) -> Result<SessionState, String> {
-    let session = registry::get(&pty_id)
-        .ok_or_else(|| format!("PTY session '{}' not found", pty_id))?;
+    let session =
+        registry::get(&pty_id).ok_or_else(|| format!("PTY session '{}' not found", pty_id))?;
 
     session
         .state

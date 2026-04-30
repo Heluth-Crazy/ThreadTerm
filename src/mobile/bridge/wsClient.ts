@@ -1,4 +1,9 @@
-import type { ClientMessage, ServerMessage } from './protocol';
+import {
+  BRIDGE_PROTOCOL_VERSION,
+  type ClientCommand,
+  type ClientMessage,
+  type ServerMessage,
+} from './protocol';
 
 export type BridgeConnectionState = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 
@@ -52,7 +57,8 @@ export class BridgeWsClient {
     };
     socket.onmessage = (event) => {
       try {
-        this.events.onMessage?.(parseServerMessage(event.data));
+        const message = parseServerMessage(event.data);
+        this.events.onMessage?.(message);
       } catch (error) {
         this.events.onError?.(error instanceof Error ? error : new Error(String(error)));
       }
@@ -65,11 +71,11 @@ export class BridgeWsClient {
     this.setState('closed');
   }
 
-  send(message: ClientMessage) {
+  send(message: ClientCommand) {
     if (!this.socket || this.socket.readyState !== this.WebSocketImpl.OPEN) {
       throw new Error('Bridge websocket is not open');
     }
-    this.socket.send(JSON.stringify(message));
+    this.socket.send(JSON.stringify(withProtocolVersion(message)));
   }
 
   getState(): BridgeConnectionState {
@@ -106,5 +112,19 @@ function parseServerMessage(data: unknown): ServerMessage {
   if (!parsed || typeof parsed.kind !== 'string') {
     throw new Error('Bridge websocket message has no kind');
   }
+  if (parsed.protocol_version !== BRIDGE_PROTOCOL_VERSION) {
+    throw new Error(
+      `Bridge websocket protocol version mismatch: expected ${BRIDGE_PROTOCOL_VERSION}, received ${
+        parsed.protocol_version ?? 'missing'
+      }`,
+    );
+  }
   return parsed as ServerMessage;
+}
+
+function withProtocolVersion(message: ClientCommand): ClientMessage {
+  return {
+    protocol_version: BRIDGE_PROTOCOL_VERSION,
+    ...message,
+  };
 }

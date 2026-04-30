@@ -53,6 +53,23 @@ export interface TerminalEvent {
   summary: string;
 }
 
+// Command block model (Stage 3): metadata emitted by shell integration OSC.
+export type BlockState = 'running' | 'success' | 'failed' | 'aborted';
+
+export interface Block {
+  id: string;
+  cardId: string;
+  cwd: string;
+  command: string;
+  startedAt: number;
+  finishedAt?: number;
+  exitCode?: number;
+  durationMs?: number;
+  bufferStart: number;
+  bufferEnd?: number;
+  state: BlockState;
+}
+
 // ── Card ─────────────────────────────────────────────────────────────────────
 
 export interface TerminalCard {

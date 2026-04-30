@@ -7,12 +7,10 @@ use std::{
 use rand::{distributions::Alphanumeric, Rng};
 use sha2::{Digest, Sha256};
 
-use super::protocol::{
-    BridgeDevice, DevicePermission, PairQrResponse, PairRequest, PairResponse,
-};
+use super::protocol::{BridgeDevice, DevicePermission, PairQrResponse, PairRequest, PairResponse};
 
 const OTP_TTL: Duration = Duration::from_secs(5 * 60);
-const DEVICE_TOKEN_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
+const DEVICE_TOKEN_TTL_SECONDS: u64 = 24 * 60 * 60;
 
 #[derive(Default)]
 pub struct PairingStore {
@@ -27,7 +25,6 @@ struct PairingInner {
 
 #[derive(Clone)]
 struct PendingPair {
-    otp: String,
     host: String,
     port: u16,
     expires_at: u64,
@@ -36,7 +33,7 @@ struct PendingPair {
 #[derive(Clone)]
 struct StoredDevice {
     device: BridgeDevice,
-    token_hash: String,
+    expires_at: u64,
 }
 
 impl PairingStore {
@@ -50,7 +47,6 @@ impl PairingStore {
         inner.pending.insert(
             otp.clone(),
             PendingPair {
-                otp: otp.clone(),
                 host: host.clone(),
                 port,
                 expires_at,
@@ -85,18 +81,18 @@ impl PairingStore {
             last_seen_at: Some(now),
         };
 
+        let hash = token_hash(&token);
         inner.devices.insert(
-            token.clone(),
+            hash.clone(),
             StoredDevice {
                 device: device.clone(),
-                token_hash: token_hash(&token),
+                expires_at: now + DEVICE_TOKEN_TTL_SECONDS,
             },
         );
 
         tracing::info!(
             host = %pending.host,
             port = pending.port,
-            otp = %pending.otp,
             device_id = %device.id,
             "Mobile bridge device paired"
         );
@@ -110,7 +106,19 @@ impl PairingStore {
 
     pub fn validate_token(&self, token: &str) -> Option<BridgeDevice> {
         let mut inner = self.inner.lock().ok()?;
-        let stored = inner.devices.get_mut(token)?;
+        let hash = token_hash(token);
+        let now = now_seconds();
+        if inner
+            .devices
+            .get(&hash)
+            .map(|stored| stored.expires_at <= now)
+            .unwrap_or(false)
+        {
+            inner.devices.remove(&hash);
+            return None;
+        }
+
+        let stored = inner.devices.get_mut(&hash)?;
         stored.device.last_seen_at = Some(now_seconds());
         Some(stored.device.clone())
     }
@@ -133,12 +141,9 @@ impl PairingStore {
             .lock()
             .map(|mut inner| {
                 let before = inner.devices.len();
-                inner.devices.retain(|_, stored| {
-                    // Touch token_hash so it remains part of the stored
-                    // representation until DB persistence lands.
-                    let _ = &stored.token_hash;
-                    stored.device.id != device_id
-                });
+                inner
+                    .devices
+                    .retain(|_, stored| stored.device.id != device_id);
                 inner.devices.len() != before
             })
             .unwrap_or(false)
@@ -177,6 +182,11 @@ fn now_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::thread;
 
     #[test]
     fn pairing_otp_is_single_use() {
@@ -200,6 +210,94 @@ mod tests {
                 permission: None,
             })
             .is_err());
+    }
+
+    #[test]
+    fn expired_pairing_otp_is_rejected() {
+        let store = PairingStore::default();
+        let qr = store.create_pair_qr("127.0.0.1".to_string(), 5174);
+
+        {
+            let mut inner = store.inner.lock().expect("pairing store");
+            let pending = inner.pending.get_mut(&qr.otp).expect("pending otp");
+            pending.expires_at = now_seconds().saturating_sub(1);
+        }
+
+        let result = store.pair(PairRequest {
+            otp: qr.otp,
+            device_name: "Expired".to_string(),
+            permission: None,
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn device_tokens_are_hashed_and_expire() {
+        let store = PairingStore::default();
+        let qr = store.create_pair_qr("127.0.0.1".to_string(), 5174);
+        let response = store
+            .pair(PairRequest {
+                otp: qr.otp,
+                device_name: "iPhone".to_string(),
+                permission: None,
+            })
+            .expect("pair device");
+
+        assert!(response.expires_in_seconds <= 24 * 60 * 60);
+
+        let hash = token_hash(&response.device_token);
+        {
+            let inner = store.inner.lock().expect("pairing store");
+            assert!(!inner.devices.contains_key(&response.device_token));
+            assert!(inner.devices.contains_key(&hash));
+        }
+
+        assert!(store.validate_token(&response.device_token).is_some());
+
+        {
+            let mut inner = store.inner.lock().expect("pairing store");
+            inner
+                .devices
+                .get_mut(&hash)
+                .expect("stored device")
+                .expires_at = now_seconds().saturating_sub(1);
+        }
+
+        assert!(store.validate_token(&response.device_token).is_none());
+    }
+
+    #[test]
+    fn concurrent_pairing_allows_only_one_consumer() {
+        let store = Arc::new(PairingStore::default());
+        let qr = store.create_pair_qr("127.0.0.1".to_string(), 5174);
+        let successes = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..8)
+            .map(|idx| {
+                let store = Arc::clone(&store);
+                let successes = Arc::clone(&successes);
+                let otp = qr.otp.clone();
+                thread::spawn(move || {
+                    if store
+                        .pair(PairRequest {
+                            otp,
+                            device_name: format!("device-{idx}"),
+                            permission: None,
+                        })
+                        .is_ok()
+                    {
+                        successes.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().expect("pairing thread");
+        }
+
+        assert_eq!(successes.load(Ordering::SeqCst), 1);
     }
 
     #[test]

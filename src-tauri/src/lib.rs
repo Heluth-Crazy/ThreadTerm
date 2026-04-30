@@ -4,6 +4,10 @@ mod notification;
 mod overlay;
 mod provider_sessions;
 mod pty;
+mod shell_integration;
+
+#[cfg(test)]
+mod shell_integration_tests;
 
 pub fn run() {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -50,6 +54,8 @@ pub fn run() {
             pty::pty_get_recent_output,
             notification::notification_send_os,
             provider_sessions::provider_find_recent_session,
+            shell_integration::install_shell_integration,
+            shell_integration::uninstall_shell_integration,
             bridge::bridge_start,
             bridge::bridge_stop,
             bridge::bridge_status,

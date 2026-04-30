@@ -77,6 +77,19 @@
     "stop": "Stop",
     "refresh": "Refresh",
     "error": "Action failed: {{message}}",
+    "bind": {
+      "label": "Bridge bind address",
+      "loopback": "This device only",
+      "lan": "LAN / all interfaces"
+    },
+    "lanConfirm": "Binding mobile access to 0.0.0.0 exposes ThreadTerm bridge traffic to your network. Continue?",
+    "confirmLanStart": "Confirm LAN start",
+    "cancelLanStart": "Cancel",
+    "listeningAddress": "Listening:",
+    "docs": {
+      "tailscale": "Tailscale docs",
+      "cloudflare": "Cloudflare Tunnel docs"
+    },
     "pairingTitle": "Pairing entry",
     "pairingDescription": "Generate a one-time pairing code that expires in 5 minutes. QR rendering will replace this later.",
     "newPairCode": "New pairing code",

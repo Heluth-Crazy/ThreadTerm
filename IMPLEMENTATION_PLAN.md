@@ -8,9 +8,18 @@
 
 1. **不打破现有功能** — 所有改动以叠加为主；Block 层默认关闭，需 shell 集成才生效，未启用时行为与 v0.3 完全一致。
 2. **小步快跑、阶段独立可发布** — 每个阶段独立可上线、可回滚，禁止跨阶段并发分支。
-3. **不把 Warp 抄过来** — Warp 终端核心闭源，我们只借鉴**块的概念 / OSC 133 协议 / Workflows YAML schema / 操作粒度**，渲染层继续用 `xterm.js`。
+3. **不把 Warp 抄过来** — Warp 目前已有公开仓库，但 ThreadTerm 不移植其 Rust 自研 UI / GPU 渲染路线；我们只借鉴 **Command Block 模型 / OSC 133 协议 / Workflows YAML schema / 块级操作粒度**，渲染层继续用 `xterm.js`。
 4. **每个阶段必须跑完 ROADMAP 验证基线** — `npm run typecheck` / `npx vitest run` / `npm run build` / `cargo check` / `cargo test`，并补齐当阶段新增模块的回归用例。
 5. **不引入新运行时依赖** — 复用已有 React 18 + Tauri 2 + xterm + zustand + i18next + vitest + cargo 体系，除非该阶段说明里显式声明（少数 Rust crate 例外，比如 OSC 解析器）。
+
+### Warp 参考边界
+
+- Warp 官方当前说明：其 viewport 是 ordered list of typed blocks，而不是传统单一字符网格；ThreadTerm 只参考这个块模型与块级操作概念。
+- Warp 早期工程路线采用 Rust 自研 UI framework + GPU rendering primitives；ThreadTerm 不复制这条路线，继续使用现有 Tauri + React + xterm.js 渲染器。
+- Warp 公开仓库显示 client codebase 已开源，`warpui_core` / `warpui` 为 MIT，其余仓库代码为 AGPL v3；这只影响参考边界，不改变 ThreadTerm 技术栈。
+- Warp Drive Workflows / YAML Workflows 可作为 Stage 7 schema 参考，但必须排在 Stage 6 之后实现，不能提前塞进 Stage 3。
+
+参考链接：<https://www.warp.dev/blog/block-model-behind-warps-agentic-development-environment>、<https://dev.to/warpdotdev/how-warp-works-1ji7>、<https://github.com/warpdotdev/warp>、<https://docs.warp.dev/knowledge-and-collaboration/warp-drive/workflows>
 
 ---
 
@@ -39,12 +48,10 @@ Stage 7 在数据上不依赖 Block 层，但工程顺序仍排在 Stage 6 之�
 - `src-tauri/src/pty.rs`（866 行）已拆为 `pty/{mod, session, registry, shell, events, tests}.rs`，所有外部签名 / 7 个原 `pty::tests` 100% 保留，`bridge/server.rs` 与 `lib.rs` 调用路径未变。
 - `src-tauri/src/overlay.rs`（886 行）已拆为 `overlay/{mod, state, platform, window, hotkey, commands}.rs`；macOS NSPanel 宏定义集中在 `mod.rs`；新增 `__cmd__*` 宏 re-export 保证 `tauri::generate_handler!` 不需要改 `lib.rs` 路径。新增 5 个回归用例（registry 3 + state 2）全部通过。
 
-**待完成：**
-- `src/components/terminal/TerminalCard.tsx`（447 行）拆为：
-  - `TerminalCard.tsx`（≤ 200 行）— 主容器，仅做布局和事件转发；
-  - `CardActions.tsx` — pin / unpin / copy-path / reveal / 关闭按钮组；
-  - `CardStatusBadge.tsx` — 状态徽章（已存在 `statusMeta.tsx`，仅做组件抽离）；
-  - `CardPreview.tsx` — 预览区，复用 `headlessPreview.ts` / `cardPreview.ts`，不改算法。
+**已完成（当前代码确认）：**
+- `src/components/terminal/TerminalCard.tsx` 当前约 191 行，已降到 ≤ 200 行目标内，仅保留主容器布局与事件转发职责。
+- `CardActions.tsx` 与 `CardActions.test.tsx` 已存在，覆盖 pin / unpin / copy-path / reveal / 关闭按钮点击行为。
+- `CardStatusBadge.tsx` 与 `CardPreviewPanel.tsx` 已存在，继续复用 `statusMeta.tsx`、`headlessPreview.ts` 与 `cardPreview.ts`，未重写预览算法；组件文件避免与 `cardPreview.ts` 在 Windows 上发生大小写路径冲突。
 
 **Success Criteria**
 - 所有现有 props / store action / 父组件接入点 **签名完全不变**；
@@ -61,7 +68,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 ```
 + 手动跑 `tauri dev`，验证浮动 / selector / 热键 / 通知点击回流路径未变。
 
-**Status**: In Progress（pty + overlay 已完成；TerminalCard 待拆）
+**Status**: Complete
 
 ---
 
@@ -83,7 +90,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 
 **Verification**: 本机走完整配对流程 → 关闭桥接后 `lsof -i :5174` 端口确实释放 + ROADMAP 基线全过。
 
-**Status**: Not Started
+**Status**: In Progress（协议版本、默认 loopback、token hash/过期、LAN 二次确认已落地；wscat 手动验证待跑）
 
 ---
 
@@ -157,7 +164,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 - 手动：mac + Linux + Windows（Powershell 7）三平台各跑一次 5 条命令场景；
 - 性能：连续 1000 条命令的会话，内存增量 < 50MB（块数据 ≈ 200 字节 / 块）。
 
-**Status**: Not Started
+**Status**: In Progress（OSC 133/6973 旁路解析、Tauri block 事件、前端 store 写入与 shell 集成安装器已落地；跨 shell 手动场景待跑）
 
 ---
 

@@ -125,18 +125,15 @@ pub(super) fn ensure_selector(app: &AppHandle) -> Result<(), String> {
 
     #[cfg(not(target_os = "macos"))]
     {
-        let builder = WebviewWindowBuilder::new(
-            app,
-            SELECTOR_LABEL,
-            WebviewUrl::App("selector.html".into()),
-        )
-        .title("ThreadTerm · Selector")
-        .decorations(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .visible(false)
-        .inner_size(logical_w, logical_h);
+        let builder =
+            WebviewWindowBuilder::new(app, SELECTOR_LABEL, WebviewUrl::App("selector.html".into()))
+                .title("ThreadTerm · Selector")
+                .decorations(false)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .resizable(false)
+                .visible(false)
+                .inner_size(logical_w, logical_h);
 
         builder
             .build()
@@ -221,19 +218,16 @@ pub(super) fn ensure_float(app: &AppHandle) -> Result<(), String> {
 
     #[cfg(not(target_os = "macos"))]
     {
-        let mut builder = WebviewWindowBuilder::new(
-            app,
-            FLOAT_LABEL,
-            WebviewUrl::App("float.html".into()),
-        )
-        .title("ThreadTerm · Floating Terminal")
-        .decorations(false)
-        .always_on_top(true)
-        .skip_taskbar(false)
-        .resizable(true)
-        .visible(false)
-        .inner_size(900.0, 560.0)
-        .min_inner_size(480.0, 320.0);
+        let mut builder =
+            WebviewWindowBuilder::new(app, FLOAT_LABEL, WebviewUrl::App("float.html".into()))
+                .title("ThreadTerm · Floating Terminal")
+                .decorations(false)
+                .always_on_top(true)
+                .skip_taskbar(false)
+                .resizable(true)
+                .visible(false)
+                .inner_size(900.0, 560.0)
+                .min_inner_size(480.0, 320.0);
 
         if let Some(b) = settings.float_bounds.clone() {
             builder = builder
@@ -255,4 +249,3 @@ pub(super) fn ensure_float(app: &AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
-
