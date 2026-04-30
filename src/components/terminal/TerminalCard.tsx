@@ -1,42 +1,28 @@
 /**
- * TerminalCard — rich card component.
+ * TerminalCard — rich card host.
  *
- * Shows (per plan §4.1 "丰富版卡片"):
- *   • terminal-type icon + project name + live status chip
- *   • project path + worktree badge
- *   • tail of last assistant reply (3-5 lines)
- *   • active duration + message count + "needs attention" hint
- *   • quick-action mini buttons (copy cwd / open dir / close)
- *   • hover-reveal mini timeline of the most recent 5 events
+ * Layout / event-forwarding only; visual concerns are delegated to:
+ *   • CardCompact      — square switcher tile (`density='compact'`)
+ *   • CardStatusBadge  — status pill / icon
+ *   • CardPreview      — boxed preview body with timer + msg-count meta
+ *   • CardActions      — copy / reveal / pin button group
  *
- * Supports 3 layout densities:
- *   - `compact`   used inside the RadialSwitcher (square)
- *   - `grid`      default grid-cell layout (portrait-ish)
- *   - `list`      (reserved for future list-mode)
+ * The 3 layout densities documented in the original spec are still
+ * supported via the `density` prop; only `grid` (default) and `compact`
+ * have visual treatments — `list` is reserved for a future iteration.
  */
-import { useMemo, useState, type MouseEvent } from 'react';
+import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
-import {
-  AlertCircle,
-  BellRing,
-  Copy,
-  ExternalLink,
-  FolderGit2,
-  MessageSquareText,
-  Pin,
-  PinOff,
-  Timer,
-  Trash2,
-  X,
-} from 'lucide-react';
+import { FolderGit2 } from 'lucide-react';
 import type { TerminalCard as TerminalCardType } from '../../types/terminal';
 import { MAX_PINNED_CARDS, useTerminalStore } from '../../stores/terminalStore';
-import { getTerminalTypeMeta } from './terminalTypeMeta';
-import { getStatusMeta } from './statusMeta';
-import { buildCardPreview, isTechnicalPreviewLine } from './cardPreview';
-import { AI_CLI_SESSION_BADGE_CLASS, getAiCliSessionBadge } from './providerSession';
-import { AiIntentSelect } from './AiIntentSelect';
+import { buildCardPreview } from './cardPreview';
+import { getAiCliSessionBadge } from './providerSession';
+import { CardCompact } from './CardCompact';
+import { CardFooter } from './CardFooter';
+import { CardHeader } from './CardHeader';
+import { CardPreview } from './CardPreview';
 
 export interface TerminalCardProps {
   card: TerminalCardType;
@@ -94,10 +80,7 @@ export function TerminalCardComponent({
     if (pinned) unpinCard(card.id);
     else pinCard(card.id);
   };
-  const typeMeta = getTerminalTypeMeta(card.terminalType);
-  const statusInfo = getStatusMeta(card.status);
-  const StatusIcon = statusInfo.Icon;
-  const TypeIcon = typeMeta.Icon;
+
   const aiSessionBadge = useMemo(
     () => getAiCliSessionBadge(card),
     [
@@ -122,9 +105,6 @@ export function TerminalCardComponent({
     () => buildCardPreview(card, { maxLines: 3 }),
     [card.lastReplyPreview, card.lastOutput, card.status, card.terminalType],
   );
-  const previewText = preview.bodyLines.join('\n\n');
-  const previewIsProse = preview.source === 'reply' && !preview.bodyLines.some(isTechnicalPreviewLine);
-  const previewLineClamp = preview.bodyLines.length <= 1 ? 8 : preview.bodyLines.length <= 2 ? 7 : 6;
 
   const recentEvents = useMemo(() => card.events.slice(-5).reverse(), [card.events]);
 
@@ -137,57 +117,18 @@ export function TerminalCardComponent({
           ? t('card.newActivity')
           : null;
 
-  const stopPropagation = (fn?: () => void) => (e: MouseEvent) => {
-    e.stopPropagation();
-    fn?.();
-  };
-
-  // ── compact layout (used in switcher) ─────────────────────────────────────
   if (density === 'compact') {
     return (
-      <motion.div
+      <CardCompact
+        card={card}
+        preview={compactPreview}
+        isFocused={isFocused}
+        isSwitcherSelected={isSwitcherSelected}
         onClick={onClick}
-        whileHover={{ scale: 1.04 }}
-        className={[
-          'relative flex h-32 w-40 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm cursor-pointer',
-          isSwitcherSelected
-            ? 'border-primary ring-2 ring-primary/40'
-            : isFocused
-              ? 'border-primary/60'
-              : 'border-border',
-        ].join(' ')}
-      >
-        <div className="flex items-center gap-1.5 border-b border-border/60 px-2 py-1.5">
-          <TypeIcon className={`h-3.5 w-3.5 ${typeMeta.accent}`} />
-          <span className="truncate text-[11px] font-medium">{card.projectName}</span>
-          <StatusIcon
-            className={`ml-auto h-3 w-3 ${statusInfo.tone} ${statusInfo.animate ? 'animate-spin' : ''}`}
-          />
-        </div>
-        <div className="flex-1 overflow-hidden px-2 py-1 text-[10px] text-muted-foreground leading-tight">
-          {compactPreview.bodyLines.length > 0 ? (
-            <div className="space-y-1">
-              {compactPreview.bodyLines.map((line, index) => (
-                <div
-                  key={`${line}-${index}`}
-                  className={[
-                    'line-clamp-1 rounded-sm',
-                    isTechnicalPreviewLine(line) ? 'font-mono text-[9.5px]' : '',
-                  ].join(' ')}
-                >
-                  {line}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <span className="italic opacity-70">—</span>
-          )}
-        </div>
-      </motion.div>
+      />
     );
   }
 
-  // ── grid layout (default) ─────────────────────────────────────────────────
   return (
     <motion.div
       onClick={onClick}
@@ -204,7 +145,6 @@ export function TerminalCardComponent({
         card.unread ? 'ring-1 ring-amber-400/40' : '',
       ].join(' ')}
     >
-      {/* Unread dot */}
       {card.unread && (
         <span
           aria-hidden="true"
@@ -212,213 +152,34 @@ export function TerminalCardComponent({
         />
       )}
 
-      {/* Header */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-1.5">
-        <div className={`flex h-7 w-7 items-center justify-center rounded-lg bg-muted ${typeMeta.accent}`}>
-          <TypeIcon className="h-4 w-4" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-sm font-semibold">{card.projectName}</span>
-            <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">
-              · {t(`types.${card.terminalType}`, typeMeta.label)}
-            </span>
-          </div>
-          <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-            <span className="truncate">{card.projectPath}</span>
-          </div>
-          {aiSessionBadge && (
-            <div className="mt-0.5 flex">
-              <span
-                title={t(aiSessionBadge.descriptionKey, {
-                  ...aiSessionBadge.values,
-                  defaultValue: aiSessionBadge.fallbackDescription,
-                })}
-                className={[
-                  'inline-flex max-w-full items-center rounded-full border px-1.5 py-0.5 text-[9.5px] font-medium leading-none',
-                  AI_CLI_SESSION_BADGE_CLASS[aiSessionBadge.tone],
-                ].join(' ')}
-              >
-                <span className="truncate">
-                  {t(aiSessionBadge.labelKey, {
-                    ...aiSessionBadge.values,
-                    defaultValue: aiSessionBadge.fallbackLabel,
-                  })}
-                </span>
-              </span>
-            </div>
-          )}
-        </div>
-        <span
-          className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${statusInfo.chip}`}
-        >
-          <StatusIcon
-            className={`h-2.5 w-2.5 ${statusInfo.animate ? 'animate-spin' : ''}`}
-          />
-          {t(`status.${card.status}`, statusInfo.label)}
-        </span>
-      </div>
+      <CardHeader card={card} aiSessionBadge={aiSessionBadge} />
 
-      {/* Worktree badge */}
       {card.worktreePath && (
         <div className="flex shrink-0 items-center gap-1.5 border-b border-border/40 bg-muted/40 px-3 py-1 text-[10px] text-muted-foreground">
           <FolderGit2 className="h-3 w-3" />
-          <span className="truncate">
-            {t('card.worktree', { path: card.worktreePath })}
-          </span>
+          <span className="truncate">{t('card.worktree', { path: card.worktreePath })}</span>
         </div>
       )}
 
       <div className="min-h-0 flex-1 overflow-hidden px-3 py-2">
-        {preview.bodyLines.length > 0 ? (
-          <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border/40 bg-muted/20">
-            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/30 px-2.5 py-1 text-[10px]">
-              <span className="min-w-0 truncate font-semibold uppercase tracking-wide text-muted-foreground/80">
-                {t(`card.preview.${preview.kind}`, preview.kind)}
-              </span>
-              <div className="flex shrink-0 items-center gap-2 text-muted-foreground/70">
-                <span
-                  className="inline-flex items-center gap-0.5"
-                  title={t('card.activeFor', { time: activeFor, defaultValue: activeFor })}
-                >
-                  <Timer className="h-3 w-3" />
-                  {activeFor}
-                </span>
-                <span
-                  className="inline-flex items-center gap-0.5"
-                  title={t('card.messageCountTitle', {
-                    count: card.messageCount,
-                    defaultValue: `${card.messageCount}`,
-                  })}
-                >
-                  <MessageSquareText className="h-3 w-3" />
-                  {card.messageCount}
-                </span>
-                {preview.hiddenLineCount > 0 && (
-                  <span className="text-[9px] text-muted-foreground/60">
-                    {t('card.preview.more', { count: preview.hiddenLineCount })}
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="min-h-0 flex-1 overflow-hidden px-2.5 py-1.5">
-              {previewIsProse ? (
-                <p
-                  className="whitespace-pre-wrap break-words text-[11.5px] leading-[1.45] text-foreground/75"
-                  style={{
-                    display: '-webkit-box',
-                    WebkitBoxOrient: 'vertical',
-                    WebkitLineClamp: previewLineClamp,
-                    overflow: 'hidden',
-                  }}
-                >
-                  {previewText}
-                </p>
-              ) : (
-                <div className="space-y-1">
-                  {preview.bodyLines.map((line, index) => {
-                    const technical = isTechnicalPreviewLine(line);
-                    return (
-                      <div
-                        key={`${line}-${index}`}
-                        className={[
-                          'line-clamp-2 break-words rounded-md text-[11px] leading-snug',
-                          technical
-                            ? 'bg-background/70 px-1.5 py-1 font-mono text-[10.5px] text-foreground/80'
-                            : 'text-muted-foreground',
-                        ].join(' ')}
-                      >
-                        {line}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="text-[11px] italic text-muted-foreground/70">
-            {t('card.noOutput')}
-          </div>
-        )}
+        <CardPreview
+          preview={preview}
+          activeFor={activeFor}
+          messageCount={card.messageCount}
+        />
       </div>
 
-      {/* Footer: quick actions on the left, attention hint as a truncating
-          middle band, intent select + close on the right. Timer / message
-          count moved into the preview header so this row never overflows
-          when the AI intent dropdown is present. */}
-      <div className="flex shrink-0 items-center gap-1.5 border-t border-border/40 bg-muted/20 px-2 py-1">
-        <div className="flex shrink-0 items-center gap-0.5">
-          <button
-            type="button"
-            title={t('card.copyPath')}
-            onClick={stopPropagation(onCopyCwd)}
-            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-          >
-            <Copy className="h-3 w-3" />
-          </button>
-          <button
-            type="button"
-            title={t('card.revealProject')}
-            onClick={stopPropagation(onOpenDir)}
-            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-          >
-            <ExternalLink className="h-3 w-3" />
-          </button>
-          <button
-            type="button"
-            title={
-              pinned
-                ? t('card.unpin')
-                : pinFull
-                  ? t('card.pinFull', { max: MAX_PINNED_CARDS })
-                  : t('card.pin')
-            }
-            disabled={pinFull && !pinned}
-            onClick={stopPropagation(togglePin)}
-            className={`rounded p-1 ${
-              pinned
-                ? 'text-primary hover:bg-primary/10'
-                : pinFull
-                  ? 'text-muted-foreground/40 cursor-not-allowed'
-                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
-            }`}
-          >
-            {pinned ? <Pin className="h-3 w-3" /> : <PinOff className="h-3 w-3" />}
-          </button>
-        </div>
-
-        <div className="flex min-w-0 flex-1 items-center" title={attentionHint ?? undefined}>
-          {attentionHint && (
-            <span
-              className={`inline-flex min-w-0 max-w-full items-center gap-0.5 truncate text-[10px] ${
-                card.status === 'failed' ? 'text-red-500' : 'text-amber-600'
-              }`}
-            >
-              {card.status === 'failed' ? (
-                <AlertCircle className="h-3 w-3 shrink-0" />
-              ) : (
-                <BellRing className="h-3 w-3 shrink-0" />
-              )}
-              <span className="truncate">{attentionHint}</span>
-            </span>
-          )}
-        </div>
-
-        {aiSessionBadge && (
-          <div className="shrink-0">
-            <AiIntentSelect cardId={card.id} value={card.aiIntent} compact />
-          </div>
-        )}
-        <button
-          type="button"
-          title={t('card.close')}
-          onClick={stopPropagation(onClose)}
-          className="shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-        >
-          <Trash2 className="h-3 w-3" />
-        </button>
-      </div>
+      <CardFooter
+        card={card}
+        aiSessionBadge={aiSessionBadge}
+        attentionHint={attentionHint}
+        pinned={pinned}
+        pinFull={pinFull}
+        onCopyCwd={onCopyCwd}
+        onOpenDir={onOpenDir}
+        onTogglePin={togglePin}
+        onClose={onClose}
+      />
 
       {timelineOpen && recentEvents.length > 0 && (
         <motion.div
