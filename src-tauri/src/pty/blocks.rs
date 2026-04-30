@@ -1,5 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
@@ -21,7 +22,10 @@ pub struct BlockStartedPayload {
 pub struct BlockFinishedPayload {
     pub session_id: String,
     pub block_id: String,
-    pub exit_code: i32,
+    /// `None` represents an aborted block (e.g. the prompt restarted before
+    /// the previous command's `D` ever arrived). The frontend store maps
+    /// `exitCode === undefined → state: 'aborted'`.
+    pub exit_code: Option<i32>,
     pub finished_at: u64,
     pub duration_ms: Option<u64>,
 }
@@ -34,30 +38,22 @@ pub enum BlockEvent {
 
 impl BlockEvent {
     pub fn emit(&self, app_handle: &AppHandle) {
-        match self {
-            Self::Started(payload) => {
-                let _ = app_handle.emit("pty://block-started", payload);
-            }
-            Self::Finished(payload) => {
-                let _ = app_handle.emit("pty://block-finished", payload);
-            }
-        }
+        let _ = match self {
+            Self::Started(p) => app_handle.emit("pty://block-started", p),
+            Self::Finished(p) => app_handle.emit("pty://block-finished", p),
+        };
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 enum ParseMode {
+    #[default]
     Ground,
     Escape,
     Osc { data: String, saw_escape: bool },
 }
 
-#[derive(Debug, Clone)]
-struct ActiveBlock {
-    block_id: String,
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BlockParser {
     session_id: String,
     mode: ParseMode,
@@ -67,7 +63,7 @@ pub struct BlockParser {
     pending_cwd: Option<String>,
     pending_duration_ms: Option<u64>,
     pending_finish: Option<BlockFinishedPayload>,
-    active_block: Option<ActiveBlock>,
+    active_block_id: Option<String>,
     next_block_index: u64,
 }
 
@@ -75,83 +71,60 @@ impl BlockParser {
     pub fn new(session_id: String) -> Self {
         Self {
             session_id,
-            mode: ParseMode::Ground,
-            capture_command: false,
-            command_buffer: String::new(),
-            pending_cmd_id: None,
-            pending_cwd: None,
-            pending_duration_ms: None,
-            pending_finish: None,
-            active_block: None,
-            next_block_index: 0,
+            ..Default::default()
         }
     }
 
     pub fn ingest(&mut self, input: &str) -> Vec<BlockEvent> {
         let mut events = Vec::new();
-
         for ch in input.chars() {
-            let mut next_mode = None;
-            let mut completed_osc = None;
-
-            match &mut self.mode {
-                ParseMode::Ground => {
-                    if ch == ESC {
-                        next_mode = Some(ParseMode::Escape);
-                    } else {
-                        self.capture_char(ch);
-                    }
-                }
-                ParseMode::Escape => {
-                    if ch == ']' {
-                        next_mode = Some(ParseMode::Osc {
-                            data: String::new(),
-                            saw_escape: false,
-                        });
-                    } else {
-                        next_mode = Some(ParseMode::Ground);
-                    }
-                }
-                ParseMode::Osc { data, saw_escape } => {
-                    if *saw_escape {
-                        if ch == '\\' {
-                            completed_osc = Some(data.clone());
-                            next_mode = Some(ParseMode::Ground);
-                        } else {
-                            data.push(ESC);
-                            data.push(ch);
-                            *saw_escape = false;
-                        }
-                    } else if ch == BEL {
-                        completed_osc = Some(data.clone());
-                        next_mode = Some(ParseMode::Ground);
-                    } else if ch == ESC {
-                        *saw_escape = true;
-                    } else {
-                        data.push(ch);
-                    }
-                }
-            }
-
-            if let Some(mode) = next_mode {
-                self.mode = mode;
-            }
-            if let Some(osc) = completed_osc {
-                self.handle_osc(&osc, &mut events);
-            }
+            let (next_mode, osc) = self.step(ch);
+            if let Some(mode) = next_mode { self.mode = mode; }
+            if let Some(osc) = osc { self.handle_osc(&osc, &mut events); }
         }
-
         self.flush_pending_finish(&mut events);
         events
     }
 
-    fn capture_char(&mut self, ch: char) {
-        if !self.capture_command {
-            return;
-        }
-
-        if ch == '\r' || ch == '\n' || ch == '\t' || !ch.is_control() {
-            self.command_buffer.push(ch);
+    fn step(&mut self, ch: char) -> (Option<ParseMode>, Option<String>) {
+        match &mut self.mode {
+            ParseMode::Ground if ch == ESC => (Some(ParseMode::Escape), None),
+            ParseMode::Ground => {
+                if self.capture_command
+                    && (ch == '\r' || ch == '\n' || ch == '\t' || !ch.is_control())
+                {
+                    self.command_buffer.push(ch);
+                }
+                (None, None)
+            }
+            ParseMode::Escape => {
+                let next = if ch == ']' {
+                    ParseMode::Osc { data: String::new(), saw_escape: false }
+                } else {
+                    ParseMode::Ground
+                };
+                (Some(next), None)
+            }
+            ParseMode::Osc { data, saw_escape } if *saw_escape => {
+                if ch == '\\' {
+                    return (Some(ParseMode::Ground), Some(std::mem::take(data)));
+                }
+                data.push(ESC);
+                data.push(ch);
+                *saw_escape = false;
+                (None, None)
+            }
+            ParseMode::Osc { data, .. } if ch == BEL => {
+                (Some(ParseMode::Ground), Some(std::mem::take(data)))
+            }
+            ParseMode::Osc { saw_escape, .. } if ch == ESC => {
+                *saw_escape = true;
+                (None, None)
+            }
+            ParseMode::Osc { data, .. } => {
+                data.push(ch);
+                (None, None)
+            }
         }
     }
 
@@ -164,9 +137,15 @@ impl BlockParser {
         }
     }
 
+    // Repeated `A` after `C` = prompt restarted (p10k / Starship re-emit);
+    // abort the still-active block so listeners never see leaked entries.
     fn handle_osc_133(&mut self, action: &str, rest: &[&str], events: &mut Vec<BlockEvent>) {
         match action {
             "A" => {
+                if self.active_block_id.is_some() {
+                    self.finish_block(None);
+                    self.flush_pending_finish(events);
+                }
                 self.capture_command = false;
                 self.command_buffer.clear();
             }
@@ -178,18 +157,14 @@ impl BlockParser {
                 self.pending_cwd = None;
                 self.pending_duration_ms = None;
             }
-            "C" => {
+            "C" if self.active_block_id.is_none() => {
                 self.capture_command = false;
-                if self.active_block.is_none() {
-                    self.start_block(events);
-                }
+                self.start_block(events);
             }
+            "C" => self.capture_command = false,
             "D" => {
-                let exit_code = rest
-                    .first()
-                    .and_then(|value| value.parse::<i32>().ok())
-                    .unwrap_or(0);
-                self.finish_block(exit_code);
+                let code = rest.first().and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+                self.finish_block(Some(code));
             }
             _ => {}
         }
@@ -197,21 +172,17 @@ impl BlockParser {
 
     fn handle_threadterm_osc(&mut self, fields: &[&str], events: &mut Vec<BlockEvent>) {
         for field in fields {
-            let Some((key, value)) = field.split_once('=') else {
-                continue;
-            };
+            let Some((key, value)) = field.split_once('=') else { continue };
+            let value = value.trim();
             match key.trim() {
-                "cmd_id" => self.pending_cmd_id = Some(value.trim().to_string()),
-                "cwd" => {
-                    self.pending_cwd = decode_base64_utf8(value.trim());
-                }
+                "cmd_id" => self.pending_cmd_id = Some(value.to_string()),
+                "cwd" => self.pending_cwd = decode_base64_utf8(value),
                 "duration" => {
-                    if let Ok(duration) = value.trim().parse::<u64>() {
-                        self.pending_duration_ms = Some(duration);
-                        if let Some(mut finish) = self.pending_finish.take() {
-                            finish.duration_ms = Some(duration);
-                            events.push(BlockEvent::Finished(finish));
-                        }
+                    let Ok(duration) = value.parse::<u64>() else { continue };
+                    self.pending_duration_ms = Some(duration);
+                    if let Some(mut finish) = self.pending_finish.take() {
+                        finish.duration_ms = Some(duration);
+                        events.push(BlockEvent::Finished(finish));
                     }
                 }
                 _ => {}
@@ -225,30 +196,22 @@ impl BlockParser {
             .pending_cmd_id
             .take()
             .unwrap_or_else(|| format!("{}-block-{}", self.session_id, self.next_block_index));
-        let command = clean_command(&self.command_buffer);
-        let cwd = self.pending_cwd.take().unwrap_or_default();
-        let started_at = now_millis();
-
-        self.active_block = Some(ActiveBlock {
-            block_id: block_id.clone(),
-        });
+        self.active_block_id = Some(block_id.clone());
         events.push(BlockEvent::Started(BlockStartedPayload {
             session_id: self.session_id.clone(),
             block_id,
-            command,
-            cwd,
-            started_at,
+            command: clean_command(&self.command_buffer),
+            cwd: self.pending_cwd.take().unwrap_or_default(),
+            started_at: now_millis(),
         }));
         self.command_buffer.clear();
     }
 
-    fn finish_block(&mut self, exit_code: i32) {
-        let Some(active) = self.active_block.take() else {
-            return;
-        };
+    fn finish_block(&mut self, exit_code: Option<i32>) {
+        let Some(block_id) = self.active_block_id.take() else { return };
         self.pending_finish = Some(BlockFinishedPayload {
             session_id: self.session_id.clone(),
-            block_id: active.block_id,
+            block_id,
             exit_code,
             finished_at: now_millis(),
             duration_ms: self.pending_duration_ms.take(),
@@ -256,8 +219,8 @@ impl BlockParser {
     }
 
     fn flush_pending_finish(&mut self, events: &mut Vec<BlockEvent>) {
-        if let Some(finish) = self.pending_finish.take() {
-            events.push(BlockEvent::Finished(finish));
+        if let Some(f) = self.pending_finish.take() {
+            events.push(BlockEvent::Finished(f));
         }
     }
 }
@@ -274,62 +237,8 @@ fn clean_command(buffer: &str) -> String {
 }
 
 fn decode_base64_utf8(input: &str) -> Option<String> {
-    let mut out = Vec::new();
-    let mut chunk = [0u8; 4];
-    let mut chunk_len = 0usize;
-
-    for byte in input.bytes().filter(|byte| !byte.is_ascii_whitespace()) {
-        chunk[chunk_len] = byte;
-        chunk_len += 1;
-        if chunk_len == 4 {
-            decode_base64_chunk(&chunk, &mut out)?;
-            chunk_len = 0;
-        }
-    }
-
-    if chunk_len != 0 {
-        for slot in chunk.iter_mut().skip(chunk_len) {
-            *slot = b'=';
-        }
-        decode_base64_chunk(&chunk, &mut out)?;
-    }
-
-    String::from_utf8(out).ok()
-}
-
-fn decode_base64_chunk(chunk: &[u8; 4], out: &mut Vec<u8>) -> Option<()> {
-    let mut values = [0u8; 4];
-    let mut padding = 0usize;
-
-    for (idx, byte) in chunk.iter().enumerate() {
-        if *byte == b'=' {
-            values[idx] = 0;
-            padding += 1;
-        } else {
-            values[idx] = base64_value(*byte)?;
-        }
-    }
-
-    out.push((values[0] << 2) | (values[1] >> 4));
-    if padding < 2 {
-        out.push((values[1] << 4) | (values[2] >> 2));
-    }
-    if padding == 0 {
-        out.push((values[2] << 6) | values[3]);
-    }
-
-    Some(())
-}
-
-fn base64_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'A'..=b'Z' => Some(byte - b'A'),
-        b'a'..=b'z' => Some(byte - b'a' + 26),
-        b'0'..=b'9' => Some(byte - b'0' + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
+    let stripped: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    String::from_utf8(BASE64.decode(stripped).ok()?).ok()
 }
 
 fn now_millis() -> u64 {

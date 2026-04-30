@@ -3,7 +3,7 @@ mod db;
 mod notification;
 mod overlay;
 mod provider_sessions;
-mod pty;
+pub mod pty;
 mod shell_integration;
 
 #[cfg(test)]
@@ -52,8 +52,12 @@ pub fn run() {
             pty::pty_kill,
             pty::pty_get_session_state,
             pty::pty_get_recent_output,
+            pty::set_command_blocks_enabled,
+            pty::get_command_blocks_enabled,
             notification::notification_send_os,
             provider_sessions::provider_find_recent_session,
+            shell_integration::detect_shell,
+            shell_integration::preview_shell_integration,
             shell_integration::install_shell_integration,
             shell_integration::uninstall_shell_integration,
             bridge::bridge_start,

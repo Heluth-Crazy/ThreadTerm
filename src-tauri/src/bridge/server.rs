@@ -15,10 +15,10 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
-use tauri::async_runtime::JoinHandle;
 use tokio::{
     net::TcpListener,
     sync::{broadcast, oneshot},
+    task::JoinHandle,
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
@@ -77,7 +77,14 @@ pub async fn start(
         .with_state(context);
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let join = tauri::async_runtime::spawn(async move {
+    // We deliberately use `tokio::spawn` instead of `tauri::async_runtime::spawn`
+    // here. The Tauri global async runtime is a separate Tokio reactor, but
+    // the `TcpListener` we just bound is registered with whichever runtime
+    // called `bridge_start`. Spawning the `accept` loop on a different
+    // reactor produces sporadic `Connection refused` errors (and broke the
+    // S2-1 wscat-style integration test). Plain `tokio::spawn` reuses the
+    // current runtime and keeps the listener and acceptor co-located.
+    let join = tokio::spawn(async move {
         let server = axum::serve(listener, app).with_graceful_shutdown(async {
             let _ = shutdown_rx.await;
         });

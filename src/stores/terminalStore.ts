@@ -146,7 +146,14 @@ interface TerminalStore {
     command: string;
     cwd: string;
     startedAt: number;
-    bufferStart?: number;
+    /**
+     * Absolute scrollback row index (`baseY + cursorY`) at the moment the
+     * block started — used by Stage 4 to anchor folding / "jump to failed
+     * block" / per-block copy actions to real xterm rows. The bridge
+     * resolves this from `xtermRegistry.getAbsoluteCursorRow` so callers
+     * never have to compute it themselves.
+     */
+    bufferStart: number;
   }) => void;
   recordBlockFinished: (input: {
     cardId: string;
@@ -154,6 +161,7 @@ interface TerminalStore {
     exitCode?: number | null;
     finishedAt: number;
     durationMs?: number | null;
+    /** Absolute scrollback row index at the moment the block finished. */
     bufferEnd?: number;
   }) => void;
   ensureBlocksState: () => void;
@@ -430,7 +438,7 @@ export const useTerminalStore = create<TerminalStore>()(
             cwd: input.cwd,
             command: input.command,
             startedAt: input.startedAt,
-            bufferStart: input.bufferStart ?? 0,
+            bufferStart: input.bufferStart,
             state: 'running',
           };
 

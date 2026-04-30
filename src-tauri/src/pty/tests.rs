@@ -130,7 +130,7 @@ fn block_parser_detects_osc133_command_lifecycle() {
         BlockEvent::Finished(payload) => {
             assert_eq!(payload.session_id, "pty-1");
             assert_eq!(payload.block_id, "cmd-1");
-            assert_eq!(payload.exit_code, 0);
+            assert_eq!(payload.exit_code, Some(0));
             assert_eq!(payload.duration_ms, Some(42));
             assert!(payload.finished_at > 0);
         }
@@ -149,24 +149,66 @@ fn block_parser_handles_split_osc_sequences_without_modifying_stream() {
     assert_eq!(events.len(), 2);
     assert!(matches!(events[0], BlockEvent::Started(_)));
     match &events[1] {
-        BlockEvent::Finished(payload) => assert_eq!(payload.exit_code, 1),
+        BlockEvent::Finished(payload) => assert_eq!(payload.exit_code, Some(1)),
         other => panic!("expected finished event, got {other:?}"),
     }
 }
 
 #[test]
-fn block_parser_fuzz_does_not_panic_on_random_control_streams() {
+fn block_parser_eats_duplicate_a_and_aborts_active_block() {
+    // Sequence: A → B → C → A (no D!) → B → C → D
+    // The first block must abort (exit_code = None → state: aborted in
+    // the frontend), the second must finish successfully.
+    let mut parser = BlockParser::new("pty-1".to_string());
+    let mut events = Vec::new();
+
+    events.extend(parser.ingest("\x1b]133;A\x07prompt> \x1b]133;B\x07echo first\r"));
+    events.extend(parser.ingest("\x1b]133;C\x07first-output\r"));
+    // p10k / Starship redraw: A re-emitted before D ever arrived.
+    events.extend(parser.ingest("\x1b]133;A\x07prompt> \x1b]133;B\x07echo second\r"));
+    events.extend(parser.ingest("\x1b]133;C\x07second-output\r\x1b]133;D;0\x07"));
+
+    let started = events
+        .iter()
+        .filter(|event| matches!(event, BlockEvent::Started(_)))
+        .count();
+    let finished: Vec<&BlockEvent> = events
+        .iter()
+        .filter(|event| matches!(event, BlockEvent::Finished(_)))
+        .collect();
+
+    assert_eq!(started, 2, "expected two Started events, got {started}");
+    assert_eq!(finished.len(), 2, "expected two Finished events");
+
+    match finished[0] {
+        BlockEvent::Finished(p) => assert_eq!(
+            p.exit_code, None,
+            "first block must abort with no exit code"
+        ),
+        _ => unreachable!(),
+    }
+    match finished[1] {
+        BlockEvent::Finished(p) => assert_eq!(p.exit_code, Some(0)),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn block_parser_fuzz_does_not_panic_on_random_byte_streams() {
+    use rand::{rngs::StdRng, RngCore, SeedableRng};
+
+    // Seeded so failures are reproducible. Feed fully-random bytes into
+    // the parser; we only assert it never panics. A property-based fuzz
+    // here would be heavier than the ROADMAP baseline budget allows, so
+    // we use a deterministic-seeded loop with a wide enough sample size.
+    let mut rng = StdRng::seed_from_u64(0xC0FFEE_u64);
     let mut parser = BlockParser::new("pty-fuzz".to_string());
 
-    for byte in 0u8..=255 {
-        let chunk = format!(
-            "\x1b]{};{};D;{}\x07\x1b[{}mtext{}\x1b\\",
-            byte % 200,
-            byte,
-            byte % 3,
-            byte % 8,
-            char::from(byte)
-        );
+    for _ in 0..1024 {
+        let len = (rng.next_u32() % 1024) as usize;
+        let mut buf = vec![0u8; len];
+        rng.fill_bytes(&mut buf);
+        let chunk = String::from_utf8_lossy(&buf);
         let _ = parser.ingest(&chunk);
     }
 }

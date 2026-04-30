@@ -106,5 +106,33 @@
     "language": "言語",
     "languageLabel": "言語",
     "languageDescription": "ThreadTerm の表示言語を選択します。"
+  },
+  "commandBlocks": {
+    "title": "コマンドブロック",
+    "description": "シェルのコマンド境界を検出し、出力の折りたたみ・コマンド全体のコピー・失敗ブロックへの移動を可能にします。既定は無効。差分を確認してからシェルごとに有効化してください。",
+    "desktopOnly": "コマンドブロックは Tauri デスクトップアプリでのみ設定できます。",
+    "detectedShellLabel": "検出されたシェル",
+    "detectedShellUnknown": "不明 — 下から手動で選択してインストールしてください。",
+    "shellsLabel": "シェル統合",
+    "rcPathLabel": "書き込み先",
+    "preview": "インストールをプレビュー",
+    "previewing": "プレビュー中…",
+    "install": "インストール",
+    "installing": "インストール中…",
+    "uninstall": "アンインストール",
+    "uninstalling": "アンインストール中…",
+    "installed": "インストール済み",
+    "notInstalled": "未インストール",
+    "diffTitle": "Diff（インストール前に確認してください）",
+    "noChanges": "既にインストール済みのため変更はありません。",
+    "installSuccess": "{{shell}} 用にインストールしました。シェルを再読み込みするか、新しい ThreadTerm カードを開いて有効化してください。",
+    "uninstallSuccess": "{{shell}} の統合を削除しました。",
+    "error": "操作に失敗しました: {{message}}",
+    "shells": {
+      "zsh": "Zsh",
+      "bash": "Bash",
+      "fish": "Fish",
+      "pwsh": "PowerShell"
+    }
   }
 }

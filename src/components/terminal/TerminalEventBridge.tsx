@@ -28,6 +28,7 @@ import type { TerminalCard, TerminalStatus } from '../../types/terminal';
 import { feedHeadless, disposeHeadless, disposeAllHeadless } from './headlessPreview';
 import { buildCardPreview } from './cardPreview';
 import { getMissingAiCliName } from './providerSession';
+import { getAbsoluteCursorRow } from './xtermRegistry';
 import i18n from '../../i18n/config.js';
 
 // Map Rust SessionState → UI TerminalStatus.
@@ -364,12 +365,17 @@ export function TerminalEventBridge(): null {
       const unsubBlockStarted = await pty.onBlockStarted((payload: BlockStartedEvent) => {
         const card = getCardForPtyId(payload.sessionId);
         if (!card) return;
+        // Plan option A: read `baseY + cursorY` at event-arrival time. May
+        // differ from the *exact* emit position by ≤ 1 row; Stage 4 renders
+        // with a +1 tolerance. See `xtermRegistry.ts` for the trade-off.
+        const bufferStart = getAbsoluteCursorRow(payload.sessionId);
         useTerminalStore.getState().recordBlockStarted({
           cardId: card.id,
           blockId: payload.blockId,
           command: payload.command,
           cwd: payload.cwd,
           startedAt: payload.startedAt,
+          bufferStart,
         });
       });
       if (cancelled) {
@@ -381,12 +387,14 @@ export function TerminalEventBridge(): null {
       const unsubBlockFinished = await pty.onBlockFinished((payload: BlockFinishedEvent) => {
         const card = getCardForPtyId(payload.sessionId);
         if (!card) return;
+        const bufferEnd = getAbsoluteCursorRow(payload.sessionId);
         useTerminalStore.getState().recordBlockFinished({
           cardId: card.id,
           blockId: payload.blockId,
           exitCode: payload.exitCode,
           finishedAt: payload.finishedAt,
           durationMs: payload.durationMs,
+          bufferEnd,
         });
       });
       if (cancelled) {
