@@ -67,6 +67,28 @@
     "testTitle": "ThreadTerm test notification",
     "testBody": "If you see this notification, the system notification path is working."
   },
+  "mobileAccess": {
+    "title": "Mobile access",
+    "description": "Starts the local HTTP/WebSocket bridge so phones on the same LAN can inspect and control desktop sessions.",
+    "desktopOnly": "Mobile access can only be started inside the Tauri desktop app.",
+    "running": "Running",
+    "stopped": "Stopped",
+    "start": "Start",
+    "stop": "Stop",
+    "refresh": "Refresh",
+    "error": "Action failed: {{message}}",
+    "pairingTitle": "Pairing entry",
+    "pairingDescription": "Generate a one-time pairing code that expires in 5 minutes. QR rendering will replace this later.",
+    "newPairCode": "New pairing code",
+    "copyUrl": "Copy URL",
+    "devicesTitle": "Paired devices",
+    "noDevices": "No paired devices yet.",
+    "revoke": "Revoke",
+    "permissions": {
+      "read_only": "Read only",
+      "full": "Full control"
+    }
+  },
   "account": {
     "language": "Language",
     "languageLabel": "Language",

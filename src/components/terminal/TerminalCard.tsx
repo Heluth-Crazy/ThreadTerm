@@ -213,7 +213,7 @@ export function TerminalCardComponent({
       )}
 
       {/* Header */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-2">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-1.5">
         <div className={`flex h-7 w-7 items-center justify-center rounded-lg bg-muted ${typeMeta.accent}`}>
           <TypeIcon className="h-4 w-4" />
         </div>
@@ -228,7 +228,7 @@ export function TerminalCardComponent({
             <span className="truncate">{card.projectPath}</span>
           </div>
           {aiSessionBadge && (
-            <div className="mt-1 flex">
+            <div className="mt-0.5 flex">
               <span
                 title={t(aiSessionBadge.descriptionKey, {
                   ...aiSessionBadge.values,
@@ -272,17 +272,36 @@ export function TerminalCardComponent({
       <div className="min-h-0 flex-1 overflow-hidden px-3 py-2">
         {preview.bodyLines.length > 0 ? (
           <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border/40 bg-muted/20">
-            <div className="flex shrink-0 items-center justify-between border-b border-border/30 px-2.5 py-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80">
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/30 px-2.5 py-1 text-[10px]">
+              <span className="min-w-0 truncate font-semibold uppercase tracking-wide text-muted-foreground/80">
                 {t(`card.preview.${preview.kind}`, preview.kind)}
               </span>
-              {preview.hiddenLineCount > 0 && (
-                <span className="text-[9px] text-muted-foreground/60">
-                  {t('card.preview.more', { count: preview.hiddenLineCount })}
+              <div className="flex shrink-0 items-center gap-2 text-muted-foreground/70">
+                <span
+                  className="inline-flex items-center gap-0.5"
+                  title={t('card.activeFor', { time: activeFor, defaultValue: activeFor })}
+                >
+                  <Timer className="h-3 w-3" />
+                  {activeFor}
                 </span>
-              )}
+                <span
+                  className="inline-flex items-center gap-0.5"
+                  title={t('card.messageCountTitle', {
+                    count: card.messageCount,
+                    defaultValue: `${card.messageCount}`,
+                  })}
+                >
+                  <MessageSquareText className="h-3 w-3" />
+                  {card.messageCount}
+                </span>
+                {preview.hiddenLineCount > 0 && (
+                  <span className="text-[9px] text-muted-foreground/60">
+                    {t('card.preview.more', { count: preview.hiddenLineCount })}
+                  </span>
+                )}
+              </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-hidden px-2.5 py-2">
+            <div className="min-h-0 flex-1 overflow-hidden px-2.5 py-1.5">
               {previewIsProse ? (
                 <p
                   className="whitespace-pre-wrap break-words text-[11.5px] leading-[1.45] text-foreground/75"
@@ -324,37 +343,12 @@ export function TerminalCardComponent({
         )}
       </div>
 
-      {/* Stats row */}
-      <div className="flex shrink-0 items-center gap-3 border-t border-border/40 bg-muted/30 px-3 py-1.5 text-[10px] text-muted-foreground">
-        <span className="inline-flex items-center gap-1">
-          <Timer className="h-3 w-3" /> {activeFor}
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <MessageSquareText className="h-3 w-3" /> {card.messageCount}
-        </span>
-        {attentionHint && (
-          <span
-            className={`ml-auto inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-medium ${
-              card.status === 'failed'
-                ? 'bg-red-500/10 text-red-500'
-                : card.status === 'waiting'
-                  ? 'bg-amber-500/10 text-amber-600'
-                  : 'bg-amber-500/10 text-amber-600'
-            }`}
-          >
-            {card.status === 'failed' ? (
-              <AlertCircle className="h-3 w-3" />
-            ) : (
-              <BellRing className="h-3 w-3" />
-            )}
-            {attentionHint}
-          </span>
-        )}
-      </div>
-
-      {/* Quick actions + mini timeline (slide up on hover) */}
-      <div className="flex shrink-0 items-center justify-between gap-1 border-t border-border/40 px-2 py-1">
-        <div className="flex gap-1">
+      {/* Footer: quick actions on the left, attention hint as a truncating
+          middle band, intent select + close on the right. Timer / message
+          count moved into the preview header so this row never overflows
+          when the AI intent dropdown is present. */}
+      <div className="flex shrink-0 items-center gap-1.5 border-t border-border/40 bg-muted/20 px-2 py-1">
+        <div className="flex shrink-0 items-center gap-0.5">
           <button
             type="button"
             title={t('card.copyPath')}
@@ -393,6 +387,24 @@ export function TerminalCardComponent({
             {pinned ? <Pin className="h-3 w-3" /> : <PinOff className="h-3 w-3" />}
           </button>
         </div>
+
+        <div className="flex min-w-0 flex-1 items-center" title={attentionHint ?? undefined}>
+          {attentionHint && (
+            <span
+              className={`inline-flex min-w-0 max-w-full items-center gap-0.5 truncate text-[10px] ${
+                card.status === 'failed' ? 'text-red-500' : 'text-amber-600'
+              }`}
+            >
+              {card.status === 'failed' ? (
+                <AlertCircle className="h-3 w-3 shrink-0" />
+              ) : (
+                <BellRing className="h-3 w-3 shrink-0" />
+              )}
+              <span className="truncate">{attentionHint}</span>
+            </span>
+          )}
+        </div>
+
         {aiSessionBadge && (
           <div className="shrink-0">
             <AiIntentSelect cardId={card.id} value={card.aiIntent} compact />
@@ -402,7 +414,7 @@ export function TerminalCardComponent({
           type="button"
           title={t('card.close')}
           onClick={stopPropagation(onClose)}
-          className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          className="shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
         >
           <Trash2 className="h-3 w-3" />
         </button>
@@ -413,7 +425,7 @@ export function TerminalCardComponent({
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.15 }}
-          className="pointer-events-none absolute inset-x-0 bottom-8 z-20 border-t border-border/40 bg-background/95 px-3 py-1.5 text-[10px] text-muted-foreground shadow-[0_-10px_24px_rgba(0,0,0,0.08)] backdrop-blur"
+          className="pointer-events-none absolute inset-x-0 bottom-10 z-20 border-t border-border/40 bg-background/95 px-3 py-1.5 text-[10px] text-muted-foreground shadow-[0_-10px_24px_rgba(0,0,0,0.08)] backdrop-blur"
         >
           <div className="mb-0.5 flex items-center gap-1 font-medium">
             <span>{t('card.recent')}</span>

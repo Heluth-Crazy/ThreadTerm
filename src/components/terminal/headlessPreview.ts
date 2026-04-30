@@ -75,8 +75,15 @@ export function feedHeadless(
  * Read the last N non-blank rows from the active buffer as a single
  * newline-joined string. Limits each row to ~240 visible chars to keep
  * the preview card layout honest.
+ *
+ * `tailRows` defaults to 32 — large enough to span both the bottom
+ * input box (often 4–10 rows for Claude / Codex composers) and a
+ * meaningful tail of the latest assistant reply *above* it. The
+ * downstream `cardPreview` pass strips footer/hint noise and trims
+ * to display size, so over-collecting here is cheap and keeps the
+ * freshest reply from being clipped off the top.
  */
-function readPreview(term: Terminal, tailRows = 8, maxCharsPerRow = 240): string {
+function readPreview(term: Terminal, tailRows = 32, maxCharsPerRow = 240): string {
   const buf = term.buffer.active;
   const total = buf.length;
   const out: string[] = [];

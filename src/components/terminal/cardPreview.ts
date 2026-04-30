@@ -35,6 +35,12 @@ const SPINNER_RE = /^[\s·•●○◦▪▫■□◆◇✦✧✶✷✸✹✺✻
 const DECORATION_HEAVY_RE = /[╭╮╰╯─│┌┐└┘├┤┬┴┼═║╔╗╚╝╟╢╠╣╦╩╬━┃┏┓┗┛]/gu;
 const WORD_RE = /[\p{L}\p{N}]/gu;
 
+// Hint-style chars used by TUI shortcut bars (e.g. "⏵ approve  ⏷ scroll  ? shortcuts").
+// Used both to recognise the bar and to allow the same pattern through the
+// keyword regex without the chars being treated as decoration.
+const TUI_HINT_KEYWORDS =
+  '(?:approve|reject|scroll|shortcuts?|cancel|quit|undo|redo|switch|navigate|copy|paste|edit|toggle|continue|send|run|select|expand|collapse|menu|history)';
+
 const STATUS_PATTERNS: RegExp[] = [
   /\b(esc|ctrl\+c|ctrl-c|shift\+tab|tab|enter)\b.*\b(cancel|quit|send|navigate|switch|close)\b/i,
   /\b(press|type)\b.+\b(to|for)\b.+\b(continue|cancel|quit|submit|send)\b/i,
@@ -46,6 +52,19 @@ const STATUS_PATTERNS: RegExp[] = [
   /^(?:[%$>#]\s+)?(printf|echo)\b/i,
   /^[%$>#]\s+[^\s@]+@[^\s]+\s+/,
   /^[-_=\s]{6,}$/,
+  // TUI shortcut hint bar: two or more "<key> <verb>" pairs separated by spaces / · / |.
+  new RegExp(
+    `^[\\s⏵⏷⏸⏹◀▶▲▼⌘⌃⌥⇧↑↓←→⇄⇅?]*${TUI_HINT_KEYWORDS}(?:\\s*[·|/]\\s*|\\s+)[\\s⏵⏷⏸⏹◀▶▲▼⌘⌃⌥⇧↑↓←→⇄⇅?\\w+]*${TUI_HINT_KEYWORDS}`,
+    'i',
+  ),
+  // "? for shortcuts" / "press ? for help" hints at the bottom of the input box.
+  /\?\s+(?:for\s+)?(?:shortcuts?|help|commands?|menu)\b/i,
+  // Stat / cost rows: "◆ 12.4k tokens", "0 errors", "2 changes", "1.2s", etc.
+  /^[\s·•●○◦▪▫■□◆◇✦✧✶✷✸✹✺✻✼✽✾✿⏵⏷]*\s*\d+(?:[.,]\d+)?\s*[kKmM]?\s*(tokens?|requests?|turns?|messages?|errors?|warnings?|changes?|edits?|diffs?|hunks?|files?|lines?|chars?|words?|seconds?|minutes?|hours?|ms|ctx|context)\b/i,
+  // Model / branding status lines: "codex  gpt-5.5  main", "claude  sonnet-4.5".
+  /^\s*(claude|codex|gemini)\s+(?:code\s+)?(?:gpt-|claude-|gemini-|sonnet|opus|haiku|o\d)/i,
+  // Empty input cursor placeholders that survive edge stripping (e.g. "> _" → "_").
+  /^_+$/,
 ];
 
 const SHELL_PROMPT_RE = /^[^\s@]+@[^\s]+\s+.+?\s([%$#>])(?:\s+(.*))?$/;

@@ -49,11 +49,44 @@ pub fn init_database() -> Result<()> {
             key   TEXT PRIMARY KEY,
             value TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS paired_devices (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            token_hash  TEXT NOT NULL UNIQUE,
+            permission  TEXT NOT NULL DEFAULT 'full',
+            created_at  INTEGER NOT NULL,
+            last_seen_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id   TEXT NOT NULL,
+            action      TEXT NOT NULL,
+            card_id     TEXT,
+            summary     TEXT NOT NULL,
+            created_at  INTEGER NOT NULL
+        );
         ",
     )
     .context("Failed to create database tables")?;
 
     tracing::info!(path = %db_path().display(), "Database initialized");
+    Ok(())
+}
+
+pub fn insert_audit_log(
+    device_id: &str,
+    action: &str,
+    card_id: Option<&str>,
+    summary: &str,
+) -> Result<()> {
+    let conn = get_db().map_err(|e| anyhow::anyhow!("{e}"))?;
+    conn.execute(
+        "INSERT INTO audit_log (device_id, action, card_id, summary, created_at)
+         VALUES (?1, ?2, ?3, ?4, strftime('%s', 'now'))",
+        rusqlite::params![device_id, action, card_id, summary],
+    )?;
     Ok(())
 }
 
