@@ -1,3 +1,4 @@
+mod bridge;
 mod db;
 mod notification;
 mod overlay;
@@ -49,6 +50,12 @@ pub fn run() {
             pty::pty_get_recent_output,
             notification::notification_send_os,
             provider_sessions::provider_find_recent_session,
+            bridge::bridge_start,
+            bridge::bridge_stop,
+            bridge::bridge_status,
+            bridge::bridge_pair_qr,
+            bridge::bridge_devices,
+            bridge::bridge_revoke_device,
             overlay::overlay_show_selector,
             overlay::overlay_hide_selector,
             overlay::overlay_show_float,

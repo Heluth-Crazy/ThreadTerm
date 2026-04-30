@@ -67,6 +67,28 @@
     "testTitle": "ThreadTerm 테스트 알림",
     "testBody": "이 알림이 보이면 시스템 알림 경로가 작동 중입니다."
   },
+  "mobileAccess": {
+    "title": "모바일 접근",
+    "description": "같은 LAN의 휴대폰에서 데스크톱 세션을 확인하고 제어할 수 있도록 로컬 HTTP/WebSocket 브리지를 시작합니다.",
+    "desktopOnly": "모바일 접근은 Tauri 데스크톱 앱에서만 시작할 수 있습니다.",
+    "running": "실행 중",
+    "stopped": "중지됨",
+    "start": "시작",
+    "stop": "중지",
+    "refresh": "새로고침",
+    "error": "작업 실패: {{message}}",
+    "pairingTitle": "페어링 항목",
+    "pairingDescription": "5분 후 만료되는 일회용 페어링 코드를 생성합니다. 이후 QR 표시로 교체됩니다.",
+    "newPairCode": "페어링 코드 생성",
+    "copyUrl": "URL 복사",
+    "devicesTitle": "페어링된 기기",
+    "noDevices": "아직 페어링된 기기가 없습니다.",
+    "revoke": "해제",
+    "permissions": {
+      "read_only": "읽기 전용",
+      "full": "전체 제어"
+    }
+  },
   "account": {
     "language": "언어",
     "languageLabel": "언어",

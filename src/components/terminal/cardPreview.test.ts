@@ -153,4 +153,60 @@ describe('buildCardPreview', () => {
     expect(isTechnicalPreviewLine(preview.bodyLines[0])).toBe(true);
     expect(isTechnicalPreviewLine(preview.bodyLines[1])).toBe(true);
   });
+
+  it('strips Claude/Codex TUI footer noise around the latest reply', () => {
+    const preview = buildCardPreview(
+      card({
+        terminalType: 'claude',
+        lastReplyPreview: [
+          'I refactored the preview pipeline.',
+          'Run npm test to verify.',
+          '╭─────────────────────────────────────────╮',
+          '│ > _                                     │',
+          '╰─────────────────────────────────────────╯',
+          '⏵ approve  ⏷ scroll  ? for shortcuts',
+          '◆ 12.4k tokens   claude  sonnet-4.5',
+        ].join('\n'),
+      }),
+    );
+
+    expect(preview.kind).toBe('reply');
+    expect(preview.bodyLines).toEqual([
+      'I refactored the preview pipeline.',
+      'Run npm test to verify.',
+    ]);
+  });
+
+  it('filters codex status header rows', () => {
+    const preview = buildCardPreview(
+      card({
+        terminalType: 'codex',
+        lastReplyPreview: [
+          'codex   gpt-5.5   main · 2 changes',
+          'Implementation done.',
+        ].join('\n'),
+      }),
+    );
+
+    expect(preview.bodyLines).toEqual(['Implementation done.']);
+  });
+
+  it('filters bare token / change stat lines but keeps prose mentioning numbers', () => {
+    const preview = buildCardPreview(
+      card({
+        terminalType: 'codex',
+        lastReplyPreview: [
+          'Found 5 errors in src/index.ts.',
+          '0 errors',
+          '2 changes',
+          'Ready for review.',
+        ].join('\n'),
+      }),
+    );
+
+    expect(preview.bodyLines).toEqual([
+      'Found 5 errors in src/index.ts.',
+      'Ready for review.',
+    ]);
+  });
 });

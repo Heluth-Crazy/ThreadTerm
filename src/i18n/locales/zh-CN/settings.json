@@ -67,6 +67,28 @@
     "testTitle": "ThreadTerm 测试通知",
     "testBody": "如果你看到这条通知，说明系统通知链路可用。"
   },
+  "mobileAccess": {
+    "title": "移动端访问",
+    "description": "启动本地 HTTP/WebSocket 桥接服务，让手机在同一局域网内查看和控制桌面端会话。",
+    "desktopOnly": "移动端访问只能在 Tauri 桌面应用中启动。",
+    "running": "运行中",
+    "stopped": "未启动",
+    "start": "启动",
+    "stop": "停止",
+    "refresh": "刷新",
+    "error": "操作失败：{{message}}",
+    "pairingTitle": "配对入口",
+    "pairingDescription": "生成 5 分钟有效的一次性配对码。后续会替换为二维码展示。",
+    "newPairCode": "生成配对码",
+    "copyUrl": "复制链接",
+    "devicesTitle": "已配对设备",
+    "noDevices": "暂无已配对设备。",
+    "revoke": "撤销",
+    "permissions": {
+      "read_only": "只读",
+      "full": "完整控制"
+    }
+  },
   "account": {
     "language": "语言",
     "languageLabel": "语言",

@@ -75,3 +75,53 @@ export const providerSessions = {
       sinceMs: sinceMs ?? null,
     }),
 };
+
+export interface BridgeStatus {
+  running: boolean;
+  host?: string | null;
+  port?: number | null;
+  url?: string | null;
+}
+
+export interface PairQrResponse {
+  host: string;
+  port: number;
+  otp: string;
+  url: string;
+  expiresInSeconds: number;
+}
+
+export type BridgeDevicePermission = 'read_only' | 'full';
+
+export interface BridgeDevice {
+  id: string;
+  name: string;
+  permission: BridgeDevicePermission;
+  createdAt: number;
+  lastSeenAt?: number | null;
+}
+
+export const mobileBridge = {
+  start: (host?: string, port?: number): Promise<BridgeStatus> =>
+    invoke<BridgeStatus>('bridge_start', {
+      host: host ?? null,
+      port: port ?? null,
+    }),
+
+  stop: (): Promise<BridgeStatus> =>
+    invoke<BridgeStatus>('bridge_stop'),
+
+  status: (): Promise<BridgeStatus> =>
+    invoke<BridgeStatus>('bridge_status'),
+
+  pairQr: (host?: string): Promise<PairQrResponse> =>
+    invoke<PairQrResponse>('bridge_pair_qr', {
+      host: host ?? null,
+    }),
+
+  devices: (): Promise<BridgeDevice[]> =>
+    invoke<BridgeDevice[]>('bridge_devices'),
+
+  revokeDevice: (deviceId: string): Promise<boolean> =>
+    invoke<boolean>('bridge_revoke_device', { deviceId }),
+};
