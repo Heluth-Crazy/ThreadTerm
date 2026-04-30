@@ -245,7 +245,12 @@ fn public_host_for_url(host: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{sync::mpsc, time::Duration};
+    use std::{sync::mpsc, sync::Mutex, time::Duration};
+
+    /// Both bridge integration tests touch the global `BRIDGE_RUNTIME`
+    /// state and bind real sockets, so they cannot run in parallel.
+    /// Serialise them via a process-wide mutex.
+    static BRIDGE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn preview_strips_ansi_and_reports_hidden_lines() {
@@ -266,6 +271,7 @@ mod tests {
 
     #[test]
     fn bridge_start_returns_after_binding() {
+        let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = mpsc::channel();
 
         std::thread::spawn(move || {
@@ -284,5 +290,149 @@ mod tests {
         runtime
             .block_on(bridge_stop())
             .expect("bridge_stop should succeed");
+    }
+
+    /// S2-1: wscat-style end-to-end test. Boots the real axum server,
+    /// runs the pairing handshake, opens a websocket and confirms that
+    /// wrong / missing `protocol_version` triggers
+    /// `protocol_version_mismatch` while the correct version round-trips.
+    #[test]
+    fn websocket_rejects_protocol_version_mismatch() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        runtime.block_on(async {
+            // Tests share a global `BRIDGE_RUNTIME`; another test may
+            // have left a stale handle pointing at a runtime that has
+            // since been dropped. Tear it down first so we get a fresh
+            // listener bound on _this_ runtime's reactor.
+            let _ = bridge_stop().await;
+
+            let status = bridge_start(Some("127.0.0.1".to_string()), Some(0))
+                .await
+                .expect("bridge_start should succeed");
+            assert!(status.running);
+            let port = status.port.expect("port should be bound");
+
+            // 1. Pair through the same code-path the real mobile UI uses.
+            let qr = bridge_pair_qr(Some("127.0.0.1".to_string()))
+                .await
+                .expect("pair_qr should succeed");
+            let pair_response = BRIDGE_RUNTIME
+                .pairing
+                .pair(super::protocol::PairRequest {
+                    otp: qr.otp,
+                    device_name: "wscat-style-test".to_string(),
+                    permission: None,
+                })
+                .expect("pairing should succeed");
+            let token = pair_response.device_token;
+
+            // 2. Open the websocket with the device token.
+            let url = format!("ws://127.0.0.1:{port}/ws?token={token}");
+            let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("websocket should connect");
+
+            // First message should be the initial snapshot.
+            let initial = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+                .await
+                .expect("snapshot should arrive in time")
+                .expect("snapshot stream should not end")
+                .expect("snapshot should be well-formed");
+            let initial_text = match initial {
+                Message::Text(text) => text,
+                other => panic!("expected text snapshot, got {other:?}"),
+            };
+            let initial_value: serde_json::Value =
+                serde_json::from_str(&initial_text).expect("snapshot must be JSON");
+            assert_eq!(initial_value["protocol_version"], 1);
+            assert_eq!(initial_value["kind"], "snapshot");
+
+            // 3. Wrong protocol version → `protocol_version_mismatch` error.
+            ws.send(Message::Text(
+                r#"{"protocol_version":2,"kind":"ping"}"#.to_string(),
+            ))
+            .await
+            .expect("send should succeed");
+
+            let err = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+                .await
+                .expect("error response should arrive")
+                .expect("ws stream should not end")
+                .expect("ws message should parse");
+            let err_text = match err {
+                Message::Text(text) => text,
+                other => panic!("expected text error, got {other:?}"),
+            };
+            let err_value: serde_json::Value = serde_json::from_str(&err_text).unwrap();
+            assert_eq!(err_value["protocol_version"], 1);
+            assert_eq!(err_value["kind"], "error");
+            assert_eq!(err_value["code"], "protocol_version_mismatch");
+
+            // The server must close the socket after rejecting a version
+            // mismatch (per `handle_socket` in server.rs).
+            let next = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+                .await
+                .expect("close frame should arrive");
+            assert!(
+                matches!(next, None | Some(Ok(Message::Close(_))) | Some(Err(_))),
+                "server should close after version mismatch, got {next:?}"
+            );
+
+            // 4. Reconnect with no `protocol_version` field → same error.
+            let (mut ws2, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("reconnect should succeed");
+            // Drain the initial snapshot.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws2.next())
+                .await
+                .expect("snapshot should arrive on reconnect");
+
+            ws2.send(Message::Text(r#"{"kind":"ping"}"#.to_string()))
+                .await
+                .expect("send should succeed");
+            let err2 = tokio::time::timeout(std::time::Duration::from_secs(2), ws2.next())
+                .await
+                .expect("error should arrive")
+                .expect("ws stream should not end")
+                .expect("ws message should parse");
+            let err2_text = match err2 {
+                Message::Text(text) => text,
+                other => panic!("expected text error, got {other:?}"),
+            };
+            let err2_value: serde_json::Value = serde_json::from_str(&err2_text).unwrap();
+            assert_eq!(err2_value["code"], "protocol_version_mismatch");
+
+            // 5. Correct version → `pong`.
+            let (mut ws3, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("reconnect again should succeed");
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws3.next())
+                .await
+                .expect("snapshot should arrive again");
+
+            ws3.send(Message::Text(
+                r#"{"protocol_version":1,"kind":"ping"}"#.to_string(),
+            ))
+            .await
+            .expect("send should succeed");
+            let pong = tokio::time::timeout(std::time::Duration::from_secs(2), ws3.next())
+                .await
+                .expect("pong should arrive")
+                .expect("ws stream should not end")
+                .expect("ws message should parse");
+            let pong_text = match pong {
+                Message::Text(text) => text,
+                other => panic!("expected pong, got {other:?}"),
+            };
+            let pong_value: serde_json::Value = serde_json::from_str(&pong_text).unwrap();
+            assert_eq!(pong_value["protocol_version"], 1);
+            assert_eq!(pong_value["kind"], "pong");
+
+            bridge_stop().await.expect("bridge_stop should succeed");
+        });
     }
 }

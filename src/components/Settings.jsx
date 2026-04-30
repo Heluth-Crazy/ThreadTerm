@@ -17,6 +17,7 @@ import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import LanguageSelector from './LanguageSelector';
 import KeyboardShortcutsSettings from './settings/KeyboardShortcutsSettings';
+import { CommandBlocksSettings } from './settings/CommandBlocksSettings';
 import { MobileAccessSettings } from './settings/MobileAccessSettings';
 import { NotificationSettings } from './settings/NotificationSettings';
 import OverlayHotkeysSettings from './settings/OverlayHotkeysSettings';
@@ -422,6 +423,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
             {activeTab === 'shortcuts' && (
               <div className="space-y-6">
                 <MobileAccessSettings />
+                <CommandBlocksSettings />
                 <NotificationSettings />
                 <OverlayHotkeysSettings />
                 <KeyboardShortcutsSettings />

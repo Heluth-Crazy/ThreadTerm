@@ -106,5 +106,33 @@
     "language": "Language",
     "languageLabel": "Language",
     "languageDescription": "Choose the display language for ThreadTerm."
+  },
+  "commandBlocks": {
+    "title": "Command blocks",
+    "description": "Detects every shell command boundary so ThreadTerm can fold output, copy whole commands, and jump to failed runs. Off by default; enable per shell after reviewing the diff.",
+    "desktopOnly": "Command blocks can only be configured inside the Tauri desktop app.",
+    "detectedShellLabel": "Detected shell",
+    "detectedShellUnknown": "Unknown — pick one below to install manually.",
+    "shellsLabel": "Shell integration",
+    "rcPathLabel": "Will write to",
+    "preview": "Preview install",
+    "previewing": "Previewing…",
+    "install": "Install",
+    "installing": "Installing…",
+    "uninstall": "Uninstall",
+    "uninstalling": "Uninstalling…",
+    "installed": "Installed",
+    "notInstalled": "Not installed",
+    "diffTitle": "Diff (review before installing)",
+    "noChanges": "Already installed — no changes needed.",
+    "installSuccess": "Installed for {{shell}}. Reload your shell or open a new ThreadTerm card to activate.",
+    "uninstallSuccess": "Removed integration for {{shell}}.",
+    "error": "Action failed: {{message}}",
+    "shells": {
+      "zsh": "Zsh",
+      "bash": "Bash",
+      "fish": "Fish",
+      "pwsh": "PowerShell"
+    }
   }
 }

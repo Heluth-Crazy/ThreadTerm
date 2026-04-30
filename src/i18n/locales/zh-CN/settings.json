@@ -106,5 +106,33 @@
     "language": "语言",
     "languageLabel": "语言",
     "languageDescription": "选择 ThreadTerm 的显示语言。"
+  },
+  "commandBlocks": {
+    "title": "命令块",
+    "description": "识别 shell 命令边界，从而支持折叠输出、整体复制命令、跳转到失败的命令。默认关闭，逐个 shell 在确认 diff 后启用。",
+    "desktopOnly": "命令块功能仅在 Tauri 桌面应用中可用。",
+    "detectedShellLabel": "已检测到的 shell",
+    "detectedShellUnknown": "未识别 — 请在下方手动选择并安装。",
+    "shellsLabel": "Shell 集成",
+    "rcPathLabel": "写入位置",
+    "preview": "预览安装",
+    "previewing": "预览中…",
+    "install": "安装",
+    "installing": "安装中…",
+    "uninstall": "卸载",
+    "uninstalling": "卸载中…",
+    "installed": "已安装",
+    "notInstalled": "未安装",
+    "diffTitle": "Diff（请先核对再安装）",
+    "noChanges": "已安装，无需修改。",
+    "installSuccess": "已为 {{shell}} 安装。重新加载 shell 或新建 ThreadTerm 终端即可生效。",
+    "uninstallSuccess": "已移除 {{shell}} 的集成。",
+    "error": "操作失败：{{message}}",
+    "shells": {
+      "zsh": "Zsh",
+      "bash": "Bash",
+      "fish": "Fish",
+      "pwsh": "PowerShell"
+    }
   }
 }

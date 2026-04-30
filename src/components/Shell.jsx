@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { logger } from '../utils/logger';
 import { isTauriEnv, pty } from '../lib/tauri-bridge';
 import { useTheme } from '../contexts/ThemeContext';
+import { registerTerminal, unregisterTerminal } from './terminal/xtermRegistry';
 
 const xtermStyles = `
   .xterm .xterm-screen {
@@ -269,6 +270,9 @@ function Shell({
         const cols = terminal.current?.cols || 120;
         const connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
         ptyIdRef.current = connectedPtyId;
+        if (terminal.current && connectedPtyId) {
+          registerTerminal(connectedPtyId, terminal.current);
+        }
 
         if (
           replayRecentOutputRef.current &&
@@ -362,8 +366,11 @@ function Shell({
     retryCountRef.current = 0;
     cleanupListeners();
 
-    if (ptyIdRef.current && !preservePtyOnUnmountRef.current) {
-      pty.kill(ptyIdRef.current).catch(() => {});
+    if (ptyIdRef.current) {
+      unregisterTerminal(ptyIdRef.current);
+      if (!preservePtyOnUnmountRef.current) {
+        pty.kill(ptyIdRef.current).catch(() => {});
+      }
     }
     ptyIdRef.current = null;
     lastPtySizeRef.current = null;
@@ -549,8 +556,11 @@ function Shell({
       retryCountRef.current = 0;
       cleanupListeners();
 
-      if (ptyIdRef.current && !preservePtyOnUnmountRef.current) {
-        pty.kill(ptyIdRef.current).catch(() => {});
+      if (ptyIdRef.current) {
+        unregisterTerminal(ptyIdRef.current);
+        if (!preservePtyOnUnmountRef.current) {
+          pty.kill(ptyIdRef.current).catch(() => {});
+        }
       }
       ptyIdRef.current = null;
       lastPtySizeRef.current = null;

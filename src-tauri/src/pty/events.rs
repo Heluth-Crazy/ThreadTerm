@@ -122,8 +122,15 @@ pub(super) fn stream_pty_output(
             Ok(0) => break, // EOF – child exited
             Ok(n) => {
                 let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                for event in block_parser.ingest(&data) {
-                    event.emit(&app_handle);
+                // Stage 3 default-off: ingest only when the user has installed
+                // the shell integration and flipped the runtime switch via
+                // `set_command_blocks_enabled`. Skipping `ingest` entirely is
+                // important — even feeding bytes into the parser builds up
+                // OSC state that leaks across enable→disable→enable cycles.
+                if super::block_parser_enabled() {
+                    for event in block_parser.ingest(&data) {
+                        event.emit(&app_handle);
+                    }
                 }
                 let _ = app_handle.emit(
                     "pty-output",

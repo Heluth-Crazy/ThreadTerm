@@ -90,7 +90,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 
 **Verification**: 本机走完整配对流程 → 关闭桥接后 `lsof -i :5174` 端口确实释放 + ROADMAP 基线全过。
 
-**Status**: In Progress（协议版本、默认 loopback、token hash/过期、LAN 二次确认已落地；wscat 手动验证待跑）
+**Status**: Complete（协议版本、默认 loopback、token hash/过期、LAN 二次确认、wscat-style ws 集成测试均已落地）
 
 ---
 
@@ -113,7 +113,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 
 **集成脚本**
 - `src-tauri/resources/shell-integration/{zsh,bash,fish,pwsh}.sh` — 体积 ≤ 50 行 / 文件，无外部依赖；
-- 安装器 = 一次性 Tauri command `install_shell_integration(shell)`，把单行 `source <path>` 追加到用户 rc 文件，并在前后加哨兵注释 `# >>> threadterm shell integration` / `# <<<`，便于之后干净卸载；
+- 安装器 = 一次性 Tauri command `install_shell_integration(shell)`，把单行 `source <path>` 追加到用户 rc 文件，并在前后加哨兵注释 `# >>> threadterm shell integration` / `# <<< threadterm shell integration`，便于之后干净卸载；
 - 永远 **不会** 直接修改 rc 文件之外的任何用户文件；安装前显示 diff、要求用户确认。
 
 **Rust 解析层**
@@ -164,7 +164,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 - 手动：mac + Linux + Windows（Powershell 7）三平台各跑一次 5 条命令场景；
 - 性能：连续 1000 条命令的会话，内存增量 < 50MB（块数据 ≈ 200 字节 / 块）。
 
-**Status**: In Progress（OSC 133/6973 旁路解析、Tauri block 事件、前端 store 写入与 shell 集成安装器已落地；跨 shell 手动场景待跑）
+**Status**: Complete（OSC 133/6973 旁路解析、duplicate-A 中止处理、`set_command_blocks_enabled` 运行时开关、`preview_shell_integration` diff 命令、`CommandBlocksSettings` UI、bufferStart/bufferEnd 必填、asciinema 回放集成测试、headless xterm 视觉一致性测试均已落地；mac × zsh + bash 端到端手动场景需在打包构建中复跑）
 
 ---
 
