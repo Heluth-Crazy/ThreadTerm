@@ -3,13 +3,13 @@ import { MessageSquareText, Timer } from 'lucide-react';
 import type { CardPreview as CardPreviewData } from './cardPreview';
 import { isTechnicalPreviewLine } from './cardPreview';
 
-export interface CardPreviewProps {
+export interface CardPreviewBoxProps {
   preview: CardPreviewData;
   activeFor: string;
   messageCount: number;
 }
 
-export function CardPreview({ preview, activeFor, messageCount }: CardPreviewProps) {
+export function CardPreviewBox({ preview, activeFor, messageCount }: CardPreviewBoxProps) {
   const { t } = useTranslation('terminal');
 
   if (preview.bodyLines.length === 0) {

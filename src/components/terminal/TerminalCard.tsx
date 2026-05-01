@@ -4,7 +4,7 @@
  * Layout / event-forwarding only; visual concerns are delegated to:
  *   • CardCompact      — square switcher tile (`density='compact'`)
  *   • CardStatusBadge  — status pill / icon
- *   • CardPreview      — boxed preview body with timer + msg-count meta
+ *   • CardPreviewBox   — boxed preview body with timer + msg-count meta
  *   • CardActions      — copy / reveal / pin button group
  *
  * The 3 layout densities documented in the original spec are still
@@ -22,7 +22,7 @@ import { getAiCliSessionBadge } from './providerSession';
 import { CardCompact } from './CardCompact';
 import { CardFooter } from './CardFooter';
 import { CardHeader } from './CardHeader';
-import { CardPreview } from './CardPreview';
+import { CardPreviewBox } from './CardPreviewBox';
 
 export interface TerminalCardProps {
   card: TerminalCardType;
@@ -162,7 +162,7 @@ export function TerminalCardComponent({
       )}
 
       <div className="min-h-0 flex-1 overflow-hidden px-3 py-2">
-        <CardPreview
+        <CardPreviewBox
           preview={preview}
           activeFor={activeFor}
           messageCount={card.messageCount}
