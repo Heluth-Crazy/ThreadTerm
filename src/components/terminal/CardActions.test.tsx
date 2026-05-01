@@ -1,16 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { CardActions } from './CardActions';
 
-vi.mock('react-i18next', () => ({
-  initReactI18next: {
-    type: '3rdParty',
-    init: vi.fn(),
-  },
-  useTranslation: () => ({
-    t: (key: string) => key,
-  }),
-}));
+vi.mock('react-i18next', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-i18next')>();
+  return {
+    ...actual,
+    useTranslation: () => ({
+      t: (key: string) => key,
+      i18n: { changeLanguage: () => Promise.resolve() },
+    }),
+  };
+});
+
+import { CardActions } from './CardActions';
 
 afterEach(() => {
   cleanup();
