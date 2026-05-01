@@ -38,6 +38,7 @@
       "deleteSuccess": "Deleted {{name}}.",
       "descriptions": {
         "threadterm-default": "The native ThreadTerm blue theme and stable fallback.",
+        "acme-mono": "Monochrome editorial surfaces with crisp borders and a restrained terminal palette.",
         "catppuccin": "Soft pastel surfaces with a calm terminal palette.",
         "tokyo-night": "A crisp blue-black developer theme.",
         "gruvbox": "Warm retro colors tuned for long terminal sessions.",

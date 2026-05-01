@@ -52,6 +52,15 @@ describe('themePacks tokens', () => {
     expect(themePacks.length).toBeGreaterThanOrEqual(14);
   });
 
+  it('registers Acme Mono as a bundled dark-only theme', () => {
+    const acmeMono = themePacks.find((pack) => pack.id === 'acme-mono');
+
+    expect(acmeMono).toBeDefined();
+    expect(acmeMono?.name).toBe('Acme Mono');
+    expect(acmeMono?.modes.dark).toBeDefined();
+    expect(acmeMono?.modes.light).toBeUndefined();
+  });
+
   it('defines a dark mode for every bundled pack', () => {
     for (const pack of themePacks) {
       expect(pack.modes.dark, pack.id).toBeDefined();
@@ -92,6 +101,13 @@ describe('themePacks tokens', () => {
     const resolved = resolveTheme('missing-pack', DEFAULT_THEME_MODE);
     expect(resolved.pack.id).toBe('threadterm-default');
     expect(resolved.tokens.terminal.background).toMatch(/^#[0-9a-fA-F]{6}$/);
+  });
+
+  it('falls back to dark mode when Acme Mono is requested in light mode', () => {
+    const resolved = resolveTheme('acme-mono', 'light');
+
+    expect(resolved.pack.id).toBe('acme-mono');
+    expect(resolved.mode).toBe('dark');
   });
 
   it('converts hex colors into Tailwind-compatible HSL tokens', () => {

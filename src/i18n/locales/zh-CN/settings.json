@@ -38,6 +38,7 @@
       "deleteSuccess": "已删除 {{name}}。",
       "descriptions": {
         "threadterm-default": "ThreadTerm 默认蓝色主题，作为稳定回退。",
+        "acme-mono": "黑白冷灰界面，搭配清晰边框和克制的终端配色。",
         "catppuccin": "柔和的粉彩界面与低刺激终端色板。",
         "tokyo-night": "清爽的蓝黑开发者主题。",
         "gruvbox": "暖色复古配色，适合长时间终端会话。",
