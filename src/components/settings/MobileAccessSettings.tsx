@@ -16,6 +16,8 @@ import {
   type BridgeStatus,
   type PairQrResponse,
 } from '../../lib/tauri-bridge';
+import { Badge } from '../ui/badge';
+import { Button } from '../ui/button';
 
 type ActionState = 'idle' | 'busy' | 'failed';
 type BindHost = '127.0.0.1' | '0.0.0.0';
@@ -163,16 +165,9 @@ export function MobileAccessSettings() {
             <h3 className="text-base font-semibold text-foreground">
               {t('mobileAccess.title')}
             </h3>
-            <span
-              className={[
-                'rounded-full px-2 py-0.5 text-[11px] font-medium',
-                status.running
-                  ? 'bg-green-500/10 text-green-600'
-                  : 'bg-muted text-muted-foreground',
-              ].join(' ')}
-            >
+            <Badge variant={status.running ? 'success' : 'muted'}>
               {status.running ? t('mobileAccess.running') : t('mobileAccess.stopped')}
-            </span>
+            </Badge>
           </div>
           <p className="mt-1 text-sm leading-5 text-muted-foreground">
             {t('mobileAccess.description')}
@@ -253,24 +248,14 @@ export function MobileAccessSettings() {
             ))}
           </div>
           <div className="flex flex-wrap justify-end gap-2">
-          <button
-            type="button"
-            onClick={status.running ? stopBridge : startBridge}
-            disabled={!isTauriEnv() || isBusy}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Power className="h-3.5 w-3.5" />
-            {status.running ? t('mobileAccess.stop') : t('mobileAccess.start')}
-          </button>
-          <button
-            type="button"
-            onClick={refresh}
-            disabled={!isTauriEnv() || isBusy}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            {t('mobileAccess.refresh')}
-          </button>
+            <Button size="sm" onClick={status.running ? stopBridge : startBridge} disabled={!isTauriEnv() || isBusy}>
+              <Power />
+              {status.running ? t('mobileAccess.stop') : t('mobileAccess.start')}
+            </Button>
+            <Button size="sm" variant="outline" onClick={refresh} disabled={!isTauriEnv() || isBusy}>
+              <RefreshCw />
+              {t('mobileAccess.refresh')}
+            </Button>
           </div>
         </div>
       </div>
@@ -281,23 +266,18 @@ export function MobileAccessSettings() {
             {t('mobileAccess.lanConfirm')}
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => runStartBridge(LAN_BIND_HOST)}
-              disabled={isBusy}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Power className="h-3.5 w-3.5" />
+            <Button size="sm" onClick={() => runStartBridge(LAN_BIND_HOST)} disabled={isBusy}>
+              <Power />
               {t('mobileAccess.confirmLanStart')}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
               onClick={() => setLanConfirmVisible(false)}
               disabled={isBusy}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
               {t('mobileAccess.cancelLanStart')}
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -325,24 +305,14 @@ export function MobileAccessSettings() {
               )}
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={createPairQr}
-                disabled={isBusy}
-                className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <QrCode className="h-3.5 w-3.5" />
+              <Button size="sm" variant="outline" onClick={createPairQr} disabled={isBusy}>
+                <QrCode />
                 {t('mobileAccess.newPairCode')}
-              </button>
-              <button
-                type="button"
-                onClick={copyPairUrl}
-                disabled={!pairQr?.url}
-                className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Copy className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant="outline" onClick={copyPairUrl} disabled={!pairQr?.url}>
+                <Copy />
                 {t('mobileAccess.copyUrl')}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -371,15 +341,16 @@ export function MobileAccessSettings() {
                     {t(`mobileAccess.permissions.${device.permission}`)}
                   </div>
                 </div>
-                <button
-                  type="button"
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
                   onClick={() => revokeDevice(device.id)}
                   disabled={isBusy}
-                  className="inline-flex shrink-0 items-center justify-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <Trash2 className="h-3 w-3" />
+                  <Trash2 />
                   {t('mobileAccess.revoke')}
-                </button>
+                </Button>
               </div>
             ))}
           </div>
