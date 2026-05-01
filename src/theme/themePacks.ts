@@ -1051,6 +1051,48 @@ const solarizedContrastDark = mode(
   ]),
 );
 
+const acmeMonoDark = mode(
+  {
+    background: '#0a0a0a',
+    foreground: '#f5f5f0',
+    card: '#111111',
+    cardForeground: '#f5f5f0',
+    popover: '#141414',
+    popoverForeground: '#f5f5f0',
+    primary: '#f2f2f2',
+    primaryForeground: '#0a0a0a',
+    secondary: '#1a1a1a',
+    secondaryForeground: '#ededed',
+    muted: '#181818',
+    mutedForeground: '#9a9a95',
+    accent: '#202020',
+    accentForeground: '#f5f5f0',
+    destructive: '#c84b4b',
+    destructiveForeground: '#fff7f7',
+    border: '#2a2a2a',
+    input: '#343434',
+    ring: '#d6d6d1',
+  },
+  terminal('#0b0b0b', '#e8e6e3', '#f2f2f2', '#0b0b0b', '#2a2a2a', '#f5f5f0', [
+    '#121212',
+    '#c16a6a',
+    '#8fa87a',
+    '#c7ab6d',
+    '#93a7c7',
+    '#b39ac7',
+    '#8fb8b3',
+    '#cfcac2',
+    '#5a5a5a',
+    '#d98989',
+    '#a7bf91',
+    '#d9bf84',
+    '#a9bfdc',
+    '#c5b1d8',
+    '#a7d0ca',
+    '#f4f1eb',
+  ]),
+);
+
 export const themePacks: ThemePack[] = [
   {
     id: DEFAULT_THEME_PACK_ID,
@@ -1064,6 +1106,19 @@ export const themePacks: ThemePack[] = [
     modes: {
       light: threadtermLight,
       dark: threadtermDark,
+    },
+  },
+  {
+    id: 'acme-mono',
+    name: 'Acme Mono',
+    description: 'Monochrome editorial surfaces with crisp borders and a restrained terminal palette.',
+    attribution: {
+      kind: 'original',
+      sourceName: 'ThreadTerm',
+      sourceUrl: 'https://github.com/Heluth-Crazy/ThreadTerm',
+    },
+    modes: {
+      dark: acmeMonoDark,
     },
   },
   {

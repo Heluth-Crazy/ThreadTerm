@@ -38,6 +38,7 @@
       "deleteSuccess": "{{name}}을(를) 삭제했습니다.",
       "descriptions": {
         "threadterm-default": "ThreadTerm 기본 블루 테마이자 안정적인 폴백입니다.",
+        "acme-mono": "흑백 중심의 에디토리얼 분위기에 또렷한 경계선과 절제된 터미널 팔레트를 더한 테마입니다.",
         "catppuccin": "부드러운 파스텔 UI와 차분한 터미널 팔레트입니다.",
         "tokyo-night": "선명한 블루 블랙 개발자 테마입니다.",
         "gruvbox": "긴 터미널 세션에 맞춘 따뜻한 레트로 색상입니다.",
