@@ -28,7 +28,7 @@ import type { TerminalCard, TerminalStatus } from '../../types/terminal';
 import { feedHeadless, disposeHeadless, disposeAllHeadless } from './headlessPreview';
 import { buildCardPreview } from './cardPreview';
 import { getMissingAiCliName } from './providerSession';
-import { getAbsoluteCursorRow } from './xtermRegistry';
+import { getAbsoluteCursorRow, readBufferRange } from './xtermRegistry';
 import i18n from '../../i18n/config.js';
 
 // Map Rust SessionState → UI TerminalStatus.
@@ -388,6 +388,16 @@ export function TerminalEventBridge(): null {
         const card = getCardForPtyId(payload.sessionId);
         if (!card) return;
         const bufferEnd = getAbsoluteCursorRow(payload.sessionId);
+        // Stage 5.1 — capture the command's output from the live xterm
+        // buffer so the Block Inspector + cross-session search can reach
+        // it later. `readBufferRange` returns '' when no terminal is
+        // registered (floating-only / persisted cards), which is fine —
+        // the store treats undefined-or-empty as "no snapshot".
+        const cardBlocks = useTerminalStore.getState().blocks?.[card.id] ?? [];
+        const started = cardBlocks.find((b) => b.id === payload.blockId);
+        const rawOutput = started
+          ? readBufferRange(payload.sessionId, started.bufferStart, bufferEnd)
+          : '';
         useTerminalStore.getState().recordBlockFinished({
           cardId: card.id,
           blockId: payload.blockId,
@@ -395,6 +405,7 @@ export function TerminalEventBridge(): null {
           finishedAt: payload.finishedAt,
           durationMs: payload.durationMs,
           bufferEnd,
+          output: rawOutput || undefined,
         });
       });
       if (cancelled) {

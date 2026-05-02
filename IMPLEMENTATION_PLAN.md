@@ -164,7 +164,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 - 手动：mac + Linux + Windows（Powershell 7）三平台各跑一次 5 条命令场景；
 - 性能：连续 1000 条命令的会话，内存增量 < 50MB（块数据 ≈ 200 字节 / 块）。
 
-**Status**: Complete（OSC 133/6973 旁路解析、duplicate-A 中止处理、`set_command_blocks_enabled` 运行时开关、`preview_shell_integration` diff 命令、`CommandBlocksSettings` UI、bufferStart/bufferEnd 必填、asciinema 回放集成测试、headless xterm 视觉一致性测试均已落地；mac × zsh + bash 端到端手动场景需在打包构建中复跑）
+**Status**: Complete（OSC 133/6973 旁路解析、duplicate-A 中止处理、`set_command_blocks_enabled` 运行时开关、`preview_shell_integration` diff 命令、`CommandBlocksSettings` UI、bufferStart/bufferEnd 必填、asciinema 回放集成测试、headless xterm 视觉一致性测试均已落地；mac × zsh + bash 端到端手动场景需在打包构建中复跑。115 个前端测试全过）
 
 ---
 
@@ -197,7 +197,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 
 **Verification**: ROADMAP baseline + 手动手感（折叠 / 重跑 / 跳转响应 < 50ms）。
 
-**Status**: Not Started
+**Status**: Complete（v2 修复批：BlockOverlay 改为 React-state-driven 像素定位（监听 onScroll/onResize/ResizeObserver + rAF 节流）替代未写入的 CSS 变量；useEffect 清理移到早 return 之前；marker.onDispose 在 scrollback 驱逐时回收 refs；Re-run 增加 1.5s 二次确认 + data-pending 视觉态；hover 仅在 inspector 打开时写 selectBlock，悬停同时支持显式 click select；TerminalView 键盘监听依赖数组只剩 [active, card.id, selectBlock]，blocks/selectedBlockId 走 ref 读取避免 race；removeCard 清理 collapsedBlockIds 与 selectedBlockId；BlockInspector 空选时显示 noBlock 文案；overflow-hidden 移除避免裁切顶部 toolbar；删除死代码 markerOffset/rowsFromBottom；rerunConfirm 4 语言 i18n。**v3 gap-fill 批 (2026-05-02)**：Block.output 字段 + MAX_BLOCK_OUTPUT_LENGTH=4000 截断 + TerminalEventBridge 在 block-finished 时从 xterm 抽取并 ANSI-strip；BlockInspector 4.3 spec 缺的纯文本输出区域已补；BlockInspector AI Explain onClick 已绑（Stage 6 占位 wiring）；Share 按钮按计划推迟到 Stage 8.3 markdown 导出。228 个前端测试全过；typecheck/build/cargo check/cargo test 通过）
 
 ---
 
@@ -234,7 +234,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 
 **i18n**: 新文案补全 `en / zh-CN / ja / ko`。
 
-**Status**: Not Started
+**Status**: Complete（5.3 Bookmark 类型 + zustand persist v5→v6 + removeCard 清理 + BlockToolbar Star 切换 + BookmarksSidebar 右侧面板 + TerminalManager 计数徽标；5.2 commandRegistry 纯模块 + CommandPalette 模态 + Cmd/Ctrl+K binding；5.1 searchAcrossBlocks 纯匹配器（regex-escape，5000 块 200ms 性能预算）+ useBlockSearch hook（≤5000 同步，>5000 Web Worker，seq 取消 stale 响应）+ BlockSearchPanel 模态 + Cmd/Ctrl+F binding（capture phase 压过 xterm-js）+ 4 语言 search 文案。**v2 gap-fill 批 (2026-05-02)**：5.1 搜索 scope 扩到 output（Block.output 字段 + 命中行 matchedLine 在结果行展示）；结果行加 HH:MM 时间戳 + search.field.output i18n 4 语言补齐；5.2 palette 加 run-workflow Stage 7 占位 + change-intent 5+1 条目（仅在 focusedCard 存在且 updateCardAiIntent 已 wire 时显示）；palette + BlockSearchPanel 关闭时还原 previously-focused 元素（spec 要求）；228 个前端测试全过；typecheck/build/cargo check/cargo test 通过；时间戳过滤刻意不实现，文档说明）
 
 ---
 

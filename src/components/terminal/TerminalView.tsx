@@ -7,9 +7,16 @@
  *
  * Animations: shared `layoutId` with the card in the grid produces a
  * smooth expand/collapse transition courtesy of Framer Motion.
+ *
+ * Stage 4 additions (block layer):
+ *   • BlockOverlay — decorations + hover toolbar, shown only when blocks exist
+ *   • BlockInspector — right side panel, toggled via the Layers button
+ *   • Keyboard shortcuts: Cmd/Ctrl+Shift+\ (prev failed), Cmd/Ctrl+Shift+/
+ *     (next failed)
  */
-import { useCallback, useEffect, useMemo } from 'react';
-import { ArrowLeft, MoreVertical, Trash2, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { Block } from '../../types/terminal';
+import { ArrowLeft, Layers, MoreVertical, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import Shell from '../Shell';
 import type { TerminalCard } from '../../types/terminal';
@@ -23,6 +30,9 @@ import {
 } from './providerSession';
 import { useProviderSessionLifecycle } from './useProviderSessionLifecycle';
 import { AiIntentSelect } from './AiIntentSelect';
+import { BlockOverlay } from './BlockOverlay';
+import { BlockInspector } from './BlockInspector';
+import { prevFailedBlock, nextFailedBlock } from './failedBlockNav';
 
 interface TerminalViewProps {
   card: TerminalCard;
@@ -35,6 +45,18 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
   const removeCard = useTerminalStore((s) => s.removeCard);
   const recordUserSubmit = useTerminalStore((s) => s.recordUserSubmit);
   const markCardRead = useTerminalStore((s) => s.markCardRead);
+  // Stable empty-array fallback so Zustand selector doesn't return a new []
+  // reference on every render when no blocks exist yet.
+  const emptyBlocksRef = useRef<Block[]>([]);
+  const blocks = useTerminalStore(
+    (s) => s.blocks?.[card.id] ?? emptyBlocksRef.current,
+  );
+  const selectedBlockId = useTerminalStore(
+    (s) => s.selectedBlockId?.[card.id] ?? null,
+  );
+  const selectBlock = useTerminalStore((s) => s.selectBlock);
+
+  const [inspectorOpen, setInspectorOpen] = useState(false);
 
   // Note: no PTY guard is needed even when the float window also hosts
   // this card. Both windows share the same pty id and the
@@ -95,6 +117,80 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
     onBack();
   };
 
+  // ── Block layer: failed block keyboard navigation ─────────────────────────
+  //
+  // We read the latest `selectedBlockId` and `blocks` through refs inside the
+  // handler so the `keydown` listener is registered exactly once per
+  // (active, card.id) pair — without re-registering on every selection
+  // change. This eliminates the listener-reattach race the reviewer flagged.
+
+  const blocksRef = useRef(blocks);
+  const selectedBlockIdRef = useRef(selectedBlockId);
+  useEffect(() => {
+    blocksRef.current = blocks;
+  }, [blocks]);
+  useEffect(() => {
+    selectedBlockIdRef.current = selectedBlockId;
+  }, [selectedBlockId]);
+
+  useEffect(() => {
+    if (!active) return;
+
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod || !e.shiftKey) return;
+      const liveBlocks = blocksRef.current;
+      if (liveBlocks.length === 0) return;
+
+      if (e.key === '\\' || e.key === '|') {
+        e.preventDefault();
+        const target = prevFailedBlock(liveBlocks, selectedBlockIdRef.current);
+        if (target) selectBlock(card.id, target);
+      } else if (e.key === '/' || e.key === '?') {
+        e.preventDefault();
+        const target = nextFailedBlock(liveBlocks, selectedBlockIdRef.current);
+        if (target) selectBlock(card.id, target);
+      }
+    };
+
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [active, card.id, selectBlock]);
+
+  // Esc closes the Block Inspector when it's open. Gated on `active` so the
+  // listener is only on the foreground card, and on `inspectorOpen` so it
+  // never steals Esc from a CLI underneath when the panel is hidden.
+  useEffect(() => {
+    if (!active || !inspectorOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setInspectorOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [active, inspectorOpen]);
+
+  // Selected block object for the inspector
+  const selectedBlock = useMemo(
+    () => blocks.find((b) => b.id === selectedBlockId) ?? null,
+    [blocks, selectedBlockId],
+  );
+
+  // Auto-select the most recent block when the inspector opens with no
+  // existing selection. Without this users see "Select a block to inspect"
+  // and have to guess that they need to hover/click an in-terminal block
+  // header to populate the panel.
+  useEffect(() => {
+    if (!inspectorOpen) return;
+    if (selectedBlockId) return;
+    if (blocks.length === 0) return;
+    selectBlock(card.id, blocks[blocks.length - 1].id);
+  }, [inspectorOpen, selectedBlockId, blocks, card.id, selectBlock]);
+
+  const hasBlocks = blocks.length > 0;
+
   return (
     <div className="flex h-full w-full flex-col bg-background">
       {/* Header */}
@@ -153,6 +249,24 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
             <StatusIcon className={`h-3 w-3 ${statusInfo.animate ? 'animate-spin' : ''}`} />
             {t(`status.${card.status}`, statusInfo.label)}
           </span>
+
+          {/* Block Inspector toggle — only shown when block data is present */}
+          {hasBlocks && (
+            <button
+              type="button"
+              title={t('block.inspector.title', { defaultValue: 'Block Inspector' })}
+              onClick={() => setInspectorOpen((v) => !v)}
+              className={[
+                'rounded-lg p-1.5',
+                inspectorOpen
+                  ? 'bg-primary/10 text-primary'
+                  : 'hover:bg-accent hover:text-accent-foreground',
+              ].join(' ')}
+            >
+              <Layers className="h-4 w-4" />
+            </button>
+          )}
+
           <div className="group relative">
             <button
               type="button"
@@ -182,23 +296,83 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
         </div>
       </div>
 
-      {/* xterm — always mounted; shares the PTY with the float window if present */}
-      <div id={`terminal-shell-${card.id}`} className="flex-1 min-h-0 bg-[var(--terminal-background)]">
-        <Shell
-          selectedProject={selectedProject}
-          initialCommand={initialCommand}
-          minimal={true}
-          autoConnect={true}
-          paneId={paneId}
-          active={active}
-          preservePtyOnUnmount={true}
-          replayRecentOutput={true}
-          suppressInitialCommandWhenPtyExists={true}
-          onInitialCommandSent={handleInitialCommandSent}
-          onUserSubmit={recordSubmit}
-          onProcessComplete={undefined}
-          onDisconnect={undefined}
-        />
+      {/* Main area: xterm + optional Block Inspector side panel */}
+      <div className="flex min-h-0 flex-1">
+        {/* xterm — always mounted; shares the PTY with the float window if present */}
+        <div
+          id={`terminal-shell-${card.id}`}
+          className="relative min-h-0 flex-1 bg-[var(--terminal-background)]"
+        >
+          <Shell
+            selectedProject={selectedProject}
+            initialCommand={initialCommand}
+            minimal={true}
+            autoConnect={true}
+            paneId={paneId}
+            active={active}
+            preservePtyOnUnmount={true}
+            replayRecentOutput={true}
+            suppressInitialCommandWhenPtyExists={true}
+            onInitialCommandSent={handleInitialCommandSent}
+            onUserSubmit={recordSubmit}
+            onProcessComplete={undefined}
+            onDisconnect={undefined}
+          />
+
+          {/* Block boundary decorations + hover toolbar overlay.
+              `overflow-hidden` is intentionally absent here — clipping the
+              wrapper would hide a toolbar that anchors to a block near the
+              top edge of the viewport. The inner xterm canvas handles its
+              own clipping. */}
+          {hasBlocks && (
+            <div className="pointer-events-none absolute inset-0">
+              <BlockOverlay
+                cardId={card.id}
+                ptyId={paneId}
+                blocks={blocks}
+                inspectorOpen={inspectorOpen}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Block Inspector side panel */}
+        {inspectorOpen && hasBlocks && (
+          <div className="w-52 shrink-0 overflow-hidden border-l border-border bg-background">
+            {selectedBlock ? (
+              <BlockInspector
+                block={selectedBlock}
+                onClose={() => setInspectorOpen(false)}
+                onExplain={() => {
+                  // Stage 4.3 gap-fill: placeholder only. Stage 6 will wire
+                  // this to the configured AI provider (Claude/Codex/Gemini)
+                  // and render the reply as a virtual block below the source.
+                  // No-op for now; button title carries the "coming soon" hint.
+                }}
+              />
+            ) : (
+              <div className="flex h-full flex-col">
+                <div className="flex items-center border-b border-border px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <span>
+                    {t('block.inspector.title', { defaultValue: 'Block Inspector' })}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setInspectorOpen(false)}
+                    title={t('common.close', { defaultValue: 'Close' })}
+                    aria-label={t('common.close', { defaultValue: 'Close' })}
+                    className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+                <div className="flex flex-1 items-center justify-center p-3 text-center text-[11px] text-muted-foreground">
+                  {t('block.inspector.noBlock', { defaultValue: 'Select a block to inspect' })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Footer */}

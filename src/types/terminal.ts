@@ -68,6 +68,28 @@ export interface Block {
   bufferStart: number;
   bufferEnd?: number;
   state: BlockState;
+  /** ANSI-stripped output captured at block-finish time. Used by
+   *  BlockInspector and cross-session search. Capped at MAX_BLOCK_OUTPUT_LENGTH. */
+  output?: string;
+}
+
+/** Cap on per-block output snapshot. 4KB is enough for ~50 lines of
+ *  command output; anything bigger gets truncated head-style. */
+export const MAX_BLOCK_OUTPUT_LENGTH = 4000;
+
+// Stage 5 — block-level bookmarks (persisted)
+export interface Bookmark {
+  id: string;
+  blockId: string;
+  cardId: string;
+  /** Snapshot of the block's command at bookmark time so the entry survives
+   *  block eviction from xterm scrollback. */
+  command: string;
+  /** Snapshot of the block's working directory. */
+  cwd: string;
+  createdAt: number;
+  /** Optional user-supplied label. */
+  label?: string;
 }
 
 // ── Card ─────────────────────────────────────────────────────────────────────

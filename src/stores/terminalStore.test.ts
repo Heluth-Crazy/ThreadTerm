@@ -5,6 +5,9 @@ function resetStore() {
   useTerminalStore.setState({
     cards: [],
     blocks: {},
+    collapsedBlockIds: [],
+    selectedBlockId: {},
+    bookmarks: [],
     focusedCardId: null,
     lastActiveCardId: null,
     selectedProjectPath: null,
@@ -219,6 +222,52 @@ describe('terminalStore command blocks', () => {
       bufferEnd: 18,
       state: 'failed',
     });
+  });
+
+  it('recordBlockFinished caps output at MAX_BLOCK_OUTPUT_LENGTH', () => {
+    const big = 'x'.repeat(10_000);
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+    s.recordBlockStarted({
+      cardId: id,
+      blockId: 'b1',
+      command: 'foo',
+      cwd: '/',
+      startedAt: 0,
+      bufferStart: 0,
+    });
+    s.recordBlockFinished({
+      cardId: id,
+      blockId: 'b1',
+      exitCode: 0,
+      finishedAt: 1,
+      durationMs: 1,
+      output: big,
+    });
+    const stored = useTerminalStore.getState().blocks[id][0];
+    expect(stored.output?.length).toBe(4000);
+  });
+
+  it('recordBlockFinished stores short output verbatim', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+    s.recordBlockStarted({
+      cardId: id,
+      blockId: 'b1',
+      command: 'foo',
+      cwd: '/',
+      startedAt: 0,
+      bufferStart: 0,
+    });
+    s.recordBlockFinished({
+      cardId: id,
+      blockId: 'b1',
+      exitCode: 0,
+      finishedAt: 1,
+      durationMs: 1,
+      output: 'hello\nworld',
+    });
+    expect(useTerminalStore.getState().blocks[id][0].output).toBe('hello\nworld');
   });
 
   it('defaults missing legacy blocks state to an empty record', () => {
@@ -482,5 +531,101 @@ describe('terminalStore — purgeReadNotifications', () => {
     s.pushNotification({ cardId: id, kind: 'waiting', title: 't', body: 'b' });
     const removed = useTerminalStore.getState().purgeReadNotifications(10);
     expect(removed).toBe(0);
+  });
+});
+
+describe('terminalStore — block UI state', () => {
+  it('toggles a block collapsed state', () => {
+    const s = useTerminalStore.getState();
+    s.toggleBlockCollapsed('blk-1');
+    expect(useTerminalStore.getState().collapsedBlockIds).toEqual(['blk-1']);
+    s.toggleBlockCollapsed('blk-1');
+    expect(useTerminalStore.getState().collapsedBlockIds).toEqual([]);
+  });
+
+  it('records the selected block per card', () => {
+    const s = useTerminalStore.getState();
+    s.selectBlock('card-1', 'blk-1');
+    s.selectBlock('card-2', 'blk-7');
+    expect(useTerminalStore.getState().selectedBlockId).toEqual({
+      'card-1': 'blk-1',
+      'card-2': 'blk-7',
+    });
+    s.selectBlock('card-1', null);
+    expect(useTerminalStore.getState().selectedBlockId).toEqual({
+      'card-1': null,
+      'card-2': 'blk-7',
+    });
+  });
+
+  it('removeCard cleans up collapsedBlockIds and selectedBlockId for the removed card', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+    // Inject blocks for the card
+    useTerminalStore.setState((state) => ({
+      blocks: {
+        ...state.blocks,
+        [id]: [
+          { id: 'blk-a', cardId: id, cwd: '/a', command: 'ls', startedAt: 0, bufferStart: 0, state: 'success' },
+          { id: 'blk-b', cardId: id, cwd: '/a', command: 'pwd', startedAt: 0, bufferStart: 1, state: 'failed' },
+        ],
+      },
+    }));
+    s.toggleBlockCollapsed('blk-a');
+    s.toggleBlockCollapsed('blk-b');
+    s.toggleBlockCollapsed('blk-z'); // unrelated, must survive
+    s.selectBlock(id, 'blk-a');
+
+    s.removeCard(id);
+
+    const after = useTerminalStore.getState();
+    expect(after.collapsedBlockIds).toEqual(['blk-z']);
+    expect(after.selectedBlockId).not.toHaveProperty(id);
+  });
+});
+
+describe('terminalStore — bookmarks', () => {
+  it('addBookmark creates a bookmark with id, blockId, cardId and createdAt', () => {
+    const s = useTerminalStore.getState();
+    const cardId = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+    s.addBookmark({ blockId: 'blk-1', cardId, command: 'ls', cwd: '/a' });
+    const after = useTerminalStore.getState().bookmarks;
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ blockId: 'blk-1', cardId, command: 'ls', cwd: '/a' });
+    expect(after[0].id).toBeTruthy();
+    expect(typeof after[0].createdAt).toBe('number');
+  });
+
+  it('addBookmark refuses to insert a duplicate (same blockId)', () => {
+    const s = useTerminalStore.getState();
+    s.addBookmark({ blockId: 'blk-1', cardId: 'c1', command: 'ls', cwd: '/a' });
+    s.addBookmark({ blockId: 'blk-1', cardId: 'c1', command: 'ls', cwd: '/a' });
+    expect(useTerminalStore.getState().bookmarks).toHaveLength(1);
+  });
+
+  it('removeBookmark drops the entry', () => {
+    const s = useTerminalStore.getState();
+    s.addBookmark({ blockId: 'blk-1', cardId: 'c1', command: 'ls', cwd: '/a' });
+    const id = useTerminalStore.getState().bookmarks[0].id;
+    useTerminalStore.getState().removeBookmark(id);
+    expect(useTerminalStore.getState().bookmarks).toHaveLength(0);
+  });
+
+  it('isBookmarked returns true after adding', () => {
+    const s = useTerminalStore.getState();
+    expect(s.isBookmarked('blk-x')).toBe(false);
+    s.addBookmark({ blockId: 'blk-x', cardId: 'c1', command: 'pwd', cwd: '/' });
+    expect(useTerminalStore.getState().isBookmarked('blk-x')).toBe(true);
+  });
+
+  it('removeCard drops bookmarks belonging to deleted card', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+    s.addBookmark({ blockId: 'blk-1', cardId: id, command: 'ls', cwd: '/a' });
+    s.addBookmark({ blockId: 'blk-2', cardId: 'other-card', command: 'pwd', cwd: '/' });
+    useTerminalStore.getState().removeCard(id);
+    const after = useTerminalStore.getState().bookmarks;
+    expect(after).toHaveLength(1);
+    expect(after[0].blockId).toBe('blk-2');
   });
 });

@@ -16,6 +16,7 @@ import type {
   NotificationEntry,
   NotificationKind,
   Block,
+  Bookmark,
   TerminalCard,
   TerminalCreateOptions,
   TerminalEvent,
@@ -23,6 +24,7 @@ import type {
   TerminalStatus,
 } from '../types/terminal';
 import {
+  MAX_BLOCK_OUTPUT_LENGTH,
   MAX_LAST_OUTPUT_LENGTH,
   MAX_NOTIFICATIONS,
   MAX_TIMELINE_EVENTS,
@@ -163,8 +165,31 @@ interface TerminalStore {
     durationMs?: number | null;
     /** Absolute scrollback row index at the moment the block finished. */
     bufferEnd?: number;
+    /** Stage 5.1 — ANSI-stripped output snapshot. Truncated to
+     *  MAX_BLOCK_OUTPUT_LENGTH by the store; callers may pass larger strings. */
+    output?: string;
   }) => void;
   ensureBlocksState: () => void;
+
+  // ─── block UI state (Stage 4, volatile — not persisted) ──────────────────
+  /** Set of block ids the user has collapsed. Reset to [] on app restart. */
+  collapsedBlockIds: string[];
+  /** Per-card selected block id for the Block Inspector. `null` = nothing selected. */
+  selectedBlockId: Record<string, string | null>;
+  toggleBlockCollapsed: (blockId: string) => void;
+  selectBlock: (cardId: string, blockId: string | null) => void;
+
+  // ─── bookmarks (Stage 5, persisted) ───────────────────────────────────
+  bookmarks: Bookmark[];
+  addBookmark: (input: {
+    blockId: string;
+    cardId: string;
+    command: string;
+    cwd: string;
+    label?: string;
+  }) => Bookmark | null;
+  removeBookmark: (id: string) => void;
+  isBookmarked: (blockId: string) => boolean;
 
   // ─── focus / switching ───────────────────────────────────────────────────
   focusCard: (id: string | null) => void;
@@ -206,6 +231,9 @@ export const useTerminalStore = create<TerminalStore>()(
     (set, get) => ({
       cards: [],
       blocks: {},
+      collapsedBlockIds: [],
+      selectedBlockId: {},
+      bookmarks: [],
       focusedCardId: null,
       lastActiveCardId: null,
       selectedProjectPath: null,
@@ -276,8 +304,22 @@ export const useTerminalStore = create<TerminalStore>()(
           }
           // Also drop from the pinned list so it doesn't linger as a dead entry.
           const pinnedCardIds = state.pinnedCardIds.filter((p) => p !== id);
+          const previousBlocks = (state.blocks ?? {})[id] ?? [];
           const blocks = { ...(state.blocks ?? {}) };
           delete blocks[id];
+          // Drop block-level UI state belonging to the removed card so it
+          // can't accumulate over a long session.
+          const removedBlockIds = new Set(previousBlocks.map((b) => b.id));
+          const collapsedBlockIds = state.collapsedBlockIds.filter(
+            (bid) => !removedBlockIds.has(bid),
+          );
+          // Drop the removed card's selection entry. `_removed` is the
+          // discarded value from the destructuring; `void` keeps TS quiet
+          // without enabling `noUnusedLocals`.
+          const { [id]: _removed, ...selectedBlockId } = state.selectedBlockId;
+          void _removed;
+          // Stage 5 — drop bookmarks belonging to the deleted card.
+          const bookmarks = state.bookmarks.filter((b) => b.cardId !== id);
           return {
             cards,
             focusedCardId,
@@ -286,6 +328,9 @@ export const useTerminalStore = create<TerminalStore>()(
             selectedProjectPath,
             pinnedCardIds,
             blocks,
+            collapsedBlockIds,
+            selectedBlockId,
+            bookmarks,
           };
         });
       },
@@ -464,12 +509,21 @@ export const useTerminalStore = create<TerminalStore>()(
             if (block.id !== input.blockId) return block;
             changed = true;
             const exitCode = input.exitCode ?? undefined;
+            // Task 3 — preserve any previously-captured output when the
+            // caller doesn't pass one; cap to MAX_BLOCK_OUTPUT_LENGTH so a
+            // runaway subprocess can't bloat localStorage.
+            const rawOutput = input.output ?? block.output;
+            const output =
+              rawOutput !== undefined
+                ? rawOutput.slice(0, MAX_BLOCK_OUTPUT_LENGTH)
+                : undefined;
             return {
               ...block,
               finishedAt: input.finishedAt,
               exitCode,
               durationMs: input.durationMs ?? undefined,
               bufferEnd: input.bufferEnd,
+              output,
               state:
                 exitCode === undefined
                   ? 'aborted'
@@ -490,6 +544,43 @@ export const useTerminalStore = create<TerminalStore>()(
 
       ensureBlocksState: () =>
         set((state) => (state.blocks === undefined ? { blocks: {} } : state)),
+
+      toggleBlockCollapsed: (blockId) =>
+        set((state) => {
+          const ids = state.collapsedBlockIds;
+          return {
+            collapsedBlockIds: ids.includes(blockId)
+              ? ids.filter((id) => id !== blockId)
+              : [...ids, blockId],
+          };
+        }),
+
+      selectBlock: (cardId, blockId) =>
+        set((state) => ({
+          selectedBlockId: { ...state.selectedBlockId, [cardId]: blockId },
+        })),
+
+      // ─── bookmarks (Stage 5) ──────────────────────────────────────────────
+      addBookmark: (input) => {
+        const existing = get().bookmarks.find((b) => b.blockId === input.blockId);
+        if (existing) return null;
+        const bookmark: Bookmark = {
+          id: uid(),
+          blockId: input.blockId,
+          cardId: input.cardId,
+          command: input.command,
+          cwd: input.cwd,
+          createdAt: Date.now(),
+          label: input.label,
+        };
+        set((state) => ({ bookmarks: [...state.bookmarks, bookmark] }));
+        return bookmark;
+      },
+
+      removeBookmark: (id) =>
+        set((state) => ({ bookmarks: state.bookmarks.filter((b) => b.id !== id) })),
+
+      isBookmarked: (blockId) => get().bookmarks.some((b) => b.blockId === blockId),
 
       // ─── focus / switching ────────────────────────────────────────────────
       focusCard: (id) =>
@@ -720,6 +811,7 @@ export const useTerminalStore = create<TerminalStore>()(
           status: isTransientStatus(card.status) ? 'idle' : card.status,
         })),
         blocks: state.blocks ?? {},
+        bookmarks: state.bookmarks ?? [],
         focusedCardId: null,
         lastActiveCardId: state.lastActiveCardId,
         selectedProjectPath: state.selectedProjectPath,
@@ -727,13 +819,15 @@ export const useTerminalStore = create<TerminalStore>()(
         notifications: state.notifications,
         notificationCentreOpen: state.notificationCentreOpen,
       }),
-      version: 5,
+      version: 6,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         return {
           ...state,
           focusedCardId: null,
           blocks: state.blocks ?? {},
+          // v6 — default bookmarks to [] for stores persisted at v≤5.
+          bookmarks: state.bookmarks ?? [],
           cards: state.cards?.map((card) => ({
             ...card,
             status: isTransientStatus(card.status) ? 'idle' : card.status,

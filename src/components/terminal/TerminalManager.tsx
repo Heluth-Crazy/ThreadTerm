@@ -12,13 +12,17 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Bell, BellDot, Plus, Settings as SettingsIcon } from 'lucide-react';
+import { Bell, BellDot, Plus, Settings as SettingsIcon, Star, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { CardGrid } from './CardGrid';
 import { TerminalView } from './TerminalView';
 import { CreateTerminalDialog } from './CreateTerminalDialog';
 import { ProjectSidebar } from './ProjectSidebar';
+import { BookmarksSidebar } from './BookmarksSidebar';
+import { CommandPalette } from '../palette/CommandPalette';
+import { buildCommandRegistry } from '../palette/commandRegistry';
+import { BlockSearchPanel } from '../search/BlockSearchPanel';
 import Settings from '../Settings';
 import type { TerminalCreateOptions } from '../../types/terminal';
 
@@ -32,6 +36,10 @@ declare global {
       closeCreate: () => void;
       focusMode: (mode: ViewMode) => void;
       openSettings: (tab?: SettingsTab) => void;
+      openPalette: () => void;
+      closePalette: () => void;
+      openSearch: () => void;
+      closeSearch: () => void;
     };
   }
 }
@@ -48,6 +56,10 @@ export function TerminalManager() {
   const selectedProjectPath = useTerminalStore((s) => s.selectedProjectPath);
   const pendingFocusCardId = useTerminalStore((s) => s.pendingFocusCardId);
   const setPendingFocusCardId = useTerminalStore((s) => s.setPendingFocusCardId);
+  const selectBlock = useTerminalStore((s) => s.selectBlock);
+  const bookmarkCount = useTerminalStore((s) => s.bookmarks.length);
+  const blocks = useTerminalStore((s) => s.blocks);
+  const updateCardAiIntent = useTerminalStore((s) => s.updateCardAiIntent);
 
   const selectedProjectName = useMemo(() => {
     if (!selectedProjectPath) return null;
@@ -69,6 +81,28 @@ export function TerminalManager() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Jump the Settings modal straight to a particular tab on open.
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('shortcuts');
+  const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  // Shortcut hint: dismissible, persisted across sessions. Once the user
+  // closes it, never show again unless they wipe localStorage.
+  const HINT_DISMISS_KEY = 'threadterm-shortcut-hint-dismissed';
+  const [hintDismissed, setHintDismissed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(HINT_DISMISS_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const dismissHint = useCallback(() => {
+    setHintDismissed(true);
+    try {
+      localStorage.setItem(HINT_DISMISS_KEY, '1');
+    } catch {
+      // localStorage unavailable — dismissal is session-only.
+    }
+  }, []);
 
   // Set of card ids whose TerminalView should be kept mounted. A view is
   // added the first time the user focuses the card and is only removed when
@@ -136,6 +170,53 @@ export function TerminalManager() {
     setViewMode('grid');
   }, [focusCard]);
 
+  const handleJumpToBlock = useCallback(
+    ({ cardId, blockId }: { cardId: string; blockId: string }) => {
+      focusCard(cardId);
+      setViewMode('focus');
+      selectBlock(cardId, blockId);
+      setBookmarksOpen(false);
+    },
+    [focusCard, selectBlock],
+  );
+
+  // Stage 5.2 — palette entries derived from current store snapshot.
+  const paletteProjects = useMemo(
+    () => Array.from(new Set(cards.map((c) => c.projectPath))),
+    [cards],
+  );
+  const paletteEntries = useMemo(
+    () =>
+      buildCommandRegistry({
+        cards,
+        blocks,
+        projects: paletteProjects,
+        focusedCardId,
+        actions: {
+          focusCard,
+          selectProject,
+          selectBlock,
+          toggleNotificationCentre,
+          updateCardAiIntent,
+          openSettings: (tab) => {
+            setSettingsTab(tab ?? 'shortcuts');
+            setSettingsOpen(true);
+          },
+        },
+      }),
+    [
+      cards,
+      blocks,
+      paletteProjects,
+      focusedCardId,
+      focusCard,
+      selectProject,
+      selectBlock,
+      updateCardAiIntent,
+      toggleNotificationCentre,
+    ],
+  );
+
   const handleCreate = useCallback(
     (options: TerminalCreateOptions) => {
       const id = createCard(options);
@@ -149,6 +230,21 @@ export function TerminalManager() {
     [createCard, focusCard, selectProject, selectedProjectPath],
   );
 
+  // Stage 5 — let Esc close the bookmarks side panel. Modals (palette /
+  // search) own their own Esc handlers; this listener is gated on those
+  // being closed so it never steals an Esc keystroke from them.
+  useEffect(() => {
+    if (!bookmarksOpen || paletteOpen || searchOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setBookmarksOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [bookmarksOpen, paletteOpen, searchOpen]);
+
   // Expose imperative API.
   useEffect(() => {
     window.__terminalManager = {
@@ -159,6 +255,10 @@ export function TerminalManager() {
         setSettingsTab(tab ?? 'shortcuts');
         setSettingsOpen(true);
       },
+      openPalette: () => setPaletteOpen(true),
+      closePalette: () => setPaletteOpen(false),
+      openSearch: () => setSearchOpen(true),
+      closeSearch: () => setSearchOpen(false),
     };
     return () => {
       delete window.__terminalManager;
@@ -202,6 +302,24 @@ export function TerminalManager() {
             className="inline-flex items-center gap-1 rounded-lg bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
           >
             <Plus className="h-3.5 w-3.5" /> {t('app.new')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setBookmarksOpen((v) => !v)}
+            title={t('bookmarks.toggle', { defaultValue: 'Toggle bookmarks panel' })}
+            className={[
+              'relative rounded-lg p-1.5',
+              bookmarksOpen
+                ? 'bg-primary/10 text-primary'
+                : 'hover:bg-accent hover:text-accent-foreground',
+            ].join(' ')}
+          >
+            <Star className="h-4 w-4" />
+            {bookmarkCount > 0 && (
+              <span className="absolute right-0.5 top-0.5 flex min-h-[14px] min-w-[14px] items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-bold text-white">
+                {bookmarkCount > 99 ? '99+' : bookmarkCount}
+              </span>
+            )}
           </button>
           <button
             type="button"
@@ -284,19 +402,61 @@ export function TerminalManager() {
           })}
       </div>
 
-      {/* Shortcut hint */}
-      {cards.length > 0 && (
+      {/* Shortcut hint — dismissible. Anchored to the LEFT so it can't
+          overlap with the right-side BlockInspector / Bookmarks panel,
+          and hidden whenever a modal/panel is open so it never sits on
+          top of overlay UI. */}
+      {cards.length > 0 && !hintDismissed && !bookmarksOpen && !paletteOpen && !searchOpen && (
         <div
           className={[
-            'pointer-events-none absolute right-3 z-10 select-none rounded-lg border border-border/60 bg-background/80 px-2.5 py-1 text-[10px] text-muted-foreground backdrop-blur',
+            'absolute left-3 z-10 flex select-none items-center gap-2 rounded-lg border border-border/60 bg-background/80 py-1 pl-2.5 pr-1 text-[10px] text-muted-foreground backdrop-blur',
             viewMode === 'focus' && focusedCard ? 'bottom-10' : 'bottom-3',
           ].join(' ')}
         >
-          <span className="font-mono">⌘/Ctrl+`</span> {t('app.shortcutHint').split(' · ')[0]} ·{' '}
-          <span className="font-mono">⌘/Ctrl+Tab</span> {t('app.shortcutHint').split(' · ')[1]} ·{' '}
-          <span className="font-mono">⌘/Ctrl+1-9</span> {t('app.shortcutHint').split(' · ')[2]}
+          <span>
+            <span className="font-mono">⌘/Ctrl+`</span> {t('app.shortcutHint').split(' · ')[0]} ·{' '}
+            <span className="font-mono">⌘/Ctrl+Tab</span> {t('app.shortcutHint').split(' · ')[1]} ·{' '}
+            <span className="font-mono">⌘/Ctrl+1-9</span> {t('app.shortcutHint').split(' · ')[2]}
+          </span>
+          <button
+            type="button"
+            data-testid="shortcut-hint-dismiss"
+            onClick={dismissHint}
+            title={t('common.close', { defaultValue: 'Close' })}
+            aria-label={t('common.close', { defaultValue: 'Close' })}
+            className="rounded p-0.5 hover:bg-accent hover:text-accent-foreground"
+          >
+            <X className="h-3 w-3" />
+          </button>
         </div>
       )}
+
+      {/* Bookmarks side panel — slides in from the right edge of the workspace */}
+      {bookmarksOpen && (
+        <div className="absolute right-0 top-0 bottom-0 z-30 w-64 border-l border-border bg-background shadow-lg">
+          <BookmarksSidebar
+            onJump={handleJumpToBlock}
+            onClose={() => setBookmarksOpen(false)}
+          />
+        </div>
+      )}
+
+      {/* Command palette (Cmd/Ctrl+K) */}
+      <CommandPalette
+        open={paletteOpen}
+        entries={paletteEntries}
+        onClose={() => setPaletteOpen(false)}
+      />
+
+      {/* Cross-session block search (Cmd/Ctrl+F) */}
+      <BlockSearchPanel
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onJump={(target) => {
+          handleJumpToBlock(target);
+          setSearchOpen(false);
+        }}
+      />
 
       {/* Create dialog */}
       <CreateTerminalDialog
