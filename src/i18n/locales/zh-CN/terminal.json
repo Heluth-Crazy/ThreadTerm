@@ -1,4 +1,7 @@
 {
+  "common": {
+    "close": "关闭"
+  },
   "app": {
     "title": "终端管理器",
     "count_one": "{{visible}} / {{total}} 个终端",
@@ -165,6 +168,65 @@
     "waiting": "等待输入",
     "completed": "已完成",
     "failed": "失败"
+  },
+  "bookmarks": {
+    "title": "书签",
+    "empty": "暂无书签",
+    "toggle": "切换书签面板"
+  },
+  "search": {
+    "label": "搜索块",
+    "placeholder": "在所有块中搜索（命令、路径、项目）…",
+    "placeholderEmpty": "输入以搜索所有块",
+    "empty": "没有匹配项",
+    "loading": "搜索中…",
+    "field": {
+      "command": "命令",
+      "cwd": "路径",
+      "project": "项目",
+      "output": "输出"
+    }
+  },
+  "palette": {
+    "label": "命令面板",
+    "placeholder": "输入命令…",
+    "empty": "没有匹配项",
+    "groups": {
+      "jump-card": "跳转到卡片",
+      "jump-block": "跳转到块",
+      "switch-project": "切换项目",
+      "run-workflow": "运行工作流",
+      "change-intent": "更改意图",
+      "toggle-overlay": "切换悬浮窗",
+      "open-settings": "设置"
+    }
+  },
+  "block": {
+    "copyCommand": "复制命令",
+    "copyOutput": "复制输出",
+    "copyBoth": "复制命令 + 输出",
+    "rerun": "重新运行",
+    "rerunConfirm": "再次点击以确认重新运行",
+    "explain": "用 AI 解释",
+    "bookmark": "收藏此块",
+    "unbookmark": "取消收藏",
+    "collapse": "折叠块",
+    "expand": "展开块",
+    "collapsed": "已折叠",
+    "navFailed": {
+      "none": "没有失败的块"
+    },
+    "inspector": {
+      "title": "块检查器",
+      "command": "命令",
+      "cwd": "目录",
+      "exitCode": "退出码",
+      "duration": "耗时",
+      "running": "运行中…",
+      "noBlock": "选择一个块以检查",
+      "output": "输出",
+      "explainPlaceholder": "用 AI 解释（将在 Stage 6 开放）"
+    }
   },
   "types": {
     "shell": "Shell",
