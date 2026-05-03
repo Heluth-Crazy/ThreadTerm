@@ -52,6 +52,8 @@ pub fn run() {
             pty::pty_kill,
             pty::pty_get_session_state,
             pty::pty_get_recent_output,
+            pty::pty_attach_snapshot,
+            pty::pty_ack,
             pty::set_command_blocks_enabled,
             pty::get_command_blocks_enabled,
             notification::notification_send_os,

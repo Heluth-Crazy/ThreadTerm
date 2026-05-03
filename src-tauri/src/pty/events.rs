@@ -11,6 +11,7 @@ use crate::bridge;
 
 use super::registry;
 use super::session::{self, PtySession, SessionState, OUTPUT_IDLE_POLL, STARTUP_ERROR_SUPPRESS};
+use super::utf8::Utf8StreamDecoder;
 
 // ── Regex patterns (compiled once) ───────────────────────────────────────────
 
@@ -59,6 +60,7 @@ pub(super) static ANSI_STRIP: Lazy<regex::Regex> =
 struct PtyOutputPayload {
     id: String,
     data: String,
+    seq: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -116,101 +118,63 @@ pub(super) fn stream_pty_output(
     let mut last_attention_time = Instant::now() - Duration::from_secs(60);
     let attention_debounce = Duration::from_secs(5);
     let session_start = Instant::now();
+    let mut decoder = Utf8StreamDecoder::default();
 
     loop {
+        while session::unacked_bytes(&ses) >= session::FLOW_CONTROL_HIGH_WATERMARK {
+            if session::is_killed(&ses) {
+                break;
+            }
+            std::thread::sleep(session::FLOW_CONTROL_SLEEP);
+            if session::unacked_bytes(&ses) <= session::FLOW_CONTROL_LOW_WATERMARK {
+                break;
+            }
+        }
+        if session::is_killed(&ses) {
+            break;
+        }
+
         match reader.read(&mut buf) {
             Ok(0) => break, // EOF – child exited
             Ok(n) => {
-                let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                // Stage 3 default-off: ingest only when the user has installed
-                // the shell integration and flipped the runtime switch via
-                // `set_command_blocks_enabled`. Skipping `ingest` entirely is
-                // important — even feeding bytes into the parser builds up
-                // OSC state that leaks across enable→disable→enable cycles.
-                if super::block_parser_enabled() {
-                    for event in block_parser.ingest(&data) {
-                        event.emit(&app_handle);
-                    }
+                if let Ok(mut snapshot) = ses.snapshot.lock() {
+                    snapshot.apply_output(&buf[..n]);
                 }
-                let _ = app_handle.emit(
-                    "pty-output",
-                    PtyOutputPayload {
-                        id: id.clone(),
-                        data: data.clone(),
-                    },
+
+                let data = decoder.decode(&buf[..n]);
+                if data.is_empty() {
+                    continue;
+                }
+                emit_pty_output_chunk(
+                    &id,
+                    &data,
+                    &ses,
+                    &app_handle,
+                    &mut block_parser,
+                    &mut last_attention_time,
+                    attention_debounce,
+                    session_start,
                 );
-                bridge::broadcast_preview(&id, &data);
-
-                // Keep raw PTY bytes so a second webview can replay the same
-                // terminal control stream instead of looking like a fresh shell.
-                if let Ok(mut out) = ses.output_buffer.write() {
-                    out.push_str(&data);
-                    session::trim_recent_output_buffer(&mut out);
-                }
-
-                // Strip ANSI escape codes for pattern matching
-                let cleaned = ANSI_STRIP.replace_all(&data, "");
-                let waiting_for_input = WAITING_PATTERNS.is_match(&cleaned);
-
-                if !waiting_for_input {
-                    session::mark_output_activity(&ses, &id);
-                }
-
-                // Detect waiting-for-input patterns
-                if waiting_for_input {
-                    let already_waiting = ses
-                        .state
-                        .read()
-                        .ok()
-                        .map(|s| *s == SessionState::WaitingForInput)
-                        .unwrap_or(false);
-
-                    if !already_waiting {
-                        session::set_session_state(&ses, &id, SessionState::WaitingForInput);
-                    }
-
-                    if last_attention_time.elapsed() > attention_debounce {
-                        last_attention_time = Instant::now();
-                        let _ = app_handle.emit(
-                            "attention-required",
-                            AttentionRequiredPayload {
-                                pty_id: id.clone(),
-                                session_id: id.clone(),
-                                attention_type: "waiting".to_string(),
-                                message: "Agent needs your input".to_string(),
-                            },
-                        );
-                        bridge::broadcast_attention(&id, "waiting", "Agent needs your input");
-                    }
-                }
-
-                // Detect error patterns (emit attention but don't change state to Failed).
-                //
-                // Skip during STARTUP_ERROR_SUPPRESS to avoid false positives from
-                // CLI banners/help output that legitimately mention "error".
-                if session_start.elapsed() > STARTUP_ERROR_SUPPRESS
-                    && ERROR_PATTERNS.is_match(&cleaned)
-                {
-                    if last_attention_time.elapsed() > attention_debounce {
-                        last_attention_time = Instant::now();
-                        let _ = app_handle.emit(
-                            "attention-required",
-                            AttentionRequiredPayload {
-                                pty_id: id.clone(),
-                                session_id: id.clone(),
-                                attention_type: "error".to_string(),
-                                message: "Agent encountered an error".to_string(),
-                            },
-                        );
-                        bridge::broadcast_attention(&id, "failed", "Agent encountered an error");
-                    }
-                }
             }
             Err(e) => {
                 tracing::warn!(id = %id, error = %e, "PTY read error");
                 break;
             }
         }
+    }
+
+    let trailing = decoder.flush_lossy();
+    if !trailing.is_empty() {
+        emit_pty_output_chunk(
+            &id,
+            &trailing,
+            &ses,
+            &app_handle,
+            &mut block_parser,
+            &mut last_attention_time,
+            attention_debounce,
+            session_start,
+        );
     }
 
     // Determine exit code and update state.
@@ -244,4 +208,100 @@ pub(super) fn stream_pty_output(
     // Remove session from map.
     registry::remove(&id);
     tracing::info!(id = %id, "PTY session ended");
+}
+
+fn emit_pty_output_chunk(
+    id: &str,
+    data: &str,
+    ses: &Arc<PtySession>,
+    app_handle: &AppHandle,
+    block_parser: &mut super::blocks::BlockParser,
+    last_attention_time: &mut Instant,
+    attention_debounce: Duration,
+    session_start: Instant,
+) {
+    // Stage 3 default-off: ingest only when the user has installed
+    // the shell integration and flipped the runtime switch via
+    // `set_command_blocks_enabled`. Skipping `ingest` entirely is
+    // important — even feeding bytes into the parser builds up
+    // OSC state that leaks across enable→disable→enable cycles.
+    if super::block_parser_enabled() {
+        for event in block_parser.ingest(data) {
+            event.emit(app_handle);
+        }
+    }
+
+    let seq = session::next_output_seq(ses);
+    let _ = app_handle.emit(
+        "pty-output",
+        PtyOutputPayload {
+            id: id.to_string(),
+            data: data.to_string(),
+            seq,
+        },
+    );
+    session::add_unacked(ses, data.as_bytes().len());
+    bridge::broadcast_preview(id, data);
+
+    // Keep raw PTY bytes so a second webview can replay the same terminal
+    // control stream until backend screen snapshots are enabled.
+    if let Ok(mut out) = ses.output_buffer.write() {
+        out.push_str(data);
+        session::trim_recent_output_buffer(&mut out);
+    }
+
+    // Strip ANSI escape codes for pattern matching.
+    let cleaned = ANSI_STRIP.replace_all(data, "");
+    let waiting_for_input = WAITING_PATTERNS.is_match(&cleaned);
+
+    if !waiting_for_input {
+        session::mark_output_activity(ses, id);
+    }
+
+    if waiting_for_input {
+        let already_waiting = ses
+            .state
+            .read()
+            .ok()
+            .map(|s| *s == SessionState::WaitingForInput)
+            .unwrap_or(false);
+
+        if !already_waiting {
+            session::set_session_state(ses, id, SessionState::WaitingForInput);
+        }
+
+        if last_attention_time.elapsed() > attention_debounce {
+            *last_attention_time = Instant::now();
+            let _ = app_handle.emit(
+                "attention-required",
+                AttentionRequiredPayload {
+                    pty_id: id.to_string(),
+                    session_id: id.to_string(),
+                    attention_type: "waiting".to_string(),
+                    message: "Agent needs your input".to_string(),
+                },
+            );
+            bridge::broadcast_attention(id, "waiting", "Agent needs your input");
+        }
+    }
+
+    // Detect error patterns (emit attention but don't change state to Failed).
+    //
+    // Skip during STARTUP_ERROR_SUPPRESS to avoid false positives from CLI
+    // banners/help output that legitimately mention "error".
+    if session_start.elapsed() > STARTUP_ERROR_SUPPRESS && ERROR_PATTERNS.is_match(&cleaned) {
+        if last_attention_time.elapsed() > attention_debounce {
+            *last_attention_time = Instant::now();
+            let _ = app_handle.emit(
+                "attention-required",
+                AttentionRequiredPayload {
+                    pty_id: id.to_string(),
+                    session_id: id.to_string(),
+                    attention_type: "error".to_string(),
+                    message: "Agent encountered an error".to_string(),
+                },
+            );
+            bridge::broadcast_attention(id, "failed", "Agent encountered an error");
+        }
+    }
 }

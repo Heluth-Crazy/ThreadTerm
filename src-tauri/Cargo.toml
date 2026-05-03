@@ -28,6 +28,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
 portable-pty = "0.8"
+wezterm-term = { package = "tattoy-wezterm-term", version = "0.1.0-fork.5" }
 dirs = "5"
 anyhow = "1"
 tracing = "0.1"

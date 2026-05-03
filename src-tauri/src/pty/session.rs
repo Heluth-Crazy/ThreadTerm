@@ -26,11 +26,26 @@ pub struct LivePtySessionSnapshot {
     pub recent_output: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyAttachSnapshot {
+    pub pty_id: String,
+    pub data: String,
+    pub seq: u64,
+    pub rows: u16,
+    pub cols: u16,
+    pub cursor_row: u16,
+    pub cursor_col: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<String>,
+}
+
 // ── Constants shared with sibling submodules ─────────────────────────────────
 
 /// Maximum bytes retained in the per-session raw output ring used when a
 /// second webview attaches mid-session.
 pub(super) const OUTPUT_BUFFER_MAX_BYTES: usize = 256 * 1024;
+pub(super) const SESSION_SCROLLBACK_LINES: usize = 3000;
 
 /// Duration during which we suppress ERROR_PATTERNS firing after a session
 /// starts. CLIs commonly print banners/help containing the word "error" during
@@ -43,6 +58,9 @@ pub(super) const STARTUP_ERROR_SUPPRESS: Duration = Duration::from_secs(2);
 pub(super) const OUTPUT_IDLE_GRACE: Duration = Duration::from_secs(2);
 pub(super) const OUTPUT_IDLE_POLL: Duration = Duration::from_millis(250);
 pub(super) const RESIZE_OUTPUT_ACTIVITY_SUPPRESS: Duration = Duration::from_millis(800);
+pub(super) const FLOW_CONTROL_HIGH_WATERMARK: usize = 200_000;
+pub(super) const FLOW_CONTROL_LOW_WATERMARK: usize = 20_000;
+pub(super) const FLOW_CONTROL_SLEEP: Duration = Duration::from_millis(2);
 
 // ── PtySession struct ────────────────────────────────────────────────────────
 
@@ -57,6 +75,9 @@ pub(super) struct PtySession {
     pub(super) app_handle: tauri::AppHandle,
     /// Raw circular buffer used when a second webview attaches to the same PTY.
     pub(super) output_buffer: RwLock<String>,
+    pub(super) output_seq: Mutex<u64>,
+    pub(super) unacked_bytes: Mutex<usize>,
+    pub(super) snapshot: Mutex<super::emulator::TerminalSnapshot>,
     pub(super) last_output_at: Mutex<Option<Instant>>,
     pub(super) last_size: Mutex<(u16, u16)>,
     pub(super) suppress_output_activity_until: Mutex<Option<Instant>>,
@@ -155,6 +176,96 @@ pub(super) fn trim_recent_output_buffer(buffer: &mut String) {
     buffer.drain(..start);
 }
 
+pub(super) fn next_output_seq(session: &PtySession) -> u64 {
+    next_output_seq_from_mutex(&session.output_seq)
+}
+
+fn next_output_seq_from_mutex(seq: &Mutex<u64>) -> u64 {
+    match seq.lock() {
+        Ok(mut guard) => {
+            *guard = guard.saturating_add(1);
+            *guard
+        }
+        Err(_) => 0,
+    }
+}
+
+pub(super) fn current_output_seq(session: &PtySession) -> u64 {
+    session.output_seq.lock().map(|seq| *seq).unwrap_or(0)
+}
+
+pub(super) fn add_unacked(session: &PtySession, count: usize) {
+    add_unacked_to_mutex(&session.unacked_bytes, count);
+}
+
+pub(super) fn subtract_unacked(session: &PtySession, count: usize) {
+    subtract_unacked_from_mutex(&session.unacked_bytes, count);
+}
+
+pub(super) fn unacked_bytes(session: &PtySession) -> usize {
+    session
+        .unacked_bytes
+        .lock()
+        .map(|value| *value)
+        .unwrap_or(0)
+}
+
+fn add_unacked_to_mutex(value: &Mutex<usize>, count: usize) {
+    if count == 0 {
+        return;
+    }
+    if let Ok(mut guard) = value.lock() {
+        *guard = guard.saturating_add(count);
+    }
+}
+
+fn subtract_unacked_from_mutex(value: &Mutex<usize>, count: usize) {
+    if count == 0 {
+        return;
+    }
+    if let Ok(mut guard) = value.lock() {
+        *guard = guard.saturating_sub(count);
+    }
+}
+
+pub(super) fn attach_snapshot(id: &str, session: &PtySession) -> PtyAttachSnapshot {
+    if let Ok(snapshot) = session.snapshot.lock() {
+        let payload = snapshot.snapshot_ansi();
+        return PtyAttachSnapshot {
+            pty_id: id.to_string(),
+            data: payload.data,
+            seq: current_output_seq(session),
+            rows: payload.rows,
+            cols: payload.cols,
+            cursor_row: payload.cursor_row,
+            cursor_col: payload.cursor_col,
+            history: payload.history,
+        };
+    }
+
+    let data = session
+        .output_buffer
+        .read()
+        .map(|buffer| buffer.clone())
+        .unwrap_or_default();
+    let (rows, cols) = session
+        .last_size
+        .lock()
+        .map(|size| *size)
+        .unwrap_or((24, 120));
+
+    PtyAttachSnapshot {
+        pty_id: id.to_string(),
+        data,
+        seq: current_output_seq(session),
+        rows,
+        cols,
+        cursor_row: 1,
+        cursor_col: 1,
+        history: None,
+    }
+}
+
 /// Clear the WaitingForInput state; the session becomes Running again only
 /// once the PTY emits more output.
 pub(super) fn clear_waiting_for_input(session: &PtySession, id: &str) {
@@ -185,4 +296,28 @@ pub(super) fn mark_killed(session: &PtySession) {
 
 pub(super) fn is_killed(session: &PtySession) -> bool {
     session.killed.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[test]
+    fn next_output_seq_is_monotonic() {
+        let seq = Mutex::new(0_u64);
+        assert_eq!(next_output_seq_from_mutex(&seq), 1);
+        assert_eq!(next_output_seq_from_mutex(&seq), 2);
+        assert_eq!(next_output_seq_from_mutex(&seq), 3);
+    }
+
+    #[test]
+    fn ack_subtracts_without_underflow() {
+        let value = Mutex::new(0_usize);
+        add_unacked_to_mutex(&value, 100);
+        subtract_unacked_from_mutex(&value, 40);
+        assert_eq!(*value.lock().expect("lock"), 60);
+        subtract_unacked_from_mutex(&value, 1000);
+        assert_eq!(*value.lock().expect("lock"), 0);
+    }
 }

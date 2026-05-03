@@ -11,13 +11,15 @@
 //! Only the items re-exported here form ThreadTerm's public PTY surface.
 
 pub mod blocks;
+mod emulator;
 mod events;
 mod registry;
 mod session;
 mod shell;
+mod utf8;
 
 pub use registry::list_live_sessions;
-pub use session::{LivePtySessionSnapshot, SessionState};
+pub use session::{LivePtySessionSnapshot, PtyAttachSnapshot, SessionState};
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +30,7 @@ use tauri::{Manager, Window};
 
 use session::{
     clear_waiting_for_input, mark_killed, suppress_output_activity_for, PtySession,
-    OUTPUT_BUFFER_MAX_BYTES, RESIZE_OUTPUT_ACTIVITY_SUPPRESS,
+    OUTPUT_BUFFER_MAX_BYTES, RESIZE_OUTPUT_ACTIVITY_SUPPRESS, SESSION_SCROLLBACK_LINES,
 };
 
 /// Runtime gate for the OSC 133/6973 block parser. Spec L92 requires the
@@ -112,6 +114,13 @@ pub async fn pty_create(
         state: RwLock::new(SessionState::Idle),
         app_handle: window.app_handle().clone(),
         output_buffer: RwLock::new(String::with_capacity(OUTPUT_BUFFER_MAX_BYTES.min(8192))),
+        output_seq: Mutex::new(0),
+        unacked_bytes: Mutex::new(0),
+        snapshot: Mutex::new(emulator::TerminalSnapshot::new(
+            rows,
+            cols,
+            SESSION_SCROLLBACK_LINES,
+        )),
         last_output_at: Mutex::new(None),
         last_size: Mutex::new((rows, cols)),
         suppress_output_activity_until: Mutex::new(None),
@@ -204,6 +213,10 @@ pub async fn pty_resize(id: String, rows: u16, cols: u16) -> Result<(), String> 
         })
         .map_err(|e| format!("Failed to resize PTY: {e}"))?;
 
+    if let Ok(mut snapshot) = session.snapshot.lock() {
+        snapshot.resize(rows, cols);
+    }
+
     Ok(())
 }
 
@@ -243,6 +256,23 @@ pub async fn pty_get_session_state(pty_id: String) -> Result<SessionState, Strin
 #[tauri::command]
 pub async fn pty_get_recent_output(pty_id: String) -> Result<Option<String>, String> {
     Ok(get_recent_output(&pty_id))
+}
+
+#[tauri::command]
+pub async fn pty_attach_snapshot(pty_id: String) -> Result<Option<PtyAttachSnapshot>, String> {
+    let Some(session) = registry::get(&pty_id) else {
+        return Ok(None);
+    };
+    Ok(Some(session::attach_snapshot(&pty_id, &session)))
+}
+
+#[tauri::command]
+pub async fn pty_ack(id: String, count: usize) -> Result<(), String> {
+    let Some(session) = registry::get(&id) else {
+        return Ok(());
+    };
+    session::subtract_unacked(&session, count);
+    Ok(())
 }
 
 /// Read the recent output buffer for a PTY session.
