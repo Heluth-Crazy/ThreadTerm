@@ -15,6 +15,23 @@ const listen = isTauriEnv()
 
 export type SessionState = 'Idle' | 'Running' | 'WaitingForInput' | 'Completed' | 'Failed';
 
+export interface PtyOutputPayload {
+  id: string;
+  data: string;
+  seq: number;
+}
+
+export interface PtyAttachSnapshot {
+  ptyId: string;
+  data: string;
+  seq: number;
+  rows: number;
+  cols: number;
+  cursorRow: number;
+  cursorCol: number;
+  history?: string;
+}
+
 export interface AttentionRequiredEvent {
   ptyId: string;
   sessionId: string;
@@ -62,8 +79,14 @@ export const pty = {
   getRecentOutput: (ptyId: string): Promise<string | null> =>
     invoke<string | null>('pty_get_recent_output', { ptyId }),
 
-  onOutput: (cb: (payload: { id: string; data: string }) => void): Promise<() => void> =>
-    listen<{ id: string; data: string }>('pty-output', (e) => cb(e.payload)),
+  attachSnapshot: (ptyId: string): Promise<PtyAttachSnapshot | null> =>
+    invoke<PtyAttachSnapshot | null>('pty_attach_snapshot', { ptyId }),
+
+  ack: (id: string, count: number): Promise<void> =>
+    invoke<void>('pty_ack', { id, count }),
+
+  onOutput: (cb: (payload: PtyOutputPayload) => void): Promise<() => void> =>
+    listen<PtyOutputPayload>('pty-output', (e) => cb(e.payload)),
 
   onExit: (cb: (payload: { id: string; code?: number }) => void): Promise<() => void> =>
     listen<{ id: string; code?: number }>('pty-exit', (e) => cb(e.payload)),

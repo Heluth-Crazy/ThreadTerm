@@ -8,6 +8,7 @@ import { logger } from '../utils/logger';
 import { isTauriEnv, pty } from '../lib/tauri-bridge';
 import { useTheme } from '../contexts/ThemeContext';
 import { registerTerminal, unregisterTerminal } from './terminal/xtermRegistry';
+import { createOutputSequencer } from './terminal/outputSequencer';
 
 const xtermStyles = `
   .xterm .xterm-screen {
@@ -42,6 +43,7 @@ if (typeof document !== 'undefined' && !document.getElementById('threadterm-xter
 }
 
 const CODEX_DEVICE_AUTH_URL = 'https://auth.openai.com/codex/device';
+const CLEANUP_SEQUENCE_RE = /\x1b\[[0-9;]*[JKLMPX]/;
 
 function isCodexLoginCommand(command) {
   return typeof command === 'string' && /\bcodex\s+login\b/i.test(command);
@@ -72,6 +74,15 @@ function fallbackCopyToClipboard(text) {
   return copied;
 }
 
+async function waitForFonts() {
+  if (!document.fonts?.ready) return;
+  try {
+    await document.fonts.ready;
+  } catch {
+    // Font readiness failure should not block terminal startup.
+  }
+}
+
 function Shell({
   selectedProject,
   initialCommand,
@@ -100,8 +111,8 @@ function Shell({
   const reconnectTimeoutRef = useRef(null);
   const surfaceRecoveryTimersRef = useRef([]);
   const manuallyDisconnected = useRef(false);
-  const replayedPtyIdRef = useRef(null);
   const lastPtySizeRef = useRef(null);
+  const outputSequencerRef = useRef(null);
 
   const [isConnected, setIsConnected] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
@@ -117,7 +128,6 @@ function Shell({
   const onUserSubmitRef = useRef(onUserSubmit);
   const activeRef = useRef(active);
   const preservePtyOnUnmountRef = useRef(preservePtyOnUnmount);
-  const replayRecentOutputRef = useRef(replayRecentOutput);
   const suppressInitialCommandWhenPtyExistsRef = useRef(suppressInitialCommandWhenPtyExists);
   const isConnectingRef = useRef(false);
   const isConnectedRef = useRef(false);
@@ -137,7 +147,6 @@ function Shell({
     onUserSubmitRef.current = onUserSubmit;
     activeRef.current = active;
     preservePtyOnUnmountRef.current = preservePtyOnUnmount;
-    replayRecentOutputRef.current = replayRecentOutput;
     suppressInitialCommandWhenPtyExistsRef.current = suppressInitialCommandWhenPtyExists;
   });
 
@@ -224,6 +233,8 @@ function Shell({
     unlistenExitRef.current?.();
     unlistenOutputRef.current = null;
     unlistenExitRef.current = null;
+    outputSequencerRef.current?.reset();
+    outputSequencerRef.current = null;
   }, []);
 
   const scheduleReconnect = useCallback((connectPty) => {
@@ -274,28 +285,51 @@ function Shell({
           registerTerminal(connectedPtyId, terminal.current);
         }
 
-        if (
-          replayRecentOutputRef.current &&
-          terminal.current &&
-          connectedPtyId &&
-          replayedPtyIdRef.current !== connectedPtyId
-        ) {
-          try {
-            const recentOutput = await pty.getRecentOutput(connectedPtyId);
-            if (recentOutput) {
-              terminal.current.write(recentOutput);
-              terminal.current.scrollToBottom();
+        const textEncoder = new TextEncoder();
+        outputSequencerRef.current = createOutputSequencer((data, _seq, onWritten, meta) => {
+          const term = terminal.current;
+          const ackWritten = () => {
+            if (meta.ack) {
+              const id = ptyIdRef.current;
+              if (id) {
+                pty.ack(id, textEncoder.encode(data).length).catch(() => {});
+              }
             }
-            replayedPtyIdRef.current = connectedPtyId;
-          } catch {
-            // Best-effort context replay; live output still streams normally.
-          }
-        }
+            onWritten();
+          };
 
-        const unlistenOut = await pty.onOutput(({ id: sid, data }) => {
+          if (!meta.render) {
+            ackWritten();
+            return;
+          }
+
+          if (!term) {
+            ackWritten();
+            return;
+          }
+
+          const needsRefresh = CLEANUP_SEQUENCE_RE.test(data) || data.includes('\r');
+          term.write(data, () => {
+            if (!term.hasSelection()) {
+              term.scrollToBottom();
+            }
+            if (needsRefresh) {
+              requestAnimationFrame(() => {
+                try {
+                  term.refresh(0, Math.max(0, term.rows - 1));
+                } catch {
+                  // Renderer recovery is best-effort.
+                }
+              });
+            }
+            ackWritten();
+          });
+        });
+        outputSequencerRef.current.reset();
+
+        const unlistenOut = await pty.onOutput(({ id: sid, data, seq }) => {
           if (sid !== ptyIdRef.current || !terminal.current) return;
-          terminal.current.write(data);
-          terminal.current.scrollToBottom();
+          outputSequencerRef.current?.receive({ seq, data });
 
           if (onProcessCompleteRef.current) {
             const cleanOutput = data.replace(/\x1b\[[0-9;]*m/g, '');
@@ -324,6 +358,28 @@ function Shell({
 
         unlistenOutputRef.current = unlistenOut;
         unlistenExitRef.current = unlistenExit;
+
+        try {
+          const snapshot = await pty.attachSnapshot(connectedPtyId);
+          if (snapshot && outputSequencerRef.current) {
+            if (terminal.current) {
+              terminal.current.clear();
+              terminal.current.write('\x1b[2J\x1b[H');
+              if (snapshot.rows && snapshot.cols) {
+                terminal.current.resize(snapshot.cols, snapshot.rows);
+                lastPtySizeRef.current = { rows: snapshot.rows, cols: snapshot.cols };
+              }
+            }
+            outputSequencerRef.current.applySnapshot({
+              seq: snapshot.seq,
+              data: `${snapshot.history || ''}${snapshot.data || ''}`,
+            });
+          } else {
+            outputSequencerRef.current?.applySnapshot({ seq: 0, data: '' });
+          }
+        } catch {
+          outputSequencerRef.current?.applySnapshot({ seq: 0, data: '' });
+        }
 
         setConnected(true);
         setConnecting(false);
@@ -522,9 +578,13 @@ function Shell({
       }
     });
 
-    requestAnimationFrame(() => {
-      recoverTerminalSurface(activeRef.current);
-      terminal.current?.scrollToBottom();
+    waitForFonts().finally(() => {
+      requestAnimationFrame(() => {
+        recoverTerminalSurface(activeRef.current);
+        if (!terminal.current?.hasSelection()) {
+          terminal.current?.scrollToBottom();
+        }
+      });
     });
 
     setIsInitialized(true);
@@ -536,7 +596,11 @@ function Shell({
       resizeDebounceTimer = setTimeout(() => {
         resizeDebounceTimer = null;
         if (!fitAddon.current || !terminal.current) return;
-        fitAddon.current.fit();
+        try {
+          fitAddon.current.fit();
+        } catch {
+          return;
+        }
         resizePtyIfNeeded(terminal.current.rows, terminal.current.cols);
       }, 150);
     });

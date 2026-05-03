@@ -2,10 +2,11 @@ import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { TerminalEventBridge } from './TerminalEventBridge';
+import { feedHeadless } from './headlessPreview';
 
 const bridgeMocks = vi.hoisted(() => {
   const listeners = {
-    output: undefined as undefined | ((payload: { id: string; data: string }) => void),
+    output: undefined as undefined | ((payload: { id: string; data: string; seq: number }) => void),
     state: undefined as undefined | ((payload: { ptyId: string; state: string }) => void),
     exit: undefined as undefined | ((payload: { id: string; code?: number }) => void),
     attention: undefined as undefined | ((payload: unknown) => void),
@@ -244,5 +245,27 @@ describe('TerminalEventBridge status reconciliation', () => {
       exitCode: 0,
       durationMs: 500,
     });
+  });
+
+  it('ignores duplicate or stale pty output seq values', async () => {
+    const id = createCard();
+
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(bridgeMocks.listeners.output).toBeDefined();
+    });
+
+    act(() => {
+      bridgeMocks.listeners.output?.({ id, data: 'one', seq: 1 });
+      bridgeMocks.listeners.output?.({ id, data: 'duplicate one', seq: 1 });
+      bridgeMocks.listeners.output?.({ id, data: 'stale zero', seq: 0 });
+      bridgeMocks.listeners.output?.({ id, data: 'two', seq: 2 });
+    });
+
+    expect(feedHeadless).toHaveBeenCalledTimes(2);
+    expect(useTerminalStore.getState().getCardById(id)?.lastOutput).toContain('two');
+    expect(useTerminalStore.getState().getCardById(id)?.lastOutput).not.toContain('duplicate one');
+    expect(useTerminalStore.getState().getCardById(id)?.lastOutput).not.toContain('stale zero');
   });
 });

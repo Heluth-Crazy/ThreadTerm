@@ -87,6 +87,8 @@ export function TerminalEventBridge(): null {
   const replyDebounceRef = useRef<Map<string, number>>(new Map());
   /** Last user-submit count already considered for reply notifications. */
   const replyInputCheckpointRef = useRef<Map<string, number>>(new Map());
+  /** Last backend output sequence applied to preview/store per PTY id. */
+  const lastOutputSeqRef = useRef<Map<string, number>>(new Map());
   const bridgeMountedAtRef = useRef(Date.now());
 
   useEffect(() => {
@@ -248,7 +250,11 @@ export function TerminalEventBridge(): null {
       //      non-blank rows → store.updateCardReplyPreview. This is
       //      the clean, wrap-aware view the card UI shows; it mirrors
       //      what the real xterm in the main window is rendering.
-      const unsubOutput = await pty.onOutput(({ id, data }) => {
+      const unsubOutput = await pty.onOutput(({ id, data, seq }) => {
+        const lastSeq = lastOutputSeqRef.current.get(id) ?? 0;
+        if (seq <= lastSeq) return;
+        lastOutputSeqRef.current.set(id, seq);
+
         const card = getCardForPtyId(id);
         if (!card) return;
         const store = useTerminalStore.getState();
