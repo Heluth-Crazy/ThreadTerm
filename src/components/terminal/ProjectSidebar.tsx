@@ -6,7 +6,7 @@
  *   • Each project below shows name + card count + optional unread dot
  *   • Click a project → set as filter, grid in the main area filters to it
  *   • Collapse toggle reduces the sidebar to an icon rail (w-12)
- *   • Open-dir button on hover uses @tauri-apps/plugin-shell
+ *   • Open-dir button on hover uses a local-directory Tauri command
  *
  * No drag-and-drop, rename, or delete — keep surface small.
  */
@@ -21,9 +21,9 @@ import {
   Pencil,
   Play,
 } from 'lucide-react';
-import { open as shellOpen } from '@tauri-apps/plugin-shell';
 import { useTranslation } from 'react-i18next';
 import { isTauriEnv } from '../../lib/tauri-bridge';
+import { openLocalDirectory } from '../../lib/localDirectory';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { useProjectGroups } from './useProjectGroups';
 import {
@@ -90,7 +90,7 @@ export function ProjectSidebar({
   const handleOpenDir = (path: string, e: MouseEvent) => {
     e.stopPropagation();
     if (!isTauriEnv()) return;
-    shellOpen(path).catch((err) => {
+    openLocalDirectory(path).catch((err) => {
       // eslint-disable-next-line no-console
       console.warn('[ProjectSidebar] open dir failed:', err);
     });
@@ -117,7 +117,7 @@ export function ProjectSidebar({
     try {
       const dir = await resolveProjectWorkflowsDir(projectPath);
       await ensureDir(dir);
-      await shellOpen(dir);
+      await openLocalDirectory(dir);
     } catch (err) {
       notifyWorkflowFailure(
         t('workflow.dirCreateFailed', { defaultValue: 'Could not open workflow directory' }),

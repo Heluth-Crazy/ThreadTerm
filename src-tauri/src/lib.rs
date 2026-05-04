@@ -1,6 +1,7 @@
 mod ai_explain;
 mod bridge;
 mod db;
+mod local_directory;
 mod notification;
 mod overlay;
 mod provider_sessions;
@@ -50,6 +51,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             ai_explain::ai_explain,
+            local_directory::open_local_directory,
             pty::pty_create,
             pty::pty_input,
             pty::pty_resize,
