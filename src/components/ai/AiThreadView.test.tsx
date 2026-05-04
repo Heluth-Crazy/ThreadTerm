@@ -27,6 +27,13 @@ describe('AiThreadView', () => {
     expect(screen.getByTestId('ai-thread-empty')).toBeInTheDocument();
   });
 
+  it('renders an export control when provided', () => {
+    const onExport = vi.fn();
+    render(<AiThreadView entries={[]} onRunCommand={vi.fn()} onExport={onExport} />);
+    fireEvent.click(screen.getByTestId('ai-thread-export'));
+    expect(onExport).toHaveBeenCalledTimes(1);
+  });
+
   it('renders user and ai entries with role distinction', () => {
     render(
       <AiThreadView

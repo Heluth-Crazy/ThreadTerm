@@ -97,6 +97,13 @@
     "timedOut": "AI 시간 초과",
     "error": "AI 오류: {{message}}"
   },
+  "aiExport": {
+    "exportMarkdown": "AI Markdown 내보내기",
+    "dialogTitle": "AI 세션 Markdown 내보내기",
+    "markdownFilter": "Markdown",
+    "saved": "AI 세션 Markdown을 내보냈습니다.",
+    "failed": "AI 세션 내보내기에 실패했습니다."
+  },
   "bottomBar": {
     "label": "포커스 모드 작업",
     "notifications": "알림",
@@ -169,6 +176,22 @@
     "test": "테스트",
     "docs": "문서"
   },
+  "autoRestart": {
+    "enable": "자동 재시작 켜기",
+    "disable": "자동 재시작 끄기",
+    "enabled": "자동 재시작 켜짐",
+    "enabledShort": "자동",
+    "maxRetries": "자동 재시작 최대 재시도 횟수",
+    "pendingShort": "{{delay}} 후 {{attempt}}/{{max}} 재시도",
+    "lastShort": "재시도 {{attempt}}/{{max}}",
+    "limitShort": "한도 {{max}}",
+    "historyLine": "재시도 {{attempt}}/{{max}}: {{status}}",
+    "status": {
+      "pending": "대기 중",
+      "started": "시작됨",
+      "cancelled": "취소됨"
+    }
+  },
   "view": {
     "backToGrid": "그리드로 돌아가기 (⌘/Ctrl+Shift+M)",
     "worktree": "worktree: {{path}}",
@@ -194,6 +217,9 @@
     "processExited": "프로세스 종료, 코드 {{code}}",
     "processCompleted": "프로세스 완료",
     "sessionClosed": "세션 닫힘",
+    "autoRestartLimitTitle": "{{project}} 자동 재시작 중지됨",
+    "autoRestartLimitBody": "{{max}}회 재시도 한도에 도달했습니다.",
+    "autoRestartLimitEvent": "자동 재시작이 {{max}}회 한도에 도달했습니다",
     "errorTitle": "⚠ {{project}}에서 오류 보고",
     "inputTitle": "• {{project}} 입력 필요",
     "missingCliTitle": "{{cli}} CLI 없음",
@@ -203,7 +229,8 @@
   },
   "events": {
     "created": "{{project}}에서 {{type}} 생성",
-    "status": "상태 → {{status}}"
+    "status": "상태 → {{status}}",
+    "autoRestartStarted": "자동 재시작 재시도 {{attempt}} 시작됨"
   },
   "shell": {
     "ptyDesktopOnly": "PTY는 Tauri 데스크톱 앱 안에서만 사용할 수 있습니다.",

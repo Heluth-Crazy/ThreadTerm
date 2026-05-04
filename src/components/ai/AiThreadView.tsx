@@ -11,7 +11,7 @@
  *     out and offered as the runnable text.
  */
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Bot, Play, User } from 'lucide-react';
+import { Bot, Download, Loader2, Play, User } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AiThreadEntry } from '../../stores/aiThreadStore';
 
@@ -27,19 +27,84 @@ function extractFirstCommand(text: string): string | null {
 interface Props {
   entries: AiThreadEntry[];
   onRunCommand: (command: string) => void;
+  onExport?: () => void;
+  exporting?: boolean;
+  exportStatus?: 'saved' | 'error' | null;
 }
 
-export function AiThreadView({ entries, onRunCommand }: Props) {
+export function AiThreadView({
+  entries,
+  onRunCommand,
+  onExport,
+  exporting = false,
+  exportStatus = null,
+}: Props) {
   const { t } = useTranslation('terminal');
+  const exportActionLabel = t('aiExport.exportMarkdown', { defaultValue: 'Export AI Markdown' });
+  const exportStatusLabel =
+    exportStatus === 'saved'
+      ? t('aiExport.saved', { defaultValue: 'AI session Markdown exported.' })
+      : exportStatus === 'error'
+        ? t('aiExport.failed', { defaultValue: 'AI session export failed.' })
+        : null;
+
   if (entries.length === 0) {
     return (
-      <div data-testid="ai-thread-empty" className="text-[10px] text-muted-foreground italic">
-        {t('aiThread.empty', { defaultValue: 'Ask AI to explain — answers appear here.' })}
+      <div className="flex items-center gap-1">
+        <div data-testid="ai-thread-empty" className="min-w-0 flex-1 text-[10px] text-muted-foreground italic">
+          {t('aiThread.empty', { defaultValue: 'Ask AI to explain — answers appear here.' })}
+        </div>
+        {onExport && (
+          <button
+            type="button"
+            data-testid="ai-thread-export"
+            onClick={onExport}
+            disabled={exporting}
+            title={exportActionLabel}
+            aria-label={exportActionLabel}
+            className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:cursor-wait disabled:opacity-50"
+          >
+            {exporting ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Download className="h-3 w-3" />
+            )}
+            {exportStatusLabel && (
+              <span className="sr-only" role="status" aria-live="polite">
+                {exportStatusLabel}
+              </span>
+            )}
+          </button>
+        )}
       </div>
     );
   }
   return (
     <div className="flex flex-col gap-2">
+      {onExport && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            data-testid="ai-thread-export"
+            onClick={onExport}
+            disabled={exporting}
+            title={exportActionLabel}
+            aria-label={exportActionLabel}
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:cursor-wait disabled:opacity-50"
+          >
+            {exporting ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Download className="h-3 w-3" />
+            )}
+            {exportStatusLabel && (
+              <span className="sr-only" role="status" aria-live="polite">
+                {exportStatusLabel}
+              </span>
+            )}
+          </button>
+        </div>
+      )}
       {entries.map((e) => (
         <Entry key={e.id} entry={e} onRunCommand={onRunCommand} />
       ))}
