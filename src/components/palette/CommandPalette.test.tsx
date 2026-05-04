@@ -32,6 +32,13 @@ function makeEntries(): CommandEntry[] {
       group: 'jump-block',
       run: vi.fn(),
     },
+    {
+      id: 'workflow',
+      label: 'Deploy workflow',
+      searchText: 'run workflow deploy',
+      group: 'run-workflow',
+      run: vi.fn(),
+    },
   ];
 }
 
@@ -72,6 +79,19 @@ describe('CommandPalette', () => {
     const options = screen.getAllByRole('option');
     expect(options[1].getAttribute('aria-selected')).toBe('true');
     expect(options[0].getAttribute('aria-selected')).toBe('false');
+  });
+
+  it('can initially select the first entry in a requested group', () => {
+    render(
+      <CommandPalette
+        open={true}
+        entries={makeEntries()}
+        initialGroup="run-workflow"
+        onClose={vi.fn()}
+      />,
+    );
+    const workflow = screen.getByText('Deploy workflow').closest('[role="option"]');
+    expect(workflow?.getAttribute('aria-selected')).toBe('true');
   });
 
   it('wraps selection with ArrowUp from index 0', () => {

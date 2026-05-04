@@ -10,43 +10,204 @@
  *
  * No drag-and-drop, rename, or delete — keep surface small.
  */
-import { useState } from 'react';
+import { useMemo, useState, type MouseEvent, type ReactNode } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
   Folder,
   FolderOpen,
   Layers,
+  Download,
+  Pencil,
+  Play,
 } from 'lucide-react';
 import { open as shellOpen } from '@tauri-apps/plugin-shell';
 import { useTranslation } from 'react-i18next';
 import { isTauriEnv } from '../../lib/tauri-bridge';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { useProjectGroups } from './useProjectGroups';
+import {
+  classifyApplyEntries,
+  type ApplyPresetEntry,
+} from '../../lib/workflows/dedupWorkflows';
+import {
+  ensureDir,
+  loadProjectPresetWorkflows,
+  resolveProjectWorkflowsDir,
+} from '../../lib/workflows/tauriFs';
+import {
+  workflowAiIntent,
+  workflowTerminalType,
+} from '../../lib/workflows/workflowRun';
+import { ApplyPresetDialog } from '../workflows/ApplyPresetDialog';
+import type { DiscoveryErrorReason } from '../../lib/workflows/discoverWorkflows';
+
+const DISCOVERY_ERROR_I18N_KEY: Record<DiscoveryErrorReason, string> = {
+  'parse-failed': 'parseFailed',
+  'duplicate-name': 'duplicateName',
+  'too-large': 'fileTooLarge',
+  'read-failed': 'readFailed',
+};
 
 interface ProjectSidebarProps {
   className?: string;
+  onImportWorkflow?: (projectPath: string, projectName: string) => void;
 }
 
-export function ProjectSidebar({ className = '' }: ProjectSidebarProps) {
+export function ProjectSidebar({
+  className = '',
+  onImportWorkflow,
+}: ProjectSidebarProps) {
   const { t } = useTranslation('terminal');
   const groups = useProjectGroups();
-  const totalCards = useTerminalStore((s) => s.cards.length);
-  const totalUnread = useTerminalStore(
-    (s) => s.cards.filter((c) => c.unread).length,
+  const cards = useTerminalStore((s) => s.cards);
+  const totalCards = cards.length;
+  const totalUnread = useMemo(
+    () => cards.filter((c) => c.unread).length,
+    [cards],
   );
   const selectedPath = useTerminalStore((s) => s.selectedProjectPath);
   const selectProject = useTerminalStore((s) => s.selectProject);
+  const createCard = useTerminalStore((s) => s.createCard);
+  const focusCard = useTerminalStore((s) => s.focusCard);
+  const updateCardAiIntent = useTerminalStore((s) => s.updateCardAiIntent);
+  const pushNotification = useTerminalStore((s) => s.pushNotification);
 
   const [collapsed, setCollapsed] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    path: string;
+    name: string;
+  } | null>(null);
+  const [applyPreset, setApplyPreset] = useState<{
+    projectPath: string;
+    projectName: string;
+    entries: ApplyPresetEntry[];
+    loading: boolean;
+  } | null>(null);
 
-  const handleOpenDir = (path: string, e: React.MouseEvent) => {
+  const handleOpenDir = (path: string, e: MouseEvent) => {
     e.stopPropagation();
     if (!isTauriEnv()) return;
     shellOpen(path).catch((err) => {
       // eslint-disable-next-line no-console
       console.warn('[ProjectSidebar] open dir failed:', err);
     });
+  };
+
+  const notifyWorkflowFailure = (title: string, body: string) => {
+    pushNotification({
+      cardId: 'system:workflows',
+      kind: 'failed',
+      title,
+      body,
+    });
+  };
+
+  const handleEditPreset = async (projectPath: string) => {
+    setContextMenu(null);
+    if (!isTauriEnv()) {
+      notifyWorkflowFailure(
+        t('workflow.editPreset', { defaultValue: 'Edit project preset' }),
+        t('dialog.browseDesktopOnly'),
+      );
+      return;
+    }
+    try {
+      const dir = await resolveProjectWorkflowsDir(projectPath);
+      await ensureDir(dir);
+      await shellOpen(dir);
+    } catch (err) {
+      notifyWorkflowFailure(
+        t('workflow.dirCreateFailed', { defaultValue: 'Could not open workflow directory' }),
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  };
+
+  const handleApplyPreset = async (projectPath: string, projectName: string) => {
+    setContextMenu(null);
+    setApplyPreset({ projectPath, projectName, entries: [], loading: true });
+    try {
+      const result = await loadProjectPresetWorkflows(projectPath);
+      for (const err of result.errors) {
+        notifyWorkflowFailure(
+          t(`workflow.${DISCOVERY_ERROR_I18N_KEY[err.reason]}`, {
+            defaultValue: err.reason,
+          }),
+          `${err.filePath}: ${err.message}`,
+        );
+      }
+      const existingCards = cards
+        .filter((card) => card.projectPath === projectPath && card.command)
+        .map((card) => ({
+          id: card.id,
+          cwd: card.worktreePath ?? card.projectPath,
+          command: card.command ?? '',
+        }));
+      setApplyPreset({
+        projectPath,
+        projectName,
+        entries: classifyApplyEntries(result.workflows, existingCards, projectPath),
+        loading: false,
+      });
+    } catch (err) {
+      setApplyPreset(null);
+      notifyWorkflowFailure(
+        t('workflow.applyPreset', { defaultValue: 'Apply preset' }),
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  };
+
+  const handleImportWorkflow = (projectPath: string, projectName: string) => {
+    setContextMenu(null);
+    if (!isTauriEnv()) {
+      notifyWorkflowFailure(
+        t('workflow.importWorkflow', { defaultValue: 'Import workflow from URL...' }),
+        t('dialog.browseDesktopOnly'),
+      );
+      return;
+    }
+    onImportWorkflow?.(projectPath, projectName);
+  };
+
+  const confirmApplyPreset = () => {
+    if (!applyPreset) return;
+    let lastCreatedId: string | null = null;
+    let created = 0;
+    for (const entry of applyPreset.entries) {
+      if (entry.state !== 'new') continue;
+      const id = createCard({
+        projectName: applyPreset.projectName,
+        projectPath: applyPreset.projectPath,
+        worktreePath:
+          entry.resolvedCwd && entry.resolvedCwd !== applyPreset.projectPath
+            ? entry.resolvedCwd
+            : undefined,
+        terminalType: workflowTerminalType(entry.workflow),
+        command: entry.resolvedCommand ?? entry.workflow.command,
+      });
+      const intent = workflowAiIntent(entry.workflow);
+      if (intent) updateCardAiIntent(id, intent);
+      lastCreatedId = id;
+      created += 1;
+    }
+    if (lastCreatedId) {
+      selectProject(applyPreset.projectPath);
+      focusCard(lastCreatedId);
+    }
+    pushNotification({
+      cardId: 'system:workflows',
+      kind: 'completed',
+      title: t('workflow.applyPreset', { defaultValue: 'Apply preset' }),
+      body: t('workflow.applyPresetCreatedCount', {
+        count: created,
+        defaultValue: 'Created {{count}} workflow cards.',
+      }),
+    });
+    setApplyPreset(null);
   };
 
   return (
@@ -107,6 +268,15 @@ export function ProjectSidebar({ className = '' }: ProjectSidebarProps) {
             count={g.cards.length}
             unread={g.unreadCount}
             onClick={() => selectProject(g.path)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setContextMenu({
+                x: event.clientX,
+                y: event.clientY,
+                path: g.path,
+                name: g.name,
+              });
+            }}
             onAux={(e) => handleOpenDir(g.path, e)}
             auxTitle={isTauriEnv() ? t('sidebar.openDir') : undefined}
           />
@@ -120,6 +290,55 @@ export function ProjectSidebar({ className = '' }: ProjectSidebarProps) {
           </div>
         )}
       </nav>
+
+      {contextMenu && (
+        <div
+          role="menu"
+          className="fixed z-[230] w-52 rounded-lg border border-border bg-popover p-1 text-xs shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
+            onClick={() => handleApplyPreset(contextMenu.path, contextMenu.name)}
+          >
+            <Play className="h-3.5 w-3.5" />
+            {t('workflow.applyPreset', { defaultValue: 'Apply preset' })}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
+            onClick={() => handleImportWorkflow(contextMenu.path, contextMenu.name)}
+          >
+            <Download className="h-3.5 w-3.5" />
+            {t('workflow.importWorkflow', {
+              defaultValue: 'Import workflow from URL...',
+            })}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
+            onClick={() => handleEditPreset(contextMenu.path)}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            {t('workflow.editPreset', { defaultValue: 'Edit project preset...' })}
+          </button>
+        </div>
+      )}
+
+      <ApplyPresetDialog
+        open={applyPreset !== null}
+        projectName={applyPreset?.projectName ?? ''}
+        projectPath={applyPreset?.projectPath ?? ''}
+        entries={applyPreset?.entries ?? []}
+        loading={applyPreset?.loading ?? false}
+        onCancel={() => setApplyPreset(null)}
+        onApply={confirmApplyPreset}
+      />
+
     </aside>
   );
 }
@@ -127,13 +346,14 @@ export function ProjectSidebar({ className = '' }: ProjectSidebarProps) {
 interface SidebarRowProps {
   collapsed: boolean;
   selected: boolean;
-  icon: React.ReactNode;
+  icon: ReactNode;
   label: string;
   subLabel?: string;
   count: number;
   unread: number;
   onClick: () => void;
-  onAux?: (e: React.MouseEvent) => void;
+  onContextMenu?: (e: MouseEvent) => void;
+  onAux?: (e: MouseEvent) => void;
   auxTitle?: string;
 }
 
@@ -146,6 +366,7 @@ function SidebarRow({
   count,
   unread,
   onClick,
+  onContextMenu,
   onAux,
   auxTitle,
 }: SidebarRowProps) {
@@ -153,6 +374,7 @@ function SidebarRow({
     <button
       type="button"
       onClick={onClick}
+      onContextMenu={onContextMenu}
       title={collapsed ? `${label} (${count})` : undefined}
       className={[
         'group relative flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors',
@@ -197,7 +419,7 @@ function SidebarRow({
               tabIndex={0}
               onClick={onAux}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') onAux(e as unknown as React.MouseEvent);
+                if (e.key === 'Enter' || e.key === ' ') onAux(e as unknown as MouseEvent);
               }}
               title={auxTitle}
               className="opacity-0 transition-opacity hover:text-primary group-hover:opacity-100"

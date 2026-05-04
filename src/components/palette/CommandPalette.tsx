@@ -17,6 +17,7 @@ import { fuzzyFilter, type CommandEntry, type CommandGroup } from './commandRegi
 export interface CommandPaletteProps {
   open: boolean;
   entries: CommandEntry[];
+  initialGroup?: CommandGroup | null;
   onClose: () => void;
 }
 
@@ -27,10 +28,15 @@ const GROUP_ORDER: CommandGroup[] = [
   'run-workflow',
   'change-intent',
   'toggle-overlay',
-  'open-settings',
+  'settings',
 ];
 
-export function CommandPalette({ open, entries, onClose }: CommandPaletteProps) {
+export function CommandPalette({
+  open,
+  entries,
+  initialGroup = null,
+  onClose,
+}: CommandPaletteProps) {
   const { t } = useTranslation('terminal');
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -58,6 +64,13 @@ export function CommandPalette({ open, entries, onClose }: CommandPaletteProps) 
   }, [open]);
 
   const filtered = useMemo(() => fuzzyFilter(entries, query), [entries, query]);
+
+  useEffect(() => {
+    if (!open || query.trim()) return;
+    if (!initialGroup) return;
+    const idx = filtered.findIndex((entry) => entry.group === initialGroup);
+    if (idx >= 0) setSelectedIndex(idx);
+  }, [filtered, initialGroup, open, query]);
 
   // Reset selection whenever the filtered list shrinks past the cursor.
   useEffect(() => {

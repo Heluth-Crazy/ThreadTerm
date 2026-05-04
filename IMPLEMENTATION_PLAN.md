@@ -286,7 +286,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 - `applyPreset.test.ts`：去重逻辑、缺省字段；
 - `workflowImport.test.ts`：URL 校验、http 拒绝、超时。
 
-**Status**: Not Started
+**Status**: Complete (batch 7.1 + 7.2, 2026-05-04): Warp-compatible YAML parsing runs in JS via `js-yaml` (`name / command / tags / description / arguments[]` plus ThreadTerm `intent` + `cwd`, unknown fields dropped); workflow discovery scans `~/.threadterm/workflows` plus focused project `.threadterm/workflows` with 256KB caps, per-file failure isolation, same-source duplicate-name warnings, and project-over-global override; command palette `Run workflow` now lists real workflows and opens a missing-argument dialog only when defaults are absent; project sidebar right-click adds `Apply preset` diff (new / duplicate / missing-args), `Edit project preset...` directory open, and `Import workflow from URL...` for single HTTPS YAML import with timeout, no redirects, 256KB cap, create/overwrite preview, and project-list refresh after save; BottomActionBar `workflows` chip opens the palette instead of the Stage 6 placeholder; `bottomBar.workflowsComingSoon` removed from all 4 locales and `workflow.*` i18n added. Team-shared workflows live in `<project>/.threadterm/workflows/`; commit that directory to share presets, or add it to `.gitignore` for local-only presets.
 
 ---
 

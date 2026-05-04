@@ -21,6 +21,8 @@ import { useTranslation } from 'react-i18next';
 import Shell from '../Shell';
 import type { TerminalCard } from '../../types/terminal';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { invoke, isTauriEnv, mobileBridge } from '../../lib/tauri-bridge';
+import type { AiExplainProvider } from '../../lib/ai/aiExplain';
 import { getStatusMeta } from './statusMeta';
 import { getTerminalTypeMeta } from './terminalTypeMeta';
 import {
@@ -33,14 +35,30 @@ import { AiIntentSelect } from './AiIntentSelect';
 import { BlockOverlay } from './BlockOverlay';
 import { BlockInspector } from './BlockInspector';
 import { prevFailedBlock, nextFailedBlock } from './failedBlockNav';
+import { BottomActionBar } from '../bottombar/BottomActionBar';
+import { buildChipRegistry, type ChipId } from '../bottombar/chipRegistry';
+import { open as openInShell } from '@tauri-apps/plugin-shell';
 
 interface TerminalViewProps {
   card: TerminalCard;
   active?: boolean;
   onBack: () => void;
+  /** Toggle the bookmarks side panel. Wired by `TerminalManager`. */
+  onOpenBookmarks?: () => void;
+  /** Open the command palette on the workflow group. */
+  onOpenWorkflows?: () => void;
+  /** Open the Settings modal, optionally on a specific tab. */
+  onOpenSettings?: (tab?: 'appearance' | 'shortcuts') => void;
 }
 
-export function TerminalView({ card, active = true, onBack }: TerminalViewProps) {
+export function TerminalView({
+  card,
+  active = true,
+  onBack,
+  onOpenBookmarks,
+  onOpenWorkflows,
+  onOpenSettings,
+}: TerminalViewProps) {
   const { t } = useTranslation('terminal');
   const removeCard = useTerminalStore((s) => s.removeCard);
   const recordUserSubmit = useTerminalStore((s) => s.recordUserSubmit);
@@ -55,6 +73,9 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
     (s) => s.selectedBlockId?.[card.id] ?? null,
   );
   const selectBlock = useTerminalStore((s) => s.selectBlock);
+  const aiExplainDefaultProvider = useTerminalStore((s) => s.aiExplainDefaultProvider);
+  const bottomBarHidden = useTerminalStore((s) => s.bottomBarHidden);
+  const addBookmark = useTerminalStore((s) => s.addBookmark);
 
   const [inspectorOpen, setInspectorOpen] = useState(false);
 
@@ -190,6 +211,100 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
   }, [inspectorOpen, selectedBlockId, blocks, card.id, selectBlock]);
 
   const hasBlocks = blocks.length > 0;
+
+  // Stage 6 — if the focused card already is an AI CLI, invoke that provider
+  // directly; otherwise fall back to the global default (user-visible in the
+  // Settings tab in Stage 8 — v1 exposes only the store-level value).
+  const providerOverride: AiExplainProvider = useMemo(() => {
+    const type = card.terminalType;
+    if (type === 'claude' || type === 'codex' || type === 'gemini') return type;
+    return aiExplainDefaultProvider;
+  }, [card.terminalType, aiExplainDefaultProvider]);
+
+  const handleRunCommand = useCallback(
+    (command: string) => {
+      // Blocks only fire on shell cards (OSC 133 isn't emitted by AI CLIs),
+      // so injection is always into a shell PTY. Append a newline so the
+      // shell actually executes the command.
+      void invoke('pty_input', { id: paneId, data: `${command}\n` });
+    },
+    [paneId],
+  );
+
+  // ── Stage 6 — bottom chip strip (Decision 5) ────────────────────────────
+  const cardCwd = card.worktreePath ?? card.projectPath ?? '';
+  const unreadNotifications = useTerminalStore((s) => s.getUnreadCount());
+  const bookmarkCount = useTerminalStore(
+    (s) => s.bookmarks.filter((b) => b.cardId === card.id).length,
+  );
+  const [bridgeAvailable, setBridgeAvailable] = useState(false);
+  useEffect(() => {
+    if (!active || !isTauriEnv()) {
+      setBridgeAvailable(false);
+      return;
+    }
+
+    let cancelled = false;
+    void mobileBridge
+      .status()
+      .then((status) => {
+        if (!cancelled) {
+          setBridgeAvailable(status.running);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setBridgeAvailable(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [active]);
+  const bottomBarChips = useMemo(
+    () =>
+      buildChipRegistry({
+        cardCwd,
+        bridgeAvailable,
+        bookmarkCount,
+        unreadNotifications,
+      }),
+    [bridgeAvailable, bookmarkCount, cardCwd, unreadNotifications],
+  );
+
+  const [placeholder, setPlaceholder] = useState<null | 'rich-input'>(null);
+
+  const handleChipActivate = useCallback(
+    (id: ChipId) => {
+      switch (id) {
+        case 'notifications':
+          useTerminalStore.getState().toggleNotificationCentre();
+          return;
+        case 'bookmarks':
+          onOpenBookmarks?.();
+          return;
+        case 'workflows':
+          onOpenWorkflows?.();
+          return;
+        case 'file-explorer': {
+          if (!cardCwd) return;
+          void openInShell(cardCwd).catch(() => {
+            // Non-existent path or denied scope — surface nothing; the chip
+            // is best-effort. Future: tie into the toast layer once one ships.
+          });
+          return;
+        }
+        case 'rich-input':
+          setPlaceholder('rich-input');
+          return;
+        case 'remote-control':
+          onOpenSettings?.('shortcuts');
+          return;
+      }
+    },
+    [cardCwd, onOpenBookmarks, onOpenSettings, onOpenWorkflows],
+  );
 
   return (
     <div className="flex h-full w-full flex-col bg-background">
@@ -343,12 +458,8 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
               <BlockInspector
                 block={selectedBlock}
                 onClose={() => setInspectorOpen(false)}
-                onExplain={() => {
-                  // Stage 4.3 gap-fill: placeholder only. Stage 6 will wire
-                  // this to the configured AI provider (Claude/Codex/Gemini)
-                  // and render the reply as a virtual block below the source.
-                  // No-op for now; button title carries the "coming soon" hint.
-                }}
+                providerOverride={providerOverride}
+                onRunCommand={handleRunCommand}
               />
             ) : (
               <div className="flex h-full flex-col">
@@ -374,6 +485,42 @@ export function TerminalView({ card, active = true, onBack }: TerminalViewProps)
           </div>
         )}
       </div>
+
+      {/* Stage 6 — focus-mode bottom chip strip. Hidden by a global setting. */}
+      {!bottomBarHidden && (
+        <BottomActionBar
+          chips={bottomBarChips}
+          onChipActivate={handleChipActivate}
+        />
+      )}
+
+      {placeholder !== null && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          data-testid={`bottom-bar-placeholder-${placeholder}`}
+          className="modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/80 p-4"
+          onClick={() => setPlaceholder(null)}
+        >
+          <div
+            className="max-w-sm rounded-xl border border-border bg-popover p-4 text-sm shadow-lg"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p>
+              {t('bottomBar.richInputComingSoon', {
+                defaultValue: 'Rich input arrives in Stage 9.',
+              })}
+            </p>
+            <button
+              type="button"
+              onClick={() => setPlaceholder(null)}
+              className="mt-3 inline-flex items-center justify-center rounded-md border border-border bg-background px-3 py-1.5 text-[11px] font-medium hover:bg-accent hover:text-accent-foreground"
+            >
+              {t('common.close', { defaultValue: 'Close' })}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <div className="flex items-center justify-between border-t border-border px-3 py-1 text-[10px] text-muted-foreground">

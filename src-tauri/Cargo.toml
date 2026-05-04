@@ -22,6 +22,7 @@ tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
@@ -43,6 +44,7 @@ tokio = { version = "1", features = ["macros", "net", "process", "rt-multi-threa
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 base64 = "0.22"
 similar = "2"
+tauri-plugin-http = "2"
 
 [dev-dependencies]
 tokio-tungstenite = "0.21"
