@@ -50,7 +50,7 @@ describe('buildCommandRegistry', () => {
     expect(groups.has('jump-block')).toBe(true);
     expect(groups.has('switch-project')).toBe(true);
     expect(groups.has('toggle-overlay')).toBe(true);
-    expect(groups.has('open-settings')).toBe(true);
+    expect(groups.has('settings')).toBe(true);
   });
 
   it('jump-card entry runs focusCard with the matching id', () => {
@@ -67,18 +67,44 @@ describe('buildCommandRegistry', () => {
     expect(actions.focusCard).toHaveBeenCalledWith('c1');
   });
 
-  it('always emits a run-workflow placeholder entry', () => {
+  it('emits run-workflow entries from discovered workflows', () => {
+    const actions = { ...emptyActions(), runWorkflow: vi.fn() };
     const reg = buildCommandRegistry({
       cards: [],
       blocks: {},
       projects: [],
-      actions: emptyActions(),
+      workflows: [
+        {
+          name: 'deploy',
+          command: 'npm run deploy',
+          description: 'Ship the app',
+          tags: ['release'],
+          source: 'project',
+          filePath: '/repo/.threadterm/workflows/deploy.yaml',
+        },
+      ],
+      actions,
     });
     const entry = reg.find((e) => e.group === 'run-workflow');
     expect(entry).toBeTruthy();
-    expect(entry!.label).toMatch(/workflow/i);
-    // Click is a no-op until Stage 7; must not throw.
-    expect(() => entry!.run()).not.toThrow();
+    expect(entry!.id).toBe('workflow:run:deploy');
+    expect(entry!.label).toBe('deploy');
+    expect(entry!.searchText).toContain('npm run deploy');
+    entry!.run();
+    expect(actions.runWorkflow).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'deploy' }),
+    );
+  });
+
+  it('does not emit a workflow placeholder when no workflows are discovered', () => {
+    const reg = buildCommandRegistry({
+      cards: [],
+      blocks: {},
+      projects: [],
+      workflows: [],
+      actions: { ...emptyActions(), runWorkflow: vi.fn() },
+    });
+    expect(reg.find((e) => e.group === 'run-workflow')).toBeUndefined();
   });
 
   it('emits change-intent entries when a card is focused and updateCardAiIntent is wired', () => {

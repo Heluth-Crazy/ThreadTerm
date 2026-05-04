@@ -21,13 +21,31 @@ import { CreateTerminalDialog } from './CreateTerminalDialog';
 import { ProjectSidebar } from './ProjectSidebar';
 import { BookmarksSidebar } from './BookmarksSidebar';
 import { CommandPalette } from '../palette/CommandPalette';
-import { buildCommandRegistry } from '../palette/commandRegistry';
+import { buildCommandRegistry, type CommandGroup } from '../palette/commandRegistry';
 import { BlockSearchPanel } from '../search/BlockSearchPanel';
 import Settings from '../Settings';
+import { WorkflowArgsDialog } from '../workflows/WorkflowArgsDialog';
+import { ImportWorkflowDialog } from '../workflows/ImportWorkflowDialog';
+import { interpolateWorkflow, type InterpolationValues } from '../../lib/workflows/interpolateWorkflow';
+import { resolveWorkflowCwd } from '../../lib/workflows/dedupWorkflows';
+import { useWorkflows } from '../../lib/workflows/useWorkflows';
+import {
+  missingDefaultArgs,
+  workflowAiIntent,
+  workflowTerminalType,
+} from '../../lib/workflows/workflowRun';
+import type { DiscoveredWorkflow } from '../../lib/workflows/discoverWorkflows';
+import type { WorkflowImportPlan } from '../../lib/workflows/importWorkflow';
 import type { TerminalCreateOptions } from '../../types/terminal';
 
 type ViewMode = 'grid' | 'focus';
 type SettingsTab = 'appearance' | 'shortcuts';
+
+function pathBasename(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '');
+  const parts = trimmed.split(/[\\/]/);
+  return parts[parts.length - 1] || trimmed;
+}
 
 declare global {
   interface Window {
@@ -60,6 +78,8 @@ export function TerminalManager() {
   const bookmarkCount = useTerminalStore((s) => s.bookmarks.length);
   const blocks = useTerminalStore((s) => s.blocks);
   const updateCardAiIntent = useTerminalStore((s) => s.updateCardAiIntent);
+  const pushNotification = useTerminalStore((s) => s.pushNotification);
+  const { workflows, reload: reloadWorkflows } = useWorkflows();
 
   const selectedProjectName = useMemo(() => {
     if (!selectedProjectPath) return null;
@@ -83,7 +103,16 @@ export function TerminalManager() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('shortcuts');
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteInitialGroup, setPaletteInitialGroup] = useState<CommandGroup | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [workflowArgs, setWorkflowArgs] = useState<{
+    workflow: DiscoveredWorkflow;
+    missingArgs: string[];
+  } | null>(null);
+  const [importWorkflow, setImportWorkflow] = useState<{
+    projectPath: string;
+    projectName: string;
+  } | null>(null);
 
   // Shortcut hint: dismissible, persisted across sessions. Once the user
   // closes it, never show again unless they wipe localStorage.
@@ -180,6 +209,124 @@ export function TerminalManager() {
     [focusCard, selectBlock],
   );
 
+  const getWorkflowProjectContext = useCallback(
+    (workflow: DiscoveredWorkflow) => {
+      const selectedCard = selectedProjectPath
+        ? cards.find((card) => card.projectPath === selectedProjectPath)
+        : undefined;
+      const sourceCard = focusedCard ?? selectedCard ?? visibleCards[0] ?? cards[0];
+      const fallbackPath = selectedProjectPath ?? sourceCard?.projectPath ?? null;
+      if (!fallbackPath) {
+        return null;
+      }
+      return {
+        projectPath: fallbackPath,
+        projectName:
+          sourceCard?.projectPath === fallbackPath
+            ? sourceCard.projectName
+            : pathBasename(fallbackPath),
+        cwd: resolveWorkflowCwd(workflow.cwd, fallbackPath),
+      };
+    },
+    [cards, focusedCard, selectedProjectPath, visibleCards],
+  );
+
+  const createWorkflowCard = useCallback(
+    (workflow: DiscoveredWorkflow, command: string) => {
+      const context = getWorkflowProjectContext(workflow);
+      if (!context) {
+        pushNotification({
+          cardId: 'system:workflows',
+          kind: 'failed',
+          title: t('workflow.runWorkflow', { defaultValue: 'Run workflow' }),
+          body: t('workflow.noProject', {
+            defaultValue: 'Select a project before running a workflow.',
+          }),
+        });
+        return;
+      }
+
+      const id = createCard({
+        projectName: context.projectName,
+        projectPath: context.projectPath,
+        worktreePath: context.cwd !== context.projectPath ? context.cwd : undefined,
+        terminalType: workflowTerminalType(workflow),
+        command,
+      });
+      const intent = workflowAiIntent(workflow);
+      if (intent) updateCardAiIntent(id, intent);
+      selectProject(context.projectPath);
+      focusCard(id);
+      setViewMode('focus');
+    },
+    [
+      createCard,
+      focusCard,
+      getWorkflowProjectContext,
+      pushNotification,
+      selectProject,
+      t,
+      updateCardAiIntent,
+    ],
+  );
+
+  const handleRunWorkflow = useCallback(
+    (workflow: DiscoveredWorkflow, values?: InterpolationValues) => {
+      if (!values) {
+        const missingDefaults = missingDefaultArgs(workflow);
+        if (missingDefaults.length > 0) {
+          setWorkflowArgs({ workflow, missingArgs: missingDefaults });
+          return;
+        }
+      }
+
+      const result = interpolateWorkflow(workflow, values);
+      if (result.kind === 'missing') {
+        setWorkflowArgs({ workflow, missingArgs: result.missingArgs });
+        return;
+      }
+      createWorkflowCard(workflow, result.command);
+      setWorkflowArgs(null);
+      setPaletteOpen(false);
+    },
+    [createWorkflowCard],
+  );
+
+  const handleOpenWorkflowPalette = useCallback(() => {
+    setPaletteInitialGroup('run-workflow');
+    setPaletteOpen(true);
+  }, []);
+
+  const handleOpenImportWorkflow = useCallback(
+    (projectPath: string, projectName: string) => {
+      setImportWorkflow({
+        projectPath,
+        projectName: projectName || pathBasename(projectPath),
+      });
+    },
+    [],
+  );
+
+  const handleWorkflowImported = useCallback(
+    (plan: WorkflowImportPlan) => {
+      pushNotification({
+        cardId: 'system:workflows',
+        kind: 'completed',
+        title: t('workflow.importWorkflowTitle', {
+          defaultValue: 'Import workflow from URL',
+        }),
+        body: t('workflow.importWorkflowSuccess', {
+          count: plan.workflows.length,
+          file: plan.targetFileName,
+          defaultValue: 'Imported {{count}} workflow(s) to {{file}}.',
+        }),
+      });
+      setImportWorkflow(null);
+      reloadWorkflows();
+    },
+    [pushNotification, reloadWorkflows, t],
+  );
+
   // Stage 5.2 — palette entries derived from current store snapshot.
   const paletteProjects = useMemo(
     () => Array.from(new Set(cards.map((c) => c.projectPath))),
@@ -191,12 +338,14 @@ export function TerminalManager() {
         cards,
         blocks,
         projects: paletteProjects,
+        workflows,
         focusedCardId,
         actions: {
           focusCard,
           selectProject,
           selectBlock,
           toggleNotificationCentre,
+          runWorkflow: handleRunWorkflow,
           updateCardAiIntent,
           openSettings: (tab) => {
             setSettingsTab(tab ?? 'shortcuts');
@@ -208,8 +357,10 @@ export function TerminalManager() {
       cards,
       blocks,
       paletteProjects,
+      workflows,
       focusedCardId,
       focusCard,
+      handleRunWorkflow,
       selectProject,
       selectBlock,
       updateCardAiIntent,
@@ -255,8 +406,14 @@ export function TerminalManager() {
         setSettingsTab(tab ?? 'shortcuts');
         setSettingsOpen(true);
       },
-      openPalette: () => setPaletteOpen(true),
-      closePalette: () => setPaletteOpen(false),
+      openPalette: () => {
+        setPaletteInitialGroup(null);
+        setPaletteOpen(true);
+      },
+      closePalette: () => {
+        setPaletteInitialGroup(null);
+        setPaletteOpen(false);
+      },
       openSearch: () => setSearchOpen(true),
       closeSearch: () => setSearchOpen(false),
     };
@@ -273,7 +430,7 @@ export function TerminalManager() {
 
   return (
     <div className="relative flex h-full w-full">
-      <ProjectSidebar />
+      <ProjectSidebar onImportWorkflow={handleOpenImportWorkflow} />
       <div className="relative flex min-w-0 flex-1 flex-col">
       {/* Top bar */}
       <div className="flex items-center justify-between border-b border-border bg-background/80 px-3 py-2 backdrop-blur">
@@ -396,6 +553,12 @@ export function TerminalManager() {
                   card={c}
                   active={isCurrent}
                   onBack={handleBackToGrid}
+                  onOpenBookmarks={() => setBookmarksOpen((v) => !v)}
+                  onOpenWorkflows={handleOpenWorkflowPalette}
+                  onOpenSettings={(tab) => {
+                    setSettingsTab(tab ?? 'shortcuts');
+                    setSettingsOpen(true);
+                  }}
                 />
               </div>
             );
@@ -445,7 +608,30 @@ export function TerminalManager() {
       <CommandPalette
         open={paletteOpen}
         entries={paletteEntries}
-        onClose={() => setPaletteOpen(false)}
+        initialGroup={paletteInitialGroup}
+        onClose={() => {
+          setPaletteInitialGroup(null);
+          setPaletteOpen(false);
+        }}
+      />
+
+      <WorkflowArgsDialog
+        open={workflowArgs !== null}
+        workflow={workflowArgs?.workflow ?? null}
+        missingArgs={workflowArgs?.missingArgs ?? []}
+        onCancel={() => setWorkflowArgs(null)}
+        onSubmit={(values) => {
+          if (!workflowArgs) return;
+          handleRunWorkflow(workflowArgs.workflow, values);
+        }}
+      />
+
+      <ImportWorkflowDialog
+        open={importWorkflow !== null}
+        projectName={importWorkflow?.projectName ?? ''}
+        projectPath={importWorkflow?.projectPath ?? ''}
+        onCancel={() => setImportWorkflow(null)}
+        onImported={handleWorkflowImported}
       />
 
       {/* Cross-session block search (Cmd/Ctrl+F) */}
@@ -463,6 +649,7 @@ export function TerminalManager() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreate={handleCreate}
+        onImportWorkflow={handleOpenImportWorkflow}
         recentProjects={recentProjects}
       />
 

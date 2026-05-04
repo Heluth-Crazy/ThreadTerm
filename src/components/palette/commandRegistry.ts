@@ -7,6 +7,7 @@
  * surface area through the palette.
  */
 import type { TerminalCard, Block, TerminalAiIntent } from '../../types/terminal';
+import type { DiscoveredWorkflow } from '../../lib/workflows/discoverWorkflows';
 
 export type CommandGroup =
   | 'jump-card'
@@ -15,7 +16,7 @@ export type CommandGroup =
   | 'run-workflow'
   | 'change-intent'
   | 'toggle-overlay'
-  | 'open-settings';
+  | 'settings';
 
 export interface CommandEntry {
   id: string;
@@ -34,6 +35,7 @@ export interface CommandRegistryActions {
   selectBlock: (cardId: string, blockId: string | null) => void;
   toggleNotificationCentre: (open?: boolean) => void;
   openSettings: (tab?: 'appearance' | 'shortcuts') => void;
+  runWorkflow?: (workflow: DiscoveredWorkflow) => void;
   /** Stage 5.2 — focused-card AI intent change. Optional so legacy
    *  callers without intent plumbing still compile. */
   updateCardAiIntent?: (cardId: string, intent: TerminalAiIntent | null) => void;
@@ -43,6 +45,7 @@ export interface CommandRegistryInput {
   cards: TerminalCard[];
   blocks: Record<string, Block[]>;
   projects: string[];
+  workflows?: DiscoveredWorkflow[];
   /** Currently focused card id; gates `change-intent` entries. */
   focusedCardId?: string | null;
   actions: CommandRegistryActions;
@@ -115,30 +118,54 @@ export function buildCommandRegistry(input: CommandRegistryInput): CommandEntry[
       id: 'settings:appearance',
       label: 'Settings · Appearance',
       searchText: 'settings appearance',
-      group: 'open-settings',
+      group: 'settings',
       run: () => input.actions.openSettings('appearance'),
     },
     {
       id: 'settings:shortcuts',
       label: 'Settings · Shortcuts',
       searchText: 'settings shortcuts',
-      group: 'open-settings',
+      group: 'settings',
       run: () => input.actions.openSettings('shortcuts'),
     },
   );
 
-  // Run workflow — Stage 7 placeholder. Surfaced now so muscle memory
-  // works when the real implementation lands; clicking is a no-op.
-  out.push({
-    id: 'workflow:placeholder',
-    label: 'Run workflow… (coming soon)',
-    detail: 'Stage 7',
-    searchText: 'run workflow coming soon stage 7',
-    group: 'run-workflow',
-    run: () => {
-      /* Stage 7 will wire this up. */
-    },
-  });
+  // Run workflow — Stage 7 real entries. Discovery already resolves project
+  // override precedence, so workflow names are unique at this layer.
+  if (input.actions.runWorkflow) {
+    for (const workflow of input.workflows ?? []) {
+      const needsArgs = workflow.arguments?.some(
+        (arg) => typeof arg.default_value !== 'string',
+      ) ?? false;
+      const tags = workflow.tags?.join(' ') ?? '';
+      out.push({
+        id: `workflow:run:${workflow.name}`,
+        label: workflow.name,
+        detail: [
+          workflow.source,
+          workflow.description,
+          needsArgs ? 'requires arguments' : undefined,
+          workflow.cwd,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        searchText: [
+          'run workflow',
+          workflow.name,
+          workflow.command,
+          workflow.description,
+          tags,
+          workflow.source,
+          workflow.cwd,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase(),
+        group: 'run-workflow',
+        run: () => input.actions.runWorkflow?.(workflow),
+      });
+    }
+  }
 
   // Change card intent — only when a card is focused and the host has
   // wired `updateCardAiIntent`. Each intent (plus a "Clear" entry) gets
