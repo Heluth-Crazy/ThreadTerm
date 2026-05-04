@@ -138,6 +138,19 @@ export const ThemeProvider = ({ children }) => {
     return pack;
   }, []);
 
+  const replaceCustomThemePacks = useCallback((packs) => {
+    const next = packs.filter((pack) => pack?.isCustom);
+    saveCustomThemePacks(next);
+    setCustomThemePacks(next);
+  }, []);
+
+  const setThemePreference = useCallback((nextPreference) => {
+    setPreference((current) => ({
+      themeMode: nextPreference?.themeMode ?? current.themeMode,
+      themePackId: nextPreference?.themePackId ?? current.themePackId,
+    }));
+  }, []);
+
   const deleteCustomThemePack = useCallback((themePackId) => {
     setCustomThemePacks((current) => {
       const next = current.filter((pack) => pack.id !== themePackId);
@@ -184,6 +197,8 @@ export const ThemeProvider = ({ children }) => {
       setThemeMode,
       setThemePackId,
       importCustomThemePack,
+      replaceCustomThemePacks,
+      setThemePreference,
       deleteCustomThemePack,
       exportThemePack,
       toggleDarkMode,
@@ -203,6 +218,8 @@ export const ThemeProvider = ({ children }) => {
       setThemeMode,
       setThemePackId,
       importCustomThemePack,
+      replaceCustomThemePacks,
+      setThemePreference,
       deleteCustomThemePack,
       exportThemePack,
       toggleDarkMode,

@@ -2,7 +2,8 @@
   "title": "設定",
   "mainTabs": {
     "appearance": "外観",
-    "shortcuts": "ショートカット"
+    "shortcuts": "ショートカット",
+    "data": "データ"
   },
   "appearanceSettings": {
     "darkMode": {
@@ -56,6 +57,41 @@
     }
   },
   "close": "設定を閉じる",
+  "dataIO": {
+    "title": "設定のインポート / エクスポート",
+    "description": "ThreadTerm の設定、カスタムテーマ、オーバーレイホットキー、グローバルワークフローを安全な JSON ファイルで移行します。",
+    "exportJson": "設定 JSON をエクスポート",
+    "exporting": "エクスポート中...",
+    "importJson": "設定 JSON をインポート",
+    "applyImport": "選択項目を適用",
+    "applying": "適用中...",
+    "clearPreview": "プレビューを消去",
+    "previewTitle": "インポートプレビュー",
+    "previewDescription": "現在の設定を上書きする項目を選択します。",
+    "current": "現在",
+    "incoming": "インポート",
+    "desktopWorkflowHint": "グローバルワークフローファイルはデスクトップアプリでのみ含まれます。ブリッジ token、ペアリング済みデバイス、監査ログ、AI provider key、カード、端末出力はエクスポートされません。",
+    "sections": {
+      "theme": "テーマ設定",
+      "customThemes": "カスタムテーマ",
+      "terminal": "端末設定",
+      "overlay": "オーバーレイホットキー",
+      "workflows": "グローバルワークフロー"
+    },
+    "statusLabels": {
+      "added": "新規",
+      "changed": "変更あり",
+      "unchanged": "変更なし"
+    },
+    "status": {
+      "exported": "設定 JSON をエクスポートしました。",
+      "exportFailed": "設定のエクスポートに失敗しました: {{message}}",
+      "importReady": "設定インポートのプレビューが準備できました。",
+      "importFailed": "設定のインポートに失敗しました: {{message}}",
+      "importApplied": "選択した設定をインポートしました。",
+      "applyFailed": "設定インポートを適用できませんでした: {{message}}"
+    }
+  },
   "notifications": {
     "title": "システム通知",
     "description": "ThreadTerm は入力待ち、エラー、返信完了時に OS 通知を送信します。",

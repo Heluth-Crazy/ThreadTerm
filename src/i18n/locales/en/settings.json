@@ -2,7 +2,8 @@
   "title": "Settings",
   "mainTabs": {
     "appearance": "Appearance",
-    "shortcuts": "Shortcuts"
+    "shortcuts": "Shortcuts",
+    "data": "Data"
   },
   "appearanceSettings": {
     "darkMode": {
@@ -56,6 +57,41 @@
     }
   },
   "close": "Close settings",
+  "dataIO": {
+    "title": "Settings import and export",
+    "description": "Move ThreadTerm preferences, custom themes, overlay hotkeys, and global workflows with one safe JSON file.",
+    "exportJson": "Export settings JSON",
+    "exporting": "Exporting...",
+    "importJson": "Import settings JSON",
+    "applyImport": "Apply selected",
+    "applying": "Applying...",
+    "clearPreview": "Clear preview",
+    "previewTitle": "Import preview",
+    "previewDescription": "Choose which sections should overwrite your current setup.",
+    "current": "Current",
+    "incoming": "Import",
+    "desktopWorkflowHint": "Global workflow files are included only in the desktop app. Bridge tokens, paired devices, audit logs, provider keys, cards, and terminal output are never exported.",
+    "sections": {
+      "theme": "Theme preference",
+      "customThemes": "Custom themes",
+      "terminal": "Terminal preferences",
+      "overlay": "Overlay hotkeys",
+      "workflows": "Global workflows"
+    },
+    "statusLabels": {
+      "added": "New",
+      "changed": "Changed",
+      "unchanged": "Unchanged"
+    },
+    "status": {
+      "exported": "Settings JSON exported.",
+      "exportFailed": "Settings export failed: {{message}}",
+      "importReady": "Settings import preview is ready.",
+      "importFailed": "Settings import failed: {{message}}",
+      "importApplied": "Selected settings were imported.",
+      "applyFailed": "Could not apply settings import: {{message}}"
+    }
+  },
   "notifications": {
     "title": "System notifications",
     "description": "ThreadTerm sends OS notifications when a session needs input, hits an error, or finishes a reply.",

@@ -2,7 +2,8 @@
   "title": "설정",
   "mainTabs": {
     "appearance": "모양",
-    "shortcuts": "단축키"
+    "shortcuts": "단축키",
+    "data": "데이터"
   },
   "appearanceSettings": {
     "darkMode": {
@@ -56,6 +57,41 @@
     }
   },
   "close": "설정 닫기",
+  "dataIO": {
+    "title": "설정 가져오기 및 내보내기",
+    "description": "ThreadTerm 환경설정, 사용자 지정 테마, 오버레이 단축키, 전역 워크플로를 안전한 JSON 파일 하나로 옮깁니다.",
+    "exportJson": "설정 JSON 내보내기",
+    "exporting": "내보내는 중...",
+    "importJson": "설정 JSON 가져오기",
+    "applyImport": "선택 항목 적용",
+    "applying": "적용 중...",
+    "clearPreview": "미리보기 지우기",
+    "previewTitle": "가져오기 미리보기",
+    "previewDescription": "현재 설정을 덮어쓸 섹션을 선택합니다.",
+    "current": "현재",
+    "incoming": "가져오기",
+    "desktopWorkflowHint": "전역 워크플로 파일은 데스크톱 앱에서만 포함됩니다. 브리지 token, 페어링된 기기, 감사 로그, AI provider key, 카드, 터미널 출력은 절대 내보내지 않습니다.",
+    "sections": {
+      "theme": "테마 환경설정",
+      "customThemes": "사용자 지정 테마",
+      "terminal": "터미널 환경설정",
+      "overlay": "오버레이 단축키",
+      "workflows": "전역 워크플로"
+    },
+    "statusLabels": {
+      "added": "새 항목",
+      "changed": "변경됨",
+      "unchanged": "변경 없음"
+    },
+    "status": {
+      "exported": "설정 JSON을 내보냈습니다.",
+      "exportFailed": "설정 내보내기 실패: {{message}}",
+      "importReady": "설정 가져오기 미리보기가 준비되었습니다.",
+      "importFailed": "설정 가져오기 실패: {{message}}",
+      "importApplied": "선택한 설정을 가져왔습니다.",
+      "applyFailed": "설정 가져오기를 적용할 수 없습니다: {{message}}"
+    }
+  },
   "notifications": {
     "title": "시스템 알림",
     "description": "ThreadTerm는 세션 입력 필요, 오류, 응답 완료 시 OS 알림을 보냅니다.",
