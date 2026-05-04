@@ -37,7 +37,7 @@ import { BlockInspector } from './BlockInspector';
 import { prevFailedBlock, nextFailedBlock } from './failedBlockNav';
 import { BottomActionBar } from '../bottombar/BottomActionBar';
 import { buildChipRegistry, type ChipId } from '../bottombar/chipRegistry';
-import { open as openInShell } from '@tauri-apps/plugin-shell';
+import { openLocalDirectory } from '../../lib/localDirectory';
 import { AutoRestartControls } from './AutoRestartControls';
 import { AutoRestartStatus } from './AutoRestartStatus';
 import { normalizeAutoRestartConfig } from '../../lib/autoRestart';
@@ -295,7 +295,7 @@ export function TerminalView({
           return;
         case 'file-explorer': {
           if (!cardCwd) return;
-          void openInShell(cardCwd).catch(() => {
+          void openLocalDirectory(cardCwd).catch(() => {
             // Non-existent path or denied scope — surface nothing; the chip
             // is best-effort. Future: tie into the toast layer once one ships.
           });

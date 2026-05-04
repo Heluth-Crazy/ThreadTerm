@@ -9,9 +9,9 @@
  */
 import { useCallback, useMemo } from 'react';
 import { FolderOpen, Plus, TerminalSquare } from 'lucide-react';
-import { open as shellOpen } from '@tauri-apps/plugin-shell';
 import { useTranslation } from 'react-i18next';
 import { isTauriEnv } from '../../lib/tauri-bridge';
+import { openLocalDirectory } from '../../lib/localDirectory';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { TerminalCardComponent } from './TerminalCard';
 
@@ -51,7 +51,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
 
   const handleOpenDir = useCallback((path: string) => {
     if (!isTauriEnv()) return;
-    shellOpen(path).catch((err) => {
+    openLocalDirectory(path).catch((err) => {
       // eslint-disable-next-line no-console
       console.warn('[CardGrid] Failed to open directory:', err);
     });
