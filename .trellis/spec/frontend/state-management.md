@@ -46,6 +46,15 @@ Questions to answer:
 
 ## Common Mistakes
 
-<!-- State management mistakes your team has made -->
+### Persisting Timer-Dependent State
+
+When a persisted Zustand store records metadata for an in-memory timer, persist
+only serializable metadata and convert any active/pending timer state to an
+interrupted state before writing storage.
+
+Example: card auto restart keeps retry `setTimeout` handles in
+`TerminalEventBridge`, not in `terminalStore`. Persisted card state may retain
+retry history for user context, but a pending retry must be written as cancelled
+because the timeout will not survive reload.
 
 (To be filled by the team)
