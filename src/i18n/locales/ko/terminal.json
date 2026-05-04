@@ -90,6 +90,24 @@
     "customCommand": "사용자 지정 명령",
     "customCommandDescription": "이 AI 카드는 기본 provider 명령 대신 사용자 지정 명령을 실행합니다."
   },
+  "aiThread": {
+    "empty": "AI에 설명을 요청하세요 — 답변이 여기에 표시됩니다.",
+    "runAsCommand": "명령으로 실행",
+    "runAsCommandConfirm": "다시 클릭하여 실행",
+    "timedOut": "AI 시간 초과",
+    "error": "AI 오류: {{message}}"
+  },
+  "bottomBar": {
+    "label": "포커스 모드 작업",
+    "notifications": "알림",
+    "bookmarks": "북마크",
+    "workflows": "워크플로우",
+    "fileExplorer": "파일 탐색기",
+    "richInput": "리치 입력",
+    "remoteControl": "원격 제어",
+    "overflow": "더 보기",
+    "richInputComingSoon": "리치 입력은 Stage 9에서 제공됩니다."
+  },
   "aiIntent": {
     "label": "AI 의도",
     "none": "의도 없음",

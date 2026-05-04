@@ -262,7 +262,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 - `aiInlineBlock.test.tsx`：插入位置、删除、Run-as-command 二级确认；
 - `bottomActionBar.test.tsx`：键盘导航、宽度自适应。
 
-**Status**: Not Started
+**Status**: Complete (Stage 6 batch 2026-05-02 + 2026-05-03 realign): 6.1 ai_explain Tauri command (one-shot tokio process spawn, 30s timeout, 8KB prompt cap) + explainWithAi frontend wrapper + aiThreadStore (in-memory, FIFO 20 entries) + AiThreadView (two-step Run-as-command) + BlockInspector wired to real provider invocation; 6.2 chipRegistry pure builder relocated to `src/components/bottombar/` + BottomActionBar (ResizeObserver overflow Popover + ArrowLeft/Right/Home/End/Enter/Space keyboard nav + badge rendering) + Decision-5 6 chips (notifications/bookmarks/workflows-placeholder/file-explorer via @tauri-apps/plugin-shell open()/rich-input-placeholder/remote-control gated by bridge) + drift action chips (`explain-last-block`/`copy-output`/`rerun-last`/`bookmark-last`/`clear-terminal`/`open-settings`) fully removed; TerminalView dispatcher rewired to `(id: ChipId)` via `onOpenBookmarks` / `onOpenSettings` prop callbacks (R3 prop-callback path over store-lift to keep TerminalManager state surface stable); persist v6→v7 with aiExplainDefaultProvider='claude' migration; 4-locale i18n parity for `aiThread.*` (incl. `aiThread.timedOut`) and `bottomBar.{notifications,bookmarks,workflows,fileExplorer,richInput,remoteControl,overflow,workflowsComingSoon,richInputComingSoon,label}`; settings toggle for chip strip visibility; typecheck / vitest 266/266 / npm build / cargo check / cargo test all green.
 
 ---
 

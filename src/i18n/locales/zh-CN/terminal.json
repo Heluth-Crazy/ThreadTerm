@@ -90,6 +90,24 @@
     "customCommand": "自定义命令",
     "customCommandDescription": "这张 AI 卡片运行自定义命令，而不是默认 provider 命令。"
   },
+  "aiThread": {
+    "empty": "向 AI 发问 — 回答会显示在这里。",
+    "runAsCommand": "作为命令运行",
+    "runAsCommandConfirm": "再次点击以运行",
+    "timedOut": "AI 超时",
+    "error": "AI 错误：{{message}}"
+  },
+  "bottomBar": {
+    "label": "焦点模式操作",
+    "notifications": "通知",
+    "bookmarks": "书签",
+    "workflows": "工作流",
+    "fileExplorer": "文件管理器",
+    "richInput": "富文本输入",
+    "remoteControl": "远程控制",
+    "overflow": "更多",
+    "richInputComingSoon": "富文本输入将在 Stage 9 提供。"
+  },
   "aiIntent": {
     "label": "AI 意图",
     "none": "无意图",

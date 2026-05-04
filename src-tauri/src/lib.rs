@@ -1,3 +1,4 @@
+mod ai_explain;
 mod bridge;
 mod db;
 mod notification;
@@ -46,6 +47,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            ai_explain::ai_explain,
             pty::pty_create,
             pty::pty_input,
             pty::pty_resize,

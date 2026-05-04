@@ -11,7 +11,7 @@
  */
 import { useMemo, useState, type FormEvent } from 'react';
 import { motion } from 'framer-motion';
-import { Folder, FolderOpen, Terminal, X } from 'lucide-react';
+import { Download, Folder, FolderOpen, Terminal, X } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { terminalTypeMeta } from './terminalTypeMeta';
@@ -34,6 +34,7 @@ interface CreateTerminalDialogProps {
   open: boolean;
   onClose: () => void;
   onCreate: (options: TerminalCreateOptions) => void;
+  onImportWorkflow?: (projectPath: string, projectName: string) => void;
   recentProjects?: RecentProject[];
 }
 
@@ -43,6 +44,7 @@ export function CreateTerminalDialog({
   open,
   onClose,
   onCreate,
+  onImportWorkflow,
   recentProjects = [],
 }: CreateTerminalDialogProps) {
   const { t } = useTranslation('terminal');
@@ -52,6 +54,7 @@ export function CreateTerminalDialog({
   const [command, setCommand] = useState('');
 
   const canSubmit = name.trim().length > 0 && path.trim().length > 0;
+  const canImportWorkflow = path.trim().length > 0 && isTauriEnv();
 
   const uniqueProjects = useMemo(() => {
     const seen = new Set<string>();
@@ -115,6 +118,12 @@ export function CreateTerminalDialog({
       // eslint-disable-next-line no-console
       console.warn('[CreateTerminalDialog] folder picker failed:', err);
     }
+  };
+
+  const handleImportWorkflow = () => {
+    const projectPath = path.trim();
+    if (!projectPath) return;
+    onImportWorkflow?.(projectPath, name.trim() || pathBasename(projectPath));
   };
 
   if (!open) return null;
@@ -266,21 +275,39 @@ export function CreateTerminalDialog({
               </div>
 
               {/* Footer */}
-              <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/30 px-5 py-3">
+              <div className="flex items-center justify-between gap-2 border-t border-border bg-muted/30 px-5 py-3">
                 <button
                   type="button"
-                  onClick={onClose}
-                  className="rounded-lg px-3 py-1.5 text-sm hover:bg-accent"
+                  onClick={handleImportWorkflow}
+                  disabled={!canImportWorkflow || !onImportWorkflow}
+                  title={
+                    isTauriEnv()
+                      ? t('workflow.importWorkflow', {
+                          defaultValue: 'Import workflow from URL...',
+                        })
+                      : t('dialog.browseDesktopOnly')
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {t('dialog.cancel')}
+                  <Download className="h-3.5 w-3.5" />
+                  {t('workflow.importWorkflowShort', { defaultValue: 'Import workflow' })}
                 </button>
-                <button
-                  type="submit"
-                  disabled={!canSubmit}
-                  className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                >
-                  {t('dialog.create')}
-                </button>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="rounded-lg px-3 py-1.5 text-sm hover:bg-accent"
+                  >
+                    {t('dialog.cancel')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!canSubmit}
+                    className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {t('dialog.create')}
+                  </button>
+                </div>
               </div>
               </form>
         </motion.div>

@@ -18,6 +18,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import LanguageSelector from './LanguageSelector';
 import KeyboardShortcutsSettings from './settings/KeyboardShortcutsSettings';
 import { CommandBlocksSettings } from './settings/CommandBlocksSettings';
+import { FocusModeSettings } from './settings/FocusModeSettings';
 import { MobileAccessSettings } from './settings/MobileAccessSettings';
 import { NotificationSettings } from './settings/NotificationSettings';
 import OverlayHotkeysSettings from './settings/OverlayHotkeysSettings';
@@ -424,6 +425,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
               <div className="space-y-6">
                 <MobileAccessSettings />
                 <CommandBlocksSettings />
+                <FocusModeSettings />
                 <NotificationSettings />
                 <OverlayHotkeysSettings />
                 <KeyboardShortcutsSettings />

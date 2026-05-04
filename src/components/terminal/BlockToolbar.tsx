@@ -60,7 +60,7 @@ export function BlockToolbar({
 
       {/* Copy output */}
       <ActionBtn
-        testId="block-copy-output"
+        testId="block-copy-result"
         title={t('block.copyOutput', { defaultValue: 'Copy output' })}
         onClick={onCopyOutput}
       >

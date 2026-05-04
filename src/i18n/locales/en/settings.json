@@ -68,6 +68,16 @@
     "testTitle": "ThreadTerm test notification",
     "testBody": "If you see this notification, the system notification path is working."
   },
+  "focusMode": {
+    "title": "Focus mode",
+    "description": "Configure the focus-mode chip strip and the default AI provider used by \"Explain with AI\".",
+    "chipStripLabel": "Show the focus-mode chip strip",
+    "chipStripDescription": "A row of quick navigation chips pinned to the bottom of the focused terminal.",
+    "chipStripOn": "Visible",
+    "chipStripOff": "Hidden",
+    "defaultProviderLabel": "Default AI Explain provider",
+    "defaultProviderDescription": "Used when the focused terminal is not already an AI CLI (e.g. shell, npm, docker)."
+  },
   "mobileAccess": {
     "title": "Mobile access",
     "description": "Starts the local HTTP/WebSocket bridge so phones on the same LAN can inspect and control desktop sessions.",

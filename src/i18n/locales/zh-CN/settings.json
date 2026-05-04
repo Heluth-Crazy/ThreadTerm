@@ -68,6 +68,16 @@
     "testTitle": "ThreadTerm 测试通知",
     "testBody": "如果你看到这条通知，说明系统通知链路可用。"
   },
+  "focusMode": {
+    "title": "专注模式",
+    "description": "配置专注模式底部芯片栏，以及“用 AI 解释”默认使用的 AI 提供方。",
+    "chipStripLabel": "显示专注模式芯片栏",
+    "chipStripDescription": "固定在当前终端底部的一排快捷导航芯片。",
+    "chipStripOn": "显示",
+    "chipStripOff": "隐藏",
+    "defaultProviderLabel": "默认 AI 解释提供方",
+    "defaultProviderDescription": "当当前终端不是 AI CLI（例如 shell、npm、docker）时使用。"
+  },
   "mobileAccess": {
     "title": "移动端访问",
     "description": "启动本地 HTTP/WebSocket 桥接服务，让手机在同一局域网内查看和控制桌面端会话。",

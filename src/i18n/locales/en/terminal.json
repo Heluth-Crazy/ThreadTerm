@@ -90,6 +90,24 @@
     "customCommand": "Custom command",
     "customCommandDescription": "This AI card runs a custom command instead of the default provider command."
   },
+  "aiThread": {
+    "empty": "Ask AI to explain — answers appear here.",
+    "runAsCommand": "Run as command",
+    "runAsCommandConfirm": "Click again to run",
+    "timedOut": "AI timed out",
+    "error": "AI error: {{message}}"
+  },
+  "bottomBar": {
+    "label": "Focus-mode actions",
+    "notifications": "Notifications",
+    "bookmarks": "Bookmarks",
+    "workflows": "Workflows",
+    "fileExplorer": "File explorer",
+    "richInput": "Rich input",
+    "remoteControl": "Remote control",
+    "overflow": "More",
+    "richInputComingSoon": "Rich input arrives in Stage 9."
+  },
   "aiIntent": {
     "label": "AI intent",
     "none": "No intent",
