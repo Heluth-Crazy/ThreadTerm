@@ -5,6 +5,7 @@ import type { TerminalCard as TerminalCardType } from '../../types/terminal';
 import type { AiCliSessionBadge } from './providerSession';
 import { AiIntentSelect } from './AiIntentSelect';
 import { CardActions } from './CardActions';
+import { AutoRestartStatus } from './AutoRestartStatus';
 
 export interface CardFooterProps {
   card: TerminalCardType;
@@ -15,6 +16,13 @@ export interface CardFooterProps {
   onCopyCwd?: () => void;
   onOpenDir?: () => void;
   onTogglePin: () => void;
+  autoRestartEnabled: boolean;
+  autoRestartMaxRetries: number;
+  onToggleAutoRestart: () => void;
+  onChangeAutoRestartMaxRetries: (value: number) => void;
+  onExportAiSession?: () => void;
+  aiSessionExporting?: boolean;
+  aiSessionExportStatus?: 'saved' | 'error' | null;
   onClose?: () => void;
 }
 
@@ -32,6 +40,13 @@ export function CardFooter({
   onCopyCwd,
   onOpenDir,
   onTogglePin,
+  autoRestartEnabled,
+  autoRestartMaxRetries,
+  onToggleAutoRestart,
+  onChangeAutoRestartMaxRetries,
+  onExportAiSession,
+  aiSessionExporting,
+  aiSessionExportStatus,
   onClose,
 }: CardFooterProps) {
   const { t } = useTranslation('terminal');
@@ -48,9 +63,16 @@ export function CardFooter({
         onCopyCwd={onCopyCwd}
         onOpenDir={onOpenDir}
         onTogglePin={onTogglePin}
+        autoRestartEnabled={autoRestartEnabled}
+        autoRestartMaxRetries={autoRestartMaxRetries}
+        onToggleAutoRestart={onToggleAutoRestart}
+        onChangeAutoRestartMaxRetries={onChangeAutoRestartMaxRetries}
+        onExportAiSession={onExportAiSession}
+        aiSessionExporting={aiSessionExporting}
+        aiSessionExportStatus={aiSessionExportStatus}
       />
 
-      <div className="flex min-w-0 flex-1 items-center" title={attentionHint ?? undefined}>
+      <div className="flex min-w-0 flex-1 items-center gap-1" title={attentionHint ?? undefined}>
         {attentionHint && (
           <span
             className={`inline-flex min-w-0 max-w-full items-center gap-0.5 truncate text-[10px] ${
@@ -65,6 +87,7 @@ export function CardFooter({
             <span className="truncate">{attentionHint}</span>
           </span>
         )}
+        <AutoRestartStatus card={card} />
       </div>
 
       {aiSessionBadge && (
