@@ -67,6 +67,58 @@ function buildPrompt(block: Block): string {
   ].join('\n');
 }
 
+function buildBlockContextMessage(block: Block): string {
+  const exitCode =
+    block.exitCode === undefined || block.exitCode === null ? 'n/a' : String(block.exitCode);
+  return [
+    'Block context:',
+    '',
+    block.command ? `Command: ${block.command}` : 'Command: Not available',
+    `Cwd: ${block.cwd}`,
+    `Exit code: ${exitCode}`,
+  ].join('\n');
+}
+
+function buildExportMessages(
+  block: Block,
+  entries: AiThreadEntry[],
+  provider: AiExplainProvider,
+): AiSessionExportMessage[] {
+  if (entries.length > 0) {
+    return entries.map<AiSessionExportMessage>((entry) => ({
+      id: entry.id,
+      role: entry.role === 'user' ? 'user' : 'assistant',
+      content: entry.text,
+      provider: entry.provider,
+      createdAt: entry.createdAt,
+      state: entry.state,
+    }));
+  }
+
+  const messages: AiSessionExportMessage[] = [
+    {
+      id: `${block.id}:context`,
+      role: 'user',
+      content: buildBlockContextMessage(block),
+      createdAt: block.startedAt,
+      state: 'ok',
+    },
+  ];
+
+  if (block.output?.trim()) {
+    messages.push({
+      id: `${block.id}:output`,
+      role: 'assistant',
+      content: block.output,
+      provider,
+      createdAt: block.finishedAt ?? Date.now(),
+      state: 'ok',
+    });
+  }
+
+  return messages;
+}
+
 export function BlockInspector({
   block,
   onClose,
@@ -124,13 +176,16 @@ export function BlockInspector({
 
   const handleExport = useCallback(async () => {
     if (!block) return;
-    const provider = providerOverride ?? entries.find((entry) => entry.provider)?.provider ?? 'claude';
+    const liveEntries = useAiThreadStore.getState().threads[block.id]?.entries ?? entries;
+    const provider =
+      providerOverride ?? liveEntries.find((entry) => entry.provider)?.provider ?? 'claude';
+    const messages = buildExportMessages(block, liveEntries, provider);
     const source = {
       userIntent: 'explain',
       provider,
       sessionId: `block:${block.id}`,
-      startedAt: entries[0]?.createdAt ?? block.startedAt,
-      endedAt: entries[entries.length - 1]?.createdAt ?? block.finishedAt ?? Date.now(),
+      startedAt: messages[0]?.createdAt ?? block.startedAt,
+      endedAt: messages[messages.length - 1]?.createdAt ?? block.finishedAt ?? Date.now(),
       sourceContext: {
         kind: 'block' as const,
         cardId: block.cardId,
@@ -138,14 +193,7 @@ export function BlockInspector({
         cwd: block.cwd,
         command: block.command,
       },
-      messages: entries.map<AiSessionExportMessage>((entry) => ({
-        id: entry.id,
-        role: entry.role === 'user' ? 'user' : 'assistant',
-        content: entry.text,
-        provider: entry.provider,
-        createdAt: entry.createdAt,
-        state: entry.state,
-      })),
+      messages,
     };
 
     setExporting(true);

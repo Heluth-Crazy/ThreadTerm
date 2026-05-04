@@ -208,4 +208,61 @@ describe('BlockInspector', () => {
     expect(markdown).toContain('Explain this');
     expect(markdown).toContain('Use `npm test`.');
   });
+
+  it('exports block context and output when no AI thread entries exist', async () => {
+    render(
+      <BlockInspector
+        block={makeBlock({
+          id: 'b-output',
+          command: '',
+          output: 'AI CLI streamed response text',
+          finishedAt: 1_700_000_006_000,
+        })}
+        providerOverride="codex"
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('ai-thread-export'));
+
+    await waitFor(() => expect(saveAiSessionMarkdownFileMock).toHaveBeenCalledTimes(1));
+    const markdown = saveAiSessionMarkdownFileMock.mock.calls[0][0] as string;
+    expect(markdown).toContain('Command: Not available');
+    expect(markdown).toContain('AI CLI streamed response text');
+    expect(markdown).not.toContain('_No prompt or reply content is available for this session._');
+  });
+
+  it('exports prompt and reply after Explain creates the visible thread', async () => {
+    invokeMock.mockImplementation(async () => ({
+      stdout: 'The build failed because a dependency is missing.',
+      stderr: '',
+      exit_code: 0,
+      timed_out: false,
+    }));
+
+    render(
+      <BlockInspector
+        block={makeBlock({
+          id: 'b4',
+          command: 'npm run build',
+          output: 'Cannot find module vite',
+        })}
+        providerOverride="claude"
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('block-inspector-explain'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/The build failed because/)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('ai-thread-export'));
+
+    await waitFor(() => expect(saveAiSessionMarkdownFileMock).toHaveBeenCalledTimes(1));
+    const markdown = saveAiSessionMarkdownFileMock.mock.calls[0][0] as string;
+    expect(markdown).toContain('Command: npm run build');
+    expect(markdown).toContain('Cannot find module vite');
+    expect(markdown).toContain('The build failed because a dependency is missing.');
+    expect(markdown).not.toContain('_No prompt or reply content is available for this session._');
+  });
 });
