@@ -40,3 +40,39 @@ Brainstormed Stage 7 (Warp YAML schema parser, palette run-workflow, ProjectSide
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: Stage 8 data IO and auto recovery
+
+**Date**: 2026-05-04
+**Task**: Stage 8 data IO and auto recovery
+**Branch**: `main`
+
+### Summary
+
+Completed Stage 8: settings bundle import/export, opt-in terminal card auto restart, local AI session Markdown export, and frontend export contracts.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e6ef7ac` | (see git log) |
+| `d28cfc8` | (see git log) |
+| `87e4e94` | (see git log) |
+| `efc7cd6` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

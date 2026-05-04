@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 1
+- **Total Sessions**: 2
 - **Last Active**: 2026-05-04
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~42 | Active |
+| `journal-1.md` | ~78 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 2 | 2026-05-04 | Stage 8 data IO and auto recovery | `e6ef7ac`, `d28cfc8`, `87e4e94`, `efc7cd6` | `main` |
 | 1 | 2026-05-04 | Stage 7 workflows + Stage 6 finalize + 3-commit split | `9ad91f0`, `cefb32d`, `2148031` | `main` |
 <!-- @@@/auto:session-history -->
 
