@@ -148,5 +148,6 @@ release/mac-arm64/
 release/win-unpacked/
 release/*.exe
 
-# Generated documentation review artifacts
-docs/media/review/
+# Local documentation and planning artifacts
+docs/
+.gitnexus
