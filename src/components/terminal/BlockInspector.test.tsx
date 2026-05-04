@@ -25,8 +25,15 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: (cmd: string, payload: unknown) => invokeMock(cmd, payload),
 }));
 
+const saveAiSessionMarkdownFileMock = vi.fn();
+vi.mock('../../lib/ai/tauriAiSessionExport', () => ({
+  saveAiSessionMarkdownFile: (...args: unknown[]) => saveAiSessionMarkdownFileMock(...args),
+}));
+
 beforeEach(() => {
   invokeMock.mockReset();
+  saveAiSessionMarkdownFileMock.mockReset();
+  saveAiSessionMarkdownFileMock.mockResolvedValue({ kind: 'saved', path: '/tmp/threadterm-ai.md' });
   useAiThreadStore.setState({ threads: {} });
 });
 
@@ -163,5 +170,42 @@ describe('BlockInspector', () => {
     await waitFor(() => {
       expect(screen.getByText(/AI error:.*boom/)).toBeInTheDocument();
     });
+  });
+
+  it('exports the visible block AI thread as Markdown', async () => {
+    useAiThreadStore.setState({
+      threads: {
+        b3: {
+          blockId: 'b3',
+          entries: [
+            {
+              id: 'q1',
+              role: 'user',
+              text: 'Explain this',
+              createdAt: 1_700_000_000_000,
+              state: 'ok',
+            },
+            {
+              id: 'a1',
+              role: 'ai',
+              text: 'Use `npm test`.',
+              provider: 'claude',
+              createdAt: 1_700_000_001_000,
+              state: 'ok',
+            },
+          ],
+        },
+      },
+    });
+
+    render(<BlockInspector block={makeBlock({ id: 'b3' })} providerOverride="claude" />);
+    fireEvent.click(screen.getByTestId('ai-thread-export'));
+
+    await waitFor(() => expect(saveAiSessionMarkdownFileMock).toHaveBeenCalledTimes(1));
+    const markdown = saveAiSessionMarkdownFileMock.mock.calls[0][0] as string;
+    expect(markdown).toContain('- Provider: claude');
+    expect(markdown).toContain('- Session id: block:b3');
+    expect(markdown).toContain('Explain this');
+    expect(markdown).toContain('Use `npm test`.');
   });
 });

@@ -97,6 +97,13 @@
     "timedOut": "AI timed out",
     "error": "AI error: {{message}}"
   },
+  "aiExport": {
+    "exportMarkdown": "Export AI Markdown",
+    "dialogTitle": "Export AI session Markdown",
+    "markdownFilter": "Markdown",
+    "saved": "AI session Markdown exported.",
+    "failed": "AI session export failed."
+  },
   "bottomBar": {
     "label": "Focus-mode actions",
     "notifications": "Notifications",
@@ -169,6 +176,22 @@
     "test": "Test",
     "docs": "Docs"
   },
+  "autoRestart": {
+    "enable": "Enable auto restart",
+    "disable": "Disable auto restart",
+    "enabled": "Auto restart enabled",
+    "enabledShort": "auto",
+    "maxRetries": "Max auto-restart retries",
+    "pendingShort": "retry {{attempt}}/{{max}} in {{delay}}",
+    "lastShort": "retry {{attempt}}/{{max}}",
+    "limitShort": "limit {{max}}",
+    "historyLine": "Retry {{attempt}}/{{max}}: {{status}}",
+    "status": {
+      "pending": "pending",
+      "started": "started",
+      "cancelled": "cancelled"
+    }
+  },
   "view": {
     "backToGrid": "Back to grid (⌘/Ctrl+Shift+M)",
     "worktree": "worktree: {{path}}",
@@ -194,6 +217,9 @@
     "processExited": "process exited with code {{code}}",
     "processCompleted": "process completed",
     "sessionClosed": "session closed",
+    "autoRestartLimitTitle": "{{project}} auto restart stopped",
+    "autoRestartLimitBody": "Retry limit reached after {{max}} attempts.",
+    "autoRestartLimitEvent": "auto restart limit reached after {{max}} attempts",
     "errorTitle": "⚠ {{project}} reported an error",
     "inputTitle": "• {{project}} needs your input",
     "missingCliTitle": "{{cli}} CLI missing",
@@ -203,7 +229,8 @@
   },
   "events": {
     "created": "Created {{type}} in {{project}}",
-    "status": "status → {{status}}"
+    "status": "status → {{status}}",
+    "autoRestartStarted": "auto restart retry {{attempt}} started"
   },
   "shell": {
     "ptyDesktopOnly": "PTY is available only inside the Tauri desktop app.",

@@ -11,18 +11,26 @@
  * supported via the `density` prop; only `grid` (default) and `compact`
  * have visual treatments — `list` is reserved for a future iteration.
  */
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { FolderGit2 } from 'lucide-react';
 import type { TerminalCard as TerminalCardType } from '../../types/terminal';
 import { MAX_PINNED_CARDS, useTerminalStore } from '../../stores/terminalStore';
+import {
+  getAiSessionExportFilename,
+  renderAiSessionMarkdown,
+  type AiSessionExportSource,
+} from '../../lib/ai/exportAiSession';
+import { saveAiSessionMarkdownFile } from '../../lib/ai/tauriAiSessionExport';
 import { buildCardPreview } from './cardPreview';
-import { getAiCliSessionBadge } from './providerSession';
+import { buildTerminalLaunchCommand, getAiCliSessionBadge } from './providerSession';
+import { getTerminalTypeMeta } from './terminalTypeMeta';
 import { CardCompact } from './CardCompact';
 import { CardFooter } from './CardFooter';
 import { CardHeader } from './CardHeader';
 import { CardPreviewPanel } from './CardPreviewPanel';
+import { normalizeAutoRestartConfig } from '../../lib/autoRestart';
 
 export interface TerminalCardProps {
   card: TerminalCardType;
@@ -68,6 +76,10 @@ export function TerminalCardComponent({
 }: TerminalCardProps) {
   const { t } = useTranslation('terminal');
   const [timelineOpen, setTimelineOpen] = useState(false);
+  const [aiSessionExporting, setAiSessionExporting] = useState(false);
+  const [aiSessionExportStatus, setAiSessionExportStatus] = useState<'saved' | 'error' | null>(
+    null,
+  );
 
   // Pin state for the global overlay selector (max MAX_PINNED_CARDS).
   const pinned = useTerminalStore((s) => s.pinnedCardIds.includes(card.id));
@@ -76,10 +88,13 @@ export function TerminalCardComponent({
   );
   const pinCard = useTerminalStore((s) => s.pinCard);
   const unpinCard = useTerminalStore((s) => s.unpinCard);
+  const setCardAutoRestartEnabled = useTerminalStore((s) => s.setCardAutoRestartEnabled);
+  const setCardAutoRestartMaxRetries = useTerminalStore((s) => s.setCardAutoRestartMaxRetries);
   const togglePin = () => {
     if (pinned) unpinCard(card.id);
     else pinCard(card.id);
   };
+  const autoRestart = normalizeAutoRestartConfig(card.autoRestart);
 
   const aiSessionBadge = useMemo(
     () => getAiCliSessionBadge(card),
@@ -107,6 +122,55 @@ export function TerminalCardComponent({
   );
 
   const recentEvents = useMemo(() => card.events.slice(-5).reverse(), [card.events]);
+  const exportLaunch = useMemo(
+    () => buildTerminalLaunchCommand(card, getTerminalTypeMeta(card.terminalType).defaultCommand),
+    [card],
+  );
+  const canExportAiSession =
+    (card.terminalType === 'claude' || card.terminalType === 'codex') &&
+    !card.command?.trim() &&
+    Boolean(exportLaunch.provider);
+
+  const handleExportAiSession = useCallback(async () => {
+    if (!canExportAiSession) return;
+
+    const source: AiSessionExportSource = {
+      userIntent: card.aiIntent ?? 'Not set',
+      provider: exportLaunch.provider ?? 'unknown',
+      sessionId: exportLaunch.providerSessionId ?? card.providerSessionId ?? null,
+      startedAt: card.createdAt,
+      endedAt: card.lastActivity,
+      sourceContext: {
+        kind: 'card' as const,
+        cardId: card.id,
+        projectName: card.projectName,
+        projectPath: card.worktreePath ?? card.projectPath,
+        launchCommand: exportLaunch.command,
+        launchAction: exportLaunch.action,
+      },
+      messages: [],
+    };
+
+    setAiSessionExporting(true);
+    setAiSessionExportStatus(null);
+    try {
+      const result = await saveAiSessionMarkdownFile(
+        renderAiSessionMarkdown(source),
+        getAiSessionExportFilename(source),
+        {
+          title: t('aiExport.dialogTitle', { defaultValue: 'Export AI session Markdown' }),
+          filterName: t('aiExport.markdownFilter', { defaultValue: 'Markdown' }),
+        },
+      );
+      if (result.kind === 'saved') {
+        setAiSessionExportStatus('saved');
+      }
+    } catch {
+      setAiSessionExportStatus('error');
+    } finally {
+      setAiSessionExporting(false);
+    }
+  }, [canExportAiSession, card, exportLaunch, t]);
 
   const attentionHint =
     card.status === 'waiting'
@@ -178,6 +242,17 @@ export function TerminalCardComponent({
         onCopyCwd={onCopyCwd}
         onOpenDir={onOpenDir}
         onTogglePin={togglePin}
+        autoRestartEnabled={autoRestart.enabled}
+        autoRestartMaxRetries={autoRestart.maxRetries}
+        onToggleAutoRestart={() =>
+          setCardAutoRestartEnabled(card.id, !autoRestart.enabled)
+        }
+        onChangeAutoRestartMaxRetries={(value) =>
+          setCardAutoRestartMaxRetries(card.id, value)
+        }
+        onExportAiSession={canExportAiSession ? handleExportAiSession : undefined}
+        aiSessionExporting={aiSessionExporting}
+        aiSessionExportStatus={aiSessionExportStatus}
         onClose={onClose}
       />
 

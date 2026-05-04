@@ -97,6 +97,13 @@
     "timedOut": "AI 超时",
     "error": "AI 错误：{{message}}"
   },
+  "aiExport": {
+    "exportMarkdown": "导出 AI Markdown",
+    "dialogTitle": "导出 AI 会话 Markdown",
+    "markdownFilter": "Markdown",
+    "saved": "AI 会话 Markdown 已导出。",
+    "failed": "AI 会话导出失败。"
+  },
   "bottomBar": {
     "label": "焦点模式操作",
     "notifications": "通知",
@@ -169,6 +176,22 @@
     "test": "测试",
     "docs": "文档"
   },
+  "autoRestart": {
+    "enable": "启用自动重启",
+    "disable": "关闭自动重启",
+    "enabled": "已启用自动重启",
+    "enabledShort": "自动",
+    "maxRetries": "自动重启最大重试次数",
+    "pendingShort": "{{delay}} 后重试 {{attempt}}/{{max}}",
+    "lastShort": "重试 {{attempt}}/{{max}}",
+    "limitShort": "上限 {{max}}",
+    "historyLine": "重试 {{attempt}}/{{max}}：{{status}}",
+    "status": {
+      "pending": "等待中",
+      "started": "已启动",
+      "cancelled": "已取消"
+    }
+  },
   "view": {
     "backToGrid": "返回网格（⌘/Ctrl+Shift+M）",
     "worktree": "worktree：{{path}}",
@@ -194,6 +217,9 @@
     "processExited": "进程退出，代码 {{code}}",
     "processCompleted": "进程已完成",
     "sessionClosed": "会话已关闭",
+    "autoRestartLimitTitle": "{{project}} 自动重启已停止",
+    "autoRestartLimitBody": "已达到 {{max}} 次重试上限。",
+    "autoRestartLimitEvent": "自动重启达到 {{max}} 次上限",
     "errorTitle": "⚠ {{project}} 报告了错误",
     "inputTitle": "• {{project}} 需要你输入",
     "missingCliTitle": "缺少 {{cli}} CLI",
@@ -203,7 +229,8 @@
   },
   "events": {
     "created": "已在 {{project}} 中创建 {{type}}",
-    "status": "状态 → {{status}}"
+    "status": "状态 → {{status}}",
+    "autoRestartStarted": "自动重启第 {{attempt}} 次重试已启动"
   },
   "shell": {
     "ptyDesktopOnly": "PTY 仅在 Tauri 桌面应用中可用。",

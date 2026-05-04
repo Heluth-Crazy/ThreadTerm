@@ -13,6 +13,12 @@ import { useTranslation } from 'react-i18next';
 import { Cpu, FolderOpen, Hash, Loader2, Sparkles, Timer, X } from 'lucide-react';
 import type { Block } from '../../types/terminal';
 import { explainWithAi, type AiExplainProvider } from '../../lib/ai/aiExplain';
+import {
+  getAiSessionExportFilename,
+  renderAiSessionMarkdown,
+  type AiSessionExportMessage,
+} from '../../lib/ai/exportAiSession';
+import { saveAiSessionMarkdownFile } from '../../lib/ai/tauriAiSessionExport';
 import { useAiThreadStore, type AiThreadEntry } from '../../stores/aiThreadStore';
 import { AiThreadView } from '../ai/AiThreadView';
 
@@ -69,6 +75,8 @@ export function BlockInspector({
 }: BlockInspectorProps) {
   const { t } = useTranslation('terminal');
   const [busy, setBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportStatus, setExportStatus] = useState<'saved' | 'error' | null>(null);
 
   // Select only the thread for this block so we don't re-render when
   // unrelated threads change. The selector must return a stable reference
@@ -113,6 +121,53 @@ export function BlockInspector({
     },
     [onRunCommand],
   );
+
+  const handleExport = useCallback(async () => {
+    if (!block) return;
+    const provider = providerOverride ?? entries.find((entry) => entry.provider)?.provider ?? 'claude';
+    const source = {
+      userIntent: 'explain',
+      provider,
+      sessionId: `block:${block.id}`,
+      startedAt: entries[0]?.createdAt ?? block.startedAt,
+      endedAt: entries[entries.length - 1]?.createdAt ?? block.finishedAt ?? Date.now(),
+      sourceContext: {
+        kind: 'block' as const,
+        cardId: block.cardId,
+        blockId: block.id,
+        cwd: block.cwd,
+        command: block.command,
+      },
+      messages: entries.map<AiSessionExportMessage>((entry) => ({
+        id: entry.id,
+        role: entry.role === 'user' ? 'user' : 'assistant',
+        content: entry.text,
+        provider: entry.provider,
+        createdAt: entry.createdAt,
+        state: entry.state,
+      })),
+    };
+
+    setExporting(true);
+    setExportStatus(null);
+    try {
+      const result = await saveAiSessionMarkdownFile(
+        renderAiSessionMarkdown(source),
+        getAiSessionExportFilename(source),
+        {
+          title: t('aiExport.dialogTitle', { defaultValue: 'Export AI session Markdown' }),
+          filterName: t('aiExport.markdownFilter', { defaultValue: 'Markdown' }),
+        },
+      );
+      if (result.kind === 'saved') {
+        setExportStatus('saved');
+      }
+    } catch {
+      setExportStatus('error');
+    } finally {
+      setExporting(false);
+    }
+  }, [block, entries, providerOverride]);
 
   if (!block) return null;
 
@@ -210,7 +265,13 @@ export function BlockInspector({
           )}
           {t('block.explain', { defaultValue: 'Explain with AI' })}
         </button>
-        <AiThreadView entries={entries} onRunCommand={handleRunCommand} />
+        <AiThreadView
+          entries={entries}
+          onRunCommand={handleRunCommand}
+          onExport={handleExport}
+          exporting={exporting}
+          exportStatus={exportStatus}
+        />
       </div>
     </div>
   );

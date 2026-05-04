@@ -97,6 +97,13 @@
     "timedOut": "AI がタイムアウトしました",
     "error": "AI エラー: {{message}}"
   },
+  "aiExport": {
+    "exportMarkdown": "AI Markdown をエクスポート",
+    "dialogTitle": "AI セッション Markdown をエクスポート",
+    "markdownFilter": "Markdown",
+    "saved": "AI セッション Markdown をエクスポートしました。",
+    "failed": "AI セッションのエクスポートに失敗しました。"
+  },
   "bottomBar": {
     "label": "フォーカスモード操作",
     "notifications": "通知",
@@ -169,6 +176,22 @@
     "test": "テスト",
     "docs": "ドキュメント"
   },
+  "autoRestart": {
+    "enable": "自動再起動を有効化",
+    "disable": "自動再起動を無効化",
+    "enabled": "自動再起動が有効です",
+    "enabledShort": "自動",
+    "maxRetries": "自動再起動の最大リトライ数",
+    "pendingShort": "{{delay}} 後に {{attempt}}/{{max}} を再試行",
+    "lastShort": "再試行 {{attempt}}/{{max}}",
+    "limitShort": "上限 {{max}}",
+    "historyLine": "再試行 {{attempt}}/{{max}}: {{status}}",
+    "status": {
+      "pending": "待機中",
+      "started": "開始済み",
+      "cancelled": "キャンセル済み"
+    }
+  },
   "view": {
     "backToGrid": "グリッドへ戻る (⌘/Ctrl+Shift+M)",
     "worktree": "worktree: {{path}}",
@@ -194,6 +217,9 @@
     "processExited": "プロセス終了、コード {{code}}",
     "processCompleted": "プロセス完了",
     "sessionClosed": "セッション終了",
+    "autoRestartLimitTitle": "{{project}} の自動再起動を停止しました",
+    "autoRestartLimitBody": "{{max}} 回のリトライ上限に達しました。",
+    "autoRestartLimitEvent": "自動再起動が {{max}} 回の上限に達しました",
     "errorTitle": "⚠ {{project}} がエラーを報告しました",
     "inputTitle": "• {{project}} は入力待ちです",
     "missingCliTitle": "{{cli}} CLI が見つかりません",
@@ -203,7 +229,8 @@
   },
   "events": {
     "created": "{{project}} で {{type}} を作成",
-    "status": "状態 → {{status}}"
+    "status": "状態 → {{status}}",
+    "autoRestartStarted": "自動再起動の再試行 {{attempt}} を開始"
   },
   "shell": {
     "ptyDesktopOnly": "PTY は Tauri デスクトップアプリ内でのみ利用できます。",

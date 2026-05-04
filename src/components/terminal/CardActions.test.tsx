@@ -90,4 +90,24 @@ describe('CardActions', () => {
     expect(onCopyCwd).toHaveBeenCalledTimes(1);
     expect(surfaceClick).not.toHaveBeenCalled();
   });
+
+  it('invokes AI session export without propagating to the card surface', () => {
+    const onExportAiSession = vi.fn();
+    const surfaceClick = vi.fn();
+    render(
+      <div onClick={surfaceClick}>
+        <CardActions
+          pinned={false}
+          pinFull={false}
+          onCopyCwd={vi.fn()}
+          onOpenDir={vi.fn()}
+          onTogglePin={vi.fn()}
+          onExportAiSession={onExportAiSession}
+        />
+      </div>,
+    );
+    fireEvent.click(screen.getByLabelText('aiExport.exportMarkdown'));
+    expect(onExportAiSession).toHaveBeenCalledTimes(1);
+    expect(surfaceClick).not.toHaveBeenCalled();
+  });
 });
