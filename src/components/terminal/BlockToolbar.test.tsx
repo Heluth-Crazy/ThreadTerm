@@ -50,12 +50,12 @@ describe('BlockToolbar', () => {
     expect(onCopyCommand).toHaveBeenCalledTimes(1);
   });
 
-  it('calls onCopyOutput when copy-output button is clicked', () => {
+  it('calls onCopyOutput when copy result button is clicked', () => {
     const onCopyOutput = vi.fn();
     render(
       <BlockToolbar block={makeBlock()} collapsed={false} onCopyCommand={vi.fn()} onCopyOutput={onCopyOutput} onCopyBoth={vi.fn()} onRerun={vi.fn()} onToggleCollapse={vi.fn()} onExplain={vi.fn()} />,
     );
-    fireEvent.click(screen.getByTestId('block-copy-output'));
+    fireEvent.click(screen.getByTestId('block-copy-result'));
     expect(onCopyOutput).toHaveBeenCalledTimes(1);
   });
 

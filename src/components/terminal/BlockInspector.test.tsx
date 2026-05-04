@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { BlockInspector } from './BlockInspector';
 import type { Block } from '../../types/terminal';
+import { useAiThreadStore } from '../../stores/aiThreadStore';
 
 vi.mock('react-i18next', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-i18next')>();
@@ -15,6 +16,18 @@ vi.mock('react-i18next', async (importOriginal) => {
       i18n: { changeLanguage: () => Promise.resolve() },
     }),
   };
+});
+
+// The Tauri core module is imported transitively via aiExplain.ts — we must
+// mock invoke() so the Explain button test doesn't try to hit a real bridge.
+const invokeMock = vi.fn<(cmd: string, payload: unknown) => Promise<unknown>>();
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (cmd: string, payload: unknown) => invokeMock(cmd, payload),
+}));
+
+beforeEach(() => {
+  invokeMock.mockReset();
+  useAiThreadStore.setState({ threads: {} });
 });
 
 afterEach(() => {
@@ -77,13 +90,18 @@ describe('BlockInspector', () => {
   it('shows a running indicator when block is still running', () => {
     render(
       <BlockInspector
-        block={makeBlock({ state: 'running', finishedAt: undefined, exitCode: undefined, durationMs: undefined })}
+        block={makeBlock({
+          state: 'running',
+          finishedAt: undefined,
+          exitCode: undefined,
+          durationMs: undefined,
+        })}
       />,
     );
     expect(screen.getByTestId('block-inspector-running')).toBeTruthy();
   });
 
-  it('shows the AI explain placeholder button', () => {
+  it('shows the AI explain button', () => {
     render(<BlockInspector block={makeBlock()} />);
     expect(screen.getByTestId('block-inspector-explain')).toBeTruthy();
   });
@@ -119,18 +137,31 @@ describe('BlockInspector', () => {
     expect(screen.queryByTestId('block-inspector-output')).toBeNull();
   });
 
-  // ── Task 2: AI Explain onClick wiring ──────────────────────────────────
-  it('calls onExplain when the explain button is clicked', () => {
-    const onExplain = vi.fn();
-    render(<BlockInspector block={makeBlock()} onExplain={onExplain} />);
+  // ── Stage 6: AI Explain real invocation ────────────────────────────────
+  it('clicking Explain invokes ai_explain and renders the answer entry', async () => {
+    invokeMock.mockImplementation(async (cmd) => {
+      expect(cmd).toBe('ai_explain');
+      return { stdout: 'short answer', stderr: '', exit_code: 0, timed_out: false };
+    });
+    render(<BlockInspector block={makeBlock({ id: 'b1' })} providerOverride="claude" />);
     fireEvent.click(screen.getByTestId('block-inspector-explain'));
-    expect(onExplain).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
+    await waitFor(() => {
+      expect(screen.getByText(/short answer/)).toBeInTheDocument();
+    });
   });
 
-  it('does not error when onExplain is omitted (button still renders)', () => {
-    render(<BlockInspector block={makeBlock()} />);
-    expect(() =>
-      fireEvent.click(screen.getByTestId('block-inspector-explain')),
-    ).not.toThrow();
+  it('renders an error entry when the provider exits non-zero', async () => {
+    invokeMock.mockImplementation(async () => ({
+      stdout: '',
+      stderr: 'boom',
+      exit_code: 1,
+      timed_out: false,
+    }));
+    render(<BlockInspector block={makeBlock({ id: 'b2' })} providerOverride="claude" />);
+    fireEvent.click(screen.getByTestId('block-inspector-explain'));
+    await waitFor(() => {
+      expect(screen.getByText(/AI error:.*boom/)).toBeInTheDocument();
+    });
   });
 });

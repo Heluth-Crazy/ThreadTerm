@@ -90,6 +90,24 @@
     "customCommand": "カスタムコマンド",
     "customCommandDescription": "この AI カードは既定の provider コマンドではなくカスタムコマンドを実行します。"
   },
+  "aiThread": {
+    "empty": "AI に説明を依頼すると、回答がここに表示されます。",
+    "runAsCommand": "コマンドとして実行",
+    "runAsCommandConfirm": "もう一度クリックで実行",
+    "timedOut": "AI がタイムアウトしました",
+    "error": "AI エラー: {{message}}"
+  },
+  "bottomBar": {
+    "label": "フォーカスモード操作",
+    "notifications": "通知",
+    "bookmarks": "ブックマーク",
+    "workflows": "ワークフロー",
+    "fileExplorer": "ファイラー",
+    "richInput": "リッチ入力",
+    "remoteControl": "リモートコントロール",
+    "overflow": "その他",
+    "richInputComingSoon": "リッチ入力はステージ 9 で提供されます。"
+  },
   "aiIntent": {
     "label": "AI の目的",
     "none": "目的なし",

@@ -23,6 +23,7 @@ import type {
   TerminalAiIntent,
   TerminalStatus,
 } from '../types/terminal';
+import type { AiExplainProvider } from '../lib/ai/aiExplain';
 import {
   MAX_BLOCK_OUTPUT_LENGTH,
   MAX_LAST_OUTPUT_LENGTH,
@@ -128,6 +129,15 @@ interface TerminalStore {
   notificationCentreOpen: boolean;
   /** Pending cardId to focus once the app regains focus (system-notification click). */
   pendingFocusCardId: string | null;
+
+  // ─── Stage 6: AI Explain + bottom chip strip settings ────────────────────
+  /** Default provider to use when the focused card is not an AI CLI. */
+  aiExplainDefaultProvider: AiExplainProvider;
+  /** Global toggle for the focus-mode bottom chip strip. Defaults to false
+   *  (i.e. the chip strip is visible). Per-card overrides deferred. */
+  bottomBarHidden: boolean;
+  setAiExplainDefaultProvider: (provider: AiExplainProvider) => void;
+  setBottomBarHidden: (hidden: boolean) => void;
 
   // ─── card actions ────────────────────────────────────────────────────────
   createCard: (options: TerminalCreateOptions) => string;
@@ -243,6 +253,11 @@ export const useTerminalStore = create<TerminalStore>()(
       notifications: [],
       notificationCentreOpen: false,
       pendingFocusCardId: null,
+
+      aiExplainDefaultProvider: 'claude',
+      bottomBarHidden: false,
+      setAiExplainDefaultProvider: (provider) => set({ aiExplainDefaultProvider: provider }),
+      setBottomBarHidden: (hidden) => set({ bottomBarHidden: hidden }),
 
       createCard: (options) => {
         const id = uid();
@@ -818,8 +833,11 @@ export const useTerminalStore = create<TerminalStore>()(
         pinnedCardIds: state.pinnedCardIds,
         notifications: state.notifications,
         notificationCentreOpen: state.notificationCentreOpen,
+        // Stage 6 — persist the global AI provider default + chip strip toggle.
+        aiExplainDefaultProvider: state.aiExplainDefaultProvider,
+        bottomBarHidden: state.bottomBarHidden,
       }),
-      version: 6,
+      version: 7,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         return {
@@ -828,6 +846,9 @@ export const useTerminalStore = create<TerminalStore>()(
           blocks: state.blocks ?? {},
           // v6 — default bookmarks to [] for stores persisted at v≤5.
           bookmarks: state.bookmarks ?? [],
+          // v7 — Stage 6 settings defaults for older snapshots.
+          aiExplainDefaultProvider: state.aiExplainDefaultProvider ?? 'claude',
+          bottomBarHidden: state.bottomBarHidden ?? false,
           cards: state.cards?.map((card) => ({
             ...card,
             status: isTransientStatus(card.status) ? 'idle' : card.status,

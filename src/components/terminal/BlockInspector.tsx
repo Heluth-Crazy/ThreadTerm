@@ -1,23 +1,41 @@
 /**
  * BlockInspector — right-side metadata panel for the selected Command Block.
  *
- * Renders: command, cwd, exit code, duration, state indicator, AI Explain
- * placeholder. Returns null when no block is selected.
- *
- * Stage 4 spec: reuse headlessPreview.ts for plain-text extraction; no
- * new markdown parser.
+ * Stage 6: the Explain button now invokes the real AI CLI via the
+ * `ai_explain` Tauri command. The Q/A thread lives in `aiThreadStore` and
+ * is rendered below the metadata/output sections. "Run as command" on an
+ * AI answer requires a two-step confirm and is delegated to the caller
+ * via `onRunCommand` (the caller is expected to inject the command into
+ * the source card's PTY).
  */
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Cpu, FolderOpen, Hash, Loader2, Sparkles, Timer, X } from 'lucide-react';
 import type { Block } from '../../types/terminal';
+import { explainWithAi, type AiExplainProvider } from '../../lib/ai/aiExplain';
+import { useAiThreadStore, type AiThreadEntry } from '../../stores/aiThreadStore';
+import { AiThreadView } from '../ai/AiThreadView';
+
+/** Stable reference used by the Zustand selector fallback. */
+const EMPTY_ENTRIES: AiThreadEntry[] = [];
 
 export interface BlockInspectorProps {
   block: Block | null;
   /** When provided, renders a close button (X) in the panel header. */
   onClose?: () => void;
-  /** Stage 6 placeholder; Stage 4.3 ships an inert click handler that just
-   *  calls this if provided. Real AI invocation lands in Stage 6. */
-  onExplain?: () => void;
+  /**
+   * Provider to invoke when the user clicks Explain. If omitted, the
+   * component falls back to `'claude'`. The caller (TerminalView) is
+   * expected to resolve this from the focused card's `terminalType` or
+   * the global `aiExplainDefaultProvider` setting.
+   */
+  providerOverride?: AiExplainProvider;
+  /**
+   * Handler invoked when the user confirms "Run as command" in an AI
+   * answer. The caller is responsible for routing this to the block's
+   * source card via `pty_input`.
+   */
+  onRunCommand?: (command: string) => void;
 }
 
 function formatDuration(ms: number): string {
@@ -28,16 +46,79 @@ function formatDuration(ms: number): string {
   return `${m}m ${s}s`;
 }
 
-export function BlockInspector({ block, onClose, onExplain }: BlockInspectorProps) {
+function buildPrompt(block: Block): string {
+  const output = block.output && block.output.length > 0 ? block.output : '(none)';
+  const exitCode =
+    block.exitCode === undefined || block.exitCode === null ? 'n/a' : String(block.exitCode);
+  return [
+    'Explain this command and its output:',
+    '',
+    `Command: ${block.command}`,
+    `Cwd: ${block.cwd}`,
+    `Exit code: ${exitCode}`,
+    'Output:',
+    output,
+  ].join('\n');
+}
+
+export function BlockInspector({
+  block,
+  onClose,
+  providerOverride,
+  onRunCommand,
+}: BlockInspectorProps) {
   const { t } = useTranslation('terminal');
+  const [busy, setBusy] = useState(false);
+
+  // Select only the thread for this block so we don't re-render when
+  // unrelated threads change. The selector must return a stable reference
+  // when entries are absent — a fresh `[]` would cause Zustand to report
+  // a new value on every render and infinite-loop React.
+  const thread = useAiThreadStore((s) => (block ? s.threads[block.id] : undefined));
+  const entries = useMemo(() => thread?.entries ?? EMPTY_ENTRIES, [thread]);
+  const appendQuestion = useAiThreadStore((s) => s.appendQuestion);
+  const appendAnswer = useAiThreadStore((s) => s.appendAnswer);
+  const setEntryState = useAiThreadStore((s) => s.setEntryState);
+
+  const handleExplain = useCallback(async () => {
+    if (!block) return;
+    const provider = providerOverride ?? 'claude';
+    const prompt = buildPrompt(block);
+    const questionId = appendQuestion(block.id, prompt);
+    setBusy(true);
+    try {
+      const result = await explainWithAi({ provider, prompt });
+      setEntryState(block.id, questionId, 'ok');
+      if (result.kind === 'ok') {
+        appendAnswer(block.id, result.text.trim() || '(empty response)', provider, 'ok');
+      } else {
+        appendAnswer(
+          block.id,
+          t('aiThread.error', {
+            message: result.message,
+            defaultValue: `AI error: ${result.message}`,
+          }),
+          provider,
+          'error',
+        );
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [block, providerOverride, appendQuestion, appendAnswer, setEntryState, t]);
+
+  const handleRunCommand = useCallback(
+    (command: string) => {
+      onRunCommand?.(command);
+    },
+    [onRunCommand],
+  );
 
   if (!block) return null;
 
   const isRunning = block.state === 'running';
   const exitCodeLabel =
-    block.exitCode !== undefined && block.exitCode !== null
-      ? String(block.exitCode)
-      : '—';
+    block.exitCode !== undefined && block.exitCode !== null ? String(block.exitCode) : '—';
   const closeLabel = t('common.close', { defaultValue: 'Close' });
 
   return (
@@ -112,20 +193,24 @@ export function BlockInspector({ block, onClose, onExplain }: BlockInspectorProp
         </div>
       )}
 
-      {/* AI Explain placeholder */}
-      <div className="mt-auto pt-2">
+      {/* AI Explain button + thread */}
+      <div className="mt-auto flex flex-col gap-2 pt-2">
         <button
           type="button"
           data-testid="block-inspector-explain"
-          onClick={onExplain}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-          title={t('block.inspector.explainPlaceholder', {
-            defaultValue: 'Explain with AI (coming in Stage 6)',
-          })}
+          onClick={handleExplain}
+          disabled={busy}
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:cursor-wait disabled:opacity-60"
+          title={t('block.explain', { defaultValue: 'Explain with AI' })}
         >
-          <Sparkles className="h-3.5 w-3.5" />
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Sparkles className="h-3.5 w-3.5" />
+          )}
           {t('block.explain', { defaultValue: 'Explain with AI' })}
         </button>
+        <AiThreadView entries={entries} onRunCommand={handleRunCommand} />
       </div>
     </div>
   );

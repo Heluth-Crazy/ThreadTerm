@@ -68,6 +68,16 @@
     "testTitle": "ThreadTerm テスト通知",
     "testBody": "この通知が表示されれば、システム通知経路は動作しています。"
   },
+  "focusMode": {
+    "title": "フォーカスモード",
+    "description": "フォーカスモードのチップバーと、「AI で説明」で使う既定の AI プロバイダーを設定します。",
+    "chipStripLabel": "フォーカスモードのチップバーを表示",
+    "chipStripDescription": "フォーカス中のターミナル下部に固定されるクイックナビゲーション用チップ列です。",
+    "chipStripOn": "表示",
+    "chipStripOff": "非表示",
+    "defaultProviderLabel": "既定の AI 説明プロバイダー",
+    "defaultProviderDescription": "フォーカス中のターミナルが AI CLI ではない場合（shell、npm、docker など）に使用します。"
+  },
   "mobileAccess": {
     "title": "モバイルアクセス",
     "description": "同じ LAN 上のスマートフォンからデスクトップセッションを確認・操作できるローカル HTTP/WebSocket ブリッジを起動します。",
