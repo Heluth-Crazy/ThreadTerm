@@ -100,6 +100,9 @@ leak sensitive or machine-specific state by accident.
 - Prompt/reply entries must remain ordered. Preserve fenced code blocks from AI
   responses; do not attempt to parse, execute, or reformat commands during
   export.
+- Block Inspector export must read the live AI thread at export time. If no AI
+  thread entries exist, export block context and captured block output when
+  available instead of producing an empty Conversation section.
 - AI CLI card export may contain only useful session metadata when no Q/A thread
   exists. Do not invent conversation content.
 - No network request is allowed during export.
@@ -109,14 +112,18 @@ leak sensitive or machine-specific state by accident.
   `writeTextFile`.
 - `writeTextFile` failure -> return an error result and keep the export action
   available.
-- Empty AI thread -> export metadata plus an empty-content note, not fabricated
-  Q/A entries.
+- Empty AI thread on a block with output -> export block command/cwd/exit code
+  plus output content.
+- Empty AI thread on an AI CLI card -> export metadata plus an empty-content
+  note, not fabricated Q/A entries.
 - Non-AI terminal card -> do not show AI Markdown export as an available card
   action.
 
 ### 5. Good/Base/Bad Cases
 - Good: a failed command block with an AI explanation can be saved as Markdown
   with command, provider, timestamps, user prompt, and AI answer in order.
+- Good: a block without an AI explanation but with captured output exports
+  command/cwd/exit metadata plus output text, not an empty Conversation.
 - Base: a Codex or Claude terminal card with a bound session id exports session
   metadata even before a saved Q/A thread exists.
 - Bad: calling `window.fetch`, serializing provider keys, or changing the button
@@ -131,6 +138,8 @@ leak sensitive or machine-specific state by accident.
   `fs:allow-write-text-file`, and the intentionally narrow static fs scope.
 - Component tests for block export action, AI card export action, hidden status
   feedback, and non-AI card omission.
+- Regression tests for exporting immediately after Explain updates the thread,
+  and for block-output fallback when no AI thread exists.
 
 ### 7. Wrong vs Correct
 

@@ -162,6 +162,65 @@ The correct version keeps remote access behind Tauri HTTP capabilities, blocks
 non-HTTPS input before network I/O, enforces timeout / redirect / size limits,
 and previews the exact file action before writing.
 
+### Scenario: Local Directory Reveal via Tauri Command
+
+#### 1. Scope / Trigger
+- Trigger: Any frontend feature that opens a local filesystem directory from the
+  desktop app.
+- Applies to project/card reveal buttons, workflow-directory edit actions,
+  bottom-bar file explorer chips, and any future local directory opener.
+
+#### 2. Signatures
+- Frontend: `openLocalDirectory(path: string): Promise<void>`
+- Backend command: `open_local_directory(path: String) -> Result<(), String>`
+
+#### 3. Contracts
+- Do not use `@tauri-apps/plugin-shell.open(path)` for filesystem paths.
+  `shell:allow-open` is URL-oriented and rejects local paths under its
+  mailto/tel/http(s) scope.
+- The backend command must validate that the path is non-empty, absolute,
+  exists, and is a directory before launching a platform opener.
+- Keep `shell:allow-open` scoped to URLs; do not broaden it to arbitrary local
+  filesystem paths to fix directory reveal.
+- Browser/non-Tauri calls should no-op through the frontend helper.
+
+#### 4. Validation & Error Matrix
+- Empty path -> error.
+- Relative path -> error.
+- Missing path -> error.
+- Existing file path -> error.
+- Existing absolute directory -> launch platform opener or return opener error.
+
+#### 5. Good/Base/Bad Cases
+- Good: edit project preset ensures `<project>/.threadterm/workflows`, then
+  opens that directory through `openLocalDirectory`.
+- Base: card reveal opens the card project directory only in Tauri.
+- Bad: `shell.open('/Users/example/project')`, because the shell plugin rejects
+  local paths and emits scoped argument regex errors.
+
+#### 6. Tests Required
+- Frontend helper tests for Tauri invoke, non-Tauri no-op, and failure
+  propagation.
+- Rust validation tests for empty, relative, missing, file, and valid directory.
+- Component tests or typechecked wiring for each local directory opener callsite.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+import { open } from '@tauri-apps/plugin-shell';
+
+await open(projectPath);
+```
+
+Correct:
+```typescript
+await openLocalDirectory(projectPath);
+```
+
+The correct version separates local filesystem reveal from URL opening and keeps
+the Tauri permission boundary narrow.
+
 ---
 
 ## Testing Requirements
