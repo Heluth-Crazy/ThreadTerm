@@ -150,7 +150,13 @@ export function BlockInspector({
       const result = await explainWithAi({ provider, prompt });
       setEntryState(block.id, questionId, 'ok');
       if (result.kind === 'ok') {
-        appendAnswer(block.id, result.text.trim() || '(empty response)', provider, 'ok');
+        const answer = result.text.trim();
+        appendAnswer(
+          block.id,
+          answer || 'AI error: AI provider returned no answer.',
+          provider,
+          answer ? 'ok' : 'error',
+        );
       } else {
         appendAnswer(
           block.id,

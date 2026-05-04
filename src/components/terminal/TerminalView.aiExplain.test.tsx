@@ -148,17 +148,22 @@ describe('TerminalView — Stage 6 AI wiring', () => {
     });
   });
 
-  it('falls back to aiExplainDefaultProvider when card is shell', async () => {
+  it('falls back to aiExplainDefaultProvider codex when card is shell and surfaces empty output as error', async () => {
     const card = makeCard({ terminalType: 'shell' });
     useTerminalStore.setState((s) => ({
       cards: [...s.cards, card],
-      aiExplainDefaultProvider: 'gemini',
+      aiExplainDefaultProvider: 'codex',
     }));
     seedBlock(card.id);
 
     invokeMock.mockImplementation(async (cmd) => {
       if (cmd === 'ai_explain') {
-        return { stdout: 'ok', stderr: '', exit_code: 0, timed_out: false };
+        return {
+          stdout: '   ',
+          stderr: 'codex returned no final answer',
+          exit_code: 0,
+          timed_out: false,
+        };
       }
       return undefined;
     });
@@ -169,7 +174,11 @@ describe('TerminalView — Stage 6 AI wiring', () => {
     await waitFor(() => {
       const call = invokeMock.mock.calls.find(([cmd]) => cmd === 'ai_explain');
       expect(call).toBeDefined();
-      expect((call?.[1] as { provider: string }).provider).toBe('gemini');
+      expect((call?.[1] as { provider: string }).provider).toBe('codex');
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/AI provider returned no answer/)).toBeInTheDocument();
+      expect(screen.getByText(/codex returned no final answer/)).toBeInTheDocument();
     });
   });
 
