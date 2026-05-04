@@ -49,7 +49,18 @@ export async function explainWithAi({ provider, prompt }: ExplainArgs): Promise<
         timedOut: false,
       };
     }
-    return { kind: 'ok', text: raw.stdout, stderr: raw.stderr };
+    const text = raw.stdout.trim();
+    if (!text) {
+      const stderr = raw.stderr.trim();
+      return {
+        kind: 'error',
+        message: stderr
+          ? `AI provider returned no answer. stderr: ${stderr}`
+          : 'AI provider returned no answer.',
+        timedOut: false,
+      };
+    }
+    return { kind: 'ok', text, stderr: raw.stderr };
   } catch (e) {
     return { kind: 'error', message: e instanceof Error ? e.message : String(e), timedOut: false };
   }

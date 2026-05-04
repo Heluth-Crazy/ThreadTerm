@@ -58,6 +58,14 @@ function makeBlock(overrides: Partial<Block> = {}): Block {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 describe('BlockInspector', () => {
   it('renders null when no block is selected', () => {
     const { container } = render(<BlockInspector block={null} />);
@@ -158,6 +166,29 @@ describe('BlockInspector', () => {
     });
   });
 
+  it('shows a pending entry while the provider request is running', async () => {
+    const pending = deferred<{
+      stdout: string;
+      stderr: string;
+      exit_code: number;
+      timed_out: boolean;
+    }>();
+    invokeMock.mockReturnValue(pending.promise);
+
+    render(<BlockInspector block={makeBlock({ id: 'b-pending' })} providerOverride="codex" />);
+    fireEvent.click(screen.getByTestId('block-inspector-explain'));
+
+    expect(await screen.findByText('…')).toBeInTheDocument();
+    expect(screen.getByTestId('block-inspector-explain')).toBeDisabled();
+
+    pending.resolve({ stdout: 'Codex explanation', stderr: '', exit_code: 0, timed_out: false });
+
+    await waitFor(() => {
+      expect(screen.getByText('Codex explanation')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('block-inspector-explain')).not.toBeDisabled();
+  });
+
   it('renders an error entry when the provider exits non-zero', async () => {
     invokeMock.mockImplementation(async () => ({
       stdout: '',
@@ -169,6 +200,31 @@ describe('BlockInspector', () => {
     fireEvent.click(screen.getByTestId('block-inspector-explain'));
     await waitFor(() => {
       expect(screen.getByText(/AI error:.*boom/)).toBeInTheDocument();
+    });
+  });
+
+  it('renders an actionable error for empty successful stdout and preserves stderr', async () => {
+    invokeMock.mockImplementation(async () => ({
+      stdout: ' \n\t',
+      stderr: 'codex did not emit a final answer',
+      exit_code: 0,
+      timed_out: false,
+    }));
+
+    render(<BlockInspector block={makeBlock({ id: 'b-empty' })} providerOverride="codex" />);
+    fireEvent.click(screen.getByTestId('block-inspector-explain'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/AI error:.*AI provider returned no answer/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/codex did not emit a final answer/)).toBeInTheDocument();
+    expect(screen.queryByText('(empty response)')).toBeNull();
+
+    const entries = useAiThreadStore.getState().threads['b-empty'].entries;
+    expect(entries.at(-1)).toMatchObject({
+      role: 'ai',
+      provider: 'codex',
+      state: 'error',
     });
   });
 
@@ -264,5 +320,41 @@ describe('BlockInspector', () => {
     expect(markdown).toContain('Cannot find module vite');
     expect(markdown).toContain('The build failed because a dependency is missing.');
     expect(markdown).not.toContain('_No prompt or reply content is available for this session._');
+  });
+
+  it('exports the real error thread after Explain returns empty stdout', async () => {
+    invokeMock.mockImplementation(async () => ({
+      stdout: '',
+      stderr: 'codex returned no final message',
+      exit_code: 0,
+      timed_out: false,
+    }));
+
+    render(
+      <BlockInspector
+        block={makeBlock({
+          id: 'b-empty-export',
+          command: 'npm run build',
+          output: 'Build output',
+        })}
+        providerOverride="codex"
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('block-inspector-explain'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/codex returned no final message/)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('ai-thread-export'));
+
+    await waitFor(() => expect(saveAiSessionMarkdownFileMock).toHaveBeenCalledTimes(1));
+    const markdown = saveAiSessionMarkdownFileMock.mock.calls[0][0] as string;
+    expect(markdown).toContain('- Provider: codex');
+    expect(markdown).toContain('state: error');
+    expect(markdown).toContain('AI provider returned no answer');
+    expect(markdown).toContain('codex returned no final message');
+    expect(markdown).not.toContain('(empty response)');
   });
 });
