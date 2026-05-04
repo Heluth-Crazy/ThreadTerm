@@ -313,7 +313,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 - `autoRestart.test.ts`：退避计算、上限触发、用户手动停止能打断重试；
 - `exportAiSession.test.ts`：providerSession → markdown 渲染快照。
 
-**Status**: Not Started
+**Status**: Complete（8.1 Settings 新增 Data 入口；单 JSON settings bundle；白名单导出 theme preference / custom themes / terminal focus prefs / overlay hotkeys / global workflow YAML；导入前 diff 预览 + 选择性应用；敏感字段负测覆盖 bridge token / paired devices / provider key / provider session / audit log 等不外泄。8.2 完成 opt-in 卡片自动重启：每卡开关、最大重试、指数退避、重试历史、达到上限通知，并保证 pending timer 不持久化为可恢复状态。8.3 完成 AI 会话 Markdown 导出：block AI thread inline 导出、AI CLI card 导出、本地 Markdown renderer、Tauri save dialog + writeTextFile 落盘、无网络请求、能力合约测试。）
 
 ---
 
