@@ -30,6 +30,7 @@ import { buildCardPreview } from './cardPreview';
 import { getMissingAiCliName } from './providerSession';
 import { getAbsoluteCursorRow, readBufferRange } from './xtermRegistry';
 import i18n from '../../i18n/config.js';
+import { getPendingAutoRestart } from '../../lib/autoRestart';
 
 // Map Rust SessionState → UI TerminalStatus.
 function mapSessionState(state: SessionState): TerminalStatus {
@@ -89,6 +90,8 @@ export function TerminalEventBridge(): null {
   const replyInputCheckpointRef = useRef<Map<string, number>>(new Map());
   /** Last backend output sequence applied to preview/store per PTY id. */
   const lastOutputSeqRef = useRef<Map<string, number>>(new Map());
+  /** Transient retry timers; persisted card state stores only serializable metadata. */
+  const autoRestartTimersRef = useRef<Map<string, number>>(new Map());
   const bridgeMountedAtRef = useRef(Date.now());
 
   useEffect(() => {
@@ -101,7 +104,61 @@ export function TerminalEventBridge(): null {
     function getCardForPtyId(ptyId: string) {
       return useTerminalStore
         .getState()
-        .cards.find((card) => card.id === ptyId || card.ptyId === ptyId);
+        .cards.find((card) => (card.ptyId || card.id) === ptyId);
+    }
+
+    function clearAutoRestartTimer(cardId: string) {
+      const timer = autoRestartTimersRef.current.get(cardId);
+      if (timer === undefined) return;
+      window.clearTimeout(timer);
+      autoRestartTimersRef.current.delete(cardId);
+    }
+
+    function scheduleAutoRestart(card: TerminalCard, code: number) {
+      const store = useTerminalStore.getState();
+      const decision = store.scheduleCardAutoRestart(card.id, {
+        exitCode: code,
+        now: Date.now(),
+      });
+      if (!decision) return;
+
+      if (decision.kind === 'limit-reached') {
+        clearAutoRestartTimer(card.id);
+        store.pushNotification({
+          cardId: card.id,
+          kind: 'failed',
+          title: i18n.t('terminal:notifications.autoRestartLimitTitle', {
+            project: card.projectName,
+          }),
+          body: i18n.t('terminal:notifications.autoRestartLimitBody', {
+            max: decision.maxRetries,
+          }),
+        });
+        store.markUnread(card.id, true);
+        store.appendEvent(card.id, {
+          kind: 'notification',
+          summary: i18n.t('terminal:notifications.autoRestartLimitEvent', {
+            max: decision.maxRetries,
+          }),
+        });
+        return;
+      }
+
+      if (decision.kind !== 'schedule') return;
+
+      clearAutoRestartTimer(card.id);
+      const { attempt } = decision;
+      const timer = window.setTimeout(() => {
+        autoRestartTimersRef.current.delete(card.id);
+        const latest = useTerminalStore.getState().getCardById(card.id);
+        const pending = getPendingAutoRestart(latest?.autoRestart);
+        if (!latest || !pending || pending.attempt !== attempt.attempt) return;
+        useTerminalStore.getState().startCardAutoRestart(card.id, {
+          attempt: attempt.attempt,
+          now: Date.now(),
+        });
+      }, attempt.delayMs);
+      autoRestartTimersRef.current.set(card.id, timer);
     }
 
     function getReplyInputCheckpoint(card: TerminalCard): number {
@@ -308,6 +365,11 @@ export function TerminalEventBridge(): null {
         else nextStatus = 'idle';
         const store = useTerminalStore.getState();
         store.updateCardStatus(card.id, nextStatus);
+        if (nextStatus === 'completed') {
+          store.scheduleCardAutoRestart(card.id, { exitCode: 0, now: Date.now() });
+        } else if (nextStatus === 'failed' && typeof code === 'number') {
+          scheduleAutoRestart(card, code);
+        }
         store.appendEvent(card.id, {
           kind: 'closed',
           summary:
@@ -426,12 +488,22 @@ export function TerminalEventBridge(): null {
       console.error('[TerminalEventBridge] failed to attach listeners:', err);
     });
 
+    const unsubscribeAutoRestart = useTerminalStore.subscribe((state) => {
+      for (const cardId of autoRestartTimersRef.current.keys()) {
+        const card = state.cards.find((candidate) => candidate.id === cardId);
+        if (!card || !getPendingAutoRestart(card.autoRestart)) {
+          clearAutoRestartTimer(cardId);
+        }
+      }
+    });
+
     return () => {
       cancelled = true;
       window.clearInterval(syncTimer);
       window.removeEventListener('focus', syncWhenVisible);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('storage', onStorage);
+      unsubscribeAutoRestart();
       for (const un of unlisteners) {
         try {
           un();
@@ -443,6 +515,10 @@ export function TerminalEventBridge(): null {
       // Hot-reload / bridge unmount: drop all headless emulators so we
       // don't accumulate duplicate listeners across HMR cycles.
       disposeAllHeadless();
+      for (const timer of autoRestartTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      autoRestartTimersRef.current.clear();
     };
   }, []);
 

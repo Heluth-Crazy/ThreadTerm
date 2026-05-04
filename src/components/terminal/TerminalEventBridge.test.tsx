@@ -42,6 +42,7 @@ const bridgeMocks = vi.hoisted(() => {
         listeners.blockFinished = cb;
         return Promise.resolve(() => {});
       }),
+      kill: vi.fn(() => Promise.resolve()),
     },
   };
 });
@@ -94,6 +95,7 @@ describe('TerminalEventBridge status reconciliation', () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -245,6 +247,132 @@ describe('TerminalEventBridge status reconciliation', () => {
       exitCode: 0,
       durationMs: 500,
     });
+  });
+
+  it('pushes a notification when auto restart reaches its retry limit', async () => {
+    const id = createCard();
+    useTerminalStore.getState().setCardAutoRestartEnabled(id, true);
+    useTerminalStore.getState().setCardAutoRestartMaxRetries(id, 1);
+
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(bridgeMocks.listeners.exit).toBeDefined();
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+
+    act(() => {
+      bridgeMocks.listeners.exit?.({ id, code: 1 });
+    });
+
+    expect(useTerminalStore.getState().getCardById(id)?.autoRestart?.history[0])
+      .toMatchObject({
+        attempt: 1,
+        status: 'pending',
+      });
+
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    const restarted = useTerminalStore.getState().getCardById(id);
+    expect(restarted?.ptyId).not.toBe(id);
+    expect(restarted?.autoRestart?.history[0]).toMatchObject({
+      attempt: 1,
+      status: 'started',
+    });
+
+    act(() => {
+      bridgeMocks.listeners.exit?.({ id: restarted?.ptyId ?? id, code: 1 });
+    });
+
+    const state = useTerminalStore.getState();
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0]?.kind).toBe('failed');
+    expect(state.notifications[0]?.body).toContain('1');
+    expect(state.getCardById(id)?.unread).toBe(true);
+  });
+
+  it('does not auto restart cards unless explicitly enabled', async () => {
+    const id = createCard();
+
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(bridgeMocks.listeners.exit).toBeDefined();
+    });
+
+    vi.useFakeTimers();
+    act(() => {
+      bridgeMocks.listeners.exit?.({ id, code: 1 });
+      vi.advanceTimersByTime(30_000);
+    });
+
+    const card = useTerminalStore.getState().getCardById(id);
+    expect(card?.autoRestart).toBeUndefined();
+    expect(card?.ptyId).toBe(id);
+    expect(useTerminalStore.getState().notifications).toHaveLength(0);
+  });
+
+  it('ignores stale exit events from a previous PTY after auto restart swaps ptyId', async () => {
+    const id = createCard();
+    useTerminalStore.getState().setCardAutoRestartEnabled(id, true);
+    useTerminalStore.getState().setCardAutoRestartMaxRetries(id, 3);
+
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(bridgeMocks.listeners.exit).toBeDefined();
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000_000);
+
+    act(() => {
+      bridgeMocks.listeners.exit?.({ id, code: 1 });
+      vi.advanceTimersByTime(1000);
+    });
+
+    const restarted = useTerminalStore.getState().getCardById(id);
+    expect(restarted?.ptyId).not.toBe(id);
+
+    act(() => {
+      bridgeMocks.listeners.exit?.({ id, code: 1 });
+    });
+
+    const afterStaleExit = useTerminalStore.getState().getCardById(id);
+    expect(afterStaleExit?.autoRestart?.retryCount).toBe(1);
+    expect(afterStaleExit?.autoRestart?.history).toHaveLength(1);
+    expect(afterStaleExit?.status).not.toBe('failed');
+  });
+
+  it('does not start a pending retry after the card is removed', async () => {
+    const id = createCard();
+    useTerminalStore.getState().setCardAutoRestartEnabled(id, true);
+    const startSpy = vi.spyOn(useTerminalStore.getState(), 'startCardAutoRestart');
+
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(bridgeMocks.listeners.exit).toBeDefined();
+    });
+
+    vi.useFakeTimers();
+    act(() => {
+      bridgeMocks.listeners.exit?.({ id, code: 1 });
+    });
+    expect(useTerminalStore.getState().getCardById(id)?.autoRestart?.history[0])
+      .toMatchObject({ status: 'pending' });
+
+    act(() => {
+      useTerminalStore.getState().removeCard(id);
+      vi.advanceTimersByTime(1000);
+    });
+
+    expect(startSpy).not.toHaveBeenCalled();
+    expect(useTerminalStore.getState().getCardById(id)).toBeUndefined();
   });
 
   it('ignores duplicate or stale pty output seq values', async () => {

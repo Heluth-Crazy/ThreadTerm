@@ -6,6 +6,7 @@ import {
 } from './providerSession';
 import { getTerminalTypeMeta } from './terminalTypeMeta';
 import { CardStatusBadge } from './CardStatusBadge';
+import { AutoRestartStatus } from './AutoRestartStatus';
 
 export interface CardHeaderProps {
   card: TerminalCardType;
@@ -56,6 +57,7 @@ export function CardHeader({ card, aiSessionBadge }: CardHeaderProps) {
           </div>
         )}
       </div>
+      <AutoRestartStatus card={card} compact />
       <CardStatusBadge status={card.status} />
     </div>
   );

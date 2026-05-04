@@ -30,6 +30,14 @@ import {
   MAX_NOTIFICATIONS,
   MAX_TIMELINE_EVENTS,
 } from '../types/terminal';
+import {
+  cancelPendingAutoRestart,
+  clampAutoRestartMaxRetries,
+  createAutoRestartDecision,
+  markAutoRestartStarted,
+  normalizeAutoRestartConfig,
+  type AutoRestartDecision,
+} from '../lib/autoRestart';
 import i18n from '../i18n/config.js';
 import { isTauriEnv, pty } from '../lib/tauri-bridge';
 
@@ -102,6 +110,15 @@ function isTransientStatus(status: TerminalStatus): boolean {
   return status === 'running' || status === 'waiting';
 }
 
+function prepareAutoRestartForPersistence(card: TerminalCard): TerminalCard['autoRestart'] {
+  if (!card.autoRestart) return undefined;
+  const normalized = normalizeAutoRestartConfig(card.autoRestart);
+  return {
+    ...cancelPendingAutoRestart(normalized, Date.now()),
+    enabled: normalized.enabled,
+  };
+}
+
 // ── store shape ──────────────────────────────────────────────────────────────
 
 /** Maximum number of user-pinned cards eligible for the global selector overlay. */
@@ -144,6 +161,17 @@ interface TerminalStore {
   removeCard: (id: string) => void;
   updateCardOutput: (id: string, chunk: string) => void;
   updateCardStatus: (id: string, status: TerminalStatus) => void;
+  setCardAutoRestartEnabled: (id: string, enabled: boolean) => void;
+  setCardAutoRestartMaxRetries: (id: string, maxRetries: number) => void;
+  scheduleCardAutoRestart: (
+    id: string,
+    input: { exitCode?: number | null; now?: number },
+  ) => AutoRestartDecision | null;
+  startCardAutoRestart: (
+    id: string,
+    input: { attempt: number; now?: number },
+  ) => string | null;
+  cancelCardAutoRestart: (id: string, now?: number) => void;
   updateCardReplyPreview: (id: string, preview: string) => void;
   appendEvent: (id: string, event: Omit<TerminalEvent, 'at'> & { at?: number }) => void;
   incrementMessageCount: (id: string) => void;
@@ -383,6 +411,106 @@ export const useTerminalStore = create<TerminalStore>()(
               }),
             },
           );
+          return { cards };
+        }),
+
+      setCardAutoRestartEnabled: (id, enabled) =>
+        set((state) => {
+          const idx = state.cards.findIndex((c) => c.id === id);
+          if (idx === -1) return state;
+          const cards = [...state.cards];
+          const existing = cards[idx];
+          const current = normalizeAutoRestartConfig(existing.autoRestart);
+          const next = enabled
+            ? { ...current, enabled: true }
+            : { ...cancelPendingAutoRestart(current, Date.now()), enabled: false };
+          cards[idx] = { ...existing, autoRestart: next };
+          return { cards };
+        }),
+
+      setCardAutoRestartMaxRetries: (id, maxRetries) =>
+        set((state) => {
+          const idx = state.cards.findIndex((c) => c.id === id);
+          if (idx === -1) return state;
+          const cards = [...state.cards];
+          const existing = cards[idx];
+          cards[idx] = {
+            ...existing,
+            autoRestart: {
+              ...normalizeAutoRestartConfig(existing.autoRestart),
+              maxRetries: clampAutoRestartMaxRetries(maxRetries),
+            },
+          };
+          return { cards };
+        }),
+
+      scheduleCardAutoRestart: (id, input) => {
+        const card = get().cards.find((candidate) => candidate.id === id);
+        if (!card) return null;
+        const decision = createAutoRestartDecision(card.autoRestart, {
+          exitCode: input.exitCode,
+          now: input.now ?? Date.now(),
+        });
+        if (decision.kind === 'ignored' && !card.autoRestart && !decision.config.enabled) {
+          return decision;
+        }
+        set((state) => {
+          const idx = state.cards.findIndex((candidate) => candidate.id === id);
+          if (idx === -1) return state;
+          const cards = [...state.cards];
+          cards[idx] = {
+            ...cards[idx],
+            autoRestart: decision.config,
+          };
+          return { cards };
+        });
+        return decision;
+      },
+
+      startCardAutoRestart: (id, input) => {
+        const now = input.now ?? Date.now();
+        const nextPtyId = `${id}-retry-${input.attempt}-${now.toString(36)}`;
+        let started = false;
+        set((state) => {
+          const idx = state.cards.findIndex((candidate) => candidate.id === id);
+          if (idx === -1) return state;
+          const cards = [...state.cards];
+          const existing = cards[idx];
+          cards[idx] = appendEvent(
+            {
+              ...existing,
+              ptyId: nextPtyId,
+              status: 'idle',
+              lastActivity: now,
+              autoRestart: markAutoRestartStarted(existing.autoRestart, {
+                attempt: input.attempt,
+                now,
+              }),
+            },
+            {
+              at: now,
+              kind: 'status',
+              summary: i18n.t('terminal:events.autoRestartStarted', {
+                attempt: input.attempt,
+              }),
+            },
+          );
+          started = true;
+          return { cards };
+        });
+        return started ? nextPtyId : null;
+      },
+
+      cancelCardAutoRestart: (id, now = Date.now()) =>
+        set((state) => {
+          const idx = state.cards.findIndex((candidate) => candidate.id === id);
+          if (idx === -1) return state;
+          const cards = [...state.cards];
+          const existing = cards[idx];
+          cards[idx] = {
+            ...existing,
+            autoRestart: cancelPendingAutoRestart(existing.autoRestart, now),
+          };
           return { cards };
         }),
 
@@ -824,6 +952,7 @@ export const useTerminalStore = create<TerminalStore>()(
         cards: state.cards.map((card) => ({
           ...card,
           status: isTransientStatus(card.status) ? 'idle' : card.status,
+          autoRestart: prepareAutoRestartForPersistence(card),
         })),
         blocks: state.blocks ?? {},
         bookmarks: state.bookmarks ?? [],
@@ -837,7 +966,7 @@ export const useTerminalStore = create<TerminalStore>()(
         aiExplainDefaultProvider: state.aiExplainDefaultProvider,
         bottomBarHidden: state.bottomBarHidden,
       }),
-      version: 7,
+      version: 8,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         return {
@@ -855,6 +984,7 @@ export const useTerminalStore = create<TerminalStore>()(
             providerSessionState:
               card.providerSessionState ??
               (isProviderSessionType(card.terminalType) ? 'unbound' : undefined),
+            autoRestart: prepareAutoRestartForPersistence(card),
           })),
         };
       },

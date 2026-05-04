@@ -92,6 +92,42 @@ export interface Bookmark {
   label?: string;
 }
 
+// ── Card auto restart (Stage 8.2) ────────────────────────────────────────────
+
+export type TerminalAutoRestartAttemptStatus = 'pending' | 'started' | 'cancelled';
+
+export interface TerminalAutoRestartAttempt {
+  /** 1-based retry attempt number within the current failure streak. */
+  attempt: number;
+  /** Exit code that triggered this retry, when the backend provided one. */
+  exitCode?: number;
+  /** Epoch ms when the failed exit was observed. */
+  failedAt: number;
+  /** Epoch ms when this retry was scheduled. */
+  scheduledAt: number;
+  /** Deterministic backoff delay. */
+  delayMs: number;
+  /** Epoch ms when the retry should launch. */
+  runAt: number;
+  status: TerminalAutoRestartAttemptStatus;
+  /** Epoch ms when ThreadTerm launched the retry. */
+  startedAt?: number;
+  /** Epoch ms when the user cancelled a pending retry. */
+  cancelledAt?: number;
+}
+
+export interface TerminalAutoRestartConfig {
+  enabled: boolean;
+  /** Max retry attempts for one failure streak. */
+  maxRetries: number;
+  /** Attempts already scheduled or started for the current failure streak. */
+  retryCount: number;
+  history: TerminalAutoRestartAttempt[];
+  /** Epoch ms when the latest failure exceeded `maxRetries`. */
+  limitReachedAt?: number;
+  lastExitCode?: number;
+}
+
 // ── Card ─────────────────────────────────────────────────────────────────────
 
 export interface TerminalCard {
@@ -130,6 +166,8 @@ export interface TerminalCard {
   events: TerminalEvent[];
   /** True if there's activity the user hasn't seen since last focus. */
   unread: boolean;
+  /** Stage 8.2: opt-in recovery config. Missing means default off. */
+  autoRestart?: TerminalAutoRestartConfig;
 }
 
 // ── Notifications ────────────────────────────────────────────────────────────

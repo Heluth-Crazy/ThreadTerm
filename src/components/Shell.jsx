@@ -95,6 +95,7 @@ function Shell({
   preservePtyOnUnmount = false,
   replayRecentOutput = false,
   suppressInitialCommandWhenPtyExists = false,
+  autoReconnectOnExit = true,
   onInitialCommandSent,
   onUserSubmit,
 }) {
@@ -128,6 +129,7 @@ function Shell({
   const onUserSubmitRef = useRef(onUserSubmit);
   const activeRef = useRef(active);
   const preservePtyOnUnmountRef = useRef(preservePtyOnUnmount);
+  const autoReconnectOnExitRef = useRef(autoReconnectOnExit);
   const suppressInitialCommandWhenPtyExistsRef = useRef(suppressInitialCommandWhenPtyExists);
   const isConnectingRef = useRef(false);
   const isConnectedRef = useRef(false);
@@ -147,6 +149,7 @@ function Shell({
     onUserSubmitRef.current = onUserSubmit;
     activeRef.current = active;
     preservePtyOnUnmountRef.current = preservePtyOnUnmount;
+    autoReconnectOnExitRef.current = autoReconnectOnExit;
     suppressInitialCommandWhenPtyExistsRef.current = suppressInitialCommandWhenPtyExists;
   });
 
@@ -353,7 +356,9 @@ function Shell({
             terminal.current.clear();
             terminal.current.write('\x1b[2J\x1b[H');
           }
-          scheduleReconnect(connectPty);
+          if (autoReconnectOnExitRef.current) {
+            scheduleReconnect(connectPty);
+          }
         });
 
         unlistenOutputRef.current = unlistenOut;

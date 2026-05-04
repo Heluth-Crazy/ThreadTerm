@@ -178,6 +178,31 @@ describe('terminalStore — card lifecycle', () => {
 
     expect(useTerminalStore.getState().blocks[id]).toBeUndefined();
   });
+
+  it('persists pending auto restart attempts as cancelled metadata only', () => {
+    localStorage.removeItem('threadterm-terminal-store');
+    const s = useTerminalStore.getState();
+    const id = s.createCard({
+      projectName: 'foo',
+      projectPath: '/tmp/foo',
+      terminalType: 'shell',
+    });
+    s.setCardAutoRestartEnabled(id, true);
+    s.scheduleCardAutoRestart(id, { exitCode: 1, now: 1000 });
+
+    const inMemory = useTerminalStore.getState().getCardById(id)?.autoRestart;
+    expect(inMemory?.history[0]?.status).toBe('pending');
+
+    const raw = localStorage.getItem('threadterm-terminal-store');
+    expect(raw).toBeTruthy();
+    const persisted = JSON.parse(raw ?? '{}') as {
+      state?: { cards?: Array<{ id: string; autoRestart?: { history?: Array<{ status: string }> } }> };
+    };
+    const persistedCard = persisted.state?.cards?.find((card) => card.id === id);
+
+    expect(persistedCard?.autoRestart?.history?.[0]?.status).toBe('cancelled');
+    expect(JSON.stringify(persistedCard?.autoRestart)).not.toContain('Timeout');
+  });
 });
 
 describe('terminalStore command blocks', () => {

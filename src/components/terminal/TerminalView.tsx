@@ -38,6 +38,9 @@ import { prevFailedBlock, nextFailedBlock } from './failedBlockNav';
 import { BottomActionBar } from '../bottombar/BottomActionBar';
 import { buildChipRegistry, type ChipId } from '../bottombar/chipRegistry';
 import { open as openInShell } from '@tauri-apps/plugin-shell';
+import { AutoRestartControls } from './AutoRestartControls';
+import { AutoRestartStatus } from './AutoRestartStatus';
+import { normalizeAutoRestartConfig } from '../../lib/autoRestart';
 
 interface TerminalViewProps {
   card: TerminalCard;
@@ -76,6 +79,8 @@ export function TerminalView({
   const aiExplainDefaultProvider = useTerminalStore((s) => s.aiExplainDefaultProvider);
   const bottomBarHidden = useTerminalStore((s) => s.bottomBarHidden);
   const addBookmark = useTerminalStore((s) => s.addBookmark);
+  const setCardAutoRestartEnabled = useTerminalStore((s) => s.setCardAutoRestartEnabled);
+  const setCardAutoRestartMaxRetries = useTerminalStore((s) => s.setCardAutoRestartMaxRetries);
 
   const [inspectorOpen, setInspectorOpen] = useState(false);
 
@@ -88,6 +93,7 @@ export function TerminalView({
   const statusInfo = getStatusMeta(card.status);
   const StatusIcon = statusInfo.Icon;
   const TypeIcon = typeMeta.Icon;
+  const autoRestart = normalizeAutoRestartConfig(card.autoRestart);
   const paneId = card.ptyId || card.id;
   const aiSessionBadge = useMemo(
     () => getAiCliSessionBadge(card),
@@ -358,6 +364,17 @@ export function TerminalView({
               </span>
             </span>
           )}
+          <AutoRestartControls
+            enabled={autoRestart.enabled}
+            maxRetries={autoRestart.maxRetries}
+            onToggle={() =>
+              setCardAutoRestartEnabled(card.id, !autoRestart.enabled)
+            }
+            onMaxRetriesChange={(value) =>
+              setCardAutoRestartMaxRetries(card.id, value)
+            }
+          />
+          <AutoRestartStatus card={card} compact />
           <span
             className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-medium ${statusInfo.chip}`}
           >
@@ -428,6 +445,7 @@ export function TerminalView({
             preservePtyOnUnmount={true}
             replayRecentOutput={true}
             suppressInitialCommandWhenPtyExists={true}
+            autoReconnectOnExit={false}
             onInitialCommandSent={handleInitialCommandSent}
             onUserSubmit={recordSubmit}
             onProcessComplete={undefined}
