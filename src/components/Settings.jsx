@@ -3,6 +3,7 @@ import {
   Check,
   Download,
   ExternalLink,
+  FileJson,
   Keyboard,
   Monitor,
   Moon,
@@ -22,8 +23,9 @@ import { FocusModeSettings } from './settings/FocusModeSettings';
 import { MobileAccessSettings } from './settings/MobileAccessSettings';
 import { NotificationSettings } from './settings/NotificationSettings';
 import OverlayHotkeysSettings from './settings/OverlayHotkeysSettings';
+import { SettingsDataIO } from './settings/SettingsDataIO';
 
-const TABS = ['appearance', 'shortcuts'];
+const TABS = ['appearance', 'shortcuts', 'data'];
 
 function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedded = false }) {
   const {
@@ -172,6 +174,14 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
             >
               <Keyboard className="h-4 w-4" />
               {t('mainTabs.shortcuts', 'Shortcuts')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('data')}
+              className={tabButtonClassName('data')}
+            >
+              <FileJson className="h-4 w-4" />
+              {t('mainTabs.data', 'Data')}
             </button>
           </div>
         </div>
@@ -429,6 +439,12 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                 <NotificationSettings />
                 <OverlayHotkeysSettings />
                 <KeyboardShortcutsSettings />
+              </div>
+            )}
+
+            {activeTab === 'data' && (
+              <div className="space-y-6">
+                <SettingsDataIO />
               </div>
             )}
           </div>

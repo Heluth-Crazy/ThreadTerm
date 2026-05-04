@@ -2,7 +2,8 @@
   "title": "设置",
   "mainTabs": {
     "appearance": "外观",
-    "shortcuts": "快捷键"
+    "shortcuts": "快捷键",
+    "data": "数据"
   },
   "appearanceSettings": {
     "darkMode": {
@@ -56,6 +57,41 @@
     }
   },
   "close": "关闭设置",
+  "dataIO": {
+    "title": "设置导入与导出",
+    "description": "用一个安全 JSON 文件迁移 ThreadTerm 偏好、自定义主题、悬浮快捷键和全局工作流。",
+    "exportJson": "导出设置 JSON",
+    "exporting": "导出中...",
+    "importJson": "导入设置 JSON",
+    "applyImport": "应用所选",
+    "applying": "应用中...",
+    "clearPreview": "清除预览",
+    "previewTitle": "导入预览",
+    "previewDescription": "选择哪些部分覆盖当前设置。",
+    "current": "当前",
+    "incoming": "导入",
+    "desktopWorkflowHint": "全局工作流文件只会在桌面端包含。桥接 token、配对设备、审计日志、AI provider key、卡片和终端输出永远不会导出。",
+    "sections": {
+      "theme": "主题偏好",
+      "customThemes": "自定义主题",
+      "terminal": "终端偏好",
+      "overlay": "悬浮快捷键",
+      "workflows": "全局工作流"
+    },
+    "statusLabels": {
+      "added": "新增",
+      "changed": "有变化",
+      "unchanged": "无变化"
+    },
+    "status": {
+      "exported": "设置 JSON 已导出。",
+      "exportFailed": "设置导出失败：{{message}}",
+      "importReady": "设置导入预览已准备好。",
+      "importFailed": "设置导入失败：{{message}}",
+      "importApplied": "已导入所选设置。",
+      "applyFailed": "无法应用设置导入：{{message}}"
+    }
+  },
   "notifications": {
     "title": "系统通知",
     "description": "ThreadTerm 会在会话需要输入、发生错误或回复完成时发送系统通知。",
