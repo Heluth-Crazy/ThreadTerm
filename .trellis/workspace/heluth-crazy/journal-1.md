@@ -19,7 +19,14 @@ Brainstormed Stage 7 (Warp YAML schema parser, palette run-workflow, ProjectSide
 
 ### Main Changes
 
-(Add details)
+- Fixed `explainWithAi` so zero-exit providers with empty or whitespace stdout
+  return an error instead of a fake successful answer.
+- Updated Block Inspector behavior/tests for pending state, Codex/default-provider
+  empty output, and export after an error thread.
+- Added `.trellis/spec/frontend/ai-explain.md` documenting the response
+  contract for future implementation work.
+- Preserved unrelated AI supervisor WIP in `stash@{0}` as
+  `wip: ai supervisor rules`.
 
 ### Git Commits
 
@@ -31,7 +38,11 @@ Brainstormed Stage 7 (Warp YAML schema parser, palette run-workflow, ProjectSide
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npx vitest run src/lib/ai/aiExplain.test.ts src/components/terminal/BlockInspector.test.tsx src/components/terminal/TerminalView.aiExplain.test.tsx`
+- [OK] `npm run typecheck`
+- [OK] `git diff --check`
+- [OK] `npx gitnexus detect-changes` completed with medium risk for the
+  BlockInspector flow.
 
 ### Status
 
@@ -64,6 +75,41 @@ Completed Stage 8: settings bundle import/export, opt-in terminal card auto rest
 | `d28cfc8` | (see git log) |
 | `87e4e94` | (see git log) |
 | `efc7cd6` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 3: Fix Block Inspector AI explain empty response
+
+**Date**: 2026-05-05
+**Task**: Fix Block Inspector AI explain empty response
+**Branch**: `main`
+
+### Summary
+
+Fixed Block Inspector AI explain handling so Codex/default-provider empty stdout becomes an actionable error instead of a fake empty success, added tests and recorded the frontend AI explain response contract. Refreshed GitNexus index metadata and stashed unrelated supervisor WIP.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cf299ce` | (see git log) |
+| `b4a429f` | (see git log) |
+| `746d703` | (see git log) |
 
 ### Testing
 
