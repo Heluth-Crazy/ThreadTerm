@@ -1,0 +1,22 @@
+{
+  "alertTitle": {
+    "sudo-password": "sudo パスワードを要求",
+    "yes-no-bracket": "確認が必要 [y/N]",
+    "yes-no-paren": "確認が必要 (yes/no)",
+    "press-any-key": "キー入力待ち",
+    "git-credentials": "Git 認証情報を要求",
+    "ai-proceed": "AI アシスタントが質問しています",
+    "ai-apply-diff": "AI が変更を適用したい",
+    "arrow-select": "選択してください"
+  },
+  "alertBody": {
+    "sudo-password": "ピン留めカードに sudo パスワードが必要です。{{sampleText}}",
+    "yes-no-bracket": "{{sampleText}}",
+    "yes-no-paren": "{{sampleText}}",
+    "press-any-key": "ピン留めカードが一時停止中です。{{sampleText}}",
+    "git-credentials": "ピン留めカードが認証情報を要求しています。{{sampleText}}",
+    "ai-proceed": "{{sampleText}}",
+    "ai-apply-diff": "{{sampleText}}",
+    "arrow-select": "ピン留めカードでメニューが開いています。{{sampleText}}"
+  }
+}

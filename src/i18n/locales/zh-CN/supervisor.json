@@ -1,0 +1,22 @@
+{
+  "alertTitle": {
+    "sudo-password": "请求 sudo 密码",
+    "yes-no-bracket": "需要确认 [y/N]",
+    "yes-no-paren": "需要确认 (yes/no)",
+    "press-any-key": "等待按键",
+    "git-credentials": "请求 Git 凭据",
+    "ai-proceed": "AI 助手在询问",
+    "ai-apply-diff": "AI 想应用变更",
+    "arrow-select": "请做出选择"
+  },
+  "alertBody": {
+    "sudo-password": "固定卡片需要 sudo 密码。{{sampleText}}",
+    "yes-no-bracket": "{{sampleText}}",
+    "yes-no-paren": "{{sampleText}}",
+    "press-any-key": "固定卡片已暂停。{{sampleText}}",
+    "git-credentials": "固定卡片正在请求凭据。{{sampleText}}",
+    "ai-proceed": "{{sampleText}}",
+    "ai-apply-diff": "{{sampleText}}",
+    "arrow-select": "固定卡片打开了菜单。{{sampleText}}"
+  }
+}

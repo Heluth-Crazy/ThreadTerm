@@ -3,6 +3,7 @@
   "mainTabs": {
     "appearance": "外観",
     "shortcuts": "ショートカット",
+    "supervisor": "スーパーバイザー",
     "data": "データ"
   },
   "appearanceSettings": {
@@ -153,6 +154,39 @@
     "language": "言語",
     "languageLabel": "言語",
     "languageDescription": "ThreadTerm の表示言語を選択します。"
+  },
+  "supervisorSettings": {
+    "enableLabel": "監視を有効化",
+    "enableHint": "ピン留めカードのプロンプトを監視します。",
+    "statusOn": "オン",
+    "statusOff": "オフ",
+    "howItWorksTitle": "仕組み",
+    "howItWorksBody": "ピン留めしたカードが sudo プロンプト、[y/N] 確認、AI からの質問、または矢印選択メニューで停止すると、ThreadTerm が通知を発します。通知をクリックするとそのカードにフォーカスし、ターミナルから返信できます。",
+    "telemetryTitle": "このセッションのテレメトリ",
+    "telemetryTriggered": "トリガー",
+    "telemetryClicked": "クリック",
+    "telemetryActed": "60 秒以内に対応",
+    "telemetryReset": "統計をリセット",
+    "alertTitle": {
+      "sudo-password": "sudo パスワードを要求",
+      "yes-no-bracket": "確認が必要 [y/N]",
+      "yes-no-paren": "確認が必要 (yes/no)",
+      "press-any-key": "キー入力待ち",
+      "git-credentials": "Git 認証情報を要求",
+      "ai-proceed": "AI アシスタントが質問しています",
+      "ai-apply-diff": "AI が変更を適用したい",
+      "arrow-select": "選択してください"
+    },
+    "alertBody": {
+      "sudo-password": "{{cardLabel}} に sudo パスワードが必要です。{{sampleText}}",
+      "yes-no-bracket": "{{cardLabel}}: {{sampleText}}",
+      "yes-no-paren": "{{cardLabel}}: {{sampleText}}",
+      "press-any-key": "{{cardLabel}} が一時停止中です。{{sampleText}}",
+      "git-credentials": "{{cardLabel}} が認証情報を要求しています。{{sampleText}}",
+      "ai-proceed": "{{cardLabel}}: {{sampleText}}",
+      "ai-apply-diff": "{{cardLabel}}: {{sampleText}}",
+      "arrow-select": "{{cardLabel}} でメニューが開いています。{{sampleText}}"
+    }
   },
   "commandBlocks": {
     "title": "コマンドブロック",

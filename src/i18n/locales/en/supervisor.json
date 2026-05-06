@@ -1,0 +1,22 @@
+{
+  "alertTitle": {
+    "sudo-password": "Sudo password requested",
+    "yes-no-bracket": "Confirmation needed [y/N]",
+    "yes-no-paren": "Confirmation needed (yes/no)",
+    "press-any-key": "Waiting for keypress",
+    "git-credentials": "Git credentials requested",
+    "ai-proceed": "AI assistant is asking",
+    "ai-apply-diff": "AI wants to apply changes",
+    "arrow-select": "Make a selection"
+  },
+  "alertBody": {
+    "sudo-password": "Pinned card needs a sudo password. {{sampleText}}",
+    "yes-no-bracket": "{{sampleText}}",
+    "yes-no-paren": "{{sampleText}}",
+    "press-any-key": "Pinned card is paused. {{sampleText}}",
+    "git-credentials": "Pinned card is requesting credentials. {{sampleText}}",
+    "ai-proceed": "{{sampleText}}",
+    "ai-apply-diff": "{{sampleText}}",
+    "arrow-select": "Pinned card has a menu open. {{sampleText}}"
+  }
+}
