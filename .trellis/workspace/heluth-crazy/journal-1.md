@@ -122,3 +122,39 @@ Fixed Block Inspector AI explain handling so Codex/default-provider empty stdout
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: AI Supervisor v0.1 — rules-based attention notifier
+
+**Date**: 2026-05-06
+**Task**: AI Supervisor v0.1 — rules-based attention notifier
+**Branch**: `main`
+
+### Summary
+
+Shipped AI Supervisor v0.1: Rust singleton matches 8 regex rules against pinned-card pty://block-finished output and emits supervisor://alert with 60s per-(card,rule) cooldown. Frontend lib/supervisor adds a non-persist Zustand slice for in-memory alerts plus triggered/clicked/acted telemetry, useSupervisor hook mirrors the master switch and pinned-card set into supervisor_enable, and a presentational SupervisorSettings tab exposes a toggle, three counters, and a Reset button. terminalStore bumped to v9 with a default-OFF migration. notificationTarget became the single funnel that credits clicks via recordClickByCardId — the trellis-check sub-agent caught that the original wiring left clickedCount stuck at zero and fixed it. i18n parity across en/zh-CN/ja/ko (64 alert keys + UI keys). Captured the cross-layer contract in frontend/supervisor.md, plus split-by-persistence convention in state-management, byte-equal Rust↔TS string + i18n key drift gotchas in cross-layer guide, and single-funnel side-effect pattern in code-reuse guide. Verification: typecheck, vitest 422/422, cargo test 77/77, vite build all green.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1045c8d` | (see git log) |
+| `b1f7392` | (see git log) |
+| `dfecd22` | (see git log) |
+| `6e4651d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
