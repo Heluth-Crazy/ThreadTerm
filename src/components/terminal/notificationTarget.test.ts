@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useOverlayStore } from '../../stores/overlayStore';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { useSupervisorStore } from '../../lib/supervisor/supervisorStore';
 import { openNotificationTarget } from './notificationTarget';
 
 function resetStores() {
@@ -25,6 +26,10 @@ function resetStores() {
     floatWindowBounds: null,
     hotkeyA: 'CmdOrCtrl+Shift+Space',
     hotkeyB: 'CmdOrCtrl+Shift+O',
+  });
+  useSupervisorStore.setState({
+    alerts: [],
+    telemetry: { triggered: 0, clicked: 0, acted: 0 },
   });
 }
 
@@ -60,5 +65,29 @@ describe('openNotificationTarget', () => {
 
   it('returns false for stale notification targets', () => {
     expect(openNotificationTarget('missing-card')).toBe(false);
+  });
+
+  it('credits a supervisor click telemetry when an alert exists for the card', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'repo', projectPath: '/repo', terminalType: 'codex' });
+    s.pushNotification({ cardId: id, kind: 'attention', title: 'sudo prompt', body: '' });
+    useSupervisorStore.getState().ingestAlert({
+      cardId: id,
+      ruleId: 'sudo-password',
+      sampleText: '[sudo] password for x:',
+      ts: Date.now(),
+    });
+
+    expect(openNotificationTarget(id)).toBe(true);
+    expect(useSupervisorStore.getState().telemetry.clicked).toBe(1);
+  });
+
+  it('does not credit a click when no supervisor alert exists for the card', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'repo', projectPath: '/repo', terminalType: 'codex' });
+    s.pushNotification({ cardId: id, kind: 'waiting', title: 'plain', body: '' });
+
+    expect(openNotificationTarget(id)).toBe(true);
+    expect(useSupervisorStore.getState().telemetry.clicked).toBe(0);
   });
 });

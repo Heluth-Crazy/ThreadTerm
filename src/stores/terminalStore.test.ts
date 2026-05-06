@@ -15,6 +15,7 @@ function resetStore() {
     notifications: [],
     notificationCentreOpen: false,
     pendingFocusCardId: null,
+    supervisorEnabled: false,
   });
 }
 
@@ -652,5 +653,67 @@ describe('terminalStore — bookmarks', () => {
     const after = useTerminalStore.getState().bookmarks;
     expect(after).toHaveLength(1);
     expect(after[0].blockId).toBe('blk-2');
+  });
+});
+
+describe('terminalStore — AI Supervisor master switch (PRD D3)', () => {
+  it('defaults supervisorEnabled to false', () => {
+    expect(useTerminalStore.getState().supervisorEnabled).toBe(false);
+  });
+
+  it('setSupervisorEnabled toggles the master switch', () => {
+    const setSupervisorEnabled = useTerminalStore.getState().setSupervisorEnabled;
+    setSupervisorEnabled(true);
+    expect(useTerminalStore.getState().supervisorEnabled).toBe(true);
+    setSupervisorEnabled(false);
+    expect(useTerminalStore.getState().supervisorEnabled).toBe(false);
+  });
+
+  it('v8 → v9 migration defaults supervisorEnabled to false', async () => {
+    // Simulate a v8 persisted snapshot (no supervisorEnabled field).
+    const v8Snapshot = {
+      state: {
+        cards: [],
+        blocks: {},
+        bookmarks: [],
+        focusedCardId: null,
+        lastActiveCardId: null,
+        selectedProjectPath: null,
+        pinnedCardIds: [],
+        notifications: [],
+        notificationCentreOpen: false,
+        aiExplainDefaultProvider: 'claude',
+        bottomBarHidden: false,
+      },
+      version: 8,
+    };
+    localStorage.setItem('threadterm-terminal-store', JSON.stringify(v8Snapshot));
+    await useTerminalStore.persist.rehydrate();
+    expect(useTerminalStore.getState().supervisorEnabled).toBe(false);
+  });
+
+  it('v9 snapshot with supervisorEnabled=true is preserved', async () => {
+    const v9Snapshot = {
+      state: {
+        cards: [],
+        blocks: {},
+        bookmarks: [],
+        focusedCardId: null,
+        lastActiveCardId: null,
+        selectedProjectPath: null,
+        pinnedCardIds: [],
+        notifications: [],
+        notificationCentreOpen: false,
+        aiExplainDefaultProvider: 'claude',
+        bottomBarHidden: false,
+        supervisorEnabled: true,
+      },
+      version: 9,
+    };
+    localStorage.setItem('threadterm-terminal-store', JSON.stringify(v9Snapshot));
+    await useTerminalStore.persist.rehydrate();
+    expect(useTerminalStore.getState().supervisorEnabled).toBe(true);
+    // Reset for downstream tests.
+    localStorage.removeItem('threadterm-terminal-store');
   });
 });

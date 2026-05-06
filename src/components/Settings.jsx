@@ -9,6 +9,7 @@ import {
   Moon,
   Palette,
   Settings as SettingsIcon,
+  ShieldAlert,
   Sun,
   Trash2,
   Upload,
@@ -24,8 +25,9 @@ import { MobileAccessSettings } from './settings/MobileAccessSettings';
 import { NotificationSettings } from './settings/NotificationSettings';
 import OverlayHotkeysSettings from './settings/OverlayHotkeysSettings';
 import { SettingsDataIO } from './settings/SettingsDataIO';
+import { SupervisorSettings } from './settings/SupervisorSettings';
 
-const TABS = ['appearance', 'shortcuts', 'data'];
+const TABS = ['appearance', 'shortcuts', 'supervisor', 'data'];
 
 function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedded = false }) {
   const {
@@ -174,6 +176,14 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
             >
               <Keyboard className="h-4 w-4" />
               {t('mainTabs.shortcuts', 'Shortcuts')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('supervisor')}
+              className={tabButtonClassName('supervisor')}
+            >
+              <ShieldAlert className="h-4 w-4" />
+              {t('mainTabs.supervisor', 'Supervisor')}
             </button>
             <button
               type="button"
@@ -439,6 +449,12 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                 <NotificationSettings />
                 <OverlayHotkeysSettings />
                 <KeyboardShortcutsSettings />
+              </div>
+            )}
+
+            {activeTab === 'supervisor' && (
+              <div className="space-y-6">
+                <SupervisorSettings />
               </div>
             )}
 

@@ -156,6 +156,12 @@ interface TerminalStore {
   setAiExplainDefaultProvider: (provider: AiExplainProvider) => void;
   setBottomBarHidden: (hidden: boolean) => void;
 
+  // ─── AI Supervisor v0.1 (PRD D3) ─────────────────────────────────────────
+  /** Master switch for the AI Supervisor. Default OFF — when false, the
+   *  backend doesn't subscribe to any events (zero CPU overhead). */
+  supervisorEnabled: boolean;
+  setSupervisorEnabled: (enabled: boolean) => void;
+
   // ─── card actions ────────────────────────────────────────────────────────
   createCard: (options: TerminalCreateOptions) => string;
   removeCard: (id: string) => void;
@@ -286,6 +292,9 @@ export const useTerminalStore = create<TerminalStore>()(
       bottomBarHidden: false,
       setAiExplainDefaultProvider: (provider) => set({ aiExplainDefaultProvider: provider }),
       setBottomBarHidden: (hidden) => set({ bottomBarHidden: hidden }),
+
+      supervisorEnabled: false,
+      setSupervisorEnabled: (enabled) => set({ supervisorEnabled: enabled }),
 
       createCard: (options) => {
         const id = uid();
@@ -965,8 +974,10 @@ export const useTerminalStore = create<TerminalStore>()(
         // Stage 6 — persist the global AI provider default + chip strip toggle.
         aiExplainDefaultProvider: state.aiExplainDefaultProvider,
         bottomBarHidden: state.bottomBarHidden,
+        // AI Supervisor v0.1 (PRD D3) — master switch persisted; default OFF.
+        supervisorEnabled: state.supervisorEnabled,
       }),
-      version: 8,
+      version: 9,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         return {
@@ -978,6 +989,8 @@ export const useTerminalStore = create<TerminalStore>()(
           // v7 — Stage 6 settings defaults for older snapshots.
           aiExplainDefaultProvider: state.aiExplainDefaultProvider ?? 'claude',
           bottomBarHidden: state.bottomBarHidden ?? false,
+          // v9 — AI Supervisor master switch defaults to OFF on upgrade.
+          supervisorEnabled: state.supervisorEnabled ?? false,
           cards: state.cards?.map((card) => ({
             ...card,
             status: isTransientStatus(card.status) ? 'idle' : card.status,

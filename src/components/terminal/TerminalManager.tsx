@@ -37,6 +37,7 @@ import {
 import type { DiscoveredWorkflow } from '../../lib/workflows/discoverWorkflows';
 import type { WorkflowImportPlan } from '../../lib/workflows/importWorkflow';
 import type { TerminalCreateOptions } from '../../types/terminal';
+import { useSupervisor } from '../../lib/supervisor/useSupervisor';
 
 type ViewMode = 'grid' | 'focus';
 type SettingsTab = 'appearance' | 'shortcuts';
@@ -80,6 +81,10 @@ export function TerminalManager() {
   const updateCardAiIntent = useTerminalStore((s) => s.updateCardAiIntent);
   const pushNotification = useTerminalStore((s) => s.pushNotification);
   const { workflows, reload: reloadWorkflows } = useWorkflows();
+
+  // AI Supervisor v0.1 — single mount point in the React tree. Hook is a no-op
+  // when `supervisorEnabled` is false, so this is safe to call unconditionally.
+  useSupervisor();
 
   const selectedProjectName = useMemo(() => {
     if (!selectedProjectPath) return null;

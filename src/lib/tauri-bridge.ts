@@ -181,6 +181,35 @@ export interface BridgeDevice {
   lastSeenAt?: number | null;
 }
 
+// ── Supervisor (AI Supervisor v0.1) ─────────────────────────────────────────
+
+export interface SupervisorAlertPayload {
+  cardId: string;
+  ruleId: string;
+  sampleText: string;
+  /** Unix epoch milliseconds when the backend matched the rule. */
+  ts: number;
+}
+
+/**
+ * Subscribe to `supervisor://alert` events. Returns a no-op unsubscribe in
+ * non-Tauri environments (mirrors the pattern used by `pty.onOutput` etc.).
+ */
+export const subscribeSupervisorAlert = (
+  cb: (payload: SupervisorAlertPayload) => void,
+): Promise<() => void> =>
+  listen<SupervisorAlertPayload>('supervisor://alert', (e) => cb(e.payload));
+
+/**
+ * Toggle the Rust supervisor singleton. `watchedCardIds` is the current
+ * `pinnedCardIds` snapshot when `enabled = true`; pass `[]` when disabling.
+ */
+export const invokeSupervisorEnable = (
+  enabled: boolean,
+  watchedCardIds: string[],
+): Promise<void> =>
+  invoke<void>('supervisor_enable', { enabled, watchedCardIds });
+
 export const mobileBridge = {
   start: (host?: string, port?: number): Promise<BridgeStatus> =>
     invoke<BridgeStatus>('bridge_start', {
