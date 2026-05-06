@@ -3,6 +3,7 @@
   "mainTabs": {
     "appearance": "Appearance",
     "shortcuts": "Shortcuts",
+    "supervisor": "Supervisor",
     "data": "Data"
   },
   "appearanceSettings": {
@@ -153,6 +154,39 @@
     "language": "Language",
     "languageLabel": "Language",
     "languageDescription": "Choose the display language for ThreadTerm."
+  },
+  "supervisorSettings": {
+    "enableLabel": "Enable supervisor",
+    "enableHint": "Watch pinned cards for prompts that need your attention.",
+    "statusOn": "On",
+    "statusOff": "Off",
+    "howItWorksTitle": "How it works",
+    "howItWorksBody": "When a pinned card pauses on a sudo prompt, [y/N] confirmation, AI question, or arrow-select menu, ThreadTerm fires a notification. Click it to focus the card and reply in the terminal.",
+    "telemetryTitle": "Telemetry (this session)",
+    "telemetryTriggered": "Triggered",
+    "telemetryClicked": "Clicked",
+    "telemetryActed": "Acted within 60s",
+    "telemetryReset": "Reset stats",
+    "alertTitle": {
+      "sudo-password": "Sudo password requested",
+      "yes-no-bracket": "Confirmation needed [y/N]",
+      "yes-no-paren": "Confirmation needed (yes/no)",
+      "press-any-key": "Waiting for keypress",
+      "git-credentials": "Git credentials requested",
+      "ai-proceed": "AI assistant is asking",
+      "ai-apply-diff": "AI wants to apply changes",
+      "arrow-select": "Make a selection"
+    },
+    "alertBody": {
+      "sudo-password": "{{cardLabel}} needs a sudo password. {{sampleText}}",
+      "yes-no-bracket": "{{cardLabel}}: {{sampleText}}",
+      "yes-no-paren": "{{cardLabel}}: {{sampleText}}",
+      "press-any-key": "{{cardLabel}} is paused. {{sampleText}}",
+      "git-credentials": "{{cardLabel}} is requesting credentials. {{sampleText}}",
+      "ai-proceed": "{{cardLabel}}: {{sampleText}}",
+      "ai-apply-diff": "{{cardLabel}}: {{sampleText}}",
+      "arrow-select": "{{cardLabel}} has a menu open. {{sampleText}}"
+    }
   },
   "commandBlocks": {
     "title": "Command blocks",

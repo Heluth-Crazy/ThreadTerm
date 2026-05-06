@@ -3,6 +3,7 @@
   "mainTabs": {
     "appearance": "外观",
     "shortcuts": "快捷键",
+    "supervisor": "监督",
     "data": "数据"
   },
   "appearanceSettings": {
@@ -153,6 +154,39 @@
     "language": "语言",
     "languageLabel": "语言",
     "languageDescription": "选择 ThreadTerm 的显示语言。"
+  },
+  "supervisorSettings": {
+    "enableLabel": "启用监督",
+    "enableHint": "监控固定卡片的待处理提示。",
+    "statusOn": "已开启",
+    "statusOff": "已关闭",
+    "howItWorksTitle": "工作方式",
+    "howItWorksBody": "当固定的卡片在 sudo 提示、[y/N] 确认、AI 询问或上下选择菜单上暂停时，ThreadTerm 会发出通知。点击通知即可聚焦到该卡片并在终端中回复。",
+    "telemetryTitle": "本次会话统计",
+    "telemetryTriggered": "触发",
+    "telemetryClicked": "点击",
+    "telemetryActed": "60 秒内响应",
+    "telemetryReset": "重置统计",
+    "alertTitle": {
+      "sudo-password": "请求 sudo 密码",
+      "yes-no-bracket": "需要确认 [y/N]",
+      "yes-no-paren": "需要确认 (yes/no)",
+      "press-any-key": "等待按键",
+      "git-credentials": "请求 Git 凭据",
+      "ai-proceed": "AI 助手在询问",
+      "ai-apply-diff": "AI 想应用变更",
+      "arrow-select": "请做出选择"
+    },
+    "alertBody": {
+      "sudo-password": "{{cardLabel}} 需要 sudo 密码。{{sampleText}}",
+      "yes-no-bracket": "{{cardLabel}}：{{sampleText}}",
+      "yes-no-paren": "{{cardLabel}}：{{sampleText}}",
+      "press-any-key": "{{cardLabel}} 已暂停。{{sampleText}}",
+      "git-credentials": "{{cardLabel}} 正在请求凭据。{{sampleText}}",
+      "ai-proceed": "{{cardLabel}}：{{sampleText}}",
+      "ai-apply-diff": "{{cardLabel}}：{{sampleText}}",
+      "arrow-select": "{{cardLabel}} 打开了菜单。{{sampleText}}"
+    }
   },
   "commandBlocks": {
     "title": "命令块",

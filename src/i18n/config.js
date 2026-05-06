@@ -7,18 +7,22 @@ import enCommon from './locales/en/common.json';
 import enSettings from './locales/en/settings.json';
 import enTerminal from './locales/en/terminal.json';
 import enOverlay from './locales/en/overlay.json';
+import enSupervisor from './locales/en/supervisor.json';
 import koCommon from './locales/ko/common.json';
 import koSettings from './locales/ko/settings.json';
 import koTerminal from './locales/ko/terminal.json';
 import koOverlay from './locales/ko/overlay.json';
+import koSupervisor from './locales/ko/supervisor.json';
 import zhCommon from './locales/zh-CN/common.json';
 import zhSettings from './locales/zh-CN/settings.json';
 import zhTerminal from './locales/zh-CN/terminal.json';
 import zhOverlay from './locales/zh-CN/overlay.json';
+import zhSupervisor from './locales/zh-CN/supervisor.json';
 import jaCommon from './locales/ja/common.json';
 import jaSettings from './locales/ja/settings.json';
 import jaTerminal from './locales/ja/terminal.json';
 import jaOverlay from './locales/ja/overlay.json';
+import jaSupervisor from './locales/ja/supervisor.json';
 
 const getSavedLanguage = () => {
   if (typeof window === 'undefined') {
@@ -48,30 +52,34 @@ i18n
         settings: enSettings,
         terminal: enTerminal,
         overlay: enOverlay,
+        supervisor: enSupervisor,
       },
       ko: {
         common: koCommon,
         settings: koSettings,
         terminal: koTerminal,
         overlay: koOverlay,
+        supervisor: koSupervisor,
       },
       'zh-CN': {
         common: zhCommon,
         settings: zhSettings,
         terminal: zhTerminal,
         overlay: zhOverlay,
+        supervisor: zhSupervisor,
       },
       ja: {
         common: jaCommon,
         settings: jaSettings,
         terminal: jaTerminal,
         overlay: jaOverlay,
+        supervisor: jaSupervisor,
       },
     },
     lng: getSavedLanguage(),
     fallbackLng: 'zh-CN',
     debug: import.meta.env.DEV,
-    ns: ['common', 'settings', 'terminal', 'overlay'],
+    ns: ['common', 'settings', 'terminal', 'overlay', 'supervisor'],
     defaultNS: 'common',
     keySeparator: '.',
     nsSeparator: ':',
