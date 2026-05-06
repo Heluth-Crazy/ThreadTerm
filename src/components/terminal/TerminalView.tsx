@@ -41,6 +41,7 @@ import { openLocalDirectory } from '../../lib/localDirectory';
 import { AutoRestartControls } from './AutoRestartControls';
 import { AutoRestartStatus } from './AutoRestartStatus';
 import { normalizeAutoRestartConfig } from '../../lib/autoRestart';
+import { useSupervisorStore } from '../../lib/supervisor/supervisorStore';
 
 interface TerminalViewProps {
   card: TerminalCard;
@@ -117,6 +118,11 @@ export function TerminalView({
 
   const recordSubmit = useCallback(() => {
     recordUserSubmit(card.id, t('view.sentInput'));
+    // AI Supervisor v0.1 (PRD D10) — credit the user with an "acted" event if
+    // they recently clicked an alert for this card. Cheap getState read avoids
+    // any subscription-driven re-render; the store self-no-ops when there's
+    // no eligible click.
+    useSupervisorStore.getState().recordAction(card.id);
   }, [card.id, recordUserSubmit, t]);
 
   const handleInitialCommandSent = useCallback(() => {
