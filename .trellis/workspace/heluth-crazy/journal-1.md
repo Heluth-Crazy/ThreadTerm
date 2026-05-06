@@ -158,3 +158,37 @@ Shipped AI Supervisor v0.1: Rust singleton matches 8 regex rules against pinned-
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: 缺陷巡检与 Supervisor telemetry 修复
+
+**Date**: 2026-05-06
+**Task**: 缺陷巡检与 Supervisor telemetry 修复
+**Branch**: `main`
+
+### Summary
+
+完成当前项目缺陷巡检，baseline 质量门禁全绿；修复 AI Supervisor acted telemetry 对同一 clicked alert 的重复计数问题，补充回归测试和 supervisor spec，刷新 GitNexus 索引元数据。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e64649f` | (see git log) |
+| `31a6744` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

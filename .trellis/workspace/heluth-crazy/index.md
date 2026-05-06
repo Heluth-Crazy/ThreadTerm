@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 4
+- **Total Sessions**: 5
 - **Last Active**: 2026-05-06
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~160 | Active |
+| `journal-1.md` | ~194 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 5 | 2026-05-06 | 缺陷巡检与 Supervisor telemetry 修复 | `e64649f`, `31a6744` | `main` |
 | 4 | 2026-05-06 | AI Supervisor v0.1 — rules-based attention notifier | `1045c8d`, `b1f7392`, `dfecd22`, `6e4651d` | `main` |
 | 3 | 2026-05-05 | Fix Block Inspector AI explain empty response | `cf299ce`, `b4a429f`, `746d703` | `main` |
 | 2 | 2026-05-04 | Stage 8 data IO and auto recovery | `e6ef7ac`, `d28cfc8`, `87e4e94`, `efc7cd6` | `main` |
