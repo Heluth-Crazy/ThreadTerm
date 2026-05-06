@@ -207,6 +207,23 @@ describe('recordAction', () => {
     vi.advanceTimersByTime(30_000);
     useSupervisorStore.getState().recordAction('c1');
     expect(useSupervisorStore.getState().telemetry.acted).toBe(1);
+    expect(useSupervisorStore.getState().alerts[0]).toMatchObject({
+      acted: true,
+    });
+    expect(useSupervisorStore.getState().alerts[0].actedAt).toBeTypeOf('number');
+  });
+
+  it('counts at most one pty.write per clicked alert', () => {
+    const alert = useSupervisorStore.getState().ingestAlert({
+      cardId: 'c1',
+      ruleId: 'sudo-password',
+      sampleText: 'x',
+      ts: Date.now(),
+    })!;
+    useSupervisorStore.getState().recordClick(alert.id);
+    useSupervisorStore.getState().recordAction('c1');
+    useSupervisorStore.getState().recordAction('c1');
+    expect(useSupervisorStore.getState().telemetry.acted).toBe(1);
   });
 
   it('does NOT count a pty.write when no alert was clicked', () => {
