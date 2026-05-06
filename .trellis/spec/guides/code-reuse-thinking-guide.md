@@ -97,9 +97,59 @@ When you've made similar changes to multiple files:
 
 ---
 
+## Pattern: Single-Funnel Side Effect
+
+**Problem**: When a feature adds a side effect to an action that already has
+multiple call sites — a click that goes through both an in-app handler and an
+OS notification handler, a write that happens via several entry points — the
+naive fix is to instrument each callsite. New callers later forget the wire
+and the side effect silently drops.
+
+**Symptom**: A telemetry counter that "should" increment on every click
+stays at zero (or is way too low) because one of the click paths bypasses
+the instrumentation. The bug surfaces as "the feature works but the metric
+is broken" — which is harder to notice than a hard crash.
+
+**Solution**: Find or create a single funnel that every caller already passes
+through and put the side effect there. Callsites stay dumb; the funnel owns
+the contract.
+
+**Example** (AI Supervisor click telemetry):
+
+Wrong:
+```typescript
+// Notification Centre item click
+useSupervisorStore.getState().recordClick(alert.id);
+focusCard(alert.cardId);
+
+// OS notification onAction handler — separate file, same logic
+useSupervisorStore.getState().recordClick(alert.id);
+focusCard(alert.cardId);
+```
+
+Both paths route to the same place anyway; one was wired and the other was
+not, so OS clicks never credited.
+
+Correct:
+```typescript
+// notificationTarget.ts — the single funnel both paths already use
+export function openNotificationTarget(cardId: string): void {
+  useSupervisorStore.getState().recordClickByCardId(cardId);
+  focusCard(cardId);
+}
+```
+
+**When to apply**: Any cross-cutting concern — telemetry, audit logs,
+permission checks, cache invalidation — added to an action that already has
+2+ call sites. If the funnel doesn't exist, creating it is usually a smaller
+change than instrumenting every callsite.
+
+---
+
 ## Checklist Before Commit
 
 - [ ] Searched for existing similar code
 - [ ] No copy-pasted logic that should be shared
 - [ ] Constants defined in one place
 - [ ] Similar patterns follow same structure
+- [ ] Side effects (telemetry, audit) live in a single funnel, not per-callsite

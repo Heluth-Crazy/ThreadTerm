@@ -20,6 +20,7 @@ This directory contains guidelines for frontend development. Fill in each file w
 | [State Management](./state-management.md) | Local state, global state, server state | To fill |
 | [AI Explain](./ai-explain.md) | Block Inspector AI provider invocation and error contracts | Active |
 | [Local Data Export](./local-data-export.md) | Settings bundle and AI Markdown export contracts | Active |
+| [AI Supervisor](./supervisor.md) | Rules-based attention notifier IPC and telemetry contracts | Active |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
 | [Type Safety](./type-safety.md) | Type patterns, validation | To fill |
 
