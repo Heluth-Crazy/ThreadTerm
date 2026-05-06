@@ -7,6 +7,7 @@ mod overlay;
 mod provider_sessions;
 pub mod pty;
 mod shell_integration;
+mod supervisor;
 
 #[cfg(test)]
 mod shell_integration_tests;
@@ -45,12 +46,14 @@ pub fn run() {
             overlay::load_settings();
             overlay::register_default_shortcuts(&app.handle());
             overlay::prewarm_windows(&app.handle());
+            supervisor::init(app.handle().clone());
 
             tracing::info!("ThreadTerm Tauri backend ready");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             ai_explain::ai_explain,
+            supervisor::supervisor_enable,
             local_directory::open_local_directory,
             pty::pty_create,
             pty::pty_input,
