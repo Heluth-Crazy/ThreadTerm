@@ -33,6 +33,10 @@ export interface SupervisorAlert {
   clicked: boolean;
   /** Epoch ms when the user clicked the corresponding notification. */
   clickedAt: number | null;
+  /** Whether this alert has already credited one follow-up pty.write. */
+  acted: boolean;
+  /** Epoch ms when the first eligible pty.write after click was observed. */
+  actedAt: number | null;
   /** id of the `NotificationEntry` this alert pushed into terminalStore. */
   notificationId: string | null;
 }
@@ -114,6 +118,8 @@ export const useSupervisorStore = create<SupervisorState>((set, get) => ({
       ts: payload.ts,
       clicked: false,
       clickedAt: null,
+      acted: false,
+      actedAt: null,
       notificationId: null,
     };
 
@@ -187,15 +193,25 @@ export const useSupervisorStore = create<SupervisorState>((set, get) => ({
   recordAction: (cardId) =>
     set((state) => {
       const now = Date.now();
-      const eligible = state.alerts.find(
-        (a) =>
-          a.cardId === cardId &&
-          a.clicked &&
-          a.clickedAt !== null &&
-          now - a.clickedAt <= SUPERVISOR_ACTION_WINDOW_MS,
-      );
-      if (!eligible) return state;
+      let targetIdx = -1;
+      for (let i = state.alerts.length - 1; i >= 0; i -= 1) {
+        const candidate = state.alerts[i];
+        if (
+          candidate.cardId === cardId &&
+          candidate.clicked &&
+          !candidate.acted &&
+          candidate.clickedAt !== null &&
+          now - candidate.clickedAt <= SUPERVISOR_ACTION_WINDOW_MS
+        ) {
+          targetIdx = i;
+          break;
+        }
+      }
+      if (targetIdx === -1) return state;
+      const alerts = [...state.alerts];
+      alerts[targetIdx] = { ...alerts[targetIdx], acted: true, actedAt: now };
       return {
+        alerts,
         telemetry: { ...state.telemetry, acted: state.telemetry.acted + 1 },
       };
     }),

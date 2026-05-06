@@ -66,9 +66,13 @@
   rapid restart can't double-emit. Belt-and-braces is intentional.
 - **Alerts cap**: `SUPERVISOR_ALERTS_MAX = 50` FIFO cap; oldest entries drop
   when exceeded. Long-running sessions must not leak unbounded.
-- **Click → Action window**: a `pty.write` to a card that received a clicked
-  alert within the last `SUPERVISOR_ACTION_WINDOW_MS = 60s` increments
-  `telemetry.acted`. Outside the window the write is ignored.
+- **Click → Action window**: the first `pty.write` to a card that received a
+  clicked alert within the last `SUPERVISOR_ACTION_WINDOW_MS = 60s` increments
+  `telemetry.acted` and marks that alert as acted (`acted=true`,
+  `actedAt=now`). Outside the window the write is ignored. A clicked alert can
+  credit `acted` at most once, even if the user types multiple times in the
+  60s window; otherwise `acted/clicked` ratios become inflated and stop
+  representing "returned and acted".
 - **Click telemetry single funnel**: `recordClickByCardId(cardId)` lives in
   one funnel — `src/components/terminal/notificationTarget.ts` — which is
   called from both the Notification Centre item click and the OS notification
@@ -96,6 +100,9 @@
   invokes `recordClickByCardId`; the newest unclicked alert for that card is
   credited; second click on the same alert is a no-op (`alert.clicked` already
   true).
+- First `pty.write` within 60s after a credited alert click -> newest eligible
+  clicked/unacted alert for that card gets `acted=true`; second write for the
+  same alert is a no-op for telemetry.
 - Persisted store version `< 9` on load -> migration runs and sets
   `supervisorEnabled = false` regardless of any pre-existing field.
 - App restart -> alerts and telemetry counters reset to zero by design.
@@ -118,8 +125,8 @@
 
 - Pure rule registry tests confirming the 8 ids and i18n key naming.
 - Store tests for `ingestAlert` dedup, alerts cap, `recordClickByCardId`
-  newest-first credit + no-double-credit, `recordAction` 60s window,
-  `resetTelemetry`.
+  newest-first credit + no-double-credit, `recordAction` 60s window +
+  no-double-credit per clicked alert, `resetTelemetry`.
 - Hook tests proving idempotent listener mount, re-emit of
   `supervisor_enable` when pinned set changes, teardown on unmount.
 - `notificationTarget` integration tests showing supervisor click credit
