@@ -66,6 +66,139 @@ describe('buildCardPreview', () => {
     expect(preview.bodyLines).toEqual(['Here is the implementation plan.']);
   });
 
+  it('summarizes the latest AI reply before trailing composer input', () => {
+    const preview = buildCardPreview(
+      card({
+        terminalType: 'codex',
+        lastReplyPreview: [
+          'Recent commits mostly update the terminal card preview.',
+          'The last commit refreshes GitNexus metadata.',
+          '╭─────────────────────────────────────────╮',
+          '│ › Summarize recent commits              │',
+          '╰─────────────────────────────────────────╯',
+          '⏎ send · Esc cancel · ? shortcuts',
+        ].join('\n'),
+      }),
+      { maxLines: 8 },
+    );
+
+    expect(preview.summaryLine).toBe('The last commit refreshes GitNexus metadata.');
+    expect(preview.bodyLines).toContain('› Summarize recent commits');
+  });
+
+  it('keeps the AI composer prompt in the thumbnail even when summary uses older reply text', () => {
+    const preview = buildCardPreview(
+      card({
+        terminalType: 'codex',
+        lastReplyPreview: [
+          'I found three relevant commits.',
+          '› Summarize recent commits',
+        ].join('\n'),
+      }),
+      { maxLines: 1 },
+    );
+
+    expect(preview.bodyLines).toEqual(['› Summarize recent commits']);
+    expect(preview.summaryLine).toBe('I found three relevant commits.');
+  });
+
+  it('strips plain ASCII AI composer input from the summary', () => {
+    const preview = buildCardPreview(
+      card({
+        terminalType: 'claude',
+        lastReplyPreview: [
+          'I reviewed the latest commits.',
+          '> Summarize recent commits',
+        ].join('\n'),
+      }),
+      { maxLines: 4 },
+    );
+
+    expect(preview.bodyLines).toEqual([
+      'I reviewed the latest commits.',
+      'Summarize recent commits',
+    ]);
+    expect(preview.summaryLine).toBe('I reviewed the latest commits.');
+  });
+
+  it('strips localized AI composer input from the summary', () => {
+    const preview = buildCardPreview(
+      card({
+        terminalType: 'codex',
+        lastReplyPreview: [
+          '我已经检查了最近的改动。',
+          '› 帮我继续修复这个问题',
+        ].join('\n'),
+      }),
+      { maxLines: 4 },
+    );
+
+    expect(preview.bodyLines).toEqual([
+      '我已经检查了最近的改动。',
+      '› 帮我继续修复这个问题',
+    ]);
+    expect(preview.summaryLine).toBe('我已经检查了最近的改动。');
+  });
+
+  it('uses the last meaningful AI output summary when reply preview falls back to terminal output', () => {
+    const preview = buildCardPreview(
+      card({
+        terminalType: 'codex',
+        lastOutput: [
+          'Implementation tests are passing.',
+          '› Find and fix a bug in the card preview',
+        ].join('\n'),
+      }),
+      { maxLines: 4 },
+    );
+
+    expect(preview.source).toBe('output');
+    expect(preview.bodyLines).toEqual([
+      'Implementation tests are passing.',
+      '› Find and fix a bug in the card preview',
+    ]);
+    expect(preview.summaryLine).toBe('Implementation tests are passing.');
+  });
+
+  it('does not treat normal shell prompts or commands as AI composer input', () => {
+    const preview = buildCardPreview(
+      card({
+        terminalType: 'shell',
+        lastOutput: [
+          '$ git status',
+          'On branch main',
+          '$ git log --oneline -3',
+        ].join('\n'),
+      }),
+      { maxLines: 4 },
+    );
+
+    expect(preview.kind).toBe('shell');
+    expect(preview.bodyLines).toEqual([
+      '$ git status',
+      'On branch main',
+      '$ git log --oneline -3',
+    ]);
+    expect(preview.summaryLine).toBe('$ git log --oneline -3');
+  });
+
+  it('keeps real assistant prose that mentions a composer-looking prompt', () => {
+    const realSentence =
+      'The visible prompt was › Summarize recent commits, so I summarized the latest commit history.';
+    const preview = buildCardPreview(
+      card({
+        terminalType: 'codex',
+        lastReplyPreview: [
+          'I reviewed the repository history.',
+          realSentence,
+        ].join('\n'),
+      }),
+      { maxLines: 4 },
+    );
+
+    expect(preview.summaryLine).toBe(realSentence);
+  });
+
   it('counts hidden lines after noise filtering', () => {
     const preview = buildCardPreview(
       card({

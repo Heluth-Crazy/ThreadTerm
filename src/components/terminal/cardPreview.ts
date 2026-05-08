@@ -5,6 +5,7 @@ export type CardPreviewKind = 'empty' | 'thinking' | 'reply' | 'waiting' | 'erro
 export interface CardPreview {
   kind: CardPreviewKind;
   bodyLines: string[];
+  summaryLine: string | null;
   hiddenLineCount: number;
   source: 'reply' | 'output' | 'none';
 }
@@ -68,6 +69,8 @@ const STATUS_PATTERNS: RegExp[] = [
 ];
 
 const SHELL_PROMPT_RE = /^[^\s@]+@[^\s]+\s+.+?\s([%$#>])(?:\s+(.*))?$/;
+const AI_COMPOSER_UNICODE_PROMPT_RE = /^[\s│┃║╎┆▌▐▏▕╭╮╰╯─┌┐└┘├┤┬┴┼═╔╗╚╝╟╢╠╣╦╩╬━┏┓┗┛┠┨┯┷┿]*[›❯▸▹▶➤]\s+\S/;
+const AI_COMPOSER_ASCII_PROMPT_RE = /^[\s│┃║╎┆▌▐▏▕╭╮╰╯─┌┐└┘├┤┬┴┼═╔╗╚╝╟╢╠╣╦╩╬━┏┓┗┛┠┨┯┷┿]*>\s+\S/;
 
 export function buildCardPreview(
   card: Pick<TerminalCard, 'lastReplyPreview' | 'lastOutput' | 'status' | 'terminalType'>,
@@ -84,6 +87,7 @@ export function buildCardPreview(
   return {
     kind: resolvePreviewKind(card.status, source, card.terminalType),
     bodyLines: outputLines.lines,
+    summaryLine: resolveSummaryLine(card, source, outputLines.lines, maxLineLength),
     hiddenLineCount: outputLines.hiddenLineCount,
     source,
   };
@@ -118,7 +122,14 @@ function cleanPreviewLines(
   maxLines: number,
   maxLineLength: number,
 ): { lines: string[]; hiddenLineCount: number } {
-  const sourceLines = splitCandidateLines(raw);
+  return cleanPreviewSourceLines(splitCandidateLines(raw), maxLines, maxLineLength);
+}
+
+function cleanPreviewSourceLines(
+  sourceLines: string[],
+  maxLines: number,
+  maxLineLength: number,
+): { lines: string[]; hiddenLineCount: number } {
   const cleaned = sourceLines
     .map(normalizePreviewLine)
     .filter((line): line is string => Boolean(line))
@@ -132,6 +143,84 @@ function cleanPreviewLines(
     lines,
     hiddenLineCount: Math.max(0, deduped.length - lines.length),
   };
+}
+
+function resolveSummaryLine(
+  card: Pick<TerminalCard, 'lastReplyPreview' | 'lastOutput' | 'status' | 'terminalType'>,
+  source: CardPreview['source'],
+  bodyLines: string[],
+  maxLineLength: number,
+): string | null {
+  if (isAiCliTerminalType(card.terminalType)) {
+    const raw = source === 'reply' ? card.lastReplyPreview : card.lastOutput;
+    const aiSummary = cleanAiCliSummaryLines(raw, maxLineLength);
+    return getLastPreviewLine(aiSummary);
+  }
+
+  return getLastPreviewLine(bodyLines);
+}
+
+function cleanAiCliSummaryLines(
+  raw: string | undefined,
+  maxLineLength: number,
+): string[] {
+  const sourceLines = splitCandidateLines(raw);
+  const summarySourceLines = stripTrailingAiComposerRegion(sourceLines);
+
+  return cleanPreviewSourceLines(
+    summarySourceLines,
+    Number.MAX_SAFE_INTEGER,
+    maxLineLength,
+  ).lines;
+}
+
+function getLastPreviewLine(lines: string[]): string | null {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]?.trim();
+    if (line) return line;
+  }
+  return null;
+}
+
+function isAiCliTerminalType(terminalType: TerminalCard['terminalType']): boolean {
+  return terminalType === 'claude' || terminalType === 'codex' || terminalType === 'gemini';
+}
+
+function stripTrailingAiComposerRegion(sourceLines: string[]): string[] {
+  let end = sourceLines.length;
+  let sawComposerChrome = false;
+
+  while (end > 0 && isAiComposerChromeLine(sourceLines[end - 1])) {
+    sawComposerChrome = true;
+    end -= 1;
+  }
+
+  let removedComposerInput = false;
+  while (end > 0 && isAiComposerInputLine(sourceLines[end - 1], sawComposerChrome)) {
+    removedComposerInput = true;
+    sawComposerChrome = true;
+    end -= 1;
+  }
+
+  if (removedComposerInput) {
+    while (end > 0 && isAiComposerChromeLine(sourceLines[end - 1])) {
+      end -= 1;
+    }
+  }
+
+  return sourceLines.slice(0, end);
+}
+
+function isAiComposerChromeLine(rawLine: string): boolean {
+  const normalized = normalizePreviewLine(rawLine);
+  return !normalized || isNoiseLine(normalized);
+}
+
+function isAiComposerInputLine(rawLine: string, sawComposerChrome: boolean): boolean {
+  const normalized = rawLine.replace(ANSI_RE, '').replace(CONTROL_RE, '').trim();
+  if (AI_COMPOSER_UNICODE_PROMPT_RE.test(normalized)) return true;
+  if (AI_COMPOSER_ASCII_PROMPT_RE.test(normalized)) return true;
+  return sawComposerChrome && isNoiseLine(normalizePreviewLine(normalized) ?? '');
 }
 
 function splitCandidateLines(raw: string | undefined): string[] {

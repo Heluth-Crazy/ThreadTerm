@@ -113,7 +113,7 @@ export function TerminalCardComponent({
   );
 
   const preview = useMemo(
-    () => buildCardPreview(card, { maxLines: 6, maxLineLength: 420 }),
+    () => buildCardPreview(card, { maxLines: 14, maxLineLength: 520 }),
     [card.lastReplyPreview, card.lastOutput, card.status, card.terminalType],
   );
   const compactPreview = useMemo(
