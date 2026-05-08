@@ -2,11 +2,12 @@
  * Pure chip-registry builder for the focus-mode bottom action bar
  * (Stage 6 §Decision 5).
  *
- * The plan locks six chips: notifications, bookmarks, workflows,
- * file-explorer, rich-input, remote-control. The builder maps a
- * minimal context (cwd, bridge availability, bookmark and unread
- * counts) into ordered, typed descriptors. The renderer maps the
- * `iconKey` strings to Lucide icons; this module stays React-free.
+ * The plan originally locked six chips: notifications, bookmarks,
+ * workflows, file-explorer, rich-input, remote-control. The builder maps a
+ * minimal context (cwd, bridge availability, bookmark and unread counts)
+ * into ordered, typed descriptors, then applies the current product-level
+ * visibility filter. The renderer maps the `iconKey` strings to Lucide icons;
+ * this module stays React-free.
  */
 
 export type ChipId =
@@ -44,6 +45,15 @@ export interface ChipContext {
   unreadNotifications: number;
 }
 
+const HIDDEN_BOTTOM_ACTION_CHIPS: ReadonlySet<ChipId> = new Set<ChipId>([
+  'workflows',
+  'file-explorer',
+]);
+
+function shouldRenderChip(id: ChipId): boolean {
+  return !HIDDEN_BOTTOM_ACTION_CHIPS.has(id);
+}
+
 export function buildChipRegistry(ctx: ChipContext): ChipDescriptor[] {
   const out: ChipDescriptor[] = [];
 
@@ -61,9 +71,11 @@ export function buildChipRegistry(ctx: ChipContext): ChipDescriptor[] {
     badge: ctx.bookmarkCount > 0 ? ctx.bookmarkCount : undefined,
   });
 
-  out.push({ id: 'workflows', labelKey: 'bottomBar.workflows', iconKey: 'workflow' });
+  if (shouldRenderChip('workflows')) {
+    out.push({ id: 'workflows', labelKey: 'bottomBar.workflows', iconKey: 'workflow' });
+  }
 
-  if (ctx.cardCwd) {
+  if (ctx.cardCwd && shouldRenderChip('file-explorer')) {
     out.push({ id: 'file-explorer', labelKey: 'bottomBar.fileExplorer', iconKey: 'folder' });
   }
 

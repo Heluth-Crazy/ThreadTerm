@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 describe('BottomActionBarForContext', () => {
-  it('renders chips for the current context', () => {
+  it('renders currently enabled chips for the current context', () => {
     const onChipActivate = vi.fn();
     render(
       <BottomActionBarForContext
@@ -35,13 +35,13 @@ describe('BottomActionBarForContext', () => {
     );
     expect(screen.getByTestId('chip-notifications')).toBeInTheDocument();
     expect(screen.getByTestId('chip-bookmarks')).toBeInTheDocument();
-    expect(screen.getByTestId('chip-workflows')).toBeInTheDocument();
-    expect(screen.getByTestId('chip-file-explorer')).toBeInTheDocument();
+    expect(screen.queryByTestId('chip-workflows')).toBeNull();
+    expect(screen.queryByTestId('chip-file-explorer')).toBeNull();
     expect(screen.getByTestId('chip-rich-input')).toBeInTheDocument();
     expect(screen.getByTestId('chip-remote-control')).toBeInTheDocument();
   });
 
-  it('omits gated chips when their context flags are false', () => {
+  it('omits hidden and gated chips when their context flags are false', () => {
     render(
       <BottomActionBarForContext
         cardCwd=""
@@ -51,6 +51,7 @@ describe('BottomActionBarForContext', () => {
         onChipActivate={vi.fn()}
       />,
     );
+    expect(screen.queryByTestId('chip-workflows')).toBeNull();
     expect(screen.queryByTestId('chip-file-explorer')).toBeNull();
     expect(screen.queryByTestId('chip-remote-control')).toBeNull();
   });
@@ -97,7 +98,7 @@ describe('BottomActionBarForContext', () => {
         onChipActivate={vi.fn()}
       />,
     );
-    const middle = screen.getByTestId('chip-workflows');
+    const middle = screen.getByTestId('chip-rich-input');
     middle.focus();
     fireEvent.keyDown(middle, { key: 'Home' });
     expect(document.activeElement).toBe(screen.getByTestId('chip-notifications'));
@@ -133,10 +134,10 @@ describe('BottomActionBarForContext', () => {
         onChipActivate={onChipActivate}
       />,
     );
-    const c = screen.getByTestId('chip-workflows');
+    const c = screen.getByTestId('chip-rich-input');
     c.focus();
     fireEvent.keyDown(c, { key: ' ' });
-    expect(onChipActivate).toHaveBeenCalledWith('workflows');
+    expect(onChipActivate).toHaveBeenCalledWith('rich-input');
   });
 
   it('renders bookmark badge when count > 0', () => {

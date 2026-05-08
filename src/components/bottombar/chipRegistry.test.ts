@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildChipRegistry } from './chipRegistry';
 
 describe('buildChipRegistry', () => {
-  it('emits all six default chips when context is full', () => {
+  it('emits only currently enabled chips when context is full', () => {
     const chips = buildChipRegistry({
       cardCwd: '/home/u',
       bridgeAvailable: true,
@@ -12,14 +12,14 @@ describe('buildChipRegistry', () => {
     expect(chips.map((c) => c.id)).toEqual([
       'notifications',
       'bookmarks',
-      'workflows',
-      'file-explorer',
       'rich-input',
       'remote-control',
     ]);
+    expect(chips.find((c) => c.id === 'workflows')).toBeUndefined();
+    expect(chips.find((c) => c.id === 'file-explorer')).toBeUndefined();
   });
 
-  it('hides file-explorer when cwd is empty', () => {
+  it('keeps file-explorer hidden when cwd is empty', () => {
     const chips = buildChipRegistry({
       cardCwd: '',
       bridgeAvailable: true,

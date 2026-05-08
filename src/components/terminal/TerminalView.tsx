@@ -55,6 +55,8 @@ interface TerminalViewProps {
   onOpenSettings?: (tab?: 'appearance' | 'shortcuts') => void;
 }
 
+const BLOCK_INSPECTOR_VISIBLE = false;
+
 export function TerminalView({
   card,
   active = true,
@@ -194,7 +196,7 @@ export function TerminalView({
   // listener is only on the foreground card, and on `inspectorOpen` so it
   // never steals Esc from a CLI underneath when the panel is hidden.
   useEffect(() => {
-    if (!active || !inspectorOpen) return;
+    if (!BLOCK_INSPECTOR_VISIBLE || !active || !inspectorOpen) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -216,6 +218,7 @@ export function TerminalView({
   // and have to guess that they need to hover/click an in-terminal block
   // header to populate the panel.
   useEffect(() => {
+    if (!BLOCK_INSPECTOR_VISIBLE) return;
     if (!inspectorOpen) return;
     if (selectedBlockId) return;
     if (blocks.length === 0) return;
@@ -389,7 +392,7 @@ export function TerminalView({
           </span>
 
           {/* Block Inspector toggle — only shown when block data is present */}
-          {hasBlocks && (
+          {BLOCK_INSPECTOR_VISIBLE && hasBlocks && (
             <button
               type="button"
               title={t('block.inspector.title', { defaultValue: 'Block Inspector' })}
@@ -469,14 +472,14 @@ export function TerminalView({
                 cardId={card.id}
                 ptyId={paneId}
                 blocks={blocks}
-                inspectorOpen={inspectorOpen}
+                inspectorOpen={BLOCK_INSPECTOR_VISIBLE && inspectorOpen}
               />
             </div>
           )}
         </div>
 
         {/* Block Inspector side panel */}
-        {inspectorOpen && hasBlocks && (
+        {BLOCK_INSPECTOR_VISIBLE && inspectorOpen && hasBlocks && (
           <div className="w-52 shrink-0 overflow-hidden border-l border-border bg-background">
             {selectedBlock ? (
               <BlockInspector
