@@ -192,3 +192,36 @@ Shipped AI Supervisor v0.1: Rust singleton matches 8 regex rules against pinned-
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Mobile remote client MVP
+
+**Date**: 2026-05-08
+**Task**: Mobile remote client MVP
+**Branch**: `main`
+
+### Summary
+
+Replaced the mobile pairing page raw/snapshot view with a live read-only WebSocket dashboard, added clickable session detail navigation, mobile overflow safeguards, bridge preview noise filtering, regression tests, and spec updates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `32bf345` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
