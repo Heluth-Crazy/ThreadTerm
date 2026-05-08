@@ -217,12 +217,22 @@ fn card_meta_from_live_session(snapshot: LivePtySessionSnapshot) -> CardMeta {
 
 fn preview_from_output(output: &str) -> (String, usize) {
     let cleaned = ANSI_STRIP.replace_all(output, "");
-    let lines: Vec<String> = cleaned
+    let all_lines: Vec<String> = cleaned
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(|line| line.chars().take(240).collect::<String>())
         .collect();
+    let filtered_lines: Vec<String> = all_lines
+        .iter()
+        .filter(|line| !is_mobile_preview_noise_line(line))
+        .cloned()
+        .collect();
+    let lines = if filtered_lines.is_empty() {
+        all_lines
+    } else {
+        filtered_lines
+    };
 
     let hidden_line_count = lines.len().saturating_sub(PREVIEW_MAX_LINES);
     let preview = lines
@@ -233,6 +243,21 @@ fn preview_from_output(output: &str) -> (String, usize) {
         .join("\n");
 
     (preview, hidden_line_count)
+}
+
+fn is_mobile_preview_noise_line(line: &str) -> bool {
+    let normalized = line.trim();
+    let lower = normalized.to_lowercase();
+
+    lower.contains("trellis sessionstart")
+        || lower.contains("hooks need review before they can run")
+        || lower.contains("open /hooks to review")
+        || lower.contains("mcp startup incomplete")
+        || lower.contains("mcp client for")
+        || lower.contains("starting mcp")
+        || lower.contains("mcp servers")
+        || (lower.contains("tip:") && lower.contains("/fast"))
+        || normalized.starts_with('›')
 }
 
 fn public_host_for_url(host: &str) -> String {
@@ -261,6 +286,32 @@ mod tests {
         assert!(!preview.contains("\x1b"));
         assert!(preview.starts_with("two"));
         assert!(preview.ends_with("nine"));
+    }
+
+    #[test]
+    fn preview_filters_mobile_bridge_noise() {
+        let input = [
+            "• Trellis SessionStart injected: workflow loaded",
+            "MCP client for `pencil` failed to start",
+            "Open /hooks to review them.",
+            "Real assistant response line",
+            "› Summarize recent commits",
+        ]
+        .join("\n");
+        let (preview, hidden) = preview_from_output(&input);
+
+        assert_eq!(hidden, 0);
+        assert_eq!(preview, "Real assistant response line");
+    }
+
+    #[test]
+    fn preview_keeps_output_when_every_line_matches_noise_filter() {
+        let input = "MCP startup incomplete\n› waiting for input\n";
+        let (preview, hidden) = preview_from_output(input);
+
+        assert_eq!(hidden, 0);
+        assert!(preview.contains("MCP startup incomplete"));
+        assert!(preview.contains("waiting for input"));
     }
 
     #[test]

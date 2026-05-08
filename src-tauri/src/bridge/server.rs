@@ -312,82 +312,208 @@ fn pair_page_html(otp: Option<&str>) -> String {
     let otp_json =
         serde_json::to_string(otp.unwrap_or_default()).unwrap_or_else(|_| "\"\"".to_string());
 
-    format!(
-        r#"<!doctype html>
+    mobile_pair_page_template().replace("__OTP_JSON__", &otp_json)
+}
+
+fn mobile_pair_page_template() -> &'static str {
+    r###"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>ThreadTerm Mobile Pairing</title>
   <style>
-    :root {{
+    :root {
       color-scheme: dark;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background: #10151d;
       color: #e8edf5;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
+    }
+    * { box-sizing: border-box; }
+    html,
+    body {
+      width: 100%;
+      overflow-x: hidden;
+    }
+    body {
       margin: 0;
       min-height: 100vh;
       display: flex;
       align-items: stretch;
       background: #10151d;
-    }}
-    main {{
+    }
+    main {
       width: 100%;
       max-width: 720px;
+      min-width: 0;
       margin: 0 auto;
-      padding: 28px 18px;
-    }}
-    h1 {{
+      overflow-x: hidden;
+      padding: max(24px, env(safe-area-inset-top)) 18px max(24px, env(safe-area-inset-bottom));
+    }
+    h1 {
       margin: 0 0 8px;
-      font-size: 24px;
+      font-size: clamp(24px, 9vw, 42px);
       line-height: 1.2;
       letter-spacing: 0;
-    }}
-    p {{
+    }
+    p {
       margin: 0;
       color: #a9b4c3;
       line-height: 1.5;
-    }}
-    .panel {{
+    }
+    .panel {
       margin-top: 22px;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
       border: 1px solid #303949;
       border-radius: 12px;
       background: #151b24;
       padding: 16px;
-    }}
-    .status {{
+    }
+    .toolbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      min-width: 0;
+    }
+    .status {
       font-size: 14px;
       font-weight: 650;
       color: #e8edf5;
-    }}
-    .muted {{ color: #a9b4c3; }}
-    .error {{ color: #ff8a8a; }}
-    .ok {{ color: #7dd3a8; }}
-    .code {{
+    }
+    .muted { color: #a9b4c3; }
+    .error { color: #ff8a8a; }
+    .ok { color: #7dd3a8; }
+    .actions {
+      display: flex;
+      flex: 0 0 auto;
+      gap: 8px;
+    }
+    .cards {
       margin-top: 12px;
-      overflow-x: auto;
-      white-space: pre-wrap;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 10px;
+      min-width: 0;
+    }
+    .card {
+      display: block;
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      margin: 0;
       border-radius: 10px;
       background: #0b0f16;
       padding: 12px;
+      border: 1px solid #253043;
+      color: inherit;
+      text-align: left;
+      box-shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
+    }
+    .card:active { transform: translateY(1px); }
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+      min-width: 0;
+    }
+    .card-title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .pill {
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: #1f2a3a;
+      padding: 3px 8px;
+      color: #cbd7e8;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .pill.running { color: #7dd3a8; }
+    .pill.failed { color: #ff8a8a; }
+    .preview {
+      min-width: 0;
       color: #d9e7ff;
       font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
       font-size: 12px;
       line-height: 1.5;
-    }}
-    button {{
-      min-height: 44px;
+    }
+    .preview-line {
+      max-width: 100%;
+      overflow: hidden;
+      overflow-wrap: anywhere;
+      white-space: normal;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    .detail-preview .preview-line {
+      -webkit-line-clamp: unset;
+      display: block;
+      padding: 2px 0;
+    }
+    .meta {
+      margin-top: 8px;
+      color: #738198;
+      font-size: 11px;
+    }
+    .empty,
+    .notice {
+      margin-top: 12px;
+      border-radius: 10px;
+      background: #0b0f16;
+      padding: 14px;
+      color: #a9b4c3;
+    }
+    .detail-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
       margin-top: 14px;
+    }
+    .detail-title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #e8edf5;
+      font-size: 18px;
+      font-weight: 750;
+    }
+    .detail-preview {
+      margin-top: 12px;
+      max-height: 48vh;
+      overflow: auto;
+      border-radius: 10px;
+      border: 1px solid #253043;
+      background: #0b0f16;
+      padding: 12px;
+    }
+    button {
+      min-height: 44px;
       border: 0;
       border-radius: 10px;
       background: #4f8bd6;
       color: #07111f;
       font-weight: 700;
       padding: 10px 14px;
-    }}
+    }
+    .ghost {
+      background: #1f2a3a;
+      color: #dbe7f7;
+    }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
@@ -395,78 +521,366 @@ fn pair_page_html(otp: Option<&str>) -> String {
     <h1>ThreadTerm Mobile Pairing</h1>
     <p id="summary">Pair this device with the desktop bridge.</p>
     <section class="panel">
-      <div id="status" class="status">Preparing pairing...</div>
-      <p id="detail" class="muted"></p>
-      <button id="retry" type="button" hidden>Retry</button>
-      <div id="snapshot" class="code" hidden></div>
+      <div class="toolbar">
+        <div style="min-width:0">
+          <div id="status" class="status">Preparing pairing...</div>
+          <p id="detail" class="muted"></p>
+        </div>
+        <div class="actions">
+          <button id="retry" type="button" class="ghost" hidden>Retry</button>
+        </div>
+      </div>
+      <div id="list-view">
+        <div id="cards" class="cards" hidden></div>
+      </div>
+      <div id="detail-view" hidden>
+        <div class="detail-head">
+          <div>
+            <div id="detail-title" class="detail-title"></div>
+            <div id="detail-meta" class="meta"></div>
+          </div>
+          <button id="back" type="button" class="ghost">Back</button>
+        </div>
+        <div id="detail-preview" class="preview detail-preview"></div>
+        <div id="readonly-notice" class="notice">
+          This paired device is read-only. Input controls are disabled.
+        </div>
+      </div>
     </section>
   </main>
   <script>
-    const otp = {otp_json};
+    const BRIDGE_PROTOCOL_VERSION = 1;
+    const otp = __OTP_JSON__;
+    const TOKEN_KEY = 'threadterm.bridgeToken';
+    const PERMISSION_KEY = 'threadterm.bridgePermission';
     const statusEl = document.getElementById('status');
     const detailEl = document.getElementById('detail');
     const retryEl = document.getElementById('retry');
-    const snapshotEl = document.getElementById('snapshot');
+    const listViewEl = document.getElementById('list-view');
+    const detailViewEl = document.getElementById('detail-view');
+    const cardsEl = document.getElementById('cards');
+    const backEl = document.getElementById('back');
+    const detailTitleEl = document.getElementById('detail-title');
+    const detailMetaEl = document.getElementById('detail-meta');
+    const detailPreviewEl = document.getElementById('detail-preview');
+    const readonlyNoticeEl = document.getElementById('readonly-notice');
 
-    function deviceName() {{
+    const state = {
+      token: localStorage.getItem(TOKEN_KEY) || '',
+      permission: localStorage.getItem(PERMISSION_KEY) || 'read_only',
+      cards: new Map(),
+      selectedCardId: null,
+      socket: null,
+      reconnectTimer: 0,
+    };
+
+    function deviceName() {
       const ua = navigator.userAgent || 'Mobile Browser';
       return ua.length > 80 ? ua.slice(0, 80) : ua;
-    }}
+    }
 
-    function setStatus(message, kind = '') {{
+    function setStatus(message, kind = '') {
       statusEl.textContent = message;
-      statusEl.className = `status ${{kind}}`;
-    }}
+      statusEl.className = `status ${kind}`;
+    }
 
-    async function pair() {{
+    function clearElement(el) {
+      while (el.firstChild) el.removeChild(el.firstChild);
+    }
+
+    function formatBytes(value) {
+      if (!Number.isFinite(value) || value <= 0) return '0 B';
+      if (value < 1024) return `${value} B`;
+      if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+      return `${(value / 1024 / 1024).toFixed(1)} MB`;
+    }
+
+    function previewLines(card, limit = 3) {
+      return String(card?.lastReplyPreview || '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(-limit);
+    }
+
+    function normalizeCard(card) {
+      if (!card || !card.id) return null;
+      return {
+        id: String(card.id),
+        status: String(card.status || 'idle'),
+        lastReplyPreview: String(card.lastReplyPreview || ''),
+        hiddenLineCount: Number(card.hiddenLineCount || 0),
+        recentOutputBytes: Number(card.recentOutputBytes || 0),
+      };
+    }
+
+    function mergeCard(card) {
+      const normalized = normalizeCard(card);
+      if (!normalized) return;
+      state.cards.set(normalized.id, {
+        ...(state.cards.get(normalized.id) || {}),
+        ...normalized,
+      });
+    }
+
+    function validateMessage(message) {
+      if (!message || message.protocol_version !== BRIDGE_PROTOCOL_VERSION) {
+        throw new Error('Bridge protocol version mismatch.');
+      }
+      if (!message.kind) {
+        throw new Error('Bridge message is missing kind.');
+      }
+      return message;
+    }
+
+    function applyServerMessage(message) {
+      switch (message.kind) {
+        case 'snapshot':
+          state.cards.clear();
+          for (const card of Array.isArray(message.cards) ? message.cards : []) {
+            mergeCard(card);
+          }
+          break;
+        case 'card_added':
+        case 'card_updated':
+          mergeCard(message.card);
+          break;
+        case 'card_removed':
+          if (message.card?.id) state.cards.delete(String(message.card.id));
+          if (state.selectedCardId === message.card?.id) state.selectedCardId = null;
+          break;
+        case 'preview': {
+          const id = String(message.card_id || '');
+          const existing = state.cards.get(id) || { id, status: 'idle', recentOutputBytes: 0 };
+          state.cards.set(id, {
+            ...existing,
+            lastReplyPreview: String(message.last_reply_preview || ''),
+            hiddenLineCount: Number(message.hidden_line_count || 0),
+          });
+          break;
+        }
+        case 'state': {
+          const id = String(message.card_id || '');
+          const existing = state.cards.get(id) || { id, lastReplyPreview: '', hiddenLineCount: 0, recentOutputBytes: 0 };
+          state.cards.set(id, { ...existing, status: String(message.status || 'idle') });
+          break;
+        }
+        case 'exit': {
+          const id = String(message.card_id || '');
+          const existing = state.cards.get(id);
+          if (existing) {
+            state.cards.set(id, { ...existing, status: message.code === 0 || message.code === null ? 'completed' : 'failed' });
+          }
+          break;
+        }
+        case 'attention': {
+          const id = String(message.card_id || '');
+          const existing = state.cards.get(id);
+          if (existing && message.message) {
+            state.cards.set(id, {
+              ...existing,
+              lastReplyPreview: `${existing.lastReplyPreview || ''}\n${message.message}`.trim(),
+            });
+          }
+          break;
+        }
+        case 'pong':
+        case 'notification':
+          break;
+        case 'error':
+          detailEl.textContent = message.message || 'Bridge error.';
+          break;
+      }
+      render();
+    }
+
+    function render() {
+      clearElement(cardsEl);
+      const cards = Array.from(state.cards.values()).sort((a, b) => a.id.localeCompare(b.id));
+      const selected = state.selectedCardId ? state.cards.get(state.selectedCardId) : null;
+
+      listViewEl.hidden = Boolean(selected);
+      detailViewEl.hidden = !selected;
+
+      if (selected) {
+        renderDetail(selected);
+        return;
+      }
+
+      if (cards.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = 'No live terminal sessions yet.';
+        cardsEl.appendChild(empty);
+        cardsEl.hidden = false;
+        return;
+      }
+
+      for (const card of cards) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'card session-card';
+        item.addEventListener('click', () => selectCard(card.id));
+
+        const head = document.createElement('div');
+        head.className = 'card-head';
+
+        const title = document.createElement('div');
+        title.className = 'card-title';
+        title.textContent = `Session ${String(card.id || '').slice(0, 8) || 'unknown'}`;
+
+        const status = document.createElement('div');
+        const statusValue = String(card.status || 'unknown');
+        status.className = `pill ${statusValue}`;
+        status.textContent = statusValue.replaceAll('_', ' ');
+
+        head.append(title, status);
+        item.appendChild(head);
+
+        const preview = document.createElement('div');
+        preview.className = 'preview';
+        const lines = previewLines(card, 2);
+        if (lines.length === 0) lines.push('No preview yet.');
+        for (const line of lines) {
+          const row = document.createElement('div');
+          row.className = 'preview-line';
+          row.textContent = line;
+          preview.appendChild(row);
+        }
+        item.appendChild(preview);
+
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        const hidden = Number(card.hiddenLineCount || 0);
+        meta.textContent = `${formatBytes(Number(card.recentOutputBytes || 0))} output${hidden > 0 ? ` · +${hidden} hidden lines` : ''}`;
+        item.appendChild(meta);
+
+        cardsEl.appendChild(item);
+      }
+      cardsEl.hidden = false;
+    }
+
+    function renderDetail(card) {
+      detailTitleEl.textContent = `Session ${String(card.id || '').slice(0, 12) || 'unknown'}`;
+      const hidden = Number(card.hiddenLineCount || 0);
+      detailMetaEl.textContent = `${String(card.status || 'unknown').replaceAll('_', ' ')} · ${formatBytes(Number(card.recentOutputBytes || 0))} output${hidden > 0 ? ` · +${hidden} hidden lines` : ''}`;
+      readonlyNoticeEl.hidden = state.permission === 'full';
+
+      clearElement(detailPreviewEl);
+      const lines = previewLines(card, 12);
+      if (lines.length === 0) lines.push('No preview yet.');
+      for (const line of lines) {
+        const row = document.createElement('div');
+        row.className = 'preview-line';
+        row.textContent = line;
+        detailPreviewEl.appendChild(row);
+      }
+    }
+
+    function selectCard(cardId) {
+      state.selectedCardId = cardId;
+      render();
+    }
+
+    function showList() {
+      state.selectedCardId = null;
+      render();
+    }
+
+    function connectWebSocket() {
+      if (!state.token) return;
+      if (state.socket) state.socket.close();
+      window.clearTimeout(state.reconnectTimer);
+
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${protocol}//${location.host}/ws?token=${encodeURIComponent(state.token)}`;
+      const socket = new WebSocket(url);
+      state.socket = socket;
+      setStatus('Connecting...', '');
+      detailEl.textContent = 'Opening live bridge connection.';
+
+      socket.onopen = () => {
+        setStatus('Connected', 'ok');
+        detailEl.textContent = state.permission === 'full'
+          ? 'Live desktop sessions synced. Full controls are enabled.'
+          : 'Live desktop sessions synced in read-only mode.';
+        socket.send(JSON.stringify({ protocol_version: BRIDGE_PROTOCOL_VERSION, kind: 'subscribe' }));
+        retryEl.hidden = true;
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          applyServerMessage(validateMessage(JSON.parse(event.data)));
+        } catch (error) {
+          detailEl.textContent = error instanceof Error ? error.message : String(error);
+        }
+      };
+
+      socket.onerror = () => {
+        setStatus('Connection error', 'error');
+        detailEl.textContent = 'The desktop bridge connection failed.';
+      };
+
+      socket.onclose = () => {
+        if (state.socket !== socket) return;
+        state.socket = null;
+        setStatus('Disconnected', 'error');
+        detailEl.textContent = 'The bridge connection closed. Retry when the desktop bridge is running.';
+        retryEl.hidden = false;
+      };
+    }
+
+    async function pair() {
       retryEl.hidden = true;
-      snapshotEl.hidden = true;
-      snapshotEl.textContent = '';
+      cardsEl.hidden = true;
+      clearElement(cardsEl);
 
-      if (!otp) {{
+      if (!otp) {
+        if (state.token) {
+          connectWebSocket();
+          return;
+        }
         setStatus('Missing pairing code', 'error');
         detailEl.textContent = 'Open the pairing link shown in ThreadTerm again.';
         return;
-      }}
+      }
 
-      try {{
+      try {
         setStatus('Pairing device...');
         detailEl.textContent = 'This one-time code will be consumed after a successful pairing.';
 
-        const response = await fetch('/pair', {{
+        const response = await fetch('/pair', {
           method: 'POST',
-          headers: {{ 'content-type': 'application/json' }},
-          body: JSON.stringify({{ otp, deviceName: deviceName() }}),
-        }});
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ otp, deviceName: deviceName(), permission: 'read_only' }),
+        });
 
-        if (!response.ok) {{
+        if (!response.ok) {
           const message = await response.text();
-          throw new Error(message || `Pairing failed with HTTP ${{response.status}}`);
-        }}
+          throw new Error(message || `Pairing failed with HTTP ${response.status}`);
+        }
 
         const payload = await response.json();
-        localStorage.setItem('threadterm.bridgeToken', payload.deviceToken);
+        state.token = payload.deviceToken || '';
+        state.permission = payload.device?.permission || 'read_only';
+        localStorage.setItem(TOKEN_KEY, state.token);
+        localStorage.setItem(PERMISSION_KEY, state.permission);
         setStatus('Paired', 'ok');
-        detailEl.textContent = 'This device can now read ThreadTerm bridge snapshots.';
-
-        const snapshot = await fetch(`/snapshot?token=${{encodeURIComponent(payload.deviceToken)}}`);
-        if (snapshot.ok) {{
-          snapshotEl.textContent = JSON.stringify(await snapshot.json(), null, 2);
-          snapshotEl.hidden = false;
-        }}
-      }} catch (error) {{
+        detailEl.textContent = 'Pairing succeeded. Connecting to live sessions.';
+        connectWebSocket();
+      } catch (error) {
         setStatus('Pairing failed', 'error');
         detailEl.textContent = error instanceof Error ? error.message : String(error);
         retryEl.hidden = false;
-      }}
-    }}
+      }
+    }
 
     retryEl.addEventListener('click', pair);
+    backEl.addEventListener('click', showList);
     pair();
   </script>
 </body>
-</html>"#
-    )
+</html>"###
 }
 
 #[cfg(test)]
@@ -481,7 +895,14 @@ mod tests {
         assert!(html.contains("const otp = \"123456\";"));
         assert!(html.contains("fetch('/pair'"));
         assert!(html.contains("deviceName"));
-        assert!(html.contains("/snapshot?token="));
+        assert!(html.contains("permission: 'read_only'"));
+        assert!(html.contains("new WebSocket"));
+        assert!(html.contains("function applyServerMessage"));
+        assert!(html.contains("function selectCard"));
+        assert!(html.contains("className = 'card session-card'"));
+        assert!(html.contains("overflow-wrap: anywhere"));
+        assert!(html.contains("id=\"cards\""));
+        assert!(!html.contains("JSON.stringify(await snapshot.json()"));
     }
 
     #[test]
@@ -489,6 +910,7 @@ mod tests {
         let html = pair_page_html(None);
 
         assert!(html.contains("const otp = \"\";"));
+        assert!(html.contains("localStorage.getItem(TOKEN_KEY)"));
         assert!(html.contains("Missing pairing code"));
     }
 }
