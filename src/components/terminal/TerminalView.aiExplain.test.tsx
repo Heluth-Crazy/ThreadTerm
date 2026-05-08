@@ -1,14 +1,11 @@
 /**
- * TerminalView — Stage 6 provider selection + Run-as-command wiring.
+ * TerminalView — Block Inspector visibility wiring.
  *
- * We render the real BlockInspector through the TerminalView so we can
- * assert: (a) that the Explain button invokes ai_explain with the correct
- * provider based on the focused card's terminalType, and (b) that the
- * Run-as-command two-step confirm calls pty_input against the focused
- * card's PTY.
+ * The BlockInspector component still has focused unit coverage, but the
+ * terminal view currently hides the inspector entry and side panel.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { useAiThreadStore } from '../../stores/aiThreadStore';
 import { TerminalView } from './TerminalView';
@@ -45,7 +42,7 @@ vi.mock('./useProviderSessionLifecycle', () => ({
   useProviderSessionLifecycle: () => () => {},
 }));
 
-// Capture every invoke() call so we can assert provider + pty_input payloads.
+// Capture invoke() calls so hidden inspector tests can assert no AI request fires.
 const invokeMock = vi.fn<(cmd: string, payload: unknown) => Promise<unknown>>();
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (cmd: string, payload: unknown) => invokeMock(cmd, payload),
@@ -124,107 +121,28 @@ afterEach(() => {
   cleanup();
 });
 
-describe('TerminalView — Stage 6 AI wiring', () => {
-  it('passes the focused card terminalType as provider when AI', async () => {
+describe('TerminalView — Block Inspector visibility', () => {
+  it('hides the Block Inspector entry and panel when block data exists', () => {
     const card = makeCard({ terminalType: 'codex' });
     useTerminalStore.setState((s) => ({ cards: [...s.cards, card] }));
     seedBlock(card.id);
 
-    invokeMock.mockImplementation(async (cmd) => {
-      if (cmd === 'ai_explain') {
-        return { stdout: 'ok', stderr: '', exit_code: 0, timed_out: false };
-      }
-      return undefined;
-    });
-
     render(<TerminalView card={card} active onBack={() => {}} />);
-    // Open the inspector first via the Layers toggle.
-    fireEvent.click(screen.getByTitle('Block Inspector'));
-    fireEvent.click(await screen.findByTestId('block-inspector-explain'));
-    await waitFor(() => {
-      const call = invokeMock.mock.calls.find(([cmd]) => cmd === 'ai_explain');
-      expect(call).toBeDefined();
-      expect((call?.[1] as { provider: string }).provider).toBe('codex');
-    });
+
+    expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
+    expect(screen.queryByTitle('Block Inspector')).toBeNull();
+    expect(screen.queryByTestId('block-inspector-explain')).toBeNull();
+    expect(screen.queryByText('Select a block to inspect')).toBeNull();
   });
 
-  it('falls back to aiExplainDefaultProvider codex when card is shell and surfaces empty output as error', async () => {
+  it('does not invoke AI explain from the terminal view while the inspector is hidden', () => {
     const card = makeCard({ terminalType: 'shell' });
-    useTerminalStore.setState((s) => ({
-      cards: [...s.cards, card],
-      aiExplainDefaultProvider: 'codex',
-    }));
+    useTerminalStore.setState((s) => ({ cards: [...s.cards, card] }));
     seedBlock(card.id);
 
-    invokeMock.mockImplementation(async (cmd) => {
-      if (cmd === 'ai_explain') {
-        return {
-          stdout: '   ',
-          stderr: 'codex returned no final answer',
-          exit_code: 0,
-          timed_out: false,
-        };
-      }
-      return undefined;
-    });
-
     render(<TerminalView card={card} active onBack={() => {}} />);
-    fireEvent.click(screen.getByTitle('Block Inspector'));
-    fireEvent.click(await screen.findByTestId('block-inspector-explain'));
-    await waitFor(() => {
-      const call = invokeMock.mock.calls.find(([cmd]) => cmd === 'ai_explain');
-      expect(call).toBeDefined();
-      expect((call?.[1] as { provider: string }).provider).toBe('codex');
-    });
-    await waitFor(() => {
-      expect(screen.getByText(/AI provider returned no answer/)).toBeInTheDocument();
-      expect(screen.getByText(/codex returned no final answer/)).toBeInTheDocument();
-    });
-  });
 
-  it('Run-as-command pumps text to pty_input for the focused card', async () => {
-    const card = makeCard({ terminalType: 'shell', ptyId: 'pty-xyz', id: 'card-xyz' });
-    useTerminalStore.setState((s) => ({ cards: [...s.cards, card] }));
-    seedBlock(card.id, 'blk-xyz');
-
-    // Seed a synthetic AI answer so Run-as-command appears immediately.
-    useAiThreadStore.setState({
-      threads: {
-        'blk-xyz': {
-          blockId: 'blk-xyz',
-          entries: [
-            {
-              id: 'a1',
-              role: 'ai',
-              text: '`echo hi`',
-              provider: 'claude',
-              createdAt: Date.now(),
-              state: 'ok',
-            },
-          ],
-        },
-      },
-    });
-
-    invokeMock.mockResolvedValue(undefined);
-
-    render(<TerminalView card={card} active onBack={() => {}} />);
-    fireEvent.click(screen.getByTitle('Block Inspector'));
-
-    const btn = await screen.findByTestId('ai-run-as-command-a1');
-    // First click → pending state, no invoke yet.
-    fireEvent.click(btn);
-    expect(invokeMock.mock.calls.find(([cmd]) => cmd === 'pty_input')).toBeUndefined();
-    // Second click within 1.5s confirms.
-    fireEvent.click(btn);
-
-    await waitFor(() => {
-      const call = invokeMock.mock.calls.find(([cmd]) => cmd === 'pty_input');
-      expect(call).toBeDefined();
-      expect(call?.[1]).toEqual({ id: 'pty-xyz', data: 'echo hi\n' });
-    });
-
-    // Silence any pending timers so afterEach cleanup is tidy.
-    act(() => {});
+    expect(screen.queryByTestId('block-inspector-explain')).toBeNull();
+    expect(invokeMock.mock.calls.find(([cmd]) => cmd === 'ai_explain')).toBeUndefined();
   });
 });
