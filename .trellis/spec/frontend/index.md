@@ -21,7 +21,7 @@ This directory contains guidelines for frontend development. Fill in each file w
 | [AI Explain](./ai-explain.md) | Block Inspector AI provider invocation and error contracts | Active |
 | [Local Data Export](./local-data-export.md) | Settings bundle and AI Markdown export contracts | Active |
 | [AI Supervisor](./supervisor.md) | Rules-based attention notifier IPC and telemetry contracts | Active |
-| [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
+| [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | Active |
 | [Type Safety](./type-safety.md) | Type patterns, validation | To fill |
 
 ---
