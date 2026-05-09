@@ -103,7 +103,7 @@ export function AiIntentSelect({ cardId, value, compact = false }: AiIntentSelec
         onClick={toggleOpen}
         onMouseDown={stop}
         className={[
-          'inline-flex shrink-0 appearance-none items-center justify-between rounded-md border border-white/10 bg-background text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:ring-2 focus:ring-ring/40',
+          'inline-flex shrink-0 appearance-none items-center justify-between rounded-[var(--radius-md)] border border-white/10 bg-background text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:ring-2 focus:ring-ring/40',
           compact
             ? 'h-7 w-[104px] gap-1.5 px-2 text-[10px]'
             : 'h-8 w-[132px] gap-2 px-2.5 text-[11px]',
@@ -118,7 +118,7 @@ export function AiIntentSelect({ cardId, value, compact = false }: AiIntentSelec
           role="menu"
           onClick={stop}
           onMouseDown={stop}
-          className="fixed z-[9999] rounded-lg border border-white/10 bg-popover p-1 text-xs text-popover-foreground shadow-xl"
+          className="fixed z-[9999] rounded-[var(--radius-md)] border border-white/10 bg-popover p-1 text-xs text-popover-foreground shadow-xl"
           style={{
             left: menuRect.left,
             top: menuRect.top,
@@ -135,7 +135,7 @@ export function AiIntentSelect({ cardId, value, compact = false }: AiIntentSelec
                 aria-checked={selected}
                 onClick={choose(option.value)}
                 className={[
-                  'flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground',
+                  'flex w-full items-center justify-between rounded-[var(--radius-md)] px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground',
                   selected ? 'bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground' : '',
                 ].join(' ')}
               >

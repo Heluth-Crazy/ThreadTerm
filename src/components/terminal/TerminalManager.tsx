@@ -445,7 +445,7 @@ export function TerminalManager() {
             <>
               <span className="text-muted-foreground">/</span>
               <span
-                className="truncate rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary"
+                className="truncate rounded-[var(--radius-md)] bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary"
                 title={selectedProjectPath ?? undefined}
               >
                 {selectedProjectName}
@@ -461,7 +461,7 @@ export function TerminalManager() {
             type="button"
             onClick={() => setCreateOpen(true)}
             title={t('app.newTerminalTitle')}
-            className="inline-flex items-center gap-1 rounded-lg bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
+            className="inline-flex items-center gap-1 rounded-[var(--radius-md)] bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
           >
             <Plus className="h-3.5 w-3.5" /> {t('app.new')}
           </button>
@@ -470,7 +470,7 @@ export function TerminalManager() {
             onClick={() => setBookmarksOpen((v) => !v)}
             title={t('bookmarks.toggle', { defaultValue: 'Toggle bookmarks panel' })}
             className={[
-              'relative rounded-lg p-1.5',
+              'relative rounded-[var(--radius-md)] p-1.5',
               bookmarksOpen
                 ? 'bg-primary/10 text-primary'
                 : 'hover:bg-accent hover:text-accent-foreground',
@@ -490,7 +490,7 @@ export function TerminalManager() {
               setSettingsOpen(true);
             }}
             title={t('app.settingsTitle')}
-            className="rounded-lg p-1.5 hover:bg-accent hover:text-accent-foreground"
+            className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
           >
             <SettingsIcon className="h-4 w-4" />
           </button>
@@ -498,7 +498,7 @@ export function TerminalManager() {
             type="button"
             onClick={() => toggleNotificationCentre()}
             title={t('app.notificationsTitle')}
-            className="relative rounded-lg p-1.5 hover:bg-accent hover:text-accent-foreground"
+            className="relative rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
           >
             {unreadCount > 0 ? (
               <BellDot className="h-4 w-4 text-amber-500" />
@@ -577,7 +577,7 @@ export function TerminalManager() {
       {cards.length > 0 && !hintDismissed && !bookmarksOpen && !paletteOpen && !searchOpen && (
         <div
           className={[
-            'absolute left-3 z-10 flex select-none items-center gap-2 rounded-lg border border-white/10/60 bg-background/80 py-1 pl-2.5 pr-1 text-[10px] text-muted-foreground backdrop-blur',
+            'absolute left-3 z-10 flex select-none items-center gap-2 rounded-[var(--radius-md)] border border-white/10/60 bg-background/80 py-1 pl-2.5 pr-1 text-[10px] text-muted-foreground backdrop-blur',
             viewMode === 'focus' && focusedCard ? 'bottom-10' : 'bottom-3',
           ].join(' ')}
         >

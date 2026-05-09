@@ -61,7 +61,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   if (cards.length === 0) {
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-6 p-8">
-        <div className="flex h-20 w-20 items-center justify-center rounded-xl bg-muted">
+        <div className="flex h-20 w-20 items-center justify-center rounded-[var(--radius)] bg-muted">
           <TerminalSquare className="h-10 w-10 text-muted-foreground" />
         </div>
         <div className="text-center">
@@ -73,7 +73,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
         <button
           type="button"
           onClick={onCreateTerminal}
-          className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          className="inline-flex items-center gap-2 rounded-[var(--radius-md)] bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
           <Plus className="h-4 w-4" /> {t('grid.createFirst')}
         </button>
@@ -95,7 +95,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   if (visibleCards.length === 0 && selectedProjectPath) {
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-8 text-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-muted">
+        <div className="flex h-14 w-14 items-center justify-center rounded-[var(--radius)] bg-muted">
           <FolderOpen className="h-7 w-7 text-muted-foreground" />
         </div>
         <div>
@@ -110,14 +110,14 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
           <button
             type="button"
             onClick={onCreateTerminal}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+            className="inline-flex items-center gap-1.5 rounded-[var(--radius-md)] bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
             <Plus className="h-3.5 w-3.5" /> {t('grid.newHere')}
           </button>
           <button
             type="button"
             onClick={() => selectProject(null)}
-            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs hover:bg-accent"
+            className="rounded-[var(--radius-md)] border border-white/10 px-3 py-1.5 text-xs hover:bg-accent"
           >
             {t('grid.showAll')}
           </button>
@@ -146,7 +146,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
       <button
         type="button"
         onClick={onCreateTerminal}
-        className="flex h-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-white/10 text-muted-foreground hover:border-primary/60 hover:bg-accent/30 hover:text-primary"
+        className="flex h-full flex-col items-center justify-center gap-2 rounded-[var(--radius)] border-2 border-dashed border-white/10 text-muted-foreground hover:border-primary/60 hover:bg-accent/30 hover:text-primary"
       >
         <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
           <Plus className="h-6 w-6" />

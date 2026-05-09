@@ -134,7 +134,7 @@ function SlotRow({
       </div>
       <div className="flex items-center gap-2">
         <div
-          className={`flex items-center gap-1 rounded-md border px-2 py-1 ${
+          className={`flex items-center gap-1 rounded-[var(--radius-md)] border px-2 py-1 ${
             capturing
               ? 'border-primary bg-primary/10'
               : 'border-white/10 bg-background'
@@ -159,7 +159,7 @@ function SlotRow({
           type="button"
           onClick={onStartCapture}
           disabled={capturing}
-          className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-background px-2 py-1 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+          className="inline-flex items-center gap-1 rounded-[var(--radius-md)] border border-white/10 bg-background px-2 py-1 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
         >
           <Keyboard className="h-3 w-3" />
           {t('hotkeys.rebind')}
@@ -169,7 +169,7 @@ function SlotRow({
           onClick={onReset}
           disabled={current === meta.defaultAccelerator}
           title={t('hotkeys.resetTitle')}
-          className="inline-flex items-center rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-40"
+          className="inline-flex items-center rounded-[var(--radius-md)] p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-40"
         >
           <RotateCcw className="h-3.5 w-3.5" />
         </button>
@@ -274,7 +274,7 @@ export function OverlayHotkeysSettings() {
   );
 
   return (
-    <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
+    <div className="rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
       <div className="mb-2 flex items-center gap-2">
         <span className="text-sm" role="img" aria-hidden="true">
           🎯
@@ -306,7 +306,7 @@ export function OverlayHotkeysSettings() {
 
       {status && (
         <div
-          className={`mt-3 flex items-start gap-2 rounded-md px-3 py-2 text-[11px] ${
+          className={`mt-3 flex items-start gap-2 rounded-[var(--radius-md)] px-3 py-2 text-[11px] ${
             status.kind === 'ok'
               ? 'bg-primary/10 text-primary'
               : 'bg-destructive/10 text-destructive'

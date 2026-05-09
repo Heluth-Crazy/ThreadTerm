@@ -76,7 +76,7 @@ export function BlockSearchPanel({ open, onClose, onJump }: BlockSearchPanelProp
       <div
         role="dialog"
         aria-label={t('search.label', { defaultValue: 'Search blocks' })}
-        className="w-full max-w-2xl rounded-xl border border-white/10 bg-background/80 backdrop-blur-2xl shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)]"
+        className="w-full max-w-2xl rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 border-b border-white/5 px-3 py-3">
@@ -114,7 +114,7 @@ export function BlockSearchPanel({ open, onClose, onJump }: BlockSearchPanelProp
               <li
                 key={block.id}
                 role="option"
-                className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-accent"
+                className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-xs hover:bg-accent"
                 onClick={() => onJump({ cardId: card.id, blockId: block.id })}
               >
                 <div className="min-w-0 flex-1">

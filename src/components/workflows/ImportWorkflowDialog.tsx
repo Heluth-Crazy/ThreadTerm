@@ -124,7 +124,7 @@ export function ImportWorkflowDialog({
         aria-modal="true"
         aria-labelledby="import-workflow-title"
         data-testid="import-workflow-dialog"
-        className="w-full max-w-2xl overflow-hidden rounded-xl border border-white/10 bg-popover text-popover-foreground shadow-2xl"
+        className="w-full max-w-2xl overflow-hidden rounded-[var(--radius)] border border-white/10 bg-popover text-popover-foreground shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="border-b border-white/10 px-4 py-3">
@@ -155,13 +155,13 @@ export function ImportWorkflowDialog({
               placeholder={t('workflow.importWorkflowUrlPlaceholder', {
                 defaultValue: 'https://example.com/workflow.yaml',
               })}
-              className="min-w-0 flex-1 rounded-md border border-white/10 bg-background px-3 py-2 text-xs outline-none focus:border-primary"
+              className="min-w-0 flex-1 rounded-[var(--radius-md)] border border-white/10 bg-background px-3 py-2 text-xs outline-none focus:border-primary"
             />
             <button
               type="button"
               onClick={handlePreview}
               disabled={loading || saving || url.trim().length === 0}
-              className="rounded-md bg-secondary px-3 py-2 text-xs font-medium text-secondary-foreground hover:bg-secondary/80 disabled:opacity-50"
+              className="rounded-[var(--radius-md)] bg-secondary px-3 py-2 text-xs font-medium text-secondary-foreground hover:bg-secondary/80 disabled:opacity-50"
             >
               {loading
                 ? t('workflow.importWorkflowPreviewing', { defaultValue: 'Previewing...' })
@@ -170,13 +170,13 @@ export function ImportWorkflowDialog({
           </div>
 
           {error && (
-            <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            <div className="rounded-[var(--radius-md)] border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {errorMessage(error, t)}
             </div>
           )}
 
           {!plan && !error && (
-            <div className="rounded-md border border-white/10 bg-muted/30 px-3 py-6 text-center text-xs text-muted-foreground">
+            <div className="rounded-[var(--radius-md)] border border-white/10 bg-muted/30 px-3 py-6 text-center text-xs text-muted-foreground">
               {t('workflow.importWorkflowEmptyPreview', {
                 defaultValue: 'Preview a workflow URL before importing.',
               })}
@@ -184,7 +184,7 @@ export function ImportWorkflowDialog({
           )}
 
           {plan && (
-            <div className="overflow-hidden rounded-lg border border-white/10">
+            <div className="overflow-hidden rounded-[var(--radius-md)] border border-white/10">
               <div className="grid grid-cols-3 border-b border-white/10 bg-muted/30 text-center text-xs">
                 <div className="px-3 py-2">
                   <div className="font-semibold">{workflowCount}</div>
@@ -213,7 +213,7 @@ export function ImportWorkflowDialog({
               </div>
 
               <div className="space-y-2 p-3">
-                <div className="rounded-md border border-white/10 bg-background px-3 py-2">
+                <div className="rounded-[var(--radius-md)] border border-white/10 bg-background px-3 py-2">
                   <div className="text-[10px] uppercase text-muted-foreground">
                     {t('workflow.importWorkflowTarget', { defaultValue: 'Target file' })}
                   </div>
@@ -240,7 +240,7 @@ export function ImportWorkflowDialog({
                   {plan.workflows.map((workflow) => (
                     <li
                       key={workflow.name}
-                      className="rounded-md border border-white/10 bg-background px-3 py-2"
+                      className="rounded-[var(--radius-md)] border border-white/10 bg-background px-3 py-2"
                     >
                       <div className="truncate text-xs font-medium">{workflow.name}</div>
                       <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
@@ -251,7 +251,7 @@ export function ImportWorkflowDialog({
                 </ul>
 
                 {plan.droppedFields.length > 0 && (
-                  <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700">
+                  <div className="rounded-[var(--radius-md)] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700">
                     {plan.droppedFields.map((entry) => (
                       <div key={`${entry.documentIndex}:${entry.workflowName}`}>
                         {entry.workflowName}: {entry.fields.join(', ')}
@@ -268,7 +268,7 @@ export function ImportWorkflowDialog({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-md px-3 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground"
+            className="rounded-[var(--radius-md)] px-3 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground"
           >
             {t('workflow.argsDialogCancel', { defaultValue: 'Cancel' })}
           </button>
@@ -276,7 +276,7 @@ export function ImportWorkflowDialog({
             type="button"
             onClick={handleImport}
             disabled={!plan || loading || saving}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            className="rounded-[var(--radius-md)] bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {saving
               ? t('workflow.importWorkflowImporting', { defaultValue: 'Importing...' })

@@ -28,7 +28,7 @@ export function CardCompact({
       onClick={onClick}
       whileHover={{ scale: 1.04 }}
       className={[
-        'relative flex h-32 w-40 flex-col overflow-hidden rounded-xl border text-card-foreground shadow-sm cursor-pointer transition-all duration-300',
+        'relative flex h-32 w-40 flex-col overflow-hidden rounded-[var(--radius)] border text-card-foreground shadow-sm cursor-pointer transition-all duration-300',
         isSwitcherSelected
           ? 'border-primary/50 bg-background/80 shadow-[0_12px_24px_-8px_rgba(0,0,0,0.4)] ring-1 ring-primary/20 scale-[1.05]'
           : isFocused
@@ -48,7 +48,7 @@ export function CardCompact({
               <div
                 key={`${line}-${index}`}
                 className={[
-                  'line-clamp-1 rounded-sm',
+                  'line-clamp-1 rounded-[var(--radius-sm)]',
                   isTechnicalPreviewLine(line) ? 'font-mono text-[9.5px]' : '',
                 ].join(' ')}
               >

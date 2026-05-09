@@ -178,7 +178,7 @@ export function MobileAccessSettings() {
   const isBusy = actionState === 'busy';
 
   return (
-    <section className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
+    <section className="rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -241,7 +241,7 @@ export function MobileAccessSettings() {
           <div
             role="radiogroup"
             aria-label={t('mobileAccess.bind.label')}
-            className="grid gap-1 rounded-lg border border-white/10/70 bg-background/70 p-1 text-xs"
+            className="grid gap-1 rounded-[var(--radius-md)] border border-white/10/70 bg-background/70 p-1 text-xs"
           >
             {[
               { value: DEFAULT_BIND_HOST, label: t('mobileAccess.bind.loopback') },
@@ -249,7 +249,7 @@ export function MobileAccessSettings() {
             ].map((option) => (
               <label
                 key={option.value}
-                className="inline-flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
+                className="inline-flex cursor-pointer items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
               >
                 <input
                   type="radio"
@@ -282,7 +282,7 @@ export function MobileAccessSettings() {
       </div>
 
       {lanConfirmVisible && !status.running && (
-        <div className="mt-4 rounded-xl border border-amber-500/35 bg-amber-500/10 p-3">
+        <div className="mt-4 rounded-[var(--radius)] border border-amber-500/35 bg-amber-500/10 p-3">
           <p className="text-xs leading-5 text-foreground">
             {t('mobileAccess.lanConfirm')}
           </p>
@@ -304,7 +304,7 @@ export function MobileAccessSettings() {
       )}
 
       {status.running && (
-        <div className="mt-4 rounded-xl border border-white/10 bg-background/70 p-3">
+        <div className="mt-4 rounded-[var(--radius)] border border-white/10 bg-background/70 p-3">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
               <div className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -317,7 +317,7 @@ export function MobileAccessSettings() {
               <div
                 role="radiogroup"
                 aria-label={t('mobileAccess.permissionMode.label')}
-                className="mt-3 grid gap-1 rounded-lg border border-white/10/70 bg-white/5 backdrop-blur-md/70 p-1 text-xs sm:inline-grid"
+                className="mt-3 grid gap-1 rounded-[var(--radius-md)] border border-white/10/70 bg-white/5 backdrop-blur-md/70 p-1 text-xs sm:inline-grid"
               >
                 {[
                   {
@@ -331,7 +331,7 @@ export function MobileAccessSettings() {
                 ].map((option) => (
                   <label
                     key={option.value}
-                    className="inline-flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
+                    className="inline-flex cursor-pointer items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
                   >
                     <input
                       type="radio"
@@ -383,7 +383,7 @@ export function MobileAccessSettings() {
             {t('mobileAccess.noDevices')}
           </p>
         ) : (
-          <div className="mt-2 divide-y divide-border/60 overflow-hidden rounded-xl border border-white/10">
+          <div className="mt-2 divide-y divide-border/60 overflow-hidden rounded-[var(--radius)] border border-white/10">
             {devices.map((device) => (
               <div
                 key={device.id}

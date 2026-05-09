@@ -710,7 +710,7 @@ function Shell({
       >
         <div ref={terminalRef} className="threadterm-xterm-host focus:outline-none" style={{ outline: 'none' }} />
         {showAuthPanel && (
-          <div className="absolute bottom-3 right-3 z-20 w-[min(420px,calc(100%-1.5rem))] rounded-xl border border-gray-700/80 bg-gray-900/95 p-3 shadow-xl backdrop-blur-sm">
+          <div className="absolute bottom-3 right-3 z-20 w-[min(420px,calc(100%-1.5rem))] rounded-[var(--radius)] border border-gray-700/80 bg-gray-900/95 p-3 shadow-xl backdrop-blur-sm">
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs text-gray-300">{t('shell.authPrompt')}</p>
@@ -828,7 +828,7 @@ function Shell({
               <button
                 type="button"
                 onClick={restartShell}
-                className="rounded-lg bg-green-600 px-6 py-3 text-base font-medium text-white transition-colors hover:bg-green-700"
+                className="rounded-[var(--radius-md)] bg-green-600 px-6 py-3 text-base font-medium text-white transition-colors hover:bg-green-700"
               >
                 {t('shell.connect')}
               </button>

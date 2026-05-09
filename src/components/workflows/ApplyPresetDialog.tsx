@@ -49,7 +49,7 @@ export function ApplyPresetDialog({
         aria-modal="true"
         aria-labelledby="apply-preset-title"
         data-testid="apply-preset-dialog"
-        className="w-full max-w-2xl overflow-hidden rounded-xl border border-white/10 bg-popover text-popover-foreground shadow-2xl"
+        className="w-full max-w-2xl overflow-hidden rounded-[var(--radius)] border border-white/10 bg-popover text-popover-foreground shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="border-b border-white/10 px-4 py-3">
@@ -98,7 +98,7 @@ export function ApplyPresetDialog({
               {entries.map((entry) => (
                 <li
                   key={`${entry.workflow.filePath}:${entry.workflow.name}`}
-                  className="rounded-lg border border-white/10 bg-background px-3 py-2"
+                  className="rounded-[var(--radius-md)] border border-white/10 bg-background px-3 py-2"
                 >
                   <div className="flex items-start gap-3">
                     <div className="min-w-0 flex-1">
@@ -137,7 +137,7 @@ export function ApplyPresetDialog({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-md px-3 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground"
+            className="rounded-[var(--radius-md)] px-3 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground"
           >
             {t('workflow.argsDialogCancel', { defaultValue: 'Cancel' })}
           </button>
@@ -145,7 +145,7 @@ export function ApplyPresetDialog({
             type="button"
             onClick={onApply}
             disabled={loading || counts.create === 0}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            className="rounded-[var(--radius-md)] bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {t('workflow.applyPreset', { defaultValue: 'Apply preset' })}
           </button>

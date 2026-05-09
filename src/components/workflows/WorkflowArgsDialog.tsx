@@ -58,7 +58,7 @@ export function WorkflowArgsDialog({
         aria-modal="true"
         aria-labelledby="workflow-args-title"
         data-testid="workflow-args-dialog"
-        className="w-full max-w-md overflow-hidden rounded-xl border border-white/10 bg-popover text-popover-foreground shadow-2xl"
+        className="w-full max-w-md overflow-hidden rounded-[var(--radius)] border border-white/10 bg-popover text-popover-foreground shadow-2xl"
         onClick={(event) => event.stopPropagation()}
         onSubmit={handleSubmit}
       >
@@ -90,7 +90,7 @@ export function WorkflowArgsDialog({
                     [field.name]: event.target.value,
                   }))
                 }
-                className="w-full rounded-lg border border-white/10 bg-background px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-primary/30"
+                className="w-full rounded-[var(--radius-md)] border border-white/10 bg-background px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-primary/30"
               />
             </label>
           ))}
@@ -100,14 +100,14 @@ export function WorkflowArgsDialog({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-md px-3 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground"
+            className="rounded-[var(--radius-md)] px-3 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground"
           >
             {t('workflow.argsDialogCancel', { defaultValue: 'Cancel' })}
           </button>
           <button
             type="submit"
             disabled={!canRun}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            className="rounded-[var(--radius-md)] bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {t('workflow.argsDialogRun', { defaultValue: 'Run' })}
           </button>

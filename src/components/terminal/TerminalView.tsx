@@ -330,11 +330,11 @@ export function TerminalView({
             type="button"
             onClick={onBack}
             title={t('view.backToGrid')}
-            className="rounded-lg p-1.5 hover:bg-accent hover:text-accent-foreground"
+            className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
           >
             <ArrowLeft className="h-4 w-4" />
           </button>
-          <div className={`flex h-8 w-8 items-center justify-center rounded-lg bg-muted ${typeMeta.accent}`}>
+          <div className={`flex h-8 w-8 items-center justify-center rounded-[var(--radius-md)] bg-muted ${typeMeta.accent}`}>
             <TypeIcon className="h-4 w-4" />
           </div>
           <div className="min-w-0 flex-1">
@@ -398,7 +398,7 @@ export function TerminalView({
               title={t('block.inspector.title', { defaultValue: 'Block Inspector' })}
               onClick={() => setInspectorOpen((v) => !v)}
               className={[
-                'rounded-lg p-1.5',
+                'rounded-[var(--radius-md)] p-1.5',
                 inspectorOpen
                   ? 'bg-primary/10 text-primary'
                   : 'hover:bg-accent hover:text-accent-foreground',
@@ -411,16 +411,16 @@ export function TerminalView({
           <div className="group relative">
             <button
               type="button"
-              className="rounded-lg p-1.5 hover:bg-accent hover:text-accent-foreground"
+              className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
               title={t('view.more')}
             >
               <MoreVertical className="h-4 w-4" />
             </button>
-            <div className="absolute right-0 top-full z-10 mt-1 hidden w-44 rounded-lg border border-white/10 bg-popover p-1 text-sm shadow-lg group-hover:block">
+            <div className="absolute right-0 top-full z-10 mt-1 hidden w-44 rounded-[var(--radius-md)] border border-white/10 bg-popover p-1 text-sm shadow-lg group-hover:block">
               <button
                 type="button"
                 onClick={handleClose}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-destructive hover:bg-destructive/10"
+                className="flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left text-destructive hover:bg-destructive/10"
               >
                 <Trash2 className="h-3.5 w-3.5" /> {t('view.closeTerminal')}
               </button>
@@ -430,7 +430,7 @@ export function TerminalView({
             type="button"
             onClick={onBack}
             title={t('view.close')}
-            className="rounded-lg p-1.5 hover:bg-accent hover:text-accent-foreground"
+            className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
           >
             <X className="h-4 w-4" />
           </button>
@@ -530,7 +530,7 @@ export function TerminalView({
           onClick={() => setPlaceholder(null)}
         >
           <div
-            className="max-w-sm rounded-xl border border-white/10 bg-popover p-4 text-sm shadow-lg"
+            className="max-w-sm rounded-[var(--radius)] border border-white/10 bg-popover p-4 text-sm shadow-lg"
             onClick={(event) => event.stopPropagation()}
           >
             <p>
@@ -541,7 +541,7 @@ export function TerminalView({
             <button
               type="button"
               onClick={() => setPlaceholder(null)}
-              className="mt-3 inline-flex items-center justify-center rounded-md border border-white/10 bg-background px-3 py-1.5 text-[11px] font-medium hover:bg-accent hover:text-accent-foreground"
+              className="mt-3 inline-flex items-center justify-center rounded-[var(--radius-md)] border border-white/10 bg-background px-3 py-1.5 text-[11px] font-medium hover:bg-accent hover:text-accent-foreground"
             >
               {t('common.close', { defaultValue: 'Close' })}
             </button>
