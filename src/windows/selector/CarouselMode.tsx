@@ -58,18 +58,21 @@ export function CarouselMode({ cards, selectedIndex, onSelect, onConfirm }: Caro
   return (
     <div className="relative flex h-full w-full items-center justify-center">
       <div
-        className="relative flex items-center justify-center"
-        style={{ perspective: 1400 }}
+        className="relative flex items-center justify-center w-full h-full"
+        style={{ perspective: 2000 }}
       >
         {cards.map((card, index) => {
           const offset = circularOffset(index, selectedIndex, n);
           const kind = classifyOffset(offset);
           const size: 'lead' | 'thumb' = kind === 'lead' ? 'lead' : 'thumb';
           const hiddenSide = offset === 0 ? 0 : Math.sign(offset);
-          const translateX = kind === 'hidden' ? hiddenSide * 760 : offset * 310;
-          const scale = kind === 'lead' ? 1 : kind === 'near' ? 0.78 : 0.6;
-          const rotateY = kind === 'hidden' ? hiddenSide * -24 : offset * -10;
-          const opacity = kind === 'lead' ? 1 : kind === 'near' ? 0.85 : 0.45;
+          
+          // Coverflow geometry
+          const translateX = kind === 'hidden' ? hiddenSide * 800 : offset * 280;
+          const scale = kind === 'lead' ? 1 : kind === 'near' ? 0.75 : 0.55;
+          const rotateY = kind === 'hidden' ? hiddenSide * -45 : offset * -25;
+          const translateY = Math.abs(offset) * 20; // Slight dip for side cards
+          const opacity = kind === 'lead' ? 1 : kind === 'near' ? 0.8 : 0.3;
 
           return (
             <motion.div
@@ -78,16 +81,17 @@ export function CarouselMode({ cards, selectedIndex, onSelect, onConfirm }: Caro
               animate={{
                 opacity: kind === 'hidden' ? 0 : opacity,
                 x: translateX,
+                y: translateY,
                 scale,
                 rotateY,
                 zIndex: 10 - Math.abs(offset),
-                filter: kind === 'lead' ? 'blur(0px)' : kind === 'near' ? 'blur(0.3px)' : 'blur(1px)',
+                filter: kind === 'lead' ? 'blur(0px)' : kind === 'near' ? 'blur(1px)' : 'blur(4px)',
               }}
               transition={{
                 type: 'spring',
-                stiffness: 210,
-                damping: 30,
-                mass: 0.9,
+                stiffness: 260,
+                damping: 26,
+                mass: 1,
               }}
               className="absolute left-1/2 top-1/2"
               style={{
@@ -113,9 +117,19 @@ export function CarouselMode({ cards, selectedIndex, onSelect, onConfirm }: Caro
         })}
       </div>
 
-      {/* Counter below */}
-      <div className="pointer-events-none absolute bottom-16 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-4 py-1.5 font-mono text-xs text-white/90 backdrop-blur">
-        {t('selector.counter', { current: selectedIndex + 1, total: n })}
+      {/* Progress Dots */}
+      <div className="absolute bottom-12 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 border border-white/5 backdrop-blur-md">
+        {cards.map((_, i) => (
+          <button
+            key={i}
+            onClick={() => onSelect(i)}
+            className={[
+              'h-1.5 rounded-full transition-all duration-300',
+              i === selectedIndex ? 'w-6 bg-primary shadow-[0_0_10px_rgba(var(--primary),0.5)]' : 'w-1.5 bg-white/20 hover:bg-white/40',
+            ].join(' ')}
+            aria-label={`Go to card ${i + 1}`}
+          />
+        ))}
       </div>
     </div>
   );

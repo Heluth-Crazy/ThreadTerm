@@ -48,9 +48,9 @@ export function TileMode({ cards, selectedIndex, onSelect, onConfirm }: TileMode
   }
 
   return (
-    <div className="flex h-full w-full items-center justify-center px-12 py-8">
+    <div className="flex h-full w-full items-center justify-center px-12 py-8 bg-radial-vignette">
       <motion.div
-        className={`grid gap-6 ${gridClassForCount(n)}`}
+        className={`grid gap-8 ${gridClassForCount(n)}`}
         initial="hidden"
         animate="visible"
         variants={{
@@ -67,12 +67,13 @@ export function TileMode({ cards, selectedIndex, onSelect, onConfirm }: TileMode
           <motion.div
             key={card.id}
             variants={{
-              hidden: { opacity: 0, scale: 0.6, y: 30 },
+              hidden: { opacity: 0, scale: 0.8, y: 40, filter: 'blur(10px)' },
               visible: {
                 opacity: 1,
                 scale: 1,
                 y: 0,
-                transition: { type: 'spring', damping: 20, stiffness: 240 },
+                filter: 'blur(0px)',
+                transition: { type: 'spring', damping: 25, stiffness: 200 },
               },
             }}
           >
