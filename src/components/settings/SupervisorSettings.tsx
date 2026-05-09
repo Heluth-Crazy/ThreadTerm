@@ -26,7 +26,7 @@ export function SupervisorSettings() {
   const resetTelemetry = useSupervisorStore((s) => s.resetTelemetry);
 
   return (
-    <section className="rounded-2xl border border-border/60 bg-card/72 p-4 shadow-sm">
+    <section className="rounded-xl border border-border/60 bg-card/72 p-4 shadow-sm">
       <div className="flex items-center gap-2">
         <ShieldAlert className="h-4 w-4 text-muted-foreground" />
         <h3 className="text-base font-semibold text-foreground">

@@ -143,7 +143,9 @@ describe('MobileAccessSettings', () => {
       expect(bridgeMocks.pairQr).toHaveBeenCalledWith('0.0.0.0');
     });
     expect(await screen.findByText('123456')).toBeInTheDocument();
-    expect(screen.getByText('http://127.0.0.1:5174/pair?otp=123456')).toBeInTheDocument();
+    expect(
+      screen.getByText('http://127.0.0.1:5174/pair?otp=123456&permission=read_only'),
+    ).toBeInTheDocument();
   });
 
   it('still shows a pair code when loading devices fails after start', async () => {
@@ -156,7 +158,30 @@ describe('MobileAccessSettings', () => {
     fireEvent.click(await screen.findByRole('button', { name: /mobileAccess.start/ }));
 
     expect(await screen.findByText('123456')).toBeInTheDocument();
-    expect(screen.getByText('http://127.0.0.1:5174/pair?otp=123456')).toBeInTheDocument();
+    expect(
+      screen.getByText('http://127.0.0.1:5174/pair?otp=123456&permission=read_only'),
+    ).toBeInTheDocument();
     expect(screen.getByText('mobileAccess.running')).toBeInTheDocument();
+  });
+
+  it('adds selected pairing permission to the mobile URL', async () => {
+    bridgeMocks.status.mockResolvedValue({
+      running: true,
+      host: '127.0.0.1',
+      port: 5174,
+      url: 'http://127.0.0.1:5174',
+    });
+
+    render(<MobileAccessSettings />);
+
+    expect(
+      await screen.findByText('http://127.0.0.1:5174/pair?otp=123456&permission=read_only'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('mobileAccess.permissions.full'));
+
+    expect(
+      screen.getByText('http://127.0.0.1:5174/pair?otp=123456&permission=full'),
+    ).toBeInTheDocument();
   });
 });
