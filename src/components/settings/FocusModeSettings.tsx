@@ -23,7 +23,7 @@ export function FocusModeSettings() {
   const setAiExplainDefaultProvider = useTerminalStore((s) => s.setAiExplainDefaultProvider);
 
   return (
-    <section className="rounded-xl border border-border/60 bg-card/72 p-4 shadow-sm">
+    <section className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
       <div className="flex items-center gap-2">
         <Sparkles className="h-4 w-4 text-muted-foreground" />
         <h3 className="text-base font-semibold text-foreground">
@@ -38,7 +38,7 @@ export function FocusModeSettings() {
       </p>
 
       {/* Chip strip toggle */}
-      <div className="mt-4 flex items-center justify-between rounded-xl border border-border/60 bg-background/70 p-3">
+      <div className="mt-4 flex items-center justify-between rounded-xl border border-white/10 bg-background/70 p-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
             <ToggleLeft className="h-4 w-4 text-muted-foreground" />
@@ -68,7 +68,7 @@ export function FocusModeSettings() {
       </div>
 
       {/* Default provider picker */}
-      <div className="mt-3 rounded-xl border border-border/60 bg-background/70 p-3">
+      <div className="mt-3 rounded-xl border border-white/10 bg-background/70 p-3">
         <div className="text-sm font-medium text-foreground">
           {t('focusMode.defaultProviderLabel', { defaultValue: 'Default AI Explain provider' })}
         </div>
@@ -79,7 +79,7 @@ export function FocusModeSettings() {
           })}
         </p>
         <div
-          className="mt-2 inline-flex rounded-xl border border-border/70 bg-muted/50 p-1"
+          className="mt-2 inline-flex rounded-xl border border-white/10/70 bg-muted/50 p-1"
           data-testid="focus-mode-provider-picker"
         >
           {PROVIDERS.map((provider) => {

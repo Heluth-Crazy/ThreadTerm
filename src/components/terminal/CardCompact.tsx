@@ -28,15 +28,15 @@ export function CardCompact({
       onClick={onClick}
       whileHover={{ scale: 1.04 }}
       className={[
-        'relative flex h-32 w-40 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm cursor-pointer',
+        'relative flex h-32 w-40 flex-col overflow-hidden rounded-xl border text-card-foreground shadow-sm cursor-pointer transition-all duration-300',
         isSwitcherSelected
-          ? 'border-primary ring-2 ring-primary/40'
+          ? 'border-primary/50 bg-background/80 shadow-[0_12px_24px_-8px_rgba(0,0,0,0.4)] ring-1 ring-primary/20 scale-[1.05]'
           : isFocused
-            ? 'border-primary/60'
-            : 'border-border',
+            ? 'border-primary/40 bg-white/10 backdrop-blur-md shadow-md'
+            : 'border-white/5 bg-white/5 backdrop-blur-md hover:border-white/20 hover:bg-white/10',
       ].join(' ')}
     >
-      <div className="flex items-center gap-1.5 border-b border-border/60 px-2 py-1.5">
+      <div className="flex items-center gap-1.5 border-b border-white/5 px-2 py-1.5 backdrop-blur-sm">
         <TypeIcon className={`h-3.5 w-3.5 ${typeMeta.accent}`} />
         <span className="truncate text-[11px] font-medium">{card.projectName}</span>
         <CardStatusBadge status={card.status} size="compact" />

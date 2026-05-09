@@ -134,13 +134,13 @@ export function CommandPalette({
 
   return (
     <div
-      className="fixed inset-0 z-[200] flex items-start justify-center bg-black/40 pt-[15vh]"
+      className="fixed inset-0 z-[200] flex items-start justify-center bg-background/40 backdrop-blur-md pt-[15vh]"
       onClick={onClose}
     >
       <div
         role="dialog"
         aria-label={t('palette.label', { defaultValue: 'Command palette' })}
-        className="w-full max-w-xl rounded-xl border border-border bg-popover shadow-2xl"
+        className="w-full max-w-xl rounded-xl border border-white/10 bg-background/80 backdrop-blur-2xl shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)]"
         onClick={(e) => e.stopPropagation()}
       >
         <input
@@ -152,7 +152,7 @@ export function CommandPalette({
             setSelectedIndex(0);
           }}
           placeholder={t('palette.placeholder', { defaultValue: 'Type a command…' })}
-          className="w-full rounded-t-xl border-b border-border bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-muted-foreground"
+          className="w-full rounded-t-xl border-b border-white/5 bg-transparent px-3 py-3 text-sm outline-none placeholder:text-muted-foreground transition-all focus:bg-white/5"
         />
 
         {filtered.length === 0 ? (
@@ -176,8 +176,10 @@ export function CommandPalette({
                         role="option"
                         aria-selected={isSelected}
                         className={[
-                          'flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs',
-                          isSelected ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50',
+                          'flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-xs transition-all duration-200',
+                          isSelected 
+                            ? 'bg-primary/10 text-primary shadow-[0_0_15px_rgba(var(--primary),0.05)] ring-1 ring-primary/20' 
+                            : 'hover:bg-white/5',
                         ].join(' ')}
                         onMouseEnter={() => setSelectedIndex(flatIdx)}
                         onClick={() => {

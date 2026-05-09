@@ -143,7 +143,7 @@ function Entry({ entry, onRunCommand }: { entry: AiThreadEntry; onRunCommand: (c
       data-role={entry.role}
       className={
         entry.role === 'user'
-          ? 'rounded-md border border-border bg-muted/30 p-2 text-[11px]'
+          ? 'rounded-md border border-white/10 bg-muted/30 p-2 text-[11px]'
           : 'rounded-md border border-violet-500/30 bg-violet-500/5 p-2 text-[11px]'
       }
     >

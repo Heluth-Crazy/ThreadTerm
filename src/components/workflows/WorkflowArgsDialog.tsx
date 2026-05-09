@@ -58,11 +58,11 @@ export function WorkflowArgsDialog({
         aria-modal="true"
         aria-labelledby="workflow-args-title"
         data-testid="workflow-args-dialog"
-        className="w-full max-w-md overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl"
+        className="w-full max-w-md overflow-hidden rounded-xl border border-white/10 bg-popover text-popover-foreground shadow-2xl"
         onClick={(event) => event.stopPropagation()}
         onSubmit={handleSubmit}
       >
-        <div className="border-b border-border px-4 py-3">
+        <div className="border-b border-white/10 px-4 py-3">
           <h2 id="workflow-args-title" className="text-sm font-semibold">
             {t('workflow.argsDialogTitle', {
               workflow: workflow.name,
@@ -90,13 +90,13 @@ export function WorkflowArgsDialog({
                     [field.name]: event.target.value,
                   }))
                 }
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-primary/30"
+                className="w-full rounded-lg border border-white/10 bg-background px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-primary/30"
               />
             </label>
           ))}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-border bg-muted/30 px-4 py-3">
+        <div className="flex justify-end gap-2 border-t border-white/10 bg-muted/30 px-4 py-3">
           <button
             type="button"
             onClick={onCancel}

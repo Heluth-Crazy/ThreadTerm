@@ -78,11 +78,11 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
           <Plus className="h-4 w-4" /> {t('grid.createFirst')}
         </button>
         <p className="text-[11px] text-muted-foreground/70">
-          {t('grid.tipPrefix')} <kbd className="rounded border border-border px-1">⌘/Ctrl</kbd>
+          {t('grid.tipPrefix')} <kbd className="rounded border border-white/10 px-1">⌘/Ctrl</kbd>
           {' '}
           +
           {' '}
-          <kbd className="rounded border border-border px-1">N</kbd>
+          <kbd className="rounded border border-white/10 px-1">N</kbd>
           {' '}{t('grid.tipSuffix')}
         </p>
       </div>
@@ -117,7 +117,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
           <button
             type="button"
             onClick={() => selectProject(null)}
-            className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent"
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs hover:bg-accent"
           >
             {t('grid.showAll')}
           </button>
@@ -146,7 +146,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
       <button
         type="button"
         onClick={onCreateTerminal}
-        className="flex h-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border text-muted-foreground hover:border-primary/60 hover:bg-accent/30 hover:text-primary"
+        className="flex h-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-white/10 text-muted-foreground hover:border-primary/60 hover:bg-accent/30 hover:text-primary"
       >
         <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
           <Plus className="h-6 w-6" />

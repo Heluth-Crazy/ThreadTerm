@@ -324,7 +324,7 @@ export function TerminalView({
   return (
     <div className="flex h-full w-full flex-col bg-background">
       {/* Header */}
-      <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
+      <div className="flex items-center justify-between gap-3 border-b border-white/10 px-3 py-2">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <button
             type="button"
@@ -416,7 +416,7 @@ export function TerminalView({
             >
               <MoreVertical className="h-4 w-4" />
             </button>
-            <div className="absolute right-0 top-full z-10 mt-1 hidden w-44 rounded-lg border border-border bg-popover p-1 text-sm shadow-lg group-hover:block">
+            <div className="absolute right-0 top-full z-10 mt-1 hidden w-44 rounded-lg border border-white/10 bg-popover p-1 text-sm shadow-lg group-hover:block">
               <button
                 type="button"
                 onClick={handleClose}
@@ -480,7 +480,7 @@ export function TerminalView({
 
         {/* Block Inspector side panel */}
         {BLOCK_INSPECTOR_VISIBLE && inspectorOpen && hasBlocks && (
-          <div className="w-52 shrink-0 overflow-hidden border-l border-border bg-background">
+          <div className="w-52 shrink-0 overflow-hidden border-l border-white/10 bg-background">
             {selectedBlock ? (
               <BlockInspector
                 block={selectedBlock}
@@ -490,7 +490,7 @@ export function TerminalView({
               />
             ) : (
               <div className="flex h-full flex-col">
-                <div className="flex items-center border-b border-border px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <div className="flex items-center border-b border-white/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                   <span>
                     {t('block.inspector.title', { defaultValue: 'Block Inspector' })}
                   </span>
@@ -530,7 +530,7 @@ export function TerminalView({
           onClick={() => setPlaceholder(null)}
         >
           <div
-            className="max-w-sm rounded-xl border border-border bg-popover p-4 text-sm shadow-lg"
+            className="max-w-sm rounded-xl border border-white/10 bg-popover p-4 text-sm shadow-lg"
             onClick={(event) => event.stopPropagation()}
           >
             <p>
@@ -541,7 +541,7 @@ export function TerminalView({
             <button
               type="button"
               onClick={() => setPlaceholder(null)}
-              className="mt-3 inline-flex items-center justify-center rounded-md border border-border bg-background px-3 py-1.5 text-[11px] font-medium hover:bg-accent hover:text-accent-foreground"
+              className="mt-3 inline-flex items-center justify-center rounded-md border border-white/10 bg-background px-3 py-1.5 text-[11px] font-medium hover:bg-accent hover:text-accent-foreground"
             >
               {t('common.close', { defaultValue: 'Close' })}
             </button>
@@ -550,7 +550,7 @@ export function TerminalView({
       )}
 
       {/* Footer */}
-      <div className="flex items-center justify-between border-t border-border px-3 py-1 text-[10px] text-muted-foreground">
+      <div className="flex items-center justify-between border-t border-white/10 px-3 py-1 text-[10px] text-muted-foreground">
         <span>
           id:&nbsp;<span className="font-mono">{card.id.slice(0, 10)}</span>
         </span>

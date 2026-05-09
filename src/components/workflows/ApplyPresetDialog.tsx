@@ -49,10 +49,10 @@ export function ApplyPresetDialog({
         aria-modal="true"
         aria-labelledby="apply-preset-title"
         data-testid="apply-preset-dialog"
-        className="w-full max-w-2xl overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl"
+        className="w-full max-w-2xl overflow-hidden rounded-xl border border-white/10 bg-popover text-popover-foreground shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="border-b border-border px-4 py-3">
+        <div className="border-b border-white/10 px-4 py-3">
           <h2 id="apply-preset-title" className="text-sm font-semibold">
             {t('workflow.applyPreset', { defaultValue: 'Apply preset' })}
           </h2>
@@ -61,14 +61,14 @@ export function ApplyPresetDialog({
           </p>
         </div>
 
-        <div className="grid grid-cols-3 border-b border-border bg-muted/30 text-center text-xs">
+        <div className="grid grid-cols-3 border-b border-white/10 bg-muted/30 text-center text-xs">
           <div className="px-3 py-2">
             <div className="font-semibold">{counts.create}</div>
             <div className="text-[10px] text-muted-foreground">
               {t('workflow.applyPresetCreated', { defaultValue: 'Will create' })}
             </div>
           </div>
-          <div className="border-x border-border px-3 py-2">
+          <div className="border-x border-white/10 px-3 py-2">
             <div className="font-semibold">{counts.duplicate}</div>
             <div className="text-[10px] text-muted-foreground">
               {t('workflow.applyPresetDuplicate', { defaultValue: 'Duplicates' })}
@@ -98,7 +98,7 @@ export function ApplyPresetDialog({
               {entries.map((entry) => (
                 <li
                   key={`${entry.workflow.filePath}:${entry.workflow.name}`}
-                  className="rounded-lg border border-border bg-background px-3 py-2"
+                  className="rounded-lg border border-white/10 bg-background px-3 py-2"
                 >
                   <div className="flex items-start gap-3">
                     <div className="min-w-0 flex-1">
@@ -133,7 +133,7 @@ export function ApplyPresetDialog({
           )}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-border bg-muted/30 px-4 py-3">
+        <div className="flex justify-end gap-2 border-t border-white/10 bg-muted/30 px-4 py-3">
           <button
             type="button"
             onClick={onCancel}

@@ -438,7 +438,7 @@ export function TerminalManager() {
       <ProjectSidebar onImportWorkflow={handleOpenImportWorkflow} />
       <div className="relative flex min-w-0 flex-1 flex-col">
       {/* Top bar */}
-      <div className="flex items-center justify-between border-b border-border bg-background/80 px-3 py-2 backdrop-blur">
+      <div className="flex items-center justify-between border-b border-white/10 bg-background/80 px-3 py-2 backdrop-blur">
         <div className="flex min-w-0 items-center gap-2">
           <div className="text-sm font-semibold shrink-0">{t('app.title')}</div>
           {selectedProjectName && (
@@ -577,7 +577,7 @@ export function TerminalManager() {
       {cards.length > 0 && !hintDismissed && !bookmarksOpen && !paletteOpen && !searchOpen && (
         <div
           className={[
-            'absolute left-3 z-10 flex select-none items-center gap-2 rounded-lg border border-border/60 bg-background/80 py-1 pl-2.5 pr-1 text-[10px] text-muted-foreground backdrop-blur',
+            'absolute left-3 z-10 flex select-none items-center gap-2 rounded-lg border border-white/10/60 bg-background/80 py-1 pl-2.5 pr-1 text-[10px] text-muted-foreground backdrop-blur',
             viewMode === 'focus' && focusedCard ? 'bottom-10' : 'bottom-3',
           ].join(' ')}
         >
@@ -601,7 +601,7 @@ export function TerminalManager() {
 
       {/* Bookmarks side panel — slides in from the right edge of the workspace */}
       {bookmarksOpen && (
-        <div className="absolute right-0 top-0 bottom-0 z-30 w-64 border-l border-border bg-background shadow-lg">
+        <div className="absolute right-0 top-0 bottom-0 z-30 w-64 border-l border-white/10 bg-background shadow-lg">
           <BookmarksSidebar
             onJump={handleJumpToBlock}
             onClose={() => setBookmarksOpen(false)}

@@ -57,7 +57,7 @@ export function AutoRestartControls({
           onClick={stopClick}
           onMouseDown={stopClick}
           onChange={handleChange}
-          className="h-5 rounded border border-border bg-background px-1 text-[10px] text-foreground"
+          className="h-5 rounded border border-white/10 bg-background px-1 text-[10px] text-foreground"
         >
           {RETRY_OPTIONS.map((value) => (
             <option key={value} value={value}>

@@ -133,7 +133,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
   return (
     <div className={containerClassName}>
       <div className={panelClassName}>
-        <div className="flex shrink-0 items-center justify-between border-b border-border/60 p-4 md:p-6">
+        <div className="flex shrink-0 items-center justify-between border-b border-white/5 p-4 md:p-6 backdrop-blur-md bg-white/5">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted text-foreground">
               <SettingsIcon className="h-5 w-5" />
@@ -159,8 +159,8 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
           )}
         </div>
 
-        <div className="border-b border-border/60 px-4 py-2 md:px-6">
-          <div className="inline-flex rounded-xl border border-border/70 bg-card/70 p-1">
+        <div className="border-b border-white/5 px-4 py-2 md:px-6 backdrop-blur-sm bg-white/5">
+          <div className="inline-flex rounded-xl border border-white/10 bg-white/5 p-1">
             <button
               type="button"
               onClick={() => setActiveTab('appearance')}
@@ -200,7 +200,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
           <div className={contentPadding}>
             {activeTab === 'appearance' && (
               <div className="space-y-5">
-                <section className="rounded-xl border border-border/60 bg-card/72 p-4 shadow-sm">
+                <section className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
                   <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                     <div>
                       <div className="font-medium text-foreground">
@@ -210,7 +210,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                         {t('appearanceSettings.mode.description')}
                       </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-2 rounded-xl border border-border/70 bg-muted/50 p-1">
+                    <div className="grid grid-cols-3 gap-2 rounded-xl border border-white/10/70 bg-muted/50 p-1">
                       {modeOptions.map(({ id, icon: Icon }) => (
                         <button
                           key={id}
@@ -232,7 +232,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                   </div>
                 </section>
 
-                <section className="rounded-xl border border-border/60 bg-card/72 p-4 shadow-sm">
+                <section className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
                   <div className="mb-4 flex flex-col gap-3 md:flex-row md:flex-wrap md:items-start md:justify-between">
                     <div>
                       <div className="font-medium text-foreground">
@@ -253,7 +253,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                       <button
                         type="button"
                         onClick={() => themeFileInputRef.current?.click()}
-                        className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
+                        className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
                       >
                         <Upload className="h-4 w-4" />
                         {t('appearanceSettings.themePack.importJson')}
@@ -261,7 +261,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                       <button
                         type="button"
                         onClick={() => downloadThemePack(themePackId)}
-                        className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
+                        className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
                       >
                         <Download className="h-4 w-4" />
                         {t('appearanceSettings.themePack.exportCurrent')}
@@ -347,14 +347,14 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                                 'flex h-6 w-6 shrink-0 items-center justify-center rounded-full border',
                                 isActive
                                   ? 'border-primary bg-primary text-primary-foreground'
-                                  : 'border-border bg-card text-transparent',
+                                  : 'border-white/10 bg-white/5 backdrop-blur-md text-transparent',
                               ].join(' ')}
                             >
                               <Check className="h-3.5 w-3.5" />
                             </span>
                           </div>
 
-                          <div className="mt-auto overflow-hidden rounded-xl border border-border/60">
+                          <div className="mt-auto overflow-hidden rounded-xl border border-white/10">
                             <div
                               className="flex h-12 items-center gap-2 px-3"
                               style={{ backgroundColor: tokens.app.background, color: tokens.app.foreground }}

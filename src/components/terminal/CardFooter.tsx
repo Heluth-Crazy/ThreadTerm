@@ -56,7 +56,7 @@ export function CardFooter({
   // preview header so this row never overflows when the AI intent dropdown
   // is present.
   return (
-    <div className="flex shrink-0 items-center gap-1.5 border-t border-border/40 bg-muted/20 px-2 py-1">
+    <div className="flex shrink-0 items-center gap-1.5 border-t border-white/10/40 bg-muted/20 px-2 py-1">
       <CardActions
         pinned={pinned}
         pinFull={pinFull}

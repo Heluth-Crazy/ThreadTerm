@@ -137,7 +137,7 @@ function SlotRow({
           className={`flex items-center gap-1 rounded-md border px-2 py-1 ${
             capturing
               ? 'border-primary bg-primary/10'
-              : 'border-border bg-background'
+              : 'border-white/10 bg-background'
           }`}
         >
           {capturing ? (
@@ -159,7 +159,7 @@ function SlotRow({
           type="button"
           onClick={onStartCapture}
           disabled={capturing}
-          className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+          className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-background px-2 py-1 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
         >
           <Keyboard className="h-3 w-3" />
           {t('hotkeys.rebind')}
@@ -274,7 +274,7 @@ export function OverlayHotkeysSettings() {
   );
 
   return (
-    <div className="rounded-xl border border-border/60 bg-card/72 p-4 shadow-sm">
+    <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
       <div className="mb-2 flex items-center gap-2">
         <span className="text-sm" role="img" aria-hidden="true">
           🎯

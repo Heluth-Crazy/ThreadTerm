@@ -39,7 +39,7 @@ export function CardPreviewPanel({ preview, activeFor, messageCount }: CardPrevi
     return (
       <div
         data-testid="card-preview-empty"
-        className="flex h-full min-h-[120px] items-center justify-center overflow-hidden rounded-lg border border-border/40 px-3 text-[11px] italic opacity-65"
+        className="flex h-full min-h-[120px] items-center justify-center overflow-hidden rounded-lg border border-white/10/40 px-3 text-[11px] italic opacity-65"
         style={terminalSurfaceStyle}
       >
         {t('card.noOutput')}
@@ -51,10 +51,10 @@ export function CardPreviewPanel({ preview, activeFor, messageCount }: CardPrevi
 
   return (
     <div
-      className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border/50 shadow-inner"
+      className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-white/10/50 shadow-inner"
       style={terminalSurfaceStyle}
     >
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/30 px-2.5 py-1 text-[10px]">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10/30 px-2.5 py-1 text-[10px]">
         <span className="min-w-0 truncate font-semibold uppercase tracking-wide text-muted-foreground/80">
           {t(`card.preview.${preview.kind}`, preview.kind)}
         </span>
@@ -120,7 +120,7 @@ export function CardPreviewPanel({ preview, activeFor, messageCount }: CardPrevi
         {summaryLine && (
           <div
             data-testid="card-preview-summary"
-            className="absolute inset-x-0 bottom-0 border-t border-border/35 px-2.5 py-1 shadow-[0_-6px_14px_rgba(0,0,0,0.14)] backdrop-blur-sm"
+            className="absolute inset-x-0 bottom-0 border-t border-white/10/35 px-2.5 py-1 shadow-[0_-6px_14px_rgba(0,0,0,0.14)] backdrop-blur-sm"
             style={{
               backgroundColor:
                 'color-mix(in srgb, var(--terminal-background) 66%, hsl(var(--card)) 34%)',

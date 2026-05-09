@@ -54,7 +54,7 @@ export function AutoRestartStatus({ card, compact = false }: AutoRestartStatusPr
     <span
       title={title || t('autoRestart.enabled')}
       className={[
-        'inline-flex min-w-0 items-center gap-1 rounded-full border border-border/60 bg-background/70 text-muted-foreground',
+        'inline-flex min-w-0 items-center gap-1 rounded-full border border-white/10/60 bg-background/70 text-muted-foreground',
         compact ? 'px-1.5 py-0.5 text-[10px]' : 'px-1.5 py-0.5 text-[10px]',
         pending ? 'text-amber-600' : config.limitReachedAt ? 'text-red-500' : '',
       ].join(' ')}
