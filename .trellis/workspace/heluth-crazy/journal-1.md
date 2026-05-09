@@ -225,3 +225,36 @@ Replaced the mobile pairing page raw/snapshot view with a live read-only WebSock
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: attach_snapshot 防御兜底：可测 helper + 4 条回归测试
+
+**Date**: 2026-05-09
+**Task**: attach_snapshot 防御兜底：可测 helper + 4 条回归测试
+**Branch**: `main`
+
+### Summary
+
+诊断'浮窗展开后终端空白'：根因是 wezterm-term 当前屏视觉为空时 attach_snapshot 序列化只剩光标定位 ANSI，浮窗 fresh xterm 因此黑屏。修复逻辑（视觉空 → 回退 raw output_buffer）已在 HEAD fae68d8 内随 UI 提交一并落地；本次将判定提取为 build_attach_snapshot 纯函数 helper，并新增 4 个 mod tests 回归测试，锁定 4 条分支契约。行为 bit-for-bit 等价于改动前。cargo check / cargo test pty:: (32 passed) / rustfmt --check 全绿。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `51456b9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
