@@ -130,11 +130,11 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   return (
     <div className="flex h-full w-full flex-wrap content-start items-stretch gap-6 overflow-y-auto p-6 md:p-8">
       {visibleCards.map((card) => (
-        <div key={card.id} className="h-[280px] w-full sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] xl:w-[calc(25%-18px)]">
+        <div key={card.id} className="h-[300px] w-full sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] xl:w-[calc(25%-18px)]">
           <TerminalCardComponent
             card={card}
             isFocused={focusedCardId === card.id}
-            onClick={() => onOpenTerminal(card.id)}
+            onClick={() => onOpenTerminal?.(card.id)}
           />
         </div>
       ))}
@@ -145,7 +145,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
         onClick={onCreateTerminal}
         whileHover={{ y: -4, scale: 1.01 }}
         transition={{ type: 'spring', damping: 20, stiffness: 300 }}
-        className="group relative flex h-[280px] w-full flex-col items-center justify-center gap-3 overflow-hidden rounded-[var(--radius)] border border-dashed border-white/10 bg-white/[0.02] text-muted-foreground transition-all duration-300 hover:border-primary/40 hover:bg-white/[0.05] hover:text-primary sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] xl:w-[calc(25%-18px)] glass-reflection"
+        className="group relative flex h-[300px] w-full flex-col items-center justify-center gap-3 overflow-hidden rounded-[var(--radius)] border border-dashed border-white/10 bg-white/[0.02] text-muted-foreground transition-all duration-300 hover:border-primary/40 hover:bg-white/[0.05] hover:text-primary sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] xl:w-[calc(25%-18px)] glass-reflection"
       >
         <div className="absolute inset-0 bg-grid opacity-[0.03] pointer-events-none" />
         <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/5 border border-primary/10 transition-transform duration-500 group-hover:scale-110 group-hover:bg-primary/10">
