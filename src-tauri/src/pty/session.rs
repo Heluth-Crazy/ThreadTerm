@@ -231,34 +231,60 @@ fn subtract_unacked_from_mutex(value: &Mutex<usize>, count: usize) {
 }
 
 pub(super) fn attach_snapshot(id: &str, session: &PtySession) -> PtyAttachSnapshot {
+    let raw_buffer = session
+        .output_buffer
+        .read()
+        .ok()
+        .map(|buffer| buffer.clone())
+        .unwrap_or_default();
+    let seq = current_output_seq(session);
+
     if let Ok(snapshot) = session.snapshot.lock() {
         let payload = snapshot.snapshot_ansi();
+        return build_attach_snapshot(id, seq, Some(payload), &raw_buffer, None);
+    }
 
-        if super::emulator::is_visually_empty_payload(&payload) {
-            let raw_buffer = session
-                .output_buffer
-                .read()
-                .ok()
-                .map(|buffer| buffer.clone())
-                .unwrap_or_default();
-            if !raw_buffer.is_empty() {
-                return PtyAttachSnapshot {
-                    pty_id: id.to_string(),
-                    data: raw_buffer,
-                    seq: current_output_seq(session),
-                    rows: payload.rows,
-                    cols: payload.cols,
-                    cursor_row: 1,
-                    cursor_col: 1,
-                    history: None,
-                };
-            }
+    let last_size = session
+        .last_size
+        .lock()
+        .map(|size| *size)
+        .unwrap_or((24, 120));
+    build_attach_snapshot(id, seq, None, &raw_buffer, Some(last_size))
+}
+
+/// Decide which payload to return to a freshly-attaching webview.
+///
+/// When the wezterm-serialized payload is non-empty it is used verbatim.
+/// When it is "visually empty" (no scrollback history and `data` is only
+/// cursor-positioning escapes) and the raw `output_buffer` has content, the
+/// raw buffer is returned instead so the new xterm does not render a black
+/// screen. Falls back to the raw buffer alone when the wezterm snapshot lock
+/// could not be acquired.
+fn build_attach_snapshot(
+    id: &str,
+    seq: u64,
+    payload: Option<super::emulator::TerminalSnapshotPayload>,
+    raw_buffer: &str,
+    fallback_size: Option<(u16, u16)>,
+) -> PtyAttachSnapshot {
+    if let Some(payload) = payload {
+        if super::emulator::is_visually_empty_payload(&payload) && !raw_buffer.is_empty() {
+            return PtyAttachSnapshot {
+                pty_id: id.to_string(),
+                data: raw_buffer.to_string(),
+                seq,
+                rows: payload.rows,
+                cols: payload.cols,
+                cursor_row: 1,
+                cursor_col: 1,
+                history: None,
+            };
         }
 
         return PtyAttachSnapshot {
             pty_id: id.to_string(),
             data: payload.data,
-            seq: current_output_seq(session),
+            seq,
             rows: payload.rows,
             cols: payload.cols,
             cursor_row: payload.cursor_row,
@@ -267,21 +293,11 @@ pub(super) fn attach_snapshot(id: &str, session: &PtySession) -> PtyAttachSnapsh
         };
     }
 
-    let data = session
-        .output_buffer
-        .read()
-        .map(|buffer| buffer.clone())
-        .unwrap_or_default();
-    let (rows, cols) = session
-        .last_size
-        .lock()
-        .map(|size| *size)
-        .unwrap_or((24, 120));
-
+    let (rows, cols) = fallback_size.unwrap_or((24, 120));
     PtyAttachSnapshot {
         pty_id: id.to_string(),
-        data,
-        seq: current_output_seq(session),
+        data: raw_buffer.to_string(),
+        seq,
         rows,
         cols,
         cursor_row: 1,
@@ -343,6 +359,7 @@ pub(super) fn is_killed(session: &PtySession) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pty::emulator::TerminalSnapshot;
     use std::sync::Mutex;
 
     #[test]
@@ -361,5 +378,76 @@ mod tests {
         assert_eq!(*value.lock().expect("lock"), 60);
         subtract_unacked_from_mutex(&value, 1000);
         assert_eq!(*value.lock().expect("lock"), 0);
+    }
+
+    #[test]
+    fn attach_snapshot_returns_raw_buffer_when_payload_visually_empty() {
+        // wezterm has only seen cursor-visibility toggles, so its current
+        // screen has no visible cells; the raw byte buffer still holds prior
+        // output (e.g. an upgrade-prompt frame) that the freshly-attached
+        // xterm should see instead of a black screen.
+        let mut snapshot = TerminalSnapshot::new(24, 80, 2000);
+        snapshot.apply_output(b"\x1b[?25l\x1b[?25h");
+        let payload = snapshot.snapshot_ansi();
+        let raw_buffer = "Installing dependencies...\r\n";
+
+        let result = build_attach_snapshot("pty-1", 7, Some(payload.clone()), raw_buffer, None);
+
+        assert_eq!(result.data, raw_buffer);
+        assert!(result.history.is_none());
+        assert_eq!(result.cursor_row, 1);
+        assert_eq!(result.cursor_col, 1);
+        assert_eq!(result.rows, payload.rows);
+        assert_eq!(result.cols, payload.cols);
+        assert_eq!(result.seq, 7);
+        assert_eq!(result.pty_id, "pty-1");
+    }
+
+    #[test]
+    fn attach_snapshot_uses_payload_when_payload_has_content() {
+        let mut snapshot = TerminalSnapshot::new(24, 80, 2000);
+        snapshot.apply_output(b"hello");
+        let payload = snapshot.snapshot_ansi();
+
+        let result = build_attach_snapshot(
+            "pty-1",
+            3,
+            Some(payload.clone()),
+            "stale raw bytes that must be ignored",
+            None,
+        );
+
+        assert!(result.data.contains("hello"));
+        assert_eq!(result.cursor_row, payload.cursor_row);
+        assert_eq!(result.cursor_col, payload.cursor_col);
+        assert_eq!(result.history, payload.history);
+    }
+
+    #[test]
+    fn attach_snapshot_keeps_payload_when_raw_buffer_is_empty() {
+        // No raw buffer to fall back to: keep the (visually empty) payload
+        // so the existing tests / behavior are unchanged.
+        let snapshot = TerminalSnapshot::new(24, 80, 2000);
+        let payload = snapshot.snapshot_ansi();
+
+        let result = build_attach_snapshot("pty-1", 1, Some(payload.clone()), "", None);
+
+        assert_eq!(result.data, payload.data);
+        assert_eq!(result.cursor_row, payload.cursor_row);
+        assert_eq!(result.cursor_col, payload.cursor_col);
+    }
+
+    #[test]
+    fn attach_snapshot_falls_back_to_raw_when_payload_missing() {
+        // Mirrors the `snapshot.lock()` failure path: no payload available,
+        // raw buffer is returned with the recorded last size.
+        let result = build_attach_snapshot("pty-1", 9, None, "raw bytes", Some((30, 100)));
+
+        assert_eq!(result.data, "raw bytes");
+        assert_eq!(result.rows, 30);
+        assert_eq!(result.cols, 100);
+        assert_eq!(result.cursor_row, 1);
+        assert_eq!(result.cursor_col, 1);
+        assert!(result.history.is_none());
     }
 }
