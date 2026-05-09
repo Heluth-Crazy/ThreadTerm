@@ -13,6 +13,7 @@ import {
   isTauriEnv,
   mobileBridge,
   type BridgeDevice,
+  type BridgeDevicePermission,
   type BridgeStatus,
   type PairQrResponse,
 } from '../../lib/tauri-bridge';
@@ -32,10 +33,28 @@ const stoppedStatus: BridgeStatus = {
   url: null,
 };
 
+function pairUrlWithPermission(
+  pairQr: PairQrResponse | null,
+  permission: BridgeDevicePermission,
+): string {
+  if (!pairQr?.url) return '';
+
+  try {
+    const url = new URL(pairQr.url);
+    url.searchParams.set('permission', permission);
+    return url.toString();
+  } catch {
+    const joiner = pairQr.url.includes('?') ? '&' : '?';
+    return `${pairQr.url}${joiner}permission=${permission}`;
+  }
+}
+
 export function MobileAccessSettings() {
   const { t } = useTranslation('settings');
   const [status, setStatus] = useState<BridgeStatus>(stoppedStatus);
   const [pairQr, setPairQr] = useState<PairQrResponse | null>(null);
+  const [pairPermission, setPairPermission] =
+    useState<BridgeDevicePermission>('read_only');
   const [devices, setDevices] = useState<BridgeDevice[]>([]);
   const [bindHost, setBindHost] = useState<BindHost>(DEFAULT_BIND_HOST);
   const [lanConfirmVisible, setLanConfirmVisible] = useState(false);
@@ -149,15 +168,17 @@ export function MobileAccessSettings() {
     }
   };
 
+  const pairUrl = pairUrlWithPermission(pairQr, pairPermission);
+
   const copyPairUrl = async () => {
-    if (!pairQr?.url || !navigator.clipboard) return;
-    await navigator.clipboard.writeText(pairQr.url);
+    if (!pairUrl || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(pairUrl);
   };
 
   const isBusy = actionState === 'busy';
 
   return (
-    <section className="rounded-2xl border border-border/60 bg-card/72 p-4 shadow-sm">
+    <section className="rounded-xl border border-border/60 bg-card/72 p-4 shadow-sm">
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -293,13 +314,48 @@ export function MobileAccessSettings() {
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
                 {t('mobileAccess.pairingDescription')}
               </p>
+              <div
+                role="radiogroup"
+                aria-label={t('mobileAccess.permissionMode.label')}
+                className="mt-3 grid gap-1 rounded-lg border border-border/70 bg-card/70 p-1 text-xs sm:inline-grid"
+              >
+                {[
+                  {
+                    value: 'read_only' as const,
+                    label: t('mobileAccess.permissions.read_only'),
+                  },
+                  {
+                    value: 'full' as const,
+                    label: t('mobileAccess.permissions.full'),
+                  },
+                ].map((option) => (
+                  <label
+                    key={option.value}
+                    className="inline-flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
+                  >
+                    <input
+                      type="radio"
+                      name="mobile-bridge-pair-permission"
+                      value={option.value}
+                      checked={pairPermission === option.value}
+                      onChange={() => setPairPermission(option.value)}
+                      aria-label={option.label}
+                      className="h-3 w-3"
+                    />
+                    {option.label}
+                  </label>
+                ))}
+              </div>
+              <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                {t('mobileAccess.permissionMode.hint')}
+              </p>
               {pairQr && (
                 <div className="mt-2 space-y-1">
                   <div className="font-mono text-sm text-foreground">
                     {pairQr.otp}
                   </div>
                   <div className="break-all font-mono text-[11px] text-muted-foreground">
-                    {pairQr.url}
+                    {pairUrl}
                   </div>
                 </div>
               )}
@@ -309,7 +365,7 @@ export function MobileAccessSettings() {
                 <QrCode />
                 {t('mobileAccess.newPairCode')}
               </Button>
-              <Button size="sm" variant="outline" onClick={copyPairUrl} disabled={!pairQr?.url}>
+              <Button size="sm" variant="outline" onClick={copyPairUrl} disabled={!pairUrl}>
                 <Copy />
                 {t('mobileAccess.copyUrl')}
               </Button>

@@ -104,7 +104,7 @@ export const PopoverContent = React.forwardRef<HTMLDivElement, PopoverContentPro
       <div
         ref={ref}
         className={cn(
-          'absolute z-50 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none',
+          'absolute z-50 rounded-md border border-border bg-popover p-1.5 text-popover-foreground shadow-lg outline-none',
           sideClass,
           alignClass,
           className,

@@ -62,7 +62,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
     : 'modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/95 p-4';
   const panelClassName = embedded
     ? 'mx-auto flex h-full w-full max-w-5xl flex-col bg-background'
-    : 'flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-2xl md:h-[86vh]';
+    : 'flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl md:h-[86vh]';
   const contentPadding = embedded ? 'px-4 py-4 sm:px-6 lg:px-8' : 'p-4 md:p-6';
 
   const tabButtonClassName = (tab) => [
@@ -135,7 +135,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
       <div className={panelClassName}>
         <div className="flex shrink-0 items-center justify-between border-b border-border/60 p-4 md:p-6">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-muted text-foreground">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted text-foreground">
               <SettingsIcon className="h-5 w-5" />
             </div>
             <div>
@@ -160,7 +160,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
         </div>
 
         <div className="border-b border-border/60 px-4 py-2 md:px-6">
-          <div className="inline-flex rounded-2xl border border-border/70 bg-card/70 p-1">
+          <div className="inline-flex rounded-xl border border-border/70 bg-card/70 p-1">
             <button
               type="button"
               onClick={() => setActiveTab('appearance')}
@@ -200,7 +200,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
           <div className={contentPadding}>
             {activeTab === 'appearance' && (
               <div className="space-y-5">
-                <section className="rounded-[20px] border border-border/60 bg-card/72 p-4 shadow-sm">
+                <section className="rounded-xl border border-border/60 bg-card/72 p-4 shadow-sm">
                   <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                     <div>
                       <div className="font-medium text-foreground">
@@ -210,7 +210,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                         {t('appearanceSettings.mode.description')}
                       </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-2 rounded-2xl border border-border/70 bg-muted/50 p-1">
+                    <div className="grid grid-cols-3 gap-2 rounded-xl border border-border/70 bg-muted/50 p-1">
                       {modeOptions.map(({ id, icon: Icon }) => (
                         <button
                           key={id}
@@ -232,7 +232,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                   </div>
                 </section>
 
-                <section className="rounded-[20px] border border-border/60 bg-card/72 p-4 shadow-sm">
+                <section className="rounded-xl border border-border/60 bg-card/72 p-4 shadow-sm">
                   <div className="mb-4 flex flex-col gap-3 md:flex-row md:flex-wrap md:items-start md:justify-between">
                     <div>
                       <div className="font-medium text-foreground">
@@ -314,10 +314,10 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                             }
                           }}
                           className={[
-                            'group flex h-full min-h-[320px] flex-col rounded-2xl border p-3 text-left transition-all',
+                            'group flex h-full min-h-[320px] flex-col rounded-xl border p-3 text-left transition-all',
                             isActive
-                              ? 'border-primary bg-primary/10 shadow-sm ring-2 ring-primary/20'
-                              : 'border-border/70 bg-background/60 hover:border-primary/50 hover:bg-background',
+                              ? 'border-primary bg-primary/5 shadow-sm ring-1 ring-primary/20'
+                              : 'border-border/70 bg-background/60 hover:border-border hover:bg-background',
                           ].join(' ')}
                           aria-pressed={isActive}
                         >

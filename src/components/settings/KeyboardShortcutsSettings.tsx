@@ -80,7 +80,7 @@ export default function KeyboardShortcutsSettings() {
         {sections.map((section) => (
           <div
             key={section.title}
-            className="rounded-2xl border border-border/60 bg-card/72 p-4 shadow-sm"
+            className="rounded-xl border border-border/60 bg-card/72 p-4 shadow-sm"
           >
             <div className="mb-3 flex items-center gap-2">
               <span className="text-sm" role="img" aria-hidden="true">{section.icon}</span>
