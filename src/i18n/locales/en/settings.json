@@ -148,6 +148,10 @@
     "permissions": {
       "read_only": "Read only",
       "full": "Full control"
+    },
+    "permissionMode": {
+      "label": "Pairing permission",
+      "hint": "Full control can type into live sessions from the paired device."
     }
   },
   "account": {

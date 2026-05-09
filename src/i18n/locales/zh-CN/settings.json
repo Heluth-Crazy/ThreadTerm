@@ -148,6 +148,10 @@
     "permissions": {
       "read_only": "只读",
       "full": "完整控制"
+    },
+    "permissionMode": {
+      "label": "配对权限",
+      "hint": "完整控制允许已配对设备向实时会话输入内容。"
     }
   },
   "account": {

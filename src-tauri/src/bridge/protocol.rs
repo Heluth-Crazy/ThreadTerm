@@ -11,7 +11,10 @@ pub const PROTOCOL_VERSION: u16 = 1;
 pub struct CardMeta {
     pub id: String,
     pub status: TerminalStatus,
+    pub project_path: String,
+    pub project_name: String,
     pub last_reply_preview: String,
+    pub summary_line: Option<String>,
     pub hidden_line_count: usize,
     pub recent_output_bytes: usize,
 }
@@ -170,6 +173,7 @@ pub enum ServerMessage {
     Preview {
         card_id: String,
         last_reply_preview: String,
+        summary_line: Option<String>,
         hidden_line_count: usize,
     },
     State {
@@ -282,6 +286,26 @@ mod tests {
         assert_eq!(json["kind"], "state");
         assert_eq!(json["card_id"], "card-1");
         assert_eq!(json["status"], "waiting_for_input");
+    }
+
+    #[test]
+    fn serializes_card_meta_context_for_mobile_clients() {
+        let card = CardMeta {
+            id: "card-1".to_string(),
+            status: TerminalStatus::Idle,
+            project_path: "/tmp/ThreadTerm".to_string(),
+            project_name: "ThreadTerm".to_string(),
+            last_reply_preview: "recent output".to_string(),
+            summary_line: Some("latest reply".to_string()),
+            hidden_line_count: 2,
+            recent_output_bytes: 128,
+        };
+
+        let json = serde_json::to_value(card).expect("serialize card meta");
+        assert_eq!(json["projectPath"], "/tmp/ThreadTerm");
+        assert_eq!(json["projectName"], "ThreadTerm");
+        assert_eq!(json["summaryLine"], "latest reply");
+        assert_eq!(json["hiddenLineCount"], 2);
     }
 
     #[test]

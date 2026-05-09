@@ -406,4 +406,15 @@ mod tests {
         assert!(!payload.data.contains("old text"));
         assert!(payload.data.contains("new text"));
     }
+
+    #[test]
+    fn carriage_return_redraw_snapshot_keeps_current_terminal_view() {
+        let mut snapshot = TerminalSnapshot::new(24, 80, 2000);
+        snapshot.apply_output(b"loading\r\x1b[Kloaded");
+
+        let payload = snapshot.snapshot_ansi();
+
+        assert!(!payload.data.contains("loading"));
+        assert!(payload.data.contains("loaded"));
+    }
 }

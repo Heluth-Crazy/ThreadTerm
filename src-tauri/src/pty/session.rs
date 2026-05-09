@@ -23,6 +23,8 @@ pub enum SessionState {
 pub struct LivePtySessionSnapshot {
     pub id: String,
     pub state: SessionState,
+    pub working_dir: String,
+    pub terminal_output: String,
     pub recent_output: String,
 }
 
@@ -263,6 +265,24 @@ pub(super) fn attach_snapshot(id: &str, session: &PtySession) -> PtyAttachSnapsh
         cursor_row: 1,
         cursor_col: 1,
         history: None,
+    }
+}
+
+pub(super) fn terminal_output_snapshot(session: &PtySession) -> Option<String> {
+    let payload = session.snapshot.lock().ok()?.snapshot_ansi();
+    let mut output = String::new();
+    if let Some(history) = payload.history {
+        output.push_str(&history);
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+    }
+    output.push_str(&payload.data);
+
+    if output.trim().is_empty() {
+        None
+    } else {
+        Some(output)
     }
 }
 
