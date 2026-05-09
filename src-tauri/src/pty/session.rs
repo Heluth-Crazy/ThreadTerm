@@ -233,6 +233,28 @@ fn subtract_unacked_from_mutex(value: &Mutex<usize>, count: usize) {
 pub(super) fn attach_snapshot(id: &str, session: &PtySession) -> PtyAttachSnapshot {
     if let Ok(snapshot) = session.snapshot.lock() {
         let payload = snapshot.snapshot_ansi();
+
+        if super::emulator::is_visually_empty_payload(&payload) {
+            let raw_buffer = session
+                .output_buffer
+                .read()
+                .ok()
+                .map(|buffer| buffer.clone())
+                .unwrap_or_default();
+            if !raw_buffer.is_empty() {
+                return PtyAttachSnapshot {
+                    pty_id: id.to_string(),
+                    data: raw_buffer,
+                    seq: current_output_seq(session),
+                    rows: payload.rows,
+                    cols: payload.cols,
+                    cursor_row: 1,
+                    cursor_col: 1,
+                    history: None,
+                };
+            }
+        }
+
         return PtyAttachSnapshot {
             pty_id: id.to_string(),
             data: payload.data,
