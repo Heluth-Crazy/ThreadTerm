@@ -50,6 +50,7 @@ struct AuthQuery {
 #[derive(Deserialize)]
 struct PairPageQuery {
     otp: Option<String>,
+    permission: Option<String>,
 }
 
 pub async fn start(
@@ -109,7 +110,10 @@ async fn health_handler() -> Json<serde_json::Value> {
 }
 
 async fn pair_page_handler(Query(query): Query<PairPageQuery>) -> Html<String> {
-    Html(pair_page_html(query.otp.as_deref()))
+    Html(pair_page_html(
+        query.otp.as_deref(),
+        normalize_pair_permission(query.permission.as_deref()),
+    ))
 }
 
 async fn snapshot_handler(
@@ -308,11 +312,22 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-fn pair_page_html(otp: Option<&str>) -> String {
+fn normalize_pair_permission(permission: Option<&str>) -> &'static str {
+    match permission {
+        Some("full") => "full",
+        _ => "read_only",
+    }
+}
+
+fn pair_page_html(otp: Option<&str>, pair_permission: &str) -> String {
     let otp_json =
         serde_json::to_string(otp.unwrap_or_default()).unwrap_or_else(|_| "\"\"".to_string());
+    let permission_json = serde_json::to_string(normalize_pair_permission(Some(pair_permission)))
+        .unwrap_or_else(|_| "\"read_only\"".to_string());
 
-    mobile_pair_page_template().replace("__OTP_JSON__", &otp_json)
+    mobile_pair_page_template()
+        .replace("__OTP_JSON__", &otp_json)
+        .replace("__PERMISSION_JSON__", &permission_json)
 }
 
 fn mobile_pair_page_template() -> &'static str {
@@ -429,6 +444,16 @@ fn mobile_pair_page_template() -> &'static str {
       font-size: 13px;
       font-weight: 700;
     }
+    .card-path,
+    .session-id {
+      min-width: 0;
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #738198;
+      font-size: 11px;
+    }
     .pill {
       flex: 0 0 auto;
       border-radius: 999px;
@@ -456,6 +481,16 @@ fn mobile_pair_page_template() -> &'static str {
       display: -webkit-box;
       -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
+    }
+    .summary-line {
+      min-width: 0;
+      margin: 8px 0 6px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #f0f6ff;
+      font-size: 13px;
+      font-weight: 700;
     }
     .detail-preview .preview-line {
       -webkit-line-clamp: unset;
@@ -500,6 +535,37 @@ fn mobile_pair_page_template() -> &'static str {
       background: #0b0f16;
       padding: 12px;
     }
+    .control-panel {
+      margin-top: 12px;
+      min-width: 0;
+      max-width: 100%;
+      border-radius: 10px;
+      border: 1px solid #253043;
+      background: #0b0f16;
+      padding: 10px;
+    }
+    .control-input {
+      display: block;
+      width: 100%;
+      min-height: 88px;
+      resize: vertical;
+      border: 1px solid #253043;
+      border-radius: 8px;
+      background: #111823;
+      color: #e8edf5;
+      padding: 10px;
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+      overflow-wrap: anywhere;
+    }
+    .control-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .control-actions button {
+      flex: 1 1 72px;
+    }
     button {
       min-height: 44px;
       border: 0;
@@ -542,6 +608,14 @@ fn mobile_pair_page_template() -> &'static str {
           <button id="back" type="button" class="ghost">Back</button>
         </div>
         <div id="detail-preview" class="preview detail-preview"></div>
+        <div id="control-panel" class="control-panel" hidden>
+          <textarea id="input" class="control-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Type input and tap Send"></textarea>
+          <div class="control-actions">
+            <button id="send-input" type="button">Send</button>
+            <button id="send-ctrl-c" type="button" class="ghost">Ctrl-C</button>
+            <button id="send-esc" type="button" class="ghost">Esc</button>
+          </div>
+        </div>
         <div id="readonly-notice" class="notice">
           This paired device is read-only. Input controls are disabled.
         </div>
@@ -551,6 +625,7 @@ fn mobile_pair_page_template() -> &'static str {
   <script>
     const BRIDGE_PROTOCOL_VERSION = 1;
     const otp = __OTP_JSON__;
+    const pairPermission = __PERMISSION_JSON__;
     const TOKEN_KEY = 'threadterm.bridgeToken';
     const PERMISSION_KEY = 'threadterm.bridgePermission';
     const statusEl = document.getElementById('status');
@@ -563,11 +638,17 @@ fn mobile_pair_page_template() -> &'static str {
     const detailTitleEl = document.getElementById('detail-title');
     const detailMetaEl = document.getElementById('detail-meta');
     const detailPreviewEl = document.getElementById('detail-preview');
+    const controlPanelEl = document.getElementById('control-panel');
+    const inputEl = document.getElementById('input');
+    const sendInputEl = document.getElementById('send-input');
+    const sendCtrlCEl = document.getElementById('send-ctrl-c');
+    const sendEscEl = document.getElementById('send-esc');
     const readonlyNoticeEl = document.getElementById('readonly-notice');
 
     const state = {
       token: localStorage.getItem(TOKEN_KEY) || '',
       permission: localStorage.getItem(PERMISSION_KEY) || 'read_only',
+      pairPermission: pairPermission === 'full' ? 'full' : 'read_only',
       cards: new Map(),
       selectedCardId: null,
       socket: null,
@@ -595,11 +676,20 @@ fn mobile_pair_page_template() -> &'static str {
       return `${(value / 1024 / 1024).toFixed(1)} MB`;
     }
 
-    function previewLines(card, limit = 3) {
-      return String(card?.lastReplyPreview || '')
+    function projectNameFromPath(path) {
+      const clean = String(path || '').trim();
+      if (!clean) return 'Unknown project';
+      return clean.split(/[\\/]/).filter(Boolean).pop() || clean;
+    }
+
+    function previewLines(card, limit = 3, excludeSummary = false) {
+      const summary = String(card?.summaryLine || '').trim();
+      const lines = String(card?.lastReplyPreview || '')
         .split('\n')
         .map((line) => line.trim())
         .filter(Boolean)
+        .filter((line) => !excludeSummary || line !== summary);
+      return lines
         .slice(-limit);
     }
 
@@ -608,7 +698,10 @@ fn mobile_pair_page_template() -> &'static str {
       return {
         id: String(card.id),
         status: String(card.status || 'idle'),
+        projectPath: String(card.projectPath || ''),
+        projectName: String(card.projectName || projectNameFromPath(card.projectPath)),
         lastReplyPreview: String(card.lastReplyPreview || ''),
+        summaryLine: card.summaryLine ? String(card.summaryLine) : '',
         hiddenLineCount: Number(card.hiddenLineCount || 0),
         recentOutputBytes: Number(card.recentOutputBytes || 0),
       };
@@ -655,13 +748,14 @@ fn mobile_pair_page_template() -> &'static str {
           state.cards.set(id, {
             ...existing,
             lastReplyPreview: String(message.last_reply_preview || ''),
+            summaryLine: message.summary_line ? String(message.summary_line) : '',
             hiddenLineCount: Number(message.hidden_line_count || 0),
           });
           break;
         }
         case 'state': {
           const id = String(message.card_id || '');
-          const existing = state.cards.get(id) || { id, lastReplyPreview: '', hiddenLineCount: 0, recentOutputBytes: 0 };
+          const existing = state.cards.get(id) || { id, projectPath: '', projectName: projectNameFromPath(''), lastReplyPreview: '', summaryLine: '', hiddenLineCount: 0, recentOutputBytes: 0 };
           state.cards.set(id, { ...existing, status: String(message.status || 'idle') });
           break;
         }
@@ -727,20 +821,38 @@ fn mobile_pair_page_template() -> &'static str {
 
         const title = document.createElement('div');
         title.className = 'card-title';
-        title.textContent = `Session ${String(card.id || '').slice(0, 8) || 'unknown'}`;
+        title.textContent = card.projectName || `Session ${String(card.id || '').slice(0, 8) || 'unknown'}`;
+
+        const titleWrap = document.createElement('div');
+        titleWrap.style.minWidth = '0';
+        titleWrap.appendChild(title);
+        if (card.projectPath) {
+          const path = document.createElement('div');
+          path.className = 'card-path';
+          path.textContent = card.projectPath;
+          titleWrap.appendChild(path);
+        }
 
         const status = document.createElement('div');
         const statusValue = String(card.status || 'unknown');
         status.className = `pill ${statusValue}`;
         status.textContent = statusValue.replaceAll('_', ' ');
 
-        head.append(title, status);
+        head.append(titleWrap, status);
         item.appendChild(head);
+
+        const summary = String(card.summaryLine || '').trim();
+        if (summary) {
+          const summaryEl = document.createElement('div');
+          summaryEl.className = 'summary-line';
+          summaryEl.textContent = summary;
+          item.appendChild(summaryEl);
+        }
 
         const preview = document.createElement('div');
         preview.className = 'preview';
-        const lines = previewLines(card, 2);
-        if (lines.length === 0) lines.push('No preview yet.');
+        const lines = previewLines(card, 2, Boolean(summary));
+        if (lines.length === 0 && !summary) lines.push('No preview yet.');
         for (const line of lines) {
           const row = document.createElement('div');
           row.className = 'preview-line';
@@ -761,14 +873,23 @@ fn mobile_pair_page_template() -> &'static str {
     }
 
     function renderDetail(card) {
-      detailTitleEl.textContent = `Session ${String(card.id || '').slice(0, 12) || 'unknown'}`;
+      detailTitleEl.textContent = card.projectName || `Session ${String(card.id || '').slice(0, 12) || 'unknown'}`;
       const hidden = Number(card.hiddenLineCount || 0);
-      detailMetaEl.textContent = `${String(card.status || 'unknown').replaceAll('_', ' ')} · ${formatBytes(Number(card.recentOutputBytes || 0))} output${hidden > 0 ? ` · +${hidden} hidden lines` : ''}`;
+      const path = card.projectPath ? `${card.projectPath} · ` : '';
+      detailMetaEl.textContent = `${path}${String(card.status || 'unknown').replaceAll('_', ' ')} · session ${String(card.id || '').slice(0, 12) || 'unknown'} · ${formatBytes(Number(card.recentOutputBytes || 0))} output${hidden > 0 ? ` · +${hidden} hidden lines` : ''}`;
       readonlyNoticeEl.hidden = state.permission === 'full';
+      controlPanelEl.hidden = state.permission !== 'full';
 
       clearElement(detailPreviewEl);
-      const lines = previewLines(card, 12);
-      if (lines.length === 0) lines.push('No preview yet.');
+      const summary = String(card.summaryLine || '').trim();
+      if (summary) {
+        const summaryEl = document.createElement('div');
+        summaryEl.className = 'summary-line';
+        summaryEl.textContent = summary;
+        detailPreviewEl.appendChild(summaryEl);
+      }
+      const lines = previewLines(card, 12, Boolean(summary));
+      if (lines.length === 0 && !summary) lines.push('No preview yet.');
       for (const line of lines) {
         const row = document.createElement('div');
         row.className = 'preview-line';
@@ -785,6 +906,29 @@ fn mobile_pair_page_template() -> &'static str {
     function showList() {
       state.selectedCardId = null;
       render();
+    }
+
+    function canSendInput() {
+      return state.permission === 'full'
+        && state.selectedCardId
+        && state.socket
+        && state.socket.readyState === WebSocket.OPEN;
+    }
+
+    function sendInput(data) {
+      if (!data || !canSendInput()) return;
+      state.socket.send(JSON.stringify({
+        protocol_version: BRIDGE_PROTOCOL_VERSION,
+        kind: 'input',
+        card_id: state.selectedCardId,
+        data,
+      }));
+    }
+
+    function submitInput() {
+      const data = inputEl.value;
+      sendInput(data ? `${data}\r` : '\r');
+      inputEl.value = '';
     }
 
     function connectWebSocket() {
@@ -852,7 +996,7 @@ fn mobile_pair_page_template() -> &'static str {
         const response = await fetch('/pair', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ otp, deviceName: deviceName(), permission: 'read_only' }),
+          body: JSON.stringify({ otp, deviceName: deviceName(), permission: state.pairPermission }),
         });
 
         if (!response.ok) {
@@ -877,6 +1021,9 @@ fn mobile_pair_page_template() -> &'static str {
 
     retryEl.addEventListener('click', pair);
     backEl.addEventListener('click', showList);
+    sendInputEl.addEventListener('click', submitInput);
+    sendCtrlCEl.addEventListener('click', () => sendInput('\u0003'));
+    sendEscEl.addEventListener('click', () => sendInput('\u001b'));
     pair();
   </script>
 </body>
@@ -889,28 +1036,48 @@ mod tests {
 
     #[test]
     fn pair_landing_page_posts_otp_to_pair_endpoint() {
-        let html = pair_page_html(Some("123456"));
+        let html = pair_page_html(Some("123456"), "read_only");
 
         assert!(html.contains("ThreadTerm Mobile Pairing"));
         assert!(html.contains("const otp = \"123456\";"));
+        assert!(html.contains("const pairPermission = \"read_only\";"));
         assert!(html.contains("fetch('/pair'"));
         assert!(html.contains("deviceName"));
-        assert!(html.contains("permission: 'read_only'"));
+        assert!(html.contains("permission: state.pairPermission"));
         assert!(html.contains("new WebSocket"));
         assert!(html.contains("function applyServerMessage"));
         assert!(html.contains("function selectCard"));
+        assert!(html.contains("function sendInput"));
         assert!(html.contains("className = 'card session-card'"));
         assert!(html.contains("overflow-wrap: anywhere"));
         assert!(html.contains("id=\"cards\""));
+        assert!(html.contains("id=\"control-panel\""));
+        assert!(html.contains("placeholder=\"Type input and tap Send\""));
+        assert!(html.contains("projectName"));
+        assert!(html.contains("summaryLine"));
+        assert!(html.contains("function submitInput"));
+        assert!(html.contains("sendInput(data ? `${data}\\r` : '\\r')"));
+        assert!(html.contains("kind: 'input'"));
+        assert!(!html.contains("id=\"send-enter\""));
         assert!(!html.contains("JSON.stringify(await snapshot.json()"));
     }
 
     #[test]
     fn pair_landing_page_handles_missing_otp() {
-        let html = pair_page_html(None);
+        let html = pair_page_html(None, "read_only");
 
         assert!(html.contains("const otp = \"\";"));
         assert!(html.contains("localStorage.getItem(TOKEN_KEY)"));
         assert!(html.contains("Missing pairing code"));
+    }
+
+    #[test]
+    fn pair_landing_page_accepts_full_control_permission() {
+        let html = pair_page_html(Some("123456"), "full");
+
+        assert!(html.contains("const pairPermission = \"full\";"));
+        assert!(html.contains("controlPanelEl.hidden = state.permission !== 'full'"));
+        assert_eq!(normalize_pair_permission(Some("full")), "full");
+        assert_eq!(normalize_pair_permission(Some("admin")), "read_only");
     }
 }

@@ -148,6 +148,10 @@
     "permissions": {
       "read_only": "読み取り専用",
       "full": "完全操作"
+    },
+    "permissionMode": {
+      "label": "ペアリング権限",
+      "hint": "完全操作では、ペアリング済みデバイスからライブセッションへ入力できます。"
     }
   },
   "account": {

@@ -4,7 +4,7 @@ use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 
-use super::session::{LivePtySessionSnapshot, PtySession};
+use super::session::{self, LivePtySessionSnapshot, PtySession};
 
 /// Global map of active PTY sessions.
 static PTY_SESSIONS: Lazy<DashMap<String, Arc<PtySession>>> = Lazy::new(DashMap::new);
@@ -54,6 +54,9 @@ pub fn list_live_sessions() -> Vec<LivePtySessionSnapshot> {
             Some(LivePtySessionSnapshot {
                 id,
                 state,
+                working_dir: session._working_dir.clone(),
+                terminal_output: session::terminal_output_snapshot(session)
+                    .unwrap_or_else(|| recent_output.clone()),
                 recent_output,
             })
         })

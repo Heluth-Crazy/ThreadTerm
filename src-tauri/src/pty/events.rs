@@ -241,7 +241,8 @@ fn emit_pty_output_chunk(
         },
     );
     session::add_unacked(ses, data.as_bytes().len());
-    bridge::broadcast_preview(id, data);
+    let preview_source = session::terminal_output_snapshot(ses).unwrap_or_else(|| data.to_string());
+    bridge::broadcast_preview(id, &preview_source);
 
     // Keep raw PTY bytes so a second webview can replay the same terminal
     // control stream until backend screen snapshots are enabled.

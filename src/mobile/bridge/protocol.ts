@@ -14,7 +14,10 @@ export interface VersionedBridgeMessage {
 export interface CardMeta {
   id: string;
   status: TerminalStatus;
+  projectPath: string;
+  projectName: string;
   lastReplyPreview: string;
+  summaryLine: string | null;
   hiddenLineCount: number;
   recentOutputBytes: number;
 }
@@ -52,6 +55,7 @@ export type ServerCommand =
       kind: 'preview';
       card_id: string;
       last_reply_preview: string;
+      summary_line: string | null;
       hidden_line_count: number;
     }
   | { kind: 'state'; card_id: string; status: TerminalStatus }

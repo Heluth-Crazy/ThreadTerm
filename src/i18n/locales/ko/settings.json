@@ -148,6 +148,10 @@
     "permissions": {
       "read_only": "읽기 전용",
       "full": "전체 제어"
+    },
+    "permissionMode": {
+      "label": "페어링 권한",
+      "hint": "전체 제어는 페어링된 기기에서 실시간 세션에 입력할 수 있습니다."
     }
   },
   "account": {

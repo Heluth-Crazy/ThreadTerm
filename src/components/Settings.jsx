@@ -59,10 +59,10 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
 
   const containerClassName = embedded
     ? 'h-full overflow-y-auto bg-background'
-    : 'modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/95 p-4';
+    : 'modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/40 backdrop-blur-md p-4';
   const panelClassName = embedded
     ? 'mx-auto flex h-full w-full max-w-5xl flex-col bg-background'
-    : 'flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl md:h-[86vh]';
+    : 'flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-white/10 bg-background/80 backdrop-blur-2xl shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)] md:h-[86vh]';
   const contentPadding = embedded ? 'px-4 py-4 sm:px-6 lg:px-8' : 'p-4 md:p-6';
 
   const tabButtonClassName = (tab) => [
@@ -316,8 +316,8 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                           className={[
                             'group flex h-full min-h-[320px] flex-col rounded-xl border p-3 text-left transition-all',
                             isActive
-                              ? 'border-primary bg-primary/5 shadow-sm ring-1 ring-primary/20'
-                              : 'border-border/70 bg-background/60 hover:border-border hover:bg-background',
+                              ? 'border-primary/50 bg-primary/5 shadow-[0_0_20px_rgba(var(--primary),0.1)] ring-1 ring-primary/20'
+                              : 'border-white/5 bg-white/5 hover:border-white/20 hover:bg-white/10',
                           ].join(' ')}
                           aria-pressed={isActive}
                         >
