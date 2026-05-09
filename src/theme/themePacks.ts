@@ -1093,6 +1093,48 @@ const acmeMonoDark = mode(
   ]),
 );
 
+const botanicalLight = mode(
+  {
+    background: '#f8f9f2', // 柔和纸白
+    foreground: '#1a2e1a', // 深苔绿
+    card: '#f1f3e9',
+    cardForeground: '#1a2e1a',
+    popover: '#f1f3e9',
+    popoverForeground: '#1a2e1a',
+    primary: '#2d4d2d', // 苔藓绿
+    primaryForeground: '#f8f9f2',
+    secondary: '#e9e4d1', // 淡土褐
+    secondaryForeground: '#1a2e1a',
+    muted: '#f1f3e9',
+    mutedForeground: '#5c6b4a',
+    accent: '#4a90e2', // 天光蓝
+    accentForeground: '#ffffff',
+    destructive: '#a63d40',
+    destructiveForeground: '#ffffff',
+    border: '#d1d9c2',
+    input: '#d1d9c2',
+    ring: '#2d4d2d',
+  },
+  terminal('#f8f9f2', '#1a2e1a', '#2d4d2d', '#f8f9f2', '#e9e4d1', '#1a2e1a', [
+    '#1a2e1a',
+    '#a63d40',
+    '#2d4d2d',
+    '#8c7b3d',
+    '#4a90e2',
+    '#7b5c8c',
+    '#4a8c82',
+    '#d1d9c2',
+    '#5c6b4a',
+    '#c45c5e',
+    '#4a7b4a',
+    '#b3a35c',
+    '#6baae2',
+    '#9c8bb3',
+    '#6ba8a1',
+    '#ffffff',
+  ]),
+);
+
 export const themePacks: ThemePack[] = [
   {
     id: DEFAULT_THEME_PACK_ID,
@@ -1106,6 +1148,20 @@ export const themePacks: ThemePack[] = [
     modes: {
       light: threadtermLight,
       dark: threadtermDark,
+    },
+  },
+  {
+    id: 'botanical',
+    name: 'Botanical Garden',
+    description: 'Calm moss greens, paper textures, and sky blues for a healing workspace.',
+    attribution: {
+      kind: 'original',
+      sourceName: 'ThreadTerm',
+      sourceUrl: 'https://github.com/Heluth-Crazy/ThreadTerm',
+    },
+    modes: {
+      light: botanicalLight,
+      dark: botanicalLight, // For now, Botanical only has a light/paper mode
     },
   },
   {
