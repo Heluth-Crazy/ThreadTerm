@@ -56,7 +56,7 @@ export function CardFooter({
   // preview header so this row never overflows when the AI intent dropdown
   // is present.
   return (
-    <div className="flex shrink-0 items-center border-t border-white/10/40 bg-muted/20 px-2 py-1.5 overflow-hidden">
+    <div className="flex shrink-0 items-center border-t border-white/10/40 bg-muted/20 px-1.5 py-1.5 overflow-hidden">
       <div className="flex shrink-0 items-center">
         <CardActions
           pinned={pinned}
@@ -74,29 +74,29 @@ export function CardFooter({
         />
       </div>
 
-      <div className="flex min-w-0 flex-1 items-center px-1" title={attentionHint ?? undefined}>
+      <div className="flex min-w-0 flex-1 items-center justify-center px-0.5" title={attentionHint ?? undefined}>
         {attentionHint && (
           <span
-            className={`inline-flex min-w-0 items-center gap-0.5 text-[10px] ${
+            className={`inline-flex items-center gap-0.5 text-[10px] ${
               card.status === 'failed' ? 'text-red-500' : 'text-amber-600'
             }`}
           >
             {card.status === 'failed' ? (
-              <AlertCircle className="h-3 w-3 shrink-0" />
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
             ) : (
-              <BellRing className="h-3 w-3 shrink-0" />
+              <BellRing className="h-3.5 w-3.5 shrink-0" />
             )}
-            <span className="truncate hidden sm:inline-block">{attentionHint}</span>
+            {/* Never show text hint in grid cards footer, icons are enough for small space */}
           </span>
         )}
-        <div className="shrink-0">
+        <div className="shrink-0 scale-90">
           <AutoRestartStatus card={card} />
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-1 ml-auto">
+      <div className="flex shrink-0 items-center gap-0.5 ml-auto">
         {aiSessionBadge && (
-          <div className="max-w-[80px] sm:max-w-none">
+          <div className="max-w-[70px] sm:max-w-none overflow-hidden">
             <AiIntentSelect cardId={card.id} value={card.aiIntent} compact />
           </div>
         )}
@@ -104,7 +104,7 @@ export function CardFooter({
           type="button"
           title={t('card.close')}
           onClick={stopPropagation(onClose)}
-          className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+          className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors shrink-0"
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
