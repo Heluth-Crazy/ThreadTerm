@@ -148,13 +148,13 @@ export function CreateTerminalDialog({
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-terminal-title"
-          className="pointer-events-auto w-full max-w-md overflow-hidden rounded-xl border border-white/10 bg-background/80 backdrop-blur-2xl text-card-foreground shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)]"
+          className="pointer-events-auto w-full max-w-md overflow-hidden rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl text-card-foreground shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)]"
         >
               <form onSubmit={handleSubmit}>
               {/* Header */}
               <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
                 <div className="flex items-center gap-2">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-md)] bg-primary/10 text-primary">
                     <Terminal className="h-4 w-4" />
                   </div>
                   <h2 id="create-terminal-title" className="text-base font-semibold">{t('dialog.title')}</h2>
@@ -162,7 +162,7 @@ export function CreateTerminalDialog({
                 <button
                   type="button"
                   onClick={onClose}
-                  className="rounded-lg p-1 hover:bg-accent hover:text-accent-foreground"
+                  className="rounded-[var(--radius-md)] p-1 hover:bg-accent hover:text-accent-foreground"
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -200,21 +200,21 @@ export function CreateTerminalDialog({
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder={t('dialog.projectNamePlaceholder')}
-                    className="w-full rounded-lg border border-white/10 bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                    className="w-full rounded-[var(--radius-md)] border border-white/10 bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                   />
                   <div className="flex gap-1.5">
                     <input
                       value={path}
                       onChange={(e) => applyPath(e.target.value)}
                       placeholder={t('dialog.projectPathPlaceholder')}
-                      className="flex-1 rounded-lg border border-white/10 bg-background px-3 py-2 font-mono text-[12px] outline-none focus:ring-2 focus:ring-primary/30"
+                      className="flex-1 rounded-[var(--radius-md)] border border-white/10 bg-background px-3 py-2 font-mono text-[12px] outline-none focus:ring-2 focus:ring-primary/30"
                     />
                     <button
                       type="button"
                       onClick={handleBrowse}
                       disabled={!isTauriEnv()}
                       title={isTauriEnv() ? t('dialog.browseTitle') : t('dialog.browseDesktopOnly')}
-                      className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-white/10 bg-background px-2.5 py-2 text-[11px] font-medium hover:bg-accent hover:text-accent-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="inline-flex shrink-0 items-center gap-1 rounded-[var(--radius-md)] border border-white/10 bg-background px-2.5 py-2 text-[11px] font-medium hover:bg-accent hover:text-accent-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <FolderOpen className="h-3.5 w-3.5" />
                       {t('dialog.browse')}
@@ -235,7 +235,7 @@ export function CreateTerminalDialog({
                           type="button"
                           onClick={() => setType(key)}
                           className={[
-                            'flex flex-col items-center gap-1 rounded-lg border px-2 py-2 text-[10px] transition-colors',
+                            'flex flex-col items-center gap-1 rounded-[var(--radius-md)] border px-2 py-2 text-[10px] transition-colors',
                             selected
                               ? 'border-primary bg-primary/10 text-primary'
                               : 'border-white/10 hover:border-primary/40 hover:bg-accent/40',
@@ -259,7 +259,7 @@ export function CreateTerminalDialog({
                     value={command}
                     onChange={(e) => setCommand(e.target.value)}
                     placeholder={t('dialog.initialCommandPlaceholder')}
-                    className="w-full rounded-lg border border-white/10 bg-background px-3 py-2 font-mono text-[12px] outline-none focus:ring-2 focus:ring-primary/30"
+                    className="w-full rounded-[var(--radius-md)] border border-white/10 bg-background px-3 py-2 font-mono text-[12px] outline-none focus:ring-2 focus:ring-primary/30"
                   />
                   <p className="text-[10px] text-muted-foreground">
                     {t('dialog.defaultCommandHint')}
@@ -287,7 +287,7 @@ export function CreateTerminalDialog({
                         })
                       : t('dialog.browseDesktopOnly')
                   }
-                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-[var(--radius-md)] px-2.5 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Download className="h-3.5 w-3.5" />
                   {t('workflow.importWorkflowShort', { defaultValue: 'Import workflow' })}
@@ -296,14 +296,14 @@ export function CreateTerminalDialog({
                   <button
                     type="button"
                     onClick={onClose}
-                    className="rounded-lg px-3 py-1.5 text-sm hover:bg-accent"
+                    className="rounded-[var(--radius-md)] px-3 py-1.5 text-sm hover:bg-accent"
                   >
                     {t('dialog.cancel')}
                   </button>
                   <button
                     type="submit"
                     disabled={!canSubmit}
-                    className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    className="rounded-[var(--radius-md)] bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                   >
                     {t('dialog.create')}
                   </button>

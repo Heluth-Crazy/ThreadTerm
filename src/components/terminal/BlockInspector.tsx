@@ -295,7 +295,7 @@ export function BlockInspector({
           </div>
           <pre
             data-testid="block-inspector-output"
-            className="max-h-48 overflow-y-auto rounded-md border border-white/10 bg-muted/30 p-2 font-mono text-[10px] leading-relaxed whitespace-pre-wrap break-all"
+            className="max-h-48 overflow-y-auto rounded-[var(--radius-md)] border border-white/10 bg-muted/30 p-2 font-mono text-[10px] leading-relaxed whitespace-pre-wrap break-all"
           >
             {block.output}
           </pre>
@@ -309,7 +309,7 @@ export function BlockInspector({
           data-testid="block-inspector-explain"
           onClick={handleExplain}
           disabled={busy}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:cursor-wait disabled:opacity-60"
+          className="flex w-full items-center justify-center gap-1.5 rounded-[var(--radius-md)] border border-white/10 bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:cursor-wait disabled:opacity-60"
           title={t('block.explain', { defaultValue: 'Explain with AI' })}
         >
           {busy ? (

@@ -229,7 +229,7 @@ export function ProjectSidebar({
           type="button"
           onClick={() => setCollapsed((c) => !c)}
           title={collapsed ? t('sidebar.expand') : t('sidebar.collapse')}
-          className="ml-auto rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          className="ml-auto rounded-[var(--radius-md)] p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
         >
           {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
         </button>
@@ -294,13 +294,13 @@ export function ProjectSidebar({
       {contextMenu && (
         <div
           role="menu"
-          className="fixed z-[230] w-52 rounded-lg border border-white/10 bg-popover p-1 text-xs shadow-lg"
+          className="fixed z-[230] w-52 rounded-[var(--radius-md)] border border-white/10 bg-popover p-1 text-xs shadow-lg"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
             type="button"
             role="menuitem"
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
+            className="flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
             onClick={() => handleApplyPreset(contextMenu.path, contextMenu.name)}
           >
             <Play className="h-3.5 w-3.5" />
@@ -309,7 +309,7 @@ export function ProjectSidebar({
           <button
             type="button"
             role="menuitem"
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
+            className="flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
             onClick={() => handleImportWorkflow(contextMenu.path, contextMenu.name)}
           >
             <Download className="h-3.5 w-3.5" />
@@ -320,7 +320,7 @@ export function ProjectSidebar({
           <button
             type="button"
             role="menuitem"
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
+            className="flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
             onClick={() => handleEditPreset(contextMenu.path)}
           >
             <Pencil className="h-3.5 w-3.5" />
@@ -377,7 +377,7 @@ function SidebarRow({
       onContextMenu={onContextMenu}
       title={collapsed ? `${label} (${count})` : undefined}
       className={[
-        'group relative flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors',
+        'group relative flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left text-[12px] transition-colors',
         collapsed ? 'justify-center' : '',
         selected
           ? 'bg-primary/10 text-primary'

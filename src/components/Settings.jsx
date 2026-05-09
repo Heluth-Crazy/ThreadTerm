@@ -62,11 +62,11 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
     : 'modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/40 backdrop-blur-md p-4';
   const panelClassName = embedded
     ? 'mx-auto flex h-full w-full max-w-5xl flex-col bg-background'
-    : 'flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-white/10 bg-background/80 backdrop-blur-2xl shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)] md:h-[86vh]';
+    : 'flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)] md:h-[86vh]';
   const contentPadding = embedded ? 'px-4 py-4 sm:px-6 lg:px-8' : 'p-4 md:p-6';
 
   const tabButtonClassName = (tab) => [
-    'inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-colors',
+    'inline-flex items-center gap-2 rounded-[var(--radius)] px-3 py-2 text-sm font-medium transition-colors',
     activeTab === tab
       ? 'bg-background text-foreground shadow-sm'
       : 'text-muted-foreground hover:text-foreground',
@@ -135,7 +135,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
       <div className={panelClassName}>
         <div className="flex shrink-0 items-center justify-between border-b border-white/5 p-4 md:p-6 backdrop-blur-md bg-white/5">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted text-foreground">
+            <div className="flex h-10 w-10 items-center justify-center rounded-[var(--radius)] bg-muted text-foreground">
               <SettingsIcon className="h-5 w-5" />
             </div>
             <div>
@@ -151,7 +151,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
             <button
               type="button"
               onClick={onClose}
-              className="rounded-xl p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="rounded-[var(--radius)] p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
               aria-label={t('close', 'Close settings')}
             >
               <X className="h-5 w-5" />
@@ -160,7 +160,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
         </div>
 
         <div className="border-b border-white/5 px-4 py-2 md:px-6 backdrop-blur-sm bg-white/5">
-          <div className="inline-flex rounded-xl border border-white/10 bg-white/5 p-1">
+          <div className="inline-flex rounded-[var(--radius)] border border-white/10 bg-white/5 p-1">
             <button
               type="button"
               onClick={() => setActiveTab('appearance')}
@@ -200,7 +200,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
           <div className={contentPadding}>
             {activeTab === 'appearance' && (
               <div className="space-y-5">
-                <section className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
+                <section className="rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
                   <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                     <div>
                       <div className="font-medium text-foreground">
@@ -210,14 +210,14 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                         {t('appearanceSettings.mode.description')}
                       </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-2 rounded-xl border border-white/10/70 bg-muted/50 p-1">
+                    <div className="grid grid-cols-3 gap-2 rounded-[var(--radius)] border border-white/10/70 bg-muted/50 p-1">
                       {modeOptions.map(({ id, icon: Icon }) => (
                         <button
                           key={id}
                           type="button"
                           onClick={() => setThemeMode(id)}
                           className={[
-                            'inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-colors',
+                            'inline-flex items-center justify-center gap-2 rounded-[var(--radius)] px-3 py-2 text-sm font-medium transition-colors',
                             themeMode === id
                               ? 'bg-background text-foreground shadow-sm'
                               : 'text-muted-foreground hover:text-foreground',
@@ -232,7 +232,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                   </div>
                 </section>
 
-                <section className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
+                <section className="rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
                   <div className="mb-4 flex flex-col gap-3 md:flex-row md:flex-wrap md:items-start md:justify-between">
                     <div>
                       <div className="font-medium text-foreground">
@@ -253,7 +253,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                       <button
                         type="button"
                         onClick={() => themeFileInputRef.current?.click()}
-                        className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
+                        className="inline-flex items-center gap-2 rounded-[var(--radius)] border border-white/10 bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
                       >
                         <Upload className="h-4 w-4" />
                         {t('appearanceSettings.themePack.importJson')}
@@ -261,7 +261,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                       <button
                         type="button"
                         onClick={() => downloadThemePack(themePackId)}
-                        className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
+                        className="inline-flex items-center gap-2 rounded-[var(--radius)] border border-white/10 bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
                       >
                         <Download className="h-4 w-4" />
                         {t('appearanceSettings.themePack.exportCurrent')}
@@ -270,7 +270,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                     {themeImportStatus && (
                       <div
                         className={[
-                          'basis-full rounded-xl border px-3 py-2 text-sm',
+                          'basis-full rounded-[var(--radius)] border px-3 py-2 text-sm',
                           themeImportStatus.type === 'error'
                             ? 'border-destructive/40 bg-destructive/10 text-destructive'
                             : 'border-primary/30 bg-primary/10 text-foreground',
@@ -314,7 +314,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                             }
                           }}
                           className={[
-                            'group flex h-full min-h-[320px] flex-col rounded-xl border p-3 text-left transition-all',
+                            'group flex h-full min-h-[320px] flex-col rounded-[var(--radius)] border p-3 text-left transition-all',
                             isActive
                               ? 'border-primary/50 bg-primary/5 shadow-[0_0_20px_rgba(var(--primary),0.1)] ring-1 ring-primary/20'
                               : 'border-white/5 bg-white/5 hover:border-white/20 hover:bg-white/10',
@@ -354,13 +354,13 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                             </span>
                           </div>
 
-                          <div className="mt-auto overflow-hidden rounded-xl border border-white/10">
+                          <div className="mt-auto overflow-hidden rounded-[var(--radius)] border border-white/10">
                             <div
                               className="flex h-12 items-center gap-2 px-3"
                               style={{ backgroundColor: tokens.app.background, color: tokens.app.foreground }}
                             >
                               <span
-                                className="h-6 w-10 rounded-lg border"
+                                className="h-6 w-10 rounded-[var(--radius-md)] border"
                                 style={{
                                   backgroundColor: tokens.app.card,
                                   borderColor: tokens.app.border,
@@ -425,7 +425,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                             <button
                               type="button"
                               onClick={(event) => handleDeleteCustomTheme(event, pack)}
-                              className="mt-2 inline-flex w-fit items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/10"
+                              className="mt-2 inline-flex w-fit items-center gap-1 rounded-[var(--radius-md)] px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/10"
                             >
                               <Trash2 className="h-3 w-3" />
                               {t('appearanceSettings.themePack.delete')}

@@ -53,7 +53,7 @@ function ShellRow({
     : t('commandBlocks.notInstalled');
 
   return (
-    <div className="rounded-xl border border-white/10 bg-background/70 p-3">
+    <div className="rounded-[var(--radius)] border border-white/10 bg-background/70 p-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -117,7 +117,7 @@ function ShellRow({
               <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 {t('commandBlocks.diffTitle')}
               </div>
-              <pre className="mt-1 max-h-64 overflow-auto rounded-lg border border-white/10 bg-white/5 backdrop-blur-md/60 p-2 font-mono text-[11px] leading-5 text-foreground">
+              <pre className="mt-1 max-h-64 overflow-auto rounded-[var(--radius-md)] border border-white/10 bg-white/5 backdrop-blur-md/60 p-2 font-mono text-[11px] leading-5 text-foreground">
                 {preview.diff}
               </pre>
             </div>
@@ -253,7 +253,7 @@ export function CommandBlocksSettings() {
   }, [detectedShell, t]);
 
   return (
-    <section className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
+    <section className="rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2">

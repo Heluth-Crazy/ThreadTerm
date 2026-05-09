@@ -39,7 +39,7 @@ export function CardPreviewPanel({ preview, activeFor, messageCount }: CardPrevi
     return (
       <div
         data-testid="card-preview-empty"
-        className="flex h-full min-h-[120px] items-center justify-center overflow-hidden rounded-lg border border-white/10/40 px-3 text-[11px] italic opacity-65"
+        className="flex h-full min-h-[120px] items-center justify-center overflow-hidden rounded-[var(--radius-md)] border border-white/10/40 px-3 text-[11px] italic opacity-65"
         style={terminalSurfaceStyle}
       >
         {t('card.noOutput')}
@@ -51,7 +51,7 @@ export function CardPreviewPanel({ preview, activeFor, messageCount }: CardPrevi
 
   return (
     <div
-      className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-white/10/50 shadow-inner"
+      className="flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius-md)] border border-white/10/50 shadow-inner"
       style={terminalSurfaceStyle}
     >
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10/30 px-2.5 py-1 text-[10px]">
@@ -98,7 +98,7 @@ export function CardPreviewPanel({ preview, activeFor, messageCount }: CardPrevi
               <div
                 key={`${line}-${index}`}
                 className={[
-                  'line-clamp-2 whitespace-pre-wrap break-words rounded-sm',
+                  'line-clamp-2 whitespace-pre-wrap break-words rounded-[var(--radius-sm)]',
                   getLineTone(line),
                   isTechnicalPreviewLine(line)
                     ? 'bg-[color-mix(in_srgb,var(--terminal-foreground)_8%,transparent)] px-1'

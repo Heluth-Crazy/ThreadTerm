@@ -114,7 +114,7 @@ export function NotificationCenter() {
                   title={t('notifications.markAllRead')}
                   onClick={markAll}
                   disabled={unreadCount === 0}
-                  className="rounded-lg p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-40"
+                  className="rounded-[var(--radius-md)] p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-40"
                 >
                   <CheckCheck className="h-4 w-4" />
                 </button>
@@ -123,14 +123,14 @@ export function NotificationCenter() {
                   title={t('notifications.clearAll')}
                   onClick={clearAll}
                   disabled={notifications.length === 0}
-                  className="rounded-lg p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+                  className="rounded-[var(--radius-md)] p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
                 <button
                   type="button"
                   onClick={() => toggle(false)}
-                  className="rounded-lg p-1.5 hover:bg-accent hover:text-accent-foreground"
+                  className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
                 >
                   <X className="h-4 w-4" />
                 </button>
