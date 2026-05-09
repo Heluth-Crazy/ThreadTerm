@@ -57,6 +57,46 @@
     --ring: 212.7 26.8% 83.9%;
   }
 
+  @layer utilities {
+    .glass-border {
+      position: relative;
+    }
+    .glass-border::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      padding: 1px;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.02) 50%, rgba(255, 255, 255, 0.05));
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask-composite: exclude;
+      pointer-events: none;
+    }
+    .glass-reflection {
+      position: relative;
+      overflow: hidden;
+    }
+    .glass-reflection::after {
+      content: "";
+      position: absolute;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.05) 0%, transparent 60%);
+      pointer-events: none;
+    }
+    .shadow-studio {
+      box-shadow: 
+        0 0 0 1px rgba(255, 255, 255, 0.05),
+        0 10px 15px -3px rgba(0, 0, 0, 0.4),
+        0 4px 6px -4px rgba(0, 0, 0, 0.4),
+        0 25px 50px -12px rgba(0, 0, 0, 0.6);
+    }
+  }
+
   * {
     @apply border-border;
     box-sizing: border-box;

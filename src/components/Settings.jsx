@@ -62,7 +62,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
     : 'modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/40 backdrop-blur-md p-4';
   const panelClassName = embedded
     ? 'mx-auto flex h-full w-full max-w-5xl flex-col bg-background'
-    : 'flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)] md:h-[86vh]';
+    : 'flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl shadow-studio glass-reflection md:h-[86vh]';
   const contentPadding = embedded ? 'px-4 py-4 sm:px-6 lg:px-8' : 'p-4 md:p-6';
 
   const tabButtonClassName = (tab) => [

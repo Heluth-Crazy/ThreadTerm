@@ -12,6 +12,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Search } from 'lucide-react';
 import { fuzzyFilter, type CommandEntry, type CommandGroup } from './commandRegistry';
 
 export interface CommandPaletteProps {
@@ -140,7 +141,7 @@ export function CommandPalette({
       <div
         role="dialog"
         aria-label={t('palette.label', { defaultValue: 'Command palette' })}
-        className="w-full max-w-xl rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)]"
+        className="w-full max-w-xl rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl shadow-studio glass-reflection"
         onClick={(e) => e.stopPropagation()}
       >
         <input
@@ -156,8 +157,16 @@ export function CommandPalette({
         />
 
         {filtered.length === 0 ? (
-          <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-            {t('palette.empty', { defaultValue: 'No matches' })}
+          <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/5 border border-white/10 mb-4 shadow-sm">
+              <Search className="h-5 w-5 text-muted-foreground/50" />
+            </div>
+            <div className="text-sm font-medium text-foreground/80 mb-1">
+              {t('palette.emptyTitle', { defaultValue: 'No matches found' })}
+            </div>
+            <div className="text-xs text-muted-foreground/60 max-w-[240px]">
+              {t('palette.emptyDescription', { defaultValue: 'Try a different command or search term.' })}
+            </div>
           </div>
         ) : (
           <ul role="listbox" className="max-h-[50vh] overflow-y-auto p-1">

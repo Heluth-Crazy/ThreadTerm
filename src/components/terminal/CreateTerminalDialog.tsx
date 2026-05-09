@@ -148,7 +148,7 @@ export function CreateTerminalDialog({
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-terminal-title"
-          className="pointer-events-auto w-full max-w-md overflow-hidden rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl text-card-foreground shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)]"
+          className="pointer-events-auto w-full max-w-md overflow-hidden rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl text-card-foreground shadow-studio glass-reflection"
         >
               <form onSubmit={handleSubmit}>
               {/* Header */}
