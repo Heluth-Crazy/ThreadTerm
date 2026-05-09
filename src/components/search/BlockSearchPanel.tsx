@@ -76,7 +76,7 @@ export function BlockSearchPanel({ open, onClose, onJump }: BlockSearchPanelProp
       <div
         role="dialog"
         aria-label={t('search.label', { defaultValue: 'Search blocks' })}
-        className="w-full max-w-2xl rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)]"
+        className="w-full max-w-2xl rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl shadow-studio glass-reflection"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 border-b border-white/5 px-3 py-3">
@@ -99,14 +99,32 @@ export function BlockSearchPanel({ open, onClose, onJump }: BlockSearchPanelProp
         </div>
 
         {!query.trim() ? (
-          <div className="px-3 py-8 text-center text-xs text-muted-foreground">
-            {t('search.placeholderEmpty', {
-              defaultValue: 'Type to search across all blocks',
-            })}
+          <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white/5 border border-white/10 mb-5 shadow-sm">
+              <Search className="h-6 w-6 text-muted-foreground/40" />
+            </div>
+            <div className="text-sm font-medium text-foreground/70 mb-1.5 tracking-tight">
+              {t('search.placeholderEmptyTitle', {
+                defaultValue: 'Search blocks',
+              })}
+            </div>
+            <div className="text-xs text-muted-foreground/50 max-w-[280px] leading-relaxed">
+              {t('search.placeholderEmptyDesc', {
+                defaultValue: 'Find commands, output, or project paths across all your terminal sessions.',
+              })}
+            </div>
           </div>
         ) : matches.length === 0 && !loading ? (
-          <div className="px-3 py-8 text-center text-xs text-muted-foreground">
-            {t('search.empty', { defaultValue: 'No matches' })}
+          <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white/5 border border-white/10 mb-5 shadow-sm">
+              <Search className="h-6 w-6 text-muted-foreground/30" />
+            </div>
+            <div className="text-sm font-medium text-foreground/70 mb-1.5 tracking-tight">
+              {t('search.emptyTitle', { defaultValue: 'No matches found' })}
+            </div>
+            <div className="text-xs text-muted-foreground/50 max-w-[280px] leading-relaxed">
+              {t('search.emptyDesc', { defaultValue: `We couldn't find anything matching "${query}".` })}
+            </div>
           </div>
         ) : (
           <ul role="listbox" className="max-h-[55vh] overflow-y-auto p-1">
