@@ -69,20 +69,20 @@ export const SelectorCard = memo(function SelectorCard({
     <motion.div
       onClick={onClick}
       onDoubleClick={onDoubleClick}
-      whileHover={{ y: -2 }}
-      transition={{ type: 'tween', duration: 0.15 }}
+      whileHover={{ y: -4, scale: size === 'lead' ? 1.01 : 1.05 }}
+      transition={{ type: 'spring', damping: 20, stiffness: 300 }}
       className={[
-        'group relative flex flex-col overflow-hidden rounded-2xl border bg-card text-card-foreground shadow-xl cursor-pointer',
-        'backdrop-blur-md',
+        'group relative flex flex-col overflow-hidden rounded-[var(--radius)] border text-card-foreground transition-all duration-300 cursor-pointer glass-reflection',
+        'backdrop-blur-2xl',
         dims,
         selected
-          ? 'border-primary ring-4 ring-primary/40 shadow-2xl'
-          : 'border-border/70 hover:border-primary/50',
+          ? 'border-primary/50 bg-background/80 shadow-studio ring-1 ring-primary/20'
+          : 'border-white/5 bg-white/5 hover:border-white/20 hover:bg-white/10',
       ].join(' ')}
     >
       {/* Header */}
-      <div className="flex items-center gap-2 border-b border-border/60 px-3 pb-2 pt-3">
-        <div className={`flex h-8 w-8 items-center justify-center rounded-lg bg-muted ${typeMeta.accent}`}>
+      <div className="flex items-center gap-2 border-b border-white/5 px-3 pb-2 pt-3 bg-white/5 backdrop-blur-sm">
+        <div className={`flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] bg-primary/10 ${typeMeta.accent}`}>
           <TypeIcon className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
@@ -94,10 +94,10 @@ export const SelectorCard = memo(function SelectorCard({
             {typeof indexLabel === 'number' && size === 'tile' && (
               <kbd
                 className={[
-                  'ml-auto shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none',
+                  'ml-auto shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none shadow-sm',
                   selected
-                    ? 'border-primary/30 bg-primary/10 text-primary'
-                    : 'border-border/70 bg-muted text-muted-foreground',
+                    ? 'border-primary/30 bg-primary/20 text-primary'
+                    : 'border-white/10 bg-white/5 text-muted-foreground',
                 ].join(' ')}
               >
                 {indexLabel}
@@ -162,9 +162,9 @@ export const SelectorCard = memo(function SelectorCard({
       </div>
 
       {/* Footer */}
-      <div className="flex items-center gap-2 border-t border-border/40 bg-muted/30 px-3 py-1.5 text-[10px] text-muted-foreground">
+      <div className="flex items-center gap-2 border-t border-white/5 bg-white/5 px-3 py-2 text-[10px] text-muted-foreground backdrop-blur-sm">
         <span
-          className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${statusInfo.chip}`}
+          className={`inline-flex items-center rounded-full px-2 py-0.5 font-bold uppercase tracking-wider text-[9px] ${statusInfo.chip} bg-opacity-20`}
         >
           {t(`status.${card.status}`, statusInfo.label)}
         </span>
