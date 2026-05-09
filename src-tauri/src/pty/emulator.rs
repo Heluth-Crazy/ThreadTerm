@@ -16,6 +16,61 @@ pub(super) struct TerminalSnapshotPayload {
     pub(super) history: Option<String>,
 }
 
+/// Returns true when the wezterm-serialized payload would render as an empty
+/// screen — no scrollback history and `data` is nothing but cursor positioning
+/// escapes (and optional whitespace). This happens when wezterm's current
+/// screen has no visible cells (e.g. immediately after construction, or while
+/// a CLI is in a long-running quiet phase such as an upgrade install). Callers
+/// can fall back to a raw byte buffer in that case so the freshly-attached
+/// xterm does not render a black screen.
+pub(super) fn is_visually_empty_payload(payload: &TerminalSnapshotPayload) -> bool {
+    if payload
+        .history
+        .as_deref()
+        .map(|history| !history.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    let stripped = strip_cursor_position_escapes(&payload.data);
+    stripped.trim().is_empty()
+}
+
+/// Removes `\x1b[H`, `\x1b[<row>;<col>H`, and `\x1b[<row>;<col>f` cursor
+/// positioning sequences from `data`. Anything else (text, SGR attributes,
+/// other CSI sequences) is preserved so the visually-empty check stays
+/// conservative.
+fn strip_cursor_position_escapes(data: &str) -> String {
+    let bytes = data.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            let mut j = i + 2;
+            let params_start = j;
+            while j < bytes.len() {
+                let c = bytes[j];
+                if c.is_ascii_digit() || c == b';' {
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            if j < bytes.len() && (bytes[j] == b'H' || bytes[j] == b'f') {
+                let params = &bytes[params_start..j];
+                if params.is_empty() || params.iter().all(|c| c.is_ascii_digit() || *c == b';') {
+                    i = j + 1;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[derive(Debug)]
 struct WeztermConfig {
     scrollback_limit: usize,
@@ -368,7 +423,51 @@ fn serialize_screen_to_ansi_segments(
 
 #[cfg(test)]
 mod tests {
-    use super::TerminalSnapshot;
+    use super::{is_visually_empty_payload, TerminalSnapshot, TerminalSnapshotPayload};
+
+    #[test]
+    fn payload_visually_empty_when_only_cursor_positioning() {
+        let snapshot = TerminalSnapshot::new(24, 80, 2000);
+        let payload = snapshot.snapshot_ansi();
+
+        assert!(is_visually_empty_payload(&payload));
+    }
+
+    #[test]
+    fn payload_visually_empty_when_only_control_bytes_applied() {
+        // Control sequences that toggle cursor visibility leave no visible
+        // cells; the payload should still be classified as empty.
+        let mut snapshot = TerminalSnapshot::new(24, 80, 2000);
+        snapshot.apply_output(b"\x1b[?25l\x1b[?25h");
+
+        let payload = snapshot.snapshot_ansi();
+
+        assert!(is_visually_empty_payload(&payload));
+    }
+
+    #[test]
+    fn payload_not_visually_empty_when_data_has_text() {
+        let mut snapshot = TerminalSnapshot::new(24, 80, 2000);
+        snapshot.apply_output(b"hello");
+
+        let payload = snapshot.snapshot_ansi();
+
+        assert!(!is_visually_empty_payload(&payload));
+    }
+
+    #[test]
+    fn payload_not_visually_empty_when_history_has_text() {
+        let payload = TerminalSnapshotPayload {
+            data: "\x1b[1;1H".to_string(),
+            rows: 24,
+            cols: 80,
+            cursor_row: 1,
+            cursor_col: 1,
+            history: Some("scrollback line\r\n".to_string()),
+        };
+
+        assert!(!is_visually_empty_payload(&payload));
+    }
 
     #[test]
     fn snapshot_contains_visible_output_and_cursor_position() {

@@ -10,6 +10,7 @@
 import { useCallback, useMemo } from 'react';
 import { FolderOpen, Plus, TerminalSquare } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { motion } from 'framer-motion';
 import { isTauriEnv } from '../../lib/tauri-bridge';
 import { openLocalDirectory } from '../../lib/localDirectory';
 import { useTerminalStore } from '../../stores/terminalStore';
@@ -127,33 +128,34 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   }
 
   return (
-    <div className="grid h-full auto-rows-[260px] grid-cols-1 items-start gap-3 overflow-auto p-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+    <div className="flex h-full w-full flex-wrap content-start items-stretch gap-6 overflow-y-auto p-6 md:p-8">
       {visibleCards.map((card) => (
-        <div key={card.id} className="h-full self-start">
+        <div key={card.id} className="h-[280px] w-full sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] xl:w-[calc(25%-18px)]">
           <TerminalCardComponent
             card={card}
-            isFocused={card.id === focusedCardId}
-            onClick={() => focusCard(card.id)}
-            onDoubleClick={() => onOpenTerminal?.(card.id)}
-            onClose={() => removeCard(card.id)}
-            onCopyCwd={() => handleCopyCwd(card.projectPath)}
-            onOpenDir={() => handleOpenDir(card.projectPath)}
+            isFocused={focusedCardId === card.id}
+            onClick={() => onOpenTerminal(card.id)}
           />
         </div>
       ))}
 
-      {/* Add new tile */}
-      <button
+      {/* New Terminal Placeholder */}
+      <motion.button
         type="button"
         onClick={onCreateTerminal}
-        className="flex h-full flex-col items-center justify-center gap-2 rounded-[var(--radius)] border-2 border-dashed border-white/10 text-muted-foreground hover:border-primary/60 hover:bg-accent/30 hover:text-primary"
+        whileHover={{ y: -4, scale: 1.01 }}
+        transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+        className="group relative flex h-[280px] w-full flex-col items-center justify-center gap-3 overflow-hidden rounded-[var(--radius)] border border-dashed border-white/10 bg-white/[0.02] text-muted-foreground transition-all duration-300 hover:border-primary/40 hover:bg-white/[0.05] hover:text-primary sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] xl:w-[calc(25%-18px)] glass-reflection"
       >
-        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+        <div className="absolute inset-0 bg-grid opacity-[0.03] pointer-events-none" />
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/5 border border-primary/10 transition-transform duration-500 group-hover:scale-110 group-hover:bg-primary/10">
           <Plus className="h-6 w-6" />
         </div>
-        <span className="text-sm font-medium">{t('app.newTerminal')}</span>
-        <span className="text-[10px] text-muted-foreground/70">⌘/Ctrl + N</span>
-      </button>
+        <div className="text-center">
+          <div className="text-sm font-semibold tracking-tight">{t('app.newTerminal')}</div>
+          <div className="mt-1 text-[10px] opacity-60 font-mono">⌘/Ctrl + N</div>
+        </div>
+      </motion.button>
     </div>
   );
 }

@@ -213,15 +213,15 @@ export function ProjectSidebar({
   return (
     <aside
       className={[
-        'flex h-full shrink-0 flex-col border-r border-white/10 bg-muted/20 transition-all duration-200',
-        collapsed ? 'w-12' : 'w-60',
+        'flex h-full shrink-0 flex-col etched-border-r bg-white/5 backdrop-blur-2xl transition-all duration-300 ease-in-out',
+        collapsed ? 'w-14' : 'w-64',
         className,
       ].join(' ')}
     >
       {/* Header */}
-      <div className="flex h-10 items-center justify-between border-b border-white/10 px-2">
+      <div className="flex h-12 items-center justify-between etched-border-b px-3">
         {!collapsed && (
-          <span className="pl-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <span className="pl-1 text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
             {t('sidebar.projects')}
           </span>
         )}
@@ -383,22 +383,26 @@ function SidebarRow({
           ? 'bg-primary/10 text-primary'
           : 'text-foreground/80 hover:bg-accent hover:text-accent-foreground',
       ].join(' ')}
-      style={collapsed ? undefined : { marginLeft: 4, marginRight: 4, width: 'calc(100% - 8px)' }}
+      style={collapsed ? undefined : { marginLeft: 8, marginRight: 8, width: 'calc(100% - 16px)' }}
     >
-      <span className="relative shrink-0">
+      <div className={[
+        'absolute inset-0 rounded-inherit transition-opacity duration-300',
+        selected ? 'bg-primary/10 opacity-100' : 'bg-white/5 opacity-0 group-hover:opacity-100'
+      ].join(' ')} />
+      <span className="relative z-10 shrink-0">
         {icon}
         {unread > 0 && (
-          <span className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-amber-500" />
+          <span className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.6)]" />
         )}
       </span>
 
       {!collapsed && (
         <>
-          <span className="flex-1 min-w-0">
-            <span className="block truncate font-medium">{label}</span>
+          <span className="relative z-10 flex-1 min-w-0">
+            <span className={['block truncate font-semibold tracking-tight', selected ? 'text-primary' : 'text-foreground/90'].join(' ')}>{label}</span>
             {subLabel && (
               <span
-                className="block truncate text-[10px] text-muted-foreground"
+                className="block truncate text-[9px] font-mono text-muted-foreground/50 mt-0.5"
                 title={subLabel}
               >
                 {subLabel}
@@ -407,8 +411,8 @@ function SidebarRow({
           </span>
           <span
             className={[
-              'shrink-0 rounded-full px-1.5 py-0.5 text-[10px] tabular-nums',
-              selected ? 'bg-primary/20 text-primary' : 'bg-muted text-muted-foreground',
+              'relative z-10 shrink-0 rounded-full px-2 py-0.5 text-[9px] font-bold tabular-nums',
+              selected ? 'bg-primary text-primary-foreground' : 'bg-white/10 text-muted-foreground',
             ].join(' ')}
           >
             {count}
@@ -422,7 +426,7 @@ function SidebarRow({
                 if (e.key === 'Enter' || e.key === ' ') onAux(e as unknown as MouseEvent);
               }}
               title={auxTitle}
-              className="opacity-0 transition-opacity hover:text-primary group-hover:opacity-100"
+              className="relative z-10 opacity-0 transition-opacity hover:text-primary group-hover:opacity-100 ml-1"
             >
               <FolderOpen className="h-3 w-3" />
             </span>
