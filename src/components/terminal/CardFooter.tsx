@@ -56,26 +56,28 @@ export function CardFooter({
   // preview header so this row never overflows when the AI intent dropdown
   // is present.
   return (
-    <div className="flex shrink-0 items-center gap-1.5 border-t border-white/10/40 bg-muted/20 px-3 py-2">
-      <CardActions
-        pinned={pinned}
-        pinFull={pinFull}
-        onCopyCwd={onCopyCwd}
-        onOpenDir={onOpenDir}
-        onTogglePin={onTogglePin}
-        autoRestartEnabled={autoRestartEnabled}
-        autoRestartMaxRetries={autoRestartMaxRetries}
-        onToggleAutoRestart={onToggleAutoRestart}
-        onChangeAutoRestartMaxRetries={onChangeAutoRestartMaxRetries}
-        onExportAiSession={onExportAiSession}
-        aiSessionExporting={aiSessionExporting}
-        aiSessionExportStatus={aiSessionExportStatus}
-      />
+    <div className="flex shrink-0 items-center border-t border-white/10/40 bg-muted/20 px-2 py-1.5 overflow-hidden">
+      <div className="flex shrink-0 items-center">
+        <CardActions
+          pinned={pinned}
+          pinFull={pinFull}
+          onCopyCwd={onCopyCwd}
+          onOpenDir={onOpenDir}
+          onTogglePin={onTogglePin}
+          autoRestartEnabled={autoRestartEnabled}
+          autoRestartMaxRetries={autoRestartMaxRetries}
+          onToggleAutoRestart={onToggleAutoRestart}
+          onChangeAutoRestartMaxRetries={onChangeAutoRestartMaxRetries}
+          onExportAiSession={onExportAiSession}
+          aiSessionExporting={aiSessionExporting}
+          aiSessionExportStatus={aiSessionExportStatus}
+        />
+      </div>
 
-      <div className="flex min-w-0 flex-1 items-center gap-1" title={attentionHint ?? undefined}>
+      <div className="flex min-w-0 flex-1 items-center px-1" title={attentionHint ?? undefined}>
         {attentionHint && (
           <span
-            className={`inline-flex min-w-0 max-w-full items-center gap-0.5 truncate text-[10px] ${
+            className={`inline-flex min-w-0 items-center gap-0.5 text-[10px] ${
               card.status === 'failed' ? 'text-red-500' : 'text-amber-600'
             }`}
           >
@@ -84,25 +86,29 @@ export function CardFooter({
             ) : (
               <BellRing className="h-3 w-3 shrink-0" />
             )}
-            <span className="truncate">{attentionHint}</span>
+            <span className="truncate hidden sm:inline-block">{attentionHint}</span>
           </span>
         )}
-        <AutoRestartStatus card={card} />
+        <div className="shrink-0">
+          <AutoRestartStatus card={card} />
+        </div>
       </div>
 
-      {aiSessionBadge && (
-        <div className="shrink-0">
-          <AiIntentSelect cardId={card.id} value={card.aiIntent} compact />
-        </div>
-      )}
-      <button
-        type="button"
-        title={t('card.close')}
-        onClick={stopPropagation(onClose)}
-        className="shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-      >
-        <Trash2 className="h-3 w-3" />
-      </button>
+      <div className="flex shrink-0 items-center gap-1 ml-auto">
+        {aiSessionBadge && (
+          <div className="max-w-[80px] sm:max-w-none">
+            <AiIntentSelect cardId={card.id} value={card.aiIntent} compact />
+          </div>
+        )}
+        <button
+          type="button"
+          title={t('card.close')}
+          onClick={stopPropagation(onClose)}
+          className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
     </div>
   );
 }
