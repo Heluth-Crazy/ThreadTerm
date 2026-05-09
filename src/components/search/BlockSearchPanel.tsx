@@ -70,16 +70,16 @@ export function BlockSearchPanel({ open, onClose, onJump }: BlockSearchPanelProp
 
   return (
     <div
-      className="fixed inset-0 z-[200] flex items-start justify-center bg-black/40 pt-[12vh]"
+      className="fixed inset-0 z-[200] flex items-start justify-center bg-background/40 backdrop-blur-md pt-[12vh]"
       onClick={onClose}
     >
       <div
         role="dialog"
         aria-label={t('search.label', { defaultValue: 'Search blocks' })}
-        className="w-full max-w-2xl rounded-xl border border-border bg-popover shadow-2xl"
+        className="w-full max-w-2xl rounded-xl border border-white/10 bg-background/80 backdrop-blur-2xl shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)]"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
+        <div className="flex items-center gap-2 border-b border-white/5 px-3 py-3">
           <Search className="h-4 w-4 text-muted-foreground" />
           <input
             ref={inputRef}
@@ -89,7 +89,7 @@ export function BlockSearchPanel({ open, onClose, onJump }: BlockSearchPanelProp
             placeholder={t('search.placeholder', {
               defaultValue: 'Search across all blocks (commands, paths, projects)…',
             })}
-            className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+            className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground transition-all focus:bg-white/5"
           />
           {loading && (
             <span className="text-[10px] text-muted-foreground">
@@ -118,22 +118,21 @@ export function BlockSearchPanel({ open, onClose, onJump }: BlockSearchPanelProp
                 onClick={() => onJump({ cardId: card.id, blockId: block.id })}
               >
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-mono text-[11px]">{block.command}</div>
+                  <div className="truncate font-mono text-[11px] font-medium text-primary/90">{block.command}</div>
                   {matchedLine && (
-                    <div className="truncate font-mono text-[10px] text-muted-foreground/80">
+                    <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/80 leading-relaxed">
                       ↳ {matchedLine}
                     </div>
                   )}
-                  <div className="flex items-center gap-1.5 truncate text-[10px] text-muted-foreground">
-                    <Folder className="h-3 w-3 shrink-0" />
-                    <span className="truncate">{card.projectName}</span>
+                  <div className="mt-1.5 flex items-center gap-2 truncate text-[10px] text-muted-foreground/70">
+                    <div className="flex items-center gap-1">
+                      <Folder className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{card.projectName}</span>
+                    </div>
                     <span>·</span>
-                    <span className="truncate">{block.cwd}</span>
-                    {/* Right-side meta cluster: pinned with `ml-auto` on the
-                        cluster wrapper (not on a single child) so future
-                        items can be added without re-shuffling pins. */}
-                    <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                      <span className="rounded bg-muted px-1 py-0.5 text-[9px] uppercase">
+                    <span className="truncate font-mono text-[9px]">{block.cwd}</span>
+                    <span className="ml-auto flex shrink-0 items-center gap-2">
+                      <span className="rounded border border-primary/20 bg-primary/5 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-primary">
                         {t(`search.field.${field}`, { defaultValue: field })}
                       </span>
                       {/* Task 4 — start-time hint (HH:MM). startedAt is

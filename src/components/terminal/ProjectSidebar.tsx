@@ -213,13 +213,13 @@ export function ProjectSidebar({
   return (
     <aside
       className={[
-        'flex h-full shrink-0 flex-col border-r border-border bg-muted/20 transition-all duration-200',
+        'flex h-full shrink-0 flex-col border-r border-white/10 bg-muted/20 transition-all duration-200',
         collapsed ? 'w-12' : 'w-60',
         className,
       ].join(' ')}
     >
       {/* Header */}
-      <div className="flex h-10 items-center justify-between border-b border-border px-2">
+      <div className="flex h-10 items-center justify-between border-b border-white/10 px-2">
         {!collapsed && (
           <span className="pl-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             {t('sidebar.projects')}
@@ -248,7 +248,7 @@ export function ProjectSidebar({
         />
 
         {groups.length > 0 && !collapsed && (
-          <div className="mx-2 my-1.5 border-t border-border/60" />
+          <div className="mx-2 my-1.5 border-t border-white/10/60" />
         )}
 
         {groups.map((g) => (
@@ -294,7 +294,7 @@ export function ProjectSidebar({
       {contextMenu && (
         <div
           role="menu"
-          className="fixed z-[230] w-52 rounded-lg border border-border bg-popover p-1 text-xs shadow-lg"
+          className="fixed z-[230] w-52 rounded-lg border border-white/10 bg-popover p-1 text-xs shadow-lg"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button

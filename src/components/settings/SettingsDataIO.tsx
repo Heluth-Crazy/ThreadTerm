@@ -212,7 +212,7 @@ export function SettingsDataIO() {
   const selectedSet = new Set(selectedSections);
 
   return (
-    <section className="rounded-xl border border-border/60 bg-card/72 p-4 shadow-sm">
+    <section className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -241,7 +241,7 @@ export function SettingsDataIO() {
           <button
             type="button"
             onClick={() => importInputRef.current?.click()}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-accent"
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-accent"
           >
             <Upload className="h-3.5 w-3.5" />
             {t('dataIO.importJson', { defaultValue: 'Import settings JSON' })}
@@ -281,7 +281,7 @@ export function SettingsDataIO() {
       )}
 
       {pendingImport && (
-        <div className="mt-4 rounded-xl border border-border/60 bg-background/70 p-3">
+        <div className="mt-4 rounded-xl border border-white/10 bg-background/70 p-3">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-sm font-semibold text-foreground">
@@ -306,11 +306,11 @@ export function SettingsDataIO() {
             </button>
           </div>
 
-          <div className="mt-3 divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60">
+          <div className="mt-3 divide-y divide-border/50 overflow-hidden rounded-lg border border-white/10">
             {pendingImport.diffs.map((diff) => (
               <label
                 key={diff.id}
-                className="grid gap-3 bg-card/50 p-3 text-sm md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]"
+                className="grid gap-3 bg-white/5 backdrop-blur-md/50 p-3 text-sm md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]"
               >
                 <span className="flex min-w-0 items-start gap-3">
                   <input

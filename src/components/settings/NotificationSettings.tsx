@@ -28,7 +28,7 @@ export function NotificationSettings() {
   };
 
   return (
-    <section className="rounded-xl border border-border/60 bg-card/72 p-4 shadow-sm">
+    <section className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2">

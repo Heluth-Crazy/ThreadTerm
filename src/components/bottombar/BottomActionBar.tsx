@@ -182,13 +182,13 @@ export function BottomActionBar({
                 }
               }
         }
-        className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background/80 px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 backdrop-blur-md px-3 py-1.5 text-[11px] font-medium text-muted-foreground transition-all duration-200 hover:bg-white/10 hover:text-foreground hover:border-white/20 hover:scale-[1.02] active:scale-[0.98] focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
         {...dataAttr}
       >
         <Icon className="h-3.5 w-3.5" aria-hidden />
         <span>{label}</span>
         {chip.badge && chip.badge > 0 && (
-          <span className="ml-0.5 inline-flex min-w-[1rem] items-center justify-center rounded-full bg-primary/15 px-1 text-[10px] text-primary">
+          <span className="ml-1 inline-flex min-w-[1.125rem] h-[1.125rem] items-center justify-center rounded-full bg-primary/20 px-1 text-[9px] font-bold text-primary shadow-sm">
             {chip.badge}
           </span>
         )}
@@ -204,7 +204,7 @@ export function BottomActionBar({
       aria-label={t('bottomBar.label', { defaultValue: 'Focus-mode actions' })}
       onKeyDown={handleKeyDown}
       className={[
-        'relative flex shrink-0 items-center gap-1 border-t border-border/60 bg-background/80 px-2 py-1 backdrop-blur',
+        'relative flex shrink-0 items-center gap-1.5 border-t border-white/5 bg-background/60 px-3 py-2 backdrop-blur-xl',
         className ?? '',
       ].join(' ')}
     >
@@ -221,7 +221,7 @@ export function BottomActionBar({
             data-testid="chip-overflow"
             aria-haspopup="menu"
             title={t('bottomBar.overflow', { defaultValue: 'More' })}
-            className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background/80 px-2.5 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 backdrop-blur-md px-3 py-1.5 text-[11px] text-muted-foreground hover:bg-white/10 hover:text-foreground hover:scale-[1.02] focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
           >
             <MoreHorizontal className="h-3.5 w-3.5" aria-hidden />
             <span>{t('bottomBar.overflow', { defaultValue: 'More' })}</span>

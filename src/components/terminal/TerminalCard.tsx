@@ -202,11 +202,11 @@ export function TerminalCardComponent({
       onMouseEnter={() => setTimelineOpen(true)}
       onMouseLeave={() => setTimelineOpen(false)}
       className={[
-        'relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm transition-shadow cursor-pointer',
+        'relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border transition-all duration-300 cursor-pointer',
         isFocused
-          ? 'border-primary/60 ring-2 ring-primary/30 shadow-md'
-          : 'border-border hover:shadow-md',
-        card.unread ? 'ring-1 ring-amber-400/40' : '',
+          ? 'border-primary/50 bg-background/80 shadow-[0_20px_40px_-12px_rgba(0,0,0,0.4)] ring-1 ring-primary/20 scale-[1.01]'
+          : 'border-white/5 bg-white/5 backdrop-blur-md hover:border-white/20 hover:bg-white/10 hover:shadow-xl',
+        card.unread ? 'ring-1 ring-amber-400/30' : '',
       ].join(' ')}
     >
       {card.unread && (
@@ -219,7 +219,7 @@ export function TerminalCardComponent({
       <CardHeader card={card} aiSessionBadge={aiSessionBadge} />
 
       {card.worktreePath && (
-        <div className="flex shrink-0 items-center gap-1.5 border-b border-border/40 bg-muted/40 px-3 py-1 text-[10px] text-muted-foreground">
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-white/5 bg-white/5 px-3 py-1.5 text-[10px] text-muted-foreground backdrop-blur-sm">
           <FolderGit2 className="h-3 w-3" />
           <span className="truncate">{t('card.worktree', { path: card.worktreePath })}</span>
         </div>
@@ -261,7 +261,7 @@ export function TerminalCardComponent({
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.15 }}
-          className="pointer-events-none absolute inset-x-0 bottom-10 z-20 border-t border-border/40 bg-background/95 px-3 py-1.5 text-[10px] text-muted-foreground shadow-[0_-10px_24px_rgba(0,0,0,0.08)] backdrop-blur"
+          className="pointer-events-none absolute inset-x-0 bottom-10 z-20 border-t border-white/10/40 bg-background/95 px-3 py-1.5 text-[10px] text-muted-foreground shadow-[0_-10px_24px_rgba(0,0,0,0.08)] backdrop-blur"
         >
           <div className="mb-0.5 flex items-center gap-1 font-medium">
             <span>{t('card.recent')}</span>

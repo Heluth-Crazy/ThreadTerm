@@ -95,10 +95,10 @@ export function NotificationCenter() {
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
             transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-            className="fixed right-0 top-0 z-50 flex h-full w-[360px] max-w-full flex-col border-l border-border bg-background shadow-2xl"
+            className="fixed right-0 top-0 z-50 flex h-full w-[360px] max-w-full flex-col border-l border-white/10 bg-background shadow-2xl"
           >
             {/* Header */}
-            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
               <div className="flex items-center gap-2">
                 <Inbox className="h-4 w-4 text-muted-foreground" />
                 <h2 className="text-sm font-semibold">{t('notifications.title')}</h2>

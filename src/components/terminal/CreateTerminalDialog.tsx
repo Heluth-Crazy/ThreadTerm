@@ -152,7 +152,7 @@ export function CreateTerminalDialog({
         >
               <form onSubmit={handleSubmit}>
               {/* Header */}
-              <div className="flex items-center justify-between border-b border-border px-5 py-3">
+              <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
                 <div className="flex items-center gap-2">
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <Terminal className="h-4 w-4" />
@@ -200,21 +200,21 @@ export function CreateTerminalDialog({
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder={t('dialog.projectNamePlaceholder')}
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                    className="w-full rounded-lg border border-white/10 bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                   />
                   <div className="flex gap-1.5">
                     <input
                       value={path}
                       onChange={(e) => applyPath(e.target.value)}
                       placeholder={t('dialog.projectPathPlaceholder')}
-                      className="flex-1 rounded-lg border border-border bg-background px-3 py-2 font-mono text-[12px] outline-none focus:ring-2 focus:ring-primary/30"
+                      className="flex-1 rounded-lg border border-white/10 bg-background px-3 py-2 font-mono text-[12px] outline-none focus:ring-2 focus:ring-primary/30"
                     />
                     <button
                       type="button"
                       onClick={handleBrowse}
                       disabled={!isTauriEnv()}
                       title={isTauriEnv() ? t('dialog.browseTitle') : t('dialog.browseDesktopOnly')}
-                      className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-2 text-[11px] font-medium hover:bg-accent hover:text-accent-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-white/10 bg-background px-2.5 py-2 text-[11px] font-medium hover:bg-accent hover:text-accent-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <FolderOpen className="h-3.5 w-3.5" />
                       {t('dialog.browse')}
@@ -238,7 +238,7 @@ export function CreateTerminalDialog({
                             'flex flex-col items-center gap-1 rounded-lg border px-2 py-2 text-[10px] transition-colors',
                             selected
                               ? 'border-primary bg-primary/10 text-primary'
-                              : 'border-border hover:border-primary/40 hover:bg-accent/40',
+                              : 'border-white/10 hover:border-primary/40 hover:bg-accent/40',
                           ].join(' ')}
                         >
                           <Icon className={`h-4 w-4 ${meta.accent}`} />
@@ -259,7 +259,7 @@ export function CreateTerminalDialog({
                     value={command}
                     onChange={(e) => setCommand(e.target.value)}
                     placeholder={t('dialog.initialCommandPlaceholder')}
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-[12px] outline-none focus:ring-2 focus:ring-primary/30"
+                    className="w-full rounded-lg border border-white/10 bg-background px-3 py-2 font-mono text-[12px] outline-none focus:ring-2 focus:ring-primary/30"
                   />
                   <p className="text-[10px] text-muted-foreground">
                     {t('dialog.defaultCommandHint')}
@@ -275,7 +275,7 @@ export function CreateTerminalDialog({
               </div>
 
               {/* Footer */}
-              <div className="flex items-center justify-between gap-2 border-t border-border bg-muted/30 px-5 py-3">
+              <div className="flex items-center justify-between gap-2 border-t border-white/10 bg-muted/30 px-5 py-3">
                 <button
                   type="button"
                   onClick={handleImportWorkflow}

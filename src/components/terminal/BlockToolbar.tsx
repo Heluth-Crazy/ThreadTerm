@@ -48,7 +48,7 @@ export function BlockToolbar({
   const { t } = useTranslation('terminal');
 
   return (
-    <div className="flex items-center gap-0.5 rounded-md border border-border bg-background/95 px-1 py-0.5 shadow-md backdrop-blur-sm">
+    <div className="flex items-center gap-0.5 rounded-md border border-white/10 bg-background/95 px-1 py-0.5 shadow-md backdrop-blur-sm">
       {/* Copy command */}
       <ActionBtn
         testId="block-copy-command"
