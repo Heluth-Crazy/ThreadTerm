@@ -5,14 +5,14 @@ use std::{
 };
 
 use axum::{
+    Json, Router,
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
     response::{Html, IntoResponse},
     routing::get,
-    Json, Router,
 };
 use serde::Deserialize;
 use tokio::{
@@ -23,11 +23,11 @@ use tokio::{
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use super::{
-    protocol::{
-        parse_client_message, versioned_server_message, BridgeDevice, ClientMessage, PairRequest,
-        ServerMessage, VersionedServerMessage,
-    },
     BridgeRuntime,
+    protocol::{
+        BridgeDevice, ClientMessage, PairRequest, ServerMessage, VersionedServerMessage,
+        parse_client_message, versioned_server_message,
+    },
 };
 
 pub struct BridgeServerHandle {
@@ -51,6 +51,10 @@ struct AuthQuery {
 struct PairPageQuery {
     otp: Option<String>,
     permission: Option<String>,
+    theme_bg: Option<String>,
+    theme_card: Option<String>,
+    theme_primary: Option<String>,
+    theme_fg: Option<String>,
 }
 
 pub async fn start(
@@ -71,6 +75,9 @@ pub async fn start(
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/snapshot", get(snapshot_handler))
+        .route("/assets/xterm.css", get(xterm_css_handler))
+        .route("/assets/xterm.js", get(xterm_js_handler))
+        .route("/assets/addon-fit.js", get(xterm_fit_js_handler))
         .route("/pair", get(pair_page_handler).post(pair_handler))
         .route("/ws", get(ws_handler))
         .layer(CorsLayer::permissive())
@@ -109,10 +116,41 @@ async fn health_handler() -> Json<serde_json::Value> {
     }))
 }
 
+async fn xterm_css_handler() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("../../../node_modules/@xterm/xterm/css/xterm.css"),
+    )
+}
+
+async fn xterm_js_handler() -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        include_str!("../../../node_modules/@xterm/xterm/lib/xterm.js"),
+    )
+}
+
+async fn xterm_fit_js_handler() -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        include_str!("../../../node_modules/@xterm/addon-fit/lib/addon-fit.js"),
+    )
+}
+
 async fn pair_page_handler(Query(query): Query<PairPageQuery>) -> Html<String> {
     Html(pair_page_html(
         query.otp.as_deref(),
         normalize_pair_permission(query.permission.as_deref()),
+        query.theme_bg.as_deref(),
+        query.theme_card.as_deref(),
+        query.theme_primary.as_deref(),
+        query.theme_fg.as_deref(),
     ))
 }
 
@@ -148,12 +186,25 @@ async fn ws_handler(
 }
 
 async fn handle_socket(context: ServerContext, device: BridgeDevice, mut socket: WebSocket) {
-    let initial = ServerMessage::from(context.runtime.snapshot());
+    let mut rx = context.runtime.subscribe();
+    let snapshot = context.runtime.snapshot();
+    let terminal_snapshots = snapshot
+        .cards
+        .iter()
+        .filter_map(|card| super::terminal_snapshot_message(&card.id))
+        .collect::<Vec<_>>();
+    let initial = ServerMessage::from(snapshot);
     if send_json(&mut socket, &initial).await.is_err() {
         return;
     }
-
-    let mut rx = context.runtime.subscribe();
+    for snapshot in terminal_snapshots {
+        if send_json(&mut socket, &ServerMessage::TerminalSnapshot { snapshot })
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
 
     loop {
         tokio::select! {
@@ -319,15 +370,31 @@ fn normalize_pair_permission(permission: Option<&str>) -> &'static str {
     }
 }
 
-fn pair_page_html(otp: Option<&str>, pair_permission: &str) -> String {
+fn pair_page_html(
+    otp: Option<&str>,
+    pair_permission: &str,
+    theme_bg: Option<&str>,
+    theme_card: Option<&str>,
+    theme_primary: Option<&str>,
+    theme_fg: Option<&str>,
+) -> String {
     let otp_json =
         serde_json::to_string(otp.unwrap_or_default()).unwrap_or_else(|_| "\"\"".to_string());
     let permission_json = serde_json::to_string(normalize_pair_permission(Some(pair_permission)))
         .unwrap_or_else(|_| "\"read_only\"".to_string());
 
+    let bg = theme_bg.unwrap_or("#10151d");
+    let card = theme_card.unwrap_or("#151b24");
+    let primary = theme_primary.unwrap_or("#4f8bd6");
+    let fg = theme_fg.unwrap_or("#e8edf5");
+
     mobile_pair_page_template()
         .replace("__OTP_JSON__", &otp_json)
         .replace("__PERMISSION_JSON__", &permission_json)
+        .replace("__THEME_BG__", bg)
+        .replace("__THEME_CARD__", card)
+        .replace("__THEME_PRIMARY__", primary)
+        .replace("__THEME_FG__", fg)
 }
 
 fn mobile_pair_page_template() -> &'static str {
@@ -337,322 +404,445 @@ fn mobile_pair_page_template() -> &'static str {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>ThreadTerm Mobile Pairing</title>
+  <link rel="stylesheet" href="/assets/xterm.css" />
   <style>
     :root {
-      color-scheme: dark;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #10151d;
-      color: #e8edf5;
+      --bg: __THEME_BG__;
+      --card: __THEME_CARD__;
+      --primary: __THEME_PRIMARY__;
+      --fg: __THEME_FG__;
+      --terminal-bg: #000;
+      color-scheme: light dark;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     }
-    * { box-sizing: border-box; }
-    html,
-    body {
-      width: 100%;
-      overflow-x: hidden;
-    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
     body {
       margin: 0;
       min-height: 100vh;
       display: flex;
       align-items: stretch;
-      background: #10151d;
+      background: var(--bg);
+      /* 增加一层极淡的蒙层，让背景色更有深度 */
+      background-image: linear-gradient(rgba(0,0,0,0.03), rgba(0,0,0,0.03));
+      color: var(--fg);
+      line-height: 1.4;
+      -webkit-font-smoothing: antialiased;
     }
+
     main {
       width: 100%;
-      max-width: 720px;
-      min-width: 0;
+      max-width: 500px;
       margin: 0 auto;
-      overflow-x: hidden;
-      padding: max(24px, env(safe-area-inset-top)) 18px max(24px, env(safe-area-inset-bottom));
+      min-height: 100vh;
+      padding: max(16px, env(safe-area-inset-top)) 16px max(32px, env(safe-area-inset-bottom));
+      display: flex;
+      flex-direction: column;
     }
+
+    /* 顶部标题区域 - 解决重叠 */
+    .header-area {
+      text-align: center;
+      margin-bottom: 32px;
+      padding-top: 8px;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      background: var(--card);
+      border-radius: 100px;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      margin-bottom: 20px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #34c759; }
+
     h1 {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
       margin: 0 0 8px;
-      font-size: clamp(24px, 9vw, 42px);
-      line-height: 1.2;
-      letter-spacing: 0;
+      color: var(--fg);
     }
-    p {
+    .subtitle {
+      font-size: 15px;
+      color: var(--fg);
+      opacity: 0.5;
       margin: 0;
-      color: #a9b4c3;
-      line-height: 1.5;
     }
-    .panel {
-      margin-top: 22px;
-      min-width: 0;
-      max-width: 100%;
-      overflow: hidden;
-      border: 1px solid #303949;
-      border-radius: 12px;
-      background: #151b24;
-      padding: 16px;
-    }
-    .toolbar {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 12px;
-      min-width: 0;
-    }
-    .status {
-      font-size: 14px;
-      font-weight: 650;
-      color: #e8edf5;
-    }
-    .muted { color: #a9b4c3; }
-    .error { color: #ff8a8a; }
-    .ok { color: #7dd3a8; }
-    .actions {
-      display: flex;
-      flex: 0 0 auto;
-      gap: 8px;
-    }
+
+    /* 首页卡片样式 - 增加层次感 */
     .cards {
-      margin-top: 12px;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
-      gap: 10px;
-      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
     }
     .card {
-      display: block;
-      width: 100%;
-      min-width: 0;
-      max-width: 100%;
-      margin: 0;
-      border-radius: 10px;
-      background: #0b0f16;
-      padding: 12px;
-      border: 1px solid #253043;
-      color: inherit;
-      text-align: left;
-      box-shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
-    }
-    .card:active { transform: translateY(1px); }
-    .card-head {
+      appearance: none;
+      background: var(--card);
+      border-radius: 20px;
+      padding: 20px;
+      border: 1px solid rgba(0, 0, 0, 0.05);
+      box-shadow: 0 10px 20px -5px rgba(0, 0, 0, 0.1);
       display: flex;
-      align-items: center;
+      flex-direction: column;
+      gap: 14px;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      text-decoration: none;
+      color: inherit;
+    }
+    .card:active {
+      transform: scale(0.97);
+      box-shadow: 0 4px 10px -2px rgba(0, 0, 0, 0.1);
+    }
+
+    .card-header {
+      display: flex;
       justify-content: space-between;
-      gap: 10px;
-      margin-bottom: 8px;
-      min-width: 0;
+      align-items: flex-start;
+      gap: 12px;
     }
+    .card-title-group { min-width: 0; }
     .card-title {
-      min-width: 0;
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 2px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      font-size: 13px;
-      font-weight: 700;
     }
-    .card-path,
-    .session-id {
-      min-width: 0;
-      margin-top: 2px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      color: #738198;
-      font-size: 11px;
-    }
-    .pill {
-      flex: 0 0 auto;
-      border-radius: 999px;
-      background: #1f2a3a;
-      padding: 3px 8px;
-      color: #cbd7e8;
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-    }
-    .pill.running { color: #7dd3a8; }
-    .pill.failed { color: #ff8a8a; }
-    .preview {
-      min-width: 0;
-      color: #d9e7ff;
-      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    .card-path {
       font-size: 12px;
-      line-height: 1.5;
+      opacity: 0.4;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pill {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 8px;
+      background: rgba(0,0,0,0.05);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .pill.running { color: #10b981; background: rgba(16, 185, 129, 0.1); }
+
+    .summary-line {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--primary);
+    }
+
+    /* 终端预览小窗 */
+    .preview {
+      background: #000;
+      color: #fff;
+      padding: 12px;
+      border-radius: 12px;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 11px;
+      line-height: 1.6;
+      box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
     }
     .preview-line {
-      max-width: 100%;
       overflow: hidden;
-      overflow-wrap: anywhere;
-      white-space: normal;
       display: -webkit-box;
       -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
+      opacity: 0.9;
     }
-    .summary-line {
-      min-width: 0;
-      margin: 8px 0 6px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      color: #f0f6ff;
-      font-size: 13px;
-      font-weight: 700;
-    }
-    .detail-preview .preview-line {
-      -webkit-line-clamp: unset;
-      display: block;
-      padding: 2px 0;
-    }
-    .meta {
-      margin-top: 8px;
-      color: #738198;
-      font-size: 11px;
-    }
-    .empty,
-    .notice {
-      margin-top: 12px;
-      border-radius: 10px;
-      background: #0b0f16;
-      padding: 14px;
-      color: #a9b4c3;
-    }
-    .detail-head {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 10px;
-      align-items: start;
-      margin-top: 14px;
-    }
-    .detail-title {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      color: #e8edf5;
-      font-size: 18px;
-      font-weight: 750;
-    }
-    .detail-preview {
-      margin-top: 12px;
-      max-height: 48vh;
-      overflow: auto;
-      border-radius: 10px;
-      border: 1px solid #253043;
-      background: #0b0f16;
-      padding: 12px;
-    }
-    .control-panel {
-      margin-top: 12px;
-      min-width: 0;
-      max-width: 100%;
-      border-radius: 10px;
-      border: 1px solid #253043;
-      background: #0b0f16;
-      padding: 10px;
-    }
-    .control-input {
-      display: block;
-      width: 100%;
-      min-height: 88px;
-      resize: vertical;
-      border: 1px solid #253043;
-      border-radius: 8px;
-      background: #111823;
-      color: #e8edf5;
-      padding: 10px;
-      font: 13px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
-      overflow-wrap: anywhere;
-    }
-    .control-actions {
+
+    .card-footer {
       display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 8px;
+      justify-content: space-between;
+      font-size: 11px;
+      opacity: 0.4;
+      font-weight: 500;
     }
-    .control-actions button {
-      flex: 1 1 72px;
+
+    /* 详情页样式 */
+    .terminal-container {
+      background: var(--terminal-bg);
+      border-radius: 20px;
+      padding: 2px; /* 减少外框厚度 */
+      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+      flex: 1 1 auto;
+      min-height: 360px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      /* 防止页面回弹干扰终端滚动 */
+      overscroll-behavior: contain;
     }
-    button {
-      min-height: 44px;
-      border: 0;
-      border-radius: 10px;
-      background: #4f8bd6;
-      color: #07111f;
+    .terminal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 18px; /* 稍微增加点击区域 */
+      background: rgba(255, 255, 255, 0.02);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .terminal-title {
+      font-size: 11px;
       font-weight: 700;
-      padding: 10px 14px;
+      opacity: 0.3;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
     }
-    .ghost {
-      background: #1f2a3a;
-      color: #dbe7f7;
+    #back {
+      background: transparent;
+      color: var(--primary);
+      font-size: 16px;
+      font-weight: 600;
+      padding: 0;
+      transition: opacity 0.2s;
     }
+    #back:active { opacity: 0.5; }
+
+    .terminal-shell {
+      flex: 1 1 auto;
+      width: 100%;
+      height: 100%;
+      min-height: 280px;
+      background: var(--terminal-bg);
+      overflow: hidden;
+      /* 核心滚动性能优化 */
+      -webkit-overflow-scrolling: touch;
+      position: relative;
+    }
+    .terminal-host {
+      width: 100%;
+      height: 100%;
+      min-height: 280px;
+      background: var(--terminal-bg);
+      /* 增加内部留白，解决文字贴边问题 */
+      padding: 12px 4px;
+      position: relative;
+      overflow: hidden;
+    }
+    .terminal-instance {
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .terminal-transcript {
+      position: absolute;
+      inset: 12px 4px;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+      touch-action: pan-y;
+      background: var(--terminal-bg);
+      color: #f8fafc;
+      font-family: ui-monospace, SFProText-Regular, SF Pro Text, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      line-height: 18px;
+      white-space: pre;
+      contain: strict;
+      will-change: scroll-position;
+    }
+    .terminal-transcript-rows {
+      overflow: hidden;
+    }
+    .terminal-transcript-row {
+      height: 18px;
+      line-height: 18px;
+      white-space: pre;
+      overflow: hidden;
+    }
+    .terminal-transcript-spacer {
+      height: 0;
+    }
+    .terminal-instance,
+    .terminal-instance .xterm,
+    .terminal-instance .xterm-viewport,
+    .terminal-instance .xterm-screen {
+      background: var(--terminal-bg) !important;
+    }
+    .terminal-fallback {
+      min-height: 100%;
+      padding: 12px;
+      border-radius: 14px;
+      background: var(--terminal-bg);
+      color: var(--fg);
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      overflow: auto;
+    }
+    .terminal-fallback-title {
+      margin-bottom: 8px;
+      color: var(--primary);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    /* 修复 xterm 滚动条在移动端的显示 */
+    .xterm-viewport {
+      overscroll-behavior: contain;
+    }
+
+    .control-panel {
+      margin-top: 24px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .terminal-keyboard {
+      grid-column: 1 / -1;
+      width: 100%;
+      min-height: 46px;
+      max-height: 86px;
+      resize: none;
+      border: 0;
+      border-radius: 16px;
+      padding: 12px 14px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--fg);
+      font-family: ui-monospace, SFProText-Regular, SF Pro Text, Menlo, Monaco, Consolas, monospace;
+      font-size: 16px;
+      line-height: 20px;
+      outline: none;
+    }
+    .terminal-keyboard::placeholder {
+      color: currentColor;
+      opacity: 0.45;
+    }
+    .terminal-keyboard:focus {
+      box-shadow: 0 0 0 2px var(--primary);
+    }
+    .control-panel button {
+      height: 54px;
+      border-radius: 16px;
+      font-size: 16px;
+      font-weight: 700;
+      border: 0;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--fg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+    }
+    .control-panel button:active {
+      transform: scale(0.94);
+      background: rgba(255, 255, 255, 0.12);
+    }
+    #send-enter { background: var(--primary); color: #000; }
+
     [hidden] { display: none !important; }
   </style>
 </head>
 <body>
   <main>
-    <h1>ThreadTerm Mobile Pairing</h1>
-    <p id="summary">Pair this device with the desktop bridge.</p>
-    <section class="panel">
-      <div class="toolbar">
-        <div style="min-width:0">
-          <div id="status" class="status">Preparing pairing...</div>
-          <p id="detail" class="muted"></p>
+    <div class="header-area">
+      <div id="status-badge" class="status-badge">
+        <span class="dot"></span>
+        <span id="status-text">Connecting...</span>
+      </div>
+      <h1>ThreadTerm</h1>
+      <p id="summary" class="subtitle">Mobile Studio Bridge</p>
+    </div>
+
+    <div id="list-view">
+      <div id="cards" class="cards" hidden></div>
+    </div>
+
+    <div id="detail-view" style="flex:1 1 auto; min-height: calc(100vh - 220px); display:flex; flex-direction:column;" hidden>
+      <div class="terminal-container">
+        <div class="terminal-header">
+          <span id="detail-title" class="terminal-title">TERMINAL</span>
+          <button id="back" type="button">Done</button>
         </div>
-        <div class="actions">
-          <button id="retry" type="button" class="ghost" hidden>Retry</button>
+        <div id="terminal-shell" class="terminal-shell" style="flex:1; padding:10px;">
+          <div id="terminal-host" class="terminal-host"></div>
         </div>
       </div>
-      <div id="list-view">
-        <div id="cards" class="cards" hidden></div>
+
+      <div id="control-panel" class="control-panel">
+        <textarea id="terminal-keyboard" class="terminal-keyboard" rows="1" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Tap to type"></textarea>
+        <button id="send-ctrl-c" type="button">Ctrl-C</button>
+        <button id="send-esc" type="button">Esc</button>
+        <button id="send-enter" type="button">Enter</button>
       </div>
-      <div id="detail-view" hidden>
-        <div class="detail-head">
-          <div>
-            <div id="detail-title" class="detail-title"></div>
-            <div id="detail-meta" class="meta"></div>
-          </div>
-          <button id="back" type="button" class="ghost">Back</button>
-        </div>
-        <div id="detail-preview" class="preview detail-preview"></div>
-        <div id="control-panel" class="control-panel" hidden>
-          <textarea id="input" class="control-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Type input and tap Send"></textarea>
-          <div class="control-actions">
-            <button id="send-input" type="button">Send</button>
-            <button id="send-ctrl-c" type="button" class="ghost">Ctrl-C</button>
-            <button id="send-esc" type="button" class="ghost">Esc</button>
-          </div>
-        </div>
-        <div id="readonly-notice" class="notice">
-          This paired device is read-only. Input controls are disabled.
-        </div>
+
+      <div id="readonly-notice" style="text-align:center; margin-top:16px; font-size:12px; opacity:0.5;" hidden>
+        Read-only session. Input disabled.
       </div>
-    </section>
+    </div>
+
+    <button id="retry" type="button" style="margin-top:32px; background:var(--primary); color:#000; border-radius:16px; height:50px; width:100%; font-weight:700;" hidden>Retry Pairing</button>
   </main>
+  <script src="/assets/xterm.js"></script>
+  <script src="/assets/addon-fit.js"></script>
   <script>
     const BRIDGE_PROTOCOL_VERSION = 1;
-    const otp = __OTP_JSON__;
+    const MOBILE_TERMINAL_SCROLLBACK = 5000;
+    const MOBILE_TERMINAL_OUTPUT_BATCH_MS = 24;
+    const MOBILE_TOUCH_SCROLL_MULTIPLIER = 1.8;
+    const MOBILE_TRANSCRIPT_ROW_HEIGHT = 18;
+    const MOBILE_TRANSCRIPT_OVERSCAN_ROWS = 30;
+    let otp = __OTP_JSON__;
     const pairPermission = __PERMISSION_JSON__;
     const TOKEN_KEY = 'threadterm.bridgeToken';
     const PERMISSION_KEY = 'threadterm.bridgePermission';
-    const statusEl = document.getElementById('status');
-    const detailEl = document.getElementById('detail');
+    const statusBadgeEl = document.getElementById('status-badge');
+    const statusTextEl = document.getElementById('status-text');
     const retryEl = document.getElementById('retry');
     const listViewEl = document.getElementById('list-view');
     const detailViewEl = document.getElementById('detail-view');
     const cardsEl = document.getElementById('cards');
     const backEl = document.getElementById('back');
     const detailTitleEl = document.getElementById('detail-title');
-    const detailMetaEl = document.getElementById('detail-meta');
-    const detailPreviewEl = document.getElementById('detail-preview');
+    const terminalHostEl = document.getElementById('terminal-host');
     const controlPanelEl = document.getElementById('control-panel');
-    const inputEl = document.getElementById('input');
-    const sendInputEl = document.getElementById('send-input');
+    const sendEnterEl = document.getElementById('send-enter');
     const sendCtrlCEl = document.getElementById('send-ctrl-c');
     const sendEscEl = document.getElementById('send-esc');
+    const terminalKeyboardEl = document.getElementById('terminal-keyboard');
     const readonlyNoticeEl = document.getElementById('readonly-notice');
 
     const state = {
       token: localStorage.getItem(TOKEN_KEY) || '',
-      permission: localStorage.getItem(PERMISSION_KEY) || 'read_only',
+      permission: otp ? pairPermission : (localStorage.getItem(PERMISSION_KEY) || 'read_only'),
       pairPermission: pairPermission === 'full' ? 'full' : 'read_only',
       cards: new Map(),
       selectedCardId: null,
       socket: null,
       reconnectTimer: 0,
+      suppressListHistory: false,
+      terminalByCardId: new Map(),
+      fitByCardId: new Map(),
+      terminalElementByCardId: new Map(),
+      terminalTouchCleanupByCardId: new Map(),
+      terminalSnapshotByCardId: new Map(),
+      transcriptChunksByCardId: new Map(),
+      transcriptRowsByCardId: new Map(),
+      transcriptViewByCardId: new Map(),
+      transcriptColsByCardId: new Map(),
+      lastTranscriptSeqByCardId: new Map(),
+      receivedTerminalSeqByCardId: new Map(),
+      pendingTerminalOutputByCardId: new Map(),
+      queuedTerminalOutputByCardId: new Map(),
+      outputFlushTimerByCardId: new Map(),
+      lastTerminalSeqByCardId: new Map(),
+      appliedTerminalSnapshotSeqByCardId: new Map(),
+      userScrolledTerminalByCardId: new Map(),
+      touchScrollingTerminalByCardId: new Map(),
+      suppressResizeByCardId: new Set(),
+      resizeObserver: null,
     };
 
     function deviceName() {
@@ -661,8 +851,8 @@ fn mobile_pair_page_template() -> &'static str {
     }
 
     function setStatus(message, kind = '') {
-      statusEl.textContent = message;
-      statusEl.className = `status ${kind}`;
+      statusTextEl.textContent = message;
+      statusBadgeEl.className = `status-badge ${kind}`;
     }
 
     function clearElement(el) {
@@ -726,12 +916,936 @@ fn mobile_pair_page_template() -> &'static str {
       return message;
     }
 
+    function scrubPairingCodeFromUrl() {
+      if (otp) {
+        otp = '';
+      }
+      if (!window.history?.replaceState) return;
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('otp')) {
+        url.searchParams.delete('otp');
+        window.history.replaceState({ view: state.selectedCardId ? 'detail' : 'list' }, '', `${url.pathname}${url.search}${url.hash}`);
+      }
+    }
+
+    function hasStoredToken() {
+      return Boolean(state.token);
+    }
+
+    function cssVar(name, fallback) {
+      const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return value || fallback;
+    }
+
+    function terminalTheme() {
+      const bg = cssVar('--terminal-bg', '#000');
+      // 确保终端文字在黑色背景下始终保持高亮，不受桌面端亮色模式影响
+      const fg = '#f8fafc';
+      const primary = cssVar('--primary', '#4f8bd6');
+      return {
+        background: bg,
+        foreground: fg,
+        cursor: primary,
+        selectionBackground: 'rgba(255,255,255,0.22)',
+        black: '#0b0f14',
+        red: '#ff6b6b',
+        green: '#34d399',
+        yellow: '#fbbf24',
+        blue: primary,
+        magenta: '#c084fc',
+        cyan: '#22d3ee',
+        white: fg,
+        brightBlack: '#64748b',
+        brightRed: '#f87171',
+        brightGreen: '#6ee7b7',
+        brightYellow: '#fde68a',
+        brightBlue: '#93c5fd',
+        brightMagenta: '#d8b4fe',
+        brightCyan: '#67e8f9',
+        brightWhite: '#ffffff',
+      };
+    }
+
+    function scrollTerminalToBottom(cardId) {
+      const id = String(cardId || '');
+      if (usesTranscriptRenderer(id)) return;
+      const term = state.terminalByCardId.get(id);
+      if (!term || state.selectedCardId !== id || detailViewEl.hidden) return;
+
+      const scroll = () => {
+        if (state.selectedCardId !== id || detailViewEl.hidden) return;
+        try {
+          term.scrollToBottom();
+          state.userScrolledTerminalByCardId.set(id, false);
+        } catch (_) {}
+      };
+
+      scroll();
+      window.requestAnimationFrame(scroll);
+      window.setTimeout(scroll, 40);
+      window.setTimeout(scroll, 120);
+    }
+
+    function xtermReady() {
+      return typeof window.Terminal === 'function'
+        && window.FitAddon
+        && typeof window.FitAddon.FitAddon === 'function';
+    }
+
+    function usesTranscriptRenderer(_cardId) {
+      return true;
+    }
+
+    function stripAnsiForFallback(value) {
+      return String(value || '')
+        .replace(/\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[()][A-Za-z0-9])/g, '')
+        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+    }
+
+    function fallbackLines(cardId) {
+      const card = state.cards.get(String(cardId || ''));
+      const fromCard = previewLines(card, 10, false);
+      if (fromCard.length > 0) return fromCard;
+      const snapshot = state.terminalSnapshotByCardId.get(String(cardId || ''));
+      const fromSnapshot = stripAnsiForFallback(snapshot ? terminalPayload(snapshot) : '')
+        .replace(/\r/g, '\n')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(-10);
+      return fromSnapshot;
+    }
+
+    function hideTerminalFallback() {
+      const fallback = document.getElementById('terminal-fallback');
+      if (fallback) fallback.hidden = true;
+    }
+
+    function hideTranscriptViews(activeCardId = '') {
+      const active = String(activeCardId || '');
+      for (const [id, view] of state.transcriptViewByCardId.entries()) {
+        view.root.hidden = id !== active;
+      }
+    }
+
+    function showTerminalFallback(cardId, title = 'Terminal preview') {
+      let fallback = document.getElementById('terminal-fallback');
+      if (!fallback) {
+        fallback = document.createElement('div');
+        fallback.id = 'terminal-fallback';
+        fallback.className = 'terminal-fallback';
+        terminalHostEl.appendChild(fallback);
+      }
+      clearElement(fallback);
+      const titleEl = document.createElement('div');
+      titleEl.className = 'terminal-fallback-title';
+      titleEl.textContent = title;
+      fallback.appendChild(titleEl);
+      const lines = fallbackLines(cardId);
+      const body = document.createElement('div');
+      body.textContent = lines.length > 0 ? lines.join('\n') : 'Waiting for terminal output.';
+      fallback.appendChild(body);
+      fallback.hidden = false;
+    }
+
+    function normalizeTerminalSnapshot(snapshot) {
+      if (!snapshot) return null;
+      const cardId = String(snapshot.cardId || snapshot.card_id || '');
+      if (!cardId) return null;
+      return {
+        cardId,
+        data: String(snapshot.data || ''),
+        seq: Number(snapshot.seq || 0),
+        rows: Math.max(1, Number(snapshot.rows || 24)),
+        cols: Math.max(2, Number(snapshot.cols || 80)),
+        cursorRow: Math.max(1, Number(snapshot.cursorRow || snapshot.cursor_row || 1)),
+        cursorCol: Math.max(1, Number(snapshot.cursorCol || snapshot.cursor_col || 1)),
+        history: snapshot.history ? String(snapshot.history) : '',
+      };
+    }
+
+    function terminalPayload(snapshot) {
+      return `${snapshot.history || ''}${snapshot.data || ''}`;
+    }
+
+    function estimatedTranscriptCols(snapshotCols) {
+      const width = Math.max(0, Number(terminalHostEl.clientWidth || 0) - 8);
+      const measuredCols = width > 0 ? Math.floor(width / 7.4) : 0;
+      const fallbackCols = Number(snapshotCols || 0) || 80;
+      return Math.max(16, Math.min(160, measuredCols || fallbackCols));
+    }
+
+    function appendWrappedTranscriptRows(rows, text, cols) {
+      const width = Math.max(16, Number(cols || 80));
+      if (rows.length === 0) rows.push('');
+      let current = rows.pop() || '';
+      let cursorCol = Number.isFinite(rows._cursorCol) ? rows._cursorCol : current.length;
+      cursorCol = Math.min(cursorCol, current.length);
+      const source = String(text || '');
+
+      const replaceAtCursor = (char) => {
+        if (cursorCol > current.length) {
+          current = current.padEnd(cursorCol, ' ');
+        }
+        current = `${current.slice(0, cursorCol)}${char}${current.slice(cursorCol + 1)}`;
+        cursorCol += 1;
+        while (cursorCol > width || current.length > width) {
+          rows.push(current.slice(0, width));
+          current = current.slice(width);
+          cursorCol = Math.max(0, cursorCol - width);
+        }
+      };
+
+      const eraseLine = (mode) => {
+        if (mode === 1) {
+          current = `${' '.repeat(Math.min(cursorCol, current.length))}${current.slice(cursorCol)}`;
+        } else if (mode === 2) {
+          current = '';
+          cursorCol = 0;
+        } else {
+          current = current.slice(0, cursorCol);
+        }
+      };
+
+      const applyCsi = (params, command) => {
+        const firstParam = Number(String(params || '').replace(/^\?/, '').split(';')[0] || 0);
+        if (command === 'K') {
+          eraseLine(firstParam);
+        } else if (command === 'G') {
+          cursorCol = Math.max(0, (firstParam || 1) - 1);
+        } else if (command === 'C') {
+          cursorCol += Math.max(1, firstParam || 1);
+        } else if (command === 'D') {
+          cursorCol = Math.max(0, cursorCol - Math.max(1, firstParam || 1));
+        } else if (command === 'J' && (firstParam === 2 || firstParam === 3)) {
+          rows.length = 0;
+          current = '';
+          cursorCol = 0;
+        }
+      };
+
+      let index = 0;
+      while (index < source.length) {
+        const char = source[index];
+        if (char === '\u001b') {
+          const next = source[index + 1];
+          if (next === '[') {
+            let end = index + 2;
+            while (end < source.length && !/[A-Za-z@-~]/.test(source[end])) end += 1;
+            if (end < source.length) {
+              applyCsi(source.slice(index + 2, end), source[end]);
+              index = end + 1;
+              continue;
+            }
+          } else if (next === ']') {
+            const bellEnd = source.indexOf('\u0007', index + 2);
+            const stEnd = source.indexOf('\u001b\\', index + 2);
+            if (bellEnd >= 0 && (stEnd < 0 || bellEnd < stEnd)) {
+              index = bellEnd + 1;
+              continue;
+            }
+            if (stEnd >= 0) {
+              index = stEnd + 2;
+              continue;
+            }
+          } else if (next) {
+            index += 2;
+            continue;
+          }
+        }
+        if (char === '\r') {
+          cursorCol = 0;
+          index += 1;
+          continue;
+        }
+        if (char === '\n') {
+          rows.push(current);
+          current = '';
+          cursorCol = 0;
+          index += 1;
+          continue;
+        }
+        if (char === '\b' || char === '\u007f') {
+          cursorCol = Math.max(0, cursorCol - 1);
+          if (cursorCol < current.length) {
+            current = `${current.slice(0, cursorCol)}${current.slice(cursorCol + 1)}`;
+          }
+          index += 1;
+          continue;
+        }
+        if (char === '\t') {
+          const spaces = 4 - (cursorCol % 4);
+          for (let count = 0; count < spaces; count += 1) replaceAtCursor(' ');
+          index += 1;
+          continue;
+        }
+        if (char < ' ' && char !== '\u00a0') {
+          index += 1;
+          continue;
+        }
+        replaceAtCursor(char);
+        index += 1;
+      }
+      rows.push(current);
+      rows._cursorCol = cursorCol;
+    }
+
+    function rebuildTranscriptRows(cardId, cols) {
+      const id = String(cardId || '');
+      const nextCols = Math.max(16, Number(cols || estimatedTranscriptCols()) || 80);
+      const rows = [];
+      rows._cursorCol = 0;
+      const chunks = state.transcriptChunksByCardId.get(id) || [];
+      for (const chunk of chunks) {
+        appendWrappedTranscriptRows(rows, chunk, nextCols);
+      }
+      state.transcriptRowsByCardId.set(id, rows.length > 0 ? rows : ['']);
+      state.transcriptColsByCardId.set(id, nextCols);
+    }
+
+    function ensureTranscriptRows(cardId, snapshotCols) {
+      const id = String(cardId || '');
+      const nextCols = estimatedTranscriptCols(snapshotCols);
+      const currentCols = Number(state.transcriptColsByCardId.get(id) || 0);
+      if (!state.transcriptRowsByCardId.has(id) || currentCols !== nextCols) {
+        rebuildTranscriptRows(id, nextCols);
+      }
+      return state.transcriptRowsByCardId.get(id) || [''];
+    }
+
+    function transcriptAtBottom(view) {
+      if (!view) return true;
+      return view.scrollHeight - view.scrollTop - view.clientHeight < MOBILE_TRANSCRIPT_ROW_HEIGHT * 2;
+    }
+
+    function ensureTranscriptView(cardId) {
+      const id = String(cardId || '');
+      if (!id) return null;
+      const existing = state.transcriptViewByCardId.get(id);
+      if (existing) return existing;
+
+      const root = document.createElement('div');
+      root.className = 'terminal-transcript';
+      root.hidden = state.selectedCardId !== id;
+      root.tabIndex = 0;
+
+      const topSpacer = document.createElement('div');
+      topSpacer.className = 'terminal-transcript-spacer';
+
+      const rowsEl = document.createElement('div');
+      rowsEl.className = 'terminal-transcript-rows';
+
+      const bottomSpacer = document.createElement('div');
+      bottomSpacer.className = 'terminal-transcript-spacer';
+
+      root.append(topSpacer, rowsEl, bottomSpacer);
+      root.addEventListener('scroll', () => {
+        state.userScrolledTerminalByCardId.set(id, !transcriptAtBottom(root));
+        scheduleRenderTranscriptWindow(id);
+      }, { passive: true });
+      root.addEventListener('touchstart', blurTerminalKeyboard, { passive: true });
+      root.addEventListener('click', blurTerminalKeyboard);
+
+      const view = { root, topSpacer, rowsEl, bottomSpacer, firstRow: -1, lastRow: -1, totalRows: 0, raf: 0 };
+      state.transcriptViewByCardId.set(id, view);
+      terminalHostEl.appendChild(root);
+      return view;
+    }
+
+    function renderTranscriptWindow(cardId, options = {}) {
+      const id = String(cardId || '');
+      const view = state.transcriptViewByCardId.get(id);
+      if (!view) return;
+      const rows = ensureTranscriptRows(id);
+      const root = view.root;
+      const totalRows = Math.max(1, rows.length);
+      const viewportRows = Math.max(1, Math.ceil((root.clientHeight || terminalHostEl.clientHeight || 280) / MOBILE_TRANSCRIPT_ROW_HEIGHT));
+      const shouldStickToBottom = options.stickToBottom === true
+        || (!options.preserveScroll && !state.userScrolledTerminalByCardId.get(id) && transcriptAtBottom(root));
+      const targetScrollTop = shouldStickToBottom
+        ? Math.max(0, totalRows * MOBILE_TRANSCRIPT_ROW_HEIGHT - (root.clientHeight || terminalHostEl.clientHeight || 280))
+        : (root.scrollTop || 0);
+      const start = Math.max(
+        0,
+        Math.floor(targetScrollTop / MOBILE_TRANSCRIPT_ROW_HEIGHT) - MOBILE_TRANSCRIPT_OVERSCAN_ROWS,
+      );
+      const end = Math.min(totalRows, start + viewportRows + MOBILE_TRANSCRIPT_OVERSCAN_ROWS * 2);
+      const totalRowsChanged = totalRows !== view.totalRows;
+      view.totalRows = totalRows;
+
+      if (options.force || start !== view.firstRow || end !== view.lastRow) {
+        view.firstRow = start;
+        view.lastRow = end;
+        view.topSpacer.style.height = `${start * MOBILE_TRANSCRIPT_ROW_HEIGHT}px`;
+        view.bottomSpacer.style.height = `${Math.max(0, totalRows - end) * MOBILE_TRANSCRIPT_ROW_HEIGHT}px`;
+        clearElement(view.rowsEl);
+        const fragment = document.createDocumentFragment();
+        for (let index = start; index < end; index += 1) {
+          const row = document.createElement('div');
+          row.className = 'terminal-transcript-row';
+          row.textContent = rows[index] || ' ';
+          fragment.appendChild(row);
+        }
+        view.rowsEl.appendChild(fragment);
+      } else if (totalRowsChanged) {
+        view.bottomSpacer.style.height = `${Math.max(0, totalRows - end) * MOBILE_TRANSCRIPT_ROW_HEIGHT}px`;
+      }
+
+      if (shouldStickToBottom) {
+        root.scrollTop = root.scrollHeight;
+        window.requestAnimationFrame(() => {
+          if (state.selectedCardId !== id || detailViewEl.hidden) return;
+          root.scrollTop = root.scrollHeight;
+          renderTranscriptWindow(id, { force: true, preserveScroll: true });
+        });
+      }
+    }
+
+    function scheduleRenderTranscriptWindow(cardId) {
+      const id = String(cardId || '');
+      const view = state.transcriptViewByCardId.get(id);
+      if (!view || view.raf) return;
+      view.raf = window.requestAnimationFrame(() => {
+        view.raf = 0;
+        renderTranscriptWindow(id, { preserveScroll: true });
+      });
+    }
+
+    function syncTranscriptLayout(cardId, snapshotCols) {
+      const id = String(cardId || '');
+      if (!id) return;
+      const nextCols = estimatedTranscriptCols(snapshotCols);
+      const currentCols = Number(state.transcriptColsByCardId.get(id) || 0);
+      if (currentCols !== nextCols) {
+        rebuildTranscriptRows(id, nextCols);
+        const view = state.transcriptViewByCardId.get(id);
+        if (view) {
+          view.firstRow = -1;
+          view.lastRow = -1;
+          renderTranscriptWindow(id, {
+            force: true,
+            stickToBottom: !state.userScrolledTerminalByCardId.get(id),
+          });
+        }
+      }
+    }
+
+    function setTranscriptSnapshot(cardId, snapshot) {
+      const id = String(cardId || '');
+      if (!id || !snapshot) return;
+      const seq = Number(snapshot.seq || 0);
+      const currentSeq = Number(state.lastTranscriptSeqByCardId.get(id) || 0);
+      if (seq > 0 && currentSeq > 0 && seq < currentSeq) return;
+      state.transcriptChunksByCardId.set(id, [terminalPayload(snapshot)]);
+      state.lastTranscriptSeqByCardId.set(id, seq);
+      state.receivedTerminalSeqByCardId.set(id, Math.max(Number(state.receivedTerminalSeqByCardId.get(id) || 0), seq));
+      rebuildTranscriptRows(id, estimatedTranscriptCols(snapshot.cols));
+      ensureTranscriptView(id);
+      renderTranscriptWindow(id, {
+        force: true,
+        stickToBottom: state.selectedCardId === id && !state.userScrolledTerminalByCardId.get(id),
+      });
+    }
+
+    function appendTranscriptOutput(cardId, data, seq) {
+      const id = String(cardId || '');
+      if (!id || !data) return;
+      if (!data) {
+        if (seq > 0) state.lastTranscriptSeqByCardId.set(id, Math.max(Number(state.lastTranscriptSeqByCardId.get(id) || 0), seq));
+        return;
+      }
+      const view = state.transcriptViewByCardId.get(id);
+      const shouldStickToBottom = state.selectedCardId === id
+        && (!view || !state.userScrolledTerminalByCardId.get(id) || transcriptAtBottom(view.root));
+      const cols = estimatedTranscriptCols();
+      if (Number(state.transcriptColsByCardId.get(id) || 0) !== cols) {
+        rebuildTranscriptRows(id, cols);
+      }
+      const chunks = state.transcriptChunksByCardId.get(id) || [];
+      chunks.push(data);
+      state.transcriptChunksByCardId.set(id, chunks);
+      const rows = state.transcriptRowsByCardId.get(id) || [];
+      appendWrappedTranscriptRows(rows, data, state.transcriptColsByCardId.get(id) || cols);
+      state.transcriptRowsByCardId.set(id, rows);
+      if (seq > 0) {
+        state.lastTranscriptSeqByCardId.set(id, Math.max(Number(state.lastTranscriptSeqByCardId.get(id) || 0), seq));
+      }
+      if (state.selectedCardId === id) {
+        ensureTranscriptView(id);
+        renderTranscriptWindow(id, {
+          force: shouldStickToBottom,
+          stickToBottom: shouldStickToBottom,
+          preserveScroll: !shouldStickToBottom,
+        });
+      }
+    }
+
+    function scrollTranscriptToBottom(cardId) {
+      const id = String(cardId || '');
+      const view = state.transcriptViewByCardId.get(id);
+      if (!view || state.selectedCardId !== id || detailViewEl.hidden) return;
+      view.root.scrollTop = view.root.scrollHeight;
+      state.userScrolledTerminalByCardId.set(id, false);
+      renderTranscriptWindow(id, { force: true, stickToBottom: true });
+    }
+
+    function blurTerminalKeyboard() {
+      if (document.activeElement === terminalKeyboardEl) {
+        terminalKeyboardEl.blur();
+      }
+    }
+
+    function terminalAtBottom(term) {
+      if (!term?.buffer?.active) return true;
+      const buffer = term.buffer.active;
+      return buffer.baseY <= buffer.viewportY + 2;
+    }
+
+    function terminalCellHeight(term) {
+      return Math.max(8, Number(term?._core?._renderService?.dimensions?.css?.cell?.height || 16));
+    }
+
+    function installTouchScrollAdapter(cardId, term, element) {
+      const id = String(cardId || '');
+      if (usesTranscriptRenderer(id)) return;
+      if (!id || state.terminalTouchCleanupByCardId.has(id) || !element) return;
+
+      let lastY = 0;
+      let pendingRows = 0;
+      let raf = 0;
+
+      const flushRows = () => {
+        raf = 0;
+        const rows = pendingRows;
+        pendingRows = 0;
+        if (!rows || state.selectedCardId !== id || detailViewEl.hidden) return;
+        try {
+          term.scrollLines(rows);
+          state.userScrolledTerminalByCardId.set(id, !terminalAtBottom(term));
+        } catch (_) {}
+      };
+
+      const queueRows = (rows) => {
+        pendingRows += rows;
+        if (!raf) raf = window.requestAnimationFrame(flushRows);
+      };
+
+      const onTouchStart = (event) => {
+        if (event.touches.length !== 1) return;
+        lastY = event.touches[0].clientY;
+        state.touchScrollingTerminalByCardId.set(id, true);
+      };
+
+      const onTouchMove = (event) => {
+        if (event.touches.length !== 1) return;
+        const nextY = event.touches[0].clientY;
+        const deltaY = lastY - nextY;
+        lastY = nextY;
+        const rows = Math.trunc((deltaY / terminalCellHeight(term)) * MOBILE_TOUCH_SCROLL_MULTIPLIER);
+        if (rows !== 0) {
+          event.preventDefault();
+          queueRows(rows);
+        }
+      };
+
+      const onTouchEnd = () => {
+        state.touchScrollingTerminalByCardId.set(id, false);
+        if (pendingRows) flushRows();
+      };
+
+      element.addEventListener('touchstart', onTouchStart, { passive: true });
+      element.addEventListener('touchmove', onTouchMove, { passive: false });
+      element.addEventListener('touchend', onTouchEnd, { passive: true });
+      element.addEventListener('touchcancel', onTouchEnd, { passive: true });
+      state.terminalTouchCleanupByCardId.set(id, () => {
+        if (raf) window.cancelAnimationFrame(raf);
+        element.removeEventListener('touchstart', onTouchStart);
+        element.removeEventListener('touchmove', onTouchMove);
+        element.removeEventListener('touchend', onTouchEnd);
+        element.removeEventListener('touchcancel', onTouchEnd);
+      });
+    }
+
+    function resizeTerminalLocal(term, cardId, cols, rows) {
+      if (!term || term.cols === cols && term.rows === rows) return;
+      state.suppressResizeByCardId.add(cardId);
+      try {
+        term.resize(cols, rows);
+      } catch (_) {
+        // xterm can throw while a hidden mobile browser view is being laid out.
+      } finally {
+        window.requestAnimationFrame(() => state.suppressResizeByCardId.delete(cardId));
+      }
+    }
+
+    function ensureTerminal(cardId) {
+      const id = String(cardId || '');
+      const existing = state.terminalByCardId.get(id);
+      if (existing) {
+        return existing;
+      }
+
+      const snapshot = state.terminalSnapshotByCardId.get(id);
+      const element = document.createElement('div');
+      element.className = 'terminal-instance';
+      element.hidden = state.selectedCardId !== id;
+      terminalHostEl.appendChild(element);
+
+      const term = new window.Terminal({
+        cols: snapshot?.cols || 80,
+        rows: snapshot?.rows || 24,
+        theme: terminalTheme(),
+        fontSize: 13,
+        lineHeight: 1.2,
+        fontFamily: 'ui-monospace, SFProText-Regular, SF Pro Text, Menlo, Monaco, Consolas, monospace',
+        convertEol: true,
+        cursorBlink: state.permission === 'full',
+        allowProposedApi: true,
+        disableStdin: state.permission !== 'full',
+        scrollback: MOBILE_TERMINAL_SCROLLBACK,
+        screenReaderMode: false,
+        fastScrollModifier: 'alt',
+        scrollSensitivity: 1.5,
+      });
+
+      const fit = new window.FitAddon.FitAddon();
+      term.loadAddon(fit);
+      term.open(element);
+      term.onData((data) => {
+        if (state.permission === 'full' && state.selectedCardId === id) {
+          sendInput(data, id);
+        }
+      });
+      term.onResize(({ cols, rows }) => sendResize(id, cols, rows));
+      term.onScroll(() => {
+        if (!usesTranscriptRenderer(id)) {
+          state.userScrolledTerminalByCardId.set(id, !terminalAtBottom(term));
+        }
+      });
+      installTouchScrollAdapter(id, term, element);
+
+      state.terminalByCardId.set(id, term);
+      state.fitByCardId.set(id, fit);
+      state.terminalElementByCardId.set(id, element);
+
+      if (snapshot) {
+        writeTerminalSnapshot(id, snapshot, { force: true });
+      } else {
+        flushPendingTerminalOutput(id);
+      }
+      return term;
+    }
+
+    function fitTerminal(cardId) {
+      const id = String(cardId || '');
+      const term = state.terminalByCardId.get(id);
+      const fit = state.fitByCardId.get(id);
+      if (!term || !fit || state.selectedCardId !== id || detailViewEl.hidden) return;
+      if (usesTranscriptRenderer(id)) {
+        syncTranscriptLayout(id);
+        renderTranscriptWindow(id, { force: true });
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        if (state.selectedCardId !== id || detailViewEl.hidden) return;
+        try {
+          fit.fit();
+          scrollTerminalToBottom(id);
+        } catch (_) {
+          // The host can be briefly hidden during view transitions.
+        }
+      });
+    }
+
+    function refreshVisibleTerminal(cardId) {
+      const id = String(cardId || '');
+      if (!id || state.selectedCardId !== id || detailViewEl.hidden) return;
+      syncTranscriptLayout(id);
+      renderTranscriptWindow(id, { force: true });
+      fitTerminal(id);
+      const snapshot = state.terminalSnapshotByCardId.get(id);
+      if (snapshot && state.terminalByCardId.has(id)) {
+        writeTerminalSnapshot(id, snapshot);
+      } else {
+        flushPendingTerminalOutput(id);
+      }
+    }
+
+    function showTerminal(cardId) {
+      const id = String(cardId || '');
+      if (!id) {
+        hideTerminalFallback();
+        hideTranscriptViews('');
+        return;
+      }
+      ensureTranscriptView(id);
+      hideTranscriptViews(id);
+      renderTranscriptWindow(id, { force: true });
+      if (!xtermReady()) {
+        showTerminalFallback(id, 'Terminal engine loading');
+        return;
+      }
+
+      try {
+        ensureTerminal(id);
+        hideTerminalFallback();
+      } catch (error) {
+        showTerminalFallback(id, 'Terminal preview unavailable');
+        return;
+      }
+
+      for (const [terminalId, element] of state.terminalElementByCardId.entries()) {
+        element.hidden = terminalId !== id;
+      }
+
+      fitTerminal(id);
+      window.requestAnimationFrame(() => refreshVisibleTerminal(id));
+      window.setTimeout(() => refreshVisibleTerminal(id), 80);
+      window.setTimeout(() => {
+        scrollTerminalToBottom(id);
+        scrollTranscriptToBottom(id);
+      }, 180);
+    }
+
+    function refreshTerminalPermission() {
+      terminalKeyboardEl.disabled = state.permission !== 'full';
+      terminalKeyboardEl.hidden = state.permission !== 'full';
+      for (const term of state.terminalByCardId.values()) {
+        term.options = {
+          cursorBlink: state.permission === 'full',
+          disableStdin: state.permission !== 'full',
+        };
+      }
+    }
+
+    function syncStoredPermission() {
+      const storedPermission = localStorage.getItem(PERMISSION_KEY) || 'read_only';
+      state.permission = storedPermission === 'full' ? 'full' : 'read_only';
+      refreshTerminalPermission();
+    }
+
+    function writeTerminalSnapshot(cardId, snapshot, options = {}) {
+      const term = state.terminalByCardId.get(cardId);
+      if (!term) return;
+      const seq = Number(snapshot.seq || 0);
+      const appliedSeq = Number(state.appliedTerminalSnapshotSeqByCardId.get(cardId) || 0);
+      if (!options.force && seq > 0 && seq <= appliedSeq) {
+        flushPendingTerminalOutput(cardId);
+        scrollTerminalToBottom(cardId);
+        return;
+      }
+      resizeTerminalLocal(term, cardId, snapshot.cols, snapshot.rows);
+      if (usesTranscriptRenderer(cardId)) {
+        state.pendingTerminalOutputByCardId.delete(cardId);
+        state.lastTerminalSeqByCardId.set(cardId, seq);
+        if (seq > 0) {
+          state.appliedTerminalSnapshotSeqByCardId.set(cardId, seq);
+        }
+        if (state.selectedCardId === cardId && !state.userScrolledTerminalByCardId.get(cardId)) {
+          scrollTranscriptToBottom(cardId);
+        }
+        return;
+      }
+      term.reset();
+      const payload = terminalPayload(snapshot);
+      if (payload) {
+        term.write(payload, () => {
+          flushPendingTerminalOutput(cardId);
+          scrollTerminalToBottom(cardId);
+        });
+      } else {
+        flushPendingTerminalOutput(cardId);
+        scrollTerminalToBottom(cardId);
+      }
+      state.lastTerminalSeqByCardId.set(cardId, seq);
+      if (seq > 0) {
+        state.appliedTerminalSnapshotSeqByCardId.set(cardId, seq);
+      }
+      if (state.selectedCardId === cardId) {
+        fitTerminal(cardId);
+        if (!state.userScrolledTerminalByCardId.get(cardId)) {
+          scrollTerminalToBottom(cardId);
+          scrollTranscriptToBottom(cardId);
+        }
+      }
+    }
+
+    function applyTerminalSnapshot(snapshotPayload) {
+      const snapshot = normalizeTerminalSnapshot(snapshotPayload);
+      if (!snapshot) return;
+      state.terminalSnapshotByCardId.set(snapshot.cardId, snapshot);
+      setTranscriptSnapshot(snapshot.cardId, snapshot);
+      trimBufferedOutputThrough(snapshot.cardId, snapshot.seq);
+      if (state.terminalByCardId.has(snapshot.cardId)) {
+        writeTerminalSnapshot(snapshot.cardId, snapshot);
+      } else if (state.selectedCardId === snapshot.cardId) {
+        hideTerminalFallback();
+        ensureTranscriptView(snapshot.cardId);
+        renderTranscriptWindow(snapshot.cardId, { force: true, stickToBottom: true });
+      }
+    }
+
+    function bufferTerminalOutput(cardId, data, seq) {
+      const output = state.pendingTerminalOutputByCardId.get(cardId) || [];
+      output.push({ data, seq });
+      if (output.length > 2000) {
+        output.splice(0, output.length - 2000);
+      }
+      state.pendingTerminalOutputByCardId.set(cardId, output);
+    }
+
+    function writeTerminalOutputChunk(cardId, data, seq) {
+      const term = state.terminalByCardId.get(cardId);
+      if (!term || !data) return;
+      if (usesTranscriptRenderer(cardId)) {
+        if (seq > 0) {
+          state.lastTerminalSeqByCardId.set(cardId, seq);
+        }
+        return;
+      }
+      const shouldAutoScroll = state.selectedCardId === cardId
+        && !state.userScrolledTerminalByCardId.get(cardId)
+        && terminalAtBottom(term);
+      term.write(data, () => {
+        if (shouldAutoScroll) {
+          scrollTerminalToBottom(cardId);
+        }
+      });
+      if (seq > 0) {
+        state.lastTerminalSeqByCardId.set(cardId, seq);
+      }
+    }
+
+    function queueTerminalOutput(cardId, data, seq) {
+      const queued = state.queuedTerminalOutputByCardId.get(cardId) || { chunks: [], seq: 0 };
+      queued.chunks.push({ data, seq });
+      queued.seq = Math.max(Number(queued.seq || 0), Number(seq || 0));
+      state.queuedTerminalOutputByCardId.set(cardId, queued);
+      if (state.outputFlushTimerByCardId.has(cardId)) return;
+      const timer = window.setTimeout(() => {
+        state.outputFlushTimerByCardId.delete(cardId);
+        const next = state.queuedTerminalOutputByCardId.get(cardId);
+        state.queuedTerminalOutputByCardId.delete(cardId);
+        if (next) {
+          const chunks = Array.isArray(next.chunks) ? next.chunks : [{ data: next.data || '', seq: next.seq || 0 }];
+          for (const chunk of chunks) {
+            const chunkSeq = Number(chunk.seq || 0);
+            const transcriptSeq = Number(state.lastTranscriptSeqByCardId.get(cardId) || 0);
+            if (!(chunkSeq > 0 && chunkSeq <= transcriptSeq)) {
+              appendTranscriptOutput(cardId, chunk.data, chunkSeq);
+            }
+            writeTerminalOutputChunk(cardId, chunk.data, chunkSeq);
+          }
+        }
+      }, MOBILE_TERMINAL_OUTPUT_BATCH_MS);
+      state.outputFlushTimerByCardId.set(cardId, timer);
+    }
+
+    function trimBufferedOutputThrough(cardId, seq) {
+      if (!seq) return;
+      const output = state.pendingTerminalOutputByCardId.get(cardId);
+      if (!output) return;
+      const filtered = output.filter((chunk) => !chunk.seq || chunk.seq > seq);
+      if (filtered.length > 0) {
+        state.pendingTerminalOutputByCardId.set(cardId, filtered);
+      } else {
+        state.pendingTerminalOutputByCardId.delete(cardId);
+      }
+    }
+
+    function flushPendingTerminalOutput(cardId) {
+      const term = state.terminalByCardId.get(cardId);
+      const output = state.pendingTerminalOutputByCardId.get(cardId);
+      if (!term || !output || output.length === 0) return;
+      state.pendingTerminalOutputByCardId.delete(cardId);
+      if (usesTranscriptRenderer(cardId)) {
+        const maxSeq = output.reduce((max, chunk) => Math.max(max, Number(chunk.seq || 0)), 0);
+        if (maxSeq > 0) state.lastTerminalSeqByCardId.set(cardId, maxSeq);
+        return;
+      }
+      for (const chunk of output) {
+        const lastSeq = Number(state.lastTerminalSeqByCardId.get(cardId) || 0);
+        if (chunk.seq > 0 && chunk.seq <= lastSeq) continue;
+        writeTerminalOutputChunk(cardId, chunk.data, chunk.seq);
+      }
+    }
+
+    function applyTerminalOutput(message) {
+      const cardId = String(message.card_id || message.cardId || '');
+      if (!cardId) return;
+      const data = String(message.data || '');
+      if (!data) return;
+      const seq = Number(message.seq || 0);
+      const receivedSeq = Number(state.receivedTerminalSeqByCardId.get(cardId) || 0);
+      if (seq > 0 && seq <= receivedSeq) return;
+      if (seq > 0) state.receivedTerminalSeqByCardId.set(cardId, seq);
+
+      const term = state.terminalByCardId.get(cardId);
+      if (!term) {
+        queueTerminalOutput(cardId, data, seq);
+        return;
+      }
+      queueTerminalOutput(cardId, data, seq);
+    }
+
+    function disposeTerminal(cardId) {
+      const id = String(cardId || '');
+      const term = state.terminalByCardId.get(id);
+      const element = state.terminalElementByCardId.get(id);
+      const transcriptView = state.transcriptViewByCardId.get(id);
+      const cleanupTouch = state.terminalTouchCleanupByCardId.get(id);
+      if (cleanupTouch) cleanupTouch();
+      if (transcriptView?.raf) window.cancelAnimationFrame(transcriptView.raf);
+      if (term) {
+        try {
+          term.dispose();
+        } catch (_) {}
+      }
+      if (element) element.remove();
+      if (transcriptView) transcriptView.root.remove();
+      state.terminalByCardId.delete(id);
+      state.fitByCardId.delete(id);
+      state.terminalElementByCardId.delete(id);
+      state.terminalTouchCleanupByCardId.delete(id);
+      state.terminalSnapshotByCardId.delete(id);
+      state.transcriptChunksByCardId.delete(id);
+      state.transcriptRowsByCardId.delete(id);
+      state.transcriptViewByCardId.delete(id);
+      state.transcriptColsByCardId.delete(id);
+      state.lastTranscriptSeqByCardId.delete(id);
+      state.receivedTerminalSeqByCardId.delete(id);
+      state.pendingTerminalOutputByCardId.delete(id);
+      state.queuedTerminalOutputByCardId.delete(id);
+      const timer = state.outputFlushTimerByCardId.get(id);
+      if (timer) window.clearTimeout(timer);
+      state.outputFlushTimerByCardId.delete(id);
+      state.lastTerminalSeqByCardId.delete(id);
+      state.appliedTerminalSnapshotSeqByCardId.delete(id);
+      state.userScrolledTerminalByCardId.delete(id);
+      state.touchScrollingTerminalByCardId.delete(id);
+      state.suppressResizeByCardId.delete(id);
+    }
+
     function applyServerMessage(message) {
       switch (message.kind) {
         case 'snapshot':
-          state.cards.clear();
-          for (const card of Array.isArray(message.cards) ? message.cards : []) {
-            mergeCard(card);
+          {
+            const nextIds = new Set();
+            state.cards.clear();
+            for (const card of Array.isArray(message.cards) ? message.cards : []) {
+              mergeCard(card);
+              if (card?.id) nextIds.add(String(card.id));
+            }
+            const knownIds = new Set([
+              ...state.terminalByCardId.keys(),
+              ...state.terminalSnapshotByCardId.keys(),
+              ...state.transcriptChunksByCardId.keys(),
+              ...state.pendingTerminalOutputByCardId.keys(),
+              ...state.queuedTerminalOutputByCardId.keys(),
+            ]);
+            for (const id of knownIds) {
+              if (!nextIds.has(id)) disposeTerminal(id);
+            }
           }
           break;
         case 'card_added':
@@ -739,7 +1853,11 @@ fn mobile_pair_page_template() -> &'static str {
           mergeCard(message.card);
           break;
         case 'card_removed':
-          if (message.card?.id) state.cards.delete(String(message.card.id));
+          if (message.card?.id) {
+            const id = String(message.card.id);
+            state.cards.delete(id);
+            disposeTerminal(id);
+          }
           if (state.selectedCardId === message.card?.id) state.selectedCardId = null;
           break;
         case 'preview': {
@@ -778,11 +1896,18 @@ fn mobile_pair_page_template() -> &'static str {
           }
           break;
         }
+        case 'terminal_snapshot':
+          applyTerminalSnapshot(message.snapshot);
+          return;
+        case 'terminal_output':
+          applyTerminalOutput(message);
+          return;
         case 'pong':
         case 'notification':
           break;
         case 'error':
-          detailEl.textContent = message.message || 'Bridge error.';
+          statusTextEl.textContent = message.message || 'Bridge error.';
+          statusBadgeEl.classList.add('error');
           break;
       }
       render();
@@ -802,9 +1927,12 @@ fn mobile_pair_page_template() -> &'static str {
       }
 
       if (cards.length === 0) {
+        showTerminal('');
         const empty = document.createElement('div');
-        empty.className = 'empty';
-        empty.textContent = 'No live terminal sessions yet.';
+        empty.style.textAlign = 'center';
+        empty.style.padding = '40px 20px';
+        empty.style.opacity = '0.4';
+        empty.textContent = 'No live terminal sessions.';
         cardsEl.appendChild(empty);
         cardsEl.hidden = false;
         return;
@@ -813,32 +1941,31 @@ fn mobile_pair_page_template() -> &'static str {
       for (const card of cards) {
         const item = document.createElement('button');
         item.type = 'button';
-        item.className = 'card session-card';
-        item.addEventListener('click', () => selectCard(card.id));
+        item.className = 'card';
+        item.onclick = () => selectCard(card.id);
 
         const head = document.createElement('div');
-        head.className = 'card-head';
+        head.className = 'card-header';
+
+        const info = document.createElement('div');
+        info.className = 'card-title-group';
 
         const title = document.createElement('div');
         title.className = 'card-title';
-        title.textContent = card.projectName || `Session ${String(card.id || '').slice(0, 8) || 'unknown'}`;
+        title.textContent = card.projectName || 'Session';
 
-        const titleWrap = document.createElement('div');
-        titleWrap.style.minWidth = '0';
-        titleWrap.appendChild(title);
-        if (card.projectPath) {
-          const path = document.createElement('div');
-          path.className = 'card-path';
-          path.textContent = card.projectPath;
-          titleWrap.appendChild(path);
-        }
+        const path = document.createElement('div');
+        path.className = 'card-path';
+        path.textContent = card.projectPath || '';
+
+        info.append(title, path);
 
         const status = document.createElement('div');
         const statusValue = String(card.status || 'unknown');
         status.className = `pill ${statusValue}`;
-        status.textContent = statusValue.replaceAll('_', ' ');
+        status.textContent = statusValue.replace('_', ' ');
 
-        head.append(titleWrap, status);
+        head.append(info, status);
         item.appendChild(head);
 
         const summary = String(card.summaryLine || '').trim();
@@ -852,20 +1979,20 @@ fn mobile_pair_page_template() -> &'static str {
         const preview = document.createElement('div');
         preview.className = 'preview';
         const lines = previewLines(card, 2, Boolean(summary));
-        if (lines.length === 0 && !summary) lines.push('No preview yet.');
+        if (lines.length === 0 && !summary) lines.push('No output yet.');
         for (const line of lines) {
-          const row = document.createElement('div');
-          row.className = 'preview-line';
-          row.textContent = line;
-          preview.appendChild(row);
+          const r = document.createElement('div');
+          r.className = 'preview-line';
+          r.textContent = line;
+          preview.appendChild(r);
         }
         item.appendChild(preview);
 
-        const meta = document.createElement('div');
-        meta.className = 'meta';
+        const footer = document.createElement('div');
+        footer.className = 'card-footer';
         const hidden = Number(card.hiddenLineCount || 0);
-        meta.textContent = `${formatBytes(Number(card.recentOutputBytes || 0))} output${hidden > 0 ? ` · +${hidden} hidden lines` : ''}`;
-        item.appendChild(meta);
+        footer.textContent = `${formatBytes(Number(card.recentOutputBytes || 0))} output${hidden > 0 ? ` · +${hidden} lines` : ''}`;
+        item.appendChild(footer);
 
         cardsEl.appendChild(item);
       }
@@ -874,65 +2001,69 @@ fn mobile_pair_page_template() -> &'static str {
 
     function renderDetail(card) {
       detailTitleEl.textContent = card.projectName || `Session ${String(card.id || '').slice(0, 12) || 'unknown'}`;
-      const hidden = Number(card.hiddenLineCount || 0);
-      const path = card.projectPath ? `${card.projectPath} · ` : '';
-      detailMetaEl.textContent = `${path}${String(card.status || 'unknown').replaceAll('_', ' ')} · session ${String(card.id || '').slice(0, 12) || 'unknown'} · ${formatBytes(Number(card.recentOutputBytes || 0))} output${hidden > 0 ? ` · +${hidden} hidden lines` : ''}`;
       readonlyNoticeEl.hidden = state.permission === 'full';
       controlPanelEl.hidden = state.permission !== 'full';
-
-      clearElement(detailPreviewEl);
-      const summary = String(card.summaryLine || '').trim();
-      if (summary) {
-        const summaryEl = document.createElement('div');
-        summaryEl.className = 'summary-line';
-        summaryEl.textContent = summary;
-        detailPreviewEl.appendChild(summaryEl);
-      }
-      const lines = previewLines(card, 12, Boolean(summary));
-      if (lines.length === 0 && !summary) lines.push('No preview yet.');
-      for (const line of lines) {
-        const row = document.createElement('div');
-        row.className = 'preview-line';
-        row.textContent = line;
-        detailPreviewEl.appendChild(row);
-      }
+      terminalKeyboardEl.hidden = state.permission !== 'full';
+      terminalKeyboardEl.disabled = state.permission !== 'full';
+      showTerminal(card.id);
     }
 
     function selectCard(cardId) {
       state.selectedCardId = cardId;
+      if (!state.suppressListHistory && window.history?.pushState) {
+        window.history.pushState({ view: 'detail', cardId }, '', window.location.href);
+      }
       render();
     }
 
     function showList() {
       state.selectedCardId = null;
+      showTerminal('');
       render();
     }
 
-    function canSendInput() {
+    function returnToListFromHistory() {
+      state.suppressListHistory = true;
+      try {
+        showList();
+      } finally {
+        state.suppressListHistory = false;
+      }
+    }
+
+    function canSendInput(cardId = state.selectedCardId) {
       return state.permission === 'full'
-        && state.selectedCardId
+        && cardId
         && state.socket
         && state.socket.readyState === WebSocket.OPEN;
     }
 
-    function sendInput(data) {
-      if (!data || !canSendInput()) return;
+    function sendInput(data, cardId = state.selectedCardId) {
+      if (!data || !canSendInput(cardId)) return;
       state.socket.send(JSON.stringify({
         protocol_version: BRIDGE_PROTOCOL_VERSION,
         kind: 'input',
-        card_id: state.selectedCardId,
+        card_id: cardId,
         data,
       }));
     }
 
-    function submitInput() {
-      const data = inputEl.value;
-      sendInput(data ? `${data}\r` : '\r');
-      inputEl.value = '';
+    function sendResize(cardId, cols, rows) {
+      if (state.suppressResizeByCardId.has(cardId) || !canSendInput(cardId)) return;
+      state.socket.send(JSON.stringify({
+        protocol_version: BRIDGE_PROTOCOL_VERSION,
+        kind: 'resize',
+        card_id: cardId,
+        cols,
+        rows,
+      }));
     }
 
     function connectWebSocket() {
       if (!state.token) return;
+      if (!otp) {
+        syncStoredPermission();
+      }
       if (state.socket) state.socket.close();
       window.clearTimeout(state.reconnectTimer);
 
@@ -941,13 +2072,9 @@ fn mobile_pair_page_template() -> &'static str {
       const socket = new WebSocket(url);
       state.socket = socket;
       setStatus('Connecting...', '');
-      detailEl.textContent = 'Opening live bridge connection.';
 
       socket.onopen = () => {
         setStatus('Connected', 'ok');
-        detailEl.textContent = state.permission === 'full'
-          ? 'Live desktop sessions synced. Full controls are enabled.'
-          : 'Live desktop sessions synced in read-only mode.';
         socket.send(JSON.stringify({ protocol_version: BRIDGE_PROTOCOL_VERSION, kind: 'subscribe' }));
         retryEl.hidden = true;
       };
@@ -956,20 +2083,19 @@ fn mobile_pair_page_template() -> &'static str {
         try {
           applyServerMessage(validateMessage(JSON.parse(event.data)));
         } catch (error) {
-          detailEl.textContent = error instanceof Error ? error.message : String(error);
+          statusTextEl.textContent = error instanceof Error ? error.message : String(error);
+          statusBadgeEl.classList.add('error');
         }
       };
 
       socket.onerror = () => {
         setStatus('Connection error', 'error');
-        detailEl.textContent = 'The desktop bridge connection failed.';
       };
 
       socket.onclose = () => {
         if (state.socket !== socket) return;
         state.socket = null;
         setStatus('Disconnected', 'error');
-        detailEl.textContent = 'The bridge connection closed. Retry when the desktop bridge is running.';
         retryEl.hidden = false;
       };
     }
@@ -979,19 +2105,19 @@ fn mobile_pair_page_template() -> &'static str {
       cardsEl.hidden = true;
       clearElement(cardsEl);
 
+      if (!otp && hasStoredToken()) {
+        scrubPairingCodeFromUrl();
+        connectWebSocket();
+        return;
+      }
+
       if (!otp) {
-        if (state.token) {
-          connectWebSocket();
-          return;
-        }
         setStatus('Missing pairing code', 'error');
-        detailEl.textContent = 'Open the pairing link shown in ThreadTerm again.';
         return;
       }
 
       try {
         setStatus('Pairing device...');
-        detailEl.textContent = 'This one-time code will be consumed after a successful pairing.';
 
         const response = await fetch('/pair', {
           method: 'POST',
@@ -1007,23 +2133,53 @@ fn mobile_pair_page_template() -> &'static str {
         const payload = await response.json();
         state.token = payload.deviceToken || '';
         state.permission = payload.device?.permission || 'read_only';
+        refreshTerminalPermission();
         localStorage.setItem(TOKEN_KEY, state.token);
         localStorage.setItem(PERMISSION_KEY, state.permission);
+        scrubPairingCodeFromUrl();
         setStatus('Paired', 'ok');
-        detailEl.textContent = 'Pairing succeeded. Connecting to live sessions.';
         connectWebSocket();
       } catch (error) {
         setStatus('Pairing failed', 'error');
-        detailEl.textContent = error instanceof Error ? error.message : String(error);
+        statusTextEl.textContent = error instanceof Error ? error.message : String(error);
         retryEl.hidden = false;
       }
     }
 
     retryEl.addEventListener('click', pair);
     backEl.addEventListener('click', showList);
-    sendInputEl.addEventListener('click', submitInput);
+    terminalKeyboardEl.addEventListener('input', () => {
+      if (!canSendInput() || !terminalKeyboardEl.value) return;
+      const data = terminalKeyboardEl.value.replace(/\n/g, '\r');
+      terminalKeyboardEl.value = '';
+      sendInput(data);
+    });
+    terminalKeyboardEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        sendInput('\r');
+        terminalKeyboardEl.value = '';
+      }
+    });
+    sendEnterEl.addEventListener('click', () => sendInput('\r'));
     sendCtrlCEl.addEventListener('click', () => sendInput('\u0003'));
     sendEscEl.addEventListener('click', () => sendInput('\u001b'));
+    window.addEventListener('popstate', () => {
+      if (state.selectedCardId) {
+        returnToListFromHistory();
+      } else if (hasStoredToken()) {
+        scrubPairingCodeFromUrl();
+      }
+    });
+    if (typeof ResizeObserver === 'function') {
+      state.resizeObserver = new ResizeObserver(() => {
+        if (state.selectedCardId) fitTerminal(state.selectedCardId);
+      });
+      state.resizeObserver.observe(terminalHostEl);
+    }
+    window.addEventListener('resize', () => {
+      if (state.selectedCardId) fitTerminal(state.selectedCardId);
+    });
     pair();
   </script>
 </body>
@@ -1034,13 +2190,33 @@ fn mobile_pair_page_template() -> &'static str {
 mod tests {
     use super::*;
 
+    fn test_pair_page_html(otp: Option<&str>, pair_permission: &str) -> String {
+        pair_page_html(otp, pair_permission, None, None, None, None)
+    }
+
     #[test]
     fn pair_landing_page_posts_otp_to_pair_endpoint() {
-        let html = pair_page_html(Some("123456"), "read_only");
+        let html = test_pair_page_html(Some("123456"), "read_only");
 
         assert!(html.contains("ThreadTerm Mobile Pairing"));
-        assert!(html.contains("const otp = \"123456\";"));
+        assert!(html.contains("MOBILE_TERMINAL_SCROLLBACK"));
+        assert!(html.contains("MOBILE_TERMINAL_OUTPUT_BATCH_MS"));
+        assert!(html.contains("MOBILE_TOUCH_SCROLL_MULTIPLIER"));
+        assert!(html.contains("href=\"/assets/xterm.css\""));
+        assert!(html.contains("src=\"/assets/xterm.js\""));
+        assert!(html.contains("src=\"/assets/addon-fit.js\""));
+        assert!(html.contains("let otp = \"123456\";"));
         assert!(html.contains("const pairPermission = \"read_only\";"));
+        assert!(html.contains("permission: otp ? pairPermission"));
+        assert!(html.contains("function syncStoredPermission"));
+        assert!(html.contains("function scrubPairingCodeFromUrl"));
+        assert!(html.contains("function hasStoredToken"));
+        assert!(html.contains("if (!otp && hasStoredToken())"));
+        assert!(html.contains("otp = '';"));
+        assert!(html.contains("url.searchParams.delete('otp')"));
+        assert!(html.contains("window.history.pushState"));
+        assert!(html.contains("window.addEventListener('popstate'"));
+        assert!(html.contains("returnToListFromHistory"));
         assert!(html.contains("fetch('/pair'"));
         assert!(html.contains("deviceName"));
         assert!(html.contains("permission: state.pairPermission"));
@@ -1048,35 +2224,90 @@ mod tests {
         assert!(html.contains("function applyServerMessage"));
         assert!(html.contains("function selectCard"));
         assert!(html.contains("function sendInput"));
-        assert!(html.contains("className = 'card session-card'"));
-        assert!(html.contains("overflow-wrap: anywhere"));
+        assert!(html.contains("function ensureTerminal"));
+        assert!(html.contains("function terminalTheme"));
+        assert!(html.contains("function scrollTerminalToBottom"));
+        assert!(html.contains("function showTerminalFallback"));
+        assert!(html.contains("function refreshVisibleTerminal"));
+        assert!(html.contains("function applyTerminalSnapshot"));
+        assert!(html.contains("function applyTerminalOutput"));
+        assert!(html.contains("MOBILE_TRANSCRIPT_ROW_HEIGHT"));
+        assert!(html.contains("MOBILE_TRANSCRIPT_OVERSCAN_ROWS"));
+        assert!(html.contains("transcriptChunksByCardId"));
+        assert!(html.contains("transcriptRowsByCardId"));
+        assert!(html.contains("function usesTranscriptRenderer"));
+        assert!(html.contains("function ensureTranscriptView"));
+        assert!(html.contains("function renderTranscriptWindow"));
+        assert!(html.contains("function appendTranscriptOutput"));
+        assert!(html.contains("function scheduleRenderTranscriptWindow"));
+        assert!(html.contains("rows._cursorCol"));
+        assert!(html.contains("command === 'K'"));
+        assert!(html.contains("char === '\\r'"));
+        assert!(html.contains("root.addEventListener('touchstart', blurTerminalKeyboard"));
+        assert!(html.contains("function blurTerminalKeyboard"));
+        assert!(html.contains("id=\"terminal-keyboard\""));
+        assert!(html.contains("terminalKeyboardEl.addEventListener('input'"));
+        assert!(html.contains("terminalKeyboardEl.addEventListener('keydown'"));
+        assert!(html.contains("terminal-transcript-row"));
+        assert!(html.contains("DocumentFragment"));
+        assert!(html.contains("- MOBILE_TRANSCRIPT_OVERSCAN_ROWS"));
+        assert!(html.contains("appendTranscriptOutput(cardId, chunk.data, chunkSeq)"));
+        assert!(html.contains("pendingTerminalOutputByCardId"));
+        assert!(html.contains("queuedTerminalOutputByCardId"));
+        assert!(html.contains("appliedTerminalSnapshotSeqByCardId"));
+        assert!(html.contains("userScrolledTerminalByCardId"));
+        assert!(html.contains("function flushPendingTerminalOutput"));
+        assert!(html.contains("function queueTerminalOutput"));
+        assert!(html.contains("function writeTerminalOutputChunk"));
+        assert!(html.contains("function installTouchScrollAdapter"));
+        assert!(html.contains("term.scrollLines(rows)"));
+        assert!(html.contains("touchmove"));
+        assert!(html.contains("writeTerminalSnapshot(id, snapshot, { force: true })"));
+        assert!(html.contains("seq <= appliedSeq"));
+        assert!(html.contains("scrollback: MOBILE_TERMINAL_SCROLLBACK"));
+        assert!(!html.contains("window.setTimeout(() => term.focus(), 0)"));
+        assert!(html.contains("terminal-fallback"));
+        assert!(html.contains("className = 'card'"));
         assert!(html.contains("id=\"cards\""));
+        assert!(html.contains("id=\"terminal-shell\""));
+        assert!(html.contains("id=\"terminal-host\""));
+        assert!(html.contains("min-height: calc(100vh - 220px)"));
+        assert!(html.contains("--terminal-bg: #000;"));
+        assert!(html.contains("background: var(--terminal-bg)"));
+        assert!(html.contains("cssVar('--terminal-bg', '#000')"));
+        assert!(html.contains("window.setTimeout(scroll, 120)"));
+        assert_eq!(html.matches("<style>").count(), 1);
         assert!(html.contains("id=\"control-panel\""));
-        assert!(html.contains("placeholder=\"Type input and tap Send\""));
+        assert!(html.contains("id=\"send-enter\""));
         assert!(html.contains("projectName"));
         assert!(html.contains("summaryLine"));
-        assert!(html.contains("function submitInput"));
-        assert!(html.contains("sendInput(data ? `${data}\\r` : '\\r')"));
+        assert!(html.contains("case 'terminal_snapshot'"));
+        assert!(html.contains("case 'terminal_output'"));
+        assert!(html.contains("sendEnterEl.addEventListener('click', () => sendInput('\\r'))"));
         assert!(html.contains("kind: 'input'"));
-        assert!(!html.contains("id=\"send-enter\""));
+        assert!(!html.contains("id=\"detail-preview\""));
+        assert!(!html.contains("id=\"send-input\""));
+        assert!(!html.contains("placeholder=\"Type input and tap Send\""));
         assert!(!html.contains("JSON.stringify(await snapshot.json()"));
     }
 
     #[test]
     fn pair_landing_page_handles_missing_otp() {
-        let html = pair_page_html(None, "read_only");
+        let html = test_pair_page_html(None, "read_only");
 
-        assert!(html.contains("const otp = \"\";"));
+        assert!(html.contains("let otp = \"\";"));
         assert!(html.contains("localStorage.getItem(TOKEN_KEY)"));
         assert!(html.contains("Missing pairing code"));
     }
 
     #[test]
     fn pair_landing_page_accepts_full_control_permission() {
-        let html = pair_page_html(Some("123456"), "full");
+        let html = test_pair_page_html(Some("123456"), "full");
 
         assert!(html.contains("const pairPermission = \"full\";"));
         assert!(html.contains("controlPanelEl.hidden = state.permission !== 'full'"));
+        assert!(html.contains("disableStdin: state.permission !== 'full'"));
+        assert!(html.contains("term.onData((data)"));
         assert_eq!(normalize_pair_permission(Some("full")), "full");
         assert_eq!(normalize_pair_permission(Some("admin")), "read_only");
     }
