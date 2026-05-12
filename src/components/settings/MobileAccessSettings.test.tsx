@@ -11,6 +11,17 @@ const bridgeMocks = vi.hoisted(() => ({
   revokeDevice: vi.fn(),
 }));
 
+const themeMocks = vi.hoisted(() => ({
+  activeThemeTokens: {
+    app: {
+      background: '#10151d',
+      card: '#151b24',
+      primary: '#4f8bd6',
+      foreground: '#e8edf5',
+    },
+  },
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallbackOrOptions?: string | Record<string, unknown>) =>
@@ -18,10 +29,26 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
+vi.mock('qrcode.react', () => ({
+  QRCodeSVG: ({ value, title }: { value: string; title?: string }) => (
+    <svg data-testid="pair-qr-code" data-value={value} aria-label={title} />
+  ),
+}));
+
 vi.mock('../../lib/tauri-bridge', () => ({
   isTauriEnv: () => true,
   mobileBridge: bridgeMocks,
 }));
+
+vi.mock('../../contexts/ThemeContext', () => ({
+  useTheme: () => themeMocks,
+}));
+
+const readOnlyPairUrl =
+  'http://192.168.1.67:5174/pair?otp=123456&permission=read_only&theme_bg=%2310151d&theme_card=%23151b24&theme_primary=%234f8bd6&theme_fg=%23e8edf5';
+
+const fullPairUrl =
+  'http://192.168.1.67:5174/pair?otp=123456&permission=full&theme_bg=%2310151d&theme_card=%23151b24&theme_primary=%234f8bd6&theme_fg=%23e8edf5';
 
 describe('MobileAccessSettings', () => {
   beforeEach(() => {
@@ -35,28 +62,33 @@ describe('MobileAccessSettings', () => {
     bridgeMocks.devices.mockResolvedValue([]);
     bridgeMocks.start.mockResolvedValue({
       running: true,
-      host: '127.0.0.1',
+      host: '0.0.0.0',
       port: 5174,
-      url: 'http://127.0.0.1:5174',
+      url: 'http://192.168.1.67:5174',
     });
     bridgeMocks.pairQr.mockResolvedValue({
-      host: '127.0.0.1',
+      host: '192.168.1.67',
       port: 5174,
       otp: '123456',
-      url: 'http://127.0.0.1:5174/pair?otp=123456',
+      url: 'http://192.168.1.67:5174/pair?otp=123456',
       expiresInSeconds: 300,
     });
   });
 
-  it('starts on loopback by default', async () => {
+  it('uses LAN binding by default after inline confirmation', async () => {
     render(<MobileAccessSettings />);
 
     fireEvent.click(await screen.findByRole('button', { name: /mobileAccess.start/ }));
 
+    expect(screen.getByText('mobileAccess.lanConfirm')).toBeInTheDocument();
+    expect(bridgeMocks.start).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /mobileAccess.confirmLanStart/ }));
+
     await waitFor(() => {
-      expect(bridgeMocks.start).toHaveBeenCalledWith('127.0.0.1');
+      expect(bridgeMocks.start).toHaveBeenCalledWith('0.0.0.0');
     });
-    expect(bridgeMocks.pairQr).toHaveBeenCalledWith('127.0.0.1');
+    expect(bridgeMocks.pairQr).toHaveBeenCalledWith('0.0.0.0');
   });
 
   it('uses an inline confirmation before binding to all interfaces', async () => {
@@ -73,7 +105,6 @@ describe('MobileAccessSettings', () => {
     });
     render(<MobileAccessSettings />);
 
-    fireEvent.click(await screen.findByLabelText('mobileAccess.bind.lan'));
     fireEvent.click(screen.getByRole('button', { name: /mobileAccess.start/ }));
 
     expect(confirm).not.toHaveBeenCalled();
@@ -100,14 +131,15 @@ describe('MobileAccessSettings', () => {
 
     const start = await screen.findByRole('button', { name: /mobileAccess.start/ });
     fireEvent.click(start);
+    fireEvent.click(screen.getByRole('button', { name: /mobileAccess.confirmLanStart/ }));
 
     expect(start).toBeDisabled();
 
     resolveStart({
       running: true,
-      host: '127.0.0.1',
+      host: '0.0.0.0',
       port: 5174,
-      url: 'http://127.0.0.1:5174',
+      url: 'http://192.168.1.67:5174',
     });
 
     await waitFor(() => {
@@ -121,11 +153,12 @@ describe('MobileAccessSettings', () => {
     render(<MobileAccessSettings />);
 
     fireEvent.click(await screen.findByRole('button', { name: /mobileAccess.start/ }));
+    fireEvent.click(screen.getByRole('button', { name: /mobileAccess.confirmLanStart/ }));
 
     await waitFor(() => {
       expect(screen.getByText('mobileAccess.running')).toBeInTheDocument();
     });
-    expect(screen.getByText('127.0.0.1:5174')).toBeInTheDocument();
+    expect(screen.getByText('0.0.0.0:5174')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /mobileAccess.newPairCode/ })).toBeInTheDocument();
   });
 
@@ -143,9 +176,8 @@ describe('MobileAccessSettings', () => {
       expect(bridgeMocks.pairQr).toHaveBeenCalledWith('0.0.0.0');
     });
     expect(await screen.findByText('123456')).toBeInTheDocument();
-    expect(
-      screen.getByText('http://127.0.0.1:5174/pair?otp=123456&permission=read_only'),
-    ).toBeInTheDocument();
+    expect(screen.getByText(readOnlyPairUrl)).toBeInTheDocument();
+    expect(screen.getByTestId('pair-qr-code')).toHaveAttribute('data-value', readOnlyPairUrl);
   });
 
   it('still shows a pair code when loading devices fails after start', async () => {
@@ -156,32 +188,28 @@ describe('MobileAccessSettings', () => {
     render(<MobileAccessSettings />);
 
     fireEvent.click(await screen.findByRole('button', { name: /mobileAccess.start/ }));
+    fireEvent.click(screen.getByRole('button', { name: /mobileAccess.confirmLanStart/ }));
 
     expect(await screen.findByText('123456')).toBeInTheDocument();
-    expect(
-      screen.getByText('http://127.0.0.1:5174/pair?otp=123456&permission=read_only'),
-    ).toBeInTheDocument();
+    expect(screen.getByText(readOnlyPairUrl)).toBeInTheDocument();
     expect(screen.getByText('mobileAccess.running')).toBeInTheDocument();
   });
 
   it('adds selected pairing permission to the mobile URL', async () => {
     bridgeMocks.status.mockResolvedValue({
       running: true,
-      host: '127.0.0.1',
+      host: '0.0.0.0',
       port: 5174,
-      url: 'http://127.0.0.1:5174',
+      url: 'http://192.168.1.67:5174',
     });
 
     render(<MobileAccessSettings />);
 
-    expect(
-      await screen.findByText('http://127.0.0.1:5174/pair?otp=123456&permission=read_only'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(readOnlyPairUrl)).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText('mobileAccess.permissions.full'));
 
-    expect(
-      screen.getByText('http://127.0.0.1:5174/pair?otp=123456&permission=full'),
-    ).toBeInTheDocument();
+    expect(screen.getByText(fullPairUrl)).toBeInTheDocument();
+    expect(screen.getByTestId('pair-qr-code')).toHaveAttribute('data-value', fullPairUrl);
   });
 });

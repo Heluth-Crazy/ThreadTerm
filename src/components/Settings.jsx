@@ -159,8 +159,8 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
           )}
         </div>
 
-        <div className="border-b border-white/5 px-4 py-2 md:px-6 backdrop-blur-sm bg-white/5">
-          <div className="inline-flex rounded-[var(--radius)] border border-white/10 bg-white/5 p-1">
+        <div className="border-b border-white/5 px-4 py-2 md:px-6 backdrop-blur-sm bg-white/5 overflow-x-auto no-scrollbar">
+          <div className="inline-flex min-w-full sm:min-w-0 rounded-[var(--radius)] border border-white/10 bg-white/5 p-1">
             <button
               type="button"
               onClick={() => setActiveTab('appearance')}

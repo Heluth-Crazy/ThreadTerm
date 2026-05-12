@@ -139,7 +139,8 @@
     "cloudflare": "Cloudflare Tunnel ドキュメント"
   },
   "pairingTitle": "ペアリング入口",
-  "pairingDescription": "5 分で期限切れになる一回限りのペアリングコードを生成します。後で QR 表示に置き換えます。",
+  "pairingDescription": "5 分で期限切れになる一回限りのペアリング QR コードを生成します。スマートフォンでスキャンするか、予備として URL をコピーしてください。",
+  "qrTitle": "ThreadTerm モバイルペアリング QR コード",
     "newPairCode": "ペアリングコードを生成",
     "copyUrl": "URL をコピー",
     "devicesTitle": "ペアリング済みデバイス",

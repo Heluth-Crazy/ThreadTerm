@@ -50,7 +50,10 @@ enum ParseMode {
     #[default]
     Ground,
     Escape,
-    Osc { data: String, saw_escape: bool },
+    Osc {
+        data: String,
+        saw_escape: bool,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -79,8 +82,12 @@ impl BlockParser {
         let mut events = Vec::new();
         for ch in input.chars() {
             let (next_mode, osc) = self.step(ch);
-            if let Some(mode) = next_mode { self.mode = mode; }
-            if let Some(osc) = osc { self.handle_osc(&osc, &mut events); }
+            if let Some(mode) = next_mode {
+                self.mode = mode;
+            }
+            if let Some(osc) = osc {
+                self.handle_osc(&osc, &mut events);
+            }
         }
         self.flush_pending_finish(&mut events);
         events
@@ -99,7 +106,10 @@ impl BlockParser {
             }
             ParseMode::Escape => {
                 let next = if ch == ']' {
-                    ParseMode::Osc { data: String::new(), saw_escape: false }
+                    ParseMode::Osc {
+                        data: String::new(),
+                        saw_escape: false,
+                    }
                 } else {
                     ParseMode::Ground
                 };
@@ -163,7 +173,10 @@ impl BlockParser {
             }
             "C" => self.capture_command = false,
             "D" => {
-                let code = rest.first().and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+                let code = rest
+                    .first()
+                    .and_then(|v| v.parse::<i32>().ok())
+                    .unwrap_or(0);
                 self.finish_block(Some(code));
             }
             _ => {}
@@ -172,13 +185,17 @@ impl BlockParser {
 
     fn handle_threadterm_osc(&mut self, fields: &[&str], events: &mut Vec<BlockEvent>) {
         for field in fields {
-            let Some((key, value)) = field.split_once('=') else { continue };
+            let Some((key, value)) = field.split_once('=') else {
+                continue;
+            };
             let value = value.trim();
             match key.trim() {
                 "cmd_id" => self.pending_cmd_id = Some(value.to_string()),
                 "cwd" => self.pending_cwd = decode_base64_utf8(value),
                 "duration" => {
-                    let Ok(duration) = value.parse::<u64>() else { continue };
+                    let Ok(duration) = value.parse::<u64>() else {
+                        continue;
+                    };
                     self.pending_duration_ms = Some(duration);
                     if let Some(mut finish) = self.pending_finish.take() {
                         finish.duration_ms = Some(duration);
@@ -208,7 +225,9 @@ impl BlockParser {
     }
 
     fn finish_block(&mut self, exit_code: Option<i32>) {
-        let Some(block_id) = self.active_block_id.take() else { return };
+        let Some(block_id) = self.active_block_id.take() else {
+            return;
+        };
         self.pending_finish = Some(BlockFinishedPayload {
             session_id: self.session_id.clone(),
             block_id,

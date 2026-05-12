@@ -62,7 +62,7 @@ const mode = (
 
 const threadtermLight = mode(
   {
-    background: '#ffffff',
+    background: '#fafafa', // 软化纯白，改为极淡灰
     foreground: '#020817',
     card: '#ffffff',
     cardForeground: '#020817',
@@ -82,7 +82,7 @@ const threadtermLight = mode(
     input: '#e2e8f0',
     ring: '#2563eb',
   },
-  terminal('#1e1e1e', '#d4d4d4', '#ffffff', '#1e1e1e', '#264f78', '#ffffff', [
+  terminal('#fcfcfc', '#1f1f1f', '#2563eb', '#fcfcfc', '#e2e8f0', '#1f1f1f', [
     '#000000',
     '#cd3131',
     '#0dbc79',
@@ -487,11 +487,11 @@ const draculaDark = mode(
   },
   terminal('#282a36', '#f8f8f2', '#f8f8f2', '#282a36', '#44475a', '#ffffff', [
     '#21222c',
-    '#ff5555',
-    '#50fa7b',
-    '#f1fa8c',
-    '#bd93f9',
-    '#ff79c6',
+    '#ea6b6b', // 降低红色饱和度
+    '#70e28c', // 软化绿色
+    '#e9e9a4', // 软化黄色
+    '#a887d9', // 软化紫色
+    '#e28cb9', // 软化粉色
     '#8be9fd',
     '#f8f8f2',
     '#6272a4',
@@ -759,28 +759,28 @@ const ayuDark = mode(
 
 const nordDark = mode(
   {
-    background: '#2e3440',
+    background: '#242933', // 稍微加深背景，增加层次
     foreground: '#eceff4',
-    card: '#3b4252',
+    card: '#2e3440',
     cardForeground: '#eceff4',
-    popover: '#3b4252',
+    popover: '#2e3440',
     popoverForeground: '#eceff4',
     primary: '#88c0d0',
     primaryForeground: '#1f2530',
-    secondary: '#434c5e',
+    secondary: '#3b4252',
     secondaryForeground: '#eceff4',
-    muted: '#434c5e',
+    muted: '#3b4252',
     mutedForeground: '#d8dee9',
-    accent: '#4c566a',
+    accent: '#434c5e',
     accentForeground: '#eceff4',
     destructive: '#bf616a',
     destructiveForeground: '#111827',
-    border: '#4c566a',
-    input: '#5b667a',
+    border: '#3b4252',
+    input: '#434c5e',
     ring: '#88c0d0',
   },
-  terminal('#2e3440', '#eceff4', '#d8dee9', '#2e3440', '#4c566a', '#eceff4', [
-    '#4c566a',
+  terminal('#242933', '#e5e9f0', '#d8dee9', '#242933', '#434c5e', '#eceff4', [
+    '#3b4252',
     '#bf616a',
     '#a3be8c',
     '#ebcb8b',
@@ -788,7 +788,7 @@ const nordDark = mode(
     '#b48ead',
     '#8fbcbb',
     '#d8dee9',
-    '#667084',
+    '#4c566a',
     '#d08770',
     '#b8d59d',
     '#f5d794',
@@ -970,42 +970,42 @@ const kanagawaWave = mode(
 const solarizedContrastLight = mode(
   {
     background: '#fdf6e3',
-    foreground: '#3a545b',
+    foreground: '#475b62', // 稍微增加文字对比，减少发灰
     card: '#eee8d5',
-    cardForeground: '#3a545b',
+    cardForeground: '#475b62',
     popover: '#fff8e8',
-    popoverForeground: '#3a545b',
-    primary: '#006fb0',
+    popoverForeground: '#475b62',
+    primary: '#268bd2',
     primaryForeground: '#ffffff',
     secondary: '#e4dcc4',
-    secondaryForeground: '#3a545b',
+    secondaryForeground: '#475b62',
     muted: '#eee8d5',
-    mutedForeground: '#586e75',
+    mutedForeground: '#657b83',
     accent: '#dceef5',
     accentForeground: '#005b8d',
-    destructive: '#c82d2b',
+    destructive: '#dc322f',
     destructiveForeground: '#ffffff',
     border: '#d6ceb8',
     input: '#c9bea6',
-    ring: '#006fb0',
+    ring: '#268bd2',
   },
-  terminal('#fdf6e3', '#3a545b', '#006fb0', '#fdf6e3', '#e4dcc4', '#3a545b', [
-    '#002b36',
-    '#c82d2b',
-    '#6f8500',
-    '#8a6500',
-    '#006fb0',
-    '#b02d70',
-    '#007f78',
+  terminal('#fdf6e3', '#475b62', '#268bd2', '#fdf6e3', '#e4dcc4', '#475b62', [
+    '#073642',
+    '#dc322f',
+    '#859900',
+    '#b58900',
+    '#268bd2',
+    '#d33682',
+    '#2aa198',
+    '#657b83',
+    '#586e75',
+    '#cb4b16',
     '#586e75',
     '#657b83',
-    '#a82524',
-    '#5f7300',
-    '#765600',
-    '#005f98',
-    '#92245d',
-    '#006f69',
-    '#3a545b',
+    '#839496',
+    '#6c71c4',
+    '#93a1a1',
+    '#eee8d5',
   ]),
 );
 

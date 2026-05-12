@@ -324,35 +324,37 @@ export function TerminalView({
   return (
     <div className="flex h-full w-full flex-col bg-background">
       {/* Header */}
-      <div className="flex items-center justify-between gap-3 border-b border-white/10 px-3 py-2">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+      <div className="flex items-center justify-between gap-2 border-b border-white/10 px-2 py-2 sm:gap-3 sm:px-3">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
           <button
             type="button"
             onClick={onBack}
             title={t('view.backToGrid')}
-            className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
+            className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground shrink-0"
           >
             <ArrowLeft className="h-4 w-4" />
           </button>
-          <div className={`flex h-8 w-8 items-center justify-center rounded-[var(--radius-md)] bg-muted ${typeMeta.accent}`}>
+          <div className={`flex h-8 w-8 items-center justify-center rounded-[var(--radius-md)] bg-muted shrink-0 ${typeMeta.accent}`}>
             <TypeIcon className="h-4 w-4" />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <span className="truncate text-sm font-semibold">{card.projectName}</span>
-              <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">
+              <span className="shrink-0 whitespace-nowrap text-[9px] sm:text-[10px] text-muted-foreground opacity-70">
                 · {t(`types.${card.terminalType}`, typeMeta.label)}
               </span>
             </div>
-            <div className="truncate text-[10px] text-muted-foreground" title={card.projectPath}>
+            <div className="truncate text-[9px] sm:text-[10px] text-muted-foreground opacity-60" title={card.projectPath}>
               {card.worktreePath ? t('view.worktree', { path: card.worktreePath }) : card.projectPath}
             </div>
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center justify-end gap-1.5">
+        <div className="flex shrink-0 items-center justify-end gap-1 sm:gap-1.5">
           {aiSessionBadge && (
-            <AiIntentSelect cardId={card.id} value={card.aiIntent} compact />
+            <div className="hidden xs:block">
+              <AiIntentSelect cardId={card.id} value={card.aiIntent} compact />
+            </div>
           )}
           {aiSessionBadge && (
             <span
@@ -385,10 +387,10 @@ export function TerminalView({
           />
           <AutoRestartStatus card={card} compact />
           <span
-            className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-medium ${statusInfo.chip}`}
+            className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] sm:text-[10px] font-medium ${statusInfo.chip}`}
           >
-            <StatusIcon className={`h-3 w-3 ${statusInfo.animate ? 'animate-spin' : ''}`} />
-            {t(`status.${card.status}`, statusInfo.label)}
+            <StatusIcon className={`h-2.5 w-2.5 sm:h-3 sm:w-3 ${statusInfo.animate ? 'animate-spin' : ''}`} />
+            <span className="hidden xs:inline">{t(`status.${card.status}`, statusInfo.label)}</span>
           </span>
 
           {/* Block Inspector toggle — only shown when block data is present */}

@@ -79,6 +79,63 @@ describe('mobile bridge ws client', () => {
     });
   });
 
+  it('dispatches terminal snapshot and output messages', () => {
+    FakeWebSocket.instances = [];
+    const onMessage = vi.fn();
+    const client = new BridgeWsClient({
+      baseUrl: 'http://127.0.0.1:5174',
+      token: 'device-token',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    });
+
+    client.connect({ onMessage });
+    const socket = FakeWebSocket.instances[0];
+
+    socket.emitMessage({
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'terminal_snapshot',
+      snapshot: {
+        cardId: 'card-1',
+        data: '\u001b[1;1Hready',
+        seq: 10,
+        rows: 24,
+        cols: 80,
+        cursorRow: 1,
+        cursorCol: 6,
+        history: 'previous line\r\n',
+      },
+    });
+    socket.emitMessage({
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'terminal_output',
+      card_id: 'card-1',
+      data: ' streamed',
+      seq: 11,
+    });
+
+    expect(onMessage).toHaveBeenNthCalledWith(1, {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'terminal_snapshot',
+      snapshot: {
+        cardId: 'card-1',
+        data: '\u001b[1;1Hready',
+        seq: 10,
+        rows: 24,
+        cols: 80,
+        cursorRow: 1,
+        cursorCol: 6,
+        history: 'previous line\r\n',
+      },
+    });
+    expect(onMessage).toHaveBeenNthCalledWith(2, {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'terminal_output',
+      card_id: 'card-1',
+      data: ' streamed',
+      seq: 11,
+    });
+  });
+
   it('rejects sends before connection opens', () => {
     const client = new BridgeWsClient({
       baseUrl: 'http://127.0.0.1:5174',
