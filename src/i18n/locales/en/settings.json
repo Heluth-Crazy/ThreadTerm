@@ -139,7 +139,8 @@
       "cloudflare": "Cloudflare Tunnel docs"
     },
     "pairingTitle": "Pairing entry",
-    "pairingDescription": "Generate a one-time pairing code that expires in 5 minutes. QR rendering will replace this later.",
+    "pairingDescription": "Generate a one-time pairing QR code that expires in 5 minutes. Scan it from your phone or copy the URL as a fallback.",
+    "qrTitle": "ThreadTerm mobile pairing QR code",
     "newPairCode": "New pairing code",
     "copyUrl": "Copy URL",
     "devicesTitle": "Paired devices",

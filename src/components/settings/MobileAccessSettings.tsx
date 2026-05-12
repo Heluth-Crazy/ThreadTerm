@@ -8,6 +8,7 @@ import {
   Smartphone,
   Trash2,
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { useTranslation } from 'react-i18next';
 import {
   isTauriEnv,
@@ -17,14 +18,17 @@ import {
   type BridgeStatus,
   type PairQrResponse,
 } from '../../lib/tauri-bridge';
+import type { ThemeModeTokens } from '../../theme/themeTypes';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
+import { useTheme } from '../../contexts/ThemeContext';
 
 type ActionState = 'idle' | 'busy' | 'failed';
 type BindHost = '127.0.0.1' | '0.0.0.0';
 
-const DEFAULT_BIND_HOST: BindHost = '127.0.0.1';
+const LOOPBACK_BIND_HOST: BindHost = '127.0.0.1';
 const LAN_BIND_HOST: BindHost = '0.0.0.0';
+const DEFAULT_BIND_HOST: BindHost = LAN_BIND_HOST;
 
 const stoppedStatus: BridgeStatus = {
   running: false,
@@ -36,21 +40,38 @@ const stoppedStatus: BridgeStatus = {
 function pairUrlWithPermission(
   pairQr: PairQrResponse | null,
   permission: BridgeDevicePermission,
+  themeTokens: ThemeModeTokens | null | undefined,
 ): string {
   if (!pairQr?.url) return '';
 
   try {
     const url = new URL(pairQr.url);
     url.searchParams.set('permission', permission);
+
+    if (themeTokens?.app) {
+      url.searchParams.set('theme_bg', themeTokens.app.background);
+      url.searchParams.set('theme_card', themeTokens.app.card);
+      url.searchParams.set('theme_primary', themeTokens.app.primary);
+      url.searchParams.set('theme_fg', themeTokens.app.foreground);
+    }
+
     return url.toString();
   } catch {
     const joiner = pairQr.url.includes('?') ? '&' : '?';
-    return `${pairQr.url}${joiner}permission=${permission}`;
+    let base = `${pairQr.url}${joiner}permission=${permission}`;
+    if (themeTokens?.app) {
+      base += `&theme_bg=${encodeURIComponent(themeTokens.app.background)}`;
+      base += `&theme_card=${encodeURIComponent(themeTokens.app.card)}`;
+      base += `&theme_primary=${encodeURIComponent(themeTokens.app.primary)}`;
+      base += `&theme_fg=${encodeURIComponent(themeTokens.app.foreground)}`;
+    }
+    return base;
   }
 }
 
 export function MobileAccessSettings() {
   const { t } = useTranslation('settings');
+  const { activeThemeTokens } = useTheme();
   const [status, setStatus] = useState<BridgeStatus>(stoppedStatus);
   const [pairQr, setPairQr] = useState<PairQrResponse | null>(null);
   const [pairPermission, setPairPermission] =
@@ -168,7 +189,7 @@ export function MobileAccessSettings() {
     }
   };
 
-  const pairUrl = pairUrlWithPermission(pairQr, pairPermission);
+  const pairUrl = pairUrlWithPermission(pairQr, pairPermission, activeThemeTokens);
 
   const copyPairUrl = async () => {
     if (!pairUrl || !navigator.clipboard) return;
@@ -244,7 +265,7 @@ export function MobileAccessSettings() {
             className="grid gap-1 rounded-[var(--radius-md)] border border-white/10/70 bg-background/70 p-1 text-xs"
           >
             {[
-              { value: DEFAULT_BIND_HOST, label: t('mobileAccess.bind.loopback') },
+              { value: LOOPBACK_BIND_HOST, label: t('mobileAccess.bind.loopback') },
               { value: LAN_BIND_HOST, label: t('mobileAccess.bind.lan') },
             ].map((option) => (
               <label
@@ -349,13 +370,26 @@ export function MobileAccessSettings() {
               <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
                 {t('mobileAccess.permissionMode.hint')}
               </p>
-              {pairQr && (
-                <div className="mt-2 space-y-1">
-                  <div className="font-mono text-sm text-foreground">
-                    {pairQr.otp}
+              {pairQr && pairUrl && (
+                <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-start">
+                  <div className="shrink-0 rounded-[var(--radius-md)] border border-border bg-white p-2 shadow-sm">
+                    <QRCodeSVG
+                      value={pairUrl}
+                      size={168}
+                      level="M"
+                      marginSize={3}
+                      bgColor="#ffffff"
+                      fgColor="#000000"
+                      title={t('mobileAccess.qrTitle')}
+                    />
                   </div>
-                  <div className="break-all font-mono text-[11px] text-muted-foreground">
-                    {pairUrl}
+                  <div className="min-w-0 space-y-1">
+                    <div className="font-mono text-sm text-foreground">
+                      {pairQr.otp}
+                    </div>
+                    <div className="break-all font-mono text-[11px] text-muted-foreground">
+                      {pairUrl}
+                    </div>
                   </div>
                 </div>
               )}

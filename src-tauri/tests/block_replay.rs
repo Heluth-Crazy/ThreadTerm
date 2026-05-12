@@ -62,7 +62,12 @@ fn block_parser_replays_zsh_cast_with_five_commands() {
         .filter(|event| matches!(event, BlockEvent::Finished(_)))
         .collect();
 
-    assert_eq!(started.len(), 5, "expected 5 Started events, got {}", started.len());
+    assert_eq!(
+        started.len(),
+        5,
+        "expected 5 Started events, got {}",
+        started.len()
+    );
     assert_eq!(
         finished.len(),
         5,
@@ -88,7 +93,11 @@ fn block_parser_replays_zsh_cast_with_five_commands() {
     // parser must still emit a clean Started/Finished pair for it.
     if let BlockEvent::Started(p) = started[3] {
         assert_eq!(p.block_id, "cmd-4");
-        assert!(p.command.contains("vim"), "block 4 command was {:?}", p.command);
+        assert!(
+            p.command.contains("vim"),
+            "block 4 command was {:?}",
+            p.command
+        );
         assert_eq!(p.cwd, "/tmp/repo", "cwd must be base64-decoded");
     }
 }

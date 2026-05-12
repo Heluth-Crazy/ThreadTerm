@@ -79,10 +79,8 @@ mod tests {
 
     #[test]
     fn rejects_missing_directory() {
-        let missing = std::env::temp_dir().join(format!(
-            "threadterm-missing-{}",
-            std::process::id()
-        ));
+        let missing =
+            std::env::temp_dir().join(format!("threadterm-missing-{}", std::process::id()));
         assert_eq!(
             validate_local_directory(&missing.to_string_lossy()).unwrap_err(),
             "Directory does not exist."
@@ -91,10 +89,7 @@ mod tests {
 
     #[test]
     fn rejects_file_path() {
-        let file = std::env::temp_dir().join(format!(
-            "threadterm-file-{}",
-            std::process::id()
-        ));
+        let file = std::env::temp_dir().join(format!("threadterm-file-{}", std::process::id()));
         fs::write(&file, "not a dir").unwrap();
 
         let result = validate_local_directory(&file.to_string_lossy());

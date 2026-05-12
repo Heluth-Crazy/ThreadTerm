@@ -12,7 +12,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Bell, BellDot, Plus, Settings as SettingsIcon, Star, X } from 'lucide-react';
+import { Bell, BellDot, Layers, Plus, Settings as SettingsIcon, Star, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { CardGrid } from './CardGrid';
@@ -102,6 +102,20 @@ export function TerminalManager() {
   );
 
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      if (!mobile) {
+        setSidebarOpen(false);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
   const [createOpen, setCreateOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Jump the Settings modal straight to a particular tab on open.
@@ -434,17 +448,46 @@ export function TerminalManager() {
   const gridVisible = viewMode === 'grid' || !focusedCard;
 
   return (
-    <div className="relative flex h-full w-full bg-mesh">
+    <div className="relative flex h-full w-full bg-mesh overflow-hidden">
       <div className="absolute inset-0 bg-grid pointer-events-none" />
-      <ProjectSidebar onImportWorkflow={handleOpenImportWorkflow} />
+
+      {/* Sidebar - Desktop: fixed, Mobile: drawer */}
+      <div className={[
+        'z-40 transition-all duration-300 ease-in-out md:relative md:translate-x-0',
+        isMobile ? 'absolute inset-y-0 left-0 shadow-2xl' : '',
+        isMobile && !sidebarOpen ? '-translate-x-full' : 'translate-x-0'
+      ].join(' ')}>
+        <ProjectSidebar
+          onImportWorkflow={handleOpenImportWorkflow}
+          onCloseMobile={() => setSidebarOpen(false)}
+        />
+      </div>
+
+      {/* Mobile Sidebar Backdrop */}
+      {isMobile && sidebarOpen && (
+        <div
+          className="absolute inset-0 z-30 bg-background/40 backdrop-blur-sm"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
       <div className="relative flex min-w-0 flex-1 flex-col glass-reflection">
       {/* Top bar */}
       <div className="flex items-center justify-between etched-border-b bg-background/60 px-4 py-3 backdrop-blur-xl">
         <div className="flex min-w-0 items-center gap-2">
-          <div className="text-sm font-semibold shrink-0">{t('app.title')}</div>
+          {isMobile && (
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              className="mr-1 rounded-[var(--radius-md)] p-1.5 hover:bg-accent"
+            >
+              <Layers className="h-4 w-4" />
+            </button>
+          )}
+          <div className="text-sm font-semibold shrink-0 md:block hidden">{t('app.title')}</div>
           {selectedProjectName && (
             <>
-              <span className="text-muted-foreground">/</span>
+              <span className="text-muted-foreground md:inline hidden">/</span>
               <span
                 className="truncate rounded-[var(--radius-md)] bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary"
                 title={selectedProjectPath ?? undefined}
@@ -453,7 +496,7 @@ export function TerminalManager() {
               </span>
             </>
           )}
-          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground sm:inline hidden">
             {t('app.count', { visible: visibleCards.length, total: cards.length, count: cards.length })}
           </span>
         </div>

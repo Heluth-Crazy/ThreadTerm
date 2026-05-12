@@ -29,8 +29,8 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tauri::{Manager, Window};
 
 use session::{
-    clear_waiting_for_input, mark_killed, suppress_output_activity_for, PtySession,
-    OUTPUT_BUFFER_MAX_BYTES, RESIZE_OUTPUT_ACTIVITY_SUPPRESS, SESSION_SCROLLBACK_LINES,
+    OUTPUT_BUFFER_MAX_BYTES, PtySession, RESIZE_OUTPUT_ACTIVITY_SUPPRESS, SESSION_SCROLLBACK_LINES,
+    clear_waiting_for_input, mark_killed, suppress_output_activity_for,
 };
 
 /// Runtime gate for the OSC 133/6973 block parser. Spec L92 requires the
@@ -178,6 +178,8 @@ pub async fn pty_input(id: String, data: String) -> Result<(), String> {
         .flush()
         .map_err(|e| format!("Failed to flush PTY: {e}"))?;
 
+    session::mark_input_activity(&session, &id);
+
     Ok(())
 }
 
@@ -260,10 +262,14 @@ pub async fn pty_get_recent_output(pty_id: String) -> Result<Option<String>, Str
 
 #[tauri::command]
 pub async fn pty_attach_snapshot(pty_id: String) -> Result<Option<PtyAttachSnapshot>, String> {
+    Ok(attach_snapshot_for_bridge(&pty_id))
+}
+
+pub fn attach_snapshot_for_bridge(pty_id: &str) -> Option<PtyAttachSnapshot> {
     let Some(session) = registry::get(&pty_id) else {
-        return Ok(None);
+        return None;
     };
-    Ok(Some(session::attach_snapshot(&pty_id, &session)))
+    Some(session::attach_snapshot(&pty_id, &session))
 }
 
 #[tauri::command]

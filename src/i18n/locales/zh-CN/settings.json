@@ -139,7 +139,8 @@
     "cloudflare": "Cloudflare Tunnel 文档"
   },
   "pairingTitle": "配对入口",
-  "pairingDescription": "生成 5 分钟有效的一次性配对码。后续会替换为二维码展示。",
+  "pairingDescription": "生成 5 分钟有效的一次性配对二维码。用手机扫码，或复制链接作为备用。",
+  "qrTitle": "ThreadTerm 移动端配对二维码",
     "newPairCode": "生成配对码",
     "copyUrl": "复制链接",
     "devicesTitle": "已配对设备",

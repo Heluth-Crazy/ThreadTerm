@@ -246,7 +246,9 @@ the Tauri permission boundary narrow.
 - Session cards must be real tap targets that open a detail view; do not render a static list with no click behavior.
 - Session cards and details must show project context from `projectName` / `projectPath`, not only opaque session ids.
 - Mobile preview rendering must use backend-provided `summaryLine` for the one-line semantic summary and keep `lastReplyPreview` for the thumbnail/body text. Do not derive the summary from input composer placeholders in the mobile DOM.
-- Full-control mobile pages may expose text input whose primary Send action submits with Enter, plus Ctrl-C and Esc shortcuts. Read-only pages must hide input controls and keep an explicit read-only notice. Destructive close/kill controls are not part of the mobile page UX.
+- Mobile detail views must render the live PTY through xterm.js using backend `terminal_snapshot` data for the initial screen and `terminal_output` messages for incremental output. Do not replace the detail terminal with line-filtered preview text; the list may still use `summaryLine` / `lastReplyPreview` as a thumbnail.
+- Full-control mobile pages should route keyboard data from the xterm instance to bridge `input`. The auxiliary controls are Enter, Ctrl-C, and Esc only. Do not add a separate textarea composer with a duplicate Send action unless the interaction is redesigned as an explicit command composer. Read-only pages must disable xterm stdin, hide input controls, and keep an explicit read-only notice. Destructive close/kill controls are not part of the mobile page UX.
+- Mobile xterm resize events may send bridge `resize` only for full-control devices. Local snapshot replay or hidden-view fitting must not issue read-only resize commands.
 - Mobile card and detail layouts must set `min-width: 0` / `max-width: 100%` and wrap preview text with `overflow-wrap` so narrow phones never show horizontal overflow.
 - Use DOM text assignment (`textContent`) for bridge-derived strings.
 - Do not show raw `protocol_version`, `kind`, `cards`, `notifications`, or full JSON on the page.
@@ -268,6 +270,7 @@ the Tauri permission boundary narrow.
 
 #### 6. Tests Required
 - Unit tests for `pair_page_html()` must assert it pairs with an explicit permission, opens a WebSocket, has a card click/detail path, includes overflow wrapping CSS, includes project/summary fields, includes full-control input wiring, and does not contain direct raw JSON display.
+- Unit tests for `pair_page_html()` must assert the mobile detail page loads xterm assets, has a `terminal-shell` / `terminal-host`, handles `terminal_snapshot` and `terminal_output`, and no longer renders the detail view through `detail-preview` text.
 - Desktop settings tests must assert the displayed/copied pairing URL appends the selected `permission` query parameter without changing the `bridge_pair_qr` invocation contract.
 - Bridge preview tests must cover mobile summary noise such as Trellis hook lines, MCP startup noise, duplicate line cleanup, and AI CLI composer/input prompt lines.
 

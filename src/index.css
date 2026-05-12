@@ -58,7 +58,7 @@
   @layer utilities {
     .bg-mesh {
       background-color: hsl(var(--background));
-      background-image: 
+      background-image:
         radial-gradient(at 0% 0%, hsl(var(--primary) / 0.08) 0px, transparent 50%),
         radial-gradient(at 100% 0%, hsl(var(--primary) / 0.05) 0px, transparent 50%),
         radial-gradient(at 50% 100%, hsl(var(--primary) / 0.03) 0px, transparent 50%),
@@ -66,7 +66,7 @@
     }
     .bg-grid {
       background-size: 40px 40px;
-      background-image: 
+      background-image:
         linear-gradient(to right, hsl(var(--foreground) / 0.03) 1px, transparent 1px),
         linear-gradient(to bottom, hsl(var(--foreground) / 0.03) 1px, transparent 1px);
     }
@@ -112,7 +112,7 @@
       pointer-events: none;
     }
     .shadow-studio {
-      box-shadow: 
+      box-shadow:
         0 0 0 1px hsl(var(--foreground) / 0.03),
         0 10px 20px -5px rgba(0, 0, 0, 0.1),
         0 8px 16px -8px rgba(0, 0, 0, 0.1),
@@ -123,7 +123,7 @@
       backdrop-filter: blur(20px) saturate(180%);
       -webkit-backdrop-filter: blur(20px) saturate(180%);
       border: 1px solid hsl(var(--foreground) / 0.12);
-      box-shadow: 
+      box-shadow:
         0 0 0 1px hsl(var(--foreground) / 0.02),
         inset 0 1px 1px 0 hsl(var(--foreground) / 0.05),
         0 10px 25px -5px rgba(0, 0, 0, 0.08),
@@ -132,7 +132,7 @@
     .dark .glass-card {
       background-color: hsl(var(--foreground) / 0.03);
       border: 1px solid hsl(var(--foreground) / 0.1);
-      box-shadow: 
+      box-shadow:
         0 0 0 1px hsl(var(--foreground) / 0.05),
         0 10px 15px -3px rgba(0, 0, 0, 0.4),
         0 4px 6px -4px rgba(0, 0, 0, 0.4),
@@ -145,14 +145,14 @@
       background-color: hsl(var(--background) / 0.9);
       border-color: hsl(var(--foreground) / 0.2);
       transform: translateY(-4px);
-      box-shadow: 
+      box-shadow:
         0 20px 25px -5px rgba(0, 0, 0, 0.1),
         0 10px 10px -5px rgba(0, 0, 0, 0.04);
     }
     .dark .glass-card-hover:hover {
       background-color: hsl(var(--foreground) / 0.08);
       border-color: hsl(var(--foreground) / 0.2);
-      box-shadow: 
+      box-shadow:
         0 0 0 1px hsl(var(--foreground) / 0.1),
         0 20px 25px -5px rgba(0, 0, 0, 0.5),
         0 40px 60px -15px rgba(0, 0, 0, 0.7);
@@ -262,14 +262,91 @@
     color-scheme: dark;
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    *,
-    ::before,
-    ::after {
-      animation-duration: 0.01ms !important;
-      animation-iteration-count: 1 !important;
-      scroll-behavior: auto !important;
-      transition-duration: 0.01ms !important;
+  /* Mobile & Small Viewport Refinements */
+  @media (max-width: 768px) {
+    :root {
+      --radius: 1rem;
+      --radius-lg: 1.25rem;
+      --radius-md: 0.75rem;
+      --radius-sm: 0.5rem;
+    }
+
+    html[data-theme-pack="botanical"] {
+      --radius: 1.25rem;
+      --radius-md: 0.875rem;
+      --radius-sm: 0.625rem;
+    }
+
+    .glass-card {
+      backdrop-filter: blur(12px) saturate(160%);
+      -webkit-backdrop-filter: blur(12px) saturate(160%);
+    }
+
+    /* 优化移动端点击区域 */
+    button,
+    [role="button"],
+    a {
+      min-height: 36px;
+      min-width: 36px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .card-grid-padding {
+      padding: 1rem !important;
+    }
+
+    /* 优化深色主题在移动端的层次感 (特别是 Ayu/Dracula) */
+    html.dark:not([data-theme-pack="botanical"]) .glass-card {
+      background-color: hsl(var(--card) / 0.8) !important;
+      border: 1px solid hsl(var(--foreground) / 0.15) !important;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
+    }
+
+    /* 针对 Ayu 主题的专项优化 */
+    html[data-theme-pack="ayu"].dark .bg-mesh {
+      background-color: #0f1219 !important; /* 比纯黑稍微亮一点的深蓝灰，增加手机易读性 */
+      background-image: none !important;
+    }
+
+    html[data-theme-pack="ayu"].dark aside {
+      background-color: #11151c !important;
+      border-right: 1px solid rgba(255, 255, 255, 0.05) !important;
+    }
+
+    /* 确保主题背景在移动端正确继承 */
+    html[data-theme-pack="botanical"] .glass-card {
+      background-color: hsl(var(--card)) !important;
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+    }
+
+    html[data-theme-pack="botanical"] aside {
+      background-color: hsl(var(--card)) !important;
+    }
+
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  }
+
+  /* 针对超小屏幕的微调 */
+  @media (max-width: 480px) {
+    :root {
+      --radius: 0.875rem;
+    }
+
+    .text-xs {
+      font-size: 10px;
+    }
+
+    .text-sm {
+      font-size: 12px;
     }
   }
 
@@ -327,25 +404,50 @@
 
   html[data-theme-pack="botanical"] body {
     background-color: hsl(var(--background));
-    background-image: 
-      url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M10 10 Q 30 0 50 10 T 90 10' fill='none' stroke='hsl(120,20%25,50%25)' stroke-width='0.1' opacity='0.1'/%3E%3C/svg%3E"), /* 极其淡的叶脉感 */
-      radial-gradient(at 0% 0%, hsl(142 45% 25% / 0.03) 0px, transparent 50%),
-      radial-gradient(at 100% 100%, hsl(195 60% 45% / 0.03) 0px, transparent 50%);
-    font-family: "Charter", "Georgia", serif; /* 使用衬线体增加人文感 */
+    background-image:
+      url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M10 10 Q 30 0 50 10 T 90 10' fill='none' stroke='hsl(142,45%25,25%25)' stroke-width='0.05' opacity='0.05'/%3E%3Cpath d='M0 50 Q 20 40 40 50 T 80 50' fill='none' stroke='hsl(142,45%25,25%25)' stroke-width='0.05' opacity='0.05'/%3E%3C/svg%3E"),
+      radial-gradient(at 0% 0%, hsl(142 45% 25% / 0.05) 0px, transparent 50%),
+      radial-gradient(at 100% 100%, hsl(195 60% 45% / 0.05) 0px, transparent 50%);
+    font-family: "Charter", "Bitstream Charter", "Sitka Text", "Cambria", "Georgia", serif;
+    font-size: 105%; /* 衬线体通常略小，稍微增大 */
   }
 
-  html[data-theme-pack="botanical"] .bg-mesh,
+  html[data-theme-pack="botanical"] .bg-mesh {
+    background-image: none;
+    background-color: hsl(var(--background));
+  }
+
   html[data-theme-pack="botanical"] .bg-grid {
-    display: none; /* 移除工业感的网格 */
+    background-image: none;
   }
 
-  html[data-theme-pack="botanical"] .glass-card,
-  html[data-theme-pack="botanical"] .glass-reflection {
+  /* Override Studio Glass components for Botanical Garden */
+  html[data-theme-pack="botanical"] aside,
+  html[data-theme-pack="botanical"] .glass-reflection,
+  html[data-theme-pack="botanical"] [class*="backdrop-blur"] {
+    background-color: hsl(var(--card) / 0.9) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    border-color: hsl(var(--border)) !important;
+    box-shadow: 0 4px 12px hsl(120 20% 10% / 0.04) !important;
+  }
+
+  html[data-theme-pack="botanical"] .glass-card {
     background-color: hsl(var(--card));
-    backdrop-filter: none; /* 减少玻璃使用 */
-    -webkit-backdrop-filter: none;
     border: 1px solid hsl(var(--border));
-    box-shadow: 0 4px 20px -2px hsl(120 20% 10% / 0.05); /* 极柔和的投影 */
+    border-radius: var(--radius);
+    box-shadow: 0 4px 20px -2px hsl(120 20% 10% / 0.05);
+  }
+
+  html[data-theme-pack="botanical"] .etched-border-b,
+  html[data-theme-pack="botanical"] .etched-border-r {
+    border-color: hsl(var(--border)) !important;
+    box-shadow: none !important;
+  }
+
+  html[data-theme-pack="botanical"] button,
+  html[data-theme-pack="botanical"] .rounded-\[var\(--radius\)\] {
+    border-radius: var(--radius) !important;
   }
 
   html[data-theme-pack="botanical"] .glass-card-hover:hover {

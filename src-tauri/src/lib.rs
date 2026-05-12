@@ -47,6 +47,7 @@ pub fn run() {
             overlay::register_default_shortcuts(&app.handle());
             overlay::prewarm_windows(&app.handle());
             supervisor::init(app.handle().clone());
+            bridge::restore_bridge_on_startup();
 
             tracing::info!("ThreadTerm Tauri backend ready");
             Ok(())

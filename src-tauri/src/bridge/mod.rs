@@ -4,7 +4,9 @@ mod pairing;
 mod server;
 
 use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     path::Path,
+    process::Command,
     sync::{Arc, Mutex},
 };
 
@@ -17,13 +19,16 @@ use crate::pty::{self, LivePtySessionSnapshot, SessionState};
 use pairing::PairingStore;
 use protocol::{
     BridgeDevice, BridgeSnapshot, BridgeStatus, CardMeta, PairQrResponse, ServerMessage,
-    TerminalStatus,
+    TerminalSnapshotMessage, TerminalStatus,
 };
 
 const DEFAULT_BRIDGE_HOST: &str = "127.0.0.1";
 const DEFAULT_BRIDGE_PORT: u16 = 5174;
 const PREVIEW_MAX_LINES: usize = 8;
 const PREVIEW_CHANNEL_CAPACITY: usize = 1024;
+const BRIDGE_ENABLED_SETTING: &str = "mobile_bridge.enabled";
+const BRIDGE_HOST_SETTING: &str = "mobile_bridge.host";
+const BRIDGE_PORT_SETTING: &str = "mobile_bridge.port";
 
 static ANSI_STRIP: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[()][A-Za-z0-9])")
@@ -91,8 +96,53 @@ impl BridgeRuntime {
     }
 }
 
+pub fn restore_bridge_on_startup() {
+    let enabled = crate::db::get_setting(BRIDGE_ENABLED_SETTING)
+        .ok()
+        .flatten()
+        .map(|value| value == "true")
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+
+    let host = crate::db::get_setting(BRIDGE_HOST_SETTING)
+        .ok()
+        .flatten()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_BRIDGE_HOST.to_string());
+    let port = crate::db::get_setting(BRIDGE_PORT_SETTING)
+        .ok()
+        .flatten()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_BRIDGE_PORT);
+
+    tauri::async_runtime::spawn(async move {
+        match start_bridge_runtime(Some(host), Some(port), true).await {
+            Ok(status) => {
+                tracing::info!(
+                    host = ?status.host,
+                    port = ?status.port,
+                    "Mobile bridge restored from settings"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to restore mobile bridge from settings");
+            }
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn bridge_start(host: Option<String>, port: Option<u16>) -> Result<BridgeStatus, String> {
+    start_bridge_runtime(host, port, !cfg!(test)).await
+}
+
+async fn start_bridge_runtime(
+    host: Option<String>,
+    port: Option<u16>,
+    persist_enabled: bool,
+) -> Result<BridgeStatus, String> {
     let runtime = BRIDGE_RUNTIME.clone();
 
     let already_running = {
@@ -103,7 +153,11 @@ pub async fn bridge_start(host: Option<String>, port: Option<u16>) -> Result<Bri
             .is_some()
     };
     if already_running {
-        return Ok(runtime.status());
+        let status = runtime.status();
+        if persist_enabled {
+            persist_bridge_running(&status);
+        }
+        return Ok(status);
     }
 
     let bind_host = host
@@ -126,6 +180,9 @@ pub async fn bridge_start(host: Option<String>, port: Option<u16>) -> Result<Bri
         port = ?status.port,
         "Mobile bridge started"
     );
+    if persist_enabled {
+        persist_bridge_running(&status);
+    }
     Ok(status)
 }
 
@@ -141,6 +198,12 @@ pub async fn bridge_stop() -> Result<BridgeStatus, String> {
     if let Some(mut handle) = handle {
         if let Some(shutdown) = handle.shutdown.take() {
             let _ = shutdown.send(());
+        }
+    }
+
+    if !cfg!(test) {
+        if let Err(error) = crate::db::set_setting(BRIDGE_ENABLED_SETTING, "false") {
+            tracing::debug!(error = %error, "Failed to persist mobile bridge stopped state");
         }
     }
 
@@ -175,6 +238,26 @@ pub async fn bridge_revoke_device(device_id: String) -> Result<bool, String> {
     Ok(BRIDGE_RUNTIME.pairing.revoke_device(&device_id))
 }
 
+fn persist_bridge_running(status: &BridgeStatus) {
+    if !status.running {
+        return;
+    }
+
+    if let Err(error) = crate::db::set_setting(BRIDGE_ENABLED_SETTING, "true") {
+        tracing::debug!(error = %error, "Failed to persist mobile bridge enabled state");
+    }
+    if let Some(host) = status.host.as_deref() {
+        if let Err(error) = crate::db::set_setting(BRIDGE_HOST_SETTING, host) {
+            tracing::debug!(error = %error, "Failed to persist mobile bridge host");
+        }
+    }
+    if let Some(port) = status.port {
+        if let Err(error) = crate::db::set_setting(BRIDGE_PORT_SETTING, &port.to_string()) {
+            tracing::debug!(error = %error, "Failed to persist mobile bridge port");
+        }
+    }
+}
+
 pub fn broadcast_preview(card_id: &str, output: &str) {
     let preview = preview_from_output(output);
     if preview.last_reply_preview.is_empty() {
@@ -186,6 +269,18 @@ pub fn broadcast_preview(card_id: &str, output: &str) {
         last_reply_preview: preview.last_reply_preview,
         summary_line: preview.summary_line,
         hidden_line_count: preview.hidden_line_count,
+    });
+}
+
+pub fn broadcast_terminal_output(card_id: &str, data: &str, seq: u64) {
+    if data.is_empty() {
+        return;
+    }
+
+    BRIDGE_RUNTIME.broadcast(ServerMessage::TerminalOutput {
+        card_id: card_id.to_string(),
+        data: data.to_string(),
+        seq,
     });
 }
 
@@ -224,6 +319,20 @@ fn card_meta_from_live_session(snapshot: LivePtySessionSnapshot) -> CardMeta {
         hidden_line_count: preview.hidden_line_count,
         recent_output_bytes: snapshot.recent_output.len(),
     }
+}
+
+pub(super) fn terminal_snapshot_message(card_id: &str) -> Option<TerminalSnapshotMessage> {
+    let snapshot = pty::attach_snapshot_for_bridge(card_id)?;
+    Some(TerminalSnapshotMessage {
+        card_id: snapshot.pty_id,
+        data: snapshot.data,
+        seq: snapshot.seq,
+        rows: snapshot.rows,
+        cols: snapshot.cols,
+        cursor_row: snapshot.cursor_row,
+        cursor_col: snapshot.cursor_col,
+        history: snapshot.history,
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -375,15 +484,71 @@ fn is_mobile_preview_noise_line(line: &str) -> bool {
 
 fn public_host_for_url(host: &str) -> String {
     match host {
-        "0.0.0.0" | "::" => "127.0.0.1".to_string(),
+        "0.0.0.0" | "::" => lan_ipv4_for_url().unwrap_or_else(|| "127.0.0.1".to_string()),
         value => value.to_string(),
     }
+}
+
+fn lan_ipv4_for_url() -> Option<String> {
+    default_route_ipv4_for_url().or_else(udp_route_ipv4_for_url)
+}
+
+#[cfg(target_os = "macos")]
+fn default_route_ipv4_for_url() -> Option<String> {
+    let output = Command::new("route")
+        .args(["-n", "get", "default"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let interface = stdout.lines().find_map(|line| {
+        let line = line.trim();
+        line.strip_prefix("interface:").map(str::trim)
+    })?;
+    interface_ipv4_for_url(interface)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn default_route_ipv4_for_url() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn interface_ipv4_for_url(interface: &str) -> Option<String> {
+    let output = Command::new("ifconfig").arg(interface).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    stdout.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let ip = trimmed.strip_prefix("inet ")?.split_whitespace().next()?;
+        lan_ipv4_candidate(ip.parse().ok()?).then(|| ip.to_string())
+    })
+}
+
+fn udp_route_ipv4_for_url() -> Option<String> {
+    let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))).ok()?;
+    socket
+        .connect(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 80)))
+        .ok()?;
+    let local_addr = socket.local_addr().ok()?;
+    match local_addr.ip() {
+        IpAddr::V4(ip) if lan_ipv4_candidate(ip) => Some(ip.to_string()),
+        _ => None,
+    }
+}
+
+fn lan_ipv4_candidate(ip: Ipv4Addr) -> bool {
+    !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local() && !ip.is_broadcast()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{sync::mpsc, sync::Mutex, time::Duration};
+    use std::{sync::Mutex, sync::mpsc, time::Duration};
 
     /// Both bridge integration tests touch the global `BRIDGE_RUNTIME`
     /// state and bind real sockets, so they cannot run in parallel.
@@ -428,9 +593,11 @@ mod tests {
         let preview = preview_from_output(input);
 
         assert_eq!(preview.hidden_line_count, 0);
-        assert!(preview
-            .last_reply_preview
-            .contains("MCP startup incomplete"));
+        assert!(
+            preview
+                .last_reply_preview
+                .contains("MCP startup incomplete")
+        );
         assert!(preview.last_reply_preview.contains("waiting for input"));
     }
 
@@ -443,9 +610,11 @@ mod tests {
             preview.summary_line.as_deref(),
             Some("It is safe to continue.")
         );
-        assert!(!preview
-            .last_reply_preview
-            .contains("Summarize recent commits"));
+        assert!(
+            !preview
+                .last_reply_preview
+                .contains("Summarize recent commits")
+        );
     }
 
     #[test]
@@ -470,9 +639,22 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_bind_host_uses_loopback_for_display_url() {
-        assert_eq!(public_host_for_url("0.0.0.0"), "127.0.0.1");
+    fn wildcard_bind_host_uses_lan_ip_for_display_url() {
+        let display_host = public_host_for_url("0.0.0.0");
+
+        assert_ne!(display_host, "0.0.0.0");
+        assert_ne!(display_host, "172.18.0.1");
+        assert!(display_host.parse::<Ipv4Addr>().is_ok());
         assert_eq!(public_host_for_url("192.168.1.2"), "192.168.1.2");
+    }
+
+    #[test]
+    fn lan_ipv4_candidate_rejects_non_lan_addresses() {
+        assert!(!lan_ipv4_candidate(Ipv4Addr::new(127, 0, 0, 1)));
+        assert!(!lan_ipv4_candidate(Ipv4Addr::new(0, 0, 0, 0)));
+        assert!(!lan_ipv4_candidate(Ipv4Addr::new(169, 254, 1, 2)));
+        assert!(!lan_ipv4_candidate(Ipv4Addr::new(255, 255, 255, 255)));
+        assert!(lan_ipv4_candidate(Ipv4Addr::new(192, 168, 1, 67)));
     }
 
     #[test]

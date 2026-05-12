@@ -241,6 +241,7 @@ fn emit_pty_output_chunk(
         },
     );
     session::add_unacked(ses, data.as_bytes().len());
+    bridge::broadcast_terminal_output(id, data, seq);
     let preview_source = session::terminal_output_snapshot(ses).unwrap_or_else(|| data.to_string());
     bridge::broadcast_preview(id, &preview_source);
 

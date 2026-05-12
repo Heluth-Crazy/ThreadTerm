@@ -139,7 +139,8 @@
     "cloudflare": "Cloudflare Tunnel 문서"
   },
   "pairingTitle": "페어링 항목",
-  "pairingDescription": "5분 후 만료되는 일회용 페어링 코드를 생성합니다. 이후 QR 표시로 교체됩니다.",
+  "pairingDescription": "5분 후 만료되는 일회용 페어링 QR 코드를 생성합니다. 휴대폰으로 스캔하거나 예비로 URL을 복사하세요.",
+  "qrTitle": "ThreadTerm 모바일 페어링 QR 코드",
     "newPairCode": "페어링 코드 생성",
     "copyUrl": "URL 복사",
     "devicesTitle": "페어링된 기기",

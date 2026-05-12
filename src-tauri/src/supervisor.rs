@@ -108,10 +108,8 @@ fn compile_rules() -> CompiledRules {
     let tail = vec![
         TailRule {
             id: RuleId::SudoPassword,
-            pattern: Regex::new(
-                r"(?i)(\[sudo\]\s+password\s+for\s+\S+:\s*$|^Password:\s*$)",
-            )
-            .expect("sudo-password regex"),
+            pattern: Regex::new(r"(?i)(\[sudo\]\s+password\s+for\s+\S+:\s*$|^Password:\s*$)")
+                .expect("sudo-password regex"),
         },
         TailRule {
             id: RuleId::YesNoBracket,
@@ -149,17 +147,14 @@ fn compile_rules() -> CompiledRules {
     // Arrow-select strong: pointer glyph followed by a space and then real
     // content. Powerlevel10k's bare `❯ ` prompt (pointer + space + EOL) does
     // NOT have `\S` after the space and therefore must NOT match.
-    let arrow_strong =
-        Regex::new(r"^\s*[❯▸]\s+\S").expect("arrow-select strong regex");
-    let arrow_weak = Regex::new(
-        r"(?i)(use\s+arrow\s+keys|↑↓\s*navigate|press\s+enter\s+to\s+select)",
-    )
-    .expect("arrow-select weak regex");
+    let arrow_strong = Regex::new(r"^\s*[❯▸]\s+\S").expect("arrow-select strong regex");
+    let arrow_weak =
+        Regex::new(r"(?i)(use\s+arrow\s+keys|↑↓\s*navigate|press\s+enter\s+to\s+select)")
+            .expect("arrow-select weak regex");
 
     // Inline ANSI stripper. We deliberately do NOT add a new crate just for
     // this: the existing `pty/events.rs` already follows the same pattern.
-    let ansi_strip =
-        Regex::new(r"\x1b\[[0-9;?]*[a-zA-Z]").expect("ansi-strip regex");
+    let ansi_strip = Regex::new(r"\x1b\[[0-9;?]*[a-zA-Z]").expect("ansi-strip regex");
 
     CompiledRules {
         tail,
@@ -362,7 +357,9 @@ pub async fn supervisor_enable(
     app_handle: AppHandle,
 ) -> Result<(), String> {
     let now = Instant::now();
-    let mut s = state().lock().map_err(|e| format!("supervisor state poisoned: {e}"))?;
+    let mut s = state()
+        .lock()
+        .map_err(|e| format!("supervisor state poisoned: {e}"))?;
 
     if !enabled {
         // Tear down: drop listener + watcher state. Pending alerts in the
@@ -386,8 +383,7 @@ pub async fn supervisor_enable(
     }
 
     // Reconcile the watched-set against the requested set.
-    let requested: std::collections::HashSet<String> =
-        watched_card_ids.iter().cloned().collect();
+    let requested: std::collections::HashSet<String> = watched_card_ids.iter().cloned().collect();
 
     s.watched.retain(|id, _| requested.contains(id));
     for card_id in watched_card_ids {
@@ -560,7 +556,10 @@ mod tests {
     }
 
     fn first_match(raw: &str) -> Option<RuleId> {
-        match_rules(raw, rules()).into_iter().next().map(|m| m.rule_id)
+        match_rules(raw, rules())
+            .into_iter()
+            .next()
+            .map(|m| m.rule_id)
     }
 
     fn matches_rule(raw: &str, rule: RuleId) -> bool {
@@ -599,8 +598,7 @@ mod tests {
 
     #[test]
     fn yes_no_paren_positive() {
-        let buf =
-            "The authenticity of host can't be established.\n\
+        let buf = "The authenticity of host can't be established.\n\
              Are you sure you want to continue connecting (yes/no)? ";
         assert!(matches_rule(buf, RuleId::YesNoParen));
     }
@@ -747,7 +745,8 @@ mod tests {
         // empty + listener is None.
         let mut s = SupervisorState::new();
         s.enabled = true;
-        s.watched.insert("card-1".into(), CardWatcher::new(Instant::now()));
+        s.watched
+            .insert("card-1".into(), CardWatcher::new(Instant::now()));
 
         // Tear-down semantics:
         s.watched.clear();

@@ -202,10 +202,8 @@ export function TerminalCardComponent({
       onMouseEnter={() => setTimelineOpen(true)}
       onMouseLeave={() => setTimelineOpen(false)}
       className={[
-        'relative flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius)] border transition-all duration-300 cursor-pointer glass-reflection',
-        isFocused
-          ? 'border-primary/50 bg-background/80 shadow-studio ring-1 ring-primary/20'
-          : 'border-white/5 bg-white/5 backdrop-blur-md hover:border-white/20 hover:bg-white/10 hover:shadow-studio',
+        'relative flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius)] transition-all duration-300 cursor-pointer glass-card glass-reflection',
+        isFocused ? 'ring-2 ring-primary/40' : '',
         card.unread ? 'ring-1 ring-amber-400/30' : '',
       ].join(' ')}
     >

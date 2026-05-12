@@ -30,6 +30,17 @@ export interface NotificationEntry {
   createdAt: number;
 }
 
+export interface TerminalSnapshotMessage {
+  cardId: string;
+  data: string;
+  seq: number;
+  rows: number;
+  cols: number;
+  cursorRow: number;
+  cursorCol: number;
+  history?: string;
+}
+
 export type ClientCommand =
   | { kind: 'subscribe'; card_ids?: string[] }
   | { kind: 'input'; card_id: string; data: string }
@@ -58,6 +69,8 @@ export type ServerCommand =
       summary_line: string | null;
       hidden_line_count: number;
     }
+  | { kind: 'terminal_snapshot'; snapshot: TerminalSnapshotMessage }
+  | { kind: 'terminal_output'; card_id: string; data: string; seq: number }
   | { kind: 'state'; card_id: string; status: TerminalStatus }
   | {
       kind: 'attention';

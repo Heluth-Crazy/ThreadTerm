@@ -338,6 +338,17 @@ pub(super) fn clear_waiting_for_input(session: &PtySession, id: &str) {
     }
 }
 
+pub(super) fn mark_input_activity(session: &PtySession, id: &str) {
+    if let Ok(mut last_output_at) = session.last_output_at.lock() {
+        *last_output_at = Some(Instant::now());
+    }
+
+    match get_session_state_snapshot(session) {
+        Some(SessionState::Completed | SessionState::Failed) => {}
+        _ => set_session_state(session, id, SessionState::Running),
+    }
+}
+
 /// Suppress output activity tracking for a brief window — used when a resize
 /// triggers a SIGWINCH that causes full-screen TUIs to redraw.
 pub(super) fn suppress_output_activity_for(session: &PtySession, window: Duration) {

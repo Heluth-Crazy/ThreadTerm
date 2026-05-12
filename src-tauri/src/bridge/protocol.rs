@@ -36,6 +36,20 @@ pub struct BridgeSnapshot {
     pub notifications: Vec<NotificationEntry>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSnapshotMessage {
+    pub card_id: String,
+    pub data: String,
+    pub seq: u64,
+    pub rows: u16,
+    pub cols: u16,
+    pub cursor_row: u16,
+    pub cursor_col: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct VersionedServerMessage {
     pub protocol_version: u16,
@@ -176,6 +190,14 @@ pub enum ServerMessage {
         summary_line: Option<String>,
         hidden_line_count: usize,
     },
+    TerminalSnapshot {
+        snapshot: TerminalSnapshotMessage,
+    },
+    TerminalOutput {
+        card_id: String,
+        data: String,
+        seq: u64,
+    },
     State {
         card_id: String,
         status: TerminalStatus,
@@ -306,6 +328,43 @@ mod tests {
         assert_eq!(json["projectName"], "ThreadTerm");
         assert_eq!(json["summaryLine"], "latest reply");
         assert_eq!(json["hiddenLineCount"], 2);
+    }
+
+    #[test]
+    fn serializes_terminal_snapshot_and_output_for_mobile_clients() {
+        let snapshot = TerminalSnapshotMessage {
+            card_id: "card-1".to_string(),
+            data: "\u{1b}[1;1Hready".to_string(),
+            seq: 42,
+            rows: 24,
+            cols: 80,
+            cursor_row: 1,
+            cursor_col: 6,
+            history: Some("previous line\r\n".to_string()),
+        };
+
+        let snapshot_json =
+            serde_json::to_value(versioned_server_message(ServerMessage::TerminalSnapshot {
+                snapshot: snapshot.clone(),
+            }))
+            .expect("serialize terminal snapshot");
+        assert_eq!(snapshot_json["protocol_version"], PROTOCOL_VERSION);
+        assert_eq!(snapshot_json["kind"], "terminal_snapshot");
+        assert_eq!(snapshot_json["snapshot"]["cardId"], "card-1");
+        assert_eq!(snapshot_json["snapshot"]["cursorRow"], 1);
+        assert_eq!(snapshot_json["snapshot"]["history"], "previous line\r\n");
+
+        let output_json =
+            serde_json::to_value(versioned_server_message(ServerMessage::TerminalOutput {
+                card_id: "card-1".to_string(),
+                data: " streamed".to_string(),
+                seq: 43,
+            }))
+            .expect("serialize terminal output");
+        assert_eq!(output_json["kind"], "terminal_output");
+        assert_eq!(output_json["card_id"], "card-1");
+        assert_eq!(output_json["data"], " streamed");
+        assert_eq!(output_json["seq"], 43);
     }
 
     #[test]

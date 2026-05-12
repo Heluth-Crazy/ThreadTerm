@@ -220,7 +220,35 @@ async fn handle_socket(context: ServerContext, device: BridgeDevice, mut socket:
                             code: "backpressure".to_string(),
                             message: "Client fell behind; intermediate events were dropped.".to_string(),
                         };
-                        let _ = send_json(&mut socket, &message).await;
+                        if send_json(&mut socket, &message).await.is_err() {
+                            break;
+                        }
+                        let resync_snapshot = context.runtime.snapshot();
+                        let resync_terminal_snapshots = resync_snapshot
+                            .cards
+                            .iter()
+                            .filter_map(|card| super::terminal_snapshot_message(&card.id))
+                            .collect::<Vec<_>>();
+                        let resync_initial = ServerMessage::from(resync_snapshot);
+                        if send_json(&mut socket, &resync_initial).await.is_err() {
+                            break;
+                        }
+                        let mut resync_failed = false;
+                        for snapshot in resync_terminal_snapshots {
+                            if send_json(
+                                &mut socket,
+                                &ServerMessage::TerminalSnapshot { snapshot },
+                            )
+                            .await
+                            .is_err()
+                            {
+                                resync_failed = true;
+                                break;
+                            }
+                        }
+                        if resync_failed {
+                            break;
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
@@ -228,7 +256,16 @@ async fn handle_socket(context: ServerContext, device: BridgeDevice, mut socket:
             incoming = socket.recv() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
+                        if text.contains("\"kind\":\"input\"") {
+                            tracing::info!(
+                                device_id = %device.id,
+                                raw_len = text.len(),
+                                raw_text = %text,
+                                "Mobile bridge raw input frame"
+                            );
+                        }
                         if let Err((code, message)) = handle_client_message(&context, &device, &text).await {
+                            tracing::warn!(code = %code, message = %message, "Mobile bridge client message rejected");
                             let _ = send_json(&mut socket, &ServerMessage::Error {
                                 code: code.clone(),
                                 message,
@@ -268,6 +305,13 @@ async fn handle_client_message(
         }
         ClientMessage::Input { card_id, data } => {
             ensure_full_permission(device)?;
+            tracing::info!(
+                device_id = %device.id,
+                card_id = %card_id,
+                len = data.len(),
+                data_debug = ?data,
+                "Mobile bridge input received"
+            );
             crate::db::insert_audit_log(
                 &device.id,
                 "input",
@@ -280,9 +324,7 @@ async fn handle_client_message(
                     format!("Failed to audit input: {e}"),
                 )
             })?;
-            crate::pty::pty_input(card_id, data)
-                .await
-                .map_err(|message| ("command_failed".to_string(), message))
+            paced_pty_input(&card_id, &data).await
         }
         ClientMessage::Resize {
             card_id,
@@ -315,6 +357,78 @@ async fn handle_client_message(
             "Remote spawn is not implemented in Stage 1.".to_string(),
         )),
     }
+}
+
+/// Mobile clients buffer keystrokes into a single batched payload (e.g.
+/// "test\r"), but TUI AI CLIs such as `codex` distinguish typed input from
+/// pasted input via timing — bytes arriving back-to-back can land in a paste
+/// handler that never echoes into the input box, leaving the user staring at
+/// a blank prompt. We split the payload into a "text body" portion and a
+/// trailing submission key, writing the body in one go (so it lands in the
+/// CLI's read buffer atomically) and then waiting long enough for the TUI to
+/// commit the text into its input box before delivering the Enter/newline.
+///
+/// Lone single-byte payloads (e.g. a stray `\r`, `Ctrl-C`, `Esc`) bypass the
+/// split entirely so their existing single-write semantics are preserved.
+async fn paced_pty_input(card_id: &str, data: &str) -> Result<(), (String, String)> {
+    if data.is_empty() {
+        return Ok(());
+    }
+
+    // Pull off any trailing submit chars (`\r`, `\n`) so the CLI gets the
+    // text body first and only then the Enter key. Sending them together can
+    // cause the body to be discarded by paste/coalesce handlers.
+    let (body, submit_tail) = split_submit_tail(data);
+
+    if body.is_empty() && submit_tail.is_empty() {
+        return Ok(());
+    }
+
+    if !body.is_empty() {
+        if let Err(message) = crate::pty::pty_input(card_id.to_string(), body.to_string()).await {
+            tracing::warn!(card_id = %card_id, %message, "pty_input failed for mobile bridge input body");
+            return Err(("command_failed".to_string(), message));
+        }
+    }
+
+    if !submit_tail.is_empty() {
+        if !body.is_empty() {
+            // Give the receiving CLI a beat to flush the text into its input
+            // box before we deliver the Enter key. ~60ms is fast enough to
+            // feel instant but slow enough that ratatui/crossterm-style TUI
+            // event loops finish handling the prior bytes first.
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        }
+        // Deliver Enter one byte at a time so each is treated as a distinct
+        // key press rather than a paste sequence.
+        for (i, byte) in submit_tail.as_bytes().iter().enumerate() {
+            let single = (*byte as char).to_string();
+            if let Err(message) = crate::pty::pty_input(card_id.to_string(), single).await {
+                tracing::warn!(card_id = %card_id, %message, index = i, "pty_input failed for mobile bridge submit key");
+                return Err(("command_failed".to_string(), message));
+            }
+            if i + 1 < submit_tail.len() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Split trailing line-submission chars (`\r`, `\n`) off the end of `data`.
+fn split_submit_tail(data: &str) -> (&str, &str) {
+    let bytes = data.as_bytes();
+    let mut split = bytes.len();
+    while split > 0 {
+        let b = bytes[split - 1];
+        if b == b'\r' || b == b'\n' {
+            split -= 1;
+        } else {
+            break;
+        }
+    }
+    (&data[..split], &data[split..])
 }
 
 fn authenticate(context: &ServerContext, token: Option<&str>) -> Option<BridgeDevice> {
@@ -822,6 +936,9 @@ fn mobile_pair_page_template() -> &'static str {
       selectedCardId: null,
       socket: null,
       reconnectTimer: 0,
+      reconnectAttempts: 0,
+      pendingInputFailFlash: 0,
+      pendingInputBuffer: '',
       suppressListHistory: false,
       terminalByCardId: new Map(),
       fitByCardId: new Map(),
@@ -930,6 +1047,26 @@ fn mobile_pair_page_template() -> &'static str {
 
     function hasStoredToken() {
       return Boolean(state.token);
+    }
+
+    function clearStoredPairing() {
+      state.token = '';
+      state.permission = state.pairPermission;
+      try {
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(PERMISSION_KEY);
+      } catch (_) {}
+      refreshTerminalPermission();
+    }
+
+    async function storedTokenStillAuthorized(token) {
+      if (!token) return false;
+      try {
+        const response = await fetch(`/snapshot?token=${encodeURIComponent(token)}`, { cache: 'no-store' });
+        return response.status !== 401 && response.status !== 403;
+      } catch (_) {
+        return true;
+      }
     }
 
     function cssVar(name, fallback) {
@@ -1205,6 +1342,14 @@ fn mobile_pair_page_template() -> &'static str {
 
     function ensureTranscriptRows(cardId, snapshotCols) {
       const id = String(cardId || '');
+      const term = state.terminalByCardId.get(id);
+      const cachedRows = state.transcriptRowsByCardId.get(id);
+      if (term && cachedRows && cachedRows.length > 0) {
+        return cachedRows;
+      }
+      if (term && syncTranscriptRowsFromTerminal(id, { render: false })) {
+        return state.transcriptRowsByCardId.get(id) || [''];
+      }
       const nextCols = estimatedTranscriptCols(snapshotCols);
       const currentCols = Number(state.transcriptColsByCardId.get(id) || 0);
       if (!state.transcriptRowsByCardId.has(id) || currentCols !== nextCols) {
@@ -1311,9 +1456,55 @@ fn mobile_pair_page_template() -> &'static str {
       });
     }
 
+    function syncTranscriptRowsFromTerminal(cardId, options = {}) {
+      const id = String(cardId || '');
+      const term = state.terminalByCardId.get(id);
+      const buffer = term?.buffer?.active;
+      if (!id || !term || !buffer) return false;
+
+      const rows = [];
+      for (let index = 0; index < buffer.length; index += 1) {
+        const line = buffer.getLine(index);
+        const text = line ? line.translateToString(true) : '';
+        if (line?.isWrapped && /^orking(?:\.{0,3})/.test(text)) {
+          const previous = rows[rows.length - 1] || '';
+          const moved = previous.match(/W\s*$/);
+          if (moved) {
+            rows[rows.length - 1] = previous.slice(0, previous.length - moved[0].length);
+            rows.push(`W${text}`);
+            continue;
+          }
+        }
+        rows.push(text);
+      }
+      state.transcriptRowsByCardId.set(id, rows.length > 0 ? rows : ['']);
+      state.transcriptColsByCardId.set(id, Math.max(16, Number(term.cols || 80)));
+
+      if (options.seq > 0) {
+        const nextSeq = Math.max(Number(state.lastTranscriptSeqByCardId.get(id) || 0), Number(options.seq || 0));
+        state.lastTranscriptSeqByCardId.set(id, nextSeq);
+      }
+
+      if (options.render !== false && state.selectedCardId === id) {
+        ensureTranscriptView(id);
+        renderTranscriptWindow(id, {
+          force: options.force !== false,
+          stickToBottom: options.stickToBottom === true,
+          preserveScroll: options.preserveScroll === true,
+        });
+      }
+      return true;
+    }
+
     function syncTranscriptLayout(cardId, snapshotCols) {
       const id = String(cardId || '');
       if (!id) return;
+      if (state.terminalByCardId.has(id) && syncTranscriptRowsFromTerminal(id, {
+        force: true,
+        stickToBottom: !state.userScrolledTerminalByCardId.get(id),
+      })) {
+        return;
+      }
       const nextCols = estimatedTranscriptCols(snapshotCols);
       const currentCols = Number(state.transcriptColsByCardId.get(id) || 0);
       if (currentCols !== nextCols) {
@@ -1542,8 +1733,22 @@ fn mobile_pair_page_template() -> &'static str {
       const fit = state.fitByCardId.get(id);
       if (!term || !fit || state.selectedCardId !== id || detailViewEl.hidden) return;
       if (usesTranscriptRenderer(id)) {
-        syncTranscriptLayout(id);
-        renderTranscriptWindow(id, { force: true });
+        window.requestAnimationFrame(() => {
+          if (state.selectedCardId !== id || detailViewEl.hidden) return;
+          const shouldStickToBottom = !state.userScrolledTerminalByCardId.get(id);
+          state.suppressResizeByCardId.add(id);
+          try {
+            fit.fit();
+          } catch (_) {
+            // The host can be briefly hidden during view transitions.
+          } finally {
+            window.requestAnimationFrame(() => state.suppressResizeByCardId.delete(id));
+          }
+          syncTranscriptRowsFromTerminal(id, {
+            force: true,
+            stickToBottom: shouldStickToBottom,
+          });
+        });
         return;
       }
       window.requestAnimationFrame(() => {
@@ -1635,31 +1840,30 @@ fn mobile_pair_page_template() -> &'static str {
         return;
       }
       resizeTerminalLocal(term, cardId, snapshot.cols, snapshot.rows);
-      if (usesTranscriptRenderer(cardId)) {
-        state.pendingTerminalOutputByCardId.delete(cardId);
-        state.lastTerminalSeqByCardId.set(cardId, seq);
-        if (seq > 0) {
-          state.appliedTerminalSnapshotSeqByCardId.set(cardId, seq);
-        }
-        if (state.selectedCardId === cardId && !state.userScrolledTerminalByCardId.get(cardId)) {
-          scrollTranscriptToBottom(cardId);
-        }
-        return;
-      }
       term.reset();
       const payload = terminalPayload(snapshot);
-      if (payload) {
-        term.write(payload, () => {
-          flushPendingTerminalOutput(cardId);
-          scrollTerminalToBottom(cardId);
-        });
-      } else {
+      const view = state.transcriptViewByCardId.get(cardId);
+      const shouldStickToBottom = state.selectedCardId === cardId
+        && (!view || !state.userScrolledTerminalByCardId.get(cardId) || transcriptAtBottom(view.root));
+      const finishSnapshotWrite = () => {
+        if (usesTranscriptRenderer(cardId)) {
+          syncTranscriptRowsFromTerminal(cardId, {
+            seq,
+            force: true,
+            stickToBottom: shouldStickToBottom,
+          });
+        }
         flushPendingTerminalOutput(cardId);
         scrollTerminalToBottom(cardId);
-      }
+      };
       state.lastTerminalSeqByCardId.set(cardId, seq);
       if (seq > 0) {
         state.appliedTerminalSnapshotSeqByCardId.set(cardId, seq);
+      }
+      if (payload) {
+        term.write(payload, finishSnapshotWrite);
+      } else {
+        finishSnapshotWrite();
       }
       if (state.selectedCardId === cardId) {
         fitTerminal(cardId);
@@ -1701,6 +1905,17 @@ fn mobile_pair_page_template() -> &'static str {
         if (seq > 0) {
           state.lastTerminalSeqByCardId.set(cardId, seq);
         }
+        const view = state.transcriptViewByCardId.get(cardId);
+        const shouldAutoScroll = state.selectedCardId === cardId
+          && (!view || !state.userScrolledTerminalByCardId.get(cardId) || transcriptAtBottom(view.root));
+        term.write(data, () => {
+          syncTranscriptRowsFromTerminal(cardId, {
+            seq,
+            force: true,
+            stickToBottom: shouldAutoScroll,
+            preserveScroll: !shouldAutoScroll,
+          });
+        });
         return;
       }
       const shouldAutoScroll = state.selectedCardId === cardId
@@ -1728,6 +1943,18 @@ fn mobile_pair_page_template() -> &'static str {
         state.queuedTerminalOutputByCardId.delete(cardId);
         if (next) {
           const chunks = Array.isArray(next.chunks) ? next.chunks : [{ data: next.data || '', seq: next.seq || 0 }];
+          const term = state.terminalByCardId.get(cardId);
+          if (usesTranscriptRenderer(cardId) && term) {
+            const lastSeq = Number(state.lastTerminalSeqByCardId.get(cardId) || 0);
+            const freshChunks = chunks.filter((chunk) => {
+              const chunkSeq = Number(chunk.seq || 0);
+              return !(chunkSeq > 0 && chunkSeq <= lastSeq);
+            });
+            const data = freshChunks.map((chunk) => String(chunk.data || '')).join('');
+            const chunkSeq = freshChunks.reduce((max, chunk) => Math.max(max, Number(chunk.seq || 0)), 0);
+            if (data) writeTerminalOutputChunk(cardId, data, chunkSeq);
+            return;
+          }
           for (const chunk of chunks) {
             const chunkSeq = Number(chunk.seq || 0);
             const transcriptSeq = Number(state.lastTranscriptSeqByCardId.get(cardId) || 0);
@@ -1759,8 +1986,11 @@ fn mobile_pair_page_template() -> &'static str {
       if (!term || !output || output.length === 0) return;
       state.pendingTerminalOutputByCardId.delete(cardId);
       if (usesTranscriptRenderer(cardId)) {
-        const maxSeq = output.reduce((max, chunk) => Math.max(max, Number(chunk.seq || 0)), 0);
-        if (maxSeq > 0) state.lastTerminalSeqByCardId.set(cardId, maxSeq);
+        const lastSeq = Number(state.lastTerminalSeqByCardId.get(cardId) || 0);
+        const freshOutput = output.filter((chunk) => !(chunk.seq > 0 && chunk.seq <= lastSeq));
+        const data = freshOutput.map((chunk) => String(chunk.data || '')).join('');
+        const maxSeq = freshOutput.reduce((max, chunk) => Math.max(max, Number(chunk.seq || 0)), 0);
+        if (data) writeTerminalOutputChunk(cardId, data, maxSeq);
         return;
       }
       for (const chunk of output) {
@@ -1782,6 +2012,7 @@ fn mobile_pair_page_template() -> &'static str {
 
       const term = state.terminalByCardId.get(cardId);
       if (!term) {
+        bufferTerminalOutput(cardId, data, seq);
         queueTerminalOutput(cardId, data, seq);
         return;
       }
@@ -2039,13 +2270,67 @@ fn mobile_pair_page_template() -> &'static str {
     }
 
     function sendInput(data, cardId = state.selectedCardId) {
-      if (!data || !canSendInput(cardId)) return;
-      state.socket.send(JSON.stringify({
-        protocol_version: BRIDGE_PROTOCOL_VERSION,
-        kind: 'input',
-        card_id: cardId,
-        data,
-      }));
+      if (!data) return;
+      if (!canSendInput(cardId)) {
+        if (state.permission === 'full' && cardId) {
+          flashInputError('Disconnected — reconnecting...');
+          scheduleReconnect();
+        }
+        return;
+      }
+      try {
+        state.socket.send(JSON.stringify({
+          protocol_version: BRIDGE_PROTOCOL_VERSION,
+          kind: 'input',
+          card_id: cardId,
+          data,
+        }));
+      } catch (error) {
+        flashInputError('Send failed — reconnecting...');
+        try { state.socket && state.socket.close(); } catch (_) {}
+        state.socket = null;
+        scheduleReconnect();
+      }
+    }
+
+    function readPendingInput() {
+      const buffered = String(state.pendingInputBuffer || '');
+      const live = String(terminalKeyboardEl.value || '');
+      const raw = live.length >= buffered.length ? live : buffered;
+      return raw.replace(/\r?\n/g, '\r');
+    }
+
+    function clearPendingInput() {
+      state.pendingInputBuffer = '';
+      terminalKeyboardEl.value = '';
+    }
+
+    function flashSentDiagnostic(value) {
+      const preview = value && value.length > 0
+        ? (value.length > 24 ? `${value.slice(0, 24)}…` : value)
+        : '<empty>';
+      setStatus(`Sent: ${preview}`, value ? 'ok' : 'error');
+    }
+
+    function performSendKeyboardBuffer() {
+      const value = readPendingInput();
+      clearPendingInput();
+      flashSentDiagnostic(value);
+      sendInput(value ? `${value}\r` : '\r');
+    }
+
+    function sendKeyboardBuffer() {
+      if (!canSendInput()) {
+        flashInputError('Disconnected — reconnecting...');
+        scheduleReconnect();
+        return;
+      }
+      // Defer the actual read by ~30ms so iOS Safari has time to commit
+      // any pending predictive-text/QuickType characters into either the
+      // textarea `.value` or our shadow buffer via the `input` event.
+      // Reading synchronously can race ahead of iOS' commit, producing an
+      // empty string and only sending `\r`.
+      window.setTimeout(performSendKeyboardBuffer, 30);
     }
 
     function sendResize(cardId, cols, rows) {
@@ -2059,6 +2344,33 @@ fn mobile_pair_page_template() -> &'static str {
       }));
     }
 
+    function scheduleReconnect(reason) {
+      if (!state.token) return;
+      if (state.socket) return;
+      if (state.reconnectTimer) return;
+      const attempt = Math.min(Number(state.reconnectAttempts || 0), 6);
+      const delay = Math.min(30000, 1000 * Math.pow(2, attempt));
+      state.reconnectAttempts = attempt + 1;
+      if (reason) setStatus(reason, 'error');
+      state.reconnectTimer = window.setTimeout(() => {
+        state.reconnectTimer = 0;
+        if (!state.socket) connectWebSocket();
+      }, delay);
+    }
+
+    function flashInputError(message) {
+      setStatus(message || 'Send failed — reconnecting...', 'error');
+      try {
+        terminalKeyboardEl.classList.add('input-error');
+      } catch (_) {}
+      window.clearTimeout(state.pendingInputFailFlash);
+      state.pendingInputFailFlash = window.setTimeout(() => {
+        try {
+          terminalKeyboardEl.classList.remove('input-error');
+        } catch (_) {}
+      }, 1200);
+    }
+
     function connectWebSocket() {
       if (!state.token) return;
       if (!otp) {
@@ -2066,6 +2378,7 @@ fn mobile_pair_page_template() -> &'static str {
       }
       if (state.socket) state.socket.close();
       window.clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = 0;
 
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       const url = `${protocol}//${location.host}/ws?token=${encodeURIComponent(state.token)}`;
@@ -2075,6 +2388,7 @@ fn mobile_pair_page_template() -> &'static str {
 
       socket.onopen = () => {
         setStatus('Connected', 'ok');
+        state.reconnectAttempts = 0;
         socket.send(JSON.stringify({ protocol_version: BRIDGE_PROTOCOL_VERSION, kind: 'subscribe' }));
         retryEl.hidden = true;
       };
@@ -2092,10 +2406,24 @@ fn mobile_pair_page_template() -> &'static str {
         setStatus('Connection error', 'error');
       };
 
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         if (state.socket !== socket) return;
         state.socket = null;
+        const closedToken = state.token;
         setStatus('Disconnected', 'error');
+        if (!otp && closedToken && (event.code === 1006 || event.code === 1008 || event.code === 1011)) {
+          storedTokenStillAuthorized(closedToken).then((authorized) => {
+            if (authorized || state.token !== closedToken) {
+              scheduleReconnect('Disconnected — reconnecting...');
+              return;
+            }
+            clearStoredPairing();
+            setStatus('Pairing expired. Scan a fresh QR code.', 'error');
+            retryEl.hidden = false;
+          });
+        } else {
+          scheduleReconnect('Disconnected — reconnecting...');
+        }
         retryEl.hidden = false;
       };
     }
@@ -2148,21 +2476,40 @@ fn mobile_pair_page_template() -> &'static str {
 
     retryEl.addEventListener('click', pair);
     backEl.addEventListener('click', showList);
-    terminalKeyboardEl.addEventListener('input', () => {
-      if (!canSendInput() || !terminalKeyboardEl.value) return;
-      const data = terminalKeyboardEl.value.replace(/\n/g, '\r');
-      terminalKeyboardEl.value = '';
-      sendInput(data);
-    });
     terminalKeyboardEl.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
+      if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
-        sendInput('\r');
-        terminalKeyboardEl.value = '';
+        sendKeyboardBuffer();
       }
     });
-    sendEnterEl.addEventListener('click', () => sendInput('\r'));
-    sendCtrlCEl.addEventListener('click', () => sendInput('\u0003'));
+    // Mirror the visible textarea content into a shadow buffer so iOS
+    // QuickType / predictive text cannot strand the typed text when the
+    // textarea loses focus before its `.value` is committed.
+    terminalKeyboardEl.addEventListener('input', () => {
+      state.pendingInputBuffer = String(terminalKeyboardEl.value || '');
+    });
+    terminalKeyboardEl.addEventListener('compositionend', () => {
+      state.pendingInputBuffer = String(terminalKeyboardEl.value || '');
+    });
+    // Prevent the action buttons from stealing focus on touchstart so iOS
+    // does not dismiss the keyboard before the textarea commits pending
+    // characters (predictive text otherwise gets dropped).
+    const keepKeyboardFocus = (event) => {
+      if (document.activeElement === terminalKeyboardEl) {
+        event.preventDefault();
+      }
+    };
+    sendEnterEl.addEventListener('mousedown', keepKeyboardFocus);
+    sendEnterEl.addEventListener('touchstart', keepKeyboardFocus, { passive: false });
+    sendCtrlCEl.addEventListener('mousedown', keepKeyboardFocus);
+    sendCtrlCEl.addEventListener('touchstart', keepKeyboardFocus, { passive: false });
+    sendEscEl.addEventListener('mousedown', keepKeyboardFocus);
+    sendEscEl.addEventListener('touchstart', keepKeyboardFocus, { passive: false });
+    sendEnterEl.addEventListener('click', sendKeyboardBuffer);
+    sendCtrlCEl.addEventListener('click', () => {
+      clearPendingInput();
+      sendInput('\u0003');
+    });
     sendEscEl.addEventListener('click', () => sendInput('\u001b'));
     window.addEventListener('popstate', () => {
       if (state.selectedCardId) {
@@ -2179,6 +2526,23 @@ fn mobile_pair_page_template() -> &'static str {
     }
     window.addEventListener('resize', () => {
       if (state.selectedCardId) fitTerminal(state.selectedCardId);
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!state.token) return;
+      if (state.socket && state.socket.readyState === WebSocket.OPEN) return;
+      state.reconnectAttempts = 0;
+      window.clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = 0;
+      connectWebSocket();
+    });
+    window.addEventListener('online', () => {
+      if (!state.token) return;
+      if (state.socket && state.socket.readyState === WebSocket.OPEN) return;
+      state.reconnectAttempts = 0;
+      window.clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = 0;
+      connectWebSocket();
     });
     pair();
   </script>
@@ -2231,6 +2595,7 @@ mod tests {
         assert!(html.contains("function refreshVisibleTerminal"));
         assert!(html.contains("function applyTerminalSnapshot"));
         assert!(html.contains("function applyTerminalOutput"));
+        assert!(html.contains("state.suppressResizeByCardId.add(id);"));
         assert!(html.contains("MOBILE_TRANSCRIPT_ROW_HEIGHT"));
         assert!(html.contains("MOBILE_TRANSCRIPT_OVERSCAN_ROWS"));
         assert!(html.contains("transcriptChunksByCardId"));
@@ -2246,12 +2611,24 @@ mod tests {
         assert!(html.contains("root.addEventListener('touchstart', blurTerminalKeyboard"));
         assert!(html.contains("function blurTerminalKeyboard"));
         assert!(html.contains("id=\"terminal-keyboard\""));
+        assert!(html.contains("function sendKeyboardBuffer"));
+        assert!(html.contains("sendInput(value ? `${value}\\r` : '\\r')"));
+        assert!(html.contains("terminalKeyboardEl.addEventListener('keydown'"));
+        assert!(html.contains("event.key === 'Enter' && !event.shiftKey"));
+        assert!(html.contains("sendEnterEl.addEventListener('click', sendKeyboardBuffer)"));
         assert!(html.contains("terminalKeyboardEl.addEventListener('input'"));
+        assert!(html.contains("terminalKeyboardEl.addEventListener('compositionend'"));
+        assert!(html.contains("state.pendingInputBuffer"));
+        assert!(html.contains("function readPendingInput"));
         assert!(html.contains("terminalKeyboardEl.addEventListener('keydown'"));
         assert!(html.contains("terminal-transcript-row"));
         assert!(html.contains("DocumentFragment"));
         assert!(html.contains("- MOBILE_TRANSCRIPT_OVERSCAN_ROWS"));
         assert!(html.contains("appendTranscriptOutput(cardId, chunk.data, chunkSeq)"));
+        assert!(html.contains("function syncTranscriptRowsFromTerminal"));
+        assert!(html.contains("term.write(data, () =>"));
+        assert!(html.contains("line.translateToString(true)"));
+        assert!(html.contains("line?.isWrapped && /^orking"));
         assert!(html.contains("pendingTerminalOutputByCardId"));
         assert!(html.contains("queuedTerminalOutputByCardId"));
         assert!(html.contains("appliedTerminalSnapshotSeqByCardId"));
@@ -2283,7 +2660,7 @@ mod tests {
         assert!(html.contains("summaryLine"));
         assert!(html.contains("case 'terminal_snapshot'"));
         assert!(html.contains("case 'terminal_output'"));
-        assert!(html.contains("sendEnterEl.addEventListener('click', () => sendInput('\\r'))"));
+        assert!(html.contains("sendEnterEl.addEventListener('click', sendKeyboardBuffer)"));
         assert!(html.contains("kind: 'input'"));
         assert!(!html.contains("id=\"detail-preview\""));
         assert!(!html.contains("id=\"send-input\""));

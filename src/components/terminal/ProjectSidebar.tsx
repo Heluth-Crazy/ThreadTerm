@@ -52,11 +52,13 @@ const DISCOVERY_ERROR_I18N_KEY: Record<DiscoveryErrorReason, string> = {
 interface ProjectSidebarProps {
   className?: string;
   onImportWorkflow?: (projectPath: string, projectName: string) => void;
+  onCloseMobile?: () => void;
 }
 
 export function ProjectSidebar({
   className = '',
   onImportWorkflow,
+  onCloseMobile,
 }: ProjectSidebarProps) {
   const { t } = useTranslation('terminal');
   const groups = useProjectGroups();
@@ -220,6 +222,15 @@ export function ProjectSidebar({
     >
       {/* Header */}
       <div className="flex h-12 items-center justify-between etched-border-b px-3">
+        {onCloseMobile ? (
+          <button
+            type="button"
+            onClick={onCloseMobile}
+            className="md:hidden rounded-[var(--radius-md)] p-1 text-muted-foreground hover:bg-accent"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+        ) : null}
         {!collapsed && (
           <span className="pl-1 text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
             {t('sidebar.projects')}

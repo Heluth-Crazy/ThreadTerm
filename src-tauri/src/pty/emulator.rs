@@ -17,8 +17,8 @@ pub(super) struct TerminalSnapshotPayload {
 }
 
 /// Returns true when the wezterm-serialized payload would render as an empty
-/// screen — no scrollback history and `data` is nothing but cursor positioning
-/// escapes (and optional whitespace). This happens when wezterm's current
+/// screen — no scrollback history and `data` is nothing but terminal control
+/// sequences (and optional whitespace). This happens when wezterm's current
 /// screen has no visible cells (e.g. immediately after construction, or while
 /// a CLI is in a long-running quiet phase such as an upgrade install). Callers
 /// can fall back to a raw byte buffer in that case so the freshly-attached
@@ -33,44 +33,67 @@ pub(super) fn is_visually_empty_payload(payload: &TerminalSnapshotPayload) -> bo
         return false;
     }
 
-    let stripped = strip_cursor_position_escapes(&payload.data);
+    let stripped = strip_terminal_control_sequences(&payload.data);
     stripped.trim().is_empty()
 }
 
-/// Removes `\x1b[H`, `\x1b[<row>;<col>H`, and `\x1b[<row>;<col>f` cursor
-/// positioning sequences from `data`. Anything else (text, SGR attributes,
-/// other CSI sequences) is preserved so the visually-empty check stays
-/// conservative.
-fn strip_cursor_position_escapes(data: &str) -> String {
+fn strip_terminal_control_sequences(data: &str) -> String {
     let bytes = data.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            let mut j = i + 2;
-            let params_start = j;
-            while j < bytes.len() {
-                let c = bytes[j];
-                if c.is_ascii_digit() || c == b';' {
-                    j += 1;
-                } else {
-                    break;
+    'outer: while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b'[' => {
+                    let mut j = i + 2;
+                    while j < bytes.len() {
+                        let c = bytes[j];
+                        if (0x40..=0x7e).contains(&c) {
+                            i = j + 1;
+                            continue 'outer;
+                        }
+                        j += 1;
+                    }
                 }
-            }
-            if j < bytes.len() && (bytes[j] == b'H' || bytes[j] == b'f') {
-                let params = &bytes[params_start..j];
-                if params.is_empty() || params.iter().all(|c| c.is_ascii_digit() || *c == b';') {
-                    i = j + 1;
-                    continue;
+                b']' => {
+                    let mut j = i + 2;
+                    while j < bytes.len() {
+                        if bytes[j] == 0x07 {
+                            i = j + 1;
+                            continue 'outer;
+                        }
+                        if bytes[j] == 0x1b && j + 1 < bytes.len() && bytes[j + 1] == b'\\' {
+                            i = j + 2;
+                            continue 'outer;
+                        }
+                        j += 1;
+                    }
+                }
+                b'(' | b')' if i + 2 < bytes.len() => {
+                    i += 3;
+                    continue 'outer;
+                }
+                _ => {
+                    i += 2;
+                    continue 'outer;
                 }
             }
         }
+
+        if bytes[i].is_ascii_control()
+            && bytes[i] != b'\n'
+            && bytes[i] != b'\r'
+            && bytes[i] != b'\t'
+        {
+            i += 1;
+            continue;
+        }
+
         out.push(bytes[i]);
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
 }
-
 #[derive(Debug)]
 struct WeztermConfig {
     scrollback_limit: usize,
@@ -441,6 +464,20 @@ mod tests {
         snapshot.apply_output(b"\x1b[?25l\x1b[?25h");
 
         let payload = snapshot.snapshot_ansi();
+
+        assert!(is_visually_empty_payload(&payload));
+    }
+
+    #[test]
+    fn payload_visually_empty_when_only_clear_screen_and_sgr_sequences() {
+        let payload = TerminalSnapshotPayload {
+            data: "\x1b[2J\x1b[H\x1b[38;2;255;255;255m\x1b[0m".to_string(),
+            rows: 24,
+            cols: 80,
+            cursor_row: 1,
+            cursor_col: 1,
+            history: None,
+        };
 
         assert!(is_visually_empty_payload(&payload));
     }
