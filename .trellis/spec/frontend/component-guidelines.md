@@ -66,6 +66,61 @@ Tests for card preview changes should cover the thumbnail layer, one-line summar
 
 </spec-entry>
 
+<spec-entry category="pattern" keywords="xterm-registry,multi-webview,float-window,block-overlay,buffer-range" date="2026-05-16" source="src/components/terminal/xtermRegistry.ts:23">
+
+### Scenario: Multi-Instance xterm Registry
+
+#### 1. Scope / Trigger
+- Trigger: Any change to desktop `Shell`, floating terminal windows, block overlay/inspector, or `src/components/terminal/xtermRegistry.ts`.
+
+#### 2. Signatures
+- `registerTerminal(ptyId: string, term: Terminal): void`
+- `unregisterTerminal(ptyId: string, term?: Terminal): void`
+- `claimTerminalActive(ptyId: string, term: Terminal): void`
+- `getTerminal(ptyId: string): Terminal | undefined`
+- `getAbsoluteCursorRow(ptyId: string): number`
+- `readBufferRange(ptyId: string, startRow: number, endRow: number): string`
+
+#### 3. Contracts
+- A single PTY may be rendered by more than one xterm instance, for example main window plus float window.
+- Registry state is `ptyId -> registrations[]`, not `ptyId -> single Terminal`.
+- Registering a terminal makes that instance active. A visible/foreground shell must call `claimTerminalActive()` when it becomes active.
+- Unregistering with a `Terminal` removes only that instance and must fall back to the previous registration for the same PTY.
+- Unregistering without a `Terminal` is a full cleanup escape hatch and removes all registrations for that PTY.
+- `getTerminal()`, `getAbsoluteCursorRow()`, and `readBufferRange()` must use the active registration.
+
+#### 4. Validation & Error Matrix
+- No registration -> `getTerminal` returns `undefined`, cursor row returns `0`, buffer range returns `''`.
+- Active float unregisters while main remains -> active terminal falls back to main.
+- Main claims foreground while float remains mounted -> cursor/buffer reads use main.
+- Invalid row range -> `readBufferRange()` returns `''`.
+
+#### 5. Good/Base/Bad Cases
+- Good: float opens for an existing card, claims active, and block overlay reads from the float until it closes.
+- Base: one shell per PTY behaves exactly like the old registry.
+- Bad: unmounting one Shell deletes another Shell's registration for the same PTY.
+
+#### 6. Tests Required
+- Registry unit tests for two terminal instances sharing one PTY, active claim selection, per-instance unregister fallback, and full cleanup.
+- Affected frontend verification must include `npm run typecheck` and `npx vitest run`.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+const terminals = new Map<string, Terminal>();
+terminals.delete(ptyId);
+```
+
+Correct:
+```typescript
+registerTerminal(ptyId, term);
+claimTerminalActive(ptyId, term);
+unregisterTerminal(ptyId, term);
+```
+
+</spec-entry>
+
 ---
 
 ## Accessibility

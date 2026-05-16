@@ -4,8 +4,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use rand::{Rng, distributions::Alphanumeric};
-use rusqlite::{OptionalExtension, params};
+use rand::{distributions::Alphanumeric, Rng};
+use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use super::protocol::{BridgeDevice, DevicePermission, PairQrResponse, PairRequest, PairResponse};
@@ -91,7 +91,7 @@ impl PairingStore {
             let device = BridgeDevice {
                 id: format!("dev_{}", random_token(16)),
                 name: clean_device_name(&request.device_name),
-                permission: request.permission.unwrap_or(DevicePermission::Full),
+                permission: request.permission.unwrap_or(DevicePermission::ReadOnly),
                 created_at: now,
                 last_seen_at: Some(now),
             };
@@ -443,8 +443,8 @@ fn db_to_seconds(value: i64) -> u64 {
 mod tests {
     use super::*;
     use std::sync::{
-        Arc,
         atomic::{AtomicUsize, Ordering},
+        Arc,
     };
     use std::thread;
 
@@ -460,7 +460,7 @@ mod tests {
                 id          TEXT PRIMARY KEY,
                 name        TEXT NOT NULL,
                 token_hash  TEXT NOT NULL UNIQUE,
-                permission  TEXT NOT NULL DEFAULT 'full',
+                permission  TEXT NOT NULL DEFAULT 'read_only',
                 created_at  INTEGER NOT NULL,
                 last_seen_at INTEGER
             );
@@ -484,16 +484,15 @@ mod tests {
             .expect("pair device");
 
         assert_eq!(response.device.name, "iPhone");
+        assert_eq!(response.device.permission, DevicePermission::ReadOnly);
         assert!(store.validate_token(&response.device_token).is_some());
-        assert!(
-            store
-                .pair(PairRequest {
-                    otp: qr.otp,
-                    device_name: "iPad".to_string(),
-                    permission: None,
-                })
-                .is_err()
-        );
+        assert!(store
+            .pair(PairRequest {
+                otp: qr.otp,
+                device_name: "iPad".to_string(),
+                permission: None,
+            })
+            .is_err());
     }
 
     #[test]

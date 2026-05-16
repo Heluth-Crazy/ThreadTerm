@@ -29,8 +29,8 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tauri::{Manager, Window};
 
 use session::{
-    OUTPUT_BUFFER_MAX_BYTES, PtySession, RESIZE_OUTPUT_ACTIVITY_SUPPRESS, SESSION_SCROLLBACK_LINES,
-    clear_waiting_for_input, mark_killed, suppress_output_activity_for,
+    clear_waiting_for_input, mark_killed, suppress_output_activity_for, PtySession,
+    OUTPUT_BUFFER_MAX_BYTES, RESIZE_OUTPUT_ACTIVITY_SUPPRESS, SESSION_SCROLLBACK_LINES,
 };
 
 /// Runtime gate for the OSC 133/6973 block parser. Spec L92 requires the

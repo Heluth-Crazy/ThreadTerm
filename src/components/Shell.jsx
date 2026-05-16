@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { logger } from '../utils/logger';
 import { isTauriEnv, pty } from '../lib/tauri-bridge';
 import { useTheme } from '../contexts/ThemeContext';
-import { registerTerminal, unregisterTerminal } from './terminal/xtermRegistry';
+import { claimTerminalActive, registerTerminal, unregisterTerminal } from './terminal/xtermRegistry';
 import { createOutputSequencer } from './terminal/outputSequencer';
 
 const xtermStyles = `
@@ -428,7 +428,11 @@ function Shell({
     cleanupListeners();
 
     if (ptyIdRef.current) {
-      unregisterTerminal(ptyIdRef.current);
+      if (terminal.current) {
+        unregisterTerminal(ptyIdRef.current, terminal.current);
+      } else {
+        unregisterTerminal(ptyIdRef.current);
+      }
       if (!preservePtyOnUnmountRef.current) {
         pty.kill(ptyIdRef.current).catch(() => {});
       }
@@ -626,7 +630,11 @@ function Shell({
       cleanupListeners();
 
       if (ptyIdRef.current) {
-        unregisterTerminal(ptyIdRef.current);
+        if (terminal.current) {
+          unregisterTerminal(ptyIdRef.current, terminal.current);
+        } else {
+          unregisterTerminal(ptyIdRef.current);
+        }
         if (!preservePtyOnUnmountRef.current) {
           pty.kill(ptyIdRef.current).catch(() => {});
         }
@@ -655,6 +663,11 @@ function Shell({
     if (!active || !isInitialized) return;
     recoverTerminalSurface(true);
   }, [active, isInitialized, recoverTerminalSurface]);
+
+  useEffect(() => {
+    if (!active || !isConnected || !ptyIdRef.current || !terminal.current) return;
+    claimTerminalActive(ptyIdRef.current, terminal.current);
+  }, [active, isConnected]);
 
   useEffect(() => {
     const handleSurfaceShown = () => recoverTerminalSurface(true);

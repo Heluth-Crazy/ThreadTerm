@@ -1,0 +1,10 @@
+{
+  "name": "threadterm-mobile-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "test": "vitest run"
+  }
+}

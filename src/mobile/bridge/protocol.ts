@@ -1,3 +1,5 @@
+import type { AppThemeTokens, ResolvedThemeMode, TerminalThemeTokens } from '../../theme/themeTypes';
+
 export type TerminalStatus =
   | 'idle'
   | 'running'
@@ -42,6 +44,7 @@ export interface TerminalSnapshotMessage {
 }
 
 export type ClientCommand =
+  | { kind: 'auth'; token: string }
   | { kind: 'subscribe'; card_ids?: string[] }
   | { kind: 'input'; card_id: string; data: string }
   | { kind: 'resize'; card_id: string; cols: number; rows: number }
@@ -71,6 +74,12 @@ export type ServerCommand =
     }
   | { kind: 'terminal_snapshot'; snapshot: TerminalSnapshotMessage }
   | { kind: 'terminal_output'; card_id: string; data: string; seq: number }
+  | {
+      kind: 'theme';
+      app: AppThemeTokens;
+      terminal: TerminalThemeTokens;
+      mode: ResolvedThemeMode;
+    }
   | { kind: 'state'; card_id: string; status: TerminalStatus }
   | {
       kind: 'attention';

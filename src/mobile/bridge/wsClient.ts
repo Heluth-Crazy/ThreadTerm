@@ -37,11 +37,12 @@ export class BridgeWsClient {
     this.events = events;
     this.setState('connecting');
 
-    const socket = new this.WebSocketImpl(buildBridgeWsUrl(this.baseUrl, this.token));
+    const socket = new this.WebSocketImpl(buildBridgeWsUrl(this.baseUrl));
     this.socket = socket;
 
     socket.onopen = () => {
       this.setState('open');
+      this.send({ kind: 'auth', token: this.token });
       this.send({ kind: 'subscribe' });
     };
     socket.onclose = () => {
@@ -89,10 +90,9 @@ export class BridgeWsClient {
   }
 }
 
-export function buildBridgeWsUrl(baseUrl: string, token: string): string {
+export function buildBridgeWsUrl(baseUrl: string): string {
   const url = new URL('/ws', normalizeBaseUrl(baseUrl));
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  url.searchParams.set('token', token);
   return url.toString();
 }
 

@@ -54,7 +54,7 @@ pub fn init_database() -> Result<()> {
             id          TEXT PRIMARY KEY,
             name        TEXT NOT NULL,
             token_hash  TEXT NOT NULL UNIQUE,
-            permission  TEXT NOT NULL DEFAULT 'full',
+            permission  TEXT NOT NULL DEFAULT 'read_only',
             created_at  INTEGER NOT NULL,
             last_seen_at INTEGER
         );

@@ -123,13 +123,16 @@ mod tests {
         )
         .await
         .expect("sleep should be killable");
-        assert!(result.timed_out, "expected timed_out=true, got {:?}", result);
+        assert!(
+            result.timed_out,
+            "expected timed_out=true, got {:?}",
+            result
+        );
     }
 
     #[tokio::test]
     async fn returns_stderr_and_nonzero_exit_for_missing_binary() {
-        let result =
-            run_one_shot("/usr/bin/false", &[], std::time::Duration::from_secs(5)).await;
+        let result = run_one_shot("/usr/bin/false", &[], std::time::Duration::from_secs(5)).await;
         // /usr/bin/false exits 1, not a spawn error.
         let result = result.expect("false should spawn");
         assert_eq!(result.exit_code, Some(1));

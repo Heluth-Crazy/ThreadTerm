@@ -9,7 +9,7 @@ export default defineConfig({
     globals: true,
     pool: 'threads',
     setupFiles: ['./src/test/setup.ts'],
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    include: ['src/**/*.{test,spec}.{ts,tsx}', 'mobile-app/src/**/*.{test,spec}.{ts,tsx}'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
@@ -19,6 +19,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(__dirname, './src'),
+      '@shared': resolve(__dirname, './src'),
+      '@mobile': resolve(__dirname, './mobile-app/src'),
     },
   },
 });

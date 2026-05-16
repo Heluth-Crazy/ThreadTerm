@@ -140,6 +140,13 @@
   },
   "pairingTitle": "페어링 항목",
   "pairingDescription": "5분 후 만료되는 일회용 페어링 QR 코드를 생성합니다. 휴대폰으로 스캔하거나 예비로 URL을 복사하세요.",
+  "publishHost": {
+    "label": "게시 호스트 재정의",
+    "placeholder": "선택 사항: 휴대폰 QR용 호스트",
+    "hint": "비워 두면 감지된 LAN 주소를 사용합니다. Tailscale, 터널 또는 수동 LAN 호스트 이름에 사용하세요.",
+    "current": "QR 호스트:",
+    "loopbackWarning": "생성된 QR 코드가 loopback을 가리킵니다. 휴대폰에 공유하기 전에 게시 호스트를 입력하세요."
+  },
   "qrTitle": "ThreadTerm 모바일 페어링 QR 코드",
     "newPairCode": "페어링 코드 생성",
     "copyUrl": "URL 복사",

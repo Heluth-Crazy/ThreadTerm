@@ -69,6 +69,27 @@ function pairUrlWithPermission(
   }
 }
 
+function normalizePublishHostOverride(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+
+  try {
+    const parsed = new URL(trimmed.includes('://') ? trimmed : `http://${trimmed}`);
+    return parsed.hostname || undefined;
+  } catch {
+    const host = trimmed
+      .replace(/^https?:\/\//i, '')
+      .split('/')[0]
+      ?.replace(/:\d+$/, '')
+      .trim();
+    return host || undefined;
+  }
+}
+
+function isLoopbackHost(host: string | null | undefined): boolean {
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+}
+
 export function MobileAccessSettings() {
   const { t } = useTranslation('settings');
   const { activeThemeTokens } = useTheme();
@@ -78,9 +99,12 @@ export function MobileAccessSettings() {
     useState<BridgeDevicePermission>('read_only');
   const [devices, setDevices] = useState<BridgeDevice[]>([]);
   const [bindHost, setBindHost] = useState<BindHost>(DEFAULT_BIND_HOST);
+  const [publishHostOverride, setPublishHostOverride] = useState('');
   const [lanConfirmVisible, setLanConfirmVisible] = useState(false);
   const [actionState, setActionState] = useState<ActionState>('idle');
   const [error, setError] = useState<string | null>(null);
+
+  const normalizedPublishHostOverride = normalizePublishHostOverride(publishHostOverride);
 
   const createPairQrForStatus = async (
     nextStatus: BridgeStatus,
@@ -92,7 +116,11 @@ export function MobileAccessSettings() {
     }
 
     try {
-      setPairQr(await mobileBridge.pairQr(nextStatus.host ?? fallbackHost));
+      setPairQr(
+        await mobileBridge.pairQr(
+          normalizedPublishHostOverride ?? nextStatus.host ?? fallbackHost,
+        ),
+      );
     } catch (err) {
       setPairQr(null);
       setError(err instanceof Error ? err.message : String(err));
@@ -168,7 +196,9 @@ export function MobileAccessSettings() {
     setActionState('busy');
     setError(null);
     try {
-      setPairQr(await mobileBridge.pairQr(status.host ?? undefined));
+      setPairQr(
+        await mobileBridge.pairQr(normalizedPublishHostOverride ?? status.host ?? undefined),
+      );
       setActionState('idle');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -190,6 +220,11 @@ export function MobileAccessSettings() {
   };
 
   const pairUrl = pairUrlWithPermission(pairQr, pairPermission, activeThemeTokens);
+  const showLoopbackPublishWarning =
+    status.running &&
+    status.host === LAN_BIND_HOST &&
+    !normalizedPublishHostOverride &&
+    isLoopbackHost(pairQr?.host);
 
   const copyPairUrl = async () => {
     if (!pairUrl || !navigator.clipboard) return;
@@ -229,6 +264,16 @@ export function MobileAccessSettings() {
                   {`${status.host ?? DEFAULT_BIND_HOST}:${status.port ?? ''}`}
                 </span>
               </p>
+              {pairQr && (
+                <p>
+                  <span className="font-medium text-foreground">
+                    {t('mobileAccess.publishHost.current')}
+                  </span>{' '}
+                  <span className="font-mono">
+                    {`${pairQr.host}:${pairQr.port}`}
+                  </span>
+                </p>
+              )}
               <p className="flex flex-wrap gap-x-3 gap-y-1">
                 <a
                   href="https://tailscale.com/kb/1017/install"
@@ -289,6 +334,21 @@ export function MobileAccessSettings() {
               </label>
             ))}
           </div>
+          <label className="grid gap-1 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">
+              {t('mobileAccess.publishHost.label')}
+            </span>
+            <input
+              type="text"
+              value={publishHostOverride}
+              onChange={(event) => setPublishHostOverride(event.target.value)}
+              placeholder={t('mobileAccess.publishHost.placeholder')}
+              disabled={isBusy}
+              aria-label={t('mobileAccess.publishHost.label')}
+              className="h-8 rounded-[var(--radius-md)] border border-white/10 bg-background/80 px-2 font-mono text-xs text-foreground outline-none focus:border-primary"
+            />
+            <span>{t('mobileAccess.publishHost.hint')}</span>
+          </label>
           <div className="flex flex-wrap justify-end gap-2">
             <Button size="sm" onClick={status.running ? stopBridge : startBridge} disabled={!isTauriEnv() || isBusy}>
               <Power />
@@ -335,6 +395,11 @@ export function MobileAccessSettings() {
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
                 {t('mobileAccess.pairingDescription')}
               </p>
+              {showLoopbackPublishWarning && (
+                <p className="mt-2 text-xs leading-5 text-amber-600">
+                  {t('mobileAccess.publishHost.loopbackWarning')}
+                </p>
+              )}
               <div
                 role="radiogroup"
                 aria-label={t('mobileAccess.permissionMode.label')}

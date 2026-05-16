@@ -52,6 +52,7 @@ coverage/
 # E2E test artifacts
 e2e-results/
 e2e-report/
+e2e-artifacts/
 test-results/
 playwright-report/
 playwright/.cache/
