@@ -61,7 +61,12 @@ const DARK_THEME = {
   brightWhite: '#ffffff',
 } as const;
 
-const DETAIL_SCROLLBACK = 4000;
+// Detail scrollback is a deliberate balance: deep enough that scrolling up to
+// review earlier output stays useful, but not so deep that the DOM renderer's
+// momentum-scroll surface (rows * lineHeight) becomes janky in iOS WKWebView.
+// 2500 lines is 2.5x xterm's default and pairs with the GPU-composited
+// `.xterm-viewport` CSS to keep large-output scrolling smooth.
+const DETAIL_SCROLLBACK = 2500;
 const PREVIEW_SCROLLBACK = 160;
 
 function snapshotPayload(snapshot: {
@@ -108,6 +113,10 @@ export function MainTerminal({
       fontSize: mode === 'preview' ? 11 : 13,
       lineHeight: 1.2,
       scrollback: mode === 'preview' ? PREVIEW_SCROLLBACK : DETAIL_SCROLLBACK,
+      // Instant (non-animated) scroll: animated smooth-scroll runs a
+      // main-thread rAF loop that compounds the DOM renderer's per-row repaint
+      // cost during a large-output burst on mobile. 0 = jump directly.
+      smoothScrollDuration: 0,
       theme: { ...DARK_THEME },
     });
     terminalRef.current = terminal;
@@ -234,11 +243,18 @@ export function MainTerminal({
       if (message.kind === 'terminal_snapshot') {
         const snapshot = message.snapshot;
         if (snapshot.cardId !== activeCardId) continue;
+        // Protocol invariant: terminal_snapshot is ONLY emitted on (re)connect
+        // (server initial_messages_for_client). In-session screen redraws
+        // (alt-screen, full repaints) arrive as raw ANSI in terminal_output,
+        // never as a new snapshot. Therefore the FIRST snapshot for this
+        // card-epoch is the real screen and gets a destructive reset; every
+        // later snapshot is a reconnect resync. Resetting on a resync wipes
+        // the scrollback the user is actively reading — that is the "history
+        // disappears after send + reply" bug (a send easily triggers a
+        // visibility/keyboard reconnect). So skip later snapshots entirely and
+        // let seq-guarded terminal_output continue the live stream in place.
+        if (appliedSnapshotSeqRef.current !== -1) continue;
         const seq = Number(snapshot.seq ?? 0);
-        if (seq === appliedSnapshotSeqRef.current) continue;
-        if (seq <= lastAppliedOutputSeqRef.current && appliedSnapshotSeqRef.current !== -1) {
-          continue;
-        }
         terminal.reset();
         terminal.write(snapshotPayload(snapshot));
         // Kick a redraw of the full viewport. xterm's DOM renderer on iOS

@@ -293,3 +293,68 @@ Replaced the mobile pairing page raw/snapshot view with a live read-only WebSock
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: 优化移动端终端展示（5 项修复）
+
+**Date**: 2026-05-16
+**Task**: 05-16-optimize-mobile-terminal-display
+**Branch**: `fix/mobile-terminal-display-05-16`
+
+### Summary
+
+按用户目标修复移动端终端 5 个问题，逐项实现后做单测 + 全量 vitest + Playwright
+（chromium/webkit 双端）回归，最后 `npm run check` 全绿，未引入回归。
+
+### Main Changes
+
+1. 卡片概览只有一个：`App.tsx` `TerminalHome` 在原"当前会话"预览下新增
+   "全部会话"列表（复用 `SessionRow`），桌面多个终端在移动端首屏全部可见可点开。
+   数据层（`pty::list_live_sessions` → bridge snapshot）本就完整，是 UI 只渲染
+   activeCard 的缺陷。
+2. 大段输出滑动卡顿：保持 xterm DOM 渲染器（WKWebView 兼容 + e2e 文本断言契约，
+   不换 Canvas/WebGL），改为 `.xterm-viewport` GPU 合成（translateZ(0)+
+   will-change+touch-action:pan-y）、`.xterm-screen/.xterm-rows` `contain:content`、
+   `DETAIL_SCROLLBACK` 4000→2500、xterm `smoothScrollDuration:0`。
+3. 切换 Appearance 不生效：根因 `MobileThemeController.apply()` 仅在 auto 调
+   `applyAppTokens`。新增内置 `LIGHT_APP_TOKENS`/`DARK_APP_TOKENS`，显式 dark/light
+   也应用对应 token 并锁定不被服务端主题覆盖。终端表面按既定 iOS 白屏回归 +
+   e2e 契约**保持锁黑不变**（只修 app chrome，这才是真正的 bug）。
+4. 全英文：新增极简 `mobile-app/src/i18n.tsx`（zh/en 字典 + Provider，无
+   react-i18next）。偏好 auto=跟随桌面（读 URL `lang`）/中文/English，存
+   localStorage；桌面 `MobileAccessSettings.pairUrlWithPermission` 注入
+   `lang`（同 theme_* 模式）；App.tsx 全量文案 `t()` 化；Settings 增语言段控。
+   默认无 lang→英文，保护既有英文 e2e 断言。
+5. 发送后历史消失：根因 `MainTerminal` 对重连重发的更高 seq
+   `terminal_snapshot` 执行 `terminal.reset()` 清空用户正在看的 scrollback。
+   协议不变量：snapshot 仅 (重)连接下发，屏幕重绘走 terminal_output。改为
+   每个 card-epoch 仅首个 snapshot 做破坏性 reset，后续 snapshot 作非破坏性
+   重连重同步跳过，靠 seq-guarded terminal_output 原地续传；切卡仍重置 epoch。
+
+文件：`mobile-app/src/{App.tsx,MainTerminal.tsx,theme.ts,styles.css,main.tsx}`、
+新增 `mobile-app/src/i18n.tsx`、`src/components/settings/MobileAccessSettings.tsx`；
+测试更新/新增：`MainTerminal.test.tsx`、`theme.test.ts`、新增 `i18n.test.tsx`、
+`MobileAccessSettings.test.tsx`、`mobile-app/e2e/mobile.spec.ts`（+多会话/中文/
+问题5 重连回归）。协议（Rust/TS protocol）未改。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| (uncommitted) | 用户未要求提交；改动停留在 `fix/mobile-terminal-display-05-16` 分支工作区 |
+
+### Testing
+
+- [OK] `npx tsc --noEmit`：干净
+- [OK] `npx vitest run`：71 文件 / 513 用例全绿
+- [OK] Playwright：10/10（android-chrome + ios-safari-emulation）
+- [OK] `npm run check`：typecheck + 513 单测 + mobile 构建 + `cargo check` 全绿
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 待用户确认后再提交（commit/PR 需用户明确要求）。
+- 注：问题3 终端表面按 iOS 白屏回归与 e2e 契约保持锁黑，仅 app chrome 随外观切换。

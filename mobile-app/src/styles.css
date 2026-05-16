@@ -599,6 +599,22 @@ button {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   background: #000000 !important;
+  /* Large terminal scrollback makes the DOM-renderer momentum scroll janky in
+     iOS WKWebView. Promote the scroller to its own GPU compositing layer and
+     declare a vertical-only gesture so the browser hands off momentum scroll
+     to the compositor instead of repainting absolutely-positioned glyph spans
+     on the main thread every frame. */
+  transform: translateZ(0);
+  will-change: scroll-position;
+  touch-action: pan-y;
+}
+
+/* Constrain layout/paint of the row container so a long scrollback does not
+   re-layout the whole terminal on each scroll tick. xterm only paints rows in
+   the viewport; `contain` keeps that work scoped. */
+.terminal-xterm-host .xterm-screen,
+.terminal-xterm-host .xterm-rows {
+  contain: content;
 }
 
 .terminal-detail-output {

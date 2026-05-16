@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Circle,
   Gauge,
+  Languages,
   Monitor,
   Moon,
   QrCode,
@@ -49,6 +50,7 @@ import {
   readMobileThemePreference,
   type MobileThemePreference,
 } from './theme';
+import { useI18n, type MobileLanguagePreference, type MobileI18n } from './i18n';
 
 type TabId = 'terminal' | 'instances' | 'settings';
 
@@ -301,31 +303,30 @@ function PairingScreen({
   onPair: () => void;
   permission: string;
 }) {
+  const { t } = useI18n();
   return (
     <main className="pair-screen">
       <section className="pair-panel">
         <div className="pair-icon">
           <Smartphone size={28} />
         </div>
-        <p className="eyebrow">ThreadTerm Mobile</p>
-        <h1>{hasOtp ? 'Pair this device' : 'Pairing code required'}</h1>
+        <p className="eyebrow">{t('pair.eyebrow')}</p>
+        <h1>{hasOtp ? t('pair.title.has') : t('pair.title.none')}</h1>
         {hasOtp ? (
           <>
             <label>
-              Device name
+              {t('pair.deviceName')}
               <input value={deviceName} onChange={(event) => onDeviceNameChange(event.target.value)} />
             </label>
             <p className="readonly-strip pair-permission">
-              {permission === 'full' ? 'Full-control pairing' : 'Read-only pairing'}
+              {permission === 'full' ? t('pair.full') : t('pair.readonly')}
             </p>
             <button type="button" onClick={onPair} disabled={busy}>
-              {busy ? 'Pairing...' : 'Pair device'}
+              {busy ? t('pair.button.busy') : t('pair.button.idle')}
             </button>
           </>
         ) : (
-          <p className="empty-copy">
-            Reopen the QR link from ThreadTerm Desktop.
-          </p>
+          <p className="empty-copy">{t('pair.reopen')}</p>
         )}
         {error && <p className="pair-error">{error}</p>}
       </section>
@@ -356,11 +357,12 @@ function TerminalHome({
   searchQuery: string;
   wsStatus: BridgeConnectionState;
 }) {
+  const { t } = useI18n();
   return (
     <main className="ios-screen">
       <IosHeader
         action={
-          <button className="nav-icon-button" type="button" onClick={onOpenScanner} aria-label="Sync via QR Code">
+          <button className="nav-icon-button" type="button" onClick={onOpenScanner} aria-label={t('home.syncQr')}>
             <QrCode size={22} />
           </button>
         }
@@ -375,7 +377,7 @@ function TerminalHome({
               <QrCode size={18} />
             </span>
             <span className="list-main">
-              <strong>Sync via QR Code</strong>
+              <strong>{t('home.syncQr')}</strong>
               <span>{bridgeAddress}</span>
             </span>
             <ChevronRight size={18} />
@@ -385,8 +387,11 @@ function TerminalHome({
               {wsStatus === 'open' ? <Wifi size={18} /> : <WifiOff size={18} />}
             </span>
             <span className="list-main">
-              <strong>Connection</strong>
-              <span>{cards.length} session{cards.length === 1 ? '' : 's'} · {permissionLabel(permission)}</span>
+              <strong>{t('home.connection')}</strong>
+              <span>
+                {cards.length} {cards.length === 1 ? t('home.session') : t('home.sessions')} ·{' '}
+                {permissionLabel(permission, t)}
+              </span>
             </span>
             <StatusBadge status={wsStatus} />
           </div>
@@ -394,7 +399,7 @@ function TerminalHome({
 
         <section className="section-block">
           <div className="section-heading">
-            <h2>Active Session</h2>
+            <h2>{t('home.activeSession')}</h2>
             <StatusBadge status={wsStatus} />
           </div>
           {activeCard ? (
@@ -422,13 +427,33 @@ function TerminalHome({
                   <strong>{activeCard.projectName || activeCard.id}</strong>
                   <small>{displayCardSummary(activeCard)}</small>
                 </span>
-                <span className="preview-action">Tap to focus</span>
+                <span className="preview-action">{t('home.tapFocus')}</span>
               </div>
             </div>
           ) : (
-            <EmptyState label="No live terminal sessions yet." />
+            <EmptyState label={t('home.noSessions')} />
           )}
         </section>
+
+        {cards.length > 0 && (
+          <section className="section-block">
+            <div className="section-heading">
+              <h2>{t('home.allSessions')}</h2>
+              <span>{cards.length}</span>
+            </div>
+            <div className="ios-list-card">
+              {cards.map((card) => (
+                <SessionRow
+                  active={card.id === activeCard?.id}
+                  card={card}
+                  key={card.id}
+                  muted={!isLiveStatus(card.status)}
+                  onOpen={() => onOpenCard(card.id)}
+                />
+              ))}
+            </div>
+          </section>
+        )}
       </div>
     </main>
   );
@@ -447,28 +472,29 @@ function InstancesScreen({
   onSearchChange: (value: string) => void;
   searchQuery: string;
 }) {
+  const { t } = useI18n();
   const activeCards = cards.filter((card) => isLiveStatus(card.status));
   const inactiveCards = cards.filter((card) => !isLiveStatus(card.status));
 
   return (
     <main className="ios-screen">
-      <IosHeader title="Instances" />
+      <IosHeader title={t('instances.title')} />
       <div className="screen-content">
         <SearchField value={searchQuery} onChange={onSearchChange} />
         <SessionGroup
           activeCardId={activeCardId}
           cards={activeCards}
-          emptyLabel="No active instances."
+          emptyLabel={t('instances.noActive')}
           onOpenCard={onOpenCard}
-          title="Active"
+          title={t('instances.active')}
         />
         <SessionGroup
           activeCardId={activeCardId}
           cards={inactiveCards}
-          emptyLabel="No offline instances from the bridge."
+          emptyLabel={t('instances.noOffline')}
           muted
           onOpenCard={onOpenCard}
-          title="Offline"
+          title={t('instances.offline')}
         />
       </div>
     </main>
@@ -494,32 +520,43 @@ function SettingsScreen({
   themePreference: MobileThemePreference;
   wsStatus: BridgeConnectionState;
 }) {
+  const { t, preference: languagePreference, setPreference: onLanguagePreferenceChange } = useI18n();
+  const appearanceLabel: Record<MobileThemePreference, string> = {
+    auto: t('settings.appearance.auto'),
+    dark: t('settings.appearance.dark'),
+    light: t('settings.appearance.light'),
+  };
+  const languageLabel: Record<MobileLanguagePreference, string> = {
+    auto: t('settings.language.auto'),
+    zh: t('settings.language.zh'),
+    en: t('settings.language.en'),
+  };
   return (
     <main className="ios-screen">
-      <IosHeader title="Settings" />
+      <IosHeader title={t('settings.title')} />
       <div className="screen-content">
         <section className="profile-block">
           <div className="profile-avatar">
             <Monitor size={36} />
           </div>
-          <h2>{activeCard?.projectName ?? 'Mobile bridge'}</h2>
-          <span>{permissionLabel(permission)} · {bridgeAddress}</span>
+          <h2>{activeCard?.projectName ?? t('settings.mobileBridge')}</h2>
+          <span>{permissionLabel(permission, t)} · {bridgeAddress}</span>
         </section>
 
         <section className="ios-list-card">
-          <InfoRow icon={<Gauge size={18} />} label="WebSocket" value={wsStatus} />
-          <InfoRow icon={<SquareTerminal size={18} />} label="PTY" value={activeCard?.status ?? 'idle'} />
+          <InfoRow icon={<Gauge size={18} />} label={t('settings.websocket')} value={wsStatus} />
+          <InfoRow icon={<SquareTerminal size={18} />} label={t('settings.pty')} value={activeCard?.status ?? 'idle'} />
           <InfoRow
             icon={<Boxes size={18} />}
-            label="Recent output"
+            label={t('settings.recentOutput')}
             value={activeCard ? `${activeCard.recentOutputBytes} bytes` : '0 bytes'}
           />
-          <InfoRow icon={<Smartphone size={18} />} label="Device" value={permissionLabel(permission)} />
-          {lastError && <InfoRow danger icon={<WifiOff size={18} />} label="Last error" value={lastError} />}
+          <InfoRow icon={<Smartphone size={18} />} label={t('settings.device')} value={permissionLabel(permission, t)} />
+          {lastError && <InfoRow danger icon={<WifiOff size={18} />} label={t('settings.lastError')} value={lastError} />}
         </section>
 
         <section className="settings-section">
-          <h2>Appearance</h2>
+          <h2>{t('settings.appearance')}</h2>
           <div className="segmented">
             {(['auto', 'dark', 'light'] as const).map((mode) => (
               <button
@@ -529,7 +566,24 @@ function SettingsScreen({
                 onClick={() => onThemePreferenceChange(mode)}
               >
                 {mode === 'light' ? <Sun size={15} /> : <Moon size={15} />}
-                {mode}
+                {appearanceLabel[mode]}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <h2>{t('settings.language')}</h2>
+          <div className="segmented">
+            {(['auto', 'zh', 'en'] as const).map((lang) => (
+              <button
+                className={languagePreference === lang ? 'segmented-active' : ''}
+                type="button"
+                key={lang}
+                onClick={() => onLanguagePreferenceChange(lang)}
+              >
+                <Languages size={15} />
+                {languageLabel[lang]}
               </button>
             ))}
           </div>
@@ -537,11 +591,11 @@ function SettingsScreen({
 
         <section className="settings-section">
           <div className="section-heading">
-            <h2>Notifications</h2>
+            <h2>{t('settings.notifications')}</h2>
             <Bell size={16} />
           </div>
           {notifications.length === 0 ? (
-            <EmptyState label="No active notifications." />
+            <EmptyState label={t('settings.noNotifications')} />
           ) : (
             <ul className="attention-list">
               {notifications.map((entry) => (
@@ -579,15 +633,16 @@ function TerminalDetail({
   permission: string;
   wsStatus: BridgeConnectionState;
 }) {
+  const { t } = useI18n();
   return (
     <main className="terminal-detail-screen">
       <header className="terminal-nav safe-top">
         <button className="nav-text-button" type="button" onClick={onBack}>
           <ChevronLeft size={22} />
-          Back
+          {t('detail.back')}
         </button>
         <div className="terminal-title">
-          <strong>{activeCard?.projectName ?? 'Terminal'}</strong>
+          <strong>{activeCard?.projectName ?? t('detail.terminal')}</strong>
           <span>{activeCard?.projectPath ?? wsStatus}</span>
         </div>
         <button className="nav-icon-button" type="button" onClick={onOpenSettings} aria-label="Open settings">
@@ -612,7 +667,7 @@ function TerminalDetail({
           <InputBar disabled={!canSend} onSend={onSend} />
         </>
       ) : (
-        <div className="readonly-strip detail-readonly">Read-only device</div>
+        <div className="readonly-strip detail-readonly">{t('detail.readonly')}</div>
       )}
     </main>
   );
@@ -629,13 +684,14 @@ function ScannerScreen({
   permission: string;
   wsStatus: BridgeConnectionState;
 }) {
+  const { t } = useI18n();
   return (
     <main className="scanner-screen">
       <header className="scanner-nav safe-top">
         <button className="nav-text-button scanner-cancel" type="button" onClick={onClose}>
-          Cancel
+          {t('scanner.cancel')}
         </button>
-        <strong>Scan Code</strong>
+        <strong>{t('scanner.title')}</strong>
         <Smartphone size={22} />
       </header>
       <div className="scanner-body">
@@ -646,7 +702,7 @@ function ScannerScreen({
         </div>
         <div className="scanner-caption">
           <strong>{bridgeAddress}</strong>
-          <span>{statusText(wsStatus)} · {permissionLabel(permission)}</span>
+          <span>{statusText(wsStatus)} · {permissionLabel(permission, t)}</span>
         </div>
       </div>
     </main>
@@ -767,6 +823,7 @@ function InfoRow({
 }
 
 function TabBar({ activeTab, onChange }: { activeTab: TabId; onChange: (tab: TabId) => void }) {
+  const { t } = useI18n();
   return (
     <footer className="tab-bar safe-bottom">
       <button
@@ -775,7 +832,7 @@ function TabBar({ activeTab, onChange }: { activeTab: TabId; onChange: (tab: Tab
         onClick={() => onChange('terminal')}
       >
         <SquareTerminal size={22} />
-        <span>Terminal</span>
+        <span>{t('tab.terminal')}</span>
       </button>
       <button
         className={activeTab === 'instances' ? 'tab-active' : ''}
@@ -783,7 +840,7 @@ function TabBar({ activeTab, onChange }: { activeTab: TabId; onChange: (tab: Tab
         onClick={() => onChange('instances')}
       >
         <Boxes size={22} />
-        <span>Instances</span>
+        <span>{t('tab.instances')}</span>
       </button>
       <button
         className={activeTab === 'settings' ? 'tab-active' : ''}
@@ -791,7 +848,7 @@ function TabBar({ activeTab, onChange }: { activeTab: TabId; onChange: (tab: Tab
         onClick={() => onChange('settings')}
       >
         <Settings size={22} />
-        <span>Settings</span>
+        <span>{t('tab.settings')}</span>
       </button>
     </footer>
   );
@@ -839,8 +896,8 @@ function isLiveStatus(status: TerminalStatus): boolean {
   return status === 'running' || status === 'waiting_for_input';
 }
 
-function permissionLabel(permission: string): string {
-  return permission === 'full' ? 'Full control' : 'Read-only';
+function permissionLabel(permission: string, t: MobileI18n['t']): string {
+  return permission === 'full' ? t('common.fullControl') : t('common.readonly');
 }
 
 function statusText(status: BridgeConnectionState | TerminalStatus): string {

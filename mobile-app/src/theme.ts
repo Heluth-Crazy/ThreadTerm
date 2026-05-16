@@ -112,6 +112,35 @@ export const fallbackTheme: MobileThemeMessage = {
   },
 };
 
+// Built-in app palettes used when the user explicitly picks dark / light
+// (i.e. NOT "auto"). In auto mode the server-pushed desktop theme is used
+// instead. These exist because the mobile stylesheet's :root only ships a
+// single dark palette, so without an explicit light token set, selecting
+// "light" produced no visible change at all (the appearance-switch bug).
+export const DARK_APP_TOKENS: AppThemeTokens = { ...fallbackTheme.app };
+
+export const LIGHT_APP_TOKENS: AppThemeTokens = {
+  background: '#f2f2f7',
+  foreground: '#1c1c1e',
+  card: '#ffffff',
+  cardForeground: '#1c1c1e',
+  popover: '#ffffff',
+  popoverForeground: '#1c1c1e',
+  primary: '#0a84ff',
+  primaryForeground: '#ffffff',
+  secondary: '#e5e5ea',
+  secondaryForeground: '#1c1c1e',
+  muted: '#e9e9ee',
+  mutedForeground: '#6c6c70',
+  accent: '#d1d1d6',
+  accentForeground: '#1c1c1e',
+  destructive: '#ff3b30',
+  destructiveForeground: '#ffffff',
+  border: '#d1d1d6',
+  input: '#e5e5ea',
+  ring: '#0a84ff',
+};
+
 export function readMobileThemePreference(storage: Storage | undefined = safeStorage()): MobileThemePreference {
   const stored = storage?.getItem(MOBILE_THEME_PREFERENCE_KEY);
   return stored === 'dark' || stored === 'light' || stored === 'auto' ? stored : 'auto';
@@ -186,6 +215,15 @@ export class MobileThemeController {
     return toXtermTheme(this.latest.terminal);
   }
 
+  private resolvedAppTokens(): AppThemeTokens {
+    // Auto follows the desktop (server) theme. An explicit dark / light choice
+    // applies the matching built-in palette so the switch is actually visible
+    // and stays "locked" against later server theme messages.
+    if (this.preference === 'light') return LIGHT_APP_TOKENS;
+    if (this.preference === 'dark') return DARK_APP_TOKENS;
+    return this.latest.app;
+  }
+
   private apply() {
     if (typeof document === 'undefined') return;
 
@@ -195,14 +233,16 @@ export class MobileThemeController {
     root.dataset.mobileThemeMode = this.preference;
     root.style.colorScheme = mode;
 
-    if (this.preference === 'auto') {
-      applyAppTokens(this.latest.app);
-    }
+    const appTokens = this.resolvedAppTokens();
+    applyAppTokens(appTokens);
+    // Terminal ANSI tokens still track the server theme. The mobile terminal
+    // surface itself stays a fixed black canvas (iOS WKWebView light-mode
+    // white-canvas regression), so this only affects non-surface consumers.
     applyTerminalTokens(this.latest.terminal);
 
     const themeColorMeta = document.querySelector('meta[name="theme-color"]');
     if (themeColorMeta) {
-      themeColorMeta.setAttribute('content', this.latest.app.background);
+      themeColorMeta.setAttribute('content', appTokens.background);
     }
   }
 }

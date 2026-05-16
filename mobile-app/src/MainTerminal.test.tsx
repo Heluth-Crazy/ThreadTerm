@@ -120,7 +120,7 @@ describe('MainTerminal', () => {
     expect(xtermMock.instances[0].options.scrollback).toBe(160);
   });
 
-  it('keeps deeper scrollback in detail mode', () => {
+  it('keeps deeper-but-bounded scrollback and instant scroll in detail mode', () => {
     render(
       <MainTerminal
         activeCardId="card-1"
@@ -129,7 +129,12 @@ describe('MainTerminal', () => {
     );
 
     expect(xtermMock.Terminal).toHaveBeenCalledTimes(1);
-    expect(xtermMock.instances[0].options.scrollback).toBe(4000);
+    // Bounded at 2500 (down from 4000) so the iOS WKWebView momentum-scroll
+    // surface stays smooth while still retaining ample upward history.
+    expect(xtermMock.instances[0].options.scrollback).toBe(2500);
+    // Animated smooth-scroll disabled to avoid main-thread rAF jank on large
+    // output bursts.
+    expect(xtermMock.instances[0].options.smoothScrollDuration).toBe(0);
   });
 
   it('skips re-applying a snapshot with the same seq (no flicker on re-render)', () => {
@@ -212,7 +217,7 @@ describe('MainTerminal', () => {
     expect(term.write).not.toHaveBeenCalledWith('STALE');
   });
 
-  it('continues output from a new epoch after a later snapshot', () => {
+  it('treats a later snapshot as a non-destructive reconnect resync (issue 5)', () => {
     const { rerender } = render(
       <MainTerminal
         activeCardId="card-1"
@@ -224,8 +229,12 @@ describe('MainTerminal', () => {
     );
 
     const term = xtermMock.instances[0];
+    expect(term.reset).toHaveBeenCalledTimes(1);
     expect(term.write).toHaveBeenLastCalledWith('A');
 
+    // A reconnect re-sends a fresh terminal_snapshot with a higher seq plus
+    // continued output. The snapshot must NOT reset (that would wipe the
+    // scrollback the user is reading); seq-guarded output continues in place.
     rerender(
       <MainTerminal
         activeCardId="card-1"
@@ -236,10 +245,35 @@ describe('MainTerminal', () => {
       />,
     );
 
-    expect(term.reset).toHaveBeenCalledTimes(2);
-    // After the seq=5 snapshot, output seq 6 continues the new epoch.
-    expect(term.write).toHaveBeenNthCalledWith(3, 'SNAP2');
-    expect(term.write).toHaveBeenNthCalledWith(4, 'B');
+    expect(term.reset).toHaveBeenCalledTimes(1);
+    expect(term.write).not.toHaveBeenCalledWith('SNAP2');
+    expect(term.write).toHaveBeenCalledTimes(3);
+    expect(term.write).toHaveBeenLastCalledWith('B');
+  });
+
+  it('resets again only when the active card changes, not on a reconnect snapshot', () => {
+    const { rerender } = render(
+      <MainTerminal
+        activeCardId="card-1"
+        messages={[snapshotMessage('card-1', 1, 'SNAP1'), outputMessage('card-1', 2, 'A')]}
+      />,
+    );
+
+    const term = xtermMock.instances[0];
+    expect(term.reset).toHaveBeenCalledTimes(1);
+
+    // Switching card is a real new epoch: the next card's first snapshot
+    // resets and paints.
+    rerender(
+      <MainTerminal
+        activeCardId="card-2"
+        messages={[snapshotMessage('card-2', 9, 'SNAP-C2')]}
+      />,
+    );
+
+    // One reset for the card switch + one for card-2's first snapshot.
+    expect(term.reset).toHaveBeenCalledTimes(3);
+    expect(term.write).toHaveBeenLastCalledWith('SNAP-C2');
   });
 
   it('renders with the default DOM renderer (no WebGL addon imported)', () => {
