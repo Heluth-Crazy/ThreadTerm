@@ -26,6 +26,7 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallbackOrOptions?: string | Record<string, unknown>) =>
       typeof fallbackOrOptions === 'string' ? fallbackOrOptions : key,
+    i18n: { language: 'en' },
   }),
 }));
 
@@ -45,10 +46,10 @@ vi.mock('../../contexts/ThemeContext', () => ({
 }));
 
 const readOnlyPairUrl =
-  'http://192.168.1.67:5174/pair?otp=123456&permission=read_only&theme_bg=%2310151d&theme_card=%23151b24&theme_primary=%234f8bd6&theme_fg=%23e8edf5';
+  'http://192.168.1.67:5174/pair?otp=123456&permission=read_only&theme_bg=%2310151d&theme_card=%23151b24&theme_primary=%234f8bd6&theme_fg=%23e8edf5&lang=en';
 
 const fullPairUrl =
-  'http://192.168.1.67:5174/pair?otp=123456&permission=full&theme_bg=%2310151d&theme_card=%23151b24&theme_primary=%234f8bd6&theme_fg=%23e8edf5';
+  'http://192.168.1.67:5174/pair?otp=123456&permission=full&theme_bg=%2310151d&theme_card=%23151b24&theme_primary=%234f8bd6&theme_fg=%23e8edf5&lang=en';
 
 describe('MobileAccessSettings', () => {
   beforeEach(() => {

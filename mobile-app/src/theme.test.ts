@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { hexToHslToken } from '@shared/theme/applyTheme';
 import {
+  DARK_APP_TOKENS,
+  LIGHT_APP_TOKENS,
   MOBILE_THEME_PREFERENCE_KEY,
   MobileThemeController,
   createFallbackThemeFromUrl,
@@ -41,9 +44,14 @@ describe('mobile theme application', () => {
     expect(controller.getResolvedMode()).toBe('light');
   });
 
-  it('locks app mode while still updating terminal ANSI tokens from server theme messages', () => {
+  it('applies the built-in dark palette and locks it against server theme app tokens', () => {
     const controller = new MobileThemeController(fallbackTheme, 'dark');
-    const initialBackground = document.documentElement.style.getPropertyValue('--background');
+
+    // Explicit dark must produce a real, visible dark palette (the bug was that
+    // explicit preferences applied no app tokens at all).
+    expect(document.documentElement.style.getPropertyValue('--background')).toBe(
+      hexToHslToken(DARK_APP_TOKENS.background),
+    );
 
     controller.applyServerTheme({
       ...fallbackTheme,
@@ -58,10 +66,33 @@ describe('mobile theme application', () => {
       },
     });
 
+    // App palette stays locked to the explicit dark choice; only terminal
+    // ANSI tokens still track the server theme.
     expect(document.documentElement.classList.contains('dark')).toBe(true);
-    expect(document.documentElement.style.getPropertyValue('--background')).toBe(initialBackground);
+    expect(document.documentElement.style.getPropertyValue('--background')).toBe(
+      hexToHslToken(DARK_APP_TOKENS.background),
+    );
     expect(document.documentElement.style.getPropertyValue('--terminal-bright-cyan')).toBe('#00ffff');
     expect(controller.getResolvedMode()).toBe('dark');
+  });
+
+  it('makes the appearance switch visible: dark and light apply different palettes', () => {
+    const controller = new MobileThemeController(fallbackTheme, 'dark');
+    const darkBackground = document.documentElement.style.getPropertyValue('--background');
+    expect(darkBackground).toBe(hexToHslToken(DARK_APP_TOKENS.background));
+
+    controller.setPreference('light');
+    const lightBackground = document.documentElement.style.getPropertyValue('--background');
+
+    expect(lightBackground).toBe(hexToHslToken(LIGHT_APP_TOKENS.background));
+    expect(lightBackground).not.toBe(darkBackground);
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+    expect(document.documentElement.style.colorScheme).toBe('light');
+    expect(controller.getResolvedMode()).toBe('light');
+
+    controller.setPreference('dark');
+    expect(document.documentElement.style.getPropertyValue('--background')).toBe(darkBackground);
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
   });
 
   it('persists the local theme preference', () => {

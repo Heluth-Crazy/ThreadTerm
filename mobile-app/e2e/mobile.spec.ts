@@ -248,6 +248,17 @@ test('mobile shell renders preview + detail xterm content, theme lock, and input
 
   await expect(page.getByRole('heading', { name: 'ThreadTerm' })).toBeVisible();
 
+  // --- Multi-session overview: the Terminal home lists ALL bridge sessions
+  // (the desktop can run several terminals at once), not just the active one.
+  // The fixture publishes card-1 (running) and card-2 (completed); both must
+  // be present and openable from the home screen. ---
+  const allSessions = page.locator('.section-block', { hasText: 'All Sessions' });
+  await expect(allSessions).toBeVisible();
+  const sessionRows = allSessions.locator('.instance-row');
+  await expect(sessionRows).toHaveCount(2);
+  await expect(sessionRows.filter({ hasText: 'ThreadTerm' })).toHaveCount(1);
+  await expect(sessionRows.filter({ hasText: 'docs-builder' })).toHaveCount(1);
+
   // --- Active Session preview: xterm exists, has real layout, and the DOM
   // renderer has actually painted the snapshot text into the DOM. The preview
   // frame is pointer-events:none, so nothing here depends on a click. ---
@@ -422,6 +433,84 @@ test('terminal content survives viewport changes, lifecycle resume, and lag snap
     )
     .toBeGreaterThan(1);
   await expectXtermText(page.locator('.terminal-preview-frame'), 'scroll sentinel 79');
+});
+
+test('history survives a reconnect snapshot with a higher seq (issue 5)', async ({ page }) => {
+  await page.goto('/pair');
+  await page.getByText('Tap to focus').click();
+  const detailScreen = page.locator('.terminal-detail-screen');
+  await expectXtermText(detailScreen, SNAPSHOT_TEXT);
+
+  // Build up real scrollback the user would be reading.
+  await page.evaluate(() => {
+    const sockets = ((window as unknown) as {
+      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
+    }).__threadtermWs;
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'terminal_output',
+      card_id: 'card-1',
+      data: Array.from({ length: 80 }, (_, index) => `scroll sentinel ${index}`).join('\n') + '\n',
+      seq: 88,
+    });
+  });
+  await expectXtermText(detailScreen, 'scroll sentinel 79');
+
+  // A real reconnect re-sends a FRESH terminal_snapshot whose seq is the live
+  // PTY seq (much higher than the first one) and whose serialized history is
+  // only the current screen — NOT the full scrollback. The old code reset the
+  // xterm on it and the user's history vanished. It must now be ignored as a
+  // non-destructive resync, and continued output must still stream in.
+  await page.evaluate(() => {
+    const sockets = ((window as unknown) as {
+      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
+    }).__threadtermWs;
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'terminal_snapshot',
+      snapshot: {
+        cardId: 'card-1',
+        data: '',
+        seq: 500,
+        rows: 24,
+        cols: 80,
+        cursorRow: 1,
+        cursorCol: 1,
+        history: 'reconnect screen only\n',
+      },
+    });
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'terminal_output',
+      card_id: 'card-1',
+      data: 'post-reconnect streamed line\n',
+      seq: 501,
+    });
+  });
+
+  // The pre-reconnect history is still there AND the new output streamed in.
+  await expectXtermText(detailScreen, 'post-reconnect streamed line');
+  await expectXtermText(detailScreen, 'scroll sentinel 79');
+});
+
+test('mobile shell follows the desktop language injected into the pair URL', async ({ page }) => {
+  // The desktop injects ?lang=<i18n.language> into the pairing URL (same
+  // pattern as the theme_* colors). With lang=zh-CN the mobile chrome must
+  // render Chinese instead of the English default.
+  await page.goto('/pair?lang=zh-CN');
+
+  await expect(page.getByRole('heading', { name: 'ThreadTerm' })).toBeVisible();
+  await expect(page.locator('.section-block', { hasText: '全部会话' })).toBeVisible();
+  await expect(page.getByText('点击进入')).toBeVisible();
+  await expect(page.locator('.tab-bar').getByText('终端')).toBeVisible();
+  await expect(page.locator('.tab-bar').getByText('设置')).toBeVisible();
+
+  // The Settings screen exposes a language switcher; "跟随桌面" (follow
+  // desktop) is the active default and English can still be chosen manually.
+  await page.locator('.tab-bar').getByText('设置').click();
+  await expect(page.getByRole('heading', { name: '语言' })).toBeVisible();
+  await page.getByRole('button', { name: 'English' }).click();
+  await expect(page.locator('.tab-bar').getByText('Terminal')).toBeVisible();
 });
 
 test('mobile input touch sends exactly once and read-only mode hides controls', async ({ page }) => {

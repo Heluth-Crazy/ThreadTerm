@@ -41,6 +41,7 @@ function pairUrlWithPermission(
   pairQr: PairQrResponse | null,
   permission: BridgeDevicePermission,
   themeTokens: ThemeModeTokens | null | undefined,
+  language: string | null | undefined,
 ): string {
   if (!pairQr?.url) return '';
 
@@ -55,6 +56,12 @@ function pairUrlWithPermission(
       url.searchParams.set('theme_fg', themeTokens.app.foreground);
     }
 
+    // The mobile shell mirrors the desktop language (it falls back to English
+    // when absent). Same injection pattern as the theme_* colors above.
+    if (language) {
+      url.searchParams.set('lang', language);
+    }
+
     return url.toString();
   } catch {
     const joiner = pairQr.url.includes('?') ? '&' : '?';
@@ -64,6 +71,9 @@ function pairUrlWithPermission(
       base += `&theme_card=${encodeURIComponent(themeTokens.app.card)}`;
       base += `&theme_primary=${encodeURIComponent(themeTokens.app.primary)}`;
       base += `&theme_fg=${encodeURIComponent(themeTokens.app.foreground)}`;
+    }
+    if (language) {
+      base += `&lang=${encodeURIComponent(language)}`;
     }
     return base;
   }
@@ -91,7 +101,7 @@ function isLoopbackHost(host: string | null | undefined): boolean {
 }
 
 export function MobileAccessSettings() {
-  const { t } = useTranslation('settings');
+  const { t, i18n } = useTranslation('settings');
   const { activeThemeTokens } = useTheme();
   const [status, setStatus] = useState<BridgeStatus>(stoppedStatus);
   const [pairQr, setPairQr] = useState<PairQrResponse | null>(null);
@@ -219,7 +229,7 @@ export function MobileAccessSettings() {
     }
   };
 
-  const pairUrl = pairUrlWithPermission(pairQr, pairPermission, activeThemeTokens);
+  const pairUrl = pairUrlWithPermission(pairQr, pairPermission, activeThemeTokens, i18n.language);
   const showLoopbackPublishWarning =
     status.running &&
     status.host === LAN_BIND_HOST &&
