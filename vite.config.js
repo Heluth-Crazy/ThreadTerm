@@ -39,6 +39,7 @@ export default defineConfig(({ command, mode }) => {
           main: 'index.html',
           selector: 'selector.html',
           float: 'float.html',
+          pet: 'pet.html',
         },
         output: {
           manualChunks: {

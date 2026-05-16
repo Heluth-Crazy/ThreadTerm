@@ -15,6 +15,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import type {
   NotificationEntry,
   NotificationKind,
+  DesktopPetConfig,
   Block,
   Bookmark,
   TerminalCard,
@@ -38,6 +39,7 @@ import {
   normalizeAutoRestartConfig,
   type AutoRestartDecision,
 } from '../lib/autoRestart';
+import { DEFAULT_PET_CONFIG, normalizePetConfig } from '../lib/petConfig';
 import i18n from '../i18n/config.js';
 import { isTauriEnv, pty } from '../lib/tauri-bridge';
 
@@ -123,6 +125,7 @@ function prepareAutoRestartForPersistence(card: TerminalCard): TerminalCard['aut
 
 /** Maximum number of user-pinned cards eligible for the global selector overlay. */
 export const MAX_PINNED_CARDS = 6;
+export { DEFAULT_PET_CONFIG } from '../lib/petConfig';
 
 interface TerminalStore {
   // Cards
@@ -146,6 +149,10 @@ interface TerminalStore {
   notificationCentreOpen: boolean;
   /** Pending cardId to focus once the app regains focus (system-notification click). */
   pendingFocusCardId: string | null;
+
+  // Desktop pet
+  petConfig: DesktopPetConfig;
+  updatePetConfig: (patch: Partial<DesktopPetConfig>) => void;
 
   // ─── Stage 6: AI Explain + bottom chip strip settings ────────────────────
   /** Default provider to use when the focused card is not an AI CLI. */
@@ -287,6 +294,7 @@ export const useTerminalStore = create<TerminalStore>()(
       notifications: [],
       notificationCentreOpen: false,
       pendingFocusCardId: null,
+      petConfig: DEFAULT_PET_CONFIG,
 
       aiExplainDefaultProvider: 'claude',
       bottomBarHidden: false,
@@ -295,6 +303,11 @@ export const useTerminalStore = create<TerminalStore>()(
 
       supervisorEnabled: false,
       setSupervisorEnabled: (enabled) => set({ supervisorEnabled: enabled }),
+
+      updatePetConfig: (patch) =>
+        set((state) => ({
+          petConfig: normalizePetConfig({ ...state.petConfig, ...patch }),
+        })),
 
       createCard: (options) => {
         const id = uid();
@@ -971,13 +984,14 @@ export const useTerminalStore = create<TerminalStore>()(
         pinnedCardIds: state.pinnedCardIds,
         notifications: state.notifications,
         notificationCentreOpen: state.notificationCentreOpen,
+        petConfig: normalizePetConfig(state.petConfig),
         // Stage 6 — persist the global AI provider default + chip strip toggle.
         aiExplainDefaultProvider: state.aiExplainDefaultProvider,
         bottomBarHidden: state.bottomBarHidden,
         // AI Supervisor v0.1 (PRD D3) — master switch persisted; default OFF.
         supervisorEnabled: state.supervisorEnabled,
       }),
-      version: 9,
+      version: 11,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         return {
@@ -991,6 +1005,18 @@ export const useTerminalStore = create<TerminalStore>()(
           bottomBarHidden: state.bottomBarHidden ?? false,
           // v9 — AI Supervisor master switch defaults to OFF on upgrade.
           supervisorEnabled: state.supervisorEnabled ?? false,
+          // v10 — desktop pet is opt-in for upgraded users.
+          // v11 — notification model changed to two toggles; reset
+          //       notificationMode to 'both' once on upgrade. The desktop
+          //       pet is a brand-new opt-in feature, so a persisted
+          //       'system' is the old default, never a deliberate user
+          //       choice — preserving it would silently suppress the pet
+          //       bubble forever. Other fields (skin/size/position) are
+          //       kept by spreading the existing petConfig first.
+          petConfig: normalizePetConfig({
+            ...(state.petConfig ?? {}),
+            notificationMode: 'both',
+          }),
           cards: state.cards?.map((card) => ({
             ...card,
             status: isTransientStatus(card.status) ? 'idle' : card.status,

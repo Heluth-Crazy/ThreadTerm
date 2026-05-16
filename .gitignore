@@ -152,4 +152,3 @@ release/*.exe
 # Local documentation and planning artifacts
 docs/
 .gitnexus
-mobile-prototypes/

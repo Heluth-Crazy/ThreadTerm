@@ -7,6 +7,7 @@ import { NotificationBridge } from './components/terminal/NotificationBridge';
 import { KeyboardBridge } from './components/terminal/KeyboardBridge';
 import { OverlayBridge } from './components/overlays/OverlayBridge';
 import { NotificationCenter } from './components/terminal/NotificationCenter';
+import { PetBridge } from './pet/PetBridge';
 
 /**
  * Terminal Manager Lite — lightweight terminal orchestrator.
@@ -24,6 +25,7 @@ export default function App() {
       <ThemeProvider>
         <TerminalEventBridge />
         <NotificationBridge />
+        <PetBridge />
         <KeyboardBridge />
         <div className="h-screen w-screen overflow-hidden bg-background text-foreground">
           <TerminalManager />
