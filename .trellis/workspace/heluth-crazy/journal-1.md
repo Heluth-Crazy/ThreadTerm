@@ -258,3 +258,38 @@ Replaced the mobile pairing page raw/snapshot view with a live read-only WebSock
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: 移动桥接与终端稳定性收尾
+
+**Date**: 2026-05-16
+**Task**: 移动桥接与终端稳定性收尾
+**Branch**: `main`
+
+### Summary
+
+落地移动端 React bridge、移动终端预览/详情渲染修复、bridge 鉴权与主题同步、PTY 退出码精度、xterm 多实例注册、provider session 扫描优化和 Tauri CSP 回归保护；验证 npm run check 与 npm run build 通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d7a3778` | (see git log) |
+| `9088fe2` | (see git log) |
+| `eb2ee2c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

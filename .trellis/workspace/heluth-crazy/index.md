@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
-- **Last Active**: 2026-05-09
+- **Total Sessions**: 8
+- **Last Active**: 2026-05-16
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~260 | Active |
+| `journal-1.md` | ~295 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-05-16 | 移动桥接与终端稳定性收尾 | `d7a3778`, `9088fe2`, `eb2ee2c` | `main` |
 | 7 | 2026-05-09 | attach_snapshot 防御兜底：可测 helper + 4 条回归测试 | `51456b9` | `main` |
 | 6 | 2026-05-08 | Mobile remote client MVP | `32bf345` | `main` |
 | 5 | 2026-05-06 | 缺陷巡检与 Supervisor telemetry 修复 | `e64649f`, `31a6744` | `main` |
