@@ -89,6 +89,13 @@ pub fn run() {
             overlay::overlay_update_shortcut,
             overlay::overlay_move_float,
             overlay::overlay_resize_float,
+            overlay::pet_show,
+            overlay::pet_hide,
+            overlay::pet_set_position,
+            overlay::pet_set_expanded,
+            overlay::pet_apply_geometry,
+            overlay::pet_focus_main_to_card,
+            overlay::pet_open_notification_center,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

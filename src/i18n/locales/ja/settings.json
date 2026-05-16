@@ -105,6 +105,53 @@
     "testTitle": "ThreadTerm テスト通知",
     "testBody": "この通知が表示されれば、システム通知経路は動作しています。"
   },
+  "desktopPet": {
+    "title": "デスクトップペット",
+    "description": "注意が必要なセッションをすぐ確認できる、小さな常時前面のステータス表示です。",
+    "desktopOnly": "デスクトップペットは Tauri デスクトップアプリでのみ利用できます。",
+    "enabled": "有効",
+    "disabled": "無効",
+    "notificationMode": {
+      "label": "通知方法",
+      "off": "オフ",
+      "system": "システムのみ",
+      "pet": "ペットのみ",
+      "both": "両方"
+    },
+    "position": {
+      "label": "既定位置",
+      "rightBottom": "右下",
+      "leftBottom": "左下",
+      "lastDragged": "最後にドラッグした位置"
+    },
+    "size": "ペットサイズ",
+    "idleTranslucent": "未読がないときは半透明にする",
+    "notify": {
+      "label": "通知方法",
+      "petBubble": "ペットに表示",
+      "os": "システム通知も送る"
+    },
+    "skin": {
+      "label": "ペットの見た目",
+      "classic": "クラシックグレー",
+      "orange": "茶トラ",
+      "cream": "クリーム",
+      "tuxedo": "ハチワレ",
+      "theme": "テーマに合わせる"
+    },
+    "resetPosition": "デフォルト位置にリセット",
+    "hint": "ペット上端またはパネル見出しをドラッグして移動できます。クリックするとセッションパネルを開きます。",
+    "expand": "デスクトップペットを展開",
+    "collapse": "デスクトップペットを折りたたむ",
+    "disable": "デスクトップペットを無効化",
+    "panel": {
+      "ariaLabel": "デスクトップペットのセッションパネル",
+      "unread": "{{count}} 件の未読",
+      "noUnread": "未読セッションはありません",
+      "allClear": "すべてクリア",
+      "viewAll": "すべての通知を表示"
+    }
+  },
   "focusMode": {
     "title": "フォーカスモード",
     "description": "フォーカスモードのチップバーと、「AI で説明」で使う既定の AI プロバイダーを設定します。",

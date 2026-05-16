@@ -105,6 +105,53 @@
     "testTitle": "ThreadTerm 테스트 알림",
     "testBody": "이 알림이 보이면 시스템 알림 경로가 작동 중입니다."
   },
+  "desktopPet": {
+    "title": "데스크톱 펫",
+    "description": "주의가 필요한 세션을 빠르게 볼 수 있는 작은 항상 위 상태 표시입니다.",
+    "desktopOnly": "데스크톱 펫은 Tauri 데스크톱 앱에서만 사용할 수 있습니다.",
+    "enabled": "켜짐",
+    "disabled": "꺼짐",
+    "notificationMode": {
+      "label": "알림 방식",
+      "off": "끔",
+      "system": "시스템만",
+      "pet": "펫만",
+      "both": "둘 다"
+    },
+    "position": {
+      "label": "기본 위치",
+      "rightBottom": "오른쪽 아래",
+      "leftBottom": "왼쪽 아래",
+      "lastDragged": "마지막 드래그 위치"
+    },
+    "size": "펫 크기",
+    "idleTranslucent": "읽지 않은 항목이 없으면 반투명하게 표시",
+    "notify": {
+      "label": "알림 방식",
+      "petBubble": "펫에 표시",
+      "os": "시스템 알림도 보내기"
+    },
+    "skin": {
+      "label": "펫 스킨",
+      "classic": "클래식 그레이",
+      "orange": "치즈냥",
+      "cream": "크림",
+      "tuxedo": "턱시도",
+      "theme": "테마 따르기"
+    },
+    "resetPosition": "기본 위치로 재설정",
+    "hint": "펫의 위쪽 가장자리나 패널 헤더를 드래그해 이동하세요. 클릭하면 세션 패널이 열립니다.",
+    "expand": "데스크톱 펫 펼치기",
+    "collapse": "데스크톱 펫 접기",
+    "disable": "데스크톱 펫 끄기",
+    "panel": {
+      "ariaLabel": "데스크톱 펫 세션 패널",
+      "unread": "읽지 않음 {{count}}개",
+      "noUnread": "읽지 않은 세션 없음",
+      "allClear": "모두 정상",
+      "viewAll": "모든 알림 보기"
+    }
+  },
   "focusMode": {
     "title": "포커스 모드",
     "description": "포커스 모드 칩 바와 “AI로 설명”에 사용할 기본 AI 제공자를 설정합니다.",

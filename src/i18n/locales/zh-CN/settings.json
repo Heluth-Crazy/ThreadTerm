@@ -105,6 +105,53 @@
     "testTitle": "ThreadTerm 测试通知",
     "testBody": "如果你看到这条通知，说明系统通知链路可用。"
   },
+  "desktopPet": {
+    "title": "桌面宠物",
+    "description": "在桌面保留一个置顶状态入口，快速看到需要关注的会话。",
+    "desktopOnly": "桌面宠物仅在 Tauri 桌面应用中可用。",
+    "enabled": "已启用",
+    "disabled": "已停用",
+    "notificationMode": {
+      "label": "通知形式",
+      "off": "关闭",
+      "system": "仅系统",
+      "pet": "仅宠物",
+      "both": "都有"
+    },
+    "position": {
+      "label": "默认位置",
+      "rightBottom": "右下角",
+      "leftBottom": "左下角",
+      "lastDragged": "上次拖动位置"
+    },
+    "size": "宠物大小",
+    "idleTranslucent": "无未读时半透明",
+    "notify": {
+      "label": "通知方式",
+      "petBubble": "在宠物上提示",
+      "os": "同时发送系统通知"
+    },
+    "skin": {
+      "label": "宠物皮肤",
+      "classic": "经典灰",
+      "orange": "橘猫",
+      "cream": "奶白",
+      "tuxedo": "玄猫",
+      "theme": "跟随主题"
+    },
+    "resetPosition": "重置到默认位置",
+    "hint": "拖动宠物顶部边缘或面板标题区域可移动位置。点击宠物打开会话面板。",
+    "expand": "展开桌面宠物",
+    "collapse": "收起桌面宠物",
+    "disable": "停用桌面宠物",
+    "panel": {
+      "ariaLabel": "桌面宠物会话面板",
+      "unread": "{{count}} 条未读",
+      "noUnread": "暂无未读会话",
+      "allClear": "当前无事项",
+      "viewAll": "查看全部通知"
+    }
+  },
   "focusMode": {
     "title": "专注模式",
     "description": "配置专注模式底部芯片栏，以及“用 AI 解释”默认使用的 AI 提供方。",

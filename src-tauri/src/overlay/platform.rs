@@ -81,6 +81,37 @@ pub(super) fn configure_float_window_for_current_space(window: &WebviewWindow) {
 }
 
 #[cfg(target_os = "macos")]
+pub(super) fn configure_pet_window_for_current_space(window: &WebviewWindow) {
+    use objc2_app_kit::{
+        NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    };
+
+    let Ok(ns_window_ptr) = window.ns_window() else {
+        return;
+    };
+    let Some(ns_window) = (unsafe { (ns_window_ptr as *mut NSWindow).as_ref() }) else {
+        return;
+    };
+
+    let behavior = ns_window.collectionBehavior()
+        | NSWindowCollectionBehavior::CanJoinAllSpaces
+        | NSWindowCollectionBehavior::CanJoinAllApplications
+        | NSWindowCollectionBehavior::FullScreenAuxiliary
+        | NSWindowCollectionBehavior::Transient
+        | NSWindowCollectionBehavior::IgnoresCycle;
+
+    ns_window.setCollectionBehavior(behavior);
+    ns_window.setHidesOnDeactivate(false);
+    ns_window.setCanBecomeVisibleWithoutLogin(true);
+    ns_window.setLevel(NSScreenSaverWindowLevel);
+
+    let style = ns_window.styleMask()
+        | NSWindowStyleMask::UtilityWindow
+        | NSWindowStyleMask::NonactivatingPanel;
+    ns_window.setStyleMask(style);
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn activate_float_window_for_keyboard(window: &WebviewWindow) {
     use objc2_app_kit::NSWindow;
 
@@ -122,7 +153,6 @@ pub(super) fn restore_regular_activation_policy_if_no_overlay_visible(app: &AppH
         .get_webview_window(FLOAT_LABEL)
         .and_then(|w| w.is_visible().ok())
         .unwrap_or(false);
-
     if !selector_visible && !float_visible {
         restore_regular_activation_policy(app);
     }
@@ -156,6 +186,9 @@ pub(super) fn configure_selector_window_for_current_space(_window: &WebviewWindo
 
 #[cfg(not(target_os = "macos"))]
 pub(super) fn configure_float_window_for_current_space(_window: &WebviewWindow) {}
+
+#[cfg(not(target_os = "macos"))]
+pub(super) fn configure_pet_window_for_current_space(_window: &WebviewWindow) {}
 
 #[cfg(not(target_os = "macos"))]
 pub(super) fn activate_float_window_for_keyboard(_window: &WebviewWindow) {}

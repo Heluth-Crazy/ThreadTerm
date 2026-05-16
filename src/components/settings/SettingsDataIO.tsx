@@ -69,6 +69,7 @@ export function SettingsDataIO() {
   } = useTheme();
   const bottomBarHidden = useTerminalStore((s) => s.bottomBarHidden);
   const aiExplainDefaultProvider = useTerminalStore((s) => s.aiExplainDefaultProvider);
+  const petConfig = useTerminalStore((s) => s.petConfig);
   const selectorMode = useOverlayStore((s) => s.selectorMode);
   const setSelectorMode = useOverlayStore((s) => s.setSelectorMode);
   const hotkeyA = useOverlayStore((s) => s.hotkeyA);
@@ -86,7 +87,7 @@ export function SettingsDataIO() {
     createSettingsBundle({
       themePreference: { themeMode, themePackId },
       customThemePacks: (themePacks as ThemePack[]).filter((pack) => pack.isCustom),
-      terminalSettings: { bottomBarHidden, aiExplainDefaultProvider },
+      terminalSettings: { bottomBarHidden, aiExplainDefaultProvider, petConfig },
       overlaySettings: { selectorMode, hotkeyA, hotkeyB },
       workflowFiles: await readGlobalWorkflowBundleFiles(),
     });
@@ -177,6 +178,7 @@ export function SettingsDataIO() {
         useTerminalStore.setState({
           bottomBarHidden: sections.terminal.bottomBarHidden,
           aiExplainDefaultProvider: sections.terminal.aiExplainDefaultProvider,
+          petConfig: sections.terminal.petConfig,
         });
       }
       if (selected.has('overlay') && sections.overlay) {

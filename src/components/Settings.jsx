@@ -23,6 +23,7 @@ import { CommandBlocksSettings } from './settings/CommandBlocksSettings';
 import { FocusModeSettings } from './settings/FocusModeSettings';
 import { MobileAccessSettings } from './settings/MobileAccessSettings';
 import { NotificationSettings } from './settings/NotificationSettings';
+import { DesktopPetSettings } from './settings/DesktopPetSettings';
 import OverlayHotkeysSettings from './settings/OverlayHotkeysSettings';
 import { SettingsDataIO } from './settings/SettingsDataIO';
 import { SupervisorSettings } from './settings/SupervisorSettings';
@@ -447,6 +448,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                 <CommandBlocksSettings />
                 <FocusModeSettings />
                 <NotificationSettings />
+                <DesktopPetSettings />
                 <OverlayHotkeysSettings />
                 <KeyboardShortcutsSettings />
               </div>
