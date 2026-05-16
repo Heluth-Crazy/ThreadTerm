@@ -17,8 +17,13 @@
   },
   "scripts": {
     "client": "vite --host",
+    "dev:mobile": "vite --config mobile-app/vite.config.ts --host",
     "build": "vite build",
+    "build:mobile": "vite build --config mobile-app/vite.config.ts",
     "preview": "vite preview",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test && npm run build:mobile && cargo check --manifest-path src-tauri/Cargo.toml",
+    "test:e2e:mobile": "playwright test -c playwright.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "release": "./release.sh",
     "prepublishOnly": "npm run build",
@@ -45,6 +50,7 @@
     "@tauri-apps/plugin-shell": "^2.3.5",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "^5.5.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -61,6 +67,7 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@release-it/conventional-changelog": "^10.0.5",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

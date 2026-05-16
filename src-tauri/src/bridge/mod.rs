@@ -18,8 +18,9 @@ use crate::pty::{self, LivePtySessionSnapshot, SessionState};
 
 use pairing::PairingStore;
 use protocol::{
-    BridgeDevice, BridgeSnapshot, BridgeStatus, CardMeta, PairQrResponse, ServerMessage,
-    TerminalSnapshotMessage, TerminalStatus,
+    AppThemeTokens, BridgeDevice, BridgeSnapshot, BridgeStatus, BridgeTheme, CardMeta,
+    PairQrResponse, ServerMessage, TerminalSnapshotMessage, TerminalStatus, TerminalThemeTokens,
+    ThemeMode,
 };
 
 const DEFAULT_BRIDGE_HOST: &str = "127.0.0.1";
@@ -43,6 +44,7 @@ pub static BRIDGE_RUNTIME: Lazy<Arc<BridgeRuntime>> = Lazy::new(|| Arc::new(Brid
 pub struct BridgeRuntime {
     tx: broadcast::Sender<ServerMessage>,
     pub pairing: PairingStore,
+    theme: Mutex<BridgeTheme>,
     server: Mutex<Option<server::BridgeServerHandle>>,
 }
 
@@ -52,6 +54,7 @@ impl BridgeRuntime {
         Self {
             tx,
             pairing: PairingStore::default(),
+            theme: Mutex::new(BridgeTheme::default()),
             server: Mutex::new(None),
         }
     }
@@ -62,6 +65,24 @@ impl BridgeRuntime {
 
     pub fn broadcast(&self, message: ServerMessage) {
         let _ = self.tx.send(message);
+    }
+
+    pub fn set_theme(&self, theme: BridgeTheme) {
+        if let Ok(mut current) = self.theme.lock() {
+            *current = theme.clone();
+        }
+        self.broadcast(ServerMessage::Theme {
+            app: theme.app,
+            terminal: theme.terminal,
+            mode: theme.mode,
+        });
+    }
+
+    pub fn current_theme(&self) -> BridgeTheme {
+        self.theme
+            .lock()
+            .map(|theme| theme.clone())
+            .unwrap_or_default()
     }
 
     pub fn snapshot(&self) -> BridgeSnapshot {
@@ -238,6 +259,16 @@ pub async fn bridge_revoke_device(device_id: String) -> Result<bool, String> {
     Ok(BRIDGE_RUNTIME.pairing.revoke_device(&device_id))
 }
 
+#[tauri::command]
+pub async fn bridge_broadcast_theme(
+    app: AppThemeTokens,
+    terminal: TerminalThemeTokens,
+    mode: ThemeMode,
+) -> Result<(), String> {
+    broadcast_theme(app, terminal, mode);
+    Ok(())
+}
+
 fn persist_bridge_running(status: &BridgeStatus) {
     if !status.running {
         return;
@@ -281,6 +312,14 @@ pub fn broadcast_terminal_output(card_id: &str, data: &str, seq: u64) {
         card_id: card_id.to_string(),
         data: data.to_string(),
         seq,
+    });
+}
+
+pub fn broadcast_theme(app: AppThemeTokens, terminal: TerminalThemeTokens, mode: ThemeMode) {
+    BRIDGE_RUNTIME.set_theme(BridgeTheme {
+        app,
+        terminal,
+        mode,
     });
 }
 
@@ -548,12 +587,53 @@ fn lan_ipv4_candidate(ip: Ipv4Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{sync::Mutex, sync::mpsc, time::Duration};
+    use std::{sync::mpsc, sync::Mutex, time::Duration};
 
     /// Both bridge integration tests touch the global `BRIDGE_RUNTIME`
     /// state and bind real sockets, so they cannot run in parallel.
     /// Serialise them via a process-wide mutex.
     static BRIDGE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    async fn raw_http_request(port: u16, request: String) -> String {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpStream,
+        };
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect to bridge server");
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write bridge HTTP request");
+        stream.flush().await.expect("flush bridge HTTP request");
+
+        let mut response = vec![0; 16 * 1024];
+        let bytes_read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut response))
+            .await
+            .expect("bridge HTTP response should arrive")
+            .expect("read bridge HTTP response");
+        response.truncate(bytes_read);
+        String::from_utf8_lossy(&response).into_owned()
+    }
+
+    fn response_header(response: &str, name: &str) -> Option<String> {
+        response.lines().find_map(|line| {
+            let (header_name, value) = line.split_once(':')?;
+            header_name
+                .eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_string())
+        })
+    }
+
+    fn assert_http_status(response: &str, code: u16) {
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {code} ")),
+            "expected HTTP {code}, got: {}",
+            response.lines().next().unwrap_or(response)
+        );
+    }
 
     #[test]
     fn preview_strips_ansi_and_reports_hidden_lines() {
@@ -593,11 +673,9 @@ mod tests {
         let preview = preview_from_output(input);
 
         assert_eq!(preview.hidden_line_count, 0);
-        assert!(
-            preview
-                .last_reply_preview
-                .contains("MCP startup incomplete")
-        );
+        assert!(preview
+            .last_reply_preview
+            .contains("MCP startup incomplete"));
         assert!(preview.last_reply_preview.contains("waiting for input"));
     }
 
@@ -610,11 +688,9 @@ mod tests {
             preview.summary_line.as_deref(),
             Some("It is safe to continue.")
         );
-        assert!(
-            !preview
-                .last_reply_preview
-                .contains("Summarize recent commits")
-        );
+        assert!(!preview
+            .last_reply_preview
+            .contains("Summarize recent commits"));
     }
 
     #[test]
@@ -627,6 +703,21 @@ mod tests {
             "收到，测试消息正常。\n下一步继续。"
         );
         assert_eq!(preview.summary_line.as_deref(), Some("下一步继续。"));
+    }
+
+    #[test]
+    fn preview_preserves_lines_split_across_output_chunks_when_source_is_cumulative() {
+        // Mirrors the bridge path where emit_pty_output_chunk previews the
+        // terminal snapshot/cumulative output, not just the latest raw chunk.
+        let first_chunk = "Building pack";
+        let second_chunk = "age\nDone\n";
+        let cumulative = format!("{first_chunk}{second_chunk}");
+        let latest_chunk_only = preview_from_output(second_chunk);
+        let preview = preview_from_output(&cumulative);
+
+        assert_eq!(latest_chunk_only.summary_line.as_deref(), Some("Done"));
+        assert_eq!(preview.last_reply_preview, "Building package\nDone");
+        assert_eq!(preview.summary_line.as_deref(), Some("Done"));
     }
 
     #[test]
@@ -680,6 +771,117 @@ mod tests {
             .expect("bridge_stop should succeed");
     }
 
+    #[test]
+    fn snapshot_auth_paths_and_cors_preflight_are_compatible_and_restricted() {
+        let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        runtime.block_on(async {
+            let _ = bridge_stop().await;
+
+            let status = bridge_start(Some("127.0.0.1".to_string()), Some(0))
+                .await
+                .expect("bridge_start should succeed");
+            let port = status.port.expect("port should be bound");
+
+            let qr = bridge_pair_qr(Some("127.0.0.1".to_string()))
+                .await
+                .expect("pair_qr should succeed");
+            let pair_response = BRIDGE_RUNTIME
+                .pairing
+                .pair(super::protocol::PairRequest {
+                    otp: qr.otp,
+                    device_name: "snapshot-auth-test".to_string(),
+                    permission: None,
+                })
+                .expect("pairing should succeed");
+            let token = pair_response.device_token;
+
+            let preflight = raw_http_request(
+                port,
+                format!(
+                    "OPTIONS /snapshot HTTP/1.1\r\n\
+                     Host: 127.0.0.1:{port}\r\n\
+                     Origin: http://192.168.1.42:5174\r\n\
+                     Access-Control-Request-Method: GET\r\n\
+                     Access-Control-Request-Headers: authorization,content-type\r\n\
+                     Connection: close\r\n\r\n"
+                ),
+            )
+            .await;
+            assert!(
+                preflight.starts_with("HTTP/1.1 200 ")
+                    || preflight.starts_with("HTTP/1.1 204 "),
+                "expected successful preflight, got: {}",
+                preflight.lines().next().unwrap_or(&preflight)
+            );
+            assert_eq!(
+                response_header(&preflight, "access-control-allow-origin").as_deref(),
+                Some("*")
+            );
+            let methods = response_header(&preflight, "access-control-allow-methods")
+                .expect("CORS allow-methods header")
+                .to_ascii_uppercase();
+            assert!(methods.contains("GET"));
+            assert!(methods.contains("POST"));
+            assert!(!methods.contains("DELETE"));
+            let headers = response_header(&preflight, "access-control-allow-headers")
+                .expect("CORS allow-headers header")
+                .to_ascii_lowercase();
+            assert!(headers.contains("authorization"));
+            assert!(headers.contains("content-type"));
+
+            let missing = raw_http_request(
+                port,
+                format!(
+                    "GET /snapshot HTTP/1.1\r\n\
+                     Host: 127.0.0.1:{port}\r\n\
+                     Connection: close\r\n\r\n"
+                ),
+            )
+            .await;
+            assert_http_status(&missing, 401);
+
+            let invalid = raw_http_request(
+                port,
+                format!(
+                    "GET /snapshot HTTP/1.1\r\n\
+                     Host: 127.0.0.1:{port}\r\n\
+                     Authorization: Bearer invalid-token\r\n\
+                     Connection: close\r\n\r\n"
+                ),
+            )
+            .await;
+            assert_http_status(&invalid, 401);
+
+            let bearer = raw_http_request(
+                port,
+                format!(
+                    "GET /snapshot HTTP/1.1\r\n\
+                     Host: 127.0.0.1:{port}\r\n\
+                     Authorization: Bearer {token}\r\n\
+                     Connection: close\r\n\r\n"
+                ),
+            )
+            .await;
+            assert_http_status(&bearer, 200);
+            assert!(bearer.contains(r#""kind":"snapshot""#));
+
+            let query = raw_http_request(
+                port,
+                format!(
+                    "GET /snapshot?token={token} HTTP/1.1\r\n\
+                     Host: 127.0.0.1:{port}\r\n\
+                     Connection: close\r\n\r\n"
+                ),
+            )
+            .await;
+            assert_http_status(&query, 200);
+            assert!(query.contains(r#""kind":"snapshot""#));
+
+            bridge_stop().await.expect("bridge_stop should succeed");
+        });
+    }
+
     /// S2-1: wscat-style end-to-end test. Boots the real axum server,
     /// runs the pairing handshake, opens a websocket and confirms that
     /// wrong / missing `protocol_version` triggers
@@ -724,7 +926,21 @@ mod tests {
                 .await
                 .expect("websocket should connect");
 
-            // First message should be the initial snapshot.
+            // Initial messages are theme first, then the current card snapshot.
+            let theme = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+                .await
+                .expect("theme should arrive in time")
+                .expect("theme stream should not end")
+                .expect("theme should be well-formed");
+            let theme_text = match theme {
+                Message::Text(text) => text,
+                other => panic!("expected text theme, got {other:?}"),
+            };
+            let theme_value: serde_json::Value =
+                serde_json::from_str(&theme_text).expect("theme must be JSON");
+            assert_eq!(theme_value["protocol_version"], 1);
+            assert_eq!(theme_value["kind"], "theme");
+
             let initial = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
                 .await
                 .expect("snapshot should arrive in time")
@@ -774,7 +990,10 @@ mod tests {
             let (mut ws2, _) = tokio_tungstenite::connect_async(&url)
                 .await
                 .expect("reconnect should succeed");
-            // Drain the initial snapshot.
+            // Drain initial theme + snapshot.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws2.next())
+                .await
+                .expect("theme should arrive on reconnect");
             let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws2.next())
                 .await
                 .expect("snapshot should arrive on reconnect");
@@ -800,6 +1019,9 @@ mod tests {
                 .expect("reconnect again should succeed");
             let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws3.next())
                 .await
+                .expect("theme should arrive again");
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws3.next())
+                .await
                 .expect("snapshot should arrive again");
 
             ws3.send(Message::Text(
@@ -819,6 +1041,77 @@ mod tests {
             let pong_value: serde_json::Value = serde_json::from_str(&pong_text).unwrap();
             assert_eq!(pong_value["protocol_version"], 1);
             assert_eq!(pong_value["kind"], "pong");
+
+            bridge_stop().await.expect("bridge_stop should succeed");
+        });
+    }
+
+    #[test]
+    fn websocket_accepts_first_frame_auth_without_query_token() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        runtime.block_on(async {
+            let _ = bridge_stop().await;
+
+            let status = bridge_start(Some("127.0.0.1".to_string()), Some(0))
+                .await
+                .expect("bridge_start should succeed");
+            let port = status.port.expect("port should be bound");
+
+            let qr = bridge_pair_qr(Some("127.0.0.1".to_string()))
+                .await
+                .expect("pair_qr should succeed");
+            let pair_response = BRIDGE_RUNTIME
+                .pairing
+                .pair(super::protocol::PairRequest {
+                    otp: qr.otp,
+                    device_name: "first-frame-auth-test".to_string(),
+                    permission: None,
+                })
+                .expect("pairing should succeed");
+            let token = pair_response.device_token;
+
+            let url = format!("ws://127.0.0.1:{port}/ws");
+            let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("websocket should connect without query token");
+
+            ws.send(Message::Text(format!(
+                r#"{{"protocol_version":1,"kind":"auth","token":"{token}"}}"#
+            )))
+            .await
+            .expect("auth frame should send");
+
+            let theme = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+                .await
+                .expect("theme should arrive after auth")
+                .expect("ws stream should not end")
+                .expect("theme should parse");
+            let theme_text = match theme {
+                Message::Text(text) => text,
+                other => panic!("expected text theme, got {other:?}"),
+            };
+            let theme_value: serde_json::Value =
+                serde_json::from_str(&theme_text).expect("theme must be JSON");
+            assert_eq!(theme_value["protocol_version"], 1);
+            assert_eq!(theme_value["kind"], "theme");
+
+            let initial = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+                .await
+                .expect("snapshot should arrive after auth")
+                .expect("ws stream should not end")
+                .expect("snapshot should parse");
+            let initial_text = match initial {
+                Message::Text(text) => text,
+                other => panic!("expected text snapshot, got {other:?}"),
+            };
+            let initial_value: serde_json::Value =
+                serde_json::from_str(&initial_text).expect("snapshot must be JSON");
+            assert_eq!(initial_value["protocol_version"], 1);
+            assert_eq!(initial_value["kind"], "snapshot");
 
             bridge_stop().await.expect("bridge_stop should succeed");
         });

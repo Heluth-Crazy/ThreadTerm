@@ -17,8 +17,10 @@
     "types": ["vite/client"],
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@mobile/*": ["./mobile-app/src/*"],
+      "@shared/*": ["./src/*"]
     }
   },
-  "include": ["src", "vite.config.js", "vitest.config.ts"]
+  "include": ["src", "mobile-app/src", "vite.config.js", "vitest.config.ts"]
 }

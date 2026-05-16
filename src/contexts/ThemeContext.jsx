@@ -18,6 +18,7 @@ import {
   LEGACY_THEME_STORAGE_KEY,
 } from '../theme/themeStorage';
 import { toXtermTheme } from '../theme/xtermTheme';
+import { isTauriEnv, mobileBridge } from '../lib/tauri-bridge';
 
 const ThemeContext = createContext();
 
@@ -48,6 +49,14 @@ export const ThemeProvider = ({ children }) => {
     applyResolvedTheme(resolvedTheme);
     saveThemePreference(preference);
   }, [preference, resolvedTheme]);
+
+  useEffect(() => {
+    if (!isTauriEnv()) return;
+
+    void mobileBridge.broadcastTheme(resolvedTheme.tokens, resolvedTheme.mode).catch((error) => {
+      console.debug('Failed to broadcast mobile bridge theme', error);
+    });
+  }, [resolvedTheme.mode, resolvedTheme.tokens]);
 
   useEffect(() => {
     if (preference.themePackId === resolvedTheme.pack.id) return;

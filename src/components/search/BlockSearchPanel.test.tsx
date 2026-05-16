@@ -43,7 +43,7 @@ describe('BlockSearchPanel', () => {
   it('shows the placeholder when open with no query', () => {
     render(<BlockSearchPanel open={true} onClose={vi.fn()} onJump={vi.fn()} />);
     expect(screen.getByTestId('block-search-input')).toBeTruthy();
-    expect(screen.getByText('Type to search across all blocks')).toBeTruthy();
+    expect(screen.getByText('Search blocks')).toBeTruthy();
   });
 
   it('lists matches when the user types', async () => {
@@ -76,7 +76,7 @@ describe('BlockSearchPanel', () => {
     seedStore();
     render(<BlockSearchPanel open={true} onClose={vi.fn()} onJump={vi.fn()} />);
     fireEvent.change(screen.getByTestId('block-search-input'), { target: { value: 'zzz-nope' } });
-    await waitFor(() => expect(screen.getByText('No matches')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('No matches found')).toBeTruthy());
   });
 
   it('clears query when re-opened (no persisted state)', () => {

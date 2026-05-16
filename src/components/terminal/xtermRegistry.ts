@@ -1,6 +1,6 @@
 /**
- * xtermRegistry — small lookup of "the live xterm.js Terminal currently
- * driving this PTY id".
+ * xtermRegistry — small lookup of the live xterm.js Terminals currently
+ * attached to each PTY id.
  *
  * Why this exists:
  * `Shell.jsx` owns the visible xterm; `TerminalEventBridge` owns the
@@ -18,16 +18,73 @@
  */
 import type { Terminal } from '@xterm/xterm';
 
-const terminals = new Map<string, Terminal>();
+interface TerminalRegistration {
+  term: Terminal;
+  registeredAt: number;
+  activeAt: number;
+}
+
+const terminals = new Map<string, TerminalRegistration[]>();
+let registrationSeq = 0;
+
+function nextRegistrationSeq(): number {
+  registrationSeq += 1;
+  return registrationSeq;
+}
+
+function activeRegistration(ptyId: string): TerminalRegistration | undefined {
+  const list = terminals.get(ptyId);
+  if (!list?.length) return undefined;
+  return list.reduce((best, candidate) => {
+    if (candidate.activeAt !== best.activeAt) {
+      return candidate.activeAt > best.activeAt ? candidate : best;
+    }
+    return candidate.registeredAt > best.registeredAt ? candidate : best;
+  });
+}
 
 export function registerTerminal(ptyId: string, term: Terminal): void {
   if (!ptyId) return;
-  terminals.set(ptyId, term);
+  const list = terminals.get(ptyId) ?? [];
+  const activeAt = nextRegistrationSeq();
+  const existing = list.find((registration) => registration.term === term);
+  if (existing) {
+    existing.activeAt = activeAt;
+    return;
+  }
+  list.push({
+    term,
+    registeredAt: activeAt,
+    activeAt,
+  });
+  terminals.set(ptyId, list);
 }
 
-export function unregisterTerminal(ptyId: string): void {
+export function unregisterTerminal(ptyId: string, term?: Terminal): void {
   if (!ptyId) return;
-  terminals.delete(ptyId);
+  if (!term) {
+    terminals.delete(ptyId);
+    return;
+  }
+  const list = terminals.get(ptyId);
+  if (!list) return;
+  const next = list.filter((registration) => registration.term !== term);
+  if (next.length === 0) {
+    terminals.delete(ptyId);
+    return;
+  }
+  terminals.set(ptyId, next);
+}
+
+export function claimTerminalActive(ptyId: string, term: Terminal): void {
+  if (!ptyId) return;
+  const list = terminals.get(ptyId);
+  const registration = list?.find((candidate) => candidate.term === term);
+  if (!registration) {
+    registerTerminal(ptyId, term);
+    return;
+  }
+  registration.activeAt = nextRegistrationSeq();
 }
 
 /**
@@ -37,7 +94,7 @@ export function unregisterTerminal(ptyId: string): void {
  * block boundary visualisation.
  */
 export function getTerminal(ptyId: string): Terminal | undefined {
-  return terminals.get(ptyId);
+  return activeRegistration(ptyId)?.term;
 }
 
 /**
@@ -50,7 +107,7 @@ export function getTerminal(ptyId: string): Terminal | undefined {
  * a 1-row offset elsewhere.
  */
 export function getAbsoluteCursorRow(ptyId: string): number {
-  const term = terminals.get(ptyId);
+  const term = getTerminal(ptyId);
   if (!term) return 0;
   try {
     const buf = term.buffer.active;
@@ -82,7 +139,7 @@ export function readBufferRange(
   startRow: number,
   endRow: number,
 ): string {
-  const term = terminals.get(ptyId);
+  const term = getTerminal(ptyId);
   if (!term) return '';
   if (!Number.isFinite(startRow) || !Number.isFinite(endRow)) return '';
   if (endRow <= startRow) return '';

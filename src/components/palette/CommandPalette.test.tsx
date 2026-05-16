@@ -120,7 +120,7 @@ describe('CommandPalette', () => {
   it('shows the empty state when no matches', () => {
     render(<CommandPalette open={true} entries={makeEntries()} onClose={vi.fn()} />);
     fireEvent.change(screen.getByTestId('palette-input'), { target: { value: 'zzzzz' } });
-    expect(screen.getByText('No matches')).toBeTruthy();
+    expect(screen.getByText('No matches found')).toBeTruthy();
   });
 
   it('restores focus to the previously focused element when closed', async () => {

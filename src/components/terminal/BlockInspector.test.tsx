@@ -92,6 +92,11 @@ describe('BlockInspector', () => {
     expect(screen.getByText('1')).toBeTruthy();
   });
 
+  it('renders non-one failure exit codes exactly', () => {
+    render(<BlockInspector block={makeBlock({ exitCode: 127, state: 'failed' })} />);
+    expect(screen.getByText('127')).toBeTruthy();
+  });
+
   it('renders duration in seconds', () => {
     render(<BlockInspector block={makeBlock({ durationMs: 5000 })} />);
     expect(screen.getByText('5.0s')).toBeTruthy();

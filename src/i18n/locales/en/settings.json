@@ -140,6 +140,13 @@
     },
     "pairingTitle": "Pairing entry",
     "pairingDescription": "Generate a one-time pairing QR code that expires in 5 minutes. Scan it from your phone or copy the URL as a fallback.",
+    "publishHost": {
+      "label": "Publish host override",
+      "placeholder": "Optional host for phone QR",
+      "hint": "Leave empty to use the detected LAN address. Use this for Tailscale, tunnel, or manual LAN hostnames.",
+      "current": "QR host:",
+      "loopbackWarning": "The generated QR code points to loopback. Enter a publish host before sharing it with a phone."
+    },
     "qrTitle": "ThreadTerm mobile pairing QR code",
     "newPairCode": "New pairing code",
     "copyUrl": "Copy URL",

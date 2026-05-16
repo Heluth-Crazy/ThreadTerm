@@ -5,8 +5,36 @@ use std::{
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
+    verify_mobile_bundle()?;
     configure_windows_resource_compiler()?;
     tauri_build::try_build(tauri_build::Attributes::default())?;
+    Ok(())
+}
+
+fn verify_mobile_bundle() -> Result<(), Box<dyn Error>> {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
+    let dist = manifest_dir.join("..").join("mobile-app").join("dist");
+    let required_files = [
+        "index.html",
+        "assets/index.css",
+        "assets/index.js",
+        "assets/vendor-react.js",
+        "assets/vendor-xterm.js",
+    ];
+
+    println!("cargo:rerun-if-changed={}", dist.display());
+    for file in required_files {
+        let path = dist.join(file);
+        println!("cargo:rerun-if-changed={}", path.display());
+        if !path.is_file() {
+            return Err(format!(
+                "missing mobile bundle asset at {}. Run `npm run build:mobile` before `cargo build`.",
+                path.display()
+            )
+            .into());
+        }
+    }
+
     Ok(())
 }
 

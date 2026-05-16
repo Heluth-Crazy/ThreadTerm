@@ -1,5 +1,6 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { listen as tauriListen } from '@tauri-apps/api/event';
+import type { ResolvedThemeMode, ThemeModeTokens } from '../theme/themeTypes';
 
 /** Returns true when running inside the Tauri desktop webview. */
 export const isTauriEnv = (): boolean =>
@@ -88,8 +89,8 @@ export const pty = {
   onOutput: (cb: (payload: PtyOutputPayload) => void): Promise<() => void> =>
     listen<PtyOutputPayload>('pty-output', (e) => cb(e.payload)),
 
-  onExit: (cb: (payload: { id: string; code?: number }) => void): Promise<() => void> =>
-    listen<{ id: string; code?: number }>('pty-exit', (e) => cb(e.payload)),
+  onExit: (cb: (payload: { id: string; code?: number | null }) => void): Promise<() => void> =>
+    listen<{ id: string; code?: number | null }>('pty-exit', (e) => cb(e.payload)),
 
   onStateChanged: (
     cb: (payload: { ptyId: string; state: SessionState }) => void,
@@ -233,4 +234,11 @@ export const mobileBridge = {
 
   revokeDevice: (deviceId: string): Promise<boolean> =>
     invoke<boolean>('bridge_revoke_device', { deviceId }),
+
+  broadcastTheme: (tokens: ThemeModeTokens, mode: ResolvedThemeMode): Promise<void> =>
+    invoke<void>('bridge_broadcast_theme', {
+      app: tokens.app,
+      terminal: tokens.terminal,
+      mode,
+    }),
 };

@@ -140,6 +140,13 @@
   },
   "pairingTitle": "ペアリング入口",
   "pairingDescription": "5 分で期限切れになる一回限りのペアリング QR コードを生成します。スマートフォンでスキャンするか、予備として URL をコピーしてください。",
+  "publishHost": {
+    "label": "公開ホストの上書き",
+    "placeholder": "任意: スマートフォン QR 用ホスト",
+    "hint": "空のままにすると検出した LAN アドレスを使います。Tailscale、トンネル、手動 LAN ホスト名に使います。",
+    "current": "QR ホスト:",
+    "loopbackWarning": "生成された QR コードは loopback を指しています。スマートフォンに共有する前に公開ホストを入力してください。"
+  },
   "qrTitle": "ThreadTerm モバイルペアリング QR コード",
     "newPairCode": "ペアリングコードを生成",
     "copyUrl": "URL をコピー",

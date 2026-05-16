@@ -36,12 +36,12 @@ class FakeWebSocket {
 }
 
 describe('mobile bridge ws client', () => {
-  it('builds websocket URLs from LAN HTTP URLs', () => {
-    expect(buildBridgeWsUrl('http://192.168.1.42:5174', 'token-1')).toBe(
-      'ws://192.168.1.42:5174/ws?token=token-1',
+  it('builds websocket URLs from LAN HTTP URLs without putting tokens in the query string', () => {
+    expect(buildBridgeWsUrl('http://192.168.1.42:5174')).toBe(
+      'ws://192.168.1.42:5174/ws',
     );
-    expect(buildBridgeWsUrl('threadterm.local:5174', 'token 1')).toBe(
-      'ws://threadterm.local:5174/ws?token=token+1',
+    expect(buildBridgeWsUrl('threadterm.local:5174')).toBe(
+      'ws://threadterm.local:5174/ws',
     );
   });
 
@@ -58,11 +58,16 @@ describe('mobile bridge ws client', () => {
     client.connect({ onMessage, onStateChange });
 
     const socket = FakeWebSocket.instances[0];
-    expect(socket.url).toBe('ws://127.0.0.1:5174/ws?token=device-token');
+    expect(socket.url).toBe('ws://127.0.0.1:5174/ws');
 
     socket.emitOpen();
     expect(onStateChange).toHaveBeenCalledWith('open');
     expect(JSON.parse(socket.sent[0])).toEqual({
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'auth',
+      token: 'device-token',
+    });
+    expect(JSON.parse(socket.sent[1])).toEqual({
       protocol_version: BRIDGE_PROTOCOL_VERSION,
       kind: 'subscribe',
     });
@@ -136,6 +141,73 @@ describe('mobile bridge ws client', () => {
     });
   });
 
+  it('dispatches theme messages with app and terminal tokens', () => {
+    FakeWebSocket.instances = [];
+    const onMessage = vi.fn();
+    const client = new BridgeWsClient({
+      baseUrl: 'http://127.0.0.1:5174',
+      token: 'device-token',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    });
+
+    client.connect({ onMessage });
+    const socket = FakeWebSocket.instances[0];
+
+    const themeMessage = {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'theme',
+      mode: 'dark',
+      app: {
+        background: '#10151d',
+        foreground: '#e8edf5',
+        card: '#151b24',
+        cardForeground: '#e8edf5',
+        popover: '#151b24',
+        popoverForeground: '#e8edf5',
+        primary: '#4f8bd6',
+        primaryForeground: '#f8fafc',
+        secondary: '#263242',
+        secondaryForeground: '#e8edf5',
+        muted: '#202a38',
+        mutedForeground: '#9aa7b7',
+        accent: '#314154',
+        accentForeground: '#e8edf5',
+        destructive: '#ef4444',
+        destructiveForeground: '#f8fafc',
+        border: '#2d3948',
+        input: '#263242',
+        ring: '#4f8bd6',
+      },
+      terminal: {
+        background: '#000000',
+        foreground: '#f8fafc',
+        cursor: '#f8fafc',
+        cursorAccent: '#000000',
+        selection: '#334155',
+        selectionForeground: '#f8fafc',
+        black: '#0f172a',
+        red: '#ef4444',
+        green: '#22c55e',
+        yellow: '#eab308',
+        blue: '#3b82f6',
+        magenta: '#d946ef',
+        cyan: '#06b6d4',
+        white: '#e2e8f0',
+        brightBlack: '#475569',
+        brightRed: '#f87171',
+        brightGreen: '#4ade80',
+        brightYellow: '#facc15',
+        brightBlue: '#60a5fa',
+        brightMagenta: '#e879f9',
+        brightCyan: '#22d3ee',
+        brightWhite: '#f8fafc',
+      },
+    };
+    socket.emitMessage(themeMessage);
+
+    expect(onMessage).toHaveBeenCalledWith(themeMessage);
+  });
+
   it('rejects sends before connection opens', () => {
     const client = new BridgeWsClient({
       baseUrl: 'http://127.0.0.1:5174',
@@ -159,7 +231,7 @@ describe('mobile bridge ws client', () => {
     socket.emitOpen();
     client.send({ kind: 'ping' });
 
-    expect(JSON.parse(socket.sent[1])).toEqual({
+    expect(JSON.parse(socket.sent[2])).toEqual({
       protocol_version: BRIDGE_PROTOCOL_VERSION,
       kind: 'ping',
     });

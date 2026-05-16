@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
+use portable_pty::ExitStatus;
 use regex::RegexSet;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -178,12 +179,11 @@ pub(super) fn stream_pty_output(
     }
 
     // Determine exit code and update state.
-    let wait_code = ses.child.lock().ok().and_then(|mut child| {
-        child
-            .wait()
-            .ok()
-            .map(|status| if status.success() { 0u32 } else { 1u32 })
-    });
+    let wait_code = ses
+        .child
+        .lock()
+        .ok()
+        .and_then(|mut child| child.wait().ok().and_then(exit_code_from_status));
     let code = if session::is_killed(&ses) {
         None
     } else {
@@ -208,6 +208,16 @@ pub(super) fn stream_pty_output(
     // Remove session from map.
     registry::remove(&id);
     tracing::info!(id = %id, "PTY session ended");
+}
+
+fn exit_code_from_status(status: ExitStatus) -> Option<u32> {
+    // portable-pty exposes signal exits through Display but not via a typed
+    // accessor. Keep those as unknown so frontend killed/signal semantics stay
+    // distinct from a real exit code 1.
+    if !status.success() && status.to_string().starts_with("Terminated by ") {
+        return None;
+    }
+    Some(status.exit_code())
 }
 
 fn emit_pty_output_chunk(
@@ -305,5 +315,32 @@ fn emit_pty_output_chunk(
             );
             bridge::broadcast_attention(id, "failed", "Agent encountered an error");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_code_from_status_preserves_exact_codes() {
+        assert_eq!(
+            exit_code_from_status(ExitStatus::with_exit_code(0)),
+            Some(0)
+        );
+        assert_eq!(
+            exit_code_from_status(ExitStatus::with_exit_code(1)),
+            Some(1)
+        );
+        assert_eq!(
+            exit_code_from_status(ExitStatus::with_exit_code(127)),
+            Some(127)
+        );
+    }
+
+    #[test]
+    fn exit_code_from_status_keeps_signal_only_status_unknown() {
+        let status = ExitStatus::with_signal("SIGTERM");
+        assert_eq!(exit_code_from_status(status), None);
     }
 }

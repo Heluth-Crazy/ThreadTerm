@@ -91,6 +91,21 @@ describe('MobileAccessSettings', () => {
     expect(bridgeMocks.pairQr).toHaveBeenCalledWith('0.0.0.0');
   });
 
+  it('uses a publish-host override for pairing without changing the bind host', async () => {
+    render(<MobileAccessSettings />);
+
+    fireEvent.change(await screen.findByLabelText('mobileAccess.publishHost.label'), {
+      target: { value: 'phone.threadterm.test' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /mobileAccess.start/ }));
+    fireEvent.click(screen.getByRole('button', { name: /mobileAccess.confirmLanStart/ }));
+
+    await waitFor(() => {
+      expect(bridgeMocks.start).toHaveBeenCalledWith('0.0.0.0');
+    });
+    expect(bridgeMocks.pairQr).toHaveBeenCalledWith('phone.threadterm.test');
+  });
+
   it('uses an inline confirmation before binding to all interfaces', async () => {
     const confirm = vi.fn().mockReturnValue(false);
     Object.defineProperty(window, 'confirm', {
@@ -178,6 +193,27 @@ describe('MobileAccessSettings', () => {
     expect(await screen.findByText('123456')).toBeInTheDocument();
     expect(screen.getByText(readOnlyPairUrl)).toBeInTheDocument();
     expect(screen.getByTestId('pair-qr-code')).toHaveAttribute('data-value', readOnlyPairUrl);
+  });
+
+  it('warns when a LAN pair code falls back to loopback without a publish host', async () => {
+    bridgeMocks.status.mockResolvedValue({
+      running: true,
+      host: '0.0.0.0',
+      port: 5174,
+      url: 'http://127.0.0.1:5174',
+    });
+    bridgeMocks.pairQr.mockResolvedValue({
+      host: '127.0.0.1',
+      port: 5174,
+      otp: '123456',
+      url: 'http://127.0.0.1:5174/pair?otp=123456',
+      expiresInSeconds: 300,
+    });
+
+    render(<MobileAccessSettings />);
+
+    expect(await screen.findByText('mobileAccess.publishHost.loopbackWarning')).toBeInTheDocument();
+    expect(screen.getByText('127.0.0.1:5174')).toBeInTheDocument();
   });
 
   it('still shows a pair code when loading devices fails after start', async () => {

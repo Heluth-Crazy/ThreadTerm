@@ -78,6 +78,7 @@ pub fn run() {
             bridge::bridge_pair_qr,
             bridge::bridge_devices,
             bridge::bridge_revoke_device,
+            bridge::bridge_broadcast_theme,
             overlay::overlay_show_selector,
             overlay::overlay_hide_selector,
             overlay::overlay_show_float,

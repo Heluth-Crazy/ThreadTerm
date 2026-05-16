@@ -8,7 +8,7 @@ const bridgeMocks = vi.hoisted(() => {
   const listeners = {
     output: undefined as undefined | ((payload: { id: string; data: string; seq: number }) => void),
     state: undefined as undefined | ((payload: { ptyId: string; state: string }) => void),
-    exit: undefined as undefined | ((payload: { id: string; code?: number }) => void),
+    exit: undefined as undefined | ((payload: { id: string; code?: number | null }) => void),
     attention: undefined as undefined | ((payload: unknown) => void),
     blockStarted: undefined as undefined | ((payload: unknown) => void),
     blockFinished: undefined as undefined | ((payload: unknown) => void),
@@ -314,6 +314,25 @@ describe('TerminalEventBridge status reconciliation', () => {
     expect(card?.autoRestart).toBeUndefined();
     expect(card?.ptyId).toBe(id);
     expect(useTerminalStore.getState().notifications).toHaveLength(0);
+  });
+
+  it('records the exact non-one exit code from the backend', async () => {
+    const id = createCard();
+
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(bridgeMocks.listeners.exit).toBeDefined();
+    });
+
+    act(() => {
+      bridgeMocks.listeners.exit?.({ id, code: 127 });
+    });
+
+    const card = useTerminalStore.getState().getCardById(id);
+    expect(card?.status).toBe('failed');
+    expect(card?.events.at(-1)?.kind).toBe('closed');
+    expect(card?.events.at(-1)?.summary).toContain('127');
   });
 
   it('ignores stale exit events from a previous PTY after auto restart swaps ptyId', async () => {
