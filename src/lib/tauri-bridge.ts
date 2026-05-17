@@ -1,6 +1,7 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { listen as tauriListen } from '@tauri-apps/api/event';
 import type { ResolvedThemeMode, ThemeModeTokens } from '../theme/themeTypes';
+import type { CardMeta } from '../mobile/bridge/protocol';
 
 /** Returns true when running inside the Tauri desktop webview. */
 export const isTauriEnv = (): boolean =>
@@ -182,6 +183,26 @@ export interface BridgeDevice {
   lastSeenAt?: number | null;
 }
 
+export interface MobileSpawnCardRequest {
+  requestId: string;
+  terminalType: string;
+  projectPath: string;
+  command?: string | null;
+}
+
+export interface MobileCardRequest {
+  requestId: string;
+  cardId: string;
+}
+
+export interface MobileCommandResult {
+  requestId: string;
+  ok: boolean;
+  cardId?: string | null;
+  errorCode?: string | null;
+  message?: string | null;
+}
+
 // ── Supervisor (AI Supervisor v0.1) ─────────────────────────────────────────
 
 export interface SupervisorAlertPayload {
@@ -234,6 +255,27 @@ export const mobileBridge = {
 
   revokeDevice: (deviceId: string): Promise<boolean> =>
     invoke<boolean>('bridge_revoke_device', { deviceId }),
+
+  syncCards: (cards: CardMeta[]): Promise<void> =>
+    invoke<void>('bridge_sync_cards', { cards }),
+
+  resolveSpawn: (result: MobileCommandResult): Promise<void> =>
+    invoke<void>('bridge_resolve_mobile_spawn', { ...result }),
+
+  resolveActivate: (result: MobileCommandResult): Promise<void> =>
+    invoke<void>('bridge_resolve_mobile_activate', { ...result }),
+
+  resolveClose: (result: MobileCommandResult): Promise<void> =>
+    invoke<void>('bridge_resolve_mobile_close', { ...result }),
+
+  onSpawnCard: (cb: (payload: MobileSpawnCardRequest) => void): Promise<() => void> =>
+    listen<MobileSpawnCardRequest>('mobile://spawn-card', (e) => cb(e.payload)),
+
+  onActivateCard: (cb: (payload: MobileCardRequest) => void): Promise<() => void> =>
+    listen<MobileCardRequest>('mobile://activate-card', (e) => cb(e.payload)),
+
+  onRemoveCard: (cb: (payload: MobileCardRequest) => void): Promise<() => void> =>
+    listen<MobileCardRequest>('mobile://remove-card', (e) => cb(e.payload)),
 
   broadcastTheme: (tokens: ThemeModeTokens, mode: ResolvedThemeMode): Promise<void> =>
     invoke<void>('bridge_broadcast_theme', {

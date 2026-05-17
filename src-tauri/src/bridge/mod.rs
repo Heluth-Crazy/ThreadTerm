@@ -12,6 +12,7 @@ use std::{
 
 use once_cell::sync::Lazy;
 use regex::Regex;
+use tauri::Emitter;
 use tokio::sync::broadcast;
 
 use crate::pty::{self, LivePtySessionSnapshot, SessionState};
@@ -19,8 +20,8 @@ use crate::pty::{self, LivePtySessionSnapshot, SessionState};
 use pairing::PairingStore;
 use protocol::{
     AppThemeTokens, BridgeDevice, BridgeSnapshot, BridgeStatus, BridgeTheme, CardMeta,
-    PairQrResponse, ServerMessage, TerminalSnapshotMessage, TerminalStatus, TerminalThemeTokens,
-    ThemeMode,
+    MobileCardRequest, MobileSpawnCardRequest, PairQrResponse, ServerMessage,
+    TerminalSnapshotMessage, TerminalStatus, TerminalThemeTokens, ThemeMode,
 };
 
 const DEFAULT_BRIDGE_HOST: &str = "127.0.0.1";
@@ -46,6 +47,9 @@ pub struct BridgeRuntime {
     pub pairing: PairingStore,
     theme: Mutex<BridgeTheme>,
     server: Mutex<Option<server::BridgeServerHandle>>,
+    app_handle: Mutex<Option<tauri::AppHandle>>,
+    card_mirror: Mutex<Vec<CardMeta>>,
+    card_mirror_initialized: Mutex<bool>,
 }
 
 impl BridgeRuntime {
@@ -56,6 +60,9 @@ impl BridgeRuntime {
             pairing: PairingStore::default(),
             theme: Mutex::new(BridgeTheme::default()),
             server: Mutex::new(None),
+            app_handle: Mutex::new(None),
+            card_mirror: Mutex::new(Vec::new()),
+            card_mirror_initialized: Mutex::new(false),
         }
     }
 
@@ -65,6 +72,12 @@ impl BridgeRuntime {
 
     pub fn broadcast(&self, message: ServerMessage) {
         let _ = self.tx.send(message);
+    }
+
+    pub fn set_app_handle(&self, app_handle: tauri::AppHandle) {
+        if let Ok(mut current) = self.app_handle.lock() {
+            *current = Some(app_handle);
+        }
     }
 
     pub fn set_theme(&self, theme: BridgeTheme) {
@@ -86,13 +99,125 @@ impl BridgeRuntime {
     }
 
     pub fn snapshot(&self) -> BridgeSnapshot {
-        BridgeSnapshot {
-            cards: pty::list_live_sessions()
-                .into_iter()
-                .map(card_meta_from_live_session)
-                .collect(),
-            notifications: Vec::new(),
+        let initialized = self
+            .card_mirror_initialized
+            .lock()
+            .map(|value| *value)
+            .unwrap_or(false);
+        if !initialized {
+            return BridgeSnapshot {
+                cards: Vec::new(),
+                notifications: Vec::new(),
+                warming_up: true,
+            };
         }
+
+        let cards = self
+            .card_mirror
+            .lock()
+            .map(|cards| {
+                cards
+                    .iter()
+                    .cloned()
+                    .map(enrich_card_with_live_state)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        BridgeSnapshot {
+            cards,
+            notifications: Vec::new(),
+            warming_up: false,
+        }
+    }
+
+    pub fn sync_cards(&self, cards: Vec<CardMeta>) {
+        if let Ok(mut mirror) = self.card_mirror.lock() {
+            *mirror = cards;
+        }
+        if let Ok(mut initialized) = self.card_mirror_initialized.lock() {
+            *initialized = true;
+        }
+        let snapshot = self.snapshot();
+        self.broadcast(ServerMessage::from(snapshot.clone()));
+        broadcast_terminal_snapshots_for_cards(&snapshot.cards);
+    }
+
+    pub fn pty_id_for_card(&self, card_id: &str) -> String {
+        self.card_mirror
+            .lock()
+            .ok()
+            .and_then(|cards| {
+                cards
+                    .iter()
+                    .find(|card| card.id == card_id)
+                    .and_then(|card| card.pty_id.clone())
+            })
+            .unwrap_or_else(|| card_id.to_string())
+    }
+
+    pub fn card_id_for_pty(&self, pty_id: &str) -> String {
+        self.card_mirror
+            .lock()
+            .ok()
+            .and_then(|cards| {
+                cards
+                    .iter()
+                    .find(|card| {
+                        card.id == pty_id
+                            || card
+                                .pty_id
+                                .as_deref()
+                                .map(|candidate| candidate == pty_id)
+                                .unwrap_or(false)
+                    })
+                    .map(|card| card.id.clone())
+            })
+            .unwrap_or_else(|| pty_id.to_string())
+    }
+
+    fn mirrored_card_for_pty(&self, pty_id: &str) -> Option<CardMeta> {
+        self.card_mirror.lock().ok().and_then(|cards| {
+            cards
+                .iter()
+                .find(|card| {
+                    card.id == pty_id
+                        || card
+                            .pty_id
+                            .as_deref()
+                            .map(|candidate| candidate == pty_id)
+                            .unwrap_or(false)
+                })
+                .cloned()
+                .map(enrich_card_with_live_state)
+        })
+    }
+
+    pub fn emit_spawn_request(&self, request: MobileSpawnCardRequest) -> Result<(), String> {
+        self.emit_desktop_event("mobile://spawn-card", request)
+    }
+
+    pub fn emit_activate_request(&self, request: MobileCardRequest) -> Result<(), String> {
+        self.emit_desktop_event("mobile://activate-card", request)
+    }
+
+    pub fn emit_remove_request(&self, request: MobileCardRequest) -> Result<(), String> {
+        self.emit_desktop_event("mobile://remove-card", request)
+    }
+
+    fn emit_desktop_event<T>(&self, event: &str, payload: T) -> Result<(), String>
+    where
+        T: serde::Serialize + Clone,
+    {
+        let app_handle = self
+            .app_handle
+            .lock()
+            .map_err(|e| format!("Bridge app handle unavailable: {e}"))?
+            .clone()
+            .ok_or_else(|| "Desktop window is unavailable.".to_string())?;
+        app_handle
+            .emit(event, payload)
+            .map_err(|e| format!("Failed to emit desktop bridge event: {e}"))
     }
 
     fn status(&self) -> BridgeStatus {
@@ -154,9 +279,73 @@ pub fn restore_bridge_on_startup() {
     });
 }
 
+pub fn set_app_handle(app_handle: tauri::AppHandle) {
+    BRIDGE_RUNTIME.set_app_handle(app_handle);
+}
+
 #[tauri::command]
 pub async fn bridge_start(host: Option<String>, port: Option<u16>) -> Result<BridgeStatus, String> {
     start_bridge_runtime(host, port, !cfg!(test)).await
+}
+
+#[tauri::command]
+pub async fn bridge_sync_cards(cards: Vec<CardMeta>) -> Result<(), String> {
+    BRIDGE_RUNTIME.sync_cards(cards);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn bridge_resolve_mobile_spawn(
+    request_id: String,
+    ok: bool,
+    card_id: Option<String>,
+    error_code: Option<String>,
+    message: Option<String>,
+) -> Result<(), String> {
+    BRIDGE_RUNTIME.broadcast(ServerMessage::SpawnResult {
+        request_id,
+        ok,
+        card_id,
+        error_code,
+        message,
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn bridge_resolve_mobile_activate(
+    request_id: String,
+    ok: bool,
+    card_id: Option<String>,
+    error_code: Option<String>,
+    message: Option<String>,
+) -> Result<(), String> {
+    BRIDGE_RUNTIME.broadcast(ServerMessage::ActivateResult {
+        request_id,
+        ok,
+        card_id,
+        error_code,
+        message,
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn bridge_resolve_mobile_close(
+    request_id: String,
+    ok: bool,
+    card_id: Option<String>,
+    error_code: Option<String>,
+    message: Option<String>,
+) -> Result<(), String> {
+    BRIDGE_RUNTIME.broadcast(ServerMessage::CloseResult {
+        request_id,
+        ok,
+        card_id,
+        error_code,
+        message,
+    });
+    Ok(())
 }
 
 async fn start_bridge_runtime(
@@ -294,9 +483,10 @@ pub fn broadcast_preview(card_id: &str, output: &str) {
     if preview.last_reply_preview.is_empty() {
         return;
     }
+    let bridge_card_id = BRIDGE_RUNTIME.card_id_for_pty(card_id);
 
     BRIDGE_RUNTIME.broadcast(ServerMessage::Preview {
-        card_id: card_id.to_string(),
+        card_id: bridge_card_id,
         last_reply_preview: preview.last_reply_preview,
         summary_line: preview.summary_line,
         hidden_line_count: preview.hidden_line_count,
@@ -307,9 +497,10 @@ pub fn broadcast_terminal_output(card_id: &str, data: &str, seq: u64) {
     if data.is_empty() {
         return;
     }
+    let bridge_card_id = BRIDGE_RUNTIME.card_id_for_pty(card_id);
 
     BRIDGE_RUNTIME.broadcast(ServerMessage::TerminalOutput {
-        card_id: card_id.to_string(),
+        card_id: bridge_card_id,
         data: data.to_string(),
         seq,
     });
@@ -324,23 +515,26 @@ pub fn broadcast_theme(app: AppThemeTokens, terminal: TerminalThemeTokens, mode:
 }
 
 pub fn broadcast_state(card_id: &str, state: &SessionState) {
+    let bridge_card_id = BRIDGE_RUNTIME.card_id_for_pty(card_id);
     BRIDGE_RUNTIME.broadcast(ServerMessage::State {
-        card_id: card_id.to_string(),
+        card_id: bridge_card_id,
         status: TerminalStatus::from(state.clone()),
     });
 }
 
 pub fn broadcast_attention(card_id: &str, kind: &str, message: &str) {
+    let bridge_card_id = BRIDGE_RUNTIME.card_id_for_pty(card_id);
     BRIDGE_RUNTIME.broadcast(ServerMessage::Attention {
-        card_id: card_id.to_string(),
+        card_id: bridge_card_id,
         attention_kind: kind.to_string(),
         message: message.to_string(),
     });
 }
 
 pub fn broadcast_exit(card_id: &str, code: Option<u32>) {
+    let bridge_card_id = BRIDGE_RUNTIME.card_id_for_pty(card_id);
     BRIDGE_RUNTIME.broadcast(ServerMessage::Exit {
-        card_id: card_id.to_string(),
+        card_id: bridge_card_id,
         code,
     });
 }
@@ -353,9 +547,11 @@ pub fn broadcast_card_added(card_id: &str) {
     let Some(snapshot) = pty::live_session_snapshot(card_id) else {
         return;
     };
-    BRIDGE_RUNTIME.broadcast(ServerMessage::CardAdded {
-        card: card_meta_from_live_session(snapshot),
-    });
+    let card = BRIDGE_RUNTIME
+        .mirrored_card_for_pty(card_id)
+        .unwrap_or_else(|| card_meta_from_live_session(snapshot));
+    BRIDGE_RUNTIME.broadcast(ServerMessage::CardAdded { card: card.clone() });
+    broadcast_terminal_snapshots_for_cards(&[card]);
 }
 
 /// Broadcast that a desktop PTY session was explicitly closed (the
@@ -365,30 +561,47 @@ pub fn broadcast_card_added(card_id: &str) {
 /// protocol requires a full `CardMeta` and the mobile reducer keys removal
 /// on `card.id`.
 pub fn broadcast_card_removed(snapshot: LivePtySessionSnapshot) {
-    BRIDGE_RUNTIME.broadcast(ServerMessage::CardRemoved {
-        card: card_meta_from_live_session(snapshot),
-    });
+    let pty_id = snapshot.id.clone();
+    let card = BRIDGE_RUNTIME
+        .mirrored_card_for_pty(&pty_id)
+        .unwrap_or_else(|| card_meta_from_live_session(snapshot));
+    BRIDGE_RUNTIME.broadcast(ServerMessage::CardRemoved { card });
 }
 
 fn card_meta_from_live_session(snapshot: LivePtySessionSnapshot) -> CardMeta {
     let preview = preview_from_output(&snapshot.terminal_output);
     let project_name = project_name_from_path(&snapshot.working_dir);
+    let status = TerminalStatus::from(snapshot.state);
     CardMeta {
         id: snapshot.id,
-        status: TerminalStatus::from(snapshot.state),
+        pty_id: None,
+        status: status.clone(),
         project_path: snapshot.working_dir,
         project_name,
+        worktree_path: None,
+        terminal_type: Some("shell".to_string()),
+        command: None,
+        created_at: None,
+        last_activity: None,
         last_reply_preview: preview.last_reply_preview,
         summary_line: preview.summary_line,
         hidden_line_count: preview.hidden_line_count,
         recent_output_bytes: snapshot.recent_output.len(),
+        message_count: None,
+        unread: None,
+        provider_session_state: None,
+        pty_live: true,
+        pty_state: Some(status),
+        attachable: true,
     }
 }
 
 pub(super) fn terminal_snapshot_message(card_id: &str) -> Option<TerminalSnapshotMessage> {
-    let snapshot = pty::attach_snapshot_for_bridge(card_id)?;
+    let pty_id = BRIDGE_RUNTIME.pty_id_for_card(card_id);
+    let snapshot = pty::attach_snapshot_for_bridge(&pty_id)?;
+    let bridge_card_id = BRIDGE_RUNTIME.card_id_for_pty(&snapshot.pty_id);
     Some(TerminalSnapshotMessage {
-        card_id: snapshot.pty_id,
+        card_id: bridge_card_id,
         data: snapshot.data,
         seq: snapshot.seq,
         rows: snapshot.rows,
@@ -397,6 +610,40 @@ pub(super) fn terminal_snapshot_message(card_id: &str) -> Option<TerminalSnapsho
         cursor_col: snapshot.cursor_col,
         history: snapshot.history,
     })
+}
+
+fn broadcast_terminal_snapshots_for_cards(cards: &[CardMeta]) {
+    for card in cards {
+        if !card.pty_live {
+            continue;
+        }
+        if let Some(snapshot) = terminal_snapshot_message(&card.id) {
+            BRIDGE_RUNTIME.broadcast(ServerMessage::TerminalSnapshot { snapshot });
+        }
+    }
+}
+
+fn enrich_card_with_live_state(mut card: CardMeta) -> CardMeta {
+    let pty_id = card.pty_id.clone().unwrap_or_else(|| card.id.clone());
+    let Some(snapshot) = pty::live_session_snapshot(&pty_id) else {
+        card.pty_live = false;
+        card.pty_state = None;
+        return card;
+    };
+
+    let preview = preview_from_output(&snapshot.terminal_output);
+    let status = TerminalStatus::from(snapshot.state);
+    card.pty_id = Some(snapshot.id);
+    card.status = status.clone();
+    card.pty_live = true;
+    card.pty_state = Some(status);
+    card.recent_output_bytes = snapshot.recent_output.len();
+    if !preview.last_reply_preview.is_empty() {
+        card.last_reply_preview = preview.last_reply_preview;
+        card.summary_line = preview.summary_line;
+        card.hidden_line_count = preview.hidden_line_count;
+    }
+    card
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -834,8 +1081,7 @@ mod tests {
             )
             .await;
             assert!(
-                preflight.starts_with("HTTP/1.1 200 ")
-                    || preflight.starts_with("HTTP/1.1 204 "),
+                preflight.starts_with("HTTP/1.1 200 ") || preflight.starts_with("HTTP/1.1 204 "),
                 "expected successful preflight, got: {}",
                 preflight.lines().next().unwrap_or(&preflight)
             );

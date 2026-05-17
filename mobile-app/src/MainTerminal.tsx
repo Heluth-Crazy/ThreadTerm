@@ -12,25 +12,21 @@ import type { ServerMessage } from '@shared/mobile/bridge/protocol';
 // longer referenced here (kept on disk for rollback), so streaming AI CLI
 // output is mirrored exactly like the desktop terminal without block chrome.
 //
-// Renderer: xterm's DEFAULT DOM renderer (no WebglAddon). The WebGL renderer
-// was removed deliberately. iOS Tauri WKWebView can return a non-null
-// `getContext('webgl2')` that never composites, so even a probe-gated WebGL
-// addon left the canvas fully black with no DOM text fallback on real devices.
-// The user goal is "faithfully mirror the desktop terminal content" — content
-// visibility outranks scroll smoothness. The DOM renderer paints text into the
-// DOM, is fully WKWebView-compatible, and scrolls fine for the bounded
-// scrollback here. (`@xterm/addon-webgl` stays in package.json / the
-// vendor-xterm chunk, just unreferenced, so WebGL can be revisited on a
-// verifiable platform without churning the lockfile.)
+// Renderer strategy: xterm's DEFAULT DOM renderer.
+// Canvas/WebGL renderers can reduce scroll paint cost, but real iOS WKWebView
+// testing showed the same unacceptable failure mode: the addon can load
+// successfully while the terminal area remains black. Since the mobile goal is
+// "always show the desktop terminal content", content visibility takes
+// precedence over renderer acceleration.
 
 interface MainTerminalProps {
   activeCardId: string | null;
   messages: ServerMessage[];
   mode?: 'detail' | 'preview';
   className?: string;
-  // Optional bridge resize channel. App wires this to bridge.send for
-  // full-control devices only; read-only / preview surfaces leave it undefined
-  // so local fitting never issues a read-only resize command.
+  // Optional resize observer for tests or future local-only consumers. The
+  // mobile app intentionally does not wire this to the desktop PTY: phone
+  // keyboard / viewport changes must not resize the desktop-owned session.
   onResize?: (cols: number, rows: number) => void;
   // Monotonic counter bumped by App ONLY on server backpressure
   // (broadcast Lagged -> error/backpressure). A change re-arms the snapshot
@@ -70,16 +66,73 @@ const DARK_THEME = {
 // Detail scrollback is a deliberate balance: deep enough that scrolling up to
 // review earlier output stays useful, but not so deep that the DOM renderer's
 // momentum-scroll surface (rows * lineHeight) becomes janky in iOS WKWebView.
-// 2500 lines is 2.5x xterm's default and pairs with the GPU-composited
-// `.xterm-viewport` CSS to keep large-output scrolling smooth.
+// 2500 lines is 2.5x xterm's default and keeps the DOM surface bounded while
+// still retaining ample upward history.
 const DETAIL_SCROLLBACK = 2500;
 const PREVIEW_SCROLLBACK = 160;
+const DETAIL_FONT_SIZE = 13;
+const PREVIEW_FONT_SIZE = 11;
+const MIN_DETAIL_FONT_SIZE = 5;
+const MIN_PREVIEW_FONT_SIZE = 5;
+const XTERM_HOST_PADDING_X = 8;
+const XTERM_HOST_PADDING_Y = 8;
+const MONOSPACE_CELL_WIDTH_RATIO = 0.62;
+
+type TerminalSize = {
+  cols: number;
+  rows: number;
+};
 
 function snapshotPayload(snapshot: {
   history?: string;
   data: string;
 }): string {
   return [snapshot.history, snapshot.data].filter(Boolean).join('');
+}
+
+function snapshotSize(snapshot: { cols: number; rows: number }): TerminalSize | null {
+  if (!Number.isFinite(snapshot.cols) || !Number.isFinite(snapshot.rows)) return null;
+  const cols = Math.floor(snapshot.cols);
+  const rows = Math.floor(snapshot.rows);
+  if (cols < 1 || rows < 1) return null;
+  return { cols, rows };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function mirroredFontSize(
+  host: HTMLElement,
+  size: TerminalSize,
+  mode: 'detail' | 'preview',
+): number {
+  const maxFontSize = mode === 'preview' ? PREVIEW_FONT_SIZE : DETAIL_FONT_SIZE;
+  const minFontSize = mode === 'preview' ? MIN_PREVIEW_FONT_SIZE : MIN_DETAIL_FONT_SIZE;
+  const usableWidth = Math.max(1, host.clientWidth - XTERM_HOST_PADDING_X);
+  const usableHeight = Math.max(1, host.clientHeight - XTERM_HOST_PADDING_Y);
+  const byCols = usableWidth / Math.max(1, size.cols) / MONOSPACE_CELL_WIDTH_RATIO;
+  const byRows = usableHeight / Math.max(1, size.rows) / 1.2;
+  const next = clamp(Math.min(maxFontSize, byCols, byRows), minFontSize, maxFontSize);
+  return Math.floor(next * 10) / 10;
+}
+
+function applyMirroredTerminalSize(
+  terminal: Terminal,
+  host: HTMLElement | null,
+  size: TerminalSize | null,
+  mode: 'detail' | 'preview',
+): boolean {
+  if (!host || !size) return false;
+  const fontSize = mirroredFontSize(host, size, mode);
+  if (terminal.options.fontSize !== fontSize) {
+    terminal.options.fontSize = fontSize;
+  }
+  if (terminal.cols !== size.cols || terminal.rows !== size.rows) {
+    terminal.resize(size.cols, size.rows);
+  }
+  terminal.refresh(0, Math.max(0, terminal.rows - 1));
+  return true;
 }
 
 export function MainTerminal({
@@ -103,6 +156,7 @@ export function MainTerminal({
   const activeCardIdRef = useRef<string | null>(activeCardId);
   const onResizeRef = useRef<typeof onResize>(onResize);
   const lastReportedSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  const sourceSizeRef = useRef<TerminalSize | null>(null);
   // The backpressure nonce already observed. Initialized to the mount value so
   // a surface that mounts after a prior backpressure does NOT spuriously
   // re-arm; only a genuine increment while this instance is alive does.
@@ -121,7 +175,7 @@ export function MainTerminal({
       disableStdin: true,
       cursorBlink: false,
       fontFamily: 'SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-      fontSize: mode === 'preview' ? 11 : 13,
+      fontSize: mode === 'preview' ? PREVIEW_FONT_SIZE : DETAIL_FONT_SIZE,
       lineHeight: 1.2,
       scrollback: mode === 'preview' ? PREVIEW_SCROLLBACK : DETAIL_SCROLLBACK,
       // Instant (non-animated) scroll: animated smooth-scroll runs a
@@ -137,10 +191,6 @@ export function MainTerminal({
     terminal.loadAddon(fitAddon);
 
     terminal.open(host);
-
-    // No WebGL addon: xterm uses its default DOM renderer (see header note).
-    // Text is rendered into the DOM, which composites reliably in iOS
-    // WKWebView and never leaves a black canvas.
 
     return () => {
       fitAddonRef.current = null;
@@ -161,11 +211,14 @@ export function MainTerminal({
     appliedSnapshotSeqRef.current = -1;
     lastAppliedOutputSeqRef.current = -1;
     lastReportedSizeRef.current = null;
+    sourceSizeRef.current = null;
     terminalRef.current?.reset();
   }, [activeCardId]);
 
-  // Fit the terminal to its container and report the new size through the
-  // optional bridge resize channel.
+  // Fit before a snapshot exists. After the first terminal_snapshot, the
+  // source PTY dimensions become authoritative: ANSI cursor addressing from AI
+  // CLIs only renders correctly when the mirror uses the same rows/cols as the
+  // producer. Mobile viewport changes adjust font size, never the desktop PTY.
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -174,6 +227,9 @@ export function MainTerminal({
       const terminal = terminalRef.current;
       const fitAddon = fitAddonRef.current;
       if (!terminal || !fitAddon) return;
+      if (applyMirroredTerminalSize(terminal, host, sourceSizeRef.current, mode)) {
+        return;
+      }
       try {
         fitAddon.fit();
       } catch {
@@ -241,7 +297,7 @@ export function MainTerminal({
       window.visualViewport?.removeEventListener('resize', onViewportChange);
       window.visualViewport?.removeEventListener('scroll', onViewportChange);
     };
-  }, []);
+  }, [mode]);
 
   // Backpressure recovery: when App bumps recoveryNonce (server broadcast
   // Lagged -> error/backpressure), re-arm the snapshot epoch ONCE so the
@@ -269,6 +325,11 @@ export function MainTerminal({
       if (message.kind === 'terminal_snapshot') {
         const snapshot = message.snapshot;
         if (snapshot.cardId !== activeCardId) continue;
+        const nextSourceSize = snapshotSize(snapshot);
+        if (nextSourceSize) {
+          sourceSizeRef.current = nextSourceSize;
+          applyMirroredTerminalSize(terminal, hostRef.current, nextSourceSize, mode);
+        }
         // Protocol invariant: terminal_snapshot is ONLY emitted on (re)connect
         // (server initial_messages_for_client). In-session screen redraws
         // (alt-screen, full repaints) arrive as raw ANSI in terminal_output,
@@ -294,13 +355,14 @@ export function MainTerminal({
       }
       if (message.kind === 'terminal_output') {
         if (message.card_id !== activeCardId) continue;
+        if (!sourceSizeRef.current && appliedSnapshotSeqRef.current === -1) continue;
         const seq = Number(message.seq ?? 0);
         if (seq <= lastAppliedOutputSeqRef.current) continue;
         terminal.write(message.data);
         lastAppliedOutputSeqRef.current = seq;
       }
     }
-  }, [activeCardId, messages]);
+  }, [activeCardId, messages, mode]);
 
   // The host div is ALWAYS rendered so hostRef stays stable. The create-effect
   // therefore reliably creates the xterm instance exactly once and never

@@ -11,12 +11,14 @@ describe('buildChipRegistry', () => {
     });
     expect(chips.map((c) => c.id)).toEqual([
       'notifications',
-      'bookmarks',
       'rich-input',
       'remote-control',
     ]);
     expect(chips.find((c) => c.id === 'workflows')).toBeUndefined();
     expect(chips.find((c) => c.id === 'file-explorer')).toBeUndefined();
+    // Bookmarks feature is hidden via `lib/featureFlags.ts`; the chip must
+    // disappear in lockstep with the top toolbar / side panel surfaces.
+    expect(chips.find((c) => c.id === 'bookmarks')).toBeUndefined();
   });
 
   it('keeps file-explorer hidden when cwd is empty', () => {
@@ -50,14 +52,20 @@ describe('buildChipRegistry', () => {
     expect(chips.find((c) => c.id === 'remote-control')).toBeUndefined();
   });
 
-  it('emits bookmark badge only when count > 0', () => {
+  it('omits the bookmarks chip while the feature is hidden, regardless of count', () => {
+    // The bookmark count is still honoured by the store / mirrored into the
+    // chip context, but the bottom-bar chip is gated by the BOOKMARKS_VISIBLE
+    // feature flag so neither the empty nor populated case should surface a
+    // chip while the feature is hidden. Flipping the flag back on must
+    // restore both the chip and its count-driven badge (covered by the
+    // existing chip descriptor shape).
     const empty = buildChipRegistry({
       cardCwd: '/x',
       bridgeAvailable: true,
       bookmarkCount: 0,
       unreadNotifications: 0,
     });
-    expect(empty.find((c) => c.id === 'bookmarks')?.badge).toBeUndefined();
+    expect(empty.find((c) => c.id === 'bookmarks')).toBeUndefined();
 
     const filled = buildChipRegistry({
       cardCwd: '/x',
@@ -65,6 +73,6 @@ describe('buildChipRegistry', () => {
       bookmarkCount: 7,
       unreadNotifications: 0,
     });
-    expect(filled.find((c) => c.id === 'bookmarks')?.badge).toBe(7);
+    expect(filled.find((c) => c.id === 'bookmarks')).toBeUndefined();
   });
 });

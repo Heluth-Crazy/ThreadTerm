@@ -10,13 +10,37 @@ pub const PROTOCOL_VERSION: u16 = 1;
 #[serde(rename_all = "camelCase")]
 pub struct CardMeta {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pty_id: Option<String>,
     pub status: TerminalStatus,
     pub project_path: String,
     pub project_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity: Option<u64>,
     pub last_reply_preview: String,
     pub summary_line: Option<String>,
     pub hidden_line_count: usize,
     pub recent_output_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unread: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_session_state: Option<String>,
+    #[serde(default)]
+    pub pty_live: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pty_state: Option<TerminalStatus>,
+    #[serde(default)]
+    pub attachable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,6 +58,8 @@ pub struct NotificationEntry {
 pub struct BridgeSnapshot {
     pub cards: Vec<CardMeta>,
     pub notifications: Vec<NotificationEntry>,
+    #[serde(default)]
+    pub warming_up: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -170,6 +196,23 @@ pub struct BridgeDevice {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileSpawnCardRequest {
+    pub request_id: String,
+    pub terminal_type: String,
+    pub project_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileCardRequest {
+    pub request_id: String,
+    pub card_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DevicePermission {
     ReadOnly,
@@ -217,11 +260,17 @@ pub enum ClientMessage {
         rows: u16,
     },
     Spawn {
+        request_id: String,
         terminal_type: String,
         project_path: String,
         command: Option<String>,
     },
+    Activate {
+        request_id: String,
+        card_id: String,
+    },
     Close {
+        request_id: Option<String>,
         card_id: String,
     },
     Pin {
@@ -244,6 +293,8 @@ pub enum ServerMessage {
     Snapshot {
         cards: Vec<CardMeta>,
         notifications: Vec<NotificationEntry>,
+        #[serde(rename = "warmingUp")]
+        warming_up: bool,
     },
     CardAdded {
         card: CardMeta,
@@ -288,6 +339,27 @@ pub enum ServerMessage {
     },
     Notification {
         entry: NotificationEntry,
+    },
+    SpawnResult {
+        request_id: String,
+        ok: bool,
+        card_id: Option<String>,
+        error_code: Option<String>,
+        message: Option<String>,
+    },
+    ActivateResult {
+        request_id: String,
+        ok: bool,
+        card_id: Option<String>,
+        error_code: Option<String>,
+        message: Option<String>,
+    },
+    CloseResult {
+        request_id: String,
+        ok: bool,
+        card_id: Option<String>,
+        error_code: Option<String>,
+        message: Option<String>,
     },
     Pong {
         t: u64,
@@ -362,6 +434,7 @@ impl From<BridgeSnapshot> for ServerMessage {
         ServerMessage::Snapshot {
             cards: value.cards,
             notifications: value.notifications,
+            warming_up: value.warming_up,
         }
     }
 }
@@ -442,20 +515,37 @@ mod tests {
     fn serializes_card_meta_context_for_mobile_clients() {
         let card = CardMeta {
             id: "card-1".to_string(),
+            pty_id: Some("pty-1".to_string()),
             status: TerminalStatus::Idle,
             project_path: "/tmp/ThreadTerm".to_string(),
             project_name: "ThreadTerm".to_string(),
+            worktree_path: None,
+            terminal_type: Some("codex".to_string()),
+            command: None,
+            created_at: Some(123),
+            last_activity: Some(456),
             last_reply_preview: "recent output".to_string(),
             summary_line: Some("latest reply".to_string()),
             hidden_line_count: 2,
             recent_output_bytes: 128,
+            message_count: Some(7),
+            unread: Some(true),
+            provider_session_state: Some("bound".to_string()),
+            pty_live: false,
+            pty_state: None,
+            attachable: true,
         };
 
         let json = serde_json::to_value(card).expect("serialize card meta");
+        assert_eq!(json["ptyId"], "pty-1");
         assert_eq!(json["projectPath"], "/tmp/ThreadTerm");
         assert_eq!(json["projectName"], "ThreadTerm");
+        assert_eq!(json["terminalType"], "codex");
         assert_eq!(json["summaryLine"], "latest reply");
         assert_eq!(json["hiddenLineCount"], 2);
+        assert_eq!(json["messageCount"], 7);
+        assert_eq!(json["unread"], true);
+        assert_eq!(json["attachable"], true);
     }
 
     #[test]
@@ -552,6 +642,61 @@ mod tests {
             ClientMessage::Auth { token } => assert_eq!(token, "device-token"),
             _ => panic!("expected auth message"),
         }
+    }
+
+    #[test]
+    fn parses_mobile_control_messages() {
+        let spawn = parse_client_message(
+            r#"{"protocol_version":1,"kind":"spawn","request_id":"req-1","terminal_type":"codex","project_path":"/tmp/app","command":"codex"}"#,
+        )
+        .expect("parse spawn");
+        match spawn {
+            ClientMessage::Spawn {
+                request_id,
+                terminal_type,
+                project_path,
+                command,
+            } => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(terminal_type, "codex");
+                assert_eq!(project_path, "/tmp/app");
+                assert_eq!(command.as_deref(), Some("codex"));
+            }
+            _ => panic!("expected spawn message"),
+        }
+
+        let activate = parse_client_message(
+            r#"{"protocol_version":1,"kind":"activate","request_id":"req-2","card_id":"card-1"}"#,
+        )
+        .expect("parse activate");
+        match activate {
+            ClientMessage::Activate {
+                request_id,
+                card_id,
+            } => {
+                assert_eq!(request_id, "req-2");
+                assert_eq!(card_id, "card-1");
+            }
+            _ => panic!("expected activate message"),
+        }
+    }
+
+    #[test]
+    fn serializes_mobile_control_results() {
+        let json = serde_json::to_value(versioned_server_message(ServerMessage::SpawnResult {
+            request_id: "req-1".to_string(),
+            ok: true,
+            card_id: Some("card-1".to_string()),
+            error_code: None,
+            message: None,
+        }))
+        .expect("serialize spawn result");
+
+        assert_eq!(json["protocol_version"], PROTOCOL_VERSION);
+        assert_eq!(json["kind"], "spawn_result");
+        assert_eq!(json["request_id"], "req-1");
+        assert_eq!(json["card_id"], "card-1");
+        assert_eq!(json["ok"], true);
     }
 
     #[test]

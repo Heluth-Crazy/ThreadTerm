@@ -55,6 +55,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -212,7 +213,7 @@ button {
 }
 
 .ios-list-item,
-.instance-row {
+.instance-row-main {
   display: flex;
   width: 100%;
   min-width: 0;
@@ -226,9 +227,66 @@ button {
   text-align: left;
 }
 
+.instance-row {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  border-bottom: 1px solid var(--ios-separator);
+}
+
+.instance-row-main {
+  border: 0;
+  border-bottom: 0;
+}
+
+.instance-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 0;
+}
+
+.instance-action-button {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+
+.instance-action-button.danger {
+  background: rgb(255 69 58 / 0.14);
+  color: var(--ios-red);
+}
+
 .ios-list-card > :last-child,
 .attention-list li:last-child {
   border-bottom: 0;
+}
+
+.project-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--ios-separator);
+  background: hsl(var(--muted) / 0.45);
+  padding: 8px 12px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.project-list-header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .list-icon,
@@ -461,6 +519,60 @@ button {
   padding: 12px;
 }
 
+.new-session-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+  border: 1px solid var(--ios-separator);
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+  padding: 12px;
+}
+
+.new-session-panel label {
+  display: grid;
+  gap: 5px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.new-session-panel input,
+.new-session-panel select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--ios-separator);
+  border-radius: var(--radius);
+  outline: none;
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  padding: 9px 10px;
+  font-size: 16px;
+}
+
+.new-session-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.new-session-actions button {
+  border: 0;
+  border-radius: var(--radius);
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  padding: 10px;
+  font-weight: 750;
+}
+
+.new-session-actions .new-session-primary {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+.new-session-actions button:disabled {
+  opacity: 0.45;
+}
+
 .settings-section .section-heading {
   padding: 0 0 10px;
 }
@@ -530,12 +642,23 @@ button {
   display: grid;
   min-height: calc(50px + env(safe-area-inset-top));
   flex: 0 0 auto;
-  grid-template-columns: 78px minmax(0, 1fr) 44px;
+  grid-template-columns: 78px minmax(0, 1fr) 78px;
   align-items: end;
   gap: 8px;
   border-bottom: 1px solid rgb(255 255 255 / 0.12);
   padding-inline: max(12px, env(safe-area-inset-left)) max(10px, env(safe-area-inset-right));
   padding-bottom: 6px;
+}
+
+.terminal-nav-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.terminal-nav-actions .nav-icon-button {
+  width: 36px;
+  height: 36px;
 }
 
 .terminal-title {
@@ -599,22 +722,14 @@ button {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   background: #000000 !important;
-  /* Large terminal scrollback makes the DOM-renderer momentum scroll janky in
-     iOS WKWebView. Promote the scroller to its own GPU compositing layer and
-     declare a vertical-only gesture so the browser hands off momentum scroll
-     to the compositor instead of repainting absolutely-positioned glyph spans
-     on the main thread every frame. */
-  transform: translateZ(0);
-  will-change: scroll-position;
-  touch-action: pan-y;
 }
 
-/* Constrain layout/paint of the row container so a long scrollback does not
-   re-layout the whole terminal on each scroll tick. xterm only paints rows in
-   the viewport; `contain` keeps that work scoped. */
-.terminal-xterm-host .xterm-screen,
+.terminal-xterm-host .xterm-screen {
+  pointer-events: none;
+}
+
 .terminal-xterm-host .xterm-rows {
-  contain: content;
+  pointer-events: none;
 }
 
 .terminal-detail-output {
@@ -761,6 +876,33 @@ button {
   border-bottom: 1px solid rgb(255 255 255 / 0.12);
   background: #101014;
   padding: 0 max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
+}
+
+.resume-strip {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid rgb(255 255 255 / 0.12);
+  background: #101014;
+  padding: 8px max(10px, env(safe-area-inset-right)) 8px max(10px, env(safe-area-inset-left));
+  color: rgb(255 255 255 / 0.7);
+  font-size: 12px;
+}
+
+.resume-strip button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--radius);
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 750;
 }
 
 .terminal-toolbar button {

@@ -7,6 +7,7 @@ export interface MobileBridgeState {
   activeCardId: string | null;
   wsStatus: 'idle' | 'connecting' | 'open' | 'closed' | 'error';
   lastError: string | null;
+  warmingUp: boolean;
   ptyStatusByCardId: Record<string, CardMeta['status']>;
   recentOutputBytesByCardId: Record<string, number>;
   theme: MobileThemeMessage | null;
@@ -18,6 +19,7 @@ export const initialBridgeState: MobileBridgeState = {
   activeCardId: null,
   wsStatus: 'idle',
   lastError: null,
+  warmingUp: false,
   ptyStatusByCardId: {},
   recentOutputBytesByCardId: {},
   theme: null,
@@ -57,6 +59,7 @@ export function applyServerMessage(
         ...state,
         cards: message.cards,
         notifications: message.notifications,
+        warmingUp: Boolean(message.warmingUp),
         activeCardId:
           state.activeCardId && message.cards.some((card) => card.id === state.activeCardId)
             ? state.activeCardId
@@ -91,6 +94,27 @@ export function applyServerMessage(
         ...state,
         cards,
         activeCardId: state.activeCardId === message.card.id ? cards[0]?.id ?? null : state.activeCardId,
+      };
+    }
+    case 'spawn_result':
+    case 'activate_result':
+      return {
+        ...state,
+        activeCardId: message.ok && message.card_id ? message.card_id : state.activeCardId,
+        lastError: message.ok ? state.lastError : message.message ?? message.error_code ?? state.lastError,
+      };
+    case 'close_result': {
+      if (!message.ok || !message.card_id) {
+        return {
+          ...state,
+          lastError: message.message ?? message.error_code ?? state.lastError,
+        };
+      }
+      const cards = state.cards.filter((card) => card.id !== message.card_id);
+      return {
+        ...state,
+        cards,
+        activeCardId: state.activeCardId === message.card_id ? cards[0]?.id ?? null : state.activeCardId,
       };
     }
     case 'preview':

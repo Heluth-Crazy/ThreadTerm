@@ -47,6 +47,7 @@ pub fn run() {
             overlay::register_default_shortcuts(&app.handle());
             overlay::prewarm_windows(&app.handle());
             supervisor::init(app.handle().clone());
+            bridge::set_app_handle(app.handle().clone());
             bridge::restore_bridge_on_startup();
 
             tracing::info!("ThreadTerm Tauri backend ready");
@@ -78,6 +79,10 @@ pub fn run() {
             bridge::bridge_pair_qr,
             bridge::bridge_devices,
             bridge::bridge_revoke_device,
+            bridge::bridge_sync_cards,
+            bridge::bridge_resolve_mobile_spawn,
+            bridge::bridge_resolve_mobile_activate,
+            bridge::bridge_resolve_mobile_close,
             bridge::bridge_broadcast_theme,
             overlay::overlay_show_selector,
             overlay::overlay_hide_selector,

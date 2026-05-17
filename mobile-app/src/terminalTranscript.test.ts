@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BRIDGE_PROTOCOL_VERSION } from '@shared/mobile/bridge/protocol';
+import { BRIDGE_PROTOCOL_VERSION, type ServerMessage } from '@shared/mobile/bridge/protocol';
 import { appendTerminalMessage, type TerminalTranscriptMessage } from './terminalTranscript';
 
 const snapshot = (seq: number, data = 'snapshot'): TerminalTranscriptMessage => ({
@@ -38,5 +38,17 @@ describe('terminal transcript source of truth', () => {
     const current = [snapshot(20, 'ready')];
 
     expect(appendTerminalMessage(current, output(19, 'stale'))).toBe(current);
+  });
+
+  it('preserves the latest snapshot when a card emits more than the transcript cap', () => {
+    let next: ServerMessage[] = [snapshot(1, 'ready')];
+
+    for (let index = 0; index < 2100; index += 1) {
+      next = appendTerminalMessage(next, output(index + 2, `chunk-${index}`));
+    }
+
+    expect(next).toHaveLength(2000);
+    expect(next[0]).toEqual(snapshot(1, 'ready'));
+    expect(next[next.length - 1]).toEqual(output(2101, 'chunk-2099'));
   });
 });
