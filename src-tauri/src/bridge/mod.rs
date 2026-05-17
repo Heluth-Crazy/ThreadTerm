@@ -140,7 +140,15 @@ impl BridgeRuntime {
         }
         let snapshot = self.snapshot();
         self.broadcast(ServerMessage::from(snapshot.clone()));
-        broadcast_terminal_snapshots_for_cards(&snapshot.cards);
+        // FIX-2 (deep-research-defect-fix / second-diagnosis 问题一-D):
+        // terminal_snapshot is sent ONLY on first connect / reconnect /
+        // Lagged-recovery (server.rs::initial_messages_for_client) and on
+        // single-card add (broadcast_card_added). Card-mirror metadata sync
+        // must NOT re-broadcast every live card's full screen snapshot —
+        // that was the dominant WS amplification under sustained output.
+        // Live screen content is already delivered incrementally via the
+        // independent broadcast_terminal_output channel, so dropping the
+        // per-sync full re-snapshot does not lose any client state.
     }
 
     pub fn pty_id_for_card(&self, card_id: &str) -> String {
@@ -1386,5 +1394,68 @@ mod tests {
 
             bridge_stop().await.expect("bridge_stop should succeed");
         });
+    }
+
+    // ── FIX-2 (deep-research-defect-fix / second-diagnosis 问题一-D) ──────
+    fn fix2_make_card(id: &str, pty_live: bool) -> CardMeta {
+        CardMeta {
+            id: id.to_string(),
+            pty_id: Some(id.to_string()),
+            status: TerminalStatus::Idle,
+            project_path: "/tmp/ThreadTerm".to_string(),
+            project_name: "ThreadTerm".to_string(),
+            worktree_path: None,
+            terminal_type: Some("shell".to_string()),
+            command: None,
+            created_at: Some(1),
+            last_activity: Some(2),
+            last_reply_preview: String::new(),
+            summary_line: None,
+            hidden_line_count: 0,
+            recent_output_bytes: 0,
+            message_count: None,
+            unread: None,
+            provider_session_state: None,
+            pty_live,
+            pty_state: None,
+            attachable: true,
+        }
+    }
+
+    #[test]
+    fn sync_cards_broadcasts_snapshot_but_not_terminal_snapshots() {
+        // FIX-2: card-mirror metadata sync must emit exactly one Snapshot
+        // and MUST NOT re-broadcast any TerminalSnapshot (the dominant WS
+        // amplification under sustained output). This holds regardless of
+        // pty_live because the per-sync full re-snapshot call was removed
+        // entirely; terminal_snapshot now flows only via
+        // initial_messages_for_client (connect/reconnect/Lagged) and
+        // broadcast_card_added (single-card add).
+        let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut rx = BRIDGE_RUNTIME.subscribe();
+
+        BRIDGE_RUNTIME.sync_cards(vec![
+            fix2_make_card("fix2-a", true),
+            fix2_make_card("fix2-b", false),
+        ]);
+
+        let mut snapshot_count = 0;
+        let mut terminal_snapshot_count = 0;
+        while let Ok(message) = rx.try_recv() {
+            match message {
+                ServerMessage::Snapshot { .. } => snapshot_count += 1,
+                ServerMessage::TerminalSnapshot { .. } => terminal_snapshot_count += 1,
+                _ => {}
+            }
+        }
+
+        assert_eq!(
+            snapshot_count, 1,
+            "sync_cards must broadcast exactly one Snapshot"
+        );
+        assert_eq!(
+            terminal_snapshot_count, 0,
+            "FIX-2: sync_cards must NOT re-broadcast TerminalSnapshot"
+        );
     }
 }
