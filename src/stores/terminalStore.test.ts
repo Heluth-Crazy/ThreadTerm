@@ -195,6 +195,12 @@ describe('terminalStore — card lifecycle', () => {
     const inMemory = useTerminalStore.getState().getCardById(id)?.autoRestart;
     expect(inMemory?.history[0]?.status).toBe('pending');
 
+    // FIX-3: persist writes are debounced at the storage layer
+    // (see ./throttledStorage). A real tab close/hide flushes the pending
+    // write; simulate that here so we can assert the *persisted* shape.
+    // The persisted-content contract below is unchanged by FIX-3.
+    window.dispatchEvent(new Event('beforeunload'));
+
     const raw = localStorage.getItem('threadterm-terminal-store');
     expect(raw).toBeTruthy();
     const persisted = JSON.parse(raw ?? '{}') as {

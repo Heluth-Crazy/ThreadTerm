@@ -8,10 +8,14 @@
  *
  * Output buffers (`lastOutput`, `lastReplyPreview`) are persisted as-is because
  * they're tiny (≤2KB per card) and give the user a useful restart preview
- * until the PTY reconnects and overwrites them.
+ * until the PTY reconnects and overwrites them. Their high-frequency writes
+ * are debounced at the storage layer — see `./throttledStorage` (FIX-3) — so
+ * per-chunk store mutations don't each trigger a synchronous full
+ * `JSON.stringify(cards)` + `localStorage` write.
  */
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
+import { createThrottledLocalStorage } from './throttledStorage';
 import type {
   NotificationEntry,
   NotificationKind,
@@ -969,7 +973,8 @@ export const useTerminalStore = create<TerminalStore>()(
     }),
     {
       name: 'threadterm-terminal-store',
-      storage: createJSONStorage(() => localStorage),
+      // FIX-3: debounce the per-chunk persist writes (see ./throttledStorage).
+      storage: createJSONStorage(() => createThrottledLocalStorage(500)),
       partialize: (state) => ({
         cards: state.cards.map((card) => ({
           ...card,
