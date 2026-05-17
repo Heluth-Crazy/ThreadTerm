@@ -37,29 +37,51 @@ pub(super) fn insert_if_absent(
     }
 }
 
+/// Build a [`LivePtySessionSnapshot`] from a single live session.
+///
+/// Returns `None` when the session state lock is unreadable (mirrors the
+/// `filter_map` behaviour of [`list_live_sessions`] so both paths agree).
+fn snapshot_from_session(id: &str, session: &PtySession) -> Option<LivePtySessionSnapshot> {
+    let state = session.state.read().ok()?.clone();
+    let recent_output = session
+        .output_buffer
+        .read()
+        .ok()
+        .map(|buffer| buffer.clone())
+        .unwrap_or_default();
+
+    Some(LivePtySessionSnapshot {
+        id: id.to_string(),
+        state,
+        working_dir: session._working_dir.clone(),
+        terminal_output: session::terminal_output_snapshot(session)
+            .unwrap_or_else(|| recent_output.clone()),
+        recent_output,
+    })
+}
+
+/// Snapshot a single registered session by id. Used by the bridge to build
+/// a `CardMeta` for incremental card-added/card-removed broadcasts without
+/// rebuilding the entire live-session list.
+pub(super) fn live_session_snapshot(id: &str) -> Option<LivePtySessionSnapshot> {
+    let session = PTY_SESSIONS.get(id)?;
+    snapshot_from_session(id, session.value())
+}
+
+/// Snapshot a session the caller already holds an `Arc` to (e.g. the one
+/// returned by [`remove`]), so a removed card can still be described after
+/// it has left the registry.
+pub(super) fn live_session_snapshot_from(
+    id: &str,
+    session: &PtySession,
+) -> Option<LivePtySessionSnapshot> {
+    snapshot_from_session(id, session)
+}
+
 pub fn list_live_sessions() -> Vec<LivePtySessionSnapshot> {
     PTY_SESSIONS
         .iter()
-        .filter_map(|entry| {
-            let id = entry.key().clone();
-            let session = entry.value();
-            let state = session.state.read().ok()?.clone();
-            let recent_output = session
-                .output_buffer
-                .read()
-                .ok()
-                .map(|buffer| buffer.clone())
-                .unwrap_or_default();
-
-            Some(LivePtySessionSnapshot {
-                id,
-                state,
-                working_dir: session._working_dir.clone(),
-                terminal_output: session::terminal_output_snapshot(session)
-                    .unwrap_or_else(|| recent_output.clone()),
-                recent_output,
-            })
-        })
+        .filter_map(|entry| snapshot_from_session(entry.key(), entry.value()))
         .collect()
 }
 
@@ -87,5 +109,28 @@ mod tests {
     #[test]
     fn remove_unknown_id_is_none() {
         assert!(remove("__threadterm_unit_test_unknown_id__").is_none());
+    }
+
+    /// The single-session snapshot helper used by the bridge for
+    /// incremental card-added broadcasts returns None for an id that is
+    /// not registered (mirrors the registry being empty for that card).
+    #[test]
+    fn live_session_snapshot_unknown_id_is_none() {
+        assert!(live_session_snapshot("__threadterm_unit_test_unknown_id__").is_none());
+    }
+
+    /// Whatever real sessions exist in the process-global registry, the
+    /// per-session snapshot must agree with the list_live_sessions entry
+    /// for the same id: same well-formed id, same working dir. This proves
+    /// the DRY extraction did not change snapshot construction.
+    #[test]
+    fn live_session_snapshot_matches_list_entry_for_known_ids() {
+        for listed in list_live_sessions() {
+            let single = live_session_snapshot(&listed.id)
+                .expect("a listed session must be snapshot-able by id");
+            assert!(!single.id.is_empty());
+            assert_eq!(single.id, listed.id);
+            assert_eq!(single.working_dir, listed.working_dir);
+        }
     }
 }

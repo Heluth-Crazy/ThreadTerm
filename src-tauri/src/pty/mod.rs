@@ -21,6 +21,13 @@ mod utf8;
 pub use registry::list_live_sessions;
 pub use session::{LivePtySessionSnapshot, PtyAttachSnapshot, SessionState};
 
+/// Snapshot a single live PTY session by id (used by the bridge to build a
+/// `CardMeta` for incremental card-added broadcasts). Returns `None` when no
+/// session is registered for `id`.
+pub fn live_session_snapshot(id: &str) -> Option<LivePtySessionSnapshot> {
+    registry::live_session_snapshot(id)
+}
+
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -142,6 +149,12 @@ pub async fn pty_create(
         return Ok(id);
     }
 
+    // The session is now in the registry. Tell connected mobile clients
+    // about the new card so the desktop/mobile session lists stay in sync
+    // without waiting for a reconnect snapshot. Pure addition: desktop
+    // behaviour is unchanged.
+    crate::bridge::broadcast_card_added(&id);
+
     // Spawn a background thread to read PTY output and emit events. The
     // session remains Idle until bytes actually flow from the PTY.
     events::spawn_output_idle_watcher(id.clone(), session.clone());
@@ -227,12 +240,23 @@ pub async fn pty_resize(id: String, rows: u16, cols: u16) -> Result<(), String> 
 pub async fn pty_kill(id: String) -> Result<(), String> {
     if let Some(session) = registry::remove(&id) {
         mark_killed(&session);
+        // Snapshot the session *before* dropping it so the bridge can build
+        // a full CardMeta for the removal broadcast (the session has already
+        // left the registry, so a fresh lookup would fail). This explicit
+        // close path also covers the mobile close entry
+        // (bridge::server.rs -> pty_kill). Natural process exit
+        // (events.rs) is intentionally NOT touched: exited cards stay
+        // visible as completed/failed, matching desktop behaviour.
+        let removed_snapshot = registry::live_session_snapshot_from(&id, &session);
         if let Ok(mut child) = session.child.lock() {
             let _ = child.kill();
         }
         // Drop the Arc<PtySession> — when the reader thread also drops its
         // clone the master fd is closed and the reader gets EOF.
         drop(session);
+        if let Some(snapshot) = removed_snapshot {
+            crate::bridge::broadcast_card_removed(snapshot);
+        }
         tracing::info!(id = %id, "PTY session killed");
         Ok(())
     } else {
