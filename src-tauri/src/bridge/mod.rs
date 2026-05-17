@@ -345,6 +345,31 @@ pub fn broadcast_exit(card_id: &str, code: Option<u32>) {
     });
 }
 
+/// Broadcast that a desktop PTY session was created so connected mobile
+/// clients add the card without waiting for a reconnect/snapshot. The
+/// snapshot is read from the registry, so this must be called *after* the
+/// session has been inserted.
+pub fn broadcast_card_added(card_id: &str) {
+    let Some(snapshot) = pty::live_session_snapshot(card_id) else {
+        return;
+    };
+    BRIDGE_RUNTIME.broadcast(ServerMessage::CardAdded {
+        card: card_meta_from_live_session(snapshot),
+    });
+}
+
+/// Broadcast that a desktop PTY session was explicitly closed (the
+/// `pty_kill` path, which also covers the mobile close entry) so connected
+/// mobile clients drop the card immediately. The caller must pass a
+/// snapshot taken *before* the session left the registry, because the
+/// protocol requires a full `CardMeta` and the mobile reducer keys removal
+/// on `card.id`.
+pub fn broadcast_card_removed(snapshot: LivePtySessionSnapshot) {
+    BRIDGE_RUNTIME.broadcast(ServerMessage::CardRemoved {
+        card: card_meta_from_live_session(snapshot),
+    });
+}
+
 fn card_meta_from_live_session(snapshot: LivePtySessionSnapshot) -> CardMeta {
     let preview = preview_from_output(&snapshot.terminal_output);
     let project_name = project_name_from_path(&snapshot.working_dir);

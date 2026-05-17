@@ -679,6 +679,137 @@ test('a plain reconnect snapshot still does NOT destroy history (issue-5 guard, 
   await expectXtermText(detailScreen, 'scroll sentinel 79');
 });
 
+// --- D4: desktop session add/remove must reflect on mobile in real time ---
+// The backend now broadcasts ServerMessage::CardAdded on pty_create and
+// ServerMessage::CardRemoved on pty_kill (the explicit-close path, which also
+// covers the mobile close entry). The mobile reducer already handled
+// card_added/card_removed; these tests prove the live session list stays in
+// sync WITHOUT a reconnect, and that a natural process exit still only marks
+// the card completed/failed (it stays visible, matching desktop behaviour).
+
+test('a desktop card_added appears in the session list without a reconnect (D4)', async ({
+  page,
+}) => {
+  await page.goto('/pair');
+
+  const allSessions = page.locator('.section-block', { hasText: 'All Sessions' });
+  await expect(allSessions).toBeVisible();
+  const sessionRows = allSessions.locator('.instance-row');
+  // Fixture snapshot publishes card-1 + card-2.
+  await expect(sessionRows).toHaveCount(2);
+
+  // Backend broadcast: a new desktop PTY session was created. No reconnect,
+  // no /snapshot fetch — just the incremental CardAdded message.
+  await page.evaluate(() => {
+    const sockets = ((window as unknown) as {
+      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
+    }).__threadtermWs;
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'card_added',
+      card: {
+        id: 'card-3',
+        status: 'running',
+        projectPath: '/Users/me/projects/api-server',
+        projectName: 'api-server',
+        lastReplyPreview: 'api-server booting',
+        summaryLine: 'api-server booting',
+        hiddenLineCount: 0,
+        recentOutputBytes: 256,
+      },
+    });
+  });
+
+  // The list grew by exactly one and the new desktop card is present.
+  await expect(sessionRows).toHaveCount(3);
+  await expect(sessionRows.filter({ hasText: 'api-server' })).toHaveCount(1);
+  // Snapshot was NOT re-fetched: this was a pure incremental update.
+  expect(snapshotRequests).toBe(1);
+});
+
+test('a desktop card_removed disappears from the session list without a reconnect (D4)', async ({
+  page,
+}) => {
+  await page.goto('/pair');
+
+  const allSessions = page.locator('.section-block', { hasText: 'All Sessions' });
+  const sessionRows = allSessions.locator('.instance-row');
+  await expect(sessionRows).toHaveCount(2);
+  await expect(sessionRows.filter({ hasText: 'docs-builder' })).toHaveCount(1);
+
+  // Backend broadcast: card-2 was explicitly closed on the desktop (or via
+  // the mobile close entry, which routes through the same pty_kill path).
+  await page.evaluate(() => {
+    const sockets = ((window as unknown) as {
+      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
+    }).__threadtermWs;
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'card_removed',
+      card: {
+        id: 'card-2',
+        status: 'completed',
+        projectPath: '/Users/me/projects/docs',
+        projectName: 'docs-builder',
+        lastReplyPreview: 'Build completed yesterday',
+        summaryLine: 'Build completed yesterday',
+        hiddenLineCount: 2,
+        recentOutputBytes: 1024,
+      },
+    });
+  });
+
+  // The closed card is gone; the other session is untouched.
+  await expect(sessionRows).toHaveCount(1);
+  await expect(sessionRows.filter({ hasText: 'docs-builder' })).toHaveCount(0);
+  await expect(sessionRows.filter({ hasText: 'ThreadTerm' })).toHaveCount(1);
+  expect(snapshotRequests).toBe(1);
+});
+
+test('a natural process exit keeps the card visible as completed/failed (D4 guard)', async ({
+  page,
+}) => {
+  // The natural-exit path (pty/events.rs) is intentionally NOT changed: it
+  // still broadcasts exit -> status, never CardRemoved. The mobile card must
+  // stay in the list (matching the desktop "exited card does not vanish"
+  // behaviour) — proving we did not mask the defect by deleting functionality.
+  await page.goto('/pair');
+
+  const allSessions = page.locator('.section-block', { hasText: 'All Sessions' });
+  const sessionRows = allSessions.locator('.instance-row');
+  await expect(sessionRows).toHaveCount(2);
+
+  // card-1 process exits with a failure code; card-2 exits cleanly (code 0).
+  await page.evaluate(() => {
+    const sockets = ((window as unknown) as {
+      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
+    }).__threadtermWs;
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'exit',
+      card_id: 'card-1',
+      code: 137,
+    });
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'exit',
+      card_id: 'card-2',
+      code: 0,
+    });
+  });
+
+  // BOTH cards remain in the list — exit does NOT remove them.
+  await expect(sessionRows).toHaveCount(2);
+  // card-1 (non-zero exit) is marked failed; card-2 (exit 0) is completed.
+  await expect(
+    sessionRows.filter({ hasText: 'ThreadTerm' }).locator('.status-badge-failed'),
+  ).toHaveCount(1);
+  await expect(
+    sessionRows.filter({ hasText: 'docs-builder' }).locator('.status-badge-completed'),
+  ).toHaveCount(1);
+  expect(snapshotRequests).toBe(1);
+});
+
 test('mobile shell follows the desktop language injected into the pair URL', async ({ page }) => {
   // The desktop injects ?lang=<i18n.language> into the pairing URL (same
   // pattern as the theme_* colors). With lang=zh-CN the mobile chrome must
