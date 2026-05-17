@@ -15,6 +15,7 @@ import { motion } from 'framer-motion';
 import { Bell, BellDot, Layers, Plus, Settings as SettingsIcon, Star, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { BOOKMARKS_VISIBLE } from '../../lib/featureFlags';
 import { CardGrid } from './CardGrid';
 import { TerminalView } from './TerminalView';
 import { CreateTerminalDialog } from './CreateTerminalDialog';
@@ -36,16 +37,80 @@ import {
 } from '../../lib/workflows/workflowRun';
 import type { DiscoveredWorkflow } from '../../lib/workflows/discoverWorkflows';
 import type { WorkflowImportPlan } from '../../lib/workflows/importWorkflow';
-import type { TerminalCreateOptions } from '../../types/terminal';
+import type { TerminalCard, TerminalCreateOptions, TerminalStatus, TerminalType } from '../../types/terminal';
 import { useSupervisor } from '../../lib/supervisor/useSupervisor';
+import { isTauriEnv, mobileBridge } from '../../lib/tauri-bridge';
+import type { CardMeta, TerminalStatus as MobileTerminalStatus } from '../../mobile/bridge/protocol';
 
 type ViewMode = 'grid' | 'focus';
 type SettingsTab = 'appearance' | 'shortcuts';
+
+const MOBILE_SYNC_DEBOUNCE_MS = 100;
+const TERMINAL_TYPES: TerminalType[] = [
+  'shell',
+  'claude',
+  'codex',
+  'gemini',
+  'npm',
+  'yarn',
+  'pnpm',
+  'docker',
+  'python',
+  'node',
+  'custom',
+];
 
 function pathBasename(path: string): string {
   const trimmed = path.replace(/[\\/]+$/, '');
   const parts = trimmed.split(/[\\/]/);
   return parts[parts.length - 1] || trimmed;
+}
+
+function toMobileStatus(status: TerminalStatus): MobileTerminalStatus {
+  return status === 'waiting' ? 'waiting_for_input' : status;
+}
+
+function summaryLineFromCard(card: TerminalCard): string | null {
+  const source = card.lastReplyPreview || card.lastOutput;
+  const line = source
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(-1)[0];
+  return line || null;
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+function cardToMobileMeta(card: TerminalCard): CardMeta {
+  return {
+    id: card.id,
+    ptyId: card.ptyId || card.id,
+    status: toMobileStatus(card.status),
+    projectPath: card.projectPath,
+    projectName: card.projectName,
+    worktreePath: card.worktreePath ?? null,
+    terminalType: card.terminalType,
+    command: card.command ?? null,
+    createdAt: card.createdAt,
+    lastActivity: card.lastActivity,
+    lastReplyPreview: card.lastReplyPreview || card.lastOutput,
+    summaryLine: summaryLineFromCard(card),
+    hiddenLineCount: 0,
+    recentOutputBytes: byteLength(card.lastOutput || card.lastReplyPreview || ''),
+    messageCount: card.messageCount,
+    unread: card.unread,
+    providerSessionState: card.providerSessionState ?? null,
+    ptyLive: false,
+    ptyState: null,
+    attachable: true,
+  };
+}
+
+function normalizeTerminalType(value: string): TerminalType {
+  return TERMINAL_TYPES.includes(value as TerminalType) ? (value as TerminalType) : 'custom';
 }
 
 declare global {
@@ -158,6 +223,14 @@ export function TerminalManager() {
   // avoids re-mounting when cards array refs change.
   const mountedIdsRef = useRef<Set<string>>(new Set());
   const [, bumpRender] = useState(0);
+  const [mobileBridgeSyncEnabled, setMobileBridgeSyncEnabled] = useState(false);
+  const lastMobileSyncPayloadRef = useRef('');
+
+  const mountCardInBackground = useCallback((cardId: string) => {
+    if (mountedIdsRef.current.has(cardId)) return;
+    mountedIdsRef.current.add(cardId);
+    bumpRender((n) => n + 1);
+  }, []);
 
   const focusedCard = useMemo(
     () => (focusedCardId ? cards.find((c) => c.id === focusedCardId) : undefined),
@@ -171,6 +244,140 @@ export function TerminalManager() {
     mountedIdsRef.current.add(focusedCardId);
     bumpRender((n) => n + 1);
   }, [focusedCardId]);
+
+  useEffect(() => {
+    if (!isTauriEnv()) return;
+    let cancelled = false;
+
+    void import('@tauri-apps/api/window')
+      .then(({ getCurrentWindow }) => {
+        if (cancelled) return;
+        setMobileBridgeSyncEnabled(getCurrentWindow().label === 'main');
+      })
+      .catch(() => {
+        if (!cancelled) setMobileBridgeSyncEnabled(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const mobileBridgeCards = useMemo(() => cards.map(cardToMobileMeta), [cards]);
+
+  useEffect(() => {
+    if (!mobileBridgeSyncEnabled) return;
+    const payload = JSON.stringify(mobileBridgeCards);
+    if (payload === lastMobileSyncPayloadRef.current) return;
+
+    const timer = window.setTimeout(() => {
+      lastMobileSyncPayloadRef.current = payload;
+      void mobileBridge.syncCards(mobileBridgeCards).catch((error) => {
+        console.warn('[MobileBridge] failed to sync cards', error);
+      });
+    }, MOBILE_SYNC_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [mobileBridgeCards, mobileBridgeSyncEnabled]);
+
+  useEffect(() => {
+    if (!mobileBridgeSyncEnabled) return;
+    let cancelled = false;
+    const unsubscribers: Array<() => void> = [];
+
+    const resolveSpawn = (result: Parameters<typeof mobileBridge.resolveSpawn>[0]) => {
+      void mobileBridge.resolveSpawn(result).catch((error) => {
+        console.warn('[MobileBridge] failed to resolve spawn', error);
+      });
+    };
+    const resolveActivate = (result: Parameters<typeof mobileBridge.resolveActivate>[0]) => {
+      void mobileBridge.resolveActivate(result).catch((error) => {
+        console.warn('[MobileBridge] failed to resolve activate', error);
+      });
+    };
+    const resolveClose = (result: Parameters<typeof mobileBridge.resolveClose>[0]) => {
+      void mobileBridge.resolveClose(result).catch((error) => {
+        console.warn('[MobileBridge] failed to resolve close', error);
+      });
+    };
+
+    void Promise.all([
+      mobileBridge.onSpawnCard((payload) => {
+        const projectPath = payload.projectPath.trim();
+        if (!projectPath) {
+          resolveSpawn({
+            requestId: payload.requestId,
+            ok: false,
+            errorCode: 'invalid_project_path',
+            message: 'Project path is required.',
+          });
+          return;
+        }
+
+        const cardId = useTerminalStore.getState().createCard({
+          projectPath,
+          projectName: pathBasename(projectPath),
+          terminalType: normalizeTerminalType(payload.terminalType),
+          command: payload.command?.trim() || undefined,
+        });
+        mountCardInBackground(cardId);
+        resolveSpawn({ requestId: payload.requestId, ok: true, cardId });
+      }),
+      mobileBridge.onActivateCard((payload) => {
+        const card = useTerminalStore
+          .getState()
+          .cards
+          .find((candidate) => candidate.id === payload.cardId);
+        if (!card) {
+          resolveActivate({
+            requestId: payload.requestId,
+            ok: false,
+            cardId: payload.cardId,
+            errorCode: 'card_not_found',
+            message: 'Card not found.',
+          });
+          return;
+        }
+
+        mountCardInBackground(card.id);
+        resolveActivate({ requestId: payload.requestId, ok: true, cardId: card.id });
+      }),
+      mobileBridge.onRemoveCard((payload) => {
+        const exists = useTerminalStore
+          .getState()
+          .cards
+          .some((candidate) => candidate.id === payload.cardId);
+        if (!exists) {
+          resolveClose({
+            requestId: payload.requestId,
+            ok: false,
+            cardId: payload.cardId,
+            errorCode: 'card_not_found',
+            message: 'Card not found.',
+          });
+          return;
+        }
+
+        useTerminalStore.getState().removeCard(payload.cardId);
+        resolveClose({ requestId: payload.requestId, ok: true, cardId: payload.cardId });
+      }),
+    ])
+      .then((nextUnsubscribers) => {
+        if (cancelled) {
+          nextUnsubscribers.forEach((unsubscribe) => unsubscribe());
+        } else {
+          unsubscribers.push(...nextUnsubscribers);
+        }
+      })
+      .catch((error) => {
+        console.warn('[MobileBridge] failed to subscribe to mobile requests', error);
+      });
+
+    return () => {
+      cancelled = true;
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [mobileBridgeSyncEnabled, mountCardInBackground]);
 
   // Drop mount entries for cards that no longer exist (user removed them).
   useEffect(() => {
@@ -509,24 +716,26 @@ export function TerminalManager() {
           >
             <Plus className="h-3.5 w-3.5" /> {t('app.new')}
           </button>
-          <button
-            type="button"
-            onClick={() => setBookmarksOpen((v) => !v)}
-            title={t('bookmarks.toggle', { defaultValue: 'Toggle bookmarks panel' })}
-            className={[
-              'relative rounded-[var(--radius-md)] p-1.5',
-              bookmarksOpen
-                ? 'bg-primary/10 text-primary'
-                : 'hover:bg-accent hover:text-accent-foreground',
-            ].join(' ')}
-          >
-            <Star className="h-4 w-4" />
-            {bookmarkCount > 0 && (
-              <span className="absolute right-0.5 top-0.5 flex min-h-[14px] min-w-[14px] items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-bold text-white">
-                {bookmarkCount > 99 ? '99+' : bookmarkCount}
-              </span>
-            )}
-          </button>
+          {BOOKMARKS_VISIBLE && (
+            <button
+              type="button"
+              onClick={() => setBookmarksOpen((v) => !v)}
+              title={t('bookmarks.toggle', { defaultValue: 'Toggle bookmarks panel' })}
+              className={[
+                'relative rounded-[var(--radius-md)] p-1.5',
+                bookmarksOpen
+                  ? 'bg-primary/10 text-primary'
+                  : 'hover:bg-accent hover:text-accent-foreground',
+              ].join(' ')}
+            >
+              <Star className="h-4 w-4" />
+              {bookmarkCount > 0 && (
+                <span className="absolute right-0.5 top-0.5 flex min-h-[14px] min-w-[14px] items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-bold text-white">
+                  {bookmarkCount > 99 ? '99+' : bookmarkCount}
+                </span>
+              )}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -602,7 +811,9 @@ export function TerminalManager() {
                   card={c}
                   active={isCurrent}
                   onBack={handleBackToGrid}
-                  onOpenBookmarks={() => setBookmarksOpen((v) => !v)}
+                  onOpenBookmarks={
+                    BOOKMARKS_VISIBLE ? () => setBookmarksOpen((v) => !v) : undefined
+                  }
                   onOpenWorkflows={handleOpenWorkflowPalette}
                   onOpenSettings={(tab) => {
                     setSettingsTab(tab ?? 'shortcuts');
@@ -643,8 +854,10 @@ export function TerminalManager() {
         </div>
       )}
 
-      {/* Bookmarks side panel — slides in from the right edge of the workspace */}
-      {bookmarksOpen && (
+      {/* Bookmarks side panel — slides in from the right edge of the workspace.
+          Hidden behind the BOOKMARKS_VISIBLE feature flag so the surface
+          disappears together with the top toolbar button / hover star / chip. */}
+      {BOOKMARKS_VISIBLE && bookmarksOpen && (
         <div className="absolute right-0 top-0 bottom-0 z-30 w-72 border-l border-white/10 bg-background/90 backdrop-blur-2xl shadow-studio">
           <BookmarksSidebar
             onJump={handleJumpToBlock}

@@ -9,6 +9,8 @@ import {
   Languages,
   Monitor,
   Moon,
+  Play,
+  Plus,
   QrCode,
   ScanLine,
   Search,
@@ -16,6 +18,7 @@ import {
   Smartphone,
   SquareTerminal,
   Sun,
+  Trash2,
   Wifi,
   WifiOff,
 } from 'lucide-react';
@@ -23,6 +26,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import type * as React from 'react';
 import type {
   CardMeta,
+  ClientCommand,
   NotificationEntry,
   ServerMessage,
   TerminalStatus,
@@ -53,6 +57,17 @@ import {
 import { useI18n, type MobileLanguagePreference, type MobileI18n } from './i18n';
 
 type TabId = 'terminal' | 'instances' | 'settings';
+type NewSessionInput = {
+  projectPath: string;
+  terminalType: string;
+  command?: string;
+};
+type ProjectCardGroup = {
+  key: string;
+  projectName: string;
+  projectPath: string;
+  cards: CardMeta[];
+};
 
 export function App() {
   const pairing = useMemo(() => readPairingConfig(window.location), []);
@@ -81,6 +96,7 @@ export function App() {
   const [tab, setTab] = useState<TabId>('terminal');
   const [detailOpen, setDetailOpen] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [themePreference, setThemePreference] = useState<MobileThemePreference>(
     themeControllerRef.current.getPreference(),
@@ -169,7 +185,8 @@ export function App() {
     () => filterCards(state.cards, searchQuery),
     [searchQuery, state.cards],
   );
-  const canSend = permission === 'full' && Boolean(activeCard) && bridge.state === 'open';
+  const canControl = permission === 'full' && bridge.state === 'open';
+  const canSend = canControl && Boolean(activeCard?.ptyLive);
 
   useEffect(() => {
     if (detailOpen && !activeCard) {
@@ -189,35 +206,61 @@ export function App() {
     void loadSnapshot();
   };
 
-  const sendInput = (data: string) => {
-    if (!activeCard || permission !== 'full') return;
+  const sendCommand = useCallback((command: ClientCommand) => {
     try {
-      bridge.send({ kind: 'input', card_id: activeCard.id, data });
+      bridge.send(command);
     } catch (error) {
       dispatch({
         type: 'ws-error',
         message: error instanceof Error ? error.message : String(error),
       });
     }
-  };
+  }, [bridge]);
 
-  // Only full-control devices may push xterm fit() dimensions back to the PTY.
-  // Read-only / preview surfaces leave onResize undefined so local fitting
-  // never issues a read-only resize command.
-  const sendResize =
-    permission === 'full'
-      ? (cols: number, rows: number) => {
-          if (!activeCard) return;
-          try {
-            bridge.send({ kind: 'resize', card_id: activeCard.id, cols, rows });
-          } catch (error) {
-            dispatch({
-              type: 'ws-error',
-              message: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-      : undefined;
+  const createRequestId = useCallback(
+    (kind: string) => `${kind}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+    [],
+  );
+
+  const requestActivate = useCallback(
+    (cardId: string) => {
+      if (!canControl) return;
+      sendCommand({ kind: 'activate', request_id: createRequestId('activate'), card_id: cardId });
+    },
+    [canControl, createRequestId, sendCommand],
+  );
+
+  const requestClose = useCallback(
+    (cardId: string) => {
+      if (!canControl) return;
+      sendCommand({ kind: 'close', request_id: createRequestId('close'), card_id: cardId });
+    },
+    [canControl, createRequestId, sendCommand],
+  );
+
+  const requestSpawn = useCallback(
+    ({ command, projectPath, terminalType }: NewSessionInput) => {
+      if (!canControl) return;
+      const trimmedProjectPath = projectPath.trim();
+      if (!trimmedProjectPath) return;
+      const trimmedCommand = command?.trim();
+      sendCommand({
+        kind: 'spawn',
+        request_id: createRequestId('spawn'),
+        terminal_type: terminalType,
+        project_path: trimmedProjectPath,
+        ...(trimmedCommand ? { command: trimmedCommand } : {}),
+      });
+      setNewSessionOpen(false);
+      setTab('instances');
+    },
+    [canControl, createRequestId, sendCommand],
+  );
+
+  const sendInput = (data: string) => {
+    if (!activeCard || permission !== 'full') return;
+    sendCommand({ kind: 'input', card_id: activeCard.id, data });
+  };
 
   if (!token) {
     return (
@@ -249,11 +292,12 @@ export function App() {
           messages={terminalMessages}
           recoveryNonce={recoveryNonce}
           onBack={() => setDetailOpen(false)}
+          onActivate={requestActivate}
+          onCloseCard={requestClose}
           onOpenSettings={() => {
             setDetailOpen(false);
             setTab('settings');
           }}
-          onResize={sendResize}
           onSend={sendInput}
           permission={permission}
           wsStatus={bridge.state}
@@ -265,8 +309,11 @@ export function App() {
               activeCard={activeCard}
               bridgeAddress={window.location.host}
               cards={state.cards}
+              canControl={canControl}
               messages={terminalMessages}
               recoveryNonce={recoveryNonce}
+              onActivateCard={requestActivate}
+              onDeleteCard={requestClose}
               onOpenCard={openCard}
               onOpenScanner={() => setScannerOpen(true)}
               onSearchChange={setSearchQuery}
@@ -279,9 +326,16 @@ export function App() {
             <InstancesScreen
               activeCardId={state.activeCardId}
               cards={filteredCards}
+              canControl={canControl}
+              newSessionOpen={newSessionOpen}
+              onActivateCard={requestActivate}
+              onCreateSession={requestSpawn}
+              onDeleteCard={requestClose}
+              onNewSessionOpenChange={setNewSessionOpen}
               onOpenCard={openCard}
               onSearchChange={setSearchQuery}
               searchQuery={searchQuery}
+              warmingUp={state.warmingUp}
             />
           )}
           {tab === 'settings' && (
@@ -355,8 +409,11 @@ function TerminalHome({
   activeCard,
   bridgeAddress,
   cards,
+  canControl,
   messages,
   recoveryNonce,
+  onActivateCard,
+  onDeleteCard,
   onOpenCard,
   onOpenScanner,
   onSearchChange,
@@ -367,8 +424,11 @@ function TerminalHome({
   activeCard: CardMeta | null;
   bridgeAddress: string;
   cards: CardMeta[];
+  canControl: boolean;
   messages: ServerMessage[];
   recoveryNonce: number;
+  onActivateCard: (cardId: string) => void;
+  onDeleteCard: (cardId: string) => void;
   onOpenCard: (cardId: string) => void;
   onOpenScanner: () => void;
   onSearchChange: (value: string) => void;
@@ -462,13 +522,16 @@ function TerminalHome({
               <span>{cards.length}</span>
             </div>
             <div className="ios-list-card">
-              {cards.map((card) => (
-                <SessionRow
-                  active={card.id === activeCard?.id}
-                  card={card}
-                  key={card.id}
-                  muted={!isLiveStatus(card.status)}
-                  onOpen={() => onOpenCard(card.id)}
+              {groupCardsByProject(cards).map((group) => (
+                <ProjectSessionGroup
+                  activeCardId={activeCard?.id ?? null}
+                  canControl={canControl}
+                  group={group}
+                  key={group.key}
+                  onActivateCard={onActivateCard}
+                  onDeleteCard={onDeleteCard}
+                  onOpenCard={onOpenCard}
+                  showHeader
                 />
               ))}
             </div>
@@ -482,40 +545,82 @@ function TerminalHome({
 function InstancesScreen({
   activeCardId,
   cards,
+  canControl,
+  newSessionOpen,
+  onActivateCard,
+  onCreateSession,
+  onDeleteCard,
+  onNewSessionOpenChange,
   onOpenCard,
   onSearchChange,
   searchQuery,
+  warmingUp,
 }: {
   activeCardId: string | null;
   cards: CardMeta[];
+  canControl: boolean;
+  newSessionOpen: boolean;
+  onActivateCard: (cardId: string) => void;
+  onCreateSession: (input: NewSessionInput) => void;
+  onDeleteCard: (cardId: string) => void;
+  onNewSessionOpenChange: (open: boolean) => void;
   onOpenCard: (cardId: string) => void;
   onSearchChange: (value: string) => void;
   searchQuery: string;
+  warmingUp: boolean;
 }) {
   const { t } = useI18n();
-  const activeCards = cards.filter((card) => isLiveStatus(card.status));
-  const inactiveCards = cards.filter((card) => !isLiveStatus(card.status));
+  const groups = groupCardsByProject(cards);
 
   return (
     <main className="ios-screen">
-      <IosHeader title={t('instances.title')} />
+      <IosHeader
+        action={
+          <button
+            className="nav-icon-button"
+            type="button"
+            onClick={() => onNewSessionOpenChange(!newSessionOpen)}
+            aria-label={t('instances.newSession')}
+            disabled={!canControl}
+          >
+            <Plus size={22} />
+          </button>
+        }
+        title={t('instances.title')}
+      />
       <div className="screen-content">
         <SearchField value={searchQuery} onChange={onSearchChange} />
-        <SessionGroup
-          activeCardId={activeCardId}
-          cards={activeCards}
-          emptyLabel={t('instances.noActive')}
-          onOpenCard={onOpenCard}
-          title={t('instances.active')}
-        />
-        <SessionGroup
-          activeCardId={activeCardId}
-          cards={inactiveCards}
-          emptyLabel={t('instances.noOffline')}
-          muted
-          onOpenCard={onOpenCard}
-          title={t('instances.offline')}
-        />
+        {newSessionOpen && (
+          <NewSessionForm
+            disabled={!canControl}
+            onCancel={() => onNewSessionOpenChange(false)}
+            onCreate={onCreateSession}
+          />
+        )}
+        {warmingUp ? (
+          <EmptyState label={t('instances.warmingUp')} />
+        ) : groups.length === 0 ? (
+          <EmptyState label={t('instances.empty')} />
+        ) : (
+          groups.map((group) => (
+            <section className="section-block" key={group.key}>
+              <div className="section-heading project-heading">
+                <h2>{group.projectName}</h2>
+                <span>{group.cards.length}</span>
+              </div>
+              <div className="ios-list-card">
+                <ProjectSessionGroup
+                  activeCardId={activeCardId}
+                  canControl={canControl}
+                  group={group}
+                  onActivateCard={onActivateCard}
+                  onDeleteCard={onDeleteCard}
+                  onOpenCard={onOpenCard}
+                />
+              </div>
+            </section>
+          ))
+        )}
       </div>
     </main>
   );
@@ -565,7 +670,7 @@ function SettingsScreen({
 
         <section className="ios-list-card">
           <InfoRow icon={<Gauge size={18} />} label={t('settings.websocket')} value={wsStatus} />
-          <InfoRow icon={<SquareTerminal size={18} />} label={t('settings.pty')} value={activeCard?.status ?? 'idle'} />
+          <InfoRow icon={<SquareTerminal size={18} />} label={t('settings.pty')} value={activeCard ? displayRuntimeStatus(activeCard) : 'idle'} />
           <InfoRow
             icon={<Boxes size={18} />}
             label={t('settings.recentOutput')}
@@ -637,9 +742,10 @@ function TerminalDetail({
   canSend,
   messages,
   recoveryNonce,
+  onActivate,
   onBack,
+  onCloseCard,
   onOpenSettings,
-  onResize,
   onSend,
   permission,
   wsStatus,
@@ -648,9 +754,10 @@ function TerminalDetail({
   canSend: boolean;
   messages: ServerMessage[];
   recoveryNonce: number;
+  onActivate: (cardId: string) => void;
   onBack: () => void;
+  onCloseCard: (cardId: string) => void;
   onOpenSettings: () => void;
-  onResize: ((cols: number, rows: number) => void) | undefined;
   onSend: (data: string) => void;
   permission: string;
   wsStatus: BridgeConnectionState;
@@ -667,9 +774,20 @@ function TerminalDetail({
           <strong>{activeCard?.projectName ?? t('detail.terminal')}</strong>
           <span>{activeCard?.projectPath ?? wsStatus}</span>
         </div>
-        <button className="nav-icon-button" type="button" onClick={onOpenSettings} aria-label="Open settings">
-          <Settings size={20} />
-        </button>
+        <div className="terminal-nav-actions">
+          <button className="nav-icon-button" type="button" onClick={onOpenSettings} aria-label="Open settings">
+            <Settings size={20} />
+          </button>
+          <button
+            className="nav-icon-button"
+            type="button"
+            onClick={() => activeCard && onCloseCard(activeCard.id)}
+            aria-label={t('instances.delete')}
+            disabled={!activeCard || permission !== 'full'}
+          >
+            <Trash2 size={19} />
+          </button>
+        </div>
       </header>
 
       <MainTerminal
@@ -677,11 +795,19 @@ function TerminalDetail({
         className="terminal-detail-output"
         messages={messages}
         recoveryNonce={recoveryNonce}
-        onResize={onResize}
       />
 
       {permission === 'full' ? (
         <>
+          {activeCard && !activeCard.ptyLive && activeCard.attachable && (
+            <div className="resume-strip">
+              <span>{t('detail.notLive')}</span>
+              <button type="button" onClick={() => onActivate(activeCard.id)}>
+                <Play size={15} />
+                {t('instances.activate')}
+              </button>
+            </div>
+          )}
           <div className="terminal-toolbar" aria-label="Terminal controls">
             <button type="button" disabled={!canSend} onClick={() => onSend('\r')}>Enter</button>
             <button type="button" disabled={!canSend} onClick={() => onSend('\x1b')}>Esc</button>
@@ -755,71 +881,167 @@ function SearchField({ onChange, value }: { onChange: (value: string) => void; v
   );
 }
 
-function SessionGroup({
-  activeCardId,
-  cards,
-  emptyLabel,
-  muted = false,
-  onOpenCard,
-  title,
+function NewSessionForm({
+  disabled,
+  onCancel,
+  onCreate,
 }: {
-  activeCardId: string | null;
-  cards: CardMeta[];
-  emptyLabel: string;
-  muted?: boolean;
-  onOpenCard: (cardId: string) => void;
-  title: string;
+  disabled: boolean;
+  onCancel: () => void;
+  onCreate: (input: NewSessionInput) => void;
 }) {
+  const { t } = useI18n();
+  const [projectPath, setProjectPath] = useState('');
+  const [terminalType, setTerminalType] = useState('shell');
+  const [command, setCommand] = useState('');
+  const canCreate = !disabled && projectPath.trim().length > 0;
+
   return (
-    <section className="section-block">
+    <section className="new-session-panel">
       <div className="section-heading">
-        <h2>{title}</h2>
-        <span>{cards.length}</span>
+        <h2>{t('instances.newSession')}</h2>
       </div>
-      <div className="ios-list-card">
-        {cards.length === 0 ? (
-          <EmptyState label={emptyLabel} />
-        ) : (
-          cards.map((card) => (
-            <SessionRow
-              active={card.id === activeCardId}
-              card={card}
-              key={card.id}
-              muted={muted}
-              onOpen={() => onOpenCard(card.id)}
-            />
-          ))
-        )}
+      <label>
+        <span>{t('instances.projectPath')}</span>
+        <input
+          value={projectPath}
+          onChange={(event) => setProjectPath(event.target.value)}
+          placeholder="/Users/me/project"
+        />
+      </label>
+      <label>
+        <span>{t('instances.terminalType')}</span>
+        <select value={terminalType} onChange={(event) => setTerminalType(event.target.value)}>
+          {['shell', 'claude', 'codex', 'gemini', 'npm', 'yarn', 'pnpm', 'docker', 'python', 'node', 'custom'].map(
+            (type) => (
+              <option key={type} value={type}>
+                {type}
+              </option>
+            ),
+          )}
+        </select>
+      </label>
+      <label>
+        <span>{t('instances.command')}</span>
+        <input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="optional" />
+      </label>
+      <div className="new-session-actions">
+        <button type="button" onClick={onCancel}>
+          {t('common.cancel')}
+        </button>
+        <button
+          className="new-session-primary"
+          type="button"
+          disabled={!canCreate}
+          onClick={() => onCreate({ projectPath, terminalType, command })}
+        >
+          {t('instances.create')}
+        </button>
       </div>
     </section>
   );
 }
 
+function ProjectSessionGroup({
+  activeCardId,
+  canControl,
+  group,
+  onActivateCard,
+  onDeleteCard,
+  onOpenCard,
+  showHeader = false,
+}: {
+  activeCardId: string | null;
+  canControl: boolean;
+  group: ProjectCardGroup;
+  onActivateCard: (cardId: string) => void;
+  onDeleteCard: (cardId: string) => void;
+  onOpenCard: (cardId: string) => void;
+  showHeader?: boolean;
+}) {
+  return (
+    <>
+      {showHeader && (
+        <div className="project-list-header">
+          <strong>{group.projectName}</strong>
+          <span>{group.cards.length}</span>
+        </div>
+      )}
+      {group.cards.map((card) => (
+        <SessionRow
+          active={card.id === activeCardId}
+          canControl={canControl}
+          card={card}
+          key={card.id}
+          muted={!isCardLive(card)}
+          onActivate={() => onActivateCard(card.id)}
+          onDelete={() => onDeleteCard(card.id)}
+          onOpen={() => onOpenCard(card.id)}
+        />
+      ))}
+    </>
+  );
+}
+
 function SessionRow({
   active,
+  canControl,
   card,
   muted,
+  onActivate,
+  onDelete,
   onOpen,
 }: {
   active: boolean;
+  canControl: boolean;
   card: CardMeta;
   muted: boolean;
+  onActivate: () => void;
+  onDelete: () => void;
   onOpen: () => void;
 }) {
+  const { t } = useI18n();
+  const showActivate = canControl && Boolean(card.attachable) && !isCardLive(card);
   return (
-    <button className={`instance-row ${active ? 'instance-row-active' : ''}`} type="button" onClick={onOpen}>
-      <span className={`instance-icon ${muted ? 'instance-icon-muted' : ''}`}>
-        {isLiveStatus(card.status) ? <CheckCircle2 size={20} /> : <Circle size={20} />}
-      </span>
-      <span className="list-main">
-        <strong>{card.projectName || card.id}</strong>
-        <span>{displayCardSummary(card)}</span>
-      </span>
-      <span className="instance-meta">
-        <StatusBadge status={card.status} />
-        <small>{formatBytes(card.recentOutputBytes)}</small>
-      </span>
-    </button>
+    <div className={`instance-row ${active ? 'instance-row-active' : ''}`}>
+      <button className="instance-row-main" type="button" onClick={onOpen}>
+        <span className={`instance-icon ${muted ? 'instance-icon-muted' : ''}`}>
+          {isCardLive(card) ? <CheckCircle2 size={20} /> : <Circle size={20} />}
+        </span>
+        <span className="list-main">
+          <strong>{displayCardTitle(card)}</strong>
+          <span>{displayCardSummary(card)}</span>
+        </span>
+        <span className="instance-meta">
+          <StatusBadge status={displayRuntimeStatus(card)} />
+          <small>{formatBytes(card.recentOutputBytes)}</small>
+        </span>
+      </button>
+      {canControl && (
+        <span className="instance-actions">
+          {showActivate && (
+            <button
+              className="instance-action-button"
+              type="button"
+              onClick={onActivate}
+              aria-label={t('instances.activate')}
+              title={t('instances.activate')}
+            >
+              <Play size={16} />
+            </button>
+          )}
+          <button
+            className="instance-action-button danger"
+            type="button"
+            onClick={onDelete}
+            aria-label={t('instances.delete')}
+            title={t('instances.delete')}
+          >
+            <Trash2 size={16} />
+          </button>
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -898,6 +1120,9 @@ function filterCards(cards: CardMeta[], query: string): CardMeta[] {
       card.id,
       card.projectName,
       card.projectPath,
+      card.worktreePath ?? '',
+      card.terminalType ?? '',
+      card.command ?? '',
       card.summaryLine ?? '',
       card.lastReplyPreview,
       card.status,
@@ -906,13 +1131,71 @@ function filterCards(cards: CardMeta[], query: string): CardMeta[] {
   });
 }
 
+function groupCardsByProject(cards: CardMeta[]): ProjectCardGroup[] {
+  const groups = new Map<string, ProjectCardGroup>();
+  for (const card of cards) {
+    const key = card.projectPath || card.worktreePath || 'unknown';
+    const existing = groups.get(key);
+    if (existing) {
+      existing.cards.push(card);
+      continue;
+    }
+    groups.set(key, {
+      key,
+      projectName: card.projectName || pathLeaf(key),
+      projectPath: key,
+      cards: [card],
+    });
+  }
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      cards: [...group.cards].sort(sortCardsForMobile),
+    }))
+    .sort((a, b) => {
+      const latestA = a.cards[0]?.lastActivity ?? 0;
+      const latestB = b.cards[0]?.lastActivity ?? 0;
+      if (latestA !== latestB) return latestB - latestA;
+      return a.projectName.localeCompare(b.projectName);
+    });
+}
+
+function sortCardsForMobile(a: CardMeta, b: CardMeta): number {
+  const liveDelta = Number(isCardLive(b)) - Number(isCardLive(a));
+  if (liveDelta !== 0) return liveDelta;
+  const unreadDelta = Number(Boolean(b.unread)) - Number(Boolean(a.unread));
+  if (unreadDelta !== 0) return unreadDelta;
+  return (b.lastActivity ?? b.createdAt ?? 0) - (a.lastActivity ?? a.createdAt ?? 0);
+}
+
+function pathLeaf(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '');
+  const parts = trimmed.split(/[\\/]/);
+  return parts[parts.length - 1] || trimmed || 'Unknown project';
+}
+
+function displayCardTitle(card: CardMeta): string {
+  const type = card.terminalType ? ` · ${card.terminalType}` : '';
+  return `${card.projectName || card.id}${type}`;
+}
+
 function displayCardSummary(card: CardMeta): string {
-  return card.summaryLine || card.lastReplyPreview || card.projectPath || card.id;
+  return card.summaryLine || card.lastReplyPreview || card.command || card.projectPath || card.id;
+}
+
+function displayRuntimeStatus(card: CardMeta): TerminalStatus {
+  return card.ptyLive === false ? 'idle' : card.ptyState ?? card.status;
 }
 
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
   return `${Math.round(value / 102.4) / 10} KB`;
+}
+
+function isCardLive(card: CardMeta): boolean {
+  if (typeof card.ptyLive === 'boolean') return card.ptyLive;
+  return isLiveStatus(card.ptyState ?? card.status);
 }
 
 function isLiveStatus(status: TerminalStatus): boolean {

@@ -34,7 +34,9 @@ describe('BottomActionBarForContext', () => {
       />,
     );
     expect(screen.getByTestId('chip-notifications')).toBeInTheDocument();
-    expect(screen.getByTestId('chip-bookmarks')).toBeInTheDocument();
+    // Bookmarks feature is hidden behind `lib/featureFlags.ts`; the chip
+    // must not render in the bottom action bar either.
+    expect(screen.queryByTestId('chip-bookmarks')).toBeNull();
     expect(screen.queryByTestId('chip-workflows')).toBeNull();
     expect(screen.queryByTestId('chip-file-explorer')).toBeNull();
     expect(screen.getByTestId('chip-rich-input')).toBeInTheDocument();
@@ -69,7 +71,9 @@ describe('BottomActionBarForContext', () => {
     const first = screen.getByTestId('chip-notifications');
     first.focus();
     fireEvent.keyDown(first, { key: 'ArrowRight' });
-    expect(document.activeElement).toBe(screen.getByTestId('chip-bookmarks'));
+    // With the bookmarks chip hidden the next focusable chip is rich-input
+    // (workflows / file-explorer are also hidden in this context).
+    expect(document.activeElement).toBe(screen.getByTestId('chip-rich-input'));
   });
 
   it('ArrowLeft from notifications wraps to last chip', () => {
@@ -117,10 +121,12 @@ describe('BottomActionBarForContext', () => {
         onChipActivate={onChipActivate}
       />,
     );
-    const c = screen.getByTestId('chip-bookmarks');
+    // Bookmarks chip is hidden; pick a chip that is currently visible to
+    // exercise the same keyboard activation path.
+    const c = screen.getByTestId('chip-notifications');
     c.focus();
     fireEvent.keyDown(c, { key: 'Enter' });
-    expect(onChipActivate).toHaveBeenCalledWith('bookmarks');
+    expect(onChipActivate).toHaveBeenCalledWith('notifications');
   });
 
   it('Space activates the focused chip', () => {
@@ -140,7 +146,11 @@ describe('BottomActionBarForContext', () => {
     expect(onChipActivate).toHaveBeenCalledWith('rich-input');
   });
 
-  it('renders bookmark badge when count > 0', () => {
+  it('does not surface the bookmarks chip even when a count is provided', () => {
+    // While the bookmarks feature is hidden, the chip must stay out of the
+    // bottom action bar regardless of any non-zero count plumbed in by the
+    // host. Flipping the feature flag back on would restore both the chip
+    // and the count-driven badge.
     render(
       <BottomActionBarForContext
         cardCwd="/x"
@@ -150,8 +160,7 @@ describe('BottomActionBarForContext', () => {
         onChipActivate={vi.fn()}
       />,
     );
-    const chip = screen.getByTestId('chip-bookmarks');
-    expect(chip.textContent).toContain('5');
+    expect(screen.queryByTestId('chip-bookmarks')).toBeNull();
   });
 
   it('collapses overflowing chips into a popover menu', async () => {

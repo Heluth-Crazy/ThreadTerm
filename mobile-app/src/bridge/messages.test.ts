@@ -82,4 +82,45 @@ describe('mobile bridge message reducer', () => {
     expect(notified.cards[0]?.status).toBe('waiting_for_input');
     expect(notified.notifications[0]?.message).toBe('Input requested');
   });
+
+  it('applies mobile control result messages', () => {
+    const hydrated = applyServerMessage(initialBridgeState, {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'snapshot',
+      notifications: [],
+      cards: [
+        {
+          id: 'card-1',
+          status: 'idle',
+          projectPath: '/tmp/ThreadTerm',
+          projectName: 'ThreadTerm',
+          lastReplyPreview: '',
+          summaryLine: null,
+          hiddenLineCount: 0,
+          recentOutputBytes: 0,
+          ptyLive: false,
+          attachable: true,
+        },
+      ],
+    });
+
+    const activated = applyServerMessage(hydrated, {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'activate_result',
+      request_id: 'req-1',
+      ok: true,
+      card_id: 'card-1',
+    });
+    const closed = applyServerMessage(activated, {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'close_result',
+      request_id: 'req-2',
+      ok: true,
+      card_id: 'card-1',
+    });
+
+    expect(activated.activeCardId).toBe('card-1');
+    expect(closed.cards).toEqual([]);
+    expect(closed.activeCardId).toBeNull();
+  });
 });

@@ -15,13 +15,25 @@ export interface VersionedBridgeMessage {
 
 export interface CardMeta {
   id: string;
+  ptyId?: string | null;
   status: TerminalStatus;
   projectPath: string;
   projectName: string;
+  worktreePath?: string | null;
+  terminalType?: string | null;
+  command?: string | null;
+  createdAt?: number | null;
+  lastActivity?: number | null;
   lastReplyPreview: string;
   summaryLine: string | null;
   hiddenLineCount: number;
   recentOutputBytes: number;
+  messageCount?: number | null;
+  unread?: boolean | null;
+  providerSessionState?: string | null;
+  ptyLive?: boolean;
+  ptyState?: TerminalStatus | null;
+  attachable?: boolean;
 }
 
 export interface NotificationEntry {
@@ -50,11 +62,13 @@ export type ClientCommand =
   | { kind: 'resize'; card_id: string; cols: number; rows: number }
   | {
       kind: 'spawn';
+      request_id: string;
       terminal_type: string;
       project_path: string;
       command?: string;
     }
-  | { kind: 'close'; card_id: string }
+  | { kind: 'activate'; request_id: string; card_id: string }
+  | { kind: 'close'; request_id?: string; card_id: string }
   | { kind: 'pin'; card_id: string; pinned: boolean }
   | { kind: 'set_intent'; card_id: string; intent: string | null }
   | { kind: 'mark_read'; card_id: string }
@@ -63,7 +77,12 @@ export type ClientCommand =
 export type ClientMessage = VersionedBridgeMessage & ClientCommand;
 
 export type ServerCommand =
-  | { kind: 'snapshot'; cards: CardMeta[]; notifications: NotificationEntry[] }
+  | {
+      kind: 'snapshot';
+      cards: CardMeta[];
+      notifications: NotificationEntry[];
+      warmingUp?: boolean;
+    }
   | { kind: 'card_added' | 'card_updated' | 'card_removed'; card: CardMeta }
   | {
       kind: 'preview';
@@ -89,6 +108,14 @@ export type ServerCommand =
     }
   | { kind: 'exit'; card_id: string; code: number | null }
   | { kind: 'notification'; entry: NotificationEntry }
+  | {
+      kind: 'spawn_result' | 'activate_result' | 'close_result';
+      request_id: string;
+      ok: boolean;
+      card_id?: string | null;
+      error_code?: string | null;
+      message?: string | null;
+    }
   | { kind: 'pong'; t: number }
   | { kind: 'error'; code: string; message: string };
 

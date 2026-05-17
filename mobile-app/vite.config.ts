@@ -34,7 +34,11 @@ export default defineConfig(({ mode }) => {
           assetFileNames: 'assets/[name][extname]',
           manualChunks: {
             'vendor-react': ['react', 'react-dom'],
-            'vendor-xterm': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-webgl'],
+            'vendor-xterm': [
+              '@xterm/xterm',
+              '@xterm/addon-fit',
+              '@xterm/addon-webgl',
+            ],
           },
         },
       },

@@ -25,7 +25,10 @@ const xtermMock = vi.hoisted(() => {
       open: vi.fn(),
       refresh: vi.fn(),
       reset: vi.fn(),
-      resize: vi.fn(),
+      resize: vi.fn((cols: number, rows: number) => {
+        instance.cols = cols;
+        instance.rows = rows;
+      }),
       write: vi.fn(),
       cols: 80,
       rows: 24,
@@ -54,11 +57,18 @@ vi.mock('@xterm/addon-fit', () => ({
 
 // NOTE: @xterm/addon-webgl is intentionally NOT mocked. MainTerminal no longer
 // imports it — xterm runs on its default DOM renderer so the terminal text is
-// always painted into the DOM (iOS WKWebView WebGL black-screen regression).
+// always painted into the DOM (iOS WKWebView canvas/WebGL black-screen
+// regressions).
 
 import { MainTerminal } from './MainTerminal';
+import { appendTerminalMessage } from './terminalTranscript';
 
-function snapshotMessage(cardId: string, seq: number, data: string): ServerMessage {
+function snapshotMessage(
+  cardId: string,
+  seq: number,
+  data: string,
+  size: { rows: number; cols: number } = { rows: 24, cols: 80 },
+): ServerMessage {
   return {
     protocol_version: 1,
     kind: 'terminal_snapshot',
@@ -66,8 +76,8 @@ function snapshotMessage(cardId: string, seq: number, data: string): ServerMessa
       cardId,
       data,
       seq,
-      rows: 24,
-      cols: 80,
+      rows: size.rows,
+      cols: size.cols,
       cursorRow: 0,
       cursorCol: 0,
     },
@@ -397,7 +407,7 @@ describe('MainTerminal', () => {
     expect(term.write).toHaveBeenLastCalledWith('SNAP-C2');
   });
 
-  it('renders with the default DOM renderer (no WebGL addon imported)', () => {
+  it('renders with the default DOM renderer (no Canvas/WebGL addon imported)', () => {
     render(
       <MainTerminal
         activeCardId="card-1"
@@ -405,8 +415,9 @@ describe('MainTerminal', () => {
       />,
     );
 
-    // Only the FitAddon is loaded onto the terminal. The WebGL addon was
-    // removed so xterm paints text into the DOM on iOS WKWebView.
+    // Only the FitAddon is loaded onto the terminal. Canvas/WebGL addons were
+    // removed because real iOS WKWebView can load them successfully while the
+    // terminal area remains black; DOM text is the reliable visibility path.
     const term = xtermMock.instances[0];
     expect(xtermMock.Terminal).toHaveBeenCalledTimes(1);
     expect(term.loadAddon).toHaveBeenCalledTimes(1);
@@ -465,6 +476,68 @@ describe('MainTerminal', () => {
     expect(term.refresh).toHaveBeenCalled();
   });
 
+  it('uses snapshot PTY dimensions as the mobile mirror size', () => {
+    render(
+      <MainTerminal
+        activeCardId="card-1"
+        messages={[snapshotMessage('card-1', 1, 'SNAP', { rows: 32, cols: 120 })]}
+      />,
+    );
+
+    // Mobile must mirror the PTY's source rows/cols instead of fitting to the
+    // phone width. Otherwise ANSI cursor addressing from AI CLIs is interpreted
+    // at a different column grid and leaves edge fragments / scrambled rows.
+    const term = xtermMock.instances[0];
+    expect(term.resize).toHaveBeenCalledWith(120, 32);
+    expect(term.cols).toBe(120);
+    expect(term.rows).toBe(32);
+    expect(term.write).toHaveBeenLastCalledWith('SNAP');
+  });
+
+  it('does not write live output before a snapshot supplies source dimensions', () => {
+    const { rerender } = render(
+      <MainTerminal
+        activeCardId="card-1"
+        messages={[outputMessage('card-1', 5, 'EARLY_OUTPUT')]}
+      />,
+    );
+
+    const term = xtermMock.instances[0];
+    expect(term.write).not.toHaveBeenCalledWith('EARLY_OUTPUT');
+    expect(term.resize).not.toHaveBeenCalled();
+
+    rerender(
+      <MainTerminal
+        activeCardId="card-1"
+        messages={[
+          snapshotMessage('card-1', 1, 'SNAP', { rows: 32, cols: 120 }),
+          outputMessage('card-1', 5, 'EARLY_OUTPUT'),
+        ]}
+      />,
+    );
+
+    expect(term.resize).toHaveBeenCalledWith(120, 32);
+    expect(term.write).toHaveBeenNthCalledWith(1, 'SNAP');
+    expect(term.write).toHaveBeenNthCalledWith(2, 'EARLY_OUTPUT');
+  });
+
+  it('remounts from a capped transcript after a large output burst', () => {
+    let messages: ServerMessage[] = [snapshotMessage('card-1', 1, 'SNAP')];
+    for (let index = 0; index < 2100; index += 1) {
+      messages = appendTerminalMessage(
+        messages,
+        outputMessage('card-1', index + 2, `chunk-${index}`) as Parameters<typeof appendTerminalMessage>[1],
+      );
+    }
+
+    render(<MainTerminal activeCardId="card-1" messages={messages} />);
+
+    const term = xtermMock.instances[0];
+    expect(term.reset).toHaveBeenCalledTimes(1);
+    expect(term.write).toHaveBeenNthCalledWith(1, 'SNAP');
+    expect(term.write).toHaveBeenLastCalledWith('chunk-2099');
+  });
+
   it('writes the snapshot after activeCardId goes null -> non-null without remount or mode change (root cause 2)', () => {
     const { rerender } = render(
       <MainTerminal activeCardId={null} messages={[]} />,
@@ -490,39 +563,47 @@ describe('MainTerminal', () => {
     expect(term.write).toHaveBeenLastCalledWith('SNAP');
   });
 
-  it('reports fitted dimensions through onResize after layout settles', async () => {
+  it('reports fitted dimensions before a snapshot supplies source dimensions', async () => {
     const onResize = vi.fn();
     render(
       <MainTerminal
-        activeCardId="card-1"
-        messages={[snapshotMessage('card-1', 1, 'SNAP')]}
+        activeCardId={null}
+        messages={[]}
         onResize={onResize}
       />,
     );
 
-    // Root cause 3 fix: the initial fit is deferred via double rAF so a
-    // not-yet-laid-out flex container is not measured. The resize is reported
-    // once the deferred fit runs, not synchronously on mount.
+    // Before any snapshot arrives, the component can still use FitAddon as a
+    // local empty-state fallback and report the fitted dimensions to tests /
+    // future local-only consumers.
     await vi.waitFor(() => {
       expect(onResize).toHaveBeenCalledWith(80, 24);
     });
   });
 
-  it('coalesces visualViewport refits and does not report unchanged dimensions', async () => {
-    const handlers: Record<string, Array<(event: Event) => void>> = {};
+  it('keeps visualViewport refits local to the mirrored PTY dimensions', async () => {
     const originalVisualViewport = window.visualViewport;
     const animationFrames: FrameRequestCallback[] = [];
     const originalRequestAnimationFrame = window.requestAnimationFrame;
     const originalCancelAnimationFrame = window.cancelAnimationFrame;
+    const originalClientWidth = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'clientWidth',
+    );
+    const originalClientHeight = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'clientHeight',
+    );
+    const hostSize = { width: 320, height: 240 };
     const flushAnimationFrame = () => {
       const frame = animationFrames.shift();
       if (!frame) throw new Error('Expected a scheduled animation frame');
       frame(performance.now());
     };
+    const handlers: Record<string, (event: Event) => void> = {};
     const visualViewport = {
       addEventListener: vi.fn((type: string, handler: (event: Event) => void) => {
-        handlers[type] ??= [];
-        handlers[type].push(handler);
+        handlers[type] = handler;
       }),
       removeEventListener: vi.fn(),
     };
@@ -541,40 +622,69 @@ describe('MainTerminal', () => {
       configurable: true,
       value: vi.fn(),
     });
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('terminal-xterm-host') ? hostSize.width : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('terminal-xterm-host') ? hostSize.height : 0;
+      },
+    });
 
     try {
       const onResize = vi.fn();
       const { unmount } = render(
         <MainTerminal
           activeCardId="card-1"
-          messages={[snapshotMessage('card-1', 1, 'SNAP')]}
+          messages={[snapshotMessage('card-1', 1, 'SNAP', { rows: 32, cols: 120 })]}
           onResize={onResize}
         />,
       );
-
-      flushAnimationFrame();
-      flushAnimationFrame();
-      flushAnimationFrame();
-      await vi.waitFor(() => {
-        expect(onResize).toHaveBeenCalledWith(80, 24);
-      });
 
       const term = xtermMock.instances[0];
       const fitAddon = term.loadAddon.mock.calls[0][0] as {
         fit: ReturnType<typeof vi.fn>;
       };
+      expect(term.resize).toHaveBeenCalledWith(120, 32);
       fitAddon.fit.mockClear();
+      term.resize.mockClear();
+      term.refresh.mockClear();
       onResize.mockClear();
-      handlers.resize?.[0]?.(new Event('resize'));
-      handlers.scroll?.[0]?.(new Event('scroll'));
+
+      flushAnimationFrame();
+      flushAnimationFrame();
+      flushAnimationFrame();
+      expect(fitAddon.fit).not.toHaveBeenCalled();
+      expect(term.resize).not.toHaveBeenCalled();
+      expect(term.refresh).toHaveBeenCalled();
+      expect(onResize).not.toHaveBeenCalled();
+
+      expect(visualViewport.addEventListener).toHaveBeenCalledWith('resize', handlers.resize);
+      expect(visualViewport.addEventListener).toHaveBeenCalledWith('scroll', handlers.scroll);
+      term.refresh.mockClear();
+      window.dispatchEvent(new Event('resize'));
       expect(animationFrames).toHaveLength(1);
       flushAnimationFrame();
-      expect(fitAddon.fit).toHaveBeenCalledTimes(1);
+      expect(fitAddon.fit).not.toHaveBeenCalled();
+      expect(term.resize).not.toHaveBeenCalled();
+      expect(term.refresh).toHaveBeenCalled();
+      expect(onResize).not.toHaveBeenCalled();
+
+      hostSize.width = 360;
+      handlers.resize(new Event('resize'));
+      expect(animationFrames).toHaveLength(1);
+      flushAnimationFrame();
+      expect(fitAddon.fit).not.toHaveBeenCalled();
+      expect(term.resize).not.toHaveBeenCalled();
       expect(onResize).not.toHaveBeenCalled();
 
       unmount();
-      expect(visualViewport.removeEventListener).toHaveBeenCalledWith('resize', handlers.resize[0]);
-      expect(visualViewport.removeEventListener).toHaveBeenCalledWith('scroll', handlers.scroll[0]);
+      expect(visualViewport.removeEventListener).toHaveBeenCalledWith('resize', handlers.resize);
+      expect(visualViewport.removeEventListener).toHaveBeenCalledWith('scroll', handlers.scroll);
     } finally {
       Object.defineProperty(window, 'visualViewport', {
         configurable: true,
@@ -588,6 +698,16 @@ describe('MainTerminal', () => {
         configurable: true,
         value: originalCancelAnimationFrame,
       });
+      if (originalClientWidth) {
+        Object.defineProperty(HTMLElement.prototype, 'clientWidth', originalClientWidth);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'clientWidth');
+      }
+      if (originalClientHeight) {
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', originalClientHeight);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight');
+      }
     }
   });
 });

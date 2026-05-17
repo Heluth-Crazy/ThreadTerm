@@ -22,6 +22,7 @@ import type { Block } from '../../types/terminal';
 import { getTerminal } from './xtermRegistry';
 import { BlockToolbar } from './BlockToolbar';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { BOOKMARKS_VISIBLE } from '../../lib/featureFlags';
 import { pty } from '../../lib/tauri-bridge';
 import type { IDecoration, IMarker } from '@xterm/xterm';
 
@@ -345,7 +346,27 @@ export function BlockOverlay({ cardId, ptyId, blocks, inspectorOpen }: BlockOver
               )}
 
               {isHovered && (() => {
-                const bookmark = bookmarkByBlockId.get(block.id);
+                // Bookmark plumbing is only attached when the feature is
+                // visible. When BOOKMARKS_VISIBLE is false the bookmark prop
+                // / callback are omitted, and BlockToolbar's own conditional
+                // rendering drops the star button entirely (covered by
+                // `does not render bookmark button when onToggleBookmark is
+                // omitted` in BlockToolbar.test.tsx).
+                const bookmark = BOOKMARKS_VISIBLE
+                  ? bookmarkByBlockId.get(block.id)
+                  : undefined;
+                const onToggleBookmark = BOOKMARKS_VISIBLE
+                  ? () => {
+                      if (bookmark) removeBookmark(bookmark.id);
+                      else
+                        addBookmark({
+                          blockId: block.id,
+                          cardId,
+                          command: block.command,
+                          cwd: block.cwd,
+                        });
+                    }
+                  : undefined;
                 return (
                   <div className="pointer-events-auto absolute right-1 top-0 z-50">
                     <BlockToolbar
@@ -353,16 +374,7 @@ export function BlockOverlay({ cardId, ptyId, blocks, inspectorOpen }: BlockOver
                       collapsed={isCollapsed}
                       rerunPending={isPendingRerun}
                       bookmarked={!!bookmark}
-                      onToggleBookmark={() => {
-                        if (bookmark) removeBookmark(bookmark.id);
-                        else
-                          addBookmark({
-                            blockId: block.id,
-                            cardId,
-                            command: block.command,
-                            cwd: block.cwd,
-                          });
-                      }}
+                      onToggleBookmark={onToggleBookmark}
                       onCopyCommand={() => void handleCopyCommand(block)}
                       onCopyOutput={() => void handleCopyOutput(block)}
                       onCopyBoth={() => void handleCopyBoth(block)}

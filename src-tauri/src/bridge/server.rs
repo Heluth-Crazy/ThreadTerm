@@ -31,8 +31,9 @@ use tower_http::{
 
 use super::{
     protocol::{
-        parse_client_message, versioned_server_message, BridgeDevice, ClientMessage, PairRequest,
-        ServerMessage, VersionedServerMessage,
+        parse_client_message, versioned_server_message, BridgeDevice, ClientMessage,
+        MobileCardRequest, MobileSpawnCardRequest, PairRequest, ServerMessage,
+        VersionedServerMessage,
     },
     BridgeRuntime,
 };
@@ -411,10 +412,12 @@ async fn handle_client_message(
         }
         ClientMessage::Input { card_id, data } => {
             ensure_full_permission(device)?;
+            let pty_id = context.runtime.pty_id_for_card(&card_id);
             let input_summary = summarize_input(&data);
             tracing::info!(
                 device_id = %device.id,
                 card_id = %card_id,
+                pty_id = %pty_id,
                 len = data.len(),
                 summary = %input_summary,
                 "Mobile bridge input received"
@@ -426,7 +429,7 @@ async fn handle_client_message(
                         format!("Failed to audit input: {e}"),
                     )
                 })?;
-            paced_pty_input(&card_id, &data).await
+            paced_pty_input(&pty_id, &data).await
         }
         ClientMessage::Resize {
             card_id,
@@ -434,11 +437,15 @@ async fn handle_client_message(
             rows,
         } => {
             ensure_full_permission(device)?;
-            crate::pty::pty_resize(card_id, rows, cols)
+            let pty_id = context.runtime.pty_id_for_card(&card_id);
+            crate::pty::pty_resize(pty_id, rows, cols)
                 .await
                 .map_err(|message| ("command_failed".to_string(), message))
         }
-        ClientMessage::Close { card_id } => {
+        ClientMessage::Close {
+            card_id,
+            request_id,
+        } => {
             ensure_full_permission(device)?;
             crate::db::insert_audit_log(&device.id, "close", Some(&card_id), "close session")
                 .map_err(|e| {
@@ -447,17 +454,71 @@ async fn handle_client_message(
                         format!("Failed to audit close: {e}"),
                     )
                 })?;
-            crate::pty::pty_kill(card_id)
-                .await
+            let request_id =
+                request_id.unwrap_or_else(|| format!("close:{}:{}", card_id, now_millis()));
+            context
+                .runtime
+                .emit_remove_request(MobileCardRequest {
+                    request_id,
+                    card_id,
+                })
                 .map_err(|message| ("command_failed".to_string(), message))
         }
         ClientMessage::MarkRead { .. }
         | ClientMessage::Pin { .. }
         | ClientMessage::SetIntent { .. } => Ok(()),
-        ClientMessage::Spawn { .. } => Err((
-            "command_failed".to_string(),
-            "Remote spawn is not implemented in Stage 1.".to_string(),
-        )),
+        ClientMessage::Activate {
+            request_id,
+            card_id,
+        } => {
+            ensure_full_permission(device)?;
+            crate::db::insert_audit_log(&device.id, "activate", Some(&card_id), "activate session")
+                .map_err(|e| {
+                    (
+                        "command_failed".to_string(),
+                        format!("Failed to audit activate: {e}"),
+                    )
+                })?;
+            context
+                .runtime
+                .emit_activate_request(MobileCardRequest {
+                    request_id,
+                    card_id,
+                })
+                .map_err(|message| ("command_failed".to_string(), message))
+        }
+        ClientMessage::Spawn {
+            request_id,
+            terminal_type,
+            project_path,
+            command,
+        } => {
+            ensure_full_permission(device)?;
+            let summary = format!(
+                "spawn metadata: terminal_type={}, project_path_bytes={}, command_present={}",
+                terminal_type,
+                project_path.len(),
+                command
+                    .as_ref()
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false)
+            );
+            crate::db::insert_audit_log(&device.id, "spawn", None, &summary).map_err(|e| {
+                (
+                    "command_failed".to_string(),
+                    format!("Failed to audit spawn: {e}"),
+                )
+            })?;
+            context
+                .runtime
+                .emit_spawn_request(MobileSpawnCardRequest {
+                    request_id,
+                    terminal_type,
+                    project_path,
+                    command,
+                })
+                .map_err(|message| ("command_failed".to_string(), message))
+        }
     }
 }
 

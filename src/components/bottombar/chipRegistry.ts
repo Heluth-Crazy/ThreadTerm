@@ -8,7 +8,13 @@
  * into ordered, typed descriptors, then applies the current product-level
  * visibility filter. The renderer maps the `iconKey` strings to Lucide icons;
  * this module stays React-free.
+ *
+ * Cross-feature flags (e.g. bookmark feature hide) come from
+ * `src/lib/featureFlags.ts` so the chip stays in sync with every other
+ * surface of the same feature (top toolbar, hover toolbar, side panel) on a
+ * single flip.
  */
+import { BOOKMARKS_VISIBLE } from '../../lib/featureFlags';
 
 export type ChipId =
   | 'notifications'
@@ -64,12 +70,14 @@ export function buildChipRegistry(ctx: ChipContext): ChipDescriptor[] {
     badge: ctx.unreadNotifications > 0 ? ctx.unreadNotifications : undefined,
   });
 
-  out.push({
-    id: 'bookmarks',
-    labelKey: 'bottomBar.bookmarks',
-    iconKey: 'star',
-    badge: ctx.bookmarkCount > 0 ? ctx.bookmarkCount : undefined,
-  });
+  if (BOOKMARKS_VISIBLE) {
+    out.push({
+      id: 'bookmarks',
+      labelKey: 'bottomBar.bookmarks',
+      iconKey: 'star',
+      badge: ctx.bookmarkCount > 0 ? ctx.bookmarkCount : undefined,
+    });
+  }
 
   if (shouldRenderChip('workflows')) {
     out.push({ id: 'workflows', labelKey: 'bottomBar.workflows', iconKey: 'workflow' });
