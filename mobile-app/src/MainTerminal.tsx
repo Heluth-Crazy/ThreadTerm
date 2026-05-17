@@ -32,6 +32,12 @@ interface MainTerminalProps {
   // full-control devices only; read-only / preview surfaces leave it undefined
   // so local fitting never issues a read-only resize command.
   onResize?: (cols: number, rows: number) => void;
+  // Monotonic counter bumped by App ONLY on server backpressure
+  // (broadcast Lagged -> error/backpressure). A change re-arms the snapshot
+  // epoch once so the immediately-following recovery terminal_snapshot is
+  // applied as a recovery reset and the dropped output segment is repainted.
+  // Plain reconnects never bump this, so the issue-5 guard is unaffected.
+  recoveryNonce?: number;
 }
 
 // Forced dark palette. iOS WKWebView in system light mode otherwise paints the
@@ -82,6 +88,7 @@ export function MainTerminal({
   mode = 'detail',
   className = '',
   onResize,
+  recoveryNonce = 0,
 }: MainTerminalProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -96,6 +103,10 @@ export function MainTerminal({
   const activeCardIdRef = useRef<string | null>(activeCardId);
   const onResizeRef = useRef<typeof onResize>(onResize);
   const lastReportedSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  // The backpressure nonce already observed. Initialized to the mount value so
+  // a surface that mounts after a prior backpressure does NOT spuriously
+  // re-arm; only a genuine increment while this instance is alive does.
+  const lastRecoveryNonceRef = useRef<number>(recoveryNonce);
 
   onResizeRef.current = onResize;
 
@@ -231,6 +242,21 @@ export function MainTerminal({
       window.visualViewport?.removeEventListener('scroll', onViewportChange);
     };
   }, []);
+
+  // Backpressure recovery: when App bumps recoveryNonce (server broadcast
+  // Lagged -> error/backpressure), re-arm the snapshot epoch ONCE so the
+  // recovery terminal_snapshot fetched right after is applied as a recovery
+  // reset and the dropped terminal_output segment is repainted. This does NOT
+  // touch lastAppliedOutputSeqRef: the snapshot branch sets it to snapshot.seq
+  // (same monotonic output_seq source), so any stale lower/equal-seq output
+  // replayed afterward is still correctly dropped by the :seq guard. Plain
+  // reconnects never bump recoveryNonce, so issue-5 (history survives a
+  // reconnect snapshot) is fully preserved.
+  useEffect(() => {
+    if (recoveryNonce === lastRecoveryNonceRef.current) return;
+    lastRecoveryNonceRef.current = recoveryNonce;
+    appliedSnapshotSeqRef.current = -1;
+  }, [recoveryNonce]);
 
   // Apply bridge messages: snapshots reset, outputs append. Sequence guards
   // make repeated snapshots / already-applied outputs no-ops so re-renders do

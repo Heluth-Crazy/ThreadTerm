@@ -251,6 +251,127 @@ describe('MainTerminal', () => {
     expect(term.write).toHaveBeenLastCalledWith('B');
   });
 
+  it('re-applies the recovery snapshot once when recoveryNonce bumps (D1 backpressure)', () => {
+    const { rerender } = render(
+      <MainTerminal
+        activeCardId="card-1"
+        messages={[
+          snapshotMessage('card-1', 1, 'SNAP1'),
+          outputMessage('card-1', 2, 'A'),
+        ]}
+        recoveryNonce={0}
+      />,
+    );
+
+    const term = xtermMock.instances[0];
+    expect(term.reset).toHaveBeenCalledTimes(1);
+    expect(term.write).toHaveBeenLastCalledWith('A');
+
+    // Server backpressure: App bumps recoveryNonce and fetches a recovery
+    // snapshot (higher seq, carries the dropped segment). The epoch is
+    // re-armed so this snapshot IS applied as a recovery reset.
+    rerender(
+      <MainTerminal
+        activeCardId="card-1"
+        messages={[
+          snapshotMessage('card-1', 10, 'RECOVERY'),
+          outputMessage('card-1', 11, 'C'),
+        ]}
+        recoveryNonce={1}
+      />,
+    );
+
+    expect(term.reset).toHaveBeenCalledTimes(2);
+    expect(term.write).toHaveBeenCalledWith('RECOVERY');
+    expect(term.write).toHaveBeenLastCalledWith('C');
+
+    // A stale lower/equal seq replayed after recovery is still dropped: the
+    // snapshot reset lastAppliedOutputSeq to 10.
+    rerender(
+      <MainTerminal
+        activeCardId="card-1"
+        messages={[
+          snapshotMessage('card-1', 10, 'RECOVERY'),
+          outputMessage('card-1', 11, 'C'),
+          outputMessage('card-1', 2, 'STALE'),
+        ]}
+        recoveryNonce={1}
+      />,
+    );
+
+    expect(term.reset).toHaveBeenCalledTimes(2);
+    expect(term.write).not.toHaveBeenCalledWith('STALE');
+  });
+
+  it('does not re-arm on a plain reconnect when recoveryNonce is unchanged (issue-5 preserved)', () => {
+    const { rerender } = render(
+      <MainTerminal
+        activeCardId="card-1"
+        messages={[
+          snapshotMessage('card-1', 1, 'SNAP1'),
+          outputMessage('card-1', 2, 'A'),
+        ]}
+        recoveryNonce={0}
+      />,
+    );
+
+    const term = xtermMock.instances[0];
+    expect(term.reset).toHaveBeenCalledTimes(1);
+
+    // Plain reconnect: a higher-seq snapshot arrives but recoveryNonce stays 0
+    // (App only bumps it on backpressure). The issue-5 guard must still ignore
+    // the snapshot so scrollback is not wiped.
+    rerender(
+      <MainTerminal
+        activeCardId="card-1"
+        messages={[
+          snapshotMessage('card-1', 5, 'SNAP2'),
+          outputMessage('card-1', 6, 'B'),
+        ]}
+        recoveryNonce={0}
+      />,
+    );
+
+    expect(term.reset).toHaveBeenCalledTimes(1);
+    expect(term.write).not.toHaveBeenCalledWith('SNAP2');
+    expect(term.write).toHaveBeenLastCalledWith('B');
+  });
+
+  it('does not re-arm when mounting at a non-zero recoveryNonce (no spurious recovery reset)', () => {
+    // A surface (e.g. detail) can mount AFTER a prior backpressure already
+    // bumped the shared nonce. Mounting at nonce=3 must not treat the first
+    // snapshot any differently — only a genuine increment while alive re-arms.
+    const { rerender } = render(
+      <MainTerminal
+        activeCardId="card-1"
+        messages={[
+          snapshotMessage('card-1', 1, 'SNAP1'),
+          outputMessage('card-1', 2, 'A'),
+        ]}
+        recoveryNonce={3}
+      />,
+    );
+
+    const term = xtermMock.instances[0];
+    expect(term.reset).toHaveBeenCalledTimes(1);
+
+    // Same nonce, higher-seq reconnect snapshot: still ignored (issue-5).
+    rerender(
+      <MainTerminal
+        activeCardId="card-1"
+        messages={[
+          snapshotMessage('card-1', 9, 'SNAP2'),
+          outputMessage('card-1', 10, 'B'),
+        ]}
+        recoveryNonce={3}
+      />,
+    );
+
+    expect(term.reset).toHaveBeenCalledTimes(1);
+    expect(term.write).not.toHaveBeenCalledWith('SNAP2');
+    expect(term.write).toHaveBeenLastCalledWith('B');
+  });
+
   it('resets again only when the active card changes, not on a reconnect snapshot', () => {
     const { rerender } = render(
       <MainTerminal
