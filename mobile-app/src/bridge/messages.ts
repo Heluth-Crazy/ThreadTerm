@@ -143,7 +143,17 @@ export function applyServerMessage(
         },
       };
     case 'exit': {
-      const status = message.code === 0 || message.code === null ? 'completed' : 'failed';
+      // FIX-1 (deep-research-defect-fix / second-diagnosis 问题二):
+      // code===null 表示人为 kill / signal / remount——后端 events.rs 已置
+      // SessionState::Idle 并通过权威 `state` 广播（session.rs::set_session_state）。
+      // 此处必须回 idle，不得覆盖成 completed，否则桌面/后端语义为 idle、
+      // 移动端显示 completed，形成跨端状态机分叉（用户可见）。
+      const status =
+        message.code === 0
+          ? 'completed'
+          : message.code === null
+            ? 'idle'
+            : 'failed';
       return {
         ...state,
         cards: state.cards.map((card) =>
