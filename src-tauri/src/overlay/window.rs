@@ -429,7 +429,10 @@ pub(super) fn ensure_float(app: &AppHandle) -> Result<(), String> {
     if app.get_webview_window(FLOAT_LABEL).is_some() {
         return Ok(());
     }
-    let settings = OVERLAY_SETTINGS.lock().unwrap().clone();
+    let settings = OVERLAY_SETTINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
 
     #[cfg(target_os = "macos")]
     {

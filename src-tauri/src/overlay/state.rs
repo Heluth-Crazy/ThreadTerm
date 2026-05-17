@@ -51,7 +51,11 @@ pub fn load_settings() -> OverlaySettings {
             out.float_bounds = Some(bounds);
         }
     }
-    *OVERLAY_SETTINGS.lock().unwrap() = out.clone();
+    // Poison-tolerant: a panic in another short critical section must not
+    // permanently disable overlay settings. Recover the inner data instead.
+    *OVERLAY_SETTINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = out.clone();
     out
 }
 
@@ -65,6 +69,28 @@ mod tests {
         assert_eq!(s.hotkey_a, "CmdOrCtrl+Shift+Space");
         assert_eq!(s.hotkey_b, "CmdOrCtrl+Shift+O");
         assert!(s.float_bounds.is_none());
+    }
+
+    #[test]
+    fn poisoned_settings_mutex_is_still_recoverable() {
+        // D2: a panic inside a critical section poisons std::sync::Mutex.
+        // The hardened `.lock().unwrap_or_else(|e| e.into_inner())` pattern
+        // must still hand back the inner data so overlay settings keep
+        // working instead of cascading panics forever.
+        let lock = std::sync::Mutex::new(OverlaySettings::default());
+
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = lock.lock().unwrap();
+            panic!("simulated panic inside the critical section");
+        }));
+        assert!(poisoned.is_err());
+        assert!(lock.is_poisoned());
+
+        // Plain `.lock().unwrap()` would propagate the poison and panic.
+        // The poison-tolerant pattern recovers the inner data unchanged.
+        let recovered = lock.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(recovered.hotkey_a, "CmdOrCtrl+Shift+Space");
+        assert_eq!(recovered.hotkey_b, "CmdOrCtrl+Shift+O");
     }
 
     #[test]

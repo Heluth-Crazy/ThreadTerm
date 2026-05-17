@@ -493,6 +493,192 @@ test('history survives a reconnect snapshot with a higher seq (issue 5)', async 
   await expectXtermText(detailScreen, 'scroll sentinel 79');
 });
 
+test('backpressure recovery snapshot is applied and repaints the dropped segment (D1)', async ({
+  page,
+}) => {
+  // The /snapshot HTTP endpoint is what onLagged -> loadSnapshot fetches. For
+  // this test it must return a RECOVERY terminal_snapshot (higher seq, carrying
+  // the repainted segment) instead of the card-list snapshot. The route is
+  // re-registered AFTER the initial load so the home screen still boots
+  // normally, then a backpressure error triggers the recovery fetch.
+  await page.goto('/pair');
+  await page.getByText('Tap to focus').click();
+  const detailScreen = page.locator('.terminal-detail-screen');
+  await expectXtermText(detailScreen, SNAPSHOT_TEXT);
+
+  // Build visible sentinel history the user would be reading. seq 88 is the
+  // last applied terminal_output seq before backpressure.
+  await page.evaluate(() => {
+    const sockets = ((window as unknown) as {
+      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
+    }).__threadtermWs;
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'terminal_output',
+      card_id: 'card-1',
+      data: Array.from({ length: 80 }, (_, index) => `scroll sentinel ${index}`).join('\n') + '\n',
+      seq: 88,
+    });
+  });
+  await expectXtermText(detailScreen, 'scroll sentinel 79');
+
+  // Re-point /snapshot at the recovery terminal_snapshot. Its history carries
+  // the segment the broadcast Lagged dropped (RECOVERY MARKER) and its seq is
+  // far higher than the last applied output seq (same monotonic output_seq
+  // source on the server).
+  await page.route('**/snapshot*', async (route) => {
+    snapshotRequests += 1;
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        protocol_version: 1,
+        kind: 'terminal_snapshot',
+        snapshot: {
+          cardId: 'card-1',
+          data: '',
+          seq: 900,
+          rows: 24,
+          cols: 80,
+          cursorRow: 1,
+          cursorCol: 1,
+          history: 'BACKPRESSURE RECOVERY MARKER repainted\n',
+        },
+      }),
+    });
+  });
+
+  // Server broadcast Lagged -> error/backpressure. The app must arm a one-shot
+  // snapshot re-apply and fetch the recovery snapshot.
+  await page.evaluate(() => {
+    const sockets = ((window as unknown) as {
+      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
+    }).__threadtermWs;
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'error',
+      code: 'backpressure',
+      message: 'Client fell behind; intermediate events were dropped.',
+    });
+  });
+
+  // The recovery snapshot was actually APPLIED (not swallowed by the issue-5
+  // epoch guard): the dropped segment is repainted on screen.
+  await expectXtermText(detailScreen, 'BACKPRESSURE RECOVERY MARKER repainted');
+  await expect.poll(() => snapshotRequests).toBeGreaterThan(1);
+
+  // A stale lower/equal-seq terminal_output replayed after recovery must NOT
+  // be re-written (the seq guard still holds: snapshot reset seq to 900).
+  await page.evaluate(() => {
+    const sockets = ((window as unknown) as {
+      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
+    }).__threadtermWs;
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'terminal_output',
+      card_id: 'card-1',
+      data: 'STALE REPLAYED LINE must not appear\n',
+      seq: 88,
+    });
+    // A genuinely new post-recovery line (seq > 900) DOES stream in, proving
+    // the live stream continues from the recovered epoch.
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'terminal_output',
+      card_id: 'card-1',
+      data: 'post-recovery streamed line\n',
+      seq: 901,
+    });
+  });
+
+  await expectXtermText(detailScreen, 'post-recovery streamed line');
+  // The recovery marker is still on-screen and the stale low-seq replay was
+  // dropped by the seq guard.
+  await expect
+    .poll(async () =>
+      detailScreen.locator('.xterm-rows').first().evaluate((el) => el.textContent ?? ''),
+    )
+    .not.toContain('STALE REPLAYED LINE');
+});
+
+test('a plain reconnect snapshot still does NOT destroy history (issue-5 guard, no nonce bump)', async ({
+  page,
+}) => {
+  // Twin of the D1 test: verifies the recovery nonce is NOT bumped on a plain
+  // reconnect path. Without a backpressure error, a higher-seq reconnect
+  // terminal_snapshot must still be ignored as a non-destructive resync so the
+  // pre-existing scrollback sentinel survives.
+  await page.goto('/pair');
+  await page.getByText('Tap to focus').click();
+  const detailScreen = page.locator('.terminal-detail-screen');
+  await expectXtermText(detailScreen, SNAPSHOT_TEXT);
+
+  await page.evaluate(() => {
+    const sockets = ((window as unknown) as {
+      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
+    }).__threadtermWs;
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'terminal_output',
+      card_id: 'card-1',
+      data: Array.from({ length: 80 }, (_, index) => `scroll sentinel ${index}`).join('\n') + '\n',
+      seq: 88,
+    });
+  });
+  await expectXtermText(detailScreen, 'scroll sentinel 79');
+
+  // Visibility / pageshow recovery reconnect (NOT backpressure): a fresh
+  // higher-seq terminal_snapshot arrives over the socket. The recovery nonce
+  // must stay put, so the issue-5 guard ignores this snapshot and history
+  // survives.
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => ((window as unknown) as { __threadtermWs?: unknown[] }).__threadtermWs?.length ?? 0,
+      ),
+    )
+    .toBeGreaterThan(1);
+
+  await page.evaluate(() => {
+    const sockets = ((window as unknown) as {
+      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
+    }).__threadtermWs;
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'terminal_snapshot',
+      snapshot: {
+        cardId: 'card-1',
+        data: '',
+        seq: 600,
+        rows: 24,
+        cols: 80,
+        cursorRow: 1,
+        cursorCol: 1,
+        history: 'reconnect screen only\n',
+      },
+    });
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'terminal_output',
+      card_id: 'card-1',
+      data: 'post-reconnect streamed line\n',
+      seq: 601,
+    });
+  });
+
+  await expectXtermText(detailScreen, 'post-reconnect streamed line');
+  // Decisive issue-5 assertion: pre-reconnect history was NOT wiped because the
+  // plain reconnect did not bump the recovery nonce.
+  await expectXtermText(detailScreen, 'scroll sentinel 79');
+});
+
 test('mobile shell follows the desktop language injected into the pair URL', async ({ page }) => {
   // The desktop injects ?lang=<i18n.language> into the pairing URL (same
   // pattern as the theme_* colors). With lang=zh-CN the mobile chrome must

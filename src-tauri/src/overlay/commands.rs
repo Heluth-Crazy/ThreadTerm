@@ -217,7 +217,10 @@ pub fn overlay_show_main(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn overlay_save_float_bounds(bounds: FloatBounds) -> Result<(), String> {
-    OVERLAY_SETTINGS.lock().unwrap().float_bounds = Some(bounds.clone());
+    OVERLAY_SETTINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .float_bounds = Some(bounds.clone());
     let json = serde_json::to_string(&bounds).unwrap_or_default();
     let _ = crate::db::set_setting("overlay.float_bounds", &json);
     Ok(())
@@ -225,7 +228,10 @@ pub fn overlay_save_float_bounds(bounds: FloatBounds) -> Result<(), String> {
 
 #[tauri::command]
 pub fn overlay_get_settings() -> OverlaySettings {
-    OVERLAY_SETTINGS.lock().unwrap().clone()
+    OVERLAY_SETTINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 #[tauri::command]
@@ -243,7 +249,7 @@ pub fn overlay_update_shortcut(
     };
     let _ = crate::db::set_setting(key, &accelerator);
     // Update in-memory settings.
-    let mut settings = OVERLAY_SETTINGS.lock().unwrap();
+    let mut settings = OVERLAY_SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
     match label.as_str() {
         "A" => settings.hotkey_a = accelerator,
         "B" => settings.hotkey_b = accelerator,

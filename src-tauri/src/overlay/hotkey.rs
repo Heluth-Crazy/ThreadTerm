@@ -27,7 +27,10 @@ pub(super) static HOTKEY_MAP: Lazy<Mutex<HashMap<u32, String>>> =
 /// Register the two global shortcuts. Safe to call from `setup`; logs but
 /// does not panic on failure (a user may have a conflicting binding).
 pub fn register_default_shortcuts(app: &AppHandle) {
-    let settings = OVERLAY_SETTINGS.lock().unwrap().clone();
+    let settings = OVERLAY_SETTINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let _ = register_hotkey(app, "A", &settings.hotkey_a);
     let _ = register_hotkey(app, "B", &settings.hotkey_b);
 }
@@ -43,7 +46,7 @@ pub(super) fn register_hotkey(app: &AppHandle, label: &str, accel: &str) -> Resu
         "B" => &REGISTERED_B,
         _ => return Err(format!("unknown slot {label}")),
     };
-    let prev = slot.lock().unwrap().clone();
+    let prev = slot.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(prev_accel) = prev {
         if let Ok(prev_shortcut) = prev_accel.parse::<Shortcut>() {
             let _ = app.global_shortcut().unregister(prev_shortcut);
@@ -64,11 +67,11 @@ pub(super) fn register_hotkey(app: &AppHandle, label: &str, accel: &str) -> Resu
         .register(shortcut)
         .map_err(|e| format!("register failed: {e:?}"))?;
 
-    *slot.lock().unwrap() = Some(accel.to_string());
+    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(accel.to_string());
 
     HOTKEY_MAP
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(shortcut_id, label.to_string());
     Ok(())
 }
@@ -100,7 +103,7 @@ pub(super) fn register_hotkey(app: &AppHandle, label: &str, accel: &str) -> Resu
 /// (Pressed + Released). The `lib.rs` handler filters to Pressed only.
 pub fn dispatch_hotkey(app: &AppHandle, shortcut: &Shortcut) {
     let id = shortcut.id();
-    let map = HOTKEY_MAP.lock().unwrap();
+    let map = HOTKEY_MAP.lock().unwrap_or_else(|e| e.into_inner());
     let slot = map.get(&id).cloned();
     drop(map);
     match slot.as_deref() {

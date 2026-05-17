@@ -71,6 +71,13 @@ export function App() {
   const [pairingError, setPairingError] = useState<string | null>(null);
   const [pairingBusy, setPairingBusy] = useState(false);
   const [terminalMessages, setTerminalMessages] = useState<ServerMessage[]>([]);
+  // Monotonic counter bumped ONLY when the server signals backpressure
+  // (broadcast Lagged -> error/backpressure -> onLagged). A bump tells
+  // MainTerminal to treat the very next terminal_snapshot as a one-shot
+  // recovery reset so the dropped terminal_output segment is repainted.
+  // Plain reconnects (visibility/online/pageshow -> onResume) MUST NOT bump
+  // this so issue-5 (history survives a reconnect snapshot) is unchanged.
+  const [recoveryNonce, setRecoveryNonce] = useState(0);
   const [tab, setTab] = useState<TabId>('terminal');
   const [detailOpen, setDetailOpen] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -106,10 +113,18 @@ export function App() {
     }
   }, [applyMessage, token]);
 
+  // Backpressure recovery: arm a one-shot snapshot re-apply in MainTerminal,
+  // THEN fetch the fresh snapshot. The bump is exclusive to this path (never
+  // onResume) so the issue-5 reconnect guard stays intact.
+  const handleLagged = useCallback(() => {
+    setRecoveryNonce((nonce) => nonce + 1);
+    void loadSnapshot();
+  }, [loadSnapshot]);
+
   const bridge = useBridgeConnection({
     token,
     onMessage: applyMessage,
-    onLagged: loadSnapshot,
+    onLagged: handleLagged,
     onError: (message) => dispatch({ type: 'ws-error', message }),
     onResume: loadSnapshot,
   });
@@ -232,6 +247,7 @@ export function App() {
           activeCard={activeCard}
           canSend={canSend}
           messages={terminalMessages}
+          recoveryNonce={recoveryNonce}
           onBack={() => setDetailOpen(false)}
           onOpenSettings={() => {
             setDetailOpen(false);
@@ -250,6 +266,7 @@ export function App() {
               bridgeAddress={window.location.host}
               cards={state.cards}
               messages={terminalMessages}
+              recoveryNonce={recoveryNonce}
               onOpenCard={openCard}
               onOpenScanner={() => setScannerOpen(true)}
               onSearchChange={setSearchQuery}
@@ -339,6 +356,7 @@ function TerminalHome({
   bridgeAddress,
   cards,
   messages,
+  recoveryNonce,
   onOpenCard,
   onOpenScanner,
   onSearchChange,
@@ -350,6 +368,7 @@ function TerminalHome({
   bridgeAddress: string;
   cards: CardMeta[];
   messages: ServerMessage[];
+  recoveryNonce: number;
   onOpenCard: (cardId: string) => void;
   onOpenScanner: () => void;
   onSearchChange: (value: string) => void;
@@ -419,6 +438,7 @@ function TerminalHome({
                 <MainTerminal
                   activeCardId={activeCard.id}
                   messages={messages}
+                  recoveryNonce={recoveryNonce}
                   mode="preview"
                 />
               </div>
@@ -616,6 +636,7 @@ function TerminalDetail({
   activeCard,
   canSend,
   messages,
+  recoveryNonce,
   onBack,
   onOpenSettings,
   onResize,
@@ -626,6 +647,7 @@ function TerminalDetail({
   activeCard: CardMeta | null;
   canSend: boolean;
   messages: ServerMessage[];
+  recoveryNonce: number;
   onBack: () => void;
   onOpenSettings: () => void;
   onResize: ((cols: number, rows: number) => void) | undefined;
@@ -654,6 +676,7 @@ function TerminalDetail({
         activeCardId={activeCard?.id ?? null}
         className="terminal-detail-output"
         messages={messages}
+        recoveryNonce={recoveryNonce}
         onResize={onResize}
       />
 
