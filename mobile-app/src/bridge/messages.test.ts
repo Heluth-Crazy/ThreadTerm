@@ -123,4 +123,77 @@ describe('mobile bridge message reducer', () => {
     expect(closed.cards).toEqual([]);
     expect(closed.activeCardId).toBeNull();
   });
+
+  // ── FIX-1 (deep-research-defect-fix / second-diagnosis 问题二) ──────────
+  function hydrateOneCard(status: 'running' | 'idle' | 'waiting_for_input') {
+    return applyServerMessage(initialBridgeState, {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'snapshot',
+      notifications: [],
+      cards: [
+        {
+          id: 'card-1',
+          status,
+          projectPath: '/tmp/ThreadTerm',
+          projectName: 'ThreadTerm',
+          lastReplyPreview: '',
+          summaryLine: null,
+          hiddenLineCount: 0,
+          recentOutputBytes: 0,
+          ptyLive: true,
+          attachable: true,
+        },
+      ],
+    });
+  }
+
+  it('FIX-1: exit(code=0) marks the card completed', () => {
+    const exited = applyServerMessage(hydrateOneCard('running'), {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'exit',
+      card_id: 'card-1',
+      code: 0,
+    });
+    expect(exited.cards[0]?.status).toBe('completed');
+    expect(exited.ptyStatusByCardId['card-1']).toBe('completed');
+  });
+
+  it('FIX-1: exit(code=null) maps to idle, not completed (cross-platform parity)', () => {
+    const exited = applyServerMessage(hydrateOneCard('running'), {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'exit',
+      card_id: 'card-1',
+      code: null,
+    });
+    expect(exited.cards[0]?.status).toBe('idle');
+    expect(exited.ptyStatusByCardId['card-1']).toBe('idle');
+  });
+
+  it('FIX-1: exit(code=137) marks the card failed', () => {
+    const exited = applyServerMessage(hydrateOneCard('running'), {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'exit',
+      card_id: 'card-1',
+      code: 137,
+    });
+    expect(exited.cards[0]?.status).toBe('failed');
+    expect(exited.ptyStatusByCardId['card-1']).toBe('failed');
+  });
+
+  it('FIX-1: authoritative state(idle) is not flipped to completed by a later exit(null)', () => {
+    const idle = applyServerMessage(hydrateOneCard('running'), {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'state',
+      card_id: 'card-1',
+      status: 'idle',
+    });
+    const afterExit = applyServerMessage(idle, {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'exit',
+      card_id: 'card-1',
+      code: null,
+    });
+    expect(afterExit.cards[0]?.status).toBe('idle');
+    expect(afterExit.ptyStatusByCardId['card-1']).toBe('idle');
+  });
 });
