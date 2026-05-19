@@ -135,6 +135,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
             card={card}
             isFocused={focusedCardId === card.id}
             onClick={() => onOpenTerminal?.(card.id)}
+            onClose={() => removeCard(card.id)}
           />
         </div>
       ))}

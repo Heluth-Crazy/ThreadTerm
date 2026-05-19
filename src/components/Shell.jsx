@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { useTranslation } from 'react-i18next';
 import { logger } from '../utils/logger';
@@ -222,7 +223,13 @@ function Shell({
     };
 
     requestAnimationFrame(run);
-    for (const delay of [60, 180]) {
+    // Windows WebView2 reports a 0-sized host on the first frames after the
+    // webview becomes visible, so the early passes hit the `rect.width < 20`
+    // guard and `fit()` is skipped — the terminal stays at its default
+    // cols/rows and never fills the pane (issue #4). `run()` is idempotent
+    // (resizePtyIfNeeded dedupes), so the extra late passes are cheap and
+    // simply succeed once the surface finally has a real size.
+    for (const delay of [60, 180, 400, 800]) {
       const timer = window.setTimeout(() => {
         run();
         surfaceRecoveryTimersRef.current = surfaceRecoveryTimersRef.current.filter((id) => id !== timer);
@@ -526,6 +533,25 @@ function Shell({
     }
 
     terminal.current.open(terminalRef.current);
+
+    // Windows WebView2's xterm DOM renderer is extremely slow with a large
+    // scrollback, which makes opening a history-heavy session janky and the
+    // viewport sluggish to scroll (issues #4 / #7). Activate the GPU
+    // renderer; degrade gracefully to the DOM renderer when WebGL is
+    // unavailable or its context is lost so the terminal never goes blank.
+    try {
+      const webglAddon = new WebglAddon();
+      webglAddon.onContextLoss(() => {
+        try {
+          webglAddon.dispose();
+        } catch {
+          // Already disposed — xterm falls back to the DOM renderer.
+        }
+      });
+      terminal.current.loadAddon(webglAddon);
+    } catch {
+      // WebGL unsupported in this webview — keep xterm's DOM renderer.
+    }
 
     terminal.current.attachCustomKeyEventHandler((event) => {
       const activeAuthUrl = isCodexLoginCommand(initialCommandRef.current)
