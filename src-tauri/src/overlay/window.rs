@@ -568,6 +568,10 @@ pub(super) fn ensure_pet(app: &AppHandle) -> Result<(), String> {
             .skip_taskbar(true)
             .resizable(false)
             .visible(false)
+            // Windows draws a drop shadow / 1px frame around borderless
+            // transparent windows. The macOS panel branch already disables
+            // it; mirror that here so the pet has no extra border (issue #6).
+            .shadow(false)
             .inner_size(w, h)
             .position(x, y)
             .build()
