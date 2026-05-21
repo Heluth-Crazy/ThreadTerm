@@ -69,6 +69,7 @@ pub fn run() {
             pty::get_command_blocks_enabled,
             notification::notification_send_os,
             provider_sessions::provider_find_recent_session,
+            provider_sessions::provider_list_recent_sessions,
             shell_integration::detect_shell,
             shell_integration::preview_shell_integration,
             shell_integration::install_shell_integration,

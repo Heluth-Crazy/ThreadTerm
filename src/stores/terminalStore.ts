@@ -26,6 +26,7 @@ import type {
   TerminalCreateOptions,
   TerminalEvent,
   TerminalAiIntent,
+  ProviderSessionImportInfo,
   TerminalStatus,
 } from '../types/terminal';
 import type { AiExplainProvider } from '../lib/ai/aiExplain';
@@ -112,6 +113,35 @@ function isProviderSessionType(type: TerminalCard['terminalType']): boolean {
   return type === 'claude' || type === 'codex';
 }
 
+function pathBasename(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '');
+  const parts = trimmed.split(/[\\/]/);
+  return parts[parts.length - 1] || trimmed || 'Unknown project';
+}
+
+function providerSessionKey(provider: ProviderSessionImportInfo['provider'], id: string): string {
+  return `${provider}\0${id}`;
+}
+
+function normalizeImportedProviderSession(
+  session: ProviderSessionImportInfo,
+): ProviderSessionImportInfo | null {
+  const id = session.id.trim();
+  const projectPath = session.projectPath.trim();
+  if (!id || !projectPath) return null;
+  if (session.provider !== 'claude' && session.provider !== 'codex') return null;
+
+  return {
+    id,
+    provider: session.provider,
+    projectPath,
+    updatedAt:
+      typeof session.updatedAt === 'number' && Number.isFinite(session.updatedAt)
+        ? session.updatedAt
+        : null,
+  };
+}
+
 function isTransientStatus(status: TerminalStatus): boolean {
   return status === 'running' || status === 'waiting';
 }
@@ -175,6 +205,7 @@ interface TerminalStore {
 
   // ─── card actions ────────────────────────────────────────────────────────
   createCard: (options: TerminalCreateOptions) => string;
+  importProviderSessionCards: (sessions: ProviderSessionImportInfo[]) => number;
   removeCard: (id: string) => void;
   updateCardOutput: (id: string, chunk: string) => void;
   updateCardStatus: (id: string, status: TerminalStatus) => void;
@@ -346,6 +377,77 @@ export const useTerminalStore = create<TerminalStore>()(
         };
         set((state) => ({ cards: [...state.cards, card] }));
         return id;
+      },
+
+      importProviderSessionCards: (sessions) => {
+        if (sessions.length === 0) return 0;
+
+        let imported = 0;
+        set((state) => {
+          const existingKeys = new Set(
+            state.cards
+              .filter(
+                (card) =>
+                  isProviderSessionType(card.terminalType) && Boolean(card.providerSessionId),
+              )
+              .map((card) =>
+                providerSessionKey(
+                  card.terminalType as ProviderSessionImportInfo['provider'],
+                  card.providerSessionId ?? '',
+                ),
+              ),
+          );
+          const projectNames = new Map(
+            state.cards.map((card) => [card.projectPath, card.projectName]),
+          );
+          const cards = [...state.cards];
+
+          for (const rawSession of sessions) {
+            const session = normalizeImportedProviderSession(rawSession);
+            if (!session) continue;
+
+            const key = providerSessionKey(session.provider, session.id);
+            if (existingKeys.has(key)) continue;
+
+            const now = Date.now();
+            const projectName =
+              projectNames.get(session.projectPath) ?? pathBasename(session.projectPath);
+            cards.push({
+              id: uid(),
+              ptyId: session.id,
+              projectPath: session.projectPath,
+              projectName,
+              terminalType: session.provider,
+              providerSessionId: session.id,
+              providerSessionState: 'bound',
+              providerSessionBoundAt: now,
+              status: 'idle',
+              createdAt: now,
+              lastActivity: session.updatedAt ?? now,
+              lastOutput: '',
+              lastReplyPreview: '',
+              messageCount: 0,
+              events: [
+                {
+                  at: now,
+                  kind: 'created',
+                  summary: i18n.t('terminal:events.created', {
+                    type: i18n.t(`terminal:types.${session.provider}`, session.provider),
+                    project: projectName,
+                  }),
+                },
+              ],
+              unread: false,
+            });
+            existingKeys.add(key);
+            projectNames.set(session.projectPath, projectName);
+            imported += 1;
+          }
+
+          return imported > 0 ? { cards } : state;
+        });
+
+        return imported;
       },
 
       removeCard: (id) => {

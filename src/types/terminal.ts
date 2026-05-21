@@ -241,6 +241,13 @@ export interface TerminalCreateOptions {
   worktreePath?: string;
 }
 
+export interface ProviderSessionImportInfo {
+  id: string;
+  provider: 'claude' | 'codex';
+  projectPath: string;
+  updatedAt?: number | null;
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Max events retained per card timeline. */

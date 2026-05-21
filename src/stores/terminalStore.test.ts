@@ -83,6 +83,60 @@ describe('terminalStore — card lifecycle', () => {
     );
   });
 
+  it('imports provider session metadata as bound cards without focusing them', () => {
+    const s = useTerminalStore.getState();
+    const existingId = s.createCard({
+      projectName: 'app',
+      projectPath: '/repo/app',
+      terminalType: 'shell',
+    });
+    s.selectProject('/repo/app');
+    s.focusCard(existingId);
+
+    const imported = s.importProviderSessionCards([
+      {
+        id: 'codex-session-1',
+        provider: 'codex',
+        projectPath: '/repo/app',
+        updatedAt: 1234,
+      },
+    ]);
+
+    const state = useTerminalStore.getState();
+    const card = state.cards.find((candidate) => candidate.providerSessionId === 'codex-session-1');
+    expect(imported).toBe(1);
+    expect(card).toMatchObject({
+      ptyId: 'codex-session-1',
+      projectName: 'app',
+      projectPath: '/repo/app',
+      terminalType: 'codex',
+      providerSessionState: 'bound',
+      status: 'idle',
+      lastActivity: 1234,
+    });
+    expect(card?.command).toBeUndefined();
+    expect(state.focusedCardId).toBe(existingId);
+    expect(state.selectedProjectPath).toBe('/repo/app');
+  });
+
+  it('imports provider session metadata idempotently by provider and session id', () => {
+    const s = useTerminalStore.getState();
+    const session = {
+      id: 'claude-session-1',
+      provider: 'claude' as const,
+      projectPath: '/repo/app',
+      updatedAt: 1234,
+    };
+
+    expect(s.importProviderSessionCards([session])).toBe(1);
+    expect(s.importProviderSessionCards([session])).toBe(0);
+    expect(
+      useTerminalStore
+        .getState()
+        .cards.filter((card) => card.providerSessionId === 'claude-session-1'),
+    ).toHaveLength(1);
+  });
+
   it('updates and clears an AI intent label', () => {
     const s = useTerminalStore.getState();
     const id = s.createCard({ projectName: 'foo', projectPath: '/tmp/foo', terminalType: 'codex' });

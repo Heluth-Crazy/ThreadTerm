@@ -809,7 +809,109 @@ fn public_host_for_url(host: &str) -> String {
 }
 
 fn lan_ipv4_for_url() -> Option<String> {
-    default_route_ipv4_for_url().or_else(udp_route_ipv4_for_url)
+    physical_adapter_ipv4_for_url()
+        .or_else(default_route_ipv4_for_url)
+        .or_else(udp_route_ipv4_for_url)
+}
+
+#[cfg(target_os = "windows")]
+fn physical_adapter_ipv4_for_url() -> Option<String> {
+    const SCRIPT: &str = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+Get-NetAdapter | ForEach-Object {
+  $adapter = $_
+  $metric = (Get-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 | Select-Object -First 1 -ExpandProperty InterfaceMetric)
+  Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 | ForEach-Object {
+    "{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}" -f $_.IPAddress,$adapter.Status,$adapter.HardwareInterface,$adapter.Virtual,$metric,$adapter.Name,$adapter.InterfaceDescription
+  }
+}
+"#;
+
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    windows_physical_adapter_ipv4_from_tsv(&stdout)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn physical_adapter_ipv4_for_url() -> Option<String> {
+    None
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn windows_physical_adapter_ipv4_from_tsv(output: &str) -> Option<String> {
+    let mut candidates = Vec::new();
+    for (index, line) in output.lines().enumerate() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 7 {
+            continue;
+        }
+
+        let status = fields[1].trim();
+        let hardware_interface = fields[2];
+        let virtual_adapter = fields[3];
+        let metric = fields[4].trim().parse::<u32>().unwrap_or(u32::MAX);
+        let alias = fields[5];
+        let description = fields[6];
+
+        if !status.eq_ignore_ascii_case("up")
+            || !windows_bool(hardware_interface)
+            || windows_bool(virtual_adapter)
+            || looks_like_windows_virtual_adapter(alias, description)
+        {
+            continue;
+        }
+
+        let Ok(ip) = fields[0].trim().parse::<Ipv4Addr>() else {
+            continue;
+        };
+        if !lan_ipv4_candidate(ip) {
+            continue;
+        }
+
+        candidates.push((metric, index, ip));
+    }
+
+    candidates.sort_by_key(|(metric, index, _)| (*metric, *index));
+    candidates
+        .into_iter()
+        .next()
+        .map(|(_, _, ip)| ip.to_string())
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn windows_bool(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1")
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn looks_like_windows_virtual_adapter(alias: &str, description: &str) -> bool {
+    const VIRTUAL_ADAPTER_KEYWORDS: &[&str] = &[
+        "vpn",
+        "tun",
+        "tap",
+        "wintun",
+        "wireguard",
+        "tailscale",
+        "zerotier",
+        "virtual",
+        "vmware",
+        "virtualbox",
+        "hyper-v",
+        "loopback",
+        "docker",
+        "wsl",
+    ];
+
+    let combined = format!("{alias} {description}").to_ascii_lowercase();
+    VIRTUAL_ADAPTER_KEYWORDS
+        .iter()
+        .any(|keyword| combined.contains(keyword))
 }
 
 #[cfg(target_os = "macos")]
@@ -1026,6 +1128,36 @@ mod tests {
         assert!(!lan_ipv4_candidate(Ipv4Addr::new(169, 254, 1, 2)));
         assert!(!lan_ipv4_candidate(Ipv4Addr::new(255, 255, 255, 255)));
         assert!(lan_ipv4_candidate(Ipv4Addr::new(192, 168, 1, 67)));
+    }
+
+    #[test]
+    fn windows_physical_adapter_parser_skips_virtual_and_tunnel_adapters() {
+        let output = [
+            "100.88.1.10\tUp\tFalse\tTrue\t1\tTailscale\tTailscale Tunnel",
+            "172.28.144.1\tUp\tTrue\tTrue\t5\tvEthernet (WSL)\tHyper-V Virtual Ethernet Adapter",
+            "10.8.0.2\tUp\tTrue\tFalse\t10\tWireGuard Tunnel\tWireGuard Tunnel",
+            "192.168.1.67\tUp\tTrue\tFalse\t25\tWi-Fi\tIntel(R) Wi-Fi 6 AX201",
+        ]
+        .join("\n");
+
+        assert_eq!(
+            windows_physical_adapter_ipv4_from_tsv(&output).as_deref(),
+            Some("192.168.1.67")
+        );
+    }
+
+    #[test]
+    fn windows_physical_adapter_parser_prefers_lower_interface_metric() {
+        let output = [
+            "192.168.1.67\tUp\tTrue\tFalse\t50\tWi-Fi\tIntel(R) Wi-Fi 6 AX201",
+            "10.0.0.12\tUp\tTrue\tFalse\t10\tEthernet\tRealtek PCIe GbE Family Controller",
+        ]
+        .join("\n");
+
+        assert_eq!(
+            windows_physical_adapter_ipv4_from_tsv(&output).as_deref(),
+            Some("10.0.0.12")
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const JSONL_SCAN_CACHE_TTL: Duration = Duration::from_millis(2_500);
 const SESSION_FILE_GRACE_MS: u64 = 120_000;
+const DEFAULT_PROVIDER_SESSION_LIST_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,30 +69,85 @@ pub async fn provider_find_recent_session(
     .map_err(|e| format!("Provider session discovery task failed: {e}"))?
 }
 
+#[tauri::command]
+pub async fn provider_list_recent_sessions(
+    limit: Option<usize>,
+) -> Result<Vec<ProviderSessionInfo>, String> {
+    let limit = normalize_provider_session_limit(limit);
+    tokio::task::spawn_blocking(move || Ok(list_recent_provider_sessions(limit)))
+        .await
+        .map_err(|e| format!("Provider session discovery task failed: {e}"))?
+}
+
 fn find_recent_codex_session(
     project_path: &str,
     since_ms: Option<u64>,
 ) -> Option<ProviderSessionInfo> {
-    let root = dirs::home_dir()?.join(".codex").join("sessions");
+    find_recent_session_for_project(list_codex_sessions(since_ms), project_path)
+}
+
+fn find_recent_claude_session(
+    project_path: &str,
+    since_ms: Option<u64>,
+) -> Option<ProviderSessionInfo> {
+    find_recent_session_for_project(list_claude_sessions(since_ms), project_path)
+}
+
+fn list_recent_provider_sessions(limit: usize) -> Vec<ProviderSessionInfo> {
+    let mut sessions = Vec::new();
+    sessions.extend(list_codex_sessions(None));
+    sessions.extend(list_claude_sessions(None));
+    dedupe_and_sort_provider_sessions(sessions, limit)
+}
+
+fn list_codex_sessions(since_ms: Option<u64>) -> Vec<ProviderSessionInfo> {
+    let Some(root) = dirs::home_dir().map(|home| home.join(".codex").join("sessions")) else {
+        return Vec::new();
+    };
+    provider_sessions_from_root(&root, "codex", since_ms, parse_codex_session_meta)
+}
+
+fn list_claude_sessions(since_ms: Option<u64>) -> Vec<ProviderSessionInfo> {
+    let Some(root) = dirs::home_dir().map(|home| home.join(".claude").join("projects")) else {
+        return Vec::new();
+    };
+    provider_sessions_from_root(&root, "claude", since_ms, parse_claude_session_meta)
+}
+
+fn provider_sessions_from_root(
+    root: &Path,
+    provider: &str,
+    since_ms: Option<u64>,
+    parse_meta: fn(&Path) -> Option<(String, String)>,
+) -> Vec<ProviderSessionInfo> {
     if !root.is_dir() {
-        return None;
+        return Vec::new();
     }
 
-    let mut best: Option<ProviderSessionInfo> = None;
+    let mut sessions = Vec::new();
     for file in jsonl_files_recent_first(&root, since_ms) {
-        let Some((id, cwd)) = parse_codex_session_meta(&file.path) else {
+        let Some((id, cwd)) = parse_meta(&file.path) else {
             continue;
         };
-        if !path_matches(&cwd, project_path) {
-            continue;
-        }
-
-        let candidate = ProviderSessionInfo {
+        sessions.push(ProviderSessionInfo {
             id,
-            provider: "codex".to_string(),
+            provider: provider.to_string(),
             project_path: cwd,
             updated_at: file.modified_ms,
-        };
+        });
+    }
+    sessions
+}
+
+fn find_recent_session_for_project(
+    sessions: Vec<ProviderSessionInfo>,
+    project_path: &str,
+) -> Option<ProviderSessionInfo> {
+    let mut best: Option<ProviderSessionInfo> = None;
+    for candidate in sessions {
+        if !path_matches(&candidate.project_path, project_path) {
+            continue;
+        }
         if is_newer(&candidate, best.as_ref()) {
             best = Some(candidate);
         }
@@ -99,35 +155,46 @@ fn find_recent_codex_session(
     best
 }
 
-fn find_recent_claude_session(
-    project_path: &str,
-    since_ms: Option<u64>,
-) -> Option<ProviderSessionInfo> {
-    let root = dirs::home_dir()?.join(".claude").join("projects");
-    if !root.is_dir() {
-        return None;
-    }
-
-    let mut best: Option<ProviderSessionInfo> = None;
-    for file in jsonl_files_recent_first(&root, since_ms) {
-        let Some((id, cwd)) = parse_claude_session_meta(&file.path) else {
-            continue;
-        };
-        if !path_matches(&cwd, project_path) {
+fn dedupe_and_sort_provider_sessions(
+    sessions: Vec<ProviderSessionInfo>,
+    limit: usize,
+) -> Vec<ProviderSessionInfo> {
+    let mut by_key: HashMap<(String, String), ProviderSessionInfo> = HashMap::new();
+    for session in sessions {
+        if session.id.trim().is_empty()
+            || session.provider.trim().is_empty()
+            || session.project_path.trim().is_empty()
+        {
             continue;
         }
 
-        let candidate = ProviderSessionInfo {
-            id,
-            provider: "claude".to_string(),
-            project_path: cwd,
-            updated_at: file.modified_ms,
-        };
-        if is_newer(&candidate, best.as_ref()) {
-            best = Some(candidate);
+        let key = (session.provider.clone(), session.id.clone());
+        let should_replace = by_key
+            .get(&key)
+            .map(|current| is_newer(&session, Some(current)))
+            .unwrap_or(true);
+        if should_replace {
+            by_key.insert(key, session);
         }
     }
-    best
+
+    let mut sessions: Vec<ProviderSessionInfo> = by_key.into_values().collect();
+    sessions.sort_by(|a, b| {
+        b.updated_at
+            .unwrap_or(0)
+            .cmp(&a.updated_at.unwrap_or(0))
+            .then_with(|| a.provider.cmp(&b.provider))
+            .then_with(|| a.project_path.cmp(&b.project_path))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    sessions.truncate(limit);
+    sessions
+}
+
+fn normalize_provider_session_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(DEFAULT_PROVIDER_SESSION_LIST_LIMIT)
+        .clamp(1, DEFAULT_PROVIDER_SESSION_LIST_LIMIT)
 }
 
 fn parse_codex_session_meta(path: &Path) -> Option<(String, String)> {
@@ -290,6 +357,108 @@ mod tests {
 
     fn clear_scan_cache() {
         JSONL_SCAN_CACHE.lock().expect("scan cache").clear();
+    }
+
+    fn session(
+        id: &str,
+        provider: &str,
+        project_path: &str,
+        updated_at: u64,
+    ) -> ProviderSessionInfo {
+        ProviderSessionInfo {
+            id: id.to_string(),
+            provider: provider.to_string(),
+            project_path: project_path.to_string(),
+            updated_at: Some(updated_at),
+        }
+    }
+
+    #[test]
+    fn parse_codex_session_meta_reads_session_payload() {
+        let _guard = TEST_LOCK.lock().expect("provider session test lock");
+        let root = temp_root("codex-parse");
+        let file = root.join("session.jsonl");
+        write_jsonl(
+            &file,
+            r#"{"type":"session_meta","payload":{"id":"codex-1","cwd":"/repo/app"}}"#,
+        );
+
+        assert_eq!(
+            parse_codex_session_meta(&file),
+            Some(("codex-1".to_string(), "/repo/app".to_string()))
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn parse_claude_session_meta_reads_cwd_and_falls_back_to_file_stem() {
+        let _guard = TEST_LOCK.lock().expect("provider session test lock");
+        let root = temp_root("claude-parse");
+        let file = root.join("claude-session-1.jsonl");
+        write_jsonl(&file, r#"{"cwd":"/repo/app","message":"hello"}"#);
+
+        assert_eq!(
+            parse_claude_session_meta(&file),
+            Some(("claude-session-1".to_string(), "/repo/app".to_string()))
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn provider_sessions_from_root_lists_valid_jsonl_metadata() {
+        let _guard = TEST_LOCK.lock().expect("provider session test lock");
+        clear_scan_cache();
+        let root = temp_root("list");
+        write_jsonl(
+            &root.join("nested").join("codex.jsonl"),
+            r#"{"type":"session_meta","payload":{"id":"codex-1","cwd":"/repo/app"}}"#,
+        );
+        write_jsonl(&root.join("nested").join("notes.txt"), "{}\n");
+        write_jsonl(&root.join("bad.jsonl"), r#"{"type":"other"}"#);
+
+        let sessions = provider_sessions_from_root(&root, "codex", None, parse_codex_session_meta);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "codex-1");
+        assert_eq!(sessions[0].provider, "codex");
+        assert_eq!(sessions[0].project_path, "/repo/app");
+        assert!(sessions[0].updated_at.is_some());
+
+        let _ = fs::remove_dir_all(&root);
+        clear_scan_cache();
+    }
+
+    #[test]
+    fn dedupe_and_sort_provider_sessions_keeps_newest_per_provider_session_id() {
+        let sessions = vec![
+            session("same", "codex", "/repo/old", 10),
+            session("claude-1", "claude", "/repo/claude", 30),
+            session("same", "codex", "/repo/new", 40),
+            session("", "codex", "/repo/ignored", 50),
+        ];
+
+        let result = dedupe_and_sort_provider_sessions(sessions, 10);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, "same");
+        assert_eq!(result[0].provider, "codex");
+        assert_eq!(result[0].project_path, "/repo/new");
+        assert_eq!(result[1].id, "claude-1");
+    }
+
+    #[test]
+    fn dedupe_and_sort_provider_sessions_applies_limit() {
+        let sessions = vec![
+            session("old", "codex", "/repo/old", 10),
+            session("new", "claude", "/repo/new", 20),
+        ];
+
+        let result = dedupe_and_sort_provider_sessions(sessions, 1);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "new");
     }
 
     #[test]
