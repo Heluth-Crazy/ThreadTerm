@@ -142,10 +142,15 @@ export interface ProviderSessionInfo {
   id: string;
   provider: 'claude' | 'codex';
   projectPath: string;
-  updatedAt?: number;
+  updatedAt?: number | null;
 }
 
 export const providerSessions = {
+  listRecent: (limit?: number): Promise<ProviderSessionInfo[]> =>
+    invoke<ProviderSessionInfo[]>('provider_list_recent_sessions', {
+      limit: limit ?? null,
+    }),
+
   findRecent: (
     provider: 'claude' | 'codex',
     projectPath: string,

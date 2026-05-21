@@ -39,7 +39,7 @@ import type { DiscoveredWorkflow } from '../../lib/workflows/discoverWorkflows';
 import type { WorkflowImportPlan } from '../../lib/workflows/importWorkflow';
 import type { TerminalCard, TerminalCreateOptions, TerminalStatus, TerminalType } from '../../types/terminal';
 import { useSupervisor } from '../../lib/supervisor/useSupervisor';
-import { isTauriEnv, mobileBridge } from '../../lib/tauri-bridge';
+import { isTauriEnv, mobileBridge, providerSessions } from '../../lib/tauri-bridge';
 import type { CardMeta, TerminalStatus as MobileTerminalStatus } from '../../mobile/bridge/protocol';
 
 type ViewMode = 'grid' | 'focus';
@@ -134,6 +134,7 @@ export function TerminalManager() {
   const focusedCardId = useTerminalStore((s) => s.focusedCardId);
   const focusCard = useTerminalStore((s) => s.focusCard);
   const createCard = useTerminalStore((s) => s.createCard);
+  const importProviderSessionCards = useTerminalStore((s) => s.importProviderSessionCards);
   const selectProject = useTerminalStore((s) => s.selectProject);
   const toggleNotificationCentre = useTerminalStore((s) => s.toggleNotificationCentre);
   const unreadCount = useTerminalStore((s) => s.notifications.filter((n) => !n.read).length);
@@ -244,6 +245,24 @@ export function TerminalManager() {
     mountedIdsRef.current.add(focusedCardId);
     bumpRender((n) => n + 1);
   }, [focusedCardId]);
+
+  useEffect(() => {
+    if (!isTauriEnv()) return;
+    let cancelled = false;
+
+    void providerSessions
+      .listRecent()
+      .then((sessions) => {
+        if (!cancelled) importProviderSessionCards(sessions);
+      })
+      .catch((error) => {
+        console.warn('[ProviderSessions] failed to import existing sessions', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [importProviderSessionCards]);
 
   useEffect(() => {
     if (!isTauriEnv()) return;
