@@ -358,3 +358,36 @@ Replaced the mobile pairing page raw/snapshot view with a live read-only WebSock
 
 - 待用户确认后再提交（commit/PR 需用户明确要求）。
 - 注：问题3 终端表面按 iOS 白屏回归与 e2e 契约保持锁黑，仅 app chrome 随外观切换。
+
+
+## Session 9: 修复远端 GitHub issues #10/#11 并核对 #7
+
+**Date**: 2026-05-21
+**Task**: 修复远端 GitHub issues #10/#11 并核对 #7
+**Branch**: `main`
+
+### Summary
+
+定位远端 open issues #7/#10/#11；新增启动导入 Claude/Codex 既有 provider sessions，修复 Windows TUN 代理下移动端局域网地址优先级，并验证 #7 已由 main 既有 Windows WebView2/xterm 处理覆盖。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0e2fb1b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
