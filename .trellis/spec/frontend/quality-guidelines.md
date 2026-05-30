@@ -277,6 +277,106 @@ Correct:
 
 </spec-entry>
 
+<spec-entry category="quality" keywords="desktop-native-feel,tauri,window-state,contextmenu,platform-material,webview" date="2026-05-30" source="src/lib/nativeDesktop.ts:1">
+
+### Scenario: Desktop Native-Feel WebView Boundary
+
+#### 1. Scope / Trigger
+- Trigger: Any change to desktop native-feel behavior, Tauri window plugins,
+  platform material/vibrancy, global context-menu policy, scrollbar platform
+  styling, or multi-window WebView entrypoints.
+- Applies to `src/lib/nativeDesktop.ts`, desktop HTML entrypoints,
+  `src-tauri/src/lib.rs`, platform material code, `src/index.css`, and terminal
+  host surfaces that need native context-menu exceptions.
+
+#### 2. Signatures
+- Frontend installer:
+  `installNativeDesktopBehavior(doc?: Document, options?: { platformMaterial?: boolean }): () => void`
+- Frontend platform state:
+  `detectNativePlatform(source?): 'macos' | 'windows' | 'linux' | 'unknown'`
+- Frontend material sync:
+  `syncPlatformMaterialAttribute(root?: HTMLElement): Promise<void>`
+- Backend command:
+  `native_platform_material_state() -> { enabled: bool, platform: NativePlatform }`
+- Runtime gate env: `THREADTERM_PLATFORM_MATERIAL=1|true|on|yes`
+- First-paint CSS experiment env:
+  `VITE_THREADTERM_PLATFORM_MATERIAL=1|true|on|yes`
+
+#### 3. Contracts
+- Platform material is a gated spike, off by default. No env vars means the app
+  keeps the existing opaque/fallback visual path.
+- Only the main desktop entrypoint may pass `{ platformMaterial: true }`.
+  Selector, float, pet, and future overlay entrypoints must install native
+  context-menu/platform attributes with material disabled so transparent CSS
+  never leaks into overlay windows.
+- The backend reports material `enabled: true` only after the native material
+  call succeeds. A supported platform plus enabled env var is not enough.
+- Linux and unsupported platforms are no-op fallbacks and must not panic.
+- `tauri-plugin-window-state` must persist only the `main` label. Overlay labels
+  such as `selector`, `float`, and `pet` are self-positioning windows and must
+  stay denied/filtered out of window-state restore.
+- Global `contextmenu` handling must block normal chrome so WebKit/browser menus
+  do not leak through, while allowing enabled `input`, `textarea`,
+  `[contenteditable]`, and terminal/xterm surfaces marked by
+  `.threadterm-xterm-host`, `.xterm`, `.xterm-viewport`, `.xterm-screen`, or
+  `[data-terminal-context-menu]`.
+- macOS scrollbar styling should be left to WebKit/system defaults. Custom thin
+  scrollbar selectors may target Windows/Linux/unknown platform markers only.
+
+#### 4. Validation & Error Matrix
+- Material env missing/false -> backend returns disabled; CSS material path stays
+  off.
+- Material env true but native apply fails -> backend returns disabled; frontend
+  must restore `data-platform-material="disabled"`.
+- Overlay entrypoint accidentally enables material -> selector/float/pet can
+  become transparent or visually clipped; reject in review.
+- Window-state includes overlay labels -> hotkey selector/float/pet geometry or
+  focus can restore incorrectly; reject in review.
+- Context-menu policy blocks editable controls -> copy/paste and text editing
+  regress; add/fix tests.
+- Context-menu policy allows ordinary chrome -> browser menu leaks and native
+  feel regresses.
+
+#### 5. Good/Base/Bad Cases
+- Good: `src/main.jsx` calls
+  `installNativeDesktopBehavior(document, { platformMaterial: true })`, while
+  overlay entrypoints call `installNativeDesktopBehavior()` with the default
+  disabled material path.
+- Base: no material env vars set; right-click is still native-feel blocked on
+  chrome, input/terminal right-click still works, and the main window uses the
+  existing visual treatment.
+- Bad: using `VITE_THREADTERM_PLATFORM_MATERIAL=1` alone to force every WebView
+  entrypoint into transparent CSS, or saving `selector`/`float`/`pet` through
+  window-state.
+
+#### 6. Tests Required
+- TS tests for platform detection, context-menu allow/deny behavior, and default
+  material-disabled installation.
+- Rust tests for env flag parsing and platform material state where pure logic is
+  testable.
+- Full gates: `npm run check`.
+- Manual platform verification for macOS/Windows material first frame, material
+  fallback, window-state restore, and overlay hotkey/focus behavior.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+// In every WebView entrypoint.
+installNativeDesktopBehavior(document, { platformMaterial: true });
+```
+
+Correct:
+```typescript
+// Main window only.
+installNativeDesktopBehavior(document, { platformMaterial: true });
+
+// Overlay windows.
+installNativeDesktopBehavior();
+```
+
+</spec-entry>
+
 <spec-entry category="quality" keywords="mobile-bridge,react-bundle,pairing,websocket,xterm,theme" date="2026-05-12" source="src-tauri/src/bridge/protocol.rs:238">
 
 ### Scenario: Mobile Bridge React Client
