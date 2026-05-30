@@ -3,8 +3,8 @@
 //! macOS needs heavy AppKit / NSPanel manipulation to make the selector and
 //! float windows behave like a global overlay (`CanJoinAllSpaces`,
 //! `Accessory` activation policy, NSScreenSaver level, etc.). The non-macOS
-//! variants are no-op stubs so callers can keep a single, branch-free code
-//! path.
+//! variants keep the same call sites while applying the subset of native
+//! focus / foreground behaviour that Tauri exposes cross-platform.
 
 use tauri::AppHandle;
 use tauri::WebviewWindow;
@@ -191,7 +191,9 @@ pub(super) fn configure_float_window_for_current_space(_window: &WebviewWindow) 
 pub(super) fn configure_pet_window_for_current_space(_window: &WebviewWindow) {}
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn activate_float_window_for_keyboard(_window: &WebviewWindow) {}
+pub(super) fn activate_float_window_for_keyboard(window: &WebviewWindow) {
+    let _ = window.set_focus();
+}
 
 #[cfg(not(target_os = "macos"))]
 pub(super) fn set_overlay_activation_policy(_app: &AppHandle) {}
@@ -203,4 +205,9 @@ pub(super) fn restore_regular_activation_policy(_app: &AppHandle) {}
 pub(super) fn restore_regular_activation_policy_if_no_overlay_visible(_app: &AppHandle) {}
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn order_overlay_window_front(_window: &WebviewWindow) {}
+pub(super) fn order_overlay_window_front(window: &WebviewWindow) {
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_always_on_top(true);
+    let _ = window.set_focus();
+}

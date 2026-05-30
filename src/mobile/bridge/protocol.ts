@@ -76,6 +76,20 @@ export type ClientCommand =
 
 export type ClientMessage = VersionedBridgeMessage & ClientCommand;
 
+export const CLIENT_MESSAGE_KINDS = [
+  'auth',
+  'subscribe',
+  'input',
+  'resize',
+  'spawn',
+  'activate',
+  'close',
+  'pin',
+  'set_intent',
+  'mark_read',
+  'ping',
+] as const satisfies readonly ClientCommand['kind'][];
+
 export type ServerCommand =
   | {
       kind: 'snapshot';
@@ -120,3 +134,23 @@ export type ServerCommand =
   | { kind: 'error'; code: string; message: string };
 
 export type ServerMessage = VersionedBridgeMessage & ServerCommand;
+
+export const SERVER_MESSAGE_KINDS = [
+  'snapshot',
+  'card_added',
+  'card_updated',
+  'card_removed',
+  'preview',
+  'terminal_snapshot',
+  'terminal_output',
+  'theme',
+  'state',
+  'attention',
+  'exit',
+  'notification',
+  'spawn_result',
+  'activate_result',
+  'close_result',
+  'pong',
+  'error',
+] as const satisfies readonly ServerCommand['kind'][];
