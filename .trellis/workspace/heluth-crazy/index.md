@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 9
-- **Last Active**: 2026-05-21
+- **Total Sessions**: 10
+- **Last Active**: 2026-05-30
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~393 | Active |
+| `journal-1.md` | ~426 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 10 | 2026-05-30 | Native feel desktop optimization | `f87b5ca` | `audit/desktop-native-feel` |
 | 9 | 2026-05-21 | 修复远端 GitHub issues #10/#11 并核对 #7 | `0e2fb1b` | `main` |
 | 8 | 2026-05-16 | 移动桥接与终端稳定性收尾 | `d7a3778`, `9088fe2`, `eb2ee2c` | `main` |
 | 7 | 2026-05-09 | attach_snapshot 防御兜底：可测 helper + 4 条回归测试 | `51456b9` | `main` |

@@ -391,3 +391,36 @@ Replaced the mobile pairing page raw/snapshot view with a live read-only WebSock
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Native feel desktop optimization
+
+**Date**: 2026-05-30
+**Task**: Native feel desktop optimization
+**Branch**: `audit/desktop-native-feel`
+
+### Summary
+
+Implemented expanded native-feel baseline: single-instance plugin, non-macOS overlay foregrounding, reduced web-like card/dialog motion and glass styling, mobile bridge protocol contract manifests/tests, and frontend type-safety spec guidance. Verified with typecheck, full Vitest, desktop/mobile builds, cargo check/test, GitNexus detect-changes, and Playwright screenshot smoke check.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f87b5ca` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
