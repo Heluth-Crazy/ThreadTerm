@@ -17,7 +17,7 @@
  * any desktop wallpaper.
  */
 import { memo, useMemo } from 'react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import type { TerminalCard } from '../../types/terminal';
 import { getTerminalTypeMeta } from '../../components/terminal/terminalTypeMeta';
@@ -43,6 +43,7 @@ export const SelectorCard = memo(function SelectorCard({
   onDoubleClick,
 }: SelectorCardProps) {
   const { t } = useTranslation('terminal');
+  const reduceMotion = useReducedMotion();
   const typeMeta = getTerminalTypeMeta(card.terminalType);
   const statusInfo = getStatusMeta(card.status);
   const TypeIcon = typeMeta.Icon;
@@ -69,15 +70,14 @@ export const SelectorCard = memo(function SelectorCard({
     <motion.div
       onClick={onClick}
       onDoubleClick={onDoubleClick}
-      whileHover={{ y: -4, scale: size === 'lead' ? 1.01 : 1.05 }}
-      transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+      whileHover={reduceMotion ? undefined : { y: -2, scale: size === 'lead' ? 1.003 : 1.01 }}
+      transition={reduceMotion ? { duration: 0 } : { duration: 0.16, ease: 'easeOut' }}
       className={[
-        'group relative flex flex-col overflow-hidden rounded-[var(--radius)] border text-card-foreground transition-all duration-300 cursor-pointer glass-reflection',
-        'backdrop-blur-2xl',
+        'group relative flex flex-col overflow-hidden rounded-[var(--radius)] border text-card-foreground transition-colors duration-150',
         dims,
         selected
-          ? 'border-primary/50 bg-background/80 shadow-studio ring-1 ring-primary/20'
-          : 'border-white/5 bg-white/5 hover:border-white/20 hover:bg-white/10',
+          ? 'border-primary/50 bg-background/95 shadow-sm ring-1 ring-primary/20'
+          : 'border-border/60 bg-background/90 hover:border-border hover:bg-background',
       ].join(' ')}
     >
       {/* Header */}

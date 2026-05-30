@@ -12,7 +12,7 @@
  * have visual treatments — `list` is reserved for a future iteration.
  */
 import { useCallback, useMemo, useState } from 'react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { FolderGit2 } from 'lucide-react';
 import type { TerminalCard as TerminalCardType } from '../../types/terminal';
@@ -75,6 +75,7 @@ export function TerminalCardComponent({
   onOpenDir,
 }: TerminalCardProps) {
   const { t } = useTranslation('terminal');
+  const reduceMotion = useReducedMotion();
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [aiSessionExporting, setAiSessionExporting] = useState(false);
   const [aiSessionExportStatus, setAiSessionExportStatus] = useState<'saved' | 'error' | null>(
@@ -197,12 +198,12 @@ export function TerminalCardComponent({
     <motion.div
       onClick={onClick}
       onDoubleClick={onDoubleClick}
-      whileHover={{ y: -4, scale: 1.01 }}
-      transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+      whileHover={reduceMotion ? undefined : { y: -2, scale: 1.003 }}
+      transition={reduceMotion ? { duration: 0 } : { duration: 0.16, ease: 'easeOut' }}
       onMouseEnter={() => setTimelineOpen(true)}
       onMouseLeave={() => setTimelineOpen(false)}
       className={[
-        'relative flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius)] transition-all duration-300 cursor-pointer glass-card glass-reflection',
+        'relative flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius)] border border-border/70 bg-card/95 shadow-sm transition-colors duration-150 hover:border-border',
         isFocused ? 'ring-2 ring-primary/40' : '',
         card.unread ? 'ring-1 ring-amber-400/30' : '',
       ].join(' ')}
@@ -256,9 +257,9 @@ export function TerminalCardComponent({
 
       {timelineOpen && recentEvents.length > 0 && (
         <motion.div
-          initial={{ opacity: 0, y: 8 }}
+          initial={reduceMotion ? { opacity: 1, y: 0 } : { opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.15 }}
+          transition={{ duration: reduceMotion ? 0 : 0.12 }}
           className="pointer-events-none absolute inset-x-0 bottom-10 z-20 border-t border-white/10/40 bg-background/95 px-3 py-1.5 text-[10px] text-muted-foreground shadow-[0_-10px_24px_rgba(0,0,0,0.08)] backdrop-blur"
         >
           <div className="mb-0.5 flex items-center gap-1 font-medium">

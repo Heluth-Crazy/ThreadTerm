@@ -10,7 +10,7 @@
  * verbatim (no FS existence check here — PTY spawn will surface errors).
  */
 import { useMemo, useState, type FormEvent } from 'react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { Download, Folder, FolderOpen, Terminal, X } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
@@ -48,6 +48,7 @@ export function CreateTerminalDialog({
   recentProjects = [],
 }: CreateTerminalDialogProps) {
   const { t } = useTranslation('terminal');
+  const reduceMotion = useReducedMotion();
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
   const [type, setType] = useState<TerminalType>('shell');
@@ -132,23 +133,24 @@ export function CreateTerminalDialog({
     <>
       {/* Backdrop */}
       <motion.div
-        initial={{ opacity: 0 }}
+        initial={{ opacity: reduceMotion ? 1 : 0 }}
         animate={{ opacity: 1 }}
+        transition={{ duration: reduceMotion ? 0 : 0.12 }}
         onClick={onClose}
-        className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
+        className="fixed inset-0 z-40 bg-black/45"
       />
 
       {/* Dialog — flex-centered wrapper, motion only handles scale/opacity
           so framer's transform doesn't overwrite translate-x/y */}
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
         <motion.div
-          initial={{ opacity: 0, scale: 0.96, y: 20 }}
+          initial={reduceMotion ? { opacity: 1, scale: 1, y: 0 } : { opacity: 0, scale: 0.985, y: 10 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
-          transition={{ type: 'spring', damping: 24, stiffness: 300 }}
+          transition={reduceMotion ? { duration: 0 } : { duration: 0.14, ease: 'easeOut' }}
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-terminal-title"
-          className="pointer-events-auto w-full max-w-md overflow-hidden rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl text-card-foreground shadow-studio glass-reflection"
+          className="pointer-events-auto w-full max-w-md overflow-hidden rounded-[var(--radius)] border border-border bg-background text-card-foreground shadow-lg"
         >
               <form onSubmit={handleSubmit}>
               {/* Header */}

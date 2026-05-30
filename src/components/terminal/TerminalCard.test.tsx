@@ -15,6 +15,7 @@ vi.mock('framer-motion', () => ({
       <div {...props}>{children}</div>
     ),
   },
+  useReducedMotion: () => false,
 }));
 
 vi.mock('react-i18next', async (importOriginal) => {

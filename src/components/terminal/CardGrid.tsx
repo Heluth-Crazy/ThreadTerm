@@ -10,7 +10,7 @@
 import { useCallback, useMemo } from 'react';
 import { FolderOpen, Plus, TerminalSquare } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { isTauriEnv } from '../../lib/tauri-bridge';
 import { openLocalDirectory } from '../../lib/localDirectory';
 import { useTerminalStore } from '../../stores/terminalStore';
@@ -23,6 +23,7 @@ interface CardGridProps {
 
 export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   const { t } = useTranslation('terminal');
+  const reduceMotion = useReducedMotion();
   const cards = useTerminalStore((s) => s.cards);
   const focusedCardId = useTerminalStore((s) => s.focusedCardId);
   const focusCard = useTerminalStore((s) => s.focusCard);
@@ -144,8 +145,8 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
       <motion.button
         type="button"
         onClick={onCreateTerminal}
-        whileHover={{ y: -4, scale: 1.01 }}
-        transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+        whileHover={reduceMotion ? undefined : { y: -2, scale: 1.003 }}
+        transition={reduceMotion ? { duration: 0 } : { duration: 0.16, ease: 'easeOut' }}
         className="group relative flex h-[300px] w-full flex-col items-center justify-center gap-3 overflow-hidden rounded-[var(--radius)] border border-dashed border-white/10 bg-white/[0.02] text-muted-foreground transition-all duration-300 hover:border-primary/40 hover:bg-white/[0.05] hover:text-primary sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] xl:w-[calc(25%-18px)] glass-reflection"
       >
         <div className="absolute inset-0 bg-grid opacity-[0.03] pointer-events-none" />

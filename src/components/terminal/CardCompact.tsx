@@ -1,4 +1,4 @@
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import type { TerminalCard as TerminalCardType } from '../../types/terminal';
 import type { CardPreview as CardPreviewData } from './cardPreview';
 import { isTechnicalPreviewLine } from './cardPreview';
@@ -20,20 +20,22 @@ export function CardCompact({
   isSwitcherSelected,
   onClick,
 }: CardCompactProps) {
+  const reduceMotion = useReducedMotion();
   const typeMeta = getTerminalTypeMeta(card.terminalType);
   const TypeIcon = typeMeta.Icon;
 
   return (
     <motion.div
       onClick={onClick}
-      whileHover={{ scale: 1.04 }}
+      whileHover={reduceMotion ? undefined : { scale: 1.015 }}
+      transition={reduceMotion ? { duration: 0 } : { duration: 0.14, ease: 'easeOut' }}
       className={[
-        'relative flex h-32 w-40 flex-col overflow-hidden rounded-[var(--radius)] border text-card-foreground shadow-sm cursor-pointer transition-all duration-300',
+        'relative flex h-32 w-40 flex-col overflow-hidden rounded-[var(--radius)] border text-card-foreground shadow-sm transition-colors duration-150',
         isSwitcherSelected
-          ? 'border-primary/50 bg-background/80 shadow-[0_12px_24px_-8px_rgba(0,0,0,0.4)] ring-1 ring-primary/20 scale-[1.05]'
+          ? 'border-primary/50 bg-background/90 shadow-sm ring-1 ring-primary/20'
           : isFocused
-            ? 'border-primary/40 bg-white/10 backdrop-blur-md shadow-md'
-            : 'border-white/5 bg-white/5 backdrop-blur-md hover:border-white/20 hover:bg-white/10',
+            ? 'border-primary/40 bg-card/95 shadow-sm'
+            : 'border-border/60 bg-card/90 hover:border-border hover:bg-card',
       ].join(' ')}
     >
       <div className="flex items-center gap-1.5 border-b border-white/5 px-2 py-1.5 backdrop-blur-sm">
