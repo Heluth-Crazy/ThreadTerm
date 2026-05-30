@@ -44,7 +44,7 @@ export function DesktopPetSettings() {
               <p className="mt-2 text-xs text-amber-600">{t('desktopPet.desktopOnly')}</p>
             )}
           </div>
-          <label className="inline-flex shrink-0 cursor-pointer items-center gap-2 text-sm">
+          <label className="inline-flex shrink-0 items-center gap-2 text-sm">
             <input
               type="checkbox"
               className="h-4 w-4 accent-primary"
@@ -73,7 +73,7 @@ export function DesktopPetSettings() {
               {DESKTOP_PET_SKINS.map((skin) => (
                 <label
                   key={skin}
-                  className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-md)] border border-border/70 px-3 py-2 text-xs hover:bg-accent/50"
+                  className="flex items-center gap-2 rounded-[var(--radius-md)] border border-border/70 px-3 py-2 text-xs hover:bg-accent/50"
                 >
                   <input
                     type="radio"
@@ -96,7 +96,7 @@ export function DesktopPetSettings() {
               {t('desktopPet.notify.label')}
             </legend>
             <div className="grid gap-2">
-              <label className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-md)] border border-border/70 px-3 py-2 text-xs hover:bg-accent/50">
+              <label className="flex items-center gap-2 rounded-[var(--radius-md)] border border-border/70 px-3 py-2 text-xs hover:bg-accent/50">
                 <input
                   type="checkbox"
                   className="h-4 w-4 accent-primary"
@@ -105,7 +105,7 @@ export function DesktopPetSettings() {
                 />
                 <span>{t('desktopPet.notify.petBubble')}</span>
               </label>
-              <label className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-md)] border border-border/70 px-3 py-2 text-xs hover:bg-accent/50">
+              <label className="flex items-center gap-2 rounded-[var(--radius-md)] border border-border/70 px-3 py-2 text-xs hover:bg-accent/50">
                 <input
                   type="checkbox"
                   className="h-4 w-4 accent-primary"
@@ -126,7 +126,7 @@ export function DesktopPetSettings() {
               {DESKTOP_PET_DEFAULT_POSITIONS.map((position) => (
                 <label
                   key={position}
-                  className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-md)] border border-border/70 px-3 py-2 text-xs hover:bg-accent/50"
+                  className="flex items-center gap-2 rounded-[var(--radius-md)] border border-border/70 px-3 py-2 text-xs hover:bg-accent/50"
                 >
                   <input
                     type="radio"

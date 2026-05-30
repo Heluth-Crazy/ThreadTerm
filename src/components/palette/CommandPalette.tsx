@@ -185,7 +185,7 @@ export function CommandPalette({
                         role="option"
                         aria-selected={isSelected}
                         className={[
-                          'flex cursor-pointer items-center gap-2 rounded-[var(--radius-md)] px-2 py-2 text-xs transition-all duration-200',
+                          'flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-2 text-xs transition-all duration-200',
                           isSelected 
                             ? 'bg-primary/10 text-primary shadow-[0_0_15px_rgba(var(--primary),0.05)] ring-1 ring-primary/20' 
                             : 'hover:bg-white/5',

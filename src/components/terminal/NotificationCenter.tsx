@@ -8,7 +8,7 @@
  * whole session.
  */
 import { useMemo } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import {
   AlertTriangle,
@@ -51,6 +51,7 @@ function formatTime(
 
 export function NotificationCenter() {
   const { t } = useTranslation('terminal');
+  const reduceMotion = useReducedMotion();
   const open = useTerminalStore((s) => s.notificationCentreOpen);
   const notifications = useTerminalStore((s) => s.notifications);
   const toggle = useTerminalStore((s) => s.toggleNotificationCentre);
@@ -94,7 +95,7 @@ export function NotificationCenter() {
             initial={{ x: '100%' }}
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
-            transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+            transition={{ duration: reduceMotion ? 0 : 0.18, ease: [0.22, 1, 0.36, 1] }}
             className="fixed right-0 top-0 z-50 flex h-full w-[360px] max-w-full flex-col border-l border-white/10 bg-background shadow-2xl"
           >
             {/* Header */}
@@ -159,7 +160,7 @@ export function NotificationCenter() {
                         key={n.id}
                         onClick={() => handleClick(n)}
                         className={[
-                          'group flex cursor-pointer items-start gap-3 px-4 py-3 hover:bg-accent/40',
+                          'group flex items-start gap-3 px-4 py-3 hover:bg-accent/40',
                           n.read ? 'opacity-70' : '',
                         ].join(' ')}
                       >
