@@ -132,7 +132,7 @@ export function BlockSearchPanel({ open, onClose, onJump }: BlockSearchPanelProp
               <li
                 key={block.id}
                 role="option"
-                className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-xs hover:bg-accent"
+                className="flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-xs hover:bg-accent"
                 onClick={() => onJump({ cardId: card.id, blockId: block.id })}
               >
                 <div className="min-w-0 flex-1">

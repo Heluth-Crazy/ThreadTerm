@@ -747,7 +747,12 @@ function Shell({
         style={terminalShellStyle}
         onMouseDown={() => recoverTerminalSurface(true)}
       >
-        <div ref={terminalRef} className="threadterm-xterm-host focus:outline-none" style={{ outline: 'none' }} />
+        <div
+          ref={terminalRef}
+          data-terminal-context-menu
+          className="threadterm-xterm-host focus:outline-none"
+          style={{ outline: 'none' }}
+        />
         {showAuthPanel && (
           <div className="absolute bottom-3 right-3 z-20 w-[min(420px,calc(100%-1.5rem))] rounded-[var(--radius)] border border-gray-700/80 bg-gray-900/95 p-3 shadow-xl backdrop-blur-sm">
             <div className="flex flex-col gap-2">
@@ -853,7 +858,12 @@ function Shell({
       </div>
 
       <div className="relative flex-1 overflow-hidden p-2">
-        <div ref={terminalRef} className="threadterm-xterm-host focus:outline-none" style={{ outline: 'none' }} />
+        <div
+          ref={terminalRef}
+          data-terminal-context-menu
+          className="threadterm-xterm-host focus:outline-none"
+          style={{ outline: 'none' }}
+        />
 
         {!isInitialized && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-900/90">

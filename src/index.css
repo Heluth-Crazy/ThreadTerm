@@ -185,6 +185,27 @@
     letter-spacing: -0.011em;
   }
 
+  html[data-platform-material="enabled"],
+  html[data-platform-material="enabled"] body,
+  html[data-platform-material="enabled"] #root {
+    background: transparent;
+  }
+
+  html[data-platform-material="enabled"] .bg-background {
+    background-color: hsl(var(--background) / 0.74) !important;
+  }
+
+  html[data-platform-material="enabled"] .bg-mesh {
+    background-color: transparent !important;
+    background-image: none;
+  }
+
+  html[data-platform-material="enabled"] .glass-card {
+    background-color: hsl(var(--card) / 0.72);
+    backdrop-filter: blur(18px) saturate(150%);
+    -webkit-backdrop-filter: blur(18px) saturate(150%);
+  }
+
   button,
   a,
   input,
@@ -238,28 +259,28 @@
     background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239CA3AF' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
   }
 
-  * {
+  :where(html[data-platform="windows"], html[data-platform="linux"], html[data-platform="unknown"]) * {
     scrollbar-width: thin;
     scrollbar-color: hsl(var(--border)) transparent;
   }
 
-  ::-webkit-scrollbar {
+  :where(html[data-platform="windows"], html[data-platform="linux"], html[data-platform="unknown"]) ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
   }
 
-  ::-webkit-scrollbar-track {
+  :where(html[data-platform="windows"], html[data-platform="linux"], html[data-platform="unknown"]) ::-webkit-scrollbar-track {
     background: transparent;
   }
 
-  ::-webkit-scrollbar-thumb {
+  :where(html[data-platform="windows"], html[data-platform="linux"], html[data-platform="unknown"]) ::-webkit-scrollbar-thumb {
     background-color: hsl(var(--border));
     border-radius: 9999px;
     border: 1px solid transparent;
     background-clip: padding-box;
   }
 
-  ::-webkit-scrollbar-thumb:hover {
+  :where(html[data-platform="windows"], html[data-platform="linux"], html[data-platform="unknown"]) ::-webkit-scrollbar-thumb:hover {
     background-color: hsl(var(--muted-foreground) / 0.5);
   }
 
@@ -379,7 +400,7 @@
     box-shadow: 0 0 0 1px hsl(var(--border) / 0.6);
   }
 
-  html[data-theme-pack="acme-mono"] ::-webkit-scrollbar-thumb {
+  :where(html[data-platform="windows"], html[data-platform="linux"], html[data-platform="unknown"])[data-theme-pack="acme-mono"] ::-webkit-scrollbar-thumb {
     background-color: hsl(var(--border));
   }
 

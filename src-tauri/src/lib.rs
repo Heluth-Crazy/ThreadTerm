@@ -4,6 +4,7 @@ mod db;
 mod local_directory;
 mod notification;
 mod overlay;
+mod platform_material;
 mod provider_sessions;
 pub mod pty;
 mod shell_integration;
@@ -27,6 +28,17 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .with_denylist(&["selector", "float", "pet"])
+                .with_filter(|label| label == "main")
+                .build(),
+        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -58,6 +70,9 @@ pub fn run() {
             supervisor::init(app.handle().clone());
             bridge::set_app_handle(app.handle().clone());
             bridge::restore_bridge_on_startup();
+            if let Some(window) = app.get_webview_window("main") {
+                platform_material::apply_to_main_window(&window);
+            }
 
             tracing::info!("ThreadTerm Tauri backend ready");
             Ok(())
@@ -79,6 +94,7 @@ pub fn run() {
             notification::notification_send_os,
             provider_sessions::provider_find_recent_session,
             provider_sessions::provider_list_recent_sessions,
+            platform_material::native_platform_material_state,
             shell_integration::detect_shell,
             shell_integration::preview_shell_integration,
             shell_integration::install_shell_integration,

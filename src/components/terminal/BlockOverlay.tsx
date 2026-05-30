@@ -390,7 +390,7 @@ export function BlockOverlay({ cardId, ptyId, blocks, inspectorOpen }: BlockOver
             {/* Collapsed-output cover */}
             {isCollapsed && (
               <div
-                className="pointer-events-auto absolute left-0 right-0 flex cursor-pointer items-center justify-center bg-background/90 text-[10px] text-muted-foreground"
+                className="pointer-events-auto absolute left-0 right-0 flex items-center justify-center bg-background/90 text-[10px] text-muted-foreground"
                 style={{
                   top: `${geom.top + HOVER_ZONE_PX}px`,
                   height: `${Math.max(0, geom.height - HOVER_ZONE_PX)}px`,

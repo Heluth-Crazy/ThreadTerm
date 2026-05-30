@@ -8,7 +8,7 @@
  * rendered as thumbs and gently rotate / scale away from the focal point.
  * Navigation cycles the selectedIndex with wrap-around.
  */
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import type { TerminalCard } from '../../types/terminal';
 import { SelectorCard } from './SelectorCard';
@@ -40,6 +40,7 @@ function circularOffset(index: number, selectedIndex: number, total: number): nu
 
 export function CarouselMode({ cards, selectedIndex, onSelect, onConfirm }: CarouselModeProps) {
   const { t } = useTranslation('overlay');
+  const reduceMotion = useReducedMotion();
   const n = cards.length;
 
   if (n === 0) {
@@ -87,12 +88,7 @@ export function CarouselMode({ cards, selectedIndex, onSelect, onConfirm }: Caro
                 zIndex: 10 - Math.abs(offset),
                 filter: kind === 'lead' ? 'blur(0px)' : kind === 'near' ? 'blur(1px)' : 'blur(4px)',
               }}
-              transition={{
-                type: 'spring',
-                stiffness: 260,
-                damping: 26,
-                mass: 1,
-              }}
+              transition={{ duration: reduceMotion ? 0 : 0.16, ease: [0.22, 1, 0.36, 1] }}
               className="absolute left-1/2 top-1/2"
               style={{
                 translateX: '-50%',

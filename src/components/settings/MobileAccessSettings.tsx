@@ -325,7 +325,7 @@ export function MobileAccessSettings() {
             ].map((option) => (
               <label
                 key={option.value}
-                className="inline-flex cursor-pointer items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
+                className="inline-flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
               >
                 <input
                   type="radio"
@@ -427,7 +427,7 @@ export function MobileAccessSettings() {
                 ].map((option) => (
                   <label
                     key={option.value}
-                    className="inline-flex cursor-pointer items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
+                    className="inline-flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
                   >
                     <input
                       type="radio"

@@ -4,10 +4,12 @@ import App from './App.tsx'
 import './index.css'
 import { logger } from './utils/logger'
 import { applySavedTheme } from './theme/applyTheme'
+import { installNativeDesktopBehavior } from './lib/nativeDesktop'
 
 // Initialize i18n
 import './i18n/config.js'
 
+installNativeDesktopBehavior(document, { platformMaterial: true });
 applySavedTheme();
 
 // Clean up stale service workers on app load to prevent caching issues after builds

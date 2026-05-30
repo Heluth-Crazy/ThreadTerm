@@ -5904,6 +5904,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-plugin-window-state"
+version = "2.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73736611e14142408d15353e21e3cca2f12a3cfb523ad0ce85999b6d2ef1a704"
+dependencies = [
+ "bitflags 2.11.1",
+ "log",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tauri-runtime"
 version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6140,6 +6155,8 @@ dependencies = [
  "futures-util",
  "objc2",
  "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-web-kit",
  "once_cell",
  "portable-pty",
  "proptest",
@@ -6163,11 +6180,13 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-shell",
  "tauri-plugin-single-instance",
+ "tauri-plugin-window-state",
  "tokio",
  "tokio-tungstenite 0.21.0",
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "window-vibrancy",
 ]
 
 [[package]]

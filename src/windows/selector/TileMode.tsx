@@ -10,7 +10,7 @@
  * Stagger animation on entry: cards appear from the centre outward so the
  * selector feels like an explosive reveal.
  */
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import type { TerminalCard } from '../../types/terminal';
 import { SelectorCard } from './SelectorCard';
@@ -33,6 +33,7 @@ function gridClassForCount(n: number): string {
 
 export function TileMode({ cards, selectedIndex, onSelect, onConfirm }: TileModeProps) {
   const { t } = useTranslation('overlay');
+  const reduceMotion = useReducedMotion();
   const n = cards.length;
   if (n === 0) {
     return (
@@ -57,8 +58,8 @@ export function TileMode({ cards, selectedIndex, onSelect, onConfirm }: TileMode
           hidden: {},
           visible: {
             transition: {
-              staggerChildren: 0.045,
-              delayChildren: 0.04,
+              staggerChildren: reduceMotion ? 0 : 0.045,
+              delayChildren: reduceMotion ? 0 : 0.04,
             },
           },
         }}
@@ -73,7 +74,7 @@ export function TileMode({ cards, selectedIndex, onSelect, onConfirm }: TileMode
                 scale: 1,
                 y: 0,
                 filter: 'blur(0px)',
-                transition: { type: 'spring', damping: 25, stiffness: 200 },
+                transition: { duration: reduceMotion ? 0 : 0.16, ease: [0.22, 1, 0.36, 1] },
               },
             }}
           >

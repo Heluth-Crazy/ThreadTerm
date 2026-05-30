@@ -63,7 +63,7 @@ export function BookmarksSidebar({ onJump, onClose }: BookmarksSidebarProps) {
         {bookmarks.map((b) => (
           <li
             key={b.id}
-            className="group flex cursor-pointer items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-xs hover:bg-accent"
+            className="group flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-xs hover:bg-accent"
             onClick={() => onJump({ cardId: b.cardId, blockId: b.blockId })}
           >
             <div className="min-w-0 flex-1">
