@@ -8,6 +8,7 @@
  */
 import type { TerminalCard, Block, TerminalAiIntent } from '../../types/terminal';
 import type { DiscoveredWorkflow } from '../../lib/workflows/discoverWorkflows';
+import type { SettingsTab } from '../../lib/settingsWindow';
 
 export type CommandGroup =
   | 'jump-card'
@@ -34,7 +35,7 @@ export interface CommandRegistryActions {
   selectProject: (path: string | null) => void;
   selectBlock: (cardId: string, blockId: string | null) => void;
   toggleNotificationCentre: (open?: boolean) => void;
-  openSettings: (tab?: 'appearance' | 'shortcuts') => void;
+  openSettings: (tab?: SettingsTab) => void;
   runWorkflow?: (workflow: DiscoveredWorkflow) => void;
   /** Stage 5.2 — focused-card AI intent change. Optional so legacy
    *  callers without intent plumbing still compile. */

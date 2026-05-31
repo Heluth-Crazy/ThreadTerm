@@ -4,6 +4,7 @@
   "description": "Default permissions for ThreadTerm",
   "windows": [
     "main",
+    "settings",
     "selector",
     "float",
     "pet"

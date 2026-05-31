@@ -37,6 +37,7 @@ export default defineConfig(({ command, mode }) => {
         // `src-tauri/src/overlay.rs`.
         input: {
           main: 'index.html',
+          settings: 'settings.html',
           selector: 'selector.html',
           float: 'float.html',
           pet: 'pet.html',

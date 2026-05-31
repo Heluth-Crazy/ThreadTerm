@@ -3,6 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { TerminalManager } from './TerminalManager';
 
+const settingsWindowMocks = vi.hoisted(() => ({
+  openSettingsWindow: vi.fn().mockResolvedValue(true),
+}));
+
+vi.mock('../../lib/settingsWindow', () => ({
+  openSettingsWindow: settingsWindowMocks.openSettingsWindow,
+}));
+
 vi.mock('../Shell', () => ({
   default: () => <div data-testid="mock-shell" />,
 }));
@@ -45,6 +53,15 @@ describe('TerminalManager shortcut hint layout', () => {
     } catch {
       /* localStorage absent in some envs */
     }
+    settingsWindowMocks.openSettingsWindow.mockClear();
+  });
+
+  it('opens the native settings window from the toolbar gear', () => {
+    render(<TerminalManager />);
+
+    fireEvent.click(screen.getByTitle('设置（⌘/Ctrl + ,）'));
+
+    expect(settingsWindowMocks.openSettingsWindow).toHaveBeenCalledWith('shortcuts');
   });
 
   it('keeps the shortcut hint above the focused terminal footer', async () => {

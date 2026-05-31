@@ -23,6 +23,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { invoke, isTauriEnv } from '../lib/tauri-bridge';
+import { emitSettingsChanged, type OverlayPreferenceSnapshot } from '../lib/settingsSync';
 
 export type SelectorMode = 'tile' | 'carousel';
 export type SelectorSurface = 'inline' | 'window';
@@ -77,6 +78,24 @@ interface OverlayStoreInternal {
 // Default accelerators mirror the Rust defaults. Persisted values override.
 const DEFAULT_HOTKEY_A = 'CmdOrCtrl+Shift+Space';
 const DEFAULT_HOTKEY_B = 'CmdOrCtrl+Shift+O';
+
+function overlayPreferenceSnapshotFromState(
+  state: Pick<OverlayStoreInternal, 'selectorMode' | 'hotkeyA' | 'hotkeyB'>,
+): OverlayPreferenceSnapshot {
+  return {
+    selectorMode: state.selectorMode,
+    hotkeyA: state.hotkeyA,
+    hotkeyB: state.hotkeyB,
+  };
+}
+
+function notifyOverlayPreferencesChanged(snapshot: OverlayPreferenceSnapshot) {
+  void emitSettingsChanged({
+    domain: 'overlay-preferences',
+    sourceWindow: 'settings',
+    overlayPreferences: snapshot,
+  });
+}
 
 async function tauriInvoke<T = void>(cmd: string, args?: Record<string, unknown>): Promise<T | null> {
   if (!isTauriEnv()) return null;
@@ -150,7 +169,14 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
         else s.openSelector(s.selectorSurface);
       },
 
-      setSelectorMode: (mode) => set({ selectorMode: mode }),
+      setSelectorMode: (mode) => {
+        const snapshot = overlayPreferenceSnapshotFromState({
+          ...get(),
+          selectorMode: mode,
+        });
+        set({ selectorMode: mode });
+        notifyOverlayPreferencesChanged(snapshot);
+      },
 
       setSelectedIndex: (i, total) =>
         set((s) => {
@@ -210,7 +236,11 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
 
       updateHotkey: async (slot, accelerator) => {
         await tauriInvoke('overlay_update_shortcut', { label: slot, accelerator });
-        set((s) => (slot === 'A' ? { ...s, hotkeyA: accelerator } : { ...s, hotkeyB: accelerator }));
+        const next = slot === 'A'
+          ? { ...get(), hotkeyA: accelerator }
+          : { ...get(), hotkeyB: accelerator };
+        set(slot === 'A' ? { hotkeyA: accelerator } : { hotkeyB: accelerator });
+        notifyOverlayPreferencesChanged(overlayPreferenceSnapshotFromState(next));
       },
     }),
     {
