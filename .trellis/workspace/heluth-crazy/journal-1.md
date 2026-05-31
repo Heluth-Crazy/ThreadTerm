@@ -424,3 +424,40 @@ Implemented expanded native-feel baseline: single-instance plugin, non-macOS ove
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: 桌面端原生手感硬化（材质默认开启 + 完整审计）
+
+**Date**: 2026-05-31
+**Task**: 桌面端原生手感硬化（材质默认开启 + 完整审计）
+**Branch**: `audit/desktop-native-feel`
+
+### Summary
+
+用 native-feel-cross-platform-desktop skill 评估并硬化桌面端：确认留在 Tauri（不重写双原生壳）。落地 PR1-PR3：cursor/spring→ease/reduced-motion、macOS 原生滚动条门控、右键菜单白名单拦截、window-state（仅 main）、Windows 单实例、跨端 overlay 焦点、平台材质（macOS vibrancy + Windows mica/acrylic 回退）。材质由 env gate 默认关改为默认开（env 可关），macOS 真机验证通过（用透明窗口 + macOSPrivateApi，接受不上架 App Store 的代价）。产出 docs/native-feel-audit.md（ship-readiness 75 项，gitignored 本地）。验证：typecheck/547 测试/双端构建/cargo check 全过。follow-up：Windows 材质真机验证、设置与对话框改真原生窗口。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f87b5ca` | (see git log) |
+| `94235cc` | (see git log) |
+| `9af7635` | (see git log) |
+| `df2ff6d` | (see git log) |
+| `4ec4b86` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
