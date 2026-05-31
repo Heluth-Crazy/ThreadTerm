@@ -240,6 +240,26 @@
     -webkit-backdrop-filter: blur(16px) saturate(135%);
   }
 
+  /* Dark mode: the UnderWindowBackground vibrancy samples the desktop, which on
+     a dark theme reads as a gray wash. Raise the body/canvas surface opacity so
+     dark stays properly dark; glass cards keep their translucency + blur. */
+  html.dark[data-platform-material="enabled"] .bg-mesh {
+    background-color: hsl(var(--background) / 0.88) !important;
+    background-image: none;
+  }
+
+  html.dark[data-platform-material="enabled"] .bg-background {
+    background-color: hsl(var(--background) / 0.92) !important;
+  }
+
+  html.dark[data-platform-material="enabled"] .bg-card {
+    background-color: hsl(var(--card) / 0.94) !important;
+  }
+
+  html.dark[data-platform-material="enabled"] .glass-card {
+    background-color: hsl(var(--card) / 0.80);
+  }
+
   button,
   a,
   input,
