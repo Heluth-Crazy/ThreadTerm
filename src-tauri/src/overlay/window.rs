@@ -79,6 +79,15 @@ pub struct PetGeometry {
 /// Failures are logged but not fatal — the lazy ensure_selector /
 /// ensure_float path still works as a fallback.
 pub fn prewarm_windows(app: &AppHandle) {
+    let skip_prewarm = std::env::var("THREADTERM_SKIP_OVERLAY_PREWARM")
+        .ok()
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false);
+    if skip_prewarm {
+        tracing::info!("overlay prewarm skipped by THREADTERM_SKIP_OVERLAY_PREWARM");
+        return;
+    }
+
     if let Err(e) = ensure_selector(app) {
         tracing::warn!(error = %e, "prewarm: ensure_selector failed");
     }
