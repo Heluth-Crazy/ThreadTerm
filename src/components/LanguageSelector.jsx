@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { Languages } from 'lucide-react';
 import { languages } from '../i18n/languages';
+import { emitSettingsChanged } from '../lib/settingsSync';
 
 function LanguageSelector({ compact = false }) {
   const { i18n, t } = useTranslation('settings');
@@ -10,7 +11,13 @@ function LanguageSelector({ compact = false }) {
 
   const handleLanguageChange = (event) => {
     const newLanguage = event.target.value;
-    i18n.changeLanguage(newLanguage);
+    void i18n.changeLanguage(newLanguage).then(() =>
+      emitSettingsChanged({
+        domain: 'language',
+        language: newLanguage,
+        sourceWindow: 'settings',
+      }),
+    );
   };
 
   if (compact) {

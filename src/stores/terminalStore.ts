@@ -47,6 +47,7 @@ import {
 import { DEFAULT_PET_CONFIG, normalizePetConfig } from '../lib/petConfig';
 import i18n from '../i18n/config.js';
 import { isTauriEnv, pty } from '../lib/tauri-bridge';
+import { emitSettingsChanged, type TerminalPreferenceSnapshot } from '../lib/settingsSync';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -312,6 +313,28 @@ interface TerminalStore {
 
 // ── store impl ───────────────────────────────────────────────────────────────
 
+function terminalPreferenceSnapshotFromState(
+  state: Pick<
+    TerminalStore,
+    'bottomBarHidden' | 'aiExplainDefaultProvider' | 'petConfig' | 'supervisorEnabled'
+  >,
+): TerminalPreferenceSnapshot {
+  return {
+    bottomBarHidden: state.bottomBarHidden,
+    aiExplainDefaultProvider: state.aiExplainDefaultProvider,
+    petConfig: normalizePetConfig(state.petConfig),
+    supervisorEnabled: state.supervisorEnabled,
+  };
+}
+
+function notifyTerminalPreferencesChanged(snapshot: TerminalPreferenceSnapshot) {
+  void emitSettingsChanged({
+    domain: 'terminal-preferences',
+    sourceWindow: 'settings',
+    terminalPreferences: snapshot,
+  });
+}
+
 export const useTerminalStore = create<TerminalStore>()(
   persist(
     (set, get) => ({
@@ -333,16 +356,42 @@ export const useTerminalStore = create<TerminalStore>()(
 
       aiExplainDefaultProvider: 'claude',
       bottomBarHidden: false,
-      setAiExplainDefaultProvider: (provider) => set({ aiExplainDefaultProvider: provider }),
-      setBottomBarHidden: (hidden) => set({ bottomBarHidden: hidden }),
+      setAiExplainDefaultProvider: (provider) => {
+        const snapshot = terminalPreferenceSnapshotFromState({
+          ...get(),
+          aiExplainDefaultProvider: provider,
+        });
+        set({ aiExplainDefaultProvider: provider });
+        notifyTerminalPreferencesChanged(snapshot);
+      },
+      setBottomBarHidden: (hidden) => {
+        const snapshot = terminalPreferenceSnapshotFromState({
+          ...get(),
+          bottomBarHidden: hidden,
+        });
+        set({ bottomBarHidden: hidden });
+        notifyTerminalPreferencesChanged(snapshot);
+      },
 
       supervisorEnabled: false,
-      setSupervisorEnabled: (enabled) => set({ supervisorEnabled: enabled }),
+      setSupervisorEnabled: (enabled) => {
+        const snapshot = terminalPreferenceSnapshotFromState({
+          ...get(),
+          supervisorEnabled: enabled,
+        });
+        set({ supervisorEnabled: enabled });
+        notifyTerminalPreferencesChanged(snapshot);
+      },
 
-      updatePetConfig: (patch) =>
-        set((state) => ({
-          petConfig: normalizePetConfig({ ...state.petConfig, ...patch }),
-        })),
+      updatePetConfig: (patch) => {
+        const petConfig = normalizePetConfig({ ...get().petConfig, ...patch });
+        const snapshot = terminalPreferenceSnapshotFromState({
+          ...get(),
+          petConfig,
+        });
+        set({ petConfig });
+        notifyTerminalPreferencesChanged(snapshot);
+      },
 
       createCard: (options) => {
         const id = uid();

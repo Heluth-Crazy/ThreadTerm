@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
+import { confirmDialog } from '../lib/nativeDialog';
 import LanguageSelector from './LanguageSelector';
 import KeyboardShortcutsSettings from './settings/KeyboardShortcutsSettings';
 import { CommandBlocksSettings } from './settings/CommandBlocksSettings';
@@ -119,9 +120,18 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
     }
   };
 
-  const handleDeleteCustomTheme = (event, pack) => {
+  const handleDeleteCustomTheme = async (event, pack) => {
     event.stopPropagation();
-    if (!window.confirm(t('appearanceSettings.themePack.deleteConfirm', { name: pack.name }))) {
+    const confirmed = await confirmDialog(
+      t('appearanceSettings.themePack.deleteConfirm', { name: pack.name }),
+      {
+        title: t('appearanceSettings.themePack.deleteTitle', {
+          defaultValue: 'Delete theme',
+        }),
+        kind: 'warning',
+      },
+    );
+    if (!confirmed) {
       return;
     }
     deleteCustomThemePack(pack.id);

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { Download, FileJson, Upload, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../../contexts/ThemeContext';
+import { emitSettingsChanged } from '../../lib/settingsSync';
 import { useOverlayStore } from '../../stores/overlayStore';
 import { useTerminalStore } from '../../stores/terminalStore';
 import {
@@ -175,10 +176,21 @@ export function SettingsDataIO() {
         setThemePreference(sections.theme);
       }
       if (selected.has('terminal') && sections.terminal) {
-        useTerminalStore.setState({
+        const terminalPreferences = {
           bottomBarHidden: sections.terminal.bottomBarHidden,
           aiExplainDefaultProvider: sections.terminal.aiExplainDefaultProvider,
           petConfig: sections.terminal.petConfig,
+          supervisorEnabled: useTerminalStore.getState().supervisorEnabled,
+        };
+        useTerminalStore.setState({
+          bottomBarHidden: terminalPreferences.bottomBarHidden,
+          aiExplainDefaultProvider: terminalPreferences.aiExplainDefaultProvider,
+          petConfig: terminalPreferences.petConfig,
+        });
+        void emitSettingsChanged({
+          domain: 'terminal-preferences',
+          sourceWindow: 'settings',
+          terminalPreferences,
         });
       }
       if (selected.has('overlay') && sections.overlay) {

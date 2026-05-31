@@ -24,7 +24,6 @@ import { BookmarksSidebar } from './BookmarksSidebar';
 import { CommandPalette } from '../palette/CommandPalette';
 import { buildCommandRegistry, type CommandGroup } from '../palette/commandRegistry';
 import { BlockSearchPanel } from '../search/BlockSearchPanel';
-import Settings from '../Settings';
 import { WorkflowArgsDialog } from '../workflows/WorkflowArgsDialog';
 import { ImportWorkflowDialog } from '../workflows/ImportWorkflowDialog';
 import { interpolateWorkflow, type InterpolationValues } from '../../lib/workflows/interpolateWorkflow';
@@ -40,10 +39,10 @@ import type { WorkflowImportPlan } from '../../lib/workflows/importWorkflow';
 import type { TerminalCard, TerminalCreateOptions, TerminalStatus, TerminalType } from '../../types/terminal';
 import { useSupervisor } from '../../lib/supervisor/useSupervisor';
 import { isTauriEnv, mobileBridge, providerSessions } from '../../lib/tauri-bridge';
+import { openSettingsWindow, type SettingsTab } from '../../lib/settingsWindow';
 import type { CardMeta, TerminalStatus as MobileTerminalStatus } from '../../mobile/bridge/protocol';
 
 type ViewMode = 'grid' | 'focus';
-type SettingsTab = 'appearance' | 'shortcuts';
 
 const MOBILE_SYNC_DEBOUNCE_MS = 100;
 const TERMINAL_TYPES: TerminalType[] = [
@@ -183,9 +182,6 @@ export function TerminalManager() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
   const [createOpen, setCreateOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  // Jump the Settings modal straight to a particular tab on open.
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>('shortcuts');
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteInitialGroup, setPaletteInitialGroup] = useState<CommandGroup | null>(null);
@@ -552,6 +548,12 @@ export function TerminalManager() {
     [],
   );
 
+  const handleOpenSettings = useCallback((tab: SettingsTab = 'shortcuts') => {
+    void openSettingsWindow(tab).catch((error) => {
+      console.warn('[settings] failed to open settings window', error);
+    });
+  }, []);
+
   const handleWorkflowImported = useCallback(
     (plan: WorkflowImportPlan) => {
       pushNotification({
@@ -592,10 +594,7 @@ export function TerminalManager() {
           toggleNotificationCentre,
           runWorkflow: handleRunWorkflow,
           updateCardAiIntent,
-          openSettings: (tab) => {
-            setSettingsTab(tab ?? 'shortcuts');
-            setSettingsOpen(true);
-          },
+          openSettings: handleOpenSettings,
         },
       }),
     [
@@ -605,6 +604,7 @@ export function TerminalManager() {
       workflows,
       focusedCardId,
       focusCard,
+      handleOpenSettings,
       handleRunWorkflow,
       selectProject,
       selectBlock,
@@ -647,10 +647,7 @@ export function TerminalManager() {
       openCreate: () => setCreateOpen(true),
       closeCreate: () => setCreateOpen(false),
       focusMode: (mode) => setViewMode(mode),
-      openSettings: (tab) => {
-        setSettingsTab(tab ?? 'shortcuts');
-        setSettingsOpen(true);
-      },
+      openSettings: handleOpenSettings,
       openPalette: () => {
         setPaletteInitialGroup(null);
         setPaletteOpen(true);
@@ -665,7 +662,7 @@ export function TerminalManager() {
     return () => {
       delete window.__terminalManager;
     };
-  }, []);
+  }, [handleOpenSettings]);
 
   const recentProjects = useMemo(
     () => cards.map((c) => ({ path: c.projectPath, name: c.projectName })),
@@ -757,10 +754,7 @@ export function TerminalManager() {
           )}
           <button
             type="button"
-            onClick={() => {
-              setSettingsTab('shortcuts');
-              setSettingsOpen(true);
-            }}
+            onClick={() => handleOpenSettings('shortcuts')}
             title={t('app.settingsTitle')}
             className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
           >
@@ -834,10 +828,7 @@ export function TerminalManager() {
                     BOOKMARKS_VISIBLE ? () => setBookmarksOpen((v) => !v) : undefined
                   }
                   onOpenWorkflows={handleOpenWorkflowPalette}
-                  onOpenSettings={(tab) => {
-                    setSettingsTab(tab ?? 'shortcuts');
-                    setSettingsOpen(true);
-                  }}
+                  onOpenSettings={handleOpenSettings}
                 />
               </div>
             );
@@ -934,12 +925,6 @@ export function TerminalManager() {
         recentProjects={recentProjects}
       />
 
-      {/* Settings modal — opened via the gear button in the top bar */}
-      <Settings
-        isOpen={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        initialTab={settingsTab}
-      />
       </div>
     </div>
   );

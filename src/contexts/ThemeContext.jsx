@@ -19,6 +19,7 @@ import {
 } from '../theme/themeStorage';
 import { toXtermTheme } from '../theme/xtermTheme';
 import { isTauriEnv, mobileBridge } from '../lib/tauri-bridge';
+import { emitSettingsChanged } from '../lib/settingsSync';
 
 const ThemeContext = createContext();
 
@@ -119,59 +120,88 @@ export const ThemeProvider = ({ children }) => {
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
 
-  const setThemeMode = useCallback((themeMode) => {
-    setPreference((current) => ({
-      ...current,
-      themeMode,
-    }));
+  const emitThemeSettingsChanged = useCallback((nextPreference, nextCustomThemePacks) => {
+    void emitSettingsChanged({
+      domain: 'theme',
+      sourceWindow: 'settings',
+      theme: {
+        preference: nextPreference,
+        customThemePacks: nextCustomThemePacks ?? getStoredCustomThemePacks(),
+      },
+    });
   }, []);
 
+  const commitThemePreference = useCallback((nextPreference, nextCustomThemePacks) => {
+    saveThemePreference(nextPreference);
+    setPreference(nextPreference);
+    emitThemeSettingsChanged(nextPreference, nextCustomThemePacks);
+  }, [emitThemeSettingsChanged]);
+
+  const applyThemeSettingsSnapshot = useCallback((snapshot = {}) => {
+    if (Array.isArray(snapshot.customThemePacks)) {
+      setCustomThemePacks(snapshot.customThemePacks);
+    } else {
+      setCustomThemePacks(getStoredCustomThemePacks());
+    }
+
+    setPreference(snapshot.preference ?? getStoredThemePreference());
+  }, []);
+
+  const setThemeMode = useCallback((themeMode) => {
+    commitThemePreference({
+      ...preference,
+      themeMode,
+    });
+  }, [commitThemePreference, preference]);
+
   const setThemePackId = useCallback((themePackId) => {
-    setPreference((current) => ({
-      ...current,
+    commitThemePreference({
+      ...preference,
       themePackId: getThemePack(themePackId, availableThemePacks).id,
-    }));
-  }, [availableThemePacks]);
+    });
+  }, [availableThemePacks, commitThemePreference, preference]);
 
   const importCustomThemePack = useCallback((json) => {
     const pack = parseCustomThemePack(json);
-    setCustomThemePacks((current) => {
-      const next = [pack, ...current.filter((item) => item.id !== pack.id)];
-      saveCustomThemePacks(next);
-      return next;
-    });
-    setPreference((current) => ({
-      ...current,
+    const nextCustomThemePacks = [
+      pack,
+      ...customThemePacks.filter((item) => item.id !== pack.id),
+    ];
+    const nextPreference = {
+      ...preference,
       themePackId: pack.id,
-    }));
+    };
+
+    saveCustomThemePacks(nextCustomThemePacks);
+    setCustomThemePacks(nextCustomThemePacks);
+    commitThemePreference(nextPreference, nextCustomThemePacks);
     return pack;
-  }, []);
+  }, [commitThemePreference, customThemePacks, preference]);
 
   const replaceCustomThemePacks = useCallback((packs) => {
     const next = packs.filter((pack) => pack?.isCustom);
     saveCustomThemePacks(next);
     setCustomThemePacks(next);
-  }, []);
+    emitThemeSettingsChanged(preference, next);
+  }, [emitThemeSettingsChanged, preference]);
 
   const setThemePreference = useCallback((nextPreference) => {
-    setPreference((current) => ({
-      themeMode: nextPreference?.themeMode ?? current.themeMode,
-      themePackId: nextPreference?.themePackId ?? current.themePackId,
-    }));
-  }, []);
+    commitThemePreference({
+      themeMode: nextPreference?.themeMode ?? preference.themeMode,
+      themePackId: nextPreference?.themePackId ?? preference.themePackId,
+    });
+  }, [commitThemePreference, preference]);
 
   const deleteCustomThemePack = useCallback((themePackId) => {
-    setCustomThemePacks((current) => {
-      const next = current.filter((pack) => pack.id !== themePackId);
-      saveCustomThemePacks(next);
-      return next;
-    });
-    setPreference((current) => (
-      current.themePackId === themePackId
-        ? { ...current, themePackId: getThemePack(null).id }
-        : current
-    ));
-  }, []);
+    const nextCustomThemePacks = customThemePacks.filter((pack) => pack.id !== themePackId);
+    const nextPreference = preference.themePackId === themePackId
+      ? { ...preference, themePackId: getThemePack(null).id }
+      : preference;
+
+    saveCustomThemePacks(nextCustomThemePacks);
+    setCustomThemePacks(nextCustomThemePacks);
+    commitThemePreference(nextPreference, nextCustomThemePacks);
+  }, [commitThemePreference, customThemePacks, preference]);
 
   const exportThemePack = useCallback((themePackId) => {
     const pack = getThemePack(themePackId, availableThemePacks);
@@ -182,11 +212,11 @@ export const ThemeProvider = ({ children }) => {
   }, [availableThemePacks]);
 
   const toggleDarkMode = useCallback(() => {
-    setPreference((current) => ({
-      ...current,
+    commitThemePreference({
+      ...preference,
       themeMode: resolvedTheme.mode === 'dark' ? 'light' : 'dark',
-    }));
-  }, [resolvedTheme.mode]);
+    });
+  }, [commitThemePreference, preference, resolvedTheme.mode]);
 
   const terminalTheme = useMemo(
     () => toXtermTheme(resolvedTheme.tokens.terminal),
@@ -211,8 +241,9 @@ export const ThemeProvider = ({ children }) => {
       deleteCustomThemePack,
       exportThemePack,
       toggleDarkMode,
+      applyThemeSettingsSnapshot,
       resetTheme: () =>
-        setPreference({
+        commitThemePreference({
           themeMode: DEFAULT_THEME_MODE,
           themePackId: getThemePack(null).id,
         }),
@@ -232,6 +263,8 @@ export const ThemeProvider = ({ children }) => {
       deleteCustomThemePack,
       exportThemePack,
       toggleDarkMode,
+      applyThemeSettingsSnapshot,
+      commitThemePreference,
       availableThemePacks,
     ],
   );

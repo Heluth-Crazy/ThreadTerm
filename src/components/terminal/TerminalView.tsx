@@ -42,6 +42,7 @@ import { AutoRestartControls } from './AutoRestartControls';
 import { AutoRestartStatus } from './AutoRestartStatus';
 import { normalizeAutoRestartConfig } from '../../lib/autoRestart';
 import { useSupervisorStore } from '../../lib/supervisor/supervisorStore';
+import type { SettingsTab } from '../../lib/settingsWindow';
 
 interface TerminalViewProps {
   card: TerminalCard;
@@ -51,8 +52,8 @@ interface TerminalViewProps {
   onOpenBookmarks?: () => void;
   /** Open the command palette on the workflow group. */
   onOpenWorkflows?: () => void;
-  /** Open the Settings modal, optionally on a specific tab. */
-  onOpenSettings?: (tab?: 'appearance' | 'shortcuts') => void;
+  /** Open Settings, optionally on a specific tab. */
+  onOpenSettings?: (tab?: SettingsTab) => void;
 }
 
 const BLOCK_INSPECTOR_VISIBLE = false;

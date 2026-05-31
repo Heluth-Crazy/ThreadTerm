@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window-management",
+  "description": "Allows the main ThreadTerm window to create auxiliary native windows.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:webview:allow-create-webview-window"
+  ]
+}
