@@ -541,3 +541,37 @@ Implemented expanded native-feel baseline: single-instance plugin, non-macOS ove
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: 设置收尾小修：窗口位置记忆 + overlay 偏好跨窗口同步
+
+**Date**: 2026-05-31
+**Task**: 设置收尾小修：窗口位置记忆 + overlay 偏好跨窗口同步
+**Branch**: `audit/desktop-native-feel`
+
+### Summary
+
+批次1收尾：(1) window-state filter 扩到 main||settings，设置窗口记忆尺寸/位置，overlay 仍排除；(2) 新增 overlayPreferenceSync，selector/float 入口订阅既有 settings://changed 广播、以 setState 直接应用 selectorMode/hotkeyA/B（防回环，复用 SettingsSyncBridge 手法），替代不可靠的跨窗口 storage 事件路径，7 个单测。另：上一会话已捕获 overlay NSPanel 私有 API KVC 禁用模式 spec（6871742）。验证：typecheck/566 测试/双端构建/cargo check 全过。本环境无法跑 GUI，运行时(位置恢复/跨窗实时同步)待用户真机确认。分支 audit/desktop-native-feel 领先 main 17 提交，未合并（用户明确不合并）。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6871742` | (see git log) |
+| `2469a9f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

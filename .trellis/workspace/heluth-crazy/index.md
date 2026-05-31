@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 13
+- **Total Sessions**: 14
 - **Last Active**: 2026-05-31
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~543 | Active |
+| `journal-1.md` | ~577 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 14 | 2026-05-31 | 设置收尾小修：窗口位置记忆 + overlay 偏好跨窗口同步 | `6871742`, `2469a9f` | `audit/desktop-native-feel` |
 | 13 | 2026-05-31 | 修复 Shift+Cmd+Space 崩溃 + 设置原生窗口收尾 | `83984fc`, `719c129`, `bf30052` | `audit/desktop-native-feel` |
 | 12 | 2026-05-31 | 清理桌面端 web 味残留 | `d46a5b8`, `0d64c7d`, `4e86815` | `audit/desktop-native-feel` |
 | 11 | 2026-05-31 | 桌面端原生手感硬化（材质默认开启 + 完整审计） | `f87b5ca`, `94235cc`, `9af7635`, `df2ff6d`, `4ec4b86` | `audit/desktop-native-feel` |
