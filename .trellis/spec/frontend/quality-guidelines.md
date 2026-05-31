@@ -292,6 +292,12 @@ Correct:
 #### 2. Signatures
 - Frontend installer:
   `installNativeDesktopBehavior(doc?: Document, options?: { platformMaterial?: boolean }): () => void`
+- Chrome text-selection installer:
+  `installChromeTextSelectionPolicy(doc?: Document): () => void`
+- Spellcheck installer:
+  `installWebviewSpellcheckPolicy(doc?: Document): () => void`
+- Overlay keep-warm loop:
+  `installOverlayKeepWarmLoop(host?: Pick<Window, 'requestAnimationFrame' | 'cancelAnimationFrame'>): () => void`
 - Frontend platform state:
   `detectNativePlatform(source?): 'macos' | 'windows' | 'linux' | 'unknown'`
 - Frontend material sync:
@@ -320,6 +326,26 @@ Correct:
   `[contenteditable]`, and terminal/xterm surfaces marked by
   `.threadterm-xterm-host`, `.xterm`, `.xterm-viewport`, `.xterm-screen`, or
   `[data-terminal-context-menu]`.
+- Desktop chrome text must default to non-selectable via
+  `data-native-text-selection="chrome"`, but copyable content must explicitly
+  opt back into text selection. The whitelist must cover `input`, `textarea`,
+  enabled `[contenteditable]`, `pre`, `code`, `kbd`, `samp`, `.select-text`,
+  `[data-selectable-text]`, and terminal/xterm surfaces.
+- Do not put `user-select: none` only on `body` with a lower-specificity
+  whitelist. Chromium/WebKit can leave nested `pre`/input content effectively
+  non-selectable. Anchor whitelist rules under `body` with equal-or-higher
+  specificity and verify computed `user-select: text` for copyable surfaces.
+- Desktop spellcheck must default off on root/body and on mounted or later-added
+  text editors. Preserve explicit `spellcheck` attributes so a field can opt in,
+  and do not write spellcheck attributes onto non-text controls such as checkbox,
+  radio, range, file, or button inputs.
+- Prewarmed selector/float WebView entrypoints should run a tiny no-op
+  `requestAnimationFrame` loop to keep WebKit's renderer scheduler warm. Scope
+  this to intentionally prewarmed overlays; do not enable it globally in the
+  main window or pet window without a measured reason.
+- macOS selector/float NSWindows should disable WebKit occlusion detection in
+  their platform configuration. This is macOS-only native plumbing; Windows and
+  Linux keep the existing no-op/fallback behavior.
 - macOS scrollbar styling should be left to WebKit/system defaults. Custom thin
   scrollbar selectors may target Windows/Linux/unknown platform markers only.
 
@@ -336,24 +362,45 @@ Correct:
   regress; add/fix tests.
 - Context-menu policy allows ordinary chrome -> browser menu leaks and native
   feel regresses.
+- Text-selection whitelist has lower specificity than the chrome default ->
+  AI replies, code blocks, or inputs cannot be selected; verify with computed
+  CSS, not only a visual glance.
+- Spellcheck policy overwrites explicit `spellcheck="true"` -> intended user
+  text fields lose their opt-in; reject in review.
+- Spellcheck policy only touches currently mounted inputs -> late-mounted
+  dialogs can still show web spellcheck redlines; use a MutationObserver or
+  explicit component attributes.
+- Keep-warm loop runs in the main window -> unnecessary perpetual rAF work;
+  keep it scoped to selector/float overlays.
 
 #### 5. Good/Base/Bad Cases
 - Good: `src/main.jsx` calls
   `installNativeDesktopBehavior(document, { platformMaterial: true })`, while
   overlay entrypoints call `installNativeDesktopBehavior()` with the default
   disabled material path.
+- Good: selector/float entrypoints call `installOverlayKeepWarmLoop()` after
+  installing native desktop behavior; main/pet entrypoints do not.
+- Good: chrome labels/buttons/drag regions cannot be selected, while `pre`,
+  `code`, inputs, AI answer text, and terminal surfaces remain copyable.
 - Base: no material env vars set; right-click is still native-feel blocked on
   chrome, input/terminal right-click still works, and the main window uses the
   existing visual treatment.
 - Bad: using `VITE_THREADTERM_PLATFORM_MATERIAL=1` alone to force every WebView
   entrypoint into transparent CSS, or saving `selector`/`float`/`pet` through
   window-state.
+- Bad: setting `body { user-select: none }` and assuming descendants remain
+  selectable without a runtime/computed-style check.
 
 #### 6. Tests Required
 - TS tests for platform detection, context-menu allow/deny behavior, and default
   material-disabled installation.
+- TS tests for text-selection root marker, spellcheck defaulting/explicit opt-in,
+  dynamic input handling, and overlay keep-warm cleanup.
 - Rust tests for env flag parsing and platform material state where pure logic is
   testable.
+- Runtime/browser check for CSS specificity when changing the text-selection
+  whitelist: assert `body` computes to `user-select: none` while a `pre` or
+  copyable surface computes to `user-select: text`.
 - Full gates: `npm run check`.
 - Manual platform verification for macOS/Windows material first frame, material
   fallback, window-state restore, and overlay hotkey/focus behavior.
@@ -373,6 +420,28 @@ installNativeDesktopBehavior(document, { platformMaterial: true });
 
 // Overlay windows.
 installNativeDesktopBehavior();
+```
+
+Wrong:
+```css
+html[data-native-text-selection="chrome"] body {
+  user-select: none;
+}
+
+html[data-native-text-selection="chrome"] :where(pre, input) {
+  user-select: text;
+}
+```
+
+Correct:
+```css
+html[data-native-text-selection="chrome"] body {
+  user-select: none;
+}
+
+html[data-native-text-selection="chrome"] body :where(pre, input) {
+  user-select: text;
+}
 ```
 
 </spec-entry>
