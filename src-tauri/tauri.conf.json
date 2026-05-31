@@ -10,6 +10,7 @@
     "beforeBuildCommand": "npm run build && npm run build:mobile"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "ThreadTerm",
@@ -21,7 +22,8 @@
         "resizable": true,
         "fullscreen": false,
         "center": true,
-        "decorations": true
+        "decorations": true,
+        "transparent": true
       }
     ],
     "security": {

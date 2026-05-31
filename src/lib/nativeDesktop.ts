@@ -23,9 +23,9 @@ const TERMINAL_CONTEXT_MENU_SELECTOR = [
   '[data-terminal-context-menu]',
 ].join(',');
 
-function envFlagEnabled(value: string | undefined): boolean {
+function envValueDisables(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase();
-  return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
+  return normalized === '0' || normalized === 'false' || normalized === 'off' || normalized === 'no';
 }
 
 export function detectNativePlatform(source: PlatformSource = navigator as PlatformSource): NativePlatform {
@@ -50,11 +50,27 @@ export function writeNativePlatformAttribute(root: HTMLElement = document.docume
   return platform;
 }
 
+/**
+ * Pure first-paint material decision. Material defaults ON for supported
+ * platforms (macOS/Windows) so the initial `data-platform-material` attribute
+ * matches the backend's default-on state and avoids a white-flash before
+ * `syncPlatformMaterialAttribute()` confirms. Disable only when the env value is
+ * an explicit disable token (mirrors Rust `material_enabled_from_env`).
+ */
+export function resolveInitialPlatformMaterial(
+  platform: NativePlatform,
+  envValue: string | undefined,
+): boolean {
+  if (platform !== 'macos' && platform !== 'windows') {
+    return false;
+  }
+  return !envValueDisables(envValue);
+}
+
 function initialPlatformMaterialEnabled(): boolean {
-  const platform = detectNativePlatform();
-  return (
-    envFlagEnabled(import.meta.env.VITE_THREADTERM_PLATFORM_MATERIAL) &&
-    (platform === 'macos' || platform === 'windows')
+  return resolveInitialPlatformMaterial(
+    detectNativePlatform(),
+    import.meta.env.VITE_THREADTERM_PLATFORM_MATERIAL,
   );
 }
 
