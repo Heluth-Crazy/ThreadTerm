@@ -506,3 +506,38 @@ Implemented expanded native-feel baseline: single-instance plugin, non-macOS ove
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: 修复 Shift+Cmd+Space 崩溃 + 设置原生窗口收尾
+
+**Date**: 2026-05-31
+**Task**: 修复 Shift+Cmd+Space 崩溃 + 设置原生窗口收尾
+**Branch**: `audit/desktop-native-feel`
+
+### Summary
+
+定位并修复全局热键崩溃：d46a5b8 在 platform.rs 对悬浮 NSPanel 用 KVC 设私有 key windowOcclusionDetectionEnabled，抛 NSException 跨 objc 边界致 non-unwinding abort（按 Shift+Cmd+Space 即崩）。移除该 #51 反节流代码后用户真机验证恢复正常。期间经历多轮误判（private-api/window-state/objc2 版本均排除），并发现无法从 Claude 沙盒 shell 可靠启动该 GUI（启动期假崩），最终靠用户崩溃报告 .ips 栈（global_hotkey hotkey_handler→panic）+ d46a5b8 diff 锁定。trellis-check 审查 settings 原生窗口整套实现：跨窗口状态同步（主题/语言/偏好经 Tauri 事件回主窗口）正确无回环，typecheck/559 测试/双端构建/cargo check 全过。提交：fix(overlay) 崩溃修复、feat(settings) 设置原生窗口、fix(material) 暗色发灰。follow-up：#51 反节流已放弃；设置窗口位置不记忆（PRD 认可）；分支未合 main。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `83984fc` | (see git log) |
+| `719c129` | (see git log) |
+| `bf30052` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
