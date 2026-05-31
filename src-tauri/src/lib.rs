@@ -36,7 +36,7 @@ pub fn run() {
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
                 .with_denylist(&["selector", "float", "pet"])
-                .with_filter(|label| label == "main")
+                .with_filter(|label| label == "main" || label == "settings")
                 .build(),
         )
         .plugin(tauri_plugin_shell::init())
