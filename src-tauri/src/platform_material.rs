@@ -68,16 +68,27 @@ pub fn apply_to_main_window(window: &WebviewWindow) {
 }
 
 fn platform_material_enabled() -> bool {
-    [MATERIAL_ENV, VITE_MATERIAL_ENV]
+    let values: Vec<Option<String>> = [MATERIAL_ENV, VITE_MATERIAL_ENV]
         .iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .any(|value| env_flag_enabled(&value))
+        .map(|key| std::env::var(key).ok())
+        .collect();
+    material_enabled_from_env(&values)
 }
 
-fn env_flag_enabled(value: &str) -> bool {
+/// Platform material defaults to ON. It is disabled only when an env value is
+/// explicitly set to a disable token. Disable wins: if any recognized env key
+/// is explicitly off, material is disabled even if the other key is unset or on.
+fn material_enabled_from_env(values: &[Option<String>]) -> bool {
+    !values
+        .iter()
+        .filter_map(|value| value.as_deref())
+        .any(env_value_disables)
+}
+
+fn env_value_disables(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "on" | "yes"
+        "0" | "false" | "off" | "no"
     )
 }
 
@@ -117,7 +128,7 @@ fn apply_platform_material(window: &WebviewWindow) -> Result<(), String> {
 
     apply_vibrancy(
         window,
-        NSVisualEffectMaterial::UnderWindowBackground,
+        NSVisualEffectMaterial::WindowBackground,
         Some(NSVisualEffectState::FollowsWindowActiveState),
         None,
     )
@@ -169,19 +180,57 @@ fn apply_platform_material(_window: &WebviewWindow) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::env_flag_enabled;
+    use super::{env_value_disables, material_enabled_from_env};
 
     #[test]
-    fn parses_enabled_flag_values() {
-        for value in ["1", "true", "TRUE", "on", "yes"] {
-            assert!(env_flag_enabled(value));
+    fn recognizes_disable_tokens() {
+        for value in ["0", "false", "FALSE", "off", "no", " no "] {
+            assert!(env_value_disables(value));
         }
     }
 
     #[test]
-    fn rejects_disabled_or_unknown_flag_values() {
-        for value in ["", "0", "false", "off", "no", "material"] {
-            assert!(!env_flag_enabled(value));
+    fn does_not_treat_enable_or_unknown_tokens_as_disable() {
+        for value in ["", "1", "true", "on", "yes", "material"] {
+            assert!(!env_value_disables(value));
         }
+    }
+
+    #[test]
+    fn defaults_enabled_when_no_env_set() {
+        assert!(material_enabled_from_env(&[None, None]));
+    }
+
+    #[test]
+    fn enabled_for_explicit_enable_tokens() {
+        for value in ["1", "true", "on", "yes"] {
+            assert!(material_enabled_from_env(&[Some(value.to_string()), None]));
+        }
+    }
+
+    #[test]
+    fn enabled_for_unknown_values_since_default_is_on() {
+        assert!(material_enabled_from_env(&[Some("material".to_string()), None]));
+    }
+
+    #[test]
+    fn disabled_when_any_env_explicitly_off() {
+        for value in ["0", "false", "off", "no"] {
+            assert!(!material_enabled_from_env(&[Some(value.to_string()), None]));
+        }
+    }
+
+    #[test]
+    fn disable_wins_when_one_key_off_and_other_unset() {
+        assert!(!material_enabled_from_env(&[Some("0".to_string()), None]));
+        assert!(!material_enabled_from_env(&[None, Some("false".to_string())]));
+    }
+
+    #[test]
+    fn disable_wins_over_enable() {
+        assert!(!material_enabled_from_env(&[
+            Some("1".to_string()),
+            Some("off".to_string())
+        ]));
     }
 }
