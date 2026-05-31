@@ -65,7 +65,14 @@ Completed Stage 8: settings bundle import/export, opt-in terminal card auto rest
 
 ### Main Changes
 
-(Add details)
+- Added native desktop chrome text-selection defaults with explicit copyable
+  surface whitelist.
+- Disabled default spellcheck on root/body and text editors while preserving
+  explicit spellcheck opt-ins.
+- Added selector/float overlay keep-warm rAF loop and macOS occlusion detection
+  disablement for prewarmed NSWindows.
+- Updated desktop native-feel spec with chrome selection, spellcheck, and
+  overlay keep-warm contracts.
 
 ### Git Commits
 
@@ -78,7 +85,10 @@ Completed Stage 8: settings bundle import/export, opt-in terminal card auto rest
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run check`
+- [OK] `npm run build`
+- [OK] Playwright runtime check for computed `user-select` and spellcheck
+- [OK] `npx gitnexus detect-changes --repo ThreadTerm`
 
 ### Status
 
@@ -449,6 +459,41 @@ Implemented expanded native-feel baseline: single-instance plugin, non-macOS ove
 | `9af7635` | (see git log) |
 | `df2ff6d` | (see git log) |
 | `4ec4b86` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 12: 清理桌面端 web 味残留
+
+**Date**: 2026-05-31
+**Task**: 清理桌面端 web 味残留
+**Branch**: `audit/desktop-native-feel`
+
+### Summary
+
+完成 chrome 默认禁选与可复制白名单、spellcheck 默认关闭、selector/float keep-warm、macOS overlay occlusion 关闭，并补充 desktop native-feel spec。验证 npm run check、npm run build、Playwright 运行时检查和 GitNexus detect-changes。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d46a5b8` | (see git log) |
+| `0d64c7d` | (see git log) |
+| `4e86815` | (see git log) |
 
 ### Testing
 
