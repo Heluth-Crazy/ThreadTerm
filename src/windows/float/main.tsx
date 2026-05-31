@@ -12,7 +12,7 @@ import '../../index.css';
 import '../../i18n/config.js';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { applySavedTheme } from '../../theme/applyTheme';
-import { installNativeDesktopBehavior } from '../../lib/nativeDesktop';
+import { installNativeDesktopBehavior, installOverlayKeepWarmLoop } from '../../lib/nativeDesktop';
 import { FloatApp } from './FloatApp';
 
 const rootEl = document.getElementById('root');
@@ -22,6 +22,7 @@ if (!rootEl) {
 
 applySavedTheme();
 installNativeDesktopBehavior();
+installOverlayKeepWarmLoop();
 
 ReactDOM.createRoot(rootEl).render(
   <React.StrictMode>

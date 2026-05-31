@@ -23,6 +23,27 @@ const TERMINAL_CONTEXT_MENU_SELECTOR = [
   '[data-terminal-context-menu]',
 ].join(',');
 
+const TEXT_EDITING_SELECTOR = 'input, textarea, [contenteditable]';
+
+const INPUT_TYPES_WITHOUT_SPELLCHECK = new Set([
+  'button',
+  'checkbox',
+  'color',
+  'date',
+  'datetime-local',
+  'file',
+  'hidden',
+  'image',
+  'month',
+  'number',
+  'radio',
+  'range',
+  'reset',
+  'submit',
+  'time',
+  'week',
+]);
+
 function envValueDisables(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase();
   return normalized === '0' || normalized === 'false' || normalized === 'off' || normalized === 'no';
@@ -134,6 +155,123 @@ export function installWebviewContextMenuPolicy(doc: Document = document): () =>
   return () => doc.removeEventListener('contextmenu', onContextMenu, true);
 }
 
+export function installChromeTextSelectionPolicy(doc: Document = document): () => void {
+  const root = doc.documentElement;
+  const previous = root.getAttribute('data-native-text-selection');
+
+  root.dataset.nativeTextSelection = 'chrome';
+
+  return () => {
+    if (previous === null) {
+      delete root.dataset.nativeTextSelection;
+    } else {
+      root.setAttribute('data-native-text-selection', previous);
+    }
+  };
+}
+
+function shouldDisableSpellcheckByDefault(element: Element): boolean {
+  if (element.hasAttribute('spellcheck')) {
+    return false;
+  }
+
+  if (element instanceof HTMLInputElement) {
+    return !INPUT_TYPES_WITHOUT_SPELLCHECK.has(element.type.toLowerCase());
+  }
+
+  if (element instanceof HTMLTextAreaElement) {
+    return true;
+  }
+
+  const contentEditable = element.getAttribute('contenteditable');
+  return contentEditable !== null && contentEditable.toLowerCase() !== 'false';
+}
+
+function disableSpellcheckByDefault(element: Element): void {
+  if (!shouldDisableSpellcheckByDefault(element)) {
+    return;
+  }
+  element.setAttribute('spellcheck', 'false');
+  if ('spellcheck' in element) {
+    (element as HTMLElement).spellcheck = false;
+  }
+}
+
+function applySpellcheckDefaults(root: ParentNode): void {
+  if (root instanceof Element) {
+    disableSpellcheckByDefault(root);
+  }
+  root.querySelectorAll(TEXT_EDITING_SELECTOR).forEach(disableSpellcheckByDefault);
+}
+
+export function installWebviewSpellcheckPolicy(doc: Document = document): () => void {
+  const root = doc.documentElement;
+  const body = doc.body;
+  const previousRoot = root.getAttribute('spellcheck');
+  const previousBody = body?.getAttribute('spellcheck') ?? null;
+
+  root.spellcheck = false;
+  root.setAttribute('spellcheck', 'false');
+  if (body) {
+    body.spellcheck = false;
+    body.setAttribute('spellcheck', 'false');
+  }
+
+  applySpellcheckDefaults(doc);
+
+  const MutationObserverCtor = doc.defaultView?.MutationObserver ?? globalThis.MutationObserver;
+  if (!MutationObserverCtor) {
+    return () => {
+      if (previousRoot === null) root.removeAttribute('spellcheck');
+      else root.setAttribute('spellcheck', previousRoot);
+      if (body) {
+        if (previousBody === null) body.removeAttribute('spellcheck');
+        else body.setAttribute('spellcheck', previousBody);
+      }
+    };
+  }
+
+  const observer = new MutationObserverCtor((records) => {
+    for (const record of records) {
+      record.addedNodes.forEach((node) => {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          applySpellcheckDefaults(node as Element);
+        }
+      });
+    }
+  });
+  observer.observe(root, { childList: true, subtree: true });
+
+  return () => {
+    observer.disconnect();
+    if (previousRoot === null) root.removeAttribute('spellcheck');
+    else root.setAttribute('spellcheck', previousRoot);
+    if (body) {
+      if (previousBody === null) body.removeAttribute('spellcheck');
+      else body.setAttribute('spellcheck', previousBody);
+    }
+  };
+}
+
+type AnimationFrameHost = Pick<Window, 'requestAnimationFrame' | 'cancelAnimationFrame'>;
+
+export function installOverlayKeepWarmLoop(host: AnimationFrameHost = window): () => void {
+  let active = true;
+  let frameId = 0;
+
+  const tick: FrameRequestCallback = () => {
+    if (!active) return;
+    frameId = host.requestAnimationFrame(tick);
+  };
+
+  frameId = host.requestAnimationFrame(tick);
+
+  return () => {
+    active = false;
+    host.cancelAnimationFrame(frameId);
+  };
+}
+
 interface NativeDesktopBehaviorOptions {
   platformMaterial?: boolean;
 }
@@ -149,5 +287,16 @@ export function installNativeDesktopBehavior(
   } else {
     doc.documentElement.dataset.platformMaterial = 'disabled';
   }
-  return installWebviewContextMenuPolicy(doc);
+
+  const cleanups = [
+    installChromeTextSelectionPolicy(doc),
+    installWebviewSpellcheckPolicy(doc),
+    installWebviewContextMenuPolicy(doc),
+  ];
+
+  return () => {
+    for (const cleanup of cleanups.reverse()) {
+      cleanup();
+    }
+  };
 }

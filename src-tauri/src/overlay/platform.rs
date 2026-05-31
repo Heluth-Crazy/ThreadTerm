@@ -15,6 +15,16 @@ use super::window::{FLOAT_LABEL, SELECTOR_LABEL};
 use tauri::Manager;
 
 #[cfg(target_os = "macos")]
+fn disable_window_occlusion_detection(ns_window: &objc2_app_kit::NSWindow) {
+    use objc2_foundation::{ns_string, NSNumber, NSObjectNSKeyValueCoding};
+
+    let no = NSNumber::numberWithBool(false);
+    unsafe {
+        ns_window.setValue_forKey(Some(&no), ns_string!("windowOcclusionDetectionEnabled"));
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn configure_selector_window_for_current_space(window: &WebviewWindow) {
     use objc2_app_kit::{
         NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
@@ -38,6 +48,7 @@ pub(super) fn configure_selector_window_for_current_space(window: &WebviewWindow
     ns_window.setHidesOnDeactivate(false);
     ns_window.setCanBecomeVisibleWithoutLogin(true);
     ns_window.setLevel(NSScreenSaverWindowLevel);
+    disable_window_occlusion_detection(ns_window);
 
     let style = ns_window.styleMask()
         | NSWindowStyleMask::UtilityWindow
@@ -69,6 +80,7 @@ pub(super) fn configure_float_window_for_current_space(window: &WebviewWindow) {
     ns_window.setHidesOnDeactivate(false);
     ns_window.setCanBecomeVisibleWithoutLogin(true);
     ns_window.setLevel(NSScreenSaverWindowLevel);
+    disable_window_occlusion_detection(ns_window);
 
     // Keep the float as a non-activating panel so selecting a card from the
     // global overlay does not switch Spaces or pull the main ThreadTerm

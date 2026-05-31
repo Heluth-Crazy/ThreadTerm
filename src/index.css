@@ -185,6 +185,26 @@
     letter-spacing: -0.011em;
   }
 
+  html[data-native-text-selection="chrome"] body {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  html[data-native-text-selection="chrome"] body :where(input, textarea, pre, code, kbd, samp, .select-text, [data-selectable-text]),
+  html[data-native-text-selection="chrome"] body [contenteditable]:not([contenteditable="false"]) {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  html[data-native-text-selection="chrome"] body :where(.threadterm-xterm-host, .threadterm-xterm-host *, .xterm, .xterm *, [data-terminal-context-menu], [data-terminal-context-menu] *) {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  html[data-native-text-selection="chrome"] body :where(button, a, [role="button"], [data-tauri-drag-region]) {
+    -webkit-user-drag: none;
+  }
+
   html[data-platform-material="enabled"],
   html[data-platform-material="enabled"] body,
   html[data-platform-material="enabled"] #root {

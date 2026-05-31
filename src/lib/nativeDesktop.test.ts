@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   detectNativePlatform,
+  installChromeTextSelectionPolicy,
   installNativeDesktopBehavior,
+  installOverlayKeepWarmLoop,
   installWebviewContextMenuPolicy,
   resolveInitialPlatformMaterial,
   shouldAllowWebviewContextMenu,
@@ -90,5 +92,67 @@ describe('webview context menu policy', () => {
 
     cleanup();
     expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe('native chrome text and spelling policy', () => {
+  it('marks desktop chrome as non-selectable at the document root', () => {
+    const doc = document.implementation.createHTMLDocument();
+    const cleanup = installChromeTextSelectionPolicy(doc);
+
+    expect(doc.documentElement.dataset.nativeTextSelection).toBe('chrome');
+
+    cleanup();
+    expect(doc.documentElement.dataset.nativeTextSelection).toBeUndefined();
+  });
+
+  it('disables spellcheck on mounted text editors without overriding explicit opt-in', async () => {
+    const doc = document.implementation.createHTMLDocument();
+    const input = doc.createElement('input');
+    const checkbox = doc.createElement('input');
+    const explicit = doc.createElement('input');
+
+    checkbox.type = 'checkbox';
+    explicit.setAttribute('spellcheck', 'true');
+    doc.body.append(input, checkbox, explicit);
+
+    const cleanup = installNativeDesktopBehavior(doc, { platformMaterial: false });
+
+    expect(doc.documentElement.getAttribute('spellcheck')).toBe('false');
+    expect(doc.body.getAttribute('spellcheck')).toBe('false');
+    expect(input.getAttribute('spellcheck')).toBe('false');
+    expect(checkbox.hasAttribute('spellcheck')).toBe(false);
+    expect(explicit.getAttribute('spellcheck')).toBe('true');
+
+    const lateInput = doc.createElement('input');
+    doc.body.append(lateInput);
+    await Promise.resolve();
+
+    cleanup();
+    expect(lateInput.getAttribute('spellcheck')).toBe('false');
+  });
+});
+
+describe('overlay render-loop keep-warm', () => {
+  it('schedules no-op animation frames until cleanup', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    const host = {
+      requestAnimationFrame: vi.fn((callback: FrameRequestCallback) => {
+        callbacks.push(callback);
+        return callbacks.length;
+      }),
+      cancelAnimationFrame: vi.fn(),
+    };
+
+    const cleanup = installOverlayKeepWarmLoop(host);
+
+    expect(host.requestAnimationFrame).toHaveBeenCalledTimes(1);
+    callbacks[0](0);
+    expect(host.requestAnimationFrame).toHaveBeenCalledTimes(2);
+
+    cleanup();
+    expect(host.cancelAnimationFrame).toHaveBeenCalledWith(2);
+    callbacks[1](16);
+    expect(host.requestAnimationFrame).toHaveBeenCalledTimes(2);
   });
 });
