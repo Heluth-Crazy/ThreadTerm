@@ -16,6 +16,7 @@ import '../../i18n/config.js';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { applySavedTheme } from '../../theme/applyTheme';
 import { installNativeDesktopBehavior, installOverlayKeepWarmLoop } from '../../lib/nativeDesktop';
+import { installOverlayPreferenceSync } from '../../lib/overlayPreferenceSync';
 import { SelectorApp } from './SelectorApp';
 
 const rootEl = document.getElementById('root');
@@ -26,6 +27,7 @@ if (!rootEl) {
 applySavedTheme();
 installNativeDesktopBehavior();
 installOverlayKeepWarmLoop();
+installOverlayPreferenceSync();
 
 ReactDOM.createRoot(rootEl).render(
   <React.StrictMode>
