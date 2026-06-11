@@ -257,7 +257,17 @@
     "start": "開始",
     "startShell": "shell を開始",
     "runCommand": "{{command}} を実行",
-    "runInProject": "{{project}} で{{action}}"
+    "runInProject": "{{project}} で{{action}}",
+    "exitBannerCode": "プロセスが終了しました（コード {{code}}）",
+    "exitBannerClosed": "セッションが終了しました",
+    "sessionExited": "セッション終了",
+    "sessionExitedWithCode": "セッション終了（コード {{code}}）",
+    "restartSession": "セッションを再起動",
+    "reconnectAttempt": "接続に失敗 — 再試行中（{{attempt}} 回目）",
+    "connectionError": "接続に失敗しました：{{error}}",
+    "retryNow": "今すぐ再試行",
+    "scrollToBottom": "最下部へ戻る",
+    "newLinesBelow": "新しい出力 {{count}} 行"
   },
   "status": {
     "idle": "待機中",

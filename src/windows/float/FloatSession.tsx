@@ -119,7 +119,6 @@ export function FloatSession({ card }: FloatSessionProps) {
         suppressInitialCommandWhenPtyExists={true}
         onInitialCommandSent={handleInitialCommandSent}
         onUserSubmit={recordSubmit}
-        onProcessComplete={undefined}
         onDisconnect={undefined}
       />
     </div>
