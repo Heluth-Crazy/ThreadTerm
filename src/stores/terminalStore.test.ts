@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DEFAULT_PET_CONFIG, MAX_PINNED_CARDS, useTerminalStore } from './terminalStore';
+import { MAX_BLOCKS_PER_CARD } from '../types/terminal';
 
 function resetStore() {
   useTerminalStore.setState({
@@ -363,6 +364,94 @@ describe('terminalStore command blocks', () => {
     useTerminalStore.getState().ensureBlocksState();
 
     expect(useTerminalStore.getState().blocks).toEqual({});
+  });
+
+  it('evicts oldest blocks past MAX_BLOCKS_PER_CARD (audit P2-4)', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+
+    for (let i = 0; i < MAX_BLOCKS_PER_CARD + 5; i++) {
+      s.recordBlockStarted({
+        cardId: id,
+        blockId: `b-${i}`,
+        command: `cmd ${i}`,
+        cwd: '/',
+        startedAt: i,
+        bufferStart: i,
+      });
+    }
+
+    const blocks = useTerminalStore.getState().blocks[id];
+    expect(blocks).toHaveLength(MAX_BLOCKS_PER_CARD);
+    expect(blocks[0].id).toBe('b-5'); // b-0..b-4 evicted FIFO
+    expect(blocks[blocks.length - 1].id).toBe(`b-${MAX_BLOCKS_PER_CARD + 4}`);
+  });
+
+  it('eviction drops collapsed/bookmark/selection references to evicted blocks', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+
+    s.recordBlockStarted({
+      cardId: id,
+      blockId: 'b-0',
+      command: 'cmd 0',
+      cwd: '/',
+      startedAt: 0,
+      bufferStart: 0,
+    });
+    s.toggleBlockCollapsed('b-0');
+    s.addBookmark({ blockId: 'b-0', cardId: id, command: 'cmd 0', cwd: '/' });
+    s.selectBlock(id, 'b-0');
+
+    for (let i = 1; i <= MAX_BLOCKS_PER_CARD; i++) {
+      s.recordBlockStarted({
+        cardId: id,
+        blockId: `b-${i}`,
+        command: `cmd ${i}`,
+        cwd: '/',
+        startedAt: i,
+        bufferStart: i,
+      });
+    }
+
+    const state = useTerminalStore.getState();
+    expect(state.blocks[id].some((b) => b.id === 'b-0')).toBe(false);
+    expect(state.collapsedBlockIds).not.toContain('b-0');
+    expect(state.bookmarks.some((b) => b.blockId === 'b-0')).toBe(false);
+    expect(state.selectedBlockId[id]).toBeNull();
+  });
+
+  it('eviction leaves references to surviving blocks intact', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+
+    for (let i = 0; i < MAX_BLOCKS_PER_CARD; i++) {
+      s.recordBlockStarted({
+        cardId: id,
+        blockId: `b-${i}`,
+        command: `cmd ${i}`,
+        cwd: '/',
+        startedAt: i,
+        bufferStart: i,
+      });
+    }
+    const survivorId = `b-${MAX_BLOCKS_PER_CARD - 1}`;
+    s.toggleBlockCollapsed(survivorId);
+    s.addBookmark({ blockId: survivorId, cardId: id, command: 'x', cwd: '/' });
+
+    // Push one more — evicts only b-0.
+    s.recordBlockStarted({
+      cardId: id,
+      blockId: 'b-extra',
+      command: 'extra',
+      cwd: '/',
+      startedAt: 999,
+      bufferStart: 999,
+    });
+
+    const state = useTerminalStore.getState();
+    expect(state.collapsedBlockIds).toContain(survivorId);
+    expect(state.bookmarks.some((b) => b.blockId === survivorId)).toBe(true);
   });
 });
 

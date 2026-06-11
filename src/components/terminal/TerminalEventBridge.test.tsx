@@ -410,9 +410,40 @@ describe('TerminalEventBridge status reconciliation', () => {
       bridgeMocks.listeners.output?.({ id, data: 'two', seq: 2 });
     });
 
+    // The headless emulator sees accepted chunks immediately; the store
+    // write is coalesced (audit P0-2) and lands after the flush window.
     expect(feedHeadless).toHaveBeenCalledTimes(2);
-    expect(useTerminalStore.getState().getCardById(id)?.lastOutput).toContain('two');
+    await waitFor(() => {
+      expect(useTerminalStore.getState().getCardById(id)?.lastOutput).toContain('two');
+    });
+    expect(useTerminalStore.getState().getCardById(id)?.lastOutput).toContain('one');
     expect(useTerminalStore.getState().getCardById(id)?.lastOutput).not.toContain('duplicate one');
     expect(useTerminalStore.getState().getCardById(id)?.lastOutput).not.toContain('stale zero');
+  });
+
+  it('coalesces an output burst into a single store write', async () => {
+    const id = createCard();
+
+    render(<TerminalEventBridge />);
+    await waitFor(() => {
+      expect(bridgeMocks.listeners.output).toBeDefined();
+    });
+
+    const before = useTerminalStore.getState().getCardById(id);
+
+    act(() => {
+      for (let seq = 1; seq <= 50; seq++) {
+        bridgeMocks.listeners.output?.({ id, data: `chunk-${seq};`, seq });
+      }
+    });
+
+    // Nothing hits the store synchronously…
+    expect(useTerminalStore.getState().getCardById(id)?.lastOutput).toBe(before?.lastOutput);
+
+    // …then the whole burst lands as one joined write.
+    await waitFor(() => {
+      expect(useTerminalStore.getState().getCardById(id)?.lastOutput).toContain('chunk-50;');
+    });
+    expect(useTerminalStore.getState().getCardById(id)?.lastOutput).toContain('chunk-1;');
   });
 });

@@ -27,6 +27,7 @@ import type { StateStorage } from 'zustand/middleware';
 export function createThrottledLocalStorage(delayMs = 500): StateStorage {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pending: { name: string; value: string } | null = null;
+  let warnedPersistFailure = false;
 
   const flush = (): void => {
     if (timer !== null) {
@@ -36,9 +37,20 @@ export function createThrottledLocalStorage(delayMs = 500): StateStorage {
     if (pending) {
       try {
         localStorage.setItem(pending.name, pending.value);
-      } catch {
+        warnedPersistFailure = false;
+      } catch (error) {
         // Quota exceeded / storage disabled: same failure mode a direct
-        // setItem would have had. Never throw from the persist path.
+        // setItem would have had. Never throw from the persist path — but
+        // surface it once (audit P2-4): a silently-full quota means EVERY
+        // subsequent persist (cards metadata included) is being dropped.
+        if (!warnedPersistFailure) {
+          warnedPersistFailure = true;
+          // eslint-disable-next-line no-console
+          console.warn(
+            '[throttledStorage] persist failed — localStorage may be full or disabled; further state changes will not survive a restart:',
+            error,
+          );
+        }
       }
       pending = null;
     }

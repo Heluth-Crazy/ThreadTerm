@@ -26,6 +26,7 @@ import type {
 import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard, TerminalStatus } from '../../types/terminal';
 import { feedHeadless, disposeHeadless, disposeAllHeadless } from './headlessPreview';
+import { createCardOutputBuffer } from './outputBuffer';
 import { buildCardPreview } from './cardPreview';
 import { getMissingAiCliName } from './providerSession';
 import { getAbsoluteCursorRow, readBufferRange } from './xtermRegistry';
@@ -72,6 +73,11 @@ const REPLY_DEBOUNCE_MS = 3000;
 /** Backend status reconciliation cadence for missed cross-webview events. */
 const SESSION_STATE_SYNC_MS = 2000;
 
+/** Audit P0-2 — per-card output coalescing window. Store writes happen at
+ *  most every OUTPUT_FLUSH_MS per card; the real xterm and the headless
+ *  preview emulator still receive every chunk immediately. */
+const OUTPUT_FLUSH_MS = 100;
+
 interface RunningState {
   runningSince: number;
 }
@@ -106,6 +112,24 @@ export function TerminalEventBridge(): null {
         .getState()
         .cards.find((card) => (card.ptyId || card.id) === ptyId);
     }
+
+    // Audit P0-2 — coalesce per-chunk store writes. Flushes drop silently
+    // when the card was removed while data was pending.
+    const outputBuffer = createCardOutputBuffer(
+      {
+        flushOutput: (cardId, data) => {
+          const store = useTerminalStore.getState();
+          if (!store.cards.some((card) => card.id === cardId)) return;
+          store.updateCardOutput(cardId, data);
+        },
+        flushPreview: (cardId, preview) => {
+          const store = useTerminalStore.getState();
+          if (!store.cards.some((card) => card.id === cardId)) return;
+          store.updateCardReplyPreview(cardId, preview);
+        },
+      },
+      OUTPUT_FLUSH_MS,
+    );
 
     function clearAutoRestartTimer(cardId: string) {
       const timer = autoRestartTimersRef.current.get(cardId);
@@ -177,6 +201,11 @@ export function TerminalEventBridge(): null {
       const store = useTerminalStore.getState();
       const card = getCardForPtyId(ptyId);
       if (!card) return;
+
+      // The reply detector below reads lastReplyPreview/lastOutput through
+      // buildCardPreview — drain any coalesced output first so the
+      // notification snippet reflects the freshest content.
+      outputBuffer.flushCard(card.id);
 
       const cardId = card.id;
       const prev = card.status;
@@ -314,12 +343,14 @@ export function TerminalEventBridge(): null {
 
         const card = getCardForPtyId(id);
         if (!card) return;
-        const store = useTerminalStore.getState();
-        store.updateCardOutput(card.id, data);
+        // Audit P0-2: store writes go through the coalescing buffer instead
+        // of mutating `cards` once per chunk. The headless emulator still
+        // sees every chunk so the preview stays frame-accurate.
+        outputBuffer.pushChunk(card.id, data);
         feedHeadless(card.id, data, (preview) => {
           // Guard against late callbacks after the card was removed.
           if (!getCardForPtyId(id)) return;
-          useTerminalStore.getState().updateCardReplyPreview(card.id, preview);
+          outputBuffer.pushPreview(card.id, preview);
         });
       });
       if (cancelled) {
@@ -356,6 +387,9 @@ export function TerminalEventBridge(): null {
       const unsubExit = await pty.onExit(({ id, code }) => {
         const card = getCardForPtyId(id);
         if (!card) return;
+        // Drain coalesced output BEFORE status/notification handling so the
+        // exit notification snippet includes the final chunks.
+        outputBuffer.flushCard(card.id);
         // Tear down the headless emulator so we don't leak ~60KB per
         // dead session. Safe no-op if the card never had output.
         disposeHeadless(card.id);
@@ -402,8 +436,13 @@ export function TerminalEventBridge(): null {
 
         const store = useTerminalStore.getState();
 
+        // getMissingAiCliName inspects card.lastOutput — drain pending
+        // chunks so the detection sees the freshest tail.
+        outputBuffer.flushCard(cardId);
+
         const kind = type === 'error' ? 'failed' : 'waiting';
-        const missingCli = kind === 'failed' ? getMissingAiCliName(card, message) : null;
+        const latestCard = store.getCardById(cardId) ?? card;
+        const missingCli = kind === 'failed' ? getMissingAiCliName(latestCard, message) : null;
         const title = missingCli
           ? i18n.t('terminal:notifications.missingCliTitle', { cli: missingCli })
           : kind === 'failed'
@@ -512,6 +551,9 @@ export function TerminalEventBridge(): null {
         }
       }
       unlisteners.length = 0;
+      // Flush whatever is still buffered so the persisted preview reflects
+      // the last output seen before unmount / HMR.
+      outputBuffer.dispose();
       // Hot-reload / bridge unmount: drop all headless emulators so we
       // don't accumulate duplicate listeners across HMR cycles.
       disposeAllHeadless();

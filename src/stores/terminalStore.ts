@@ -32,6 +32,7 @@ import type {
 import type { AiExplainProvider } from '../lib/ai/aiExplain';
 import {
   MAX_BLOCK_OUTPUT_LENGTH,
+  MAX_BLOCKS_PER_CARD,
   MAX_LAST_OUTPUT_LENGTH,
   MAX_NOTIFICATIONS,
   MAX_TIMELINE_EVENTS,
@@ -807,14 +808,48 @@ export const useTerminalStore = create<TerminalStore>()(
             state: 'running',
           };
 
+          const next = [
+            ...existing.filter((candidate) => candidate.id !== input.blockId),
+            block,
+          ];
+
+          if (next.length <= MAX_BLOCKS_PER_CARD) {
+            return {
+              blocks: {
+                ...blocksByCard,
+                [input.cardId]: next,
+              },
+            };
+          }
+
+          // Audit P2-4 — FIFO eviction so a long-lived shell can't grow the
+          // persisted blocks map until the localStorage quota is hit. UI
+          // state and bookmarks pointing at evicted blocks are dropped with
+          // them so they can't accumulate as dead references.
+          const evicted = next.slice(0, next.length - MAX_BLOCKS_PER_CARD);
+          const kept = next.slice(next.length - MAX_BLOCKS_PER_CARD);
+          const evictedIds = new Set(evicted.map((candidate) => candidate.id));
+
+          const collapsedBlockIds = state.collapsedBlockIds.filter(
+            (id) => !evictedIds.has(id),
+          );
+          const bookmarks = state.bookmarks.filter(
+            (bookmark) => !evictedIds.has(bookmark.blockId),
+          );
+          const selectedForCard = state.selectedBlockId[input.cardId];
+          const selectedBlockId =
+            selectedForCard && evictedIds.has(selectedForCard)
+              ? { ...state.selectedBlockId, [input.cardId]: null }
+              : state.selectedBlockId;
+
           return {
             blocks: {
               ...blocksByCard,
-              [input.cardId]: [
-                ...existing.filter((candidate) => candidate.id !== input.blockId),
-                block,
-              ],
+              [input.cardId]: kept,
             },
+            collapsedBlockIds,
+            bookmarks,
+            selectedBlockId,
           };
         }),
 
