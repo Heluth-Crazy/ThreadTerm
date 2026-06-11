@@ -258,3 +258,12 @@ export const MAX_LAST_OUTPUT_LENGTH = 2000;
 
 /** Max notifications retained in the centre. */
 export const MAX_NOTIFICATIONS = 100;
+
+/**
+ * Max blocks retained per card (FIFO). Blocks are persisted to localStorage
+ * with up to MAX_BLOCK_OUTPUT_LENGTH chars of output each — without a cap a
+ * long-lived shell session grows until the ~5MB quota is hit, after which
+ * EVERY store persist (cards metadata included) silently fails (audit P2-4).
+ * 200 blocks ≈ 800KB worst case for one busy card.
+ */
+export const MAX_BLOCKS_PER_CARD = 200;
