@@ -460,7 +460,6 @@ export function TerminalView({
             autoReconnectOnExit={false}
             onInitialCommandSent={handleInitialCommandSent}
             onUserSubmit={recordSubmit}
-            onProcessComplete={undefined}
             onDisconnect={undefined}
           />
 

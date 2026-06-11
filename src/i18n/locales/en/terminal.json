@@ -257,7 +257,17 @@
     "start": "Start",
     "startShell": "Start shell",
     "runCommand": "Run {{command}}",
-    "runInProject": "{{action}} in {{project}}"
+    "runInProject": "{{action}} in {{project}}",
+    "exitBannerCode": "process exited with code {{code}}",
+    "exitBannerClosed": "session closed",
+    "sessionExited": "Session ended",
+    "sessionExitedWithCode": "Session ended (code {{code}})",
+    "restartSession": "Restart session",
+    "reconnectAttempt": "Connection failed — retrying ({{attempt}})",
+    "connectionError": "Connection failed: {{error}}",
+    "retryNow": "Retry now",
+    "scrollToBottom": "Scroll to bottom",
+    "newLinesBelow": "{{count}} new lines"
   },
   "status": {
     "idle": "Idle",

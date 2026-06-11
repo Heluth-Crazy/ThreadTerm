@@ -10,6 +10,12 @@ import { isTauriEnv, pty } from '../lib/tauri-bridge';
 import { useTheme } from '../contexts/ThemeContext';
 import { claimTerminalActive, registerTerminal, unregisterTerminal } from './terminal/xtermRegistry';
 import { createOutputSequencer } from './terminal/outputSequencer';
+import {
+  computeReconnectDelay,
+  countNewlines,
+  formatExitBanner,
+  shouldFollowOutput,
+} from './terminal/shellBehavior';
 
 const xtermStyles = `
   .xterm .xterm-screen {
@@ -87,7 +93,6 @@ async function waitForFonts() {
 function Shell({
   selectedProject,
   initialCommand,
-  onProcessComplete,
   minimal = false,
   autoConnect = false,
   paneId,
@@ -122,10 +127,22 @@ function Shell({
   const [isConnecting, setIsConnecting] = useState(false);
   const [isAuthPanelDismissed, setIsAuthPanelDismissed] = useState(false);
   const [authUrlCopyStatus, setAuthUrlCopyStatus] = useState('idle');
+  // Audit P1-2: PTY exited while autoReconnectOnExit is off — wait for an
+  // explicit user restart instead of silently respawning + clearing.
+  const [exitInfo, setExitInfo] = useState(null);
+  const exitedRef = useRef(false);
+  // Audit P1-4: surface the reconnect loop in minimal mode instead of a
+  // silent black screen. retryAttempt mirrors retryCountRef for rendering.
+  const [retryAttempt, setRetryAttempt] = useState(0);
+  const [connectError, setConnectError] = useState(null);
+  // Audit P0-1: "N new lines below" indicator while the user reads history.
+  const [scrolledUp, setScrolledUp] = useState(false);
+  const [newOutputLines, setNewOutputLines] = useState(0);
+  const pendingNewLinesRef = useRef(0);
+  const newOutputFlushTimerRef = useRef(null);
 
   const selectedProjectRef = useRef(selectedProject);
   const initialCommandRef = useRef(initialCommand);
-  const onProcessCompleteRef = useRef(onProcessComplete);
   const onInitialCommandSentRef = useRef(onInitialCommandSent);
   const onUserSubmitRef = useRef(onUserSubmit);
   const activeRef = useRef(active);
@@ -145,7 +162,6 @@ function Shell({
   useEffect(() => {
     selectedProjectRef.current = selectedProject;
     initialCommandRef.current = initialCommand;
-    onProcessCompleteRef.current = onProcessComplete;
     onInitialCommandSentRef.current = onInitialCommandSent;
     onUserSubmitRef.current = onUserSubmit;
     activeRef.current = active;
@@ -249,11 +265,35 @@ function Shell({
 
   const scheduleReconnect = useCallback((connectPty) => {
     if (manuallyDisconnected.current) return;
-    const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
+    const delay = computeReconnectDelay(retryCountRef.current);
     retryCountRef.current += 1;
+    setRetryAttempt(retryCountRef.current);
     reconnectTimeoutRef.current = setTimeout(() => {
       connectPty();
     }, delay);
+  }, []);
+
+  // Flush the buffered "new lines while scrolled up" count into render state
+  // at most every 200ms so a fast output burst doesn't re-render per chunk.
+  const scheduleNewOutputFlush = useCallback(() => {
+    if (newOutputFlushTimerRef.current) return;
+    newOutputFlushTimerRef.current = setTimeout(() => {
+      newOutputFlushTimerRef.current = null;
+      setNewOutputLines(pendingNewLinesRef.current);
+    }, 200);
+  }, []);
+
+  const scrollToBottomNow = useCallback(() => {
+    const term = terminal.current;
+    if (!term) return;
+    term.scrollToBottom();
+    pendingNewLinesRef.current = 0;
+    setNewOutputLines(0);
+    try {
+      term.focus();
+    } catch {
+      // Focus can fail while the webview is backgrounded.
+    }
   }, []);
 
   const connectPty = useCallback(() => {
@@ -318,10 +358,20 @@ function Shell({
             return;
           }
 
+          // Audit P0-1: decide follow-or-not BEFORE the write. Follow only
+          // when the viewport already sits at the bottom (or the app runs on
+          // the alternate screen); a user reading history must not be yanked
+          // back down by every incoming chunk.
+          const followOutput = shouldFollowOutput(term.buffer.active);
           const needsRefresh = CLEANUP_SEQUENCE_RE.test(data) || data.includes('\r');
           term.write(data, () => {
-            if (!term.hasSelection()) {
-              term.scrollToBottom();
+            if (followOutput) {
+              if (!term.hasSelection()) {
+                term.scrollToBottom();
+              }
+            } else {
+              pendingNewLinesRef.current += countNewlines(data);
+              scheduleNewOutputFlush();
             }
             if (needsRefresh) {
               requestAnimationFrame(() => {
@@ -340,31 +390,32 @@ function Shell({
         const unlistenOut = await pty.onOutput(({ id: sid, data, seq }) => {
           if (sid !== ptyIdRef.current || !terminal.current) return;
           outputSequencerRef.current?.receive({ seq, data });
-
-          if (onProcessCompleteRef.current) {
-            const cleanOutput = data.replace(/\x1b\[[0-9;]*m/g, '');
-            if (cleanOutput.includes('Process exited with code 0')) {
-              onProcessCompleteRef.current(0);
-            } else {
-              const match = cleanOutput.match(/Process exited with code (\d+)/);
-              if (match) {
-                const exitCode = Number.parseInt(match[1], 10);
-                if (exitCode !== 0) onProcessCompleteRef.current(exitCode);
-              }
-            }
-          }
         });
 
-        const unlistenExit = await pty.onExit(({ id: sid }) => {
+        const unlistenExit = await pty.onExit(({ id: sid, code }) => {
           if (sid !== ptyIdRef.current) return;
           setConnected(false);
           setConnecting(false);
-          if (terminal.current) {
-            terminal.current.clear();
-            terminal.current.write('\x1b[2J\x1b[H');
+          // Audit P1-2: never wipe the viewport on exit — the final output
+          // (panic, stack trace, exit reason) is exactly what the user needs
+          // to see. Append a coloured banner instead.
+          const term = terminal.current;
+          if (term) {
+            const label =
+              typeof code === 'number'
+                ? t('shell.exitBannerCode', { code })
+                : t('shell.exitBannerClosed');
+            term.write(formatExitBanner(code ?? null, label));
           }
           if (autoReconnectOnExitRef.current) {
             scheduleReconnect(connectPty);
+          } else {
+            // Block the autoConnect effect from silently respawning the
+            // session; the user restarts explicitly via the exit strip (or
+            // the auto-restart feature assigns a fresh ptyId, which clears
+            // this gate).
+            exitedRef.current = true;
+            setExitInfo({ code: typeof code === 'number' ? code : null });
           }
         });
 
@@ -396,6 +447,8 @@ function Shell({
         setConnected(true);
         setConnecting(false);
         retryCountRef.current = 0;
+        setRetryAttempt(0);
+        setConnectError(null);
         recoverTerminalSurface(true);
 
         const command = initialCommandRef.current?.trim();
@@ -409,6 +462,7 @@ function Shell({
         }
       } catch (error) {
         logger.error('[Shell] PTY connection failed:', error);
+        setConnectError(error instanceof Error ? error.message : String(error));
         setConnected(false);
         setConnecting(false);
         scheduleReconnect(connectPty);
@@ -474,6 +528,36 @@ function Shell({
       setIsRestarting(false);
     }, 200);
   }, [disconnectFromShell]);
+
+  // Audit P1-2: explicit user restart after the session exited. This is the
+  // only path (besides a fresh ptyId from auto-restart) that clears the
+  // screen — the user has read the exit banner and asked for a new session.
+  const restartAfterExit = useCallback(() => {
+    exitedRef.current = false;
+    setExitInfo(null);
+    retryCountRef.current = 0;
+    setRetryAttempt(0);
+    setConnectError(null);
+    manuallyDisconnected.current = false;
+    const term = terminal.current;
+    if (term) {
+      term.clear();
+      term.write('\x1b[2J\x1b[H');
+    }
+    connectToShell();
+  }, [connectToShell]);
+
+  // Audit P1-4: skip the backoff wait and reconnect immediately.
+  const retryConnectNow = useCallback(() => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    retryCountRef.current = 0;
+    setRetryAttempt(0);
+    manuallyDisconnected.current = false;
+    connectPty();
+  }, [connectPty]);
 
   const openAuthUrlInBrowser = useCallback((url) => {
     if (!url) return false;
@@ -613,6 +697,20 @@ function Shell({
       }
     });
 
+    // Track whether the viewport sits at the bottom; returning to the bottom
+    // (manually or via the indicator button) clears the new-output counter.
+    const scrollDisposable = terminal.current.onScroll(() => {
+      const term = terminal.current;
+      if (!term) return;
+      const buf = term.buffer.active;
+      const atBottom = buf.viewportY >= buf.baseY;
+      setScrolledUp(!atBottom);
+      if (atBottom) {
+        pendingNewLinesRef.current = 0;
+        setNewOutputLines(0);
+      }
+    });
+
     waitForFonts().finally(() => {
       requestAnimationFrame(() => {
         recoverTerminalSurface(activeRef.current);
@@ -645,6 +743,16 @@ function Shell({
     return () => {
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       resizeObserver.disconnect();
+      try {
+        scrollDisposable.dispose();
+      } catch {
+        // Already disposed with the terminal.
+      }
+      if (newOutputFlushTimerRef.current) {
+        clearTimeout(newOutputFlushTimerRef.current);
+        newOutputFlushTimerRef.current = null;
+      }
+      pendingNewLinesRef.current = 0;
       for (const timer of surfaceRecoveryTimersRef.current) clearTimeout(timer);
       surfaceRecoveryTimersRef.current = [];
 
@@ -713,10 +821,27 @@ function Shell({
     };
   }, [recoverTerminalSurface]);
 
+  // A fresh ptyId (auto-restart feature, or a different card reusing this
+  // Shell) clears the exit gate so the autoConnect effect below may run.
+  // Defined BEFORE the autoConnect effect — same-commit effect order matters.
+  useEffect(() => {
+    exitedRef.current = false;
+    setExitInfo(null);
+    retryCountRef.current = 0;
+    setRetryAttempt(0);
+    setConnectError(null);
+  }, [paneId]);
+
   useEffect(() => {
     if (!autoConnect || !isInitialized) return;
     if (isConnectingRef.current || isConnectedRef.current) return;
     if (manuallyDisconnected.current) return;
+    // Audit P1-2: after a PTY exit the session stays down (banner + restart
+    // strip) instead of silently respawning with a cleared screen.
+    if (exitedRef.current) return;
+    // A failed connect already scheduled a backoff retry; re-triggering here
+    // would bypass the backoff and spin connect→fail→connect synchronously.
+    if (reconnectTimeoutRef.current) return;
     connectToShell();
   }, [autoConnect, isInitialized, isConnecting, isConnected, connectToShell]);
 
@@ -753,6 +878,66 @@ function Shell({
           className="threadterm-xterm-host focus:outline-none"
           style={{ outline: 'none' }}
         />
+        {scrolledUp && (
+          <button
+            type="button"
+            data-testid="shell-scroll-to-bottom"
+            onClick={scrollToBottomNow}
+            className={[
+              'absolute left-1/2 z-20 -translate-x-1/2 rounded-full border border-white/15 bg-gray-900/90 px-3 py-1.5 text-[11px] font-medium text-gray-100 shadow-lg backdrop-blur-sm hover:bg-gray-700',
+              exitInfo !== null || (!isConnected && retryAttempt > 0) ? 'bottom-12' : 'bottom-3',
+            ].join(' ')}
+          >
+            ↓{' '}
+            {newOutputLines > 0
+              ? t('shell.newLinesBelow', { count: newOutputLines })
+              : t('shell.scrollToBottom')}
+          </button>
+        )}
+        {exitInfo !== null && (
+          <div
+            data-testid="shell-exit-strip"
+            className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-3 border-t border-white/10 bg-gray-900/90 px-3 py-2 backdrop-blur-sm"
+          >
+            <span className="min-w-0 truncate text-xs text-gray-300">
+              {typeof exitInfo.code === 'number'
+                ? t('shell.sessionExitedWithCode', { code: exitInfo.code })
+                : t('shell.sessionExited')}
+            </span>
+            <button
+              type="button"
+              onClick={restartAfterExit}
+              className="shrink-0 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+            >
+              {t('shell.restartSession')}
+            </button>
+          </div>
+        )}
+        {exitInfo === null && !isConnected && retryAttempt > 0 && (
+          <div
+            data-testid="shell-reconnect-strip"
+            className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-3 border-t border-white/10 bg-gray-900/90 px-3 py-2 backdrop-blur-sm"
+          >
+            <span
+              className="flex min-w-0 items-center gap-2 text-xs text-amber-300"
+              title={connectError ?? undefined}
+            >
+              <span className="h-3 w-3 shrink-0 animate-spin rounded-full border border-amber-300 border-t-transparent" />
+              <span className="truncate">
+                {connectError
+                  ? t('shell.connectionError', { error: connectError })
+                  : t('shell.reconnectAttempt', { attempt: retryAttempt })}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={retryConnectNow}
+              className="shrink-0 rounded bg-gray-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-600"
+            >
+              {t('shell.retryNow')}
+            </button>
+          </div>
+        )}
         {showAuthPanel && (
           <div className="absolute bottom-3 right-3 z-20 w-[min(420px,calc(100%-1.5rem))] rounded-[var(--radius)] border border-gray-700/80 bg-gray-900/95 p-3 shadow-xl backdrop-blur-sm">
             <div className="flex flex-col gap-2">

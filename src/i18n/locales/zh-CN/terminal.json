@@ -257,7 +257,17 @@
     "start": "启动",
     "startShell": "启动 shell",
     "runCommand": "运行 {{command}}",
-    "runInProject": "在 {{project}} 中{{action}}"
+    "runInProject": "在 {{project}} 中{{action}}",
+    "exitBannerCode": "进程已退出，退出码 {{code}}",
+    "exitBannerClosed": "会话已关闭",
+    "sessionExited": "会话已结束",
+    "sessionExitedWithCode": "会话已结束（退出码 {{code}}）",
+    "restartSession": "重启会话",
+    "reconnectAttempt": "连接失败 — 正在重试（第 {{attempt}} 次）",
+    "connectionError": "连接失败：{{error}}",
+    "retryNow": "立即重试",
+    "scrollToBottom": "回到底部",
+    "newLinesBelow": "{{count}} 行新输出"
   },
   "status": {
     "idle": "空闲",

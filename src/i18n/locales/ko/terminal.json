@@ -257,7 +257,17 @@
     "start": "시작",
     "startShell": "shell 시작",
     "runCommand": "{{command}} 실행",
-    "runInProject": "{{project}}에서 {{action}}"
+    "runInProject": "{{project}}에서 {{action}}",
+    "exitBannerCode": "프로세스가 종료됨 (코드 {{code}})",
+    "exitBannerClosed": "세션이 닫혔습니다",
+    "sessionExited": "세션 종료됨",
+    "sessionExitedWithCode": "세션 종료됨 (코드 {{code}})",
+    "restartSession": "세션 다시 시작",
+    "reconnectAttempt": "연결 실패 — 재시도 중 ({{attempt}}회)",
+    "connectionError": "연결 실패: {{error}}",
+    "retryNow": "지금 재시도",
+    "scrollToBottom": "맨 아래로",
+    "newLinesBelow": "새 출력 {{count}}줄"
   },
   "status": {
     "idle": "유휴",
