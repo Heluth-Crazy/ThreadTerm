@@ -17,6 +17,7 @@ import { useTranslation } from 'react-i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { BOOKMARKS_VISIBLE } from '../../lib/featureFlags';
 import { CardGrid } from './CardGrid';
+import { MAX_MOUNTED_TERMINAL_VIEWS, touchMountedId } from './mountedViewsLru';
 import { TerminalView } from './TerminalView';
 import { CreateTerminalDialog } from './CreateTerminalDialog';
 import { ProjectSidebar } from './ProjectSidebar';
@@ -214,19 +215,34 @@ export function TerminalManager() {
     }
   }, []);
 
-  // Set of card ids whose TerminalView should be kept mounted. A view is
-  // added the first time the user focuses the card and is only removed when
-  // the card itself is deleted. Using a Set ref (plus forceRender counter)
-  // avoids re-mounting when cards array refs change.
-  const mountedIdsRef = useRef<Set<string>>(new Set());
+  // Card ids whose TerminalView is kept mounted, in LRU order (oldest first).
+  // Each mounted view holds a WebGL context, so the list is capped at
+  // MAX_MOUNTED_TERMINAL_VIEWS (audit P1-1): evicted views unmount their
+  // xterm while the PTY survives in Rust (`preservePtyOnUnmount`), and
+  // re-focusing replays history via Shell's attachSnapshot path. Using an
+  // array ref (plus forceRender counter) avoids re-mounting when cards array
+  // refs change.
+  const mountedIdsRef = useRef<string[]>([]);
   const [, bumpRender] = useState(0);
   const [mobileBridgeSyncEnabled, setMobileBridgeSyncEnabled] = useState(false);
   const lastMobileSyncPayloadRef = useRef('');
 
   const mountCardInBackground = useCallback((cardId: string) => {
-    if (mountedIdsRef.current.has(cardId)) return;
-    mountedIdsRef.current.add(cardId);
-    bumpRender((n) => n + 1);
+    const current = mountedIdsRef.current;
+    const wasMounted = current.includes(cardId);
+    // Read the focused card from the store (not from render scope) so this
+    // callback stays referentially stable — it is a dependency of the mobile
+    // bridge subscription effect and must not resubscribe on focus changes.
+    const { next, evicted } = touchMountedId(
+      current,
+      cardId,
+      MAX_MOUNTED_TERMINAL_VIEWS,
+      useTerminalStore.getState().focusedCardId,
+    );
+    mountedIdsRef.current = next;
+    // Re-render only when membership changed; pure LRU reordering does not
+    // affect which TerminalViews render.
+    if (!wasMounted || evicted.length > 0) bumpRender((n) => n + 1);
   }, []);
 
   const focusedCard = useMemo(
@@ -234,13 +250,13 @@ export function TerminalManager() {
     [focusedCardId, cards],
   );
 
-  // Ensure the focused card is marked as "ever mounted".
+  // Mark the focused card as most-recently-used (mounting it if needed and
+  // evicting the LRU view when over cap). The focused card itself is the
+  // protected id inside touchMountedId, so it can never be evicted.
   useEffect(() => {
     if (!focusedCardId) return;
-    if (mountedIdsRef.current.has(focusedCardId)) return;
-    mountedIdsRef.current.add(focusedCardId);
-    bumpRender((n) => n + 1);
-  }, [focusedCardId]);
+    mountCardInBackground(focusedCardId);
+  }, [focusedCardId, mountCardInBackground]);
 
   useEffect(() => {
     if (!isTauriEnv()) return;
@@ -397,14 +413,11 @@ export function TerminalManager() {
   // Drop mount entries for cards that no longer exist (user removed them).
   useEffect(() => {
     const ids = new Set(cards.map((c) => c.id));
-    let changed = false;
-    for (const id of mountedIdsRef.current) {
-      if (!ids.has(id)) {
-        mountedIdsRef.current.delete(id);
-        changed = true;
-      }
+    const next = mountedIdsRef.current.filter((id) => ids.has(id));
+    if (next.length !== mountedIdsRef.current.length) {
+      mountedIdsRef.current = next;
+      bumpRender((n) => n + 1);
     }
-    if (changed) bumpRender((n) => n + 1);
   }, [cards]);
 
   // Automatically enter focus mode when a card is focused, back to grid when cleared.
@@ -805,7 +818,7 @@ export function TerminalManager() {
 
         {/* Persistent terminal views */}
         {cards
-          .filter((c) => mountedIdsRef.current.has(c.id))
+          .filter((c) => mountedIdsRef.current.includes(c.id))
           .map((c) => {
             const isCurrent = viewMode === 'focus' && focusedCardId === c.id;
             return (
