@@ -86,6 +86,7 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_kill,
             pty::pty_get_session_state,
+            pty::pty_get_all_session_states,
             pty::pty_get_recent_output,
             pty::pty_attach_snapshot,
             pty::pty_ack,

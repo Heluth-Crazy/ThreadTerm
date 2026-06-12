@@ -70,8 +70,11 @@ const REPLY_MIN_RUNNING_MS = 1500;
 /** Minimum gap between two reply notifications for the same card. */
 const REPLY_DEBOUNCE_MS = 3000;
 
-/** Backend status reconciliation cadence for missed cross-webview events. */
-const SESSION_STATE_SYNC_MS = 2000;
+/** Backend status reconciliation cadence for missed cross-webview events.
+ *  `session-state-changed` events are the primary channel; this poll is only
+ *  a fallback for events dropped across webviews, so a relaxed cadence is
+ *  fine (audit P2-5: 2s → 5s, and one batch IPC instead of one per card). */
+const SESSION_STATE_SYNC_MS = 5000;
 
 /** Audit P0-2 — per-card output coalescing window. Store writes happen at
  *  most every OUTPUT_FLUSH_MS per card; the real xterm and the headless
@@ -277,27 +280,38 @@ export function TerminalEventBridge(): null {
 
       syncInFlight = true;
       try {
-        await Promise.all(
-          cards.map(async (card) => {
-            const ptyId = card.ptyId || card.id;
-            try {
-              const state = await pty.getSessionState(ptyId);
-              if (!cancelled) {
-                handleSessionState(ptyId, state);
-              }
-            } catch {
-              if (cancelled) return;
+        // Audit P2-5 — one batch IPC covers every card instead of one
+        // `getSessionState` round-trip per card.
+        let states: Record<string, SessionState>;
+        try {
+          states = await pty.getAllSessionStates();
+        } catch {
+          // A batch failure is far more likely an IPC / window-lifecycle
+          // problem than every PTY dying at once, so skip this round
+          // instead of flipping transient cards back to idle.
+          return;
+        }
+        if (cancelled) return;
 
-              const latest = useTerminalStore
-                .getState()
-                .cards.find((candidate) => candidate.id === card.id);
-              if (!latest || !isTransientStatus(latest.status)) return;
+        for (const card of cards) {
+          const ptyId = card.ptyId || card.id;
+          const state = states[ptyId];
+          if (state !== undefined) {
+            handleSessionState(ptyId, state);
+            continue;
+          }
 
-              runningStateRef.current.delete(latest.id);
-              useTerminalStore.getState().updateCardStatus(latest.id, 'idle');
-            }
-          }),
-        );
+          // Missing from the map = the PTY is no longer registered. Keep
+          // the existing "missing pty → transient cards fall back to idle"
+          // semantics (previously signalled by a per-card reject).
+          const latest = useTerminalStore
+            .getState()
+            .cards.find((candidate) => candidate.id === card.id);
+          if (!latest || !isTransientStatus(latest.status)) continue;
+
+          runningStateRef.current.delete(latest.id);
+          useTerminalStore.getState().updateCardStatus(latest.id, 'idle');
+        }
       } finally {
         syncInFlight = false;
       }

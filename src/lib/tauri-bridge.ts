@@ -78,6 +78,14 @@ export const pty = {
   getSessionState: (ptyId: string): Promise<SessionState> =>
     invoke<SessionState>('pty_get_session_state', { ptyId }),
 
+  /**
+   * Batch variant of {@link getSessionState} (audit P2-5): one IPC returns
+   * every live session's state keyed by PTY id. Ids missing from the map
+   * mean the PTY is no longer registered on the backend.
+   */
+  getAllSessionStates: (): Promise<Record<string, SessionState>> =>
+    invoke<Record<string, SessionState>>('pty_get_all_session_states'),
+
   getRecentOutput: (ptyId: string): Promise<string | null> =>
     invoke<string | null>('pty_get_recent_output', { ptyId }),
 
