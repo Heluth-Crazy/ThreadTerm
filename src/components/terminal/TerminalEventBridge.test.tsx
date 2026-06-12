@@ -17,7 +17,7 @@ const bridgeMocks = vi.hoisted(() => {
   return {
     listeners,
     pty: {
-      getSessionState: vi.fn(),
+      getAllSessionStates: vi.fn(),
       onOutput: vi.fn((cb) => {
         listeners.output = cb;
         return Promise.resolve(() => {});
@@ -90,7 +90,7 @@ describe('TerminalEventBridge status reconciliation', () => {
     bridgeMocks.listeners.attention = undefined;
     bridgeMocks.listeners.blockStarted = undefined;
     bridgeMocks.listeners.blockFinished = undefined;
-    bridgeMocks.pty.getSessionState.mockResolvedValue('Idle');
+    bridgeMocks.pty.getAllSessionStates.mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -101,20 +101,41 @@ describe('TerminalEventBridge status reconciliation', () => {
 
   it('syncs a card status from the backend snapshot on mount', async () => {
     const id = createCard();
-    bridgeMocks.pty.getSessionState.mockResolvedValue('Running');
+    bridgeMocks.pty.getAllSessionStates.mockResolvedValue({ [id]: 'Running' });
 
     render(<TerminalEventBridge />);
 
     await waitFor(() => {
       expect(useTerminalStore.getState().getCardById(id)?.status).toBe('running');
     });
-    expect(bridgeMocks.pty.getSessionState).toHaveBeenCalledWith(id);
+    expect(bridgeMocks.pty.getAllSessionStates).toHaveBeenCalled();
   });
 
-  it('falls transient missing PTYs back to idle', async () => {
+  it('reconciles multiple cards with a single batch IPC call', async () => {
+    const idA = createCard();
+    const idB = createCard();
+    const idC = createCard();
+    bridgeMocks.pty.getAllSessionStates.mockResolvedValue({
+      [idA]: 'Running',
+      [idB]: 'WaitingForInput',
+      [idC]: 'Completed',
+    });
+
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(useTerminalStore.getState().getCardById(idA)?.status).toBe('running');
+      expect(useTerminalStore.getState().getCardById(idB)?.status).toBe('waiting');
+      expect(useTerminalStore.getState().getCardById(idC)?.status).toBe('completed');
+    });
+    // Audit P2-5: three cards must not cost three IPC round-trips.
+    expect(bridgeMocks.pty.getAllSessionStates).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls transient PTYs missing from the batch map back to idle', async () => {
     const id = createCard();
     useTerminalStore.getState().updateCardStatus(id, 'running');
-    bridgeMocks.pty.getSessionState.mockRejectedValue(new Error('missing pty'));
+    bridgeMocks.pty.getAllSessionStates.mockResolvedValue({});
 
     render(<TerminalEventBridge />);
 
@@ -126,14 +147,30 @@ describe('TerminalEventBridge status reconciliation', () => {
   it('does not overwrite a failed card when the backend PTY is gone', async () => {
     const id = createCard();
     useTerminalStore.getState().updateCardStatus(id, 'failed');
-    bridgeMocks.pty.getSessionState.mockRejectedValue(new Error('missing pty'));
+    bridgeMocks.pty.getAllSessionStates.mockResolvedValue({});
 
     render(<TerminalEventBridge />);
 
     await waitFor(() => {
-      expect(bridgeMocks.pty.getSessionState).toHaveBeenCalledWith(id);
+      expect(bridgeMocks.pty.getAllSessionStates).toHaveBeenCalled();
     });
     expect(useTerminalStore.getState().getCardById(id)?.status).toBe('failed');
+  });
+
+  it('skips the round without idling transient cards when the batch call rejects', async () => {
+    const id = createCard();
+    useTerminalStore.getState().updateCardStatus(id, 'running');
+    bridgeMocks.pty.getAllSessionStates.mockRejectedValue(new Error('ipc dropped'));
+
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(bridgeMocks.pty.getAllSessionStates).toHaveBeenCalled();
+    });
+    // A batch failure means IPC / window-lifecycle trouble, not "every PTY
+    // died" — the card must keep its transient status until the next round.
+    await act(async () => {});
+    expect(useTerminalStore.getState().getCardById(id)?.status).toBe('running');
   });
 
   it('does not notify when a focus or resize redraw briefly flips running to idle', async () => {

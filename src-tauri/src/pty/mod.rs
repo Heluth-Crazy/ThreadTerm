@@ -28,6 +28,7 @@ pub fn live_session_snapshot(id: &str) -> Option<LivePtySessionSnapshot> {
     registry::live_session_snapshot(id)
 }
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -275,6 +276,18 @@ pub async fn pty_get_session_state(pty_id: String) -> Result<SessionState, Strin
         .read()
         .map(|s| s.clone())
         .map_err(|e| format!("Failed to read session state: {e}"))
+}
+
+/// Get the states of all live PTY sessions in a single call.
+///
+/// Audit P2-5: the frontend's cross-webview reconciliation poll used to call
+/// `pty_get_session_state` once per card every cycle (N cards = N IPC
+/// round-trips). This batch command returns `{ id → SessionState }` so the
+/// poll costs one IPC regardless of card count; ids missing from the map
+/// mean the PTY is no longer registered.
+#[tauri::command]
+pub async fn pty_get_all_session_states() -> Result<HashMap<String, SessionState>, String> {
+    Ok(registry::all_session_states())
 }
 
 /// Read recent output for a live PTY session so a second webview can render

@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 
-use super::session::{self, LivePtySessionSnapshot, PtySession};
+use super::session::{self, LivePtySessionSnapshot, PtySession, SessionState};
 
 /// Global map of active PTY sessions.
 static PTY_SESSIONS: Lazy<DashMap<String, Arc<PtySession>>> = Lazy::new(DashMap::new);
@@ -85,6 +86,23 @@ pub fn list_live_sessions() -> Vec<LivePtySessionSnapshot> {
         .collect()
 }
 
+/// Collect the current state of every registered session in one pass.
+///
+/// Audit P2-5: the frontend's cross-webview reconciliation poll previously
+/// issued one `pty_get_session_state` IPC per card; this helper backs the
+/// batch command so all cards reconcile with a single round-trip. Sessions
+/// whose state lock is unreadable are skipped (mirrors the `filter_map`
+/// behaviour of [`list_live_sessions`]).
+pub(super) fn all_session_states() -> HashMap<String, SessionState> {
+    PTY_SESSIONS
+        .iter()
+        .filter_map(|entry| {
+            session::get_session_state_snapshot(entry.value())
+                .map(|state| (entry.key().clone(), state))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +135,18 @@ mod tests {
     #[test]
     fn live_session_snapshot_unknown_id_is_none() {
         assert!(live_session_snapshot("__threadterm_unit_test_unknown_id__").is_none());
+    }
+
+    /// The registry is process-global; we don't seed it from this test.
+    /// Verify the batch state map never invents entries for unknown ids
+    /// and stays consistent with list_live_sessions for any real entries.
+    #[test]
+    fn all_session_states_matches_live_sessions() {
+        let states = all_session_states();
+        assert!(!states.contains_key("__threadterm_unit_test_unknown_id__"));
+        for listed in list_live_sessions() {
+            assert_eq!(states.get(&listed.id), Some(&listed.state));
+        }
     }
 
     /// Whatever real sessions exist in the process-global registry, the
