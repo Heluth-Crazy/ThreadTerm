@@ -24,6 +24,7 @@
     "test": "vitest run",
     "check": "npm run typecheck && npm run test && npm run build:mobile && cargo check --manifest-path src-tauri/Cargo.toml",
     "test:e2e:mobile": "playwright test -c playwright.config.ts",
+    "test:e2e:desktop": "playwright test -c e2e/desktop/playwright.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "release": "./release.sh",
     "prepublishOnly": "npm run build",
