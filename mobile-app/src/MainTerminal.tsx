@@ -1,7 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import type { ServerMessage } from '@shared/mobile/bridge/protocol';
+import {
+  getTerminalFeedBacklog,
+  subscribeTerminalFeed,
+  type TerminalFeedMessage,
+} from './terminalFeed';
 
 // P2 architecture: a single xterm instance drives both preview and detail
 // surfaces. The bridge protocol contract is unchanged:
@@ -21,7 +25,6 @@ import type { ServerMessage } from '@shared/mobile/bridge/protocol';
 
 interface MainTerminalProps {
   activeCardId: string | null;
-  messages: ServerMessage[];
   mode?: 'detail' | 'preview';
   className?: string;
   // Optional resize observer for tests or future local-only consumers. The
@@ -137,7 +140,6 @@ function applyMirroredTerminalSize(
 
 export function MainTerminal({
   activeCardId,
-  messages,
   mode = 'detail',
   className = '',
   onResize,
@@ -315,16 +317,21 @@ export function MainTerminal({
   }, [recoveryNonce]);
 
   // Apply bridge messages: snapshots reset, outputs append. Sequence guards
-  // make repeated snapshots / already-applied outputs no-ops so re-renders do
+  // make repeated snapshots / already-applied outputs no-ops so replays do
   // not flash or duplicate content.
+  //
+  // Stage 5 (audit P1-3): messages no longer arrive as a React-state array
+  // prop. The terminalFeed module owns per-card buckets; this effect replays
+  // the card's backlog once, then subscribes for increments which are written
+  // straight into xterm — no App re-render, no full-transcript loop per chunk.
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal || !activeCardId) return;
 
-    for (const message of messages) {
+    const applyFeedMessage = (message: TerminalFeedMessage) => {
       if (message.kind === 'terminal_snapshot') {
         const snapshot = message.snapshot;
-        if (snapshot.cardId !== activeCardId) continue;
+        if (snapshot.cardId !== activeCardId) return;
         const nextSourceSize = snapshotSize(snapshot);
         if (nextSourceSize) {
           sourceSizeRef.current = nextSourceSize;
@@ -340,7 +347,7 @@ export function MainTerminal({
         // disappears after send + reply" bug (a send easily triggers a
         // visibility/keyboard reconnect). So skip later snapshots entirely and
         // let seq-guarded terminal_output continue the live stream in place.
-        if (appliedSnapshotSeqRef.current !== -1) continue;
+        if (appliedSnapshotSeqRef.current !== -1) return;
         const seq = Number(snapshot.seq ?? 0);
         terminal.reset();
         terminal.write(snapshotPayload(snapshot));
@@ -351,18 +358,23 @@ export function MainTerminal({
         terminal.refresh(0, Math.max(0, terminal.rows - 1));
         appliedSnapshotSeqRef.current = seq;
         lastAppliedOutputSeqRef.current = seq;
-        continue;
+        return;
       }
       if (message.kind === 'terminal_output') {
-        if (message.card_id !== activeCardId) continue;
-        if (!sourceSizeRef.current && appliedSnapshotSeqRef.current === -1) continue;
+        if (message.card_id !== activeCardId) return;
+        if (!sourceSizeRef.current && appliedSnapshotSeqRef.current === -1) return;
         const seq = Number(message.seq ?? 0);
-        if (seq <= lastAppliedOutputSeqRef.current) continue;
+        if (seq <= lastAppliedOutputSeqRef.current) return;
         terminal.write(message.data);
         lastAppliedOutputSeqRef.current = seq;
       }
+    };
+
+    for (const message of getTerminalFeedBacklog(activeCardId)) {
+      applyFeedMessage(message);
     }
-  }, [activeCardId, messages, mode]);
+    return subscribeTerminalFeed(activeCardId, applyFeedMessage);
+  }, [activeCardId, mode]);
 
   // The host div is ALWAYS rendered so hostRef stays stable. The create-effect
   // therefore reliably creates the xterm instance exactly once and never

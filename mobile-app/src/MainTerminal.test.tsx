@@ -1,6 +1,5 @@
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ServerMessage } from '@shared/mobile/bridge/protocol';
 
 // Mock @xterm/xterm. Hoisted because vi.mock factories run before the module
 // imports below. Style mirrors blocks/TuiBlock.test.tsx.
@@ -61,14 +60,24 @@ vi.mock('@xterm/addon-fit', () => ({
 // regressions).
 
 import { MainTerminal } from './MainTerminal';
-import { appendTerminalMessage } from './terminalTranscript';
+import {
+  pushTerminalFeedMessage,
+  resetTerminalFeed,
+  type TerminalFeedMessage,
+} from './terminalFeed';
+
+// Stage 5 (audit P1-3): messages no longer flow in as a React prop array.
+// Tests feed the per-card terminalFeed instead — pushes BEFORE render exercise
+// the backlog-replay path, pushes AFTER render exercise the live subscription
+// path. All sequencing assertions below are unchanged: they are the issue-5 /
+// backpressure D1 regression net.
 
 function snapshotMessage(
   cardId: string,
   seq: number,
   data: string,
   size: { rows: number; cols: number } = { rows: 24, cols: 80 },
-): ServerMessage {
+): TerminalFeedMessage {
   return {
     protocol_version: 1,
     kind: 'terminal_snapshot',
@@ -81,34 +90,32 @@ function snapshotMessage(
       cursorRow: 0,
       cursorCol: 0,
     },
-  } as unknown as ServerMessage;
+  } as unknown as TerminalFeedMessage;
 }
 
-function outputMessage(cardId: string, seq: number, data: string): ServerMessage {
+function outputMessage(cardId: string, seq: number, data: string): TerminalFeedMessage {
   return {
     protocol_version: 1,
     kind: 'terminal_output',
     card_id: cardId,
     seq,
     data,
-  } as unknown as ServerMessage;
+  } as unknown as TerminalFeedMessage;
 }
 
 describe('MainTerminal', () => {
   afterEach(() => {
     cleanup();
+    resetTerminalFeed();
     xtermMock.Terminal.mockClear();
     xtermMock.instances.length = 0;
     fitAddonMock.FitAddon.mockClear();
   });
 
   it('creates a single xterm instance, opens it, and writes the first snapshot via reset', () => {
-    render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[snapshotMessage('card-1', 1, 'SNAP')]}
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
+
+    render(<MainTerminal activeCardId="card-1" />);
 
     expect(xtermMock.Terminal).toHaveBeenCalledTimes(1);
     const term = xtermMock.instances[0];
@@ -118,25 +125,18 @@ describe('MainTerminal', () => {
   });
 
   it('uses bounded scrollback in preview mode', () => {
-    render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[snapshotMessage('card-1', 1, 'SNAP')]}
-        mode="preview"
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
+
+    render(<MainTerminal activeCardId="card-1" mode="preview" />);
 
     expect(xtermMock.Terminal).toHaveBeenCalledTimes(1);
     expect(xtermMock.instances[0].options.scrollback).toBe(160);
   });
 
   it('keeps deeper-but-bounded scrollback and instant scroll in detail mode', () => {
-    render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[snapshotMessage('card-1', 1, 'SNAP')]}
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
+
+    render(<MainTerminal activeCardId="card-1" />);
 
     expect(xtermMock.Terminal).toHaveBeenCalledTimes(1);
     // Bounded at 2500 (down from 4000) so the iOS WKWebView momentum-scroll
@@ -148,17 +148,16 @@ describe('MainTerminal', () => {
   });
 
   it('skips re-applying a snapshot with the same seq (no flicker on re-render)', () => {
-    const messages = [snapshotMessage('card-1', 1, 'SNAP')];
-    const { rerender } = render(
-      <MainTerminal activeCardId="card-1" messages={messages} />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
+    const { rerender } = render(<MainTerminal activeCardId="card-1" />);
 
     const term = xtermMock.instances[0];
     expect(term.reset).toHaveBeenCalledTimes(1);
     expect(term.write).toHaveBeenCalledTimes(1);
 
-    // Same snapshot object/seq arrives again on re-render.
-    rerender(<MainTerminal activeCardId="card-1" messages={[...messages]} />);
+    // The same snapshot seq arrives again (duplicated push) plus a re-render.
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
+    rerender(<MainTerminal activeCardId="card-1" />);
 
     expect(xtermMock.Terminal).toHaveBeenCalledTimes(1);
     expect(term.reset).toHaveBeenCalledTimes(1);
@@ -166,61 +165,33 @@ describe('MainTerminal', () => {
   });
 
   it('appends incremental output for increasing seq and skips already-applied seq', () => {
-    const { rerender } = render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 1, 'SNAP'),
-          outputMessage('card-1', 2, 'A'),
-        ]}
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
+    pushTerminalFeedMessage(outputMessage('card-1', 2, 'A'));
+    render(<MainTerminal activeCardId="card-1" />);
 
     const term = xtermMock.instances[0];
     expect(term.write).toHaveBeenNthCalledWith(1, 'SNAP');
     expect(term.write).toHaveBeenNthCalledWith(2, 'A');
 
-    rerender(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 1, 'SNAP'),
-          outputMessage('card-1', 2, 'A'),
-          outputMessage('card-1', 3, 'B'),
-        ]}
-      />,
-    );
+    // 'A' (seq 2) replayed again must not be re-written; only 'B'.
+    pushTerminalFeedMessage(outputMessage('card-1', 2, 'A'));
+    pushTerminalFeedMessage(outputMessage('card-1', 3, 'B'));
 
-    // 'A' (seq 2) is already applied and must not be re-written; only 'B'.
     expect(term.write).toHaveBeenCalledTimes(3);
     expect(term.write).toHaveBeenLastCalledWith('B');
   });
 
   it('does not apply a stale snapshot after newer output has already been written', () => {
-    const { rerender } = render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 1, 'SNAP1'),
-          outputMessage('card-1', 3, 'A'),
-        ]}
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP1'));
+    pushTerminalFeedMessage(outputMessage('card-1', 3, 'A'));
+    render(<MainTerminal activeCardId="card-1" />);
 
     const term = xtermMock.instances[0];
     expect(term.reset).toHaveBeenCalledTimes(1);
     expect(term.write).toHaveBeenNthCalledWith(1, 'SNAP1');
     expect(term.write).toHaveBeenNthCalledWith(2, 'A');
 
-    rerender(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 2, 'STALE'),
-          outputMessage('card-1', 3, 'A'),
-        ]}
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 2, 'STALE'));
 
     expect(term.reset).toHaveBeenCalledTimes(1);
     expect(term.write).toHaveBeenCalledTimes(2);
@@ -228,15 +199,9 @@ describe('MainTerminal', () => {
   });
 
   it('treats a later snapshot as a non-destructive reconnect resync (issue 5)', () => {
-    const { rerender } = render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 1, 'SNAP1'),
-          outputMessage('card-1', 2, 'A'),
-        ]}
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP1'));
+    pushTerminalFeedMessage(outputMessage('card-1', 2, 'A'));
+    render(<MainTerminal activeCardId="card-1" />);
 
     const term = xtermMock.instances[0];
     expect(term.reset).toHaveBeenCalledTimes(1);
@@ -245,15 +210,8 @@ describe('MainTerminal', () => {
     // A reconnect re-sends a fresh terminal_snapshot with a higher seq plus
     // continued output. The snapshot must NOT reset (that would wipe the
     // scrollback the user is reading); seq-guarded output continues in place.
-    rerender(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 5, 'SNAP2'),
-          outputMessage('card-1', 6, 'B'),
-        ]}
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 5, 'SNAP2'));
+    pushTerminalFeedMessage(outputMessage('card-1', 6, 'B'));
 
     expect(term.reset).toHaveBeenCalledTimes(1);
     expect(term.write).not.toHaveBeenCalledWith('SNAP2');
@@ -262,34 +220,22 @@ describe('MainTerminal', () => {
   });
 
   it('re-applies the recovery snapshot once when recoveryNonce bumps (D1 backpressure)', () => {
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP1'));
+    pushTerminalFeedMessage(outputMessage('card-1', 2, 'A'));
     const { rerender } = render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 1, 'SNAP1'),
-          outputMessage('card-1', 2, 'A'),
-        ]}
-        recoveryNonce={0}
-      />,
+      <MainTerminal activeCardId="card-1" recoveryNonce={0} />,
     );
 
     const term = xtermMock.instances[0];
     expect(term.reset).toHaveBeenCalledTimes(1);
     expect(term.write).toHaveBeenLastCalledWith('A');
 
-    // Server backpressure: App bumps recoveryNonce and fetches a recovery
-    // snapshot (higher seq, carries the dropped segment). The epoch is
-    // re-armed so this snapshot IS applied as a recovery reset.
-    rerender(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 10, 'RECOVERY'),
-          outputMessage('card-1', 11, 'C'),
-        ]}
-        recoveryNonce={1}
-      />,
-    );
+    // Server backpressure: App bumps recoveryNonce FIRST, then fetches a
+    // recovery snapshot (higher seq, carries the dropped segment). The epoch
+    // is re-armed so this snapshot IS applied as a recovery reset.
+    rerender(<MainTerminal activeCardId="card-1" recoveryNonce={1} />);
+    pushTerminalFeedMessage(snapshotMessage('card-1', 10, 'RECOVERY'));
+    pushTerminalFeedMessage(outputMessage('card-1', 11, 'C'));
 
     expect(term.reset).toHaveBeenCalledTimes(2);
     expect(term.write).toHaveBeenCalledWith('RECOVERY');
@@ -297,32 +243,17 @@ describe('MainTerminal', () => {
 
     // A stale lower/equal seq replayed after recovery is still dropped: the
     // snapshot reset lastAppliedOutputSeq to 10.
-    rerender(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 10, 'RECOVERY'),
-          outputMessage('card-1', 11, 'C'),
-          outputMessage('card-1', 2, 'STALE'),
-        ]}
-        recoveryNonce={1}
-      />,
-    );
+    pushTerminalFeedMessage(outputMessage('card-1', 2, 'STALE'));
 
     expect(term.reset).toHaveBeenCalledTimes(2);
     expect(term.write).not.toHaveBeenCalledWith('STALE');
   });
 
   it('does not re-arm on a plain reconnect when recoveryNonce is unchanged (issue-5 preserved)', () => {
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP1'));
+    pushTerminalFeedMessage(outputMessage('card-1', 2, 'A'));
     const { rerender } = render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 1, 'SNAP1'),
-          outputMessage('card-1', 2, 'A'),
-        ]}
-        recoveryNonce={0}
-      />,
+      <MainTerminal activeCardId="card-1" recoveryNonce={0} />,
     );
 
     const term = xtermMock.instances[0];
@@ -331,16 +262,9 @@ describe('MainTerminal', () => {
     // Plain reconnect: a higher-seq snapshot arrives but recoveryNonce stays 0
     // (App only bumps it on backpressure). The issue-5 guard must still ignore
     // the snapshot so scrollback is not wiped.
-    rerender(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 5, 'SNAP2'),
-          outputMessage('card-1', 6, 'B'),
-        ]}
-        recoveryNonce={0}
-      />,
-    );
+    rerender(<MainTerminal activeCardId="card-1" recoveryNonce={0} />);
+    pushTerminalFeedMessage(snapshotMessage('card-1', 5, 'SNAP2'));
+    pushTerminalFeedMessage(outputMessage('card-1', 6, 'B'));
 
     expect(term.reset).toHaveBeenCalledTimes(1);
     expect(term.write).not.toHaveBeenCalledWith('SNAP2');
@@ -351,31 +275,19 @@ describe('MainTerminal', () => {
     // A surface (e.g. detail) can mount AFTER a prior backpressure already
     // bumped the shared nonce. Mounting at nonce=3 must not treat the first
     // snapshot any differently — only a genuine increment while alive re-arms.
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP1'));
+    pushTerminalFeedMessage(outputMessage('card-1', 2, 'A'));
     const { rerender } = render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 1, 'SNAP1'),
-          outputMessage('card-1', 2, 'A'),
-        ]}
-        recoveryNonce={3}
-      />,
+      <MainTerminal activeCardId="card-1" recoveryNonce={3} />,
     );
 
     const term = xtermMock.instances[0];
     expect(term.reset).toHaveBeenCalledTimes(1);
 
     // Same nonce, higher-seq reconnect snapshot: still ignored (issue-5).
-    rerender(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 9, 'SNAP2'),
-          outputMessage('card-1', 10, 'B'),
-        ]}
-        recoveryNonce={3}
-      />,
-    );
+    rerender(<MainTerminal activeCardId="card-1" recoveryNonce={3} />);
+    pushTerminalFeedMessage(snapshotMessage('card-1', 9, 'SNAP2'));
+    pushTerminalFeedMessage(outputMessage('card-1', 10, 'B'));
 
     expect(term.reset).toHaveBeenCalledTimes(1);
     expect(term.write).not.toHaveBeenCalledWith('SNAP2');
@@ -383,24 +295,17 @@ describe('MainTerminal', () => {
   });
 
   it('resets again only when the active card changes, not on a reconnect snapshot', () => {
-    const { rerender } = render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[snapshotMessage('card-1', 1, 'SNAP1'), outputMessage('card-1', 2, 'A')]}
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP1'));
+    pushTerminalFeedMessage(outputMessage('card-1', 2, 'A'));
+    const { rerender } = render(<MainTerminal activeCardId="card-1" />);
 
     const term = xtermMock.instances[0];
     expect(term.reset).toHaveBeenCalledTimes(1);
 
     // Switching card is a real new epoch: the next card's first snapshot
     // resets and paints.
-    rerender(
-      <MainTerminal
-        activeCardId="card-2"
-        messages={[snapshotMessage('card-2', 9, 'SNAP-C2')]}
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-2', 9, 'SNAP-C2'));
+    rerender(<MainTerminal activeCardId="card-2" />);
 
     // One reset for the card switch + one for card-2's first snapshot.
     expect(term.reset).toHaveBeenCalledTimes(3);
@@ -408,12 +313,9 @@ describe('MainTerminal', () => {
   });
 
   it('renders with the default DOM renderer (no Canvas/WebGL addon imported)', () => {
-    render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[snapshotMessage('card-1', 1, 'SNAP')]}
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
+
+    render(<MainTerminal activeCardId="card-1" />);
 
     // Only the FitAddon is loaded onto the terminal. Canvas/WebGL addons were
     // removed because real iOS WKWebView can load them successfully while the
@@ -426,12 +328,8 @@ describe('MainTerminal', () => {
   });
 
   it('disposes the xterm instance on unmount', () => {
-    const { unmount } = render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[snapshotMessage('card-1', 1, 'SNAP')]}
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
+    const { unmount } = render(<MainTerminal activeCardId="card-1" />);
 
     const term = xtermMock.instances[0];
     expect(term.dispose).not.toHaveBeenCalled();
@@ -442,9 +340,7 @@ describe('MainTerminal', () => {
   });
 
   it('keeps the xterm host mounted and shows an empty overlay when no card is active', () => {
-    const { container } = render(
-      <MainTerminal activeCardId={null} messages={[]} />,
-    );
+    const { container } = render(<MainTerminal activeCardId={null} />);
 
     // Root cause 2 fix: the host div is ALWAYS rendered so hostRef is stable
     // and the create-effect reliably builds the terminal exactly once. The
@@ -455,15 +351,10 @@ describe('MainTerminal', () => {
   });
 
   it('forces a redraw after applying a snapshot so the first frame is not black', () => {
-    render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 1, 'SNAP'),
-          outputMessage('card-1', 2, 'OUT'),
-        ]}
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
+    pushTerminalFeedMessage(outputMessage('card-1', 2, 'OUT'));
+
+    render(<MainTerminal activeCardId="card-1" />);
 
     // The DOM renderer occasionally does not self-paint the first frame after
     // a reset on iOS WKWebView; the explicit refresh() forces the initial
@@ -477,12 +368,9 @@ describe('MainTerminal', () => {
   });
 
   it('uses snapshot PTY dimensions as the mobile mirror size', () => {
-    render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[snapshotMessage('card-1', 1, 'SNAP', { rows: 32, cols: 120 })]}
-      />,
-    );
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP', { rows: 32, cols: 120 }));
+
+    render(<MainTerminal activeCardId="card-1" />);
 
     // Mobile must mirror the PTY's source rows/cols instead of fitting to the
     // phone width. Otherwise ANSI cursor addressing from AI CLIs is interpreted
@@ -495,26 +383,17 @@ describe('MainTerminal', () => {
   });
 
   it('does not write live output before a snapshot supplies source dimensions', () => {
-    const { rerender } = render(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[outputMessage('card-1', 5, 'EARLY_OUTPUT')]}
-      />,
-    );
+    render(<MainTerminal activeCardId="card-1" />);
+
+    pushTerminalFeedMessage(outputMessage('card-1', 5, 'EARLY_OUTPUT'));
 
     const term = xtermMock.instances[0];
     expect(term.write).not.toHaveBeenCalledWith('EARLY_OUTPUT');
     expect(term.resize).not.toHaveBeenCalled();
 
-    rerender(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[
-          snapshotMessage('card-1', 1, 'SNAP', { rows: 32, cols: 120 }),
-          outputMessage('card-1', 5, 'EARLY_OUTPUT'),
-        ]}
-      />,
-    );
+    // Once the snapshot lands, the feed re-delivers the retained early output
+    // after it, so the live surface catches up without a remount.
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP', { rows: 32, cols: 120 }));
 
     expect(term.resize).toHaveBeenCalledWith(120, 32);
     expect(term.write).toHaveBeenNthCalledWith(1, 'SNAP');
@@ -522,26 +401,23 @@ describe('MainTerminal', () => {
   });
 
   it('remounts from a capped transcript after a large output burst', () => {
-    let messages: ServerMessage[] = [snapshotMessage('card-1', 1, 'SNAP')];
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
     for (let index = 0; index < 2100; index += 1) {
-      messages = appendTerminalMessage(
-        messages,
-        outputMessage('card-1', index + 2, `chunk-${index}`) as Parameters<typeof appendTerminalMessage>[1],
-      );
+      pushTerminalFeedMessage(outputMessage('card-1', index + 2, `chunk-${index}`));
     }
 
-    render(<MainTerminal activeCardId="card-1" messages={messages} />);
+    render(<MainTerminal activeCardId="card-1" />);
 
     const term = xtermMock.instances[0];
     expect(term.reset).toHaveBeenCalledTimes(1);
     expect(term.write).toHaveBeenNthCalledWith(1, 'SNAP');
     expect(term.write).toHaveBeenLastCalledWith('chunk-2099');
+    // Backlog replay is bounded by the per-card cap: snapshot + 1999 outputs.
+    expect(term.write).toHaveBeenCalledTimes(2000);
   });
 
   it('writes the snapshot after activeCardId goes null -> non-null without remount or mode change (root cause 2)', () => {
-    const { rerender } = render(
-      <MainTerminal activeCardId={null} messages={[]} />,
-    );
+    const { rerender } = render(<MainTerminal activeCardId={null} />);
 
     // Terminal is created up-front because the host is always mounted.
     expect(xtermMock.Terminal).toHaveBeenCalledTimes(1);
@@ -549,13 +425,9 @@ describe('MainTerminal', () => {
     expect(term.write).not.toHaveBeenCalled();
 
     // Card becomes active later (no remount, no mode change). The already
-    // created terminal must receive the snapshot.
-    rerender(
-      <MainTerminal
-        activeCardId="card-1"
-        messages={[snapshotMessage('card-1', 1, 'SNAP')]}
-      />,
-    );
+    // created terminal must receive the snapshot from the backlog replay.
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
+    rerender(<MainTerminal activeCardId="card-1" />);
 
     // Same single instance — not recreated.
     expect(xtermMock.Terminal).toHaveBeenCalledTimes(1);
@@ -565,13 +437,7 @@ describe('MainTerminal', () => {
 
   it('reports fitted dimensions before a snapshot supplies source dimensions', async () => {
     const onResize = vi.fn();
-    render(
-      <MainTerminal
-        activeCardId={null}
-        messages={[]}
-        onResize={onResize}
-      />,
-    );
+    render(<MainTerminal activeCardId={null} onResize={onResize} />);
 
     // Before any snapshot arrives, the component can still use FitAddon as a
     // local empty-state fallback and report the fitted dimensions to tests /
@@ -637,12 +503,9 @@ describe('MainTerminal', () => {
 
     try {
       const onResize = vi.fn();
+      pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP', { rows: 32, cols: 120 }));
       const { unmount } = render(
-        <MainTerminal
-          activeCardId="card-1"
-          messages={[snapshotMessage('card-1', 1, 'SNAP', { rows: 32, cols: 120 })]}
-          onResize={onResize}
-        />,
+        <MainTerminal activeCardId="card-1" onResize={onResize} />,
       );
 
       const term = xtermMock.instances[0];
