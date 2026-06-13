@@ -47,7 +47,7 @@ import {
   storePairing,
 } from './bridge/pairing';
 import { fetchSnapshot, useBridgeConnection } from './bridge/useBridgeConnection';
-import { appendTerminalMessage } from './terminalTranscript';
+import { pushTerminalFeedMessage } from './terminalFeed';
 import {
   MobileThemeController,
   createFallbackThemeFromUrl,
@@ -85,7 +85,6 @@ export function App() {
   const [deviceName, setDeviceName] = useState(pairing.deviceName);
   const [pairingError, setPairingError] = useState<string | null>(null);
   const [pairingBusy, setPairingBusy] = useState(false);
-  const [terminalMessages, setTerminalMessages] = useState<ServerMessage[]>([]);
   // Monotonic counter bumped ONLY when the server signals backpressure
   // (broadcast Lagged -> error/backpressure -> onLagged). A bump tells
   // MainTerminal to treat the very next terminal_snapshot as a one-shot
@@ -111,7 +110,11 @@ export function App() {
     }
 
     if (message.kind === 'terminal_output' || message.kind === 'terminal_snapshot') {
-      setTerminalMessages((current) => appendTerminalMessage(current, message));
+      // Stage 5 (audit P1-3): terminal transport bypasses React state. The
+      // per-card feed buckets the chunk and notifies subscribed MainTerminal
+      // instances directly, so a hot output stream no longer re-renders the
+      // whole App tree per chunk.
+      pushTerminalFeedMessage(message);
     }
 
     dispatch({ type: 'server-message', message });
@@ -289,7 +292,6 @@ export function App() {
         <TerminalDetail
           activeCard={activeCard}
           canSend={canSend}
-          messages={terminalMessages}
           recoveryNonce={recoveryNonce}
           onBack={() => setDetailOpen(false)}
           onActivate={requestActivate}
@@ -310,7 +312,6 @@ export function App() {
               bridgeAddress={window.location.host}
               cards={state.cards}
               canControl={canControl}
-              messages={terminalMessages}
               recoveryNonce={recoveryNonce}
               onActivateCard={requestActivate}
               onDeleteCard={requestClose}
@@ -410,7 +411,6 @@ function TerminalHome({
   bridgeAddress,
   cards,
   canControl,
-  messages,
   recoveryNonce,
   onActivateCard,
   onDeleteCard,
@@ -425,7 +425,6 @@ function TerminalHome({
   bridgeAddress: string;
   cards: CardMeta[];
   canControl: boolean;
-  messages: ServerMessage[];
   recoveryNonce: number;
   onActivateCard: (cardId: string) => void;
   onDeleteCard: (cardId: string) => void;
@@ -497,7 +496,6 @@ function TerminalHome({
               <div className="terminal-preview-frame">
                 <MainTerminal
                   activeCardId={activeCard.id}
-                  messages={messages}
                   recoveryNonce={recoveryNonce}
                   mode="preview"
                 />
@@ -740,7 +738,6 @@ function SettingsScreen({
 function TerminalDetail({
   activeCard,
   canSend,
-  messages,
   recoveryNonce,
   onActivate,
   onBack,
@@ -752,7 +749,6 @@ function TerminalDetail({
 }: {
   activeCard: CardMeta | null;
   canSend: boolean;
-  messages: ServerMessage[];
   recoveryNonce: number;
   onActivate: (cardId: string) => void;
   onBack: () => void;
@@ -793,7 +789,6 @@ function TerminalDetail({
       <MainTerminal
         activeCardId={activeCard?.id ?? null}
         className="terminal-detail-output"
-        messages={messages}
         recoveryNonce={recoveryNonce}
       />
 
