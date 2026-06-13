@@ -372,7 +372,7 @@ test('terminal content survives viewport changes, lifecycle resume, and lag snap
   // keep the new content and allow scrolling.
   await page.getByText('Tap to focus').click();
   await expect(page.locator('.terminal-nav.safe-top')).toBeVisible();
-  await expect(page.locator('.input-bar.safe-bottom')).toBeVisible();
+  await expect(page.locator('.input-bar-shell.safe-bottom')).toBeVisible();
   const detailScreen = page.locator('.terminal-detail-screen');
   await expectXtermText(detailScreen, SNAPSHOT_TEXT);
 

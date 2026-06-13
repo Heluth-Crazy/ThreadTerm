@@ -63,4 +63,43 @@ describe('InputBar', () => {
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(onSend).toHaveBeenCalledWith('\x03');
   });
+
+  it('sends Esc as a raw escape (not a buffered line)', () => {
+    const onSend = vi.fn();
+    render(<InputBar disabled={false} onSend={onSend} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Esc' }));
+
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend).toHaveBeenCalledWith('\x1b');
+  });
+
+  it.each([
+    ['Arrow up', '\x1b[A'],
+    ['Arrow down', '\x1b[B'],
+    ['Arrow left', '\x1b[D'],
+    ['Arrow right', '\x1b[C'],
+    ['Tab', '\t'],
+    ['Ctrl-D', '\x04'],
+  ])('sends the correct escape sequence for the %s key', (label, sequence) => {
+    const onSend = vi.fn();
+    render(<InputBar disabled={false} onSend={onSend} />);
+
+    fireEvent.click(screen.getByRole('button', { name: label }));
+
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend).toHaveBeenCalledWith(sequence);
+  });
+
+  it('does not duplicate a control-key action after touchstart', () => {
+    const onSend = vi.fn();
+    render(<InputBar disabled={false} onSend={onSend} />);
+
+    const tabButton = screen.getByRole('button', { name: 'Tab' });
+    fireEvent.touchStart(tabButton);
+    fireEvent.click(tabButton);
+
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend).toHaveBeenCalledWith('\t');
+  });
 });

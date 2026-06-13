@@ -32,6 +32,8 @@ import type {
   TerminalStatus,
 } from '@shared/mobile/bridge/protocol';
 import type { BridgeConnectionState } from '@shared/mobile/bridge/wsClient';
+import { compareCardsByActivity } from '@shared/lib/cardSort';
+import { ConnectionBanner } from './ConnectionBanner';
 import { InputBar } from './input/InputBar';
 import { MainTerminal } from './MainTerminal';
 import {
@@ -447,6 +449,7 @@ function TerminalHome({
         title="ThreadTerm"
       />
       <div className="screen-content">
+        <ConnectionBanner wsStatus={wsStatus} />
         <SearchField value={searchQuery} onChange={onSearchChange} />
 
         <section className="ios-list-card">
@@ -786,6 +789,8 @@ function TerminalDetail({
         </div>
       </header>
 
+      <ConnectionBanner wsStatus={wsStatus} />
+
       <MainTerminal
         activeCardId={activeCard?.id ?? null}
         className="terminal-detail-output"
@@ -863,14 +868,15 @@ function IosHeader({ action, title }: { action?: React.ReactNode; title: string 
 }
 
 function SearchField({ onChange, value }: { onChange: (value: string) => void; value: string }) {
+  const { t } = useI18n();
   return (
     <label className="search-field">
       <Search size={16} />
       <input
-        aria-label="Search sessions"
+        aria-label={t('home.searchLabel')}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder="Search sessions..."
+        placeholder={t('home.searchPlaceholder')}
       />
     </label>
   );
@@ -1157,11 +1163,14 @@ function groupCardsByProject(cards: CardMeta[]): ProjectCardGroup[] {
 }
 
 function sortCardsForMobile(a: CardMeta, b: CardMeta): number {
-  const liveDelta = Number(isCardLive(b)) - Number(isCardLive(a));
-  if (liveDelta !== 0) return liveDelta;
-  const unreadDelta = Number(Boolean(b.unread)) - Number(Boolean(a.unread));
-  if (unreadDelta !== 0) return unreadDelta;
-  return (b.lastActivity ?? b.createdAt ?? 0) - (a.lastActivity ?? a.createdAt ?? 0);
+  // Reuse the shared "activity first" comparator (live > unread > recency) so
+  // mobile and desktop CardGrid stay in lockstep. Mobile liveness keeps its
+  // own ptyState fallback, so resolve an explicit ptyLive boolean and let the
+  // shared comparator honour it.
+  return compareCardsByActivity(
+    { ptyLive: isCardLive(a), unread: a.unread, lastActivity: a.lastActivity, createdAt: a.createdAt },
+    { ptyLive: isCardLive(b), unread: b.unread, lastActivity: b.lastActivity, createdAt: b.createdAt },
+  );
 }
 
 function pathLeaf(path: string): string {

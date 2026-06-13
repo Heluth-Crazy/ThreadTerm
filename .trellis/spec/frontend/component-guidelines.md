@@ -121,6 +121,78 @@ unregisterTerminal(ptyId, term);
 
 </spec-entry>
 
+<spec-entry category="pattern" keywords="card-sort,activity-first,card-grid,mobile-parity,terminal-card-order" date="2026-06-13" source="src/lib/cardSort.ts:1">
+
+### Scenario: Activity-First Card Ordering (Desktop + Mobile Parity)
+
+#### 1. Scope / Trigger
+- Trigger: Any change to how the desktop `CardGrid` or the mobile session
+  list orders terminal cards, or to `src/lib/cardSort.ts`.
+- Applies to `src/lib/cardSort.ts`, `src/components/terminal/CardGrid.tsx`,
+  and mobile `sortCardsForMobile` in `mobile-app/src/App.tsx`.
+
+#### 2. Signatures
+- `compareCardsByActivity(a: CardActivitySortFields, b: CardActivitySortFields): number`
+- `isDesktopCardLive(status: string | null | undefined): boolean`
+- `CardActivitySortFields = { status?, unread?, lastActivity?, createdAt?, ptyLive? }`
+
+#### 3. Contracts
+- Desktop and mobile present cards in the same "activity first" order so a
+  user moving between screens sees a consistent layout. The single source of
+  truth is `compareCardsByActivity`, imported on mobile via the `@shared`
+  alias (`@shared/lib/cardSort`).
+- Ordering tiers, in priority order:
+  1. live cards first (a PTY is running / waiting for input),
+  2. then unread cards,
+  3. then most recent first (`lastActivity`, falling back to `createdAt`).
+- Liveness vocabulary is unified across layers: `running`, desktop `waiting`,
+  and mobile `waiting_for_input` all count as live. An explicit `ptyLive`
+  boolean (mobile) overrides the `status`-derived liveness.
+- The comparator must be stable (return 0 for equal cards) and must never
+  mutate its inputs. Callers sort a copy
+  (`[...cards].sort(compareCardsByActivity)`).
+- The desktop `terminalStore.cards` array keeps creation order. Only the
+  rendered `visibleCards` projection is sorted. Keyboard navigation
+  (`nextCard` / `prevCard` / `jumpToIndex`) intentionally walks store
+  (creation) order, not the activity-sorted view.
+
+#### 4. Validation & Error Matrix
+- Live + read + old beats idle + unread + new (liveness dominates).
+- Equal liveness: unread beats read.
+- Equal liveness + unread: higher `lastActivity` wins, else higher `createdAt`.
+- `ptyLive: false` on a `status: 'running'` mobile card is treated as not
+  live.
+- Equal cards preserve input order (stable sort).
+
+#### 5. Good/Base/Bad Cases
+- Good: both `CardGrid.visibleCards` and `sortCardsForMobile` route through
+  `compareCardsByActivity`.
+- Base: a single project's cards render live-first without touching the store
+  array.
+- Bad: re-sorting `terminalStore.cards` in place, or duplicating the tier
+  logic separately on desktop and mobile so the two drift.
+
+#### 6. Tests Required
+- `src/lib/cardSort.test.ts` covers liveness vocabulary, each tier, the
+  `ptyLive` override, and stability.
+- Affected frontend verification: `npm run typecheck` and
+  `npx vitest run mobile-app/ src/`.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+// Desktop renders creation order; mobile re-implements its own tiers.
+const visibleCards = cards;
+```
+
+Correct:
+```typescript
+const visibleCards = [...filtered].sort(compareCardsByActivity);
+```
+
+</spec-entry>
+
 ---
 
 ## Accessibility
