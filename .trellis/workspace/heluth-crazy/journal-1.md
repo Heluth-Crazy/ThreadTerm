@@ -575,3 +575,43 @@ Implemented expanded native-feel baseline: single-instance plugin, non-macOS ove
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: 桌面/移动端终端审查修复（P0-P2 五阶段）
+
+**Date**: 2026-06-13
+**Task**: 桌面/移动端终端审查修复（P0-P2 五阶段）
+**Branch**: `audit/desktop-native-feel`
+
+### Summary
+
+基于全系统只读审查（audit-report.md，17 项 P0-P3 发现）分 5 Stage 修复 P0/P1 缺陷 + P2 优化，Win/macOS 双端适配。Stage1 Shell 滚动跟随/退出横幅/连接失败可见化；Stage2 输出链路 per-card 节流 + blocks FIFO 上限 + quota 告警；Stage3 TerminalView LRU 挂载上限（WebGL 预算）；Stage4a Rust 批量状态命令（N→1 IPC）；Stage4b 桌面 e2e 基线（Playwright+fake Tauri）；Stage5a 移动端 transcript per-card 订阅重构；Stage5b 跨端活跃优先排序 + 移动端方向键/连接横幅/i18n。642 单测 + typecheck + build + cargo + 桌面 e2e 3 journey 全绿；mobile e2e 16 passed（含 issue-5/backpressure 回归），4 既有 baseline 失败非回归。spec 记录排序约定/输出五表示数据流向/ptyLive 契约。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0ecf1af` | (see git log) |
+| `78b2ef7` | (see git log) |
+| `241b1ee` | (see git log) |
+| `b362fca` | (see git log) |
+| `bdee023` | (see git log) |
+| `3f94cf0` | (see git log) |
+| `173e9c0` | (see git log) |
+| `695d48e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
