@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next';
 import { motion, useReducedMotion } from 'framer-motion';
 import { isTauriEnv } from '../../lib/tauri-bridge';
 import { openLocalDirectory } from '../../lib/localDirectory';
+import { compareCardsByActivity } from '../../lib/cardSort';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { TerminalCardComponent } from './TerminalCard';
 
@@ -31,13 +32,16 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   const selectedProjectPath = useTerminalStore((s) => s.selectedProjectPath);
   const selectProject = useTerminalStore((s) => s.selectProject);
 
-  const visibleCards = useMemo(
-    () =>
-      selectedProjectPath
-        ? cards.filter((c) => c.projectPath === selectedProjectPath)
-        : cards,
-    [cards, selectedProjectPath],
-  );
+  // Render order is "activity first" (live > unread > most recent) so the grid
+  // matches the mobile session list. The underlying `cards` store array keeps
+  // creation order — sort a copy here, never mutate it (keyboard nextCard /
+  // prevCard / jumpToIndex still walk the store order).
+  const visibleCards = useMemo(() => {
+    const filtered = selectedProjectPath
+      ? cards.filter((c) => c.projectPath === selectedProjectPath)
+      : cards;
+    return [...filtered].sort(compareCardsByActivity);
+  }, [cards, selectedProjectPath]);
 
   const selectedProjectLabel = useMemo(() => {
     if (!selectedProjectPath) return null;

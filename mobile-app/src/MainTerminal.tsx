@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { useI18n } from './i18n';
 import {
   getTerminalFeedBacklog,
   subscribeTerminalFeed,
@@ -145,6 +146,7 @@ export function MainTerminal({
   onResize,
   recoveryNonce = 0,
 }: MainTerminalProps) {
+  const { t } = useI18n();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -398,7 +400,7 @@ export function MainTerminal({
             mode === 'preview' ? 'terminal-empty-overlay-preview' : ''
           }`}
         >
-          <span>No live terminal sessions yet.</span>
+          <span>{t('home.noSessions')}</span>
         </div>
       )}
     </div>

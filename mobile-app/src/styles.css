@@ -918,15 +918,65 @@ button {
   opacity: 0.36;
 }
 
+.input-bar-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  border-top: 1px solid rgb(255 255 255 / 0.12);
+  background: #050507;
+  padding: 8px max(10px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  gap: 8px;
+}
+
+/* Horizontally scrollable control-key strip (arrows / Tab / Ctrl-D). */
+.input-key-strip {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+
+.input-key-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.input-key {
+  flex: 0 0 auto;
+  display: inline-flex;
+  min-width: 44px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 10px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: var(--radius);
+  background: #15151a;
+  color: #fff;
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.input-key:disabled {
+  opacity: 0.45;
+}
+
 .input-bar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 38px 38px 38px;
   gap: 7px;
   align-items: center;
-  flex: 0 0 auto;
-  border-top: 1px solid rgb(255 255 255 / 0.12);
-  background: #050507;
-  padding: 8px max(10px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+}
+
+.input-action-esc {
+  background: rgb(255 255 255 / 0.1);
+  color: #fff;
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .input-bar textarea {
@@ -974,6 +1024,37 @@ button {
   padding: 7px 10px;
   font-size: 12px;
   text-align: center;
+}
+
+.connection-banner {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.connection-banner-reconnecting {
+  background: rgb(255 159 10 / 0.18);
+  color: var(--ios-orange, #ff9f0a);
+}
+
+.connection-banner-offline {
+  background: rgb(255 69 58 / 0.18);
+  color: var(--ios-red, #ff453a);
+}
+
+.connection-banner-spin {
+  animation: connection-banner-spin 0.9s linear infinite;
+}
+
+@keyframes connection-banner-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .detail-readonly {

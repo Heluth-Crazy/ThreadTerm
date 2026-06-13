@@ -1,5 +1,17 @@
 import { cleanup, render } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { I18nProvider } from './i18n';
+
+// MainTerminal calls useI18n() for its empty-state copy, so every render must
+// sit inside an I18nProvider. Passing this wrapper to render() also propagates
+// to rerender(), keeping the existing sequencing assertions untouched.
+function I18nWrapper({ children }: { children: ReactNode }) {
+  return <I18nProvider search="">{children}</I18nProvider>;
+}
+
+const wrapper = I18nWrapper;
 
 // Mock @xterm/xterm. Hoisted because vi.mock factories run before the module
 // imports below. Style mirrors blocks/TuiBlock.test.tsx.
@@ -115,7 +127,7 @@ describe('MainTerminal', () => {
   it('creates a single xterm instance, opens it, and writes the first snapshot via reset', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
 
-    render(<MainTerminal activeCardId="card-1" />);
+    render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     expect(xtermMock.Terminal).toHaveBeenCalledTimes(1);
     const term = xtermMock.instances[0];
@@ -127,7 +139,7 @@ describe('MainTerminal', () => {
   it('uses bounded scrollback in preview mode', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
 
-    render(<MainTerminal activeCardId="card-1" mode="preview" />);
+    render(<MainTerminal activeCardId="card-1" mode="preview" />, { wrapper });
 
     expect(xtermMock.Terminal).toHaveBeenCalledTimes(1);
     expect(xtermMock.instances[0].options.scrollback).toBe(160);
@@ -136,7 +148,7 @@ describe('MainTerminal', () => {
   it('keeps deeper-but-bounded scrollback and instant scroll in detail mode', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
 
-    render(<MainTerminal activeCardId="card-1" />);
+    render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     expect(xtermMock.Terminal).toHaveBeenCalledTimes(1);
     // Bounded at 2500 (down from 4000) so the iOS WKWebView momentum-scroll
@@ -149,7 +161,7 @@ describe('MainTerminal', () => {
 
   it('skips re-applying a snapshot with the same seq (no flicker on re-render)', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
-    const { rerender } = render(<MainTerminal activeCardId="card-1" />);
+    const { rerender } = render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     const term = xtermMock.instances[0];
     expect(term.reset).toHaveBeenCalledTimes(1);
@@ -167,7 +179,7 @@ describe('MainTerminal', () => {
   it('appends incremental output for increasing seq and skips already-applied seq', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
     pushTerminalFeedMessage(outputMessage('card-1', 2, 'A'));
-    render(<MainTerminal activeCardId="card-1" />);
+    render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     const term = xtermMock.instances[0];
     expect(term.write).toHaveBeenNthCalledWith(1, 'SNAP');
@@ -184,7 +196,7 @@ describe('MainTerminal', () => {
   it('does not apply a stale snapshot after newer output has already been written', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP1'));
     pushTerminalFeedMessage(outputMessage('card-1', 3, 'A'));
-    render(<MainTerminal activeCardId="card-1" />);
+    render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     const term = xtermMock.instances[0];
     expect(term.reset).toHaveBeenCalledTimes(1);
@@ -201,7 +213,7 @@ describe('MainTerminal', () => {
   it('treats a later snapshot as a non-destructive reconnect resync (issue 5)', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP1'));
     pushTerminalFeedMessage(outputMessage('card-1', 2, 'A'));
-    render(<MainTerminal activeCardId="card-1" />);
+    render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     const term = xtermMock.instances[0];
     expect(term.reset).toHaveBeenCalledTimes(1);
@@ -224,6 +236,7 @@ describe('MainTerminal', () => {
     pushTerminalFeedMessage(outputMessage('card-1', 2, 'A'));
     const { rerender } = render(
       <MainTerminal activeCardId="card-1" recoveryNonce={0} />,
+      { wrapper },
     );
 
     const term = xtermMock.instances[0];
@@ -254,6 +267,7 @@ describe('MainTerminal', () => {
     pushTerminalFeedMessage(outputMessage('card-1', 2, 'A'));
     const { rerender } = render(
       <MainTerminal activeCardId="card-1" recoveryNonce={0} />,
+      { wrapper },
     );
 
     const term = xtermMock.instances[0];
@@ -279,6 +293,7 @@ describe('MainTerminal', () => {
     pushTerminalFeedMessage(outputMessage('card-1', 2, 'A'));
     const { rerender } = render(
       <MainTerminal activeCardId="card-1" recoveryNonce={3} />,
+      { wrapper },
     );
 
     const term = xtermMock.instances[0];
@@ -297,7 +312,7 @@ describe('MainTerminal', () => {
   it('resets again only when the active card changes, not on a reconnect snapshot', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP1'));
     pushTerminalFeedMessage(outputMessage('card-1', 2, 'A'));
-    const { rerender } = render(<MainTerminal activeCardId="card-1" />);
+    const { rerender } = render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     const term = xtermMock.instances[0];
     expect(term.reset).toHaveBeenCalledTimes(1);
@@ -315,7 +330,7 @@ describe('MainTerminal', () => {
   it('renders with the default DOM renderer (no Canvas/WebGL addon imported)', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
 
-    render(<MainTerminal activeCardId="card-1" />);
+    render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     // Only the FitAddon is loaded onto the terminal. Canvas/WebGL addons were
     // removed because real iOS WKWebView can load them successfully while the
@@ -329,7 +344,7 @@ describe('MainTerminal', () => {
 
   it('disposes the xterm instance on unmount', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
-    const { unmount } = render(<MainTerminal activeCardId="card-1" />);
+    const { unmount } = render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     const term = xtermMock.instances[0];
     expect(term.dispose).not.toHaveBeenCalled();
@@ -340,7 +355,7 @@ describe('MainTerminal', () => {
   });
 
   it('keeps the xterm host mounted and shows an empty overlay when no card is active', () => {
-    const { container } = render(<MainTerminal activeCardId={null} />);
+    const { container } = render(<MainTerminal activeCardId={null} />, { wrapper });
 
     // Root cause 2 fix: the host div is ALWAYS rendered so hostRef is stable
     // and the create-effect reliably builds the terminal exactly once. The
@@ -354,7 +369,7 @@ describe('MainTerminal', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
     pushTerminalFeedMessage(outputMessage('card-1', 2, 'OUT'));
 
-    render(<MainTerminal activeCardId="card-1" />);
+    render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     // The DOM renderer occasionally does not self-paint the first frame after
     // a reset on iOS WKWebView; the explicit refresh() forces the initial
@@ -370,7 +385,7 @@ describe('MainTerminal', () => {
   it('uses snapshot PTY dimensions as the mobile mirror size', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP', { rows: 32, cols: 120 }));
 
-    render(<MainTerminal activeCardId="card-1" />);
+    render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     // Mobile must mirror the PTY's source rows/cols instead of fitting to the
     // phone width. Otherwise ANSI cursor addressing from AI CLIs is interpreted
@@ -383,7 +398,7 @@ describe('MainTerminal', () => {
   });
 
   it('does not write live output before a snapshot supplies source dimensions', () => {
-    render(<MainTerminal activeCardId="card-1" />);
+    render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     pushTerminalFeedMessage(outputMessage('card-1', 5, 'EARLY_OUTPUT'));
 
@@ -406,7 +421,7 @@ describe('MainTerminal', () => {
       pushTerminalFeedMessage(outputMessage('card-1', index + 2, `chunk-${index}`));
     }
 
-    render(<MainTerminal activeCardId="card-1" />);
+    render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     const term = xtermMock.instances[0];
     expect(term.reset).toHaveBeenCalledTimes(1);
@@ -417,7 +432,7 @@ describe('MainTerminal', () => {
   });
 
   it('writes the snapshot after activeCardId goes null -> non-null without remount or mode change (root cause 2)', () => {
-    const { rerender } = render(<MainTerminal activeCardId={null} />);
+    const { rerender } = render(<MainTerminal activeCardId={null} />, { wrapper });
 
     // Terminal is created up-front because the host is always mounted.
     expect(xtermMock.Terminal).toHaveBeenCalledTimes(1);
@@ -437,7 +452,7 @@ describe('MainTerminal', () => {
 
   it('reports fitted dimensions before a snapshot supplies source dimensions', async () => {
     const onResize = vi.fn();
-    render(<MainTerminal activeCardId={null} onResize={onResize} />);
+    render(<MainTerminal activeCardId={null} onResize={onResize} />, { wrapper });
 
     // Before any snapshot arrives, the component can still use FitAddon as a
     // local empty-state fallback and report the fitted dimensions to tests /
@@ -506,6 +521,7 @@ describe('MainTerminal', () => {
       pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP', { rows: 32, cols: 120 }));
       const { unmount } = render(
         <MainTerminal activeCardId="card-1" onResize={onResize} />,
+        { wrapper },
       );
 
       const term = xtermMock.instances[0];
