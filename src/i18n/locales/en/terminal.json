@@ -31,7 +31,8 @@
     "noProjectTitle": "No terminals in {{project}}",
     "noProjectDescription": "Create one here, or pick another project from the sidebar.",
     "newHere": "New here",
-    "showAll": "Show all"
+    "showAll": "Show all",
+    "reorderCard": "Drag to reorder card"
   },
   "dialog": {
     "chooseProjectDirectory": "Choose project directory",
@@ -62,6 +63,7 @@
     "unpin": "Unpin from overlay selector",
     "pin": "Pin to overlay selector",
     "pinFull": "Pin list is full (max {{max}})",
+    "archive": "Archive card",
     "close": "Close terminal",
     "recent": "Recent",
     "justNow": "just now",
@@ -196,6 +198,7 @@
     "backToGrid": "Back to grid (⌘/Ctrl+Shift+M)",
     "worktree": "worktree: {{path}}",
     "more": "More",
+    "archiveTerminal": "Archive terminal",
     "closeTerminal": "Close terminal",
     "close": "Back to grid",
     "footer": "{{count}} msgs · created {{time}}",
@@ -280,6 +283,14 @@
     "title": "Bookmarks",
     "empty": "No bookmarks yet",
     "toggle": "Toggle bookmarks panel"
+  },
+  "archive": {
+    "open": "Archive",
+    "openTitle": "Show archived cards for this project",
+    "title": "{{project}} archive",
+    "empty": "No archived cards in this project",
+    "restore": "Restore",
+    "archivedAt": "Archived {{time}}"
   },
   "search": {
     "label": "Search blocks",

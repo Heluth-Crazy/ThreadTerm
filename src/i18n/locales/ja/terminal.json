@@ -31,7 +31,8 @@
     "noProjectTitle": "{{project}} にターミナルはありません",
     "noProjectDescription": "ここで作成するか、サイドバーから別のプロジェクトを選択してください。",
     "newHere": "ここで作成",
-    "showAll": "すべて表示"
+    "showAll": "すべて表示",
+    "reorderCard": "ドラッグしてカードを並べ替え"
   },
   "dialog": {
     "chooseProjectDirectory": "プロジェクトディレクトリを選択",
@@ -62,6 +63,7 @@
     "unpin": "オーバーレイ選択からピン解除",
     "pin": "オーバーレイ選択にピン留め",
     "pinFull": "ピン留めリストは上限です（最大 {{max}}）",
+    "archive": "カードをアーカイブ",
     "close": "ターミナルを閉じる",
     "recent": "最近",
     "justNow": "たった今",
@@ -196,6 +198,7 @@
     "backToGrid": "グリッドへ戻る (⌘/Ctrl+Shift+M)",
     "worktree": "worktree: {{path}}",
     "more": "その他",
+    "archiveTerminal": "ターミナルをアーカイブ",
     "closeTerminal": "ターミナルを閉じる",
     "close": "グリッドへ戻る",
     "footer": "{{count}} 件のメッセージ · 作成 {{time}}",
@@ -280,6 +283,14 @@
     "title": "ブックマーク",
     "empty": "ブックマークなし",
     "toggle": "ブックマークパネル切替"
+  },
+  "archive": {
+    "open": "アーカイブ",
+    "openTitle": "このプロジェクトのアーカイブ済みカードを表示",
+    "title": "{{project}} のアーカイブ",
+    "empty": "このプロジェクトにアーカイブ済みカードはありません",
+    "restore": "復元",
+    "archivedAt": "{{time}} にアーカイブ"
   },
   "search": {
     "label": "ブロック検索",

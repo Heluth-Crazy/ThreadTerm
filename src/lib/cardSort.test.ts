@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   compareCardsByActivity,
   isDesktopCardLive,
+  orderCardsByIdList,
   type CardActivitySortFields,
 } from './cardSort';
 
@@ -80,5 +81,30 @@ describe('compareCardsByActivity', () => {
         { id: 'third', status: 'idle', unread: false, lastActivity: 10 },
       ]),
     ).toEqual(['first', 'second', 'third']);
+  });
+});
+
+describe('orderCardsByIdList', () => {
+  it('projects cards through a persisted id order', () => {
+    expect(
+      orderCardsByIdList(
+        [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+        ['c', 'a', 'b'],
+      ).map((card) => card.id),
+    ).toEqual(['c', 'a', 'b']);
+  });
+
+  it('ignores stale and duplicate ids then appends missing cards in input order', () => {
+    expect(
+      orderCardsByIdList(
+        [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+        ['missing', 'b', 'b'],
+      ).map((card) => card.id),
+    ).toEqual(['b', 'a', 'c']);
+  });
+
+  it('falls back to input order when no persisted order exists', () => {
+    expect(orderCardsByIdList([{ id: 'a' }, { id: 'b' }], undefined).map((card) => card.id))
+      .toEqual(['a', 'b']);
   });
 });

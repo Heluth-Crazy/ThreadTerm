@@ -49,6 +49,7 @@ import { DEFAULT_PET_CONFIG, normalizePetConfig } from '../lib/petConfig';
 import i18n from '../i18n/config.js';
 import { isTauriEnv, pty } from '../lib/tauri-bridge';
 import { emitSettingsChanged, type TerminalPreferenceSnapshot } from '../lib/settingsSync';
+import { orderCardsByIdList } from '../lib/cardSort';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -163,15 +164,28 @@ function prepareAutoRestartForPersistence(card: TerminalCard): TerminalCard['aut
 export const MAX_PINNED_CARDS = 6;
 export { DEFAULT_PET_CONFIG } from '../lib/petConfig';
 
+export interface ArchivedTerminalCard extends TerminalCard {
+  archivedAt: number;
+}
+
 interface TerminalStore {
   // Cards
   cards: TerminalCard[];
+  archivedCards: ArchivedTerminalCard[];
   blocks: Record<string, Block[]>;
   focusedCardId: string | null;
   lastActiveCardId: string | null;
 
   /** Selected project path for the left sidebar filter. `null` = "All". */
   selectedProjectPath: string | null;
+
+  /**
+   * User-defined card order scoped by exact `projectPath`.
+   *
+   * Keys are raw project paths. Do not normalize separators or case-fold here:
+   * macOS/Linux and Windows paths must remain byte-stable across reloads.
+   */
+  projectCardOrder: Record<string, string[]>;
 
   /**
    * Ordered list of card ids that the user has pinned to the global overlay
@@ -209,6 +223,8 @@ interface TerminalStore {
   createCard: (options: TerminalCreateOptions) => string;
   importProviderSessionCards: (sessions: ProviderSessionImportInfo[]) => number;
   removeCard: (id: string) => void;
+  archiveCard: (id: string) => void;
+  restoreArchivedCard: (id: string) => void;
   updateCardOutput: (id: string, chunk: string) => void;
   updateCardStatus: (id: string, status: TerminalStatus) => void;
   setCardAutoRestartEnabled: (id: string, enabled: boolean) => void;
@@ -230,6 +246,7 @@ interface TerminalStore {
   markCardRead: (id: string) => void;
   markProviderSessionBound: (id: string, providerSessionId: string) => void;
   updateCardAiIntent: (id: string, intent: TerminalAiIntent | null) => void;
+  moveProjectCard: (projectPath: string, id: string, toIndex: number) => void;
   recordBlockStarted: (input: {
     cardId: string;
     blockId: string;
@@ -288,6 +305,8 @@ interface TerminalStore {
 
   // ─── project sidebar ────────────────────────────────────────────────────
   selectProject: (path: string | null) => void;
+  getCardsForProjectView: (path: string | null) => TerminalCard[];
+  getArchivedCardsForProject: (path: string) => ArchivedTerminalCard[];
 
   // ─── pinned cards (global overlay) ───────────────────────────────────────
   pinCard: (id: string) => boolean;
@@ -336,10 +355,91 @@ function notifyTerminalPreferencesChanged(snapshot: TerminalPreferenceSnapshot) 
   });
 }
 
+function cardsForProjectView(
+  cards: readonly TerminalCard[],
+  projectCardOrder: Record<string, string[]> | undefined,
+  path: string | null,
+): TerminalCard[] {
+  if (!path) return [...cards];
+  const projectCards = cards.filter((card) => card.projectPath === path);
+  return orderCardsByIdList(projectCards, projectCardOrder?.[path]);
+}
+
+function prependProjectCardOrder(
+  order: Record<string, string[]> | undefined,
+  projectPath: string,
+  cardId: string,
+): Record<string, string[]> {
+  const current = order?.[projectPath] ?? [];
+  return {
+    ...(order ?? {}),
+    [projectPath]: [cardId, ...current.filter((id) => id !== cardId)],
+  };
+}
+
+function compactProjectCardOrder(
+  order: Record<string, string[]> | undefined,
+  cards: readonly TerminalCard[],
+): Record<string, string[]> {
+  if (!order) return {};
+  const idsByProject = new Map<string, Set<string>>();
+  for (const card of cards) {
+    const ids = idsByProject.get(card.projectPath);
+    if (ids) ids.add(card.id);
+    else idsByProject.set(card.projectPath, new Set([card.id]));
+  }
+
+  const next: Record<string, string[]> = {};
+  for (const [projectPath, orderedIds] of Object.entries(order)) {
+    const validIds = idsByProject.get(projectPath);
+    if (!validIds) continue;
+    const seen = new Set<string>();
+    const cleaned = orderedIds.filter((id) => {
+      if (!validIds.has(id) || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    if (cleaned.length > 0) next[projectPath] = cleaned;
+  }
+  return next;
+}
+
+function archiveCardSnapshot(card: TerminalCard, archivedAt: number): ArchivedTerminalCard {
+  return {
+    ...card,
+    archivedAt,
+    status: 'idle',
+    unread: false,
+    autoRestart: prepareAutoRestartForPersistence(card),
+  };
+}
+
+function restoreArchivedCardSnapshot(card: ArchivedTerminalCard, now: number): TerminalCard {
+  const { archivedAt: _archivedAt, ...restored } = card;
+  void _archivedAt;
+  return {
+    ...restored,
+    status: 'idle',
+    unread: false,
+    lastActivity: now,
+    autoRestart: prepareAutoRestartForPersistence(restored),
+  };
+}
+
+function archivedCardsForProject(
+  archivedCards: readonly ArchivedTerminalCard[] | undefined,
+  path: string,
+): ArchivedTerminalCard[] {
+  return (archivedCards ?? [])
+    .filter((card) => card.projectPath === path)
+    .sort((a, b) => b.archivedAt - a.archivedAt);
+}
+
 export const useTerminalStore = create<TerminalStore>()(
   persist(
     (set, get) => ({
       cards: [],
+      archivedCards: [],
       blocks: {},
       collapsedBlockIds: [],
       selectedBlockId: {},
@@ -347,6 +447,7 @@ export const useTerminalStore = create<TerminalStore>()(
       focusedCardId: null,
       lastActiveCardId: null,
       selectedProjectPath: null,
+      projectCardOrder: {},
 
       pinnedCardIds: [],
 
@@ -425,7 +526,14 @@ export const useTerminalStore = create<TerminalStore>()(
           ],
           unread: false,
         };
-        set((state) => ({ cards: [...state.cards, card] }));
+        set((state) => ({
+          cards: [...state.cards, card],
+          projectCardOrder: prependProjectCardOrder(
+            state.projectCardOrder,
+            options.projectPath,
+            id,
+          ),
+        }));
         return id;
       },
 
@@ -434,8 +542,9 @@ export const useTerminalStore = create<TerminalStore>()(
 
         let imported = 0;
         set((state) => {
+          const knownCards = [...state.cards, ...(state.archivedCards ?? [])];
           const existingKeys = new Set(
-            state.cards
+            knownCards
               .filter(
                 (card) =>
                   isProviderSessionType(card.terminalType) && Boolean(card.providerSessionId),
@@ -448,9 +557,10 @@ export const useTerminalStore = create<TerminalStore>()(
               ),
           );
           const projectNames = new Map(
-            state.cards.map((card) => [card.projectPath, card.projectName]),
+            knownCards.map((card) => [card.projectPath, card.projectName]),
           );
           const cards = [...state.cards];
+          let projectCardOrder = state.projectCardOrder ?? {};
 
           for (const rawSession of sessions) {
             const session = normalizeImportedProviderSession(rawSession);
@@ -462,8 +572,9 @@ export const useTerminalStore = create<TerminalStore>()(
             const now = Date.now();
             const projectName =
               projectNames.get(session.projectPath) ?? pathBasename(session.projectPath);
+            const id = uid();
             cards.push({
-              id: uid(),
+              id,
               ptyId: session.id,
               projectPath: session.projectPath,
               projectName,
@@ -489,12 +600,13 @@ export const useTerminalStore = create<TerminalStore>()(
               ],
               unread: false,
             });
+            projectCardOrder = prependProjectCardOrder(projectCardOrder, session.projectPath, id);
             existingKeys.add(key);
             projectNames.set(session.projectPath, projectName);
             imported += 1;
           }
 
-          return imported > 0 ? { cards } : state;
+          return imported > 0 ? { cards, projectCardOrder } : state;
         });
 
         return imported;
@@ -525,6 +637,7 @@ export const useTerminalStore = create<TerminalStore>()(
           }
           // Also drop from the pinned list so it doesn't linger as a dead entry.
           const pinnedCardIds = state.pinnedCardIds.filter((p) => p !== id);
+          const projectCardOrder = compactProjectCardOrder(state.projectCardOrder, cards);
           const previousBlocks = (state.blocks ?? {})[id] ?? [];
           const blocks = { ...(state.blocks ?? {}) };
           delete blocks[id];
@@ -547,6 +660,7 @@ export const useTerminalStore = create<TerminalStore>()(
             lastActiveCardId,
             notifications,
             selectedProjectPath,
+            projectCardOrder,
             pinnedCardIds,
             blocks,
             collapsedBlockIds,
@@ -555,6 +669,68 @@ export const useTerminalStore = create<TerminalStore>()(
           };
         });
       },
+
+      archiveCard: (id) => {
+        const target = get().cards.find((c) => c.id === id);
+        if (target && isTauriEnv()) {
+          void pty.kill(target.ptyId || target.id);
+        }
+
+        set((state) => {
+          const targetIndex = state.cards.findIndex((c) => c.id === id);
+          if (targetIndex === -1) return state;
+
+          const now = Date.now();
+          const targetCard = state.cards[targetIndex];
+          const cards = state.cards.filter((c) => c.id !== id);
+          const archivedCards = [
+            archiveCardSnapshot(targetCard, now),
+            ...(state.archivedCards ?? []).filter((card) => card.id !== id),
+          ];
+          const focusedCardId = state.focusedCardId === id ? null : state.focusedCardId;
+          const lastActiveCardId =
+            state.lastActiveCardId === id ? null : state.lastActiveCardId;
+          const pendingFocusCardId =
+            state.pendingFocusCardId === id ? null : state.pendingFocusCardId;
+          const notifications = state.notifications.filter((n) => n.cardId !== id);
+          const pinnedCardIds = state.pinnedCardIds.filter((pinnedId) => pinnedId !== id);
+          const projectCardOrder = compactProjectCardOrder(state.projectCardOrder, cards);
+
+          return {
+            cards,
+            archivedCards,
+            focusedCardId,
+            lastActiveCardId,
+            pendingFocusCardId,
+            notifications,
+            pinnedCardIds,
+            projectCardOrder,
+          };
+        });
+      },
+
+      restoreArchivedCard: (id) =>
+        set((state) => {
+          const archivedIndex = (state.archivedCards ?? []).findIndex((card) => card.id === id);
+          if (archivedIndex === -1) return state;
+
+          const now = Date.now();
+          const archivedCard = state.archivedCards[archivedIndex];
+          const restoredCard = restoreArchivedCardSnapshot(archivedCard, now);
+          const archivedCards = state.archivedCards.filter((card) => card.id !== id);
+          const cards = [...state.cards, restoredCard];
+
+          return {
+            cards,
+            archivedCards,
+            selectedProjectPath: restoredCard.projectPath,
+            projectCardOrder: prependProjectCardOrder(
+              state.projectCardOrder,
+              restoredCard.projectPath,
+              restoredCard.id,
+            ),
+          };
+        }),
 
       updateCardOutput: (id, chunk) =>
         set((state) => {
@@ -794,6 +970,39 @@ export const useTerminalStore = create<TerminalStore>()(
           return { cards };
         }),
 
+      moveProjectCard: (projectPath, id, toIndex) =>
+        set((state) => {
+          const projectCards = cardsForProjectView(
+            state.cards,
+            state.projectCardOrder,
+            projectPath,
+          );
+          const from = projectCards.findIndex((card) => card.id === id);
+          if (from === -1) return state;
+
+          const nextCards = projectCards.slice();
+          const [moved] = nextCards.splice(from, 1);
+          if (!moved) return state;
+          const target = Math.max(0, Math.min(nextCards.length, toIndex));
+          nextCards.splice(target, 0, moved);
+
+          const nextIds = nextCards.map((card) => card.id);
+          const previousIds = state.projectCardOrder[projectPath] ?? [];
+          if (
+            previousIds.length === nextIds.length &&
+            previousIds.every((candidate, index) => candidate === nextIds[index])
+          ) {
+            return state;
+          }
+
+          return {
+            projectCardOrder: {
+              ...state.projectCardOrder,
+              [projectPath]: nextIds,
+            },
+          };
+        }),
+
       recordBlockStarted: (input) =>
         set((state) => {
           const blocksByCard = state.blocks ?? {};
@@ -986,7 +1195,13 @@ export const useTerminalStore = create<TerminalStore>()(
       },
 
       nextCard: () => {
-        const { cards, focusedCardId } = get();
+        const state = get();
+        const { focusedCardId } = state;
+        const cards = cardsForProjectView(
+          state.cards,
+          state.projectCardOrder,
+          state.selectedProjectPath,
+        );
         if (cards.length === 0) return;
         const i = focusedCardId ? cards.findIndex((c) => c.id === focusedCardId) : -1;
         const next = cards[(i + 1 + cards.length) % cards.length];
@@ -994,7 +1209,13 @@ export const useTerminalStore = create<TerminalStore>()(
       },
 
       prevCard: () => {
-        const { cards, focusedCardId } = get();
+        const state = get();
+        const { focusedCardId } = state;
+        const cards = cardsForProjectView(
+          state.cards,
+          state.projectCardOrder,
+          state.selectedProjectPath,
+        );
         if (cards.length === 0) return;
         const i = focusedCardId ? cards.findIndex((c) => c.id === focusedCardId) : 0;
         const prev = cards[(i - 1 + cards.length) % cards.length];
@@ -1002,7 +1223,12 @@ export const useTerminalStore = create<TerminalStore>()(
       },
 
       jumpToIndex: (i) => {
-        const { cards } = get();
+        const state = get();
+        const cards = cardsForProjectView(
+          state.cards,
+          state.projectCardOrder,
+          state.selectedProjectPath,
+        );
         if (i < 0 || i >= cards.length) return;
         get().focusCard(cards[i].id);
       },
@@ -1018,6 +1244,14 @@ export const useTerminalStore = create<TerminalStore>()(
             focusedCardId: null,
           };
         }),
+
+      getCardsForProjectView: (path) => {
+        const state = get();
+        return cardsForProjectView(state.cards, state.projectCardOrder, path);
+      },
+
+      getArchivedCardsForProject: (path) =>
+        archivedCardsForProject(get().archivedCards, path),
 
       // ─── pinned cards (global overlay) ───────────────────────────────────
       pinCard: (id) => {
@@ -1167,11 +1401,18 @@ export const useTerminalStore = create<TerminalStore>()(
           status: isTransientStatus(card.status) ? 'idle' : card.status,
           autoRestart: prepareAutoRestartForPersistence(card),
         })),
+        archivedCards: state.archivedCards.map((card) => ({
+          ...card,
+          status: isTransientStatus(card.status) ? 'idle' : card.status,
+          unread: false,
+          autoRestart: prepareAutoRestartForPersistence(card),
+        })),
         blocks: state.blocks ?? {},
         bookmarks: state.bookmarks ?? [],
         focusedCardId: null,
         lastActiveCardId: state.lastActiveCardId,
         selectedProjectPath: state.selectedProjectPath,
+        projectCardOrder: compactProjectCardOrder(state.projectCardOrder, state.cards),
         pinnedCardIds: state.pinnedCardIds,
         notifications: state.notifications,
         notificationCentreOpen: state.notificationCentreOpen,
@@ -1182,9 +1423,26 @@ export const useTerminalStore = create<TerminalStore>()(
         // AI Supervisor v0.1 (PRD D3) — master switch persisted; default OFF.
         supervisorEnabled: state.supervisorEnabled,
       }),
-      version: 11,
+      version: 13,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
+        const cards = state.cards?.map((card) => ({
+          ...card,
+          status: isTransientStatus(card.status) ? 'idle' : card.status,
+          providerSessionState:
+            card.providerSessionState ??
+            (isProviderSessionType(card.terminalType) ? 'unbound' : undefined),
+          autoRestart: prepareAutoRestartForPersistence(card),
+        }));
+        const archivedCards = (state.archivedCards ?? []).map((card) => ({
+          ...card,
+          status: isTransientStatus(card.status) ? 'idle' : card.status,
+          unread: false,
+          providerSessionState:
+            card.providerSessionState ??
+            (isProviderSessionType(card.terminalType) ? 'unbound' : undefined),
+          autoRestart: prepareAutoRestartForPersistence(card),
+        }));
         return {
           ...state,
           focusedCardId: null,
@@ -1196,6 +1454,13 @@ export const useTerminalStore = create<TerminalStore>()(
           bottomBarHidden: state.bottomBarHidden ?? false,
           // v9 — AI Supervisor master switch defaults to OFF on upgrade.
           supervisorEnabled: state.supervisorEnabled ?? false,
+          // v12 — project-scoped manual card order. Empty means existing
+          // cards are projected in their current store order until the user
+          // creates or drags a card in a project view.
+          projectCardOrder: compactProjectCardOrder(state.projectCardOrder, cards ?? []),
+          // v13 — archived cards live outside the active card list so existing
+          // views and bridge snapshots keep showing only active cards.
+          archivedCards,
           // v10 — desktop pet is opt-in for upgraded users.
           // v11 — notification model changed to two toggles; reset
           //       notificationMode to 'both' once on upgrade. The desktop
@@ -1208,14 +1473,7 @@ export const useTerminalStore = create<TerminalStore>()(
             ...(state.petConfig ?? {}),
             notificationMode: 'both',
           }),
-          cards: state.cards?.map((card) => ({
-            ...card,
-            status: isTransientStatus(card.status) ? 'idle' : card.status,
-            providerSessionState:
-              card.providerSessionState ??
-              (isProviderSessionType(card.terminalType) ? 'unbound' : undefined),
-            autoRestart: prepareAutoRestartForPersistence(card),
-          })),
+          cards,
         };
       },
     },

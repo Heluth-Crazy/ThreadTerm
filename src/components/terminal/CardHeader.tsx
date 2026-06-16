@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import type { ReactNode } from 'react';
 import type { TerminalCard as TerminalCardType } from '../../types/terminal';
 import {
   AI_CLI_SESSION_BADGE_CLASS,
@@ -11,15 +12,17 @@ import { AutoRestartStatus } from './AutoRestartStatus';
 export interface CardHeaderProps {
   card: TerminalCardType;
   aiSessionBadge: AiCliSessionBadge | null;
+  dragHandle?: ReactNode;
 }
 
-export function CardHeader({ card, aiSessionBadge }: CardHeaderProps) {
+export function CardHeader({ card, aiSessionBadge, dragHandle }: CardHeaderProps) {
   const { t } = useTranslation('terminal');
   const typeMeta = getTerminalTypeMeta(card.terminalType);
   const TypeIcon = typeMeta.Icon;
 
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-white/10/60 px-3 py-1.5">
+      {dragHandle}
       <div
         className={`flex h-7 w-7 items-center justify-center rounded-[var(--radius-md)] bg-muted ${typeMeta.accent}`}
       >

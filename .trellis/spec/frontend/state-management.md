@@ -141,6 +141,62 @@ by removing a representation. Never make the real xterm wait on a throttle.
 
 </spec-entry>
 
+<spec-entry category="arch" keywords="terminal-card-archive,archivedCards,active-cards,provider-session,project-card-order" date="2026-06-16" source="src/stores/terminalStore.ts:185">
+
+### Scenario: Terminal Card Archive Uses a Separate Inactive Collection
+
+#### 1. Scope / Trigger
+- Trigger: Any change to terminal card archive/restore behavior, provider-session import deduplication, project card ordering, or card list consumers.
+- Applies to `terminalStore.cards`, `terminalStore.archivedCards`, `archiveCard`, `restoreArchivedCard`, `importProviderSessionCards`, desktop `CardGrid`, and top-level archive UI.
+
+#### 2. Signatures
+- `ArchivedTerminalCard extends TerminalCard { archivedAt: number }`
+- `terminalStore.archivedCards: ArchivedTerminalCard[]`
+- `terminalStore.archiveCard(id: string): void`
+- `terminalStore.restoreArchivedCard(id: string): void`
+- `terminalStore.getArchivedCardsForProject(path: string): ArchivedTerminalCard[]`
+
+#### 3. Contracts
+- Active cards live only in `terminalStore.cards`; archived cards live only in `terminalStore.archivedCards`.
+- Do not implement archive by adding `archived: true` to active cards. Active list consumers such as project groups, command palette, search, mobile bridge sync, selector windows, and mounted terminal views must keep reading `cards` without project-wide archive filters.
+- Archiving a card stops its live PTY when running in Tauri, removes focus/pin/notification state, removes the id from `projectCardOrder`, and keeps blocks, bookmarks, provider session id, events, and preview metadata.
+- Restoring a card moves it back to `cards`, prepends it to that project's manual order, keeps it unfocused, and leaves PTY launch until the user opens the card.
+- Provider-session import must dedupe against both active and archived cards so a Claude/Codex history scan does not recreate an archived session as a new active card.
+- `projectPath` keys remain raw strings. Do not normalize separators or case-fold Windows/macOS paths.
+
+#### 4. Validation & Error Matrix
+- Unknown archive/restore id -> no state change.
+- Archive active focused card -> focus and last-active refs clear; selected project remains so the user can restore from that project.
+- Archive pinned card -> pinned id removed.
+- Archive card with notifications -> notifications for that card removed and unread cleared in the archive snapshot.
+- Restore archived card -> archived list loses id, active list gains id, project order starts with restored id.
+- Import provider session matching archived card -> import count remains 0.
+
+#### 5. Good/Base/Bad Cases
+- Good: archive moves a card from `cards` to `archivedCards`, then restore prepends it to `projectCardOrder[projectPath]`.
+- Base: projects with no archived cards render no archive toolbar button.
+- Bad: leaving archived cards in `cards` and teaching every consumer to filter them out.
+
+#### 6. Tests Required
+- Store tests for archive, restore, provider-session dedupe against archived cards, migration default, and preservation of blocks/bookmarks/provider session metadata.
+- UI tests for grid archive action, project archive toolbar panel, restore action, and i18n key parity across terminal locales.
+- Full gates: `npm exec vitest run`, `npm run typecheck`, `npm run build`, and `npm run build:mobile`.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+const visibleCards = state.cards.filter((card) => !card.archived);
+```
+
+Correct:
+```typescript
+const visibleCards = state.cards;
+const archivedCards = state.archivedCards;
+```
+
+</spec-entry>
+
 <spec-entry category="arch" keywords="ptyLive,card-mirror,bridge-snapshot,front-back-contract,session-state,mobile-bridge" date="2026-06-13" source="src/components/terminal/TerminalManager.tsx:105">
 
 ### Scenario: `ptyLive` Is a Front-Emits-Placeholder / Back-Overwrites Contract

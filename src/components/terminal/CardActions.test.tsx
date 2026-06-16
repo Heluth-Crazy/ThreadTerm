@@ -110,4 +110,24 @@ describe('CardActions', () => {
     expect(onExportAiSession).toHaveBeenCalledTimes(1);
     expect(surfaceClick).not.toHaveBeenCalled();
   });
+
+  it('invokes archive without propagating to the card surface', () => {
+    const onArchive = vi.fn();
+    const surfaceClick = vi.fn();
+    render(
+      <div onClick={surfaceClick}>
+        <CardActions
+          pinned={false}
+          pinFull={false}
+          onCopyCwd={vi.fn()}
+          onOpenDir={vi.fn()}
+          onTogglePin={vi.fn()}
+          onArchive={onArchive}
+        />
+      </div>,
+    );
+    fireEvent.click(screen.getByTitle('card.archive'));
+    expect(onArchive).toHaveBeenCalledTimes(1);
+    expect(surfaceClick).not.toHaveBeenCalled();
+  });
 });

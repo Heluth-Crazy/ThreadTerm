@@ -1,6 +1,6 @@
 import type { MouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Copy, Download, ExternalLink, Loader2, Pin, PinOff } from 'lucide-react';
+import { Archive, Copy, Download, ExternalLink, Loader2, Pin, PinOff } from 'lucide-react';
 import { MAX_PINNED_CARDS } from '../../stores/terminalStore';
 import { AutoRestartControls } from './AutoRestartControls';
 
@@ -10,6 +10,7 @@ export interface CardActionsProps {
   onCopyCwd?: () => void;
   onOpenDir?: () => void;
   onTogglePin: () => void;
+  onArchive?: () => void;
   autoRestartEnabled?: boolean;
   autoRestartMaxRetries?: number;
   onToggleAutoRestart?: () => void;
@@ -30,6 +31,7 @@ export function CardActions({
   onCopyCwd,
   onOpenDir,
   onTogglePin,
+  onArchive,
   autoRestartEnabled = false,
   autoRestartMaxRetries = 3,
   onToggleAutoRestart,
@@ -86,6 +88,16 @@ export function CardActions({
       >
         {pinned ? <Pin className="h-3 w-3" /> : <PinOff className="h-3 w-3" />}
       </button>
+      {onArchive && (
+        <button
+          type="button"
+          title={t('card.archive')}
+          onClick={stopPropagation(onArchive)}
+          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+        >
+          <Archive className="h-3 w-3" />
+        </button>
+      )}
       {onExportAiSession && (
         <button
           type="button"

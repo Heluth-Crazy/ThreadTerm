@@ -5,6 +5,7 @@ import { MAX_BLOCKS_PER_CARD } from '../types/terminal';
 function resetStore() {
   useTerminalStore.setState({
     cards: [],
+    archivedCards: [],
     blocks: {},
     collapsedBlockIds: [],
     selectedBlockId: {},
@@ -12,6 +13,7 @@ function resetStore() {
     focusedCardId: null,
     lastActiveCardId: null,
     selectedProjectPath: null,
+    projectCardOrder: {},
     pinnedCardIds: [],
     notifications: [],
     notificationCentreOpen: false,
@@ -136,6 +138,98 @@ describe('terminalStore — card lifecycle', () => {
         .getState()
         .cards.filter((card) => card.providerSessionId === 'claude-session-1'),
     ).toHaveLength(1);
+  });
+
+  it('does not re-import provider sessions that already exist in the archive', () => {
+    const s = useTerminalStore.getState();
+    const session = {
+      id: 'codex-session-archived',
+      provider: 'codex' as const,
+      projectPath: '/repo/app',
+      updatedAt: 1234,
+    };
+
+    expect(s.importProviderSessionCards([session])).toBe(1);
+    const id = useTerminalStore.getState().cards[0].id;
+    useTerminalStore.getState().archiveCard(id);
+
+    expect(useTerminalStore.getState().cards).toHaveLength(0);
+    expect(useTerminalStore.getState().archivedCards).toHaveLength(1);
+    expect(useTerminalStore.getState().importProviderSessionCards([session])).toBe(0);
+    expect(useTerminalStore.getState().cards).toHaveLength(0);
+  });
+
+  it('archives a card without deleting blocks, bookmarks, or provider session binding', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({
+      projectName: 'app',
+      projectPath: '/repo/app',
+      terminalType: 'codex',
+    });
+    s.markProviderSessionBound(id, 'codex-session-1');
+    s.selectProject('/repo/app');
+    s.focusCard(id);
+    s.pinCard(id);
+    s.pushNotification({
+      cardId: id,
+      kind: 'attention',
+      title: 'Needs input',
+      body: 'Please respond',
+    });
+    s.recordBlockStarted({
+      cardId: id,
+      blockId: 'blk-1',
+      command: 'npm test',
+      cwd: '/repo/app',
+      startedAt: 100,
+      bufferStart: 1,
+    });
+    s.addBookmark({ blockId: 'blk-1', cardId: id, command: 'npm test', cwd: '/repo/app' });
+
+    useTerminalStore.getState().archiveCard(id);
+    const state = useTerminalStore.getState();
+
+    expect(state.cards).toHaveLength(0);
+    expect(state.archivedCards).toHaveLength(1);
+    expect(state.archivedCards[0]).toMatchObject({
+      id,
+      projectPath: '/repo/app',
+      terminalType: 'codex',
+      providerSessionId: 'codex-session-1',
+      providerSessionState: 'bound',
+      status: 'idle',
+      unread: false,
+    });
+    expect(state.focusedCardId).toBeNull();
+    expect(state.lastActiveCardId).toBeNull();
+    expect(state.selectedProjectPath).toBe('/repo/app');
+    expect(state.pinnedCardIds).toEqual([]);
+    expect(state.notifications).toEqual([]);
+    expect(state.blocks[id]).toHaveLength(1);
+    expect(state.bookmarks).toHaveLength(1);
+  });
+
+  it('restores archived cards to the front of project order without focusing them', () => {
+    const s = useTerminalStore.getState();
+    const first = s.createCard({
+      projectName: 'first',
+      projectPath: '/repo/app',
+      terminalType: 'shell',
+    });
+    const second = s.createCard({
+      projectName: 'second',
+      projectPath: '/repo/app',
+      terminalType: 'shell',
+    });
+    s.archiveCard(first);
+    s.restoreArchivedCard(first);
+    const state = useTerminalStore.getState();
+
+    expect(state.archivedCards).toHaveLength(0);
+    expect(state.cards.map((card) => card.id)).toEqual([second, first]);
+    expect(state.projectCardOrder['/repo/app']).toEqual([first, second]);
+    expect(state.focusedCardId).toBeNull();
+    expect(state.selectedProjectPath).toBe('/repo/app');
   });
 
   it('updates and clears an AI intent label', () => {
@@ -501,6 +595,120 @@ describe('terminalStore — focus & switching', () => {
     s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
     useTerminalStore.getState().jumpToIndex(5);
     expect(useTerminalStore.getState().focusedCardId).toBeNull();
+  });
+});
+
+describe('terminalStore — project card order', () => {
+  it('prepends newly-created cards within their raw project path key', () => {
+    const s = useTerminalStore.getState();
+    const first = s.createCard({ projectName: 'mac', projectPath: '/Users/me/app', terminalType: 'shell' });
+    const second = s.createCard({ projectName: 'mac', projectPath: '/Users/me/app', terminalType: 'shell' });
+    const win = s.createCard({ projectName: 'win', projectPath: 'C:\\repo\\app', terminalType: 'shell' });
+
+    expect(useTerminalStore.getState().projectCardOrder['/Users/me/app']).toEqual([
+      second,
+      first,
+    ]);
+    expect(useTerminalStore.getState().projectCardOrder['C:\\repo\\app']).toEqual([win]);
+  });
+
+  it('moves cards inside one project without affecting other projects', () => {
+    const s = useTerminalStore.getState();
+    const a = s.createCard({ projectName: 'p1', projectPath: '/p1', terminalType: 'shell' });
+    const b = s.createCard({ projectName: 'p1', projectPath: '/p1', terminalType: 'shell' });
+    const c = s.createCard({ projectName: 'p1', projectPath: '/p1', terminalType: 'shell' });
+    const other = s.createCard({ projectName: 'p2', projectPath: '/p2', terminalType: 'shell' });
+
+    useTerminalStore.getState().moveProjectCard('/p1', a, 1);
+
+    expect(useTerminalStore.getState().getCardsForProjectView('/p1').map((card) => card.id))
+      .toEqual([c, a, b]);
+    expect(useTerminalStore.getState().getCardsForProjectView('/p2').map((card) => card.id))
+      .toEqual([other]);
+  });
+
+  it('cleans deleted cards out of project order', () => {
+    const s = useTerminalStore.getState();
+    const a = s.createCard({ projectName: 'p1', projectPath: '/p1', terminalType: 'shell' });
+    const b = s.createCard({ projectName: 'p1', projectPath: '/p1', terminalType: 'shell' });
+
+    useTerminalStore.getState().removeCard(a);
+
+    expect(useTerminalStore.getState().projectCardOrder['/p1']).toEqual([b]);
+    expect(useTerminalStore.getState().getCardsForProjectView('/p1').map((card) => card.id))
+      .toEqual([b]);
+  });
+
+  it('uses project order for directory-view shortcuts but keeps all-view store order', () => {
+    const s = useTerminalStore.getState();
+    const a = s.createCard({ projectName: 'p1', projectPath: '/p1', terminalType: 'shell' });
+    const b = s.createCard({ projectName: 'p1', projectPath: '/p1', terminalType: 'shell' });
+    const c = s.createCard({ projectName: 'p1', projectPath: '/p1', terminalType: 'shell' });
+
+    useTerminalStore.getState().selectProject('/p1');
+    useTerminalStore.getState().jumpToIndex(0);
+    expect(useTerminalStore.getState().focusedCardId).toBe(c);
+
+    useTerminalStore.getState().nextCard();
+    expect(useTerminalStore.getState().focusedCardId).toBe(b);
+
+    useTerminalStore.getState().jumpToIndex(2);
+    expect(useTerminalStore.getState().focusedCardId).toBe(a);
+
+    useTerminalStore.getState().selectProject(null);
+    useTerminalStore.getState().jumpToIndex(0);
+    expect(useTerminalStore.getState().focusedCardId).toBe(a);
+  });
+
+  it('v11 migration defaults projectCardOrder to an empty object', async () => {
+    const v11Snapshot = {
+      state: {
+        cards: [],
+        blocks: {},
+        bookmarks: [],
+        focusedCardId: null,
+        lastActiveCardId: null,
+        selectedProjectPath: null,
+        pinnedCardIds: [],
+        notifications: [],
+        notificationCentreOpen: false,
+        aiExplainDefaultProvider: 'claude',
+        bottomBarHidden: false,
+        supervisorEnabled: false,
+        petConfig: DEFAULT_PET_CONFIG,
+      },
+      version: 11,
+    };
+    localStorage.setItem('threadterm-terminal-store', JSON.stringify(v11Snapshot));
+    await useTerminalStore.persist.rehydrate();
+    expect(useTerminalStore.getState().projectCardOrder).toEqual({});
+    localStorage.removeItem('threadterm-terminal-store');
+  });
+
+  it('v12 migration defaults archivedCards to an empty array', async () => {
+    const v12Snapshot = {
+      state: {
+        cards: [],
+        blocks: {},
+        bookmarks: [],
+        focusedCardId: null,
+        lastActiveCardId: null,
+        selectedProjectPath: null,
+        projectCardOrder: {},
+        pinnedCardIds: [],
+        notifications: [],
+        notificationCentreOpen: false,
+        aiExplainDefaultProvider: 'claude',
+        bottomBarHidden: false,
+        supervisorEnabled: false,
+        petConfig: DEFAULT_PET_CONFIG,
+      },
+      version: 12,
+    };
+    localStorage.setItem('threadterm-terminal-store', JSON.stringify(v12Snapshot));
+    await useTerminalStore.persist.rehydrate();
+    expect(useTerminalStore.getState().archivedCards).toEqual([]);
+    localStorage.removeItem('threadterm-terminal-store');
   });
 });
 

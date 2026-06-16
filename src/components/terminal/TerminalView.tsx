@@ -16,7 +16,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Block } from '../../types/terminal';
-import { ArrowLeft, Layers, MoreVertical, Trash2, X } from 'lucide-react';
+import { Archive, ArrowLeft, Layers, MoreVertical, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import Shell from '../Shell';
 import type { TerminalCard } from '../../types/terminal';
@@ -68,6 +68,7 @@ export function TerminalView({
 }: TerminalViewProps) {
   const { t } = useTranslation('terminal');
   const removeCard = useTerminalStore((s) => s.removeCard);
+  const archiveCard = useTerminalStore((s) => s.archiveCard);
   const recordUserSubmit = useTerminalStore((s) => s.recordUserSubmit);
   const markCardRead = useTerminalStore((s) => s.markCardRead);
   // Stable empty-array fallback so Zustand selector doesn't return a new []
@@ -150,6 +151,10 @@ export function TerminalView({
 
   const handleClose = () => {
     removeCard(card.id);
+    onBack();
+  };
+  const handleArchive = () => {
+    archiveCard(card.id);
     onBack();
   };
 
@@ -420,6 +425,13 @@ export function TerminalView({
               <MoreVertical className="h-4 w-4" />
             </button>
             <div className="absolute right-0 top-full z-10 mt-1 hidden w-44 rounded-[var(--radius-md)] border border-white/10 bg-popover p-1 text-sm shadow-lg group-hover:block">
+              <button
+                type="button"
+                onClick={handleArchive}
+                className="flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
+              >
+                <Archive className="h-3.5 w-3.5" /> {t('view.archiveTerminal')}
+              </button>
               <button
                 type="button"
                 onClick={handleClose}

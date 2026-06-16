@@ -31,7 +31,8 @@
     "noProjectTitle": "{{project}} 中没有终端",
     "noProjectDescription": "可以在这里新建一个，或从侧栏选择其他项目。",
     "newHere": "在此新建",
-    "showAll": "显示全部"
+    "showAll": "显示全部",
+    "reorderCard": "拖拽以重新排序卡片"
   },
   "dialog": {
     "chooseProjectDirectory": "选择项目目录",
@@ -62,6 +63,7 @@
     "unpin": "从浮层选择器取消固定",
     "pin": "固定到浮层选择器",
     "pinFull": "固定列表已满（最多 {{max}} 个）",
+    "archive": "归档卡片",
     "close": "关闭终端",
     "recent": "最近",
     "justNow": "刚刚",
@@ -196,6 +198,7 @@
     "backToGrid": "返回网格（⌘/Ctrl+Shift+M）",
     "worktree": "worktree：{{path}}",
     "more": "更多",
+    "archiveTerminal": "归档终端",
     "closeTerminal": "关闭终端",
     "close": "返回网格",
     "footer": "{{count}} 条消息 · 创建于 {{time}}",
@@ -280,6 +283,14 @@
     "title": "书签",
     "empty": "暂无书签",
     "toggle": "切换书签面板"
+  },
+  "archive": {
+    "open": "归档",
+    "openTitle": "显示当前项目的归档卡片",
+    "title": "{{project}} 归档",
+    "empty": "当前项目没有归档卡片",
+    "restore": "恢复",
+    "archivedAt": "归档于 {{time}}"
   },
   "search": {
     "label": "搜索块",

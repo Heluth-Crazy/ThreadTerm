@@ -11,7 +11,7 @@
  * supported via the `density` prop; only `grid` (default) and `compact`
  * have visual treatments — `list` is reserved for a future iteration.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { FolderGit2 } from 'lucide-react';
@@ -40,8 +40,10 @@ export interface TerminalCardProps {
   onClick?: () => void;
   onDoubleClick?: () => void;
   onClose?: () => void;
+  onArchive?: () => void;
   onCopyCwd?: () => void;
   onOpenDir?: () => void;
+  dragHandle?: ReactNode;
 }
 
 function formatDuration(ms: number): string {
@@ -71,8 +73,10 @@ export function TerminalCardComponent({
   onClick,
   onDoubleClick,
   onClose,
+  onArchive,
   onCopyCwd,
   onOpenDir,
+  dragHandle,
 }: TerminalCardProps) {
   const { t } = useTranslation('terminal');
   const reduceMotion = useReducedMotion();
@@ -215,7 +219,7 @@ export function TerminalCardComponent({
         />
       )}
 
-      <CardHeader card={card} aiSessionBadge={aiSessionBadge} />
+      <CardHeader card={card} aiSessionBadge={aiSessionBadge} dragHandle={dragHandle} />
 
       {card.worktreePath && (
         <div className="flex shrink-0 items-center gap-1.5 border-b border-white/5 bg-white/5 px-3 py-1.5 text-[10px] text-muted-foreground backdrop-blur-sm">
@@ -241,6 +245,7 @@ export function TerminalCardComponent({
         onCopyCwd={onCopyCwd}
         onOpenDir={onOpenDir}
         onTogglePin={togglePin}
+        onArchive={onArchive}
         autoRestartEnabled={autoRestart.enabled}
         autoRestartMaxRetries={autoRestart.maxRetries}
         onToggleAutoRestart={() =>
