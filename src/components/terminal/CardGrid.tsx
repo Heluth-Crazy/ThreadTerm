@@ -7,15 +7,32 @@
  *   • empty state invites the user to create the first terminal
  *   • always includes a "+ new terminal" tile at the end
  */
-import { useCallback, useMemo } from 'react';
-import { FolderOpen, Plus, TerminalSquare } from 'lucide-react';
+import { useCallback, useMemo, type CSSProperties } from 'react';
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  rectSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { FolderOpen, GripVertical, Plus, TerminalSquare } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { motion, useReducedMotion } from 'framer-motion';
 import { isTauriEnv } from '../../lib/tauri-bridge';
 import { openLocalDirectory } from '../../lib/localDirectory';
-import { compareCardsByActivity } from '../../lib/cardSort';
+import { compareCardsByActivity, orderCardsByIdList } from '../../lib/cardSort';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { TerminalCardComponent } from './TerminalCard';
+import type { TerminalCard } from '../../types/terminal';
 
 interface CardGridProps {
   onCreateTerminal?: () => void;
@@ -26,22 +43,50 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   const { t } = useTranslation('terminal');
   const reduceMotion = useReducedMotion();
   const cards = useTerminalStore((s) => s.cards);
+  const projectCardOrder = useTerminalStore((s) => s.projectCardOrder);
   const focusedCardId = useTerminalStore((s) => s.focusedCardId);
   const focusCard = useTerminalStore((s) => s.focusCard);
   const removeCard = useTerminalStore((s) => s.removeCard);
+  const archiveCard = useTerminalStore((s) => s.archiveCard);
+  const moveProjectCard = useTerminalStore((s) => s.moveProjectCard);
   const selectedProjectPath = useTerminalStore((s) => s.selectedProjectPath);
   const selectProject = useTerminalStore((s) => s.selectProject);
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
 
-  // Render order is "activity first" (live > unread > most recent) so the grid
-  // matches the mobile session list. The underlying `cards` store array keeps
-  // creation order — sort a copy here, never mutate it (keyboard nextCard /
-  // prevCard / jumpToIndex still walk the store order).
+  // All terminals keeps the shared "activity first" order. A selected project
+  // switches to persisted manual order so cards do not jump while the user is
+  // working inside one directory.
   const visibleCards = useMemo(() => {
     const filtered = selectedProjectPath
       ? cards.filter((c) => c.projectPath === selectedProjectPath)
       : cards;
+    if (selectedProjectPath) {
+      return orderCardsByIdList(filtered, projectCardOrder[selectedProjectPath]);
+    }
     return [...filtered].sort(compareCardsByActivity);
-  }, [cards, selectedProjectPath]);
+  }, [cards, projectCardOrder, selectedProjectPath]);
+
+  const visibleCardIds = useMemo(() => visibleCards.map((card) => card.id), [visibleCards]);
+  const sortingEnabled = Boolean(selectedProjectPath);
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      if (!selectedProjectPath) return;
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const toIndex = visibleCards.findIndex((card) => card.id === over.id);
+      if (toIndex === -1) return;
+      moveProjectCard(selectedProjectPath, String(active.id), toIndex);
+    },
+    [moveProjectCard, selectedProjectPath, visibleCards],
+  );
 
   const selectedProjectLabel = useMemo(() => {
     if (!selectedProjectPath) return null;
@@ -64,7 +109,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   }, []);
 
   // No cards at all → onboarding empty state.
-  if (cards.length === 0) {
+  if (cards.length === 0 && !selectedProjectPath) {
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-6 p-8">
         <div className="flex h-20 w-20 items-center justify-center rounded-[var(--radius)] bg-muted">
@@ -132,17 +177,19 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
     );
   }
 
-  return (
-    <div className="flex h-full w-full flex-wrap content-start items-stretch gap-6 overflow-y-auto p-6 md:p-8">
+  const cardTiles = (
+    <>
       {visibleCards.map((card) => (
-        <div key={card.id} className="h-[300px] w-full sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] xl:w-[calc(25%-18px)]">
-          <TerminalCardComponent
-            card={card}
-            isFocused={focusedCardId === card.id}
-            onClick={() => onOpenTerminal?.(card.id)}
-            onClose={() => removeCard(card.id)}
-          />
-        </div>
+        <CardTile
+          key={card.id}
+          card={card}
+          sortingEnabled={sortingEnabled}
+          dragLabel={t('grid.reorderCard', { defaultValue: 'Drag to reorder card' })}
+          isFocused={focusedCardId === card.id}
+          onClick={() => onOpenTerminal?.(card.id)}
+          onClose={() => removeCard(card.id)}
+          onArchive={() => archiveCard(card.id)}
+        />
       ))}
 
       {/* New Terminal Placeholder */}
@@ -162,6 +209,124 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
           <div className="mt-1 text-[10px] opacity-60 font-mono">⌘/Ctrl + N</div>
         </div>
       </motion.button>
+    </>
+  );
+
+  return (
+    <div className="flex h-full w-full flex-wrap content-start items-stretch gap-6 overflow-y-auto p-6 md:p-8">
+      {sortingEnabled ? (
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={visibleCardIds} strategy={rectSortingStrategy}>
+            {cardTiles}
+          </SortableContext>
+        </DndContext>
+      ) : (
+        cardTiles
+      )}
+    </div>
+  );
+}
+
+const CARD_TILE_CLASS =
+  'relative h-[300px] w-full sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] xl:w-[calc(25%-18px)]';
+
+function CardTile({
+  card,
+  dragLabel,
+  isFocused,
+  onClick,
+  onClose,
+  onArchive,
+  sortingEnabled,
+}: {
+  card: TerminalCard;
+  dragLabel: string;
+  isFocused: boolean;
+  onClick: () => void;
+  onClose: () => void;
+  onArchive: () => void;
+  sortingEnabled: boolean;
+}) {
+  if (!sortingEnabled) {
+    return (
+      <div className={CARD_TILE_CLASS}>
+        <TerminalCardComponent
+          card={card}
+          isFocused={isFocused}
+          onClick={onClick}
+          onClose={onClose}
+          onArchive={onArchive}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <SortableCardTile
+      card={card}
+      dragLabel={dragLabel}
+      isFocused={isFocused}
+      onClick={onClick}
+      onClose={onClose}
+      onArchive={onArchive}
+    />
+  );
+}
+
+function SortableCardTile({
+  card,
+  dragLabel,
+  isFocused,
+  onClick,
+  onClose,
+  onArchive,
+}: {
+  card: TerminalCard;
+  dragLabel: string;
+  isFocused: boolean;
+  onClick: () => void;
+  onClose: () => void;
+  onArchive: () => void;
+}) {
+  const {
+    attributes,
+    isDragging,
+    listeners,
+    setActivatorNodeRef,
+    setNodeRef,
+    transform,
+    transition,
+  } = useSortable({ id: card.id });
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 20 : undefined,
+    opacity: isDragging ? 0.86 : undefined,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} className={CARD_TILE_CLASS}>
+      <TerminalCardComponent
+        card={card}
+        isFocused={isFocused}
+        onClick={onClick}
+        onClose={onClose}
+        onArchive={onArchive}
+        dragHandle={
+          <button
+            ref={setActivatorNodeRef}
+            type="button"
+            aria-label={`${dragLabel}: ${card.projectName}`}
+            title={dragLabel}
+            className="inline-flex h-7 w-5 shrink-0 items-center justify-center rounded-[var(--radius-md)] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground active:scale-95 active:bg-accent"
+            onClick={(event) => event.stopPropagation()}
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical className="h-4 w-4" aria-hidden="true" />
+          </button>
+        }
+      />
     </div>
   );
 }

@@ -1,0 +1,125 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { CardGrid } from './CardGrid';
+import { DEFAULT_PET_CONFIG, useTerminalStore } from '../../stores/terminalStore';
+import type { TerminalCard } from '../../types/terminal';
+
+vi.mock('framer-motion', () => ({
+  motion: {
+    button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+      <button {...props}>{children}</button>
+    ),
+  },
+  useReducedMotion: () => false,
+}));
+
+vi.mock('react-i18next', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-i18next')>();
+  return {
+    ...actual,
+    useTranslation: () => ({
+      t: (key: string, opts?: unknown) => {
+        if (opts && typeof opts === 'object' && 'defaultValue' in opts) {
+          return (opts as { defaultValue: string }).defaultValue;
+        }
+        return key;
+      },
+    }),
+  };
+});
+
+vi.mock('./TerminalCard', () => ({
+  TerminalCardComponent: ({
+    card,
+    dragHandle,
+    onArchive,
+  }: {
+    card: TerminalCard;
+    dragHandle?: React.ReactNode;
+    onArchive?: () => void;
+  }) => (
+    <div data-testid="terminal-card">
+      {dragHandle}
+      <span data-testid="terminal-card-name">{card.projectName}</span>
+      {onArchive && (
+        <button type="button" onClick={onArchive}>
+          archive {card.projectName}
+        </button>
+      )}
+    </div>
+  ),
+}));
+
+function resetStore() {
+  useTerminalStore.setState({
+    cards: [],
+    archivedCards: [],
+    blocks: {},
+    collapsedBlockIds: [],
+    selectedBlockId: {},
+    bookmarks: [],
+    focusedCardId: null,
+    lastActiveCardId: null,
+    selectedProjectPath: null,
+    projectCardOrder: {},
+    pinnedCardIds: [],
+    notifications: [],
+    notificationCentreOpen: false,
+    pendingFocusCardId: null,
+    petConfig: DEFAULT_PET_CONFIG,
+    supervisorEnabled: false,
+  });
+}
+
+beforeEach(resetStore);
+
+afterEach(() => {
+  cleanup();
+});
+
+describe('CardGrid project ordering', () => {
+  it('does not show drag handles in the all-terminals view', () => {
+    useTerminalStore.getState().createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+
+    render(<CardGrid />);
+
+    expect(screen.queryByLabelText(/Drag to reorder card/)).toBeNull();
+  });
+
+  it('shows drag handles in a selected project view', () => {
+    const store = useTerminalStore.getState();
+    store.createCard({ projectName: 'First', projectPath: '/repo/threadterm', terminalType: 'shell' });
+    store.createCard({ projectName: 'Second', projectPath: '/repo/threadterm', terminalType: 'shell' });
+    useTerminalStore.getState().selectProject('/repo/threadterm');
+
+    render(<CardGrid />);
+
+    expect(screen.getAllByLabelText(/Drag to reorder card/)).toHaveLength(2);
+    expect(screen.getAllByTestId('terminal-card-name').map((node) => node.textContent)).toEqual([
+      'Second',
+      'First',
+    ]);
+  });
+
+  it('archives cards from the grid without deleting the archived snapshot', async () => {
+    const store = useTerminalStore.getState();
+    store.createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+    store.selectProject('/repo/threadterm');
+
+    render(<CardGrid />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'archive ThreadTerm' }));
+
+    await waitFor(() => expect(screen.queryByTestId('terminal-card')).toBeNull());
+    expect(useTerminalStore.getState().cards).toHaveLength(0);
+    expect(useTerminalStore.getState().archivedCards).toHaveLength(1);
+  });
+});

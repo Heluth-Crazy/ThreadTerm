@@ -42,6 +42,11 @@ export interface CardActivitySortFields {
   ptyLive?: boolean | null;
 }
 
+/** Minimal shape for cards that can be projected through a persisted id order. */
+export interface CardManualOrderFields {
+  id: string;
+}
+
 function isLive(card: CardActivitySortFields): boolean {
   if (typeof card.ptyLive === 'boolean') return card.ptyLive;
   return isDesktopCardLive(card.status);
@@ -64,4 +69,36 @@ export function compareCardsByActivity(
   const recencyA = a.lastActivity ?? a.createdAt ?? 0;
   const recencyB = b.lastActivity ?? b.createdAt ?? 0;
   return recencyB - recencyA;
+}
+
+/**
+ * Project cards through a persisted id order without mutating the source list.
+ *
+ * Invalid ids are ignored, duplicate ids are collapsed, and any current cards
+ * missing from the persisted order are appended in their input order. This
+ * keeps older persisted snapshots forward-compatible when cards are created by
+ * code paths that did not yet know about manual project ordering.
+ */
+export function orderCardsByIdList<T extends CardManualOrderFields>(
+  cards: readonly T[],
+  orderedIds: readonly string[] | null | undefined,
+): T[] {
+  const byId = new Map(cards.map((card) => [card.id, card]));
+  const seen = new Set<string>();
+  const ordered: T[] = [];
+
+  for (const id of orderedIds ?? []) {
+    const card = byId.get(id);
+    if (!card || seen.has(id)) continue;
+    ordered.push(card);
+    seen.add(id);
+  }
+
+  for (const card of cards) {
+    if (seen.has(card.id)) continue;
+    ordered.push(card);
+    seen.add(card.id);
+  }
+
+  return ordered;
 }

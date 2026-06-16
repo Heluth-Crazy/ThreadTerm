@@ -16,6 +16,7 @@ export interface CardFooterProps {
   onCopyCwd?: () => void;
   onOpenDir?: () => void;
   onTogglePin: () => void;
+  onArchive?: () => void;
   autoRestartEnabled: boolean;
   autoRestartMaxRetries: number;
   onToggleAutoRestart: () => void;
@@ -40,6 +41,7 @@ export function CardFooter({
   onCopyCwd,
   onOpenDir,
   onTogglePin,
+  onArchive,
   autoRestartEnabled,
   autoRestartMaxRetries,
   onToggleAutoRestart,
@@ -64,6 +66,7 @@ export function CardFooter({
           onCopyCwd={onCopyCwd}
           onOpenDir={onOpenDir}
           onTogglePin={onTogglePin}
+          onArchive={onArchive}
           autoRestartEnabled={autoRestartEnabled}
           autoRestartMaxRetries={autoRestartMaxRetries}
           onToggleAutoRestart={onToggleAutoRestart}

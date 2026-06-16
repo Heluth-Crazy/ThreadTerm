@@ -31,7 +31,8 @@
     "noProjectTitle": "{{project}}에 터미널이 없습니다",
     "noProjectDescription": "여기에서 만들거나 사이드바에서 다른 프로젝트를 선택하세요.",
     "newHere": "여기에 만들기",
-    "showAll": "모두 보기"
+    "showAll": "모두 보기",
+    "reorderCard": "드래그하여 카드 순서 변경"
   },
   "dialog": {
     "chooseProjectDirectory": "프로젝트 디렉터리 선택",
@@ -62,6 +63,7 @@
     "unpin": "오버레이 선택기에서 고정 해제",
     "pin": "오버레이 선택기에 고정",
     "pinFull": "고정 목록이 가득 찼습니다 (최대 {{max}}개)",
+    "archive": "카드 보관",
     "close": "터미널 닫기",
     "recent": "최근",
     "justNow": "방금",
@@ -196,6 +198,7 @@
     "backToGrid": "그리드로 돌아가기 (⌘/Ctrl+Shift+M)",
     "worktree": "worktree: {{path}}",
     "more": "더 보기",
+    "archiveTerminal": "터미널 보관",
     "closeTerminal": "터미널 닫기",
     "close": "그리드로 돌아가기",
     "footer": "{{count}}개 메시지 · 생성 {{time}}",
@@ -280,6 +283,14 @@
     "title": "북마크",
     "empty": "북마크 없음",
     "toggle": "북마크 패널 토글"
+  },
+  "archive": {
+    "open": "보관함",
+    "openTitle": "이 프로젝트의 보관된 카드 표시",
+    "title": "{{project}} 보관함",
+    "empty": "이 프로젝트에 보관된 카드가 없습니다",
+    "restore": "복원",
+    "archivedAt": "{{time}}에 보관됨"
   },
   "search": {
     "label": "블록 검색",

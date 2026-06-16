@@ -34,10 +34,12 @@ vi.mock('../Settings', () => ({
 function resetStore() {
   useTerminalStore.setState({
     cards: [],
+    archivedCards: [],
     blocks: {},
     focusedCardId: null,
     lastActiveCardId: null,
     selectedProjectPath: null,
+    projectCardOrder: {},
     pinnedCardIds: [],
     notifications: [],
     notificationCentreOpen: false,
@@ -116,5 +118,28 @@ describe('TerminalManager shortcut hint layout', () => {
 
     render(<TerminalManager />);
     expect(screen.queryByTestId('shortcut-hint-dismiss')).toBeNull();
+  });
+
+  it('restores archived cards from the selected project toolbar panel', async () => {
+    const store = useTerminalStore.getState();
+    const id = store.createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'codex',
+    });
+    store.selectProject('/tmp/repo');
+    store.archiveCard(id);
+
+    render(<TerminalManager />);
+
+    fireEvent.click(screen.getByTitle('显示当前项目的归档卡片'));
+    expect(screen.getByText('/tmp/repo')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '恢复' }));
+
+    await waitFor(() => {
+      expect(useTerminalStore.getState().cards.map((card) => card.id)).toEqual([id]);
+    });
+    expect(useTerminalStore.getState().archivedCards).toHaveLength(0);
   });
 });

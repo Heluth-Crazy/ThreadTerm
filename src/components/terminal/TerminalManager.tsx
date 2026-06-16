@@ -12,7 +12,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Bell, BellDot, Layers, Plus, Settings as SettingsIcon, Star, X } from 'lucide-react';
+import { Archive, Bell, BellDot, Layers, Plus, Settings as SettingsIcon, Star, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { BOOKMARKS_VISIBLE } from '../../lib/featureFlags';
@@ -22,6 +22,7 @@ import { TerminalView } from './TerminalView';
 import { CreateTerminalDialog } from './CreateTerminalDialog';
 import { ProjectSidebar } from './ProjectSidebar';
 import { BookmarksSidebar } from './BookmarksSidebar';
+import { ArchivedCardsPanel } from './ArchivedCardsPanel';
 import { CommandPalette } from '../palette/CommandPalette';
 import { buildCommandRegistry, type CommandGroup } from '../palette/commandRegistry';
 import { BlockSearchPanel } from '../search/BlockSearchPanel';
@@ -131,9 +132,11 @@ declare global {
 export function TerminalManager() {
   const { t } = useTranslation('terminal');
   const cards = useTerminalStore((s) => s.cards);
+  const archivedCards = useTerminalStore((s) => s.archivedCards);
   const focusedCardId = useTerminalStore((s) => s.focusedCardId);
   const focusCard = useTerminalStore((s) => s.focusCard);
   const createCard = useTerminalStore((s) => s.createCard);
+  const restoreArchivedCard = useTerminalStore((s) => s.restoreArchivedCard);
   const importProviderSessionCards = useTerminalStore((s) => s.importProviderSessionCards);
   const selectProject = useTerminalStore((s) => s.selectProject);
   const toggleNotificationCentre = useTerminalStore((s) => s.toggleNotificationCentre);
@@ -154,9 +157,18 @@ export function TerminalManager() {
 
   const selectedProjectName = useMemo(() => {
     if (!selectedProjectPath) return null;
-    const card = cards.find((c) => c.projectPath === selectedProjectPath);
+    const card =
+      cards.find((c) => c.projectPath === selectedProjectPath) ??
+      archivedCards.find((c) => c.projectPath === selectedProjectPath);
     return card?.projectName ?? selectedProjectPath;
-  }, [cards, selectedProjectPath]);
+  }, [archivedCards, cards, selectedProjectPath]);
+
+  const selectedProjectArchivedCards = useMemo(() => {
+    if (!selectedProjectPath) return [];
+    return archivedCards
+      .filter((card) => card.projectPath === selectedProjectPath)
+      .sort((a, b) => b.archivedAt - a.archivedAt);
+  }, [archivedCards, selectedProjectPath]);
 
   // Cards visible with the current project filter applied.
   const visibleCards = useMemo(
@@ -184,6 +196,7 @@ export function TerminalManager() {
   }, []);
   const [createOpen, setCreateOpen] = useState(false);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteInitialGroup, setPaletteInitialGroup] = useState<CommandGroup | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -214,6 +227,10 @@ export function TerminalManager() {
       // localStorage unavailable — dismissal is session-only.
     }
   }, []);
+
+  useEffect(() => {
+    setArchiveOpen(false);
+  }, [selectedProjectPath]);
 
   // Card ids whose TerminalView is kept mounted, in LRU order (oldest first).
   // Each mounted view holds a WebGL context, so the list is capped at
@@ -461,6 +478,13 @@ export function TerminalManager() {
       setBookmarksOpen(false);
     },
     [focusCard, selectBlock],
+  );
+
+  const handleRestoreArchivedCard = useCallback(
+    (cardId: string) => {
+      restoreArchivedCard(cardId);
+    },
+    [restoreArchivedCard],
   );
 
   const getWorkflowProjectContext = useCallback(
@@ -737,6 +761,27 @@ export function TerminalManager() {
           </span>
         </div>
         <div className="flex items-center gap-1">
+          {selectedProjectPath && selectedProjectArchivedCards.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setArchiveOpen((v) => !v)}
+              title={t('archive.openTitle')}
+              className={[
+                'relative inline-flex items-center gap-1 rounded-[var(--radius-md)] px-2 py-1 text-[11px] font-medium',
+                archiveOpen
+                  ? 'bg-primary/10 text-primary'
+                  : 'hover:bg-accent hover:text-accent-foreground',
+              ].join(' ')}
+            >
+              <Archive className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">{t('archive.open')}</span>
+              <span className="flex min-h-[14px] min-w-[14px] items-center justify-center rounded-full bg-muted px-1 text-[9px] font-bold text-muted-foreground">
+                {selectedProjectArchivedCards.length > 99
+                  ? '99+'
+                  : selectedProjectArchivedCards.length}
+              </span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setCreateOpen(true)}
@@ -852,7 +897,7 @@ export function TerminalManager() {
           overlap with the right-side BlockInspector / Bookmarks panel,
           and hidden whenever a modal/panel is open so it never sits on
           top of overlay UI. */}
-      {cards.length > 0 && !hintDismissed && !bookmarksOpen && !paletteOpen && !searchOpen && (
+      {cards.length > 0 && !hintDismissed && !bookmarksOpen && !archiveOpen && !paletteOpen && !searchOpen && (
         <div
           className={[
             'absolute left-3 z-10 flex select-none items-center gap-2 rounded-[var(--radius-md)] border border-white/10/60 bg-background/80 py-1 pl-2.5 pr-1 text-[10px] text-muted-foreground backdrop-blur',
@@ -885,6 +930,17 @@ export function TerminalManager() {
           <BookmarksSidebar
             onJump={handleJumpToBlock}
             onClose={() => setBookmarksOpen(false)}
+          />
+        </div>
+      )}
+
+      {archiveOpen && selectedProjectPath && selectedProjectName && (
+        <div className="absolute right-0 top-0 bottom-0 z-30 w-80 border-l border-white/10 bg-background/90 backdrop-blur-2xl shadow-studio">
+          <ArchivedCardsPanel
+            projectName={selectedProjectName}
+            cards={selectedProjectArchivedCards}
+            onRestore={handleRestoreArchivedCard}
+            onClose={() => setArchiveOpen(false)}
           />
         </div>
       )}
