@@ -130,4 +130,86 @@ describe('CardActions', () => {
     expect(onArchive).toHaveBeenCalledTimes(1);
     expect(surfaceClick).not.toHaveBeenCalled();
   });
+
+  it('moves optional actions into the overflow menu in compact density', () => {
+    const onArchive = vi.fn();
+    const onExportAiSession = vi.fn();
+    const onTogglePin = vi.fn();
+    const surfaceClick = vi.fn();
+    render(
+      <div onClick={surfaceClick}>
+        <CardActions
+          pinned={false}
+          pinFull={false}
+          onCopyCwd={vi.fn()}
+          onOpenDir={vi.fn()}
+          onTogglePin={onTogglePin}
+          onArchive={onArchive}
+          onExportAiSession={onExportAiSession}
+          density="compact"
+        />
+      </div>,
+    );
+
+    expect(screen.getByTitle('card.copyPath')).toBeInTheDocument();
+    expect(screen.getByTitle('card.revealProject')).toBeInTheDocument();
+    expect(screen.queryByTitle('card.pin')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('bottomBar.overflow'));
+    fireEvent.click(screen.getByTitle('card.pin'));
+    fireEvent.click(screen.getByTitle('card.archive'));
+    fireEvent.click(screen.getByTitle('aiExport.exportMarkdown'));
+
+    expect(onTogglePin).toHaveBeenCalledTimes(1);
+    expect(onArchive).toHaveBeenCalledTimes(1);
+    expect(onExportAiSession).toHaveBeenCalledTimes(1);
+    expect(surfaceClick).not.toHaveBeenCalled();
+  });
+
+  it('keeps pin reachable from overflow when compact cards have no extra actions', () => {
+    const props = renderActions({ density: 'compact' });
+
+    expect(screen.queryByTitle('card.pin')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTitle('bottomBar.overflow'));
+    fireEvent.click(screen.getByTitle('card.pin'));
+
+    expect(props.onTogglePin).toHaveBeenCalledTimes(1);
+  });
+
+  it('moves reveal into the overflow menu in narrow density', () => {
+    const onOpenDir = vi.fn();
+    const surfaceClick = vi.fn();
+    render(
+      <div onClick={surfaceClick}>
+        <CardActions
+          pinned={false}
+          pinFull={false}
+          onCopyCwd={vi.fn()}
+          onOpenDir={onOpenDir}
+          onTogglePin={vi.fn()}
+          density="narrow"
+        />
+      </div>,
+    );
+
+    expect(screen.getByTitle('card.copyPath')).toBeInTheDocument();
+    expect(screen.queryByTitle('card.revealProject')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('bottomBar.overflow'));
+    fireEvent.click(screen.getByTitle('card.revealProject'));
+
+    expect(onOpenDir).toHaveBeenCalledTimes(1);
+    expect(surfaceClick).not.toHaveBeenCalled();
+  });
+
+  it('renders overflow content inside the compact overflow menu', () => {
+    renderActions({
+      density: 'compact',
+      overflowContent: <button type="button" title="ai-intent-control" />,
+    });
+
+    expect(screen.queryByTitle('ai-intent-control')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTitle('bottomBar.overflow'));
+    expect(screen.getByTitle('ai-intent-control')).toBeInTheDocument();
+  });
 });
