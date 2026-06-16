@@ -217,6 +217,69 @@ const visibleCards = selectedProjectPath
 
 </spec-entry>
 
+<spec-entry category="pattern" keywords="terminal-card-footer,responsive-actions,overflow-menu,resize-observer,portal-menu" date="2026-06-16" source="src/components/terminal/CardFooter.tsx:35">
+
+### Scenario: Responsive Terminal Card Footer Actions
+
+#### 1. Scope / Trigger
+- Trigger: Any change to terminal card footer controls, card action buttons, AI intent placement, or footer width behavior.
+- Applies to `src/components/terminal/CardFooter.tsx`, `src/components/terminal/CardActions.tsx`, and their component tests.
+
+#### 2. Signatures
+- `CardActionDensity = 'wide' | 'compact' | 'narrow'`
+- `getCardFooterDensity(width: number): CardActionDensity`
+- `CardActionsProps.density?: CardActionDensity`
+- `CardActionsProps.overflowContent?: React.ReactNode`
+
+#### 3. Contracts
+- The close button and copy action must stay directly reachable at every card width.
+- `wide` footers render the full action strip inline.
+- `compact` footers render copy, reveal, More, and close inline; pin/archive/export/auto-restart/AI intent move into More.
+- `narrow` footers render copy, More, and close inline; reveal and all optional controls move into More.
+- Footer density must be driven by the rendered footer width, not by global viewport width, because grid cards resize independently.
+- A non-measurable width (`0`) must keep the default `wide` layout so tests and hidden/offscreen cards do not collapse controls before layout is available.
+- More menus inside cards must render through a portal or otherwise escape card `overflow-hidden`; relative popovers inside the card can be clipped.
+- Menu actions must stop propagation so clicking footer controls does not focus/open the card surface.
+
+#### 4. Validation & Error Matrix
+- Width `<= 0` -> `wide`.
+- Width `< 300` -> `narrow`.
+- Width `300..359` -> `compact`.
+- Width `>= 360` -> `wide`.
+- Missing `ResizeObserver` -> fall back to window resize measurement.
+- Compact card with no archive/export/auto-restart still shows More because pin/unpin is folded into it.
+
+#### 5. Good/Base/Bad Cases
+- Good: a non-fullscreen window narrows cards and optional controls move into a portal More menu without clipping.
+- Base: a normal desktop card keeps existing inline action buttons and AI intent select.
+- Bad: hiding the AI intent select by clipping a fixed-width child inside `overflow-hidden`.
+- Bad: moving close into an overflow menu; close must remain directly visible.
+
+#### 6. Tests Required
+- `CardFooter.test.tsx` covers density thresholds, including width `0`.
+- `CardActions.test.tsx` covers compact/narrow direct controls, overflow items, and event propagation.
+- Affected frontend verification must include `npm run typecheck`, `npm run test`, and `npm run build`.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```tsx
+<div className="overflow-hidden">
+  <CardActions />
+  <AiIntentSelect compact />
+</div>
+```
+
+Correct:
+```tsx
+<CardActions
+  density={density}
+  overflowContent={density === 'wide' ? null : <AiIntentSelect compact />}
+/>
+```
+
+</spec-entry>
+
 ---
 
 ## Accessibility

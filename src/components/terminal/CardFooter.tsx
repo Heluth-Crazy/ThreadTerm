@@ -1,10 +1,10 @@
-import type { MouseEvent } from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, BellRing, Trash2 } from 'lucide-react';
 import type { TerminalCard as TerminalCardType } from '../../types/terminal';
 import type { AiCliSessionBadge } from './providerSession';
 import { AiIntentSelect } from './AiIntentSelect';
-import { CardActions } from './CardActions';
+import { CardActions, type CardActionDensity } from './CardActions';
 import { AutoRestartStatus } from './AutoRestartStatus';
 
 export interface CardFooterProps {
@@ -32,6 +32,44 @@ const stopPropagation = (fn?: () => void) => (e: MouseEvent) => {
   fn?.();
 };
 
+export function getCardFooterDensity(width: number): CardActionDensity {
+  if (width <= 0) return 'wide';
+  if (width < 300) return 'narrow';
+  if (width < 360) return 'compact';
+  return 'wide';
+}
+
+function useCardFooterDensity() {
+  const footerRef = useRef<HTMLDivElement | null>(null);
+  const [density, setDensity] = useState<CardActionDensity>('wide');
+
+  useEffect(() => {
+    const node = footerRef.current;
+    if (!node) return;
+
+    const updateDensity = (width: number) => {
+      setDensity(getCardFooterDensity(width));
+    };
+
+    updateDensity(node.getBoundingClientRect().width);
+
+    if (typeof ResizeObserver === 'undefined') {
+      const onResize = () => updateDensity(node.getBoundingClientRect().width);
+      window.addEventListener('resize', onResize);
+      return () => window.removeEventListener('resize', onResize);
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? node.getBoundingClientRect().width;
+      updateDensity(width);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  return { footerRef, density };
+}
+
 export function CardFooter({
   card,
   aiSessionBadge,
@@ -52,13 +90,23 @@ export function CardFooter({
   onClose,
 }: CardFooterProps) {
   const { t } = useTranslation('terminal');
+  const { footerRef, density } = useCardFooterDensity();
+  const showInlineAiIntent = Boolean(aiSessionBadge && density === 'wide');
+  const overflowAiIntent =
+    aiSessionBadge && density !== 'wide' ? (
+      <AiIntentSelect cardId={card.id} value={card.aiIntent} compact />
+    ) : null;
 
   // Quick actions on the left, attention hint as a truncating middle band,
-  // intent select + close on the right. Timer / message count live in the
-  // preview header so this row never overflows when the AI intent dropdown
-  // is present.
+  // attention state in the middle, intent select + close on the right. Narrow
+  // card widths move optional actions into the More menu so the close button
+  // and core actions stay reachable.
   return (
-    <div className="flex shrink-0 items-center border-t border-white/10/40 bg-muted/20 px-1 py-1.5 overflow-hidden sm:px-1.5">
+    <div
+      ref={footerRef}
+      data-card-footer-density={density}
+      className="flex shrink-0 items-center border-t border-white/10/40 bg-muted/20 px-1 py-1.5 overflow-hidden sm:px-1.5"
+    >
       <div className="flex shrink-0 items-center scale-90 origin-left sm:scale-100">
         <CardActions
           pinned={pinned}
@@ -74,6 +122,8 @@ export function CardFooter({
           onExportAiSession={onExportAiSession}
           aiSessionExporting={aiSessionExporting}
           aiSessionExportStatus={aiSessionExportStatus}
+          density={density}
+          overflowContent={overflowAiIntent}
         />
       </div>
 
@@ -98,7 +148,7 @@ export function CardFooter({
       </div>
 
       <div className="flex shrink-0 items-center gap-0.5 ml-auto">
-        {aiSessionBadge && (
+        {showInlineAiIntent && (
           <div className="max-w-[70px] sm:max-w-none overflow-hidden">
             <AiIntentSelect cardId={card.id} value={card.aiIntent} compact />
           </div>
