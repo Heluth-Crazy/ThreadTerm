@@ -32,7 +32,32 @@
     "noProjectDescription": "여기에서 만들거나 사이드바에서 다른 프로젝트를 선택하세요.",
     "newHere": "여기에 만들기",
     "showAll": "모두 보기",
-    "reorderCard": "드래그하여 카드 순서 변경"
+    "reorderCard": "드래그하여 카드 순서 변경",
+    "reorderDisabledWhileSearching": "검색을 지우면 순서 변경 가능"
+  },
+  "cardSearch": {
+    "placeholder": "이름 또는 경로로 카드 필터링…",
+    "filter": "필터",
+    "empty": "“{{query}}”와 일치하는 카드가 없습니다.",
+    "clear": "검색 지우기"
+  },
+  "stats": {
+    "title": "토큰 사용량",
+    "toggle": "토큰 사용량",
+    "refresh": "새로고침",
+    "close": "닫기",
+    "range": { "today": "오늘", "7d": "7일", "30d": "30일", "all": "전체" },
+    "tokens": "토큰",
+    "sessions": "세션",
+    "calls": "호출",
+    "usageInput": "입력",
+    "usageOutput": "출력",
+    "usageCacheWrite": "캐시 쓰기",
+    "usageCacheRead": "캐시 읽기",
+    "byModel": "모델별",
+    "byProject": "프로젝트별",
+    "loading": "세션 스캔 중…",
+    "empty": "이 기간에 사용량이 없습니다."
   },
   "dialog": {
     "chooseProjectDirectory": "프로젝트 디렉터리 선택",
@@ -60,6 +85,8 @@
     "newActivity": "새 활동",
     "copyPath": "경로 복사",
     "revealProject": "프로젝트 표시",
+    "rename": "이름 변경",
+    "renameHint": "더블클릭하여 이름 변경",
     "unpin": "오버레이 선택기에서 고정 해제",
     "pin": "오버레이 선택기에 고정",
     "pinFull": "고정 목록이 가득 찼습니다 (최대 {{max}}개)",

@@ -21,9 +21,9 @@ pub struct ProviderSessionInfo {
 }
 
 #[derive(Debug, Clone)]
-struct SessionFileCandidate {
-    path: PathBuf,
-    modified_ms: Option<u64>,
+pub(crate) struct SessionFileCandidate {
+    pub(crate) path: PathBuf,
+    pub(crate) modified_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Eq)]
@@ -229,7 +229,10 @@ fn parse_claude_session_meta(path: &Path) -> Option<(String, String)> {
     None
 }
 
-fn jsonl_files_recent_first(root: &Path, since_ms: Option<u64>) -> Vec<SessionFileCandidate> {
+pub(crate) fn jsonl_files_recent_first(
+    root: &Path,
+    since_ms: Option<u64>,
+) -> Vec<SessionFileCandidate> {
     let key = JsonlScanCacheKey {
         root: root.to_path_buf(),
         since_ms,

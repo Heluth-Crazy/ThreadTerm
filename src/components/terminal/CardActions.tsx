@@ -8,6 +8,7 @@ import {
   ExternalLink,
   Loader2,
   MoreHorizontal,
+  Pencil,
   Pin,
   PinOff,
   type LucideIcon,
@@ -23,6 +24,7 @@ export interface CardActionsProps {
   onCopyCwd?: () => void;
   onOpenDir?: () => void;
   onTogglePin: () => void;
+  onRename?: () => void;
   onArchive?: () => void;
   autoRestartEnabled?: boolean;
   autoRestartMaxRetries?: number;
@@ -192,6 +194,7 @@ export function CardActions({
   onCopyCwd,
   onOpenDir,
   onTogglePin,
+  onRename,
   onArchive,
   autoRestartEnabled = false,
   autoRestartMaxRetries = 3,
@@ -314,6 +317,13 @@ export function CardActions({
         <CardActionOverflowMenu label={overflowLabel}>
           {density === 'narrow' && (
             <OverflowActionItem icon={ExternalLink} label={t('card.revealProject')} onClick={onOpenDir} />
+          )}
+          {onRename && (
+            <OverflowActionItem
+              icon={Pencil}
+              label={t('card.rename', { defaultValue: 'Rename' })}
+              onClick={onRename}
+            />
           )}
           <OverflowActionItem
             icon={pinIcon}

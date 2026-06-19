@@ -32,7 +32,32 @@
     "noProjectDescription": "ここで作成するか、サイドバーから別のプロジェクトを選択してください。",
     "newHere": "ここで作成",
     "showAll": "すべて表示",
-    "reorderCard": "ドラッグしてカードを並べ替え"
+    "reorderCard": "ドラッグしてカードを並べ替え",
+    "reorderDisabledWhileSearching": "検索をクリアすると並べ替え可能"
+  },
+  "cardSearch": {
+    "placeholder": "名前またはパスでカードを絞り込み…",
+    "filter": "フィルター",
+    "empty": "「{{query}}」に一致するカードがありません。",
+    "clear": "検索をクリア"
+  },
+  "stats": {
+    "title": "トークン使用量",
+    "toggle": "トークン使用量",
+    "refresh": "更新",
+    "close": "閉じる",
+    "range": { "today": "今日", "7d": "7日間", "30d": "30日間", "all": "すべて" },
+    "tokens": "トークン",
+    "sessions": "セッション",
+    "calls": "呼び出し",
+    "usageInput": "入力",
+    "usageOutput": "出力",
+    "usageCacheWrite": "キャッシュ書込",
+    "usageCacheRead": "キャッシュ読込",
+    "byModel": "モデル別",
+    "byProject": "プロジェクト別",
+    "loading": "セッションをスキャン中…",
+    "empty": "この期間の使用量はありません。"
   },
   "dialog": {
     "chooseProjectDirectory": "プロジェクトディレクトリを選択",
@@ -60,6 +85,8 @@
     "newActivity": "新しいアクティビティ",
     "copyPath": "パスをコピー",
     "revealProject": "プロジェクトを表示",
+    "rename": "名前を変更",
+    "renameHint": "ダブルクリックで名前を変更",
     "unpin": "オーバーレイ選択からピン解除",
     "pin": "オーバーレイ選択にピン留め",
     "pinFull": "ピン留めリストは上限です（最大 {{max}}）",

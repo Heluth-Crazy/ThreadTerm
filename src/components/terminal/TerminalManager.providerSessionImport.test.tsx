@@ -33,6 +33,13 @@ vi.mock('../../lib/tauri-bridge', () => ({
     resolveActivate: bridgeMocks.resolveActivate,
     resolveClose: bridgeMocks.resolveClose,
   },
+  tokenStats: {
+    compute: () => Promise.resolve(),
+    cancel: () => Promise.resolve(),
+    onProgress: () => Promise.resolve(() => {}),
+    onDone: () => Promise.resolve(() => {}),
+    onError: () => Promise.resolve(() => {}),
+  },
   invokeSupervisorEnable: bridgeMocks.invokeSupervisorEnable,
   subscribeSupervisorAlert: bridgeMocks.subscribeSupervisorAlert,
 }));

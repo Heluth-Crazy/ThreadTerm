@@ -85,6 +85,7 @@ export function TerminalCardComponent({
   const [aiSessionExportStatus, setAiSessionExportStatus] = useState<'saved' | 'error' | null>(
     null,
   );
+  const [editingName, setEditingName] = useState(false);
 
   // Pin state for the global overlay selector (max MAX_PINNED_CARDS).
   const pinned = useTerminalStore((s) => s.pinnedCardIds.includes(card.id));
@@ -95,6 +96,7 @@ export function TerminalCardComponent({
   const unpinCard = useTerminalStore((s) => s.unpinCard);
   const setCardAutoRestartEnabled = useTerminalStore((s) => s.setCardAutoRestartEnabled);
   const setCardAutoRestartMaxRetries = useTerminalStore((s) => s.setCardAutoRestartMaxRetries);
+  const renameCard = useTerminalStore((s) => s.renameCard);
   const togglePin = () => {
     if (pinned) unpinCard(card.id);
     else pinCard(card.id);
@@ -219,7 +221,18 @@ export function TerminalCardComponent({
         />
       )}
 
-      <CardHeader card={card} aiSessionBadge={aiSessionBadge} dragHandle={dragHandle} />
+      <CardHeader
+        card={card}
+        aiSessionBadge={aiSessionBadge}
+        dragHandle={dragHandle}
+        editing={editingName}
+        onStartEdit={() => setEditingName(true)}
+        onCommitName={(name) => {
+          renameCard(card.id, name);
+          setEditingName(false);
+        }}
+        onCancelEdit={() => setEditingName(false)}
+      />
 
       {card.worktreePath && (
         <div className="flex shrink-0 items-center gap-1.5 border-b border-white/5 bg-white/5 px-3 py-1.5 text-[10px] text-muted-foreground backdrop-blur-sm">
@@ -240,6 +253,7 @@ export function TerminalCardComponent({
         card={card}
         aiSessionBadge={aiSessionBadge}
         attentionHint={attentionHint}
+        onRename={() => setEditingName(true)}
         pinned={pinned}
         pinFull={pinFull}
         onCopyCwd={onCopyCwd}

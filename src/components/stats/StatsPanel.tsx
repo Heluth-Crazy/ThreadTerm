@@ -1,0 +1,166 @@
+/**
+ * StatsPanel — right sidebar showing token usage + cost aggregated across all
+ * Claude/Codex sessions on the machine. Mounted by TerminalManager behind a
+ * `statsOpen` toggle, same pattern as BookmarksSidebar / ArchivedCardsPanel.
+ */
+import { useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
+import { BarChart3, RefreshCw, X } from 'lucide-react';
+import { useStatsStore } from '../../stores/statsStore';
+import { formatCost, formatTokens } from '../../lib/statsFormat';
+import type { StatBucket, StatsRange } from '../../types/stats';
+
+const RANGES: StatsRange[] = ['today', '7d', '30d', 'all'];
+
+function basename(p: string): string {
+  const parts = p.replace(/[\\/]+$/, '').split(/[\\/]/);
+  return parts[parts.length - 1] || p;
+}
+
+export interface StatsPanelProps {
+  onClose: () => void;
+}
+
+export function StatsPanel({ onClose }: StatsPanelProps) {
+  const { t } = useTranslation('terminal');
+  const snapshot = useStatsStore((s) => s.snapshot);
+  const loading = useStatsStore((s) => s.loading);
+  const error = useStatsStore((s) => s.error);
+  const range = useStatsStore((s) => s.range);
+  const scanned = useStatsStore((s) => s.scanned);
+  const total = useStatsStore((s) => s.total);
+  const setRange = useStatsStore((s) => s.setRange);
+  const compute = useStatsStore((s) => s.compute);
+
+  // Compute on first open if we have nothing yet.
+  useEffect(() => {
+    if (!snapshot && !loading) compute();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <div className="flex items-center gap-2">
+          <BarChart3 className="h-4 w-4 text-primary" />
+          <h2 className="text-sm font-semibold">{t('stats.title', { defaultValue: 'Token usage' })}</h2>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => compute()}
+            title={t('stats.refresh', { defaultValue: 'Refresh' })}
+            className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={t('stats.close', { defaultValue: 'Close' })}
+            className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex shrink-0 gap-1 border-b border-border/60 px-3 py-2">
+        {RANGES.map((r) => (
+          <button
+            key={r}
+            type="button"
+            onClick={() => setRange(r)}
+            className={`rounded-[var(--radius-md)] px-2 py-1 text-[11px] transition-colors ${
+              range === r ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent'
+            }`}
+          >
+            {t(`stats.range.${r}`, { defaultValue: r })}
+          </button>
+        ))}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+        {error ? (
+          <p className="text-xs text-red-500">{error}</p>
+        ) : loading && !snapshot ? (
+          <p className="text-xs text-muted-foreground">
+            {t('stats.loading', { defaultValue: 'Scanning sessions…' })}
+            {total ? ` (${scanned}/${total})` : ''}
+          </p>
+        ) : !snapshot || snapshot.totalCalls === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            {t('stats.empty', { defaultValue: 'No usage in this window.' })}
+          </p>
+        ) : (
+          <>
+            <div className="mb-4 rounded-[var(--radius)] border border-border bg-foreground/5 p-3">
+              <div className="text-2xl font-semibold tabular-nums">{formatCost(snapshot.totalCostUsd)}</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                {formatTokens(snapshot.totalTokens)} {t('stats.tokens', { defaultValue: 'tokens' })} ·{' '}
+                {snapshot.sessionCount} {t('stats.sessions', { defaultValue: 'sessions' })} ·{' '}
+                {snapshot.totalCalls} {t('stats.calls', { defaultValue: 'calls' })}
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-1 text-[10px] text-muted-foreground tabular-nums">
+                <span>{t('stats.usageInput', { defaultValue: 'input' })} {formatTokens(snapshot.usage.input)}</span>
+                <span>{t('stats.usageOutput', { defaultValue: 'output' })} {formatTokens(snapshot.usage.output)}</span>
+                <span>{t('stats.usageCacheWrite', { defaultValue: 'cache write' })} {formatTokens(snapshot.usage.cacheCreation)}</span>
+                <span>{t('stats.usageCacheRead', { defaultValue: 'cache read' })} {formatTokens(snapshot.usage.cacheRead)}</span>
+              </div>
+            </div>
+
+            <BucketList title={t('stats.byModel', { defaultValue: 'By model' })} buckets={snapshot.byModel} />
+            <BucketList
+              title={t('stats.byProject', { defaultValue: 'By project' })}
+              buckets={snapshot.byProject}
+              labelTransform={basename}
+            />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BucketList({
+  title,
+  buckets,
+  labelTransform,
+}: {
+  title: string;
+  buckets: StatBucket[];
+  labelTransform?: (s: string) => string;
+}) {
+  if (buckets.length === 0) return null;
+  const max = Math.max(...buckets.map((b) => b.costUsd), 0.0001);
+  return (
+    <div className="mb-4">
+      <h3 className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        {title}
+      </h3>
+      <ul className="space-y-1.5">
+        {buckets.slice(0, 12).map((b) => (
+          <li
+            key={b.key}
+            className="relative overflow-hidden rounded-[var(--radius-md)] border border-border/60 bg-foreground/[0.03] px-2 py-1.5"
+          >
+            <div
+              className="absolute inset-y-0 left-0 bg-primary/10"
+              style={{ width: `${(b.costUsd / max) * 100}%` }}
+              aria-hidden
+            />
+            <div className="relative flex items-center justify-between gap-2 text-[11px]">
+              <span className="truncate font-medium">
+                {labelTransform ? labelTransform(b.label) : b.label || 'unknown'}
+              </span>
+              <span className="shrink-0 tabular-nums text-muted-foreground">{formatCost(b.costUsd)}</span>
+            </div>
+            <div className="relative mt-0.5 text-[10px] tabular-nums text-muted-foreground">
+              {formatTokens(b.totalTokens)}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}

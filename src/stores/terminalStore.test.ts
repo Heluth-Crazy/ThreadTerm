@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { DEFAULT_PET_CONFIG, MAX_PINNED_CARDS, useTerminalStore } from './terminalStore';
+import {
+  DEFAULT_PET_CONFIG,
+  MAX_CARD_NAME_LENGTH,
+  MAX_PINNED_CARDS,
+  useTerminalStore,
+} from './terminalStore';
 import { MAX_BLOCKS_PER_CARD } from '../types/terminal';
 
 function resetStore() {
@@ -359,6 +364,80 @@ describe('terminalStore — card lifecycle', () => {
 
     expect(persistedCard?.autoRestart?.history?.[0]?.status).toBe('cancelled');
     expect(JSON.stringify(persistedCard?.autoRestart)).not.toContain('Timeout');
+  });
+});
+
+describe('terminalStore — renameCard', () => {
+  it('renames a card to a custom display name', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'foo', projectPath: '/tmp/foo', terminalType: 'shell' });
+
+    s.renameCard(id, 'My API server');
+
+    expect(useTerminalStore.getState().getCardById(id)?.projectName).toBe('My API server');
+  });
+
+  it('trims surrounding whitespace', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'foo', projectPath: '/tmp/foo', terminalType: 'shell' });
+
+    s.renameCard(id, '  spaced  ');
+
+    expect(useTerminalStore.getState().getCardById(id)?.projectName).toBe('spaced');
+  });
+
+  it('falls back to the directory basename when the new name is blank', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({
+      projectName: 'custom',
+      projectPath: '/repo/my-app',
+      terminalType: 'shell',
+    });
+
+    s.renameCard(id, '   ');
+
+    expect(useTerminalStore.getState().getCardById(id)?.projectName).toBe('my-app');
+  });
+
+  it('truncates names longer than MAX_CARD_NAME_LENGTH', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'foo', projectPath: '/tmp/foo', terminalType: 'shell' });
+
+    s.renameCard(id, 'x'.repeat(MAX_CARD_NAME_LENGTH + 50));
+
+    expect(useTerminalStore.getState().getCardById(id)?.projectName).toHaveLength(
+      MAX_CARD_NAME_LENGTH,
+    );
+  });
+
+  it('keeps the same store reference when the name is unchanged', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({
+      projectName: 'stable',
+      projectPath: '/tmp/stable',
+      terminalType: 'shell',
+    });
+    const before = useTerminalStore.getState().getCardById(id);
+
+    s.renameCard(id, 'stable');
+
+    expect(useTerminalStore.getState().getCardById(id)).toBe(before);
+  });
+
+  it('ignores unknown card ids without throwing', () => {
+    const s = useTerminalStore.getState();
+    expect(() => s.renameCard('does-not-exist', 'whatever')).not.toThrow();
+  });
+
+  it('renames only the targeted card when several share a projectPath', () => {
+    const s = useTerminalStore.getState();
+    const a = s.createCard({ projectName: 'app', projectPath: '/repo/app', terminalType: 'shell' });
+    const b = s.createCard({ projectName: 'app', projectPath: '/repo/app', terminalType: 'shell' });
+
+    s.renameCard(a, 'frontend');
+
+    expect(useTerminalStore.getState().getCardById(a)?.projectName).toBe('frontend');
+    expect(useTerminalStore.getState().getCardById(b)?.projectName).toBe('app');
   });
 });
 

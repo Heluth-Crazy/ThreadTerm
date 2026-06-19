@@ -12,7 +12,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Archive, Bell, BellDot, Layers, Plus, Settings as SettingsIcon, Star, X } from 'lucide-react';
+import { Archive, BarChart3, Bell, BellDot, Layers, Plus, Settings as SettingsIcon, Star, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { BOOKMARKS_VISIBLE } from '../../lib/featureFlags';
@@ -23,6 +23,8 @@ import { CreateTerminalDialog } from './CreateTerminalDialog';
 import { ProjectSidebar } from './ProjectSidebar';
 import { BookmarksSidebar } from './BookmarksSidebar';
 import { ArchivedCardsPanel } from './ArchivedCardsPanel';
+import { StatsPanel } from '../stats/StatsPanel';
+import { useStatsSubscription } from '../../stores/statsStore';
 import { CommandPalette } from '../palette/CommandPalette';
 import { buildCommandRegistry, type CommandGroup } from '../palette/commandRegistry';
 import { BlockSearchPanel } from '../search/BlockSearchPanel';
@@ -197,6 +199,8 @@ export function TerminalManager() {
   const [createOpen, setCreateOpen] = useState(false);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(false);
+  useStatsSubscription();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteInitialGroup, setPaletteInitialGroup] = useState<CommandGroup | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -812,6 +816,19 @@ export function TerminalManager() {
           )}
           <button
             type="button"
+            onClick={() => setStatsOpen((v) => !v)}
+            title={t('stats.toggle', { defaultValue: 'Token usage' })}
+            className={[
+              'rounded-[var(--radius-md)] p-1.5',
+              statsOpen
+                ? 'bg-primary/10 text-primary'
+                : 'hover:bg-accent hover:text-accent-foreground',
+            ].join(' ')}
+          >
+            <BarChart3 className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
             onClick={() => handleOpenSettings('shortcuts')}
             title={t('app.settingsTitle')}
             className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
@@ -942,6 +959,12 @@ export function TerminalManager() {
             onRestore={handleRestoreArchivedCard}
             onClose={() => setArchiveOpen(false)}
           />
+        </div>
+      )}
+
+      {statsOpen && (
+        <div className="absolute right-0 top-0 bottom-0 z-30 w-80 border-l border-white/10 bg-background/90 backdrop-blur-2xl shadow-studio">
+          <StatsPanel onClose={() => setStatsOpen(false)} />
         </div>
       )}
 
