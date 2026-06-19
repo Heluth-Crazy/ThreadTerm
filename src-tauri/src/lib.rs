@@ -8,6 +8,7 @@ mod platform_material;
 mod provider_sessions;
 pub mod pty;
 mod shell_integration;
+mod stats;
 mod supervisor;
 
 use tauri::Manager;
@@ -95,6 +96,8 @@ pub fn run() {
             notification::notification_send_os,
             provider_sessions::provider_find_recent_session,
             provider_sessions::provider_list_recent_sessions,
+            stats::stats_compute,
+            stats::stats_cancel,
             platform_material::native_platform_material_state,
             shell_integration::detect_shell,
             shell_integration::preview_shell_integration,

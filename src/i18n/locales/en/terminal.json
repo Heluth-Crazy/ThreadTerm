@@ -32,7 +32,32 @@
     "noProjectDescription": "Create one here, or pick another project from the sidebar.",
     "newHere": "New here",
     "showAll": "Show all",
-    "reorderCard": "Drag to reorder card"
+    "reorderCard": "Drag to reorder card",
+    "reorderDisabledWhileSearching": "Clear search to reorder"
+  },
+  "cardSearch": {
+    "placeholder": "Filter cards by name or path…",
+    "filter": "Filter",
+    "empty": "No cards match “{{query}}”.",
+    "clear": "Clear search"
+  },
+  "stats": {
+    "title": "Token usage",
+    "toggle": "Token usage",
+    "refresh": "Refresh",
+    "close": "Close",
+    "range": { "today": "Today", "7d": "7 days", "30d": "30 days", "all": "All" },
+    "tokens": "tokens",
+    "sessions": "sessions",
+    "calls": "calls",
+    "usageInput": "input",
+    "usageOutput": "output",
+    "usageCacheWrite": "cache write",
+    "usageCacheRead": "cache read",
+    "byModel": "By model",
+    "byProject": "By project",
+    "loading": "Scanning sessions…",
+    "empty": "No usage in this window."
   },
   "dialog": {
     "chooseProjectDirectory": "Choose project directory",
@@ -60,6 +85,8 @@
     "newActivity": "New activity",
     "copyPath": "Copy path",
     "revealProject": "Reveal project",
+    "rename": "Rename",
+    "renameHint": "Double-click to rename",
     "unpin": "Unpin from overlay selector",
     "pin": "Pin to overlay selector",
     "pinFull": "Pin list is full (max {{max}})",

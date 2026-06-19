@@ -162,6 +162,9 @@ function prepareAutoRestartForPersistence(card: TerminalCard): TerminalCard['aut
 
 /** Maximum number of user-pinned cards eligible for the global selector overlay. */
 export const MAX_PINNED_CARDS = 6;
+
+/** Maximum length of a user-assigned card display name (`projectName`). */
+export const MAX_CARD_NAME_LENGTH = 80;
 export { DEFAULT_PET_CONFIG } from '../lib/petConfig';
 
 export interface ArchivedTerminalCard extends TerminalCard {
@@ -246,6 +249,12 @@ interface TerminalStore {
   markCardRead: (id: string) => void;
   markProviderSessionBound: (id: string, providerSessionId: string) => void;
   updateCardAiIntent: (id: string, intent: TerminalAiIntent | null) => void;
+  /**
+   * Rename a card's display name. Trims, caps at MAX_CARD_NAME_LENGTH, and
+   * falls back to the project directory basename when the new name is blank.
+   * Only the targeted card changes — cards sharing a projectPath are unaffected.
+   */
+  renameCard: (id: string, name: string) => void;
   moveProjectCard: (projectPath: string, id: string, toIndex: number) => void;
   recordBlockStarted: (input: {
     cardId: string;
@@ -536,6 +545,19 @@ export const useTerminalStore = create<TerminalStore>()(
         }));
         return id;
       },
+
+      renameCard: (id, name) =>
+        set((state) => {
+          const idx = state.cards.findIndex((c) => c.id === id);
+          if (idx === -1) return state;
+          const existing = state.cards[idx];
+          const trimmed = name.trim().slice(0, MAX_CARD_NAME_LENGTH);
+          const nextName = trimmed || pathBasename(existing.projectPath);
+          if (nextName === existing.projectName) return state;
+          const cards = [...state.cards];
+          cards[idx] = { ...existing, projectName: nextName };
+          return { cards };
+        }),
 
       importProviderSessionCards: (sessions) => {
         if (sessions.length === 0) return 0;

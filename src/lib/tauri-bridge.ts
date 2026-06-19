@@ -2,6 +2,13 @@ import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { listen as tauriListen } from '@tauri-apps/api/event';
 import type { ResolvedThemeMode, ThemeModeTokens } from '../theme/themeTypes';
 import type { CardMeta } from '../mobile/bridge/protocol';
+import type {
+  StatsDoneEvent,
+  StatsErrorEvent,
+  StatsProgressEvent,
+  StatsRange,
+  StatsScope,
+} from '../types/stats';
 
 /** Returns true when running inside the Tauri desktop webview. */
 export const isTauriEnv = (): boolean =>
@@ -169,6 +176,22 @@ export const providerSessions = {
       projectPath,
       sinceMs: sinceMs ?? null,
     }),
+};
+
+export const tokenStats = {
+  compute: (scope: StatsScope, range: StatsRange, requestId: number): Promise<void> =>
+    invoke<void>('stats_compute', { scope, range, requestId }),
+
+  cancel: (): Promise<void> => invoke<void>('stats_cancel'),
+
+  onProgress: (cb: (payload: StatsProgressEvent) => void): Promise<() => void> =>
+    listen<StatsProgressEvent>('stats://progress', (e) => cb(e.payload)),
+
+  onDone: (cb: (payload: StatsDoneEvent) => void): Promise<() => void> =>
+    listen<StatsDoneEvent>('stats://done', (e) => cb(e.payload)),
+
+  onError: (cb: (payload: StatsErrorEvent) => void): Promise<() => void> =>
+    listen<StatsErrorEvent>('stats://error', (e) => cb(e.payload)),
 };
 
 export interface BridgeStatus {

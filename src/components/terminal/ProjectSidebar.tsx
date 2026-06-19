@@ -215,7 +215,7 @@ export function ProjectSidebar({
   return (
     <aside
       className={[
-        'flex h-full shrink-0 flex-col etched-border-r bg-white/5 backdrop-blur-2xl transition-all duration-300 ease-in-out',
+        'flex h-full shrink-0 flex-col etched-border-r bg-background/80 backdrop-blur-2xl transition-all duration-300 ease-in-out',
         collapsed ? 'w-14' : 'w-64',
         className,
       ].join(' ')}
@@ -232,7 +232,8 @@ export function ProjectSidebar({
           </button>
         ) : null}
         {!collapsed && (
-          <span className="pl-1 text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+          <span className="flex items-center gap-2 pl-0.5 text-[13px] font-semibold text-foreground">
+            <Layers className="h-4 w-4 text-primary" />
             {t('sidebar.projects')}
           </span>
         )}
@@ -246,7 +247,7 @@ export function ProjectSidebar({
         </button>
       </div>
 
-      <nav className="min-h-0 flex-1 overflow-y-auto py-1">
+      <nav className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5">
         {/* "All" pseudo-project */}
         <SidebarRow
           collapsed={collapsed}
@@ -259,7 +260,7 @@ export function ProjectSidebar({
         />
 
         {groups.length > 0 && !collapsed && (
-          <div className="mx-2 my-1.5 border-t border-white/10/60" />
+          <div className="my-1.5 border-t border-border" />
         )}
 
         {groups.map((g) => (
@@ -305,7 +306,7 @@ export function ProjectSidebar({
       {contextMenu && (
         <div
           role="menu"
-          className="fixed z-[230] w-52 rounded-[var(--radius-md)] border border-white/10 bg-popover p-1 text-xs shadow-lg"
+          className="fixed z-[230] w-52 rounded-[var(--radius-md)] border border-border bg-popover p-1 text-xs shadow-lg"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
@@ -386,21 +387,23 @@ function SidebarRow({
       type="button"
       onClick={onClick}
       onContextMenu={onContextMenu}
-      title={collapsed ? `${label} (${count})` : undefined}
+      title={collapsed ? `${label} (${count})` : subLabel || label}
       className={[
-        'group relative flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left text-[12px] transition-colors',
+        'group relative flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left text-[13px] transition-colors',
         collapsed ? 'justify-center' : '',
         selected
           ? 'bg-primary/10 text-primary'
           : 'text-foreground/80 hover:bg-accent hover:text-accent-foreground',
       ].join(' ')}
-      style={collapsed ? undefined : { marginLeft: 8, marginRight: 8, width: 'calc(100% - 16px)' }}
     >
-      <div className={[
-        'absolute inset-0 rounded-inherit transition-opacity duration-300',
-        selected ? 'bg-primary/10 opacity-100' : 'bg-white/5 opacity-0 group-hover:opacity-100'
-      ].join(' ')} />
-      <span className="relative z-10 shrink-0">
+      {/* Active indicator — left accent bar (Finder/VSCode style). */}
+      {selected && !collapsed && (
+        <span
+          aria-hidden="true"
+          className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-primary"
+        />
+      )}
+      <span className="relative shrink-0">
         {icon}
         {unread > 0 && (
           <span className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.6)]" />
@@ -409,21 +412,20 @@ function SidebarRow({
 
       {!collapsed && (
         <>
-          <span className="relative z-10 flex-1 min-w-0">
-            <span className={['block truncate font-semibold tracking-tight', selected ? 'text-primary' : 'text-foreground/90'].join(' ')}>{label}</span>
-            {subLabel && (
-              <span
-                className="block truncate text-[9px] font-mono text-muted-foreground/50 mt-0.5"
-                title={subLabel}
-              >
-                {subLabel}
-              </span>
-            )}
+          {/* Single-line label; full path lives in the button `title` tooltip
+              so the row height stays constant (no layout shift on hover). */}
+          <span
+            className={[
+              'min-w-0 flex-1 truncate font-semibold tracking-tight',
+              selected ? 'text-primary' : 'text-foreground/90',
+            ].join(' ')}
+          >
+            {label}
           </span>
           <span
             className={[
-              'relative z-10 shrink-0 rounded-full px-2 py-0.5 text-[9px] font-bold tabular-nums',
-              selected ? 'bg-primary text-primary-foreground' : 'bg-white/10 text-muted-foreground',
+              'shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums',
+              selected ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground',
             ].join(' ')}
           >
             {count}
@@ -437,7 +439,7 @@ function SidebarRow({
                 if (e.key === 'Enter' || e.key === ' ') onAux(e as unknown as MouseEvent);
               }}
               title={auxTitle}
-              className="relative z-10 opacity-0 transition-opacity hover:text-primary group-hover:opacity-100 ml-1"
+              className="ml-0.5 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-primary group-hover:opacity-100"
             >
               <FolderOpen className="h-3 w-3" />
             </span>

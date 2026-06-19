@@ -32,7 +32,32 @@
     "noProjectDescription": "可以在这里新建一个，或从侧栏选择其他项目。",
     "newHere": "在此新建",
     "showAll": "显示全部",
-    "reorderCard": "拖拽以重新排序卡片"
+    "reorderCard": "拖拽以重新排序卡片",
+    "reorderDisabledWhileSearching": "清除搜索后可拖拽排序"
+  },
+  "cardSearch": {
+    "placeholder": "按名称或路径筛选卡片…",
+    "filter": "筛选",
+    "empty": "没有匹配“{{query}}”的卡片。",
+    "clear": "清除搜索"
+  },
+  "stats": {
+    "title": "Token 用量",
+    "toggle": "Token 用量",
+    "refresh": "刷新",
+    "close": "关闭",
+    "range": { "today": "今天", "7d": "7 天", "30d": "30 天", "all": "全部" },
+    "tokens": "tokens",
+    "sessions": "会话",
+    "calls": "调用",
+    "usageInput": "输入",
+    "usageOutput": "输出",
+    "usageCacheWrite": "缓存写",
+    "usageCacheRead": "缓存读",
+    "byModel": "按模型",
+    "byProject": "按项目",
+    "loading": "正在扫描会话…",
+    "empty": "此时间窗口内无用量。"
   },
   "dialog": {
     "chooseProjectDirectory": "选择项目目录",
@@ -60,6 +85,8 @@
     "newActivity": "有新活动",
     "copyPath": "复制路径",
     "revealProject": "打开项目目录",
+    "rename": "重命名",
+    "renameHint": "双击重命名",
     "unpin": "从浮层选择器取消固定",
     "pin": "固定到浮层选择器",
     "pinFull": "固定列表已满（最多 {{max}} 个）",

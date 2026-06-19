@@ -438,6 +438,9 @@ function TerminalHome({
   wsStatus: BridgeConnectionState;
 }) {
   const { t } = useI18n();
+  // Mirror InstancesScreen: the home search field filters the "All sessions"
+  // list too, otherwise the field on this screen would do nothing.
+  const visibleCards = useMemo(() => filterCards(cards, searchQuery), [cards, searchQuery]);
   return (
     <main className="ios-screen">
       <IosHeader
@@ -520,21 +523,25 @@ function TerminalHome({
           <section className="section-block">
             <div className="section-heading">
               <h2>{t('home.allSessions')}</h2>
-              <span>{cards.length}</span>
+              <span>{searchQuery.trim() ? visibleCards.length : cards.length}</span>
             </div>
             <div className="ios-list-card">
-              {groupCardsByProject(cards).map((group) => (
-                <ProjectSessionGroup
-                  activeCardId={activeCard?.id ?? null}
-                  canControl={canControl}
-                  group={group}
-                  key={group.key}
-                  onActivateCard={onActivateCard}
-                  onDeleteCard={onDeleteCard}
-                  onOpenCard={onOpenCard}
-                  showHeader
-                />
-              ))}
+              {visibleCards.length === 0 ? (
+                <p className="empty-copy">{t('home.noMatches')}</p>
+              ) : (
+                groupCardsByProject(visibleCards).map((group) => (
+                  <ProjectSessionGroup
+                    activeCardId={activeCard?.id ?? null}
+                    canControl={canControl}
+                    group={group}
+                    key={group.key}
+                    onActivateCard={onActivateCard}
+                    onDeleteCard={onDeleteCard}
+                    onOpenCard={onOpenCard}
+                    showHeader
+                  />
+                ))
+              )}
             </div>
           </section>
         )}

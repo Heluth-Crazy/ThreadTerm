@@ -7,7 +7,7 @@
  *   • empty state invites the user to create the first terminal
  *   • always includes a "+ new terminal" tile at the end
  */
-import { useCallback, useMemo, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   closestCenter,
   DndContext,
@@ -24,12 +24,13 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { FolderOpen, GripVertical, Plus, TerminalSquare } from 'lucide-react';
+import { FolderOpen, GripVertical, Plus, Search, TerminalSquare, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { motion, useReducedMotion } from 'framer-motion';
 import { isTauriEnv } from '../../lib/tauri-bridge';
 import { openLocalDirectory } from '../../lib/localDirectory';
 import { compareCardsByActivity, orderCardsByIdList } from '../../lib/cardSort';
+import { matchesCardQuery } from '../../lib/cardSearch';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { TerminalCardComponent } from './TerminalCard';
 import type { TerminalCard } from '../../types/terminal';
@@ -73,19 +74,48 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
     return [...filtered].sort(compareCardsByActivity);
   }, [cards, projectCardOrder, selectedProjectPath]);
 
-  const visibleCardIds = useMemo(() => visibleCards.map((card) => card.id), [visibleCards]);
-  const sortingEnabled = Boolean(selectedProjectPath);
+  const [query, setQuery] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  // Filter is a collapsed icon chip by default; expands to a prompt input on
+  // click or "/" (kept expanded while a query is active).
+  const searchExpanded = searchOpen || query.trim().length > 0;
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    requestAnimationFrame(() => searchInputRef.current?.focus());
+  }, []);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      event.preventDefault();
+      openSearch();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [openSearch]);
+  const displayCards = useMemo(
+    () => visibleCards.filter((card) => matchesCardQuery(card, query)),
+    [visibleCards, query],
+  );
+
+  const visibleCardIds = useMemo(() => displayCards.map((card) => card.id), [displayCards]);
+  // Manual drag-reorder only makes sense in an unfiltered project view: a
+  // filtered list reorders nothing, and its indices wouldn't map back to the
+  // persisted project order.
+  const sortingEnabled = Boolean(selectedProjectPath) && !query.trim();
 
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       if (!selectedProjectPath) return;
       const { active, over } = event;
       if (!over || active.id === over.id) return;
-      const toIndex = visibleCards.findIndex((card) => card.id === over.id);
+      const toIndex = displayCards.findIndex((card) => card.id === over.id);
       if (toIndex === -1) return;
       moveProjectCard(selectedProjectPath, String(active.id), toIndex);
     },
-    [moveProjectCard, selectedProjectPath, visibleCards],
+    [moveProjectCard, selectedProjectPath, displayCards],
   );
 
   const selectedProjectLabel = useMemo(() => {
@@ -179,12 +209,16 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
 
   const cardTiles = (
     <>
-      {visibleCards.map((card) => (
+      {displayCards.map((card) => (
         <CardTile
           key={card.id}
           card={card}
           sortingEnabled={sortingEnabled}
+          showDisabledHandle={Boolean(selectedProjectPath) && Boolean(query.trim())}
           dragLabel={t('grid.reorderCard', { defaultValue: 'Drag to reorder card' })}
+          dragDisabledLabel={t('grid.reorderDisabledWhileSearching', {
+            defaultValue: 'Clear search to reorder',
+          })}
           isFocused={focusedCardId === card.id}
           onClick={() => onOpenTerminal?.(card.id)}
           onClose={() => removeCard(card.id)}
@@ -192,7 +226,9 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
         />
       ))}
 
-      {/* New Terminal Placeholder */}
+      {/* New Terminal Placeholder — hidden while filtering so the grid shows
+          only matches. */}
+      {!query.trim() && (
       <motion.button
         type="button"
         onClick={onCreateTerminal}
@@ -209,20 +245,90 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
           <div className="mt-1 text-[10px] opacity-60 font-mono">⌘/Ctrl + N</div>
         </div>
       </motion.button>
+      )}
     </>
   );
 
+  const noMatches = Boolean(query.trim()) && displayCards.length === 0;
+
   return (
-    <div className="flex h-full w-full flex-wrap content-start items-stretch gap-6 overflow-y-auto p-6 md:p-8">
-      {sortingEnabled ? (
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <SortableContext items={visibleCardIds} strategy={rectSortingStrategy}>
-            {cardTiles}
-          </SortableContext>
-        </DndContext>
-      ) : (
-        cardTiles
-      )}
+    <div className="flex h-full w-full flex-col">
+      <div className="shrink-0 px-6 pt-6 md:px-8 md:pt-8">
+        {searchExpanded ? (
+          <div className="inline-flex w-72 max-w-full items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 transition-shadow focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
+            <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <input
+              ref={searchInputRef}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onBlur={() => {
+                if (!query.trim()) setSearchOpen(false);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  setQuery('');
+                  setSearchOpen(false);
+                }
+              }}
+              placeholder={t('cardSearch.placeholder', { defaultValue: 'filter sessions…' })}
+              aria-label={t('cardSearch.placeholder', { defaultValue: 'filter sessions…' })}
+              className="min-w-0 flex-1 bg-transparent font-mono text-[13px] outline-none placeholder:text-muted-foreground"
+            />
+            {query.trim() && (
+              <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
+                {displayCards.length}/{visibleCards.length}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setQuery('');
+                setSearchOpen(false);
+              }}
+              aria-label={t('cardSearch.clear', { defaultValue: 'Clear search' })}
+              title={t('cardSearch.clear', { defaultValue: 'Clear search' })}
+              className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={openSearch}
+            title={t('cardSearch.filter', { defaultValue: 'Filter' })}
+            className="inline-flex items-center gap-2 rounded-[var(--radius-md)] border border-border bg-foreground/[0.04] px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            <Search className="h-4 w-4" />
+            {t('cardSearch.filter', { defaultValue: 'Filter' })}
+            <kbd className="rounded border border-border px-1 font-mono text-[10px] leading-tight">/</kbd>
+          </button>
+        )}
+      </div>
+
+      <div className="flex flex-1 flex-wrap content-start items-stretch gap-6 overflow-y-auto p-6 md:p-8">
+        {noMatches ? (
+          <div className="flex w-full flex-col items-center justify-center gap-3 py-16 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/5">
+              <Search className="h-5 w-5 text-muted-foreground/50" />
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {t('cardSearch.empty', {
+                defaultValue: 'No cards match “{{query}}”.',
+                query: query.trim(),
+              })}
+            </p>
+          </div>
+        ) : sortingEnabled ? (
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <SortableContext items={visibleCardIds} strategy={rectSortingStrategy}>
+              {cardTiles}
+            </SortableContext>
+          </DndContext>
+        ) : (
+          cardTiles
+        )}
+      </div>
     </div>
   );
 }
@@ -233,19 +339,23 @@ const CARD_TILE_CLASS =
 function CardTile({
   card,
   dragLabel,
+  dragDisabledLabel,
   isFocused,
   onClick,
   onClose,
   onArchive,
   sortingEnabled,
+  showDisabledHandle,
 }: {
   card: TerminalCard;
   dragLabel: string;
+  dragDisabledLabel: string;
   isFocused: boolean;
   onClick: () => void;
   onClose: () => void;
   onArchive: () => void;
   sortingEnabled: boolean;
+  showDisabledHandle: boolean;
 }) {
   if (!sortingEnabled) {
     return (
@@ -256,6 +366,17 @@ function CardTile({
           onClick={onClick}
           onClose={onClose}
           onArchive={onArchive}
+          dragHandle={
+            showDisabledHandle ? (
+              <span
+                aria-label={dragDisabledLabel}
+                title={dragDisabledLabel}
+                className="inline-flex h-7 w-5 shrink-0 cursor-not-allowed items-center justify-center rounded-[var(--radius-md)] text-muted-foreground/30"
+              >
+                <GripVertical className="h-4 w-4" aria-hidden="true" />
+              </span>
+            ) : undefined
+          }
         />
       </div>
     );
