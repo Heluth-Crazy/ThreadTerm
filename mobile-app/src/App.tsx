@@ -243,6 +243,21 @@ export function App() {
     [canControl, createRequestId, sendCommand],
   );
 
+  const requestRenameCard = useCallback(
+    (cardId: string, projectName: string) => {
+      if (!canControl) return;
+      const trimmed = projectName.trim();
+      if (!trimmed) return;
+      sendCommand({
+        kind: 'rename_card',
+        request_id: createRequestId('rename'),
+        card_id: cardId,
+        project_name: trimmed,
+      });
+    },
+    [canControl, createRequestId, sendCommand],
+  );
+
   const requestSpawn = useCallback(
     ({ command, projectPath, terminalType }: NewSessionInput) => {
       if (!canControl) return;
@@ -319,6 +334,7 @@ export function App() {
               onDeleteCard={requestClose}
               onOpenCard={openCard}
               onOpenScanner={() => setScannerOpen(true)}
+              onRenameCard={requestRenameCard}
               onSearchChange={setSearchQuery}
               permission={permission}
               searchQuery={searchQuery}
@@ -336,6 +352,7 @@ export function App() {
               onDeleteCard={requestClose}
               onNewSessionOpenChange={setNewSessionOpen}
               onOpenCard={openCard}
+              onRenameCard={requestRenameCard}
               onSearchChange={setSearchQuery}
               searchQuery={searchQuery}
               warmingUp={state.warmingUp}
@@ -418,6 +435,7 @@ function TerminalHome({
   onDeleteCard,
   onOpenCard,
   onOpenScanner,
+  onRenameCard,
   onSearchChange,
   permission,
   searchQuery,
@@ -432,6 +450,7 @@ function TerminalHome({
   onDeleteCard: (cardId: string) => void;
   onOpenCard: (cardId: string) => void;
   onOpenScanner: () => void;
+  onRenameCard?: (cardId: string, projectName: string) => void;
   onSearchChange: (value: string) => void;
   permission: string;
   searchQuery: string;
@@ -538,6 +557,7 @@ function TerminalHome({
                     onActivateCard={onActivateCard}
                     onDeleteCard={onDeleteCard}
                     onOpenCard={onOpenCard}
+                    onRenameCard={onRenameCard}
                     showHeader
                   />
                 ))
@@ -560,6 +580,7 @@ function InstancesScreen({
   onDeleteCard,
   onNewSessionOpenChange,
   onOpenCard,
+  onRenameCard,
   onSearchChange,
   searchQuery,
   warmingUp,
@@ -573,6 +594,7 @@ function InstancesScreen({
   onDeleteCard: (cardId: string) => void;
   onNewSessionOpenChange: (open: boolean) => void;
   onOpenCard: (cardId: string) => void;
+  onRenameCard?: (cardId: string, projectName: string) => void;
   onSearchChange: (value: string) => void;
   searchQuery: string;
   warmingUp: boolean;
@@ -624,6 +646,7 @@ function InstancesScreen({
                   onActivateCard={onActivateCard}
                   onDeleteCard={onDeleteCard}
                   onOpenCard={onOpenCard}
+                  onRenameCard={onRenameCard}
                 />
               </div>
             </section>
@@ -957,6 +980,7 @@ function ProjectSessionGroup({
   onActivateCard,
   onDeleteCard,
   onOpenCard,
+  onRenameCard,
   showHeader = false,
 }: {
   activeCardId: string | null;
@@ -965,6 +989,7 @@ function ProjectSessionGroup({
   onActivateCard: (cardId: string) => void;
   onDeleteCard: (cardId: string) => void;
   onOpenCard: (cardId: string) => void;
+  onRenameCard?: (cardId: string, projectName: string) => void;
   showHeader?: boolean;
 }) {
   return (
@@ -985,6 +1010,7 @@ function ProjectSessionGroup({
           onActivate={() => onActivateCard(card.id)}
           onDelete={() => onDeleteCard(card.id)}
           onOpen={() => onOpenCard(card.id)}
+          onRename={onRenameCard ? (name) => onRenameCard(card.id, name) : undefined}
         />
       ))}
     </>
