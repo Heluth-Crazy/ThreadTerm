@@ -32,7 +32,8 @@ use tower_http::{
 use super::{
     protocol::{
         parse_client_message, versioned_server_message, BridgeDevice, ClientMessage,
-        MobileCardRequest, MobileSpawnCardRequest, PairRequest, ServerMessage,
+        MobileCardRequest, MobileRenameCardRequest, MobileSpawnCardRequest, PairRequest,
+        ServerMessage,
         VersionedServerMessage,
     },
     BridgeRuntime,
@@ -516,6 +517,28 @@ async fn handle_client_message(
                     terminal_type,
                     project_path,
                     command,
+                })
+                .map_err(|message| ("command_failed".to_string(), message))
+        }
+        ClientMessage::RenameCard {
+            request_id,
+            card_id,
+            project_name,
+        } => {
+            ensure_full_permission(device)?;
+            crate::db::insert_audit_log(&device.id, "rename_card", Some(&card_id), &project_name)
+                .map_err(|e| {
+                    (
+                        "command_failed".to_string(),
+                        format!("Failed to audit rename: {e}"),
+                    )
+                })?;
+            context
+                .runtime
+                .emit_rename_card_request(MobileRenameCardRequest {
+                    request_id,
+                    card_id,
+                    project_name,
                 })
                 .map_err(|message| ("command_failed".to_string(), message))
         }

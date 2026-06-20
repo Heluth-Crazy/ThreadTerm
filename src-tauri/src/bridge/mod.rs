@@ -20,7 +20,8 @@ use crate::pty::{self, LivePtySessionSnapshot, SessionState};
 use pairing::PairingStore;
 use protocol::{
     AppThemeTokens, BridgeDevice, BridgeSnapshot, BridgeStatus, BridgeTheme, CardMeta,
-    MobileCardRequest, MobileSpawnCardRequest, PairQrResponse, ServerMessage,
+    MobileCardRequest, MobileRenameCardRequest, MobileSpawnCardRequest, PairQrResponse,
+    ServerMessage,
     TerminalSnapshotMessage, TerminalStatus, TerminalThemeTokens, ThemeMode,
 };
 
@@ -213,6 +214,13 @@ impl BridgeRuntime {
         self.emit_desktop_event("mobile://remove-card", request)
     }
 
+    pub fn emit_rename_card_request(
+        &self,
+        request: MobileRenameCardRequest,
+    ) -> Result<(), String> {
+        self.emit_desktop_event("mobile://rename-card", request)
+    }
+
     fn emit_desktop_event<T>(&self, event: &str, payload: T) -> Result<(), String>
     where
         T: serde::Serialize + Clone,
@@ -347,6 +355,24 @@ pub async fn bridge_resolve_mobile_close(
     message: Option<String>,
 ) -> Result<(), String> {
     BRIDGE_RUNTIME.broadcast(ServerMessage::CloseResult {
+        request_id,
+        ok,
+        card_id,
+        error_code,
+        message,
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn bridge_resolve_mobile_rename_card(
+    request_id: String,
+    ok: bool,
+    card_id: Option<String>,
+    error_code: Option<String>,
+    message: Option<String>,
+) -> Result<(), String> {
+    BRIDGE_RUNTIME.broadcast(ServerMessage::RenameResult {
         request_id,
         ok,
         card_id,

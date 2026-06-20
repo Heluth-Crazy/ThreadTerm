@@ -72,6 +72,7 @@ export type ClientCommand =
   | { kind: 'pin'; card_id: string; pinned: boolean }
   | { kind: 'set_intent'; card_id: string; intent: string | null }
   | { kind: 'mark_read'; card_id: string }
+  | { kind: 'rename_card'; request_id: string; card_id: string; project_name: string }
   | { kind: 'ping' };
 
 export type ClientMessage = VersionedBridgeMessage & ClientCommand;
@@ -87,6 +88,7 @@ export const CLIENT_MESSAGE_KINDS = [
   'pin',
   'set_intent',
   'mark_read',
+  'rename_card',
   'ping',
 ] as const satisfies readonly ClientCommand['kind'][];
 
@@ -123,7 +125,7 @@ export type ServerCommand =
   | { kind: 'exit'; card_id: string; code: number | null }
   | { kind: 'notification'; entry: NotificationEntry }
   | {
-      kind: 'spawn_result' | 'activate_result' | 'close_result';
+      kind: 'spawn_result' | 'activate_result' | 'close_result' | 'rename_result';
       request_id: string;
       ok: boolean;
       card_id?: string | null;
@@ -151,6 +153,7 @@ export const SERVER_MESSAGE_KINDS = [
   'spawn_result',
   'activate_result',
   'close_result',
+  'rename_result',
   'pong',
   'error',
 ] as const satisfies readonly ServerCommand['kind'][];

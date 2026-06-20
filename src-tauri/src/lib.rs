@@ -113,6 +113,7 @@ pub fn run() {
             bridge::bridge_resolve_mobile_spawn,
             bridge::bridge_resolve_mobile_activate,
             bridge::bridge_resolve_mobile_close,
+            bridge::bridge_resolve_mobile_rename_card,
             bridge::bridge_broadcast_theme,
             overlay::overlay_show_selector,
             overlay::overlay_hide_selector,

@@ -213,6 +213,14 @@ pub struct MobileCardRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileRenameCardRequest {
+    pub request_id: String,
+    pub card_id: String,
+    pub project_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DevicePermission {
     ReadOnly,
@@ -283,6 +291,11 @@ pub enum ClientMessage {
     },
     MarkRead {
         card_id: String,
+    },
+    RenameCard {
+        request_id: String,
+        card_id: String,
+        project_name: String,
     },
     Ping,
 }
@@ -355,6 +368,13 @@ pub enum ServerMessage {
         message: Option<String>,
     },
     CloseResult {
+        request_id: String,
+        ok: bool,
+        card_id: Option<String>,
+        error_code: Option<String>,
+        message: Option<String>,
+    },
+    RenameResult {
         request_id: String,
         ok: bool,
         card_id: Option<String>,
