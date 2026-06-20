@@ -352,6 +352,11 @@ export function TerminalManager() {
         console.warn('[MobileBridge] failed to resolve close', error);
       });
     };
+    const resolveRename = (result: Parameters<typeof mobileBridge.resolveRenameCard>[0]) => {
+      void mobileBridge.resolveRenameCard(result).catch((error) => {
+        console.warn('[MobileBridge] failed to resolve rename', error);
+      });
+    };
 
     void Promise.all([
       mobileBridge.onSpawnCard((payload) => {
@@ -412,6 +417,25 @@ export function TerminalManager() {
 
         useTerminalStore.getState().removeCard(payload.cardId);
         resolveClose({ requestId: payload.requestId, ok: true, cardId: payload.cardId });
+      }),
+      mobileBridge.onRenameCard((payload) => {
+        const exists = useTerminalStore
+          .getState()
+          .cards
+          .some((candidate) => candidate.id === payload.cardId);
+        if (!exists) {
+          resolveRename({
+            requestId: payload.requestId,
+            ok: false,
+            cardId: payload.cardId,
+            errorCode: 'card_not_found',
+            message: 'Card not found.',
+          });
+          return;
+        }
+
+        useTerminalStore.getState().renameCard(payload.cardId, payload.projectName);
+        resolveRename({ requestId: payload.requestId, ok: true, cardId: payload.cardId });
       }),
     ])
       .then((nextUnsubscribers) => {

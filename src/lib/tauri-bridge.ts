@@ -231,6 +231,12 @@ export interface MobileCardRequest {
   cardId: string;
 }
 
+export interface MobileRenameCardRequest {
+  requestId: string;
+  cardId: string;
+  projectName: string;
+}
+
 export interface MobileCommandResult {
   requestId: string;
   ok: boolean;
@@ -304,6 +310,9 @@ export const mobileBridge = {
   resolveClose: (result: MobileCommandResult): Promise<void> =>
     invoke<void>('bridge_resolve_mobile_close', { ...result }),
 
+  resolveRenameCard: (result: MobileCommandResult): Promise<void> =>
+    invoke<void>('bridge_resolve_mobile_rename_card', { ...result }),
+
   onSpawnCard: (cb: (payload: MobileSpawnCardRequest) => void): Promise<() => void> =>
     listen<MobileSpawnCardRequest>('mobile://spawn-card', (e) => cb(e.payload)),
 
@@ -312,6 +321,9 @@ export const mobileBridge = {
 
   onRemoveCard: (cb: (payload: MobileCardRequest) => void): Promise<() => void> =>
     listen<MobileCardRequest>('mobile://remove-card', (e) => cb(e.payload)),
+
+  onRenameCard: (cb: (payload: MobileRenameCardRequest) => void): Promise<() => void> =>
+    listen<MobileRenameCardRequest>('mobile://rename-card', (e) => cb(e.payload)),
 
   broadcastTheme: (tokens: ThemeModeTokens, mode: ResolvedThemeMode): Promise<void> =>
     invoke<void>('bridge_broadcast_theme', {
