@@ -9,6 +9,7 @@ import {
   Languages,
   Monitor,
   Moon,
+  Pencil,
   Play,
   Plus,
   QrCode,
@@ -1010,7 +1011,7 @@ function ProjectSessionGroup({
           onActivate={() => onActivateCard(card.id)}
           onDelete={() => onDeleteCard(card.id)}
           onOpen={() => onOpenCard(card.id)}
-          onRename={onRenameCard ? (name) => onRenameCard(card.id, name) : undefined}
+          onRename={onRenameCard ? (name: string) => onRenameCard(card.id, name) : undefined}
         />
       ))}
     </>
@@ -1025,6 +1026,7 @@ function SessionRow({
   onActivate,
   onDelete,
   onOpen,
+  onRename,
 }: {
   active: boolean;
   canControl: boolean;
@@ -1033,9 +1035,18 @@ function SessionRow({
   onActivate: () => void;
   onDelete: () => void;
   onOpen: () => void;
+  onRename?: (name: string) => void;
 }) {
   const { t } = useI18n();
   const showActivate = canControl && Boolean(card.attachable) && !isCardLive(card);
+  const handleRename = () => {
+    if (!onRename) return;
+    const nextName = window.prompt(t('instances.renamePrompt'), displayCardTitle(card));
+    if (nextName !== null) {
+      onRename(nextName);
+    }
+  };
+
   return (
     <div className={`instance-row ${active ? 'instance-row-active' : ''}`}>
       <button className="instance-row-main" type="button" onClick={onOpen}>
@@ -1062,6 +1073,17 @@ function SessionRow({
               title={t('instances.activate')}
             >
               <Play size={16} />
+            </button>
+          )}
+          {onRename && (
+            <button
+              className="instance-action-button"
+              type="button"
+              onClick={handleRename}
+              aria-label={t('instances.rename')}
+              title={t('instances.rename')}
+            >
+              <Pencil size={16} />
             </button>
           )}
           <button
