@@ -91,6 +91,26 @@ describe('terminalStore — card lifecycle', () => {
     );
   });
 
+  it('binds Codex app-server thread metadata separately from CLI session metadata', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'codex' });
+    s.markProviderSessionBound(id, 'codex-cli-session-1');
+    s.bindCodexAppThread(id, {
+      threadId: 'codex-thread-1',
+      sessionId: 'codex-app-session-1',
+      threadPath: '/tmp/codex-thread.jsonl',
+      boundAt: 1234,
+    });
+
+    expect(useTerminalStore.getState().getCardById(id)).toMatchObject({
+      providerSessionId: 'codex-cli-session-1',
+      codexAppThreadId: 'codex-thread-1',
+      codexAppSessionId: 'codex-app-session-1',
+      codexAppThreadPath: '/tmp/codex-thread.jsonl',
+      codexAppBoundAt: 1234,
+    });
+  });
+
   it('imports provider session metadata as bound cards without focusing them', () => {
     const s = useTerminalStore.getState();
     const existingId = s.createCard({

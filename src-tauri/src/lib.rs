@@ -1,5 +1,6 @@
 mod ai_explain;
 mod bridge;
+mod codex_app;
 mod db;
 mod local_directory;
 mod notification;
@@ -115,6 +116,14 @@ pub fn run() {
             bridge::bridge_resolve_mobile_close,
             bridge::bridge_resolve_mobile_rename_card,
             bridge::bridge_broadcast_theme,
+            codex_app::codex_app_status,
+            codex_app::codex_app_open_card,
+            codex_app::codex_app_send_message,
+            codex_app::codex_app_respond_request,
+            codex_app::codex_app_interrupt,
+            codex_app::codex_app_compact,
+            codex_app::codex_app_set_goal,
+            codex_app::codex_app_list_skills,
             overlay::overlay_show_selector,
             overlay::overlay_hide_selector,
             overlay::overlay_show_float,

@@ -26,6 +26,7 @@ import type {
   TerminalCreateOptions,
   TerminalEvent,
   TerminalAiIntent,
+  CodexAppThreadBinding,
   ProviderSessionImportInfo,
   TerminalStatus,
 } from '../types/terminal';
@@ -248,6 +249,7 @@ interface TerminalStore {
   markUnread: (id: string, unread: boolean) => void;
   markCardRead: (id: string) => void;
   markProviderSessionBound: (id: string, providerSessionId: string) => void;
+  bindCodexAppThread: (id: string, binding: CodexAppThreadBinding) => void;
   updateCardAiIntent: (id: string, intent: TerminalAiIntent | null) => void;
   /**
    * Rename a card's display name. Trims, caps at MAX_CARD_NAME_LENGTH, and
@@ -981,6 +983,24 @@ export const useTerminalStore = create<TerminalStore>()(
           return { cards };
         }),
 
+      bindCodexAppThread: (id, binding) =>
+        set((state) => {
+          const threadId = binding.threadId.trim();
+          if (!threadId) return state;
+          const idx = state.cards.findIndex((c) => c.id === id);
+          if (idx === -1) return state;
+          const cards = [...state.cards];
+          const existing = cards[idx];
+          cards[idx] = {
+            ...existing,
+            codexAppThreadId: threadId,
+            codexAppSessionId: binding.sessionId?.trim() || undefined,
+            codexAppThreadPath: binding.threadPath?.trim() || undefined,
+            codexAppBoundAt: binding.boundAt ?? Date.now(),
+          };
+          return { cards };
+        }),
+
       updateCardAiIntent: (id, intent) =>
         set((state) => {
           const idx = state.cards.findIndex((c) => c.id === id);
@@ -1445,7 +1465,7 @@ export const useTerminalStore = create<TerminalStore>()(
         // AI Supervisor v0.1 (PRD D3) — master switch persisted; default OFF.
         supervisorEnabled: state.supervisorEnabled,
       }),
-      version: 13,
+      version: 14,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         const cards = state.cards?.map((card) => ({
