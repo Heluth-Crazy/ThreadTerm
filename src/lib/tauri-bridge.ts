@@ -178,6 +178,108 @@ export const providerSessions = {
     }),
 };
 
+export interface CodexAppStatus {
+  running: boolean;
+  initialized: boolean;
+  userAgent?: string | null;
+  codexHome?: string | null;
+  platformOs?: string | null;
+  lastError?: string | null;
+}
+
+export interface CodexAppOpenCardResult {
+  cardId: string;
+  threadId: string;
+  sessionId?: string | null;
+  threadPath?: string | null;
+  status: 'resumed' | 'listed' | 'created';
+  thread: unknown;
+}
+
+export interface CodexAppNotificationPayload {
+  cardId?: string | null;
+  method: string;
+  params: unknown;
+  raw: unknown;
+}
+
+export interface CodexAppRequestPayload {
+  requestId: unknown;
+  cardId?: string | null;
+  method: string;
+  params: unknown;
+  raw: unknown;
+}
+
+export interface CodexAppDisconnectedPayload {
+  message: string;
+}
+
+export const codexApp = {
+  status: (): Promise<CodexAppStatus> =>
+    invoke<CodexAppStatus>('codex_app_status'),
+
+  openCard: (input: {
+    cardId: string;
+    cwd: string;
+    codexAppThreadId?: string | null;
+    providerSessionId?: string | null;
+  }): Promise<CodexAppOpenCardResult> =>
+    invoke<CodexAppOpenCardResult>('codex_app_open_card', {
+      cardId: input.cardId,
+      cwd: input.cwd,
+      codexAppThreadId: input.codexAppThreadId ?? null,
+      providerSessionId: input.providerSessionId ?? null,
+    }),
+
+  sendMessage: (input: {
+    cardId: string;
+    threadId: string;
+    text: string;
+    input?: unknown[] | null;
+    cwd?: string | null;
+  }): Promise<unknown> =>
+    invoke<unknown>('codex_app_send_message', {
+      cardId: input.cardId,
+      threadId: input.threadId,
+      text: input.text,
+      input: input.input ?? null,
+      cwd: input.cwd ?? null,
+    }),
+
+  respondRequest: (requestId: unknown, response: unknown): Promise<void> =>
+    invoke<void>('codex_app_respond_request', { requestId, response }),
+
+  interrupt: (threadId: string, turnId: string): Promise<unknown> =>
+    invoke<unknown>('codex_app_interrupt', { threadId, turnId }),
+
+  compact: (threadId: string): Promise<unknown> =>
+    invoke<unknown>('codex_app_compact', { threadId }),
+
+  setGoal: (
+    threadId: string,
+    objective: string,
+    tokenBudget?: number | null,
+  ): Promise<unknown> =>
+    invoke<unknown>('codex_app_set_goal', {
+      threadId,
+      objective,
+      tokenBudget: tokenBudget ?? null,
+    }),
+
+  listSkills: (cwd: string): Promise<unknown> =>
+    invoke<unknown>('codex_app_list_skills', { cwd }),
+
+  onNotification: (cb: (payload: CodexAppNotificationPayload) => void): Promise<() => void> =>
+    listen<CodexAppNotificationPayload>('codex-app://notification', (e) => cb(e.payload)),
+
+  onRequest: (cb: (payload: CodexAppRequestPayload) => void): Promise<() => void> =>
+    listen<CodexAppRequestPayload>('codex-app://request', (e) => cb(e.payload)),
+
+  onDisconnected: (cb: (payload: CodexAppDisconnectedPayload) => void): Promise<() => void> =>
+    listen<CodexAppDisconnectedPayload>('codex-app://disconnected', (e) => cb(e.payload)),
+};
+
 export const tokenStats = {
   compute: (scope: StatsScope, range: StatsRange, requestId: number): Promise<void> =>
     invoke<void>('stats_compute', { scope, range, requestId }),

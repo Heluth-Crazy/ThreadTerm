@@ -128,6 +128,13 @@ export interface TerminalAutoRestartConfig {
   lastExitCode?: number;
 }
 
+export interface CodexAppThreadBinding {
+  threadId: string;
+  sessionId?: string | null;
+  threadPath?: string | null;
+  boundAt?: number;
+}
+
 // ── Card ─────────────────────────────────────────────────────────────────────
 
 export interface TerminalCard {
@@ -149,6 +156,14 @@ export interface TerminalCard {
   providerSessionBoundAt?: number;
   /** Last time ThreadTerm launched this card with a provider-native session id. */
   providerSessionLastResumeAt?: number;
+  /** Codex app-server thread id used by Chat Mode. Kept separate from CLI resume ids. */
+  codexAppThreadId?: string;
+  /** Codex app-server session id for display/debugging; may differ from the thread id. */
+  codexAppSessionId?: string;
+  /** Codex app-server rollout/history path when the server reports one. */
+  codexAppThreadPath?: string;
+  /** Last time ThreadTerm bound this card to an app-server thread. */
+  codexAppBoundAt?: number;
   /** User-selected intent label for quickly scanning AI CLI cards. */
   aiIntent?: TerminalAiIntent;
   status: TerminalStatus;
