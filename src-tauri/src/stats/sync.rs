@@ -1,0 +1,413 @@
+//! Incremental sync of Claude/Codex session logs into the `usage_records` table.
+//!
+//! ## Data flow
+//! ```text
+//! jsonl_files_recent_first → per-file mtime check → parse → INSERT OR IGNORE → usage_records
+//!                                            ↓
+//!                                     session_log_sync (mtime + line offset)
+//! ```
+//!
+//! ## Incremental strategy
+//! - **mtime gate**: a file whose mtime hasn't bumped since the last sync is
+//!   skipped whole (no read, no parse).
+//! - **INSERT OR IGNORE**: for files that did change, we re-parse the whole
+//!   file (Claude/Codex dedup is already handled inside the parser) and rely on
+//!   the `request_id` primary key to skip rows already imported. Codex deltas
+//!   depend on cumulative state that can't be cheaply resumed mid-file, so
+//!   whole-file reparse is the correct-if-less-incremental choice; the mtime
+//!   gate ensures only actively-appended files pay this cost.
+//! - **DedupKey cross-check**: a second guard that catches the same billable
+//!   event recorded with different request_ids (e.g. proxy + session log).
+
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use rusqlite::params;
+
+use crate::db::get_db;
+use crate::provider_sessions::jsonl_files_recent_first;
+use crate::stats::parse;
+use crate::stats::pricing;
+use crate::stats::types::{CallRecord, DedupKey, UsageSummary};
+
+/// Aggregate result of one sync pass.
+#[derive(Debug, Clone, Default)]
+pub struct SyncResult {
+    pub imported: u32,
+    pub skipped: u32,
+    pub files_scanned: u32,
+    pub errors: Vec<String>,
+}
+
+impl SyncResult {
+    fn merge(&mut self, other: &SyncResult) {
+        self.imported += other.imported;
+        self.skipped += other.skipped;
+        self.files_scanned += other.files_scanned;
+        self.errors.extend(other.errors.iter().cloned());
+    }
+}
+
+const PROGRESS_EVERY: usize = 16;
+
+/// Sync all providers' session logs into `usage_records`. Scans only files
+/// newer than `lo_ms` (coarse mtime pre-filter); the mtime gate then skips
+/// unchanged files entirely. `on_progress(scanned, total)` is called
+/// periodically so the caller can stream progress to the UI.
+pub fn sync_all<F: FnMut(usize, usize)>(lo_ms: Option<u64>, mut on_progress: F) -> SyncResult {
+    // Collect candidates from both providers up front so `total` is known
+    // before the scan loop starts — the UI progress bar needs a denominator.
+    let mut files: Vec<(PathBuf, &'static str)> = Vec::new();
+    if let Some(root) = super::claude_root() {
+        for f in jsonl_files_recent_first(&root, lo_ms) {
+            files.push((f.path, "claude"));
+        }
+    }
+    if let Some(root) = super::codex_root() {
+        for f in jsonl_files_recent_first(&root, lo_ms) {
+            files.push((f.path, "codex"));
+        }
+    }
+
+    let total = files.len();
+    let mut result = SyncResult::default();
+
+    for (i, (path, provider)) in files.iter().enumerate() {
+        if i % PROGRESS_EVERY == 0 {
+            on_progress(i + 1, total);
+        }
+        let r = match *provider {
+            "claude" => sync_claude_file(path),
+            "codex" => sync_codex_file(path),
+            _ => continue,
+        };
+        result.merge(&r);
+    }
+    on_progress(total, total);
+
+    if result.imported > 0 {
+        tracing::info!(
+            "[STATS-SYNC] imported {} skipped {} files {} errors {}",
+            result.imported,
+            result.skipped,
+            result.files_scanned,
+            result.errors.len()
+        );
+    }
+
+    result
+}
+
+/// File mtime as nanoseconds since epoch. Stored in `session_log_sync` so a
+/// nanosecond-precision change is detected even on filesystems with sub-second
+/// mtime resolution.
+fn mtime_nanos(path: &Path) -> i64 {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
+/// Read (last_modified, last_line_offset) for a file; (0, 0) when unseen.
+fn get_sync_state(conn: &rusqlite::Connection, file_path: &str) -> (i64, i64) {
+    conn.query_row(
+        "SELECT last_modified, last_line_offset FROM session_log_sync WHERE file_path = ?1",
+        params![file_path],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+    )
+    .unwrap_or((0, 0))
+}
+
+/// Persist sync progress for a file.
+fn update_sync_state(
+    conn: &rusqlite::Connection,
+    file_path: &str,
+    last_modified: i64,
+    last_offset: i64,
+) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO session_log_sync
+            (file_path, last_modified, last_line_offset, last_synced_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![file_path, last_modified, last_offset, now],
+    );
+}
+
+/// Count lines in a file (for the line-offset cursor). Best-effort: on read
+/// error falls back to 0, which just means the next sync re-evaluates the file.
+fn line_count(path: &Path) -> i64 {
+    fs::File::open(path)
+        .ok()
+        .map(|f| BufReader::new(f).lines().count() as i64)
+        .unwrap_or(0)
+}
+
+/// True when an equivalent billable event already exists (same provider, model,
+/// token shape, and timestamp). Catches proxy + session-log duplicates that
+/// have different request_ids.
+fn dup_exists(conn: &rusqlite::Connection, key: &DedupKey) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM usage_records
+         WHERE provider = ?1 AND model = ?2
+           AND input_tokens = ?3 AND output_tokens = ?4
+           AND cache_read_tokens = ?5 AND cache_creation_tokens = ?6
+           AND created_at = ?7
+         LIMIT 1",
+        params![
+            key.provider,
+            key.model,
+            key.input_tokens,
+            key.output_tokens,
+            key.cache_read_tokens,
+            key.cache_creation_tokens,
+            key.created_at,
+        ],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+/// Insert one call into `usage_records`. Returns true if a new row was written.
+fn insert_record(
+    conn: &rusqlite::Connection,
+    request_id: &str,
+    provider: &str,
+    record: &CallRecord,
+    project_path: &str,
+    created_at: i64,
+) -> bool {
+    let dedup = DedupKey {
+        provider,
+        model: &record.model,
+        input_tokens: record.usage.input,
+        output_tokens: record.usage.output,
+        cache_read_tokens: record.usage.cache_read,
+        cache_creation_tokens: record.usage.cache_creation,
+        created_at,
+    };
+    if dup_exists(conn, &dedup) {
+        return false;
+    }
+
+    let cb = pricing::cost_breakdown(&record.model, &record.usage);
+    let inserted = conn
+        .execute(
+            "INSERT OR IGNORE INTO usage_records
+                (request_id, provider, model,
+                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                 input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd,
+                 total_cost_usd, session_id, project_path, created_at, data_source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                request_id,
+                provider,
+                record.model,
+                record.usage.input,
+                record.usage.output,
+                record.usage.cache_read,
+                record.usage.cache_creation,
+                cb.input,
+                cb.output,
+                cb.cache_read,
+                cb.cache_write,
+                cb.total,
+                record.session_id,
+                project_path,
+                created_at,
+                "session_log",
+            ],
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    inserted
+}
+
+/// Sync one Claude session jsonl.
+fn sync_claude_file(path: &Path) -> SyncResult {
+    let mut result = SyncResult::default();
+    result.files_scanned = 1;
+
+    let Ok(conn) = get_db() else {
+        result.errors.push("DB unavailable".into());
+        return result;
+    };
+    let file_path = path.to_string_lossy().to_string();
+    let modified = mtime_nanos(path);
+
+    let (last_modified, _last_offset) = get_sync_state(&conn, &file_path);
+    if modified <= last_modified {
+        return result; // unchanged
+    }
+
+    let (cwd, calls) = parse::parse_claude_file(path);
+    let file_mtime_secs = (modified / 1_000_000_000).max(0);
+
+    for call in &calls {
+        // Claude dedup key: the Anthropic message id is globally unique.
+        let Some(msg_id) = call.message_id.as_deref() else {
+            result.skipped += 1;
+            continue;
+        };
+        let request_id = format!("session:{msg_id}");
+        let created_at = call
+            .timestamp_ms
+            .map(|ms| (ms / 1000) as i64)
+            .unwrap_or(file_mtime_secs);
+
+        if insert_record(&conn, &request_id, "claude", call, &cwd, created_at) {
+            result.imported += 1;
+        } else {
+            result.skipped += 1;
+        }
+    }
+
+    update_sync_state(&conn, &file_path, modified, line_count(path));
+    result
+}
+
+/// Sync one Codex session jsonl.
+fn sync_codex_file(path: &Path) -> SyncResult {
+    let mut result = SyncResult::default();
+    result.files_scanned = 1;
+
+    let Ok(conn) = get_db() else {
+        result.errors.push("DB unavailable".into());
+        return result;
+    };
+    let file_path = path.to_string_lossy().to_string();
+    let modified = mtime_nanos(path);
+
+    let (last_modified, _last_offset) = get_sync_state(&conn, &file_path);
+    if modified <= last_modified {
+        return result;
+    }
+
+    let Some((sid, cwd, calls)) = parse::parse_codex_file(path) else {
+        // No billable events; still record sync state so we don't re-read it.
+        update_sync_state(&conn, &file_path, modified, line_count(path));
+        return result;
+    };
+    let file_mtime_secs = (modified / 1_000_000_000).max(0);
+
+    // Codex calls are indexed by their non-zero-delta order; the parser
+    // produces a stable sequence so `i+1` is a stable event id across syncs.
+    for (i, call) in calls.iter().enumerate() {
+        let request_id = format!("codex_session:{sid}:{}", i + 1);
+        let created_at = call
+            .timestamp_ms
+            .map(|ms| (ms / 1000) as i64)
+            .unwrap_or(file_mtime_secs);
+
+        if insert_record(&conn, &request_id, "codex", call, &cwd, created_at) {
+            result.imported += 1;
+        } else {
+            result.skipped += 1;
+        }
+    }
+
+    update_sync_state(&conn, &file_path, modified, line_count(path));
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mem_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE usage_records (
+                request_id TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                input_cost_usd REAL NOT NULL DEFAULT 0,
+                output_cost_usd REAL NOT NULL DEFAULT 0,
+                cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+                cache_creation_cost_usd REAL NOT NULL DEFAULT 0,
+                total_cost_usd REAL NOT NULL DEFAULT 0,
+                session_id TEXT, project_path TEXT,
+                created_at INTEGER NOT NULL, data_source TEXT NOT NULL DEFAULT 'session_log');
+             CREATE TABLE session_log_sync (
+                file_path TEXT PRIMARY KEY, last_modified INTEGER NOT NULL,
+                last_line_offset INTEGER NOT NULL, last_synced_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn record(model: &str, input: u64, output: u64, ts_ms: Option<u64>) -> CallRecord {
+        CallRecord {
+            model: model.to_string(),
+            message_id: Some("msg_1".to_string()),
+            usage: UsageSummary {
+                input,
+                output,
+                cache_creation: 0,
+                cache_read: 0,
+            },
+            timestamp_ms: ts_ms,
+            stop_reason: None,
+            session_id: Some("s1".to_string()),
+        }
+    }
+
+    #[test]
+    fn insert_record_writes_row_and_costs() {
+        let conn = mem_conn();
+        let r = record("claude-opus-4-8", 1_000_000, 0, Some(1_609_459_200_000));
+        assert!(insert_record(&conn, "session:msg_1", "claude", &r, "/p", 1_609_459_200));
+        let (cost, input): (f64, i64) = conn
+            .query_row(
+                "SELECT total_cost_usd, input_tokens FROM usage_records WHERE request_id='session:msg_1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(input, 1_000_000);
+        assert!((cost - 15.0).abs() < 1e-6, "1M input opus = $15, got {cost}");
+    }
+
+    #[test]
+    fn insert_record_skips_duplicate_request_id() {
+        let conn = mem_conn();
+        let r = record("claude-opus-4-8", 100, 10, Some(1_609_459_200_000));
+        assert!(insert_record(&conn, "session:msg_1", "claude", &r, "/p", 1_609_459_200));
+        // Same request_id → INSERT OR IGNORE skips.
+        assert!(!insert_record(&conn, "session:msg_1", "claude", &r, "/p", 1_609_459_200));
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn dup_exists_catches_same_token_shape_different_id() {
+        let conn = mem_conn();
+        let r = record("claude-opus-4-8", 100, 10, Some(1_609_459_200_000));
+        assert!(insert_record(&conn, "session:msg_1", "claude", &r, "/p", 1_609_459_200));
+        // Different request_id but identical token shape + timestamp → blocked.
+        assert!(!insert_record(&conn, "session:msg_other", "claude", &r, "/p", 1_609_459_200));
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "DedupKey guard must block same-shape duplicate");
+    }
+
+    #[test]
+    fn sync_state_round_trips() {
+        let conn = mem_conn();
+        assert_eq!(get_sync_state(&conn, "/x.jsonl"), (0, 0));
+        update_sync_state(&conn, "/x.jsonl", 1_700_000_000_000, 42);
+        assert_eq!(get_sync_state(&conn, "/x.jsonl"), (1_700_000_000_000, 42));
+    }
+}

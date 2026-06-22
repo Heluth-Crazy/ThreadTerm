@@ -2,6 +2,8 @@ use once_cell::sync::Lazy;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -235,21 +237,12 @@ impl CodexAppManager {
         card_id: String,
         cwd: String,
         codex_app_thread_id: Option<String>,
-        provider_session_id: Option<String>,
+        _provider_session_id: Option<String>,
     ) -> Result<CodexAppOpenCardResult, String> {
         self.ensure_initialized(&app).await?;
 
-        let mut tried = Vec::new();
-        for candidate in [codex_app_thread_id, provider_session_id]
-            .into_iter()
-            .flatten()
-            .filter_map(|value| clean_optional_string(Some(value)))
-        {
-            if tried.iter().any(|existing| existing == &candidate) {
-                continue;
-            }
-            tried.push(candidate.clone());
-            match self.resume_thread(&candidate, &cwd).await {
+        if let Some(thread_id) = clean_optional_string(codex_app_thread_id) {
+            match self.resume_thread(&thread_id, &cwd).await {
                 Ok(thread) => {
                     return self
                         .open_result(card_id, thread, "resumed".to_string())
@@ -257,7 +250,7 @@ impl CodexAppManager {
                 }
                 Err(err) => {
                     tracing::debug!(
-                        thread_id = %candidate,
+                        thread_id = %thread_id,
                         error = %err,
                         "Codex app-server resume candidate failed"
                     );
@@ -374,7 +367,7 @@ impl CodexAppManager {
             state.initialize_response = Some(response);
             state.last_error = None;
         }
-        self.send_notification("initialized", Value::Null).await?;
+        self.send_notification("initialized", json!({})).await?;
         Ok(())
     }
 
@@ -384,17 +377,18 @@ impl CodexAppManager {
             return Ok(!state.initialized);
         }
 
-        let mut child = Command::new("codex")
-            .arg("app-server")
-            .arg("--stdio")
+        let launch = codex_app_server_launch();
+        let mut command = Command::new(&launch.program);
+        command
+            .args(&launch.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+
+        let mut child = command
             .spawn()
-            .map_err(|err| {
-                format!("Failed to start `codex app-server --stdio`: {err}")
-            })?;
+            .map_err(|err| format!("Failed to start `{}`: {err}", launch.display()))?;
 
         let stdin = child
             .stdin
@@ -639,6 +633,103 @@ fn is_response_message(raw: &Value) -> bool {
     raw.get("id").is_some() && (raw.get("result").is_some() || raw.get("error").is_some())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexAppServerLaunch {
+    program: String,
+    args: Vec<String>,
+}
+
+impl CodexAppServerLaunch {
+    fn display(&self) -> String {
+        std::iter::once(self.program.as_str())
+            .chain(self.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+fn codex_app_server_launch() -> CodexAppServerLaunch {
+    #[cfg(windows)]
+    {
+        if let Some(path) = resolve_windows_codex_exe() {
+            return CodexAppServerLaunch {
+                program: path.to_string_lossy().to_string(),
+                args: vec!["app-server".to_string(), "--stdio".to_string()],
+            };
+        }
+
+        // npm exposes Codex on Windows as codex.cmd/codex.ps1, which cannot
+        // be launched reliably through CreateProcess as a bare `codex` binary.
+        // Keep this shell fallback static so stdin/stdout still proxy directly
+        // to `codex app-server --stdio` without user-controlled interpolation.
+        return CodexAppServerLaunch {
+            program: "cmd.exe".to_string(),
+            args: vec![
+                "/d".to_string(),
+                "/s".to_string(),
+                "/c".to_string(),
+                "codex app-server --stdio".to_string(),
+            ],
+        };
+    }
+
+    #[cfg(not(windows))]
+    {
+        CodexAppServerLaunch {
+            program: "codex".to_string(),
+            args: vec!["app-server".to_string(), "--stdio".to_string()],
+        }
+    }
+}
+
+#[cfg(windows)]
+fn resolve_windows_codex_exe() -> Option<PathBuf> {
+    for candidate in windows_codex_exe_candidates() {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn windows_codex_exe_candidates() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        roots.push(PathBuf::from(appdata).join("npm"));
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        roots.extend(std::env::split_paths(&path));
+    }
+
+    let mut candidates = Vec::new();
+    for root in roots {
+        candidates.push(root.join("codex.exe"));
+        candidates.push(
+            root.join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("node_modules")
+                .join("@openai")
+                .join("codex-win32-x64")
+                .join("vendor")
+                .join("x86_64-pc-windows-msvc")
+                .join("bin")
+                .join("codex.exe"),
+        );
+        candidates.push(
+            root.join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("vendor")
+                .join("x86_64-pc-windows-msvc")
+                .join("bin")
+                .join("codex.exe"),
+        );
+    }
+    candidates
+}
+
 fn extract_thread(response: Value) -> Option<Value> {
     response.get("thread").cloned()
 }
@@ -753,5 +844,12 @@ mod tests {
                 "text_elements": [],
             })]
         );
+    }
+
+    #[test]
+    fn app_server_launch_uses_stdio_transport() {
+        let launch = codex_app_server_launch();
+        assert!(launch.display().contains("app-server"));
+        assert!(launch.display().contains("--stdio"));
     }
 }

@@ -125,3 +125,69 @@
 
 **核心原则**:在 A 未排除软渲染、C/D/E 可修项未修复之前,**不要启动原生终端重写**——
 这一步几乎零成本,却可能直接省掉一次以"人月"计的重写。
+
+---
+
+## 5. 本次核查记录(2026-06-22 / Windows 11)
+
+### 5.1 用户现象
+
+- Chat 模式打开后停留在"正在连接 Codex app-server..."，约 10 秒才进入可用状态。
+- 终端模式执行 `codex resume ... --no-alt-screen` 后，约 5 秒才开始出现信息流。
+- 恢复历史或信息流从上向下滚动时明显卡顿，体感为约 6-8 行一卡。
+- 问题在 Windows 11 上明显，macOS 端未感受到同等慢。
+
+### 5.2 当前环境记录
+
+| 项目 | 本次记录 |
+|------|----------|
+| Windows 版本 | Microsoft Windows 11 家庭版 中文版，10.0.26200，64 位 |
+| GPU | Intel(R) Graphics |
+| GPU 驱动 | 32.0.101.8425 |
+| 显示器 | 3840x2160 / 60Hz |
+| WebView2 Runtime | ThreadTerm 进程使用 `149.0.4022.80` |
+| WebView2 进程 | ThreadTerm 存在 `--type=gpu-process`，renderer 进程带 `--device-scale-factor=1.75`、`--num-raster-threads=4` |
+| WebGL renderer 字符串 | WebView2 页面内 renderer 未直接取得；本机 Edge / Chromium 代理核验为 Intel Direct3D11，详见 5.6 |
+
+### 5.3 Chat 连接慢核查结果
+
+| 核查项 | 结果 | 判定 |
+|--------|------|------|
+| `codex app-server --stdio` 初始化 | 本机探针约 135-238ms 返回 initialize | app-server 进程启动本身不是 10 秒慢点 |
+| `thread/list` | 本机探针约 100ms | 列表查询不是主慢点 |
+| `thread/start` | 本机探针在 ThreadTerm cwd 约 7.6s，在 cdispatching 项目 cwd 约 12s | Chat 打开慢主要落在新建 thread / 项目上下文加载 |
+| 前端等待点 | `CodexChatView` 当前等待 `codexApp.openCard()` 完成后才 ready | UI 把"连接 app-server"和"创建/恢复 thread"绑在一起 |
+| 后端等待点 | `codex_app_open_card` 当前会同步 `resume_thread` / `latest_thread_for_cwd` / `thread/start` | 长耗时请求阻塞 Chat 打开体验 |
+
+**结论**:Chat 慢不是 Windows 无法使用 Chat，也不是 app-server 初始化慢；当前实现把 `thread/start` 的 7-12 秒耗时放在打开窗口路径里，导致用户看到长时间 Connecting。修复指向是拆开"app-server 已连接"与"thread 已创建/恢复"，让 Chat UI 先 ready，thread 在后台或首次发送时创建。
+
+### 5.4 终端卡顿核查结果
+
+| 检查项 | 结果 / 事实 | 判定 | 指向 |
+|--------|-------------|------|------|
+| PTY 实现 | `src-tauri/src/pty/mod.rs` 使用 `portable_pty::NativePtySystem::default()`、`openpty()`、`spawn_command()` | Windows 下已走 native PTY / ConPTY 族路径 | 不是"没用 Windows PTY"导致 |
+| PTY 创建耗时 | 日志显示 PTY session created 很快完成 | `pty_create` 本身不是 5 秒等待来源 | 首输出等待更像 Codex CLI resume / MCP / 项目上下文启动 |
+| 恢复历史写入 | `Shell.jsx` 在 attach snapshot 后把 `history + data` 一次性 `term.write` | 一次性大 write 是可修项 | 对应检查 C，建议分帧/分批灌入 |
+| scrollback | xterm 配置 `scrollback: 3000` | 大 scrollback 会放大 Windows WebView2 滚动成本 | 对应检查 D，需要复测 1000/1500 对比 |
+| 实时输出链路 | 每个 PTY chunk 同时进入可见 xterm、headless xterm preview、Rust snapshot/preview broadcast | 6-8 行一卡更符合实时输出管线叠加 | 对应检查 E，建议节流/合并 |
+| 全屏刷新 | 可见终端对包含 `\r` 或 cleanup 序列的 chunk 会调度 `term.refresh(0, rows - 1)` | 高频刷新可能造成主线程和渲染抖动 | 可修，建议按帧合并 |
+| 硬件加速 | 已看到 ThreadTerm WebView2 GPU process；但未取得 WebGL renderer 字符串 | 不能最终排除 SwiftShader / software fallback | 需补检查 A |
+
+**结论**:终端首输出慢和滚动卡顿不是同一个点。首输出慢更像 Codex CLI resume 阶段加载项目/MCP/上下文；恢复后滚动和信息流卡顿更像 xterm/WebView2 输出链路负载过高。当前证据不足以直接判定为 WebView 渲染天花板，也不足以支持立即重写原生终端；应先落地 C/D/E 的可修项并补齐 A 的 WebGL renderer 验证。
+
+### 5.5 本次未完成项
+
+- 未从 ThreadTerm WebView2 页面内读取 `UNMASKED_RENDERER_WEBGL`，因此检查 A 对 WebView2 仍未完全闭环。
+- 未录制 Performance 面板 FPS / long task 数据，因此检查 B/C/E 仍缺量化 FPS 与长任务耗时。
+- 未临时调低 `scrollback` 做 A/B 对照，因此检查 D 仍缺对比结论。
+
+### 5.6 补充核验(2026-06-22)
+
+| 核验项 | 结果 | 判定 |
+|--------|------|------|
+| CDP 端口 | 当前 ThreadTerm WebView2 未开放 `9222/9223`，进程命令行无 `remote-debugging-port` | 不能直接用 CDP 读取页面内 WebGL / Performance |
+| WebView2 调试参数来源 | 本项目使用的 `wry-0.54.4` 只从 Tauri `additionalBrowserArgs` 配置设置 WebView2 参数，未发现读取 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | 不改配置/代码时，无法通过环境变量临时打开 CDP |
+| Edge 代理 WebGL | `ANGLE (Intel, Intel(R) Graphics (0x00007DD1) Direct3D11 vs_5_0 ps_5_0, D3D11)` | 本机 Chromium/ANGLE 路径不是 SwiftShader |
+| Playwright Chromium 代理 WebGL | `ANGLE (Intel, Intel(R) Graphics (0x00007DD1) Direct3D11 vs_5_0 ps_5_0, D3D11)` | 本机 GPU/驱动具备硬件 WebGL 能力 |
+
+**补充结论**:当前证据显示这台 Windows 11 机器的 Chromium/ANGLE 能走 Intel Direct3D11，软渲染概率降低；但 ThreadTerm 的 WebView2 页面内 renderer 仍未直接取得。若要完全闭环检查 A，需要临时在 Tauri 配置或窗口构建处加 `--remote-debugging-port=9222` 后重启，或手工打开 DevTools Console 执行 WebGL renderer 脚本。
