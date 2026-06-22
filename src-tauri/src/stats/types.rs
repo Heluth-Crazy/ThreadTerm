@@ -30,17 +30,51 @@ impl UsageSummary {
             .saturating_add(self.cache_creation)
             .saturating_add(self.cache_read)
     }
+
+    /// True when every category is zero — such rows carry no billable signal
+    /// and only inflate `calls` counts, so parsers/inserters skip them.
+    pub fn is_empty(&self) -> bool {
+        self.input == 0
+            && self.output == 0
+            && self.cache_creation == 0
+            && self.cache_read == 0
+    }
 }
 
 /// One assistant API call parsed from a session jsonl line.
 #[derive(Clone, Debug)]
 pub struct CallRecord {
     pub model: String,
-    /// Dedup key — Claude `message.id`. `None` = not deduplicated (Codex).
+    /// Dedup key — Claude `message.id`. `None` = not deduplicated (Codex uses
+    /// `session_id:event_index` composite keys instead).
     pub message_id: Option<String>,
     pub usage: UsageSummary,
     /// Per-call timestamp (epoch ms, UTC). `None` when the line had no parseable timestamp.
     pub timestamp_ms: Option<u64>,
+    /// Claude `stop_reason` (e.g. `end_turn`). Used to pick the final stream
+    /// chunk over the `message_start` snapshot when deduping by `message_id`.
+    /// `None` for Codex (no equivalent field).
+    pub stop_reason: Option<String>,
+    /// Session id parsed from the jsonl (Codex `session_meta.id`, Claude
+    /// `sessionId` or file stem). Used to group calls into per-session buckets.
+    pub session_id: Option<String>,
+}
+
+/// Composite dedup key for cross-record duplicate detection at insert time.
+///
+/// Two records with the same `(provider, model, token breakdown, created_at)`
+/// are treated as the same billable event even when their `request_id`
+/// differs — this catches the case where a proxy-intercepted request and the
+/// corresponding session-log entry describe the same call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DedupKey<'a> {
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub created_at: i64,
 }
 
 /// One aggregation bucket (a model / project / session row) for the frontend.

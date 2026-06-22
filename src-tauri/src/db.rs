@@ -67,6 +67,47 @@ pub fn init_database() -> Result<()> {
             summary     TEXT NOT NULL,
             created_at  INTEGER NOT NULL
         );
+
+        -- Token usage records ingested from Claude/Codex session logs.
+        -- Each row is one billable API call. Dedup is by request_id (INSERT OR
+        -- IGNORE) plus a composite token-shape key (see DedupKey) to catch the
+        -- same call recorded by both a proxy and the session log.
+        CREATE TABLE IF NOT EXISTS usage_records (
+            request_id              TEXT PRIMARY KEY,
+            provider                TEXT NOT NULL,
+            model                   TEXT NOT NULL,
+            input_tokens            INTEGER NOT NULL DEFAULT 0,
+            output_tokens           INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens       INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens   INTEGER NOT NULL DEFAULT 0,
+            input_cost_usd          REAL NOT NULL DEFAULT 0,
+            output_cost_usd         REAL NOT NULL DEFAULT 0,
+            cache_read_cost_usd     REAL NOT NULL DEFAULT 0,
+            cache_creation_cost_usd REAL NOT NULL DEFAULT 0,
+            total_cost_usd          REAL NOT NULL DEFAULT 0,
+            session_id              TEXT,
+            project_path            TEXT,
+            created_at              INTEGER NOT NULL,
+            data_source             TEXT NOT NULL DEFAULT 'session_log'
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_usage_records_created_at
+            ON usage_records(created_at);
+        CREATE INDEX IF NOT EXISTS idx_usage_records_session
+            ON usage_records(session_id);
+        CREATE INDEX IF NOT EXISTS idx_usage_records_provider_created
+            ON usage_records(provider, created_at);
+
+        -- Incremental sync progress per session-log file. last_modified is the
+        -- file mtime in nanoseconds; last_line_offset is the number of lines
+        -- already consumed. A file whose mtime hasn't bumped is skipped whole;
+        -- otherwise we resume from last_line_offset + 1.
+        CREATE TABLE IF NOT EXISTS session_log_sync (
+            file_path        TEXT PRIMARY KEY,
+            last_modified    INTEGER NOT NULL,
+            last_line_offset INTEGER NOT NULL,
+            last_synced_at   INTEGER NOT NULL
+        );
         ",
     )
     .context("Failed to create database tables")?;
