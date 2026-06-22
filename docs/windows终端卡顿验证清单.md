@@ -191,3 +191,110 @@
 | Playwright Chromium 代理 WebGL | `ANGLE (Intel, Intel(R) Graphics (0x00007DD1) Direct3D11 vs_5_0 ps_5_0, D3D11)` | 本机 GPU/驱动具备硬件 WebGL 能力 |
 
 **补充结论**:当前证据显示这台 Windows 11 机器的 Chromium/ANGLE 能走 Intel Direct3D11，软渲染概率降低；但 ThreadTerm 的 WebView2 页面内 renderer 仍未直接取得。若要完全闭环检查 A，需要临时在 Tauri 配置或窗口构建处加 `--remote-debugging-port=9222` 后重启，或手工打开 DevTools Console 执行 WebGL renderer 脚本。
+
+---
+
+## 6. Codex 二次核实执行说明（Windows）
+
+本节用于把当前思路交给 Windows 环境中的 Codex 二次核实。默认以只读核查和临时 instrumentation
+为主，不直接推进 TerminalControl / native rewrite。
+
+### 6.1 二次核实原则
+
+- 先补齐 W0 证据，再决定是否进入 W1。
+- 不把 Chat 打开慢和 terminal renderer 卡顿混为一个问题。
+- 不用 Edge / Playwright Chromium 的 WebGL renderer 结果替代 ThreadTerm WebView2 页面内结果。
+- 临时改配置或代码只用于采集数据，完成后必须说明是否已还原。
+- 结论必须落到三选一：继续 xterm 优化、补充 instrumentation 后复测、进入 W1 Native Host Spike。
+
+### 6.2 给 Windows Codex 的提示词
+
+```text
+你在 Windows 11 物理机上的 ThreadTerm 仓库中做二次核实。请以只读核查为主，不要直接开始
+TerminalControl / ConPTY native rewrite。目标是验证 W0.1-W0.6，并把结果更新到 docs 中。
+
+背景：
+- 当前分支目标是评估 Windows terminal 性能优化。
+- 现有实现的 PTY 后端已经使用 portable_pty::NativePtySystem，Windows 下应走 ConPTY 族路径。
+- 2026-06-22 核查显示：
+  1. codex app-server --stdio initialize 约 135-238ms；
+  2. thread/list 约 100ms；
+  3. thread/start 在项目 cwd 下约 7.6-12s；
+  4. Chat UI 当前等待 openCard 完成后才 ready，因此“正在连接”很可能包含 thread/start；
+  5. 终端恢复历史时 Shell.jsx 会把 history + data 一次性写入 xterm；
+  6. xterm scrollback 当前为 3000；
+  7. 实时输出同时进入 visible xterm、headless preview、Rust snapshot/preview broadcast；
+  8. ThreadTerm WebView2 页面内 UNMASKED_RENDERER_WEBGL 还没有直接取得。
+
+请按以下顺序执行：
+
+1. 记录环境和仓库状态：
+   - Windows 版本、GPU、驱动、显示器刷新率、缩放比例、WebView2 Runtime 版本。
+   - `git status --short`、当前 branch、当前 commit。
+   - 如果有未提交文件，不要覆盖；只记录与本次核查相关的文件。
+
+2. W0.1：直接确认 ThreadTerm WebView2 renderer。
+   - 优先在 ThreadTerm DevTools Console 执行：
+     const gl = document.createElement('canvas').getContext('webgl');
+     const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+     console.log(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL));
+   - 同时记录滚动终端时 msedgewebview2.exe 的 GPU/CPU 占用。
+   - 如果 DevTools 无法打开，可以临时通过 Tauri additionalBrowserArgs 增加
+     --remote-debugging-port=9222 做核查；核查后说明是否已还原。
+
+3. W0.2：拆分 Codex Chat readiness。
+   - 分别测量 codex app-server initialize、thread/list、thread/start。
+   - 在 ThreadTerm Chat 模式中记录：
+     app-server 可用时间、UI ready 时间、thread ready 时间、首条消息/事件出现时间。
+   - 判断 Chat 慢是否应该通过“UI 先 ready，thread 后台创建/首次发送前等待”修复。
+
+4. W0.3：验证 snapshot restore 一次性写入成本。
+   - 只读定位 `src/components/Shell.jsx` 中 attach snapshot / applySnapshot 路径。
+   - 用 Performance 录制旧会话恢复，记录 snapshot 数据长度、首次可输入/可滚动时间、
+     最长 long task。
+   - 如需临时 instrumentation，只加最小日志，完成后说明是否保留或还原。
+
+5. W0.4：做 scrollback A/B。
+   - 在同一历史会话下对比 scrollback 1000 / 1500 / 3000。
+   - 记录纯滚动平均 FPS、最低 FPS、>50ms long task。
+   - 测完恢复原值，除非另有明确决定。
+
+6. W0.5：验证实时输出管线负载。
+   - 核查 visible xterm、headless preview、Rust snapshot/preview broadcast、
+     full refresh 是否在高频输出时叠加。
+   - 记录单卡输出、多卡输出、暂停或节流 headless/preview 后的 FPS/CPU 对比。
+   - 判断“6-8 行一卡”是 renderer 天花板，还是 IPC/headless/refresh 叠加。
+
+7. W0.6：输出结论。
+   - 更新 `docs/windows-terminal-baseline-report.md` 或新增同目录核查报告。
+   - 必须给出三选一：
+     A. 继续 xterm 优化；
+     B. 补充 instrumentation 后复测；
+     C. 进入 W1 Native Host Spike。
+   - 只有在 ThreadTerm WebView2 已确认硬件加速、C/D/E 可修项已修复或证明不是主因、
+     且至少 3 个高优先级场景仍明显劣于 Windows Terminal 时，才能选择 C。
+
+请不要把 TerminalControl / ConPTY native rewrite 作为默认结论。先用数据证明当前 xterm/WebView2
+路径已经排除可修项。
+```
+
+### 6.3 建议输出格式
+
+| 项目 | 结果 | 证据位置 | 判定 |
+|------|------|----------|------|
+| W0.1 WebView2 renderer | | DevTools / CDP / 截图 / 日志 | 硬件 / 软渲染 / 未闭环 |
+| W0.2 Chat readiness | | app-server / thread timing | UI 时序可修 / 仍不明 |
+| W0.3 snapshot restore | | Performance trace / 日志 | 可修 / 非主因 |
+| W0.4 scrollback A/B | | FPS / long task | 可修 / 非主因 |
+| W0.5 realtime pipeline | | FPS / CPU / trace | 可修 / renderer 天花板 |
+| W0.6 结论 | | baseline report | xterm 优化 / 复测 / W1 |
+
+### 6.4 进入 W1 的硬条件
+
+同时满足以下条件，才进入 Windows native host / TerminalControl spike：
+
+- ThreadTerm WebView2 页面内 renderer 已直接确认是硬件加速，不是 SwiftShader / software fallback。
+- snapshot restore、scrollback、实时输出管线这三类可修项已修复，或用数据证明不是主因。
+- 同机 Windows Terminal 对照明显更顺，且至少 3 个高优先级场景仍不可接受。
+- 已确认问题不主要来自 Codex CLI resume / MCP / 项目上下文启动。
+- 已更新 baseline report，并明确记录进入 W1 的理由和剩余风险。
