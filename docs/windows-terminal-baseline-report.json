@@ -1,0 +1,181 @@
+{
+    "formatVersion":  1,
+    "documentType":  "windows-terminal-baseline-report",
+    "title":  "Windows Terminal Baseline Report",
+    "convertedFrom":  "docs/windows-terminal-baseline-report.md",
+    "convertedAt":  "2026-06-22",
+    "reason":  "Markdown files are encrypted by the local document protection layer after commit; JSON keeps the same content readable after commit.",
+    "sections":  [
+                     {
+                         "level":  1,
+                         "heading":  "Windows Terminal Baseline Report",
+                         "body":  [
+                                      "",
+                                      "Date: 2026-06-22",
+                                      "Operator: Codex / local Windows CDP probe",
+                                      "ThreadTerm branch: exp/windows-native-terminal-host",
+                                      "ThreadTerm commit: f390754",
+                                      "Build type: dev"
+                                  ]
+                     },
+                     {
+                         "level":  2,
+                         "heading":  "Machine",
+                         "body":  [
+                                      "",
+                                      "Windows version: Microsoft Windows 11 Home Chinese, 10.0.26200, 64-bit",
+                                      "GPU / driver: Intel(R) Graphics / 32.0.101.8425",
+                                      "CPU: not recorded",
+                                      "Memory: not recorded",
+                                      "Display refresh rate: 3840x2160 / 60Hz",
+                                      "Display scale: 175% / device scale factor 1.75",
+                                      "WebView2 Runtime version: 149.0.4022.80",
+                                      "ThreadTerm feature flags: none recorded; CDP was opened via temporary Tauri `additionalBrowserArgs = --remote-debugging-port=9222` and removed after retest"
+                                  ]
+                     },
+                     {
+                         "level":  2,
+                         "heading":  "Control Terminal",
+                         "body":  [
+                                      "",
+                                      "Windows Terminal version: not recorded",
+                                      "Shell: Windows PowerShell",
+                                      "Font family / size: not recorded"
+                                  ]
+                     },
+                     {
+                         "level":  2,
+                         "heading":  "WebGL / Hardware Acceleration",
+                         "body":  [
+                                      "",
+                                      "DevTools renderer string: `ANGLE (Intel, Intel(R) Graphics (0x00007DD1) Direct3D11 vs_5_0 ps_5_0, D3D11)`",
+                                      "GPU usage while scrolling: not recorded",
+                                      "CPU usage while scrolling: not recorded",
+                                      "Verdict: hardware accelerated"
+                                  ]
+                     },
+                     {
+                         "level":  2,
+                         "heading":  "Scenario Results",
+                         "body":  [
+                                      "",
+                                      "| Scenario | ThreadTerm result | Windows Terminal control | Verdict | Evidence |",
+                                      "| --- | --- | --- | --- | --- |",
+                                      "| ~1.37 MB direct xterm write control | `term.write()` completed in 90.6ms; 1 long task at about 90ms; frame p99 about 16.8ms | not applicable | pass | Renderer-throughput control, bypassed PTY/backend |",
+                                      "| ~1.49 MB continuous output through ThreadTerm PTY | 10000 lines completed in about 297.3s; 365 output events; ACK bytes matched output bytes; 0 long task; frame p99 about 16.9ms | not recorded | fail | Points to PTY event / ACK / snapshot-preview hot path, not renderer/GPU |",
+                                      "| 10 MB continuous output | | | pass / warn / fail | |",
+                                      "| 100 MB continuous output | | | pass / warn / fail | |",
+                                      "| High-refresh TUI | | | pass / warn / fail | |",
+                                      "| Long selection over 2,000 lines | | | pass / warn / fail | |",
+                                      "| Unicode / emoji / bidi / CJK | | | pass / warn / fail | |",
+                                      "| Microsoft Pinyin IME | | | pass / warn / fail | |",
+                                      "| Japanese IME | | | pass / warn / fail | |",
+                                      "| Korean IME | | | pass / warn / fail | |",
+                                      "| Font clarity at 11 px | | | pass / warn / fail | |",
+                                      "| Font clarity at 12 px | | | pass / warn / fail | |",
+                                      "| Font clarity at 13 px | | | pass / warn / fail | |",
+                                      "| Multi-terminal stress: 1 + 8 cards | | | pass / warn / fail | |",
+                                      "| Multi-terminal stress: 1 + 16 cards | | | pass / warn / fail | |",
+                                      "| Multi-terminal stress: 1 + 32 cards | | | pass / warn / fail | |"
+                                  ]
+                     },
+                     {
+                         "level":  2,
+                         "heading":  "Metrics",
+                         "body":  [
+                                      "",
+                                      "| Metric | P50 | P95 | Peak / notes |",
+                                      "| --- | --- | --- | --- |",
+                                      "| input-to-echo latency | | | |",
+                                      "| `term.write()` completion latency | | | 90.6ms for direct xterm write of ~1.37 MB / 10000 lines; 1 long task around 90ms |",
+                                      "| output completion time | | | ThreadTerm PTY output completed 10000 lines / ~1.49 MB in about 297.3s; snapshot/recent output both reached line 10000 |",
+                                      "| scroll FPS / frame interval | | | During real PTY output: frame p99 about 16.9ms, max about 66.7ms, 0 long task |",
+                                      "| CPU | | | |",
+                                      "| GPU | | | |",
+                                      "| memory | | | |"
+                                  ]
+                     },
+                     {
+                         "level":  2,
+                         "heading":  "Raw Artifacts",
+                         "body":  [
+                                      "",
+                                      "Store logs, screenshots, traces, and videos under:",
+                                      "",
+                                      "`docs/artifacts/windows-terminal-baseline/`",
+                                      "",
+                                      "Artifacts captured:",
+                                      "",
+                                      "- [ ] environment JSON from `capture-env.ps1`",
+                                      "- [ ] DevTools Performance trace for pure scroll",
+                                      "- [ ] DevTools Performance trace for restart/session restore",
+                                      "- [ ] screen recording for output flood",
+                                      "- [ ] screenshots for Unicode and IME",
+                                      "- [ ] Windows Terminal control screenshots or notes",
+                                      "- [x] CDP WebGL renderer string recorded in this report and `docs/windows终端卡顿验证清单.json`"
+                                  ]
+                     },
+                     {
+                         "level":  2,
+                         "heading":  "Findings",
+                         "body":  [
+
+                                  ]
+                     },
+                     {
+                         "level":  3,
+                         "heading":  "Likely Fixable In Current xterm Path",
+                         "body":  [
+                                      "",
+                                      "- Realtime PTY output hot path: each chunk flows through Tauri event delivery, ACK accounting, snapshot/preview broadcast, raw output buffering, and regex detection.",
+                                      "- Chat readiness: `codex app-server --stdio` and `thread/list` are fast, while `thread/start` takes about 7.6-12s and currently blocks Chat UI ready.",
+                                      "- Snapshot restore: `Shell.jsx` writes `history + data` into xterm in one `term.write()` call; still needs a dedicated restore trace.",
+                                      "- Scrollback: xterm is configured at `scrollback: 3000`; large output reaches that cap and still needs 1000/1500/3000 A/B."
+                                  ]
+                     },
+                     {
+                         "level":  3,
+                         "heading":  "Likely WebView / xterm Ceiling",
+                         "body":  [
+                                      "",
+                                      "- None confirmed in this run. ThreadTerm WebView2 is hardware accelerated; direct xterm write is far faster than the real PTY path, so the current bottleneck is not the renderer/GPU."
+                                  ]
+                     },
+                     {
+                         "level":  3,
+                         "heading":  "Unknown / Needs Repeat",
+                         "body":  [
+                                      "",
+                                      "- Pure historical scroll FPS and long tasks.",
+                                      "- Restart/session restore Performance trace.",
+                                      "- Windows Terminal side-by-side control for the same large-output scenario.",
+                                      "- Scrollback A/B at 1000 / 1500 / 3000.",
+                                      "- Full 10 MB / 100 MB baseline, high-refresh TUI, selection, Unicode, IME, font clarity, and multi-terminal stress scenarios."
+                                  ]
+                     },
+                     {
+                         "level":  2,
+                         "heading":  "Decision",
+                         "body":  [
+                                      "",
+                                      "Choose one:",
+                                      "",
+                                      "- stop native renderer work and optimize xterm only",
+                                      "- continue to W1 native host spike",
+                                      "- repeat W0 after instrumentation fixes",
+                                      "",
+                                      "Decision: stop native renderer work and optimize xterm/output hot paths first; repeat W0 measurements after the PTY event / ACK / snapshot-preview fixes before considering W1."
+                                  ]
+                     },
+                     {
+                         "level":  2,
+                         "heading":  "Follow-Up Tasks",
+                         "body":  [
+                                      "",
+                                      "- Move snapshot/preview work out of the per-chunk realtime output hot path, or batch/throttle it behind the visible terminal write.",
+                                      "- Split Chat UI readiness from `thread/start` so the app-server connection is not presented as blocked for 7-12s.",
+                                      "- Run the missing pure scroll, restore, scrollback A/B, and Windows Terminal control measurements before any TerminalControl / native host spike."
+                                  ]
+                     }
+                 ]
+}
