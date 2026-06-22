@@ -39,7 +39,96 @@ Windows native terminal 方案可以按阶段推进，而不是一次性重写�
 - [x] 建立 baseline report 模板：`docs/windows-terminal-baseline-report.md`
 - [ ] 在本地 Windows 物理机采集环境信息和 raw logs
 - [ ] 记录 ThreadTerm 与 Windows Terminal 对照结果
+- [ ] W0.1 直接确认 ThreadTerm WebView2 页面内 WebGL renderer 和滚动时 GPU/CPU 占用
+- [ ] W0.2 拆分并量化 Codex Chat 的 `app-server ready` 与 `thread ready`
+- [ ] W0.3 验证 snapshot restore 一次性 `history + data` 写入成本
+- [ ] W0.4 做 `scrollback: 1000 / 1500 / 3000` A/B 对照
+- [ ] W0.5 验证实时输出链路的 headless / preview / full refresh 负载
 - [ ] 给出 W0 结论：停止 native、进入 W1、或先修 xterm 可修项
+
+## W0 当前执行路径（2026-06-22 核查后）
+
+2026-06-22 Windows 11 真机核查后，W0 不应直接跳到 TerminalControl / native
+rewrite。现有证据把问题拆成两条线：
+
+- Chat 打开慢主要落在 `thread/start` / 项目上下文加载，而不是 `codex app-server`
+  初始化。
+- 终端滚动和恢复卡顿仍可能由 WebView2/xterm 路径里的可修项主导，包括一次性
+  snapshot 写入、较大 scrollback、实时输出同时进入 visible xterm、headless
+  preview 和 Rust snapshot broadcast。
+
+因此当前默认策略是先完成 W0.1-W0.6。只有这些检查闭环后，仍有至少 3 个高优先级
+痛点明显劣于 Windows Terminal，才进入 W1 Native Host Spike。
+
+### W0.1 直接确认 WebView2 renderer
+
+目标：补齐检查 A，避免把软渲染、驱动、WebView2 参数问题误判为 WebView 天花板。
+
+- 在 ThreadTerm 的 WebView2 页面内读取 `UNMASKED_RENDERER_WEBGL`，不能只用 Edge /
+  Playwright Chromium 代理结果替代。
+- 如果 DevTools 无法直接打开，允许临时通过 Tauri `additionalBrowserArgs` 增加
+  `--remote-debugging-port=9222` 做只读核查，核查后还原。
+- 记录滚动时 `msedgewebview2.exe` 的 GPU/CPU 占用、renderer 字符串、缩放比例和刷新率。
+
+进入下一步条件：确认 ThreadTerm WebView2 使用硬件 Direct3D11/Direct3D12 路径，或先修复
+软渲染后重测。
+
+### W0.2 拆分 Codex Chat readiness
+
+目标：确认 Chat 慢是否是产品交互阻塞，而不是 terminal renderer 问题。
+
+- 分别量化 `codex app-server --stdio initialize`、`thread/list`、`thread/start`、
+  `CodexChatView` 可见 ready、首条 assistant/tool event 出现时间。
+- 设计方向是把 UI 状态拆成 `app-server ready` 和 `thread ready`：窗口先进入可输入/可见
+  状态，thread 创建或 resume 在后台执行，必要时在首次发送前等待。
+- 该优化属于 Codex Chat 路径，不应作为进入 native terminal rewrite 的理由。
+
+进入下一步条件：确认 Chat 打开慢已独立归因，并形成可单独修复的 UI/后端时序方案。
+
+### W0.3 验证 snapshot restore 写入成本
+
+目标：确认旧会话恢复卡顿是否来自 `history + data` 一次性写入 xterm。
+
+- 在 `src/components/Shell.jsx` 的 attach snapshot / `applySnapshot` 路径记录数据长度、
+  `term.write` 开始/结束、最长 long task、首次可滚动时间。
+- 原型方向是按帧分片写入：每帧固定字节预算或时间预算，优先让输入和滚动可恢复，
+  再补齐历史。
+- 如果分片后恢复峰值明显下降，此项判定为 xterm 路径可修，不进入 W1。
+
+进入下一步条件：有一次性写入和分片写入的同机对照数据。
+
+### W0.4 scrollback A/B
+
+目标：量化 `scrollback: 3000` 对 Windows WebView2 滚动成本的影响。
+
+- 在同一个历史会话、同一显示器缩放和刷新率下测试 `1000 / 1500 / 3000`。
+- 记录纯滚动 FPS、最低 FPS、>50ms long task、Windows Terminal 主观对照。
+- 测完必须恢复原配置，除非正式决定调整默认值。
+
+进入下一步条件：明确 scrollback 是否为主因或放大因子。
+
+### W0.5 实时输出管线负载
+
+目标：确认“6-8 行一卡”是否来自每个 chunk 同时驱动多条链路。
+
+- 只读核查当前链路：visible xterm、headless xterm preview、Rust snapshot/preview
+  broadcast、`term.refresh(0, rows - 1)`。
+- 原型方向：visible xterm 保持优先；headless 只在卡片可见/需要预览时工作，或按帧节流；
+  preview broadcast 降频；full refresh 合并到一帧一次。
+- 记录单卡输出、多卡输出、暂停 headless/preview 后的 FPS 和 CPU 差异。
+
+进入下一步条件：明确实时输出卡顿是 renderer 本身，还是 IPC/headless/refresh 叠加。
+
+### W0.6 复测与决策
+
+W0.1-W0.5 完成后，更新 `docs/windows-terminal-baseline-report.md`，并给出三选一结论：
+
+1. **继续 xterm 优化**：主要瓶颈来自可修项，native rewrite 暂停。
+2. **补充 instrumentation 后复测**：证据仍不足，不能进入 W1。
+3. **进入 W1 Native Host Spike**：ThreadTerm WebView2 已确认硬件加速，C/D/E 可修项已修复
+   或证明不是主因，且至少 3 个高优先级场景仍明显劣于 Windows Terminal。
+
+没有 W0.6 结论时，不进入 W1。
 
 ## W1 Checklist
 
