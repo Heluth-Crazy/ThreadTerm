@@ -41,5 +41,5 @@ the operator can start DevTools Performance recording or screen recording.
 .\tools\windows-terminal-benchmark\unicode-fixture.ps1 -Repeat 20
 ```
 
-Record results in `docs/windows-terminal-baseline-report.md`. Raw logs and
+Record results in `docs/windows-terminal-baseline-report.json`. Raw logs and
 screenshots should go under `docs/artifacts/windows-terminal-baseline/`.

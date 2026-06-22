@@ -34,4 +34,4 @@ Wait-Step "Unicode / emoji / bidi fixture"
 & (Join-Path $ScriptDir "unicode-fixture.ps1") -Repeat 20
 
 Write-Host ""
-Write-Host "Baseline fixture run complete. Fill docs/windows-terminal-baseline-report.md with measured FPS, latency, screenshots, and control results."
+Write-Host "Baseline fixture run complete. Fill docs/windows-terminal-baseline-report.json with measured FPS, latency, screenshots, and control results."
