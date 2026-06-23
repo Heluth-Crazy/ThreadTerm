@@ -99,6 +99,7 @@ pub fn run() {
             provider_sessions::provider_list_recent_sessions,
             stats::stats_compute,
             stats::stats_cancel,
+            stats::stats_rebuild,
             platform_material::native_platform_material_state,
             shell_integration::detect_shell,
             shell_integration::preview_shell_integration,

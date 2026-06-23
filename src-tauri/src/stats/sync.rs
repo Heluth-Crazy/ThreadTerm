@@ -30,7 +30,7 @@ use crate::db::get_db;
 use crate::provider_sessions::jsonl_files_recent_first;
 use crate::stats::parse;
 use crate::stats::pricing;
-use crate::stats::types::{CallRecord, DedupKey, UsageSummary};
+use crate::stats::types::{CallRecord, UsageSummary};
 
 /// Aggregate result of one sync pass.
 #[derive(Debug, Clone, Default)]
@@ -52,11 +52,65 @@ impl SyncResult {
 
 const PROGRESS_EVERY: usize = 16;
 
+/// Bump when parser logic changes in a way that alters stored token/cost
+/// numbers. On the next sync a DB whose recorded version differs is wiped and
+/// fully re-ingested — `INSERT OR IGNORE` + the mtime gate otherwise freeze old
+/// rows forever, so this is the only way an accuracy fix reaches data that an
+/// earlier parser already ingested.
+///
+/// History: 1 = original parser; 2 = Claude snapshot-dedup + Codex per-call
+/// delta fixes (the "对齐 cc-switch" rework); 3 = dropped the shape+timestamp
+/// dedup that was under-counting Codex (no proxy → request_id dedup suffices).
+const STATS_PARSER_VERSION: i64 = 3;
+
+/// Wipe `usage_records` + `session_log_sync` when the stored parser version
+/// doesn't match the current one, then stamp the new version. Returns true when
+/// a rebuild happened. Best-effort; schema is guaranteed by `db::init_database`.
+fn rebuild_if_parser_changed(conn: &rusqlite::Connection) -> bool {
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS stats_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+    );
+    let stored: i64 = conn
+        .query_row(
+            "SELECT value FROM stats_meta WHERE key = 'parser_version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if stored == STATS_PARSER_VERSION {
+        return false;
+    }
+    let _ = conn.execute_batch("DELETE FROM usage_records; DELETE FROM session_log_sync;");
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO stats_meta (key, value) VALUES ('parser_version', ?1)",
+        params![STATS_PARSER_VERSION.to_string()],
+    );
+    tracing::info!(
+        "[STATS-SYNC] parser version {stored} -> {STATS_PARSER_VERSION}: rebuilt usage_records"
+    );
+    true
+}
+
+/// Force a full rebuild: drop ingested rows + sync cursors so the next
+/// `stats_compute` re-ingests every file from scratch with the current parser.
+pub fn rebuild_now() -> Result<(), String> {
+    let conn = get_db()?;
+    conn.execute_batch("DELETE FROM usage_records; DELETE FROM session_log_sync;")
+        .map_err(|e| e.to_string())
+}
+
 /// Sync all providers' session logs into `usage_records`. Scans only files
 /// newer than `lo_ms` (coarse mtime pre-filter); the mtime gate then skips
 /// unchanged files entirely. `on_progress(scanned, total)` is called
 /// periodically so the caller can stream progress to the UI.
 pub fn sync_all<F: FnMut(usize, usize)>(lo_ms: Option<u64>, mut on_progress: F) -> SyncResult {
+    // One-time rebuild if the parser version changed since rows were ingested.
+    if let Ok(conn) = get_db() {
+        rebuild_if_parser_changed(&conn);
+    }
+
     // Collect candidates from both providers up front so `total` is known
     // before the scan loop starts — the UI progress bar needs a denominator.
     let mut files: Vec<(PathBuf, &'static str)> = Vec::new();
@@ -150,32 +204,16 @@ fn line_count(path: &Path) -> i64 {
         .unwrap_or(0)
 }
 
-/// True when an equivalent billable event already exists (same provider, model,
-/// token shape, and timestamp). Catches proxy + session-log duplicates that
-/// have different request_ids.
-fn dup_exists(conn: &rusqlite::Connection, key: &DedupKey) -> bool {
-    conn.query_row(
-        "SELECT 1 FROM usage_records
-         WHERE provider = ?1 AND model = ?2
-           AND input_tokens = ?3 AND output_tokens = ?4
-           AND cache_read_tokens = ?5 AND cache_creation_tokens = ?6
-           AND created_at = ?7
-         LIMIT 1",
-        params![
-            key.provider,
-            key.model,
-            key.input_tokens,
-            key.output_tokens,
-            key.cache_read_tokens,
-            key.cache_creation_tokens,
-            key.created_at,
-        ],
-        |_| Ok(()),
-    )
-    .is_ok()
-}
-
 /// Insert one call into `usage_records`. Returns true if a new row was written.
+///
+/// Dedup is by the `request_id` primary key alone (`session:{msg_id}` for
+/// Claude, `codex_session:{sid}:{idx}` for Codex) — both are stable across
+/// re-syncs, so `INSERT OR IGNORE` is exact. We deliberately do NOT also dedup
+/// by token shape + timestamp: ThreadTerm has no proxy writing `usage_records`
+/// (the only writer is this module), so there is no cross-source duplicate to
+/// catch — a shape match only ever means two *distinct* API calls that happen
+/// to look alike, and dropping the second under-counts usage (Codex deltas are
+/// small, uniform integers at second resolution, so they collide easily).
 fn insert_record(
     conn: &rusqlite::Connection,
     request_id: &str,
@@ -184,19 +222,6 @@ fn insert_record(
     project_path: &str,
     created_at: i64,
 ) -> bool {
-    let dedup = DedupKey {
-        provider,
-        model: &record.model,
-        input_tokens: record.usage.input,
-        output_tokens: record.usage.output,
-        cache_read_tokens: record.usage.cache_read,
-        cache_creation_tokens: record.usage.cache_creation,
-        created_at,
-    };
-    if dup_exists(conn, &dedup) {
-        return false;
-    }
-
     let cb = pricing::cost_breakdown(&record.model, &record.usage);
     let inserted = conn
         .execute(
@@ -339,7 +364,8 @@ mod tests {
                 created_at INTEGER NOT NULL, data_source TEXT NOT NULL DEFAULT 'session_log');
              CREATE TABLE session_log_sync (
                 file_path TEXT PRIMARY KEY, last_modified INTEGER NOT NULL,
-                last_line_offset INTEGER NOT NULL, last_synced_at INTEGER NOT NULL);",
+                last_line_offset INTEGER NOT NULL, last_synced_at INTEGER NOT NULL);
+             CREATE TABLE stats_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )
         .unwrap();
         conn
@@ -391,16 +417,20 @@ mod tests {
     }
 
     #[test]
-    fn dup_exists_catches_same_token_shape_different_id() {
+    fn distinct_request_ids_with_same_shape_both_count() {
+        // Two distinct calls that happen to share model + token shape + second
+        // must BOTH be recorded — they are different API calls. Only a repeated
+        // request_id is a true duplicate (covered above). This is the Codex
+        // under-count fix: small uniform deltas at second resolution collide on
+        // shape, and the old shape-dedup wrongly dropped the second one.
         let conn = mem_conn();
         let r = record("claude-opus-4-8", 100, 10, Some(1_609_459_200_000));
         assert!(insert_record(&conn, "session:msg_1", "claude", &r, "/p", 1_609_459_200));
-        // Different request_id but identical token shape + timestamp → blocked.
-        assert!(!insert_record(&conn, "session:msg_other", "claude", &r, "/p", 1_609_459_200));
+        assert!(insert_record(&conn, "session:msg_other", "claude", &r, "/p", 1_609_459_200));
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 1, "DedupKey guard must block same-shape duplicate");
+        assert_eq!(count, 2, "distinct request_ids are distinct calls");
     }
 
     #[test]
@@ -409,5 +439,28 @@ mod tests {
         assert_eq!(get_sync_state(&conn, "/x.jsonl"), (0, 0));
         update_sync_state(&conn, "/x.jsonl", 1_700_000_000_000, 42);
         assert_eq!(get_sync_state(&conn, "/x.jsonl"), (1_700_000_000_000, 42));
+    }
+
+    #[test]
+    fn rebuild_wipes_rows_when_version_missing_then_is_idempotent() {
+        let conn = mem_conn();
+        // Simulate stale rows ingested by an older parser (no version stamped).
+        let r = record("claude-opus-4-8", 100, 10, Some(1_609_459_200_000));
+        assert!(insert_record(&conn, "session:msg_1", "claude", &r, "/p", 1_609_459_200));
+        update_sync_state(&conn, "/old.jsonl", 1_700_000_000_000, 5);
+
+        // First sync after the version bump: rows + cursors wiped, version stamped.
+        assert!(rebuild_if_parser_changed(&conn), "stale DB must rebuild");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
+            .unwrap();
+        let cursors: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_log_sync", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "stale usage rows cleared");
+        assert_eq!(cursors, 0, "sync cursors cleared so files re-parse");
+
+        // Second call: version now matches → no-op (no needless wipe each sync).
+        assert!(!rebuild_if_parser_changed(&conn), "matching version must not rebuild");
     }
 }

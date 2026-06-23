@@ -381,7 +381,10 @@ mod tests {
         let conn = mem_conn_with_rows();
         insert_row(&conn, "r1", "claude-opus-4-8", 100, 10, 1.5, Some("s1"), "/a", 1000);
         insert_row(&conn, "r2", "claude-opus-4-8", 200, 20, 3.0, Some("s2"), "/b", 5000);
-        let snap = aggregate_from_db(&conn, "all", Some(2_000), Some(6_000)).unwrap();
+        // `created_at` is epoch SECONDS; the window args are epoch ms (the fn
+        // divides by 1000). 2_000_000ms→2000s .. 6_000_000ms→6000s brackets r2
+        // (created_at 5000s) and excludes r1 (1000s).
+        let snap = aggregate_from_db(&conn, "all", Some(2_000_000), Some(6_000_000)).unwrap();
         assert_eq!(snap.total_calls, 1);
         assert_eq!(snap.usage.input, 200);
     }
