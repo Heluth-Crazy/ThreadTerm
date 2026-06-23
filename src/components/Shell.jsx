@@ -51,6 +51,11 @@ if (typeof document !== 'undefined' && !document.getElementById('threadterm-xter
 
 const CODEX_DEVICE_AUTH_URL = 'https://auth.openai.com/codex/device';
 const CLEANUP_SEQUENCE_RE = /\x1b\[[0-9;]*[JKLMPX]/;
+// W0.3: above this size, a session-restore snapshot is written to xterm in
+// byte-budgeted slices (chained on term.write's drain callback) instead of one
+// blocking write, so input/scroll stay responsive while a history-heavy session
+// restores. End state is identical — xterm's parser is stateful across writes.
+const SNAPSHOT_RESTORE_CHUNK_CHARS = 65536;
 
 function isCodexLoginCommand(command) {
   return typeof command === 'string' && /\bcodex\s+login\b/i.test(command);
@@ -364,7 +369,7 @@ function Shell({
           // back down by every incoming chunk.
           const followOutput = shouldFollowOutput(term.buffer.active);
           const needsRefresh = CLEANUP_SEQUENCE_RE.test(data) || data.includes('\r');
-          term.write(data, () => {
+          const finalize = () => {
             if (followOutput) {
               if (!term.hasSelection()) {
                 term.scrollToBottom();
@@ -383,7 +388,28 @@ function Shell({
               });
             }
             ackWritten();
-          });
+          };
+
+          // W0.3: a large session-restore snapshot (`!meta.ack`) is otherwise one
+          // giant term.write that blocks input/scroll while xterm parses it.
+          // Feed it in byte-budgeted slices, chaining on term.write's drain
+          // callback so the main thread yields between slices. Realtime chunks
+          // and small snapshots keep the single write (zero behavior change).
+          if (!meta.ack && data.length > SNAPSHOT_RESTORE_CHUNK_CHARS) {
+            let offset = 0;
+            const writeNextSlice = () => {
+              if (!terminal.current || offset >= data.length) {
+                finalize();
+                return;
+              }
+              const slice = data.slice(offset, offset + SNAPSHOT_RESTORE_CHUNK_CHARS);
+              offset += SNAPSHOT_RESTORE_CHUNK_CHARS;
+              term.write(slice, writeNextSlice);
+            };
+            writeNextSlice();
+          } else {
+            term.write(data, finalize);
+          }
         });
         outputSequencerRef.current.reset();
 
