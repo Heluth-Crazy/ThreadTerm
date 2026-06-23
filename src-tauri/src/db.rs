@@ -108,6 +108,14 @@ pub fn init_database() -> Result<()> {
             last_line_offset INTEGER NOT NULL,
             last_synced_at   INTEGER NOT NULL
         );
+
+        -- Stats bookkeeping (e.g. the parser-logic version that produced the
+        -- rows currently in usage_records). When the parser improves, bumping
+        -- the version triggers a one-time rebuild so old rows can't go stale.
+        CREATE TABLE IF NOT EXISTS stats_meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
         ",
     )
     .context("Failed to create database tables")?;

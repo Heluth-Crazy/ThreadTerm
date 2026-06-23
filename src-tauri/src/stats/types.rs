@@ -60,23 +60,6 @@ pub struct CallRecord {
     pub session_id: Option<String>,
 }
 
-/// Composite dedup key for cross-record duplicate detection at insert time.
-///
-/// Two records with the same `(provider, model, token breakdown, created_at)`
-/// are treated as the same billable event even when their `request_id`
-/// differs — this catches the case where a proxy-intercepted request and the
-/// corresponding session-log entry describe the same call.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DedupKey<'a> {
-    pub provider: &'a str,
-    pub model: &'a str,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_creation_tokens: u64,
-    pub created_at: i64,
-}
-
 /// One aggregation bucket (a model / project / session row) for the frontend.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]

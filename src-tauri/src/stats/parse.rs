@@ -573,12 +573,14 @@ mod tests {
 
     #[test]
     fn codex_skips_zero_delta_at_task_boundary() {
-        // Same cumulative reading twice → zero delta → dropped.
+        // The first cumulative reading is the baseline (taken verbatim → one
+        // call). A second *identical* reading is a zero delta and must be
+        // dropped, so exactly one call survives — not two.
         let jsonl = r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":58346,"cached_input_tokens":46976,"output_tokens":1045}}}}
 {"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":58346,"cached_input_tokens":46976,"output_tokens":1045}}}}"#;
         let path = write_temp_jsonl("codex_zero_delta.jsonl", jsonl);
-        let result = parse_codex_file(&path);
-        assert!(result.is_none(), "zero deltas only → no calls");
+        let (_, _, calls) = parse_codex_file(&path).expect("baseline reading is one call");
+        assert_eq!(calls.len(), 1, "zero-delta second event dropped, baseline kept");
         let _ = std::fs::remove_file(&path);
     }
 

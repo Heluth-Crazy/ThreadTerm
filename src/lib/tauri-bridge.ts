@@ -286,6 +286,9 @@ export const tokenStats = {
 
   cancel: (): Promise<void> => invoke<void>('stats_cancel'),
 
+  /** Clear ingested rows + sync cursors; next compute re-ingests from scratch. */
+  rebuild: (): Promise<void> => invoke<void>('stats_rebuild'),
+
   onProgress: (cb: (payload: StatsProgressEvent) => void): Promise<() => void> =>
     listen<StatsProgressEvent>('stats://progress', (e) => cb(e.payload)),
 

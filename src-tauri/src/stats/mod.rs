@@ -120,6 +120,14 @@ pub fn stats_cancel() {
     STATS_GEN.fetch_add(1, Ordering::SeqCst);
 }
 
+/// Force a full rebuild: clear ingested rows + sync cursors so the next
+/// `stats_compute` re-ingests every session file from scratch with the current
+/// parser. Use when the on-disk numbers look stale.
+#[tauri::command]
+pub fn stats_rebuild() -> Result<(), String> {
+    sync::rebuild_now()
+}
+
 fn run_worker(
     app: &AppHandle,
     scope: &str,
