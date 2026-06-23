@@ -155,4 +155,5 @@ docs/*
 !docs/windows-terminal-baseline-report.json
 !docs/windows-terminal-optimization-execution-plan.json
 !docs/windows终端卡顿验证清单.json
+!docs/windows-terminal-optimization-verification.json
 .gitnexus

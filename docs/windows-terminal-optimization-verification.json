@@ -1,0 +1,119 @@
+{
+    "formatVersion": 1,
+    "documentType": "windows-terminal-optimization-verification",
+    "title": "Windows 终端优化真机核验清单",
+    "generatedAt": "2026-06-23",
+    "branch": "exp/windows-native-terminal-host",
+    "reason": "Markdown 文件在本地文档保护层下提交后会被加密;born-as-JSON 保证提交到远端后内容仍可读,供 Windows 真机核验。",
+    "commitsUnderTest": [
+        "e39f82a fix: 修复用量统计陈旧与 Codex 少计",
+        "36de656 perf: 节流 PTY 输出热路径的快照预览,修复 Windows 大输出卡顿",
+        "479269f perf: 大会话恢复快照分片写入,避免一次性 term.write 阻塞"
+    ],
+    "sections": [
+        {
+            "level": 1,
+            "heading": "本次改了什么(待核验)",
+            "body": [
+                "",
+                "三项修复,目标是消除『错误实现带来的卡顿』,不删除任何实时功能:",
+                "",
+                "1. PTY 输出热路径节流(36de656):`stream_pty_output` 原本每 ~8KB chunk 都无条件把整屏+history 全量序列化(`terminal_output_snapshot`)再 `broadcast_preview`。现改为节流合并(~100ms 一次;waiting 状态变更 / EOF 强制 flush)。可见终端、移动端镜像、快照状态、waiting/error 检测全部仍每 chunk 实时。",
+                "2. 大会话恢复分片(479269f):`Shell.jsx` 恢复快照超过 64KB 时按 64KB 切片、链式经 `term.write` drain 回调写入,切片间让出主线程。小快照与实时输出零变化,终态一致。",
+                "3. 用量统计(e39f82a,非 Windows 专属但一并核验):新增 `STATS_PARSER_VERSION` 自愈重建(打开统计面板即按版本全量重灌);移除无 proxy 场景下误删 Codex delta 的形状去重。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "准备",
+            "body": [
+                "",
+                "- `git pull`(确认本机已到 479269f 或更新)。",
+                "- 重启 `tauri dev`(本地 CLI:`./node_modules/.bin/tauri dev`),让 Rust 重新编译带上 36de656 / e39f82a。",
+                "- 统计 DB 会在『打开统计面板』时按 `STATS_PARSER_VERSION` 自动重建,无需手动清库;也可调 `stats_rebuild` 命令强制。",
+                "- 临时 CDP(可选,沿用基线方法):Tauri `additionalBrowserArgs = --remote-debugging-port=9222`,核验后还原。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "V1 — PTY 输出热路径(核心,36de656)",
+            "body": [
+                "",
+                "步骤:`Set-ExecutionPolicy -Scope Process Bypass -Force` 后跑 `\\tools\\windows-terminal-benchmark\\run-baseline.ps1` 的 ~1.49MB / 10000 行连续输出场景(与基线同口径)。",
+                "",
+                "记录:完成总耗时、output 事件数、frame p99 / max、>50ms long task 数、ACK 字节是否与输出一致、snapshot/recent output 是否仍到第 10000 行。",
+                "",
+                "通过标准:",
+                "- 完成耗时从基线 ~297.3s 大幅下降到秒级(逼近直接 `term.write` 控制项 90.6ms + IPC 开销量级);",
+                "- 期间主线程不出现持续长任务;",
+                "- ACK 字节与输出字节一致(背压语义未变)。",
+                "",
+                "结果: [ 待填 ]"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "V2 — 热路径回归(零功能降级核验)",
+            "body": [
+                "",
+                "逐项确认下列实时能力**未**因节流而退化:",
+                "",
+                "| 能力 | 期望 | 结果 |",
+                "| --- | --- | --- |",
+                "| 可见终端实时输出(`pty-output`) | 仍逐块实时,无新增延迟 | [ 待填 ] |",
+                "| 桌面卡片预览(前端从 pty-output 派生) | 实时,不受后端节流影响 | [ 待填 ] |",
+                "| 移动端实时终端镜像(`broadcast_terminal_output`) | 仍实时镜像 | [ 待填 ] |",
+                "| 移动端卡片列表预览(被节流项) | ~100ms 内刷新,无感 | [ 待填 ] |",
+                "| 手机 / 第二 webview 接入(`attach_snapshot`) | 仍显示完整准确屏幕 | [ 待填 ] |",
+                "| 『等待输入』状态(prompt 出现) | 仍及时触发(prompt 强制 flush) | [ 待填 ] |"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "V3 — 大会话恢复分片(479269f)",
+            "body": [
+                "",
+                "步骤:打开一个 history 很多(接近 scrollback 3000 行)的旧会话,触发恢复(切换到该卡 / 重开窗口 / 第二 webview)。",
+                "",
+                "通过标准:",
+                "- 恢复期间输入与滚动保持可响应,不被一次性大写卡住;",
+                "- 恢复完成后屏幕内容/历史与改动前完全一致(无缺行、无错位)。",
+                "",
+                "对照:小会话恢复行为应与之前完全一致(单次写)。",
+                "",
+                "结果: [ 待填 ]"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "V4 — 用量统计 Codex 少计(e39f82a)",
+            "body": [
+                "",
+                "步骤:打开统计面板(触发按版本自愈重建)→ 对照 cc-switch 同区间 Codex 数字。",
+                "",
+                "通过标准:",
+                "- Codex token 总量不再明显偏少(同形状 delta 不再被误删);",
+                "- Claude 数字保持正确;",
+                "- 重复打开/刷新数字稳定。",
+                "",
+                "备注:成本仍为静态价目表估算,与 cc-switch 的 models.dev 动态价对未知模型/漂移费率可能有小差,属预期。",
+                "",
+                "结果: [ 待填 ]"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "结论",
+            "body": [
+                "",
+                "三选一(核验后填写):",
+                "",
+                "- 通过:V1 秒级 + V2 全部无降级 + V3 恢复顺滑 + V4 Codex 对齐 → 可合入主线。",
+                "- 部分通过:记录仍不达标的项与数据,决定补测或追加优化。",
+                "- 仍有 ≥3 个高优先级场景显著劣于 Windows Terminal:才考虑重启 W1 Native Host Spike。",
+                "",
+                "结论: [ 待填 ]"
+            ]
+        }
+    ]
+}
