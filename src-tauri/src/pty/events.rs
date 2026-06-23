@@ -107,6 +107,30 @@ pub(super) fn spawn_output_idle_watcher(id: String, ses: Arc<PtySession>) {
     });
 }
 
+/// Coalesce the expensive full-screen snapshot + card/mobile preview broadcast
+/// to at most once per interval instead of once per ~8KB chunk. Everything that
+/// is actually realtime — the visible terminal (`pty-output`), the mobile mirror
+/// (`broadcast_terminal_output`), raw-output buffering, and waiting/attention
+/// detection — stays per-chunk; only the redundant per-chunk re-serialization of
+/// the whole screen is throttled. A waiting-state change or EOF forces an
+/// immediate flush so the preview is never visibly stale when it matters.
+const PREVIEW_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Whether to (re)broadcast the preview snapshot this chunk: forced on a state
+/// change, otherwise rate-limited to one flush per [`PREVIEW_FLUSH_INTERVAL`].
+fn should_flush_preview(since_last_flush: Duration, force: bool) -> bool {
+    force || since_last_flush >= PREVIEW_FLUSH_INTERVAL
+}
+
+/// Serialize the current screen snapshot and broadcast it as the card/mobile
+/// preview. Extracted so the per-chunk hot path can call it on a throttled
+/// cadence instead of every chunk; `data` is only a fallback when the snapshot
+/// is empty. `broadcast_preview` itself no-ops on empty content.
+fn flush_preview(id: &str, data: &str, ses: &Arc<PtySession>) {
+    let preview_source = session::terminal_output_snapshot(ses).unwrap_or_else(|| data.to_string());
+    bridge::broadcast_preview(id, &preview_source);
+}
+
 /// Background reader: reads chunks from the PTY and emits Tauri events.
 pub(super) fn stream_pty_output(
     id: String,
@@ -118,6 +142,8 @@ pub(super) fn stream_pty_output(
     let mut block_parser = super::blocks::BlockParser::new(id.clone());
     let mut last_attention_time = Instant::now() - Duration::from_secs(60);
     let attention_debounce = Duration::from_secs(5);
+    // Start "stale" so the very first chunk flushes a preview immediately.
+    let mut last_preview_flush = Instant::now() - PREVIEW_FLUSH_INTERVAL;
     let session_start = Instant::now();
     let mut decoder = Utf8StreamDecoder::default();
 
@@ -153,6 +179,7 @@ pub(super) fn stream_pty_output(
                     &app_handle,
                     &mut block_parser,
                     &mut last_attention_time,
+                    &mut last_preview_flush,
                     attention_debounce,
                     session_start,
                 );
@@ -173,10 +200,15 @@ pub(super) fn stream_pty_output(
             &app_handle,
             &mut block_parser,
             &mut last_attention_time,
+            &mut last_preview_flush,
             attention_debounce,
             session_start,
         );
     }
+
+    // Output has ended — guarantee the final screen is reflected in the
+    // card/mobile preview even if the last chunk fell inside the throttle window.
+    flush_preview(&id, "", &ses);
 
     // Determine exit code and update state.
     let wait_code = ses
@@ -227,6 +259,7 @@ fn emit_pty_output_chunk(
     app_handle: &AppHandle,
     block_parser: &mut super::blocks::BlockParser,
     last_attention_time: &mut Instant,
+    last_preview_flush: &mut Instant,
     attention_debounce: Duration,
     session_start: Instant,
 ) {
@@ -252,8 +285,6 @@ fn emit_pty_output_chunk(
     );
     session::add_unacked(ses, data.as_bytes().len());
     bridge::broadcast_terminal_output(id, data, seq);
-    let preview_source = session::terminal_output_snapshot(ses).unwrap_or_else(|| data.to_string());
-    bridge::broadcast_preview(id, &preview_source);
 
     // Keep raw PTY bytes so a second webview can replay the same terminal
     // control stream until backend screen snapshots are enabled.
@@ -265,6 +296,7 @@ fn emit_pty_output_chunk(
     // Strip ANSI escape codes for pattern matching.
     let cleaned = ANSI_STRIP.replace_all(data, "");
     let waiting_for_input = WAITING_PATTERNS.is_match(&cleaned);
+    let mut force_preview = false;
 
     if !waiting_for_input {
         session::mark_output_activity(ses, id);
@@ -280,6 +312,8 @@ fn emit_pty_output_chunk(
 
         if !already_waiting {
             session::set_session_state(ses, id, SessionState::WaitingForInput);
+            // A new prompt appeared — refresh the preview now, not on the next tick.
+            force_preview = true;
         }
 
         if last_attention_time.elapsed() > attention_debounce {
@@ -316,11 +350,31 @@ fn emit_pty_output_chunk(
             bridge::broadcast_attention(id, "failed", "Agent encountered an error");
         }
     }
+
+    // Coalesced snapshot + preview — the expensive part, kept off the per-chunk
+    // path. Forced on a state change, otherwise at most once per interval.
+    if should_flush_preview(last_preview_flush.elapsed(), force_preview) {
+        flush_preview(id, data, ses);
+        *last_preview_flush = Instant::now();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_flush_preview_throttles_unless_forced() {
+        // A state change (e.g. a new prompt) forces an immediate flush.
+        assert!(should_flush_preview(Duration::from_millis(0), true));
+        // Within the interval and not forced → coalesced, no per-chunk flush.
+        assert!(!should_flush_preview(
+            PREVIEW_FLUSH_INTERVAL - Duration::from_millis(1),
+            false
+        ));
+        // At or past the interval → flush.
+        assert!(should_flush_preview(PREVIEW_FLUSH_INTERVAL, false));
+    }
 
     #[test]
     fn exit_code_from_status_preserves_exact_codes() {
