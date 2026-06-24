@@ -1,0 +1,143 @@
+{
+    "formatVersion": 1,
+    "documentType": "windows-pty-governance-verification",
+    "title": "Windows PTY 治理 + 吞吐埋点 真机核验清单",
+    "generatedAt": "2026-06-24",
+    "branch": "exp/windows-native-terminal-host",
+    "reason": "Markdown 提交后会被本地文档保护层加密;born-as-JSON 保证提交到远端后内容可读,供 Windows 真机核验。",
+    "commitsUnderTest": [
+        "2c6f91e feat: Windows PTY 治理(pwsh 优先 / cwd 归一化 / ConPTY 串行化 / 进程树清理)+ 输出埋点",
+        "e2d7eeb chore(stats): 将仅测试用的 UsageSummary 导入移入 tests"
+    ],
+    "sections": [
+        {
+            "level": 1,
+            "heading": "背景与范围",
+            "body": [
+                "",
+                "依据 Terax 调研(`docs/research/terax-threadterm-windows-terminal-compare.json`):Windows 终端稳定性/性能重点在低层 PTY/shell 治理,而非原生渲染器。本轮落地 P0 治理项 + 给吞吐残留(上轮 47s)加埋点定位。",
+                "",
+                "所有改动 `cfg(windows)` 隔离,mac/Linux 行为不变。其中 pwsh 选择分支、cwd 归一化调用、taskkill 进程树清理为 Windows-only 代码,**mac 编译器不编译**,因此必须先在 Windows 编译通过再做行为核验。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "准备",
+            "body": [
+                "",
+                "- `git pull --ff-only`(取到 2c6f91e / e2d7eeb)。",
+                "- 重启 `./node_modules/.bin/tauri dev`(让 Rust 重新编译 Windows 路径)。",
+                "- 吞吐埋点日志:dev 控制台/日志里 target 为 `pty_perf`、消息 `PTY output stream profile`(仅对 >256KB 的大输出打印)。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "C0 — Windows 编译(必做,先决条件)",
+            "body": [
+                "",
+                "目的:确认 cfg(windows) 代码(pwsh 选择 / cwd 归一化 / taskkill `CommandExt::creation_flags`)在 Windows 上无编译错误——这些 mac 编译器跳过了。",
+                "",
+                "步骤:`cargo build --manifest-path src-tauri/Cargo.toml`(或 `tauri dev` 启动时的 Rust 编译)成功;`cargo test -p threadterm pty::` 通过。",
+                "",
+                "通过标准:编译 0 error;`taskkill` 块、`select_windows_shell`/`normalize_windows_cwd` 调用、`PTY_SPAWN_LOCK` 均编译通过。",
+                "",
+                "结果: [ 待填 ]"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "G1 — pwsh 优先选择",
+            "body": [
+                "",
+                "步骤:确保已装 PowerShell 7(`pwsh.exe` 在 PATH)→ 新建一个 shell 终端卡片。",
+                "",
+                "通过标准:新终端运行的是 `pwsh.exe`(可在终端里 `$PSVersionTable.PSVersion` 看主版本为 7+,或 `(Get-Process -Id $PID).Path`)。卸载/无 pwsh 时回退 `powershell.exe`;两者都无时 `cmd.exe`。",
+                "",
+                "结果: [ 待填 ]"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "G2 — cwd 反斜杠归一化",
+            "body": [
+                "",
+                "步骤:用一个**含正斜杠或空格**的项目路径(如 `C:/Users/<you>/my project`)新建终端。",
+                "",
+                "通过标准:终端起始目录正确(`pwd` / `cd` 显示该目录),不报错、不落到错误目录。",
+                "",
+                "结果: [ 待填 ]"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "G3 — ConPTY 启停串行化(空白/卡死)",
+            "body": [
+                "",
+                "步骤:快速连续新建多个终端、快速开关终端、切换卡片、关闭再重开窗口(尽量制造并发 PTY 创建)。",
+                "",
+                "通过标准:不再出现首次打开/快速开关/视图回收再附着时的空白或卡死(与改动前对照,概率应下降)。",
+                "",
+                "结果: [ 待填 ]"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "G4 — 进程树清理(taskkill /F /T,消除 orphan)",
+            "body": [
+                "",
+                "步骤:在终端里启动一个会派生子进程的命令(如 `node`、`npm run dev`、`cmd /c ping -t localhost`),确认任务管理器里出现子进程;然后**关闭该终端卡片**(走 pty_kill)。",
+                "",
+                "通过标准:关闭后任务管理器中该终端的子进程/孙进程被一起结束,无残留 orphan;且关闭过程不弹出 taskkill 控制台窗口(用了 CREATE_NO_WINDOW)。",
+                "",
+                "对照:改动前关闭仅杀直接子进程,孙进程可能 orphan。",
+                "",
+                "结果: [ 待填 ]"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "P1 — 吞吐埋点定位 47s 残留",
+            "body": [
+                "",
+                "步骤:`Set-ExecutionPolicy -Scope Process Bypass -Force` 后跑 `\\tools\\windows-terminal-benchmark\\run-baseline.ps1` 的 10000 行场景;结束后在日志找 `pty_perf` 的 `PTY output stream profile` 行。",
+                "",
+                "记录该行字段:`total_ms / flow_wait_ms / read_ms / apply_ms / emit_ms / chunks / bytes`。",
+                "",
+                "解读(定位 47s 花在哪段):",
+                "- `read_ms` 占大头 → 时间在 ConPTY 字节投递 / shell 自身生成输出(cmd 47s vs PowerShell 61.7s 的差异支持这一猜测),非 ThreadTerm 渲染;",
+                "- `apply_ms` 占大头 → headless 模拟器 advance(快照维护)是瓶颈,可考虑节流/降配;",
+                "- `emit_ms` 占大头 → Tauri IPC 每 chunk 开销,可考虑合并 emit;",
+                "- `flow_wait_ms` 占大头 → 前端 ACK / 背压往返,可调水位或批量 ACK。",
+                "",
+                "补充对照(可选):单独量 ConPTY 字节到达速率 vs 渲染完成时间,排除 shell 生成本身的耗时。",
+                "",
+                "结果(贴 profile 行 + 解读): [ 待填 ]"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "REG — 回归",
+            "body": [
+                "",
+                "- 普通终端输入/输出/滚动正常;",
+                "- 旧会话恢复(上轮 W0.3 分片)行为不变;",
+                "- 移动端镜像 / 卡片预览正常;",
+                "- 统计面板可正常打开(stats 仅 chore 改了测试导入,无功能变化)。",
+                "",
+                "结果: [ 待填 ]"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "结论 + 下一步",
+            "body": [
+                "",
+                "核验后填写。P1 的 profile 结果将决定吞吐下一步方向(动模拟器 / 合并 IPC / 调流控 / 确认是 shell 生成瓶颈)。",
+                "",
+                "已知遗留(非本轮引入):`cargo check` 非测试构建仍有 4 个 stats 模块 dead_code 警告(`Aggregator`/`pricing::cost`/`CallRecord.stop_reason`,e39f82a 起的测试专用项),不影响功能,可另开 chore 清理。",
+                "",
+                "结论: [ 待填 ]"
+            ]
+        }
+    ]
+}

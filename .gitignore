@@ -156,4 +156,5 @@ docs/*
 !docs/windows-terminal-optimization-execution-plan.json
 !docs/windows终端卡顿验证清单.json
 !docs/windows-terminal-optimization-verification.json
+!docs/windows-pty-governance-verification.json
 .gitnexus
