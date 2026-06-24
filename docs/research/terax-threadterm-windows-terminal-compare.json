@@ -1,0 +1,589 @@
+{
+  "meta": {
+    "title": "Terax AI 与 ThreadTerm Windows 终端处理对比调研",
+    "generatedAt": "2026-06-24T16:42:15.0537874+08:00",
+    "generatedBy": "Codex",
+    "scope": "聚焦 Windows 下的 PTY/ConPTY、shell 启动、终端渲染、会话恢复、AI CLI 绑定与性能相关路径",
+    "outputType": "research-comparison",
+    "artifactLocation": ".trellis/tasks/06-22-windows/research/terax-threadterm-windows-terminal-compare.json",
+    "note": "该文件位于 .trellis 研究目录，属于本仓库全局默认忽略范围；本次是按用户要求明确产出的研究文档。"
+  },
+  "repositories": {
+    "threadterm": {
+      "name": "ThreadTerm",
+      "path": "D:/ThreadTerm",
+      "revision": "7e547f60c8735e4a10d8d40bb241323fe6b513d5",
+      "branch": "exp/windows-native-terminal-host"
+    },
+    "teraxAi": {
+      "name": "terax-ai",
+      "remote": "https://github.com/crynta/terax-ai",
+      "localMirror": "D:/ThreadTerm/.tmp/terax-ai",
+      "revision": "564e145a7387a2f54502815d9feb612b8e6222e5",
+      "defaultBranch": "main"
+    }
+  },
+  "highLevelConclusion": {
+    "summary": [
+      "Terax 在 Windows 终端这条链路上，真正值得借鉴的重点不在“换成原生终端控件”，而在于把 ConPTY 生命周期、PowerShell 启动方式、shell integration 注入、子进程树回收、WSL/Git Bash 兼容和前端渲染池化都做成了明确的 Windows 约束。",
+      "ThreadTerm 当前 Windows 方案更偏“在现有 xterm + Tauri 事件流 + 会话快照 + provider session 绑定”上做可靠性修补，已经有一套适合自身产品形态的恢复/桥接能力，但 Windows 低层 PTY 启动链路明显比 Terax 更保守，也更依赖外部环境状态。",
+      "如果只从 Windows 终端稳定性和性能角度选可参考项，Terax 最值得迁移的是：ConPTY 启停串行化、Job Object 杀整棵进程树、自动 shell integration 注入、Windows cwd 反斜杠归一化、统一的 shell 枚举/优先级和失败重试/失败可视化。",
+      "如果考虑 ThreadTerm 现有需求边界，Terax 的整个前端 renderer pool / dormant ring 机制不能直接搬运。ThreadTerm 已经背负了多卡片、移动桥接、快照回放、provider session 扫描绑定、Codex app-server 这些额外职责，直接替换成本高且风险大。"
+    ],
+    "judgement": {
+      "canReferenceDeeply": [
+        "Windows PTY 生命周期治理",
+        "Windows shell 启动与兼容层",
+        "自动 shell integration 注入",
+        "进程树清理与 orphan 防护",
+        "WSL / Git Bash 的差异化适配策略"
+      ],
+      "shouldNotCopyBlindly": [
+        "Terax 的完整前端 terminal session / renderer pool 架构",
+        "Terax 的 block-mode 输入模型",
+        "Terax 的 tab/leaf 生命周期设计"
+      ],
+      "keyInsight": "Terax 的高性能主要来自把现有 xterm/WebGL 路径打磨到足够稳，而不是引入一个全新的 Windows 原生终端渲染栈。对 ThreadTerm 来说，这意味着优先级应该是先补齐 Windows PTY/shell 低层治理，而不是继续押注尚未启用的 windows-native renderer 草案。"
+    }
+  },
+  "requirementLayer": {
+    "coreRequirements": [
+      {
+        "id": "R1",
+        "name": "Windows 首屏稳定启动",
+        "description": "首次打开/快速连续打开终端时不能出现黑屏、空白、无输出或输出管道卡死。",
+        "terax": "明确用 CONPTY_LIFECYCLE_LOCK 串行化 openpty + spawn + drop，直接针对 ConPTY 生命周期竞态。",
+        "threadterm": "当前主要通过前端 recoverTerminalSurface、多次 fit、重连和快照恢复兜底，没有看到 Windows 专属的 spawn/drop 锁。",
+        "gapAssessment": "Terax 在要求定义和实现上都更贴近 Windows 平台问题本身；ThreadTerm 目前更多在 UI/恢复层规避后果。"
+      },
+      {
+        "id": "R2",
+        "name": "shell 行为一致性",
+        "description": "PowerShell、cmd、Git Bash、WSL 下的 cwd、prompt、命令边界、回车和 profile 行为要一致可控。",
+        "terax": "运行时自动注入 shell integration，PowerShell/Git Bash/WSL 都有专门逻辑。",
+        "threadterm": "运行时默认只起 powershell.exe/cmd.exe；shell integration 主要通过设置页安装到用户 profile，默认 PTY 启动链路本身不注入。",
+        "gapAssessment": "Terax 的默认开箱一致性更强；ThreadTerm 的一致性更依赖用户环境已经安装脚本。"
+      },
+      {
+        "id": "R3",
+        "name": "大输出和隐藏标签性能",
+        "description": "后台终端持续输出时不能拖垮前端渲染，恢复到前台时仍要尽可能快。",
+        "terax": "raw bytes IPC + WebGL renderer pool + dormant ring + idle release。",
+        "threadterm": "字符串事件流 + ack 背压 + attachSnapshot + 大快照分片写入 + LRU 挂载上限。",
+        "gapAssessment": "两者都考虑了性能，但 Terax 直接压低 IPC 和渲染常驻成本；ThreadTerm 更强调跨视图恢复和桥接一致性。"
+      },
+      {
+        "id": "R4",
+        "name": "关闭应用后的子进程树清理",
+        "description": "Windows 下关闭终端或关闭应用后，shell 内部拉起的 dev server / npm / python 子进程不能继续孤儿化驻留。",
+        "terax": "Windows Job Object 明确覆盖这一需求。",
+        "threadterm": "当前 PTY kill 路径未见 Job Object 或等价的进程树治理。",
+        "gapAssessment": "这是 ThreadTerm 当前 Windows 链路里最值得补的系统级缺口之一。"
+      },
+      {
+        "id": "R5",
+        "name": "AI CLI 恢复与外部会话绑定",
+        "description": "Codex/Claude 这类外部 CLI 的恢复、历史发现、会话绑定与专用回退链路要可用。",
+        "terax": "不是它的核心产品要求；更多是内建 AI 工作区，不围绕外部 provider session 做恢复绑定。",
+        "threadterm": "这是当前项目的强项：provider session 扫描、resume 命令拼装、Codex app-server Windows 启动回退都已存在。",
+        "gapAssessment": "这部分 ThreadTerm 的需求明显更复杂，所以它的架构更重是合理的，不能简单用 Terax 的轻量体积去反推 ThreadTerm 设计错误。"
+      }
+    ],
+    "productFitConclusion": "Terax 更像是“先把一个 Windows 终端产品做稳、做轻”；ThreadTerm 则是在“终端 + provider 会话恢复 + 移动桥接 + 多卡片状态同步”的更宽需求面上演进。对比时必须把需求差异显式算进去。"
+  },
+  "technicalLayer": {
+    "comparisonMatrix": [
+      {
+        "id": "T1",
+        "topic": "PTY / ConPTY 生命周期控制",
+        "terax": {
+          "status": "strong",
+          "implementation": "在 Windows 下用 CONPTY_LIFECYCLE_LOCK 序列化 spawn 和 drop；pty_open/pty_close_all 都围绕该约束设计。",
+          "evidence": [
+            "src-tauri/src/modules/pty/session.rs:71",
+            "src-tauri/src/modules/pty/session.rs:102",
+            "src-tauri/src/modules/pty/mod.rs:44",
+            "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/src-tauri/src/modules/pty/session.rs",
+            "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/TERAX.md"
+          ]
+        },
+        "threadterm": {
+          "status": "medium",
+          "implementation": "PTY session 以 registry 为中心，创建 idempotent，并有快照/流控/退出广播，但未看到 Windows 专属的 spawn/drop 串行锁。",
+          "evidence": [
+            "src-tauri/src/pty/mod.rs:69",
+            "src-tauri/src/pty/events.rs:135",
+            "src-tauri/src/pty/session.rs:63",
+            "src/components/Shell.jsx:304"
+          ]
+        },
+        "assessment": "Terax 更接近根因治理；ThreadTerm 目前更多在输出恢复和前端可见性问题上补强。",
+        "referencePotential": "high"
+      },
+      {
+        "id": "T2",
+        "topic": "Windows shell 选择与枚举",
+        "terax": {
+          "status": "strong",
+          "implementation": "优先 pwsh.exe，再回退 powershell.exe，再到 cmd.exe；同时枚举 Git Bash，并支持 shell override 白名单。",
+          "evidence": [
+            "src-tauri/src/modules/pty/shell_init.rs:481",
+            "src-tauri/src/modules/pty/shell_init.rs:998",
+            "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/src-tauri/src/modules/pty/shell_init.rs",
+            "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/README.md"
+          ]
+        },
+        "threadterm": {
+          "status": "basic",
+          "implementation": "默认 shell 只在 powershell.exe 和 cmd.exe 间二选一；运行时没有 shell 枚举/override 模型。shell integration 检测却返回 pwsh，这与运行时默认 shell 优先级并不一致。",
+          "evidence": [
+            "src-tauri/src/pty/shell.rs:9",
+            "src-tauri/src/shell_integration.rs:66"
+          ]
+        },
+        "assessment": "ThreadTerm 在 Windows shell 识别上存在“运行时选择”和“集成安装选择”分离的问题，长期会放大用户环境差异。",
+        "referencePotential": "high"
+      },
+      {
+        "id": "T3",
+        "topic": "自动 shell integration 注入",
+        "terax": {
+          "status": "strong",
+          "implementation": "PowerShell 用 -NoLogo -NoExit -ExecutionPolicy Bypass -File <profile.ps1> 直接注入；Git Bash 用 rcfile；WSL zsh/bash/fish 也写缓存脚本后自动带起。",
+          "evidence": [
+            "src-tauri/src/modules/pty/shell_init.rs:511",
+            "src-tauri/src/modules/pty/shell_init.rs:523",
+            "src-tauri/src/modules/pty/shell_init.rs:546",
+            "src-tauri/src/modules/pty/scripts/profile.ps1:37",
+            "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/src-tauri/src/modules/pty/scripts/profile.ps1"
+          ]
+        },
+        "threadterm": {
+          "status": "partial",
+          "implementation": "存在 pwsh/bash/fish/zsh 的 shell integration 资源和安装/卸载入口，但默认 PTY 启动链路只设置 TERM/COLORTERM/FORCE_COLOR，不会主动把脚本带入当前 shell 进程。",
+          "evidence": [
+            "src-tauri/src/shell_integration.rs:45",
+            "src-tauri/src/shell_integration.rs:82",
+            "src-tauri/src/pty/shell.rs:86",
+            "src/lib/tauri-bridge.ts:142"
+          ]
+        },
+        "assessment": "这是两者 Windows 体验差异最大的地方之一。Terax 是 runtime bootstrap，ThreadTerm 更像 post-install opt-in。",
+        "referencePotential": "high"
+      },
+      {
+        "id": "T4",
+        "topic": "Windows cwd 规范化",
+        "terax": {
+          "status": "strong",
+          "implementation": "apply_common 在 Windows 下把 cwd 统一改成反斜杠，显式规避 CreateProcessW/ConPTY 的 cwd 兼容问题。",
+          "evidence": [
+            "src-tauri/src/modules/pty/shell_init.rs:143",
+            "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/TERAX.md"
+          ]
+        },
+        "threadterm": {
+          "status": "not-found",
+          "implementation": "PTY 创建时直接使用 working_dir 调 cmd.cwd，没有看到 Windows 路径分隔符纠偏。",
+          "evidence": [
+            "src-tauri/src/pty/mod.rs:95"
+          ]
+        },
+        "assessment": "这是低成本高收益项，ThreadTerm 直接补齐的性价比很高。",
+        "referencePotential": "high"
+      },
+      {
+        "id": "T5",
+        "topic": "Windows 子进程树回收",
+        "terax": {
+          "status": "strong",
+          "implementation": "每个 ConPTY 子进程绑定 Job Object，开启 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE，确保 shell 及其后代随会话句柄回收。",
+          "evidence": [
+            "src-tauri/src/modules/pty/job.rs:26",
+            "src-tauri/src/modules/pty/session.rs:31",
+            "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/src-tauri/src/modules/pty/job.rs"
+          ]
+        },
+        "threadterm": {
+          "status": "not-found",
+          "implementation": "当前 PTY session 里未见 Windows Job Object 或等价 subtree kill 机制，kill 主要停留在 child 级别。",
+          "evidence": [
+            "src-tauri/src/pty/mod.rs:241"
+          ]
+        },
+        "assessment": "这是系统级可靠性差异。ThreadTerm 长期使用 Windows 终端后，孤儿进程问题大概率会暴露。",
+        "referencePotential": "high"
+      },
+      {
+        "id": "T6",
+        "topic": "输出 IPC 热路径",
+        "terax": {
+          "status": "strong",
+          "implementation": "输出通过 Channel<Response> 直接发 ArrayBuffer；输入通过 raw body + x-pty-id header，避免每次按键的 JSON 序列化。",
+          "evidence": [
+            "src-tauri/src/modules/pty/mod.rs:100",
+            "src/modules/terminal/lib/pty-bridge.ts:20",
+            "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/src/modules/terminal/lib/pty-bridge.ts"
+          ]
+        },
+        "threadterm": {
+          "status": "medium",
+          "implementation": "仍走字符串化的事件流 payload，但通过 seq + ack + high/low watermark + attachSnapshot 来限制积压与重放压力。",
+          "evidence": [
+            "src/lib/tauri-bridge.ts:72",
+            "src-tauri/src/pty/events.rs:151",
+            "src-tauri/src/pty/session.rs:63",
+            "src/components/terminal/outputSequencer.ts:23"
+          ]
+        },
+        "assessment": "Terax 在 IPC 热路径上更激进更轻；ThreadTerm 的方案与现有 bridge/mobile/snapshot 架构绑定更深，直接替换的收益和风险都很高。",
+        "referencePotential": "medium"
+      },
+      {
+        "id": "T7",
+        "topic": "隐藏终端与渲染资源管理",
+        "terax": {
+          "status": "strong",
+          "implementation": "rendererPool + dormantRing + park/release slot + foreground-job 检测，后台活动终端可以保留 live grid，闲置时回收 WebGL 槽位。",
+          "evidence": [
+            "src/modules/terminal/lib/useTerminalSession.ts:317",
+            "src/modules/terminal/lib/useTerminalSession.ts:477",
+            "src/modules/terminal/lib/useTerminalSession.ts:589",
+            "src/modules/terminal/lib/rendererPool.ts:388",
+            "src/modules/terminal/lib/rendererPool.ts:760"
+          ]
+        },
+        "threadterm": {
+          "status": "medium",
+          "implementation": "通过 mounted view LRU 限制常驻 TerminalView 数量；unmount 后 PTY 继续存活，重新 attach 时用快照+seq 回放恢复，并对大快照分片写入。",
+          "evidence": [
+            "src/components/terminal/TerminalManager.tsx:239",
+            "src/components/Shell.jsx:393",
+            "src/components/Shell.jsx:452",
+            "src-tauri/src/pty/mod.rs:301"
+          ]
+        },
+        "assessment": "两者都在解决“后台终端太多”问题。Terax 靠 live grid 池化，ThreadTerm 靠快照恢复。ThreadTerm 不必照搬，但可以借鉴 foreground-job 维持/释放判定逻辑。",
+        "referencePotential": "medium"
+      },
+      {
+        "id": "T8",
+        "topic": "Windows 空白页/黑屏恢复策略",
+        "terax": {
+          "status": "root-cause-heavy",
+          "implementation": "重点从 spawn/drop 生命周期、ConPTY resize 时机和 renderer slot 管理上控制 blank tab，而不是主要依赖前端重复 fit。",
+          "evidence": [
+            "src/modules/terminal/lib/useTerminalSession.ts:551",
+            "src-tauri/src/modules/pty/session.rs:71",
+            "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/TERAX.md"
+          ]
+        },
+        "threadterm": {
+          "status": "recovery-heavy",
+          "implementation": "针对 WebView2 可见后前几帧 host 尺寸为 0 的情况，多次延迟 fit/refresh；同时有自动重连、快照恢复和大输出分片。",
+          "evidence": [
+            "src/components/Shell.jsx:211",
+            "src/components/Shell.jsx:247",
+            "src/components/Shell.jsx:271"
+          ]
+        },
+        "assessment": "ThreadTerm 的恢复层修补是有价值的，但如果 Windows blank/卡死根因在 ConPTY 生命周期，则 Terax 的做法更接近应补的底层。",
+        "referencePotential": "high"
+      },
+      {
+        "id": "T9",
+        "topic": "WSL / Git Bash 支持",
+        "terax": {
+          "status": "strong",
+          "implementation": "把 WSL 作为 WorkspaceEnv 的一等环境，启动时用 wsl.exe --cd --exec，并分别为 zsh/bash/fish 做 integration。",
+          "evidence": [
+            "src-tauri/src/modules/pty/shell_init.rs:546",
+            "src-tauri/src/modules/pty/shell_init.rs:622",
+            "README.md Windows notes / terminal features"
+          ]
+        },
+        "threadterm": {
+          "status": "not-found-in-pty-path",
+          "implementation": "当前仓库可见的 WSL 相关逻辑主要出现在网络适配或系统探测，不在 PTY 启动链路中。",
+          "evidence": [
+            "src-tauri/src/bridge/mod.rs:934"
+          ]
+        },
+        "assessment": "如果 ThreadTerm 未来需要覆盖更真实的 Windows 开发环境，WSL 迟早会成为需求，而 Terax 已经给出了可参考的执行入口和 shell 注入路径。",
+        "referencePotential": "medium"
+      },
+      {
+        "id": "T10",
+        "topic": "Windows 原生终端方向",
+        "terax": {
+          "status": "xterm-optimized",
+          "implementation": "没有走 Windows native renderer，而是把 xterm/WebGL 路径打磨到可接受性能。",
+          "evidence": [
+            "TERAX.md terminal/renderer 描述",
+            "README.md terminal section"
+          ]
+        },
+        "threadterm": {
+          "status": "draft-only",
+          "implementation": "存在 windows-native renderer 的 capabilities draft，但默认 resolver 明确 nativeHostAvailable=false，因此目前始终回退 xterm。",
+          "evidence": [
+            "src/lib/terminalRenderer.ts:97",
+            "src/lib/terminalRenderer.ts:164"
+          ]
+        },
+        "assessment": "Terax 的实践说明：在 native Windows renderer 真正可用前，继续深挖现有 xterm 路径依然有很大收益。",
+        "referencePotential": "strategic"
+      },
+      {
+        "id": "T11",
+        "topic": "AI CLI / session 恢复体系",
+        "terax": {
+          "status": "different-problem-space",
+          "implementation": "更强调内建 AI 工作区与 terminal context bridge，不围绕 Claude/Codex 外部 CLI session 文件做恢复绑定。",
+          "evidence": [
+            "TERAX.md AI/composer/context 描述"
+          ]
+        },
+        "threadterm": {
+          "status": "strong",
+          "implementation": "provider session 扫描 JSONL 元数据、buildTerminalLaunchCommand 组装 resume/start 命令、useProviderSessionLifecycle 发现 recent session、Codex app-server Windows 启动回退。",
+          "evidence": [
+            "src/components/terminal/providerSession.ts:142",
+            "src/components/terminal/useProviderSessionLifecycle.ts:10",
+            "src-tauri/src/provider_sessions.rs:58",
+            "src-tauri/src/codex_app.rs:651"
+          ]
+        },
+        "assessment": "这部分是 ThreadTerm 自己的护城河，不应该为了借鉴 Terax 而削弱。",
+        "referencePotential": "low"
+      }
+    ],
+    "technicalTakeaways": [
+      "Terax 在 Windows 上解决的是“shell/ConPTY 本身不稳定”问题；ThreadTerm 现在更像在解决“shell 已经起起来后，怎么恢复视图和跨组件状态”。",
+      "ThreadTerm 现有快照/seq/ack/bridge 体系已经构成自己的技术路径，最适合吸收 Terax 的地方是 Rust PTY 启动层，而不是整个 React terminal session 层。",
+      "Terax 的 shell integration 自动注入是其 blocks/cwd/foreground-job 可靠工作的前提；ThreadTerm 如果不把 runtime shell bootstrap 和 shell integration 统一起来，很多高级终端特性在 Windows 上会继续依赖用户环境运气。"
+    ]
+  },
+  "functionalLayer": {
+    "featureComparison": [
+      {
+        "feature": "默认 Windows shell 启动",
+        "terax": "pwsh -> powershell -> cmd，且支持 Git Bash/WSL。",
+        "threadterm": "powershell -> cmd。",
+        "verdict": "Terax 更完整。"
+      },
+      {
+        "feature": "终端 shell 自动带上 cwd/prompt/command markers",
+        "terax": "默认自动带上。",
+        "threadterm": "默认不自动带上，主要依赖用户安装 integration。",
+        "verdict": "Terax 明显更开箱即用。"
+      },
+      {
+        "feature": "后台隐藏终端持续运行",
+        "terax": "支持，并做了 renderer pool/parked live grid 优化。",
+        "threadterm": "支持，并通过 PTY 常驻 + attachSnapshot 恢复。",
+        "verdict": "都支持，但实现哲学不同。"
+      },
+      {
+        "feature": "多终端恢复能力",
+        "terax": "偏 tab/leaf 恢复，聚焦本地前端状态。",
+        "threadterm": "更强，附带快照恢复、bridge/mobile 同步、provider session 绑定。",
+        "verdict": "ThreadTerm 在产品能力上更强。"
+      },
+      {
+        "feature": "Windows 子进程树清理",
+        "terax": "有 Job Object。",
+        "threadterm": "未见等价机制。",
+        "verdict": "Terax 更可靠。"
+      },
+      {
+        "feature": "Codex Windows 特化",
+        "terax": "不是重点。",
+        "threadterm": "有 Codex app-server 和 resume 特化逻辑。",
+        "verdict": "ThreadTerm 更贴近当前产品目标。"
+      },
+      {
+        "feature": "WSL 一等支持",
+        "terax": "有。",
+        "threadterm": "当前 PTY 启动链路未见。",
+        "verdict": "Terax 更强。"
+      },
+      {
+        "feature": "native Windows terminal renderer",
+        "terax": "没有，继续走 xterm/WebGL。",
+        "threadterm": "有 draft，但默认未启用。",
+        "verdict": "短期内两者都还是 xterm 路线，只是 Terax 把这条路做得更深。"
+      }
+    ],
+    "functionalConclusion": "从功能层看，Terax 的 Windows 终端能力更像一套扎实的基础设施；ThreadTerm 则在其上叠加了更多产品特性。Terax 更适合作为 Windows 终端底层参考，不适合作为 ThreadTerm 功能面裁剪模板。"
+  },
+  "recommendedActions": [
+    {
+      "priority": "P0",
+      "title": "在 ThreadTerm Windows PTY 路径加入 ConPTY 生命周期串行化",
+      "why": "这是 Terax 里最直接针对 Windows blank/stall 类问题的底层治理项；比继续只在前端做 fit/reconnect 更接近根因。",
+      "suggestedAreas": [
+        "src-tauri/src/pty/mod.rs",
+        "src-tauri/src/pty/session.rs"
+      ],
+      "expectedBenefit": "降低 Windows 首次打开、快速开关终端、视图回收后再次附着时的空白/卡死概率。",
+      "migrationRisk": "medium",
+      "referenceFromTerax": [
+        "src-tauri/src/modules/pty/session.rs:71",
+        "src-tauri/src/modules/pty/session.rs:115"
+      ]
+    },
+    {
+      "priority": "P0",
+      "title": "引入 Windows Job Object，保证关闭会话时杀整棵进程树",
+      "why": "这是系统级可靠性保障，收益明确，且与现有上层功能耦合较低。",
+      "suggestedAreas": [
+        "src-tauri/src/pty/session.rs",
+        "新增 Windows 专用 job 模块"
+      ],
+      "expectedBenefit": "避免 npm/python/dev server 等在 Windows 下孤儿化残留。",
+      "migrationRisk": "medium",
+      "referenceFromTerax": [
+        "src-tauri/src/modules/pty/job.rs:26",
+        "src-tauri/src/modules/pty/session.rs:31"
+      ]
+    },
+    {
+      "priority": "P0",
+      "title": "统一 Windows shell 选择策略，并把 pwsh 放到 powershell.exe 前面",
+      "why": "当前 ThreadTerm 的 runtime shell 默认和 shell integration 检测不一致，会让用户体验和调试路径都更混乱。",
+      "suggestedAreas": [
+        "src-tauri/src/pty/shell.rs",
+        "src-tauri/src/shell_integration.rs"
+      ],
+      "expectedBenefit": "减少 PowerShell 版本差异带来的行为不一致，让 shell integration 预期更统一。",
+      "migrationRisk": "low",
+      "referenceFromTerax": [
+        "src-tauri/src/modules/pty/shell_init.rs:998",
+        "README.md Windows notes"
+      ]
+    },
+    {
+      "priority": "P0",
+      "title": "在 Windows PTY spawn 前标准化 cwd 分隔符",
+      "why": "这是低成本修复项，能减少 Windows cwd 解析不稳导致的隐性故障。",
+      "suggestedAreas": [
+        "src-tauri/src/pty/mod.rs",
+        "或抽到 pty/shell.rs 公共函数"
+      ],
+      "expectedBenefit": "降低 cwd 相关 spawn 失败和路径兼容问题。",
+      "migrationRisk": "low",
+      "referenceFromTerax": [
+        "src-tauri/src/modules/pty/shell_init.rs:143"
+      ]
+    },
+    {
+      "priority": "P1",
+      "title": "把 Windows shell integration 从“用户安装脚本”前移为“运行时注入”",
+      "why": "ThreadTerm 很多基于 shell 行为的高级能力在 Windows 上会继续受用户 profile 状态影响；Terax 的自动注入让默认体验更稳定。",
+      "suggestedAreas": [
+        "src-tauri/src/pty/shell.rs",
+        "src-tauri/resources/shell-integration/pwsh.ps1",
+        "src-tauri/src/shell_integration.rs"
+      ],
+      "expectedBenefit": "让 OSC 7/133 相关能力在 Windows 上真正开箱即用。",
+      "migrationRisk": "medium-high",
+      "referenceFromTerax": [
+        "src-tauri/src/modules/pty/shell_init.rs:511",
+        "src-tauri/src/modules/pty/scripts/profile.ps1:70"
+      ]
+    },
+    {
+      "priority": "P1",
+      "title": "补充 shell 启动失败的显式反馈与一次性重试",
+      "why": "Terax 的失败处理比纯黑屏/静默失败更友好，也更利于定位 Windows 环境问题。",
+      "suggestedAreas": [
+        "src/components/Shell.jsx",
+        "src-tauri/src/pty/mod.rs"
+      ],
+      "expectedBenefit": "让用户知道是 spawn 失败而不是界面卡住，同时可降低偶发失败的感知。",
+      "migrationRisk": "low-medium",
+      "referenceFromTerax": [
+        "src/modules/terminal/lib/useTerminalSession.ts:489",
+        "src/modules/terminal/lib/useTerminalSession.ts:507"
+      ]
+    },
+    {
+      "priority": "P2",
+      "title": "评估是否引入 foreground-job 判定来优化隐藏终端保活/释放策略",
+      "why": "ThreadTerm 目前靠 LRU + snapshot 恢复，若未来隐藏终端数量继续上升，可借鉴 Terax 的“忙时保活、闲时释放”。",
+      "suggestedAreas": [
+        "src/components/terminal/TerminalManager.tsx",
+        "src/components/Shell.jsx",
+        "src-tauri/src/pty/mod.rs"
+      ],
+      "expectedBenefit": "在大量后台终端场景下降低常驻渲染成本。",
+      "migrationRisk": "high",
+      "referenceFromTerax": [
+        "src/modules/terminal/lib/useTerminalSession.ts:317",
+        "src/modules/terminal/lib/useTerminalSession.ts:933"
+      ]
+    }
+  ],
+  "nonRecommendations": [
+    {
+      "title": "短期内不要把重点放在 windows-native renderer 草案上",
+      "reason": "Terax 证明在 xterm/WebGL 路线上仍有大量低层治理空间；ThreadTerm 当前 windows-native 还只是 capability draft，nativeHostAvailable 默认就是 false。"
+    },
+    {
+      "title": "不要直接搬 Terax 的整个前端 terminal session 架构",
+      "reason": "ThreadTerm 已经和 provider session、移动 bridge、快照广播、卡片模型深度耦合，直接替换成本过高，且会破坏现有产品能力。"
+    },
+    {
+      "title": "不要因为 Terax 仓库小就简单推导 ThreadTerm 一定过度设计",
+      "reason": "ThreadTerm 解决的问题明显更多，尤其是 Codex/Claude 外部会话恢复和跨端桥接，这些功能本来就会增加结构重量。"
+    }
+  ],
+  "directAnswerToUserQuestion": {
+    "whatIsActuallyWorthReferencing": [
+      "Windows ConPTY 启停锁",
+      "Windows Job Object 杀进程树",
+      "pwsh 优先的 shell 枚举与 override 白名单",
+      "runtime shell integration 注入而不是只靠安装脚本",
+      "Windows cwd 反斜杠归一化",
+      "spawn 失败可视化与 retry"
+    ],
+    "whatIsLessWorthReferencingRightNow": [
+      "完整 renderer pool 实现",
+      "block input bar 交互模型",
+      "Terax 的整体标签/leaf 生命周期"
+    ],
+    "bestStrategicDirectionForThreadTerm": "先把 Windows Rust PTY 启动链路补强到 Terax 那个级别，再决定是否继续推进 windows-native renderer；不要反过来。"
+  },
+  "sourceIndex": {
+    "teraxWebSources": [
+      "https://github.com/crynta/terax-ai",
+      "https://github.com/crynta/terax-ai/blob/main/README.md",
+      "https://github.com/crynta/terax-ai/blob/main/TERAX.md",
+      "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/src-tauri/src/modules/pty/mod.rs",
+      "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/src-tauri/src/modules/pty/session.rs",
+      "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/src-tauri/src/modules/pty/shell_init.rs",
+      "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/src-tauri/src/modules/pty/job.rs",
+      "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/src-tauri/src/modules/pty/scripts/profile.ps1",
+      "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/src/modules/terminal/lib/pty-bridge.ts",
+      "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/src/modules/terminal/lib/useTerminalSession.ts",
+      "https://github.com/crynta/terax-ai/blob/564e145a7387a2f54502815d9feb612b8e6222e5/src/modules/terminal/lib/rendererPool.ts"
+    ],
+    "threadtermLocalSources": [
+      "src-tauri/src/pty/mod.rs",
+      "src-tauri/src/pty/events.rs",
+      "src-tauri/src/pty/session.rs",
+      "src-tauri/src/pty/shell.rs",
+      "src-tauri/src/provider_sessions.rs",
+      "src-tauri/src/codex_app.rs",
+      "src-tauri/src/shell_integration.rs",
+      "src/components/Shell.jsx",
+      "src/components/terminal/providerSession.ts",
+      "src/components/terminal/useProviderSessionLifecycle.ts",
+      "src/lib/tauri-bridge.ts",
+      "src/lib/terminalRenderer.ts",
+      "src/components/terminal/TerminalManager.tsx",
+      "src/components/terminal/outputSequencer.ts"
+    ]
+  }
+}
