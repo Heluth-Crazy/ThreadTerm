@@ -30,7 +30,7 @@ use crate::db::get_db;
 use crate::provider_sessions::jsonl_files_recent_first;
 use crate::stats::parse;
 use crate::stats::pricing;
-use crate::stats::types::{CallRecord, UsageSummary};
+use crate::stats::types::CallRecord;
 
 /// Aggregate result of one sync pass.
 #[derive(Debug, Clone, Default)]
@@ -345,6 +345,7 @@ fn sync_codex_file(path: &Path) -> SyncResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stats::types::UsageSummary;
 
     fn mem_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
