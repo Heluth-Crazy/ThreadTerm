@@ -147,7 +147,19 @@ pub(super) fn stream_pty_output(
     let session_start = Instant::now();
     let mut decoder = Utf8StreamDecoder::default();
 
+    // Throughput profile (emitted at EOF for large outputs): splits stream time
+    // across flow-control backpressure, ConPTY read, emulator advance, and
+    // emit/IPC so a Windows benchmark reveals where the residual cost lives.
+    // Pure measurement — no behavior change.
+    let mut prof_flow = Duration::ZERO;
+    let mut prof_read = Duration::ZERO;
+    let mut prof_apply = Duration::ZERO;
+    let mut prof_emit = Duration::ZERO;
+    let mut prof_chunks: u64 = 0;
+    let mut prof_bytes: u64 = 0;
+
     loop {
+        let flow_t = Instant::now();
         while session::unacked_bytes(&ses) >= session::FLOW_CONTROL_HIGH_WATERMARK {
             if session::is_killed(&ses) {
                 break;
@@ -157,21 +169,31 @@ pub(super) fn stream_pty_output(
                 break;
             }
         }
+        prof_flow += flow_t.elapsed();
         if session::is_killed(&ses) {
             break;
         }
 
-        match reader.read(&mut buf) {
+        let read_t = Instant::now();
+        let read_result = reader.read(&mut buf);
+        prof_read += read_t.elapsed();
+        match read_result {
             Ok(0) => break, // EOF – child exited
             Ok(n) => {
+                prof_chunks += 1;
+                prof_bytes += n as u64;
+
+                let apply_t = Instant::now();
                 if let Ok(mut snapshot) = ses.snapshot.lock() {
                     snapshot.apply_output(&buf[..n]);
                 }
+                prof_apply += apply_t.elapsed();
 
                 let data = decoder.decode(&buf[..n]);
                 if data.is_empty() {
                     continue;
                 }
+                let emit_t = Instant::now();
                 emit_pty_output_chunk(
                     &id,
                     &data,
@@ -183,6 +205,7 @@ pub(super) fn stream_pty_output(
                     attention_debounce,
                     session_start,
                 );
+                prof_emit += emit_t.elapsed();
             }
             Err(e) => {
                 tracing::warn!(id = %id, error = %e, "PTY read error");
@@ -209,6 +232,23 @@ pub(super) fn stream_pty_output(
     // Output has ended — guarantee the final screen is reflected in the
     // card/mobile preview even if the last chunk fell inside the throttle window.
     flush_preview(&id, "", &ses);
+
+    // Throughput profile for large outputs (e.g. the Windows benchmark): one
+    // line showing where stream time went. Quiet for normal small sessions.
+    if prof_bytes > 262_144 {
+        tracing::info!(
+            target: "pty_perf",
+            id = %id,
+            chunks = prof_chunks,
+            bytes = prof_bytes,
+            total_ms = session_start.elapsed().as_millis() as u64,
+            flow_wait_ms = prof_flow.as_millis() as u64,
+            read_ms = prof_read.as_millis() as u64,
+            apply_ms = prof_apply.as_millis() as u64,
+            emit_ms = prof_emit.as_millis() as u64,
+            "PTY output stream profile"
+        );
+    }
 
     // Determine exit code and update state.
     let wait_code = ses
