@@ -181,7 +181,7 @@ pub(super) fn stream_pty_output(
             Ok(0) => break, // EOF – child exited
             Ok(n) => {
                 prof_chunks += 1;
-                prof_bytes += n as u64;
+                    prof_bytes += n as u64;
 
                 let apply_t = Instant::now();
                 if let Ok(mut snapshot) = ses.snapshot.lock() {
