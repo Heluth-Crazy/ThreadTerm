@@ -106,4 +106,92 @@ Also add the matching Rust enum variant and keep the contract test passing.
 
 </spec-entry>
 
+<spec-entry category="contract" keywords="git-worktree,tauri-command,rust-typescript,project-sidebar,worktreePath" date="2026-06-25" source="src-tauri/src/git.rs:117">
+
+## Scenario: Git Worktree List Tauri IPC Contract
+
+### 1. Scope / Trigger
+- Trigger: Any change to git worktree discovery, `git_worktree_list`, the
+  `WorktreeInfo` Rust/TypeScript shape, or ProjectSidebar worktree terminal
+  entries.
+- Applies to `src-tauri/src/git.rs`, `src-tauri/src/lib.rs`,
+  `src/lib/tauri-bridge.ts`, `src/components/terminal/useProjectWorktrees.ts`,
+  and `src/components/terminal/ProjectSidebar.tsx`.
+
+### 2. Signatures
+- Rust command: `git_worktree_list(project_path: String) -> Result<Vec<WorktreeInfo>, String>`
+- Rust struct serialized with `#[serde(rename_all = "camelCase")]`:
+  `WorktreeInfo { path, head, branch, is_main, is_detached, is_bare, is_locked }`
+- TypeScript bridge: `git.worktrees.list(projectPath: string): Promise<WorktreeInfo[]>`
+- TypeScript type:
+  `WorktreeInfo = { path: string; head: string; branch?: string | null; isMain: boolean; isDetached: boolean; isBare: boolean; isLocked: boolean }`
+
+### 3. Contracts
+- `project_path` must be an existing absolute directory before running git.
+- The backend runs `git -C <project_path> worktree list --porcelain`.
+- Non-git directories, missing `git`, and unsuccessful git exits return
+  `Ok([])` so the sidebar can silently omit the worktree section.
+- Porcelain parsing treats records as blank-line separated. Supported keys:
+  `worktree <path>`, `HEAD <sha>`, `branch refs/heads/<name>`, `detached`,
+  `bare`, and `locked [reason]`.
+- The first parsed record is `isMain: true`; later records are linked
+  worktrees.
+- ProjectSidebar must keep cards grouped by the original `projectPath`. Opening
+  a worktree terminal creates a shell card with `worktreePath = WorktreeInfo.path`
+  and leaves `projectPath` unchanged.
+
+### 4. Validation & Error Matrix
+- Empty `project_path` -> backend returns an error.
+- Relative `project_path` -> backend returns an error.
+- Existing non-git directory -> backend returns `[]`.
+- Missing git binary -> backend returns `[]`.
+- Git command non-zero exit -> backend returns `[]`.
+- Root worktree path equals project path -> ProjectSidebar hides that row.
+- Linked worktree row clicked -> new card has `terminalType: 'shell'` and the
+  selected `worktreePath`.
+
+### 5. Good/Base/Bad Cases
+- Good: a repo with `/repo/app` and `/repo/app-feature` renders only
+  `/repo/app-feature` under the project and opens a terminal in that cwd.
+- Base: a non-git project renders exactly like before, with no error toast.
+- Bad: changing the Rust struct to snake_case without updating the TypeScript
+  bridge; the UI will read `isMain`/`isDetached` as undefined.
+- Bad: creating worktree cards with `projectPath = worktree.path`; this splits
+  one repository into multiple project groups instead of preserving the project
+  rollup.
+
+### 6. Tests Required
+- Rust unit tests for `parse_worktree_porcelain()` covering main, linked branch,
+  detached, bare, and locked records.
+- Hook tests for `useProjectWorktrees()` covering load/cache/refresh and
+  non-Tauri no-op behavior.
+- ProjectSidebar tests for hiding the root worktree and opening a shell card
+  with the linked worktree path.
+- Verification gates: `npm run typecheck`, targeted Vitest tests for sidebar /
+  hook, `cargo test --manifest-path src-tauri/Cargo.toml git::`, and
+  `cargo check --manifest-path src-tauri/Cargo.toml`.
+
+### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+createCard({
+  projectName,
+  projectPath: worktree.path,
+  terminalType: 'shell',
+});
+```
+
+Correct:
+```typescript
+createCard({
+  projectName,
+  projectPath,
+  worktreePath: worktree.path,
+  terminalType: 'shell',
+});
+```
+
+</spec-entry>
+
 (To be filled by the team)
