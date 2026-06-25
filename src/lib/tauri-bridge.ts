@@ -129,6 +129,23 @@ export const pty = {
     invoke<boolean>('get_command_blocks_enabled'),
 };
 
+export interface WorktreeInfo {
+  path: string;
+  head: string;
+  branch?: string | null;
+  isMain: boolean;
+  isDetached: boolean;
+  isBare: boolean;
+  isLocked: boolean;
+}
+
+export const git = {
+  worktrees: {
+    list: (projectPath: string): Promise<WorktreeInfo[]> =>
+      invoke<WorktreeInfo[]>('git_worktree_list', { projectPath }),
+  },
+};
+
 export type SupportedShell = 'zsh' | 'bash' | 'fish' | 'pwsh';
 
 export interface ShellIntegrationPreview {

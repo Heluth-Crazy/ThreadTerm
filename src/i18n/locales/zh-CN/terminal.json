@@ -19,6 +19,12 @@
     "collapse": "收起侧栏",
     "allTerminals": "全部终端",
     "openDir": "在 Finder/资源管理器中打开",
+    "worktrees": "Worktree",
+    "refreshWorktrees": "刷新 worktree",
+    "openWorktreeTerminal": "在这里开终端",
+    "detachedWorktree": "detached",
+    "lockedWorktree": "locked",
+    "bareWorktree": "bare",
     "emptyLine1": "还没有项目。",
     "emptyLine2": "创建一个终端即可开始。"
   },

@@ -16,16 +16,21 @@ import {
   ChevronRight,
   Folder,
   FolderOpen,
+  GitBranch,
+  GitCommit,
   Layers,
   Download,
   Pencil,
   Play,
+  RefreshCw,
+  Terminal,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { isTauriEnv } from '../../lib/tauri-bridge';
+import { isTauriEnv, type WorktreeInfo } from '../../lib/tauri-bridge';
 import { openLocalDirectory } from '../../lib/localDirectory';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { useProjectGroups } from './useProjectGroups';
+import { useProjectWorktrees } from './useProjectWorktrees';
 import {
   classifyApplyEntries,
   type ApplyPresetEntry,
@@ -175,6 +180,21 @@ export function ProjectSidebar({
     onImportWorkflow?.(projectPath, projectName);
   };
 
+  const handleOpenWorktreeTerminal = (
+    projectPath: string,
+    projectName: string,
+    worktreePath: string,
+  ) => {
+    const id = createCard({
+      projectName,
+      projectPath,
+      worktreePath,
+      terminalType: 'shell',
+    });
+    selectProject(projectPath);
+    focusCard(id);
+  };
+
   const confirmApplyPreset = () => {
     if (!applyPreset) return;
     let lastCreatedId: string | null = null;
@@ -264,34 +284,42 @@ export function ProjectSidebar({
         )}
 
         {groups.map((g) => (
-          <SidebarRow
-            key={g.path}
-            collapsed={collapsed}
-            selected={selectedPath === g.path}
-            icon={
-              selectedPath === g.path ? (
-                <FolderOpen className="h-3.5 w-3.5" />
-              ) : (
-                <Folder className="h-3.5 w-3.5" />
-              )
-            }
-            label={g.name}
-            subLabel={g.path}
-            count={g.cards.length}
-            unread={g.unreadCount}
-            onClick={() => selectProject(g.path)}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              setContextMenu({
-                x: event.clientX,
-                y: event.clientY,
-                path: g.path,
-                name: g.name,
-              });
-            }}
-            onAux={(e) => handleOpenDir(g.path, e)}
-            auxTitle={isTauriEnv() ? t('sidebar.openDir') : undefined}
-          />
+          <div key={g.path}>
+            <SidebarRow
+              collapsed={collapsed}
+              selected={selectedPath === g.path}
+              icon={
+                selectedPath === g.path ? (
+                  <FolderOpen className="h-3.5 w-3.5" />
+                ) : (
+                  <Folder className="h-3.5 w-3.5" />
+                )
+              }
+              label={g.name}
+              subLabel={g.path}
+              count={g.cards.length}
+              unread={g.unreadCount}
+              onClick={() => selectProject(g.path)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setContextMenu({
+                  x: event.clientX,
+                  y: event.clientY,
+                  path: g.path,
+                  name: g.name,
+                });
+              }}
+              onAux={(e) => handleOpenDir(g.path, e)}
+              auxTitle={isTauriEnv() ? t('sidebar.openDir') : undefined}
+            />
+            {!collapsed && (
+              <ProjectWorktreeList
+                projectPath={g.path}
+                projectName={g.name}
+                onOpenTerminal={handleOpenWorktreeTerminal}
+              />
+            )}
+          </div>
         ))}
 
         {groups.length === 0 && !collapsed && (
@@ -352,6 +380,110 @@ export function ProjectSidebar({
       />
 
     </aside>
+  );
+}
+
+function normalizeComparablePath(path: string): string {
+  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
+  return /^[a-zA-Z]:/.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function samePath(left: string, right: string): boolean {
+  return normalizeComparablePath(left) === normalizeComparablePath(right);
+}
+
+function basename(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '');
+  return trimmed.split(/[\\/]/).pop() || path;
+}
+
+function shortHead(head: string): string {
+  return head ? head.slice(0, 7) : '';
+}
+
+function worktreeLabel(worktree: WorktreeInfo, detachedLabel: string): string {
+  if (worktree.branch) return worktree.branch;
+  if (worktree.isDetached) {
+    const short = shortHead(worktree.head);
+    return short ? `${detachedLabel} ${short}` : detachedLabel;
+  }
+  return basename(worktree.path);
+}
+
+interface ProjectWorktreeListProps {
+  projectPath: string;
+  projectName: string;
+  onOpenTerminal: (projectPath: string, projectName: string, worktreePath: string) => void;
+}
+
+function ProjectWorktreeList({
+  projectPath,
+  projectName,
+  onOpenTerminal,
+}: ProjectWorktreeListProps) {
+  const { t } = useTranslation('terminal');
+  const { worktrees, refresh } = useProjectWorktrees(projectPath);
+  const visibleWorktrees = worktrees.filter((worktree) => !samePath(projectPath, worktree.path));
+
+  if (visibleWorktrees.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mb-1 ml-4 border-l border-border/60 pl-2">
+      <div className="flex items-center justify-between px-1 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+        <span>{t('sidebar.worktrees')}</span>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            void refresh();
+          }}
+          title={t('sidebar.refreshWorktrees')}
+          className="rounded-[var(--radius-md)] p-0.5 hover:bg-accent hover:text-accent-foreground"
+        >
+          <RefreshCw className="h-3 w-3" />
+        </button>
+      </div>
+      <div className="space-y-0.5">
+        {visibleWorktrees.map((worktree) => {
+          const label = worktreeLabel(worktree, t('sidebar.detachedWorktree'));
+          const suffixes = [
+            worktree.isLocked ? t('sidebar.lockedWorktree') : null,
+            worktree.isBare ? t('sidebar.bareWorktree') : null,
+          ].filter(Boolean);
+          return (
+            <button
+              key={worktree.path}
+              type="button"
+              title={`${label} — ${worktree.path}`}
+              onClick={() => onOpenTerminal(projectPath, projectName, worktree.path)}
+              className="group flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left text-[12px] text-foreground/80 hover:bg-accent hover:text-accent-foreground"
+            >
+              <span className="shrink-0 text-muted-foreground group-hover:text-primary">
+                {worktree.isDetached ? (
+                  <GitCommit className="h-3.5 w-3.5" />
+                ) : (
+                  <GitBranch className="h-3.5 w-3.5" />
+                )}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">{label}</span>
+                <span className="block truncate text-[10px] text-muted-foreground">
+                  {suffixes.length > 0
+                    ? `${basename(worktree.path)} · ${suffixes.join(' · ')}`
+                    : basename(worktree.path)}
+                </span>
+              </span>
+              <Terminal
+                className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                aria-label={t('sidebar.openWorktreeTerminal')}
+              />
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
