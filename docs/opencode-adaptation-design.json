@@ -1,0 +1,143 @@
+{
+    "formatVersion": 1,
+    "documentType": "opencode-adaptation-design",
+    "title": "OpenCode 适配实现设计:用量统计(读 opencode.db)+ 终端类型 — 供实现者",
+    "generatedAt": "2026-06-25",
+    "branch": "exp/windows-native-terminal-host",
+    "designedBy": "Claude(只设计,不实现);实现由其他模型完成",
+    "reason": "born-as-JSON:提交后不被本地 .md 保护层加密,实现者 pull 即可读。设计前已逐处核对 ThreadTerm 真实代码(stats/sync.rs、aggregate.rs、mod.rs、types/stats.ts、terminalTypeMeta.tsx、providerSession.ts、statsStore.ts)与 cc-switch 源(services/session_usage_opencode.rs、opencode_config.rs),下列字段名/单位/函数签名均已对齐真实代码。",
+    "sections": [
+        {
+            "level": 1,
+            "heading": "目标",
+            "body": [
+                "",
+                "两件事(用户原话):① 仿 cc-switch 把 **OpenCode 的 token 用量统计**加进来;② 新建终端窗口**增加 opencode 类型**。",
+                "",
+                "**最大差异(务必注意)**:OpenCode 把用量存在 **SQLite `opencode.db`**(不是 jsonl),每条 assistant 消息**自带 `cost`**,时间戳是**毫秒**。所以摄入路径与 claude/codex(jsonl + 文件 mtime 扫描)完全不同——要新开一条「读 opencode.db」的同步分支,而且**不能复用现有 `insert_record`**(它写死了 `pricing::cost_breakdown` 与 `data_source='session_log'`)。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "cc-switch 精确口径(已读源,逐字段核对)",
+            "body": [
+                "",
+                "源:`/tmp/cc-switch/src-tauri/src/services/session_usage_opencode.rs` + `opencode_config.rs`。",
+                "",
+                "- **db 路径** `get_opencode_db_path()`:`OPENCODE_DB`(绝对则直用,相对则基于数据目录;空串忽略)> `XDG_DATA_HOME/opencode`(空串忽略)> `~/.local/share/opencode`,再 `/opencode.db`。**所有平台**(含 mac/Windows)都用 `~/.local/share/opencode`(opencode 用 xdg-basedir,不随平台约定)。",
+                "- **WAL mtime 门控**:`wal_path = db_path.with_extension(\"db-wal\")`;`file_modified = max(mtime_nanos(db), mtime_nanos(wal))`(纳秒)。不看 -wal 会在 checkpoint 前漏掉刚写入的会话。",
+                "- **会话查询** `query_sessions`:`SELECT s.id, MAX(s.time_updated, COALESCE(MAX(m.time_updated), s.time_updated)) AS watermark FROM session s LEFT JOIN message m ON m.session_id=s.id GROUP BY s.id ORDER BY watermark` → 返回 `(session_id, watermark)`。watermark 用作会话级增量水位。",
+                "- **消息查询** `query_assistant_messages`:`SELECT id, data FROM message WHERE session_id = ?1 ORDER BY time_created`。逐条:`data` JSON 解析后,**仅当** `role == \"assistant\"` 且存在 `tokens` 字段才处理;**缺 `time.completed`(进行中)→ 跳过并标记 `has_incomplete_usage = true`**(半截 token,且 INSERT OR IGNORE 无法回填)。",
+                "- **`parse_message_data(&Value)`**:`tokens.input` / `tokens.output` / `tokens.reasoning` / `tokens.cache.read` / `tokens.cache.write`(均 u64,缺省 0);`cost`(f64,缺省 0);`modelID`(缺省 \"unknown\");`time.created`(**i64 毫秒**)。全零 token → 返回 None。",
+                "- **写入口径**:`output_with_reasoning = output + reasoning`(Anthropic 风格,reasoning 按输出计费);`created_at = time.created / 1000`(毫秒→秒;为 0 时用当前秒);request_id = `opencode_session:{session_id}:{message_id}`。",
+                "- **费用规则**(关键):`cost > 0` → 直接把 `cost` 放进 `total_cost_usd`,各分项 cost 置 0(opencode 的 cost 是聚合值,无法精确拆分);`cost == 0`(如免费模型)→ 回退到模型定价表计算。",
+                "- **增量两级水位**:文件级 key = opencode.db 路径,值 = `file_modified`;会话级 key = `{db_path}:{session_id}`,值 = `watermark`。**若某会话 `has_incomplete_usage` 为真,则不推进该会话水位**(下次重扫);**仅当整轮无错误才推进文件级水位**。",
+                "- **样例 data JSON**(供实现者写单测,取自 cc-switch 测试):`{\"role\":\"assistant\",\"cost\":0.0023113,\"tokens\":{\"input\":3272,\"output\":383,\"reasoning\":419,\"cache\":{\"write\":0,\"read\":52480}},\"modelID\":\"deepseek-v4-pro\",\"time\":{\"created\":1779755333700,\"completed\":1779755350639}}` → input 3272 / output(含 reasoning)802 / cacheRead 52480 / cacheWrite 0 / cost 0.0023113 / created_at 1779755333(秒)。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "ThreadTerm stats 现状(已核对,实现者依赖这些事实)",
+            "body": [
+                "",
+                "- **表 `usage_records`** 列(见 sync.rs 测试建表):`request_id TEXT PK, provider TEXT, model TEXT, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd, session_id, project_path, created_at INTEGER, data_source TEXT`。**`created_at` 是 epoch 秒**(claude/codex 都 `timestamp_ms/1000` 后写入)。schema 列已够,**db 建表不用改**。",
+                "- **`stats/sync.rs::insert_record`**:**写死** `cost = pricing::cost_breakdown(model, usage)` 且 `data_source = \"session_log\"`。→ opencode **不能复用**,需新增 `insert_opencode_record`(接收 opencode 自带 cost + `data_source=\"opencode_session\"`)。",
+                "- **`sync_all`**:把 claude/codex 的文件收集进 `Vec<(PathBuf, &str)>` 后逐文件 `sync_claude_file`/`sync_codex_file`(各自内部 `get_db()`)。opencode 非文件型 → 在**文件循环之后**用 `result.merge(&sync_opencode())` 接入(不进 files 向量)。",
+                "- **增量助手**:`mtime_nanos(&Path)->i64`、`get_sync_state(conn,key)->(i64,i64)`、`update_sync_state(conn,key,modified,offset)` 均**私有于 sync.rs**,且 key 就是任意 TEXT 主键(`session_log_sync.file_path`),可直接拿来当 opencode 的文件级/会话级水位 key。",
+                "- **`STATS_PARSER_VERSION` 当前 = 3**(sync.rs:64),版本变更触发 `rebuild_if_parser_changed` 全量重建(清 usage_records + session_log_sync)。",
+                "- **`aggregate.rs::aggregate_from_db(conn, scope, lo_ms, hi_ms)`**:scope 匹配 `\"claude\" | \"codex\"` → `WHERE provider = ?3`;`_`(含 \"all\")→ 无 provider 过滤。**这是唯一需要动的 scope 点**。",
+                "- **前端**:`types/stats.ts:30` `StatsScope='all'|'claude'|'codex'`;`statsStore` scope 默认 `'all'`、`compute()` 把 scope 透传给 `tokenStats.compute(scope,range,id)`;**StatsPanel 目前没有 scope 选择器 UI**(只有 range)。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "Part A — 用量统计(读 opencode.db 写入 usage_records)",
+            "body": [
+                "",
+                "**文件拆分**(隔离纯逻辑,便于单测;镜像 cc-switch 的文件划分):",
+                "",
+                "**1) 新文件 `src-tauri/src/stats/opencode.rs`** — 纯逻辑,无 ThreadTerm-db 耦合:",
+                "- `pub fn opencode_db_path() -> PathBuf`(按上面优先级:OPENCODE_DB / XDG_DATA_HOME / ~/.local/share,空串忽略)。",
+                "- `pub struct OpenCodeUsage { input, output, reasoning, cache_read, cache_write: u64, cost: f64, model_id: String, timestamp_ms: i64 }`。",
+                "- `pub fn parse_opencode_message_data(&serde_json::Value) -> Option<OpenCodeUsage>`(全零 token 返回 None;不在此过滤 role,交给调用方)。",
+                "- `pub fn query_sessions(&rusqlite::Connection) -> rusqlite::Result<Vec<(String, i64)>>`(watermark SQL 同上)。",
+                "- `pub fn query_assistant_messages(&rusqlite::Connection, session_id) -> rusqlite::Result<(Vec<(String, OpenCodeUsage)>, bool)>`(返回 (消息列表, has_incomplete_usage);内部做 role/tokens/time.completed 过滤)。",
+                "- 单测:`parse_opencode_message_data` 喂上面样例 JSON 断言各字段;全零→None;`query_assistant_messages` 用内存库断言跳过缺 `time.completed` 的消息并置 has_incomplete_usage。",
+                "",
+                "**2) `src-tauri/src/stats/sync.rs`** — 薄胶水(与私有助手同模块,直接复用):",
+                "- 把 `mod opencode;`(在 `stats/mod.rs`)声明出来,`use` 其纯函数。",
+                "- `fn insert_opencode_record(conn, request_id, usage: &OpenCodeUsage, session_id, created_at_secs) -> bool`:`output_tokens = output + reasoning`;费用按规则——`cost>0` → `total_cost_usd=cost` 且分项=0;`cost==0` → 回退 `pricing::cost_breakdown(model, usage)`。`provider=\"opencode\"`,`project_path=\"\"`(见风险),`data_source=\"opencode_session\"`。INSERT OR IGNORE。",
+                "- `fn sync_opencode() -> SyncResult`:`get_db()` 拿 ThreadTerm conn;`let path = opencode::opencode_db_path()`;不存在 → 返回空 SyncResult(优雅降级);mtime 门控(max db/-wal 纳秒,对比文件级水位);`Connection::open_with_flags(path, SQLITE_OPEN_READ_ONLY)` 打开 opencode.db;`query_sessions` → 逐会话(会话级水位门控)→ `query_assistant_messages` → 逐条 `insert_opencode_record`(request_id=`opencode_session:{sid}:{mid}`,created_at = `timestamp_ms/1000`,≤0 用文件 mtime 秒);incomplete 会话不推进会话水位;整轮无错才推进文件水位。",
+                "- `sync_all` 文件循环之后:`result.merge(&sync_opencode());`(进度条分母可不计 opencode,或 total+1,任选其一)。",
+                "- **`STATS_PARSER_VERSION` 3 → 4**,并加历史注释行:`4 = added opencode.db ingestion`(触发一次全量重建把 opencode 灌入;否则旧 usage_records 不会重建、opencode 不出现)。",
+                "",
+                "**3) `src-tauri/src/stats/aggregate.rs`**:`aggregate_from_db` 的 scope 匹配臂改 `\"claude\" | \"codex\" | \"opencode\"`(自动生成 `provider = ?3` 过滤);`\"all\"` 分支无过滤,opencode 行天然计入。新增 scope 单测(仿 `aggregate_from_db_filters_by_scope`,插一条 provider='opencode')。",
+                "",
+                "**4) `src-tauri/src/stats/mod.rs`**:加 `mod opencode;`(与 `mod aggregate;` 等并列)。`opencode_db_path` 放 opencode.rs(opencode 的关注点),不必塞进 claude_root/codex_root 旁。",
+                "",
+                "**无需新增 crate**:rusqlite、serde_json、dirs 均已是依赖。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "Part A 前端(scope)",
+            "body": [
+                "",
+                "- `src/types/stats.ts:30` `StatsScope` → 加 `'opencode'`(前瞻,为将来 scope 选择器留位)。",
+                "- **当前 StatsPanel 无 scope 选择器**,scope 恒为默认 `'all'` → opencode 用量**自动计入总量与 byModel/byProject/bySession**,无需额外 UI 即可见。",
+                "- 若本次要顺带做 scope 选择器(可选):仿 StatsPanel 里 RANGES 的按钮组,加一行 scope 切换(all/claude/codex/opencode),`onClick={() => setScope(s)}`;i18n 加 `stats.scope.*`。不做也不影响 opencode 计入 all。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "Part B — 终端类型 opencode",
+            "body": [
+                "",
+                "- `src/types/terminal.ts` `TerminalType`(:25)加 `| 'opencode'`。`terminalTypeMeta` 是 `Record<TerminalType, …>`,加类型后 **tsc 会强制要求补 opencode 条目**(漏了编译不过,天然防遗漏)。",
+                "- `src/components/terminal/terminalTypeMeta.tsx`(注意是 .tsx)加条目,字段为 `{ label, Icon: LucideIcon, accent: string(text-*), defaultCommand: string }`:",
+                "  `opencode: { label: 'OpenCode', Icon: <未占用的 lucide 图标,如 SquareTerminal 或 Braces,需在顶部 import>, accent: 'text-indigo-500'(未占用语义色), defaultCommand: 'opencode' }`。",
+                "- **启动**:`CreateTerminalDialog` 遍历 `Object.entries(terminalTypeMeta)` 自动列入新建对话框,无需改对话框;`buildTerminalLaunchCommand`(providerSession.ts:192)对非 claude/codex 类型**回退到 `defaultCommand`**,返回 `{ command: 'opencode' }` —— 即在 shell 里运行 `opencode`,**无需改 buildTerminalLaunchCommand**。",
+                "- **不要**把 opencode 加进 `ProviderSessionProvider`('claude'|'codex')——它的会话在 opencode.db,不是 provider_sessions.rs 扫描的 jsonl,无 resume 绑定。",
+                "- **可选增强**(仿 gemini,低风险):把 `'opencode'` 加进 `isAiCliTerminalType` 与 `AI_CLI_LABELS`({...,opencode:'OpenCode'}),并在 `getAiCliSessionBadge` 复制 gemini 的 `cliOnly` 分支 → 得到「命令未找到」检测 + 「CLI 会话(暂不跟踪 resume)」徽标。不做则 opencode 只是普通命令型终端,功能仍完整。",
+                "- i18n:terminalTypeMeta 的 label 为内联英文(同 Claude/Codex/Gemini),无需额外 i18n key;若加 cliOnly 徽标则复用既有 `aiSession.*` key。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "验证",
+            "body": [
+                "",
+                "- Rust 单测:`parse_opencode_message_data`(样例 JSON 各字段 + 全零→None);`query_assistant_messages` 跳过缺 time.completed;`aggregate_from_db` scope='opencode' 过滤;`insert_opencode_record` 的 cost>0 直用 / cost==0 回退两分支。",
+                "- `cargo check --manifest-path src-tauri/Cargo.toml` + `cargo test stats::`;`npm run typecheck`(TerminalType 改动会触发 terminalTypeMeta 的穷尽性检查)+ `npm run test`。",
+                "- 手动:本机装 opencode 跑几条对话 → ThreadTerm 打开统计面板(默认 all)→ 出现 OpenCode 的 token 与成本(成本 ≈ opencode 自带 cost 之和,byModel 出现其 modelID);多次刷新数字稳定(INSERT OR IGNORE 不重复计)。",
+                "- 终端类型:新建对话框出现 OpenCode → 选它建卡 → shell 里运行 `opencode`;未安装时(若做了 cliOnly 增强)有「command not found」反馈。",
+                "- 跨平台:opencode.db 路径在 `~/.local/share/opencode`(Windows/mac 同);设置 `OPENCODE_DB` 后走覆盖路径。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "风险 / 边界 / 明确不要做",
+            "body": [
+                "",
+                "- **不能复用 `insert_record`**(写死 pricing + data_source);必须新增 `insert_opencode_record`。这是最易踩的坑。",
+                "- **`time.created` 是毫秒**,写 `created_at` 前必须 `/1000`(否则时间窗过滤全错,且与 claude/codex 口径不一致)。",
+                "- **费用**:`cost>0` 直用 opencode 的 cost(更准,且静态表未必有其 model);仅 `cost==0` 才回退 `pricing::cost_breakdown`。不要无条件走静态定价。",
+                "- **incomplete 会话**:有进行中消息时,已完成的照插,但**不推进该会话水位**;**整轮有错不推进文件水位**——保证可重试,避免漏算。",
+                "- `opencode.db` **只读**打开;mtime 门控含 `-wal`。opencode 运行中读 WAL 对只读连接安全。",
+                "- **project_path 暂留空**:cc-switch 的 query_sessions 未取目录。opencode 的 `session` 表新版可能有 `directory` 列——可选地 `SELECT ... directory` 填 project_path 参与 by_project;取不到则留空(by_project 聚到空键,仅 by_model/总量可靠)。属已知限制,非 bug。",
+                "- **STATS_PARSER_VERSION 必须 3→4**,否则已存在的 usage_records 不重建、opencode 不灌入。",
+                "- 不重构既有 claude/codex 路径;opencode 是**新增并行**分支。不把 opencode 当作 jsonl-provider-session(无 resume)。MVP 不做 opencode resume(留 Phase 2)。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "改动文件清单(预估)",
+            "body": [
+                "",
+                "Rust:**新增** `src-tauri/src/stats/opencode.rs`(opencode_db_path + OpenCodeUsage + parse_opencode_message_data + query_sessions + query_assistant_messages + 单测);`stats/mod.rs`(`mod opencode;`);`stats/sync.rs`(insert_opencode_record + sync_opencode + sync_all 接入 + STATS_PARSER_VERSION 3→4);`stats/aggregate.rs`(scope 臂加 'opencode' + 单测)。**db 建表不改**(列已够)。",
+                "前端:`src/types/stats.ts`(StatsScope += 'opencode');`src/types/terminal.ts`(TerminalType += 'opencode');`src/components/terminal/terminalTypeMeta.tsx`(opencode 条目 + 图标 import);可选 `src/components/terminal/providerSession.ts`(isAiCliTerminalType/AI_CLI_LABELS/cliOnly 徽标);可选 `src/components/stats/StatsPanel.tsx`(scope 选择器)+ i18n。",
+                "复用(不改):`CreateTerminalDialog`(由 terminalTypeMeta 驱动)、`buildTerminalLaunchCommand`(默认命令回退)、usage_records schema、aggregate 的 'all' 分支、createCard→pty_create 链路。"
+            ]
+        }
+    ]
+}
