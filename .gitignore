@@ -158,4 +158,5 @@ docs/*
 !docs/windows-terminal-optimization-verification.json
 !docs/windows-pty-governance-verification.json
 !docs/pty-emit-coalescing-design.json
+!docs/worktree-terminal-design.json
 .gitnexus
