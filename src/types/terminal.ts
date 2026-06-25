@@ -26,6 +26,7 @@ export type TerminalType =
   | 'shell'
   | 'claude'
   | 'codex'
+  | 'opencode'
   | 'gemini'
   | 'npm'
   | 'yarn'

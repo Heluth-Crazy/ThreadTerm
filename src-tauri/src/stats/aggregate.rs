@@ -140,7 +140,7 @@ impl Aggregator {
 
 /// Aggregate `usage_records` rows within `[lo_ms, hi_ms]` (epoch ms) into an
 /// `AgentStats` snapshot. `lo_ms = None` means no lower bound ("all time").
-/// `scope` is `"all"`, `"claude"`, or `"codex"` — filters by provider.
+/// `scope` is `"all"`, `"claude"`, `"codex"`, or `"opencode"` — filters by provider.
 ///
 /// Rows are read in a single pass and bucketed in memory — the table is
 /// indexed on `created_at` so the range scan is cheap.
@@ -163,7 +163,7 @@ pub fn aggregate_from_db(
     // are bound positionally; provider filter is optional so "all" doesn't
     // need a placeholder.
     let (sql, use_scope_filter) = match scope {
-        "claude" | "codex" => (
+        "claude" | "codex" | "opencode" => (
             "SELECT provider, model,
                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                     total_cost_usd, session_id, project_path
@@ -403,6 +403,15 @@ mod tests {
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO usage_records
+                (request_id, provider, model, input_tokens, output_tokens,
+                 cache_read_tokens, cache_creation_tokens, total_cost_usd,
+                 session_id, project_path, created_at)
+             VALUES ('r3','opencode','deepseek-v4-pro',700,70,0,0,0.7,'s3','',1000)",
+            [],
+        )
+        .unwrap();
 
         let claude_only = aggregate_from_db(&conn, "claude", None, None).unwrap();
         assert_eq!(claude_only.total_calls, 1);
@@ -412,8 +421,12 @@ mod tests {
         assert_eq!(codex_only.total_calls, 1);
         assert_eq!(codex_only.usage.input, 400);
 
+        let opencode_only = aggregate_from_db(&conn, "opencode", None, None).unwrap();
+        assert_eq!(opencode_only.total_calls, 1);
+        assert_eq!(opencode_only.usage.input, 700);
+
         let all = aggregate_from_db(&conn, "all", None, None).unwrap();
-        assert_eq!(all.total_calls, 2);
+        assert_eq!(all.total_calls, 3);
     }
 
     #[test]

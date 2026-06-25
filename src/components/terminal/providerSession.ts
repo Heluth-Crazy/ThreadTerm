@@ -31,6 +31,7 @@ export const AI_CLI_SESSION_BADGE_CLASS: Record<AiCliSessionBadgeTone, string> =
 const AI_CLI_LABELS: Partial<Record<TerminalType, string>> = {
   claude: 'Claude',
   codex: 'Codex',
+  opencode: 'OpenCode',
   gemini: 'Gemini',
 };
 
@@ -40,7 +41,7 @@ export function shellQuote(value: string): string {
 }
 
 export function isAiCliTerminalType(type: TerminalType): boolean {
-  return type === 'claude' || type === 'codex' || type === 'gemini';
+  return type === 'claude' || type === 'codex' || type === 'opencode' || type === 'gemini';
 }
 
 export function getAiCliName(type: TerminalType): string {
@@ -96,7 +97,7 @@ export function getAiCliSessionBadge(card: TerminalCard): AiCliSessionBadge | nu
     };
   }
 
-  if (card.terminalType === 'gemini') {
+  if (card.terminalType === 'gemini' || card.terminalType === 'opencode') {
     return {
       labelKey: 'aiSession.cliOnly',
       descriptionKey: 'aiSession.cliOnlyDescription',

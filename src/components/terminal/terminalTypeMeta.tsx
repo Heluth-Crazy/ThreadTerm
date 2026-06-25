@@ -9,6 +9,7 @@ import {
   Container,
   FileCode,
   Package,
+  SquareTerminal,
   Sparkles,
   Terminal as TerminalIcon,
   type LucideIcon,
@@ -42,6 +43,12 @@ export const terminalTypeMeta: Record<TerminalType, TerminalTypeMeta> = {
     Icon: Code2,
     accent: 'text-emerald-500',
     defaultCommand: 'codex',
+  },
+  opencode: {
+    label: 'OpenCode',
+    Icon: SquareTerminal,
+    accent: 'text-indigo-500',
+    defaultCommand: 'opencode',
   },
   gemini: {
     label: 'Gemini',

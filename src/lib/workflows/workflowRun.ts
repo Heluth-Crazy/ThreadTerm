@@ -8,6 +8,7 @@ const TERMINAL_TYPES: ReadonlySet<TerminalType> = new Set([
   'shell',
   'claude',
   'codex',
+  'opencode',
   'gemini',
   'npm',
   'yarn',
