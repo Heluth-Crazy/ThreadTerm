@@ -24,10 +24,11 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::params;
+use rusqlite::{params, OpenFlags};
 
 use crate::db::get_db;
 use crate::provider_sessions::jsonl_files_recent_first;
+use crate::stats::opencode::{self, OpenCodeUsage};
 use crate::stats::parse;
 use crate::stats::pricing;
 use crate::stats::types::CallRecord;
@@ -60,8 +61,9 @@ const PROGRESS_EVERY: usize = 16;
 ///
 /// History: 1 = original parser; 2 = Claude snapshot-dedup + Codex per-call
 /// delta fixes (the "对齐 cc-switch" rework); 3 = dropped the shape+timestamp
-/// dedup that was under-counting Codex (no proxy → request_id dedup suffices).
-const STATS_PARSER_VERSION: i64 = 3;
+/// dedup that was under-counting Codex (no proxy → request_id dedup suffices);
+/// 4 = added opencode.db ingestion.
+const STATS_PARSER_VERSION: i64 = 4;
 
 /// Wipe `usage_records` + `session_log_sync` when the stored parser version
 /// doesn't match the current one, then stamp the new version. Returns true when
@@ -140,6 +142,8 @@ pub fn sync_all<F: FnMut(usize, usize)>(lo_ms: Option<u64>, mut on_progress: F) 
         result.merge(&r);
     }
     on_progress(total, total);
+
+    result.merge(&sync_opencode());
 
     if result.imported > 0 {
         tracing::info!(
@@ -253,6 +257,161 @@ fn insert_record(
         .map(|n| n > 0)
         .unwrap_or(false);
     inserted
+}
+
+fn insert_opencode_record(
+    conn: &rusqlite::Connection,
+    request_id: &str,
+    usage: &OpenCodeUsage,
+    session_id: &str,
+    created_at: i64,
+) -> bool {
+    let output_with_reasoning = usage.output.saturating_add(usage.reasoning);
+    let summary = crate::stats::types::UsageSummary {
+        input: usage.input,
+        output: output_with_reasoning,
+        cache_read: usage.cache_read,
+        cache_creation: usage.cache_write,
+    };
+    let cost = if usage.cost > 0.0 {
+        pricing::CostBreakdown {
+            total: usage.cost,
+            ..Default::default()
+        }
+    } else {
+        pricing::cost_breakdown(&usage.model_id, &summary)
+    };
+
+    conn.execute(
+        "INSERT OR IGNORE INTO usage_records
+            (request_id, provider, model,
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+             input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd,
+             total_cost_usd, session_id, project_path, created_at, data_source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        params![
+            request_id,
+            "opencode",
+            usage.model_id,
+            summary.input,
+            summary.output,
+            summary.cache_read,
+            summary.cache_creation,
+            cost.input,
+            cost.output,
+            cost.cache_read,
+            cost.cache_write,
+            cost.total,
+            session_id,
+            "",
+            created_at,
+            "opencode_session",
+        ],
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
+fn opencode_modified(path: &Path) -> i64 {
+    let wal_path = path.with_extension("db-wal");
+    mtime_nanos(path).max(mtime_nanos(&wal_path))
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn sync_opencode() -> SyncResult {
+    let mut result = SyncResult::default();
+    let path = opencode::opencode_db_path();
+    if !path.exists() {
+        return result;
+    }
+    result.files_scanned = 1;
+
+    let Ok(conn) = get_db() else {
+        result.errors.push("DB unavailable".into());
+        return result;
+    };
+
+    let file_path = path.to_string_lossy().to_string();
+    let modified = opencode_modified(&path);
+    let (last_modified, _last_offset) = get_sync_state(&conn, &file_path);
+    if modified <= last_modified {
+        return result;
+    }
+
+    let file_mtime_secs = (modified / 1_000_000_000).max(0);
+    let fallback_created_at = if file_mtime_secs > 0 {
+        file_mtime_secs
+    } else {
+        now_secs()
+    };
+
+    let opencode_conn = match rusqlite::Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(conn) => conn,
+        Err(err) => {
+            result.errors.push(format!("OpenCode DB unavailable: {err}"));
+            return result;
+        }
+    };
+
+    let sessions = match opencode::query_sessions(&opencode_conn) {
+        Ok(sessions) => sessions,
+        Err(err) => {
+            result.errors.push(format!("OpenCode session query failed: {err}"));
+            return result;
+        }
+    };
+
+    for (session_id, watermark) in sessions {
+        let session_key = format!("{file_path}:{session_id}");
+        let (last_session_modified, _last_offset) = get_sync_state(&conn, &session_key);
+        if watermark <= last_session_modified {
+            continue;
+        }
+
+        let (messages, has_incomplete_usage) =
+            match opencode::query_assistant_messages(&opencode_conn, &session_id) {
+                Ok(messages) => messages,
+                Err(err) => {
+                    result.errors.push(format!(
+                        "OpenCode message query failed for session {session_id}: {err}"
+                    ));
+                    continue;
+                }
+            };
+
+        for (message_id, usage) in messages {
+            let request_id = format!("opencode_session:{session_id}:{message_id}");
+            let created_at = if usage.timestamp_ms > 0 {
+                usage.timestamp_ms / 1000
+            } else {
+                fallback_created_at
+            };
+            if insert_opencode_record(&conn, &request_id, &usage, &session_id, created_at) {
+                result.imported += 1;
+            } else {
+                result.skipped += 1;
+            }
+        }
+
+        if !has_incomplete_usage {
+            update_sync_state(&conn, &session_key, watermark, 0);
+        }
+    }
+
+    if result.errors.is_empty() {
+        update_sync_state(&conn, &file_path, modified, 0);
+    }
+
+    result
 }
 
 /// Sync one Claude session jsonl.
@@ -415,6 +574,88 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn insert_opencode_record_uses_reported_cost_when_present() {
+        let conn = mem_conn();
+        let usage = OpenCodeUsage {
+            input: 100,
+            output: 20,
+            reasoning: 5,
+            cache_read: 30,
+            cache_write: 40,
+            cost: 0.123,
+            model_id: "deepseek-v4-pro".to_string(),
+            timestamp_ms: 1_609_459_200_000,
+        };
+
+        assert!(insert_opencode_record(
+            &conn,
+            "opencode_session:s1:m1",
+            &usage,
+            "s1",
+            1_609_459_200,
+        ));
+        let row: (String, i64, i64, f64, f64, String) = conn
+            .query_row(
+                "SELECT provider, output_tokens, cache_creation_tokens,
+                        total_cost_usd, input_cost_usd, data_source
+                 FROM usage_records
+                 WHERE request_id='opencode_session:s1:m1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(row.0, "opencode");
+        assert_eq!(row.1, 25, "reasoning tokens are counted as output");
+        assert_eq!(row.2, 40);
+        assert!((row.3 - 0.123).abs() < f64::EPSILON);
+        assert_eq!(row.4, 0.0, "reported aggregate cost cannot be split");
+        assert_eq!(row.5, "opencode_session");
+    }
+
+    #[test]
+    fn insert_opencode_record_falls_back_to_pricing_when_cost_is_zero() {
+        let conn = mem_conn();
+        let usage = OpenCodeUsage {
+            input: 1_000_000,
+            output: 0,
+            reasoning: 0,
+            cache_read: 0,
+            cache_write: 0,
+            cost: 0.0,
+            model_id: "claude-opus-4-8".to_string(),
+            timestamp_ms: 1_609_459_200_000,
+        };
+
+        assert!(insert_opencode_record(
+            &conn,
+            "opencode_session:s1:m2",
+            &usage,
+            "s1",
+            1_609_459_200,
+        ));
+        let (total_cost, input_cost): (f64, f64) = conn
+            .query_row(
+                "SELECT total_cost_usd, input_cost_usd
+                 FROM usage_records
+                 WHERE request_id='opencode_session:s1:m2'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!((total_cost - 15.0).abs() < 1e-6);
+        assert!((input_cost - 15.0).abs() < 1e-6);
     }
 
     #[test]

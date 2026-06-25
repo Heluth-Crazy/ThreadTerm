@@ -10,6 +10,7 @@
 //! 3. The snapshot is emitted as a `stats://done` event.
 
 mod aggregate;
+mod opencode;
 mod parse;
 mod pricing;
 mod sync;

@@ -183,7 +183,10 @@ function getLastPreviewLine(lines: string[]): string | null {
 }
 
 function isAiCliTerminalType(terminalType: TerminalCard['terminalType']): boolean {
-  return terminalType === 'claude' || terminalType === 'codex' || terminalType === 'gemini';
+  return terminalType === 'claude'
+    || terminalType === 'codex'
+    || terminalType === 'opencode'
+    || terminalType === 'gemini';
 }
 
 function stripTrailingAiComposerRegion(sourceLines: string[]): string[] {
