@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
@@ -115,11 +115,52 @@ pub(super) fn spawn_output_idle_watcher(id: String, ses: Arc<PtySession>) {
 /// the whole screen is throttled. A waiting-state change or EOF forces an
 /// immediate flush so the preview is never visibly stale when it matters.
 const PREVIEW_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+const COALESCE_WINDOW: Duration = Duration::from_millis(16);
+const COALESCE_MAX_BYTES: usize = 65_536;
+const COALESCE_RAW_QUEUE_CAPACITY: usize = 16;
+
+enum PtyReadMessage {
+    Chunk {
+        bytes: Vec<u8>,
+        read_elapsed: Duration,
+    },
+    ReadError {
+        error: String,
+    },
+}
+
+enum PtyReadEvent {
+    Message(PtyReadMessage),
+    Timeout,
+    Disconnected,
+}
 
 /// Whether to (re)broadcast the preview snapshot this chunk: forced on a state
 /// change, otherwise rate-limited to one flush per [`PREVIEW_FLUSH_INTERVAL`].
 fn should_flush_preview(since_last_flush: Duration, force: bool) -> bool {
     force || since_last_flush >= PREVIEW_FLUSH_INTERVAL
+}
+
+fn coalesce_decide(pending_bytes: usize, elapsed: Option<Duration>, force: bool) -> bool {
+    if force {
+        return true;
+    }
+    if pending_bytes >= COALESCE_MAX_BYTES {
+        return true;
+    }
+    matches!(elapsed, Some(elapsed) if elapsed >= COALESCE_WINDOW)
+}
+
+fn coalesce_should_flush(
+    pending_bytes: usize,
+    pending_since: Option<Instant>,
+    force: bool,
+) -> bool {
+    coalesce_decide(
+        pending_bytes,
+        pending_since.map(|since| since.elapsed()),
+        force,
+    )
 }
 
 /// Serialize the current screen snapshot and broadcast it as the card/mobile
@@ -131,14 +172,81 @@ fn flush_preview(id: &str, data: &str, ses: &Arc<PtySession>) {
     bridge::broadcast_preview(id, &preview_source);
 }
 
+fn recv_next_pty_read(
+    rx: &mpsc::Receiver<PtyReadMessage>,
+    pending_since: Option<Instant>,
+) -> PtyReadEvent {
+    if let Some(since) = pending_since {
+        match COALESCE_WINDOW.checked_sub(since.elapsed()) {
+            Some(timeout) if timeout > Duration::ZERO => match rx.recv_timeout(timeout) {
+                Ok(message) => PtyReadEvent::Message(message),
+                Err(mpsc::RecvTimeoutError::Timeout) => PtyReadEvent::Timeout,
+                Err(mpsc::RecvTimeoutError::Disconnected) => PtyReadEvent::Disconnected,
+            },
+            _ => PtyReadEvent::Timeout,
+        }
+    } else {
+        match rx.recv() {
+            Ok(message) => PtyReadEvent::Message(message),
+            Err(_) => PtyReadEvent::Disconnected,
+        }
+    }
+}
+
+fn output_requests_fast_flush(data: &str, session_start: Instant) -> bool {
+    let cleaned = ANSI_STRIP.replace_all(data, "");
+    WAITING_PATTERNS.is_match(&cleaned)
+        || (session_start.elapsed() > STARTUP_ERROR_SUPPRESS && ERROR_PATTERNS.is_match(&cleaned))
+}
+
+fn spawn_pty_reader(
+    mut reader: Box<dyn Read + Send>,
+    ses: Arc<PtySession>,
+    tx: mpsc::SyncSender<PtyReadMessage>,
+) {
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            if session::is_killed(&ses) {
+                break;
+            }
+
+            let read_t = Instant::now();
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let read_elapsed = read_t.elapsed();
+                    if tx
+                        .send(PtyReadMessage::Chunk {
+                            bytes: buf[..n].to_vec(),
+                            read_elapsed,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(PtyReadMessage::ReadError {
+                        error: e.to_string(),
+                    });
+                    break;
+                }
+            }
+        }
+    });
+}
+
 /// Background reader: reads chunks from the PTY and emits Tauri events.
 pub(super) fn stream_pty_output(
     id: String,
-    mut reader: Box<dyn Read + Send>,
+    reader: Box<dyn Read + Send>,
     ses: Arc<PtySession>,
     app_handle: AppHandle,
 ) {
-    let mut buf = [0u8; 8192];
+    let (read_tx, read_rx) = mpsc::sync_channel(COALESCE_RAW_QUEUE_CAPACITY);
+    spawn_pty_reader(reader, ses.clone(), read_tx);
+
     let mut block_parser = super::blocks::BlockParser::new(id.clone());
     let mut last_attention_time = Instant::now() - Duration::from_secs(60);
     let attention_debounce = Duration::from_secs(5);
@@ -146,6 +254,9 @@ pub(super) fn stream_pty_output(
     let mut last_preview_flush = Instant::now() - PREVIEW_FLUSH_INTERVAL;
     let session_start = Instant::now();
     let mut decoder = Utf8StreamDecoder::default();
+    let mut pending = String::new();
+    let mut pending_bytes = 0usize;
+    let mut pending_since: Option<Instant> = None;
 
     // Throughput profile (emitted at EOF for large outputs): splits stream time
     // across flow-control backpressure, ConPTY read, emulator advance, and
@@ -155,10 +266,28 @@ pub(super) fn stream_pty_output(
     let mut prof_read = Duration::ZERO;
     let mut prof_apply = Duration::ZERO;
     let mut prof_emit = Duration::ZERO;
-    let mut prof_chunks: u64 = 0;
+    let mut prof_read_chunks: u64 = 0;
+    let mut prof_emit_chunks: u64 = 0;
     let mut prof_bytes: u64 = 0;
 
     loop {
+        if session::unacked_bytes(&ses) >= session::FLOW_CONTROL_HIGH_WATERMARK {
+            flush_pending_pty_output(
+                &id,
+                &mut pending,
+                &mut pending_bytes,
+                &mut pending_since,
+                &ses,
+                &app_handle,
+                &mut last_attention_time,
+                &mut last_preview_flush,
+                attention_debounce,
+                session_start,
+                &mut prof_emit,
+                &mut prof_emit_chunks,
+            );
+        }
+
         let flow_t = Instant::now();
         while session::unacked_bytes(&ses) >= session::FLOW_CONTROL_HIGH_WATERMARK {
             if session::is_killed(&ses) {
@@ -174,41 +303,107 @@ pub(super) fn stream_pty_output(
             break;
         }
 
-        let read_t = Instant::now();
-        let read_result = reader.read(&mut buf);
-        prof_read += read_t.elapsed();
-        match read_result {
-            Ok(0) => break, // EOF – child exited
-            Ok(n) => {
-                prof_chunks += 1;
-                    prof_bytes += n as u64;
+        match recv_next_pty_read(&read_rx, pending_since) {
+            PtyReadEvent::Message(PtyReadMessage::Chunk {
+                bytes,
+                read_elapsed,
+            }) => {
+                prof_read += read_elapsed;
+                prof_read_chunks += 1;
+                prof_bytes += bytes.len() as u64;
 
                 let apply_t = Instant::now();
                 if let Ok(mut snapshot) = ses.snapshot.lock() {
-                    snapshot.apply_output(&buf[..n]);
+                    snapshot.apply_output(&bytes);
                 }
                 prof_apply += apply_t.elapsed();
 
-                let data = decoder.decode(&buf[..n]);
+                let data = decoder.decode(&bytes);
                 if data.is_empty() {
                     continue;
                 }
-                let emit_t = Instant::now();
-                emit_pty_output_chunk(
+
+                // Keep shell-integration parsing per decoded chunk so OSC state
+                // is not affected by the emit coalescing boundary.
+                if super::block_parser_enabled() {
+                    for event in block_parser.ingest(&data) {
+                        event.emit(&app_handle);
+                    }
+                }
+
+                if pending_since.is_none() {
+                    pending_since = Some(Instant::now());
+                }
+                pending_bytes = pending_bytes.saturating_add(data.as_bytes().len());
+                pending.push_str(&data);
+
+                let force_flush = output_requests_fast_flush(&pending, session_start);
+                if coalesce_should_flush(pending_bytes, pending_since, force_flush) {
+                    flush_pending_pty_output(
+                        &id,
+                        &mut pending,
+                        &mut pending_bytes,
+                        &mut pending_since,
+                        &ses,
+                        &app_handle,
+                        &mut last_attention_time,
+                        &mut last_preview_flush,
+                        attention_debounce,
+                        session_start,
+                        &mut prof_emit,
+                        &mut prof_emit_chunks,
+                    );
+                }
+            }
+            PtyReadEvent::Message(PtyReadMessage::ReadError { error }) => {
+                tracing::warn!(id = %id, error = %error, "PTY reader stopped after read error");
+                flush_pending_pty_output(
                     &id,
-                    &data,
+                    &mut pending,
+                    &mut pending_bytes,
+                    &mut pending_since,
                     &ses,
                     &app_handle,
-                    &mut block_parser,
                     &mut last_attention_time,
                     &mut last_preview_flush,
                     attention_debounce,
                     session_start,
+                    &mut prof_emit,
+                    &mut prof_emit_chunks,
                 );
-                prof_emit += emit_t.elapsed();
+                break;
             }
-            Err(e) => {
-                tracing::warn!(id = %id, error = %e, "PTY read error");
+            PtyReadEvent::Timeout => {
+                flush_pending_pty_output(
+                    &id,
+                    &mut pending,
+                    &mut pending_bytes,
+                    &mut pending_since,
+                    &ses,
+                    &app_handle,
+                    &mut last_attention_time,
+                    &mut last_preview_flush,
+                    attention_debounce,
+                    session_start,
+                    &mut prof_emit,
+                    &mut prof_emit_chunks,
+                );
+            }
+            PtyReadEvent::Disconnected => {
+                flush_pending_pty_output(
+                    &id,
+                    &mut pending,
+                    &mut pending_bytes,
+                    &mut pending_since,
+                    &ses,
+                    &app_handle,
+                    &mut last_attention_time,
+                    &mut last_preview_flush,
+                    attention_debounce,
+                    session_start,
+                    &mut prof_emit,
+                    &mut prof_emit_chunks,
+                );
                 break;
             }
         }
@@ -216,16 +411,30 @@ pub(super) fn stream_pty_output(
 
     let trailing = decoder.flush_lossy();
     if !trailing.is_empty() {
-        emit_pty_output_chunk(
+        if super::block_parser_enabled() {
+            for event in block_parser.ingest(&trailing) {
+                event.emit(&app_handle);
+            }
+        }
+
+        if pending_since.is_none() {
+            pending_since = Some(Instant::now());
+        }
+        pending_bytes = pending_bytes.saturating_add(trailing.as_bytes().len());
+        pending.push_str(&trailing);
+        flush_pending_pty_output(
             &id,
-            &trailing,
+            &mut pending,
+            &mut pending_bytes,
+            &mut pending_since,
             &ses,
             &app_handle,
-            &mut block_parser,
             &mut last_attention_time,
             &mut last_preview_flush,
             attention_debounce,
             session_start,
+            &mut prof_emit,
+            &mut prof_emit_chunks,
         );
     }
 
@@ -239,7 +448,8 @@ pub(super) fn stream_pty_output(
         tracing::info!(
             target: "pty_perf",
             id = %id,
-            chunks = prof_chunks,
+            chunks = prof_emit_chunks,
+            read_chunks = prof_read_chunks,
             bytes = prof_bytes,
             total_ms = session_start.elapsed().as_millis() as u64,
             flow_wait_ms = prof_flow.as_millis() as u64,
@@ -292,28 +502,58 @@ fn exit_code_from_status(status: ExitStatus) -> Option<u32> {
     Some(status.exit_code())
 }
 
+fn flush_pending_pty_output(
+    id: &str,
+    pending: &mut String,
+    pending_bytes: &mut usize,
+    pending_since: &mut Option<Instant>,
+    ses: &Arc<PtySession>,
+    app_handle: &AppHandle,
+    last_attention_time: &mut Instant,
+    last_preview_flush: &mut Instant,
+    attention_debounce: Duration,
+    session_start: Instant,
+    prof_emit: &mut Duration,
+    prof_emit_chunks: &mut u64,
+) {
+    if pending.is_empty() {
+        *pending_bytes = 0;
+        *pending_since = None;
+        return;
+    }
+
+    let data = std::mem::take(pending);
+    let byte_count = *pending_bytes;
+    *pending_bytes = 0;
+    *pending_since = None;
+
+    let emit_t = Instant::now();
+    emit_pty_output_chunk(
+        id,
+        &data,
+        byte_count,
+        ses,
+        app_handle,
+        last_attention_time,
+        last_preview_flush,
+        attention_debounce,
+        session_start,
+    );
+    *prof_emit += emit_t.elapsed();
+    *prof_emit_chunks = prof_emit_chunks.saturating_add(1);
+}
+
 fn emit_pty_output_chunk(
     id: &str,
     data: &str,
+    byte_count: usize,
     ses: &Arc<PtySession>,
     app_handle: &AppHandle,
-    block_parser: &mut super::blocks::BlockParser,
     last_attention_time: &mut Instant,
     last_preview_flush: &mut Instant,
     attention_debounce: Duration,
     session_start: Instant,
 ) {
-    // Stage 3 default-off: ingest only when the user has installed
-    // the shell integration and flipped the runtime switch via
-    // `set_command_blocks_enabled`. Skipping `ingest` entirely is
-    // important — even feeding bytes into the parser builds up
-    // OSC state that leaks across enable→disable→enable cycles.
-    if super::block_parser_enabled() {
-        for event in block_parser.ingest(data) {
-            event.emit(app_handle);
-        }
-    }
-
     let seq = session::next_output_seq(ses);
     let _ = app_handle.emit(
         "pty-output",
@@ -323,7 +563,12 @@ fn emit_pty_output_chunk(
             seq,
         },
     );
-    session::add_unacked(ses, data.as_bytes().len());
+    let ack_bytes = if byte_count == 0 {
+        data.as_bytes().len()
+    } else {
+        byte_count
+    };
+    session::add_unacked(ses, ack_bytes);
     bridge::broadcast_terminal_output(id, data, seq);
 
     // Keep raw PTY bytes so a second webview can replay the same terminal
@@ -414,6 +659,36 @@ mod tests {
         ));
         // At or past the interval → flush.
         assert!(should_flush_preview(PREVIEW_FLUSH_INTERVAL, false));
+    }
+
+    #[test]
+    fn coalesce_decide_flushes_when_forced() {
+        assert!(coalesce_decide(0, None, true));
+        assert!(coalesce_decide(1, Some(Duration::from_millis(0)), true));
+    }
+
+    #[test]
+    fn coalesce_decide_holds_small_recent_output() {
+        assert!(!coalesce_decide(
+            COALESCE_MAX_BYTES - 1,
+            Some(COALESCE_WINDOW - Duration::from_millis(1)),
+            false,
+        ));
+    }
+
+    #[test]
+    fn coalesce_decide_flushes_at_size_or_window_limit() {
+        assert!(coalesce_decide(COALESCE_MAX_BYTES, None, false));
+        assert!(coalesce_decide(1, Some(COALESCE_WINDOW), false));
+    }
+
+    #[test]
+    fn coalesce_should_flush_uses_pending_age() {
+        assert!(coalesce_should_flush(
+            1,
+            Some(Instant::now() - COALESCE_WINDOW),
+            false,
+        ));
     }
 
     #[test]
