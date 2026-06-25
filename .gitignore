@@ -160,4 +160,5 @@ docs/*
 !docs/pty-emit-coalescing-design.json
 !docs/worktree-terminal-design.json
 !docs/opencode-adaptation-design.json
+!docs/worktree-branch-terminal-design.json
 .gitnexus
