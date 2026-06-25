@@ -19,6 +19,12 @@
     "collapse": "사이드바 접기",
     "allTerminals": "모든 터미널",
     "openDir": "Finder/Explorer에서 열기",
+    "worktrees": "Worktrees",
+    "refreshWorktrees": "worktree 새로고침",
+    "openWorktreeTerminal": "여기에서 터미널 열기",
+    "detachedWorktree": "detached",
+    "lockedWorktree": "locked",
+    "bareWorktree": "bare",
     "emptyLine1": "아직 프로젝트가 없습니다.",
     "emptyLine2": "터미널을 만들어 시작하세요."
   },

@@ -2,6 +2,7 @@ mod ai_explain;
 mod bridge;
 mod codex_app;
 mod db;
+mod git;
 mod local_directory;
 mod notification;
 mod overlay;
@@ -82,6 +83,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ai_explain::ai_explain,
             supervisor::supervisor_enable,
+            git::git_worktree_list,
             local_directory::open_local_directory,
             pty::pty_create,
             pty::pty_input,

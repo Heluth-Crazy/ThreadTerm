@@ -19,6 +19,12 @@
     "collapse": "サイドバーを折りたたむ",
     "allTerminals": "すべてのターミナル",
     "openDir": "Finder/Explorer で開く",
+    "worktrees": "Worktrees",
+    "refreshWorktrees": "worktree を更新",
+    "openWorktreeTerminal": "ここでターミナルを開く",
+    "detachedWorktree": "detached",
+    "lockedWorktree": "locked",
+    "bareWorktree": "bare",
     "emptyLine1": "まだプロジェクトがありません。",
     "emptyLine2": "ターミナルを作成して開始します。"
   },

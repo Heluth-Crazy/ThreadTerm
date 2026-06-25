@@ -19,6 +19,12 @@
     "collapse": "Collapse sidebar",
     "allTerminals": "All terminals",
     "openDir": "Open in Finder/Explorer",
+    "worktrees": "Worktrees",
+    "refreshWorktrees": "Refresh worktrees",
+    "openWorktreeTerminal": "Open terminal here",
+    "detachedWorktree": "detached",
+    "lockedWorktree": "locked",
+    "bareWorktree": "bare",
     "emptyLine1": "No projects yet.",
     "emptyLine2": "Create a terminal to start."
   },
