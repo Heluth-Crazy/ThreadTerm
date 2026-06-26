@@ -615,3 +615,36 @@ Implemented expanded native-feel baseline: single-instance plugin, non-macOS ove
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: 实现分支 worktree 终端
+
+**Date**: 2026-06-26
+**Task**: 实现分支 worktree 终端
+**Branch**: `exp/windows-native-terminal-host`
+
+### Summary
+
+根据 docs/worktree-branch-terminal-design.json 实现 branch overview、按需创建 worktree 并打开终端，补齐 bridge、sidebar、i18n、测试和契约 spec。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e73b96e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

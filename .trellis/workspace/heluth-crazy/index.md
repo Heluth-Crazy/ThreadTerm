@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 15
-- **Last Active**: 2026-06-13
+- **Total Sessions**: 16
+- **Last Active**: 2026-06-26
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~617 | Active |
+| `journal-1.md` | ~650 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 16 | 2026-06-26 | 实现分支 worktree 终端 | `e73b96e` | `exp/windows-native-terminal-host` |
 | 15 | 2026-06-13 | 桌面/移动端终端审查修复（P0-P2 五阶段） | `0ecf1af`, `78b2ef7`, `241b1ee`, `b362fca`, `bdee023`, `3f94cf0`, `173e9c0`, `695d48e` | `audit/desktop-native-feel` |
 | 14 | 2026-05-31 | 设置收尾小修：窗口位置记忆 + overlay 偏好跨窗口同步 | `6871742`, `2469a9f` | `audit/desktop-native-feel` |
 | 13 | 2026-05-31 | 修复 Shift+Cmd+Space 崩溃 + 设置原生窗口收尾 | `83984fc`, `719c129`, `bf30052` | `audit/desktop-native-feel` |
