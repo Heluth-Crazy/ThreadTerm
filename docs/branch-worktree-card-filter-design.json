@@ -1,0 +1,119 @@
+{
+    "formatVersion": 1,
+    "documentType": "branch-worktree-card-filter-design",
+    "title": "点击分支 = 筛选主区卡片(而非直接建终端)+ 卡片归属可分辨 — 供实现者",
+    "generatedAt": "2026-06-26",
+    "branch": "exp/windows-native-terminal-host",
+    "designedBy": "Claude(只设计,不实现);实现由其他模型完成",
+    "reason": "born-as-JSON:提交后不被本地 .md 保护层加密,实现者 pull 即可读。需求:点分支不要直接创建并进入终端,而是把右侧主区卡片按该分支/worktree 筛选展示,便于分辨哪个卡片属于哪个分支/目录。",
+    "sections": [
+        {
+            "level": 1,
+            "heading": "需求:当前行为 vs 期望",
+            "body": [
+                "",
+                "- **当前**:点分支行主体 → 有 worktree 直接 `createCard` 开终端;仅分支直接 `git worktree add` + 开终端(`handleOpenWorktreeTerminal` / `handleCreateWorktreeAndOpen`)。即『点击=立即创建并进入』。",
+                "- **期望**:点分支 → 右侧主区只**筛选展示**属于该分支/worktree 的卡片(不直接进入),方便分辨卡片归属。创建终端降级为**显式的次级动作**(行尾图标)。",
+                "- **范式**:这与现有『点项目行=选中并筛选该项目卡片』完全同构,只是多了一层 worktree 粒度。最终是三级筛选:**全部(All)/ 项目 / 项目+分支**。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "当前筛选架构(已核对)",
+            "body": [
+                "",
+                "- 状态:`terminalStore.selectedProjectPath: string | null`(单层维度)。`selectProject(path)`(:1279)设它 + 退出 focus。",
+                "- 主区过滤 `CardGrid.tsx`:`visibleCards = selectedProjectPath ? cards.filter(c => c.projectPath === selectedProjectPath) : cards`(:68-69),选中时按 `projectCardOrder[selectedProjectPath]` 排序(:71-72)。",
+                "- 拖拽排序:`sortingEnabled = Boolean(selectedProjectPath) && !query`(:107),`moveProjectCard(selectedProjectPath, …)`。",
+                "- 空态:无卡片无选中→onboarding(:142);选中项目但无卡片→『新建/显示全部』(:176-208)。面包屑 `selectedProjectLabel`(:121)。",
+                "- 卡片数据:`card.worktreePath`(`createCard` 写 `options.worktreePath`,:517;**主项目根开终端时为 undefined**)。`TerminalCard.tsx:237-240` 已在 `card.worktreePath` 存在时显示一行 worktree 标签(`card.worktree` i18n)。",
+                "- `TerminalManager.tsx:162-174` 也用 `selectedProjectPath` 算面包屑名 / archived 卡片。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "设计 1:worktree 作为第二筛选维度(store + CardGrid)",
+            "body": [
+                "",
+                "**store(terminalStore.ts)**:",
+                "- 新增 `selectedWorktreePath: string | null`(默认 null = 项目级,不细分)。加入初始 state(:460 附近)与持久化白名单(:1456 附近,和 selectedProjectPath 并列)。",
+                "- `selectProject(path)`:设 `selectedProjectPath=path` 时**同时清空** `selectedWorktreePath=null`(切项目=看该项目所有 worktree 卡片)。",
+                "- 新增 `selectWorktree(projectPath: string, worktreePath: string, label?: string)`:设 `selectedProjectPath=projectPath` + `selectedWorktreePath=worktreePath` + 可选 `selectedWorktreeLabel=label`(分支名,供面包屑)+ `focusedCardId=null`。",
+                "- removeCard 清筛选的逻辑(:654-686)同步考虑 selectedWorktreePath(删掉某 worktree 最后一张卡片时是否回退到项目级——可选,保持简单即回退 null)。",
+                "",
+                "**归一化(关键)**:卡片的有效 worktree = `effectiveWorktree(card) = card.worktreePath ?? card.projectPath`(主项目根卡片 worktreePath 为 undefined,归一到 projectPath)。分支树里 main 分支的 `worktree.path` 即仓库根,故选 main → 匹配那些 `worktreePath==null` 的根终端卡片。路径比较必须用规范化(复用 ProjectSidebar 的 `normalizeComparablePath`/`samePath`,抽到共享 util),避免大小写/斜杠差异。",
+                "",
+                "**CardGrid.tsx 过滤(:67-75)**改为:",
+                "`const filtered = cards.filter(c => (!selectedProjectPath || c.projectPath === selectedProjectPath) && (!selectedWorktreePath || samePath(effectiveWorktree(c), selectedWorktreePath)));`",
+                "- 排序:沿用 `projectCardOrder[selectedProjectPath]` 的子序列(过滤后仍有序);**worktree 级筛选下禁用拖拽**(`sortingEnabled = Boolean(selectedProjectPath) && !selectedWorktreePath && !query`),避免 order key 复杂化(注明:worktree 级排序留后续)。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "设计 2:分支行交互 = 主体筛选 + 行尾动作(ProjectSidebar.tsx)",
+            "body": [
+                "",
+                "把分支行(`ProjectBranchTree` :570-640)的**整行点击语义从『创建』改为『筛选』**,创建收进行尾图标按钮:",
+                "",
+                "- **行主体点击** → `selectWorktree(projectPath, effectiveWorktreePath, branch.branch)`:",
+                "  · 有 worktree:`effectiveWorktreePath = branch.worktreePath` → 主区筛出其卡片。",
+                "  · 仅分支(无 worktree):无实体目录、无卡片 → 仍 `selectWorktree` 到一个『待创建』选中态(用占位 key,如 `pending:{projectPath}:{branch}`),主区显示**空态 + 『为该分支创建工作树并打开』引导按钮**(等价点行尾 ＋)。这样点任何分支都不会『直接进终端』,符合需求。",
+                "- **行尾图标 = 显式动作按钮**(独立可点,`stopPropagation`):",
+                "  · 有 worktree → `▣ Terminal`:点击 = 在该 worktree **新开一个终端**(原 `handleOpenWorktreeTerminal`)。",
+                "  · 仅分支 → `＋ Plus`:点击 = `handleCreateWorktreeAndOpen`(建 worktree 并开,原逻辑)。",
+                "  · 创建中 → `Loader2`,行禁用(沿用现有)。",
+                "- **选中态高亮**:被选中的分支行用 `selected` 视觉(bg-primary/10 + 左 accent bar,复用 SidebarRow 风格);其父项目行可保持高亮表示上下文。需要把 `selectedWorktreePath` 传进 `ProjectBranchTree` 判断每行 `isSelected = samePath(effectiveWorktreePath, selectedWorktreePath)`。",
+                "- 注:上一轮 UI 设计已把行尾图标改成 `opacity-60` 常驻——正好承接『行尾=动作』,与本轮『行主体=筛选』语义自洽。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "设计 3:主区卡片归属可分辨(用户核心目的)",
+            "body": [
+                "",
+                "- **面包屑**:主区顶部当前筛选路径显示 `项目名 / 分支名`(selectedWorktreePath 时附加分支段;用 `selectedWorktreeLabel`)。CardGrid `selectedProjectLabel`(:121)与 TerminalManager(:162-167)同步扩展。",
+                "- **每张卡片标明归属**:`TerminalCard.tsx:237` 现仅在 `worktreePath` 存在时显示标签。扩展为**所有卡片都显示归属**——有 worktree 显示分支/worktree(优先分支名,无则 basename);主项目根卡片显示 `main`(或项目名)。让用户在『全部 / 项目级』视图下也能一眼看出每张卡属于哪个分支。",
+                "  · 分支名来源:`createCard` 时把 `branch` 也存进卡片(新增可选 `TerminalCard.branchLabel` + `TerminalCreateOptions.branchLabel`),由分支行的动作传入;无则回退 `basename(worktreePath)`。",
+                "- **空态引导**(CardGrid :176 扩展):selectedWorktreePath 选中但无卡片 → 文案『该分支/工作树下还没有终端』+ 主按钮『在此新建』(走对应 worktree 的创建)+ 次按钮『显示该项目全部』(清 worktree 维度回项目级)。仅分支『待创建』选中 → 主按钮『创建工作树并打开』。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "边界 / 风险 / 明确不要做",
+            "body": [
+                "",
+                "- 路径比较一律走规范化(`samePath`),否则 Windows 反斜杠/大小写、canonicalize 差异会导致筛选漏配。把 ProjectSidebar 内的 `normalizeComparablePath`/`samePath` 抽成共享 util 供 CardGrid/store 复用,勿各写一份。",
+                "- 主分支卡片 `worktreePath==undefined` 与 main 分支 `worktree.path==仓库根` 的归一要一致(`effectiveWorktree`),否则选 main 筛不到根终端卡片。",
+                "- 切项目必须清 worktree 维度(避免 A 项目的 worktree 选中残留到 B 项目导致空白)。",
+                "- worktree 级**拖拽排序本期禁用**(只读筛选视图);保持项目级排序不变。",
+                "- 不改后端、不改 createCard→pty_create 链路;`git_worktree_add` 仍只在行尾 ＋ 显式触发(非破坏,免确认)。",
+                "- 不引入新的全局路由/标签页;筛选仍是 store 单状态 + CardGrid 派生,保持现有架构。",
+                "- 移动端:同一 selectWorktree 状态驱动,确认移动端卡片列表也消费(若移动端单独过滤逻辑,一并接 selectedWorktreePath)。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "落地清单(映射文件/行)",
+            "body": [
+                "",
+                "- `src/stores/terminalStore.ts`:加 `selectedWorktreePath`(+`selectedWorktreeLabel`)state(:184/:460/:1456)、`selectWorktree` action、`selectProject` 清 worktree 维度(:1279)、removeCard 清理(:654-686);`createCard` 存可选 `branchLabel`(:505-525);类型 `TerminalCreateOptions`/`TerminalCard` 增 `branchLabel?`、`StoreState` 增字段与 selector。",
+                "- `src/components/terminal/CardGrid.tsx`:`visibleCards` 过滤加 worktree 维度(:67-75)、`sortingEnabled` 加 `!selectedWorktreePath`(:107)、空态扩展(:176-208)、面包屑(:121-125)。",
+                "- `src/components/terminal/ProjectSidebar.tsx`:`ProjectBranchTree` 行主体改 `selectWorktree`、行尾图标承接创建动作、传 `selectedWorktreePath` 标记选中行(:521-657);`handleOpenWorktreeTerminal`/`handleCreateWorktreeAndOpen` 改由行尾图标调用。",
+                "- `src/components/terminal/TerminalCard.tsx`:归属标签扩展到所有卡片(:237-240),优先 `branchLabel`。",
+                "- `src/components/terminal/TerminalManager.tsx`:面包屑/archived 同步 selectedWorktreePath(:162-174)。",
+                "- 共享 util:抽 `samePath`/`normalizeComparablePath`/`effectiveWorktree` 到 `src/components/terminal/path.ts`(或 lib),供三处复用。",
+                "- i18n(en/zh-CN/ja/ko):`grid.noWorktreeTitle`/`grid.noWorktreeDescription`/`grid.createWorktreeHere`/`grid.showProjectAll`、面包屑分隔等。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "验证",
+            "body": [
+                "",
+                "- 单测:`effectiveWorktree` 归一(undefined→projectPath)、`samePath` 跨平台;CardGrid 过滤在 项目级/worktree级/全部 三态下的卡片集合;selectProject 清 worktree 维度。",
+                "- 手动:① 点有 worktree 的分支 → 右侧只剩该 worktree 卡片,不新建终端;② 点项目行 → 显示该项目所有 worktree 卡片;③ 点 All → 全部;④ 行尾 ▣ → 在该 worktree 新开终端;⑤ 仅分支点行主体 → 空态引导,点 ＋ → 建 worktree 并开;⑥ 选 main 分支能筛到项目根终端卡片(worktreePath 为空的);⑦ 每张卡片显示分支/worktree 归属,面包屑显示 项目/分支。",
+                "- 回归:`npm run typecheck` + `npm run test`;切项目不残留 worktree 选中;拖拽排序在项目级仍可用、worktree 级禁用且无报错。"
+            ]
+        }
+    ]
+}

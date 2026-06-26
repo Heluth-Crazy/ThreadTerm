@@ -162,4 +162,5 @@ docs/*
 !docs/opencode-adaptation-design.json
 !docs/worktree-branch-terminal-design.json
 !docs/sidebar-branch-tree-ui-design.json
+!docs/branch-worktree-card-filter-design.json
 .gitnexus
