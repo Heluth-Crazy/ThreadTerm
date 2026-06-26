@@ -648,3 +648,36 @@ Implemented expanded native-feel baseline: single-instance plugin, non-macOS ove
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: 实现 sidebar 分支树 UI
+
+**Date**: 2026-06-26
+**Task**: 实现 sidebar 分支树 UI
+**Branch**: `exp/windows-native-terminal-host`
+
+### Summary
+
+根据 docs/sidebar-branch-tree-ui-design.json 调整 ProjectSidebar：固定 disclosure 列、刷新按钮进项目行 aux、分支状态图标常驻、current 分支内联标记，并补充测试和组件规范。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `afe2e47` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
