@@ -83,6 +83,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ai_explain::ai_explain,
             supervisor::supervisor_enable,
+            git::git_branch_overview,
+            git::git_worktree_add,
             git::git_worktree_list,
             local_directory::open_local_directory,
             pty::pty_create,

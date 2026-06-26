@@ -139,10 +139,34 @@ export interface WorktreeInfo {
   isLocked: boolean;
 }
 
+export interface BranchRow {
+  branch: string;
+  head: string;
+  isCurrent: boolean;
+  worktreePath?: string | null;
+  isMainWorktree: boolean;
+  lastCommitUnix: number;
+  upstream?: string | null;
+}
+
 export const git = {
+  branches: {
+    overview: (projectPath: string): Promise<BranchRow[]> =>
+      invoke<BranchRow[]>('git_branch_overview', { projectPath }),
+  },
   worktrees: {
     list: (projectPath: string): Promise<WorktreeInfo[]> =>
       invoke<WorktreeInfo[]>('git_worktree_list', { projectPath }),
+    add: (
+      projectPath: string,
+      branch: string,
+      worktreePath?: string,
+    ): Promise<WorktreeInfo> =>
+      invoke<WorktreeInfo>('git_worktree_add', {
+        projectPath,
+        branch,
+        worktreePath,
+      }),
   },
 };
 
