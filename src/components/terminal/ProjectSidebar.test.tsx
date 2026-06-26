@@ -8,6 +8,8 @@ const branchHookMock = vi.hoisted(() => ({
   clearBranchCache: vi.fn(),
   refresh: vi.fn<() => Promise<void>>(),
   branches: [] as BranchRow[],
+  branchesByPath: {} as Record<string, BranchRow[]>,
+  loadingByPath: {} as Record<string, boolean>,
 }));
 
 const worktreeHookMock = vi.hoisted(() => ({
@@ -44,9 +46,9 @@ vi.mock('../../lib/localDirectory', () => ({
 
 vi.mock('./useProjectBranches', () => ({
   clearProjectBranchCache: branchHookMock.clearBranchCache,
-  useProjectBranches: () => ({
-    branches: branchHookMock.branches,
-    loading: false,
+  useProjectBranches: (projectPath: string) => ({
+    branches: branchHookMock.branchesByPath[projectPath] ?? branchHookMock.branches,
+    loading: branchHookMock.loadingByPath[projectPath] ?? false,
     error: null,
     refresh: branchHookMock.refresh,
   }),
@@ -92,6 +94,8 @@ describe('ProjectSidebar branch worktrees', () => {
     branchHookMock.refresh.mockReset();
     branchHookMock.refresh.mockResolvedValue(undefined);
     branchHookMock.branches = [];
+    branchHookMock.branchesByPath = {};
+    branchHookMock.loadingByPath = {};
     worktreeHookMock.clearWorktreeCache.mockReset();
     gitBridgeMock.addWorktree.mockReset();
   });
@@ -148,6 +152,89 @@ describe('ProjectSidebar branch worktrees', () => {
 
     expect(screen.queryByTitle('sidebar.expand')).toBeNull();
     expect(screen.queryByText('sidebar.branches')).toBeNull();
+  });
+
+  it('keeps a fixed disclosure column for expandable and leaf rows', () => {
+    useTerminalStore.getState().createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+    useTerminalStore.getState().createCard({
+      projectName: 'Plain',
+      projectPath: '/repo/plain',
+      terminalType: 'shell',
+    });
+    branchHookMock.branchesByPath = {
+      '/repo/threadterm': [
+        baseBranch({
+          branch: 'main',
+          isCurrent: true,
+          worktreePath: '/repo/threadterm',
+          isMainWorktree: true,
+        }),
+      ],
+      '/repo/plain': [],
+    };
+
+    render(<ProjectSidebar />);
+
+    const disclosureColumns = screen.getAllByTestId('sidebar-disclosure-column');
+    expect(disclosureColumns).toHaveLength(3);
+    expect(disclosureColumns.every((column) => column.className.includes('w-4'))).toBe(true);
+    expect(screen.getAllByTestId('sidebar-disclosure-placeholder')).toHaveLength(2);
+    expect(screen.getAllByTestId('sidebar-disclosure-toggle')).toHaveLength(1);
+  });
+
+  it('moves branch refresh into the project row auxiliary actions', () => {
+    useTerminalStore.getState().createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+    branchHookMock.branches = [
+      baseBranch({
+        branch: 'main',
+        isCurrent: true,
+        worktreePath: '/repo/threadterm',
+        isMainWorktree: true,
+      }),
+    ];
+
+    render(<ProjectSidebar />);
+    fireEvent.click(screen.getByTitle('sidebar.refreshWorktrees'));
+    fireEvent.click(screen.getByTitle('sidebar.expand'));
+
+    expect(branchHookMock.refresh).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('sidebar.branches')).toBeNull();
+  });
+
+  it('keeps branch action icons visible without hover and marks the current branch inline', () => {
+    useTerminalStore.getState().createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+    branchHookMock.branches = [
+      baseBranch({
+        branch: 'main',
+        isCurrent: true,
+        worktreePath: '/repo/threadterm',
+        isMainWorktree: true,
+      }),
+      baseBranch({
+        branch: 'feature/no-tree',
+        head: '3333333333333333333333333333333333333333',
+        lastCommitUnix: 2,
+      }),
+    ];
+
+    render(<ProjectSidebar />);
+    fireEvent.click(screen.getByTitle('sidebar.expand'));
+
+    expect(screen.getByText('Current')).toBeInTheDocument();
+    expect(screen.getByLabelText('sidebar.openWorktreeTerminal')).toHaveClass('opacity-60');
+    expect(screen.getByLabelText('Create worktree and open terminal')).toHaveClass('opacity-60');
   });
 
   it('creates a worktree for a branch without one, then opens a terminal there', async () => {

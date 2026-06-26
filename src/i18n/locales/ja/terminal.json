@@ -25,6 +25,7 @@
     "openWorktreeTerminal": "ここでターミナルを開く",
     "createWorktree": "ブランチの worktree を作成してターミナルを開く",
     "currentBranch": "現在のブランチ",
+    "currentShort": "現在",
     "showAllBranches": "{{count}} 個のブランチをすべて表示",
     "creatingWorktree": "worktree を作成中…",
     "worktreeCreated": "worktree {{path}} を作成しました。",

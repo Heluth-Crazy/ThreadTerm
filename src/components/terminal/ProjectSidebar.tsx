@@ -65,6 +65,13 @@ interface ProjectSidebarProps {
 
 type ProjectGroup = ReturnType<typeof useProjectGroups>[number];
 
+interface SidebarRowAuxAction {
+  key: string;
+  title?: string;
+  icon: ReactNode;
+  onClick: (e: MouseEvent) => void;
+}
+
 export function ProjectSidebar({
   className = '',
   onImportWorkflow,
@@ -437,6 +444,35 @@ function ProjectBranchSection({
   const { branches, loading, error, refresh } = useProjectBranches(group.path);
   const [expanded, setExpanded] = useState(false);
   const hasBranches = branches.length > 0;
+  const auxActions: SidebarRowAuxAction[] = [
+    ...(isTauriEnv()
+      ? [
+          {
+            key: 'open-dir',
+            title: t('sidebar.openDir'),
+            icon: <FolderOpen className="h-3 w-3" />,
+            onClick: onOpenDir,
+          },
+        ]
+      : []),
+    ...(hasBranches
+      ? [
+          {
+            key: 'refresh-branches',
+            title: t('sidebar.refreshWorktrees'),
+            icon: loading ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3 w-3" />
+            ),
+            onClick: (event: MouseEvent) => {
+              event.stopPropagation();
+              void refresh();
+            },
+          },
+        ]
+      : []),
+  ];
 
   return (
     <div>
@@ -456,8 +492,7 @@ function ProjectBranchSection({
         unread={group.unreadCount}
         onClick={onSelect}
         onContextMenu={onContextMenu}
-        onAux={onOpenDir}
-        auxTitle={isTauriEnv() ? t('sidebar.openDir') : undefined}
+        auxActions={auxActions}
         hasChildren={hasBranches}
         expanded={expanded}
         toggleTitle={expanded ? t('sidebar.collapse') : t('sidebar.expand')}
@@ -471,7 +506,6 @@ function ProjectBranchSection({
           projectPath={group.path}
           projectName={group.name}
           branches={branches}
-          loading={loading}
           error={error}
           refresh={refresh}
           onOpenTerminal={onOpenTerminal}
@@ -497,7 +531,6 @@ interface ProjectBranchTreeProps {
   projectPath: string;
   projectName: string;
   branches: BranchRow[];
-  loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
   onOpenTerminal: (projectPath: string, projectName: string, worktreePath: string) => void;
@@ -522,7 +555,6 @@ function ProjectBranchTree({
   projectPath,
   projectName,
   branches,
-  loading,
   error,
   refresh,
   onOpenTerminal,
@@ -536,24 +568,6 @@ function ProjectBranchTree({
 
   return (
     <div className="mb-1 ml-4 border-l border-border/60 pl-2">
-      <div className="flex items-center justify-between px-1 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-        <span>{t('sidebar.branches', { defaultValue: 'Branches' })}</span>
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            void refresh();
-          }}
-          title={t('sidebar.refreshWorktrees')}
-          className="rounded-[var(--radius-md)] p-0.5 hover:bg-accent hover:text-accent-foreground"
-        >
-          {loading ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
-          ) : (
-            <RefreshCw className="h-3 w-3" />
-          )}
-        </button>
-      </div>
       {error && (
         <div className="px-2 py-1 text-[10px] text-red-500">
           {error}
@@ -566,6 +580,19 @@ function ProjectBranchTree({
           const detail = worktreePath
             ? basename(worktreePath)
             : branch.upstream || shortHead(branch.head);
+          const branchIconClass = branch.isCurrent
+            ? 'text-primary'
+            : worktreePath
+              ? 'text-foreground/70'
+              : 'text-muted-foreground/50';
+          const branchTextClass = branch.isCurrent
+            ? 'text-primary'
+            : worktreePath
+              ? 'text-foreground/90'
+              : 'text-foreground/70';
+          const detailClass = branch.isCurrent
+            ? 'text-primary/70'
+            : 'text-muted-foreground';
           return (
             <button
               key={branch.branch}
@@ -597,26 +624,31 @@ function ProjectBranchTree({
                   setCreatingBranch(null);
                 }
               }}
-              className="group flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left text-[12px] text-foreground/80 hover:bg-accent hover:text-accent-foreground disabled:cursor-wait disabled:opacity-60"
+              className={[
+                'group flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left text-[12px] hover:bg-accent disabled:cursor-wait disabled:opacity-60',
+                branchTextClass,
+              ].join(' ')}
             >
-              <span className="shrink-0 text-muted-foreground group-hover:text-primary">
+              <span className={['shrink-0 group-hover:text-primary', branchIconClass].join(' ')}>
                 <GitBranch className="h-3.5 w-3.5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">{branch.branch}</span>
+                {detail && (
+                  <span className={['block truncate text-[10px]', detailClass].join(' ')}>
+                    {detail}
+                  </span>
+                )}
               </span>
               {branch.isCurrent && (
                 <span
                   aria-label={t('sidebar.currentBranch', { defaultValue: 'Current branch' })}
                   title={t('sidebar.currentBranch', { defaultValue: 'Current branch' })}
-                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
-                />
+                  className="mr-0.5 shrink-0 rounded bg-primary/15 px-1 py-0.5 text-[9px] font-medium leading-none text-primary"
+                >
+                  {t('sidebar.currentShort', { defaultValue: 'Current' })}
+                </span>
               )}
-              <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium">{branch.branch}</span>
-                {detail && (
-                  <span className="block truncate text-[10px] text-muted-foreground">
-                    {detail}
-                  </span>
-                )}
-              </span>
               {isCreating ? (
                 <Loader2
                   className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground"
@@ -626,12 +658,12 @@ function ProjectBranchTree({
                 />
               ) : worktreePath ? (
                 <Terminal
-                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-60 transition-opacity group-hover:text-primary group-hover:opacity-100"
                   aria-label={t('sidebar.openWorktreeTerminal')}
                 />
               ) : (
                 <Plus
-                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-60 transition-opacity group-hover:text-primary group-hover:opacity-100"
                   aria-label={t('sidebar.createWorktree', {
                     defaultValue: 'Create worktree and open terminal',
                   })}
@@ -644,7 +676,7 @@ function ProjectBranchTree({
           <button
             type="button"
             onClick={() => setShowAll(true)}
-            className="w-full rounded-[var(--radius-md)] px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            className="w-full rounded-[var(--radius-md)] px-2 py-1 text-center text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground"
           >
             {t('sidebar.showAllBranches', {
               count: branches.length,
@@ -667,8 +699,7 @@ interface SidebarRowProps {
   unread: number;
   onClick: () => void;
   onContextMenu?: (e: MouseEvent) => void;
-  onAux?: (e: MouseEvent) => void;
-  auxTitle?: string;
+  auxActions?: SidebarRowAuxAction[];
   hasChildren?: boolean;
   expanded?: boolean;
   toggleTitle?: string;
@@ -685,8 +716,7 @@ function SidebarRow({
   unread,
   onClick,
   onContextMenu,
-  onAux,
-  auxTitle,
+  auxActions = [],
   hasChildren = false,
   expanded = false,
   toggleTitle,
@@ -713,25 +743,39 @@ function SidebarRow({
           className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-primary"
         />
       )}
-      {hasChildren && !collapsed && onToggle && (
+      {!collapsed && (
         <span
-          role="button"
-          tabIndex={0}
-          onClick={onToggle}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              e.stopPropagation();
-              onToggle(e as unknown as MouseEvent);
-            }
-          }}
-          title={toggleTitle}
-          className="shrink-0 text-muted-foreground hover:text-primary"
+          data-testid="sidebar-disclosure-column"
+          className="flex h-full w-4 shrink-0 items-center justify-center"
         >
-          {expanded ? (
-            <ChevronDown className="h-3 w-3" />
+          {hasChildren && onToggle ? (
+            <span
+              role="button"
+              tabIndex={0}
+              data-testid="sidebar-disclosure-toggle"
+              onClick={onToggle}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onToggle(e as unknown as MouseEvent);
+                }
+              }}
+              title={toggleTitle}
+              className="flex h-5 w-4 items-center justify-center text-muted-foreground hover:text-primary"
+            >
+              {expanded ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
+              )}
+            </span>
           ) : (
-            <ChevronRight className="h-3 w-3" />
+            <span
+              aria-hidden="true"
+              data-testid="sidebar-disclosure-placeholder"
+              className="h-5 w-4"
+            />
           )}
         </span>
       )}
@@ -762,24 +806,25 @@ function SidebarRow({
           >
             {count}
           </span>
-          {onAux && (
+          {auxActions.map((action) => (
             <span
+              key={action.key}
               role="button"
               tabIndex={0}
-              onClick={onAux}
+              onClick={action.onClick}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
                   e.stopPropagation();
-                  onAux(e as unknown as MouseEvent);
+                  action.onClick(e as unknown as MouseEvent);
                 }
               }}
-              title={auxTitle}
+              title={action.title}
               className="ml-0.5 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-primary group-hover:opacity-100"
             >
-              <FolderOpen className="h-3 w-3" />
+              {action.icon}
             </span>
-          )}
+          ))}
         </>
       )}
     </button>
