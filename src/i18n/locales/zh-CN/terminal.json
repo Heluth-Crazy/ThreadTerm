@@ -25,6 +25,7 @@
     "openWorktreeTerminal": "在这里开终端",
     "createWorktree": "为分支创建 worktree 并打开终端",
     "currentBranch": "当前分支",
+    "currentShort": "当前",
     "showAllBranches": "显示全部 {{count}} 个分支",
     "creatingWorktree": "正在创建 worktree…",
     "worktreeCreated": "已创建 worktree {{path}}。",

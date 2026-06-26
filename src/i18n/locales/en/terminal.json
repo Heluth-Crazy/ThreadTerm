@@ -25,6 +25,7 @@
     "openWorktreeTerminal": "Open terminal here",
     "createWorktree": "Create worktree and open terminal",
     "currentBranch": "Current branch",
+    "currentShort": "Current",
     "showAllBranches": "Show all {{count}} branches",
     "creatingWorktree": "Creating worktree...",
     "worktreeCreated": "Created worktree {{path}}.",

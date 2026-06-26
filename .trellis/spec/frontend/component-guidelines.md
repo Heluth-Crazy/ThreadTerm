@@ -52,6 +52,81 @@ is not installed in this project.
 
 (To be filled by the team)
 
+<spec-entry category="pattern" keywords="project-sidebar,branch-tree,disclosure-column,worktree-state,aux-actions" date="2026-06-26" source="src/components/terminal/ProjectSidebar.tsx:65">
+
+## Scenario: Project Sidebar Tree Row Alignment
+
+### 1. Scope / Trigger
+- Trigger: Any change to `ProjectSidebar`, `SidebarRow`, or project/branch
+  tree rows in `src/components/terminal/ProjectSidebar.tsx`.
+
+### 2. Signatures
+- `SidebarRowAuxAction = { key: string; title?: string; icon: ReactNode; onClick(e): void }`
+- `SidebarRow` receives `hasChildren`, `expanded`, `onToggle`, and optional
+  `auxActions`.
+
+### 3. Contracts
+- Every expanded-width sidebar row reserves the same disclosure column before
+  the main icon. Expandable rows render a chevron inside that column; leaf rows
+  render an equal-width empty placeholder.
+- Collapsed icon-rail mode hides the disclosure column and row labels, keeping
+  the single main icon centered.
+- The disclosure target owns expand/collapse only and must stop propagation so
+  it does not select the project row.
+- Project row aux actions are grouped at the row tail. Directory reveal and
+  branch refresh must share this action pattern instead of adding independent
+  header rows.
+- Branch rows should remain isomorphic: branch icon, label/detail, then a
+  persistent action icon. Existing worktrees use `Terminal`; branch-only rows
+  use `Plus`; both are visible before hover.
+- Current branch state must not insert a leading marker before the label. Use
+  primary coloring and an inline trailing pill if a textual marker is needed.
+
+### 4. Validation & Error Matrix
+- Git project row with children -> disclosure column contains chevron.
+- Non-git project row and `All terminals` row -> disclosure column contains an
+  empty placeholder.
+- Chevron click or keyboard activation -> expands/collapses only.
+- Branch refresh action click -> refreshes branches only and does not select
+  the project.
+- Existing worktree branch -> action icon is visible `Terminal`.
+- Branch without worktree -> action icon is visible `Plus`.
+
+### 5. Good/Base/Bad Cases
+- Good: git projects, non-git projects, and `All terminals` align their icon and
+  label columns exactly because the disclosure column is always present.
+- Base: collapsed sidebar remains a centered icon rail without branch rows.
+- Bad: conditionally rendering the disclosure column only for expandable rows;
+  this shifts folder icons and makes mixed project lists look uneven.
+- Bad: hiding branch action icons until hover; this makes worktree and
+  branch-only rows indistinguishable in a static scan.
+
+### 6. Tests Required
+- `ProjectSidebar.test.tsx` should cover fixed disclosure columns for leaf and
+  expandable rows.
+- Tests should verify branch refresh lives in the project row aux actions and
+  the old `sidebar.branches` header row is absent.
+- Tests should verify `Terminal` and `Plus` action icons are visible without
+  hover and current branch marking does not use a leading dot.
+
+### 7. Wrong vs Correct
+
+Wrong:
+```tsx
+{hasChildren && <ChevronRight />}
+<Folder />
+```
+
+Correct:
+```tsx
+<span className="w-4">
+  {hasChildren ? <ChevronRight /> : <span className="w-4" />}
+</span>
+<Folder />
+```
+
+</spec-entry>
+
 <spec-entry category="pattern" keywords="terminal-card-preview,summary-strip,composer-hints,theme-vars" date="2026-05-07" source="src/components/terminal/CardPreviewPanel.tsx:13">
 
 ### Terminal Card Preview Thumbnail + Summary
