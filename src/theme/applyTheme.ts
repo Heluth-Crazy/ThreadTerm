@@ -92,7 +92,14 @@ export function applyResolvedTheme(resolved: ResolvedTheme) {
     ]>
   ) {
     const value = resolved.tokens.terminal[key];
-    if (value) root.style.setProperty(cssVariable, value);
+    // Set when present; otherwise clear any inline value left by a previous
+    // theme so the variable falls back to the :root default instead of being
+    // stuck on the prior theme's colour (e.g. a custom pack missing a token).
+    if (value) {
+      root.style.setProperty(cssVariable, value);
+    } else {
+      root.style.removeProperty(cssVariable);
+    }
   }
 
   const themeColorMeta = document.querySelector('meta[name="theme-color"]');

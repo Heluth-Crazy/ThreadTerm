@@ -26,4 +26,25 @@ describe('applyResolvedTheme', () => {
       resolved.tokens.app.background,
     );
   });
+
+  it('clears a previously-set terminal variable when the new theme lacks that token', () => {
+    const base = resolveTheme('acme-mono', 'dark');
+    applyResolvedTheme(base);
+    expect(document.documentElement.style.getPropertyValue('--terminal-selection')).toBe(
+      base.tokens.terminal.selection,
+    );
+
+    // A theme whose terminal palette is missing `selection` must clear the
+    // inline value (fall back to the :root default) instead of leaving the
+    // previous theme's colour stuck on the variable.
+    const stripped = {
+      ...base,
+      tokens: {
+        ...base.tokens,
+        terminal: { ...base.tokens.terminal, selection: '' },
+      },
+    };
+    applyResolvedTheme(stripped);
+    expect(document.documentElement.style.getPropertyValue('--terminal-selection')).toBe('');
+  });
 });
