@@ -3,9 +3,9 @@
     "documentType": "windows-webview-removal-assessment",
     "title": "Windows 去 WebView 可行性核查 + 方案",
 "generatedAt": "2026-06-27",
-    "lastUpdated": "2026-06-27(A1 核验 3/5 自动通过,2/5 待人按热键+填表)",
+    "lastUpdated": "2026-06-27(A1 核验2 真机死锁,A1 已回退 e395ea4)",
     "branch": "main",
-    "status": "assessment + plan;A0 已实测;A1 已实施+核验中(项1/4/5 自动通过,2/3 待人)",
+    "status": "assessment + plan;A0 已实测;A1 已回退(核验2 物理热键唤起 selector 死锁,见第八节)",
     "designedBy": "Claude(核查 + 规划)",
     "sections": [
         {
@@ -171,6 +171,20 @@
                 "**核验环境归位**:已将 `overlay.prewarm` 持久化行删除(回到默认 false)、env `THREADTERM_SKIP_OVERLAY_PREWARM` 清除、threadterm 进程关闭 — 留待用户启动真机继续核验 2/3 项。",
                 "",
                 "**核验2 自动测尝试记录(失败,非替代人工)**:尝试用 PowerShell SendInput/keybd_event P/Invoke 注入 Ctrl+Shift+Space 合弦以触发 `RegisterHotKey` 注册的全局热键 — 两次独立尝试均在 4s 轮询窗口期无 renderer 数量变化(2→3 未发生)。根因:`tauri-plugin-global-shortcut` 底层 `RegisterHotKey`(WM_HOTKEY) 不响应 `keybd_event` 的 LLKHF_INJECTED 注入事件。**该项无法自动化,需真实物理按键触发。**"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "八、核验2 真机结果:死锁 → A1 已回退(2026-06-27,commit e395ea4)",
+            "body": [
+                "",
+                "**真机物理按键结果**:用户在 Windows 真机按 `Ctrl+Shift+Space` 首次唤起 selector → **直接卡死(转圈/加载,等 5 分钟无响应)**;且**连带主窗口失效**——此前进入卡片即『全屏终端空白、敲命令无任何回显』。两现象同源。",
+                "",
+                "**根因(死锁)**:按需模式下首次热键从 `tauri-plugin-global-shortcut` 全局热键回调里调 `overlay_show_selector → ensure_selector`,在该回调上下文执行 `WebviewWindowBuilder.build()` 创建 webview 窗口——落到非主线程 / 错误 event-loop 上下文,`build()` 死锁,卡住整个 event loop,使主窗口 `pty_create` / 键盘输入命令一并无响应。**预热没事是因为它在启动 setup(主线程)创建窗口**;A1 把窗口创建推迟到运行时热键回调才暴露这个 Tauri 主线程约束。第七节的核验2 自动注入恰好不触发 `RegisterHotKey`,所以自动测漏了死锁,直到真机物理按键才暴露——印证『核验2 必须物理按键』。",
+                "",
+                "**处置**:A1 全量回退(commit e395ea4),恢复启动预热(窗口主线程创建)。**核验1/4/5 的内存与开关数据仍真实成立**,只是 A1 的『按需创建独立 webview 窗口』实现方式在 Tauri 上不可行。",
+                "",
+                "**A1 正确重做方向(下次)**:① `ensure_*` 用 `app.run_on_main_thread(...)`(+ channel 回传)把 `WebviewWindowBuilder.build()` 调度回主线程再懒创建;或 ② 方案 B——把 selector/float 合并进**主 webview 的 overlay 层**(同窗口 DOM 渲染,根本不创建独立 webview 窗口,既省内存又无窗口创建线程问题)。两者都须真机**物理按键**复测核验2/3(自动注入不触发全局热键,不能替代)。内存收益(核验1 的 ~402 MB / 42%)仍是目标。"
             ]
         }
     ]
