@@ -16,7 +16,14 @@
     "minimize": "最小化",
     "close": "关闭（隐藏窗口，保留会话）",
     "emptyTitle": "浮动窗口还没有绑定会话。",
-    "emptyDescription": "在主窗口按 <kbd>{{shortcut}}</kbd> 选择一个已固定会话。"
+    "emptyDescription": "在主窗口按 <kbd>{{shortcut}}</kbd> 选择一个已固定会话。",
+    "launchMode": {
+      "title": "浮动窗口尺寸",
+      "description": "从选择器选择卡片后，浮动终端窗口的打开方式。",
+      "floating": "悬浮窗",
+      "maximized": "最大化",
+      "fullscreen": "全屏"
+    }
   },
   "hotkeys": {
     "slotA": {

@@ -3,11 +3,46 @@ use std::sync::Mutex;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
+/// How the floating terminal window opens after a card is picked from the
+/// selector. Persisted as `overlay.float_launch_mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FloatLaunchMode {
+    /// Borderless 900×560 (or last-saved bounds) picture-in-picture window.
+    #[default]
+    Floating,
+    /// Fill the work area (keeps the OS window frame off — float is frameless).
+    Maximized,
+    /// True fullscreen (covers the taskbar).
+    Fullscreen,
+}
+
+impl FloatLaunchMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FloatLaunchMode::Floating => "floating",
+            FloatLaunchMode::Maximized => "maximized",
+            FloatLaunchMode::Fullscreen => "fullscreen",
+        }
+    }
+
+    pub fn from_value(s: &str) -> Option<Self> {
+        match s {
+            "floating" => Some(FloatLaunchMode::Floating),
+            "maximized" => Some(FloatLaunchMode::Maximized),
+            "fullscreen" => Some(FloatLaunchMode::Fullscreen),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlaySettings {
     pub hotkey_a: String,
     pub hotkey_b: String,
     pub float_bounds: Option<FloatBounds>,
+    #[serde(default)]
+    pub float_launch_mode: FloatLaunchMode,
 }
 
 impl Default for OverlaySettings {
@@ -16,6 +51,7 @@ impl Default for OverlaySettings {
             hotkey_a: "CmdOrCtrl+Shift+Space".to_string(),
             hotkey_b: "CmdOrCtrl+Shift+O".to_string(),
             float_bounds: None,
+            float_launch_mode: FloatLaunchMode::Floating,
         }
     }
 }
@@ -49,6 +85,11 @@ pub fn load_settings() -> OverlaySettings {
     if let Ok(Some(v)) = crate::db::get_setting("overlay.float_bounds") {
         if let Ok(bounds) = serde_json::from_str::<FloatBounds>(&v) {
             out.float_bounds = Some(bounds);
+        }
+    }
+    if let Ok(Some(v)) = crate::db::get_setting("overlay.float_launch_mode") {
+        if let Some(mode) = FloatLaunchMode::from_value(&v) {
+            out.float_launch_mode = mode;
         }
     }
     // Poison-tolerant: a panic in another short critical section must not
