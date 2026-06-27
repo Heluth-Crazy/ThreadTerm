@@ -3,9 +3,9 @@
     "documentType": "windows-webview-removal-assessment",
     "title": "Windows 去 WebView 可行性核查 + 方案",
     "generatedAt": "2026-06-27",
-    "lastUpdated": "2026-06-27(A0 实测回填)",
+    "lastUpdated": "2026-06-27(A1 已实施,待 Windows 核验)",
     "branch": "main",
-    "status": "assessment + plan(不实现、不提交);A0 已实测",
+    "status": "assessment + plan;A0 已实测;A1 已实施(commit 75aacdf)待核验",
     "designedBy": "Claude(核查 + 规划)",
     "sections": [
         {
@@ -117,6 +117,23 @@
                 "- A0 收尾 → **阶段 A 的第一刀(取消 selector/float/pet 常驻预热)预测可省 ~216 MB renderer + ~24 MB 共享进程 = ~240 MB**,与实测的 ~388 MB 中的可复现部分一致(差值来自热启动后渐涨)。",
                 "- Trade-off 明确:`prewarm` 注释自陈预热是为把首次热键延迟从『300–800 ms』压平到瞬时;关 prewarm 后需用既有的 `ensure_selector / ensure_float` 懒创建补回 UX。**下一非破坏性验证**:在 skip-prewarm 下测首次热键唤起的实际延迟,决定是否值得落地 A1。",
                 "- 不影响此前结论:阶段 A 仍是最该先做的一刀,**但收益预期要按 ~40% 而非 ~60% 设定**。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "六、A1 已实施(默认按需)+ 待 Windows 核验(commit 75aacdf)",
+            "body": [
+                "",
+                "**已落地**:selector/float/pet 的启动常驻预热改为**默认按需**——`OverlaySettings.overlay_prewarm` 默认 false,`prewarm_windows` 据此跳过,首次唤起由既有 `ensure_*` 懒创建;新增 `overlay_set_prewarm` 命令 + 设置面板『预热悬浮窗口』开关(开=瞬时热键 / 关[默认]=省内存);`THREADTERM_SKIP_OVERLAY_PREWARM` env 保留(优先级最高,强制 skip)。改动:Rust state/window/commands/mod/lib + overlayStore + 设置 UI + 四语言 i18n;cargo check / typecheck / 测试均过。",
+                "",
+                "**待 Windows 真机核验**:",
+                "1. **空闲内存**:默认(按需)启动后稳态内存是否 ≈ A0 场景 B 的 ~560 MB(对照 prewarm ~948 MB);在设置里**开『预热』**后是否回升到 ~948 MB 量级(确认开关双向生效)。",
+                "2. **首次热键延迟**:按需模式下首次按 hotkeyA(selector)/ 唤起 float 的创建延迟(ms)——即 prewarm 注释自陈要消除的 300–800 ms,实测是否可接受;第二次起应瞬时(已创建常驻)。",
+                "3. **功能回归**:按需模式下 selector / float / pet 唤起→显示→隐藏→再唤起 均正常;float 的位置/尺寸(float_bounds)与打开方式(floating/maximized/fullscreen)不受影响。",
+                "4. **设置开关**:面板『预热悬浮窗口』开 → 本会话立即预热(无需重启);关 → 下次启动按需(本会话已建的 webview 保留至退出);重启后 overlay.prewarm 持久化正确。",
+                "5. **env 优先级**:设 `THREADTERM_SKIP_OVERLAY_PREWARM=1` 时,即使设置开了预热也不预热(env 最高优先)。",
+                "",
+                "**回填后决策**:延迟可接受 → 默认按需保留,A1 收尾(预测稳态省 ~216 MB renderer + ~24 MB 共享 ≈ 240 MB);延迟碍事 → 文档提示『重度用户在设置开预热』,默认仍按需(多数不用 overlay 的用户永久省内存)。"
             ]
         }
     ]
