@@ -30,6 +30,44 @@ describe('buildCardPreview', () => {
     expect(preview.bodyLines).toEqual(['I updated the tests.', 'Run npm test next.']);
   });
 
+  it('drops braille/block ASCII-art rows (e.g. Claude robot mascot) but keeps the text', () => {
+    const preview = buildCardPreview(
+      card({
+        terminalType: 'claude',
+        lastReplyPreview: [
+          '⣿⣿⠿⠿⣿⣿  ⣰⣾⣷⣆',
+          '▛▀▀▜  ▐███▌',
+          'I refactored the ANSI parser.',
+          'Added unit tests for edge cases.',
+        ].join('\n'),
+      }),
+    );
+
+    // Braille / block art rows are decoration → filtered; no art glyph survives.
+    expect(preview.bodyLines.some((line) => /[⠀-⣿▀-▟]/u.test(line))).toBe(false);
+    expect(preview.bodyLines).toEqual([
+      'I refactored the ANSI parser.',
+      'Added unit tests for edge cases.',
+    ]);
+  });
+
+  it('filters AI CLI session banners so the latest reply surfaces', () => {
+    const preview = buildCardPreview(
+      card({
+        terminalType: 'claude',
+        lastReplyPreview: [
+          'claude --resume 0d85f24a-5ea5-4abc-b710-ac3fec86c5c0',
+          'Claude Code v2.1.173',
+          'Opus 4.8 with xhigh effort · Claude Pro',
+          'Opus 4.8 | ThreadTerm',
+          'Done. I refactored the parser and added tests.',
+        ].join('\n'),
+      }),
+    );
+
+    expect(preview.bodyLines).toEqual(['Done. I refactored the parser and added tests.']);
+  });
+
   it('collapses spinner redraw frames into stable content', () => {
     const preview = buildCardPreview(
       card({

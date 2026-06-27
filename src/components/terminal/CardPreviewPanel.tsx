@@ -87,18 +87,18 @@ export function CardPreviewPanel({ preview, activeFor, messageCount }: CardPrevi
         <div
           data-testid="card-preview-thumbnail"
           aria-hidden="true"
-          className="absolute inset-0 overflow-hidden px-2.5 py-2 font-mono text-[8px] leading-[1.1]"
+          className="absolute inset-0 overflow-hidden px-2.5 py-2 font-mono text-[11px] leading-snug"
         >
           <div
             className="pointer-events-none absolute inset-0 opacity-25"
             style={scanlineStyle}
           />
-          <div className="relative space-y-[3px]">
+          <div className="relative space-y-1">
             {preview.bodyLines.map((line, index) => (
               <div
                 key={`${line}-${index}`}
                 className={[
-                  'line-clamp-2 whitespace-pre-wrap break-words rounded-[var(--radius-sm)]',
+                  'line-clamp-2 whitespace-normal break-words rounded-[var(--radius-sm)]',
                   getLineTone(line),
                   isTechnicalPreviewLine(line)
                     ? 'bg-[color-mix(in_srgb,var(--terminal-foreground)_8%,transparent)] px-1'

@@ -33,7 +33,12 @@ const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
 const BORDER_ONLY_RE = /^[\s╭╮╰╯─│┌┐└┘├┤┬┴┼═║╔╗╚╝╟╢╠╣╦╩╬━┃┏┓┗┛┠┨┯┷┿╾╼╺╸╴╶]+$/;
 const EDGE_RE = /^[\s│┃║▌▐▏▕>]+|[\s│┃║▌▐▏▕]+$/g;
 const SPINNER_RE = /^[\s·•●○◦▪▫■□◆◇✦✧✶✷✸✹✺✻✼✽✾✿⠁-⣿⣀-⣿⡀-⣿⢀-⣿⠁-⣿]+/u;
-const DECORATION_HEAVY_RE = /[╭╮╰╯─│┌┐└┘├┤┬┴┼═║╔╗╚╝╟╢╠╣╦╩╬━┃┏┓┗┛]/gu;
+// Glyphs that make up TUI ASCII/Unicode art: Box Drawing (U+2500–257F),
+// Block Elements (U+2580–259F), Braille (U+2800–28FF) and Geometric Shapes
+// (U+25A0–25FF). A line where these dominate over real letters/digits is
+// decoration — Claude's braille/block robot mascot, progress bars, separators —
+// and gets dropped so the text preview doesn't show misaligned art fragments.
+const DECORATION_HEAVY_RE = /[─-╿▀-▟⠀-⣿■-◿]/gu;
 const WORD_RE = /[\p{L}\p{N}]/gu;
 
 // Hint-style chars used by TUI shortcut bars (e.g. "⏵ approve  ⏷ scroll  ? shortcuts").
@@ -66,6 +71,12 @@ const STATUS_PATTERNS: RegExp[] = [
   /^\s*(claude|codex|gemini)\s+(?:code\s+)?(?:gpt-|claude-|gemini-|sonnet|opus|haiku|o\d)/i,
   // Empty input cursor placeholders that survive edge stripping (e.g. "> _" → "_").
   /^_+$/,
+  // AI CLI session banner / status lines (resume echo, version banner,
+  // model-plan, model|project status bar) - noise for a "latest reply" preview,
+  // so the most recent assistant reply surfaces instead of the startup chrome.
+  /^[%$>#]?\s*(?:claude|codex|gemini)\s+(?:--?resume|resume)\b/i,
+  /^(?:claude code|codex(?:\s+cli)?|gemini(?:\s+cli)?)\s+v?\d+\.\d/i,
+  /^(?:opus|sonnet|haiku|gpt|o\d|gemini|claude)[\w.-]*\s+v?[\d.]+\s*(?:[|·]|with\s+\w+\s+effort\b)/i,
 ];
 
 const SHELL_PROMPT_RE = /^[^\s@]+@[^\s]+\s+.+?\s([%$#>])(?:\s+(.*))?$/;
