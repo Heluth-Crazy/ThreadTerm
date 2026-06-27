@@ -124,7 +124,28 @@ const threadtermDark = mode(
     input: '#64748b',
     ring: '#3b82f6',
   },
-  threadtermLight.terminal,
+  // Dark mode needs its OWN dark terminal palette. Reusing
+  // `threadtermLight.terminal` (background #fcfcfc) left the dark theme's
+  // terminal painted light, and made light/dark share one `tokens.terminal`
+  // reference so the xterm theme `useMemo` never recomputed on toggle.
+  terminal('#020817', '#f8fafc', '#3b82f6', '#020817', '#1e293b', '#f8fafc', [
+    '#000000',
+    '#cd3131',
+    '#0dbc79',
+    '#e5e510',
+    '#2472c8',
+    '#bc3fbc',
+    '#11a8cd',
+    '#e5e5e5',
+    '#666666',
+    '#f14c4c',
+    '#23d18b',
+    '#f5f543',
+    '#3b8eea',
+    '#d670d6',
+    '#29b8db',
+    '#ffffff',
+  ]),
 );
 
 const catppuccinLatte = mode(
