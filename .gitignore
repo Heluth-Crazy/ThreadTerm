@@ -165,4 +165,5 @@ docs/*
 !docs/branch-worktree-card-filter-design.json
 !docs/session-dock-keepalive-design.json
 !docs/card-token-live-display-design.json
+!docs/windows-webview-removal-assessment.json
 .gitnexus

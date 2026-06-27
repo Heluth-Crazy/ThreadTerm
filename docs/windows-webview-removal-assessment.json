@@ -1,0 +1,77 @@
+{
+    "formatVersion": 1,
+    "documentType": "windows-webview-removal-assessment",
+    "title": "Windows 去 WebView 可行性核查 + 方案",
+    "generatedAt": "2026-06-27",
+    "branch": "main",
+    "status": "assessment + plan(不实现、不提交)",
+    "designedBy": "Claude(核查 + 规划)",
+    "sections": [
+        {
+            "level": 1,
+            "heading": "诉求",
+            "body": [
+                "",
+                "ThreadTerm 是 Tauri 2(Rust + WebView2/React)。Windows 上 WebView2 运行时内存占用过高,不符『轻量』初衷。问:**完全去 webview、用原生 GUI、功能/UI 100% 保留**是否可行;可行则出方案(即使全重写)。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "一、核查(事实底座,已调研)",
+            "body": [
+                "",
+                "**前端规模**:42.5K 行 TS/TSX/JSX,105 组件。",
+                "",
+                "**5 个 webview 窗口(内存翻倍主因)**:main(index.html)/ selector / float / pet / settings;其中 **selector + float 常驻预热**(`overlay/window.rs prewarm_windows`)。每个 webview 各自加载 React/CSS/bundle。",
+                "",
+                "**Rust 后端 19K 行,~82% 与 UI 无关、可保留**:pty 2.5K / bridge 3.8K / stats 2.4K / codex 0.9K / supervisor 0.8K / git 0.6K / provider_sessions 0.5K / db 0.16K …;**仅 `overlay/`(~1.2K)强绑 webview 窗口生命周期、需重写**;`platform_material`(0.24K)需适配。",
+                "",
+                "**强 web 依赖(去 webview 最难复刻)**:",
+                "- **xterm.js ★★★★★** — DOM+Canvas+WebGL 终端渲染(`Shell.jsx`),15 年演化的 ANSI/CSI 解析 + GPU 文本渲染,**原生 GUI 无等价库**,是成败瓶颈。",
+                "- framer-motion 动画 ★★(~30+ 处);复杂 CSS 主题 ★★★(玻璃态/渐变/mesh/backdrop-filter + HSL 变量体系 ~1.6K 行);SVG 桌宠 + lucide 图标 ★★★。",
+                "",
+                "**IPC 面**:~61 端点(44 invoke + 17 listen);PTY/stats/git/shell/supervisor/codex 接口可直接保留,**overlay/pet 系列随窗口模型重写**。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "二、可行性结论(诚实)",
+            "body": [
+                "",
+                "**『完全去 webview + UI 100% 保留 + 全重写』= 理论可行,但代价极大,且『UI 100% 保留』这一硬约束基本不可达。**",
+                "- 需用 Rust 原生 GUI(候选 Slint / Freya(Dioxus+Skia)/ egui / Dioxus-blitz)重写 42.5K 行前端 + 重写 overlay 多窗口模型。",
+                "- **xterm.js 无原生等价** → 自研/移植终端渲染栈(可借 wezterm / alacritty 的 renderer crate),决定成败。",
+                "- framer-motion 动画、玻璃态/渐变/backdrop-filter 等 web 视觉,原生栈难 1:1 → **UI 必有可见差异**,与『100% 保留』直接冲突。",
+                "- 粗估数千工时(xterm 替代 2–3k h + overlay 0.5–0.8k h + CSS/动画 0.3–0.6k h),高风险。",
+                "- **判断:不推荐『全重写完全去 webview』作首选**——投产比低,且『UI 100% 保留』无法在原生栈严格满足。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "三、推荐路径(按性价比,先低风险验证内存收益)",
+            "body": [
+                "",
+                "**阶段 A — 高性价比 / 不动 UI 技术栈 / 几乎零 UI 风险(优先)**",
+                "- **A0 先量化**:Windows 任务管理器分别测 main 与 selector/float/pet 各 webview 内存,确认『多 webview 常驻』是否主因。",
+                "- **A1 裁剪 webview 窗口(最大收益)**:selector/float/pet 现各占一份常驻预热 webview。改为 ① 取消预热常驻、按需 create/destroy(改 `overlay/window.rs prewarm_windows` + show/hide commands);或 ② 把 selector/float 合并进**主 webview 的 overlay 层**(同窗口渲染,不再独立窗口)。直接砍掉 2–3 个常驻 webview,**UI/功能不变**。",
+                "- **A2 WebView2 调优**:共享 user-data-folder、复用 environment、关非必要特性。",
+                "- **A3 xterm 内存**:收紧 scrollback、复用 WebGL 上下文(已有 LRU=6)、空闲卡降级。",
+                "",
+                "**阶段 B — 中等风险(可选)**:Rust 原生终端渲染(wezterm/alacritty renderer)替代 xterm,UI 壳仍 webview。降 xterm 内存,但终端是核心、风险中。",
+                "",
+                "**阶段 C — 完全去 webview(仅当 A/B 不达标且业务接受 UI 有损)**:Rust GUI(Slint/Freya)全重写 UI + overlay + 终端渲染,保留后端 ~82%。明确接受 UI 差异。高风险高成本,最后选项;进入前先做 xterm 替代的可行性 spike。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "四、度量 / 备注",
+            "body": [
+                "",
+                "- 以 A0 内存基线为准,A 完成后对比(目标:消除常驻 overlay webview 的内存)。",
+                "- 内存问题仅 Windows(WebView2/Chromium);macOS(WKWebView)/Linux 不在此诉求 → **阶段 A 的窗口裁剪对全平台都有益、零 UI 风险,最值得先做**。",
+                "- 若进入 C,先做 xterm 替代的终端渲染 spike 再决策。",
+                "- 本文件为核查 + 规划;**不实现、不提交**(按用户要求)。"
+            ]
+        }
+    ]
+}
