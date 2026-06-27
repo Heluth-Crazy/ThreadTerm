@@ -121,7 +121,7 @@ Metrics:
 
 Artifacts:
 
-- `docs/windows-terminal-baseline-report.json`.
+- `docs/windows-terminal-baseline-report.md`.
 - Raw benchmark logs under `docs/artifacts/windows-terminal-baseline/`.
 - A short conclusion: "xterm optimization only", "native spike justified", or
   "repeat after instrumentation fixes".
@@ -499,5 +499,5 @@ Minimum next task:
 
 1. Add benchmark fixture commands/scripts for Windows output, TUI, Unicode, IME,
    and selection scenarios.
-2. Produce `docs/windows-terminal-baseline-report.json`.
+2. Produce `docs/windows-terminal-baseline-report.md`.
 3. Decide whether W1 is justified from measured pain, not assumptions.
