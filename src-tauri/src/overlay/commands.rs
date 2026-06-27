@@ -284,21 +284,6 @@ pub fn overlay_set_float_launch_mode(app: AppHandle, mode: String) -> Result<(),
 }
 
 #[tauri::command]
-pub fn overlay_set_prewarm(app: AppHandle, enabled: bool) -> Result<(), String> {
-    OVERLAY_SETTINGS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .overlay_prewarm = enabled;
-    let _ = crate::db::set_setting("overlay.prewarm", if enabled { "true" } else { "false" });
-    // Enabling warms the overlay webviews now (effective this session). Disabling
-    // only affects the next startup; already-created webviews persist until exit.
-    if enabled {
-        super::window::prewarm_windows(&app);
-    }
-    Ok(())
-}
-
-#[tauri::command]
 pub fn overlay_update_shortcut(
     app: AppHandle,
     label: String,

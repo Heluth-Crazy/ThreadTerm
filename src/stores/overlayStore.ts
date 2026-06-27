@@ -54,9 +54,6 @@ interface OverlayStoreInternal {
   /** How the float window opens (floating / maximized / fullscreen). Mirror of
    *  the Rust-persisted `overlay.float_launch_mode`. */
   floatLaunchMode: FloatLaunchMode;
-  /** Prewarm overlay webviews at startup (true) vs lazy on-demand (false,
-   *  default — lower idle memory). Mirror of Rust `overlay.prewarm`. */
-  overlayPrewarm: boolean;
 
   // Hotkeys
   hotkeyA: string;
@@ -79,7 +76,6 @@ interface OverlayStoreInternal {
 
   setFloatBounds: (bounds: FloatBounds | null) => void;
   setFloatLaunchMode: (mode: FloatLaunchMode) => void;
-  setOverlayPrewarm: (enabled: boolean) => void;
 
   setHotkeys: (a: string, b: string) => void;
   updateHotkey: (slot: 'A' | 'B', accelerator: string) => Promise<void>;
@@ -132,7 +128,6 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
       floatCardId: null,
       floatWindowBounds: null,
       floatLaunchMode: 'floating',
-      overlayPrewarm: false,
 
       hotkeyA: DEFAULT_HOTKEY_A,
       hotkeyB: DEFAULT_HOTKEY_B,
@@ -233,11 +228,6 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
         // Rust persists it (overlay.float_launch_mode) and reflows a visible
         // float window; the store is just a mirror for the settings UI.
         void tauriInvoke('overlay_set_float_launch_mode', { mode });
-      },
-
-      setOverlayPrewarm: (enabled) => {
-        set({ overlayPrewarm: enabled });
-        void tauriInvoke('overlay_set_prewarm', { enabled });
       },
 
       recycleToMain: () => {
