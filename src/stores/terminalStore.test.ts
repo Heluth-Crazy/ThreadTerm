@@ -3,6 +3,7 @@ import {
   DEFAULT_PET_CONFIG,
   MAX_CARD_NAME_LENGTH,
   MAX_PINNED_CARDS,
+  MAX_RECENTLY_VIEWED_CARDS,
   useTerminalStore,
 } from './terminalStore';
 import { MAX_BLOCKS_PER_CARD } from '../types/terminal';
@@ -17,6 +18,8 @@ function resetStore() {
     bookmarks: [],
     focusedCardId: null,
     lastActiveCardId: null,
+    recentlyViewedCardIds: [],
+    dockPinned: false,
     selectedProjectPath: null,
     selectedWorktreePath: null,
     selectedWorktreeLabel: null,
@@ -696,6 +699,110 @@ describe('terminalStore — focus & switching', () => {
     s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
     useTerminalStore.getState().jumpToIndex(5);
     expect(useTerminalStore.getState().focusedCardId).toBeNull();
+  });
+});
+
+describe('terminalStore — session dock metadata', () => {
+  it('tracks focused cards in most-recent-first order', () => {
+    const s = useTerminalStore.getState();
+    const a = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+    const b = s.createCard({ projectName: 'b', projectPath: '/b', terminalType: 'shell' });
+    const c = s.createCard({ projectName: 'c', projectPath: '/c', terminalType: 'shell' });
+
+    s.focusCard(a);
+    useTerminalStore.getState().focusCard(b);
+    useTerminalStore.getState().focusCard(c);
+    useTerminalStore.getState().focusCard(b);
+
+    expect(useTerminalStore.getState().recentlyViewedCardIds).toEqual([b, c, a]);
+  });
+
+  it('caps the recent session queue', () => {
+    const s = useTerminalStore.getState();
+    const ids = Array.from({ length: MAX_RECENTLY_VIEWED_CARDS + 3 }, (_, index) =>
+      s.createCard({
+        projectName: `p${index}`,
+        projectPath: `/p${index}`,
+        terminalType: 'shell',
+      }),
+    );
+
+    ids.forEach((id) => useTerminalStore.getState().focusCard(id));
+
+    expect(useTerminalStore.getState().recentlyViewedCardIds).toEqual(
+      ids.slice(-MAX_RECENTLY_VIEWED_CARDS).reverse(),
+    );
+  });
+
+  it('removes deleted and archived cards from the recent session queue', () => {
+    const s = useTerminalStore.getState();
+    const a = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+    const b = s.createCard({ projectName: 'b', projectPath: '/b', terminalType: 'shell' });
+    const c = s.createCard({ projectName: 'c', projectPath: '/c', terminalType: 'shell' });
+    [a, b, c].forEach((id) => useTerminalStore.getState().focusCard(id));
+
+    useTerminalStore.getState().removeCard(b);
+    expect(useTerminalStore.getState().recentlyViewedCardIds).toEqual([c, a]);
+
+    useTerminalStore.getState().archiveCard(c);
+    expect(useTerminalStore.getState().recentlyViewedCardIds).toEqual([a]);
+  });
+
+  it('toggles the dock pinned state', () => {
+    expect(useTerminalStore.getState().dockPinned).toBe(false);
+    useTerminalStore.getState().toggleDockPin();
+    expect(useTerminalStore.getState().dockPinned).toBe(true);
+    useTerminalStore.getState().toggleDockPin();
+    expect(useTerminalStore.getState().dockPinned).toBe(false);
+  });
+
+  it('v15 migration defaults session dock metadata and prunes stale recent ids', async () => {
+    const v15Snapshot = {
+      state: {
+        cards: [
+          {
+            id: 'live',
+            ptyId: 'live',
+            projectName: 'live',
+            projectPath: '/live',
+            terminalType: 'shell',
+            status: 'running',
+            createdAt: 1,
+            lastActivity: 2,
+            lastOutput: '',
+            lastReplyPreview: '',
+            messageCount: 0,
+            events: [],
+            unread: false,
+          },
+        ],
+        archivedCards: [],
+        blocks: {},
+        bookmarks: [],
+        focusedCardId: null,
+        lastActiveCardId: null,
+        selectedProjectPath: null,
+        selectedWorktreePath: null,
+        selectedWorktreeLabel: null,
+        projectCardOrder: {},
+        pinnedCardIds: [],
+        recentlyViewedCardIds: ['missing', 'live', 'live'],
+        notifications: [],
+        notificationCentreOpen: false,
+        aiExplainDefaultProvider: 'claude',
+        bottomBarHidden: false,
+        supervisorEnabled: false,
+        petConfig: DEFAULT_PET_CONFIG,
+      },
+      version: 15,
+    };
+    localStorage.setItem('threadterm-terminal-store', JSON.stringify(v15Snapshot));
+
+    await useTerminalStore.persist.rehydrate();
+
+    expect(useTerminalStore.getState().dockPinned).toBe(false);
+    expect(useTerminalStore.getState().recentlyViewedCardIds).toEqual(['live']);
+    localStorage.removeItem('threadterm-terminal-store');
   });
 });
 

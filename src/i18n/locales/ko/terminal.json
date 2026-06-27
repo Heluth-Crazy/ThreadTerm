@@ -62,6 +62,14 @@
     "empty": "“{{query}}”와 일치하는 카드가 없습니다.",
     "clear": "검색 지우기"
   },
+  "dock": {
+    "title": "최근 세션",
+    "shortcut": "Cmd/Ctrl+E",
+    "close": "세션 Dock 닫기",
+    "empty": "최근 세션 없음",
+    "current": "현재",
+    "hoverHandle": "최근 세션 보기"
+  },
   "stats": {
     "title": "토큰 사용량",
     "toggle": "토큰 사용량",

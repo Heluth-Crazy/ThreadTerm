@@ -165,6 +165,9 @@ function prepareAutoRestartForPersistence(card: TerminalCard): TerminalCard['aut
 /** Maximum number of user-pinned cards eligible for the global selector overlay. */
 export const MAX_PINNED_CARDS = 6;
 
+/** Maximum number of recently focused cards shown in the session dock. */
+export const MAX_RECENTLY_VIEWED_CARDS = 20;
+
 /** Maximum length of a user-assigned card display name (`projectName`). */
 export const MAX_CARD_NAME_LENGTH = 80;
 export { DEFAULT_PET_CONFIG } from '../lib/petConfig';
@@ -180,6 +183,10 @@ interface TerminalStore {
   blocks: Record<string, Block[]>;
   focusedCardId: string | null;
   lastActiveCardId: string | null;
+  /** Global MRU queue for the focus-mode session dock. */
+  recentlyViewedCardIds: string[];
+  /** Whether the focus-mode session dock is pinned open. */
+  dockPinned: boolean;
 
   /** Selected project path for the left sidebar filter. `null` = "All". */
   selectedProjectPath: string | null;
@@ -314,6 +321,7 @@ interface TerminalStore {
 
   // ─── focus / switching ───────────────────────────────────────────────────
   focusCard: (id: string | null) => void;
+  toggleDockPin: () => void;
   switchToLast: () => void;
   nextCard: () => void;
   prevCard: () => void;
@@ -427,6 +435,45 @@ function compactProjectCardOrder(
   return next;
 }
 
+function sameStringArray(a: readonly string[] | undefined, b: readonly string[]): boolean {
+  if (!a || a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
+}
+
+function compactRecentCardIds(
+  ids: readonly string[] | undefined,
+  cards: readonly TerminalCard[],
+): string[] {
+  if (!ids || ids.length === 0) return [];
+  const liveIds = new Set(cards.map((card) => card.id));
+  const seen = new Set<string>();
+  const next: string[] = [];
+
+  for (const id of ids) {
+    if (!liveIds.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    next.push(id);
+    if (next.length >= MAX_RECENTLY_VIEWED_CARDS) break;
+  }
+
+  return sameStringArray(ids, next) ? (ids as string[]) : next;
+}
+
+function recentCardIdsAfterFocus(
+  ids: readonly string[] | undefined,
+  id: string | null,
+  cards: readonly TerminalCard[],
+): string[] {
+  const compacted = compactRecentCardIds(ids, cards);
+  if (!id || !cards.some((card) => card.id === id)) return compacted;
+
+  const next = [id, ...compacted.filter((candidate) => candidate !== id)].slice(
+    0,
+    MAX_RECENTLY_VIEWED_CARDS,
+  );
+  return sameStringArray(ids, next) ? (ids as string[]) : next;
+}
+
 function archiveCardSnapshot(card: TerminalCard, archivedAt: number): ArchivedTerminalCard {
   return {
     ...card,
@@ -470,6 +517,8 @@ export const useTerminalStore = create<TerminalStore>()(
       bookmarks: [],
       focusedCardId: null,
       lastActiveCardId: null,
+      recentlyViewedCardIds: [],
+      dockPinned: false,
       selectedProjectPath: null,
       selectedWorktreePath: null,
       selectedWorktreeLabel: null,
@@ -694,6 +743,9 @@ export const useTerminalStore = create<TerminalStore>()(
           }
           // Also drop from the pinned list so it doesn't linger as a dead entry.
           const pinnedCardIds = state.pinnedCardIds.filter((p) => p !== id);
+          const recentlyViewedCardIds = state.recentlyViewedCardIds.filter(
+            (recentId) => recentId !== id,
+          );
           const projectCardOrder = compactProjectCardOrder(state.projectCardOrder, cards);
           const previousBlocks = (state.blocks ?? {})[id] ?? [];
           const blocks = { ...(state.blocks ?? {}) };
@@ -721,6 +773,7 @@ export const useTerminalStore = create<TerminalStore>()(
             selectedWorktreeLabel,
             projectCardOrder,
             pinnedCardIds,
+            recentlyViewedCardIds,
             blocks,
             collapsedBlockIds,
             selectedBlockId,
@@ -753,6 +806,9 @@ export const useTerminalStore = create<TerminalStore>()(
             state.pendingFocusCardId === id ? null : state.pendingFocusCardId;
           const notifications = state.notifications.filter((n) => n.cardId !== id);
           const pinnedCardIds = state.pinnedCardIds.filter((pinnedId) => pinnedId !== id);
+          const recentlyViewedCardIds = state.recentlyViewedCardIds.filter(
+            (recentId) => recentId !== id,
+          );
           const projectCardOrder = compactProjectCardOrder(state.projectCardOrder, cards);
 
           return {
@@ -763,6 +819,7 @@ export const useTerminalStore = create<TerminalStore>()(
             pendingFocusCardId,
             notifications,
             pinnedCardIds,
+            recentlyViewedCardIds,
             projectCardOrder,
           };
         });
@@ -1234,6 +1291,12 @@ export const useTerminalStore = create<TerminalStore>()(
         set((state) => {
           if (state.focusedCardId === id) {
             if (!id) return state;
+            const recentlyViewedCardIds = recentCardIdsAfterFocus(
+              state.recentlyViewedCardIds,
+              id,
+              state.cards,
+            );
+            const recentChanged = recentlyViewedCardIds !== state.recentlyViewedCardIds;
             let changed = false;
             const cards = state.cards.map((card) => {
               if (card.id !== id || !card.unread) return card;
@@ -1245,7 +1308,9 @@ export const useTerminalStore = create<TerminalStore>()(
               changed = true;
               return { ...notification, read: true };
             });
-            return changed ? { cards, notifications } : state;
+            return changed || recentChanged
+              ? { cards, notifications, recentlyViewedCardIds }
+              : state;
           }
           // when leaving a card, remember it as last-active for double-ctrl switching
           const lastActiveCardId =
@@ -1267,8 +1332,20 @@ export const useTerminalStore = create<TerminalStore>()(
               );
             }
           }
-          return { focusedCardId: id, lastActiveCardId, cards, notifications };
+          return {
+            focusedCardId: id,
+            lastActiveCardId,
+            cards,
+            notifications,
+            recentlyViewedCardIds: recentCardIdsAfterFocus(
+              state.recentlyViewedCardIds,
+              id,
+              state.cards,
+            ),
+          };
         }),
+
+      toggleDockPin: () => set((state) => ({ dockPinned: !state.dockPinned })),
 
       switchToLast: () => {
         const { lastActiveCardId, focusedCardId, cards } = get();
@@ -1523,6 +1600,8 @@ export const useTerminalStore = create<TerminalStore>()(
         bookmarks: state.bookmarks ?? [],
         focusedCardId: null,
         lastActiveCardId: state.lastActiveCardId,
+        recentlyViewedCardIds: compactRecentCardIds(state.recentlyViewedCardIds, state.cards),
+        dockPinned: state.dockPinned,
         selectedProjectPath: state.selectedProjectPath,
         selectedWorktreePath: state.selectedWorktreePath,
         selectedWorktreeLabel: state.selectedWorktreeLabel,
@@ -1537,7 +1616,7 @@ export const useTerminalStore = create<TerminalStore>()(
         // AI Supervisor v0.1 (PRD D3) — master switch persisted; default OFF.
         supervisorEnabled: state.supervisorEnabled,
       }),
-      version: 15,
+      version: 16,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         const cards = state.cards?.map((card) => ({
@@ -1568,6 +1647,12 @@ export const useTerminalStore = create<TerminalStore>()(
           bottomBarHidden: state.bottomBarHidden ?? false,
           // v9 — AI Supervisor master switch defaults to OFF on upgrade.
           supervisorEnabled: state.supervisorEnabled ?? false,
+          // v16 — focus-mode session dock metadata.
+          recentlyViewedCardIds: compactRecentCardIds(
+            state.recentlyViewedCardIds,
+            cards ?? [],
+          ),
+          dockPinned: state.dockPinned ?? false,
           // v12 — project-scoped manual card order. Empty means existing
           // cards are projected in their current store order until the user
           // creates or drags a card in a project view.
