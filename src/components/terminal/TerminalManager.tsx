@@ -25,7 +25,7 @@ import { BookmarksSidebar } from './BookmarksSidebar';
 import { ArchivedCardsPanel } from './ArchivedCardsPanel';
 import { SessionDock } from './SessionDock';
 import { StatsPanel } from '../stats/StatsPanel';
-import { useStatsSubscription } from '../../stores/statsStore';
+import { useStatsAutoRefresh, useStatsSubscription } from '../../stores/statsStore';
 import { CommandPalette } from '../palette/CommandPalette';
 import { buildCommandRegistry, type CommandGroup } from '../palette/commandRegistry';
 import { BlockSearchPanel } from '../search/BlockSearchPanel';
@@ -220,6 +220,7 @@ export function TerminalManager() {
   const [statsOpen, setStatsOpen] = useState(false);
   const [dockHovered, setDockHovered] = useState(false);
   useStatsSubscription();
+  useStatsAutoRefresh();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteInitialGroup, setPaletteInitialGroup] = useState<CommandGroup | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
