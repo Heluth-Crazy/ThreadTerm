@@ -164,4 +164,5 @@ docs/*
 !docs/sidebar-branch-tree-ui-design.json
 !docs/branch-worktree-card-filter-design.json
 !docs/session-dock-keepalive-design.json
+!docs/card-token-live-display-design.json
 .gitnexus
