@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { create } from 'zustand';
 import { tokenStats } from '../lib/tauri-bridge';
+import { useTerminalStore } from './terminalStore';
 import type {
   AgentStats,
   StatBucket,
@@ -10,8 +11,11 @@ import type {
   StatsRange,
   StatsScope,
 } from '../types/stats';
+import type { TerminalCard } from '../types/terminal';
 
 let requestCounter = 0;
+
+export const STATS_AUTO_REFRESH_INTERVAL_MS = 20_000;
 
 interface StatsState {
   snapshot: AgentStats | null;
@@ -24,14 +28,24 @@ interface StatsState {
   scanned: number;
   total: number;
   activeRequestId: number;
+  activeSilent: boolean;
   lastComputedAt: number | null;
 
   setScope: (scope: StatsScope) => void;
   setRange: (range: StatsRange) => void;
-  compute: () => void;
+  compute: (opts?: { silent?: boolean }) => void;
   handleProgress: (payload: StatsProgressEvent) => void;
   handleDone: (payload: StatsDoneEvent) => void;
   handleError: (payload: StatsErrorEvent) => void;
+}
+
+function isStatsBackedAiCard(
+  card: Pick<TerminalCard, 'providerSessionId' | 'terminalType'>,
+): boolean {
+  return (
+    (card.terminalType === 'claude' || card.terminalType === 'codex') &&
+    Boolean(card.providerSessionId)
+  );
 }
 
 export const useStatsStore = create<StatsState>((set, get) => ({
@@ -44,6 +58,7 @@ export const useStatsStore = create<StatsState>((set, get) => ({
   scanned: 0,
   total: 0,
   activeRequestId: 0,
+  activeSilent: false,
   lastComputedAt: null,
 
   setScope: (scope) => {
@@ -54,17 +69,34 @@ export const useStatsStore = create<StatsState>((set, get) => ({
     set({ range });
     get().compute();
   },
-  compute: () => {
+  compute: (opts) => {
     const requestId = (requestCounter += 1);
-    set({ loading: true, error: null, scanned: 0, total: 0, activeRequestId: requestId });
+    const silent = opts?.silent === true;
+    set(
+      silent
+        ? { activeRequestId: requestId, activeSilent: true }
+        : {
+            loading: true,
+            error: null,
+            scanned: 0,
+            total: 0,
+            activeRequestId: requestId,
+            activeSilent: false,
+          },
+    );
     void tokenStats.compute(get().scope, get().range, requestId).catch((err) => {
       if (get().activeRequestId === requestId) {
-        set({ loading: false, error: String(err) });
+        set((state) => ({
+          loading: false,
+          activeSilent: false,
+          error: state.activeSilent ? state.error : String(err),
+        }));
       }
     });
   },
   handleProgress: (payload) => {
     if (payload.requestId !== get().activeRequestId) return;
+    if (get().activeSilent) return;
     set({ scanned: payload.scanned, total: payload.total });
   },
   handleDone: (payload) => {
@@ -77,15 +109,24 @@ export const useStatsStore = create<StatsState>((set, get) => ({
       snapshot: payload.stats,
       bySession,
       loading: false,
+      activeSilent: false,
       error: null,
       lastComputedAt: Date.now(),
     });
   },
   handleError: (payload) => {
     if (payload.requestId !== get().activeRequestId) return;
-    set({ loading: false, error: payload.error });
+    set((state) => ({
+      loading: false,
+      activeSilent: false,
+      error: state.activeSilent ? state.error : payload.error,
+    }));
   },
 }));
+
+function hasStatsBackedAiCards(): boolean {
+  return useTerminalStore.getState().cards.some(isStatsBackedAiCard);
+}
 
 /**
  * Subscribe to the backend `stats://` event stream once (mount it high in the
@@ -116,6 +157,51 @@ export function useStatsSubscription(): void {
       stops.forEach((stop) => stop());
     };
   }, []);
+}
+
+/**
+ * Keeps per-card token badges warm without requiring the stats panel to open.
+ * Polling is limited to visible windows with bound Claude/Codex sessions.
+ */
+export function useStatsAutoRefresh(): void {
+  const hasAiCards = useTerminalStore((state) => state.cards.some(isStatsBackedAiCard));
+
+  useEffect(() => {
+    if (!hasAiCards || typeof document === 'undefined') return;
+
+    let intervalId: number | null = null;
+
+    const clearTimer = () => {
+      if (intervalId === null) return;
+      window.clearInterval(intervalId);
+      intervalId = null;
+    };
+
+    const computeSilent = () => {
+      if (!hasStatsBackedAiCards()) return;
+      useStatsStore.getState().compute({ silent: true });
+    };
+
+    const start = () => {
+      clearTimer();
+      if (document.visibilityState !== 'visible') return;
+      if (!hasStatsBackedAiCards()) return;
+      computeSilent();
+      intervalId = window.setInterval(computeSilent, STATS_AUTO_REFRESH_INTERVAL_MS);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') start();
+      else clearTimer();
+    };
+
+    start();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      clearTimer();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [hasAiCards]);
 }
 
 /** Convenience selector for a single session's bucket (per-card badge). */
