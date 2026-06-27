@@ -872,33 +872,44 @@ function SidebarRow({
           >
             {label}
           </span>
+          {/* Count badge stays last in the flex flow, so its right edge aligns
+              across every row regardless of how many aux actions a row has. */}
           <span
             className={[
-              'shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums',
+              'shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums transition-opacity',
+              auxActions.length > 0 ? 'group-hover:opacity-0' : '',
               selected ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground',
             ].join(' ')}
           >
             {count}
           </span>
-          {auxActions.map((action) => (
-            <span
-              key={action.key}
-              role="button"
-              tabIndex={0}
-              onClick={action.onClick}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  action.onClick(e as unknown as MouseEvent);
-                }
-              }}
-              title={action.title}
-              className="ml-0.5 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-primary group-hover:opacity-100"
-            >
-              {action.icon}
+          {/* Hover actions float over the row's right edge instead of occupying
+              flow width — otherwise their (invisible) boxes would push the count
+              badge left by a per-row-variable amount and misalign it. On hover
+              the badge fades out and these fade in, so they never overlap. */}
+          {auxActions.length > 0 && (
+            <span className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+              {auxActions.map((action) => (
+                <span
+                  key={action.key}
+                  role="button"
+                  tabIndex={0}
+                  onClick={action.onClick}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      action.onClick(e as unknown as MouseEvent);
+                    }
+                  }}
+                  title={action.title}
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-primary"
+                >
+                  {action.icon}
+                </span>
+              ))}
             </span>
-          ))}
+          )}
         </>
       )}
     </button>
