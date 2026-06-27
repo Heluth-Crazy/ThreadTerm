@@ -26,6 +26,7 @@ import type {
   TerminalCreateOptions,
   TerminalEvent,
   TerminalAiIntent,
+  CodexAppThreadBinding,
   ProviderSessionImportInfo,
   TerminalStatus,
 } from '../types/terminal';
@@ -50,6 +51,13 @@ import i18n from '../i18n/config.js';
 import { isTauriEnv, pty } from '../lib/tauri-bridge';
 import { emitSettingsChanged, type TerminalPreferenceSnapshot } from '../lib/settingsSync';
 import { orderCardsByIdList } from '../lib/cardSort';
+import {
+  cardMatchesWorktree,
+  effectiveWorktreePath,
+  isPendingWorktreePath,
+  pathBasename,
+  samePath,
+} from '../lib/worktreePaths';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -116,12 +124,6 @@ function isProviderSessionType(type: TerminalCard['terminalType']): boolean {
   return type === 'claude' || type === 'codex';
 }
 
-function pathBasename(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/, '');
-  const parts = trimmed.split(/[\\/]/);
-  return parts[parts.length - 1] || trimmed || 'Unknown project';
-}
-
 function providerSessionKey(provider: ProviderSessionImportInfo['provider'], id: string): string {
   return `${provider}\0${id}`;
 }
@@ -163,6 +165,9 @@ function prepareAutoRestartForPersistence(card: TerminalCard): TerminalCard['aut
 /** Maximum number of user-pinned cards eligible for the global selector overlay. */
 export const MAX_PINNED_CARDS = 6;
 
+/** Maximum number of recently focused cards shown in the session dock. */
+export const MAX_RECENTLY_VIEWED_CARDS = 20;
+
 /** Maximum length of a user-assigned card display name (`projectName`). */
 export const MAX_CARD_NAME_LENGTH = 80;
 export { DEFAULT_PET_CONFIG } from '../lib/petConfig';
@@ -178,9 +183,17 @@ interface TerminalStore {
   blocks: Record<string, Block[]>;
   focusedCardId: string | null;
   lastActiveCardId: string | null;
+  /** Global MRU queue for the focus-mode session dock. */
+  recentlyViewedCardIds: string[];
+  /** Whether the focus-mode session dock is pinned open. */
+  dockPinned: boolean;
 
   /** Selected project path for the left sidebar filter. `null` = "All". */
   selectedProjectPath: string | null;
+  /** Selected worktree path for the branch/worktree filter. `null` = project level. */
+  selectedWorktreePath: string | null;
+  /** Human-readable selected branch/worktree label for breadcrumbs and empty states. */
+  selectedWorktreeLabel: string | null;
 
   /**
    * User-defined card order scoped by exact `projectPath`.
@@ -248,6 +261,7 @@ interface TerminalStore {
   markUnread: (id: string, unread: boolean) => void;
   markCardRead: (id: string) => void;
   markProviderSessionBound: (id: string, providerSessionId: string) => void;
+  bindCodexAppThread: (id: string, binding: CodexAppThreadBinding) => void;
   updateCardAiIntent: (id: string, intent: TerminalAiIntent | null) => void;
   /**
    * Rename a card's display name. Trims, caps at MAX_CARD_NAME_LENGTH, and
@@ -307,6 +321,7 @@ interface TerminalStore {
 
   // ─── focus / switching ───────────────────────────────────────────────────
   focusCard: (id: string | null) => void;
+  toggleDockPin: () => void;
   switchToLast: () => void;
   nextCard: () => void;
   prevCard: () => void;
@@ -314,8 +329,12 @@ interface TerminalStore {
 
   // ─── project sidebar ────────────────────────────────────────────────────
   selectProject: (path: string | null) => void;
-  getCardsForProjectView: (path: string | null) => TerminalCard[];
-  getArchivedCardsForProject: (path: string) => ArchivedTerminalCard[];
+  selectWorktree: (projectPath: string, worktreePath: string, label?: string | null) => void;
+  getCardsForProjectView: (path: string | null, worktreePath?: string | null) => TerminalCard[];
+  getArchivedCardsForProject: (
+    path: string,
+    worktreePath?: string | null,
+  ) => ArchivedTerminalCard[];
 
   // ─── pinned cards (global overlay) ───────────────────────────────────────
   pinCard: (id: string) => boolean;
@@ -368,9 +387,12 @@ function cardsForProjectView(
   cards: readonly TerminalCard[],
   projectCardOrder: Record<string, string[]> | undefined,
   path: string | null,
+  worktreePath?: string | null,
 ): TerminalCard[] {
   if (!path) return [...cards];
-  const projectCards = cards.filter((card) => card.projectPath === path);
+  const projectCards = cards.filter(
+    (card) => card.projectPath === path && cardMatchesWorktree(card, worktreePath),
+  );
   return orderCardsByIdList(projectCards, projectCardOrder?.[path]);
 }
 
@@ -413,6 +435,45 @@ function compactProjectCardOrder(
   return next;
 }
 
+function sameStringArray(a: readonly string[] | undefined, b: readonly string[]): boolean {
+  if (!a || a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
+}
+
+function compactRecentCardIds(
+  ids: readonly string[] | undefined,
+  cards: readonly TerminalCard[],
+): string[] {
+  if (!ids || ids.length === 0) return [];
+  const liveIds = new Set(cards.map((card) => card.id));
+  const seen = new Set<string>();
+  const next: string[] = [];
+
+  for (const id of ids) {
+    if (!liveIds.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    next.push(id);
+    if (next.length >= MAX_RECENTLY_VIEWED_CARDS) break;
+  }
+
+  return sameStringArray(ids, next) ? (ids as string[]) : next;
+}
+
+function recentCardIdsAfterFocus(
+  ids: readonly string[] | undefined,
+  id: string | null,
+  cards: readonly TerminalCard[],
+): string[] {
+  const compacted = compactRecentCardIds(ids, cards);
+  if (!id || !cards.some((card) => card.id === id)) return compacted;
+
+  const next = [id, ...compacted.filter((candidate) => candidate !== id)].slice(
+    0,
+    MAX_RECENTLY_VIEWED_CARDS,
+  );
+  return sameStringArray(ids, next) ? (ids as string[]) : next;
+}
+
 function archiveCardSnapshot(card: TerminalCard, archivedAt: number): ArchivedTerminalCard {
   return {
     ...card,
@@ -438,9 +499,10 @@ function restoreArchivedCardSnapshot(card: ArchivedTerminalCard, now: number): T
 function archivedCardsForProject(
   archivedCards: readonly ArchivedTerminalCard[] | undefined,
   path: string,
+  worktreePath?: string | null,
 ): ArchivedTerminalCard[] {
   return (archivedCards ?? [])
-    .filter((card) => card.projectPath === path)
+    .filter((card) => card.projectPath === path && cardMatchesWorktree(card, worktreePath))
     .sort((a, b) => b.archivedAt - a.archivedAt);
 }
 
@@ -455,7 +517,11 @@ export const useTerminalStore = create<TerminalStore>()(
       bookmarks: [],
       focusedCardId: null,
       lastActiveCardId: null,
+      recentlyViewedCardIds: [],
+      dockPinned: false,
       selectedProjectPath: null,
+      selectedWorktreePath: null,
+      selectedWorktreeLabel: null,
       projectCardOrder: {},
 
       pinnedCardIds: [],
@@ -513,6 +579,7 @@ export const useTerminalStore = create<TerminalStore>()(
           projectPath: options.projectPath,
           projectName: options.projectName,
           worktreePath: options.worktreePath,
+          branchLabel: options.branchLabel,
           terminalType: options.terminalType,
           command: options.command,
           providerSessionId: options.terminalType === 'claude' ? uuid() : undefined,
@@ -650,15 +717,35 @@ export const useTerminalStore = create<TerminalStore>()(
           // if the removed card was the last one for its project and the project
           // was selected, fall back to "All"
           let selectedProjectPath = state.selectedProjectPath;
+          let selectedWorktreePath = state.selectedWorktreePath;
+          let selectedWorktreeLabel = state.selectedWorktreeLabel;
           if (
             target &&
             selectedProjectPath === target.projectPath &&
             !cards.some((c) => c.projectPath === target.projectPath)
           ) {
             selectedProjectPath = null;
+            selectedWorktreePath = null;
+            selectedWorktreeLabel = null;
+          } else if (
+            target &&
+            selectedWorktreePath &&
+            !isPendingWorktreePath(selectedWorktreePath) &&
+            samePath(effectiveWorktreePath(target), selectedWorktreePath) &&
+            !cards.some(
+              (c) =>
+                c.projectPath === target.projectPath &&
+                samePath(effectiveWorktreePath(c), selectedWorktreePath),
+            )
+          ) {
+            selectedWorktreePath = null;
+            selectedWorktreeLabel = null;
           }
           // Also drop from the pinned list so it doesn't linger as a dead entry.
           const pinnedCardIds = state.pinnedCardIds.filter((p) => p !== id);
+          const recentlyViewedCardIds = state.recentlyViewedCardIds.filter(
+            (recentId) => recentId !== id,
+          );
           const projectCardOrder = compactProjectCardOrder(state.projectCardOrder, cards);
           const previousBlocks = (state.blocks ?? {})[id] ?? [];
           const blocks = { ...(state.blocks ?? {}) };
@@ -682,8 +769,11 @@ export const useTerminalStore = create<TerminalStore>()(
             lastActiveCardId,
             notifications,
             selectedProjectPath,
+            selectedWorktreePath,
+            selectedWorktreeLabel,
             projectCardOrder,
             pinnedCardIds,
+            recentlyViewedCardIds,
             blocks,
             collapsedBlockIds,
             selectedBlockId,
@@ -716,6 +806,9 @@ export const useTerminalStore = create<TerminalStore>()(
             state.pendingFocusCardId === id ? null : state.pendingFocusCardId;
           const notifications = state.notifications.filter((n) => n.cardId !== id);
           const pinnedCardIds = state.pinnedCardIds.filter((pinnedId) => pinnedId !== id);
+          const recentlyViewedCardIds = state.recentlyViewedCardIds.filter(
+            (recentId) => recentId !== id,
+          );
           const projectCardOrder = compactProjectCardOrder(state.projectCardOrder, cards);
 
           return {
@@ -726,6 +819,7 @@ export const useTerminalStore = create<TerminalStore>()(
             pendingFocusCardId,
             notifications,
             pinnedCardIds,
+            recentlyViewedCardIds,
             projectCardOrder,
           };
         });
@@ -746,6 +840,12 @@ export const useTerminalStore = create<TerminalStore>()(
             cards,
             archivedCards,
             selectedProjectPath: restoredCard.projectPath,
+            selectedWorktreePath: state.selectedWorktreePath
+              ? effectiveWorktreePath(restoredCard)
+              : null,
+            selectedWorktreeLabel: state.selectedWorktreePath
+              ? (restoredCard.branchLabel ?? state.selectedWorktreeLabel)
+              : null,
             projectCardOrder: prependProjectCardOrder(
               state.projectCardOrder,
               restoredCard.projectPath,
@@ -981,6 +1081,24 @@ export const useTerminalStore = create<TerminalStore>()(
           return { cards };
         }),
 
+      bindCodexAppThread: (id, binding) =>
+        set((state) => {
+          const threadId = binding.threadId.trim();
+          if (!threadId) return state;
+          const idx = state.cards.findIndex((c) => c.id === id);
+          if (idx === -1) return state;
+          const cards = [...state.cards];
+          const existing = cards[idx];
+          cards[idx] = {
+            ...existing,
+            codexAppThreadId: threadId,
+            codexAppSessionId: binding.sessionId?.trim() || undefined,
+            codexAppThreadPath: binding.threadPath?.trim() || undefined,
+            codexAppBoundAt: binding.boundAt ?? Date.now(),
+          };
+          return { cards };
+        }),
+
       updateCardAiIntent: (id, intent) =>
         set((state) => {
           const idx = state.cards.findIndex((c) => c.id === id);
@@ -1173,6 +1291,12 @@ export const useTerminalStore = create<TerminalStore>()(
         set((state) => {
           if (state.focusedCardId === id) {
             if (!id) return state;
+            const recentlyViewedCardIds = recentCardIdsAfterFocus(
+              state.recentlyViewedCardIds,
+              id,
+              state.cards,
+            );
+            const recentChanged = recentlyViewedCardIds !== state.recentlyViewedCardIds;
             let changed = false;
             const cards = state.cards.map((card) => {
               if (card.id !== id || !card.unread) return card;
@@ -1184,7 +1308,9 @@ export const useTerminalStore = create<TerminalStore>()(
               changed = true;
               return { ...notification, read: true };
             });
-            return changed ? { cards, notifications } : state;
+            return changed || recentChanged
+              ? { cards, notifications, recentlyViewedCardIds }
+              : state;
           }
           // when leaving a card, remember it as last-active for double-ctrl switching
           const lastActiveCardId =
@@ -1206,8 +1332,20 @@ export const useTerminalStore = create<TerminalStore>()(
               );
             }
           }
-          return { focusedCardId: id, lastActiveCardId, cards, notifications };
+          return {
+            focusedCardId: id,
+            lastActiveCardId,
+            cards,
+            notifications,
+            recentlyViewedCardIds: recentCardIdsAfterFocus(
+              state.recentlyViewedCardIds,
+              id,
+              state.cards,
+            ),
+          };
         }),
+
+      toggleDockPin: () => set((state) => ({ dockPinned: !state.dockPinned })),
 
       switchToLast: () => {
         const { lastActiveCardId, focusedCardId, cards } = get();
@@ -1223,6 +1361,7 @@ export const useTerminalStore = create<TerminalStore>()(
           state.cards,
           state.projectCardOrder,
           state.selectedProjectPath,
+          state.selectedWorktreePath,
         );
         if (cards.length === 0) return;
         const i = focusedCardId ? cards.findIndex((c) => c.id === focusedCardId) : -1;
@@ -1237,6 +1376,7 @@ export const useTerminalStore = create<TerminalStore>()(
           state.cards,
           state.projectCardOrder,
           state.selectedProjectPath,
+          state.selectedWorktreePath,
         );
         if (cards.length === 0) return;
         const i = focusedCardId ? cards.findIndex((c) => c.id === focusedCardId) : 0;
@@ -1250,6 +1390,7 @@ export const useTerminalStore = create<TerminalStore>()(
           state.cards,
           state.projectCardOrder,
           state.selectedProjectPath,
+          state.selectedWorktreePath,
         );
         if (i < 0 || i >= cards.length) return;
         get().focusCard(cards[i].id);
@@ -1258,22 +1399,48 @@ export const useTerminalStore = create<TerminalStore>()(
       // ─── project sidebar ─────────────────────────────────────────────────
       selectProject: (path) =>
         set((state) => {
-          if (state.selectedProjectPath === path) return state;
+          if (
+            state.selectedProjectPath === path &&
+            state.selectedWorktreePath === null &&
+            state.selectedWorktreeLabel === null
+          ) {
+            return state;
+          }
           // When switching projects, exit focus mode so the user sees the
           // filtered grid of the newly-selected project.
           return {
             selectedProjectPath: path,
+            selectedWorktreePath: null,
+            selectedWorktreeLabel: null,
             focusedCardId: null,
           };
         }),
 
-      getCardsForProjectView: (path) => {
+      selectWorktree: (projectPath, worktreePath, label) =>
+        set((state) => {
+          const selectedWorktreeLabel = label?.trim() || pathBasename(worktreePath);
+          if (
+            state.selectedProjectPath === projectPath &&
+            state.selectedWorktreePath === worktreePath &&
+            state.selectedWorktreeLabel === selectedWorktreeLabel
+          ) {
+            return state;
+          }
+          return {
+            selectedProjectPath: projectPath,
+            selectedWorktreePath: worktreePath,
+            selectedWorktreeLabel,
+            focusedCardId: null,
+          };
+        }),
+
+      getCardsForProjectView: (path, worktreePath) => {
         const state = get();
-        return cardsForProjectView(state.cards, state.projectCardOrder, path);
+        return cardsForProjectView(state.cards, state.projectCardOrder, path, worktreePath);
       },
 
-      getArchivedCardsForProject: (path) =>
-        archivedCardsForProject(get().archivedCards, path),
+      getArchivedCardsForProject: (path, worktreePath) =>
+        archivedCardsForProject(get().archivedCards, path, worktreePath),
 
       // ─── pinned cards (global overlay) ───────────────────────────────────
       pinCard: (id) => {
@@ -1433,7 +1600,11 @@ export const useTerminalStore = create<TerminalStore>()(
         bookmarks: state.bookmarks ?? [],
         focusedCardId: null,
         lastActiveCardId: state.lastActiveCardId,
+        recentlyViewedCardIds: compactRecentCardIds(state.recentlyViewedCardIds, state.cards),
+        dockPinned: state.dockPinned,
         selectedProjectPath: state.selectedProjectPath,
+        selectedWorktreePath: state.selectedWorktreePath,
+        selectedWorktreeLabel: state.selectedWorktreeLabel,
         projectCardOrder: compactProjectCardOrder(state.projectCardOrder, state.cards),
         pinnedCardIds: state.pinnedCardIds,
         notifications: state.notifications,
@@ -1445,7 +1616,7 @@ export const useTerminalStore = create<TerminalStore>()(
         // AI Supervisor v0.1 (PRD D3) — master switch persisted; default OFF.
         supervisorEnabled: state.supervisorEnabled,
       }),
-      version: 13,
+      version: 16,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         const cards = state.cards?.map((card) => ({
@@ -1476,10 +1647,19 @@ export const useTerminalStore = create<TerminalStore>()(
           bottomBarHidden: state.bottomBarHidden ?? false,
           // v9 — AI Supervisor master switch defaults to OFF on upgrade.
           supervisorEnabled: state.supervisorEnabled ?? false,
+          // v16 — focus-mode session dock metadata.
+          recentlyViewedCardIds: compactRecentCardIds(
+            state.recentlyViewedCardIds,
+            cards ?? [],
+          ),
+          dockPinned: state.dockPinned ?? false,
           // v12 — project-scoped manual card order. Empty means existing
           // cards are projected in their current store order until the user
           // creates or drags a card in a project view.
           projectCardOrder: compactProjectCardOrder(state.projectCardOrder, cards ?? []),
+          // v15 — branch/worktree card filtering state.
+          selectedWorktreePath: state.selectedWorktreePath ?? null,
+          selectedWorktreeLabel: state.selectedWorktreeLabel ?? null,
           // v13 — archived cards live outside the active card list so existing
           // views and bridge snapshots keep showing only active cards.
           archivedCards,

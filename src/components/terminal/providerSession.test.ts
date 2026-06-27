@@ -100,6 +100,9 @@ describe('providerSession launch command builder', () => {
     expect(buildTerminalLaunchCommand(card({ terminalType: 'python' }), 'python3')).toEqual({
       command: 'python3',
     });
+    expect(buildTerminalLaunchCommand(card({ terminalType: 'opencode' }), 'opencode')).toEqual({
+      command: 'opencode',
+    });
     expect(buildTerminalLaunchCommand(card({ terminalType: 'shell' }), '')).toEqual({});
   });
 });
@@ -140,6 +143,12 @@ describe('providerSession AI CLI state badge', () => {
     expect(result?.values?.cli).toBe('Gemini');
   });
 
+  it('describes OpenCode as CLI-only until native resume support exists', () => {
+    const result = getAiCliSessionBadge(card({ terminalType: 'opencode' }));
+    expect(result?.labelKey).toBe('aiSession.cliOnly');
+    expect(result?.values?.cli).toBe('OpenCode');
+  });
+
   it('detects missing AI CLI output', () => {
     const missing = card({
       terminalType: 'codex',
@@ -150,5 +159,11 @@ describe('providerSession AI CLI state badge', () => {
     const result = getAiCliSessionBadge(missing);
     expect(result?.labelKey).toBe('aiSession.missingCli');
     expect(result?.tone).toBe('danger');
+
+    const missingOpenCode = card({
+      terminalType: 'opencode',
+      lastOutput: 'opencode: command not found\n',
+    });
+    expect(getMissingAiCliName(missingOpenCode)).toBe('OpenCode');
   });
 });

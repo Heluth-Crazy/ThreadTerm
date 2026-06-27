@@ -1,13 +1,24 @@
 //! Aggregator: feed parsed sessions, get an `AgentStats` snapshot.
 //!
-//! Two correctness rules carried over from cc-sessions-viewer:
+//! Two paths produce snapshots:
+//!   1. `Aggregator` + `feed_session` — in-memory, used for one-off scans
+//!      without the DB (and by tests).
+//!   2. `aggregate_from_db` — reads persisted `usage_records` rows filtered by
+//!      the time window. This is the production path after `sync::sync_all`
+//!      has ingested new session-log lines.
+//!
+//! Correctness rules carried over from cc-sessions-viewer:
 //!   1. Dedup Claude calls by `message.id` — fork / sub-agent jsonl copy the
-//!      same assistant message, which would otherwise double-count.
+//!      same assistant message, which would otherwise double-count. Dedup now
+//!      happens in the parser (best row kept), but the in-memory aggregator
+//!      keeps a `HashSet` as a belt-and-suspenders guard.
 //!   2. Per-call time-window filter — a session "touched today" (recent mtime)
 //!      may contain weeks-old calls; filtering per call (not per session mtime)
 //!      keeps "Today" totals honest.
 
 use std::collections::{HashMap, HashSet};
+
+use rusqlite::params;
 
 use crate::stats::pricing;
 use crate::stats::types::{AgentStats, CallRecord, StatBucket, UsageSummary};
@@ -101,10 +112,11 @@ impl Aggregator {
                 .entry(project_path.to_string())
                 .or_default()
                 .add(&call.usage, cost);
-            self.by_session
-                .entry(session_id.to_string())
-                .or_default()
-                .add(&call.usage, cost);
+            let sid = call
+                .session_id
+                .clone()
+                .unwrap_or_else(|| session_id.to_string());
+            self.by_session.entry(sid).or_default().add(&call.usage, cost);
             had_call = true;
         }
         if had_call {
@@ -124,6 +136,105 @@ impl Aggregator {
             by_session: to_buckets(&self.by_session),
         }
     }
+}
+
+/// Aggregate `usage_records` rows within `[lo_ms, hi_ms]` (epoch ms) into an
+/// `AgentStats` snapshot. `lo_ms = None` means no lower bound ("all time").
+/// `scope` is `"all"`, `"claude"`, `"codex"`, or `"opencode"` — filters by provider.
+///
+/// Rows are read in a single pass and bucketed in memory — the table is
+/// indexed on `created_at` so the range scan is cheap.
+pub fn aggregate_from_db(
+    conn: &rusqlite::Connection,
+    scope: &str,
+    lo_ms: Option<u64>,
+    hi_ms: Option<u64>,
+) -> rusqlite::Result<AgentStats> {
+    let lo = lo_ms.map(|ms| (ms / 1000) as i64).unwrap_or(0);
+    let hi = hi_ms.map(|ms| (ms / 1000) as i64).unwrap_or(i64::MAX);
+
+    let mut total = Bucket::default();
+    let mut session_count: u64 = 0;
+    let mut by_model: HashMap<String, Bucket> = HashMap::new();
+    let mut by_project: HashMap<String, Bucket> = HashMap::new();
+    let mut by_session: HashMap<String, Bucket> = HashMap::new();
+
+    // Build the WHERE clause: time window + optional provider scope. Params
+    // are bound positionally; provider filter is optional so "all" doesn't
+    // need a placeholder.
+    let (sql, use_scope_filter) = match scope {
+        "claude" | "codex" | "opencode" => (
+            "SELECT provider, model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    total_cost_usd, session_id, project_path
+             FROM usage_records
+             WHERE created_at >= ?1 AND created_at <= ?2 AND provider = ?3",
+            true,
+        ),
+        _ => (
+            "SELECT provider, model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    total_cost_usd, session_id, project_path
+             FROM usage_records
+             WHERE created_at >= ?1 AND created_at <= ?2",
+            false,
+        ),
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let mut rows = if use_scope_filter {
+        stmt.query(params![lo, hi, scope])?
+    } else {
+        stmt.query(params![lo, hi])?
+    };
+
+    let mut seen_sessions: HashSet<String> = HashSet::new();
+    while let Some(row) = rows.next()? {
+        let model: String = row.get(1)?;
+        let input: i64 = row.get(2)?;
+        let output: i64 = row.get(3)?;
+        let cache_read: i64 = row.get(4)?;
+        let cache_creation: i64 = row.get(5)?;
+        let cost: f64 = row.get(6)?;
+        let session_id: Option<String> = row.get(7)?;
+        let project_path: String = row.get::<_, Option<String>>(8)?.unwrap_or_default();
+
+        let usage = UsageSummary {
+            input: input as u64,
+            output: output as u64,
+            cache_read: cache_read as u64,
+            cache_creation: cache_creation as u64,
+        };
+        total.add(&usage, cost);
+
+        let model_key = if model.is_empty() {
+            "unknown".to_string()
+        } else {
+            model.clone()
+        };
+        by_model.entry(model_key).or_default().add(&usage, cost);
+        by_project
+            .entry(project_path)
+            .or_default()
+            .add(&usage, cost);
+        if let Some(sid) = &session_id {
+            if seen_sessions.insert(sid.clone()) {
+                session_count += 1;
+            }
+            by_session.entry(sid.clone()).or_default().add(&usage, cost);
+        }
+    }
+
+    Ok(AgentStats {
+        total_tokens: total.usage.total(),
+        total_cost_usd: total.cost,
+        total_calls: total.calls,
+        session_count,
+        usage: total.usage,
+        by_model: to_buckets(&by_model),
+        by_project: to_buckets(&by_project),
+        by_session: to_buckets(&by_session),
+    })
 }
 
 fn to_buckets(map: &HashMap<String, Bucket>) -> Vec<StatBucket> {
@@ -162,6 +273,8 @@ mod tests {
                 cache_read: 0,
             },
             timestamp_ms: ts,
+            stop_reason: None,
+            session_id: None,
         }
     }
 
@@ -201,5 +314,128 @@ mod tests {
         assert_eq!(snap.by_model.len(), 2);
         assert_eq!(snap.by_session.len(), 1);
         assert_eq!(snap.total_tokens, 45);
+    }
+
+    // ── aggregate_from_db ──
+
+    fn mem_conn_with_rows() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE usage_records (
+                request_id TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                input_cost_usd REAL NOT NULL DEFAULT 0,
+                output_cost_usd REAL NOT NULL DEFAULT 0,
+                cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+                cache_creation_cost_usd REAL NOT NULL DEFAULT 0,
+                total_cost_usd REAL NOT NULL DEFAULT 0,
+                session_id TEXT, project_path TEXT,
+                created_at INTEGER NOT NULL, data_source TEXT NOT NULL DEFAULT 'session_log');",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_row(
+        conn: &rusqlite::Connection,
+        rid: &str,
+        model: &str,
+        input: i64,
+        output: i64,
+        cost: f64,
+        session_id: Option<&str>,
+        project: &str,
+        created_at: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO usage_records
+                (request_id, provider, model, input_tokens, output_tokens,
+                 cache_read_tokens, cache_creation_tokens, total_cost_usd,
+                 session_id, project_path, created_at)
+             VALUES (?1,'claude',?2,?3,?4,0,0,?5,?6,?7,?8)",
+            params![rid, model, input, output, cost, session_id, project, created_at],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn aggregate_from_db_sums_all_rows_when_no_lower_bound() {
+        let conn = mem_conn_with_rows();
+        insert_row(&conn, "r1", "claude-opus-4-8", 100, 10, 1.5, Some("s1"), "/a", 1000);
+        insert_row(&conn, "r2", "claude-sonnet-4-5", 200, 20, 0.6, Some("s1"), "/a", 2000);
+        insert_row(&conn, "r3", "gpt-5-codex", 300, 30, 0.3, Some("s2"), "/b", 3000);
+
+        let snap = aggregate_from_db(&conn, "all", None, None).unwrap();
+        assert_eq!(snap.total_calls, 3);
+        assert_eq!(snap.usage.input, 600);
+        assert_eq!(snap.session_count, 2, "two distinct session_ids");
+        assert_eq!(snap.by_model.len(), 3);
+        assert_eq!(snap.by_project.len(), 2);
+    }
+
+    #[test]
+    fn aggregate_from_db_filters_by_time_window() {
+        let conn = mem_conn_with_rows();
+        insert_row(&conn, "r1", "claude-opus-4-8", 100, 10, 1.5, Some("s1"), "/a", 1000);
+        insert_row(&conn, "r2", "claude-opus-4-8", 200, 20, 3.0, Some("s2"), "/b", 5000);
+        // `created_at` is epoch SECONDS; the window args are epoch ms (the fn
+        // divides by 1000). 2_000_000ms→2000s .. 6_000_000ms→6000s brackets r2
+        // (created_at 5000s) and excludes r1 (1000s).
+        let snap = aggregate_from_db(&conn, "all", Some(2_000_000), Some(6_000_000)).unwrap();
+        assert_eq!(snap.total_calls, 1);
+        assert_eq!(snap.usage.input, 200);
+    }
+
+    #[test]
+    fn aggregate_from_db_filters_by_scope() {
+        let conn = mem_conn_with_rows();
+        insert_row(&conn, "r1", "claude-opus-4-8", 100, 10, 1.5, Some("s1"), "/a", 1000);
+        // r2 is tagged provider='codex' manually for this test.
+        conn.execute(
+            "INSERT INTO usage_records
+                (request_id, provider, model, input_tokens, output_tokens,
+                 cache_read_tokens, cache_creation_tokens, total_cost_usd,
+                 session_id, project_path, created_at)
+             VALUES ('r2','codex','gpt-5-codex',400,40,0,0,0.4,'s2','/b',1000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO usage_records
+                (request_id, provider, model, input_tokens, output_tokens,
+                 cache_read_tokens, cache_creation_tokens, total_cost_usd,
+                 session_id, project_path, created_at)
+             VALUES ('r3','opencode','deepseek-v4-pro',700,70,0,0,0.7,'s3','',1000)",
+            [],
+        )
+        .unwrap();
+
+        let claude_only = aggregate_from_db(&conn, "claude", None, None).unwrap();
+        assert_eq!(claude_only.total_calls, 1);
+        assert_eq!(claude_only.usage.input, 100);
+
+        let codex_only = aggregate_from_db(&conn, "codex", None, None).unwrap();
+        assert_eq!(codex_only.total_calls, 1);
+        assert_eq!(codex_only.usage.input, 400);
+
+        let opencode_only = aggregate_from_db(&conn, "opencode", None, None).unwrap();
+        assert_eq!(opencode_only.total_calls, 1);
+        assert_eq!(opencode_only.usage.input, 700);
+
+        let all = aggregate_from_db(&conn, "all", None, None).unwrap();
+        assert_eq!(all.total_calls, 3);
+    }
+
+    #[test]
+    fn aggregate_from_db_buckets_sorted_by_cost_desc() {
+        let conn = mem_conn_with_rows();
+        insert_row(&conn, "r1", "cheap", 100, 0, 0.1, Some("s1"), "/a", 1000);
+        insert_row(&conn, "r2", "pricey", 100, 0, 5.0, Some("s2"), "/b", 1000);
+        let snap = aggregate_from_db(&conn, "all", None, None).unwrap();
+        assert_eq!(snap.by_model[0].key, "pricey");
+        assert_eq!(snap.by_model[1].key, "cheap");
     }
 }

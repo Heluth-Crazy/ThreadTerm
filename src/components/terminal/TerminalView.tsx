@@ -16,7 +16,16 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Block } from '../../types/terminal';
-import { Archive, ArrowLeft, Layers, MoreVertical, Trash2, X } from 'lucide-react';
+import {
+  Archive,
+  ArrowLeft,
+  Layers,
+  MessageSquare,
+  MoreVertical,
+  TerminalSquare,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import Shell from '../Shell';
 import type { TerminalCard } from '../../types/terminal';
@@ -43,6 +52,7 @@ import { AutoRestartStatus } from './AutoRestartStatus';
 import { normalizeAutoRestartConfig } from '../../lib/autoRestart';
 import { useSupervisorStore } from '../../lib/supervisor/supervisorStore';
 import type { SettingsTab } from '../../lib/settingsWindow';
+import { CodexChatView } from '../codex/CodexChatView';
 
 interface TerminalViewProps {
   card: TerminalCard;
@@ -88,6 +98,9 @@ export function TerminalView({
   const setCardAutoRestartMaxRetries = useTerminalStore((s) => s.setCardAutoRestartMaxRetries);
 
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [codexViewMode, setCodexViewMode] = useState<'chat' | 'terminal'>(
+    card.terminalType === 'codex' ? 'chat' : 'terminal',
+  );
 
   // Note: no PTY guard is needed even when the float window also hosts
   // this card. Both windows share the same pty id and the
@@ -100,6 +113,8 @@ export function TerminalView({
   const TypeIcon = typeMeta.Icon;
   const autoRestart = normalizeAutoRestartConfig(card.autoRestart);
   const paneId = card.ptyId || card.id;
+  const isCodexCard = card.terminalType === 'codex';
+  const showCodexChat = isCodexCard && codexViewMode === 'chat';
   const aiSessionBadge = useMemo(
     () => getAiCliSessionBadge(card),
     [
@@ -119,6 +134,10 @@ export function TerminalView({
   );
   const initialCommand = launch.command;
   const onProviderInitialCommandSent = useProviderSessionLifecycle(card, launch, active);
+
+  useEffect(() => {
+    setCodexViewMode(card.terminalType === 'codex' ? 'chat' : 'terminal');
+  }, [card.id, card.terminalType]);
 
   const recordSubmit = useCallback(() => {
     recordUserSubmit(card.id, t('view.sentInput'));
@@ -392,6 +411,42 @@ export function TerminalView({
             }
           />
           <AutoRestartStatus card={card} compact />
+          {isCodexCard && (
+            <div className="flex shrink-0 rounded-[var(--radius-md)] border border-white/10 bg-muted/30 p-0.5">
+              <button
+                type="button"
+                onClick={() => setCodexViewMode('chat')}
+                title={t('codexChat.chatMode', { defaultValue: 'Chat mode' })}
+                className={[
+                  'inline-flex h-7 items-center gap-1 rounded-[calc(var(--radius-md)-2px)] px-2 text-[11px]',
+                  codexViewMode === 'chat'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                ].join(' ')}
+              >
+                <MessageSquare className="h-3 w-3" />
+                <span className="hidden sm:inline">
+                  {t('codexChat.chat', { defaultValue: 'Chat' })}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCodexViewMode('terminal')}
+                title={t('codexChat.terminalMode', { defaultValue: 'Terminal mode' })}
+                className={[
+                  'inline-flex h-7 items-center gap-1 rounded-[calc(var(--radius-md)-2px)] px-2 text-[11px]',
+                  codexViewMode === 'terminal'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                ].join(' ')}
+              >
+                <TerminalSquare className="h-3 w-3" />
+                <span className="hidden sm:inline">
+                  {t('codexChat.terminal', { defaultValue: 'Terminal' })}
+                </span>
+              </button>
+            </div>
+          )}
           <span
             className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] sm:text-[10px] font-medium ${statusInfo.chip}`}
           >
@@ -452,48 +507,53 @@ export function TerminalView({
         </div>
       </div>
 
-      {/* Main area: xterm + optional Block Inspector side panel */}
+      {/* Main area: Codex Chat, or xterm + optional Block Inspector side panel */}
       <div className="flex min-h-0 flex-1">
-        {/* xterm — always mounted; shares the PTY with the float window if present */}
-        <div
-          id={`terminal-shell-${card.id}`}
-          className="relative min-h-0 flex-1 bg-[var(--terminal-background)]"
-        >
-          <Shell
-            selectedProject={selectedProject}
-            initialCommand={initialCommand}
-            minimal={true}
-            autoConnect={true}
-            paneId={paneId}
-            active={active}
-            preservePtyOnUnmount={true}
-            replayRecentOutput={true}
-            suppressInitialCommandWhenPtyExists={true}
-            autoReconnectOnExit={false}
-            onInitialCommandSent={handleInitialCommandSent}
-            onUserSubmit={recordSubmit}
-            onDisconnect={undefined}
-          />
+        {showCodexChat ? (
+          <div className="min-h-0 flex-1">
+            <CodexChatView card={card} active={active} />
+          </div>
+        ) : (
+          <div
+            id={`terminal-shell-${card.id}`}
+            className="relative min-h-0 flex-1 bg-[var(--terminal-background)]"
+          >
+            <Shell
+              selectedProject={selectedProject}
+              initialCommand={initialCommand}
+              minimal={true}
+              autoConnect={true}
+              paneId={paneId}
+              active={active}
+              preservePtyOnUnmount={true}
+              replayRecentOutput={true}
+              suppressInitialCommandWhenPtyExists={true}
+              autoReconnectOnExit={false}
+              onInitialCommandSent={handleInitialCommandSent}
+              onUserSubmit={recordSubmit}
+              onDisconnect={undefined}
+            />
 
-          {/* Block boundary decorations + hover toolbar overlay.
-              `overflow-hidden` is intentionally absent here — clipping the
-              wrapper would hide a toolbar that anchors to a block near the
-              top edge of the viewport. The inner xterm canvas handles its
-              own clipping. */}
-          {hasBlocks && (
-            <div className="pointer-events-none absolute inset-0">
-              <BlockOverlay
-                cardId={card.id}
-                ptyId={paneId}
-                blocks={blocks}
-                inspectorOpen={BLOCK_INSPECTOR_VISIBLE && inspectorOpen}
-              />
-            </div>
-          )}
-        </div>
+            {/* Block boundary decorations + hover toolbar overlay.
+                `overflow-hidden` is intentionally absent here — clipping the
+                wrapper would hide a toolbar that anchors to a block near the
+                top edge of the viewport. The inner xterm canvas handles its
+                own clipping. */}
+            {hasBlocks && (
+              <div className="pointer-events-none absolute inset-0">
+                <BlockOverlay
+                  cardId={card.id}
+                  ptyId={paneId}
+                  blocks={blocks}
+                  inspectorOpen={BLOCK_INSPECTOR_VISIBLE && inspectorOpen}
+                />
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Block Inspector side panel */}
-        {BLOCK_INSPECTOR_VISIBLE && inspectorOpen && hasBlocks && (
+        {!showCodexChat && BLOCK_INSPECTOR_VISIBLE && inspectorOpen && hasBlocks && (
           <div className="w-52 shrink-0 overflow-hidden border-l border-white/10 bg-background">
             {selectedBlock ? (
               <BlockInspector
@@ -528,7 +588,7 @@ export function TerminalView({
       </div>
 
       {/* Stage 6 — focus-mode bottom chip strip. Hidden by a global setting. */}
-      {!bottomBarHidden && (
+      {!bottomBarHidden && !showCodexChat && (
         <BottomActionBar
           chips={bottomBarChips}
           onChipActivate={handleChipActivate}

@@ -31,6 +31,7 @@ import { CardFooter } from './CardFooter';
 import { CardHeader } from './CardHeader';
 import { CardPreviewPanel } from './CardPreviewPanel';
 import { normalizeAutoRestartConfig } from '../../lib/autoRestart';
+import { worktreeDisplayLabel } from '../../lib/worktreePaths';
 
 export interface TerminalCardProps {
   card: TerminalCardType;
@@ -129,6 +130,10 @@ export function TerminalCardComponent({
   );
 
   const recentEvents = useMemo(() => card.events.slice(-5).reverse(), [card.events]);
+  const worktreeLabel = useMemo(
+    () => worktreeDisplayLabel(card),
+    [card.branchLabel, card.projectName, card.projectPath, card.worktreePath],
+  );
   const exportLaunch = useMemo(
     () => buildTerminalLaunchCommand(card, getTerminalTypeMeta(card.terminalType).defaultCommand),
     [card],
@@ -234,12 +239,10 @@ export function TerminalCardComponent({
         onCancelEdit={() => setEditingName(false)}
       />
 
-      {card.worktreePath && (
-        <div className="flex shrink-0 items-center gap-1.5 border-b border-white/5 bg-white/5 px-3 py-1.5 text-[10px] text-muted-foreground backdrop-blur-sm">
-          <FolderGit2 className="h-3 w-3" />
-          <span className="truncate">{t('card.worktree', { path: card.worktreePath })}</span>
-        </div>
-      )}
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-white/5 bg-white/5 px-3 py-1.5 text-[10px] text-muted-foreground backdrop-blur-sm">
+        <FolderGit2 className="h-3 w-3" />
+        <span className="truncate">{t('card.worktree', { path: worktreeLabel })}</span>
+      </div>
 
       <div className="min-h-0 flex-1 overflow-hidden px-3 py-2">
         <CardPreviewPanel

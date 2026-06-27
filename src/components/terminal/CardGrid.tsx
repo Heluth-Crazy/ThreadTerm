@@ -33,14 +33,30 @@ import { compareCardsByActivity, orderCardsByIdList } from '../../lib/cardSort';
 import { matchesCardQuery } from '../../lib/cardSearch';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { TerminalCardComponent } from './TerminalCard';
-import type { TerminalCard } from '../../types/terminal';
+import type { TerminalCard, TerminalCreateOptions } from '../../types/terminal';
+import {
+  cardMatchesWorktree,
+  parsePendingWorktreePath,
+  pathBasename,
+} from '../../lib/worktreePaths';
+
+interface PendingWorktreeCreateRequest {
+  projectPath: string;
+  branch: string;
+  branchLabel: string;
+}
 
 interface CardGridProps {
-  onCreateTerminal?: () => void;
+  onCreateTerminal?: (options?: TerminalCreateOptions) => void;
+  onCreateWorktreeTerminal?: (request: PendingWorktreeCreateRequest) => void;
   onOpenTerminal?: (cardId: string) => void;
 }
 
-export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
+export function CardGrid({
+  onCreateTerminal,
+  onCreateWorktreeTerminal,
+  onOpenTerminal,
+}: CardGridProps) {
   const { t } = useTranslation('terminal');
   const reduceMotion = useReducedMotion();
   const cards = useTerminalStore((s) => s.cards);
@@ -51,6 +67,8 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   const archiveCard = useTerminalStore((s) => s.archiveCard);
   const moveProjectCard = useTerminalStore((s) => s.moveProjectCard);
   const selectedProjectPath = useTerminalStore((s) => s.selectedProjectPath);
+  const selectedWorktreePath = useTerminalStore((s) => s.selectedWorktreePath);
+  const selectedWorktreeLabel = useTerminalStore((s) => s.selectedWorktreeLabel);
   const selectProject = useTerminalStore((s) => s.selectProject);
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -65,14 +83,19 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   // switches to persisted manual order so cards do not jump while the user is
   // working inside one directory.
   const visibleCards = useMemo(() => {
+    const activeWorktreePath = selectedProjectPath ? selectedWorktreePath : null;
     const filtered = selectedProjectPath
-      ? cards.filter((c) => c.projectPath === selectedProjectPath)
+      ? cards.filter(
+          (c) =>
+            c.projectPath === selectedProjectPath &&
+            cardMatchesWorktree(c, activeWorktreePath),
+        )
       : cards;
     if (selectedProjectPath) {
       return orderCardsByIdList(filtered, projectCardOrder[selectedProjectPath]);
     }
     return [...filtered].sort(compareCardsByActivity);
-  }, [cards, projectCardOrder, selectedProjectPath]);
+  }, [cards, projectCardOrder, selectedProjectPath, selectedWorktreePath]);
 
   const [query, setQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
@@ -104,7 +127,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   // Manual drag-reorder only makes sense in an unfiltered project view: a
   // filtered list reorders nothing, and its indices wouldn't map back to the
   // persisted project order.
-  const sortingEnabled = Boolean(selectedProjectPath) && !query.trim();
+  const sortingEnabled = Boolean(selectedProjectPath) && !selectedWorktreePath && !query.trim();
 
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
@@ -121,8 +144,58 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   const selectedProjectLabel = useMemo(() => {
     if (!selectedProjectPath) return null;
     const c = cards.find((x) => x.projectPath === selectedProjectPath);
-    return c?.projectName ?? selectedProjectPath;
+    return c?.projectName ?? pathBasename(selectedProjectPath);
   }, [cards, selectedProjectPath]);
+
+  const pendingWorktreeSelection = useMemo(
+    () => parsePendingWorktreePath(selectedWorktreePath),
+    [selectedWorktreePath],
+  );
+  const selectedWorktreeDisplayLabel =
+    selectedWorktreeLabel ??
+    pendingWorktreeSelection?.branch ??
+    (selectedWorktreePath ? pathBasename(selectedWorktreePath) : null);
+
+  const createTerminalInCurrentScope = useCallback(() => {
+    if (!selectedProjectPath || !selectedWorktreePath || pendingWorktreeSelection) {
+      onCreateTerminal?.();
+      return;
+    }
+    onCreateTerminal?.({
+      projectPath: selectedProjectPath,
+      projectName: selectedProjectLabel ?? pathBasename(selectedProjectPath),
+      worktreePath: selectedWorktreePath,
+      branchLabel: selectedWorktreeDisplayLabel ?? undefined,
+      terminalType: 'shell',
+    });
+  }, [
+    onCreateTerminal,
+    pendingWorktreeSelection,
+    selectedProjectLabel,
+    selectedProjectPath,
+    selectedWorktreeDisplayLabel,
+    selectedWorktreePath,
+  ]);
+
+  const createForEmptyWorktree = useCallback(() => {
+    if (!selectedProjectPath || !selectedWorktreePath) return;
+    if (pendingWorktreeSelection) {
+      onCreateWorktreeTerminal?.({
+        projectPath: selectedProjectPath,
+        branch: pendingWorktreeSelection.branch,
+        branchLabel: selectedWorktreeDisplayLabel ?? pendingWorktreeSelection.branch,
+      });
+      return;
+    }
+    createTerminalInCurrentScope();
+  }, [
+    createTerminalInCurrentScope,
+    onCreateWorktreeTerminal,
+    pendingWorktreeSelection,
+    selectedProjectPath,
+    selectedWorktreeDisplayLabel,
+    selectedWorktreePath,
+  ]);
 
   const handleCopyCwd = useCallback((path: string) => {
     void navigator.clipboard?.writeText(path).catch(() => {
@@ -153,7 +226,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
         </div>
         <button
           type="button"
-          onClick={onCreateTerminal}
+          onClick={() => onCreateTerminal?.()}
           className="inline-flex items-center gap-2 rounded-[var(--radius-md)] bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
           <Plus className="h-4 w-4" /> {t('grid.createFirst')}
@@ -174,33 +247,51 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
   // happen because removeCard clears the filter, but render a clean state
   // anyway if the user filtered and then somehow all disappear).
   if (visibleCards.length === 0 && selectedProjectPath) {
+    const isWorktreeEmpty = Boolean(selectedWorktreePath);
+    const title = isWorktreeEmpty
+      ? pendingWorktreeSelection
+        ? t('grid.noPendingBranchTitle', {
+            branch: selectedWorktreeDisplayLabel ?? pendingWorktreeSelection.branch,
+          })
+        : t('grid.noWorktreeTitle', {
+            worktree: selectedWorktreeDisplayLabel ?? selectedWorktreePath,
+          })
+      : t('grid.noProjectTitle', { project: selectedProjectLabel });
+    const description = isWorktreeEmpty
+      ? pendingWorktreeSelection
+        ? t('grid.noPendingBranchDescription')
+        : t('grid.noWorktreeDescription', { project: selectedProjectLabel })
+      : t('grid.noProjectDescription');
+    const primaryLabel = isWorktreeEmpty
+      ? pendingWorktreeSelection
+        ? t('grid.createWorktreeHere')
+        : t('grid.newHere')
+      : t('grid.newHere');
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-8 text-center">
         <div className="flex h-14 w-14 items-center justify-center rounded-[var(--radius)] bg-muted">
           <FolderOpen className="h-7 w-7 text-muted-foreground" />
         </div>
         <div>
-          <h2 className="text-sm font-semibold">
-            {t('grid.noProjectTitle', { project: selectedProjectLabel })}
-          </h2>
+          <h2 className="text-sm font-semibold">{title}</h2>
           <p className="mt-1 text-[11px] text-muted-foreground">
-            {t('grid.noProjectDescription')}
+            {description}
           </p>
         </div>
         <div className="flex gap-2">
           <button
             type="button"
-            onClick={onCreateTerminal}
+            onClick={isWorktreeEmpty ? createForEmptyWorktree : () => onCreateTerminal?.()}
             className="inline-flex items-center gap-1.5 rounded-[var(--radius-md)] bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
-            <Plus className="h-3.5 w-3.5" /> {t('grid.newHere')}
+            <Plus className="h-3.5 w-3.5" /> {primaryLabel}
           </button>
           <button
             type="button"
-            onClick={() => selectProject(null)}
+            onClick={() => (isWorktreeEmpty ? selectProject(selectedProjectPath) : selectProject(null))}
             className="rounded-[var(--radius-md)] border border-white/10 px-3 py-1.5 text-xs hover:bg-accent"
           >
-            {t('grid.showAll')}
+            {isWorktreeEmpty ? t('grid.showProjectAll') : t('grid.showAll')}
           </button>
         </div>
       </div>
@@ -214,11 +305,19 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
           key={card.id}
           card={card}
           sortingEnabled={sortingEnabled}
-          showDisabledHandle={Boolean(selectedProjectPath) && Boolean(query.trim())}
+          showDisabledHandle={
+            Boolean(selectedProjectPath) && (Boolean(query.trim()) || Boolean(selectedWorktreePath))
+          }
           dragLabel={t('grid.reorderCard', { defaultValue: 'Drag to reorder card' })}
-          dragDisabledLabel={t('grid.reorderDisabledWhileSearching', {
-            defaultValue: 'Clear search to reorder',
-          })}
+          dragDisabledLabel={
+            selectedWorktreePath
+              ? t('grid.reorderDisabledInWorktree', {
+                  defaultValue: 'Show the whole project to reorder',
+                })
+              : t('grid.reorderDisabledWhileSearching', {
+                  defaultValue: 'Clear search to reorder',
+                })
+          }
           isFocused={focusedCardId === card.id}
           onClick={() => onOpenTerminal?.(card.id)}
           onClose={() => removeCard(card.id)}
@@ -231,7 +330,7 @@ export function CardGrid({ onCreateTerminal, onOpenTerminal }: CardGridProps) {
       {!query.trim() && (
       <motion.button
         type="button"
-        onClick={onCreateTerminal}
+        onClick={createTerminalInCurrentScope}
         whileHover={reduceMotion ? undefined : { y: -2, scale: 1.003 }}
         transition={reduceMotion ? { duration: 0 } : { duration: 0.16, ease: 'easeOut' }}
         className="group relative flex h-[300px] w-full flex-col items-center justify-center gap-3 overflow-hidden rounded-[var(--radius)] border border-dashed border-white/10 bg-white/[0.02] text-muted-foreground transition-all duration-300 hover:border-primary/40 hover:bg-white/[0.05] hover:text-primary sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] xl:w-[calc(25%-18px)] glass-reflection"
