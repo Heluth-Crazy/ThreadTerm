@@ -16,7 +16,14 @@
     "minimize": "最小化",
     "close": "閉じる（非表示、セッションは保持）",
     "emptyTitle": "フローティングウィンドウにセッションはまだ接続されていません。",
-    "emptyDescription": "メインウィンドウで <kbd>{{shortcut}}</kbd> を押してピン留めセッションを選択します。"
+    "emptyDescription": "メインウィンドウで <kbd>{{shortcut}}</kbd> を押してピン留めセッションを選択します。",
+    "launchMode": {
+      "title": "フローティングウィンドウのサイズ",
+      "description": "セレクターでカードを選んだ後のフローティングターミナルの開き方。",
+      "floating": "フローティング",
+      "maximized": "最大化",
+      "fullscreen": "全画面"
+    }
   },
   "hotkeys": {
     "slotA": {

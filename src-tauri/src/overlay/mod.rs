@@ -72,8 +72,9 @@ pub use window::prewarm_windows;
 
 pub use commands::{
     overlay_get_settings, overlay_hide_float, overlay_hide_selector, overlay_move_float,
-    overlay_resize_float, overlay_save_float_bounds, overlay_show_float, overlay_show_main,
-    overlay_show_selector, overlay_update_shortcut, pet_apply_geometry, pet_focus_main_to_card,
+    overlay_resize_float, overlay_save_float_bounds, overlay_set_float_launch_mode,
+    overlay_show_float, overlay_show_main, overlay_show_selector, overlay_update_shortcut,
+    pet_apply_geometry, pet_focus_main_to_card,
     pet_hide, pet_open_notification_center, pet_set_expanded, pet_set_position, pet_show,
 };
 
@@ -84,7 +85,8 @@ pub use commands::{
 pub use commands::{
     __cmd__overlay_get_settings, __cmd__overlay_hide_float, __cmd__overlay_hide_selector,
     __cmd__overlay_move_float, __cmd__overlay_resize_float, __cmd__overlay_save_float_bounds,
-    __cmd__overlay_show_float, __cmd__overlay_show_main, __cmd__overlay_show_selector,
+    __cmd__overlay_set_float_launch_mode, __cmd__overlay_show_float, __cmd__overlay_show_main,
+    __cmd__overlay_show_selector,
     __cmd__overlay_update_shortcut, __cmd__pet_apply_geometry, __cmd__pet_focus_main_to_card,
     __cmd__pet_hide, __cmd__pet_open_notification_center, __cmd__pet_set_expanded,
     __cmd__pet_set_position, __cmd__pet_show,

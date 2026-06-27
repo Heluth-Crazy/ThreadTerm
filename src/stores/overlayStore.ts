@@ -35,6 +35,8 @@ interface FloatBounds {
   h: number;
 }
 
+export type FloatLaunchMode = 'floating' | 'maximized' | 'fullscreen';
+
 interface OverlayStoreInternal {
   // Selector
   selectorOpen: boolean;
@@ -49,6 +51,9 @@ interface OverlayStoreInternal {
   floatHiddenByOverlay: boolean;
   floatCardId: string | null;
   floatWindowBounds: FloatBounds | null;
+  /** How the float window opens (floating / maximized / fullscreen). Mirror of
+   *  the Rust-persisted `overlay.float_launch_mode`. */
+  floatLaunchMode: FloatLaunchMode;
 
   // Hotkeys
   hotkeyA: string;
@@ -70,6 +75,7 @@ interface OverlayStoreInternal {
   recycleToMain: () => void;
 
   setFloatBounds: (bounds: FloatBounds | null) => void;
+  setFloatLaunchMode: (mode: FloatLaunchMode) => void;
 
   setHotkeys: (a: string, b: string) => void;
   updateHotkey: (slot: 'A' | 'B', accelerator: string) => Promise<void>;
@@ -121,6 +127,7 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
       floatHiddenByOverlay: false,
       floatCardId: null,
       floatWindowBounds: null,
+      floatLaunchMode: 'floating',
 
       hotkeyA: DEFAULT_HOTKEY_A,
       hotkeyB: DEFAULT_HOTKEY_B,
@@ -214,6 +221,13 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
       closeFloat: () => {
         void tauriInvoke('overlay_hide_float');
         set({ floatOpen: false, floatHiddenByOverlay: false });
+      },
+
+      setFloatLaunchMode: (mode) => {
+        set({ floatLaunchMode: mode });
+        // Rust persists it (overlay.float_launch_mode) and reflows a visible
+        // float window; the store is just a mirror for the settings UI.
+        void tauriInvoke('overlay_set_float_launch_mode', { mode });
       },
 
       recycleToMain: () => {

@@ -23,7 +23,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Keyboard, RotateCcw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { invoke, isTauriEnv } from '../../lib/tauri-bridge';
-import { useOverlayStore } from '../../stores/overlayStore';
+import { useOverlayStore, type FloatLaunchMode } from '../../stores/overlayStore';
 
 type Slot = 'A' | 'B';
 
@@ -47,6 +47,12 @@ const SLOTS: SlotMeta[] = [
     descriptionKey: 'hotkeys.slotB.description',
     defaultAccelerator: 'CmdOrCtrl+Shift+O',
   },
+];
+
+const FLOAT_MODES: { value: FloatLaunchMode; labelKey: string }[] = [
+  { value: 'floating', labelKey: 'float.launchMode.floating' },
+  { value: 'maximized', labelKey: 'float.launchMode.maximized' },
+  { value: 'fullscreen', labelKey: 'float.launchMode.fullscreen' },
 ];
 
 // Convert a KeyboardEvent into a Tauri accelerator string (e.g. "CmdOrCtrl+Shift+Space").
@@ -183,6 +189,8 @@ export function OverlayHotkeysSettings() {
   const hotkeyA = useOverlayStore((s) => s.hotkeyA);
   const hotkeyB = useOverlayStore((s) => s.hotkeyB);
   const updateHotkey = useOverlayStore((s) => s.updateHotkey);
+  const floatLaunchMode = useOverlayStore((s) => s.floatLaunchMode);
+  const setFloatLaunchMode = useOverlayStore((s) => s.setFloatLaunchMode);
 
   const [capturing, setCapturing] = useState<Slot | null>(null);
   const [status, setStatus] = useState<{
@@ -203,11 +211,16 @@ export function OverlayHotkeysSettings() {
     let cancelled = false;
     (async () => {
       try {
-        const s = await invoke<{ hotkey_a: string; hotkey_b: string } | null>(
-          'overlay_get_settings',
-        );
+        const s = await invoke<{
+          hotkey_a: string;
+          hotkey_b: string;
+          float_launch_mode?: FloatLaunchMode;
+        } | null>('overlay_get_settings');
         if (!s || cancelled) return;
         useOverlayStore.getState().setHotkeys(s.hotkey_a, s.hotkey_b);
+        if (s.float_launch_mode) {
+          useOverlayStore.setState({ floatLaunchMode: s.float_launch_mode });
+        }
       } catch {
         /* noop */
       }
@@ -323,6 +336,30 @@ export function OverlayHotkeysSettings() {
           </button>
         </div>
       )}
+
+      <div className="mt-4 border-t border-border/40 pt-3">
+        <div className="text-sm font-medium text-foreground">{t('float.launchMode.title')}</div>
+        <div className="mt-0.5 text-xs text-muted-foreground">
+          {t('float.launchMode.description')}
+        </div>
+        <div className="mt-2 flex gap-1.5">
+          {FLOAT_MODES.map((m) => (
+            <button
+              key={m.value}
+              type="button"
+              onClick={() => setFloatLaunchMode(m.value)}
+              className={[
+                'flex-1 rounded-[var(--radius-md)] border px-2 py-1.5 text-xs font-medium transition-colors',
+                floatLaunchMode === m.value
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-white/10 bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+              ].join(' ')}
+            >
+              {t(m.labelKey)}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <div className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
         {t('hotkeys.tips')}

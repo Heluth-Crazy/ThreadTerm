@@ -16,7 +16,14 @@
     "minimize": "Minimize",
     "close": "Close (hide — keeps session alive)",
     "emptyTitle": "No session attached to the floating window yet.",
-    "emptyDescription": "Press <kbd>{{shortcut}}</kbd> on the main window to pick a pinned session."
+    "emptyDescription": "Press <kbd>{{shortcut}}</kbd> on the main window to pick a pinned session.",
+    "launchMode": {
+      "title": "Floating window size",
+      "description": "How the floating terminal opens after you pick a card from the selector.",
+      "floating": "Floating",
+      "maximized": "Maximized",
+      "fullscreen": "Fullscreen"
+    }
   },
   "hotkeys": {
     "slotA": {

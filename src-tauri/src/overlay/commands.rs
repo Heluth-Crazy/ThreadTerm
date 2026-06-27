@@ -7,7 +7,7 @@ use super::platform::{
     order_overlay_window_front, restore_regular_activation_policy,
     restore_regular_activation_policy_if_no_overlay_visible, set_overlay_activation_policy,
 };
-use super::state::{FloatBounds, OverlaySettings, OVERLAY_SETTINGS};
+use super::state::{FloatBounds, FloatLaunchMode, OverlaySettings, OVERLAY_SETTINGS};
 use super::window::{
     ensure_float, ensure_pet, ensure_selector, pet_window_size, primary_monitor_bounds,
     resolve_pet_geometry, PetGeometry, FLOAT_LABEL, MAIN_LABEL, PET_LABEL, SELECTOR_LABEL,
@@ -151,6 +151,7 @@ pub fn overlay_show_float(app: AppHandle, card_id: String) -> Result<(), String>
 
         #[cfg(not(target_os = "macos"))]
         {
+            apply_float_launch_mode(&w);
             let _ = w.show();
             order_overlay_window_front(&w);
         }
@@ -232,6 +233,54 @@ pub fn overlay_get_settings() -> OverlaySettings {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
+}
+
+/// Apply the persisted float launch mode to the live float window
+/// (fullscreen / maximized / restore-to-floating). No-op on macOS where the
+/// float surface is an NSPanel with its own fullscreen semantics.
+#[cfg(not(target_os = "macos"))]
+fn apply_float_launch_mode(w: &tauri::WebviewWindow) {
+    let mode = OVERLAY_SETTINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .float_launch_mode;
+    match mode {
+        FloatLaunchMode::Fullscreen => {
+            let _ = w.set_fullscreen(true);
+        }
+        FloatLaunchMode::Maximized => {
+            let _ = w.set_fullscreen(false);
+            let _ = w.maximize();
+        }
+        FloatLaunchMode::Floating => {
+            let _ = w.set_fullscreen(false);
+            let _ = w.unmaximize();
+        }
+    }
+}
+
+#[tauri::command]
+pub fn overlay_set_float_launch_mode(app: AppHandle, mode: String) -> Result<(), String> {
+    let parsed = FloatLaunchMode::from_value(&mode)
+        .ok_or_else(|| format!("unknown float launch mode: {mode}"))?;
+    OVERLAY_SETTINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .float_launch_mode = parsed;
+    let _ = crate::db::set_setting("overlay.float_launch_mode", parsed.as_str());
+
+    // Reflow a currently-visible float window so the change takes effect now.
+    #[cfg(not(target_os = "macos"))]
+    if let Some(w) = app.get_webview_window(FLOAT_LABEL) {
+        if w.is_visible().unwrap_or(false) {
+            apply_float_launch_mode(&w);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = &app;
+    }
+    Ok(())
 }
 
 #[tauri::command]
