@@ -43,11 +43,6 @@ pub struct OverlaySettings {
     pub float_bounds: Option<FloatBounds>,
     #[serde(default)]
     pub float_launch_mode: FloatLaunchMode,
-    /// Prewarm the selector/float/pet overlay webviews at startup.
-    /// `false` (default) = lazy on-demand → lower idle memory (each overlay is
-    /// its own webview ~90 MB); `true` = instant hotkeys at the cost of memory.
-    #[serde(default)]
-    pub overlay_prewarm: bool,
 }
 
 impl Default for OverlaySettings {
@@ -57,7 +52,6 @@ impl Default for OverlaySettings {
             hotkey_b: "CmdOrCtrl+Shift+O".to_string(),
             float_bounds: None,
             float_launch_mode: FloatLaunchMode::Floating,
-            overlay_prewarm: false,
         }
     }
 }
@@ -97,9 +91,6 @@ pub fn load_settings() -> OverlaySettings {
         if let Some(mode) = FloatLaunchMode::from_value(&v) {
             out.float_launch_mode = mode;
         }
-    }
-    if let Ok(Some(v)) = crate::db::get_setting("overlay.prewarm") {
-        out.overlay_prewarm = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES");
     }
     // Poison-tolerant: a panic in another short critical section must not
     // permanently disable overlay settings. Recover the inner data instead.

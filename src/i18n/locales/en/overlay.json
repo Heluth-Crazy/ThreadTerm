@@ -42,9 +42,5 @@
     "bound": "Bound to {{accelerator}}",
     "reset": "Reset to {{accelerator}}",
     "tips": "Tips: use a combination that's unlikely to clash with your OS / other apps (e.g. add Shift + Alt). If the OS refuses to register a binding (for example when another app already owns it), the old accelerator stays active."
-  },
-  "prewarm": {
-    "title": "Prewarm overlay windows",
-    "description": "Keep the selector / float / pet webviews warm at startup for instant hotkeys. Off (default) creates them on demand, saving ~200+ MB of idle memory; the first hotkey is then slightly slower."
   }
 }

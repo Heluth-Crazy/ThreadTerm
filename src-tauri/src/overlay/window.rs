@@ -88,18 +88,6 @@ pub fn prewarm_windows(app: &AppHandle) {
         return;
     }
 
-    // Default is on-demand: the overlay webviews are created lazily by their
-    // `ensure_*` (called from the show commands) on first use, keeping idle
-    // memory low. Only prewarm when the user opted in (overlay.prewarm=true).
-    let prewarm_enabled = OVERLAY_SETTINGS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .overlay_prewarm;
-    if !prewarm_enabled {
-        tracing::info!("overlay prewarm skipped (on-demand mode; overlay.prewarm=false)");
-        return;
-    }
-
     if let Err(e) = ensure_selector(app) {
         tracing::warn!(error = %e, "prewarm: ensure_selector failed");
     }

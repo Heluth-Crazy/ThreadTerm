@@ -191,8 +191,6 @@ export function OverlayHotkeysSettings() {
   const updateHotkey = useOverlayStore((s) => s.updateHotkey);
   const floatLaunchMode = useOverlayStore((s) => s.floatLaunchMode);
   const setFloatLaunchMode = useOverlayStore((s) => s.setFloatLaunchMode);
-  const overlayPrewarm = useOverlayStore((s) => s.overlayPrewarm);
-  const setOverlayPrewarm = useOverlayStore((s) => s.setOverlayPrewarm);
 
   const [capturing, setCapturing] = useState<Slot | null>(null);
   const [status, setStatus] = useState<{
@@ -217,15 +215,11 @@ export function OverlayHotkeysSettings() {
           hotkey_a: string;
           hotkey_b: string;
           float_launch_mode?: FloatLaunchMode;
-          overlay_prewarm?: boolean;
         } | null>('overlay_get_settings');
         if (!s || cancelled) return;
         useOverlayStore.getState().setHotkeys(s.hotkey_a, s.hotkey_b);
         if (s.float_launch_mode) {
           useOverlayStore.setState({ floatLaunchMode: s.float_launch_mode });
-        }
-        if (typeof s.overlay_prewarm === 'boolean') {
-          useOverlayStore.setState({ overlayPrewarm: s.overlay_prewarm });
         }
       } catch {
         /* noop */
@@ -364,33 +358,6 @@ export function OverlayHotkeysSettings() {
               {t(m.labelKey)}
             </button>
           ))}
-        </div>
-      </div>
-
-      <div className="mt-4 border-t border-border/40 pt-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-sm font-medium text-foreground">{t('prewarm.title')}</div>
-            <div className="mt-0.5 text-xs text-muted-foreground">{t('prewarm.description')}</div>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={overlayPrewarm}
-            aria-label={t('prewarm.title')}
-            onClick={() => setOverlayPrewarm(!overlayPrewarm)}
-            className={[
-              'relative mt-0.5 inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-              overlayPrewarm ? 'bg-primary' : 'bg-muted',
-            ].join(' ')}
-          >
-            <span
-              className={[
-                'inline-block h-4 w-4 transform rounded-full bg-background shadow transition-transform',
-                overlayPrewarm ? 'translate-x-4' : 'translate-x-0.5',
-              ].join(' ')}
-            />
-          </button>
         </div>
       </div>
 
