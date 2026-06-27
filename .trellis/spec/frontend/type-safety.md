@@ -106,4 +106,125 @@ Also add the matching Rust enum variant and keep the contract test passing.
 
 </spec-entry>
 
+<spec-entry category="contract" keywords="git-branch,git-worktree,tauri-command,rust-typescript,project-sidebar,worktreePath" date="2026-06-26" source="src-tauri/src/git.rs:29">
+
+## Scenario: Git Branch Worktree Tauri IPC Contract
+
+### 1. Scope / Trigger
+- Trigger: Any change to git branch discovery, worktree creation,
+  `WorktreeInfo`/`BranchRow` Rust-TypeScript shape, or ProjectSidebar branch
+  terminal entries.
+- Applies to `src-tauri/src/git.rs`, `src-tauri/src/lib.rs`,
+  `src/lib/tauri-bridge.ts`, `src/components/terminal/useProjectBranches.ts`,
+  `src/components/terminal/useProjectWorktrees.ts`, and
+  `src/components/terminal/ProjectSidebar.tsx`.
+
+### 2. Signatures
+- Rust commands:
+  - `git_worktree_list(project_path: String) -> Result<Vec<WorktreeInfo>, String>`
+  - `git_branch_overview(project_path: String) -> Result<Vec<BranchRow>, String>`
+  - `git_worktree_add(project_path: String, branch: String, worktree_path: Option<String>) -> Result<WorktreeInfo, String>`
+- Rust structs serialized with `#[serde(rename_all = "camelCase")]`:
+  - `WorktreeInfo { path, head, branch, is_main, is_detached, is_bare, is_locked }`
+  - `BranchRow { branch, head, is_current, worktree_path, is_main_worktree, last_commit_unix, upstream }`
+- TypeScript bridge:
+  - `git.branches.overview(projectPath: string): Promise<BranchRow[]>`
+  - `git.worktrees.list(projectPath: string): Promise<WorktreeInfo[]>`
+  - `git.worktrees.add(projectPath: string, branch: string, worktreePath?: string): Promise<WorktreeInfo>`
+
+### 3. Contracts
+- `project_path` must be an existing absolute directory before running git.
+- Branch overview runs `git -C <project_path> for-each-ref --sort=-committerdate
+  --format=%(refname:short)%00%(objectname)%00%(HEAD)%00%(committerdate:unix)%00%(upstream:short)
+  refs/heads`, then joins branch rows to `git worktree list --porcelain` by
+  exact local branch name.
+- Non-git directories, missing `git`, and unsuccessful list/overview git exits
+  return `Ok([])` so the sidebar can silently omit branch affordances.
+- `git_worktree_add` defaults the target path to
+  `<repo_root.parent>/<repo_basename>-worktrees/<branch with / and \ replaced by ->`
+  unless `worktree_path` is supplied.
+- Worktree creation must keep cards grouped by the original `projectPath`.
+  Opening any branch worktree creates a shell card with
+  `worktreePath = WorktreeInfo.path` and leaves `projectPath` unchanged.
+- ProjectSidebar renders a collapsed branch tree per project. Existing
+  `BranchRow.worktreePath` rows open a terminal; rows without a worktree create
+  one first, clear branch/worktree caches, refresh branches, then open terminal.
+
+### 4. Validation & Error Matrix
+- Empty `project_path` -> backend returns an error.
+- Relative `project_path` -> backend returns an error.
+- Existing non-git directory -> branch/worktree overview returns `[]`.
+- Missing git binary -> overview/list returns `[]`; create returns an error.
+- `git worktree add` target already exists -> backend returns an error.
+- Supplied or default target path escapes the sibling worktrees directory
+  through `..` or an absolute path outside the base -> backend returns an error.
+- Existing branch with `worktreePath` clicked -> new card has
+  `terminalType: 'shell'` and the selected `worktreePath`.
+- Branch without `worktreePath` clicked -> backend creates a worktree, caches
+  are cleared, branches refresh, then the new card opens in the created path.
+
+### 5. Good/Base/Bad Cases
+- Good: a repo with `main` at `/repo/app` and `feature/x` at
+  `/repo/app-worktrees/feature-x` renders both branches; clicking either opens a
+  terminal in that branch's cwd.
+- Good: a branch without a worktree creates
+  `/repo/app-worktrees/<sanitized-branch>` and opens a shell terminal there.
+- Base: a non-git project renders exactly like before, with no branch toggle and
+  no error toast.
+- Bad: changing Rust fields to snake_case without updating TypeScript; the UI
+  will read `isCurrent`, `worktreePath`, or `isMainWorktree` as undefined.
+- Bad: creating branch terminal cards with `projectPath = worktree.path`; this
+  splits one repository into multiple project groups instead of preserving the
+  project rollup.
+
+### 6. Tests Required
+- Rust unit tests for `parse_worktree_porcelain()`, branch ref parsing,
+  branch-worktree merge ordering, branch sanitization, default target derivation,
+  and escape-path rejection.
+- Hook tests for `useProjectBranches()` covering load/cache/refresh and
+  non-Tauri no-op behavior; keep `useProjectWorktrees()` cache tests intact.
+- ProjectSidebar tests for no branch toggle on non-git projects, opening an
+  existing branch worktree terminal, and creating a missing worktree before
+  opening the terminal.
+- Verification gates: `npm run typecheck`, targeted Vitest tests for sidebar /
+  branch hook, `cargo test --manifest-path src-tauri/Cargo.toml git::`,
+  `cargo check --manifest-path src-tauri/Cargo.toml`, and `npm run build`.
+
+### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+createCard({
+  projectName,
+  projectPath: worktree.path,
+  terminalType: 'shell',
+});
+```
+
+Correct:
+```typescript
+createCard({
+  projectName,
+  projectPath,
+  worktreePath: worktree.path,
+  terminalType: 'shell',
+});
+```
+
+Wrong:
+```rust
+let target = repo_root.join("worktrees").join(branch);
+```
+
+Correct:
+```rust
+let base = worktree_base_dir(&repo_root)?;
+let target = match worktree_path {
+    Some(path) => checked_worktree_target(&base, Path::new(&path))?,
+    None => default_worktree_path(&repo_root, &branch)?,
+};
+```
+
+</spec-entry>
+
 (To be filled by the team)

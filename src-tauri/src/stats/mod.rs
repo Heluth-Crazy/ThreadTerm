@@ -1,10 +1,19 @@
 //! Token statistics — scan Claude/Codex session jsonl, aggregate usage + cost,
 //! stream results to the frontend over `stats://` events from a background
 //! thread with generation-based cancellation.
+//!
+//! ## Flow
+//! 1. `sync::sync_all` incrementally ingests new session-log lines into the
+//!    `usage_records` SQLite table (mtime-gated; unchanged files are skipped).
+//! 2. `aggregate::aggregate_from_db` reads back rows within the requested time
+//!    window and scope, producing the `AgentStats` snapshot.
+//! 3. The snapshot is emitted as a `stats://done` event.
 
 mod aggregate;
+mod opencode;
 mod parse;
 mod pricing;
+mod sync;
 mod types;
 
 use std::path::PathBuf;
@@ -15,15 +24,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use crate::provider_sessions::jsonl_files_recent_first;
-use aggregate::Aggregator;
+use aggregate::aggregate_from_db;
 use types::AgentStats;
 
 /// Monotonic generation. Each compute / cancel bumps it; a worker whose
 /// request_id no longer matches the latest generation bails silently.
 static STATS_GEN: AtomicU64 = AtomicU64::new(0);
-
-const PROGRESS_EVERY: usize = 16;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,7 +74,7 @@ fn parse_range(range: &str) -> (Option<u64>, Option<u64>) {
 
 /// Claude session root. Honours `CLAUDE_CONFIG_DIR` (Claude Code's override),
 /// else `~/.claude` — which is `%USERPROFILE%\.claude` on Windows.
-fn claude_root() -> Option<PathBuf> {
+pub(crate) fn claude_root() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
         if !dir.is_empty() {
             return Some(PathBuf::from(dir).join("projects"));
@@ -79,7 +85,7 @@ fn claude_root() -> Option<PathBuf> {
 
 /// Codex session root. Honours `CODEX_HOME` (Codex CLI's override), else
 /// `~/.codex` — which is `%USERPROFILE%\.codex` on Windows.
-fn codex_root() -> Option<PathBuf> {
+pub(crate) fn codex_root() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("CODEX_HOME") {
         if !dir.is_empty() {
             return Some(PathBuf::from(dir).join("sessions"));
@@ -115,6 +121,14 @@ pub fn stats_cancel() {
     STATS_GEN.fetch_add(1, Ordering::SeqCst);
 }
 
+/// Force a full rebuild: clear ingested rows + sync cursors so the next
+/// `stats_compute` re-ingests every session file from scratch with the current
+/// parser. Use when the on-disk numbers look stale.
+#[tauri::command]
+pub fn stats_rebuild() -> Result<(), String> {
+    sync::rebuild_now()
+}
+
 fn run_worker(
     app: &AppHandle,
     scope: &str,
@@ -123,61 +137,27 @@ fn run_worker(
 ) -> Result<AgentStats, String> {
     let (lo, hi) = parse_range(range);
 
-    // Coarse pre-filter by file mtime (lo); the aggregator still does per-call
-    // window judgement so resumed-today old sessions don't pollute "Today".
-    let mut files: Vec<(PathBuf, &'static str, Option<u64>)> = Vec::new();
-    if scope == "all" || scope == "claude" {
-        if let Some(root) = claude_root() {
-            for f in jsonl_files_recent_first(&root, lo) {
-                files.push((f.path, "claude", f.modified_ms));
-            }
-        }
-    }
-    if scope == "all" || scope == "codex" {
-        if let Some(root) = codex_root() {
-            for f in jsonl_files_recent_first(&root, lo) {
-                files.push((f.path, "codex", f.modified_ms));
-            }
-        }
-    }
-
-    let total = files.len();
-    let mut agg = Aggregator::new(lo, hi);
-    for (i, (path, provider, mtime)) in files.iter().enumerate() {
+    // Phase 1: incremental sync. sync_all streams progress as it walks files.
+    sync::sync_all(lo, |scanned, total| {
         if request_id != STATS_GEN.load(Ordering::SeqCst) {
-            return Err("cancelled".to_string());
+            return;
         }
-        let file_session_id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        match *provider {
-            "claude" => {
-                let (cwd, calls) = parse::parse_claude_file(path);
-                if !calls.is_empty() {
-                    agg.feed_session(&file_session_id, &cwd, *mtime, &calls);
-                }
-            }
-            "codex" => {
-                if let Some((sid, cwd, call)) = parse::parse_codex_file(path) {
-                    let session_id = if sid.is_empty() { file_session_id } else { sid };
-                    agg.feed_session(&session_id, &cwd, *mtime, std::slice::from_ref(&call));
-                }
-            }
-            _ => {}
-        }
-        if i % PROGRESS_EVERY == 0 {
-            let _ = app.emit(
-                "stats://progress",
-                StatsProgress {
-                    request_id,
-                    scanned: i + 1,
-                    total,
-                },
-            );
-        }
+        let _ = app.emit(
+            "stats://progress",
+            StatsProgress {
+                request_id,
+                scanned,
+                total,
+            },
+        );
+    });
+
+    if request_id != STATS_GEN.load(Ordering::SeqCst) {
+        return Err("cancelled".to_string());
     }
 
-    Ok(agg.snapshot())
+    // Phase 2: aggregate from the persisted usage_records within the
+    // requested scope + time window.
+    let conn = crate::db::get_db()?;
+    aggregate_from_db(&conn, scope, lo, hi).map_err(|e| e.to_string())
 }

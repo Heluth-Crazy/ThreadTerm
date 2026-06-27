@@ -47,6 +47,11 @@ use session::{
 /// the frontend explicitly flips this on through `set_command_blocks_enabled`.
 static BLOCK_PARSER_ENABLED: AtomicBool = AtomicBool::new(false);
 
+/// Serializes PTY open+spawn so concurrent terminal creation can't race ConPTY
+/// initialization — a known source of Windows blank/stall on rapid open/close
+/// or multi-card spawn. Cheap and harmless elsewhere (spawns are infrequent).
+static PTY_SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
 pub fn block_parser_enabled() -> bool {
     BLOCK_PARSER_ENABLED.load(Ordering::Relaxed)
 }
@@ -78,28 +83,42 @@ pub async fn pty_create(
         return Ok(id);
     }
 
-    let pty_system = NativePtySystem::default();
+    // Serialize ConPTY/PTY open+spawn across concurrent terminal creations
+    // (Windows blank/stall mitigation; harmless on other platforms). The lock
+    // is held only around open+spawn, then released before the rest of setup.
+    let (pair, child, shell_path) = {
+        let _spawn_guard = PTY_SPAWN_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
 
-    let size = PtySize {
-        rows,
-        cols,
-        pixel_width: 0,
-        pixel_height: 0,
+        let pty_system = NativePtySystem::default();
+
+        let size = PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+
+        let pair = pty_system
+            .openpty(size)
+            .map_err(|e| format!("Failed to open PTY: {e}"))?;
+
+        let shell_path = shell::default_shell();
+        let mut cmd = CommandBuilder::new(&shell_path);
+        // Windows: normalize forward slashes so ConPTY resolves the cwd reliably.
+        #[cfg(target_os = "windows")]
+        cmd.cwd(shell::normalize_windows_cwd(&working_dir));
+        #[cfg(not(target_os = "windows"))]
+        cmd.cwd(&working_dir);
+        shell::configure_shell_command(&mut cmd, &shell_path);
+
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("Failed to spawn shell: {e}"))?;
+        (pair, child, shell_path)
     };
-
-    let pair = pty_system
-        .openpty(size)
-        .map_err(|e| format!("Failed to open PTY: {e}"))?;
-
-    let shell_path = shell::default_shell();
-    let mut cmd = CommandBuilder::new(&shell_path);
-    cmd.cwd(&working_dir);
-    shell::configure_shell_command(&mut cmd, &shell_path);
-
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| format!("Failed to spawn shell: {e}"))?;
 
     // Drop the slave so reads on master detect EOF when the child exits.
     drop(pair.slave);
@@ -250,6 +269,19 @@ pub async fn pty_kill(id: String) -> Result<(), String> {
         // visible as completed/failed, matching desktop behaviour.
         let removed_snapshot = registry::live_session_snapshot_from(&id, &session);
         if let Ok(mut child) = session.child.lock() {
+            // Windows: kill the whole process tree first so grandchildren
+            // (sub-shells, node, git, …) don't orphan after close. `child.kill()`
+            // alone only terminates the direct ConPTY child.
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                if let Some(pid) = child.process_id() {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &pid.to_string()])
+                        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                        .output();
+                }
+            }
             let _ = child.kill();
         }
         // Drop the Arc<PtySession> — when the reader thread also drops its

@@ -10,22 +10,30 @@
  *
  * No drag-and-drop, rename, or delete — keep surface small.
  */
-import { useMemo, useState, type MouseEvent, type ReactNode } from 'react';
+import { useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import {
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Folder,
   FolderOpen,
+  GitBranch,
   Layers,
   Download,
+  Loader2,
   Pencil,
   Play,
+  Plus,
+  RefreshCw,
+  Terminal,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { isTauriEnv } from '../../lib/tauri-bridge';
+import { git, isTauriEnv, type BranchRow } from '../../lib/tauri-bridge';
 import { openLocalDirectory } from '../../lib/localDirectory';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { useProjectGroups } from './useProjectGroups';
+import { clearProjectWorktreeCache } from './useProjectWorktrees';
+import { clearProjectBranchCache, useProjectBranches } from './useProjectBranches';
 import {
   classifyApplyEntries,
   type ApplyPresetEntry,
@@ -41,6 +49,7 @@ import {
 } from '../../lib/workflows/workflowRun';
 import { ApplyPresetDialog } from '../workflows/ApplyPresetDialog';
 import type { DiscoveryErrorReason } from '../../lib/workflows/discoverWorkflows';
+import { pendingWorktreePath, samePath } from '../../lib/worktreePaths';
 
 const DISCOVERY_ERROR_I18N_KEY: Record<DiscoveryErrorReason, string> = {
   'parse-failed': 'parseFailed',
@@ -53,6 +62,15 @@ interface ProjectSidebarProps {
   className?: string;
   onImportWorkflow?: (projectPath: string, projectName: string) => void;
   onCloseMobile?: () => void;
+}
+
+type ProjectGroup = ReturnType<typeof useProjectGroups>[number];
+
+interface SidebarRowAuxAction {
+  key: string;
+  title?: string;
+  icon: ReactNode;
+  onClick: (e: MouseEvent) => void;
 }
 
 export function ProjectSidebar({
@@ -69,7 +87,9 @@ export function ProjectSidebar({
     [cards],
   );
   const selectedPath = useTerminalStore((s) => s.selectedProjectPath);
+  const selectedWorktreePath = useTerminalStore((s) => s.selectedWorktreePath);
   const selectProject = useTerminalStore((s) => s.selectProject);
+  const selectWorktree = useTerminalStore((s) => s.selectWorktree);
   const createCard = useTerminalStore((s) => s.createCard);
   const focusCard = useTerminalStore((s) => s.focusCard);
   const updateCardAiIntent = useTerminalStore((s) => s.updateCardAiIntent);
@@ -175,6 +195,67 @@ export function ProjectSidebar({
     onImportWorkflow?.(projectPath, projectName);
   };
 
+  const handleOpenWorktreeTerminal = (
+    projectPath: string,
+    projectName: string,
+    worktreePath: string,
+    branchLabel?: string,
+  ) => {
+    const id = createCard({
+      projectName,
+      projectPath,
+      worktreePath,
+      branchLabel,
+      terminalType: 'shell',
+    });
+    selectWorktree(projectPath, worktreePath, branchLabel);
+    focusCard(id);
+  };
+
+  const handleSelectWorktree = (
+    projectPath: string,
+    worktreePath: string,
+    label?: string | null,
+  ) => {
+    selectWorktree(projectPath, worktreePath, label);
+  };
+
+  const handleCreateWorktreeAndOpen = async (
+    projectPath: string,
+    projectName: string,
+    branch: string,
+    refreshBranches: () => Promise<void>,
+  ) => {
+    try {
+      const worktree = await git.worktrees.add(projectPath, branch);
+      clearProjectBranchCache();
+      clearProjectWorktreeCache();
+      await refreshBranches();
+      handleOpenWorktreeTerminal(projectPath, projectName, worktree.path, branch);
+      pushNotification({
+        cardId: 'system:worktrees',
+        kind: 'completed',
+        title: t('sidebar.createWorktree', {
+          defaultValue: 'Create worktree and open terminal',
+        }),
+        body: t('sidebar.worktreeCreated', {
+          path: worktree.path,
+          defaultValue: 'Created worktree {{path}}.',
+        }),
+      });
+    } catch (err) {
+      pushNotification({
+        cardId: 'system:worktrees',
+        kind: 'failed',
+        title: t('sidebar.worktreeCreateFailed', {
+          defaultValue: 'Failed to create worktree',
+        }),
+        body: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  };
+
   const confirmApplyPreset = () => {
     if (!applyPreset) return;
     let lastCreatedId: string | null = null;
@@ -264,22 +345,12 @@ export function ProjectSidebar({
         )}
 
         {groups.map((g) => (
-          <SidebarRow
+          <ProjectBranchSection
             key={g.path}
+            group={g}
             collapsed={collapsed}
             selected={selectedPath === g.path}
-            icon={
-              selectedPath === g.path ? (
-                <FolderOpen className="h-3.5 w-3.5" />
-              ) : (
-                <Folder className="h-3.5 w-3.5" />
-              )
-            }
-            label={g.name}
-            subLabel={g.path}
-            count={g.cards.length}
-            unread={g.unreadCount}
-            onClick={() => selectProject(g.path)}
+            onSelect={() => selectProject(g.path)}
             onContextMenu={(event) => {
               event.preventDefault();
               setContextMenu({
@@ -289,8 +360,11 @@ export function ProjectSidebar({
                 name: g.name,
               });
             }}
-            onAux={(e) => handleOpenDir(g.path, e)}
-            auxTitle={isTauriEnv() ? t('sidebar.openDir') : undefined}
+            onOpenDir={(event) => handleOpenDir(g.path, event)}
+            onOpenTerminal={handleOpenWorktreeTerminal}
+            onSelectWorktree={handleSelectWorktree}
+            onCreateWorktreeAndOpen={handleCreateWorktreeAndOpen}
+            selectedWorktreePath={selectedWorktreePath}
           />
         ))}
 
@@ -355,6 +429,340 @@ export function ProjectSidebar({
   );
 }
 
+interface ProjectBranchSectionProps {
+  group: ProjectGroup;
+  collapsed: boolean;
+  selected: boolean;
+  onSelect: () => void;
+  onContextMenu: (event: MouseEvent) => void;
+  onOpenDir: (event: MouseEvent) => void;
+  selectedWorktreePath: string | null;
+  onOpenTerminal: (
+    projectPath: string,
+    projectName: string,
+    worktreePath: string,
+    branchLabel?: string,
+  ) => void;
+  onSelectWorktree: (projectPath: string, worktreePath: string, label?: string | null) => void;
+  onCreateWorktreeAndOpen: (
+    projectPath: string,
+    projectName: string,
+    branch: string,
+    refreshBranches: () => Promise<void>,
+  ) => Promise<void>;
+}
+
+function ProjectBranchSection({
+  group,
+  collapsed,
+  selected,
+  onSelect,
+  onContextMenu,
+  onOpenDir,
+  selectedWorktreePath,
+  onOpenTerminal,
+  onSelectWorktree,
+  onCreateWorktreeAndOpen,
+}: ProjectBranchSectionProps) {
+  const { t } = useTranslation('terminal');
+  const { branches, loading, error, refresh } = useProjectBranches(group.path);
+  const [expanded, setExpanded] = useState(false);
+  const hasBranches = branches.length > 0;
+  const auxActions: SidebarRowAuxAction[] = [
+    ...(isTauriEnv()
+      ? [
+          {
+            key: 'open-dir',
+            title: t('sidebar.openDir'),
+            icon: <FolderOpen className="h-3 w-3" />,
+            onClick: onOpenDir,
+          },
+        ]
+      : []),
+    ...(hasBranches
+      ? [
+          {
+            key: 'refresh-branches',
+            title: t('sidebar.refreshWorktrees'),
+            icon: loading ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3 w-3" />
+            ),
+            onClick: (event: MouseEvent) => {
+              event.stopPropagation();
+              void refresh();
+            },
+          },
+        ]
+      : []),
+  ];
+
+  return (
+    <div>
+      <SidebarRow
+        collapsed={collapsed}
+        selected={selected}
+        icon={
+          selected ? (
+            <FolderOpen className="h-3.5 w-3.5" />
+          ) : (
+            <Folder className="h-3.5 w-3.5" />
+          )
+        }
+        label={group.name}
+        subLabel={group.path}
+        count={group.cards.length}
+        unread={group.unreadCount}
+        onClick={onSelect}
+        onContextMenu={onContextMenu}
+        auxActions={auxActions}
+        hasChildren={hasBranches}
+        expanded={expanded}
+        toggleTitle={expanded ? t('sidebar.collapse') : t('sidebar.expand')}
+        onToggle={(event) => {
+          event.stopPropagation();
+          setExpanded((value) => !value);
+        }}
+      />
+      {!collapsed && hasBranches && expanded && (
+        <ProjectBranchTree
+          projectPath={group.path}
+          projectName={group.name}
+          branches={branches}
+          error={error}
+          refresh={refresh}
+          selectedWorktreePath={selectedWorktreePath}
+          onOpenTerminal={onOpenTerminal}
+          onSelectWorktree={onSelectWorktree}
+          onCreateWorktreeAndOpen={onCreateWorktreeAndOpen}
+        />
+      )}
+    </div>
+  );
+}
+
+function basename(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '');
+  return trimmed.split(/[\\/]/).pop() || path;
+}
+
+function shortHead(head: string): string {
+  return head ? head.slice(0, 7) : '';
+}
+
+const MAX_COLLAPSED_BRANCHES = 8;
+
+interface ProjectBranchTreeProps {
+  projectPath: string;
+  projectName: string;
+  branches: BranchRow[];
+  error: string | null;
+  refresh: () => Promise<void>;
+  selectedWorktreePath: string | null;
+  onOpenTerminal: (
+    projectPath: string,
+    projectName: string,
+    worktreePath: string,
+    branchLabel?: string,
+  ) => void;
+  onSelectWorktree: (projectPath: string, worktreePath: string, label?: string | null) => void;
+  onCreateWorktreeAndOpen: (
+    projectPath: string,
+    projectName: string,
+    branch: string,
+    refreshBranches: () => Promise<void>,
+  ) => Promise<void>;
+}
+
+function visibleBranchRows(branches: BranchRow[], showAll: boolean): BranchRow[] {
+  if (showAll || branches.length <= MAX_COLLAPSED_BRANCHES) return branches;
+  const pinned = branches.filter((row) => row.isCurrent || row.worktreePath);
+  const pinnedBranches = new Set(pinned.map((row) => row.branch));
+  const rest = branches.filter((row) => !pinnedBranches.has(row.branch));
+  const restLimit = Math.max(0, MAX_COLLAPSED_BRANCHES - pinned.length);
+  return [...pinned, ...rest.slice(0, restLimit)];
+}
+
+function ProjectBranchTree({
+  projectPath,
+  projectName,
+  branches,
+  error,
+  refresh,
+  selectedWorktreePath,
+  onOpenTerminal,
+  onSelectWorktree,
+  onCreateWorktreeAndOpen,
+}: ProjectBranchTreeProps) {
+  const { t } = useTranslation('terminal');
+  const [showAll, setShowAll] = useState(false);
+  const [creatingBranch, setCreatingBranch] = useState<string | null>(null);
+  const visibleBranches = visibleBranchRows(branches, showAll);
+  const hiddenCount = branches.length - visibleBranches.length;
+
+  return (
+    <div className="mb-1 ml-4 border-l border-border/60 pl-2">
+      {error && (
+        <div className="px-2 py-1 text-[10px] text-red-500">
+          {error}
+        </div>
+      )}
+      <div className="space-y-0.5">
+        {visibleBranches.map((branch) => {
+          const worktreePath = branch.worktreePath ?? '';
+          const targetWorktreePath =
+            worktreePath || pendingWorktreePath(projectPath, branch.branch);
+          const isSelected = selectedWorktreePath
+            ? worktreePath
+              ? samePath(selectedWorktreePath, worktreePath)
+              : selectedWorktreePath === targetWorktreePath
+            : false;
+          const isCreating = creatingBranch === branch.branch;
+          const detail = worktreePath
+            ? basename(worktreePath)
+            : branch.upstream || shortHead(branch.head);
+          const branchIconClass = branch.isCurrent
+            ? 'text-primary'
+            : worktreePath
+              ? 'text-foreground/70'
+              : 'text-muted-foreground/50';
+          const branchTextClass = branch.isCurrent
+            ? 'text-primary'
+            : worktreePath
+              ? 'text-foreground/90'
+              : 'text-foreground/70';
+          const detailClass = branch.isCurrent
+            ? 'text-primary/70'
+            : 'text-muted-foreground';
+          const runBranchAction = async (event: MouseEvent | KeyboardEvent) => {
+            event.stopPropagation();
+            if (isCreating) return;
+            if (worktreePath) {
+              onOpenTerminal(projectPath, projectName, worktreePath, branch.branch);
+              return;
+            }
+            setCreatingBranch(branch.branch);
+            try {
+              await onCreateWorktreeAndOpen(
+                projectPath,
+                projectName,
+                branch.branch,
+                refresh,
+              );
+            } catch {
+              // The parent handler already emits the failure notification.
+            } finally {
+              setCreatingBranch(null);
+            }
+          };
+          return (
+            <button
+              key={branch.branch}
+              type="button"
+              title={
+                worktreePath
+                  ? `${branch.branch} — ${worktreePath}`
+                  : branch.branch
+              }
+              onClick={() => onSelectWorktree(projectPath, targetWorktreePath, branch.branch)}
+              className={[
+                'group relative flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left text-[12px] hover:bg-accent',
+                isSelected ? 'bg-primary/10 text-primary' : branchTextClass,
+              ].join(' ')}
+            >
+              {isSelected && (
+                <span
+                  aria-hidden="true"
+                  className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-primary"
+                />
+              )}
+              <span className={['shrink-0 group-hover:text-primary', branchIconClass].join(' ')}>
+                <GitBranch className="h-3.5 w-3.5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">{branch.branch}</span>
+                {detail && (
+                  <span className={['block truncate text-[10px]', detailClass].join(' ')}>
+                    {detail}
+                  </span>
+                )}
+              </span>
+              {branch.isCurrent && (
+                <span
+                  aria-label={t('sidebar.currentBranch', { defaultValue: 'Current branch' })}
+                  title={t('sidebar.currentBranch', { defaultValue: 'Current branch' })}
+                  className="mr-0.5 shrink-0 rounded bg-primary/15 px-1 py-0.5 text-[9px] font-medium leading-none text-primary"
+                >
+                  {t('sidebar.currentShort', { defaultValue: 'Current' })}
+                </span>
+              )}
+              {isCreating ? (
+                <Loader2
+                  className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground"
+                  aria-label={t('sidebar.creatingWorktree', {
+                    defaultValue: 'Creating worktree...',
+                  })}
+                />
+              ) : worktreePath ? (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  aria-label={t('sidebar.openWorktreeTerminal')}
+                  title={t('sidebar.openWorktreeTerminal')}
+                  onClick={runBranchAction}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      void runBranchAction(event);
+                    }
+                  }}
+                  className="shrink-0 text-muted-foreground opacity-60 transition-opacity hover:text-primary group-hover:opacity-100"
+                >
+                  <Terminal className="h-3.5 w-3.5" />
+                </span>
+              ) : (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  aria-label={t('sidebar.createWorktree', {
+                    defaultValue: 'Create worktree and open terminal',
+                  })}
+                  title={t('sidebar.createWorktree', {
+                    defaultValue: 'Create worktree and open terminal',
+                  })}
+                  onClick={runBranchAction}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      void runBranchAction(event);
+                    }
+                  }}
+                  className="shrink-0 text-muted-foreground opacity-60 transition-opacity hover:text-primary group-hover:opacity-100"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </span>
+              )}
+            </button>
+          );
+        })}
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowAll(true)}
+            className="w-full rounded-[var(--radius-md)] px-2 py-1 text-center text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          >
+            {t('sidebar.showAllBranches', {
+              count: branches.length,
+              defaultValue: 'Show all {{count}} branches',
+            })}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 interface SidebarRowProps {
   collapsed: boolean;
   selected: boolean;
@@ -365,8 +773,11 @@ interface SidebarRowProps {
   unread: number;
   onClick: () => void;
   onContextMenu?: (e: MouseEvent) => void;
-  onAux?: (e: MouseEvent) => void;
-  auxTitle?: string;
+  auxActions?: SidebarRowAuxAction[];
+  hasChildren?: boolean;
+  expanded?: boolean;
+  toggleTitle?: string;
+  onToggle?: (e: MouseEvent) => void;
 }
 
 function SidebarRow({
@@ -379,8 +790,11 @@ function SidebarRow({
   unread,
   onClick,
   onContextMenu,
-  onAux,
-  auxTitle,
+  auxActions = [],
+  hasChildren = false,
+  expanded = false,
+  toggleTitle,
+  onToggle,
 }: SidebarRowProps) {
   return (
     <button
@@ -403,6 +817,42 @@ function SidebarRow({
           className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-primary"
         />
       )}
+      {!collapsed && (
+        <span
+          data-testid="sidebar-disclosure-column"
+          className="flex h-full w-4 shrink-0 items-center justify-center"
+        >
+          {hasChildren && onToggle ? (
+            <span
+              role="button"
+              tabIndex={0}
+              data-testid="sidebar-disclosure-toggle"
+              onClick={onToggle}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onToggle(e as unknown as MouseEvent);
+                }
+              }}
+              title={toggleTitle}
+              className="flex h-5 w-4 items-center justify-center text-muted-foreground hover:text-primary"
+            >
+              {expanded ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
+              )}
+            </span>
+          ) : (
+            <span
+              aria-hidden="true"
+              data-testid="sidebar-disclosure-placeholder"
+              className="h-5 w-4"
+            />
+          )}
+        </span>
+      )}
       <span className="relative shrink-0">
         {icon}
         {unread > 0 && (
@@ -422,26 +872,42 @@ function SidebarRow({
           >
             {label}
           </span>
+          {/* Count badge stays last in the flex flow, so its right edge aligns
+              across every row regardless of how many aux actions a row has. */}
           <span
             className={[
-              'shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums',
+              'shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums transition-opacity',
+              auxActions.length > 0 ? 'group-hover:opacity-0' : '',
               selected ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground',
             ].join(' ')}
           >
             {count}
           </span>
-          {onAux && (
-            <span
-              role="button"
-              tabIndex={0}
-              onClick={onAux}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') onAux(e as unknown as MouseEvent);
-              }}
-              title={auxTitle}
-              className="ml-0.5 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-primary group-hover:opacity-100"
-            >
-              <FolderOpen className="h-3 w-3" />
+          {/* Hover actions float over the row's right edge instead of occupying
+              flow width — otherwise their (invisible) boxes would push the count
+              badge left by a per-row-variable amount and misalign it. On hover
+              the badge fades out and these fade in, so they never overlap. */}
+          {auxActions.length > 0 && (
+            <span className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+              {auxActions.map((action) => (
+                <span
+                  key={action.key}
+                  role="button"
+                  tabIndex={0}
+                  onClick={action.onClick}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      action.onClick(e as unknown as MouseEvent);
+                    }
+                  }}
+                  title={action.title}
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-primary"
+                >
+                  {action.icon}
+                </span>
+              ))}
             </span>
           )}
         </>

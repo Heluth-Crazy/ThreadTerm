@@ -17,6 +17,7 @@ and the bridge server.
 | Guide | Description | Status |
 |-------|-------------|--------|
 | [macOS Overlay / NSPanel](./macos-overlay-nspanel.md) | objc2 rules for selector/float/pet panels; forbidden private-API KVC | Active |
+| [Stats OpenCode Usage Ingestion](./stats-opencode.md) | OpenCode SQLite token usage ingestion and `opencode` provider contracts | Active |
 
 ---
 

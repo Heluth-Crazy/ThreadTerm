@@ -1,6 +1,8 @@
 mod ai_explain;
 mod bridge;
+mod codex_app;
 mod db;
+mod git;
 mod local_directory;
 mod notification;
 mod overlay;
@@ -81,6 +83,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ai_explain::ai_explain,
             supervisor::supervisor_enable,
+            git::git_branch_overview,
+            git::git_worktree_add,
+            git::git_worktree_list,
             local_directory::open_local_directory,
             pty::pty_create,
             pty::pty_input,
@@ -98,6 +103,7 @@ pub fn run() {
             provider_sessions::provider_list_recent_sessions,
             stats::stats_compute,
             stats::stats_cancel,
+            stats::stats_rebuild,
             platform_material::native_platform_material_state,
             shell_integration::detect_shell,
             shell_integration::preview_shell_integration,
@@ -115,6 +121,14 @@ pub fn run() {
             bridge::bridge_resolve_mobile_close,
             bridge::bridge_resolve_mobile_rename_card,
             bridge::bridge_broadcast_theme,
+            codex_app::codex_app_status,
+            codex_app::codex_app_open_card,
+            codex_app::codex_app_send_message,
+            codex_app::codex_app_respond_request,
+            codex_app::codex_app_interrupt,
+            codex_app::codex_app_compact,
+            codex_app::codex_app_set_goal,
+            codex_app::codex_app_list_skills,
             overlay::overlay_show_selector,
             overlay::overlay_hide_selector,
             overlay::overlay_show_float,
