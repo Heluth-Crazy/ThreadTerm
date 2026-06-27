@@ -76,6 +76,7 @@
     "refresh": "刷新",
     "close": "关闭",
     "range": { "today": "今天", "7d": "7 天", "30d": "30 天", "all": "全部" },
+    "scope": { "all": "全部", "claude": "Claude", "codex": "Codex", "opencode": "OpenCode" },
     "tokens": "tokens",
     "sessions": "会话",
     "calls": "调用",

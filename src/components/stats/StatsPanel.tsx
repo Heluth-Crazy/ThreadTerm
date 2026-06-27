@@ -1,6 +1,6 @@
 /**
  * StatsPanel — right sidebar showing token usage + cost aggregated across all
- * Claude/Codex sessions on the machine. Mounted by TerminalManager behind a
+ * Claude/Codex/OpenCode sessions on the machine. Mounted by TerminalManager behind a
  * `statsOpen` toggle, same pattern as BookmarksSidebar / ArchivedCardsPanel.
  */
 import { useEffect } from 'react';
@@ -8,9 +8,16 @@ import { useTranslation } from 'react-i18next';
 import { BarChart3, RefreshCw, X } from 'lucide-react';
 import { useStatsStore } from '../../stores/statsStore';
 import { formatCost, formatTokens } from '../../lib/statsFormat';
-import type { StatBucket, StatsRange } from '../../types/stats';
+import type { StatBucket, StatsRange, StatsScope } from '../../types/stats';
 
 const RANGES: StatsRange[] = ['today', '7d', '30d', 'all'];
+const SCOPES: StatsScope[] = ['all', 'claude', 'codex', 'opencode'];
+const SCOPE_LABEL_FALLBACKS: Record<StatsScope, string> = {
+  all: 'All',
+  claude: 'Claude',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+};
 
 function basename(p: string): string {
   const parts = p.replace(/[\\/]+$/, '').split(/[\\/]/);
@@ -27,9 +34,11 @@ export function StatsPanel({ onClose }: StatsPanelProps) {
   const loading = useStatsStore((s) => s.loading);
   const error = useStatsStore((s) => s.error);
   const range = useStatsStore((s) => s.range);
+  const scope = useStatsStore((s) => s.scope);
   const scanned = useStatsStore((s) => s.scanned);
   const total = useStatsStore((s) => s.total);
   const setRange = useStatsStore((s) => s.setRange);
+  const setScope = useStatsStore((s) => s.setScope);
   const compute = useStatsStore((s) => s.compute);
 
   // Compute on first open if we have nothing yet.
@@ -65,19 +74,45 @@ export function StatsPanel({ onClose }: StatsPanelProps) {
         </div>
       </div>
 
-      <div className="flex shrink-0 gap-1 border-b border-border/60 px-3 py-2">
-        {RANGES.map((r) => (
-          <button
-            key={r}
-            type="button"
-            onClick={() => setRange(r)}
-            className={`rounded-[var(--radius-md)] px-2 py-1 text-[11px] transition-colors ${
-              range === r ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent'
-            }`}
-          >
-            {t(`stats.range.${r}`, { defaultValue: r })}
-          </button>
-        ))}
+      <div className="flex shrink-0 flex-col gap-2 border-b border-border/60 px-3 py-2">
+        <div
+          className="flex flex-wrap gap-1"
+          role="group"
+          aria-label={t('stats.rangeLabel', { defaultValue: 'Range' })}
+        >
+          {RANGES.map((r) => (
+            <button
+              key={r}
+              type="button"
+              aria-pressed={range === r}
+              onClick={() => setRange(r)}
+              className={`rounded-[var(--radius-md)] px-2 py-1 text-[11px] transition-colors ${
+                range === r ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent'
+              }`}
+            >
+              {t(`stats.range.${r}`, { defaultValue: r })}
+            </button>
+          ))}
+        </div>
+        <div
+          className="flex flex-wrap gap-1"
+          role="group"
+          aria-label={t('stats.scopeLabel', { defaultValue: 'Scope' })}
+        >
+          {SCOPES.map((s) => (
+            <button
+              key={s}
+              type="button"
+              aria-pressed={scope === s}
+              onClick={() => setScope(s)}
+              className={`rounded-[var(--radius-md)] px-2 py-1 text-[11px] transition-colors ${
+                scope === s ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent'
+              }`}
+            >
+              {t(`stats.scope.${s}`, { defaultValue: SCOPE_LABEL_FALLBACKS[s] })}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
