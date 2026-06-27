@@ -23,6 +23,7 @@ import { CreateTerminalDialog } from './CreateTerminalDialog';
 import { ProjectSidebar } from './ProjectSidebar';
 import { BookmarksSidebar } from './BookmarksSidebar';
 import { ArchivedCardsPanel } from './ArchivedCardsPanel';
+import { SessionDock } from './SessionDock';
 import { StatsPanel } from '../stats/StatsPanel';
 import { useStatsSubscription } from '../../stores/statsStore';
 import { CommandPalette } from '../palette/CommandPalette';
@@ -158,6 +159,8 @@ export function TerminalManager() {
   const blocks = useTerminalStore((s) => s.blocks);
   const updateCardAiIntent = useTerminalStore((s) => s.updateCardAiIntent);
   const pushNotification = useTerminalStore((s) => s.pushNotification);
+  const dockPinned = useTerminalStore((s) => s.dockPinned);
+  const toggleDockPin = useTerminalStore((s) => s.toggleDockPin);
   const { workflows, reload: reloadWorkflows } = useWorkflows();
 
   // AI Supervisor v0.1 — single mount point in the React tree. Hook is a no-op
@@ -215,6 +218,7 @@ export function TerminalManager() {
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
+  const [dockHovered, setDockHovered] = useState(false);
   useStatsSubscription();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteInitialGroup, setPaletteInitialGroup] = useState<CommandGroup | null>(null);
@@ -512,6 +516,20 @@ export function TerminalManager() {
     focusCard(null);
     setViewMode('grid');
   }, [focusCard]);
+
+  const sessionDockAvailable = viewMode === 'focus' && Boolean(focusedCard);
+  const sessionDockVisible = sessionDockAvailable && (dockPinned || dockHovered);
+
+  useEffect(() => {
+    if (!sessionDockAvailable && dockHovered) {
+      setDockHovered(false);
+    }
+  }, [dockHovered, sessionDockAvailable]);
+
+  const handleCloseSessionDock = useCallback(() => {
+    if (dockPinned) toggleDockPin();
+    setDockHovered(false);
+  }, [dockPinned, toggleDockPin]);
 
   const handleJumpToBlock = useCallback(
     ({ cardId, blockId }: { cardId: string; blockId: string }) => {
@@ -1017,6 +1035,24 @@ export function TerminalManager() {
               </div>
             );
           })}
+
+        {sessionDockAvailable && (
+          <>
+            <button
+              type="button"
+              aria-label={t('dock.hoverHandle')}
+              onFocus={() => setDockHovered(true)}
+              onMouseEnter={() => setDockHovered(true)}
+              className="absolute bottom-0 right-0 top-0 z-[34] w-3 cursor-ew-resize"
+            />
+            <SessionDock
+              visible={sessionDockVisible}
+              pinned={dockPinned}
+              onClose={handleCloseSessionDock}
+              onHoverChange={setDockHovered}
+            />
+          </>
+        )}
       </div>
 
       {/* Shortcut hint — dismissible. Anchored to the LEFT so it can't

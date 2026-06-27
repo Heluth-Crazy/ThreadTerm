@@ -14,6 +14,7 @@
  *   Ctrl+N                  open "create terminal" dialog
  *   Ctrl+W                  close the currently focused card
  *   Ctrl+B                  toggle notification centre
+ *   Ctrl+E                  pin / unpin the focus-mode session dock
  *   Ctrl+Shift+M            return focused terminal to grid
  *   Escape                  close non-terminal drawers only; terminal Esc is reserved for CLIs
  *
@@ -52,6 +53,14 @@ export function KeyboardBridge(): null {
         const ov = useOverlayStore.getState();
         if (ov.selectorOpen) ov.closeSelector();
         else ov.openSelector('inline');
+        return;
+      }
+
+      // Ctrl/Cmd+E — pin / unpin the focus-mode session dock.
+      if (mod && (e.key === 'e' || e.key === 'E') && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        s.getState().toggleDockPin();
         return;
       }
 

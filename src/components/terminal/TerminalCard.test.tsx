@@ -85,6 +85,12 @@ describe('TerminalCardComponent AI session export', () => {
     expect(screen.getByText('worktree: feature/worktree-ui')).toBeInTheDocument();
   });
 
+  it('shows the card status badge in the ownership strip', () => {
+    render(<TerminalCardComponent card={makeCard({ status: 'waiting' })} isFocused={false} />);
+
+    expect(screen.getByText('Waiting')).toBeInTheDocument();
+  });
+
   it('exports provider card session metadata from the card action strip', async () => {
     render(<TerminalCardComponent card={makeCard()} isFocused={false} />);
 

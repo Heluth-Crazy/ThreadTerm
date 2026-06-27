@@ -62,6 +62,14 @@
     "empty": "No cards match “{{query}}”.",
     "clear": "Clear search"
   },
+  "dock": {
+    "title": "Recent sessions",
+    "shortcut": "Cmd/Ctrl+E",
+    "close": "Close session dock",
+    "empty": "No recent sessions",
+    "current": "Current",
+    "hoverHandle": "Show recent sessions"
+  },
   "stats": {
     "title": "Token usage",
     "toggle": "Token usage",
