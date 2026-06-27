@@ -51,6 +51,13 @@ import i18n from '../i18n/config.js';
 import { isTauriEnv, pty } from '../lib/tauri-bridge';
 import { emitSettingsChanged, type TerminalPreferenceSnapshot } from '../lib/settingsSync';
 import { orderCardsByIdList } from '../lib/cardSort';
+import {
+  cardMatchesWorktree,
+  effectiveWorktreePath,
+  isPendingWorktreePath,
+  pathBasename,
+  samePath,
+} from '../lib/worktreePaths';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -117,12 +124,6 @@ function isProviderSessionType(type: TerminalCard['terminalType']): boolean {
   return type === 'claude' || type === 'codex';
 }
 
-function pathBasename(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/, '');
-  const parts = trimmed.split(/[\\/]/);
-  return parts[parts.length - 1] || trimmed || 'Unknown project';
-}
-
 function providerSessionKey(provider: ProviderSessionImportInfo['provider'], id: string): string {
   return `${provider}\0${id}`;
 }
@@ -182,6 +183,10 @@ interface TerminalStore {
 
   /** Selected project path for the left sidebar filter. `null` = "All". */
   selectedProjectPath: string | null;
+  /** Selected worktree path for the branch/worktree filter. `null` = project level. */
+  selectedWorktreePath: string | null;
+  /** Human-readable selected branch/worktree label for breadcrumbs and empty states. */
+  selectedWorktreeLabel: string | null;
 
   /**
    * User-defined card order scoped by exact `projectPath`.
@@ -316,8 +321,12 @@ interface TerminalStore {
 
   // ─── project sidebar ────────────────────────────────────────────────────
   selectProject: (path: string | null) => void;
-  getCardsForProjectView: (path: string | null) => TerminalCard[];
-  getArchivedCardsForProject: (path: string) => ArchivedTerminalCard[];
+  selectWorktree: (projectPath: string, worktreePath: string, label?: string | null) => void;
+  getCardsForProjectView: (path: string | null, worktreePath?: string | null) => TerminalCard[];
+  getArchivedCardsForProject: (
+    path: string,
+    worktreePath?: string | null,
+  ) => ArchivedTerminalCard[];
 
   // ─── pinned cards (global overlay) ───────────────────────────────────────
   pinCard: (id: string) => boolean;
@@ -370,9 +379,12 @@ function cardsForProjectView(
   cards: readonly TerminalCard[],
   projectCardOrder: Record<string, string[]> | undefined,
   path: string | null,
+  worktreePath?: string | null,
 ): TerminalCard[] {
   if (!path) return [...cards];
-  const projectCards = cards.filter((card) => card.projectPath === path);
+  const projectCards = cards.filter(
+    (card) => card.projectPath === path && cardMatchesWorktree(card, worktreePath),
+  );
   return orderCardsByIdList(projectCards, projectCardOrder?.[path]);
 }
 
@@ -440,9 +452,10 @@ function restoreArchivedCardSnapshot(card: ArchivedTerminalCard, now: number): T
 function archivedCardsForProject(
   archivedCards: readonly ArchivedTerminalCard[] | undefined,
   path: string,
+  worktreePath?: string | null,
 ): ArchivedTerminalCard[] {
   return (archivedCards ?? [])
-    .filter((card) => card.projectPath === path)
+    .filter((card) => card.projectPath === path && cardMatchesWorktree(card, worktreePath))
     .sort((a, b) => b.archivedAt - a.archivedAt);
 }
 
@@ -458,6 +471,8 @@ export const useTerminalStore = create<TerminalStore>()(
       focusedCardId: null,
       lastActiveCardId: null,
       selectedProjectPath: null,
+      selectedWorktreePath: null,
+      selectedWorktreeLabel: null,
       projectCardOrder: {},
 
       pinnedCardIds: [],
@@ -515,6 +530,7 @@ export const useTerminalStore = create<TerminalStore>()(
           projectPath: options.projectPath,
           projectName: options.projectName,
           worktreePath: options.worktreePath,
+          branchLabel: options.branchLabel,
           terminalType: options.terminalType,
           command: options.command,
           providerSessionId: options.terminalType === 'claude' ? uuid() : undefined,
@@ -652,12 +668,29 @@ export const useTerminalStore = create<TerminalStore>()(
           // if the removed card was the last one for its project and the project
           // was selected, fall back to "All"
           let selectedProjectPath = state.selectedProjectPath;
+          let selectedWorktreePath = state.selectedWorktreePath;
+          let selectedWorktreeLabel = state.selectedWorktreeLabel;
           if (
             target &&
             selectedProjectPath === target.projectPath &&
             !cards.some((c) => c.projectPath === target.projectPath)
           ) {
             selectedProjectPath = null;
+            selectedWorktreePath = null;
+            selectedWorktreeLabel = null;
+          } else if (
+            target &&
+            selectedWorktreePath &&
+            !isPendingWorktreePath(selectedWorktreePath) &&
+            samePath(effectiveWorktreePath(target), selectedWorktreePath) &&
+            !cards.some(
+              (c) =>
+                c.projectPath === target.projectPath &&
+                samePath(effectiveWorktreePath(c), selectedWorktreePath),
+            )
+          ) {
+            selectedWorktreePath = null;
+            selectedWorktreeLabel = null;
           }
           // Also drop from the pinned list so it doesn't linger as a dead entry.
           const pinnedCardIds = state.pinnedCardIds.filter((p) => p !== id);
@@ -684,6 +717,8 @@ export const useTerminalStore = create<TerminalStore>()(
             lastActiveCardId,
             notifications,
             selectedProjectPath,
+            selectedWorktreePath,
+            selectedWorktreeLabel,
             projectCardOrder,
             pinnedCardIds,
             blocks,
@@ -748,6 +783,12 @@ export const useTerminalStore = create<TerminalStore>()(
             cards,
             archivedCards,
             selectedProjectPath: restoredCard.projectPath,
+            selectedWorktreePath: state.selectedWorktreePath
+              ? effectiveWorktreePath(restoredCard)
+              : null,
+            selectedWorktreeLabel: state.selectedWorktreePath
+              ? (restoredCard.branchLabel ?? state.selectedWorktreeLabel)
+              : null,
             projectCardOrder: prependProjectCardOrder(
               state.projectCardOrder,
               restoredCard.projectPath,
@@ -1243,6 +1284,7 @@ export const useTerminalStore = create<TerminalStore>()(
           state.cards,
           state.projectCardOrder,
           state.selectedProjectPath,
+          state.selectedWorktreePath,
         );
         if (cards.length === 0) return;
         const i = focusedCardId ? cards.findIndex((c) => c.id === focusedCardId) : -1;
@@ -1257,6 +1299,7 @@ export const useTerminalStore = create<TerminalStore>()(
           state.cards,
           state.projectCardOrder,
           state.selectedProjectPath,
+          state.selectedWorktreePath,
         );
         if (cards.length === 0) return;
         const i = focusedCardId ? cards.findIndex((c) => c.id === focusedCardId) : 0;
@@ -1270,6 +1313,7 @@ export const useTerminalStore = create<TerminalStore>()(
           state.cards,
           state.projectCardOrder,
           state.selectedProjectPath,
+          state.selectedWorktreePath,
         );
         if (i < 0 || i >= cards.length) return;
         get().focusCard(cards[i].id);
@@ -1278,22 +1322,48 @@ export const useTerminalStore = create<TerminalStore>()(
       // ─── project sidebar ─────────────────────────────────────────────────
       selectProject: (path) =>
         set((state) => {
-          if (state.selectedProjectPath === path) return state;
+          if (
+            state.selectedProjectPath === path &&
+            state.selectedWorktreePath === null &&
+            state.selectedWorktreeLabel === null
+          ) {
+            return state;
+          }
           // When switching projects, exit focus mode so the user sees the
           // filtered grid of the newly-selected project.
           return {
             selectedProjectPath: path,
+            selectedWorktreePath: null,
+            selectedWorktreeLabel: null,
             focusedCardId: null,
           };
         }),
 
-      getCardsForProjectView: (path) => {
+      selectWorktree: (projectPath, worktreePath, label) =>
+        set((state) => {
+          const selectedWorktreeLabel = label?.trim() || pathBasename(worktreePath);
+          if (
+            state.selectedProjectPath === projectPath &&
+            state.selectedWorktreePath === worktreePath &&
+            state.selectedWorktreeLabel === selectedWorktreeLabel
+          ) {
+            return state;
+          }
+          return {
+            selectedProjectPath: projectPath,
+            selectedWorktreePath: worktreePath,
+            selectedWorktreeLabel,
+            focusedCardId: null,
+          };
+        }),
+
+      getCardsForProjectView: (path, worktreePath) => {
         const state = get();
-        return cardsForProjectView(state.cards, state.projectCardOrder, path);
+        return cardsForProjectView(state.cards, state.projectCardOrder, path, worktreePath);
       },
 
-      getArchivedCardsForProject: (path) =>
-        archivedCardsForProject(get().archivedCards, path),
+      getArchivedCardsForProject: (path, worktreePath) =>
+        archivedCardsForProject(get().archivedCards, path, worktreePath),
 
       // ─── pinned cards (global overlay) ───────────────────────────────────
       pinCard: (id) => {
@@ -1454,6 +1524,8 @@ export const useTerminalStore = create<TerminalStore>()(
         focusedCardId: null,
         lastActiveCardId: state.lastActiveCardId,
         selectedProjectPath: state.selectedProjectPath,
+        selectedWorktreePath: state.selectedWorktreePath,
+        selectedWorktreeLabel: state.selectedWorktreeLabel,
         projectCardOrder: compactProjectCardOrder(state.projectCardOrder, state.cards),
         pinnedCardIds: state.pinnedCardIds,
         notifications: state.notifications,
@@ -1465,7 +1537,7 @@ export const useTerminalStore = create<TerminalStore>()(
         // AI Supervisor v0.1 (PRD D3) — master switch persisted; default OFF.
         supervisorEnabled: state.supervisorEnabled,
       }),
-      version: 14,
+      version: 15,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         const cards = state.cards?.map((card) => ({
@@ -1500,6 +1572,9 @@ export const useTerminalStore = create<TerminalStore>()(
           // cards are projected in their current store order until the user
           // creates or drags a card in a project view.
           projectCardOrder: compactProjectCardOrder(state.projectCardOrder, cards ?? []),
+          // v15 — branch/worktree card filtering state.
+          selectedWorktreePath: state.selectedWorktreePath ?? null,
+          selectedWorktreeLabel: state.selectedWorktreeLabel ?? null,
           // v13 — archived cards live outside the active card list so existing
           // views and bridge snapshots keep showing only active cards.
           archivedCards,

@@ -146,6 +146,8 @@ export interface TerminalCard {
   projectPath: string;
   projectName: string;
   worktreePath?: string;
+  /** Human-readable branch/worktree label when the card belongs to a branch view. */
+  branchLabel?: string;
   terminalType: TerminalType;
   /** Optional initial command executed after PTY spawn. */
   command?: string;
@@ -255,6 +257,7 @@ export interface TerminalCreateOptions {
   /** Optional initial command. If omitted, terminalType's default command is used. */
   command?: string;
   worktreePath?: string;
+  branchLabel?: string;
 }
 
 export interface ProviderSessionImportInfo {

@@ -44,10 +44,17 @@
     "tipSuffix": "을 누르면 만들 수 있습니다.",
     "noProjectTitle": "{{project}}에 터미널이 없습니다",
     "noProjectDescription": "여기에서 만들거나 사이드바에서 다른 프로젝트를 선택하세요.",
+    "noWorktreeTitle": "{{worktree}}에 터미널이 없습니다",
+    "noWorktreeDescription": "여기에서 만들거나 {{project}}의 모든 터미널을 보세요.",
+    "noPendingBranchTitle": "{{branch}}의 worktree가 아직 없습니다",
+    "noPendingBranchDescription": "이 브랜치의 worktree를 만들고 터미널을 엽니다.",
     "newHere": "여기에 만들기",
+    "createWorktreeHere": "worktree 만들고 열기",
     "showAll": "모두 보기",
+    "showProjectAll": "프로젝트 보기",
     "reorderCard": "드래그하여 카드 순서 변경",
-    "reorderDisabledWhileSearching": "검색을 지우면 순서 변경 가능"
+    "reorderDisabledWhileSearching": "검색을 지우면 순서 변경 가능",
+    "reorderDisabledInWorktree": "전체 프로젝트를 보면 순서 변경 가능"
   },
   "cardSearch": {
     "placeholder": "이름 또는 경로로 카드 필터링…",

@@ -44,10 +44,17 @@
     "tipSuffix": "to create one.",
     "noProjectTitle": "No terminals in {{project}}",
     "noProjectDescription": "Create one here, or pick another project from the sidebar.",
+    "noWorktreeTitle": "No terminals in {{worktree}}",
+    "noWorktreeDescription": "Create one here, or show all terminals in {{project}}.",
+    "noPendingBranchTitle": "No worktree for {{branch}} yet",
+    "noPendingBranchDescription": "Create a worktree for this branch and open a terminal.",
     "newHere": "New here",
+    "createWorktreeHere": "Create worktree and open",
     "showAll": "Show all",
+    "showProjectAll": "Show project",
     "reorderCard": "Drag to reorder card",
-    "reorderDisabledWhileSearching": "Clear search to reorder"
+    "reorderDisabledWhileSearching": "Clear search to reorder",
+    "reorderDisabledInWorktree": "Show the whole project to reorder"
   },
   "cardSearch": {
     "placeholder": "Filter cards by name or path…",

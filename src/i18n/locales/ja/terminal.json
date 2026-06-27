@@ -44,10 +44,17 @@
     "tipSuffix": "で作成できます。",
     "noProjectTitle": "{{project}} にターミナルはありません",
     "noProjectDescription": "ここで作成するか、サイドバーから別のプロジェクトを選択してください。",
+    "noWorktreeTitle": "{{worktree}} にターミナルはありません",
+    "noWorktreeDescription": "ここで作成するか、{{project}} のすべてのターミナルを表示してください。",
+    "noPendingBranchTitle": "{{branch}} の worktree はまだありません",
+    "noPendingBranchDescription": "このブランチの worktree を作成してターミナルを開きます。",
     "newHere": "ここで作成",
+    "createWorktreeHere": "worktree を作成して開く",
     "showAll": "すべて表示",
+    "showProjectAll": "プロジェクトを表示",
     "reorderCard": "ドラッグしてカードを並べ替え",
-    "reorderDisabledWhileSearching": "検索をクリアすると並べ替え可能"
+    "reorderDisabledWhileSearching": "検索をクリアすると並べ替え可能",
+    "reorderDisabledInWorktree": "プロジェクト全体を表示すると並べ替え可能"
   },
   "cardSearch": {
     "placeholder": "名前またはパスでカードを絞り込み…",

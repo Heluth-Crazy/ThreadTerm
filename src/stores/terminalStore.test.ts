@@ -18,6 +18,8 @@ function resetStore() {
     focusedCardId: null,
     lastActiveCardId: null,
     selectedProjectPath: null,
+    selectedWorktreePath: null,
+    selectedWorktreeLabel: null,
     projectCardOrder: {},
     pinnedCardIds: [],
     notifications: [],
@@ -757,6 +759,91 @@ describe('terminalStore — project card order', () => {
     useTerminalStore.getState().selectProject(null);
     useTerminalStore.getState().jumpToIndex(0);
     expect(useTerminalStore.getState().focusedCardId).toBe(a);
+  });
+
+  it('stores branch labels on created worktree cards', () => {
+    const id = useTerminalStore.getState().createCard({
+      projectName: 'p1',
+      projectPath: '/p1',
+      worktreePath: '/p1-feature',
+      branchLabel: 'feature/worktree-ui',
+      terminalType: 'shell',
+    });
+
+    expect(useTerminalStore.getState().getCardById(id)).toMatchObject({
+      worktreePath: '/p1-feature',
+      branchLabel: 'feature/worktree-ui',
+    });
+  });
+
+  it('selectWorktree scopes project view and selectProject clears the worktree dimension', () => {
+    const s = useTerminalStore.getState();
+    s.createCard({ projectName: 'root', projectPath: '/p1', terminalType: 'shell' });
+    const worktree = s.createCard({
+      projectName: 'feature',
+      projectPath: '/p1',
+      worktreePath: '/p1-feature',
+      terminalType: 'shell',
+    });
+
+    useTerminalStore.getState().selectWorktree('/p1', '/p1-feature', 'feature/x');
+
+    expect(useTerminalStore.getState().selectedProjectPath).toBe('/p1');
+    expect(useTerminalStore.getState().selectedWorktreePath).toBe('/p1-feature');
+    expect(useTerminalStore.getState().selectedWorktreeLabel).toBe('feature/x');
+    expect(
+      useTerminalStore
+        .getState()
+        .getCardsForProjectView('/p1', '/p1-feature')
+        .map((card) => card.id),
+    ).toEqual([worktree]);
+
+    useTerminalStore.getState().selectProject('/p1');
+    expect(useTerminalStore.getState().selectedProjectPath).toBe('/p1');
+    expect(useTerminalStore.getState().selectedWorktreePath).toBeNull();
+    expect(useTerminalStore.getState().selectedWorktreeLabel).toBeNull();
+  });
+
+  it('uses selected worktree filtering for directory-view shortcuts', () => {
+    const s = useTerminalStore.getState();
+    s.createCard({ projectName: 'root', projectPath: '/p1', terminalType: 'shell' });
+    const first = s.createCard({
+      projectName: 'feature',
+      projectPath: '/p1',
+      worktreePath: '/p1-feature',
+      terminalType: 'shell',
+    });
+    const second = s.createCard({
+      projectName: 'feature',
+      projectPath: '/p1',
+      worktreePath: '/p1-feature',
+      terminalType: 'shell',
+    });
+
+    useTerminalStore.getState().selectWorktree('/p1', '/p1-feature', 'feature/x');
+    useTerminalStore.getState().jumpToIndex(0);
+    expect(useTerminalStore.getState().focusedCardId).toBe(second);
+
+    useTerminalStore.getState().nextCard();
+    expect(useTerminalStore.getState().focusedCardId).toBe(first);
+  });
+
+  it('clears a selected worktree after its last active card is removed', () => {
+    const s = useTerminalStore.getState();
+    s.createCard({ projectName: 'root', projectPath: '/p1', terminalType: 'shell' });
+    const worktree = s.createCard({
+      projectName: 'feature',
+      projectPath: '/p1',
+      worktreePath: '/p1-feature',
+      terminalType: 'shell',
+    });
+    useTerminalStore.getState().selectWorktree('/p1', '/p1-feature', 'feature/x');
+
+    useTerminalStore.getState().removeCard(worktree);
+
+    expect(useTerminalStore.getState().selectedProjectPath).toBe('/p1');
+    expect(useTerminalStore.getState().selectedWorktreePath).toBeNull();
+    expect(useTerminalStore.getState().selectedWorktreeLabel).toBeNull();
   });
 
   it('v11 migration defaults projectCardOrder to an empty object', async () => {

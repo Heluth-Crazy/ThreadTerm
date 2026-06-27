@@ -44,10 +44,17 @@
     "tipSuffix": "即可创建。",
     "noProjectTitle": "{{project}} 中没有终端",
     "noProjectDescription": "可以在这里新建一个，或从侧栏选择其他项目。",
+    "noWorktreeTitle": "{{worktree}} 中没有终端",
+    "noWorktreeDescription": "可以在这里新建一个，或显示 {{project}} 的全部终端。",
+    "noPendingBranchTitle": "{{branch}} 还没有 worktree",
+    "noPendingBranchDescription": "为这个分支创建 worktree 并打开终端。",
     "newHere": "在此新建",
+    "createWorktreeHere": "创建 worktree 并打开",
     "showAll": "显示全部",
+    "showProjectAll": "显示项目",
     "reorderCard": "拖拽以重新排序卡片",
-    "reorderDisabledWhileSearching": "清除搜索后可拖拽排序"
+    "reorderDisabledWhileSearching": "清除搜索后可拖拽排序",
+    "reorderDisabledInWorktree": "显示整个项目后可拖拽排序"
   },
   "cardSearch": {
     "placeholder": "按名称或路径筛选卡片…",

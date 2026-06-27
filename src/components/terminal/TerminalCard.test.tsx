@@ -27,6 +27,9 @@ vi.mock('react-i18next', async (importOriginal) => {
         if (opts && typeof opts === 'object' && 'defaultValue' in opts) {
           return (opts as { defaultValue: string }).defaultValue;
         }
+        if (key === 'card.worktree' && opts && typeof opts === 'object' && 'path' in opts) {
+          return `worktree: ${(opts as { path: string }).path}`;
+        }
         if (typeof opts === 'string') return opts;
         return key;
       },
@@ -68,6 +71,20 @@ afterEach(() => {
 });
 
 describe('TerminalCardComponent AI session export', () => {
+  it('shows the branch label as the card ownership strip', () => {
+    render(
+      <TerminalCardComponent
+        card={makeCard({
+          worktreePath: '/repo/threadterm-feature',
+          branchLabel: 'feature/worktree-ui',
+        })}
+        isFocused={false}
+      />,
+    );
+
+    expect(screen.getByText('worktree: feature/worktree-ui')).toBeInTheDocument();
+  });
+
   it('exports provider card session metadata from the card action strip', async () => {
     render(<TerminalCardComponent card={makeCard()} isFocused={false} />);
 
