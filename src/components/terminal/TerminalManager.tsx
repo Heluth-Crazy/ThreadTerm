@@ -42,9 +42,12 @@ import type { DiscoveredWorkflow } from '../../lib/workflows/discoverWorkflows';
 import type { WorkflowImportPlan } from '../../lib/workflows/importWorkflow';
 import type { TerminalCard, TerminalCreateOptions, TerminalStatus, TerminalType } from '../../types/terminal';
 import { useSupervisor } from '../../lib/supervisor/useSupervisor';
-import { isTauriEnv, mobileBridge, providerSessions } from '../../lib/tauri-bridge';
+import { git, isTauriEnv, mobileBridge, providerSessions } from '../../lib/tauri-bridge';
 import { openSettingsWindow, type SettingsTab } from '../../lib/settingsWindow';
 import type { CardMeta, TerminalStatus as MobileTerminalStatus } from '../../mobile/bridge/protocol';
+import { cardMatchesWorktree } from '../../lib/worktreePaths';
+import { clearProjectBranchCache } from './useProjectBranches';
+import { clearProjectWorktreeCache } from './useProjectWorktrees';
 
 type ViewMode = 'grid' | 'focus';
 
@@ -142,9 +145,12 @@ export function TerminalManager() {
   const restoreArchivedCard = useTerminalStore((s) => s.restoreArchivedCard);
   const importProviderSessionCards = useTerminalStore((s) => s.importProviderSessionCards);
   const selectProject = useTerminalStore((s) => s.selectProject);
+  const selectWorktree = useTerminalStore((s) => s.selectWorktree);
   const toggleNotificationCentre = useTerminalStore((s) => s.toggleNotificationCentre);
   const unreadCount = useTerminalStore((s) => s.notifications.filter((n) => !n.read).length);
   const selectedProjectPath = useTerminalStore((s) => s.selectedProjectPath);
+  const selectedWorktreePath = useTerminalStore((s) => s.selectedWorktreePath);
+  const selectedWorktreeLabel = useTerminalStore((s) => s.selectedWorktreeLabel);
   const pendingFocusCardId = useTerminalStore((s) => s.pendingFocusCardId);
   const setPendingFocusCardId = useTerminalStore((s) => s.setPendingFocusCardId);
   const selectBlock = useTerminalStore((s) => s.selectBlock);
@@ -169,17 +175,25 @@ export function TerminalManager() {
   const selectedProjectArchivedCards = useMemo(() => {
     if (!selectedProjectPath) return [];
     return archivedCards
-      .filter((card) => card.projectPath === selectedProjectPath)
+      .filter(
+        (card) =>
+          card.projectPath === selectedProjectPath &&
+          cardMatchesWorktree(card, selectedWorktreePath),
+      )
       .sort((a, b) => b.archivedAt - a.archivedAt);
-  }, [archivedCards, selectedProjectPath]);
+  }, [archivedCards, selectedProjectPath, selectedWorktreePath]);
 
-  // Cards visible with the current project filter applied.
+  // Cards visible with the current project/worktree filter applied.
   const visibleCards = useMemo(
     () =>
       selectedProjectPath
-        ? cards.filter((c) => c.projectPath === selectedProjectPath)
+        ? cards.filter(
+            (c) =>
+              c.projectPath === selectedProjectPath &&
+              cardMatchesWorktree(c, selectedWorktreePath),
+          )
         : cards,
-    [cards, selectedProjectPath],
+    [cards, selectedProjectPath, selectedWorktreePath],
   );
 
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
@@ -682,14 +696,72 @@ export function TerminalManager() {
   const handleCreate = useCallback(
     (options: TerminalCreateOptions) => {
       const id = createCard(options);
-      if (selectedProjectPath && selectedProjectPath !== options.projectPath) {
+      if (options.worktreePath) {
+        selectWorktree(options.projectPath, options.worktreePath, options.branchLabel);
+      } else {
         selectProject(options.projectPath);
       }
       setCreateOpen(false);
       focusCard(id);
       setViewMode('focus');
     },
-    [createCard, focusCard, selectProject, selectedProjectPath],
+    [createCard, focusCard, selectProject, selectWorktree],
+  );
+
+  const handleGridCreateTerminal = useCallback(
+    (options?: TerminalCreateOptions) => {
+      if (options) {
+        handleCreate(options);
+        return;
+      }
+      setCreateOpen(true);
+    },
+    [handleCreate],
+  );
+
+  const handleCreateWorktreeTerminal = useCallback(
+    async (request: { projectPath: string; branch: string; branchLabel: string }) => {
+      try {
+        const worktree = await git.worktrees.add(request.projectPath, request.branch);
+        clearProjectBranchCache();
+        clearProjectWorktreeCache();
+        const projectName =
+          cards.find((card) => card.projectPath === request.projectPath)?.projectName ??
+          selectedProjectName ??
+          pathBasename(request.projectPath);
+        const id = createCard({
+          projectName,
+          projectPath: request.projectPath,
+          worktreePath: worktree.path,
+          branchLabel: request.branchLabel,
+          terminalType: 'shell',
+        });
+        selectWorktree(request.projectPath, worktree.path, request.branchLabel);
+        focusCard(id);
+        setViewMode('focus');
+        pushNotification({
+          cardId: 'system:worktrees',
+          kind: 'completed',
+          title: t('sidebar.createWorktree', {
+            defaultValue: 'Create worktree and open terminal',
+          }),
+          body: t('sidebar.worktreeCreated', {
+            path: worktree.path,
+            defaultValue: 'Created worktree {{path}}.',
+          }),
+        });
+      } catch (err) {
+        pushNotification({
+          cardId: 'system:worktrees',
+          kind: 'failed',
+          title: t('sidebar.worktreeCreateFailed', {
+            defaultValue: 'Failed to create worktree',
+          }),
+          body: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    [cards, createCard, focusCard, pushNotification, selectWorktree, selectedProjectName, t],
   );
 
   // Stage 5 — let Esc close the bookmarks side panel. Modals (palette /
@@ -782,6 +854,17 @@ export function TerminalManager() {
                 title={selectedProjectPath ?? undefined}
               >
                 {selectedProjectName}
+              </span>
+            </>
+          )}
+          {selectedProjectName && selectedWorktreeLabel && (
+            <>
+              <span className="text-muted-foreground md:inline hidden">/</span>
+              <span
+                className="truncate rounded-[var(--radius-md)] bg-foreground/[0.06] px-1.5 py-0.5 text-[11px] font-medium text-foreground/80"
+                title={selectedWorktreePath ?? undefined}
+              >
+                {selectedWorktreeLabel}
               </span>
             </>
           )}
@@ -898,7 +981,8 @@ export function TerminalManager() {
           ].join(' ')}
         >
           <CardGrid
-            onCreateTerminal={() => setCreateOpen(true)}
+            onCreateTerminal={handleGridCreateTerminal}
+            onCreateWorktreeTerminal={handleCreateWorktreeTerminal}
             onOpenTerminal={handleOpenTerminal}
           />
         </motion.div>

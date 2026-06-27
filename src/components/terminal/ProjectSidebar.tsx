@@ -10,7 +10,7 @@
  *
  * No drag-and-drop, rename, or delete — keep surface small.
  */
-import { useMemo, useState, type MouseEvent, type ReactNode } from 'react';
+import { useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import {
   ChevronDown,
   ChevronLeft,
@@ -49,6 +49,7 @@ import {
 } from '../../lib/workflows/workflowRun';
 import { ApplyPresetDialog } from '../workflows/ApplyPresetDialog';
 import type { DiscoveryErrorReason } from '../../lib/workflows/discoverWorkflows';
+import { pendingWorktreePath, samePath } from '../../lib/worktreePaths';
 
 const DISCOVERY_ERROR_I18N_KEY: Record<DiscoveryErrorReason, string> = {
   'parse-failed': 'parseFailed',
@@ -86,7 +87,9 @@ export function ProjectSidebar({
     [cards],
   );
   const selectedPath = useTerminalStore((s) => s.selectedProjectPath);
+  const selectedWorktreePath = useTerminalStore((s) => s.selectedWorktreePath);
   const selectProject = useTerminalStore((s) => s.selectProject);
+  const selectWorktree = useTerminalStore((s) => s.selectWorktree);
   const createCard = useTerminalStore((s) => s.createCard);
   const focusCard = useTerminalStore((s) => s.focusCard);
   const updateCardAiIntent = useTerminalStore((s) => s.updateCardAiIntent);
@@ -196,15 +199,25 @@ export function ProjectSidebar({
     projectPath: string,
     projectName: string,
     worktreePath: string,
+    branchLabel?: string,
   ) => {
     const id = createCard({
       projectName,
       projectPath,
       worktreePath,
+      branchLabel,
       terminalType: 'shell',
     });
-    selectProject(projectPath);
+    selectWorktree(projectPath, worktreePath, branchLabel);
     focusCard(id);
+  };
+
+  const handleSelectWorktree = (
+    projectPath: string,
+    worktreePath: string,
+    label?: string | null,
+  ) => {
+    selectWorktree(projectPath, worktreePath, label);
   };
 
   const handleCreateWorktreeAndOpen = async (
@@ -218,7 +231,7 @@ export function ProjectSidebar({
       clearProjectBranchCache();
       clearProjectWorktreeCache();
       await refreshBranches();
-      handleOpenWorktreeTerminal(projectPath, projectName, worktree.path);
+      handleOpenWorktreeTerminal(projectPath, projectName, worktree.path, branch);
       pushNotification({
         cardId: 'system:worktrees',
         kind: 'completed',
@@ -349,7 +362,9 @@ export function ProjectSidebar({
             }}
             onOpenDir={(event) => handleOpenDir(g.path, event)}
             onOpenTerminal={handleOpenWorktreeTerminal}
+            onSelectWorktree={handleSelectWorktree}
             onCreateWorktreeAndOpen={handleCreateWorktreeAndOpen}
+            selectedWorktreePath={selectedWorktreePath}
           />
         ))}
 
@@ -421,7 +436,14 @@ interface ProjectBranchSectionProps {
   onSelect: () => void;
   onContextMenu: (event: MouseEvent) => void;
   onOpenDir: (event: MouseEvent) => void;
-  onOpenTerminal: (projectPath: string, projectName: string, worktreePath: string) => void;
+  selectedWorktreePath: string | null;
+  onOpenTerminal: (
+    projectPath: string,
+    projectName: string,
+    worktreePath: string,
+    branchLabel?: string,
+  ) => void;
+  onSelectWorktree: (projectPath: string, worktreePath: string, label?: string | null) => void;
   onCreateWorktreeAndOpen: (
     projectPath: string,
     projectName: string,
@@ -437,7 +459,9 @@ function ProjectBranchSection({
   onSelect,
   onContextMenu,
   onOpenDir,
+  selectedWorktreePath,
   onOpenTerminal,
+  onSelectWorktree,
   onCreateWorktreeAndOpen,
 }: ProjectBranchSectionProps) {
   const { t } = useTranslation('terminal');
@@ -508,7 +532,9 @@ function ProjectBranchSection({
           branches={branches}
           error={error}
           refresh={refresh}
+          selectedWorktreePath={selectedWorktreePath}
           onOpenTerminal={onOpenTerminal}
+          onSelectWorktree={onSelectWorktree}
           onCreateWorktreeAndOpen={onCreateWorktreeAndOpen}
         />
       )}
@@ -533,7 +559,14 @@ interface ProjectBranchTreeProps {
   branches: BranchRow[];
   error: string | null;
   refresh: () => Promise<void>;
-  onOpenTerminal: (projectPath: string, projectName: string, worktreePath: string) => void;
+  selectedWorktreePath: string | null;
+  onOpenTerminal: (
+    projectPath: string,
+    projectName: string,
+    worktreePath: string,
+    branchLabel?: string,
+  ) => void;
+  onSelectWorktree: (projectPath: string, worktreePath: string, label?: string | null) => void;
   onCreateWorktreeAndOpen: (
     projectPath: string,
     projectName: string,
@@ -557,7 +590,9 @@ function ProjectBranchTree({
   branches,
   error,
   refresh,
+  selectedWorktreePath,
   onOpenTerminal,
+  onSelectWorktree,
   onCreateWorktreeAndOpen,
 }: ProjectBranchTreeProps) {
   const { t } = useTranslation('terminal');
@@ -576,6 +611,13 @@ function ProjectBranchTree({
       <div className="space-y-0.5">
         {visibleBranches.map((branch) => {
           const worktreePath = branch.worktreePath ?? '';
+          const targetWorktreePath =
+            worktreePath || pendingWorktreePath(projectPath, branch.branch);
+          const isSelected = selectedWorktreePath
+            ? worktreePath
+              ? samePath(selectedWorktreePath, worktreePath)
+              : selectedWorktreePath === targetWorktreePath
+            : false;
           const isCreating = creatingBranch === branch.branch;
           const detail = worktreePath
             ? basename(worktreePath)
@@ -593,42 +635,48 @@ function ProjectBranchTree({
           const detailClass = branch.isCurrent
             ? 'text-primary/70'
             : 'text-muted-foreground';
+          const runBranchAction = async (event: MouseEvent | KeyboardEvent) => {
+            event.stopPropagation();
+            if (isCreating) return;
+            if (worktreePath) {
+              onOpenTerminal(projectPath, projectName, worktreePath, branch.branch);
+              return;
+            }
+            setCreatingBranch(branch.branch);
+            try {
+              await onCreateWorktreeAndOpen(
+                projectPath,
+                projectName,
+                branch.branch,
+                refresh,
+              );
+            } catch {
+              // The parent handler already emits the failure notification.
+            } finally {
+              setCreatingBranch(null);
+            }
+          };
           return (
             <button
               key={branch.branch}
               type="button"
-              disabled={isCreating}
               title={
                 worktreePath
                   ? `${branch.branch} — ${worktreePath}`
-                  : t('sidebar.createWorktree', {
-                      defaultValue: 'Create worktree and open terminal',
-                    })
+                  : branch.branch
               }
-              onClick={async () => {
-                if (worktreePath) {
-                  onOpenTerminal(projectPath, projectName, worktreePath);
-                  return;
-                }
-                setCreatingBranch(branch.branch);
-                try {
-                  await onCreateWorktreeAndOpen(
-                    projectPath,
-                    projectName,
-                    branch.branch,
-                    refresh,
-                  );
-                } catch {
-                  // The parent handler already emits the failure notification.
-                } finally {
-                  setCreatingBranch(null);
-                }
-              }}
+              onClick={() => onSelectWorktree(projectPath, targetWorktreePath, branch.branch)}
               className={[
-                'group flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left text-[12px] hover:bg-accent disabled:cursor-wait disabled:opacity-60',
-                branchTextClass,
+                'group relative flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left text-[12px] hover:bg-accent',
+                isSelected ? 'bg-primary/10 text-primary' : branchTextClass,
               ].join(' ')}
             >
+              {isSelected && (
+                <span
+                  aria-hidden="true"
+                  className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-primary"
+                />
+              )}
               <span className={['shrink-0 group-hover:text-primary', branchIconClass].join(' ')}>
                 <GitBranch className="h-3.5 w-3.5" />
               </span>
@@ -657,17 +705,43 @@ function ProjectBranchTree({
                   })}
                 />
               ) : worktreePath ? (
-                <Terminal
-                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-60 transition-opacity group-hover:text-primary group-hover:opacity-100"
+                <span
+                  role="button"
+                  tabIndex={0}
                   aria-label={t('sidebar.openWorktreeTerminal')}
-                />
+                  title={t('sidebar.openWorktreeTerminal')}
+                  onClick={runBranchAction}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      void runBranchAction(event);
+                    }
+                  }}
+                  className="shrink-0 text-muted-foreground opacity-60 transition-opacity hover:text-primary group-hover:opacity-100"
+                >
+                  <Terminal className="h-3.5 w-3.5" />
+                </span>
               ) : (
-                <Plus
-                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-60 transition-opacity group-hover:text-primary group-hover:opacity-100"
+                <span
+                  role="button"
+                  tabIndex={0}
                   aria-label={t('sidebar.createWorktree', {
                     defaultValue: 'Create worktree and open terminal',
                   })}
-                />
+                  title={t('sidebar.createWorktree', {
+                    defaultValue: 'Create worktree and open terminal',
+                  })}
+                  onClick={runBranchAction}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      void runBranchAction(event);
+                    }
+                  }}
+                  className="shrink-0 text-muted-foreground opacity-60 transition-opacity hover:text-primary group-hover:opacity-100"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </span>
               )}
             </button>
           );

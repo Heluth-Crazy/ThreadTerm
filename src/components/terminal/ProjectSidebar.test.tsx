@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BranchRow, WorktreeInfo } from '../../lib/tauri-bridge';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { ProjectSidebar } from './ProjectSidebar';
+import { parsePendingWorktreePath } from '../../lib/worktreePaths';
 
 const branchHookMock = vi.hoisted(() => ({
   clearBranchCache: vi.fn(),
@@ -66,6 +67,8 @@ function resetStore() {
     focusedCardId: null,
     lastActiveCardId: null,
     selectedProjectPath: null,
+    selectedWorktreePath: null,
+    selectedWorktreeLabel: null,
     projectCardOrder: {},
     pinnedCardIds: [],
     notifications: [],
@@ -104,7 +107,7 @@ describe('ProjectSidebar branch worktrees', () => {
     cleanup();
   });
 
-  it('opens a shell terminal with the selected existing branch worktree path', () => {
+  it('opens a shell terminal with the selected existing branch worktree path from the row action', () => {
     useTerminalStore.getState().createCard({
       projectName: 'ThreadTerm',
       projectPath: '/repo/threadterm',
@@ -128,7 +131,8 @@ describe('ProjectSidebar branch worktrees', () => {
 
     render(<ProjectSidebar />);
     fireEvent.click(screen.getByTitle('sidebar.expand'));
-    fireEvent.click(screen.getByTitle('feature/worktree-ui — /repo/threadterm-feature'));
+    const terminalActions = screen.getAllByLabelText('sidebar.openWorktreeTerminal');
+    fireEvent.click(terminalActions[1]);
 
     const cards = useTerminalStore.getState().cards;
     expect(cards).toHaveLength(2);
@@ -136,9 +140,37 @@ describe('ProjectSidebar branch worktrees', () => {
       projectName: 'ThreadTerm',
       projectPath: '/repo/threadterm',
       worktreePath: '/repo/threadterm-feature',
+      branchLabel: 'feature/worktree-ui',
       terminalType: 'shell',
     });
     expect(useTerminalStore.getState().focusedCardId).toBe(cards[1].id);
+    expect(useTerminalStore.getState().selectedWorktreePath).toBe('/repo/threadterm-feature');
+    expect(useTerminalStore.getState().selectedWorktreeLabel).toBe('feature/worktree-ui');
+  });
+
+  it('selects an existing branch worktree when the branch row body is clicked', () => {
+    useTerminalStore.getState().createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+    branchHookMock.branches = [
+      baseBranch({
+        branch: 'feature/worktree-ui',
+        head: '2222222222222222222222222222222222222222',
+        worktreePath: '/repo/threadterm-feature',
+        lastCommitUnix: 2,
+      }),
+    ];
+
+    render(<ProjectSidebar />);
+    fireEvent.click(screen.getByTitle('sidebar.expand'));
+    fireEvent.click(screen.getByTitle('feature/worktree-ui — /repo/threadterm-feature'));
+
+    expect(useTerminalStore.getState().cards).toHaveLength(1);
+    expect(useTerminalStore.getState().selectedProjectPath).toBe('/repo/threadterm');
+    expect(useTerminalStore.getState().selectedWorktreePath).toBe('/repo/threadterm-feature');
+    expect(useTerminalStore.getState().selectedWorktreeLabel).toBe('feature/worktree-ui');
   });
 
   it('does not render a branch tree toggle for non-git projects', () => {
@@ -237,7 +269,34 @@ describe('ProjectSidebar branch worktrees', () => {
     expect(screen.getByLabelText('Create worktree and open terminal')).toHaveClass('opacity-60');
   });
 
-  it('creates a worktree for a branch without one, then opens a terminal there', async () => {
+  it('selects a pending branch worktree when a branch without worktree is clicked', () => {
+    useTerminalStore.getState().createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+    branchHookMock.branches = [
+      baseBranch({
+        branch: 'feature/no-tree',
+        head: '3333333333333333333333333333333333333333',
+        lastCommitUnix: 2,
+      }),
+    ];
+
+    render(<ProjectSidebar />);
+    fireEvent.click(screen.getByTitle('sidebar.expand'));
+    fireEvent.click(screen.getByText('feature/no-tree'));
+
+    expect(gitBridgeMock.addWorktree).not.toHaveBeenCalled();
+    expect(useTerminalStore.getState().selectedProjectPath).toBe('/repo/threadterm');
+    expect(useTerminalStore.getState().selectedWorktreeLabel).toBe('feature/no-tree');
+    expect(parsePendingWorktreePath(useTerminalStore.getState().selectedWorktreePath)).toEqual({
+      projectPath: '/repo/threadterm',
+      branch: 'feature/no-tree',
+    });
+  });
+
+  it('creates a worktree for a branch without one, then opens a terminal there from the row action', async () => {
     useTerminalStore.getState().createCard({
       projectName: 'ThreadTerm',
       projectPath: '/repo/threadterm',
@@ -268,7 +327,7 @@ describe('ProjectSidebar branch worktrees', () => {
 
     render(<ProjectSidebar />);
     fireEvent.click(screen.getByTitle('sidebar.expand'));
-    fireEvent.click(screen.getByText('feature/no-tree'));
+    fireEvent.click(screen.getByLabelText('Create worktree and open terminal'));
 
     await waitFor(() => expect(gitBridgeMock.addWorktree).toHaveBeenCalledTimes(1));
     expect(gitBridgeMock.addWorktree).toHaveBeenCalledWith('/repo/threadterm', 'feature/no-tree');
@@ -281,7 +340,11 @@ describe('ProjectSidebar branch worktrees', () => {
       projectName: 'ThreadTerm',
       projectPath: '/repo/threadterm',
       worktreePath: '/repo/threadterm-worktrees/feature-no-tree',
+      branchLabel: 'feature/no-tree',
       terminalType: 'shell',
     });
+    expect(useTerminalStore.getState().selectedWorktreePath).toBe(
+      '/repo/threadterm-worktrees/feature-no-tree',
+    );
   });
 });
