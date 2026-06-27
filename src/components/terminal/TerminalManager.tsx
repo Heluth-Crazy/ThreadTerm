@@ -519,7 +519,14 @@ export function TerminalManager() {
   }, [focusCard]);
 
   const sessionDockAvailable = viewMode === 'focus' && Boolean(focusedCard);
-  const sessionDockVisible = sessionDockAvailable && (dockPinned || dockHovered);
+  // The dock overlay sits above (z-35) the other right-side panels (bookmarks /
+  // archive / stats, z-30); yield to them when any is open so it doesn't cover them.
+  const sessionDockVisible =
+    sessionDockAvailable &&
+    (dockPinned || dockHovered) &&
+    !bookmarksOpen &&
+    !archiveOpen &&
+    !statsOpen;
 
   useEffect(() => {
     if (!sessionDockAvailable && dockHovered) {
@@ -1042,9 +1049,19 @@ export function TerminalManager() {
             <button
               type="button"
               aria-label={t('dock.hoverHandle')}
+              title={t('dock.hoverHandle')}
               onFocus={() => setDockHovered(true)}
               onMouseEnter={() => setDockHovered(true)}
-              className="absolute bottom-0 right-0 top-0 z-[34] w-3 cursor-ew-resize"
+              className={[
+                // Narrow 6px hover strip to summon the dock. The previous 12px
+                // `cursor-ew-resize` box sat over the terminal's right edge and
+                // swallowed scrollbar + rightmost-column mouse input, and the
+                // resize cursor wrongly implied the dock was width-draggable.
+                'absolute bottom-0 right-0 top-0 z-[34] w-1.5 cursor-pointer transition-colors hover:bg-primary/20',
+                // When the dock is showing it owns hover; don't keep blocking
+                // the terminal edge underneath it.
+                sessionDockVisible ? 'pointer-events-none' : '',
+              ].join(' ')}
             />
             <SessionDock
               visible={sessionDockVisible}

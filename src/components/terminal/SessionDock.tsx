@@ -1,8 +1,8 @@
 import { X } from 'lucide-react';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
-import { worktreeDisplayLabel } from '../../lib/worktreePaths';
+import { pathBasename, worktreeDisplayLabel } from '../../lib/worktreePaths';
 import type { TerminalCard } from '../../types/terminal';
 import { CardStatusBadge } from './CardStatusBadge';
 import { getTerminalTypeMeta } from './terminalTypeMeta';
@@ -38,6 +38,15 @@ function orderedRecentCards(cards: TerminalCard[], recentIds: string[]): Termina
   return recentIds.map((id) => byId.get(id)).filter((card): card is TerminalCard => Boolean(card));
 }
 
+/**
+ * Short branch/worktree chip that disambiguates same-project cards in the list.
+ * Null when it would only repeat the project name (i.e. the main worktree).
+ */
+function worktreeChip(card: TerminalCard): string | null {
+  const label = worktreeDisplayLabel(card);
+  return label && label !== card.projectName ? label : null;
+}
+
 export function SessionDock({ visible, pinned, onClose, onHoverChange }: SessionDockProps) {
   const { t } = useTranslation('terminal');
   const cards = useTerminalStore((s) => s.cards);
@@ -46,6 +55,15 @@ export function SessionDock({ visible, pinned, onClose, onHoverChange }: Session
   const focusCard = useTerminalStore((s) => s.focusCard);
 
   const recentCards = useMemo(() => orderedRecentCards(cards, recentIds), [cards, recentIds]);
+
+  // Relative timestamps ("3m ago") are computed at render; without this tick the
+  // pinned dock would freeze them. Re-render every 30s while the dock is visible.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (!visible) return;
+    const id = window.setInterval(() => forceTick((n) => n + 1), 30_000);
+    return () => window.clearInterval(id);
+  }, [visible]);
 
   const handleSelect = (cardId: string) => {
     focusCard(cardId);
@@ -94,6 +112,7 @@ export function SessionDock({ visible, pinned, onClose, onHoverChange }: Session
               const typeMeta = getTerminalTypeMeta(card.terminalType);
               const TypeIcon = typeMeta.Icon;
               const isCurrent = card.id === focusedCardId;
+              const chip = worktreeChip(card);
               return (
                 <button
                   key={card.id}
@@ -111,9 +130,14 @@ export function SessionDock({ visible, pinned, onClose, onHoverChange }: Session
                   <div className="flex min-w-0 items-start justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-1.5">
                       <TypeIcon className={`h-3.5 w-3.5 shrink-0 ${typeMeta.accent}`} />
-                      <span className="truncate text-xs font-medium text-foreground">
+                      <span className="min-w-0 truncate text-xs font-medium text-foreground">
                         {card.projectName}
                       </span>
+                      {chip && (
+                        <span className="max-w-[45%] shrink-0 truncate rounded bg-muted px-1 py-0.5 text-[9px] font-medium text-muted-foreground">
+                          {chip}
+                        </span>
+                      )}
                     </div>
                     {isCurrent && (
                       <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-0.5 text-[9px] font-medium text-primary">
@@ -130,7 +154,7 @@ export function SessionDock({ visible, pinned, onClose, onHoverChange }: Session
                   </div>
 
                   <div className="mt-1 flex min-w-0 items-center justify-between gap-2 text-[10px] text-muted-foreground">
-                    <span className="truncate">{worktreeDisplayLabel(card)}</span>
+                    <span className="truncate">{pathBasename(card.projectPath)}</span>
                     <span className="shrink-0">{formatRelative(card.lastActivity, t)}</span>
                   </div>
                 </button>
