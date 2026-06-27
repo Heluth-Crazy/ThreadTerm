@@ -136,6 +136,7 @@ pub fn run() {
             overlay::overlay_show_main,
             overlay::overlay_save_float_bounds,
             overlay::overlay_set_float_launch_mode,
+            overlay::overlay_set_prewarm,
             overlay::overlay_get_settings,
             overlay::overlay_update_shortcut,
             overlay::overlay_move_float,
