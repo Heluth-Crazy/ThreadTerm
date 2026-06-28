@@ -1,6 +1,6 @@
 import { isTauriEnv } from './tauri-bridge';
 import type { AiExplainProvider } from './ai/aiExplain';
-import type { DesktopPetConfig } from '../types/terminal';
+import { readOsNotificationsEnabled } from './notificationPrefs';
 import type { StoredThemePreference, ThemePack } from '../theme/themeTypes';
 
 export const SETTINGS_CHANGED_EVENT = 'settings://changed';
@@ -21,7 +21,7 @@ export interface ThemeSettingsSnapshot {
 export interface TerminalPreferenceSnapshot {
   bottomBarHidden: boolean;
   aiExplainDefaultProvider: AiExplainProvider;
-  petConfig: DesktopPetConfig;
+  osNotificationsEnabled: boolean;
   supervisorEnabled: boolean;
 }
 
@@ -81,7 +81,6 @@ function normalizeTerminalPreferences(value: unknown): TerminalPreferenceSnapsho
   if (
     typeof value.bottomBarHidden !== 'boolean'
     || typeof value.aiExplainDefaultProvider !== 'string'
-    || !isRecord(value.petConfig)
     || typeof value.supervisorEnabled !== 'boolean'
   ) {
     return undefined;
@@ -90,7 +89,7 @@ function normalizeTerminalPreferences(value: unknown): TerminalPreferenceSnapsho
   return {
     bottomBarHidden: value.bottomBarHidden,
     aiExplainDefaultProvider: value.aiExplainDefaultProvider as AiExplainProvider,
-    petConfig: value.petConfig as unknown as DesktopPetConfig,
+    osNotificationsEnabled: readOsNotificationsEnabled(value),
     supervisorEnabled: value.supervisorEnabled,
   };
 }

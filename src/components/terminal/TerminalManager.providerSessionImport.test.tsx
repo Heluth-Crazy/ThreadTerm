@@ -1,9 +1,6 @@
 import { render, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  DEFAULT_PET_CONFIG,
-  useTerminalStore,
-} from '../../stores/terminalStore';
+import { useTerminalStore } from '../../stores/terminalStore';
 import { TerminalManager } from './TerminalManager';
 
 const bridgeMocks = vi.hoisted(() => ({
@@ -93,7 +90,7 @@ function resetStore() {
     notifications: [],
     notificationCentreOpen: false,
     pendingFocusCardId: null,
-    petConfig: DEFAULT_PET_CONFIG,
+    osNotificationsEnabled: true,
     supervisorEnabled: false,
   });
 }

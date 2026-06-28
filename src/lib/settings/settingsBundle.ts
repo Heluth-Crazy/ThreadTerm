@@ -15,8 +15,7 @@ import type {
   ThemePack,
 } from '../../theme/themeTypes';
 import type { SelectorMode } from '../../stores/overlayStore';
-import type { DesktopPetConfig } from '../../types/terminal';
-import { DEFAULT_PET_CONFIG, normalizePetConfig } from '../petConfig';
+import { readOsNotificationsEnabled } from '../notificationPrefs';
 
 export const SETTINGS_BUNDLE_APP = 'ThreadTerm';
 export const SETTINGS_BUNDLE_KIND = 'threadterm-settings-bundle';
@@ -41,7 +40,7 @@ export interface SettingsBundleCustomThemesSection {
 export interface SettingsBundleTerminalSection {
   bottomBarHidden: boolean;
   aiExplainDefaultProvider: AiExplainProvider;
-  petConfig: DesktopPetConfig;
+  osNotificationsEnabled: boolean;
 }
 
 export interface SettingsBundleOverlaySection {
@@ -134,9 +133,7 @@ function normalizeTerminalSettings(value: unknown): SettingsBundleTerminalSectio
     aiExplainDefaultProvider: AI_EXPLAIN_PROVIDERS.has(record.aiExplainDefaultProvider as AiExplainProvider)
       ? (record.aiExplainDefaultProvider as AiExplainProvider)
       : 'claude',
-    petConfig: normalizePetConfig(
-      isRecord(record.petConfig) ? (record.petConfig as Partial<DesktopPetConfig>) : DEFAULT_PET_CONFIG,
-    ),
+    osNotificationsEnabled: readOsNotificationsEnabled(record),
   };
 }
 
@@ -311,7 +308,7 @@ export function summarizeSettingsBundleSection(
       if (!section) return 'Not set';
       return `${section.aiExplainDefaultProvider}, chip strip ${
         section.bottomBarHidden ? 'hidden' : 'visible'
-      }, pet ${section.petConfig.enabled ? 'on' : 'off'} (${section.petConfig.notificationMode})`;
+      }, notifications ${section.osNotificationsEnabled ? 'on' : 'off'}`;
     }
     case 'overlay': {
       const section = bundle.sections.overlay;

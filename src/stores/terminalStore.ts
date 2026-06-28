@@ -19,7 +19,6 @@ import { createThrottledLocalStorage } from './throttledStorage';
 import type {
   NotificationEntry,
   NotificationKind,
-  DesktopPetConfig,
   Block,
   Bookmark,
   TerminalCard,
@@ -46,7 +45,7 @@ import {
   normalizeAutoRestartConfig,
   type AutoRestartDecision,
 } from '../lib/autoRestart';
-import { DEFAULT_PET_CONFIG, normalizePetConfig } from '../lib/petConfig';
+import { DEFAULT_OS_NOTIFICATIONS_ENABLED, readOsNotificationsEnabled } from '../lib/notificationPrefs';
 import i18n from '../i18n/config.js';
 import { isTauriEnv, pty } from '../lib/tauri-bridge';
 import { emitSettingsChanged, type TerminalPreferenceSnapshot } from '../lib/settingsSync';
@@ -170,7 +169,6 @@ export const MAX_RECENTLY_VIEWED_CARDS = 20;
 
 /** Maximum length of a user-assigned card display name (`projectName`). */
 export const MAX_CARD_NAME_LENGTH = 80;
-export { DEFAULT_PET_CONFIG } from '../lib/petConfig';
 
 export interface ArchivedTerminalCard extends TerminalCard {
   archivedAt: number;
@@ -216,9 +214,9 @@ interface TerminalStore {
   /** Pending cardId to focus once the app regains focus (system-notification click). */
   pendingFocusCardId: string | null;
 
-  // Desktop pet
-  petConfig: DesktopPetConfig;
-  updatePetConfig: (patch: Partial<DesktopPetConfig>) => void;
+  // OS notifications
+  osNotificationsEnabled: boolean;
+  setOsNotificationsEnabled: (enabled: boolean) => void;
 
   // ─── Stage 6: AI Explain + bottom chip strip settings ────────────────────
   /** Default provider to use when the focused card is not an AI CLI. */
@@ -364,13 +362,13 @@ interface TerminalStore {
 function terminalPreferenceSnapshotFromState(
   state: Pick<
     TerminalStore,
-    'bottomBarHidden' | 'aiExplainDefaultProvider' | 'petConfig' | 'supervisorEnabled'
+    'bottomBarHidden' | 'aiExplainDefaultProvider' | 'osNotificationsEnabled' | 'supervisorEnabled'
   >,
 ): TerminalPreferenceSnapshot {
   return {
     bottomBarHidden: state.bottomBarHidden,
     aiExplainDefaultProvider: state.aiExplainDefaultProvider,
-    petConfig: normalizePetConfig(state.petConfig),
+    osNotificationsEnabled: state.osNotificationsEnabled,
     supervisorEnabled: state.supervisorEnabled,
   };
 }
@@ -529,7 +527,7 @@ export const useTerminalStore = create<TerminalStore>()(
       notifications: [],
       notificationCentreOpen: false,
       pendingFocusCardId: null,
-      petConfig: DEFAULT_PET_CONFIG,
+      osNotificationsEnabled: DEFAULT_OS_NOTIFICATIONS_ENABLED,
 
       aiExplainDefaultProvider: 'claude',
       bottomBarHidden: false,
@@ -560,13 +558,12 @@ export const useTerminalStore = create<TerminalStore>()(
         notifyTerminalPreferencesChanged(snapshot);
       },
 
-      updatePetConfig: (patch) => {
-        const petConfig = normalizePetConfig({ ...get().petConfig, ...patch });
+      setOsNotificationsEnabled: (enabled) => {
         const snapshot = terminalPreferenceSnapshotFromState({
           ...get(),
-          petConfig,
+          osNotificationsEnabled: enabled,
         });
-        set({ petConfig });
+        set({ osNotificationsEnabled: enabled });
         notifyTerminalPreferencesChanged(snapshot);
       },
 
@@ -1609,14 +1606,14 @@ export const useTerminalStore = create<TerminalStore>()(
         pinnedCardIds: state.pinnedCardIds,
         notifications: state.notifications,
         notificationCentreOpen: state.notificationCentreOpen,
-        petConfig: normalizePetConfig(state.petConfig),
+        osNotificationsEnabled: state.osNotificationsEnabled,
         // Stage 6 — persist the global AI provider default + chip strip toggle.
         aiExplainDefaultProvider: state.aiExplainDefaultProvider,
         bottomBarHidden: state.bottomBarHidden,
         // AI Supervisor v0.1 (PRD D3) — master switch persisted; default OFF.
         supervisorEnabled: state.supervisorEnabled,
       }),
-      version: 16,
+      version: 17,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         const cards = state.cards?.map((card) => ({
@@ -1663,18 +1660,11 @@ export const useTerminalStore = create<TerminalStore>()(
           // v13 — archived cards live outside the active card list so existing
           // views and bridge snapshots keep showing only active cards.
           archivedCards,
-          // v10 — desktop pet is opt-in for upgraded users.
-          // v11 — notification model changed to two toggles; reset
-          //       notificationMode to 'both' once on upgrade. The desktop
-          //       pet is a brand-new opt-in feature, so a persisted
-          //       'system' is the old default, never a deliberate user
-          //       choice — preserving it would silently suppress the pet
-          //       bubble forever. Other fields (skin/size/position) are
-          //       kept by spreading the existing petConfig first.
-          petConfig: normalizePetConfig({
-            ...(state.petConfig ?? {}),
-            notificationMode: 'both',
-          }),
+          // v17 — desktop pet removed; only the OS-notification preference
+          //       survives, as a boolean. Read the new field when present,
+          //       else fall back to the legacy petConfig (notificationMode
+          //       'system'/'both' → on).
+          osNotificationsEnabled: readOsNotificationsEnabled(state),
           cards,
         };
       },

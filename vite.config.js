@@ -40,7 +40,6 @@ export default defineConfig(({ command, mode }) => {
           settings: 'settings.html',
           selector: 'selector.html',
           float: 'float.html',
-          pet: 'pet.html',
         },
         output: {
           manualChunks: {

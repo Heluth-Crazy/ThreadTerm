@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  DEFAULT_PET_CONFIG,
   MAX_CARD_NAME_LENGTH,
   MAX_PINNED_CARDS,
   MAX_RECENTLY_VIEWED_CARDS,
@@ -28,7 +27,7 @@ function resetStore() {
     notifications: [],
     notificationCentreOpen: false,
     pendingFocusCardId: null,
-    petConfig: DEFAULT_PET_CONFIG,
+    osNotificationsEnabled: true,
     supervisorEnabled: false,
   });
 }
@@ -792,7 +791,7 @@ describe('terminalStore — session dock metadata', () => {
         aiExplainDefaultProvider: 'claude',
         bottomBarHidden: false,
         supervisorEnabled: false,
-        petConfig: DEFAULT_PET_CONFIG,
+        osNotificationsEnabled: true,
       },
       version: 15,
     };
@@ -968,7 +967,7 @@ describe('terminalStore — project card order', () => {
         aiExplainDefaultProvider: 'claude',
         bottomBarHidden: false,
         supervisorEnabled: false,
-        petConfig: DEFAULT_PET_CONFIG,
+        osNotificationsEnabled: true,
       },
       version: 11,
     };
@@ -994,7 +993,7 @@ describe('terminalStore — project card order', () => {
         aiExplainDefaultProvider: 'claude',
         bottomBarHidden: false,
         supervisorEnabled: false,
-        petConfig: DEFAULT_PET_CONFIG,
+        osNotificationsEnabled: true,
       },
       version: 12,
     };
@@ -1146,21 +1145,17 @@ describe('terminalStore — notifications', () => {
   });
 });
 
-describe('terminalStore — desktop pet config', () => {
-  it('defaults desktop pet to opt-in system notifications', () => {
-    expect(useTerminalStore.getState().petConfig).toEqual(DEFAULT_PET_CONFIG);
+describe('terminalStore — OS notifications', () => {
+  it('defaults OS notifications to on', () => {
+    expect(useTerminalStore.getState().osNotificationsEnabled).toBe(true);
   });
 
-  it('updates and clamps desktop pet size', () => {
-    const store = useTerminalStore.getState();
+  it('toggles OS notifications', () => {
+    useTerminalStore.getState().setOsNotificationsEnabled(false);
+    expect(useTerminalStore.getState().osNotificationsEnabled).toBe(false);
 
-    store.updatePetConfig({ enabled: true, notificationMode: 'both', size: 999 });
-
-    expect(useTerminalStore.getState().petConfig).toMatchObject({
-      enabled: true,
-      notificationMode: 'both',
-      size: 120,
-    });
+    useTerminalStore.getState().setOsNotificationsEnabled(true);
+    expect(useTerminalStore.getState().osNotificationsEnabled).toBe(true);
   });
 });
 
@@ -1382,16 +1377,15 @@ describe('terminalStore — AI Supervisor master switch (PRD D3)', () => {
     localStorage.setItem('threadterm-terminal-store', JSON.stringify(v9Snapshot));
     await useTerminalStore.persist.rehydrate();
     expect(useTerminalStore.getState().supervisorEnabled).toBe(true);
-    expect(useTerminalStore.getState().petConfig).toEqual(DEFAULT_PET_CONFIG);
+    expect(useTerminalStore.getState().osNotificationsEnabled).toBe(true);
     // Reset for downstream tests.
     localStorage.removeItem('threadterm-terminal-store');
   });
 
-  it('v11 migration resets notificationMode to both but keeps other pet fields', async () => {
-    // An upgraded user persisted the old default notificationMode 'system'
-    // (plus their own skin/size). The new two-toggle model means a stale
-    // 'system' would suppress the pet bubble forever, so the migration must
-    // force notificationMode back to 'both' while preserving everything else.
+  it('v17 migration maps a legacy system notificationMode to enabled', async () => {
+    // The desktop pet was removed; only the OS-notification preference
+    // survives, as a boolean. A persisted notificationMode of 'system'
+    // (OS notifications on) must map to true.
     const upgradedSnapshot = {
       state: {
         cards: [],
@@ -1409,11 +1403,6 @@ describe('terminalStore — AI Supervisor master switch (PRD D3)', () => {
         petConfig: {
           enabled: true,
           notificationMode: 'system',
-          defaultPosition: 'leftBottom',
-          size: 110,
-          idleTranslucent: false,
-          expanded: false,
-          lastPosition: { x: 42, y: 84 },
           skin: 'tuxedo',
         },
       },
@@ -1421,14 +1410,23 @@ describe('terminalStore — AI Supervisor master switch (PRD D3)', () => {
     };
     localStorage.setItem('threadterm-terminal-store', JSON.stringify(upgradedSnapshot));
     await useTerminalStore.persist.rehydrate();
-    const petConfig = useTerminalStore.getState().petConfig;
-    expect(petConfig.notificationMode).toBe('both');
-    // Other user choices survive the forced reset.
-    expect(petConfig.skin).toBe('tuxedo');
-    expect(petConfig.size).toBe(110);
-    expect(petConfig.defaultPosition).toBe('leftBottom');
-    expect(petConfig.lastPosition).toEqual({ x: 42, y: 84 });
-    expect(petConfig.enabled).toBe(true);
+    expect(useTerminalStore.getState().osNotificationsEnabled).toBe(true);
+    localStorage.removeItem('threadterm-terminal-store');
+  });
+
+  it('v17 migration maps a legacy off/pet notificationMode to disabled', async () => {
+    const upgradedSnapshot = {
+      state: {
+        aiExplainDefaultProvider: 'claude',
+        bottomBarHidden: false,
+        supervisorEnabled: false,
+        petConfig: { enabled: true, notificationMode: 'pet' },
+      },
+      version: 10,
+    };
+    localStorage.setItem('threadterm-terminal-store', JSON.stringify(upgradedSnapshot));
+    await useTerminalStore.persist.rehydrate();
+    expect(useTerminalStore.getState().osNotificationsEnabled).toBe(false);
     localStorage.removeItem('threadterm-terminal-store');
   });
 });

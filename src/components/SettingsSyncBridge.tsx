@@ -2,7 +2,6 @@ import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { listenSettingsChanged } from '../lib/settingsSync';
-import { normalizePetConfig } from '../lib/petConfig';
 import { useOverlayStore } from '../stores/overlayStore';
 import { useTerminalStore } from '../stores/terminalStore';
 
@@ -44,7 +43,7 @@ export function SettingsSyncBridge(): null {
         useTerminalStore.setState({
           bottomBarHidden: payload.terminalPreferences.bottomBarHidden,
           aiExplainDefaultProvider: payload.terminalPreferences.aiExplainDefaultProvider,
-          petConfig: normalizePetConfig(payload.terminalPreferences.petConfig),
+          osNotificationsEnabled: payload.terminalPreferences.osNotificationsEnabled,
           supervisorEnabled: payload.terminalPreferences.supervisorEnabled,
         });
       }

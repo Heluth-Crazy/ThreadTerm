@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CardGrid } from './CardGrid';
-import { DEFAULT_PET_CONFIG, useTerminalStore } from '../../stores/terminalStore';
+import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard } from '../../types/terminal';
 import { pendingWorktreePath } from '../../lib/worktreePaths';
 
@@ -70,7 +70,7 @@ function resetStore() {
     notifications: [],
     notificationCentreOpen: false,
     pendingFocusCardId: null,
-    petConfig: DEFAULT_PET_CONFIG,
+    osNotificationsEnabled: true,
     supervisorEnabled: false,
   });
 }

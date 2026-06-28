@@ -24,7 +24,6 @@ import type { NotificationEntry } from '../../types/terminal';
 import { invoke, isTauriEnv } from '../../lib/tauri-bridge';
 import { logger } from '../../utils/logger';
 import { openNotificationTarget } from './notificationTarget';
-import { shouldDispatchOsNotification } from './notificationDispatchMode';
 
 // Encodes a cardId into a numeric notification id that Tauri accepts.
 // We use a hash so repeated notifications for the same card share an id
@@ -101,7 +100,7 @@ export function NotificationBridge(): null {
       for (const n of state.notifications) {
         if (prevIds.has(n.id)) continue;
         if (sentIdsRef.current.has(n.id)) continue;
-        if (!shouldDispatchOsNotification(state.petConfig.notificationMode)) continue;
+        if (!state.osNotificationsEnabled) continue;
         sentIdsRef.current.add(n.id);
         void dispatchOsNotification(n);
       }

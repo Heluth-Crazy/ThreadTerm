@@ -3,16 +3,15 @@ use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager};
 use super::hotkey::register_hotkey;
 use super::platform::{
     activate_float_window_for_keyboard, configure_float_window_for_current_space,
-    configure_pet_window_for_current_space, configure_selector_window_for_current_space,
+    configure_selector_window_for_current_space,
     order_overlay_window_front, restore_regular_activation_policy,
     restore_regular_activation_policy_if_no_overlay_visible, set_overlay_activation_policy,
 };
 use super::state::{FloatBounds, FloatLaunchMode, OverlaySettings, OVERLAY_SETTINGS};
 use super::window::{
-    ensure_float, ensure_pet, ensure_selector, pet_window_size, primary_monitor_bounds,
-    resolve_pet_geometry, PetGeometry, FLOAT_LABEL, MAIN_LABEL, PET_LABEL, SELECTOR_LABEL,
+    ensure_float, ensure_selector, primary_monitor_bounds, FLOAT_LABEL, MAIN_LABEL,
+    SELECTOR_LABEL,
 };
-use std::sync::Mutex;
 
 #[tauri::command]
 pub fn overlay_show_selector(app: AppHandle) -> Result<(), String> {
@@ -320,177 +319,5 @@ pub fn overlay_resize_float(app: AppHandle, w: f64, h: f64) -> Result<(), String
     if let Some(win) = app.get_webview_window(FLOAT_LABEL) {
         let _ = win.set_size(LogicalSize::new(w, h));
     }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn pet_show(app: AppHandle) -> Result<(), String> {
-    ensure_pet(&app)?;
-
-    if let Some(window) = app.get_webview_window(PET_LABEL) {
-        let _ = window.set_visible_on_all_workspaces(true);
-        configure_pet_window_for_current_space(&window);
-        let _ = window.set_always_on_top(true);
-        let _ = window.unminimize();
-
-        #[cfg(target_os = "macos")]
-        {
-            use tauri_nspanel::ManagerExt;
-
-            if let Ok(panel) = app.get_webview_panel(PET_LABEL) {
-                panel.show_and_make_key();
-                panel.order_front_regardless();
-            } else {
-                let _ = window.show();
-                order_overlay_window_front(&window);
-            }
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = window.show();
-            order_overlay_window_front(&window);
-        }
-    }
-
-    let _ = app.emit("pet://shown", ());
-    Ok(())
-}
-
-#[tauri::command]
-pub fn pet_hide(app: AppHandle) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        use tauri_nspanel::ManagerExt;
-
-        if let Ok(panel) = app.get_webview_panel(PET_LABEL) {
-            panel.hide();
-        }
-    }
-
-    if let Some(window) = app.get_webview_window(PET_LABEL) {
-        let _ = window.hide();
-    }
-
-    let _ = app.emit("pet://hidden", ());
-    Ok(())
-}
-
-#[tauri::command]
-pub fn pet_set_position(app: AppHandle, x: f64, y: f64) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(PET_LABEL) {
-        let _ = window.set_position(LogicalPosition::new(x, y));
-    }
-    Ok(())
-}
-
-/// Sprite anchor in logical px, monitor-global (same口径 as `lastPosition`).
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct PetAnchor {
-    pub x: f64,
-    pub y: f64,
-}
-
-/// Intent sent by the pet webview. `visual` is one of
-/// "collapsed" | "bubble" | "expanded". `anchor` is `None` on first show
-/// (backend picks the default bottom-right slot).
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct PetGeometryIntent {
-    pub visual: String,
-    pub size: f64,
-    pub anchor: Option<PetAnchor>,
-    /// Default-corner hint used only when `anchor` is `None`:
-    /// "leftBottom" pins bottom-left, anything else → bottom-right.
-    pub corner: Option<String>,
-}
-
-/// Serializes all pet window resize+move so two concurrent geometry passes
-/// (e.g. a bubble arriving while an expand is in flight) can never interleave
-/// and produce a half-applied/flickering window.
-static PET_GEOMETRY_LOCK: Mutex<()> = Mutex::new(());
-
-/// The single authority for the pet window's size + position. Computes the
-/// union geometry (sprite + bubble/panel) clamped into the hosting monitor's
-/// work area, applies size then position atomically, and broadcasts the
-/// resolved geometry on `pet://geometry` so the webview can lay out the
-/// sprite/content with the returned local offsets. Replaces the old split
-/// `pet_set_expanded` + `pet_set_position` pet-sync path (race fix).
-#[tauri::command]
-pub fn pet_apply_geometry(
-    app: AppHandle,
-    intent: PetGeometryIntent,
-) -> Result<PetGeometry, String> {
-    let _guard = PET_GEOMETRY_LOCK
-        .lock()
-        .map_err(|e| format!("pet geometry lock poisoned: {e}"))?;
-
-    let anchor = intent.anchor.as_ref().map(|a| (a.x, a.y));
-    let geom = resolve_pet_geometry(
-        &app,
-        &intent.visual,
-        intent.size,
-        anchor,
-        intent.corner.as_deref(),
-    );
-
-    if let Some(window) = app.get_webview_window(PET_LABEL) {
-        let _ = window.set_size(LogicalSize::new(geom.window_w, geom.window_h));
-        let _ = window.set_position(LogicalPosition::new(geom.window_x, geom.window_y));
-
-        // Physical-size/position fallback. On macOS some NSPanel-backed
-        // windows don't reliably honour `set_size(LogicalSize)` for the pet
-        // panel — the selector window already works around the same class of
-        // bug with PhysicalSize + physical coordinates (see
-        // `overlay_show_selector` / `ensure_selector`). Re-assert the rect in
-        // physical px using this window's own scale factor so the resize
-        // actually takes effect. Logical-only environments (scale 1.0) are a
-        // no-op repeat, so this is safe everywhere.
-        let scale = window.scale_factor().unwrap_or(1.0);
-        if scale > 0.0 {
-            let _ = window.set_size(tauri::PhysicalSize::new(
-                (geom.window_w * scale).round() as u32,
-                (geom.window_h * scale).round() as u32,
-            ));
-            let _ = window.set_position(tauri::PhysicalPosition::new(
-                (geom.window_x * scale).round() as i32,
-                (geom.window_y * scale).round() as i32,
-            ));
-        }
-    }
-
-    tracing::info!(
-        visual = %intent.visual,
-        w = geom.window_w,
-        h = geom.window_h,
-        x = geom.window_x,
-        y = geom.window_y,
-        "pet_apply_geometry applied"
-    );
-
-    let _ = app.emit("pet://geometry", &geom);
-    Ok(geom)
-}
-
-#[tauri::command]
-pub fn pet_set_expanded(app: AppHandle, expanded: bool, size: Option<f64>) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(PET_LABEL) {
-        let (w, h) = pet_window_size(expanded, size);
-        let _ = window.set_size(LogicalSize::new(w, h));
-    }
-    let _ = app.emit("pet://expanded", expanded);
-    Ok(())
-}
-
-#[tauri::command]
-pub fn pet_focus_main_to_card(app: AppHandle, card_id: String) -> Result<(), String> {
-    overlay_show_main(app.clone())?;
-    let _ = app.emit("pet://focus-card", card_id);
-    Ok(())
-}
-
-#[tauri::command]
-pub fn pet_open_notification_center(app: AppHandle) -> Result<(), String> {
-    overlay_show_main(app.clone())?;
-    let _ = app.emit("pet://open-notification-center", ());
     Ok(())
 }
