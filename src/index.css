@@ -295,6 +295,66 @@
     color: rgb(75 85 99);
   }
 
+  .cm-editor {
+    color-scheme: light dark;
+  }
+
+  .threadterm-merge-host,
+  .threadterm-merge-view,
+  .threadterm-merge-view .cm-mergeView,
+  .threadterm-merge-view .cm-mergeViewEditors,
+  .threadterm-merge-view .cm-editor {
+    height: 100%;
+    min-height: 0;
+  }
+
+  .threadterm-merge-view .cm-mergeView {
+    overflow: hidden;
+  }
+
+  .threadterm-merge-view .cm-mergeViewEditors {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .threadterm-merge-view .cm-mergeViewEditor {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .threadterm-merge-view .cm-scroller {
+    overflow: auto;
+  }
+
+  .threadterm-merge-view .cm-changedLine {
+    background-color: hsl(142 70% 35% / 0.12);
+  }
+
+  .threadterm-merge-view .cm-deletedLine {
+    background-color: hsl(0 72% 45% / 0.12);
+  }
+
+  .threadterm-merge-view .cm-insertedLine {
+    background-color: hsl(142 70% 35% / 0.12);
+  }
+
+  .cm-diff-line-actions {
+    width: 1.75rem;
+  }
+
+  .cm-diff-line-action-button {
+    border-radius: 4px;
+    color: hsl(var(--muted-foreground));
+    font-size: 10px;
+    line-height: 1;
+    padding: 2px 4px;
+  }
+
+  .cm-diff-line-action-button:hover {
+    background-color: hsl(var(--accent));
+    color: hsl(var(--foreground));
+  }
+
   .dark [class*="ring-offset"],
   .dark button:focus {
     --tw-ring-offset-color: rgb(31 41 55);
