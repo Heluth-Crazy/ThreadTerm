@@ -8,7 +8,6 @@ import {
   sanitizeSettingsWorkflowFileName,
   stringifySettingsBundle,
 } from './settingsBundle';
-import { DEFAULT_PET_CONFIG } from '../petConfig';
 import type { ThemePack } from '../../theme/themeTypes';
 
 const appTokens = {
@@ -94,12 +93,9 @@ describe('settings bundle', () => {
       terminalSettings: {
         bottomBarHidden: true,
         aiExplainDefaultProvider: 'codex',
-        petConfig: {
-          ...DEFAULT_PET_CONFIG,
-          enabled: true,
-          notificationMode: 'both',
-          secret: 'pet-secret',
-        },
+        osNotificationsEnabled: true,
+        notificationMode: 'both',
+        petSecret: 'pet-secret',
         cards: [{ providerSessionId: 'provider-session-secret' }],
         pairedDevices: [{ id: 'device-secret' }],
       } as never,
@@ -128,10 +124,7 @@ describe('settings bundle', () => {
     expect(json).not.toContain('pet-secret');
     expect(json).not.toContain('card-secret');
     expect(json).not.toContain('audit-secret');
-    expect(bundle.sections.terminal?.petConfig).toMatchObject({
-      enabled: true,
-      notificationMode: 'both',
-    });
+    expect(bundle.sections.terminal?.osNotificationsEnabled).toBe(true);
   });
 
   it('parses a bundle and normalizes custom themes to portable ids', () => {

@@ -7,7 +7,6 @@ import { NotificationBridge } from './components/terminal/NotificationBridge';
 import { KeyboardBridge } from './components/terminal/KeyboardBridge';
 import { OverlayBridge } from './components/overlays/OverlayBridge';
 import { NotificationCenter } from './components/terminal/NotificationCenter';
-import { PetBridge } from './pet/PetBridge';
 import { SettingsSyncBridge } from './components/SettingsSyncBridge';
 
 /**
@@ -26,7 +25,6 @@ export default function App() {
       <ThemeProvider>
         <TerminalEventBridge />
         <NotificationBridge />
-        <PetBridge />
         <KeyboardBridge />
         <SettingsSyncBridge />
         <div className="h-screen w-screen overflow-hidden bg-background text-foreground">

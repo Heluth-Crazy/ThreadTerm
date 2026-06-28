@@ -203,51 +203,6 @@ export interface NotificationEntry {
   read: boolean;
 }
 
-// ── Desktop Pet ─────────────────────────────────────────────────────────────
-
-export type DesktopPetNotificationMode = 'off' | 'system' | 'pet' | 'both';
-export type DesktopPetDefaultPosition = 'rightBottom' | 'leftBottom' | 'lastDragged';
-
-/** Cat fur colour variants. Keep in sync with `src/pet/petSkins.ts`. */
-export type DesktopPetSkin = 'classic' | 'orange' | 'cream' | 'tuxedo' | 'theme';
-
-export interface DesktopPetPosition {
-  x: number;
-  y: number;
-}
-
-export interface DesktopPetConfig {
-  enabled: boolean;
-  notificationMode: DesktopPetNotificationMode;
-  defaultPosition: DesktopPetDefaultPosition;
-  size: number;
-  idleTranslucent: boolean;
-  expanded: boolean;
-  lastPosition: DesktopPetPosition | null;
-  skin: DesktopPetSkin;
-}
-
-/** Finite visual state of the pet OS window. Mirrors the Rust authority. */
-export type PetVisual = 'collapsed' | 'bubble' | 'expanded';
-
-/**
- * Resolved geometry returned by the `pet_apply_geometry` Tauri command and
- * broadcast on `pet://geometry`. All values are logical px; `*Local*` are
- * offsets of the sprite / content inside the window. Mirrors the Rust
- * `PetGeometry` struct (camelCase via serde rename).
- */
-export interface PetGeometry {
-  windowX: number;
-  windowY: number;
-  windowW: number;
-  windowH: number;
-  side: 'left' | 'right' | 'top' | 'bottom';
-  petLocalX: number;
-  petLocalY: number;
-  contentLocalX: number;
-  contentLocalY: number;
-}
-
 // ── Creation ─────────────────────────────────────────────────────────────────
 
 export interface TerminalCreateOptions {

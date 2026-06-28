@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { SettingsDataIO } from './SettingsDataIO';
-import { DEFAULT_PET_CONFIG } from '../../lib/petConfig';
 import { useOverlayStore } from '../../stores/overlayStore';
 import { useTerminalStore } from '../../stores/terminalStore';
 
@@ -66,7 +65,7 @@ beforeEach(() => {
   useTerminalStore.setState({
     bottomBarHidden: false,
     aiExplainDefaultProvider: 'claude',
-    petConfig: DEFAULT_PET_CONFIG,
+    osNotificationsEnabled: true,
   });
   useOverlayStore.setState({
     selectorMode: 'tile',
@@ -91,7 +90,6 @@ describe('SettingsDataIO', () => {
               bottomBarHidden: true,
               aiExplainDefaultProvider: 'gemini',
               petConfig: {
-                ...DEFAULT_PET_CONFIG,
                 enabled: true,
                 notificationMode: 'both',
               },
@@ -115,10 +113,7 @@ describe('SettingsDataIO', () => {
     await waitFor(() => {
       expect(useTerminalStore.getState().bottomBarHidden).toBe(true);
       expect(useTerminalStore.getState().aiExplainDefaultProvider).toBe('gemini');
-      expect(useTerminalStore.getState().petConfig).toMatchObject({
-        enabled: true,
-        notificationMode: 'both',
-      });
+      expect(useTerminalStore.getState().osNotificationsEnabled).toBe(true);
       expect(useOverlayStore.getState().selectorMode).toBe('carousel');
       expect(useOverlayStore.getState().hotkeyA).toBe('CmdOrCtrl+Alt+A');
       expect(useOverlayStore.getState().hotkeyB).toBe('CmdOrCtrl+Alt+B');

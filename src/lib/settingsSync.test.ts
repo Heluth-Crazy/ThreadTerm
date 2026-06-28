@@ -30,13 +30,7 @@ describe('settingsSync', () => {
         bottomBarHidden: true,
         aiExplainDefaultProvider: 'codex',
         supervisorEnabled: true,
-        petConfig: {
-          enabled: true,
-          skin: 'cat',
-          size: 64,
-          position: 'bottom-right',
-          notificationMode: 'both',
-        },
+        osNotificationsEnabled: true,
       },
       overlayPreferences: {
         selectorMode: 'carousel',

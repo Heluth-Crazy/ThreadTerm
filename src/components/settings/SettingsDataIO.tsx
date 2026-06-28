@@ -70,7 +70,7 @@ export function SettingsDataIO() {
   } = useTheme();
   const bottomBarHidden = useTerminalStore((s) => s.bottomBarHidden);
   const aiExplainDefaultProvider = useTerminalStore((s) => s.aiExplainDefaultProvider);
-  const petConfig = useTerminalStore((s) => s.petConfig);
+  const osNotificationsEnabled = useTerminalStore((s) => s.osNotificationsEnabled);
   const selectorMode = useOverlayStore((s) => s.selectorMode);
   const setSelectorMode = useOverlayStore((s) => s.setSelectorMode);
   const hotkeyA = useOverlayStore((s) => s.hotkeyA);
@@ -88,7 +88,7 @@ export function SettingsDataIO() {
     createSettingsBundle({
       themePreference: { themeMode, themePackId },
       customThemePacks: (themePacks as ThemePack[]).filter((pack) => pack.isCustom),
-      terminalSettings: { bottomBarHidden, aiExplainDefaultProvider, petConfig },
+      terminalSettings: { bottomBarHidden, aiExplainDefaultProvider, osNotificationsEnabled },
       overlaySettings: { selectorMode, hotkeyA, hotkeyB },
       workflowFiles: await readGlobalWorkflowBundleFiles(),
     });
@@ -179,13 +179,13 @@ export function SettingsDataIO() {
         const terminalPreferences = {
           bottomBarHidden: sections.terminal.bottomBarHidden,
           aiExplainDefaultProvider: sections.terminal.aiExplainDefaultProvider,
-          petConfig: sections.terminal.petConfig,
+          osNotificationsEnabled: sections.terminal.osNotificationsEnabled,
           supervisorEnabled: useTerminalStore.getState().supervisorEnabled,
         };
         useTerminalStore.setState({
           bottomBarHidden: terminalPreferences.bottomBarHidden,
           aiExplainDefaultProvider: terminalPreferences.aiExplainDefaultProvider,
-          petConfig: terminalPreferences.petConfig,
+          osNotificationsEnabled: terminalPreferences.osNotificationsEnabled,
         });
         void emitSettingsChanged({
           domain: 'terminal-preferences',
