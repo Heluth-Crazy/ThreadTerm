@@ -2,6 +2,7 @@ mod ai_explain;
 mod bridge;
 mod codex_app;
 mod db;
+mod files;
 mod git;
 mod local_directory;
 mod notification;
@@ -84,8 +85,14 @@ pub fn run() {
             ai_explain::ai_explain,
             supervisor::supervisor_enable,
             git::git_branch_overview,
+            git::git_file_diff,
+            git::git_file_text_diff,
+            git::git_status,
             git::git_worktree_add,
             git::git_worktree_list,
+            files::read_directory,
+            files::workspace_read_file,
+            files::workspace_write_file,
             local_directory::open_local_directory,
             pty::pty_create,
             pty::pty_input,

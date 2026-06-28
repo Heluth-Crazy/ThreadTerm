@@ -149,10 +149,53 @@ export interface BranchRow {
   upstream?: string | null;
 }
 
+export interface GitStatusEntry {
+  path: string;
+  absolutePath: string;
+  repositoryRoot: string;
+  staged?: string | null;
+  unstaged?: string | null;
+  isUntracked: boolean;
+}
+
+export interface GitFileDiff {
+  path: string;
+  stagedDiff: string;
+  unstagedDiff: string;
+  isBinary: boolean;
+}
+
+export type GitTextDiffSectionKind = 'staged' | 'unstaged';
+
+export interface GitTextDiffSection {
+  kind: GitTextDiffSectionKind;
+  baseLabel: string;
+  currentLabel: string;
+  baseContents: string;
+  currentContents: string;
+  editable: boolean;
+  currentModifiedUnixMs?: number | null;
+}
+
+export interface GitTextDiff {
+  path: string;
+  repositoryRoot: string;
+  isBinary: boolean;
+  sections: GitTextDiffSection[];
+}
+
 export const git = {
   branches: {
     overview: (projectPath: string): Promise<BranchRow[]> =>
       invoke<BranchRow[]>('git_branch_overview', { projectPath }),
+  },
+  changes: {
+    status: (projectPath: string): Promise<GitStatusEntry[]> =>
+      invoke<GitStatusEntry[]>('git_status', { projectPath }),
+    diff: (projectPath: string, path: string): Promise<GitFileDiff> =>
+      invoke<GitFileDiff>('git_file_diff', { projectPath, path }),
+    textDiff: (projectPath: string, path: string): Promise<GitTextDiff> =>
+      invoke<GitTextDiff>('git_file_text_diff', { projectPath, path }),
   },
   worktrees: {
     list: (projectPath: string): Promise<WorktreeInfo[]> =>
@@ -168,6 +211,30 @@ export const git = {
         worktreePath,
       }),
   },
+};
+
+export interface WorkspaceFile {
+  path: string;
+  contents: string;
+  sizeBytes: number;
+  modifiedUnixMs?: number | null;
+}
+
+export const workspaceFiles = {
+  read: (rootPath: string, path: string): Promise<WorkspaceFile> =>
+    invoke<WorkspaceFile>('workspace_read_file', { rootPath, path }),
+  write: (
+    rootPath: string,
+    path: string,
+    contents: string,
+    expectedModifiedUnixMs?: number | null,
+  ): Promise<WorkspaceFile> =>
+    invoke<WorkspaceFile>('workspace_write_file', {
+      rootPath,
+      path,
+      contents,
+      expectedModifiedUnixMs: expectedModifiedUnixMs ?? null,
+    }),
 };
 
 export type SupportedShell = 'zsh' | 'bash' | 'fish' | 'pwsh';

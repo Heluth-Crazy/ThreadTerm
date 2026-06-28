@@ -1,7 +1,10 @@
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
+
+const MAX_TEXT_DIFF_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +37,52 @@ pub struct BranchRow {
     pub is_main_worktree: bool,
     pub last_commit_unix: i64,
     pub upstream: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatusEntry {
+    /// Repository-relative path using Git's slash separator.
+    pub path: String,
+    /// Absolute platform path suitable for opening in the workspace editor.
+    pub absolute_path: String,
+    /// Canonical repository root; use as the workspace root when opening this file.
+    pub repository_root: String,
+    /// Porcelain X status, if staged.
+    pub staged: Option<String>,
+    /// Porcelain Y status, if unstaged.
+    pub unstaged: Option<String>,
+    pub is_untracked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitFileDiff {
+    pub path: String,
+    pub staged_diff: String,
+    pub unstaged_diff: String,
+    pub is_binary: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitTextDiffSection {
+    pub kind: String,
+    pub base_label: String,
+    pub current_label: String,
+    pub base_contents: String,
+    pub current_contents: String,
+    pub editable: bool,
+    pub current_modified_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitTextDiff {
+    pub path: String,
+    pub repository_root: String,
+    pub is_binary: bool,
+    pub sections: Vec<GitTextDiffSection>,
 }
 
 #[derive(Default)]
@@ -249,6 +298,93 @@ fn branch_overview_for_directory(project_path: &str) -> Result<Vec<BranchRow>, S
     Ok(merge_branch_worktree(branches, worktrees))
 }
 
+fn path_to_display(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+fn git_path_to_absolute(repo_root: &Path, git_path: &str) -> String {
+    path_to_display(&repo_root.join(git_path))
+}
+
+fn porcelain_status_char(value: char) -> Option<String> {
+    match value {
+        ' ' | '?' | '!' => None,
+        other => Some(other.to_string()),
+    }
+}
+
+fn parse_status_porcelain_z(output: &[u8], repo_root: &Path) -> Vec<GitStatusEntry> {
+    let mut entries = Vec::new();
+    let mut fields = output
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
+
+    while let Some(field) = fields.next() {
+        let record = String::from_utf8_lossy(field);
+        if record.len() < 4 {
+            continue;
+        }
+        let mut chars = record.chars();
+        let Some(x) = chars.next() else {
+            continue;
+        };
+        let Some(y) = chars.next() else {
+            continue;
+        };
+        let Some(separator) = chars.next() else {
+            continue;
+        };
+        if separator != ' ' {
+            continue;
+        }
+        let path = chars.as_str().to_string();
+        if path.is_empty() {
+            continue;
+        }
+
+        if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
+            let _ = fields.next();
+        }
+
+        entries.push(GitStatusEntry {
+            absolute_path: git_path_to_absolute(repo_root, &path),
+            repository_root: path_to_display(repo_root),
+            path,
+            staged: porcelain_status_char(x),
+            unstaged: porcelain_status_char(y),
+            is_untracked: x == '?' && y == '?',
+        });
+    }
+
+    entries
+}
+
+fn status_for_directory(project_path: &str) -> Result<Vec<GitStatusEntry>, String> {
+    let project_dir = validate_git_project_directory(project_path)?;
+    let repo_root = match git_repo_root(&project_dir) {
+        Ok(root) => root,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let output = match Command::new("git")
+        .arg("-C")
+        .arg(&repo_root)
+        .arg("status")
+        .arg("--porcelain=v1")
+        .arg("-z")
+        .arg("--untracked-files=all")
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    Ok(parse_status_porcelain_z(&output.stdout, &repo_root))
+}
+
 fn git_repo_root(project_path: &Path) -> Result<PathBuf, String> {
     let output = Command::new("git")
         .arg("-C")
@@ -270,6 +406,176 @@ fn git_repo_root(project_path: &Path) -> Result<PathBuf, String> {
         return Err("Could not resolve git repository root.".to_string());
     }
     Ok(PathBuf::from(root))
+}
+
+fn validate_repo_relative_path(path: &str) -> Result<String, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("Git path is required.".to_string());
+    }
+    let normalized = path.replace('\\', "/");
+    if normalized.starts_with('/') || looks_like_windows_drive_path(&normalized) {
+        return Err("Git path must stay inside the repository.".to_string());
+    }
+    let repo_path = Path::new(&normalized);
+    if repo_path.is_absolute() || has_root_prefix_or_parent(repo_path) {
+        return Err("Git path must stay inside the repository.".to_string());
+    }
+    Ok(normalized)
+}
+
+fn looks_like_windows_drive_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
+}
+
+fn run_git_diff(repo_root: &Path, path: &str, cached: bool) -> Result<String, String> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(repo_root)
+        .arg("diff")
+        .arg("--no-color")
+        .arg("--no-ext-diff");
+    if cached {
+        command.arg("--cached");
+    }
+    let output = command
+        .arg("--")
+        .arg(path)
+        .output()
+        .map_err(|err| format!("Failed to run git diff: {err}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Failed to read git diff.".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn diff_is_binary(diff: &str) -> bool {
+    diff.contains("Binary files ") || diff.contains("GIT binary patch")
+}
+
+fn file_diff_for_directory(project_path: &str, path: &str) -> Result<GitFileDiff, String> {
+    let project_dir = validate_git_project_directory(project_path)?;
+    let repo_root = git_repo_root(&project_dir)?;
+    let path = validate_repo_relative_path(path)?;
+    let staged_diff = run_git_diff(&repo_root, &path, true)?;
+    let unstaged_diff = run_git_diff(&repo_root, &path, false)?;
+    let is_binary = diff_is_binary(&staged_diff) || diff_is_binary(&unstaged_diff);
+
+    Ok(GitFileDiff {
+        path,
+        staged_diff,
+        unstaged_diff,
+        is_binary,
+    })
+}
+
+fn modified_unix_ms(path: &Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+}
+
+fn bytes_to_text(bytes: Vec<u8>, label: &str) -> Result<String, String> {
+    if bytes.len() > MAX_TEXT_DIFF_BYTES {
+        return Err(format!(
+            "file_too_large: {label} is larger than {} bytes.",
+            MAX_TEXT_DIFF_BYTES
+        ));
+    }
+    if bytes.contains(&0) {
+        return Err(format!("file_binary: {label} is binary."));
+    }
+    String::from_utf8(bytes).map_err(|_| format!("file_not_utf8: {label} is not valid UTF-8 text."))
+}
+
+fn read_git_blob(repo_root: &Path, revision: &str, path: &str) -> Result<Option<String>, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("show")
+        .arg(format!("{revision}:{path}"))
+        .output()
+        .map_err(|err| format!("Failed to run git show: {err}"))?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    bytes_to_text(output.stdout, &format!("{revision}:{path}")).map(Some)
+}
+
+fn read_worktree_file(repo_root: &Path, path: &str) -> Result<Option<String>, String> {
+    let file = repo_root.join(path);
+    if !file.exists() {
+        return Ok(None);
+    }
+    if !file.is_file() {
+        return Err(format!("file_not_regular: Not a file: {}", file.display()));
+    }
+    let bytes = std::fs::read(&file)
+        .map_err(|err| format!("file_read_failed: Failed to read file: {err}"))?;
+    bytes_to_text(bytes, &path).map(Some)
+}
+
+fn file_text_diff_for_directory(project_path: &str, path: &str) -> Result<GitTextDiff, String> {
+    let project_dir = validate_git_project_directory(project_path)?;
+    let repo_root = git_repo_root(&project_dir)?;
+    let path = validate_repo_relative_path(path)?;
+    let staged_diff = run_git_diff(&repo_root, &path, true)?;
+    let unstaged_diff = run_git_diff(&repo_root, &path, false)?;
+    let is_binary = diff_is_binary(&staged_diff) || diff_is_binary(&unstaged_diff);
+    if is_binary {
+        return Ok(GitTextDiff {
+            path,
+            repository_root: path_to_display(&repo_root),
+            is_binary: true,
+            sections: Vec::new(),
+        });
+    }
+
+    let mut sections = Vec::new();
+    if !staged_diff.trim().is_empty() {
+        sections.push(GitTextDiffSection {
+            kind: "staged".to_string(),
+            base_label: "HEAD".to_string(),
+            current_label: "Index".to_string(),
+            base_contents: read_git_blob(&repo_root, "HEAD", &path)?.unwrap_or_default(),
+            current_contents: read_git_blob(&repo_root, "", &path)?.unwrap_or_default(),
+            editable: false,
+            current_modified_unix_ms: None,
+        });
+    }
+
+    if !unstaged_diff.trim().is_empty() {
+        let worktree_path = repo_root.join(&path);
+        sections.push(GitTextDiffSection {
+            kind: "unstaged".to_string(),
+            base_label: "Index".to_string(),
+            current_label: "Working tree".to_string(),
+            base_contents: read_git_blob(&repo_root, "", &path)?.unwrap_or_default(),
+            current_contents: read_worktree_file(&repo_root, &path)?.unwrap_or_default(),
+            editable: true,
+            current_modified_unix_ms: modified_unix_ms(&worktree_path),
+        });
+    }
+
+    Ok(GitTextDiff {
+        path,
+        repository_root: path_to_display(&repo_root),
+        is_binary: false,
+        sections,
+    })
 }
 
 fn sanitize_worktree_branch(branch: &str) -> String {
@@ -296,6 +602,15 @@ fn worktree_base_dir(repo_root: &Path) -> Result<PathBuf, String> {
 fn has_parent_dir(path: &Path) -> bool {
     path.components()
         .any(|component| component == Component::ParentDir)
+}
+
+fn has_root_prefix_or_parent(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    })
 }
 
 fn default_worktree_path(repo_root: &Path, branch: &str) -> Result<PathBuf, String> {
@@ -398,15 +713,66 @@ pub async fn git_worktree_add(
     .map_err(|err| format!("Failed to create git worktree: {err}"))?
 }
 
+#[tauri::command]
+pub async fn git_status(project_path: String) -> Result<Vec<GitStatusEntry>, String> {
+    tokio::task::spawn_blocking(move || status_for_directory(&project_path))
+        .await
+        .map_err(|err| format!("Failed to read git status: {err}"))?
+}
+
+#[tauri::command]
+pub async fn git_file_diff(project_path: String, path: String) -> Result<GitFileDiff, String> {
+    tokio::task::spawn_blocking(move || file_diff_for_directory(&project_path, &path))
+        .await
+        .map_err(|err| format!("Failed to read git file diff: {err}"))?
+}
+
+#[tauri::command]
+pub async fn git_file_text_diff(project_path: String, path: String) -> Result<GitTextDiff, String> {
+    tokio::task::spawn_blocking(move || file_text_diff_for_directory(&project_path, &path))
+        .await
+        .map_err(|err| format!("Failed to read git text diff: {err}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        checked_worktree_target, default_worktree_path, merge_branch_worktree,
-        parse_branch_ref_output, parse_worktree_porcelain, sanitize_worktree_branch,
-        validate_git_project_directory, BranchRecord, WorktreeInfo,
+        checked_worktree_target, default_worktree_path, file_text_diff_for_directory,
+        merge_branch_worktree, parse_branch_ref_output, parse_status_porcelain_z,
+        parse_worktree_porcelain, sanitize_worktree_branch, validate_git_project_directory,
+        validate_repo_relative_path, BranchRecord, WorktreeInfo,
     };
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "threadterm_git_{name}_{}_{}",
+            std::process::id(),
+            stamp
+        ))
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn parse_worktree_porcelain_reads_main_and_linked_worktrees() {
@@ -566,5 +932,71 @@ bare
             checked_worktree_target(base, Path::new("feature")).unwrap(),
             PathBuf::from("/repos/threadterm-worktrees/feature")
         );
+    }
+
+    #[test]
+    fn parse_status_porcelain_z_reads_staged_unstaged_and_untracked() {
+        let output =
+            b"M  src/lib.rs\0 M src/main.rs\0?? docs/new file.md\0A  \xe4\xb8\xad\xe6\x96\x87.txt\0";
+        let rows = parse_status_porcelain_z(output, Path::new("/repo/app"));
+
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].path, "src/lib.rs");
+        assert_eq!(rows[0].staged.as_deref(), Some("M"));
+        assert_eq!(rows[0].unstaged, None);
+        assert_eq!(rows[1].unstaged.as_deref(), Some("M"));
+        assert!(rows[2].is_untracked);
+        assert_eq!(rows[2].absolute_path, "/repo/app/docs/new file.md");
+        assert_eq!(rows[3].path, "中文.txt");
+    }
+
+    #[test]
+    fn parse_status_porcelain_z_consumes_rename_source() {
+        let output = b"R  new name.txt\0old name.txt\0 M keep.txt\0";
+        let rows = parse_status_porcelain_z(output, Path::new("/repo/app"));
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].path, "new name.txt");
+        assert_eq!(rows[0].staged.as_deref(), Some("R"));
+        assert_eq!(rows[1].path, "keep.txt");
+    }
+
+    #[test]
+    fn validate_repo_relative_path_rejects_absolute_and_parent_paths() {
+        assert!(validate_repo_relative_path("../secret").is_err());
+        assert!(validate_repo_relative_path("src\\..\\secret").is_err());
+        assert!(validate_repo_relative_path("/tmp/secret").is_err());
+        assert!(validate_repo_relative_path("\\tmp\\secret").is_err());
+        assert!(validate_repo_relative_path("C:\\tmp\\secret").is_err());
+        assert!(validate_repo_relative_path("C:/tmp/secret").is_err());
+        assert_eq!(
+            validate_repo_relative_path("src\\main.rs").unwrap(),
+            "src/main.rs"
+        );
+    }
+
+    #[test]
+    fn file_text_diff_returns_editable_unstaged_contents() {
+        let repo = temp_dir("text_diff");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "threadterm@example.test"]);
+        run_git(&repo, &["config", "user.name", "ThreadTerm Test"]);
+        std::fs::write(repo.join("app.txt"), "old\nsame\n").unwrap();
+        run_git(&repo, &["add", "app.txt"]);
+        run_git(&repo, &["commit", "-m", "initial"]);
+        std::fs::write(repo.join("app.txt"), "new\nsame\n").unwrap();
+
+        let diff = file_text_diff_for_directory(repo.to_str().unwrap(), "app.txt").unwrap();
+
+        assert!(!diff.is_binary);
+        assert_eq!(diff.sections.len(), 1);
+        let section = &diff.sections[0];
+        assert_eq!(section.kind, "unstaged");
+        assert!(section.editable);
+        assert_eq!(section.base_contents, "old\nsame\n");
+        assert_eq!(section.current_contents, "new\nsame\n");
+
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }

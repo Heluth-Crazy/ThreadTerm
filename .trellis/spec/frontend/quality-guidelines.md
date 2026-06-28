@@ -277,6 +277,63 @@ Correct:
 
 </spec-entry>
 
+<spec-entry category="quality" keywords="workspace,diff,codemirror,tauri,git,editor" date="2026-06-28" source="src/components/files/WorkspaceContentViews.tsx:187">
+
+### Scenario: Workspace CodeMirror Editor and Editable Git Diff
+
+#### 1. Scope / Trigger
+- Trigger: Any change to main-content workspace file editing, CodeMirror integration, Git diff rendering, or Tauri commands that feed file/diff editor data.
+- Applies to `src/components/files/**`, `src/lib/tauri-bridge.ts`, `src-tauri/src/git.rs`, `src-tauri/src/files.rs`, and workspace tab dirty-state wiring.
+
+#### 2. Signatures
+- Frontend file editor: `WorkspaceCodeEditor({ value, path, active, readOnly?, onChange?, onSave? })`
+- Frontend diff editor: `WorkspaceMergeDiffEditor({ baseValue, currentValue, editable, onCurrentChange?, onSave? })`
+- Frontend bridge: `git.changes.textDiff(projectPath: string, path: string): Promise<GitTextDiff>`
+- Backend command: `git_file_text_diff(project_path: String, path: String) -> Result<GitTextDiff, String>`
+- Save path: `workspaceFiles.write(rootPath, absolutePath, contents, currentModifiedUnixMs)`
+
+#### 3. Contracts
+- `GitTextDiff.sections[].kind` is `staged` or `unstaged`; only `unstaged` is editable in v1.
+- Staged diff displays `HEAD` vs `Index` and must be read-only.
+- Unstaged diff displays `Index` vs `Working tree`; edits and line/hunk reverts update an in-memory draft until the user saves.
+- CodeMirror language extensions must load by file extension and be disabled above the syntax-highlight size threshold; do not recreate MergeView on every keystroke.
+- `Mod-s` is the only save shortcut in editor surfaces so macOS maps to `Cmd+S` and Windows/Linux maps to `Ctrl+S`.
+- Saving must preserve CRLF-dominant files through `normalizeDraftForSave`.
+
+#### 4. Validation & Error Matrix
+- Repo-relative path is empty, absolute, parent-traversing, or Windows drive-like -> reject before running Git.
+- Binary diff -> return/show binary state instead of creating editable sections.
+- Missing working-tree file with unstaged deletion -> editable draft may be saved by creating the file inside the workspace root.
+- File changed on disk after diff load -> `workspace_write_file` returns `file_conflict`.
+- Untracked file with no staged diff -> show no textual diff and offer normal file open behavior.
+
+#### 5. Good/Base/Bad Cases
+- Good: click a modified file in Changes, edit the right diff pane, see dirty tab marker, save to working tree with the section mtime.
+- Good: `Revert line` changes only the draft; if single-line mapping is unsafe, revert the current hunk and show a status message.
+- Base: staged-only changes are visible but read-only.
+- Bad: calling Git or writing files from the frontend directly, or applying a revert immediately to disk without the explicit Save action.
+
+#### 6. Tests Required
+- Component tests for file edit save, CRLF preservation, diff load, diff draft save, and dirty tab wiring.
+- Rust tests for `git_file_text_diff` editable unstaged sections and `workspace_write_file` restoring a missing file inside the workspace.
+- Run `npm run typecheck`, targeted Vitest for workspace views/panels/tabs/i18n parity, `cargo check`, targeted Rust tests, `npm run build`, and `git diff --check`.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+// Recreates the merge editor every time the right side changes.
+useEffect(() => createMergeView(currentValue), [currentValue]);
+```
+
+Correct:
+```typescript
+// Keep the editor instance alive; CodeMirror transactions own per-keystroke updates.
+useEffect(() => createMergeView(initialCurrentValue), [baseValue, languageExtensions]);
+```
+
+</spec-entry>
+
 <spec-entry category="quality" keywords="desktop-native-feel,tauri,window-state,contextmenu,platform-material,webview" date="2026-05-30" source="src/lib/nativeDesktop.ts:1">
 
 ### Scenario: Desktop Native-Feel WebView Boundary
