@@ -348,7 +348,12 @@
   }
 
   .cm-diff-line-actions {
+    box-sizing: border-box;
     width: 1.75rem;
+  }
+
+  .cm-diff-line-actions-placeholder {
+    pointer-events: none;
   }
 
   .cm-diff-line-action-button {
@@ -357,6 +362,11 @@
     font-size: 10px;
     line-height: 1;
     padding: 2px 4px;
+  }
+
+  .cm-diff-line-action-spacer {
+    pointer-events: none;
+    visibility: hidden;
   }
 
   .cm-diff-line-action-button:hover {
