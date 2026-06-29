@@ -10,6 +10,7 @@ import { getTerminalTypeMeta } from './terminalTypeMeta';
 export interface SessionDockProps {
   visible: boolean;
   pinned: boolean;
+  variant?: 'overlay' | 'panel';
   onClose: () => void;
   onHoverChange: (hovered: boolean) => void;
 }
@@ -47,7 +48,13 @@ function worktreeChip(card: TerminalCard): string | null {
   return label && label !== card.projectName ? label : null;
 }
 
-export function SessionDock({ visible, pinned, onClose, onHoverChange }: SessionDockProps) {
+export function SessionDock({
+  visible,
+  pinned,
+  variant = 'overlay',
+  onClose,
+  onHoverChange,
+}: SessionDockProps) {
   const { t } = useTranslation('terminal');
   const cards = useTerminalStore((s) => s.cards);
   const recentIds = useTerminalStore((s) => s.recentlyViewedCardIds);
@@ -77,7 +84,10 @@ export function SessionDock({ visible, pinned, onClose, onHoverChange }: Session
       onMouseEnter={() => onHoverChange(true)}
       onMouseLeave={() => onHoverChange(false)}
       className={[
-        'absolute bottom-0 right-0 top-0 z-[35] flex w-64 flex-col border-l border-white/10 bg-background/95 shadow-studio backdrop-blur-2xl transition-all duration-150 ease-out',
+        'flex flex-col bg-background/95 shadow-studio backdrop-blur-2xl transition-all duration-150 ease-out',
+        variant === 'panel'
+          ? 'relative h-full w-full'
+          : 'absolute bottom-0 right-0 top-0 z-[35] w-64 border-l border-white/10',
         visible
           ? 'translate-x-0 opacity-100 pointer-events-auto'
           : 'translate-x-full opacity-0 pointer-events-none',
