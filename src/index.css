@@ -327,7 +327,8 @@
   }
 
   .threadterm-merge-view .cm-scroller {
-    overflow: visible !important;
+    overflow-x: auto !important;
+    overflow-y: visible !important;
   }
 
   .threadterm-merge-view .cm-merge-revert {

@@ -233,14 +233,12 @@ export function WorkspaceMergeDiffEditor({
 
     const baseExtensions: Extension[] = [
       codeEditorTheme,
-      EditorView.lineWrapping,
       EditorState.readOnly.of(true),
       EditorView.editable.of(false),
       ...languageExtensions,
     ];
     const currentExtensions: Extension[] = [
       codeEditorTheme,
-      EditorView.lineWrapping,
       editable ? [] : [EditorState.readOnly.of(true), EditorView.editable.of(false)],
       editable ? createDiffLineActionGutter(() => mergeRef.current, revertLine, labels.revertLine) : [],
       keymap.of([
