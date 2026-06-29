@@ -289,7 +289,36 @@ export function WorkspaceMergeDiffEditor({
     mergeRef.current = mergeView;
     mergeView.b.dispatch({});
 
+    const win = mergeView.dom.ownerDocument.defaultView ?? window;
+    let measureFrame: number | null = null;
+    const scheduleMergeMeasure = () => {
+      if (measureFrame !== null) return;
+      measureFrame = win.requestAnimationFrame(() => {
+        measureFrame = null;
+        mergeView.a.requestMeasure();
+        mergeView.b.requestMeasure();
+      });
+    };
+    const handleMergeScroll = () => {
+      scheduleMergeMeasure();
+    };
+    const handleCollapsedClick = (event: MouseEvent) => {
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest('.cm-collapsedLines')) {
+        scheduleMergeMeasure();
+      }
+    };
+
+    mergeView.dom.addEventListener('scroll', handleMergeScroll, { passive: true });
+    mergeView.dom.addEventListener('click', handleCollapsedClick);
+    scheduleMergeMeasure();
+
     return () => {
+      mergeView.dom.removeEventListener('scroll', handleMergeScroll);
+      mergeView.dom.removeEventListener('click', handleCollapsedClick);
+      if (measureFrame !== null) {
+        win.cancelAnimationFrame(measureFrame);
+      }
       mergeRef.current = null;
       mergeView.destroy();
       parent.innerHTML = '';

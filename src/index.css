@@ -300,27 +300,34 @@
   }
 
   .threadterm-merge-host,
-  .threadterm-merge-view,
-  .threadterm-merge-view .cm-mergeView,
-  .threadterm-merge-view .cm-mergeViewEditors,
-  .threadterm-merge-view .cm-editor {
+  .threadterm-merge-view.cm-mergeView {
     height: 100%;
     min-height: 0;
   }
 
-  .threadterm-merge-view .cm-mergeView {
+  .threadterm-merge-view.cm-mergeView {
     overflow: auto;
   }
 
   .threadterm-merge-view .cm-mergeViewEditors {
     align-items: stretch;
     display: flex;
+    min-height: 100%;
   }
 
   .threadterm-merge-view .cm-mergeViewEditor {
     flex: 1 1 0;
     min-width: 0;
     overflow: hidden;
+  }
+
+  .threadterm-merge-view .cm-editor {
+    height: auto !important;
+    min-height: 100%;
+  }
+
+  .threadterm-merge-view .cm-scroller {
+    overflow: visible !important;
   }
 
   .threadterm-merge-view .cm-merge-revert {
