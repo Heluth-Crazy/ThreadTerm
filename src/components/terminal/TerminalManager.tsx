@@ -19,7 +19,6 @@ import {
   Bell,
   BellDot,
   FileText,
-  FolderTree,
   GitCompare,
   Layers,
   Plus,
@@ -73,7 +72,7 @@ import {
 import type { DirEntry } from '../files/fileMeta';
 
 type ViewMode = 'grid' | 'focus';
-type RightSurface = 'workspace' | 'stats' | 'archive' | 'bookmarks' | 'sessionDock';
+type RightSurface = 'stats' | 'archive' | 'bookmarks' | 'sessionDock';
 type WorkspaceContentTab =
   | {
       id: string;
@@ -402,8 +401,6 @@ export function TerminalManager() {
   const isRightSurfaceAvailable = useCallback(
     (surface: RightSurface) => {
       switch (surface) {
-        case 'workspace':
-          return viewMode === 'focus' && Boolean(focusedCwd);
         case 'stats':
           return true;
         case 'archive':
@@ -414,7 +411,7 @@ export function TerminalManager() {
           return sessionDockAvailable;
       }
     },
-    [focusedCwd, selectedProjectName, selectedProjectPath, sessionDockAvailable, viewMode],
+    [selectedProjectName, selectedProjectPath, sessionDockAvailable],
   );
 
   const activeRightSurface = useMemo(
@@ -449,10 +446,10 @@ export function TerminalManager() {
     }
   }, [closeRightSurface, dockPinned, openRightSurface, sessionDockAvailable]);
 
-  // Right-side surfaces share one visual slot. The most recently opened
-  // surface wins, and closing it restores the next valid surface in the stack.
+  // Auxiliary right-side surfaces share the fixed workspace rail. The most
+  // recently opened surface wins, and closing it restores the workspace rail.
   const toggleRightPanel = useCallback(
-    (panel: 'workspace' | 'stats' | 'archive' | 'bookmarks') => {
+    (panel: 'stats' | 'archive' | 'bookmarks') => {
       setRightSurfaceStack((current) =>
         activeRightSurface === panel
           ? removeRightSurface(current, panel)
@@ -462,19 +459,18 @@ export function TerminalManager() {
     [activeRightSurface],
   );
 
-  const workspacePanelVisible = activeRightSurface === 'workspace' && viewMode === 'focus' && !!focusedCwd;
+  const workspaceRailVisible = viewMode === 'focus' && !!focusedCwd;
+  const workspacePanelVisible = workspaceRailVisible && !activeRightSurface;
   const statsPanelVisible = activeRightSurface === 'stats';
   const archivePanelVisible =
     activeRightSurface === 'archive' && !!selectedProjectPath && !!selectedProjectName;
   const bookmarksPanelVisible = activeRightSurface === 'bookmarks' && BOOKMARKS_VISIBLE;
   const sessionDockPanelVisible = activeRightSurface === 'sessionDock' && sessionDockAvailable;
+  const auxiliaryRightPanelOpen =
+    statsPanelVisible || archivePanelVisible || bookmarksPanelVisible || sessionDockPanelVisible;
   const rightPanelOpen =
-    workspacePanelVisible ||
-    statsPanelVisible ||
-    archivePanelVisible ||
-    bookmarksPanelVisible ||
-    sessionDockPanelVisible;
-  const workspaceOpen = activeRightSurface === 'workspace';
+    workspaceRailVisible ||
+    auxiliaryRightPanelOpen;
   const statsOpen = activeRightSurface === 'stats';
   const archiveOpen = activeRightSurface === 'archive';
   const bookmarksOpen = activeRightSurface === 'bookmarks';
@@ -891,6 +887,27 @@ export function TerminalManager() {
     setDockHovered(false);
     closeRightSurface('sessionDock');
   }, [closeRightSurface, dockPinned, toggleDockPin]);
+
+  const handleSelectSessionDockCard = useCallback(
+    (cardId: string) => {
+      focusCard(cardId);
+      setViewMode('focus');
+      setWorkspaceContentByCardId((current) => {
+        const state = workspaceContentStateWithPanelDefaults(
+          workspaceContentStateWithDefaults(current[cardId]),
+        );
+        if (state.activeTabId === TERMINAL_CONTENT_TAB_ID) return current;
+        return {
+          ...current,
+          [cardId]: {
+            ...state,
+            activeTabId: TERMINAL_CONTENT_TAB_ID,
+          },
+        };
+      });
+    },
+    [focusCard],
+  );
 
   const handleSessionDockHoverChange = useCallback(
     (hovered: boolean) => {
@@ -1326,21 +1343,6 @@ export function TerminalManager() {
           >
             <BarChart3 className="h-4 w-4" />
           </button>
-          {viewMode === 'focus' && (
-            <button
-              type="button"
-              onClick={() => toggleRightPanel('workspace')}
-              title={t('workspace.toggle', { defaultValue: '文件 / 改动' })}
-              className={[
-                'rounded-[var(--radius-md)] p-1.5',
-                workspaceOpen
-                  ? 'bg-primary/10 text-primary'
-                  : 'hover:bg-accent hover:text-accent-foreground',
-              ].join(' ')}
-            >
-              <FolderTree className="h-4 w-4" />
-            </button>
-          )}
           <button
             type="button"
             onClick={() => handleOpenSettings('shortcuts')}
@@ -1515,7 +1517,6 @@ export function TerminalManager() {
               activeFilePath={activeWorkspaceFilePath}
               activeDiffPath={activeWorkspaceDiffPath}
               onStateChange={handleWorkspacePanelStateChange}
-              onClose={() => closeRightSurface('workspace')}
               onOpenFile={openWorkspaceFile}
               onOpenDiff={openWorkspaceDiff}
             />
@@ -1539,6 +1540,7 @@ export function TerminalManager() {
               variant="panel"
               onClose={handleCloseSessionDock}
               onHoverChange={handleSessionDockHoverChange}
+              onSelectCard={handleSelectSessionDockCard}
             />
           )}
         </aside>
@@ -1552,7 +1554,7 @@ export function TerminalManager() {
       {cards.length > 0 &&
         terminalContentActive &&
         !hintDismissed &&
-        !rightPanelOpen &&
+        !auxiliaryRightPanelOpen &&
         !sessionDockVisible &&
         !paletteOpen &&
         !searchOpen && (

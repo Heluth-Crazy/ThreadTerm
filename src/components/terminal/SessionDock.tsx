@@ -1,5 +1,5 @@
 import { X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { pathBasename, worktreeDisplayLabel } from '../../lib/worktreePaths';
@@ -13,6 +13,7 @@ export interface SessionDockProps {
   variant?: 'overlay' | 'panel';
   onClose: () => void;
   onHoverChange: (hovered: boolean) => void;
+  onSelectCard?: (cardId: string) => void;
 }
 
 function formatDuration(ms: number): string {
@@ -39,6 +40,16 @@ function orderedRecentCards(cards: TerminalCard[], recentIds: string[]): Termina
   return recentIds.map((id) => byId.get(id)).filter((card): card is TerminalCard => Boolean(card));
 }
 
+function isEditableKeyTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    target.tagName === 'INPUT' ||
+    target.tagName === 'TEXTAREA' ||
+    target.tagName === 'SELECT'
+  );
+}
+
 /**
  * Short branch/worktree chip that disambiguates same-project cards in the list.
  * Null when it would only repeat the project name (i.e. the main worktree).
@@ -54,12 +65,14 @@ export function SessionDock({
   variant = 'overlay',
   onClose,
   onHoverChange,
+  onSelectCard,
 }: SessionDockProps) {
   const { t } = useTranslation('terminal');
   const cards = useTerminalStore((s) => s.cards);
   const recentIds = useTerminalStore((s) => s.recentlyViewedCardIds);
   const focusedCardId = useTerminalStore((s) => s.focusedCardId);
   const focusCard = useTerminalStore((s) => s.focusCard);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
 
   const recentCards = useMemo(() => orderedRecentCards(cards, recentIds), [cards, recentIds]);
 
@@ -72,10 +85,101 @@ export function SessionDock({
     return () => window.clearInterval(id);
   }, [visible]);
 
-  const handleSelect = (cardId: string) => {
-    focusCard(cardId);
-    if (!pinned) onHoverChange(false);
-  };
+  useEffect(() => {
+    if (!visible) return;
+    const focusedIndex = recentCards.findIndex((card) => card.id === focusedCardId);
+    setHighlightedIndex(focusedIndex >= 0 ? focusedIndex : 0);
+  }, [focusedCardId, recentCards, visible]);
+
+  const handleSelect = useCallback(
+    (cardId: string) => {
+      if (onSelectCard) {
+        onSelectCard(cardId);
+      } else {
+        focusCard(cardId);
+      }
+      if (!pinned) onHoverChange(false);
+    },
+    [focusCard, onHoverChange, onSelectCard, pinned],
+  );
+
+  useEffect(() => {
+    if (!visible) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.altKey || event.ctrlKey || event.metaKey || isEditableKeyTarget(event.target)) {
+        return;
+      }
+      if (recentCards.length === 0) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          if (pinned) onClose();
+          else onHoverChange(false);
+        }
+        return;
+      }
+
+      if (/^[1-9]$/.test(event.key)) {
+        const index = Number(event.key) - 1;
+        const card = recentCards[index];
+        if (card) {
+          event.preventDefault();
+          handleSelect(card.id);
+        }
+        return;
+      }
+
+      if (event.key === '0') {
+        const card = recentCards[9];
+        if (card) {
+          event.preventDefault();
+          handleSelect(card.id);
+        }
+        return;
+      }
+
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setHighlightedIndex((index) => (index + 1) % recentCards.length);
+        return;
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setHighlightedIndex((index) => (index - 1 + recentCards.length) % recentCards.length);
+        return;
+      }
+
+      if (event.key === 'Home') {
+        event.preventDefault();
+        setHighlightedIndex(0);
+        return;
+      }
+
+      if (event.key === 'End') {
+        event.preventDefault();
+        setHighlightedIndex(recentCards.length - 1);
+        return;
+      }
+
+      if (event.key === 'Enter') {
+        const card = recentCards[highlightedIndex];
+        if (card) {
+          event.preventDefault();
+          handleSelect(card.id);
+        }
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (pinned) onClose();
+        else onHoverChange(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleSelect, highlightedIndex, onClose, onHoverChange, pinned, recentCards, visible]);
 
   return (
     <section
@@ -118,10 +222,11 @@ export function SessionDock({
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
           <div className="space-y-1">
-            {recentCards.map((card) => {
+            {recentCards.map((card, index) => {
               const typeMeta = getTerminalTypeMeta(card.terminalType);
               const TypeIcon = typeMeta.Icon;
               const isCurrent = card.id === focusedCardId;
+              const isHighlighted = index === highlightedIndex;
               const chip = worktreeChip(card);
               return (
                 <button
@@ -129,16 +234,25 @@ export function SessionDock({
                   type="button"
                   data-testid={`session-dock-row-${card.id}`}
                   aria-current={isCurrent ? 'page' : undefined}
+                  aria-selected={isHighlighted}
                   onClick={() => handleSelect(card.id)}
+                  onMouseEnter={() => setHighlightedIndex(index)}
                   className={[
                     'w-full rounded-[var(--radius-md)] border px-2 py-2 text-left transition-colors',
                     isCurrent
                       ? 'border-primary/35 bg-primary/10'
-                      : 'border-transparent hover:border-white/10 hover:bg-accent/70',
+                      : isHighlighted
+                        ? 'border-white/20 bg-accent/70'
+                        : 'border-transparent hover:border-white/10 hover:bg-accent/70',
                   ].join(' ')}
                 >
                   <div className="flex min-w-0 items-start justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-1.5">
+                      {index < 9 && (
+                        <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded bg-muted px-1 font-mono text-[9px] text-muted-foreground">
+                          {index + 1}
+                        </span>
+                      )}
                       <TypeIcon className={`h-3.5 w-3.5 shrink-0 ${typeMeta.accent}`} />
                       <span className="min-w-0 truncate text-xs font-medium text-foreground">
                         {card.projectName}

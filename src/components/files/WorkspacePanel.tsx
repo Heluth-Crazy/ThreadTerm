@@ -27,7 +27,7 @@ interface WorkspacePanelProps {
   activeFilePath?: string | null;
   activeDiffPath?: string | null;
   onStateChange?: (state: WorkspacePanelState) => void;
-  onClose: () => void;
+  onClose?: () => void;
   onOpenFile: (rootPath: string, entry: DirEntry) => void;
   onOpenDiff: (entry: GitStatusEntry) => void;
 }
@@ -129,15 +129,17 @@ export function WorkspacePanel({
           icon={<GitCompare className="h-3.5 w-3.5" />}
           label={t('workspace.changes', { defaultValue: 'Changes' })}
         />
-        <button
-          type="button"
-          onClick={onClose}
-          title={t('common.close')}
-          aria-label={t('common.close')}
-          className="ml-auto rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            title={t('common.close')}
+            aria-label={t('common.close')}
+            className="ml-auto rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
 
       <div

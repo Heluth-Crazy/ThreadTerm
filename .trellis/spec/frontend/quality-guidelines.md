@@ -825,20 +825,24 @@ PanelBuilder::<_, OverlayPetPanel>::new(app, PET_LABEL)
 - Applies to `TerminalManager`, `SessionDock`, and any future terminal-side panel.
 
 #### 2. Contracts
-- Right-side surfaces that are mutually exclusive must render in the same fixed-width flex `aside` slot.
+- In focus mode, the workspace files/changes rail is permanent whenever the focused card has a cwd; it is not a toggleable panel.
+- Auxiliary right-side surfaces (stats, archive, bookmarks, recent-session dock) must render in the same fixed-width flex `aside` slot and temporarily replace the workspace rail.
 - Do not make one right-side surface a floating overlay while another surface participates in flex layout.
 - Session dock priority may still be last-opened-wins, but it must use the same slot as workspace/files so switching between them does not resize the terminal content.
 - Hover handles may live on the terminal edge, but the expanded surface must not overlay the terminal when another right-side surface is already open.
-- If a surface is temporarily hidden and a previous surface remains in the right-surface stack, closing it should restore the previous surface without changing the terminal column width.
+- If an auxiliary surface closes, the slot should restore the permanent workspace rail without changing the terminal column width.
+- Selecting a recent session from the dock should focus that card and make its terminal tab active; existing file/diff tabs for that session may remain open but should not steal focus.
 
 #### 3. Validation & Error Matrix
 - Switching Files/Changes -> Recent sessions -> Files/Changes must not repeatedly resize or reflow xterm.
-- Opening the first right-side surface may resize the terminal once; switching between already-open right-side surfaces should keep the same content width.
+- Entering focus mode may resize the terminal once to account for the permanent workspace rail; switching auxiliary surfaces after that should keep the same content width.
 - If session dock is rendered outside the shared `aside`, expect terminal fit/reflow flicker when users rapidly alternate surfaces.
+- If the workspace rail is toggleable again, expect toolbar clicks to repeatedly resize xterm and refresh terminal layout.
 
 #### 4. Tests Required
-- Component regression tests should assert session dock is hosted inside the right-side `aside` when it takes priority over the workspace panel.
-- Tests should cover restoring the previous workspace panel after a hover-only session dock closes.
+- Component regression tests should assert session dock is hosted inside the right-side `aside` when it takes priority over the workspace rail.
+- Tests should cover restoring the workspace rail after a hover-only session dock closes.
+- Tests should cover number-key and arrow/Enter session selection from the dock.
 
 </spec-entry>
 
