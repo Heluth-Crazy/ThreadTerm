@@ -292,7 +292,6 @@ describe('TerminalManager shortcut hint layout', () => {
       expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByTitle('文件 / 改动'));
     fireEvent.click(await screen.findByText('README.md'));
 
     expect(await screen.findByDisplayValue('old')).toBeInTheDocument();
@@ -311,7 +310,6 @@ describe('TerminalManager shortcut hint layout', () => {
 
     render(<TerminalManager />);
 
-    fireEvent.click(screen.getByTitle('文件 / 改动'));
     fireEvent.click(screen.getByText('改动'));
     fireEvent.click(await screen.findByText('App.tsx'));
 
@@ -331,7 +329,6 @@ describe('TerminalManager shortcut hint layout', () => {
 
     render(<TerminalManager />);
 
-    fireEvent.click(screen.getByTitle('文件 / 改动'));
     expect(await screen.findByText('README.md')).toBeInTheDocument();
 
     fireEvent.mouseEnter(screen.getByTitle('显示最近会话'));
@@ -386,22 +383,23 @@ describe('TerminalManager shortcut hint layout', () => {
 
     render(<TerminalManager />);
 
-    fireEvent.click(screen.getByTitle('文件 / 改动'));
     fireEvent.click(await screen.findByText('README.md'));
     expect(await screen.findByDisplayValue('repo file')).toBeInTheDocument();
 
     fireEvent.mouseEnter(screen.getByTitle('显示最近会话'));
-    fireEvent.click(screen.getByTestId(`session-dock-row-${otherId}`));
+    fireEvent.keyDown(window, { key: '1' });
 
     expect(await screen.findByText('OTHER.md')).toBeInTheDocument();
     expect(screen.queryByDisplayValue('repo file')).toBeNull();
     expect(screen.queryByRole('button', { name: 'README.md' })).toBeNull();
     expect(screen.getAllByTestId('mock-shell').length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('session-dock')).toBeNull();
 
     fireEvent.mouseEnter(screen.getByTitle('显示最近会话'));
-    fireEvent.click(screen.getByTestId(`session-dock-row-${repoId}`));
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'Enter' });
 
-    expect(await screen.findByDisplayValue('repo file')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '终端' })).toHaveClass('bg-primary/15');
     expect(
       document.querySelector('[data-terminal-context-menu="true"][title="/tmp/repo/README.md"]'),
     ).not.toBeNull();
@@ -418,7 +416,6 @@ describe('TerminalManager shortcut hint layout', () => {
 
     render(<TerminalManager />);
 
-    fireEvent.click(screen.getByTitle('文件 / 改动'));
     fireEvent.click(await screen.findByText('README.md'));
     expect(await screen.findByDisplayValue('old')).toBeInTheDocument();
 

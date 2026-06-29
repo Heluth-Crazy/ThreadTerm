@@ -124,6 +124,28 @@ describe('SessionDock', () => {
     expect(onHoverChange).toHaveBeenCalledWith(false);
   });
 
+  it('selects recent sessions with number and arrow keyboard shortcuts', () => {
+    const onHoverChange = vi.fn();
+    render(
+      <SessionDock
+        visible={true}
+        pinned={false}
+        onClose={vi.fn()}
+        onHoverChange={onHoverChange}
+      />,
+    );
+
+    fireEvent.keyDown(window, { key: '1' });
+    expect(useTerminalStore.getState().focusedCardId).toBe('card-b');
+    expect(onHoverChange).toHaveBeenCalledWith(false);
+
+    onHoverChange.mockClear();
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'Enter' });
+    expect(useTerminalStore.getState().focusedCardId).toBe('card-a');
+    expect(onHoverChange).toHaveBeenCalledWith(false);
+  });
+
   it('keeps a pinned dock open when selecting a card', () => {
     const onHoverChange = vi.fn();
     render(
