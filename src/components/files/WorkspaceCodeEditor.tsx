@@ -233,12 +233,15 @@ export function WorkspaceMergeDiffEditor({
 
     const baseExtensions: Extension[] = [
       codeEditorTheme,
+      EditorView.lineWrapping,
+      editable ? createDiffLineActionPlaceholderGutter() : [],
       EditorState.readOnly.of(true),
       EditorView.editable.of(false),
       ...languageExtensions,
     ];
     const currentExtensions: Extension[] = [
       codeEditorTheme,
+      EditorView.lineWrapping,
       editable ? [] : [EditorState.readOnly.of(true), EditorView.editable.of(false)],
       editable ? createDiffLineActionGutter(() => mergeRef.current, revertLine, labels.revertLine) : [],
       keymap.of([
@@ -470,6 +473,29 @@ class DiffLineActionMarker extends GutterMarker {
     });
     return button;
   }
+}
+
+class DiffLineActionSpacerMarker extends GutterMarker {
+  eq(other: GutterMarker): boolean {
+    return other instanceof DiffLineActionSpacerMarker;
+  }
+
+  toDOM(): HTMLElement {
+    const spacer = document.createElement('span');
+    spacer.textContent = 'R';
+    spacer.className = 'cm-diff-line-action-button cm-diff-line-action-spacer';
+    spacer.setAttribute('aria-hidden', 'true');
+    return spacer;
+  }
+}
+
+const diffLineActionSpacerMarker = new DiffLineActionSpacerMarker();
+
+function createDiffLineActionPlaceholderGutter(): Extension {
+  return gutter({
+    class: 'cm-diff-line-actions cm-diff-line-actions-placeholder',
+    initialSpacer: () => diffLineActionSpacerMarker,
+  });
 }
 
 function createDiffLineActionGutter(

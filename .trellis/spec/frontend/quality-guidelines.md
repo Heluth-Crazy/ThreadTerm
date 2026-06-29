@@ -297,7 +297,7 @@ Correct:
 - Staged diff displays `HEAD` vs `Index` and must be read-only.
 - Unstaged diff displays `Index` vs `Working tree`; edits and line/hunk reverts update an in-memory draft until the user saves.
 - CodeMirror language extensions must load by file extension and be disabled above the syntax-highlight size threshold; do not recreate MergeView on every keystroke.
-- Side-by-side `MergeView` diff panes must not enable `EditorView.lineWrapping`; long lines should scroll horizontally so equal unchanged lines keep the same visual height in both panes.
+- Side-by-side `MergeView` diff panes may enable `EditorView.lineWrapping` only when both panes reserve identical gutter width; if the editable side has a line-action gutter, the read-only side must add an invisible placeholder gutter.
 - MergeView CSS may make `.cm-scroller` `overflow-y: visible` for root-level vertical scrolling, but must preserve horizontal scrolling with `overflow-x: auto`.
 - `Mod-s` is the only save shortcut in editor surfaces so macOS maps to `Cmd+S` and Windows/Linux maps to `Ctrl+S`.
 - Saving must preserve CRLF-dominant files through `normalizeDraftForSave`.
@@ -308,14 +308,14 @@ Correct:
 - Missing working-tree file with unstaged deletion -> editable draft may be saved by creating the file inside the workspace root.
 - File changed on disk after diff load -> `workspace_write_file` returns `file_conflict`.
 - Untracked file with no staged diff -> show no textual diff and offer normal file open behavior.
-- Soft-wrapped side-by-side diff lines -> unchanged sections can appear vertically misaligned because each pane has different gutter/content width.
+- Soft-wrapped side-by-side diff lines with unequal gutter/content width -> unchanged sections can appear vertically misaligned.
 
 #### 5. Good/Base/Bad Cases
 - Good: click a modified file in Changes, edit the right diff pane, see dirty tab marker, save to working tree with the section mtime.
 - Good: `Revert line` changes only the draft; if single-line mapping is unsafe, revert the current hunk and show a status message.
-- Good: long unchanged lines in side-by-side diff stay one logical row high and are readable via horizontal scrolling.
+- Good: long unchanged lines in side-by-side diff wrap at the same visual column on both panes.
 - Base: staged-only changes are visible but read-only.
-- Bad: calling Git or writing files from the frontend directly, applying a revert immediately to disk without the explicit Save action, or enabling soft wrap in side-by-side MergeView.
+- Bad: calling Git or writing files from the frontend directly, applying a revert immediately to disk without the explicit Save action, or enabling soft wrap while only one pane has an action gutter.
 
 #### 6. Tests Required
 - Component tests for file edit save, CRLF preservation, diff load, diff draft save, and dirty tab wiring.
@@ -343,7 +343,16 @@ const diffExtensions = [codeEditorTheme, EditorView.lineWrapping];
 
 Correct:
 ```typescript
-const diffExtensions = [codeEditorTheme];
+const baseDiffExtensions = [
+  codeEditorTheme,
+  EditorView.lineWrapping,
+  createDiffLineActionPlaceholderGutter(),
+];
+const editableDiffExtensions = [
+  codeEditorTheme,
+  EditorView.lineWrapping,
+  createDiffLineActionGutter(),
+];
 ```
 
 </spec-entry>
