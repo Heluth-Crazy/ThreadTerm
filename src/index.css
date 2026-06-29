@@ -313,13 +313,18 @@
   }
 
   .threadterm-merge-view .cm-mergeViewEditors {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: stretch;
+    display: flex;
   }
 
   .threadterm-merge-view .cm-mergeViewEditor {
+    flex: 1 1 0;
     min-width: 0;
     overflow: hidden;
+  }
+
+  .threadterm-merge-view .cm-merge-revert {
+    flex: 0 0 1.75rem;
   }
 
   .threadterm-merge-view .cm-scroller {
