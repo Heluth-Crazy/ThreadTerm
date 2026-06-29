@@ -309,7 +309,7 @@
   }
 
   .threadterm-merge-view .cm-mergeView {
-    overflow: hidden;
+    overflow: auto;
   }
 
   .threadterm-merge-view .cm-mergeViewEditors {
@@ -325,10 +325,6 @@
 
   .threadterm-merge-view .cm-merge-revert {
     flex: 0 0 1.75rem;
-  }
-
-  .threadterm-merge-view .cm-scroller {
-    overflow: auto;
   }
 
   .threadterm-merge-view .cm-changedLine {
