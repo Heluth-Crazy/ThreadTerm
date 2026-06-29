@@ -319,4 +319,136 @@ describe('TerminalManager shortcut hint layout', () => {
     expect(bridgeMocks.gitTextDiff).toHaveBeenCalledWith('/tmp/repo', 'src/App.tsx');
     expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
   });
+
+  it('lets the session dock temporarily take priority over the workspace panel', async () => {
+    const store = useTerminalStore.getState();
+    const id = store.createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+    store.focusCard(id);
+
+    render(<TerminalManager />);
+
+    fireEvent.click(screen.getByTitle('文件 / 改动'));
+    expect(await screen.findByText('README.md')).toBeInTheDocument();
+
+    fireEvent.mouseEnter(screen.getByTitle('显示最近会话'));
+
+    const dock = screen.getByTestId('session-dock');
+    expect(dock).toHaveAttribute('aria-hidden', 'false');
+    expect(dock.closest('aside')).not.toBeNull();
+    expect(screen.queryByText('README.md')).toBeNull();
+
+    fireEvent.mouseLeave(dock);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('session-dock')).toBeNull();
+    });
+    expect(await screen.findByText('README.md')).toBeInTheDocument();
+  });
+
+  it('keeps workspace tabs isolated per focused session', async () => {
+    bridgeMocks.invoke.mockImplementation((_command: string, args: { path: string }) => {
+      const name = args.path === '/tmp/other' ? 'OTHER.md' : 'README.md';
+      return Promise.resolve([
+        {
+          name,
+          path: `${args.path}/${name}`,
+          isDir: false,
+          isHidden: false,
+        },
+      ]);
+    });
+    bridgeMocks.readFile.mockImplementation((_rootPath: string, path: string) =>
+      Promise.resolve({
+        path,
+        contents: path.includes('OTHER.md') ? 'other file' : 'repo file',
+        sizeBytes: 9,
+        modifiedUnixMs: 10,
+      }),
+    );
+
+    const store = useTerminalStore.getState();
+    const repoId = store.createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+    const otherId = store.createCard({
+      projectName: 'other',
+      projectPath: '/tmp/other',
+      terminalType: 'shell',
+    });
+    store.focusCard(repoId);
+    useTerminalStore.setState({ recentlyViewedCardIds: [otherId, repoId] });
+
+    render(<TerminalManager />);
+
+    fireEvent.click(screen.getByTitle('文件 / 改动'));
+    fireEvent.click(await screen.findByText('README.md'));
+    expect(await screen.findByDisplayValue('repo file')).toBeInTheDocument();
+
+    fireEvent.mouseEnter(screen.getByTitle('显示最近会话'));
+    fireEvent.click(screen.getByTestId(`session-dock-row-${otherId}`));
+
+    expect(await screen.findByText('OTHER.md')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('repo file')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'README.md' })).toBeNull();
+    expect(screen.getAllByTestId('mock-shell').length).toBeGreaterThan(0);
+
+    fireEvent.mouseEnter(screen.getByTitle('显示最近会话'));
+    fireEvent.click(screen.getByTestId(`session-dock-row-${repoId}`));
+
+    expect(await screen.findByDisplayValue('repo file')).toBeInTheDocument();
+    expect(
+      document.querySelector('[data-terminal-context-menu="true"][title="/tmp/repo/README.md"]'),
+    ).not.toBeNull();
+  });
+
+  it('supports workspace tab context close actions without closing the terminal tab', async () => {
+    const store = useTerminalStore.getState();
+    const id = store.createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+    store.focusCard(id);
+
+    render(<TerminalManager />);
+
+    fireEvent.click(screen.getByTitle('文件 / 改动'));
+    fireEvent.click(await screen.findByText('README.md'));
+    expect(await screen.findByDisplayValue('old')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('改动'));
+    fireEvent.click(await screen.findByText('App.tsx'));
+    expect(await screen.findByDisplayValue('changed')).toBeInTheDocument();
+
+    const getWorkspaceTab = (title: string) => {
+      const tab = document.querySelector<HTMLElement>(
+        `[data-terminal-context-menu="true"][title="${title}"]`,
+      );
+      expect(tab).not.toBeNull();
+      return tab!;
+    };
+
+    fireEvent.contextMenu(getWorkspaceTab('/tmp/repo/README.md'));
+    expect(screen.getByTestId('workspace-tab-context-menu')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitem', { name: '关闭除当前' }));
+
+    expect(await screen.findByDisplayValue('old')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'README.md' })).toBeInTheDocument();
+    expect(
+      document.querySelector('[data-terminal-context-menu="true"][title="src/App.tsx"]'),
+    ).toBeNull();
+    expect(screen.getByRole('button', { name: '终端' })).toBeInTheDocument();
+
+    fireEvent.contextMenu(getWorkspaceTab('/tmp/repo/README.md'));
+    fireEvent.click(screen.getByRole('menuitem', { name: '关闭所有' }));
+
+    expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '终端' })).toBeNull();
+  });
 });

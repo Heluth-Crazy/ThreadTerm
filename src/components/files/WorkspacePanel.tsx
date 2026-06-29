@@ -12,33 +12,65 @@ import { cn } from '../../lib/utils';
 import { basename, type DirEntry } from './fileMeta';
 import { FileTree } from './FileTree';
 
-type WorkspaceTab = 'explorer' | 'changes';
+export type WorkspaceTab = 'explorer' | 'changes';
+
+export interface WorkspacePanelState {
+  tab: WorkspaceTab;
+  selectedFilePath: string | null;
+  selectedChangePath: string | null;
+}
 
 interface WorkspacePanelProps {
   /** Live working directory of the focused card (tree root). */
   rootCwd: string;
+  state?: WorkspacePanelState;
   activeFilePath?: string | null;
   activeDiffPath?: string | null;
+  onStateChange?: (state: WorkspacePanelState) => void;
   onClose: () => void;
   onOpenFile: (rootPath: string, entry: DirEntry) => void;
   onOpenDiff: (entry: GitStatusEntry) => void;
 }
 
+const DEFAULT_WORKSPACE_PANEL_STATE: WorkspacePanelState = {
+  tab: 'explorer',
+  selectedFilePath: null,
+  selectedChangePath: null,
+};
+
 export function WorkspacePanel({
   rootCwd,
+  state,
   activeFilePath = null,
   activeDiffPath = null,
+  onStateChange,
   onClose,
   onOpenFile,
   onOpenDiff,
 }: WorkspacePanelProps) {
   const { t } = useTranslation('terminal');
-  const [tab, setTab] = useState<WorkspaceTab>('explorer');
-  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const [internalState, setInternalState] = useState<WorkspacePanelState>(
+    DEFAULT_WORKSPACE_PANEL_STATE,
+  );
+  const panelState = state ?? internalState;
+  const updatePanelState = useCallback(
+    (patch: Partial<WorkspacePanelState>) => {
+      const next = { ...panelState, ...patch };
+      if (
+        next.tab === panelState.tab &&
+        next.selectedFilePath === panelState.selectedFilePath &&
+        next.selectedChangePath === panelState.selectedChangePath
+      ) {
+        return;
+      }
+      if (!state) setInternalState(next);
+      onStateChange?.(next);
+    },
+    [onStateChange, panelState, state],
+  );
   const [changes, setChanges] = useState<GitStatusEntry[]>([]);
   const [changesLoading, setChangesLoading] = useState(false);
   const [changesError, setChangesError] = useState<string | null>(null);
-  const [selectedChangePath, setSelectedChangePath] = useState<string | null>(null);
 
   const loadChanges = useCallback(async () => {
     setChangesLoading(true);
@@ -46,50 +78,54 @@ export function WorkspacePanel({
     try {
       const result = await git.changes.status(rootCwd);
       setChanges(result);
-      setSelectedChangePath((current) =>
-        current && result.some((entry) => entry.path === current) ? current : null,
-      );
+      updatePanelState({
+        selectedChangePath:
+          panelState.selectedChangePath &&
+          result.some((entry) => entry.path === panelState.selectedChangePath)
+            ? panelState.selectedChangePath
+            : null,
+      });
     } catch (error) {
       setChanges([]);
-      setSelectedChangePath(null);
+      updatePanelState({ selectedChangePath: null });
       setChangesError(error instanceof Error ? error.message : String(error));
     } finally {
       setChangesLoading(false);
     }
-  }, [rootCwd]);
+  }, [panelState.selectedChangePath, rootCwd, updatePanelState]);
 
   useEffect(() => {
-    if (tab === 'changes') void loadChanges();
-  }, [loadChanges, tab]);
+    if (panelState.tab === 'changes') void loadChanges();
+  }, [loadChanges, panelState.tab]);
 
   const handleSelectFile = useCallback(
     (entry: DirEntry) => {
-      setSelectedFilePath(entry.path);
+      updatePanelState({ selectedFilePath: entry.path });
       onOpenFile(rootCwd, entry);
     },
-    [onOpenFile, rootCwd],
+    [onOpenFile, rootCwd, updatePanelState],
   );
 
   const handleSelectChange = useCallback(
     (entry: GitStatusEntry) => {
-      setSelectedChangePath(entry.path);
+      updatePanelState({ selectedChangePath: entry.path });
       onOpenDiff(entry);
     },
-    [onOpenDiff],
+    [onOpenDiff, updatePanelState],
   );
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-1 border-b border-white/10 px-2 py-1.5">
         <TabButton
-          active={tab === 'explorer'}
-          onClick={() => setTab('explorer')}
+          active={panelState.tab === 'explorer'}
+          onClick={() => updatePanelState({ tab: 'explorer' })}
           icon={<FolderTree className="h-3.5 w-3.5" />}
           label={t('workspace.files', { defaultValue: 'Files' })}
         />
         <TabButton
-          active={tab === 'changes'}
-          onClick={() => setTab('changes')}
+          active={panelState.tab === 'changes'}
+          onClick={() => updatePanelState({ tab: 'changes' })}
           icon={<GitCompare className="h-3.5 w-3.5" />}
           label={t('workspace.changes', { defaultValue: 'Changes' })}
         />
@@ -112,11 +148,11 @@ export function WorkspacePanel({
         {rootCwd}
       </div>
 
-      {tab === 'explorer' ? (
+      {panelState.tab === 'explorer' ? (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <FileTree
             rootPath={rootCwd}
-            selectedPath={activeFilePath ?? selectedFilePath}
+            selectedPath={activeFilePath ?? panelState.selectedFilePath}
             onSelectFile={handleSelectFile}
           />
         </div>
@@ -125,7 +161,7 @@ export function WorkspacePanel({
           changes={changes}
           loading={changesLoading}
           error={changesError}
-          selectedPath={activeDiffPath ?? selectedChangePath}
+          selectedPath={activeDiffPath ?? panelState.selectedChangePath}
           onRefresh={() => void loadChanges()}
           onSelectChange={handleSelectChange}
         />

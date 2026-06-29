@@ -10,7 +10,8 @@
  * The actual keyboard shortcuts and radial switcher live in their own
  * sibling components so this file stays focused on view composition.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
 import {
   Archive,
@@ -64,7 +65,7 @@ import type { CardMeta, TerminalStatus as MobileTerminalStatus } from '../../mob
 import { cardMatchesWorktree } from '../../lib/worktreePaths';
 import { clearProjectBranchCache } from './useProjectBranches';
 import { clearProjectWorktreeCache } from './useProjectWorktrees';
-import { WorkspacePanel } from '../files/WorkspacePanel';
+import { WorkspacePanel, type WorkspacePanelState } from '../files/WorkspacePanel';
 import {
   WorkspaceDiffView,
   WorkspaceFileEditorView,
@@ -72,6 +73,7 @@ import {
 import type { DirEntry } from '../files/fileMeta';
 
 type ViewMode = 'grid' | 'focus';
+type RightSurface = 'workspace' | 'stats' | 'archive' | 'bookmarks' | 'sessionDock';
 type WorkspaceContentTab =
   | {
       id: string;
@@ -86,9 +88,60 @@ type WorkspaceContentTab =
       change: GitStatusEntry;
       title: string;
     };
+interface WorkspaceContentState {
+  tabs: WorkspaceContentTab[];
+  activeTabId: string;
+  dirtyTabIds: Record<string, boolean>;
+  panelState: WorkspacePanelState;
+}
 
 const MOBILE_SYNC_DEBOUNCE_MS = 100;
 const TERMINAL_CONTENT_TAB_ID = 'terminal';
+const DEFAULT_WORKSPACE_PANEL_STATE: WorkspacePanelState = {
+  tab: 'explorer',
+  selectedFilePath: null,
+  selectedChangePath: null,
+};
+const EMPTY_WORKSPACE_CONTENT_STATE: WorkspaceContentState = {
+  tabs: [],
+  activeTabId: TERMINAL_CONTENT_TAB_ID,
+  dirtyTabIds: {},
+  panelState: DEFAULT_WORKSPACE_PANEL_STATE,
+};
+
+function pushRightSurface(stack: RightSurface[], surface: RightSurface): RightSurface[] {
+  return [...stack.filter((item) => item !== surface), surface];
+}
+
+function removeRightSurface(stack: RightSurface[], surface: RightSurface): RightSurface[] {
+  return stack.filter((item) => item !== surface);
+}
+
+function resolveActiveRightSurface(
+  stack: RightSurface[],
+  isAvailable: (surface: RightSurface) => boolean,
+): RightSurface | null {
+  for (let i = stack.length - 1; i >= 0; i -= 1) {
+    const surface = stack[i];
+    if (isAvailable(surface)) return surface;
+  }
+  return null;
+}
+
+function workspaceContentStateWithDefaults(
+  state: WorkspaceContentState | undefined,
+): WorkspaceContentState {
+  return state ?? EMPTY_WORKSPACE_CONTENT_STATE;
+}
+
+function workspaceContentStateWithPanelDefaults(
+  state: WorkspaceContentState,
+): WorkspaceContentState {
+  return {
+    ...state,
+    panelState: state.panelState ?? DEFAULT_WORKSPACE_PANEL_STATE,
+  };
+}
 const TERMINAL_TYPES: TerminalType[] = [
   'shell',
   'claude',
@@ -259,13 +312,10 @@ export function TerminalManager() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
   const [createOpen, setCreateOpen] = useState(false);
-  const [bookmarksOpen, setBookmarksOpen] = useState(false);
-  const [archiveOpen, setArchiveOpen] = useState(false);
-  const [statsOpen, setStatsOpen] = useState(false);
-  const [workspaceOpen, setWorkspaceOpen] = useState(false);
-  const [workspaceContentTabs, setWorkspaceContentTabs] = useState<WorkspaceContentTab[]>([]);
-  const [activeContentTabId, setActiveContentTabId] = useState(TERMINAL_CONTENT_TAB_ID);
-  const [dirtyWorkspaceTabIds, setDirtyWorkspaceTabIds] = useState<Record<string, boolean>>({});
+  const [rightSurfaceStack, setRightSurfaceStack] = useState<RightSurface[]>([]);
+  const [workspaceContentByCardId, setWorkspaceContentByCardId] = useState<
+    Record<string, WorkspaceContentState>
+  >({});
   const [dockHovered, setDockHovered] = useState(false);
   useStatsSubscription();
   useStatsAutoRefresh();
@@ -299,10 +349,6 @@ export function TerminalManager() {
       // localStorage unavailable — dismissal is session-only.
     }
   }, []);
-
-  useEffect(() => {
-    setArchiveOpen(false);
-  }, [selectedProjectPath]);
 
   // Card ids whose TerminalView is kept mounted, in LRU order (oldest first).
   // Each mounted view holds a WebGL context, so the list is capped at
@@ -351,29 +397,127 @@ export function TerminalManager() {
     return cwd || null;
   }, [focusedCardId, blocks, focusedCard]);
 
-  // The right-side panels (files / stats / archive / bookmarks) share a single
-  // column that squeezes the terminal, so only one is open at a time.
-  const toggleRightPanel = useCallback(
-    (panel: 'workspace' | 'stats' | 'archive' | 'bookmarks') => {
-      setWorkspaceOpen((v) => (panel === 'workspace' ? !v : false));
-      setStatsOpen((v) => (panel === 'stats' ? !v : false));
-      setArchiveOpen((v) => (panel === 'archive' ? !v : false));
-      setBookmarksOpen((v) => (panel === 'bookmarks' ? !v : false));
+  const sessionDockAvailable = viewMode === 'focus' && Boolean(focusedCard);
+
+  const isRightSurfaceAvailable = useCallback(
+    (surface: RightSurface) => {
+      switch (surface) {
+        case 'workspace':
+          return viewMode === 'focus' && Boolean(focusedCwd);
+        case 'stats':
+          return true;
+        case 'archive':
+          return Boolean(selectedProjectPath && selectedProjectName);
+        case 'bookmarks':
+          return BOOKMARKS_VISIBLE;
+        case 'sessionDock':
+          return sessionDockAvailable;
+      }
     },
-    [],
+    [focusedCwd, selectedProjectName, selectedProjectPath, sessionDockAvailable, viewMode],
   );
 
-  const workspacePanelVisible = workspaceOpen && viewMode === 'focus' && !!focusedCwd;
-  const archivePanelVisible = archiveOpen && !!selectedProjectPath && !!selectedProjectName;
-  const bookmarksPanelVisible = BOOKMARKS_VISIBLE && bookmarksOpen;
+  const activeRightSurface = useMemo(
+    () => resolveActiveRightSurface(rightSurfaceStack, isRightSurfaceAvailable),
+    [isRightSurfaceAvailable, rightSurfaceStack],
+  );
+
+  const openRightSurface = useCallback((surface: RightSurface) => {
+    setRightSurfaceStack((current) => pushRightSurface(current, surface));
+  }, []);
+
+  const closeRightSurface = useCallback((surface: RightSurface) => {
+    setRightSurfaceStack((current) => removeRightSurface(current, surface));
+  }, []);
+
+  useEffect(() => {
+    closeRightSurface('archive');
+  }, [closeRightSurface, selectedProjectPath]);
+
+  useEffect(() => {
+    if (!sessionDockAvailable) {
+      closeRightSurface('sessionDock');
+      setDockHovered(false);
+    }
+  }, [closeRightSurface, sessionDockAvailable]);
+
+  useEffect(() => {
+    if (dockPinned && sessionDockAvailable) {
+      openRightSurface('sessionDock');
+    } else if (!dockPinned) {
+      closeRightSurface('sessionDock');
+    }
+  }, [closeRightSurface, dockPinned, openRightSurface, sessionDockAvailable]);
+
+  // Right-side surfaces share one visual slot. The most recently opened
+  // surface wins, and closing it restores the next valid surface in the stack.
+  const toggleRightPanel = useCallback(
+    (panel: 'workspace' | 'stats' | 'archive' | 'bookmarks') => {
+      setRightSurfaceStack((current) =>
+        activeRightSurface === panel
+          ? removeRightSurface(current, panel)
+          : pushRightSurface(current, panel),
+      );
+    },
+    [activeRightSurface],
+  );
+
+  const workspacePanelVisible = activeRightSurface === 'workspace' && viewMode === 'focus' && !!focusedCwd;
+  const statsPanelVisible = activeRightSurface === 'stats';
+  const archivePanelVisible =
+    activeRightSurface === 'archive' && !!selectedProjectPath && !!selectedProjectName;
+  const bookmarksPanelVisible = activeRightSurface === 'bookmarks' && BOOKMARKS_VISIBLE;
+  const sessionDockPanelVisible = activeRightSurface === 'sessionDock' && sessionDockAvailable;
   const rightPanelOpen =
-    workspacePanelVisible || statsOpen || archivePanelVisible || bookmarksPanelVisible;
+    workspacePanelVisible ||
+    statsPanelVisible ||
+    archivePanelVisible ||
+    bookmarksPanelVisible ||
+    sessionDockPanelVisible;
+  const workspaceOpen = activeRightSurface === 'workspace';
+  const statsOpen = activeRightSurface === 'stats';
+  const archiveOpen = activeRightSurface === 'archive';
+  const bookmarksOpen = activeRightSurface === 'bookmarks';
+  const currentWorkspaceContent = workspaceContentStateWithPanelDefaults(
+    workspaceContentStateWithDefaults(
+      focusedCardId ? workspaceContentByCardId[focusedCardId] : undefined,
+    ),
+  );
+  const workspaceContentTabs = currentWorkspaceContent.tabs;
+  const activeContentTabId = currentWorkspaceContent.activeTabId;
+  const dirtyWorkspaceTabIds = currentWorkspaceContent.dirtyTabIds;
+  const workspacePanelState = currentWorkspaceContent.panelState;
+
   const activeWorkspaceTab = workspaceContentTabs.find((tab) => tab.id === activeContentTabId) ?? null;
   const workspaceTabsVisible = viewMode === 'focus' && !!focusedCard && workspaceContentTabs.length > 0;
   const terminalContentActive = activeContentTabId === TERMINAL_CONTENT_TAB_ID;
   const activeWorkspaceFilePath = activeWorkspaceTab?.kind === 'file' ? activeWorkspaceTab.path : null;
   const activeWorkspaceDiffPath =
     activeWorkspaceTab?.kind === 'diff' ? activeWorkspaceTab.change.path : null;
+
+  const updateFocusedWorkspaceContent = useCallback(
+    (updater: (state: WorkspaceContentState) => WorkspaceContentState) => {
+      if (!focusedCardId) return;
+      setWorkspaceContentByCardId((current) => {
+        const previous = workspaceContentStateWithPanelDefaults(
+          workspaceContentStateWithDefaults(current[focusedCardId]),
+        );
+        const next = updater(previous);
+        if (next === previous) return current;
+        return { ...current, [focusedCardId]: next };
+      });
+    },
+    [focusedCardId],
+  );
+
+  const setActiveContentTabId = useCallback(
+    (tabId: string) => {
+      updateFocusedWorkspaceContent((state) =>
+        state.activeTabId === tabId ? state : { ...state, activeTabId: tabId },
+      );
+    },
+    [updateFocusedWorkspaceContent],
+  );
 
   useEffect(() => {
     if (
@@ -382,67 +526,71 @@ export function TerminalManager() {
     ) {
       setActiveContentTabId(TERMINAL_CONTENT_TAB_ID);
     }
-  }, [activeContentTabId, workspaceContentTabs]);
+  }, [activeContentTabId, setActiveContentTabId, workspaceContentTabs]);
 
-  const openWorkspaceFile = useCallback((rootPath: string, entry: DirEntry) => {
-    const id = workspaceFileTabId(rootPath, entry.path);
-    setWorkspaceContentTabs((current) => {
-      if (current.some((tab) => tab.id === id)) return current;
-      return [
-        ...current,
-        {
-          id,
-          kind: 'file',
-          rootPath,
-          path: entry.path,
-          title: pathBasename(entry.path),
-        },
-      ];
-    });
-    setActiveContentTabId(id);
-  }, []);
-
-  const openWorkspaceDiff = useCallback((entry: GitStatusEntry) => {
-    const id = workspaceDiffTabId(entry.repositoryRoot, entry.path);
-    setWorkspaceContentTabs((current) => {
-      const existing = current.find((tab) => tab.id === id);
-      if (existing) {
-        return current.map((tab) =>
-          tab.id === id
-            ? {
+  const openWorkspaceFile = useCallback(
+    (rootPath: string, entry: DirEntry) => {
+      const id = workspaceFileTabId(rootPath, entry.path);
+      updateFocusedWorkspaceContent((state) => {
+        const tabs = state.tabs.some((tab) => tab.id === id)
+          ? state.tabs
+          : [
+              ...state.tabs,
+              {
                 id,
-                kind: 'diff',
-                change: entry,
+                kind: 'file' as const,
+                rootPath,
+                path: entry.path,
                 title: pathBasename(entry.path),
-              }
-            : tab,
-        );
-      }
-      return [
-        ...current,
-        {
+              },
+            ];
+        return { ...state, tabs, activeTabId: id };
+      });
+    },
+    [updateFocusedWorkspaceContent],
+  );
+
+  const openWorkspaceDiff = useCallback(
+    (entry: GitStatusEntry) => {
+      const id = workspaceDiffTabId(entry.repositoryRoot, entry.path);
+      updateFocusedWorkspaceContent((state) => {
+        const existing = state.tabs.find((tab) => tab.id === id);
+        const nextTab: WorkspaceContentTab = {
           id,
           kind: 'diff',
           change: entry,
           title: pathBasename(entry.path),
-        },
-      ];
-    });
-    setActiveContentTabId(id);
-  }, []);
+        };
+        const tabs = existing
+          ? state.tabs.map((tab) => (tab.id === id ? nextTab : tab))
+          : [...state.tabs, nextTab];
+        return { ...state, tabs, activeTabId: id };
+      });
+    },
+    [updateFocusedWorkspaceContent],
+  );
 
-  const markWorkspaceTabDirty = useCallback((tabId: string, dirty: boolean) => {
-    setDirtyWorkspaceTabIds((current) => {
-      if (dirty) return { ...current, [tabId]: true };
-      if (!current[tabId]) return current;
-      const { [tabId]: _removed, ...rest } = current;
-      return rest;
-    });
-  }, []);
+  const markWorkspaceTabDirty = useCallback(
+    (tabId: string, dirty: boolean) => {
+      updateFocusedWorkspaceContent((state) => {
+        if (dirty) {
+          if (state.dirtyTabIds[tabId]) return state;
+          return { ...state, dirtyTabIds: { ...state.dirtyTabIds, [tabId]: true } };
+        }
+        if (!state.dirtyTabIds[tabId]) return state;
+        const { [tabId]: _removed, ...rest } = state.dirtyTabIds;
+        return { ...state, dirtyTabIds: rest };
+      });
+    },
+    [updateFocusedWorkspaceContent],
+  );
 
-  const closeWorkspaceTab = useCallback(
-    async (tabId: string) => {
-      if (dirtyWorkspaceTabIds[tabId]) {
+  const closeWorkspaceTabs = useCallback(
+    async (tabIds: string[], nextActiveTabId?: string) => {
+      if (!focusedCardId || tabIds.length === 0) return;
+      const targetIds = new Set(tabIds);
+      const hasDirtyTarget = tabIds.some((tabId) => dirtyWorkspaceTabIds[tabId]);
+      if (hasDirtyTarget) {
         const shouldClose = await confirmDialog(
           t('workspace.discardChangesConfirm', {
             defaultValue: 'Discard unsaved file changes?',
@@ -452,16 +600,55 @@ export function TerminalManager() {
         if (!shouldClose) return;
       }
 
-      setWorkspaceContentTabs((current) => current.filter((tab) => tab.id !== tabId));
-      setDirtyWorkspaceTabIds((current) => {
-        const { [tabId]: _removed, ...rest } = current;
-        return rest;
+      setWorkspaceContentByCardId((current) => {
+        const state = workspaceContentStateWithPanelDefaults(
+          workspaceContentStateWithDefaults(current[focusedCardId]),
+        );
+        const tabs = state.tabs.filter((tab) => !targetIds.has(tab.id));
+        const dirtyTabIds = Object.fromEntries(
+          Object.entries(state.dirtyTabIds).filter(([tabId]) => !targetIds.has(tabId)),
+        );
+        const activeTabId =
+          nextActiveTabId ??
+          (targetIds.has(state.activeTabId) ? TERMINAL_CONTENT_TAB_ID : state.activeTabId);
+        return {
+          ...current,
+          [focusedCardId]: {
+            ...state,
+            tabs,
+            dirtyTabIds,
+            activeTabId,
+          },
+        };
       });
-      setActiveContentTabId((current) =>
-        current === tabId ? TERMINAL_CONTENT_TAB_ID : current,
-      );
     },
-    [dirtyWorkspaceTabIds, t],
+    [dirtyWorkspaceTabIds, focusedCardId, t],
+  );
+
+  const closeWorkspaceTab = useCallback(
+    (tabId: string) => closeWorkspaceTabs([tabId]),
+    [closeWorkspaceTabs],
+  );
+
+  const closeAllWorkspaceTabs = useCallback(
+    () => closeWorkspaceTabs(workspaceContentTabs.map((tab) => tab.id)),
+    [closeWorkspaceTabs, workspaceContentTabs],
+  );
+
+  const closeOtherWorkspaceTabs = useCallback(
+    (tabId: string) =>
+      closeWorkspaceTabs(
+        workspaceContentTabs.filter((tab) => tab.id !== tabId).map((tab) => tab.id),
+        tabId,
+      ),
+    [closeWorkspaceTabs, workspaceContentTabs],
+  );
+
+  const handleWorkspacePanelStateChange = useCallback(
+    (panelState: WorkspacePanelState) => {
+      updateFocusedWorkspaceContent((state) => ({ ...state, panelState }));
+    },
+    [updateFocusedWorkspaceContent],
   );
 
   // Mark the focused card as most-recently-used (mounting it if needed and
@@ -691,17 +878,7 @@ export function TerminalManager() {
     setViewMode('grid');
   }, [focusCard]);
 
-  const sessionDockAvailable = viewMode === 'focus' && Boolean(focusedCard);
-  // The dock overlay sits above (z-35) the other right-side panels (bookmarks /
-  // archive / stats, z-30); yield to them when any is open so it doesn't cover them.
-  const sessionDockVisible =
-    sessionDockAvailable &&
-    terminalContentActive &&
-    (dockPinned || dockHovered) &&
-    !bookmarksOpen &&
-    !archiveOpen &&
-    !statsOpen &&
-    !workspaceOpen;
+  const sessionDockVisible = sessionDockPanelVisible;
 
   useEffect(() => {
     if (!sessionDockAvailable && dockHovered) {
@@ -712,16 +889,29 @@ export function TerminalManager() {
   const handleCloseSessionDock = useCallback(() => {
     if (dockPinned) toggleDockPin();
     setDockHovered(false);
-  }, [dockPinned, toggleDockPin]);
+    closeRightSurface('sessionDock');
+  }, [closeRightSurface, dockPinned, toggleDockPin]);
+
+  const handleSessionDockHoverChange = useCallback(
+    (hovered: boolean) => {
+      setDockHovered(hovered);
+      if (hovered) {
+        openRightSurface('sessionDock');
+      } else if (!dockPinned) {
+        closeRightSurface('sessionDock');
+      }
+    },
+    [closeRightSurface, dockPinned, openRightSurface],
+  );
 
   const handleJumpToBlock = useCallback(
     ({ cardId, blockId }: { cardId: string; blockId: string }) => {
       focusCard(cardId);
       setViewMode('focus');
       selectBlock(cardId, blockId);
-      setBookmarksOpen(false);
+      closeRightSurface('bookmarks');
     },
-    [focusCard, selectBlock],
+    [closeRightSurface, focusCard, selectBlock],
   );
 
   const handleRestoreArchivedCard = useCallback(
@@ -973,12 +1163,12 @@ export function TerminalManager() {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        setBookmarksOpen(false);
+        closeRightSurface('bookmarks');
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [bookmarksOpen, paletteOpen, searchOpen]);
+  }, [bookmarksOpen, closeRightSurface, paletteOpen, searchOpen]);
 
   // Expose imperative API.
   useEffect(() => {
@@ -1192,8 +1382,13 @@ export function TerminalManager() {
             dirtyTabIds={dirtyWorkspaceTabIds}
             terminalLabel={t('codexChat.terminal', { defaultValue: 'Terminal' })}
             closeLabel={t('common.close', { defaultValue: 'Close' })}
+            closeCurrentLabel={t('workspace.closeCurrentTab', { defaultValue: '关闭当前' })}
+            closeAllLabel={t('workspace.closeAllTabs', { defaultValue: '关闭所有' })}
+            closeOthersLabel={t('workspace.closeOtherTabs', { defaultValue: '关闭除当前' })}
             onActivate={setActiveContentTabId}
             onClose={(tabId) => void closeWorkspaceTab(tabId)}
+            onCloseAll={() => void closeAllWorkspaceTabs()}
+            onCloseOthers={(tabId) => void closeOtherWorkspaceTabs(tabId)}
           />
         )}
 
@@ -1287,31 +1482,23 @@ export function TerminalManager() {
         })}
 
         {sessionDockAvailable && (
-          <>
-            <button
-              type="button"
-              aria-label={t('dock.hoverHandle')}
-              title={t('dock.hoverHandle')}
-              onFocus={() => setDockHovered(true)}
-              onMouseEnter={() => setDockHovered(true)}
-              className={[
-                // Narrow 6px hover strip to summon the dock. The previous 12px
-                // `cursor-ew-resize` box sat over the terminal's right edge and
-                // swallowed scrollbar + rightmost-column mouse input, and the
-                // resize cursor wrongly implied the dock was width-draggable.
-                'absolute bottom-0 right-0 top-0 z-[34] w-1.5 cursor-pointer transition-colors hover:bg-primary/20',
-                // When the dock is showing it owns hover; don't keep blocking
-                // the terminal edge underneath it.
-                sessionDockVisible ? 'pointer-events-none' : '',
-              ].join(' ')}
-            />
-            <SessionDock
-              visible={sessionDockVisible}
-              pinned={dockPinned}
-              onClose={handleCloseSessionDock}
-              onHoverChange={setDockHovered}
-            />
-          </>
+          <button
+            type="button"
+            aria-label={t('dock.hoverHandle')}
+            title={t('dock.hoverHandle')}
+            onFocus={() => handleSessionDockHoverChange(true)}
+            onMouseEnter={() => handleSessionDockHoverChange(true)}
+            className={[
+              // Narrow 6px hover strip to summon the dock. The previous 12px
+              // `cursor-ew-resize` box sat over the terminal's right edge and
+              // swallowed scrollbar + rightmost-column mouse input, and the
+              // resize cursor wrongly implied the dock was width-draggable.
+              'absolute bottom-0 right-0 top-0 z-[34] w-1.5 cursor-pointer transition-colors hover:bg-primary/20',
+              // When the dock is showing it owns hover; don't keep blocking
+              // the terminal edge underneath it.
+              sessionDockVisible ? 'pointer-events-none' : '',
+            ].join(' ')}
+          />
         )}
       </div>
       </div>
@@ -1324,24 +1511,35 @@ export function TerminalManager() {
           {workspacePanelVisible && focusedCwd && (
             <WorkspacePanel
               rootCwd={focusedCwd}
+              state={workspacePanelState}
               activeFilePath={activeWorkspaceFilePath}
               activeDiffPath={activeWorkspaceDiffPath}
-              onClose={() => setWorkspaceOpen(false)}
+              onStateChange={handleWorkspacePanelStateChange}
+              onClose={() => closeRightSurface('workspace')}
               onOpenFile={openWorkspaceFile}
               onOpenDiff={openWorkspaceDiff}
             />
           )}
-          {statsOpen && <StatsPanel onClose={() => setStatsOpen(false)} />}
+          {statsPanelVisible && <StatsPanel onClose={() => closeRightSurface('stats')} />}
           {archivePanelVisible && selectedProjectName && (
             <ArchivedCardsPanel
               projectName={selectedProjectName}
               cards={selectedProjectArchivedCards}
               onRestore={handleRestoreArchivedCard}
-              onClose={() => setArchiveOpen(false)}
+              onClose={() => closeRightSurface('archive')}
             />
           )}
           {bookmarksPanelVisible && (
-            <BookmarksSidebar onJump={handleJumpToBlock} onClose={() => setBookmarksOpen(false)} />
+            <BookmarksSidebar onJump={handleJumpToBlock} onClose={() => closeRightSurface('bookmarks')} />
+          )}
+          {sessionDockVisible && (
+            <SessionDock
+              visible={sessionDockVisible}
+              pinned={dockPinned}
+              variant="panel"
+              onClose={handleCloseSessionDock}
+              onHoverChange={handleSessionDockHoverChange}
+            />
           )}
         </aside>
       )}
@@ -1354,8 +1552,8 @@ export function TerminalManager() {
       {cards.length > 0 &&
         terminalContentActive &&
         !hintDismissed &&
-        !bookmarksOpen &&
-        !archiveOpen &&
+        !rightPanelOpen &&
+        !sessionDockVisible &&
         !paletteOpen &&
         !searchOpen && (
         <div
@@ -1443,19 +1641,66 @@ function WorkspaceContentTabStrip({
   dirtyTabIds,
   terminalLabel,
   closeLabel,
+  closeCurrentLabel,
+  closeAllLabel,
+  closeOthersLabel,
   onActivate,
   onClose,
+  onCloseAll,
+  onCloseOthers,
 }: {
   tabs: WorkspaceContentTab[];
   activeTabId: string;
   dirtyTabIds: Record<string, boolean>;
   terminalLabel: string;
   closeLabel: string;
+  closeCurrentLabel: string;
+  closeAllLabel: string;
+  closeOthersLabel: string;
   onActivate: (tabId: string) => void;
   onClose: (tabId: string) => void;
+  onCloseAll: () => void;
+  onCloseOthers: (tabId: string) => void;
 }) {
+  const [menu, setMenu] = useState<{ tabId: string; left: number; top: number } | null>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close();
+    };
+    window.addEventListener('mousedown', close);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [menu]);
+
+  const openMenu = (event: ReactMouseEvent, tabId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const width = 160;
+    const height = 112;
+    const padding = 8;
+    setMenu({
+      tabId,
+      left: Math.min(event.clientX, window.innerWidth - width - padding),
+      top: Math.min(event.clientY, window.innerHeight - height - padding),
+    });
+  };
+
+  const runMenuAction = (action: () => void) => {
+    setMenu(null);
+    action();
+  };
+
   return (
-    <div className="flex min-h-[34px] items-center gap-1 overflow-x-auto border-b border-white/10 bg-background/95 px-2 py-1">
+    <div
+      className="flex min-h-[34px] items-center gap-1 overflow-x-auto border-b border-white/10 bg-background/95 px-2 py-1"
+      data-terminal-context-menu
+    >
       <button
         type="button"
         onClick={() => onActivate(TERMINAL_CONTENT_TAB_ID)}
@@ -1473,6 +1718,8 @@ function WorkspaceContentTabStrip({
         <div
           key={tab.id}
           title={tab.kind === 'file' ? tab.path : tab.change.path}
+          onContextMenu={(event) => openMenu(event, tab.id)}
+          data-terminal-context-menu
           className={[
             'inline-flex h-7 max-w-[240px] shrink-0 items-center overflow-hidden rounded-[var(--radius-md)] text-[11px] transition-colors',
             activeTabId === tab.id
@@ -1506,6 +1753,50 @@ function WorkspaceContentTabStrip({
           </button>
         </div>
       ))}
+      {menu &&
+        createPortal(
+          <div
+            role="menu"
+            data-testid="workspace-tab-context-menu"
+            data-terminal-context-menu
+            className="fixed z-50 w-40 overflow-hidden rounded-[var(--radius-md)] border border-white/10 bg-popover py-1 text-[11px] text-popover-foreground shadow-xl shadow-black/30"
+            style={{ left: menu.left, top: menu.top }}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <WorkspaceTabMenuItem
+              label={closeCurrentLabel}
+              onClick={() => runMenuAction(() => onClose(menu.tabId))}
+            />
+            <WorkspaceTabMenuItem
+              label={closeAllLabel}
+              onClick={() => runMenuAction(onCloseAll)}
+            />
+            <WorkspaceTabMenuItem
+              label={closeOthersLabel}
+              onClick={() => runMenuAction(() => onCloseOthers(menu.tabId))}
+            />
+          </div>,
+          document.body,
+        )}
     </div>
+  );
+}
+
+function WorkspaceTabMenuItem({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      className="block w-full px-3 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
+    >
+      {label}
+    </button>
   );
 }

@@ -816,6 +816,32 @@ PanelBuilder::<_, OverlayPetPanel>::new(app, PET_LABEL)
 
 </spec-entry>
 
+<spec-entry category="quality" keywords="terminal,right-surface,session-dock,workspace-panel,xterm-resize" date="2026-06-29" source="src/components/terminal/TerminalManager.tsx:1509">
+
+### Scenario: Terminal right-side surfaces share one stable layout slot
+
+#### 1. Scope / Trigger
+- Trigger: Any frontend change to terminal right-side surfaces, including workspace files/changes, stats, archive, bookmarks, or recent-session dock.
+- Applies to `TerminalManager`, `SessionDock`, and any future terminal-side panel.
+
+#### 2. Contracts
+- Right-side surfaces that are mutually exclusive must render in the same fixed-width flex `aside` slot.
+- Do not make one right-side surface a floating overlay while another surface participates in flex layout.
+- Session dock priority may still be last-opened-wins, but it must use the same slot as workspace/files so switching between them does not resize the terminal content.
+- Hover handles may live on the terminal edge, but the expanded surface must not overlay the terminal when another right-side surface is already open.
+- If a surface is temporarily hidden and a previous surface remains in the right-surface stack, closing it should restore the previous surface without changing the terminal column width.
+
+#### 3. Validation & Error Matrix
+- Switching Files/Changes -> Recent sessions -> Files/Changes must not repeatedly resize or reflow xterm.
+- Opening the first right-side surface may resize the terminal once; switching between already-open right-side surfaces should keep the same content width.
+- If session dock is rendered outside the shared `aside`, expect terminal fit/reflow flicker when users rapidly alternate surfaces.
+
+#### 4. Tests Required
+- Component regression tests should assert session dock is hosted inside the right-side `aside` when it takes priority over the workspace panel.
+- Tests should cover restoring the previous workspace panel after a hover-only session dock closes.
+
+</spec-entry>
+
 ---
 
 ## Testing Requirements
