@@ -450,8 +450,9 @@ function DiffBlock({
             : t('workspace.diffReadOnly', { defaultValue: 'Read-only' })}
         </span>
       </div>
-      <div className="grid grid-cols-2 border-b border-white/10 bg-muted/20 text-[10px] font-medium text-muted-foreground">
+      <div className="grid grid-cols-[minmax(0,1fr)_1.75rem_minmax(0,1fr)] border-b border-white/10 bg-muted/20 text-[10px] font-medium text-muted-foreground">
         <div className="border-r border-white/10 px-3 py-1">{section.baseLabel}</div>
+        <div className="border-r border-white/10" aria-hidden />
         <div className="px-3 py-1">{section.currentLabel}</div>
       </div>
       <WorkspaceMergeDiffEditor
