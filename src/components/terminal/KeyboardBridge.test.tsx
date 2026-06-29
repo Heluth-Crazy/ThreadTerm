@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 describe('KeyboardBridge', () => {
-  it('toggles the session dock pin with Ctrl+E', () => {
+  it('toggles the session dock with Ctrl+E', () => {
     render(<KeyboardBridge />);
 
     const event = dispatchKeyDown({ key: 'e', ctrlKey: true });
@@ -33,7 +33,7 @@ describe('KeyboardBridge', () => {
     expect(useTerminalStore.getState().dockPinned).toBe(true);
   });
 
-  it('toggles the session dock pin with Cmd+E', () => {
+  it('toggles the session dock with Cmd+E', () => {
     render(<KeyboardBridge />);
 
     dispatchKeyDown({ key: 'E', metaKey: true });
@@ -41,7 +41,7 @@ describe('KeyboardBridge', () => {
     expect(useTerminalStore.getState().dockPinned).toBe(true);
   });
 
-  it('does not toggle the session dock pin when Shift or Alt is held', () => {
+  it('does not toggle the session dock when Shift or Alt is held', () => {
     render(<KeyboardBridge />);
 
     dispatchKeyDown({ key: 'e', ctrlKey: true, shiftKey: true });

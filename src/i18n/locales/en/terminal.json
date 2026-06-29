@@ -67,8 +67,7 @@
     "shortcut": "Cmd/Ctrl+E",
     "close": "Close session dock",
     "empty": "No recent sessions",
-    "current": "Current",
-    "hoverHandle": "Show recent sessions"
+    "current": "Current"
   },
   "stats": {
     "title": "Token usage",

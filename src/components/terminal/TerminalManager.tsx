@@ -315,7 +315,6 @@ export function TerminalManager() {
   const [workspaceContentByCardId, setWorkspaceContentByCardId] = useState<
     Record<string, WorkspaceContentState>
   >({});
-  const [dockHovered, setDockHovered] = useState(false);
   useStatsSubscription();
   useStatsAutoRefresh();
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -434,7 +433,6 @@ export function TerminalManager() {
   useEffect(() => {
     if (!sessionDockAvailable) {
       closeRightSurface('sessionDock');
-      setDockHovered(false);
     }
   }, [closeRightSurface, sessionDockAvailable]);
 
@@ -876,15 +874,8 @@ export function TerminalManager() {
 
   const sessionDockVisible = sessionDockPanelVisible;
 
-  useEffect(() => {
-    if (!sessionDockAvailable && dockHovered) {
-      setDockHovered(false);
-    }
-  }, [dockHovered, sessionDockAvailable]);
-
   const handleCloseSessionDock = useCallback(() => {
     if (dockPinned) toggleDockPin();
-    setDockHovered(false);
     closeRightSurface('sessionDock');
   }, [closeRightSurface, dockPinned, toggleDockPin]);
 
@@ -907,18 +898,6 @@ export function TerminalManager() {
       });
     },
     [focusCard],
-  );
-
-  const handleSessionDockHoverChange = useCallback(
-    (hovered: boolean) => {
-      setDockHovered(hovered);
-      if (hovered) {
-        openRightSurface('sessionDock');
-      } else if (!dockPinned) {
-        closeRightSurface('sessionDock');
-      }
-    },
-    [closeRightSurface, dockPinned, openRightSurface],
   );
 
   const handleJumpToBlock = useCallback(
@@ -1483,25 +1462,6 @@ export function TerminalManager() {
           );
         })}
 
-        {sessionDockAvailable && (
-          <button
-            type="button"
-            aria-label={t('dock.hoverHandle')}
-            title={t('dock.hoverHandle')}
-            onFocus={() => handleSessionDockHoverChange(true)}
-            onMouseEnter={() => handleSessionDockHoverChange(true)}
-            className={[
-              // Narrow 6px hover strip to summon the dock. The previous 12px
-              // `cursor-ew-resize` box sat over the terminal's right edge and
-              // swallowed scrollbar + rightmost-column mouse input, and the
-              // resize cursor wrongly implied the dock was width-draggable.
-              'absolute bottom-0 right-0 top-0 z-[34] w-1.5 cursor-pointer transition-colors hover:bg-primary/20',
-              // When the dock is showing it owns hover; don't keep blocking
-              // the terminal edge underneath it.
-              sessionDockVisible ? 'pointer-events-none' : '',
-            ].join(' ')}
-          />
-        )}
       </div>
       </div>
 
@@ -1536,10 +1496,8 @@ export function TerminalManager() {
           {sessionDockVisible && (
             <SessionDock
               visible={sessionDockVisible}
-              pinned={dockPinned}
               variant="panel"
               onClose={handleCloseSessionDock}
-              onHoverChange={handleSessionDockHoverChange}
               onSelectCard={handleSelectSessionDockCard}
             />
           )}

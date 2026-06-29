@@ -331,14 +331,14 @@ describe('TerminalManager shortcut hint layout', () => {
 
     expect(await screen.findByText('README.md')).toBeInTheDocument();
 
-    fireEvent.mouseEnter(screen.getByTitle('显示最近会话'));
+    useTerminalStore.setState({ dockPinned: true });
 
-    const dock = screen.getByTestId('session-dock');
+    const dock = await screen.findByTestId('session-dock');
     expect(dock).toHaveAttribute('aria-hidden', 'false');
     expect(dock.closest('aside')).not.toBeNull();
     expect(screen.queryByText('README.md')).toBeNull();
 
-    fireEvent.mouseLeave(dock);
+    fireEvent.keyDown(window, { key: 'Escape' });
 
     await waitFor(() => {
       expect(screen.queryByTestId('session-dock')).toBeNull();
@@ -386,7 +386,8 @@ describe('TerminalManager shortcut hint layout', () => {
     fireEvent.click(await screen.findByText('README.md'));
     expect(await screen.findByDisplayValue('repo file')).toBeInTheDocument();
 
-    fireEvent.mouseEnter(screen.getByTitle('显示最近会话'));
+    useTerminalStore.setState({ dockPinned: true });
+    expect(await screen.findByTestId('session-dock')).toBeInTheDocument();
     fireEvent.keyDown(window, { key: '1' });
 
     expect(await screen.findByText('OTHER.md')).toBeInTheDocument();
@@ -395,7 +396,8 @@ describe('TerminalManager shortcut hint layout', () => {
     expect(screen.getAllByTestId('mock-shell').length).toBeGreaterThan(0);
     expect(screen.queryByTestId('session-dock')).toBeNull();
 
-    fireEvent.mouseEnter(screen.getByTitle('显示最近会话'));
+    useTerminalStore.setState({ dockPinned: true });
+    expect(await screen.findByTestId('session-dock')).toBeInTheDocument();
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'Enter' });
 

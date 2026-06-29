@@ -841,7 +841,7 @@ PanelBuilder::<_, OverlayPetPanel>::new(app, PET_LABEL)
 
 #### 4. Tests Required
 - Component regression tests should assert session dock is hosted inside the right-side `aside` when it takes priority over the workspace rail.
-- Tests should cover restoring the workspace rail after a hover-only session dock closes.
+- Tests should cover restoring the workspace rail after a shortcut-opened session dock closes.
 - Tests should cover number-key and arrow/Enter session selection from the dock.
 
 </spec-entry>

@@ -67,8 +67,7 @@
     "shortcut": "Cmd/Ctrl+E",
     "close": "关闭会话 Dock",
     "empty": "暂无最近会话",
-    "current": "当前",
-    "hoverHandle": "显示最近会话"
+    "current": "当前"
   },
   "stats": {
     "title": "Token 用量",
