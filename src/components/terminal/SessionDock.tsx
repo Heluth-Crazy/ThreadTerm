@@ -9,10 +9,8 @@ import { getTerminalTypeMeta } from './terminalTypeMeta';
 
 export interface SessionDockProps {
   visible: boolean;
-  pinned: boolean;
   variant?: 'overlay' | 'panel';
   onClose: () => void;
-  onHoverChange: (hovered: boolean) => void;
   onSelectCard?: (cardId: string) => void;
 }
 
@@ -61,10 +59,8 @@ function worktreeChip(card: TerminalCard): string | null {
 
 export function SessionDock({
   visible,
-  pinned,
   variant = 'overlay',
   onClose,
-  onHoverChange,
   onSelectCard,
 }: SessionDockProps) {
   const { t } = useTranslation('terminal');
@@ -77,7 +73,7 @@ export function SessionDock({
   const recentCards = useMemo(() => orderedRecentCards(cards, recentIds), [cards, recentIds]);
 
   // Relative timestamps ("3m ago") are computed at render; without this tick the
-  // pinned dock would freeze them. Re-render every 30s while the dock is visible.
+  // open dock would freeze them. Re-render every 30s while the dock is visible.
   const [, forceTick] = useState(0);
   useEffect(() => {
     if (!visible) return;
@@ -98,22 +94,25 @@ export function SessionDock({
       } else {
         focusCard(cardId);
       }
-      if (!pinned) onHoverChange(false);
+      onClose();
     },
-    [focusCard, onHoverChange, onSelectCard, pinned],
+    [focusCard, onClose, onSelectCard],
   );
 
   useEffect(() => {
     if (!visible) return;
+    const consume = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.altKey || event.ctrlKey || event.metaKey || isEditableKeyTarget(event.target)) {
         return;
       }
       if (recentCards.length === 0) {
         if (event.key === 'Escape') {
-          event.preventDefault();
-          if (pinned) onClose();
-          else onHoverChange(false);
+          consume(event);
+          onClose();
         }
         return;
       }
@@ -122,7 +121,7 @@ export function SessionDock({
         const index = Number(event.key) - 1;
         const card = recentCards[index];
         if (card) {
-          event.preventDefault();
+          consume(event);
           handleSelect(card.id);
         }
         return;
@@ -131,32 +130,32 @@ export function SessionDock({
       if (event.key === '0') {
         const card = recentCards[9];
         if (card) {
-          event.preventDefault();
+          consume(event);
           handleSelect(card.id);
         }
         return;
       }
 
       if (event.key === 'ArrowDown') {
-        event.preventDefault();
+        consume(event);
         setHighlightedIndex((index) => (index + 1) % recentCards.length);
         return;
       }
 
       if (event.key === 'ArrowUp') {
-        event.preventDefault();
+        consume(event);
         setHighlightedIndex((index) => (index - 1 + recentCards.length) % recentCards.length);
         return;
       }
 
       if (event.key === 'Home') {
-        event.preventDefault();
+        consume(event);
         setHighlightedIndex(0);
         return;
       }
 
       if (event.key === 'End') {
-        event.preventDefault();
+        consume(event);
         setHighlightedIndex(recentCards.length - 1);
         return;
       }
@@ -164,29 +163,26 @@ export function SessionDock({
       if (event.key === 'Enter') {
         const card = recentCards[highlightedIndex];
         if (card) {
-          event.preventDefault();
+          consume(event);
           handleSelect(card.id);
         }
         return;
       }
 
       if (event.key === 'Escape') {
-        event.preventDefault();
-        if (pinned) onClose();
-        else onHoverChange(false);
+        consume(event);
+        onClose();
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleSelect, highlightedIndex, onClose, onHoverChange, pinned, recentCards, visible]);
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [handleSelect, highlightedIndex, onClose, recentCards, visible]);
 
   return (
     <section
       aria-hidden={!visible}
       data-testid="session-dock"
-      onMouseEnter={() => onHoverChange(true)}
-      onMouseLeave={() => onHoverChange(false)}
       className={[
         'flex flex-col bg-background/95 shadow-studio backdrop-blur-2xl transition-all duration-150 ease-out',
         variant === 'panel'

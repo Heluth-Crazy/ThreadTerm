@@ -67,8 +67,7 @@
     "shortcut": "Cmd/Ctrl+E",
     "close": "セッション Dock を閉じる",
     "empty": "最近のセッションはありません",
-    "current": "現在",
-    "hoverHandle": "最近のセッションを表示"
+    "current": "現在"
   },
   "stats": {
     "title": "トークン使用量",

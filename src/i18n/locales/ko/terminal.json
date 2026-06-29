@@ -67,8 +67,7 @@
     "shortcut": "Cmd/Ctrl+E",
     "close": "세션 Dock 닫기",
     "empty": "최근 세션 없음",
-    "current": "현재",
-    "hoverHandle": "최근 세션 보기"
+    "current": "현재"
   },
   "stats": {
     "title": "토큰 사용량",

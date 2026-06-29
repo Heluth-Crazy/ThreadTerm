@@ -12,7 +12,6 @@ vi.mock('react-i18next', async (importOriginal) => {
     'dock.close': 'Close session dock',
     'dock.empty': 'No recent sessions',
     'dock.current': 'Current',
-    'dock.hoverHandle': 'Show recent sessions',
     'card.justNow': 'just now',
     'types.shell': 'Shell',
     'types.codex': 'Codex',
@@ -92,9 +91,7 @@ describe('SessionDock', () => {
     render(
       <SessionDock
         visible={true}
-        pinned={false}
         onClose={vi.fn()}
-        onHoverChange={vi.fn()}
       />,
     );
 
@@ -107,60 +104,57 @@ describe('SessionDock', () => {
     expect(within(rows[1]).getByText('Running')).toBeInTheDocument();
   });
 
-  it('focuses a clicked card and hides a hover-only dock', () => {
-    const onHoverChange = vi.fn();
+  it('focuses a clicked card and closes the dock', () => {
+    const onClose = vi.fn();
     render(
       <SessionDock
         visible={true}
-        pinned={false}
-        onClose={vi.fn()}
-        onHoverChange={onHoverChange}
+        onClose={onClose}
       />,
     );
 
     fireEvent.click(screen.getByTestId('session-dock-row-card-b'));
 
     expect(useTerminalStore.getState().focusedCardId).toBe('card-b');
-    expect(onHoverChange).toHaveBeenCalledWith(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('selects recent sessions with number and arrow keyboard shortcuts', () => {
-    const onHoverChange = vi.fn();
+    const onClose = vi.fn();
     render(
       <SessionDock
         visible={true}
-        pinned={false}
-        onClose={vi.fn()}
-        onHoverChange={onHoverChange}
+        onClose={onClose}
       />,
     );
 
     fireEvent.keyDown(window, { key: '1' });
     expect(useTerminalStore.getState().focusedCardId).toBe('card-b');
-    expect(onHoverChange).toHaveBeenCalledWith(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
 
-    onHoverChange.mockClear();
+    onClose.mockClear();
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     fireEvent.keyDown(window, { key: 'Enter' });
     expect(useTerminalStore.getState().focusedCardId).toBe('card-a');
-    expect(onHoverChange).toHaveBeenCalledWith(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps a pinned dock open when selecting a card', () => {
-    const onHoverChange = vi.fn();
+  it('captures handled keyboard shortcuts before terminal input', () => {
+    const onClose = vi.fn();
+    const parentKeyDown = vi.fn();
+    window.addEventListener('keydown', parentKeyDown);
     render(
       <SessionDock
         visible={true}
-        pinned={true}
-        onClose={vi.fn()}
-        onHoverChange={onHoverChange}
+        onClose={onClose}
       />,
     );
 
-    fireEvent.click(screen.getByTestId('session-dock-row-card-b'));
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
 
-    expect(useTerminalStore.getState().focusedCardId).toBe('card-b');
-    expect(onHoverChange).not.toHaveBeenCalledWith(false);
+    expect(parentKeyDown).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    window.removeEventListener('keydown', parentKeyDown);
   });
 
   it('renders an empty state and calls close from the header button', () => {
@@ -169,9 +163,7 @@ describe('SessionDock', () => {
     render(
       <SessionDock
         visible={true}
-        pinned={false}
         onClose={onClose}
-        onHoverChange={vi.fn()}
       />,
     );
 
