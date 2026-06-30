@@ -830,6 +830,7 @@ PanelBuilder::<_, OverlayPetPanel>::new(app, PET_LABEL)
 - Do not make one right-side surface a floating overlay while another surface participates in flex layout.
 - Session dock priority may still be last-opened-wins, but it must use the same slot as workspace/files so switching between them does not resize the terminal content.
 - The session dock must not use edge hover triggers; it opens/closes from the global keyboard shortcut only.
+- The focused terminal header height must align with the workspace panel header stack (`WorkspacePanel` tab row + cwd row) so the split boundary has continuous horizontal rules.
 - If an auxiliary surface closes, the slot should restore the permanent workspace rail without changing the terminal column width.
 - Selecting a recent session from the dock should focus that card and make its terminal tab active; existing file/diff tabs for that session may remain open but should not steal focus.
 - While the session dock is active, `KeyboardBridge` owns `0-9`, `ArrowUp`, `ArrowDown`, `Home`, `End`, `Enter`, and `Escape` before terminal/global shortcut handlers, then forwards them to `SessionDock`.

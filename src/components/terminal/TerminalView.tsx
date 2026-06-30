@@ -349,7 +349,7 @@ export function TerminalView({
   return (
     <div className="flex h-full w-full flex-col bg-background">
       {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b border-white/10 px-2 py-2 sm:gap-3 sm:px-3">
+      <div className="flex h-[61.5px] shrink-0 items-center justify-between gap-2 border-b border-white/10 px-2 py-2 sm:gap-3 sm:px-3">
         <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
           <button
             type="button"
