@@ -141,7 +141,7 @@ import Shell from './Shell';
 
 const PROJECT = { name: 'proj', path: '/tmp/proj', fullPath: '/tmp/proj' };
 
-function renderMinimalShell(paneId = 'pane-1') {
+function renderMinimalShell(paneId = 'pane-1', active = true) {
   return render(
     <Shell
       selectedProject={PROJECT}
@@ -149,7 +149,7 @@ function renderMinimalShell(paneId = 'pane-1') {
       minimal={true}
       autoConnect={true}
       paneId={paneId}
-      active={true}
+      active={active}
       preservePtyOnUnmount={true}
       autoReconnectOnExit={false}
       onDisconnect={undefined}
@@ -298,5 +298,60 @@ describe('Shell — scroll-to-bottom indicator (P0-1)', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('shell-scroll-to-bottom')).not.toBeInTheDocument(),
     );
+  });
+
+  it('scrolls to the bottom when the terminal becomes active', async () => {
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      width: 640,
+      height: 360,
+      top: 0,
+      left: 0,
+      right: 640,
+      bottom: 360,
+      toJSON: () => ({}),
+    } as DOMRect);
+    try {
+      const { rerender } = render(
+        <Shell
+          selectedProject={PROJECT}
+          initialCommand={undefined}
+          minimal={true}
+          autoConnect={true}
+          paneId="pane-active"
+          active={false}
+          preservePtyOnUnmount={true}
+          autoReconnectOnExit={false}
+          onDisconnect={undefined}
+          onInitialCommandSent={undefined}
+          onUserSubmit={undefined}
+        />,
+      );
+      await waitForConnected();
+
+      const term = xtermMock.instances[0];
+      term.scrollToBottom.mockClear();
+
+      rerender(
+        <Shell
+          selectedProject={PROJECT}
+          initialCommand={undefined}
+          minimal={true}
+          autoConnect={true}
+          paneId="pane-active"
+          active={true}
+          preservePtyOnUnmount={true}
+          autoReconnectOnExit={false}
+          onDisconnect={undefined}
+          onInitialCommandSent={undefined}
+          onUserSubmit={undefined}
+        />,
+      );
+
+      await waitFor(() => expect(term.scrollToBottom).toHaveBeenCalled());
+    } finally {
+      rectSpy.mockRestore();
+    }
   });
 });

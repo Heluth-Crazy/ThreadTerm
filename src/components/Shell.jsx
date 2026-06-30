@@ -208,7 +208,7 @@ function Shell({
     pty.resize(id, rows, cols).catch(() => {});
   }, []);
 
-  const recoverTerminalSurface = useCallback((shouldFocus = false) => {
+  const recoverTerminalSurface = useCallback((shouldFocus = false, shouldScrollToBottom = false) => {
     if (!activeRef.current) return;
 
     const run = () => {
@@ -240,6 +240,12 @@ function Shell({
         } catch {
           // Focus can fail before the webview becomes key; later passes retry.
         }
+      }
+
+      if (shouldScrollToBottom && !term.hasSelection()) {
+        term.scrollToBottom();
+        pendingNewLinesRef.current = 0;
+        setNewOutputLines(0);
       }
     };
 
@@ -821,7 +827,7 @@ function Shell({
 
   useEffect(() => {
     if (!active || !isInitialized) return;
-    recoverTerminalSurface(true);
+    recoverTerminalSurface(true, true);
   }, [active, isInitialized, recoverTerminalSurface]);
 
   useEffect(() => {
