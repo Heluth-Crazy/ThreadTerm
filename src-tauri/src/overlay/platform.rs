@@ -156,7 +156,6 @@ pub(super) fn configure_selector_window_for_current_space(_window: &WebviewWindo
 #[cfg(not(target_os = "macos"))]
 pub(super) fn configure_float_window_for_current_space(_window: &WebviewWindow) {}
 
-
 #[cfg(not(target_os = "macos"))]
 pub(super) fn activate_float_window_for_keyboard(window: &WebviewWindow) {
     let _ = window.set_focus();

@@ -121,8 +121,12 @@ pub fn parse_claude_file(path: &Path) -> (String, Vec<CallRecord>) {
         if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
             continue;
         }
-        let Some(msg) = v.get("message") else { continue };
-        let Some(usage) = msg.get("usage") else { continue };
+        let Some(msg) = v.get("message") else {
+            continue;
+        };
+        let Some(usage) = msg.get("usage") else {
+            continue;
+        };
         let Some(msg_id) = msg.get("id").and_then(|m| m.as_str()) else {
             continue;
         };
@@ -135,8 +139,14 @@ pub fn parse_claude_file(path: &Path) -> (String, Vec<CallRecord>) {
                 .unwrap_or("")
                 .to_string(),
             usage: UsageSummary {
-                input: usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
-                output: usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
+                input: usage
+                    .get("input_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                output: usage
+                    .get("output_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
                 cache_creation: usage
                     .get("cache_creation_input_tokens")
                     .and_then(Value::as_u64)
@@ -284,7 +294,10 @@ pub fn parse_codex_file(path: &Path) -> Option<(String, String, Vec<CallRecord>)
             }
             "turn_context" => {
                 if let Some(m) = payload
-                    .and_then(|p| p.get("model").or_else(|| p.get("info").and_then(|i| i.get("model"))))
+                    .and_then(|p| {
+                        p.get("model")
+                            .or_else(|| p.get("info").and_then(|i| i.get("model")))
+                    })
                     .and_then(|m| m.as_str())
                 {
                     state.model = normalize_model(m);
@@ -457,7 +470,10 @@ mod tests {
     #[test]
     fn iso8601_epoch() {
         assert_eq!(parse_iso8601_ms("1970-01-01T00:00:00.000Z"), Some(0));
-        assert_eq!(parse_iso8601_ms("2021-01-01T00:00:00Z"), Some(1_609_459_200_000));
+        assert_eq!(
+            parse_iso8601_ms("2021-01-01T00:00:00Z"),
+            Some(1_609_459_200_000)
+        );
         assert_eq!(
             parse_iso8601_ms("2021-01-01T00:00:00.500Z"),
             Some(1_609_459_200_500)
@@ -468,7 +484,10 @@ mod tests {
 
     #[test]
     fn normalize_strips_vendor_and_pin() {
-        assert_eq!(normalize_model("anthropic/claude-opus-4-8@20260101"), "claude-opus-4-8");
+        assert_eq!(
+            normalize_model("anthropic/claude-opus-4-8@20260101"),
+            "claude-opus-4-8"
+        );
         assert_eq!(normalize_model("Claude-Sonnet-4-5"), "claude-sonnet-4-5");
         assert_eq!(normalize_model("openai/gpt-5.4"), "gpt-5.4");
     }
@@ -482,7 +501,10 @@ mod tests {
     #[test]
     fn normalize_strips_compact_date() {
         assert_eq!(normalize_model("gpt-5.4-20260305"), "gpt-5.4");
-        assert_eq!(normalize_model("claude-opus-4-6-20260206"), "claude-opus-4-6");
+        assert_eq!(
+            normalize_model("claude-opus-4-6-20260206"),
+            "claude-opus-4-6"
+        );
     }
 
     // ── Claude parsing + dedup ──
@@ -580,7 +602,11 @@ mod tests {
 {"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":58346,"cached_input_tokens":46976,"output_tokens":1045}}}}"#;
         let path = write_temp_jsonl("codex_zero_delta.jsonl", jsonl);
         let (_, _, calls) = parse_codex_file(&path).expect("baseline reading is one call");
-        assert_eq!(calls.len(), 1, "zero-delta second event dropped, baseline kept");
+        assert_eq!(
+            calls.len(),
+            1,
+            "zero-delta second event dropped, baseline kept"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

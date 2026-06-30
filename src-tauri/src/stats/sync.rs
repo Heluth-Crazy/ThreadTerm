@@ -357,7 +357,9 @@ fn sync_opencode() -> SyncResult {
     ) {
         Ok(conn) => conn,
         Err(err) => {
-            result.errors.push(format!("OpenCode DB unavailable: {err}"));
+            result
+                .errors
+                .push(format!("OpenCode DB unavailable: {err}"));
             return result;
         }
     };
@@ -365,7 +367,9 @@ fn sync_opencode() -> SyncResult {
     let sessions = match opencode::query_sessions(&opencode_conn) {
         Ok(sessions) => sessions,
         Err(err) => {
-            result.errors.push(format!("OpenCode session query failed: {err}"));
+            result
+                .errors
+                .push(format!("OpenCode session query failed: {err}"));
             return result;
         }
     };
@@ -551,7 +555,14 @@ mod tests {
     fn insert_record_writes_row_and_costs() {
         let conn = mem_conn();
         let r = record("claude-opus-4-8", 1_000_000, 0, Some(1_609_459_200_000));
-        assert!(insert_record(&conn, "session:msg_1", "claude", &r, "/p", 1_609_459_200));
+        assert!(insert_record(
+            &conn,
+            "session:msg_1",
+            "claude",
+            &r,
+            "/p",
+            1_609_459_200
+        ));
         let (cost, input): (f64, i64) = conn
             .query_row(
                 "SELECT total_cost_usd, input_tokens FROM usage_records WHERE request_id='session:msg_1'",
@@ -560,16 +571,33 @@ mod tests {
             )
             .unwrap();
         assert_eq!(input, 1_000_000);
-        assert!((cost - 15.0).abs() < 1e-6, "1M input opus = $15, got {cost}");
+        assert!(
+            (cost - 15.0).abs() < 1e-6,
+            "1M input opus = $15, got {cost}"
+        );
     }
 
     #[test]
     fn insert_record_skips_duplicate_request_id() {
         let conn = mem_conn();
         let r = record("claude-opus-4-8", 100, 10, Some(1_609_459_200_000));
-        assert!(insert_record(&conn, "session:msg_1", "claude", &r, "/p", 1_609_459_200));
+        assert!(insert_record(
+            &conn,
+            "session:msg_1",
+            "claude",
+            &r,
+            "/p",
+            1_609_459_200
+        ));
         // Same request_id → INSERT OR IGNORE skips.
-        assert!(!insert_record(&conn, "session:msg_1", "claude", &r, "/p", 1_609_459_200));
+        assert!(!insert_record(
+            &conn,
+            "session:msg_1",
+            "claude",
+            &r,
+            "/p",
+            1_609_459_200
+        ));
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
             .unwrap();
@@ -667,8 +695,22 @@ mod tests {
         // shape, and the old shape-dedup wrongly dropped the second one.
         let conn = mem_conn();
         let r = record("claude-opus-4-8", 100, 10, Some(1_609_459_200_000));
-        assert!(insert_record(&conn, "session:msg_1", "claude", &r, "/p", 1_609_459_200));
-        assert!(insert_record(&conn, "session:msg_other", "claude", &r, "/p", 1_609_459_200));
+        assert!(insert_record(
+            &conn,
+            "session:msg_1",
+            "claude",
+            &r,
+            "/p",
+            1_609_459_200
+        ));
+        assert!(insert_record(
+            &conn,
+            "session:msg_other",
+            "claude",
+            &r,
+            "/p",
+            1_609_459_200
+        ));
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
             .unwrap();
@@ -688,7 +730,14 @@ mod tests {
         let conn = mem_conn();
         // Simulate stale rows ingested by an older parser (no version stamped).
         let r = record("claude-opus-4-8", 100, 10, Some(1_609_459_200_000));
-        assert!(insert_record(&conn, "session:msg_1", "claude", &r, "/p", 1_609_459_200));
+        assert!(insert_record(
+            &conn,
+            "session:msg_1",
+            "claude",
+            &r,
+            "/p",
+            1_609_459_200
+        ));
         update_sync_state(&conn, "/old.jsonl", 1_700_000_000_000, 5);
 
         // First sync after the version bump: rows + cursors wiped, version stamped.
@@ -697,12 +746,17 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
             .unwrap();
         let cursors: i64 = conn
-            .query_row("SELECT COUNT(*) FROM session_log_sync", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM session_log_sync", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(rows, 0, "stale usage rows cleared");
         assert_eq!(cursors, 0, "sync cursors cleared so files re-parse");
 
         // Second call: version now matches → no-op (no needless wipe each sync).
-        assert!(!rebuild_if_parser_changed(&conn), "matching version must not rebuild");
+        assert!(
+            !rebuild_if_parser_changed(&conn),
+            "matching version must not rebuild"
+        );
     }
 }

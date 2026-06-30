@@ -210,7 +210,10 @@ mod tests {
 
     #[test]
     fn enabled_for_unknown_values_since_default_is_on() {
-        assert!(material_enabled_from_env(&[Some("material".to_string()), None]));
+        assert!(material_enabled_from_env(&[
+            Some("material".to_string()),
+            None
+        ]));
     }
 
     #[test]
@@ -223,7 +226,10 @@ mod tests {
     #[test]
     fn disable_wins_when_one_key_off_and_other_unset() {
         assert!(!material_enabled_from_env(&[Some("0".to_string()), None]));
-        assert!(!material_enabled_from_env(&[None, Some("false".to_string())]));
+        assert!(!material_enabled_from_env(&[
+            None,
+            Some("false".to_string())
+        ]));
     }
 
     #[test]

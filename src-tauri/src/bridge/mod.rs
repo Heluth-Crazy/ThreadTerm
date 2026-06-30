@@ -21,8 +21,7 @@ use pairing::PairingStore;
 use protocol::{
     AppThemeTokens, BridgeDevice, BridgeSnapshot, BridgeStatus, BridgeTheme, CardMeta,
     MobileCardRequest, MobileRenameCardRequest, MobileSpawnCardRequest, PairQrResponse,
-    ServerMessage,
-    TerminalSnapshotMessage, TerminalStatus, TerminalThemeTokens, ThemeMode,
+    ServerMessage, TerminalSnapshotMessage, TerminalStatus, TerminalThemeTokens, ThemeMode,
 };
 
 const DEFAULT_BRIDGE_HOST: &str = "127.0.0.1";
@@ -214,10 +213,7 @@ impl BridgeRuntime {
         self.emit_desktop_event("mobile://remove-card", request)
     }
 
-    pub fn emit_rename_card_request(
-        &self,
-        request: MobileRenameCardRequest,
-    ) -> Result<(), String> {
+    pub fn emit_rename_card_request(&self, request: MobileRenameCardRequest) -> Result<(), String> {
         self.emit_desktop_event("mobile://rename-card", request)
     }
 

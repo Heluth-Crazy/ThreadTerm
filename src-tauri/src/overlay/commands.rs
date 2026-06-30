@@ -3,14 +3,13 @@ use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager};
 use super::hotkey::register_hotkey;
 use super::platform::{
     activate_float_window_for_keyboard, configure_float_window_for_current_space,
-    configure_selector_window_for_current_space,
-    order_overlay_window_front, restore_regular_activation_policy,
-    restore_regular_activation_policy_if_no_overlay_visible, set_overlay_activation_policy,
+    configure_selector_window_for_current_space, order_overlay_window_front,
+    restore_regular_activation_policy, restore_regular_activation_policy_if_no_overlay_visible,
+    set_overlay_activation_policy,
 };
 use super::state::{FloatBounds, FloatLaunchMode, OverlaySettings, OVERLAY_SETTINGS};
 use super::window::{
-    ensure_float, ensure_selector, primary_monitor_bounds, FLOAT_LABEL, MAIN_LABEL,
-    SELECTOR_LABEL,
+    ensure_float, ensure_selector, primary_monitor_bounds, FLOAT_LABEL, MAIN_LABEL, SELECTOR_LABEL,
 };
 
 #[tauri::command]
