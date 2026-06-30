@@ -25,6 +25,11 @@
 import { useEffect, useRef } from 'react';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { useOverlayStore } from '../../stores/overlayStore';
+import {
+  dispatchSessionDockKey,
+  isSessionDockKeyboardActive,
+  shouldForwardKeyToSessionDock,
+} from './sessionDockKeyboard';
 
 const DOUBLE_TAP_WINDOW_MS = 300;
 
@@ -68,6 +73,18 @@ export function KeyboardBridge(): null {
       // SelectorKeyboardBridge inside the overlay). Let Ctrl-release
       // double-tap fall through without any terminal-store mutation.
       if (useOverlayStore.getState().selectorOpen) return;
+
+      // When the focus-mode session dock is open, it owns list navigation and
+      // direct numeric selection even if xterm's hidden textarea still has DOM
+      // focus. Forward to SessionDock so highlight/selection state stays local
+      // to the visible list, then stop the terminal/global shortcut chain.
+      if (isSessionDockKeyboardActive() && shouldForwardKeyToSessionDock(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        dispatchSessionDockKey(e.key);
+        return;
+      }
 
       // Ctrl+1-9 — jump to card
       if (mod && /^[1-9]$/.test(e.key)) {

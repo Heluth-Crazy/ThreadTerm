@@ -1,11 +1,16 @@
 import { X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { pathBasename, worktreeDisplayLabel } from '../../lib/worktreePaths';
 import type { TerminalCard } from '../../types/terminal';
 import { CardStatusBadge } from './CardStatusBadge';
 import { getTerminalTypeMeta } from './terminalTypeMeta';
+import {
+  SESSION_DOCK_KEY_EVENT,
+  isSessionDockSelectionKey,
+  type SessionDockKeyDetail,
+} from './sessionDockKeyboard';
 
 export interface SessionDockProps {
   visible: boolean;
@@ -48,6 +53,14 @@ function isEditableKeyTarget(target: EventTarget | null): boolean {
   );
 }
 
+function isEditableKeyTargetInsideDock(
+  target: EventTarget | null,
+  dockRoot: HTMLElement | null,
+): boolean {
+  if (!dockRoot || !(target instanceof HTMLElement)) return false;
+  return dockRoot.contains(target) && isEditableKeyTarget(target);
+}
+
 /**
  * Short branch/worktree chip that disambiguates same-project cards in the list.
  * Null when it would only repeat the project name (i.e. the main worktree).
@@ -64,6 +77,7 @@ export function SessionDock({
   onSelectCard,
 }: SessionDockProps) {
   const { t } = useTranslation('terminal');
+  const dockRootRef = useRef<HTMLElement>(null);
   const cards = useTerminalStore((s) => s.cards);
   const recentIds = useTerminalStore((s) => s.recentlyViewedCardIds);
   const focusedCardId = useTerminalStore((s) => s.focusedCardId);
@@ -99,89 +113,108 @@ export function SessionDock({
     [focusCard, onClose, onSelectCard],
   );
 
+  const handleDockKey = useCallback(
+    (key: string): boolean => {
+      if (!isSessionDockSelectionKey(key)) return false;
+
+      if (recentCards.length === 0) {
+        if (key === 'Escape') {
+          onClose();
+        }
+        return true;
+      }
+
+      if (/^[1-9]$/.test(key)) {
+        const index = Number(key) - 1;
+        const card = recentCards[index];
+        if (card) handleSelect(card.id);
+        return true;
+      }
+
+      if (key === '0') {
+        const card = recentCards[9];
+        if (card) handleSelect(card.id);
+        return true;
+      }
+
+      if (key === 'ArrowDown') {
+        setHighlightedIndex((index) => (index + 1) % recentCards.length);
+        return true;
+      }
+
+      if (key === 'ArrowUp') {
+        setHighlightedIndex((index) => (index - 1 + recentCards.length) % recentCards.length);
+        return true;
+      }
+
+      if (key === 'Home') {
+        setHighlightedIndex(0);
+        return true;
+      }
+
+      if (key === 'End') {
+        setHighlightedIndex(recentCards.length - 1);
+        return true;
+      }
+
+      if (key === 'Enter') {
+        const card = recentCards[highlightedIndex];
+        if (card) handleSelect(card.id);
+        return true;
+      }
+
+      if (key === 'Escape') {
+        onClose();
+        return true;
+      }
+
+      return false;
+    },
+    [handleSelect, highlightedIndex, onClose, recentCards],
+  );
+
   useEffect(() => {
     if (!visible) return;
     const consume = (event: KeyboardEvent) => {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.altKey || event.ctrlKey || event.metaKey || isEditableKeyTarget(event.target)) {
+      if (
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        isEditableKeyTargetInsideDock(event.target, dockRootRef.current)
+      ) {
         return;
       }
-      if (recentCards.length === 0) {
-        if (event.key === 'Escape') {
-          consume(event);
-          onClose();
-        }
-        return;
-      }
-
-      if (/^[1-9]$/.test(event.key)) {
-        const index = Number(event.key) - 1;
-        const card = recentCards[index];
-        if (card) {
-          consume(event);
-          handleSelect(card.id);
-        }
-        return;
-      }
-
-      if (event.key === '0') {
-        const card = recentCards[9];
-        if (card) {
-          consume(event);
-          handleSelect(card.id);
-        }
-        return;
-      }
-
-      if (event.key === 'ArrowDown') {
+      if (handleDockKey(event.key)) {
         consume(event);
-        setHighlightedIndex((index) => (index + 1) % recentCards.length);
-        return;
-      }
-
-      if (event.key === 'ArrowUp') {
-        consume(event);
-        setHighlightedIndex((index) => (index - 1 + recentCards.length) % recentCards.length);
-        return;
-      }
-
-      if (event.key === 'Home') {
-        consume(event);
-        setHighlightedIndex(0);
-        return;
-      }
-
-      if (event.key === 'End') {
-        consume(event);
-        setHighlightedIndex(recentCards.length - 1);
-        return;
-      }
-
-      if (event.key === 'Enter') {
-        const card = recentCards[highlightedIndex];
-        if (card) {
-          consume(event);
-          handleSelect(card.id);
-        }
-        return;
-      }
-
-      if (event.key === 'Escape') {
-        consume(event);
-        onClose();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [handleSelect, highlightedIndex, onClose, recentCards, visible]);
+  }, [handleDockKey, visible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const handleForwardedKey = (event: Event) => {
+      const detail = (event as CustomEvent<SessionDockKeyDetail>).detail;
+      if (!detail || typeof detail.key !== 'string') return;
+      handleDockKey(detail.key);
+    };
+
+    window.addEventListener(SESSION_DOCK_KEY_EVENT, handleForwardedKey);
+    return () => window.removeEventListener(SESSION_DOCK_KEY_EVENT, handleForwardedKey);
+  }, [handleDockKey, visible]);
 
   return (
     <section
+      ref={dockRootRef}
       aria-hidden={!visible}
+      data-session-dock-active={visible ? 'true' : undefined}
       data-testid="session-dock"
       className={[
         'flex flex-col bg-background/95 shadow-studio backdrop-blur-2xl transition-all duration-150 ease-out',
