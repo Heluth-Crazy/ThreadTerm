@@ -197,7 +197,10 @@ mod tests {
 
     #[test]
     fn canonical_strips_provider_and_pin() {
-        assert_eq!(canonical("anthropic/claude-opus-4-8@20260101"), "claude-opus-4-8");
+        assert_eq!(
+            canonical("anthropic/claude-opus-4-8@20260101"),
+            "claude-opus-4-8"
+        );
         assert_eq!(canonical("Claude-Sonnet-4-5"), "claude-sonnet-4-5");
     }
 
@@ -205,10 +208,7 @@ mod tests {
     fn canonical_strips_iso_date_suffix() {
         assert_eq!(canonical("gpt-5.4-2026-03-05"), "gpt-5.4");
         assert_eq!(canonical("gpt-5.4-pro-2026-03-05"), "gpt-5.4-pro");
-        assert_eq!(
-            canonical("openai/gpt-5.4-2026-03-05"),
-            "gpt-5.4"
-        );
+        assert_eq!(canonical("openai/gpt-5.4-2026-03-05"), "gpt-5.4");
     }
 
     #[test]

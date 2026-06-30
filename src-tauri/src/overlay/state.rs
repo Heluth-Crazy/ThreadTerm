@@ -94,9 +94,7 @@ pub fn load_settings() -> OverlaySettings {
     }
     // Poison-tolerant: a panic in another short critical section must not
     // permanently disable overlay settings. Recover the inner data instead.
-    *OVERLAY_SETTINGS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = out.clone();
+    *OVERLAY_SETTINGS.lock().unwrap_or_else(|e| e.into_inner()) = out.clone();
     out
 }
 

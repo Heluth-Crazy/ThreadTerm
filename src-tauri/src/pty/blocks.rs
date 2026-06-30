@@ -191,7 +191,9 @@ impl BlockParser {
             let value = value.trim();
             match key.trim() {
                 "cmd_id" => self.pending_cmd_id = Some(value.to_string()),
-                "cwd" => self.pending_cwd = decode_base64_utf8(value),
+                // The shell helper does `pwd | base64`, which encodes pwd's
+                // trailing newline too — strip it so cwd is a clean path.
+                "cwd" => self.pending_cwd = decode_base64_utf8(value).map(|s| s.trim().to_string()),
                 "duration" => {
                     let Ok(duration) = value.parse::<u64>() else {
                         continue;

@@ -157,6 +157,9 @@ mod tests {
             normalize_windows_cwd("C:/Users/foo/my project"),
             "C:\\Users\\foo\\my project"
         );
-        assert_eq!(normalize_windows_cwd("C:\\already\\native"), "C:\\already\\native");
+        assert_eq!(
+            normalize_windows_cwd("C:\\already\\native"),
+            "C:\\already\\native"
+        );
     }
 }

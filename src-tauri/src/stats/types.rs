@@ -34,10 +34,7 @@ impl UsageSummary {
     /// True when every category is zero — such rows carry no billable signal
     /// and only inflate `calls` counts, so parsers/inserters skip them.
     pub fn is_empty(&self) -> bool {
-        self.input == 0
-            && self.output == 0
-            && self.cache_creation == 0
-            && self.cache_read == 0
+        self.input == 0 && self.output == 0 && self.cache_creation == 0 && self.cache_read == 0
     }
 }
 

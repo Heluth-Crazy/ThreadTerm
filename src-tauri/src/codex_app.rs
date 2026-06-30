@@ -273,10 +273,10 @@ impl CodexAppManager {
                 }),
             )
             .await?;
-        let thread = extract_thread(started).ok_or_else(|| {
-            "Codex app-server returned no thread for thread/start".to_string()
-        })?;
-        self.open_result(card_id, thread, "created".to_string()).await
+        let thread = extract_thread(started)
+            .ok_or_else(|| "Codex app-server returned no thread for thread/start".to_string())?;
+        self.open_result(card_id, thread, "created".to_string())
+            .await
     }
 
     async fn open_result(
@@ -502,7 +502,10 @@ impl CodexAppManager {
 
     async fn register_card_thread(&self, card_id: String, thread_id: String) {
         let mut state = self.state.lock().await;
-        if let Some(previous_thread_id) = state.card_threads.insert(card_id.clone(), thread_id.clone()) {
+        if let Some(previous_thread_id) = state
+            .card_threads
+            .insert(card_id.clone(), thread_id.clone())
+        {
             state.thread_cards.remove(&previous_thread_id);
         }
         state.thread_cards.insert(thread_id, card_id);
@@ -586,7 +589,11 @@ async fn handle_server_line(app: &AppHandle, pending: &PendingMap, line: String)
         return;
     }
 
-    let Some(method) = raw.get("method").and_then(Value::as_str).map(ToOwned::to_owned) else {
+    let Some(method) = raw
+        .get("method")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+    else {
         return;
     };
     let params = raw.get("params").cloned().unwrap_or(Value::Null);
@@ -800,7 +807,9 @@ mod tests {
     fn response_message_requires_result_or_error() {
         assert!(is_response_message(&json!({"id": 1, "result": {}})));
         assert!(is_response_message(&json!({"id": 1, "error": "nope"})));
-        assert!(!is_response_message(&json!({"id": 1, "method": "item/tool/call"})));
+        assert!(!is_response_message(
+            &json!({"id": 1, "method": "item/tool/call"})
+        ));
         assert!(!is_response_message(&json!({"method": "turn/started"})));
     }
 

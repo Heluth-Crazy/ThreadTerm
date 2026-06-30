@@ -107,7 +107,10 @@ impl Aggregator {
             } else {
                 call.model.clone()
             };
-            self.by_model.entry(model_key).or_default().add(&call.usage, cost);
+            self.by_model
+                .entry(model_key)
+                .or_default()
+                .add(&call.usage, cost);
             self.by_project
                 .entry(project_path.to_string())
                 .or_default()
@@ -116,7 +119,10 @@ impl Aggregator {
                 .session_id
                 .clone()
                 .unwrap_or_else(|| session_id.to_string());
-            self.by_session.entry(sid).or_default().add(&call.usage, cost);
+            self.by_session
+                .entry(sid)
+                .or_default()
+                .add(&call.usage, cost);
             had_call = true;
         }
         if had_call {
@@ -364,9 +370,39 @@ mod tests {
     #[test]
     fn aggregate_from_db_sums_all_rows_when_no_lower_bound() {
         let conn = mem_conn_with_rows();
-        insert_row(&conn, "r1", "claude-opus-4-8", 100, 10, 1.5, Some("s1"), "/a", 1000);
-        insert_row(&conn, "r2", "claude-sonnet-4-5", 200, 20, 0.6, Some("s1"), "/a", 2000);
-        insert_row(&conn, "r3", "gpt-5-codex", 300, 30, 0.3, Some("s2"), "/b", 3000);
+        insert_row(
+            &conn,
+            "r1",
+            "claude-opus-4-8",
+            100,
+            10,
+            1.5,
+            Some("s1"),
+            "/a",
+            1000,
+        );
+        insert_row(
+            &conn,
+            "r2",
+            "claude-sonnet-4-5",
+            200,
+            20,
+            0.6,
+            Some("s1"),
+            "/a",
+            2000,
+        );
+        insert_row(
+            &conn,
+            "r3",
+            "gpt-5-codex",
+            300,
+            30,
+            0.3,
+            Some("s2"),
+            "/b",
+            3000,
+        );
 
         let snap = aggregate_from_db(&conn, "all", None, None).unwrap();
         assert_eq!(snap.total_calls, 3);
@@ -379,8 +415,28 @@ mod tests {
     #[test]
     fn aggregate_from_db_filters_by_time_window() {
         let conn = mem_conn_with_rows();
-        insert_row(&conn, "r1", "claude-opus-4-8", 100, 10, 1.5, Some("s1"), "/a", 1000);
-        insert_row(&conn, "r2", "claude-opus-4-8", 200, 20, 3.0, Some("s2"), "/b", 5000);
+        insert_row(
+            &conn,
+            "r1",
+            "claude-opus-4-8",
+            100,
+            10,
+            1.5,
+            Some("s1"),
+            "/a",
+            1000,
+        );
+        insert_row(
+            &conn,
+            "r2",
+            "claude-opus-4-8",
+            200,
+            20,
+            3.0,
+            Some("s2"),
+            "/b",
+            5000,
+        );
         // `created_at` is epoch SECONDS; the window args are epoch ms (the fn
         // divides by 1000). 2_000_000ms→2000s .. 6_000_000ms→6000s brackets r2
         // (created_at 5000s) and excludes r1 (1000s).
@@ -392,7 +448,17 @@ mod tests {
     #[test]
     fn aggregate_from_db_filters_by_scope() {
         let conn = mem_conn_with_rows();
-        insert_row(&conn, "r1", "claude-opus-4-8", 100, 10, 1.5, Some("s1"), "/a", 1000);
+        insert_row(
+            &conn,
+            "r1",
+            "claude-opus-4-8",
+            100,
+            10,
+            1.5,
+            Some("s1"),
+            "/a",
+            1000,
+        );
         // r2 is tagged provider='codex' manually for this test.
         conn.execute(
             "INSERT INTO usage_records

@@ -4,8 +4,7 @@ use tauri::{AppHandle, Manager, WebviewUrl};
 use tauri::WebviewWindowBuilder;
 
 use super::platform::{
-    configure_float_window_for_current_space,
-    configure_selector_window_for_current_space,
+    configure_float_window_for_current_space, configure_selector_window_for_current_space,
     restore_regular_activation_policy_if_no_overlay_visible, set_overlay_activation_policy,
 };
 use super::state::OVERLAY_SETTINGS;
@@ -15,7 +14,6 @@ use super::state::OVERLAY_SETTINGS;
 pub const SELECTOR_LABEL: &str = "selector";
 pub const FLOAT_LABEL: &str = "float";
 pub const MAIN_LABEL: &str = "main";
-
 
 // ── Public API (called from lib.rs setup) ────────────────────────────────────
 
@@ -263,4 +261,3 @@ pub(super) fn ensure_float(app: &AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
-

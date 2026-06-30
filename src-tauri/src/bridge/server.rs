@@ -33,8 +33,7 @@ use super::{
     protocol::{
         parse_client_message, versioned_server_message, BridgeDevice, ClientMessage,
         MobileCardRequest, MobileRenameCardRequest, MobileSpawnCardRequest, PairRequest,
-        ServerMessage,
-        VersionedServerMessage,
+        ServerMessage, VersionedServerMessage,
     },
     BridgeRuntime,
 };
@@ -528,11 +527,11 @@ async fn handle_client_message(
             ensure_full_permission(device)?;
             crate::db::insert_audit_log(&device.id, "rename_card", Some(&card_id), &project_name)
                 .map_err(|e| {
-                    (
-                        "command_failed".to_string(),
-                        format!("Failed to audit rename: {e}"),
-                    )
-                })?;
+                (
+                    "command_failed".to_string(),
+                    format!("Failed to audit rename: {e}"),
+                )
+            })?;
             context
                 .runtime
                 .emit_rename_card_request(MobileRenameCardRequest {
