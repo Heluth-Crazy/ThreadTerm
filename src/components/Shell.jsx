@@ -143,6 +143,7 @@ function Shell({
   // Audit P0-1: "N new lines below" indicator while the user reads history.
   const [scrolledUp, setScrolledUp] = useState(false);
   const [newOutputLines, setNewOutputLines] = useState(0);
+  const scrolledUpRef = useRef(false);
   const pendingNewLinesRef = useRef(0);
   const newOutputFlushTimerRef = useRef(null);
 
@@ -208,6 +209,36 @@ function Shell({
     pty.resize(id, rows, cols).catch(() => {});
   }, []);
 
+  const scrollTerminalToBottom = useCallback((shouldFocus = false) => {
+    const term = terminal.current;
+    if (!term) return;
+
+    try {
+      term.scrollToBottom();
+    } catch {
+      return;
+    }
+
+    scrolledUpRef.current = false;
+    pendingNewLinesRef.current = 0;
+    setScrolledUp(false);
+    setNewOutputLines(0);
+
+    try {
+      term.refresh(0, Math.max(0, term.rows - 1));
+    } catch {
+      // Best-effort repaint after programmatic scroll recovery.
+    }
+
+    if (shouldFocus) {
+      try {
+        term.focus();
+      } catch {
+        // Focus can fail while the webview is backgrounded.
+      }
+    }
+  }, []);
+
   const recoverTerminalSurface = useCallback((shouldFocus = false, shouldScrollToBottom = false) => {
     if (!activeRef.current) return;
 
@@ -243,9 +274,7 @@ function Shell({
       }
 
       if (shouldScrollToBottom && !term.hasSelection()) {
-        term.scrollToBottom();
-        pendingNewLinesRef.current = 0;
-        setNewOutputLines(0);
+        scrollTerminalToBottom();
       }
     };
 
@@ -263,7 +292,7 @@ function Shell({
       }, delay);
       surfaceRecoveryTimersRef.current.push(timer);
     }
-  }, [resizePtyIfNeeded]);
+  }, [resizePtyIfNeeded, scrollTerminalToBottom]);
 
   const cleanupListeners = useCallback(() => {
     unlistenOutputRef.current?.();
@@ -295,17 +324,8 @@ function Shell({
   }, []);
 
   const scrollToBottomNow = useCallback(() => {
-    const term = terminal.current;
-    if (!term) return;
-    term.scrollToBottom();
-    pendingNewLinesRef.current = 0;
-    setNewOutputLines(0);
-    try {
-      term.focus();
-    } catch {
-      // Focus can fail while the webview is backgrounded.
-    }
-  }, []);
+    scrollTerminalToBottom(true);
+  }, [scrollTerminalToBottom]);
 
   const connectPty = useCallback(() => {
     if (isConnectingRef.current || isConnectedRef.current) return;
@@ -481,7 +501,7 @@ function Shell({
         retryCountRef.current = 0;
         setRetryAttempt(0);
         setConnectError(null);
-        recoverTerminalSurface(true);
+        recoverTerminalSurface(true, true);
 
         const command = initialCommandRef.current?.trim();
         const shouldSendInitialCommand =
@@ -736,6 +756,7 @@ function Shell({
       if (!term) return;
       const buf = term.buffer.active;
       const atBottom = buf.viewportY >= buf.baseY;
+      scrolledUpRef.current = !atBottom;
       setScrolledUp(!atBottom);
       if (atBottom) {
         pendingNewLinesRef.current = 0;
@@ -745,10 +766,7 @@ function Shell({
 
     waitForFonts().finally(() => {
       requestAnimationFrame(() => {
-        recoverTerminalSurface(activeRef.current);
-        if (!terminal.current?.hasSelection()) {
-          terminal.current?.scrollToBottom();
-        }
+        recoverTerminalSurface(activeRef.current, true);
       });
     });
 
@@ -767,6 +785,9 @@ function Shell({
           return;
         }
         resizePtyIfNeeded(terminal.current.rows, terminal.current.cols);
+        if (activeRef.current && !scrolledUpRef.current && !terminal.current.hasSelection()) {
+          scrollTerminalToBottom();
+        }
       }, 150);
     });
 
@@ -785,6 +806,7 @@ function Shell({
         newOutputFlushTimerRef.current = null;
       }
       pendingNewLinesRef.current = 0;
+      scrolledUpRef.current = false;
       for (const timer of surfaceRecoveryTimersRef.current) clearTimeout(timer);
       surfaceRecoveryTimersRef.current = [];
 
@@ -823,6 +845,7 @@ function Shell({
     cleanupListeners,
     recoverTerminalSurface,
     resizePtyIfNeeded,
+    scrollTerminalToBottom,
   ]);
 
   useEffect(() => {
