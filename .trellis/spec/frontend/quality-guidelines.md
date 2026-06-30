@@ -816,7 +816,7 @@ PanelBuilder::<_, OverlayPetPanel>::new(app, PET_LABEL)
 
 </spec-entry>
 
-<spec-entry category="quality" keywords="terminal,right-surface,session-dock,workspace-panel,xterm-resize" date="2026-06-29" source="src/components/terminal/TerminalManager.tsx:1509">
+<spec-entry category="quality" keywords="terminal,right-surface,session-dock,workspace-panel,xterm-resize,keyboard-priority" date="2026-06-30" source="src/components/terminal/KeyboardBridge.tsx:78">
 
 ### Scenario: Terminal right-side surfaces share one stable layout slot
 
@@ -829,20 +829,24 @@ PanelBuilder::<_, OverlayPetPanel>::new(app, PET_LABEL)
 - Auxiliary right-side surfaces (stats, archive, bookmarks, recent-session dock) must render in the same fixed-width flex `aside` slot and temporarily replace the workspace rail.
 - Do not make one right-side surface a floating overlay while another surface participates in flex layout.
 - Session dock priority may still be last-opened-wins, but it must use the same slot as workspace/files so switching between them does not resize the terminal content.
-- Hover handles may live on the terminal edge, but the expanded surface must not overlay the terminal when another right-side surface is already open.
+- The session dock must not use edge hover triggers; it opens/closes from the global keyboard shortcut only.
 - If an auxiliary surface closes, the slot should restore the permanent workspace rail without changing the terminal column width.
 - Selecting a recent session from the dock should focus that card and make its terminal tab active; existing file/diff tabs for that session may remain open but should not steal focus.
+- While the session dock is active, `KeyboardBridge` owns `0-9`, `ArrowUp`, `ArrowDown`, `Home`, `End`, `Enter`, and `Escape` before terminal/global shortcut handlers, then forwards them to `SessionDock`.
+- Do not ignore session-dock navigation just because the event target is xterm's hidden `textarea`; only editable targets inside the dock itself may opt out.
 
 #### 3. Validation & Error Matrix
 - Switching Files/Changes -> Recent sessions -> Files/Changes must not repeatedly resize or reflow xterm.
 - Entering focus mode may resize the terminal once to account for the permanent workspace rail; switching auxiliary surfaces after that should keep the same content width.
 - If session dock is rendered outside the shared `aside`, expect terminal fit/reflow flicker when users rapidly alternate surfaces.
 - If the workspace rail is toggleable again, expect toolbar clicks to repeatedly resize xterm and refresh terminal layout.
+- If session-dock keyboard handling lives only in the dock component, earlier global capture listeners or xterm's focused hidden `textarea` can make number/arrow selection appear broken.
 
 #### 4. Tests Required
 - Component regression tests should assert session dock is hosted inside the right-side `aside` when it takes priority over the workspace rail.
 - Tests should cover restoring the workspace rail after a shortcut-opened session dock closes.
 - Tests should cover number-key and arrow/Enter session selection from the dock.
+- Tests should cover xterm-like `textarea` focus and `KeyboardBridge` forwarding while `[data-session-dock-active="true"]` is present.
 
 </spec-entry>
 

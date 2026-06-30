@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { SessionDock } from './SessionDock';
 import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard } from '../../types/terminal';
+import { SESSION_DOCK_KEY_EVENT } from './sessionDockKeyboard';
 
 vi.mock('react-i18next', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-i18next')>();
@@ -155,6 +156,44 @@ describe('SessionDock', () => {
     expect(parentKeyDown).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
     window.removeEventListener('keydown', parentKeyDown);
+  });
+
+  it('owns navigation keys even when terminal textarea remains focused', () => {
+    const onClose = vi.fn();
+    const terminalTextarea = document.createElement('textarea');
+    document.body.appendChild(terminalTextarea);
+    render(
+      <SessionDock
+        visible={true}
+        onClose={onClose}
+      />,
+    );
+
+    terminalTextarea.focus();
+    fireEvent.keyDown(terminalTextarea, { key: '1' });
+
+    expect(useTerminalStore.getState().focusedCardId).toBe('card-b');
+    expect(onClose).toHaveBeenCalledTimes(1);
+    document.body.removeChild(terminalTextarea);
+  });
+
+  it('selects sessions from the global keyboard bridge event', () => {
+    const onClose = vi.fn();
+    render(
+      <SessionDock
+        visible={true}
+        onClose={onClose}
+      />,
+    );
+
+    window.dispatchEvent(
+      new CustomEvent(SESSION_DOCK_KEY_EVENT, {
+        detail: { key: '1' },
+      }),
+    );
+
+    expect(useTerminalStore.getState().focusedCardId).toBe('card-b');
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('renders an empty state and calls close from the header button', () => {
