@@ -398,7 +398,7 @@ function Shell({
           const finalize = () => {
             if (followOutput) {
               if (!term.hasSelection()) {
-                term.scrollToBottom();
+                scrollTerminalToBottom();
               }
             } else {
               pendingNewLinesRef.current += countNewlines(data);
@@ -522,7 +522,17 @@ function Shell({
     };
 
     setup();
-  }, [cleanupListeners, paneId, recoverTerminalSurface, scheduleReconnect, setConnected, setConnecting, t]);
+  }, [
+    cleanupListeners,
+    paneId,
+    recoverTerminalSurface,
+    scheduleNewOutputFlush,
+    scheduleReconnect,
+    scrollTerminalToBottom,
+    setConnected,
+    setConnecting,
+    t,
+  ]);
 
   const connectToShell = useCallback(() => {
     if (!isInitialized || isConnectedRef.current || isConnectingRef.current) return;

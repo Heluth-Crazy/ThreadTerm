@@ -24,7 +24,7 @@ export interface SeedCard {
   ptyId: string;
   projectPath: string;
   projectName: string;
-  terminalType: 'shell';
+  terminalType: 'shell' | 'codex';
   status: 'idle';
   createdAt: number;
   lastActivity: number;
@@ -45,7 +45,7 @@ export function makeSeedCards(count: number): SeedCard[] {
       ptyId: id,
       projectPath: `/tmp/e2e-project-${n}`,
       projectName: `E2EProj${n}`,
-      terminalType: 'shell' as const,
+      terminalType: 'shell',
       status: 'idle' as const,
       createdAt: now - 1000 * n,
       lastActivity: now - 1000 * n,
@@ -56,6 +56,25 @@ export function makeSeedCards(count: number): SeedCard[] {
       unread: false,
     };
   });
+}
+
+export function makeSeedCodexCard(): SeedCard {
+  const now = Date.now();
+  return {
+    id: 'e2e-codex-card',
+    ptyId: 'e2e-codex-card',
+    projectPath: '/tmp/e2e-codex-project',
+    projectName: 'E2ECodex',
+    terminalType: 'codex',
+    status: 'idle',
+    createdAt: now - 1000,
+    lastActivity: now - 1000,
+    lastOutput: '',
+    lastReplyPreview: '',
+    messageCount: 0,
+    events: [],
+    unread: false,
+  };
 }
 
 interface FakeSeed {
@@ -241,6 +260,8 @@ function installInPage(seed: FakeSeed): void {
       case 'bridge_status':
         return { running: false };
       case 'provider_list_recent_sessions':
+      case 'git_branch_overview':
+      case 'git_worktree_list':
         return [];
       case 'native_platform_material_state':
         return { enabled: false, platform: 'macos' };

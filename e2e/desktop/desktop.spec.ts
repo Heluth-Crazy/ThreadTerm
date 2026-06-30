@@ -12,7 +12,8 @@
  * and the Stage 1 strip test-ids instead of DOM text.
  */
 import { test, expect, type Page } from '@playwright/test';
-import { installFakeTauri, makeSeedCards } from './fakeTauri';
+import { inflateSync } from 'node:zlib';
+import { installFakeTauri, makeSeedCards, makeSeedCodexCard } from './fakeTauri';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -26,14 +27,11 @@ function trackPageErrors(page: Page): string[] {
 
 /** Click a card in the (visible) grid by its seeded project name. */
 async function openCard(page: Page, projectName: string): Promise<void> {
-  // Card root is the only `bg-card` surface containing the project name —
-  // the sidebar project button and the TerminalView header use other
-  // backgrounds, and hidden layers are excluded by the visibility check.
-  await page
-    .locator('[class*="bg-card"]')
-    .filter({ hasText: projectName })
-    .first()
-    .click();
+  // Click the visible card title instead of matching Tailwind class strings:
+  // xterm/card class names may include slash variants such as `bg-card/95`.
+  const cardName = page.getByText(projectName).last();
+  await expect(cardName).toBeVisible();
+  await cardName.click();
 }
 
 /** Click the focused TerminalView's back-to-grid header button. */
@@ -84,6 +82,115 @@ function emitExit(page: Page, ptyId: string, code: number): Promise<void> {
     },
     [ptyId, code] as const,
   );
+}
+
+async function expectVisibleTerminalHasTextOrInk(page: Page, expectedText: string): Promise<void> {
+  const host = page.locator('.threadterm-xterm-host:visible').first();
+  await expect(host).toBeVisible();
+  await expect(async () => {
+    const text = await host.evaluate((source) => (source.textContent ?? '').trim());
+    const screenshot = await host.screenshot();
+    const stats = countContrastingPngPixels(screenshot);
+    expect(stats.width).toBeGreaterThan(0);
+    expect(stats.height).toBeGreaterThan(0);
+    expect(text.includes(expectedText) || stats.contrastingPixels > 300).toBeTruthy();
+  }).toPass({ timeout: 10_000 });
+}
+
+function countContrastingPngPixels(png: Buffer): {
+  width: number;
+  height: number;
+  contrastingPixels: number;
+} {
+  const signature = png.subarray(0, 8).toString('hex');
+  expect(signature).toBe('89504e470d0a1a0a');
+
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idatChunks: Buffer[] = [];
+
+  while (offset < png.length) {
+    const length = png.readUInt32BE(offset);
+    const type = png.subarray(offset + 4, offset + 8).toString('ascii');
+    const data = png.subarray(offset + 8, offset + 8 + length);
+    offset += 12 + length;
+
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8] ?? 0;
+      colorType = data[9] ?? 0;
+    } else if (type === 'IDAT') {
+      idatChunks.push(data);
+    } else if (type === 'IEND') {
+      break;
+    }
+  }
+
+  expect(bitDepth).toBe(8);
+  const bytesPerPixel = colorType === 6 ? 4 : colorType === 2 ? 3 : 0;
+  expect(bytesPerPixel).toBeGreaterThan(0);
+
+  const inflated = inflateSync(Buffer.concat(idatChunks));
+  const stride = width * bytesPerPixel;
+  const pixels = Buffer.alloc(height * stride);
+  let inputOffset = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    const filter = inflated[inputOffset] ?? 0;
+    inputOffset += 1;
+    const rowOffset = y * stride;
+    const prevRowOffset = rowOffset - stride;
+
+    for (let x = 0; x < stride; x += 1) {
+      const raw = inflated[inputOffset] ?? 0;
+      inputOffset += 1;
+      const left = x >= bytesPerPixel ? pixels[rowOffset + x - bytesPerPixel] ?? 0 : 0;
+      const up = y > 0 ? pixels[prevRowOffset + x] ?? 0 : 0;
+      const upLeft = y > 0 && x >= bytesPerPixel
+        ? pixels[prevRowOffset + x - bytesPerPixel] ?? 0
+        : 0;
+      let predictor = 0;
+      if (filter === 1) predictor = left;
+      else if (filter === 2) predictor = up;
+      else if (filter === 3) predictor = Math.floor((left + up) / 2);
+      else if (filter === 4) predictor = paethPredictor(left, up, upLeft);
+      pixels[rowOffset + x] = (raw + predictor) & 0xff;
+    }
+  }
+
+  const histogram = new Map<string, number>();
+  for (let i = 0; i < pixels.length; i += bytesPerPixel) {
+    const key = `${(pixels[i] ?? 0) >> 4},${(pixels[i + 1] ?? 0) >> 4},${(pixels[i + 2] ?? 0) >> 4}`;
+    histogram.set(key, (histogram.get(key) ?? 0) + 1);
+  }
+  const backgroundKey = Array.from(histogram.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '0,0,0';
+  const [bgR, bgG, bgB] = backgroundKey.split(',').map((part) => Number(part) * 16 + 8);
+
+  let contrastingPixels = 0;
+  for (let i = 0; i < pixels.length; i += bytesPerPixel) {
+    const r = pixels[i] ?? 0;
+    const g = pixels[i + 1] ?? 0;
+    const b = pixels[i + 2] ?? 0;
+    if (Math.abs(r - bgR) + Math.abs(g - bgG) + Math.abs(b - bgB) > 40) {
+      contrastingPixels += 1;
+    }
+  }
+
+  return { width, height, contrastingPixels };
+}
+
+function paethPredictor(left: number, up: number, upLeft: number): number {
+  const p = left + up - upLeft;
+  const pa = Math.abs(p - left);
+  const pb = Math.abs(p - up);
+  const pc = Math.abs(p - upLeft);
+  if (pa <= pb && pa <= pc) return left;
+  if (pb <= pc) return up;
+  return upLeft;
 }
 
 // ── Journey 1: exit banner + restart ─────────────────────────────────────────
@@ -206,6 +313,39 @@ test('streaming output does not yank a scrolled-up viewport; button returns to b
     const state = await readScroll();
     expect(state.bottom - state.scrollTop).toBeLessThan(50);
   }).toPass({ timeout: 5_000 });
+
+  expect(errors).toEqual([]);
+});
+
+// ── Journey 4: Codex chat ↔ terminal keeps xterm visible ────────────────────
+
+test('codex chat to terminal restore shows terminal output without stale bottom prompt', async ({
+  page,
+}) => {
+  const card = makeSeedCodexCard();
+  await installFakeTauri(page, [card]);
+  const errors = trackPageErrors(page);
+
+  await page.goto('/');
+  await openCard(page, card.projectName);
+
+  // Codex cards open in chat mode by default. Switching to terminal mounts
+  // Shell for the first time and starts/restores the PTY.
+  await page.locator('button[title="Terminal mode"]').click();
+  await waitForCount(page, 'create', card.ptyId, 1);
+  await waitForCount(page, 'attachSnapshot', card.ptyId, 1);
+  await emitOutput(page, card.ptyId, 'codex terminal line\r\n');
+  await waitForCount(page, 'ack', card.ptyId, 1);
+  await expectVisibleTerminalHasTextOrInk(page, 'codex terminal line');
+  await expect(page.getByTestId('shell-scroll-to-bottom')).toBeHidden();
+
+  // Returning to chat unmounts Shell; going back to terminal must restore the
+  // preserved PTY snapshot instead of leaving an empty terminal surface.
+  await page.locator('button[title="Chat mode"]').click();
+  await page.locator('button[title="Terminal mode"]').click();
+  await waitForCount(page, 'attachSnapshot', card.ptyId, 2);
+  await expectVisibleTerminalHasTextOrInk(page, 'codex terminal line');
+  await expect(page.getByTestId('shell-scroll-to-bottom')).toBeHidden();
 
   expect(errors).toEqual([]);
 });
