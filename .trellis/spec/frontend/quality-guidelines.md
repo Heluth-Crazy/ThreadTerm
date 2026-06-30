@@ -833,6 +833,7 @@ PanelBuilder::<_, OverlayPetPanel>::new(app, PET_LABEL)
 - The focused terminal header height must align with the workspace panel header stack (`WorkspacePanel` tab row + cwd row) so the split boundary has continuous horizontal rules.
 - If an auxiliary surface closes, the slot should restore the permanent workspace rail without changing the terminal column width.
 - When the terminal content becomes active again after being hidden by file/diff tabs or other focus-mode layers, `Shell` must recover the xterm surface and scroll to the bottom unless text is selected.
+- Programmatic terminal bottom recovery must update both xterm and React state: clear `scrolledUp`, reset pending new-line counters, and repaint after `scrollToBottom`.
 - Selecting a recent session from the dock should focus that card and make its terminal tab active; existing file/diff tabs for that session may remain open but should not steal focus.
 - While the session dock is active, `KeyboardBridge` owns `0-9`, `ArrowUp`, `ArrowDown`, `Home`, `End`, `Enter`, and `Escape` before terminal/global shortcut handlers, then forwards them to `SessionDock`.
 - Do not ignore session-dock navigation just because the event target is xterm's hidden `textarea`; only editable targets inside the dock itself may opt out.
@@ -843,6 +844,7 @@ PanelBuilder::<_, OverlayPetPanel>::new(app, PET_LABEL)
 - If session dock is rendered outside the shared `aside`, expect terminal fit/reflow flicker when users rapidly alternate surfaces.
 - If the workspace rail is toggleable again, expect toolbar clicks to repeatedly resize xterm and refresh terminal layout.
 - If terminal activation only calls `fit/refresh/focus`, xterm can reopen at the top of scrollback after a header-height or tab visibility change.
+- If programmatic bottom recovery only calls xterm `scrollToBottom`, the React scroll indicator can stay stale and leave an empty-looking terminal with a visible "scroll to bottom" prompt.
 - If session-dock keyboard handling lives only in the dock component, earlier global capture listeners or xterm's focused hidden `textarea` can make number/arrow selection appear broken.
 
 #### 4. Tests Required

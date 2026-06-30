@@ -331,6 +331,13 @@ describe('Shell — scroll-to-bottom indicator (P0-1)', () => {
       await waitForConnected();
 
       const term = xtermMock.instances[0];
+      term.buffer.active.baseY = 100;
+      term.buffer.active.viewportY = 40;
+      act(() => {
+        for (const handler of term.scrollHandlers) handler();
+      });
+      expect(await screen.findByTestId('shell-scroll-to-bottom')).toBeInTheDocument();
+
       term.scrollToBottom.mockClear();
 
       rerender(
@@ -350,6 +357,9 @@ describe('Shell — scroll-to-bottom indicator (P0-1)', () => {
       );
 
       await waitFor(() => expect(term.scrollToBottom).toHaveBeenCalled());
+      await waitFor(() =>
+        expect(screen.queryByTestId('shell-scroll-to-bottom')).not.toBeInTheDocument(),
+      );
     } finally {
       rectSpy.mockRestore();
     }
