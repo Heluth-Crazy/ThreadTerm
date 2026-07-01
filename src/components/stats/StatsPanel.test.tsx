@@ -70,6 +70,14 @@ afterEach(() => {
 });
 
 describe('StatsPanel', () => {
+  it('keeps the header boundary aligned with the focused terminal header', () => {
+    render(<StatsPanel onClose={vi.fn()} />);
+
+    const header = screen.getByRole('heading', { name: 'Token usage' }).parentElement?.parentElement;
+
+    expect(header).toHaveClass('h-[61.5px]', 'shrink-0');
+  });
+
   it('lets the user scope usage to OpenCode', () => {
     render(<StatsPanel onClose={vi.fn()} />);
 

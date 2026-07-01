@@ -49,12 +49,12 @@ export function StatsPanel({ onClose }: StatsPanelProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <div className="flex items-center gap-2">
-          <BarChart3 className="h-4 w-4 text-primary" />
-          <h2 className="text-sm font-semibold">{t('stats.title', { defaultValue: 'Token usage' })}</h2>
+      <div className="flex h-[61.5px] shrink-0 items-center justify-between border-b border-border px-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <BarChart3 className="h-4 w-4 shrink-0 text-primary" />
+          <h2 className="truncate text-sm font-semibold">{t('stats.title', { defaultValue: 'Token usage' })}</h2>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           <button
             type="button"
             onClick={() => compute()}
