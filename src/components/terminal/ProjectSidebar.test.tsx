@@ -107,6 +107,14 @@ describe('ProjectSidebar branch worktrees', () => {
     cleanup();
   });
 
+  it('aligns its header boundary with the app content top bar', () => {
+    render(<ProjectSidebar />);
+
+    const header = screen.getByText('sidebar.projects').parentElement;
+
+    expect(header).toHaveClass('h-[53px]', 'shrink-0');
+  });
+
   it('opens a shell terminal with the selected existing branch worktree path from the row action', () => {
     useTerminalStore.getState().createCard({
       projectName: 'ThreadTerm',

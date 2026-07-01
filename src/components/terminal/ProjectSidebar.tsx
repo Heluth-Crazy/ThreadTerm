@@ -302,7 +302,7 @@ export function ProjectSidebar({
       ].join(' ')}
     >
       {/* Header */}
-      <div className="flex h-12 items-center justify-between etched-border-b px-3">
+      <div className="flex h-[53px] shrink-0 items-center justify-between etched-border-b px-3">
         {onCloseMobile ? (
           <button
             type="button"
