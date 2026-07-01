@@ -37,6 +37,19 @@ vi.mock('../../lib/settingsWindow', () => ({
   openSettingsWindow: settingsWindowMocks.openSettingsWindow,
 }));
 
+vi.mock('../../contexts/ThemeContext', () => ({
+  useTheme: () => ({
+    activeThemeTokens: {
+      app: {
+        background: '#10151d',
+        card: '#151b24',
+        primary: '#4f8bd6',
+        foreground: '#e8edf5',
+      },
+    },
+  }),
+}));
+
 vi.mock('../../lib/tauri-bridge', () => ({
   invoke: (...args: unknown[]) => bridgeMocks.invoke(...args),
   isTauriEnv: () => false,
@@ -110,7 +123,13 @@ vi.mock('./CreateTerminalDialog', () => ({
 }));
 
 vi.mock('./ProjectSidebar', () => ({
-  ProjectSidebar: () => <aside data-testid="mock-project-sidebar" />,
+  ProjectSidebar: ({ onOpenMobileAccess }: { onOpenMobileAccess?: () => void }) => (
+    <aside data-testid="mock-project-sidebar">
+      <button type="button" onClick={onOpenMobileAccess}>
+        open mobile access
+      </button>
+    </aside>
+  ),
 }));
 
 vi.mock('../Settings', () => ({
@@ -198,6 +217,18 @@ describe('TerminalManager shortcut hint layout', () => {
     fireEvent.click(screen.getByTitle('设置（⌘/Ctrl + ,）'));
 
     expect(settingsWindowMocks.openSettingsWindow).toHaveBeenCalledWith('shortcuts');
+  });
+
+  it('opens mobile access as a full-width main content view from the sidebar', async () => {
+    render(<TerminalManager />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'open mobile access' }));
+
+    const view = await screen.findByTestId('mobile-access-view');
+    const content = view.firstElementChild;
+
+    expect(content).toHaveClass('w-full');
+    expect(content).not.toHaveClass('max-w-3xl');
   });
 
   it('keeps the shortcut hint above the focused terminal footer', async () => {

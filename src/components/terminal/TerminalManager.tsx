@@ -1396,8 +1396,11 @@ export function TerminalManager() {
 
         {/* Mobile-access view layer — replaces the grid when "移动端" is selected. */}
         {mobileViewActive && (
-          <div className="absolute inset-0 overflow-y-auto bg-background/40 backdrop-blur-sm">
-            <div className="mx-auto max-w-3xl px-6 py-8">
+          <div
+            data-testid="mobile-access-view"
+            className="absolute inset-0 overflow-y-auto bg-background/40 backdrop-blur-sm"
+          >
+            <div className="min-h-full w-full px-4 py-4 sm:px-6 lg:px-8">
               <MobileAccessSettings />
             </div>
           </div>
