@@ -109,6 +109,10 @@ temp/
 # AI specific
 .claude/
 .claude_settings.json
+.agents/
+.codex/
+.github/
+.trellis/
 .roo/
 .taskmaster/
 .cline/
