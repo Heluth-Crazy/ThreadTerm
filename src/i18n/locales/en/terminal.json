@@ -18,6 +18,7 @@
     "expand": "Expand sidebar",
     "collapse": "Collapse sidebar",
     "allTerminals": "All terminals",
+    "mobileAccess": "Mobile",
     "openDir": "Open in Finder/Explorer",
     "worktrees": "Worktrees",
     "branches": "Branches",

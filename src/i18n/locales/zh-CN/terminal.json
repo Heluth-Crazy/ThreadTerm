@@ -18,6 +18,7 @@
     "expand": "展开侧栏",
     "collapse": "收起侧栏",
     "allTerminals": "全部终端",
+    "mobileAccess": "移动端",
     "openDir": "在 Finder/资源管理器中打开",
     "worktrees": "Worktree",
     "branches": "分支",

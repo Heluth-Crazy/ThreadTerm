@@ -25,6 +25,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Smartphone,
   Terminal,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -62,6 +63,14 @@ interface ProjectSidebarProps {
   className?: string;
   onImportWorkflow?: (projectPath: string, projectName: string) => void;
   onCloseMobile?: () => void;
+  /** Invoked when the "新建终端" row is clicked — opens the create-terminal dialog. */
+  onCreateTerminal?: () => void;
+  /** Invoked when the "移动端" row is clicked — shows the mobile access view. */
+  onOpenMobileAccess?: () => void;
+  /** When true, the "移动端" row is rendered as the active selection. */
+  mobileViewActive?: boolean;
+  /** Invoked when the user navigates to a project row — used to exit the mobile view. */
+  onExitMobileView?: () => void;
 }
 
 type ProjectGroup = ReturnType<typeof useProjectGroups>[number];
@@ -77,6 +86,10 @@ export function ProjectSidebar({
   className = '',
   onImportWorkflow,
   onCloseMobile,
+  onCreateTerminal,
+  onOpenMobileAccess,
+  mobileViewActive = false,
+  onExitMobileView,
 }: ProjectSidebarProps) {
   const { t } = useTranslation('terminal');
   const groups = useProjectGroups();
@@ -301,7 +314,7 @@ export function ProjectSidebar({
         className,
       ].join(' ')}
     >
-      {/* Header */}
+      {/* Header — logo + title */}
       <div className="flex h-12 items-center justify-between etched-border-b px-3">
         {onCloseMobile ? (
           <button
@@ -313,9 +326,14 @@ export function ProjectSidebar({
           </button>
         ) : null}
         {!collapsed && (
-          <span className="flex items-center gap-2 pl-0.5 text-[13px] font-semibold text-foreground">
-            <Layers className="h-4 w-4 text-primary" />
-            {t('sidebar.projects')}
+          <span className="flex items-center gap-2 pl-0.5 text-xs font-semibold text-foreground">
+            <img
+              src="/logo.svg"
+              alt="ThreadTerm"
+              className="h-5 w-5 rounded-[6px]"
+              draggable={false}
+            />
+            ThreadTerm
           </span>
         )}
         <button
@@ -328,16 +346,59 @@ export function ProjectSidebar({
         </button>
       </div>
 
-      <nav className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5">
-        {/* "All" pseudo-project */}
+      {/* Create-area — 新建终端 / 移动端 rows (occupies ~1/3 of the sidebar body). */}
+      <div
+        className="flex flex-col justify-start gap-2 px-3 py-4 etched-border-b"
+        role="group"
+        aria-label={t('sidebar.projects', { defaultValue: 'Projects' })}
+        style={{ flex: '1 1 0%' }}
+      >
+        <button
+          type="button"
+          onClick={onCreateTerminal}
+          disabled={!onCreateTerminal}
+          title={t('app.newTerminalTitle', { defaultValue: 'New terminal (⌘/Ctrl+N)' })}
+          className={[
+            'flex w-full items-center gap-2 rounded-[var(--radius-md)] px-3 py-1.5 text-left text-xs leading-[1.35] font-medium transition-colors',
+            'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+            'focus-visible:bg-accent focus-visible:outline focus-visible:outline-1 focus-visible:outline-foreground/15',
+            'disabled:opacity-50 disabled:pointer-events-none',
+            collapsed ? 'justify-center' : '',
+          ].join(' ')}
+        >
+          <Plus className="h-3.5 w-3.5 shrink-0" />
+          {!collapsed && <span>{t('app.newTerminal', { defaultValue: 'New terminal' })}</span>}
+        </button>
+        <button
+          type="button"
+          onClick={onOpenMobileAccess}
+          disabled={!onOpenMobileAccess}
+          title={t('sidebar.mobileAccess', { defaultValue: 'Mobile' })}
+          className={[
+            'flex w-full items-center gap-2 rounded-[var(--radius-md)] px-3 py-1.5 text-left text-xs leading-[1.35] font-medium transition-colors',
+            mobileViewActive
+              ? 'bg-primary/10 text-primary'
+              : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+            'focus-visible:bg-accent focus-visible:outline focus-visible:outline-1 focus-visible:outline-foreground/15',
+            'disabled:opacity-50 disabled:pointer-events-none',
+            collapsed ? 'justify-center' : '',
+          ].join(' ')}
+        >
+          <Smartphone className="h-3.5 w-3.5 shrink-0" />
+          {!collapsed && <span>{t('sidebar.mobileAccess', { defaultValue: 'Mobile' })}</span>}
+        </button>
+      </div>
+
+      <nav className="min-h-0 px-2 py-1.5 overflow-y-auto" style={{ flex: '2 1 0%' }}>
+        {/* "All" pseudo-project (now labelled "项目" / Projects) */}
         <SidebarRow
           collapsed={collapsed}
-          selected={selectedPath === null}
+          selected={selectedPath === null && !mobileViewActive}
           icon={<Layers className="h-3.5 w-3.5" />}
-          label={t('sidebar.allTerminals')}
+          label={t('sidebar.projects')}
           count={totalCards}
           unread={totalUnread}
-          onClick={() => selectProject(null)}
+          onClick={() => { selectProject(null); onExitMobileView?.(); }}
         />
 
         {groups.length > 0 && !collapsed && (
@@ -350,7 +411,7 @@ export function ProjectSidebar({
             group={g}
             collapsed={collapsed}
             selected={selectedPath === g.path}
-            onSelect={() => selectProject(g.path)}
+            onSelect={() => { selectProject(g.path); onExitMobileView?.(); }}
             onContextMenu={(event) => {
               event.preventDefault();
               setContextMenu({

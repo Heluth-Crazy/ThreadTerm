@@ -18,6 +18,7 @@
     "expand": "サイドバーを展開",
     "collapse": "サイドバーを折りたたむ",
     "allTerminals": "すべてのターミナル",
+    "mobileAccess": "モバイル",
     "openDir": "Finder/Explorer で開く",
     "worktrees": "Worktrees",
     "branches": "Branches",

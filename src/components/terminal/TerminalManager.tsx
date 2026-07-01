@@ -21,7 +21,6 @@ import {
   FileText,
   GitCompare,
   Layers,
-  Plus,
   Settings as SettingsIcon,
   Star,
   TerminalSquare,
@@ -35,6 +34,7 @@ import { MAX_MOUNTED_TERMINAL_VIEWS, touchMountedId } from './mountedViewsLru';
 import { TerminalView } from './TerminalView';
 import { CreateTerminalDialog } from './CreateTerminalDialog';
 import { ProjectSidebar } from './ProjectSidebar';
+import { MobileAccessSettings } from '../settings/MobileAccessSettings';
 import { BookmarksSidebar } from './BookmarksSidebar';
 import { ArchivedCardsPanel } from './ArchivedCardsPanel';
 import { SessionDock } from './SessionDock';
@@ -311,6 +311,7 @@ export function TerminalManager() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
   const [createOpen, setCreateOpen] = useState(false);
+  const [mobileViewActive, setMobileViewActive] = useState(false);
   const [rightSurfaceStack, setRightSurfaceStack] = useState<RightSurface[]>([]);
   const [workspaceContentByCardId, setWorkspaceContentByCardId] = useState<
     Record<string, WorkspaceContentState>
@@ -1193,7 +1194,7 @@ export function TerminalManager() {
     () => cards.map((c) => ({ path: c.projectPath, name: c.projectName })),
     [cards],
   );
-  const gridVisible = viewMode === 'grid' || !focusedCard;
+  const gridVisible = (viewMode === 'grid' || !focusedCard) && !mobileViewActive;
 
   return (
     <div className="relative flex h-full w-full bg-mesh overflow-hidden">
@@ -1208,6 +1209,10 @@ export function TerminalManager() {
         <ProjectSidebar
           onImportWorkflow={handleOpenImportWorkflow}
           onCloseMobile={() => setSidebarOpen(false)}
+          onCreateTerminal={() => setCreateOpen(true)}
+          onOpenMobileAccess={() => setMobileViewActive(true)}
+          onExitMobileView={() => setMobileViewActive(false)}
+          mobileViewActive={mobileViewActive}
         />
       </div>
 
@@ -1281,14 +1286,6 @@ export function TerminalManager() {
               </span>
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => setCreateOpen(true)}
-            title={t('app.newTerminalTitle')}
-            className="inline-flex items-center gap-1 rounded-[var(--radius-md)] bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            <Plus className="h-3.5 w-3.5" /> {t('app.new')}
-          </button>
           {BOOKMARKS_VISIBLE && (
             <button
               type="button"
@@ -1396,6 +1393,15 @@ export function TerminalManager() {
             onOpenTerminal={handleOpenTerminal}
           />
         </motion.div>
+
+        {/* Mobile-access view layer — replaces the grid when "移动端" is selected. */}
+        {mobileViewActive && (
+          <div className="absolute inset-0 overflow-y-auto bg-background/40 backdrop-blur-sm">
+            <div className="mx-auto max-w-3xl px-6 py-8">
+              <MobileAccessSettings />
+            </div>
+          </div>
+        )}
 
         {/* Persistent terminal views */}
         {cards

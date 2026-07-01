@@ -18,6 +18,7 @@
     "expand": "사이드바 펼치기",
     "collapse": "사이드바 접기",
     "allTerminals": "모든 터미널",
+    "mobileAccess": "모바일",
     "openDir": "Finder/Explorer에서 열기",
     "worktrees": "Worktrees",
     "branches": "Branches",
