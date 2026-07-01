@@ -543,6 +543,15 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 - Snapshot fallback/API: `GET /snapshot` must authenticate with `Authorization: Bearer <deviceToken>`. `GET /snapshot?token=<deviceToken>` remains a compatibility path only.
 - Bridge CORS must stay explicit: allow browser mobile bridge flows with only the required HTTP methods and headers instead of using a fully permissive layer.
 - Pair QR host selection must keep bind host and publish host separate. Binding to `0.0.0.0` may listen on all interfaces, but QR generation must accept an explicit publish-host override for LAN DNS, Tailscale, or tunnel names.
+- Desktop UI code must use the official Tauri `isTauri()` detector first, with
+  legacy `window.__TAURI_INTERNALS__` / `window.__TAURI__` checks only as
+  fallback. Do not gate mobile bridge controls solely on an internal WebView
+  global; WebView2 builds can otherwise look like browser mode and skip QR
+  generation.
+- Windows LAN QR host discovery may call PowerShell, but stdout must be parsed
+  as UTF-8 or UTF-16LE. Windows PowerShell versions and host encodings differ;
+  treating non-UTF-8 output as "no adapter" can incorrectly fall back to
+  loopback and make the mobile QR unusable.
 - Snapshot cards: `CardMeta` must include `id`, `status`, `projectPath`, `projectName`, `lastReplyPreview`, `summaryLine`, `hiddenLineCount`, and `recentOutputBytes`.
 - Preview events: `kind: "preview"` must include `card_id`, `last_reply_preview`, `summary_line`, and `hidden_line_count`.
 - Theme events: `kind: "theme"` must include `app`, `terminal`, and `mode`.
@@ -630,6 +639,10 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 - Snapshot request with missing or invalid token -> return `401`; legacy query-token and bearer-token paths must both be covered while compatibility remains.
 - CORS preflight for snapshot/mobile bridge endpoints -> expose only the expected methods and headers.
 - Publish-host override entered in settings -> QR generation uses the override without changing the bridge bind address.
+- Windows PowerShell adapter output is UTF-16LE -> decode and still choose the
+  best physical LAN IPv4 address.
+- Tauri official `isTauri()` returns true while legacy globals are absent ->
+  desktop-only mobile bridge controls remain enabled.
 - WebSocket close/error -> keep the page visible, show retry/reconnect, and do not clear the stored token automatically.
 - Deliberate cleanup/reconnect -> close the stale client without scheduling a duplicate reconnect loop.
 - Lag/backpressure message -> fetch `/snapshot` and merge it without clearing current terminal snapshots prematurely.
@@ -666,6 +679,10 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 - Rust bridge tests must cover first-frame WebSocket auth without query token, bearer token parsing, and the legacy query-token path until it is intentionally removed.
 - Rust bridge tests must cover CORS preflight, missing token, invalid token, bearer snapshot auth, and legacy query-token snapshot auth.
 - Settings tests must cover publish-host override and the loopback warning path for LAN QR generation.
+- Desktop bridge wrapper tests must cover official `isTauri()` detection and
+  fallback globals.
+- Rust bridge tests must cover UTF-16LE PowerShell adapter output on the
+  Windows LAN host parser.
 - Mobile WS client tests must assert the token is sent in an `auth` frame before `subscribe`, and `buildBridgeWsUrl()` does not include a token query string.
 - Mobile terminal tests must assert preview/detail scrollback sizes, stale snapshot suppression after newer output, coalesced viewport fitting, and unchanged-size resize suppression.
 

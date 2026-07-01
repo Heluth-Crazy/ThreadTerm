@@ -840,6 +840,8 @@ fn lan_ipv4_for_url() -> Option<String> {
 fn physical_adapter_ipv4_for_url() -> Option<String> {
     const SCRIPT: &str = r#"
 $ErrorActionPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Get-NetAdapter | ForEach-Object {
   $adapter = $_
   $metric = (Get-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 | Select-Object -First 1 -ExpandProperty InterfaceMetric)
@@ -856,7 +858,7 @@ Get-NetAdapter | ForEach-Object {
     if !output.status.success() {
         return None;
     }
-    let stdout = String::from_utf8(output.stdout).ok()?;
+    let stdout = decode_windows_command_stdout(&output.stdout);
     windows_physical_adapter_ipv4_from_tsv(&stdout)
 }
 
@@ -904,6 +906,34 @@ fn windows_physical_adapter_ipv4_from_tsv(output: &str) -> Option<String> {
         .into_iter()
         .next()
         .map(|(_, _, ip)| ip.to_string())
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn decode_windows_command_stdout(bytes: &[u8]) -> String {
+    if looks_like_utf16le(bytes) {
+        let words = bytes
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect::<Vec<_>>();
+        if let Ok(decoded) = String::from_utf16(&words) {
+            return decoded.trim_start_matches('\u{feff}').to_string();
+        }
+    }
+
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn looks_like_utf16le(bytes: &[u8]) -> bool {
+    if bytes.starts_with(&[0xff, 0xfe]) {
+        return true;
+    }
+    if bytes.len() < 4 {
+        return false;
+    }
+
+    let nul_count = bytes.iter().filter(|byte| **byte == 0).count();
+    nul_count * 4 >= bytes.len()
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -1179,6 +1209,23 @@ mod tests {
         assert_eq!(
             windows_physical_adapter_ipv4_from_tsv(&output).as_deref(),
             Some("10.0.0.12")
+        );
+    }
+
+    #[test]
+    fn windows_physical_adapter_parser_handles_utf16le_powershell_output() {
+        let output = [
+            "100.88.1.10\tUp\tFalse\tTrue\t1\tTailscale\tTailscale Tunnel",
+            "192.168.1.67\tUp\tTrue\tFalse\t25\tWi-Fi\tIntel(R) Wi-Fi 6 AX201",
+        ]
+        .join("\r\n");
+        let mut bytes = vec![0xff, 0xfe];
+        bytes.extend(output.encode_utf16().flat_map(u16::to_le_bytes));
+        let decoded = decode_windows_command_stdout(&bytes);
+
+        assert_eq!(
+            windows_physical_adapter_ipv4_from_tsv(&decoded).as_deref(),
+            Some("192.168.1.67")
         );
     }
 

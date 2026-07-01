@@ -1,4 +1,4 @@
-import { invoke as tauriInvoke } from '@tauri-apps/api/core';
+import { invoke as tauriInvoke, isTauri as tauriIsTauri } from '@tauri-apps/api/core';
 import { listen as tauriListen } from '@tauri-apps/api/event';
 import type { ResolvedThemeMode, ThemeModeTokens } from '../theme/themeTypes';
 import type { CardMeta } from '../mobile/bridge/protocol';
@@ -12,7 +12,19 @@ import type {
 
 /** Returns true when running inside the Tauri desktop webview. */
 export const isTauriEnv = (): boolean =>
-  typeof (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== 'undefined';
+  tauriIsTauri() ||
+  typeof (
+    window as {
+      __TAURI__?: unknown;
+      __TAURI_INTERNALS__?: unknown;
+    }
+  ).__TAURI_INTERNALS__ !== 'undefined' ||
+  typeof (
+    window as {
+      __TAURI__?: unknown;
+      __TAURI_INTERNALS__?: unknown;
+    }
+  ).__TAURI__ !== 'undefined';
 
 /** Re-export the Tauri invoke primitive for overlay/window commands. */
 export const invoke = tauriInvoke;
