@@ -580,7 +580,13 @@ fn emit_pty_output_chunk(
 
     // Strip ANSI escape codes for pattern matching.
     let cleaned = ANSI_STRIP.replace_all(data, "");
-    let waiting_for_input = WAITING_PATTERNS.is_match(&cleaned);
+    // Windows ConPTY replays the whole visible screen after a resize; that
+    // replay re-emits any prompt text already on screen and would re-trigger
+    // the waiting/error attention notifications for input the user already
+    // saw. During the post-resize suppression window (see pty_resize), treat
+    // the output as a redraw: no attention detection, no waiting-state flip.
+    let resize_redraw = session::resize_output_activity_suppressed(ses, Instant::now());
+    let waiting_for_input = !resize_redraw && WAITING_PATTERNS.is_match(&cleaned);
     let mut force_preview = false;
 
     if !waiting_for_input {
@@ -620,7 +626,10 @@ fn emit_pty_output_chunk(
     //
     // Skip during STARTUP_ERROR_SUPPRESS to avoid false positives from CLI
     // banners/help output that legitimately mention "error".
-    if session_start.elapsed() > STARTUP_ERROR_SUPPRESS && ERROR_PATTERNS.is_match(&cleaned) {
+    if !resize_redraw
+        && session_start.elapsed() > STARTUP_ERROR_SUPPRESS
+        && ERROR_PATTERNS.is_match(&cleaned)
+    {
         if last_attention_time.elapsed() > attention_debounce {
             *last_attention_time = Instant::now();
             let _ = app_handle.emit(

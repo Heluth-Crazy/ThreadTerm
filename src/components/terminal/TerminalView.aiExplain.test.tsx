@@ -45,6 +45,7 @@ vi.mock('./useProviderSessionLifecycle', () => ({
 // Capture invoke() calls so hidden inspector tests can assert no AI request fires.
 const invokeMock = vi.fn<(cmd: string, payload: unknown) => Promise<unknown>>();
 vi.mock('@tauri-apps/api/core', () => ({
+  isTauri: () => false,
   invoke: (cmd: string, payload: unknown) => invokeMock(cmd, payload),
 }));
 

@@ -241,3 +241,19 @@ export const MAX_NOTIFICATIONS = 100;
  * 200 blocks ≈ 800KB worst case for one busy card.
  */
 export const MAX_BLOCKS_PER_CARD = 200;
+
+/**
+ * Max archived cards retained (FIFO, newest first). Archived cards persist to
+ * localStorage with the same quota concern as blocks: without a cap the
+ * archive grows for the lifetime of the install and every persist write slows
+ * down with it. Restoring is the common path, long-tail archaeology is not,
+ * so the oldest snapshots are dropped once the list is full.
+ */
+export const MAX_ARCHIVED_CARDS = 100;
+
+/**
+ * Max bookmarks retained (FIFO). Same localStorage quota rationale as
+ * MAX_ARCHIVED_CARDS; bookmarks are tiny individually but unbounded growth
+ * eventually taxes every persist cycle.
+ */
+export const MAX_BOOKMARKS = 500;

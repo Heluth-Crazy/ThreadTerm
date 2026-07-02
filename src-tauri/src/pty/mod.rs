@@ -83,10 +83,15 @@ pub async fn pty_create(
         return Ok(id);
     }
 
+    // Resolve the shell before taking the spawn lock: the first Windows call
+    // probes PATH via `where` (~1.3s total) and must not serialize concurrent
+    // card creation behind it. Subsequent calls hit the cached Lazy value.
+    let shell_path = shell::default_shell();
+
     // Serialize ConPTY/PTY open+spawn across concurrent terminal creations
     // (Windows blank/stall mitigation; harmless on other platforms). The lock
     // is held only around open+spawn, then released before the rest of setup.
-    let (pair, child, shell_path) = {
+    let (pair, child) = {
         let _spawn_guard = PTY_SPAWN_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
@@ -104,7 +109,6 @@ pub async fn pty_create(
             .openpty(size)
             .map_err(|e| format!("Failed to open PTY: {e}"))?;
 
-        let shell_path = shell::default_shell();
         let mut cmd = CommandBuilder::new(&shell_path);
         // Windows: normalize forward slashes so ConPTY resolves the cwd reliably.
         #[cfg(target_os = "windows")]
@@ -117,7 +121,7 @@ pub async fn pty_create(
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn shell: {e}"))?;
-        (pair, child, shell_path)
+        (pair, child)
     };
 
     // Drop the slave so reads on master detect EOF when the child exits.

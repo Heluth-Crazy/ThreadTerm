@@ -31,8 +31,10 @@ import type {
 } from '../types/terminal';
 import type { AiExplainProvider } from '../lib/ai/aiExplain';
 import {
+  MAX_ARCHIVED_CARDS,
   MAX_BLOCK_OUTPUT_LENGTH,
   MAX_BLOCKS_PER_CARD,
+  MAX_BOOKMARKS,
   MAX_LAST_OUTPUT_LENGTH,
   MAX_NOTIFICATIONS,
   MAX_TIMELINE_EVENTS,
@@ -50,6 +52,7 @@ import i18n from '../i18n/config.js';
 import { isTauriEnv, pty } from '../lib/tauri-bridge';
 import { emitSettingsChanged, type TerminalPreferenceSnapshot } from '../lib/settingsSync';
 import { orderCardsByIdList } from '../lib/cardSort';
+import { useAiThreadStore } from './aiThreadStore';
 import {
   cardMatchesWorktree,
   effectiveWorktreePath,
@@ -704,6 +707,13 @@ export const useTerminalStore = create<TerminalStore>()(
           void pty.kill(target.ptyId || target.id);
         }
 
+        // Drop AI explain threads for the card's blocks before the blocks map
+        // forgets them (they live in a separate non-persisted store).
+        const cardBlocks = (get().blocks ?? {})[id];
+        if (cardBlocks?.length) {
+          useAiThreadStore.getState().clearThreads(cardBlocks.map((b) => b.id));
+        }
+
         set((state) => {
           const cards = state.cards.filter((c) => c.id !== id);
           const focusedCardId = state.focusedCardId === id ? null : state.focusedCardId;
@@ -792,10 +802,11 @@ export const useTerminalStore = create<TerminalStore>()(
           const now = Date.now();
           const targetCard = state.cards[targetIndex];
           const cards = state.cards.filter((c) => c.id !== id);
+          // Newest-first; FIFO cap drops the oldest snapshots past the limit.
           const archivedCards = [
             archiveCardSnapshot(targetCard, now),
             ...(state.archivedCards ?? []).filter((card) => card.id !== id),
-          ];
+          ].slice(0, MAX_ARCHIVED_CARDS);
           const focusedCardId = state.focusedCardId === id ? null : state.focusedCardId;
           const lastActiveCardId =
             state.lastActiveCardId === id ? null : state.lastActiveCardId;
@@ -1140,7 +1151,8 @@ export const useTerminalStore = create<TerminalStore>()(
           };
         }),
 
-      recordBlockStarted: (input) =>
+      recordBlockStarted: (input) => {
+        let evictedBlockIds: Set<string> | null = null;
         set((state) => {
           const blocksByCard = state.blocks ?? {};
           const existing = blocksByCard[input.cardId] ?? [];
@@ -1175,6 +1187,7 @@ export const useTerminalStore = create<TerminalStore>()(
           const evicted = next.slice(0, next.length - MAX_BLOCKS_PER_CARD);
           const kept = next.slice(next.length - MAX_BLOCKS_PER_CARD);
           const evictedIds = new Set(evicted.map((candidate) => candidate.id));
+          evictedBlockIds = evictedIds;
 
           const collapsedBlockIds = state.collapsedBlockIds.filter(
             (id) => !evictedIds.has(id),
@@ -1197,7 +1210,13 @@ export const useTerminalStore = create<TerminalStore>()(
             bookmarks,
             selectedBlockId,
           };
-        }),
+        });
+        // AI explain threads are keyed by block id in a separate store; drop
+        // them with their evicted blocks so the map can't grow unbounded.
+        if (evictedBlockIds) {
+          useAiThreadStore.getState().clearThreads(evictedBlockIds);
+        }
+      },
 
       recordBlockFinished: (input) =>
         set((state) => {
@@ -1274,7 +1293,10 @@ export const useTerminalStore = create<TerminalStore>()(
           createdAt: Date.now(),
           label: input.label,
         };
-        set((state) => ({ bookmarks: [...state.bookmarks, bookmark] }));
+        // Oldest-first append order; FIFO cap drops the oldest bookmarks.
+        set((state) => ({
+          bookmarks: [...state.bookmarks, bookmark].slice(-MAX_BOOKMARKS),
+        }));
         return bookmark;
       },
 

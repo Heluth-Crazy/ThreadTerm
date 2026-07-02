@@ -47,6 +47,14 @@ export function StatsPanel({ onClose }: StatsPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // While the panel is open, the silent auto-refresh polls at the faster
+  // interval; closed panels only need to keep per-card badges loosely fresh.
+  useEffect(() => {
+    const setPanelOpen = useStatsStore.getState().setPanelOpen;
+    setPanelOpen(true);
+    return () => setPanelOpen(false);
+  }, []);
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-[61.5px] shrink-0 items-center justify-between border-b border-border px-3">

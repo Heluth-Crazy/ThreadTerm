@@ -789,6 +789,16 @@ function Shell({
       resizeDebounceTimer = setTimeout(() => {
         resizeDebounceTimer = null;
         if (!fitAddon.current || !terminal.current) return;
+        // Hidden terminals (visibility:hidden — a workspace diff/file tab or
+        // another card is in front) skip fit entirely. Fitting while hidden
+        // resizes the PTY, and on Windows every ConPTY resize replays the
+        // whole screen — so a panel squeeze while hidden plus the un-squeeze
+        // on return produced two replays the user saw as history re-scrolling.
+        // recoverTerminalSurface() re-fits once when the card becomes active,
+        // and if the width is back to what it was, the cols don't change and
+        // no PTY resize (hence no replay) happens at all.
+        const host = terminalRef.current;
+        if (host && getComputedStyle(host).visibility === 'hidden') return;
         try {
           fitAddon.current.fit();
         } catch {

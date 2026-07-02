@@ -27,15 +27,25 @@ pub const MAIN_LABEL: &str = "main";
 /// stores rehydrate from localStorage. For a "press hotkey → overlay
 /// appears over Windsurf NOW" UX that's unacceptable.
 ///
+/// Platform default: prewarm is ON everywhere except Windows, where the two
+/// hidden WebView2 renderer processes cost ~230MB of standing memory even
+/// for users who never touch the overlay hotkeys. Windows users who want
+/// instant first summon can opt back in with THREADTERM_OVERLAY_PREWARM=1;
+/// THREADTERM_SKIP_OVERLAY_PREWARM=1 forces prewarm off on any platform.
+///
 /// Failures are logged but not fatal — the lazy ensure_selector /
 /// ensure_float path still works as a fallback.
 pub fn prewarm_windows(app: &AppHandle) {
-    let skip_prewarm = std::env::var("THREADTERM_SKIP_OVERLAY_PREWARM")
-        .ok()
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false);
-    if skip_prewarm {
-        tracing::info!("overlay prewarm skipped by THREADTERM_SKIP_OVERLAY_PREWARM");
+    if !prewarm_enabled(
+        std::env::var("THREADTERM_SKIP_OVERLAY_PREWARM")
+            .ok()
+            .as_deref(),
+        std::env::var("THREADTERM_OVERLAY_PREWARM").ok().as_deref(),
+        default_prewarm_enabled(),
+    ) {
+        tracing::info!(
+            "overlay prewarm disabled; selector/float will be created lazily on first use"
+        );
         return;
     }
 
@@ -49,6 +59,36 @@ pub fn prewarm_windows(app: &AppHandle) {
     // Accessory activation policy; restore the normal app policy before the
     // main window becomes the user's focus target.
     restore_regular_activation_policy_if_no_overlay_visible(app);
+}
+
+fn env_truthy(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
+/// Windows defaults prewarm OFF (lazy overlay creation); other platforms ON.
+#[cfg(target_os = "windows")]
+fn default_prewarm_enabled() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_prewarm_enabled() -> bool {
+    true
+}
+
+/// Skip wins over opt-in; otherwise an explicit opt-in wins over the
+/// platform default.
+fn prewarm_enabled(skip_env: Option<&str>, optin_env: Option<&str>, default_enabled: bool) -> bool {
+    if env_truthy(skip_env) {
+        return false;
+    }
+    if env_truthy(optin_env) {
+        return true;
+    }
+    default_enabled
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -260,4 +300,36 @@ pub(super) fn ensure_float(app: &AppHandle) -> Result<(), String> {
         configure_float_window_for_current_space(&w);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prewarm_enabled;
+
+    #[test]
+    fn follows_platform_default_when_no_env_set() {
+        assert!(prewarm_enabled(None, None, true));
+        assert!(!prewarm_enabled(None, None, false));
+    }
+
+    #[test]
+    fn optin_overrides_default_off() {
+        for value in ["1", "true", "yes", "on", " TRUE "] {
+            assert!(prewarm_enabled(None, Some(value), false));
+        }
+    }
+
+    #[test]
+    fn non_truthy_optin_falls_through_to_default() {
+        for value in ["0", "false", "", "maybe"] {
+            assert!(!prewarm_enabled(None, Some(value), false));
+            assert!(prewarm_enabled(None, Some(value), true));
+        }
+    }
+
+    #[test]
+    fn skip_wins_over_optin_and_default() {
+        assert!(!prewarm_enabled(Some("1"), Some("1"), true));
+        assert!(!prewarm_enabled(Some("yes"), None, true));
+    }
 }

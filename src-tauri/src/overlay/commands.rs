@@ -12,9 +12,19 @@ use super::window::{
     ensure_float, ensure_selector, primary_monitor_bounds, FLOAT_LABEL, MAIN_LABEL, SELECTOR_LABEL,
 };
 
+/// Async because `ensure_selector` may create a webview window: on Windows,
+/// creating a WebView2 window from a *synchronous* IPC command deadlocks the
+/// event loop (wry#583 / tauri#4121) — the controller creation needs the
+/// message loop to keep pumping. Async moves the command off that loop.
+/// The sync body lives in `show_selector_impl` so the global-hotkey path
+/// (which runs on the event loop, where creation is safe) can share it.
 #[tauri::command]
-pub fn overlay_show_selector(app: AppHandle) -> Result<(), String> {
-    ensure_selector(&app)?;
+pub async fn overlay_show_selector(app: AppHandle) -> Result<(), String> {
+    show_selector_impl(&app)
+}
+
+pub(super) fn show_selector_impl(app: &AppHandle) -> Result<(), String> {
+    ensure_selector(app)?;
     set_overlay_activation_policy(&app);
     // Hide float while selector is open (mutual exclusion). Restored on close.
     if let Some(f) = app.get_webview_window(FLOAT_LABEL) {
@@ -105,9 +115,15 @@ pub fn overlay_hide_selector(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Async for the same Windows sync-command deadlock reason as
+/// `overlay_show_selector` — `ensure_float` may create the float window.
 #[tauri::command]
-pub fn overlay_show_float(app: AppHandle, card_id: String) -> Result<(), String> {
-    ensure_float(&app)?;
+pub async fn overlay_show_float(app: AppHandle, card_id: String) -> Result<(), String> {
+    show_float_impl(&app, card_id)
+}
+
+pub(super) fn show_float_impl(app: &AppHandle, card_id: String) -> Result<(), String> {
+    ensure_float(app)?;
     set_overlay_activation_policy(&app);
     // Hide selector if visible.
     #[cfg(target_os = "macos")]

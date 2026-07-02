@@ -219,18 +219,21 @@ export function SelectorApp() {
 
   const onConfirm = useCallback(async (cardId: string) => {
     setVisible(false);
+    // Persist the card id BEFORE asking Rust to show the float window. With
+    // lazy float creation (Windows skips prewarm) the window may be built
+    // right now, and its page loads too late to catch the
+    // `overlay://float-shown` event — it falls back to the persisted
+    // overlayStore.floatCardId instead, which must already hold this value.
+    useOverlayStore.setState({
+      selectorOpen: false,
+      floatOpen: true,
+      floatCardId: cardId,
+      floatHiddenByOverlay: false,
+    });
     // Direct invoke: selector and float are both Rust-owned windows.
     try {
       await invoke('overlay_hide_selector');
       await invoke('overlay_show_float', { cardId });
-      // Mirror into overlayStore so the main window sees the new float
-      // focus once the storage event fans out.
-      useOverlayStore.setState({
-        selectorOpen: false,
-        floatOpen: true,
-        floatCardId: cardId,
-        floatHiddenByOverlay: false,
-      });
     } catch (e) {
       console.warn('[selector] confirm failed', e);
     }
