@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  STATS_AUTO_REFRESH_HIDDEN_PANEL_INTERVAL_MS,
   STATS_AUTO_REFRESH_INTERVAL_MS,
   useStatsAutoRefresh,
   useStatsStore,
@@ -84,6 +85,7 @@ function resetStores() {
     activeRequestId: 0,
     activeSilent: false,
     lastComputedAt: null,
+    panelOpen: false,
   });
   useTerminalStore.setState({ cards: [] });
 }
@@ -156,7 +158,7 @@ describe('statsStore silent compute', () => {
 });
 
 describe('useStatsAutoRefresh', () => {
-  it('runs immediately and then on interval for visible bound Claude/Codex cards', () => {
+  it('runs immediately and then on the relaxed interval while the panel is closed', () => {
     mockVisibility('visible');
     useTerminalStore.setState({
       cards: [makeCard({ terminalType: 'codex', providerSessionId: 'codex-session-1' })],
@@ -169,9 +171,34 @@ describe('useStatsAutoRefresh', () => {
     act(() => {
       vi.advanceTimersByTime(STATS_AUTO_REFRESH_INTERVAL_MS);
     });
+    expect(bridgeMocks.compute).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      vi.advanceTimersByTime(
+        STATS_AUTO_REFRESH_HIDDEN_PANEL_INTERVAL_MS - STATS_AUTO_REFRESH_INTERVAL_MS,
+      );
+    });
     expect(bridgeMocks.compute).toHaveBeenCalledTimes(2);
 
     unmount();
+    act(() => {
+      vi.advanceTimersByTime(STATS_AUTO_REFRESH_HIDDEN_PANEL_INTERVAL_MS);
+    });
+    expect(bridgeMocks.compute).toHaveBeenCalledTimes(2);
+  });
+
+  it('polls at the faster interval while the stats panel is open', () => {
+    mockVisibility('visible');
+    useTerminalStore.setState({
+      cards: [makeCard({ terminalType: 'codex', providerSessionId: 'codex-session-1' })],
+    });
+    act(() => {
+      useStatsStore.getState().setPanelOpen(true);
+    });
+
+    renderHook(() => useStatsAutoRefresh());
+    expect(bridgeMocks.compute).toHaveBeenCalledTimes(1);
+
     act(() => {
       vi.advanceTimersByTime(STATS_AUTO_REFRESH_INTERVAL_MS);
     });
@@ -188,7 +215,7 @@ describe('useStatsAutoRefresh', () => {
     visibility.mockReturnValue('hidden');
     act(() => {
       document.dispatchEvent(new Event('visibilitychange'));
-      vi.advanceTimersByTime(STATS_AUTO_REFRESH_INTERVAL_MS);
+      vi.advanceTimersByTime(STATS_AUTO_REFRESH_HIDDEN_PANEL_INTERVAL_MS);
     });
     expect(bridgeMocks.compute).toHaveBeenCalledTimes(1);
 
@@ -211,7 +238,7 @@ describe('useStatsAutoRefresh', () => {
     renderHook(() => useStatsAutoRefresh());
 
     act(() => {
-      vi.advanceTimersByTime(STATS_AUTO_REFRESH_INTERVAL_MS);
+      vi.advanceTimersByTime(STATS_AUTO_REFRESH_HIDDEN_PANEL_INTERVAL_MS);
     });
     expect(bridgeMocks.compute).not.toHaveBeenCalled();
   });

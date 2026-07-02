@@ -26,7 +26,7 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: path.resolve(__dirname, 'dist'),
       emptyOutDir: true,
-      sourcemap: true,
+      sourcemap: false,
       rollupOptions: {
         output: {
           entryFileNames: 'assets/index.js',

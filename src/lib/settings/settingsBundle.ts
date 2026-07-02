@@ -1,5 +1,4 @@
 import type { AiExplainProvider } from '../ai/aiExplain';
-import { MAX_WORKFLOW_FILE_BYTES } from '../workflows/discoverWorkflows';
 import { DEFAULT_THEME_PACK_ID } from '../../theme/themePacks';
 import {
   parseCustomThemePack,
@@ -26,7 +25,6 @@ export const SETTINGS_BUNDLE_SECTION_ORDER = [
   'customThemes',
   'terminal',
   'overlay',
-  'workflows',
 ] as const;
 
 export type SettingsBundleSectionId = typeof SETTINGS_BUNDLE_SECTION_ORDER[number];
@@ -49,21 +47,11 @@ export interface SettingsBundleOverlaySection {
   hotkeyB: string;
 }
 
-export interface SettingsBundleWorkflowFile {
-  fileName: string;
-  yamlText: string;
-}
-
-export interface SettingsBundleWorkflowsSection {
-  global: SettingsBundleWorkflowFile[];
-}
-
 export interface SettingsBundleSections {
   theme?: SettingsBundleThemeSection;
   customThemes?: SettingsBundleCustomThemesSection;
   terminal?: SettingsBundleTerminalSection;
   overlay?: SettingsBundleOverlaySection;
-  workflows?: SettingsBundleWorkflowsSection;
 }
 
 export interface SettingsBundle {
@@ -80,7 +68,6 @@ export interface SettingsBundleSource {
   customThemePacks?: ThemePack[] | null;
   terminalSettings?: Partial<SettingsBundleTerminalSection> | null;
   overlaySettings?: Partial<SettingsBundleOverlaySection> | null;
-  workflowFiles?: SettingsBundleWorkflowFile[] | null;
 }
 
 export type SettingsBundleParseResult =
@@ -98,7 +85,6 @@ export interface SettingsBundleSectionDiff {
 
 const AI_EXPLAIN_PROVIDERS = new Set<AiExplainProvider>(['claude', 'codex', 'gemini']);
 const SELECTOR_MODES = new Set<SelectorMode>(['tile', 'carousel']);
-const YAML_FILE_NAME_PATTERN = /^[^/\\]+\.ya?ml$/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -148,46 +134,12 @@ function normalizeOverlaySettings(value: unknown): SettingsBundleOverlaySection 
   };
 }
 
-export function sanitizeSettingsWorkflowFileName(value: unknown): string | null {
-  const fileName = optionalString(value);
-  if (!fileName || !YAML_FILE_NAME_PATTERN.test(fileName)) return null;
-  return fileName;
-}
-
-function normalizeWorkflowFiles(value: unknown, strict: boolean): SettingsBundleWorkflowFile[] {
-  if (!Array.isArray(value)) return [];
-
-  const files: SettingsBundleWorkflowFile[] = [];
-  for (const item of value) {
-    if (!isRecord(item)) {
-      if (strict) throw new Error('Workflow entry must be an object.');
-      continue;
-    }
-    const fileName = sanitizeSettingsWorkflowFileName(item.fileName);
-    const yamlText = typeof item.yamlText === 'string' ? item.yamlText : null;
-    if (!fileName || yamlText === null || yamlText.length > MAX_WORKFLOW_FILE_BYTES) {
-      if (strict) throw new Error(`Invalid workflow file in settings bundle: ${String(item.fileName)}`);
-      continue;
-    }
-    files.push({ fileName, yamlText });
-  }
-  return files;
-}
-
-function normalizeWorkflowsSection(value: unknown, strict: boolean): SettingsBundleWorkflowsSection {
-  const record = isRecord(value) ? value : {};
-  return {
-    global: normalizeWorkflowFiles(record.global, strict),
-  };
-}
-
 export function normalizeBundleCustomThemePacks(packs: ThemePack[]): ThemePack[] {
   return packs.map((pack) => parseCustomThemePack(JSON.stringify(pack)));
 }
 
 export function createSettingsBundle(source: SettingsBundleSource = {}): SettingsBundle {
   const customThemePacks = normalizeCustomThemePacks(source.customThemePacks ?? []);
-  const workflowFiles = normalizeWorkflowFiles(source.workflowFiles ?? [], false);
 
   return {
     app: SETTINGS_BUNDLE_APP,
@@ -199,7 +151,6 @@ export function createSettingsBundle(source: SettingsBundleSource = {}): Setting
       customThemes: { packs: customThemePacks },
       terminal: normalizeTerminalSettings(source.terminalSettings),
       overlay: normalizeOverlaySettings(source.overlaySettings),
-      workflows: { global: workflowFiles },
     },
   };
 }
@@ -250,9 +201,6 @@ export function parseSettingsBundle(json: string): SettingsBundleParseResult {
     }
     if (parsed.sections.overlay !== undefined) {
       sections.overlay = normalizeOverlaySettings(parsed.sections.overlay);
-    }
-    if (parsed.sections.workflows !== undefined) {
-      sections.workflows = normalizeWorkflowsSection(parsed.sections.workflows, true);
     }
 
     return {
@@ -314,13 +262,6 @@ export function summarizeSettingsBundleSection(
       const section = bundle.sections.overlay;
       if (!section) return 'Not set';
       return `${section.selectorMode}, A ${section.hotkeyA}, B ${section.hotkeyB}`;
-    }
-    case 'workflows': {
-      const section = bundle.sections.workflows;
-      if (!section) return 'Not set';
-      return `${section.global.length} global workflow file${
-        section.global.length === 1 ? '' : 's'
-      }`;
     }
     default:
       return 'Not set';

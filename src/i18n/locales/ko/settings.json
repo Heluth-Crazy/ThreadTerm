@@ -60,7 +60,7 @@
   "close": "설정 닫기",
   "dataIO": {
     "title": "설정 가져오기 및 내보내기",
-    "description": "ThreadTerm 환경설정, 사용자 지정 테마, 오버레이 단축키, 전역 워크플로를 안전한 JSON 파일 하나로 옮깁니다.",
+    "description": "ThreadTerm 환경설정, 사용자 테마, 오버레이 단축키를 안전한 JSON 파일 하나로 옮깁니다.",
     "exportJson": "설정 JSON 내보내기",
     "exporting": "내보내는 중...",
     "importJson": "설정 JSON 가져오기",
@@ -71,13 +71,11 @@
     "previewDescription": "현재 설정을 덮어쓸 섹션을 선택합니다.",
     "current": "현재",
     "incoming": "가져오기",
-    "desktopWorkflowHint": "전역 워크플로 파일은 데스크톱 앱에서만 포함됩니다. 브리지 token, 페어링된 기기, 감사 로그, AI provider key, 카드, 터미널 출력은 절대 내보내지 않습니다.",
     "sections": {
       "theme": "테마 환경설정",
       "customThemes": "사용자 지정 테마",
       "terminal": "터미널 환경설정",
-      "overlay": "오버레이 단축키",
-      "workflows": "전역 워크플로"
+      "overlay": "오버레이 단축키"
     },
     "statusLabels": {
       "added": "새 항목",
@@ -91,7 +89,8 @@
       "importFailed": "설정 가져오기 실패: {{message}}",
       "importApplied": "선택한 설정을 가져왔습니다.",
       "applyFailed": "설정 가져오기를 적용할 수 없습니다: {{message}}"
-    }
+    },
+    "safetyHint": "브리지 토큰, 페어링된 기기, 감사 로그, AI provider key, 카드, 터미널 출력은 내보내지 않습니다."
   },
   "notifications": {
     "title": "시스템 알림",
@@ -170,31 +169,31 @@
     "stopped": "중지됨",
     "start": "시작",
     "stop": "중지",
-  "refresh": "새로고침",
-  "error": "작업 실패: {{message}}",
-  "bind": {
-    "label": "브리지 수신 주소",
-    "loopback": "이 기기만",
-    "lan": "LAN / 모든 인터페이스"
-  },
-  "lanConfirm": "모바일 접근을 0.0.0.0에 바인딩하면 ThreadTerm 브리지 트래픽이 현재 네트워크에 노출됩니다. 계속하시겠습니까?",
-  "confirmLanStart": "LAN 시작 확인",
-  "cancelLanStart": "취소",
-  "listeningAddress": "수신 주소:",
-  "docs": {
-    "tailscale": "Tailscale 문서",
-    "cloudflare": "Cloudflare Tunnel 문서"
-  },
-  "pairingTitle": "페어링 항목",
-  "pairingDescription": "5분 후 만료되는 일회용 페어링 QR 코드를 생성합니다. 휴대폰으로 스캔하거나 예비로 URL을 복사하세요.",
-  "publishHost": {
-    "label": "게시 호스트 재정의",
-    "placeholder": "선택 사항: 휴대폰 QR용 호스트",
-    "hint": "비워 두면 감지된 LAN 주소를 사용합니다. Tailscale, 터널 또는 수동 LAN 호스트 이름에 사용하세요.",
-    "current": "QR 호스트:",
-    "loopbackWarning": "생성된 QR 코드가 loopback을 가리킵니다. 휴대폰에 공유하기 전에 게시 호스트를 입력하세요."
-  },
-  "qrTitle": "ThreadTerm 모바일 페어링 QR 코드",
+    "refresh": "새로고침",
+    "error": "작업 실패: {{message}}",
+    "bind": {
+      "label": "브리지 수신 주소",
+      "loopback": "이 기기만",
+      "lan": "LAN / 모든 인터페이스"
+    },
+    "lanConfirm": "모바일 접근을 0.0.0.0에 바인딩하면 ThreadTerm 브리지 트래픽이 현재 네트워크에 노출됩니다. 계속하시겠습니까?",
+    "confirmLanStart": "LAN 시작 확인",
+    "cancelLanStart": "취소",
+    "listeningAddress": "수신 주소:",
+    "docs": {
+      "tailscale": "Tailscale 문서",
+      "cloudflare": "Cloudflare Tunnel 문서"
+    },
+    "pairingTitle": "페어링 항목",
+    "pairingDescription": "5분 후 만료되는 일회용 페어링 QR 코드를 생성합니다. 휴대폰으로 스캔하거나 예비로 URL을 복사하세요.",
+    "publishHost": {
+      "label": "게시 호스트 재정의",
+      "placeholder": "선택 사항: 휴대폰 QR용 호스트",
+      "hint": "비워 두면 감지된 LAN 주소를 사용합니다. Tailscale, 터널 또는 수동 LAN 호스트 이름에 사용하세요.",
+      "current": "QR 호스트:",
+      "loopbackWarning": "생성된 QR 코드가 loopback을 가리킵니다. 휴대폰에 공유하기 전에 게시 호스트를 입력하세요."
+    },
+    "qrTitle": "ThreadTerm 모바일 페어링 QR 코드",
     "newPairCode": "페어링 코드 생성",
     "copyUrl": "URL 복사",
     "devicesTitle": "페어링된 기기",

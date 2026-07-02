@@ -14,7 +14,6 @@ describe('buildChipRegistry', () => {
       'rich-input',
       'remote-control',
     ]);
-    expect(chips.find((c) => c.id === 'workflows')).toBeUndefined();
     expect(chips.find((c) => c.id === 'file-explorer')).toBeUndefined();
     // Bookmarks feature is hidden via `lib/featureFlags.ts`; the chip must
     // disappear in lockstep with the top toolbar / side panel surfaces.

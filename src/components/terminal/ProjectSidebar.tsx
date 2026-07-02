@@ -19,10 +19,7 @@ import {
   FolderOpen,
   GitBranch,
   Layers,
-  Download,
   Loader2,
-  Pencil,
-  Play,
   Plus,
   RefreshCw,
   Smartphone,
@@ -35,33 +32,10 @@ import { useTerminalStore } from '../../stores/terminalStore';
 import { useProjectGroups } from './useProjectGroups';
 import { clearProjectWorktreeCache } from './useProjectWorktrees';
 import { clearProjectBranchCache, useProjectBranches } from './useProjectBranches';
-import {
-  classifyApplyEntries,
-  type ApplyPresetEntry,
-} from '../../lib/workflows/dedupWorkflows';
-import {
-  ensureDir,
-  loadProjectPresetWorkflows,
-  resolveProjectWorkflowsDir,
-} from '../../lib/workflows/tauriFs';
-import {
-  workflowAiIntent,
-  workflowTerminalType,
-} from '../../lib/workflows/workflowRun';
-import { ApplyPresetDialog } from '../workflows/ApplyPresetDialog';
-import type { DiscoveryErrorReason } from '../../lib/workflows/discoverWorkflows';
 import { pendingWorktreePath, samePath } from '../../lib/worktreePaths';
-
-const DISCOVERY_ERROR_I18N_KEY: Record<DiscoveryErrorReason, string> = {
-  'parse-failed': 'parseFailed',
-  'duplicate-name': 'duplicateName',
-  'too-large': 'fileTooLarge',
-  'read-failed': 'readFailed',
-};
 
 interface ProjectSidebarProps {
   className?: string;
-  onImportWorkflow?: (projectPath: string, projectName: string) => void;
   onCloseMobile?: () => void;
   /** Invoked when the "新建终端" row is clicked — opens the create-terminal dialog. */
   onCreateTerminal?: () => void;
@@ -84,7 +58,6 @@ interface SidebarRowAuxAction {
 
 export function ProjectSidebar({
   className = '',
-  onImportWorkflow,
   onCloseMobile,
   onCreateTerminal,
   onOpenMobileAccess,
@@ -105,22 +78,9 @@ export function ProjectSidebar({
   const selectWorktree = useTerminalStore((s) => s.selectWorktree);
   const createCard = useTerminalStore((s) => s.createCard);
   const focusCard = useTerminalStore((s) => s.focusCard);
-  const updateCardAiIntent = useTerminalStore((s) => s.updateCardAiIntent);
   const pushNotification = useTerminalStore((s) => s.pushNotification);
 
   const [collapsed, setCollapsed] = useState(false);
-  const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-    path: string;
-    name: string;
-  } | null>(null);
-  const [applyPreset, setApplyPreset] = useState<{
-    projectPath: string;
-    projectName: string;
-    entries: ApplyPresetEntry[];
-    loading: boolean;
-  } | null>(null);
 
   const handleOpenDir = (path: string, e: MouseEvent) => {
     e.stopPropagation();
@@ -129,83 +89,6 @@ export function ProjectSidebar({
       // eslint-disable-next-line no-console
       console.warn('[ProjectSidebar] open dir failed:', err);
     });
-  };
-
-  const notifyWorkflowFailure = (title: string, body: string) => {
-    pushNotification({
-      cardId: 'system:workflows',
-      kind: 'failed',
-      title,
-      body,
-    });
-  };
-
-  const handleEditPreset = async (projectPath: string) => {
-    setContextMenu(null);
-    if (!isTauriEnv()) {
-      notifyWorkflowFailure(
-        t('workflow.editPreset', { defaultValue: 'Edit project preset' }),
-        t('dialog.browseDesktopOnly'),
-      );
-      return;
-    }
-    try {
-      const dir = await resolveProjectWorkflowsDir(projectPath);
-      await ensureDir(dir);
-      await openLocalDirectory(dir);
-    } catch (err) {
-      notifyWorkflowFailure(
-        t('workflow.dirCreateFailed', { defaultValue: 'Could not open workflow directory' }),
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-  };
-
-  const handleApplyPreset = async (projectPath: string, projectName: string) => {
-    setContextMenu(null);
-    setApplyPreset({ projectPath, projectName, entries: [], loading: true });
-    try {
-      const result = await loadProjectPresetWorkflows(projectPath);
-      for (const err of result.errors) {
-        notifyWorkflowFailure(
-          t(`workflow.${DISCOVERY_ERROR_I18N_KEY[err.reason]}`, {
-            defaultValue: err.reason,
-          }),
-          `${err.filePath}: ${err.message}`,
-        );
-      }
-      const existingCards = cards
-        .filter((card) => card.projectPath === projectPath && card.command)
-        .map((card) => ({
-          id: card.id,
-          cwd: card.worktreePath ?? card.projectPath,
-          command: card.command ?? '',
-        }));
-      setApplyPreset({
-        projectPath,
-        projectName,
-        entries: classifyApplyEntries(result.workflows, existingCards, projectPath),
-        loading: false,
-      });
-    } catch (err) {
-      setApplyPreset(null);
-      notifyWorkflowFailure(
-        t('workflow.applyPreset', { defaultValue: 'Apply preset' }),
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-  };
-
-  const handleImportWorkflow = (projectPath: string, projectName: string) => {
-    setContextMenu(null);
-    if (!isTauriEnv()) {
-      notifyWorkflowFailure(
-        t('workflow.importWorkflow', { defaultValue: 'Import workflow from URL...' }),
-        t('dialog.browseDesktopOnly'),
-      );
-      return;
-    }
-    onImportWorkflow?.(projectPath, projectName);
   };
 
   const handleOpenWorktreeTerminal = (
@@ -267,43 +150,6 @@ export function ProjectSidebar({
       });
       throw err;
     }
-  };
-
-  const confirmApplyPreset = () => {
-    if (!applyPreset) return;
-    let lastCreatedId: string | null = null;
-    let created = 0;
-    for (const entry of applyPreset.entries) {
-      if (entry.state !== 'new') continue;
-      const id = createCard({
-        projectName: applyPreset.projectName,
-        projectPath: applyPreset.projectPath,
-        worktreePath:
-          entry.resolvedCwd && entry.resolvedCwd !== applyPreset.projectPath
-            ? entry.resolvedCwd
-            : undefined,
-        terminalType: workflowTerminalType(entry.workflow),
-        command: entry.resolvedCommand ?? entry.workflow.command,
-      });
-      const intent = workflowAiIntent(entry.workflow);
-      if (intent) updateCardAiIntent(id, intent);
-      lastCreatedId = id;
-      created += 1;
-    }
-    if (lastCreatedId) {
-      selectProject(applyPreset.projectPath);
-      focusCard(lastCreatedId);
-    }
-    pushNotification({
-      cardId: 'system:workflows',
-      kind: 'completed',
-      title: t('workflow.applyPreset', { defaultValue: 'Apply preset' }),
-      body: t('workflow.applyPresetCreatedCount', {
-        count: created,
-        defaultValue: 'Created {{count}} workflow cards.',
-      }),
-    });
-    setApplyPreset(null);
   };
 
   return (
@@ -412,15 +258,6 @@ export function ProjectSidebar({
             collapsed={collapsed}
             selected={selectedPath === g.path}
             onSelect={() => { selectProject(g.path); onExitMobileView?.(); }}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              setContextMenu({
-                x: event.clientX,
-                y: event.clientY,
-                path: g.path,
-                name: g.name,
-              });
-            }}
             onOpenDir={(event) => handleOpenDir(g.path, event)}
             onOpenTerminal={handleOpenWorktreeTerminal}
             onSelectWorktree={handleSelectWorktree}
@@ -438,54 +275,6 @@ export function ProjectSidebar({
         )}
       </nav>
 
-      {contextMenu && (
-        <div
-          role="menu"
-          className="fixed z-[230] w-52 rounded-[var(--radius-md)] border border-border bg-popover p-1 text-xs shadow-lg"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-        >
-          <button
-            type="button"
-            role="menuitem"
-            className="flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
-            onClick={() => handleApplyPreset(contextMenu.path, contextMenu.name)}
-          >
-            <Play className="h-3.5 w-3.5" />
-            {t('workflow.applyPreset', { defaultValue: 'Apply preset' })}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
-            onClick={() => handleImportWorkflow(contextMenu.path, contextMenu.name)}
-          >
-            <Download className="h-3.5 w-3.5" />
-            {t('workflow.importWorkflow', {
-              defaultValue: 'Import workflow from URL...',
-            })}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
-            onClick={() => handleEditPreset(contextMenu.path)}
-          >
-            <Pencil className="h-3.5 w-3.5" />
-            {t('workflow.editPreset', { defaultValue: 'Edit project preset...' })}
-          </button>
-        </div>
-      )}
-
-      <ApplyPresetDialog
-        open={applyPreset !== null}
-        projectName={applyPreset?.projectName ?? ''}
-        projectPath={applyPreset?.projectPath ?? ''}
-        entries={applyPreset?.entries ?? []}
-        loading={applyPreset?.loading ?? false}
-        onCancel={() => setApplyPreset(null)}
-        onApply={confirmApplyPreset}
-      />
-
     </aside>
   );
 }
@@ -495,7 +284,6 @@ interface ProjectBranchSectionProps {
   collapsed: boolean;
   selected: boolean;
   onSelect: () => void;
-  onContextMenu: (event: MouseEvent) => void;
   onOpenDir: (event: MouseEvent) => void;
   selectedWorktreePath: string | null;
   onOpenTerminal: (
@@ -518,7 +306,6 @@ function ProjectBranchSection({
   collapsed,
   selected,
   onSelect,
-  onContextMenu,
   onOpenDir,
   selectedWorktreePath,
   onOpenTerminal,
@@ -576,7 +363,6 @@ function ProjectBranchSection({
         count={group.cards.length}
         unread={group.unreadCount}
         onClick={onSelect}
-        onContextMenu={onContextMenu}
         auxActions={auxActions}
         hasChildren={hasBranches}
         expanded={expanded}

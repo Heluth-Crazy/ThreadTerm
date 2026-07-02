@@ -70,6 +70,10 @@ impl BridgeRuntime {
         self.tx.subscribe()
     }
 
+    pub fn has_subscribers(&self) -> bool {
+        self.tx.receiver_count() > 0
+    }
+
     pub fn broadcast(&self, message: ServerMessage) {
         let _ = self.tx.send(message);
     }
@@ -509,6 +513,9 @@ fn persist_bridge_running(status: &BridgeStatus) {
 }
 
 pub fn broadcast_preview(card_id: &str, output: &str) {
+    if !BRIDGE_RUNTIME.has_subscribers() {
+        return;
+    }
     let preview = preview_from_output(output);
     if preview.last_reply_preview.is_empty() {
         return;
@@ -524,7 +531,7 @@ pub fn broadcast_preview(card_id: &str, output: &str) {
 }
 
 pub fn broadcast_terminal_output(card_id: &str, data: &str, seq: u64) {
-    if data.is_empty() {
+    if data.is_empty() || !BRIDGE_RUNTIME.has_subscribers() {
         return;
     }
     let bridge_card_id = BRIDGE_RUNTIME.card_id_for_pty(card_id);

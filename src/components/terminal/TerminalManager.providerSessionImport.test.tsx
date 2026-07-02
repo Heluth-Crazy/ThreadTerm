@@ -69,13 +69,6 @@ vi.mock('../Settings', () => ({
   default: () => null,
 }));
 
-vi.mock('../../lib/workflows/useWorkflows', () => ({
-  useWorkflows: () => ({
-    workflows: [],
-    reload: vi.fn(),
-  }),
-}));
-
 function resetStore() {
   useTerminalStore.setState({
     cards: [],

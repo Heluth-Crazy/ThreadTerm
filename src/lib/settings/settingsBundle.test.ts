@@ -5,7 +5,6 @@ import {
   getDefaultSelectedSettingsSections,
   getSettingsBundleExportFilename,
   parseSettingsBundle,
-  sanitizeSettingsWorkflowFileName,
   stringifySettingsBundle,
 } from './settingsBundle';
 import type { ThemePack } from '../../theme/themeTypes';
@@ -105,13 +104,6 @@ describe('settings bundle', () => {
         hotkeyB: 'CmdOrCtrl+Shift+B',
         floatCardId: 'card-secret',
       } as never,
-      workflowFiles: [
-        {
-          fileName: 'deploy.yaml',
-          yamlText: 'name: Deploy\ncommand: npm run deploy\n',
-          auditLog: 'audit-secret',
-        } as never,
-      ],
     });
 
     const json = stringifySettingsBundle(bundle);
@@ -143,11 +135,7 @@ describe('settings bundle', () => {
     }
   });
 
-  it('rejects workflow file names that could escape the workflow directory', () => {
-    expect(sanitizeSettingsWorkflowFileName('deploy.yaml')).toBe('deploy.yaml');
-    expect(sanitizeSettingsWorkflowFileName('../secret.yaml')).toBeNull();
-    expect(sanitizeSettingsWorkflowFileName('nested/deploy.yaml')).toBeNull();
-
+  it('ignores removed workflow sections from older settings bundles', () => {
     const parsed = parseSettingsBundle(JSON.stringify({
       app: 'ThreadTerm',
       kind: 'threadterm-settings-bundle',
@@ -160,7 +148,10 @@ describe('settings bundle', () => {
       },
     }));
 
-    expect(parsed.kind).toBe('error');
+    expect(parsed.kind).toBe('success');
+    if (parsed.kind === 'success') {
+      expect(parsed.bundle.sections).not.toHaveProperty('workflows');
+    }
   });
 
   it('builds section diffs and selects only changed sections by default', () => {

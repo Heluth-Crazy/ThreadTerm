@@ -67,46 +67,6 @@ describe('buildCommandRegistry', () => {
     expect(actions.focusCard).toHaveBeenCalledWith('c1');
   });
 
-  it('emits run-workflow entries from discovered workflows', () => {
-    const actions = { ...emptyActions(), runWorkflow: vi.fn() };
-    const reg = buildCommandRegistry({
-      cards: [],
-      blocks: {},
-      projects: [],
-      workflows: [
-        {
-          name: 'deploy',
-          command: 'npm run deploy',
-          description: 'Ship the app',
-          tags: ['release'],
-          source: 'project',
-          filePath: '/repo/.threadterm/workflows/deploy.yaml',
-        },
-      ],
-      actions,
-    });
-    const entry = reg.find((e) => e.group === 'run-workflow');
-    expect(entry).toBeTruthy();
-    expect(entry!.id).toBe('workflow:run:deploy');
-    expect(entry!.label).toBe('deploy');
-    expect(entry!.searchText).toContain('npm run deploy');
-    entry!.run();
-    expect(actions.runWorkflow).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'deploy' }),
-    );
-  });
-
-  it('does not emit a workflow placeholder when no workflows are discovered', () => {
-    const reg = buildCommandRegistry({
-      cards: [],
-      blocks: {},
-      projects: [],
-      workflows: [],
-      actions: { ...emptyActions(), runWorkflow: vi.fn() },
-    });
-    expect(reg.find((e) => e.group === 'run-workflow')).toBeUndefined();
-  });
-
   it('emits change-intent entries when a card is focused and updateCardAiIntent is wired', () => {
     const actions = { ...emptyActions(), updateCardAiIntent: vi.fn() };
     const reg = buildCommandRegistry({

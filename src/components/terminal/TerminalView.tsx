@@ -60,8 +60,6 @@ interface TerminalViewProps {
   onBack: () => void;
   /** Toggle the bookmarks side panel. Wired by `TerminalManager`. */
   onOpenBookmarks?: () => void;
-  /** Open the command palette on the workflow group. */
-  onOpenWorkflows?: () => void;
   /** Open Settings, optionally on a specific tab. */
   onOpenSettings?: (tab?: SettingsTab) => void;
 }
@@ -73,7 +71,6 @@ export function TerminalView({
   active = true,
   onBack,
   onOpenBookmarks,
-  onOpenWorkflows,
   onOpenSettings,
 }: TerminalViewProps) {
   const { t } = useTranslation('terminal');
@@ -324,9 +321,6 @@ export function TerminalView({
         case 'bookmarks':
           onOpenBookmarks?.();
           return;
-        case 'workflows':
-          onOpenWorkflows?.();
-          return;
         case 'file-explorer': {
           if (!cardCwd) return;
           void openLocalDirectory(cardCwd).catch(() => {
@@ -343,7 +337,7 @@ export function TerminalView({
           return;
       }
     },
-    [cardCwd, onOpenBookmarks, onOpenSettings, onOpenWorkflows],
+    [cardCwd, onOpenBookmarks, onOpenSettings],
   );
 
   return (

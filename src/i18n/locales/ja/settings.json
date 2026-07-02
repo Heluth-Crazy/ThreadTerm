@@ -60,7 +60,7 @@
   "close": "設定を閉じる",
   "dataIO": {
     "title": "設定のインポート / エクスポート",
-    "description": "ThreadTerm の設定、カスタムテーマ、オーバーレイホットキー、グローバルワークフローを安全な JSON ファイルで移行します。",
+    "description": "ThreadTerm の設定、カスタムテーマ、オーバーレイホットキーを安全な JSON ファイルで移行します。",
     "exportJson": "設定 JSON をエクスポート",
     "exporting": "エクスポート中...",
     "importJson": "設定 JSON をインポート",
@@ -71,13 +71,11 @@
     "previewDescription": "現在の設定を上書きする項目を選択します。",
     "current": "現在",
     "incoming": "インポート",
-    "desktopWorkflowHint": "グローバルワークフローファイルはデスクトップアプリでのみ含まれます。ブリッジ token、ペアリング済みデバイス、監査ログ、AI provider key、カード、端末出力はエクスポートされません。",
     "sections": {
       "theme": "テーマ設定",
       "customThemes": "カスタムテーマ",
       "terminal": "端末設定",
-      "overlay": "オーバーレイホットキー",
-      "workflows": "グローバルワークフロー"
+      "overlay": "オーバーレイホットキー"
     },
     "statusLabels": {
       "added": "新規",
@@ -91,7 +89,8 @@
       "importFailed": "設定のインポートに失敗しました: {{message}}",
       "importApplied": "選択した設定をインポートしました。",
       "applyFailed": "設定インポートを適用できませんでした: {{message}}"
-    }
+    },
+    "safetyHint": "ブリッジ token、ペアリング済みデバイス、監査ログ、AI provider key、カード、端末出力はエクスポートされません。"
   },
   "notifications": {
     "title": "システム通知",
@@ -170,31 +169,31 @@
     "stopped": "停止中",
     "start": "起動",
     "stop": "停止",
-  "refresh": "更新",
-  "error": "操作に失敗しました: {{message}}",
-  "bind": {
-    "label": "ブリッジの待ち受けアドレス",
-    "loopback": "この端末のみ",
-    "lan": "LAN / すべてのインターフェイス"
-  },
-  "lanConfirm": "モバイルアクセスを 0.0.0.0 にバインドすると、ThreadTerm ブリッジの通信が現在のネットワークに公開されます。続行しますか？",
-  "confirmLanStart": "LAN 起動を確認",
-  "cancelLanStart": "キャンセル",
-  "listeningAddress": "待ち受け:",
-  "docs": {
-    "tailscale": "Tailscale ドキュメント",
-    "cloudflare": "Cloudflare Tunnel ドキュメント"
-  },
-  "pairingTitle": "ペアリング入口",
-  "pairingDescription": "5 分で期限切れになる一回限りのペアリング QR コードを生成します。スマートフォンでスキャンするか、予備として URL をコピーしてください。",
-  "publishHost": {
-    "label": "公開ホストの上書き",
-    "placeholder": "任意: スマートフォン QR 用ホスト",
-    "hint": "空のままにすると検出した LAN アドレスを使います。Tailscale、トンネル、手動 LAN ホスト名に使います。",
-    "current": "QR ホスト:",
-    "loopbackWarning": "生成された QR コードは loopback を指しています。スマートフォンに共有する前に公開ホストを入力してください。"
-  },
-  "qrTitle": "ThreadTerm モバイルペアリング QR コード",
+    "refresh": "更新",
+    "error": "操作に失敗しました: {{message}}",
+    "bind": {
+      "label": "ブリッジの待ち受けアドレス",
+      "loopback": "この端末のみ",
+      "lan": "LAN / すべてのインターフェイス"
+    },
+    "lanConfirm": "モバイルアクセスを 0.0.0.0 にバインドすると、ThreadTerm ブリッジの通信が現在のネットワークに公開されます。続行しますか？",
+    "confirmLanStart": "LAN 起動を確認",
+    "cancelLanStart": "キャンセル",
+    "listeningAddress": "待ち受け:",
+    "docs": {
+      "tailscale": "Tailscale ドキュメント",
+      "cloudflare": "Cloudflare Tunnel ドキュメント"
+    },
+    "pairingTitle": "ペアリング入口",
+    "pairingDescription": "5 分で期限切れになる一回限りのペアリング QR コードを生成します。スマートフォンでスキャンするか、予備として URL をコピーしてください。",
+    "publishHost": {
+      "label": "公開ホストの上書き",
+      "placeholder": "任意: スマートフォン QR 用ホスト",
+      "hint": "空のままにすると検出した LAN アドレスを使います。Tailscale、トンネル、手動 LAN ホスト名に使います。",
+      "current": "QR ホスト:",
+      "loopbackWarning": "生成された QR コードは loopback を指しています。スマートフォンに共有する前に公開ホストを入力してください。"
+    },
+    "qrTitle": "ThreadTerm モバイルペアリング QR コード",
     "newPairCode": "ペアリングコードを生成",
     "copyUrl": "URL をコピー",
     "devicesTitle": "ペアリング済みデバイス",

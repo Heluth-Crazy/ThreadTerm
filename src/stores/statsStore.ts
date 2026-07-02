@@ -15,7 +15,17 @@ import type { TerminalCard } from '../types/terminal';
 
 let requestCounter = 0;
 
-export const STATS_AUTO_REFRESH_INTERVAL_MS = 20_000;
+/**
+ * Background stats polling scans every JSONL session file under
+ * ~/.claude/projects and ~/.codex/sessions, so the silent interval is
+ * deliberately coarse: 60s keeps per-card token badges reasonably fresh,
+ * and while the stats panel is closed nobody is watching the numbers, so
+ * polling relaxes further to 120s. Opening the panel triggers an immediate
+ * compute anyway (StatsPanel mount effect), so a stale badge never survives
+ * a panel open.
+ */
+export const STATS_AUTO_REFRESH_INTERVAL_MS = 60_000;
+export const STATS_AUTO_REFRESH_HIDDEN_PANEL_INTERVAL_MS = 120_000;
 
 interface StatsState {
   snapshot: AgentStats | null;
@@ -30,7 +40,10 @@ interface StatsState {
   activeRequestId: number;
   activeSilent: boolean;
   lastComputedAt: number | null;
+  /** True while the stats panel is mounted; auto-refresh polls faster. */
+  panelOpen: boolean;
 
+  setPanelOpen: (open: boolean) => void;
   setScope: (scope: StatsScope) => void;
   setRange: (range: StatsRange) => void;
   compute: (opts?: { silent?: boolean }) => void;
@@ -60,7 +73,9 @@ export const useStatsStore = create<StatsState>((set, get) => ({
   activeRequestId: 0,
   activeSilent: false,
   lastComputedAt: null,
+  panelOpen: false,
 
+  setPanelOpen: (open) => set({ panelOpen: open }),
   setScope: (scope) => {
     set({ scope });
     get().compute();
@@ -165,9 +180,14 @@ export function useStatsSubscription(): void {
  */
 export function useStatsAutoRefresh(): void {
   const hasAiCards = useTerminalStore((state) => state.cards.some(isStatsBackedAiCard));
+  const panelOpen = useStatsStore((state) => state.panelOpen);
 
   useEffect(() => {
     if (!hasAiCards || typeof document === 'undefined') return;
+
+    const intervalMs = panelOpen
+      ? STATS_AUTO_REFRESH_INTERVAL_MS
+      : STATS_AUTO_REFRESH_HIDDEN_PANEL_INTERVAL_MS;
 
     let intervalId: number | null = null;
 
@@ -187,7 +207,7 @@ export function useStatsAutoRefresh(): void {
       if (document.visibilityState !== 'visible') return;
       if (!hasStatsBackedAiCards()) return;
       computeSilent();
-      intervalId = window.setInterval(computeSilent, STATS_AUTO_REFRESH_INTERVAL_MS);
+      intervalId = window.setInterval(computeSilent, intervalMs);
     };
 
     const handleVisibilityChange = () => {
@@ -201,7 +221,7 @@ export function useStatsAutoRefresh(): void {
       clearTimer();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [hasAiCards]);
+  }, [hasAiCards, panelOpen]);
 }
 
 /** Convenience selector for a single session's bucket (per-card badge). */

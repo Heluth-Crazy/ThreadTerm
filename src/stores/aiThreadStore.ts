@@ -34,6 +34,8 @@ interface AiThreadState {
   ) => void;
   setEntryState: (blockId: string, entryId: string, state: 'pending' | 'ok' | 'error') => void;
   clearThread: (blockId: string) => void;
+  /** Bulk cleanup used when blocks are FIFO-evicted from terminalStore. */
+  clearThreads: (blockIds: Iterable<string>) => void;
 }
 
 const MAX_ENTRIES = 20;
@@ -101,5 +103,17 @@ export const useAiThreadStore = create<AiThreadState>((set) => ({
       const next = { ...s.threads };
       delete next[blockId];
       return { threads: next };
+    }),
+  clearThreads: (blockIds) =>
+    set((s) => {
+      let changed = false;
+      const next = { ...s.threads };
+      for (const blockId of blockIds) {
+        if (next[blockId]) {
+          delete next[blockId];
+          changed = true;
+        }
+      }
+      return changed ? { threads: next } : s;
     }),
 }));

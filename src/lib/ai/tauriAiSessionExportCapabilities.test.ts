@@ -25,19 +25,14 @@ describe('AI session export Tauri capability contract', () => {
     expect(hasPermission('fs:allow-write-text-file')).toBe(true);
   });
 
-  it('keeps workflow fs scope intact while relying on dialog.save for user-selected export paths', () => {
-    const fsScope = permissions.find(
-      (permission): permission is PermissionObject =>
-        typeof permission !== 'string' && permission.identifier === 'fs:scope',
-    );
-
-    expect(fsScope?.allow).toEqual(
-      expect.arrayContaining([
-        { path: '$HOME/.threadterm/workflows' },
-        { path: '$HOME/.threadterm/workflows/**' },
-        { path: '**/.threadterm/workflows' },
-        { path: '**/.threadterm/workflows/**' },
-      ]),
-    );
+  it('does not keep removed workflow-specific fs or http scopes', () => {
+    expect(hasPermission('http:default')).toBe(false);
+    expect(hasPermission('fs:allow-read-dir')).toBe(false);
+    expect(hasPermission('fs:allow-read-text-file')).toBe(false);
+    expect(
+      permissions.some(
+        (permission) => typeof permission !== 'string' && permission.identifier === 'fs:scope',
+      ),
+    ).toBe(false);
   });
 });

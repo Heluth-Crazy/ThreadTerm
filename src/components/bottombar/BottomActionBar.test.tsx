@@ -37,7 +37,6 @@ describe('BottomActionBarForContext', () => {
     // Bookmarks feature is hidden behind `lib/featureFlags.ts`; the chip
     // must not render in the bottom action bar either.
     expect(screen.queryByTestId('chip-bookmarks')).toBeNull();
-    expect(screen.queryByTestId('chip-workflows')).toBeNull();
     expect(screen.queryByTestId('chip-file-explorer')).toBeNull();
     expect(screen.getByTestId('chip-rich-input')).toBeInTheDocument();
     expect(screen.getByTestId('chip-remote-control')).toBeInTheDocument();
@@ -53,7 +52,6 @@ describe('BottomActionBarForContext', () => {
         onChipActivate={vi.fn()}
       />,
     );
-    expect(screen.queryByTestId('chip-workflows')).toBeNull();
     expect(screen.queryByTestId('chip-file-explorer')).toBeNull();
     expect(screen.queryByTestId('chip-remote-control')).toBeNull();
   });
@@ -71,8 +69,8 @@ describe('BottomActionBarForContext', () => {
     const first = screen.getByTestId('chip-notifications');
     first.focus();
     fireEvent.keyDown(first, { key: 'ArrowRight' });
-    // With the bookmarks chip hidden the next focusable chip is rich-input
-    // (workflows / file-explorer are also hidden in this context).
+    // With the bookmarks and file-explorer chips hidden the next focusable
+    // chip is rich-input.
     expect(document.activeElement).toBe(screen.getByTestId('chip-rich-input'));
   });
 
@@ -190,7 +188,6 @@ describe('BottomActionBarForContext', () => {
           chips={[
             { id: 'notifications', labelKey: 'bottomBar.notifications', iconKey: 'bell' },
             { id: 'bookmarks', labelKey: 'bottomBar.bookmarks', iconKey: 'star' },
-            { id: 'workflows', labelKey: 'bottomBar.workflows', iconKey: 'workflow' },
             { id: 'file-explorer', labelKey: 'bottomBar.fileExplorer', iconKey: 'folder' },
             { id: 'rich-input', labelKey: 'bottomBar.richInput', iconKey: 'message' },
             { id: 'remote-control', labelKey: 'bottomBar.remoteControl', iconKey: 'phone' },

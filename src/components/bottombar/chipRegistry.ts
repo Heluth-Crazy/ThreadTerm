@@ -2,8 +2,8 @@
  * Pure chip-registry builder for the focus-mode bottom action bar
  * (Stage 6 §Decision 5).
  *
- * The plan originally locked six chips: notifications, bookmarks,
- * workflows, file-explorer, rich-input, remote-control. The builder maps a
+ * The plan originally locked five chips: notifications, bookmarks,
+ * file-explorer, rich-input, remote-control. The builder maps a
  * minimal context (cwd, bridge availability, bookmark and unread counts)
  * into ordered, typed descriptors, then applies the current product-level
  * visibility filter. The renderer maps the `iconKey` strings to Lucide icons;
@@ -19,12 +19,11 @@ import { BOOKMARKS_VISIBLE } from '../../lib/featureFlags';
 export type ChipId =
   | 'notifications'
   | 'bookmarks'
-  | 'workflows'
   | 'file-explorer'
   | 'rich-input'
   | 'remote-control';
 
-export type ChipIconKey = 'bell' | 'star' | 'workflow' | 'folder' | 'message' | 'phone';
+export type ChipIconKey = 'bell' | 'star' | 'folder' | 'message' | 'phone';
 
 export interface ChipDescriptor {
   id: ChipId;
@@ -52,7 +51,6 @@ export interface ChipContext {
 }
 
 const HIDDEN_BOTTOM_ACTION_CHIPS: ReadonlySet<ChipId> = new Set<ChipId>([
-  'workflows',
   'file-explorer',
 ]);
 
@@ -77,10 +75,6 @@ export function buildChipRegistry(ctx: ChipContext): ChipDescriptor[] {
       iconKey: 'star',
       badge: ctx.bookmarkCount > 0 ? ctx.bookmarkCount : undefined,
     });
-  }
-
-  if (shouldRenderChip('workflows')) {
-    out.push({ id: 'workflows', labelKey: 'bottomBar.workflows', iconKey: 'workflow' });
   }
 
   if (ctx.cardCwd && shouldRenderChip('file-explorer')) {

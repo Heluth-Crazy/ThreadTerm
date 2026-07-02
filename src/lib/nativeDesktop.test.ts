@@ -19,14 +19,23 @@ describe('native desktop platform helpers', () => {
 });
 
 describe('initial platform material decision', () => {
-  it('defaults enabled on supported platforms when env is unset', () => {
+  it('defaults enabled on macOS and disabled on Windows when env is unset', () => {
     expect(resolveInitialPlatformMaterial('macos', undefined)).toBe(true);
-    expect(resolveInitialPlatformMaterial('windows', undefined)).toBe(true);
+    expect(resolveInitialPlatformMaterial('windows', undefined)).toBe(false);
   });
 
-  it('stays enabled for explicit enable or unknown env tokens', () => {
+  it('macOS stays enabled for explicit enable or unknown env tokens', () => {
     for (const value of ['1', 'true', 'on', 'yes', 'anything']) {
       expect(resolveInitialPlatformMaterial('macos', value)).toBe(true);
+    }
+  });
+
+  it('Windows enables only on explicit enable tokens', () => {
+    for (const value of ['1', 'true', 'on', 'yes', ' YES ']) {
+      expect(resolveInitialPlatformMaterial('windows', value)).toBe(true);
+    }
+    for (const value of ['anything', 'material', '']) {
+      expect(resolveInitialPlatformMaterial('windows', value)).toBe(false);
     }
   });
 
@@ -134,7 +143,7 @@ describe('native chrome text and spelling policy', () => {
 });
 
 describe('overlay render-loop keep-warm', () => {
-  it('schedules no-op animation frames until cleanup', () => {
+  function makeHost() {
     const callbacks: FrameRequestCallback[] = [];
     const host = {
       requestAnimationFrame: vi.fn((callback: FrameRequestCallback) => {
@@ -143,8 +152,30 @@ describe('overlay render-loop keep-warm', () => {
       }),
       cancelAnimationFrame: vi.fn(),
     };
+    return { callbacks, host };
+  }
 
-    const cleanup = installOverlayKeepWarmLoop(host);
+  function makeDoc(initial: DocumentVisibilityState): Document {
+    const doc = document.implementation.createHTMLDocument();
+    let visibility = initial;
+    Object.defineProperty(doc, 'visibilityState', {
+      get: () => visibility,
+      configurable: true,
+    });
+    (doc as Document & { setVisibility: (v: DocumentVisibilityState) => void }).setVisibility = (
+      v,
+    ) => {
+      visibility = v;
+      doc.dispatchEvent(new Event('visibilitychange'));
+    };
+    return doc;
+  }
+
+  it('schedules no-op animation frames while visible until cleanup', () => {
+    const { callbacks, host } = makeHost();
+    const doc = makeDoc('visible');
+
+    const cleanup = installOverlayKeepWarmLoop(host, doc);
 
     expect(host.requestAnimationFrame).toHaveBeenCalledTimes(1);
     callbacks[0](0);
@@ -154,5 +185,34 @@ describe('overlay render-loop keep-warm', () => {
     expect(host.cancelAnimationFrame).toHaveBeenCalledWith(2);
     callbacks[1](16);
     expect(host.requestAnimationFrame).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not start while hidden and pauses/resumes with visibility', () => {
+    const { callbacks, host } = makeHost();
+    const doc = makeDoc('hidden');
+    const setVisibility = (doc as Document & {
+      setVisibility: (v: DocumentVisibilityState) => void;
+    }).setVisibility;
+
+    const cleanup = installOverlayKeepWarmLoop(host, doc);
+    expect(host.requestAnimationFrame).not.toHaveBeenCalled();
+
+    setVisibility('visible');
+    expect(host.requestAnimationFrame).toHaveBeenCalledTimes(1);
+    callbacks[0](0);
+    expect(host.requestAnimationFrame).toHaveBeenCalledTimes(2);
+
+    setVisibility('hidden');
+    expect(host.cancelAnimationFrame).toHaveBeenCalledWith(2);
+    callbacks[1](16);
+    expect(host.requestAnimationFrame).toHaveBeenCalledTimes(2);
+
+    setVisibility('visible');
+    expect(host.requestAnimationFrame).toHaveBeenCalledTimes(3);
+
+    cleanup();
+    expect(host.cancelAnimationFrame).toHaveBeenCalledWith(3);
+    setVisibility('visible');
+    expect(host.requestAnimationFrame).toHaveBeenCalledTimes(3);
   });
 });

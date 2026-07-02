@@ -43,18 +43,6 @@ import { useStatsAutoRefresh, useStatsSubscription } from '../../stores/statsSto
 import { CommandPalette } from '../palette/CommandPalette';
 import { buildCommandRegistry, type CommandGroup } from '../palette/commandRegistry';
 import { BlockSearchPanel } from '../search/BlockSearchPanel';
-import { WorkflowArgsDialog } from '../workflows/WorkflowArgsDialog';
-import { ImportWorkflowDialog } from '../workflows/ImportWorkflowDialog';
-import { interpolateWorkflow, type InterpolationValues } from '../../lib/workflows/interpolateWorkflow';
-import { resolveWorkflowCwd } from '../../lib/workflows/dedupWorkflows';
-import { useWorkflows } from '../../lib/workflows/useWorkflows';
-import {
-  missingDefaultArgs,
-  workflowAiIntent,
-  workflowTerminalType,
-} from '../../lib/workflows/workflowRun';
-import type { DiscoveredWorkflow } from '../../lib/workflows/discoverWorkflows';
-import type { WorkflowImportPlan } from '../../lib/workflows/importWorkflow';
 import type { TerminalCard, TerminalCreateOptions, TerminalStatus, TerminalType } from '../../types/terminal';
 import { useSupervisor } from '../../lib/supervisor/useSupervisor';
 import { git, isTauriEnv, mobileBridge, providerSessions, type GitStatusEntry } from '../../lib/tauri-bridge';
@@ -257,7 +245,6 @@ export function TerminalManager() {
   const pushNotification = useTerminalStore((s) => s.pushNotification);
   const dockPinned = useTerminalStore((s) => s.dockPinned);
   const toggleDockPin = useTerminalStore((s) => s.toggleDockPin);
-  const { workflows, reload: reloadWorkflows } = useWorkflows();
 
   // AI Supervisor v0.1 — single mount point in the React tree. Hook is a no-op
   // when `supervisorEnabled` is false, so this is safe to call unconditionally.
@@ -321,14 +308,6 @@ export function TerminalManager() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteInitialGroup, setPaletteInitialGroup] = useState<CommandGroup | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [workflowArgs, setWorkflowArgs] = useState<{
-    workflow: DiscoveredWorkflow;
-    missingArgs: string[];
-  } | null>(null);
-  const [importWorkflow, setImportWorkflow] = useState<{
-    projectPath: string;
-    projectName: string;
-  } | null>(null);
 
   // Shortcut hint: dismissible, persisted across sessions. Once the user
   // closes it, never show again unless they wipe localStorage.
@@ -918,129 +897,11 @@ export function TerminalManager() {
     [restoreArchivedCard],
   );
 
-  const getWorkflowProjectContext = useCallback(
-    (workflow: DiscoveredWorkflow) => {
-      const selectedCard = selectedProjectPath
-        ? cards.find((card) => card.projectPath === selectedProjectPath)
-        : undefined;
-      const sourceCard = focusedCard ?? selectedCard ?? visibleCards[0] ?? cards[0];
-      const fallbackPath = selectedProjectPath ?? sourceCard?.projectPath ?? null;
-      if (!fallbackPath) {
-        return null;
-      }
-      return {
-        projectPath: fallbackPath,
-        projectName:
-          sourceCard?.projectPath === fallbackPath
-            ? sourceCard.projectName
-            : pathBasename(fallbackPath),
-        cwd: resolveWorkflowCwd(workflow.cwd, fallbackPath),
-      };
-    },
-    [cards, focusedCard, selectedProjectPath, visibleCards],
-  );
-
-  const createWorkflowCard = useCallback(
-    (workflow: DiscoveredWorkflow, command: string) => {
-      const context = getWorkflowProjectContext(workflow);
-      if (!context) {
-        pushNotification({
-          cardId: 'system:workflows',
-          kind: 'failed',
-          title: t('workflow.runWorkflow', { defaultValue: 'Run workflow' }),
-          body: t('workflow.noProject', {
-            defaultValue: 'Select a project before running a workflow.',
-          }),
-        });
-        return;
-      }
-
-      const id = createCard({
-        projectName: context.projectName,
-        projectPath: context.projectPath,
-        worktreePath: context.cwd !== context.projectPath ? context.cwd : undefined,
-        terminalType: workflowTerminalType(workflow),
-        command,
-      });
-      const intent = workflowAiIntent(workflow);
-      if (intent) updateCardAiIntent(id, intent);
-      selectProject(context.projectPath);
-      focusCard(id);
-      setViewMode('focus');
-    },
-    [
-      createCard,
-      focusCard,
-      getWorkflowProjectContext,
-      pushNotification,
-      selectProject,
-      t,
-      updateCardAiIntent,
-    ],
-  );
-
-  const handleRunWorkflow = useCallback(
-    (workflow: DiscoveredWorkflow, values?: InterpolationValues) => {
-      if (!values) {
-        const missingDefaults = missingDefaultArgs(workflow);
-        if (missingDefaults.length > 0) {
-          setWorkflowArgs({ workflow, missingArgs: missingDefaults });
-          return;
-        }
-      }
-
-      const result = interpolateWorkflow(workflow, values);
-      if (result.kind === 'missing') {
-        setWorkflowArgs({ workflow, missingArgs: result.missingArgs });
-        return;
-      }
-      createWorkflowCard(workflow, result.command);
-      setWorkflowArgs(null);
-      setPaletteOpen(false);
-    },
-    [createWorkflowCard],
-  );
-
-  const handleOpenWorkflowPalette = useCallback(() => {
-    setPaletteInitialGroup('run-workflow');
-    setPaletteOpen(true);
-  }, []);
-
-  const handleOpenImportWorkflow = useCallback(
-    (projectPath: string, projectName: string) => {
-      setImportWorkflow({
-        projectPath,
-        projectName: projectName || pathBasename(projectPath),
-      });
-    },
-    [],
-  );
-
   const handleOpenSettings = useCallback((tab: SettingsTab = 'shortcuts') => {
     void openSettingsWindow(tab).catch((error) => {
       console.warn('[settings] failed to open settings window', error);
     });
   }, []);
-
-  const handleWorkflowImported = useCallback(
-    (plan: WorkflowImportPlan) => {
-      pushNotification({
-        cardId: 'system:workflows',
-        kind: 'completed',
-        title: t('workflow.importWorkflowTitle', {
-          defaultValue: 'Import workflow from URL',
-        }),
-        body: t('workflow.importWorkflowSuccess', {
-          count: plan.workflows.length,
-          file: plan.targetFileName,
-          defaultValue: 'Imported {{count}} workflow(s) to {{file}}.',
-        }),
-      });
-      setImportWorkflow(null);
-      reloadWorkflows();
-    },
-    [pushNotification, reloadWorkflows, t],
-  );
 
   // Stage 5.2 — palette entries derived from current store snapshot.
   const paletteProjects = useMemo(
@@ -1053,14 +914,12 @@ export function TerminalManager() {
         cards,
         blocks,
         projects: paletteProjects,
-        workflows,
         focusedCardId,
         actions: {
           focusCard,
           selectProject,
           selectBlock,
           toggleNotificationCentre,
-          runWorkflow: handleRunWorkflow,
           updateCardAiIntent,
           openSettings: handleOpenSettings,
         },
@@ -1069,11 +928,9 @@ export function TerminalManager() {
       cards,
       blocks,
       paletteProjects,
-      workflows,
       focusedCardId,
       focusCard,
       handleOpenSettings,
-      handleRunWorkflow,
       selectProject,
       selectBlock,
       updateCardAiIntent,
@@ -1207,7 +1064,6 @@ export function TerminalManager() {
         isMobile && !sidebarOpen ? '-translate-x-full' : 'translate-x-0'
       ].join(' ')}>
         <ProjectSidebar
-          onImportWorkflow={handleOpenImportWorkflow}
           onCloseMobile={() => setSidebarOpen(false)}
           onCreateTerminal={() => setCreateOpen(true)}
           onOpenMobileAccess={() => setMobileViewActive(true)}
@@ -1431,7 +1287,6 @@ export function TerminalManager() {
                   onOpenBookmarks={
                     BOOKMARKS_VISIBLE ? () => toggleRightPanel('bookmarks') : undefined
                   }
-                  onOpenWorkflows={handleOpenWorkflowPalette}
                   onOpenSettings={handleOpenSettings}
                 />
               </div>
@@ -1561,25 +1416,6 @@ export function TerminalManager() {
         }}
       />
 
-      <WorkflowArgsDialog
-        open={workflowArgs !== null}
-        workflow={workflowArgs?.workflow ?? null}
-        missingArgs={workflowArgs?.missingArgs ?? []}
-        onCancel={() => setWorkflowArgs(null)}
-        onSubmit={(values) => {
-          if (!workflowArgs) return;
-          handleRunWorkflow(workflowArgs.workflow, values);
-        }}
-      />
-
-      <ImportWorkflowDialog
-        open={importWorkflow !== null}
-        projectName={importWorkflow?.projectName ?? ''}
-        projectPath={importWorkflow?.projectPath ?? ''}
-        onCancel={() => setImportWorkflow(null)}
-        onImported={handleWorkflowImported}
-      />
-
       {/* Cross-session block search (Cmd/Ctrl+F) */}
       <BlockSearchPanel
         open={searchOpen}
@@ -1595,7 +1431,6 @@ export function TerminalManager() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreate={handleCreate}
-        onImportWorkflow={handleOpenImportWorkflow}
         recentProjects={recentProjects}
       />
 

@@ -26,7 +26,6 @@ const GROUP_ORDER: CommandGroup[] = [
   'jump-card',
   'jump-block',
   'switch-project',
-  'run-workflow',
   'change-intent',
   'toggle-overlay',
   'settings',

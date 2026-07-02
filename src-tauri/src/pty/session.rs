@@ -132,7 +132,7 @@ pub(super) fn should_idle_after_quiet(
             .unwrap_or(false)
 }
 
-fn resize_output_activity_suppressed(session: &PtySession, now: Instant) -> bool {
+pub(super) fn resize_output_activity_suppressed(session: &PtySession, now: Instant) -> bool {
     session
         .suppress_output_activity_until
         .lock()

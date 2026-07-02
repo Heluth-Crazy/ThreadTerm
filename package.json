@@ -29,7 +29,8 @@
     "release": "./release.sh",
     "prepublishOnly": "npm run build",
     "tauri:dev": "cargo tauri dev",
-    "tauri:build": "cargo tauri build"
+    "tauri:build": "cargo tauri build",
+    "tauri:build:windows": "npx tauri build --config src-tauri/tauri.windows.conf.json --bundles nsis"
   },
   "keywords": [
     "threadterm",
@@ -63,9 +64,7 @@
     "@tauri-apps/cli": "2.10.1",
     "@tauri-apps/plugin-dialog": "^2.7.0",
     "@tauri-apps/plugin-fs": "^2.5.1",
-    "@tauri-apps/plugin-http": "^2.5.9",
     "@tauri-apps/plugin-notification": "^2.3.3",
-    "@tauri-apps/plugin-shell": "^2.3.5",
     "@uiw/react-codemirror": "^4.25.10",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.11.0",
@@ -76,7 +75,6 @@
     "framer-motion": "^12.38.0",
     "i18next": "^25.7.4",
     "i18next-browser-languagedetector": "^8.2.0",
-    "js-yaml": "^4.1.1",
     "lucide-react": "^0.515.0",
     "qrcode.react": "^4.2.0",
     "react": "^18.2.0",
@@ -90,7 +88,6 @@
     "@release-it/conventional-changelog": "^10.0.5",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
-    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.19.17",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",

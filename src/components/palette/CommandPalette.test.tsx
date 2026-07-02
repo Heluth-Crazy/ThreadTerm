@@ -33,10 +33,10 @@ function makeEntries(): CommandEntry[] {
       run: vi.fn(),
     },
     {
-      id: 'workflow',
-      label: 'Deploy workflow',
-      searchText: 'run workflow deploy',
-      group: 'run-workflow',
+      id: 'settings',
+      label: 'Settings · Appearance',
+      searchText: 'settings appearance',
+      group: 'settings',
       run: vi.fn(),
     },
   ];
@@ -86,12 +86,12 @@ describe('CommandPalette', () => {
       <CommandPalette
         open={true}
         entries={makeEntries()}
-        initialGroup="run-workflow"
+        initialGroup="settings"
         onClose={vi.fn()}
       />,
     );
-    const workflow = screen.getByText('Deploy workflow').closest('[role="option"]');
-    expect(workflow?.getAttribute('aria-selected')).toBe('true');
+    const settings = screen.getByText('Settings · Appearance').closest('[role="option"]');
+    expect(settings?.getAttribute('aria-selected')).toBe('true');
   });
 
   it('wraps selection with ArrowUp from index 0', () => {

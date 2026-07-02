@@ -30,145 +30,13 @@ Questions to answer:
 
 ## Required Patterns
 
-### Scenario: Workflow YAML Files via Tauri FS
-
-#### 1. Scope / Trigger
-- Trigger: Any frontend feature that reads or writes workflow files on disk.
-- Applies to `src/lib/workflows/**`, workflow UI components, and Tauri capability changes.
-
-#### 2. Signatures
-- `loadAllWorkflows(focusedProjectCwd: string | null): Promise<DiscoveryResult>`
-- `loadProjectPresetWorkflows(projectCwd: string): Promise<DiscoveryResult>`
-- `discoverWorkflows(fs, { globalDir, projectDir }): Promise<{ workflows, errors }>`
-- `ensureDir(path: string): Promise<void>`
-
-#### 3. Contracts
-- Global workflow dir: `~/.threadterm/workflows/`.
-- Project workflow dir: `<projectCwd>/.threadterm/workflows/`.
-- Tauri capability scope must include those two directory families.
-- Allowed frontend fs calls for this contract: `readDir`, `readTextFile`, `stat`, `mkdir`.
-- Do not add `exists()` unless `src-tauri/capabilities/default.json` also grants the matching fs permission.
-
-#### 4. Validation & Error Matrix
-- Missing workflow directory -> empty result, no notification.
-- YAML parse failure in one file -> keep other files, emit `parse-failed`.
-- Same-source duplicate workflow name -> keep first, emit `duplicate-name`.
-- File size greater than 256KB -> skip file, emit `too-large`.
-- Permission/read failure -> emit `read-failed`.
-
-#### 5. Good/Base/Bad Cases
-- Good: project workflow with same `name` overrides global workflow.
-- Base: no global or project workflow directory returns no workflows.
-- Bad: one invalid YAML file must not abort discovery for valid files.
-
-#### 6. Tests Required
-- Parser tests for required fields, unknown field dropping, multi-document YAML, malformed YAML.
-- Discovery tests for missing dirs, per-file failures, duplicate names, project override, file size cap.
-- Apply preset tests for `(resolved cwd, interpolated command)` dedup and missing-argument skips.
-- UI tests for workflow argument modal and apply preset diff states.
-
-#### 7. Wrong vs Correct
-
-Wrong:
-```typescript
-import { exists } from '@tauri-apps/plugin-fs';
-
-if (!(await exists(dir))) {
-  await mkdir(dir, { recursive: true });
-}
-```
-
-Correct:
-```typescript
-await mkdir(dir, { recursive: true });
-```
-
-The correct version stays inside the currently granted fs capability set and
-avoids a runtime permission denial.
-
-### Scenario: Workflow URL Import via Tauri HTTP
-
-#### 1. Scope / Trigger
-- Trigger: Any frontend feature that downloads workflow YAML from a remote URL.
-- Applies to `src/lib/workflows/importWorkflow.ts`,
-  `src/lib/workflows/tauriWorkflowImport.ts`, workflow import UI components,
-  and Tauri capability / plugin changes.
-
-#### 2. Signatures
-- `fetchWorkflowImportText(rawUrl, fetcher): Promise<WorkflowImportResult<WorkflowImportFetchedText>>`
-- `parseWorkflowImportText(sourceUrl, yamlText): WorkflowImportResult<ParsedWorkflowImport>`
-- `previewProjectWorkflowUrlImport(rawUrl, projectCwd): Promise<WorkflowImportResult<WorkflowImportPlan>>`
-- `saveProjectWorkflowImportPlan(plan): Promise<void>`
-
-#### 3. Contracts
-- Network must use `@tauri-apps/plugin-http` from the Tauri desktop app, not
-  browser `window.fetch`.
-- Rust backend must register `.plugin(tauri_plugin_http::init())`.
-- `src-tauri/capabilities/default.json` must include `http:default` with HTTPS
-  URL scope and fs write permission for workflow directories.
-- Import target for Stage 7.2 is project-only:
-  `<projectCwd>/.threadterm/workflows/<derived-file>.yaml`.
-- Request options:
-  - method: `GET`
-  - `connectTimeout: 10_000`
-  - `maxRedirections: 0`
-- Preserve fetched YAML text on disk; do not regenerate YAML from parsed objects.
-
-#### 4. Validation & Error Matrix
-- Malformed URL -> `invalid-url`, no network call.
-- Non-HTTPS URL -> `unsupported-scheme`, no network call.
-- URL with username/password -> `credentials-not-allowed`, no network call.
-- Network timeout / abort -> `timeout`.
-- Other plugin/network failure -> `fetch-failed`.
-- Non-2xx status -> `http-status`.
-- Empty body -> `empty-body`.
-- Body greater than 256KB -> `too-large`.
-- YAML parse or required-field failure -> `parse-failed`.
-- Existing target file cannot be read -> `read-existing-failed`.
-
-#### 5. Good/Base/Bad Cases
-- Good: `https://raw.githubusercontent.com/.../deploy.yaml` previews one target
-  file and only writes after explicit user confirmation.
-- Base: existing target file previews as `overwrite`; missing target previews as
-  `create`.
-- Bad: `http://example.com/a.yaml` must fail locally before calling the fetcher.
-
-#### 6. Tests Required
-- Pure import tests for URL validation, local http rejection, timeout
-  normalization, non-2xx, body size cap, parse failure, filename derivation, and
-  create/overwrite plan state.
-- Component tests for preview success, save confirmation, and preview error
-  states when import UI has non-trivial state.
-- Full gates: `npm run typecheck`, `npx vitest run`, `npm run build`,
-  `cargo check`, and `cargo test`.
-
-#### 7. Wrong vs Correct
-
-Wrong:
-```typescript
-const response = await window.fetch(url);
-await writeTextFile(targetPath, await response.text());
-```
-
-Correct:
-```typescript
-const result = await previewProjectWorkflowUrlImport(url, projectCwd);
-if (result.kind === 'success') {
-  await saveProjectWorkflowImportPlan(result.value);
-}
-```
-
-The correct version keeps remote access behind Tauri HTTP capabilities, blocks
-non-HTTPS input before network I/O, enforces timeout / redirect / size limits,
-and previews the exact file action before writing.
-
 ### Scenario: Local Directory Reveal via Tauri Command
 
 #### 1. Scope / Trigger
 - Trigger: Any frontend feature that opens a local filesystem directory from the
   desktop app.
-- Applies to project/card reveal buttons, workflow-directory edit actions,
-  bottom-bar file explorer chips, and any future local directory opener.
+- Applies to project/card reveal buttons, bottom-bar file explorer chips, and
+  any future local directory opener.
 
 #### 2. Signatures
 - Frontend: `openLocalDirectory(path: string): Promise<void>`
@@ -192,9 +60,9 @@ and previews the exact file action before writing.
 - Existing absolute directory -> launch platform opener or return opener error.
 
 #### 5. Good/Base/Bad Cases
-- Good: edit project preset ensures `<project>/.threadterm/workflows`, then
-  opens that directory through `openLocalDirectory`.
-- Base: card reveal opens the card project directory only in Tauri.
+- Good: project reveal opens the selected project directory through
+  `openLocalDirectory`.
+- Base: card reveal opens the card working directory only in Tauri.
 - Bad: `shell.open('/Users/example/project')`, because the shell plugin rejects
   local paths and emits scoped argument regex errors.
 
@@ -254,7 +122,8 @@ the Tauri permission boundary narrow.
 #### 5. Good/Base/Bad Cases
 - Good: `tauri info` shows an explicit CSP and app builds still pass.
 - Good: production `script-src` remains strict while `devCsp` has the minimal dev-only `unsafe-inline` needed for Vite React Refresh.
-- Base: existing capability scopes for workflow fs and HTTPS import remain unchanged.
+- Base: removed workflow fs and HTTPS import capabilities stay absent unless a
+  new audited callsite is introduced.
 - Bad: `csp: null`, `connect-src *`, or adding production `script-src 'unsafe-inline'` only to fix a dev-only Vite issue.
 
 #### 6. Tests Required

@@ -3,8 +3,8 @@
  * the focused card view (Stage 6 §Decision 5 / §Task 9).
  *
  * Plan-locked behavior:
- *   • Six chips, ordered notifications → bookmarks → workflows →
- *     file-explorer (gated by `cardCwd`) → rich-input → remote-control
+ *   • Five chips, ordered notifications → bookmarks → file-explorer
+ *     (gated by `cardCwd`) → rich-input → remote-control
  *     (gated by `bridgeAvailable`).
  *   • ArrowLeft / ArrowRight / Home / End move focus among visible
  *     chips; Enter / Space activate.
@@ -29,7 +29,6 @@ import {
   MoreHorizontal,
   Smartphone,
   Star,
-  Workflow,
   type LucideIcon,
 } from 'lucide-react';
 import { buildChipRegistry, type ChipDescriptor, type ChipIconKey, type ChipId } from './chipRegistry';
@@ -50,7 +49,6 @@ interface ContextProps extends Omit<Props, 'chips'> {
 
 const STATIC_ICONS: Record<Exclude<ChipIconKey, 'bell'>, LucideIcon> = {
   star: Star,
-  workflow: Workflow,
   folder: FolderOpen,
   message: MessageSquare,
   phone: Smartphone,

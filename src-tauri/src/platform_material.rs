@@ -72,23 +72,48 @@ fn platform_material_enabled() -> bool {
         .iter()
         .map(|key| std::env::var(key).ok())
         .collect();
-    material_enabled_from_env(&values)
+    material_enabled_from_env(&values, default_material_enabled())
 }
 
-/// Platform material defaults to ON. It is disabled only when an env value is
-/// explicitly set to a disable token. Disable wins: if any recognized env key
-/// is explicitly off, material is disabled even if the other key is unset or on.
-fn material_enabled_from_env(values: &[Option<String>]) -> bool {
-    !values
-        .iter()
-        .filter_map(|value| value.as_deref())
-        .any(env_value_disables)
+/// Windows defaults material OFF: transparent windows force WebView2 into the
+/// slower visuals-based composition path, which measurably degrades terminal
+/// and diff scrolling and inflates the GPU process. macOS vibrancy is
+/// window-server native and effectively free, so it stays default ON.
+#[cfg(target_os = "windows")]
+fn default_material_enabled() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_material_enabled() -> bool {
+    true
+}
+
+/// Resolves the material gate from env values against the platform default.
+/// Disable wins over enable; an explicit enable token overrides a default-off
+/// platform; unset/unknown values fall through to the default.
+fn material_enabled_from_env(values: &[Option<String>], default_enabled: bool) -> bool {
+    let tokens: Vec<&str> = values.iter().filter_map(|value| value.as_deref()).collect();
+    if tokens.iter().any(|value| env_value_disables(value)) {
+        return false;
+    }
+    if tokens.iter().any(|value| env_value_enables(value)) {
+        return true;
+    }
+    default_enabled
 }
 
 fn env_value_disables(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "0" | "false" | "off" | "no"
+    )
+}
+
+fn env_value_enables(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "on" | "yes"
     )
 }
 
@@ -180,7 +205,7 @@ fn apply_platform_material(_window: &WebviewWindow) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{env_value_disables, material_enabled_from_env};
+    use super::{env_value_disables, env_value_enables, material_enabled_from_env};
 
     #[test]
     fn recognizes_disable_tokens() {
@@ -197,46 +222,67 @@ mod tests {
     }
 
     #[test]
-    fn defaults_enabled_when_no_env_set() {
-        assert!(material_enabled_from_env(&[None, None]));
-    }
-
-    #[test]
-    fn enabled_for_explicit_enable_tokens() {
-        for value in ["1", "true", "on", "yes"] {
-            assert!(material_enabled_from_env(&[Some(value.to_string()), None]));
+    fn recognizes_enable_tokens() {
+        for value in ["1", "true", "TRUE", "on", "yes", " yes "] {
+            assert!(env_value_enables(value));
         }
     }
 
     #[test]
-    fn enabled_for_unknown_values_since_default_is_on() {
-        assert!(material_enabled_from_env(&[
-            Some("material".to_string()),
-            None
-        ]));
+    fn follows_platform_default_when_no_env_set() {
+        assert!(material_enabled_from_env(&[None, None], true));
+        assert!(!material_enabled_from_env(&[None, None], false));
+    }
+
+    #[test]
+    fn explicit_enable_overrides_default_off() {
+        for value in ["1", "true", "on", "yes"] {
+            assert!(material_enabled_from_env(
+                &[Some(value.to_string()), None],
+                false
+            ));
+        }
+    }
+
+    #[test]
+    fn unknown_values_fall_through_to_default() {
+        assert!(material_enabled_from_env(
+            &[Some("material".to_string()), None],
+            true
+        ));
+        assert!(!material_enabled_from_env(
+            &[Some("material".to_string()), None],
+            false
+        ));
     }
 
     #[test]
     fn disabled_when_any_env_explicitly_off() {
         for value in ["0", "false", "off", "no"] {
-            assert!(!material_enabled_from_env(&[Some(value.to_string()), None]));
+            assert!(!material_enabled_from_env(
+                &[Some(value.to_string()), None],
+                true
+            ));
         }
     }
 
     #[test]
     fn disable_wins_when_one_key_off_and_other_unset() {
-        assert!(!material_enabled_from_env(&[Some("0".to_string()), None]));
-        assert!(!material_enabled_from_env(&[
-            None,
-            Some("false".to_string())
-        ]));
+        assert!(!material_enabled_from_env(
+            &[Some("0".to_string()), None],
+            true
+        ));
+        assert!(!material_enabled_from_env(
+            &[None, Some("false".to_string())],
+            true
+        ));
     }
 
     #[test]
     fn disable_wins_over_enable() {
-        assert!(!material_enabled_from_env(&[
-            Some("1".to_string()),
-            Some("off".to_string())
-        ]));
+        assert!(!material_enabled_from_env(
+            &[Some("1".to_string()), Some("off".to_string())],
+            true
+        ));
     }
 }

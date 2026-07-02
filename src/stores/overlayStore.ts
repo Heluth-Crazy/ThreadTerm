@@ -195,27 +195,31 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
 
       confirmSelector: (cardId) => {
         const { selectorSurface } = get();
+        // Persist floatCardId before the show invoke: a lazily-created float
+        // window misses the `overlay://float-shown` event and boots from the
+        // persisted store value instead.
+        set({
+          selectorOpen: false,
+          floatOpen: true,
+          floatCardId: cardId,
+          floatHiddenByOverlay: false,
+        });
         // Hide selector window (if that's the surface) and open float.
         if (selectorSurface === 'window') {
           void tauriInvoke('overlay_hide_selector');
         }
         void tauriInvoke('overlay_show_float', { cardId });
-        set({
-          selectorOpen: false,
-          floatOpen: true,
-          floatCardId: cardId,
-          floatHiddenByOverlay: false,
-        });
       },
 
       openFloat: (cardId) => {
-        void tauriInvoke('overlay_show_float', { cardId });
+        // Same ordering as confirmSelector: persist before the show invoke.
         set({
           floatOpen: true,
           floatCardId: cardId,
           selectorOpen: false,
           floatHiddenByOverlay: false,
         });
+        void tauriInvoke('overlay_show_float', { cardId });
       },
 
       closeFloat: () => {

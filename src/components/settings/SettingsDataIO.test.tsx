@@ -12,19 +12,10 @@ const mocks = vi.hoisted(() => ({
     setThemePreference: vi.fn(),
     replaceCustomThemePacks: vi.fn(),
   },
-  readGlobalWorkflowBundleFiles: vi.fn(),
-  writeGlobalWorkflowBundleFiles: vi.fn(),
 }));
 
 vi.mock('../../contexts/ThemeContext', () => ({
   useTheme: () => mocks.themeState,
-}));
-
-vi.mock('../../lib/settings/settingsBundleWorkflowIO', () => ({
-  readGlobalWorkflowBundleFiles: (...args: unknown[]) =>
-    mocks.readGlobalWorkflowBundleFiles(...args),
-  writeGlobalWorkflowBundleFiles: (...args: unknown[]) =>
-    mocks.writeGlobalWorkflowBundleFiles(...args),
 }));
 
 vi.mock('react-i18next', async (importOriginal) => {
@@ -60,8 +51,6 @@ beforeEach(() => {
   mocks.themeState.themePacks = [];
   mocks.themeState.setThemePreference.mockReset();
   mocks.themeState.replaceCustomThemePacks.mockReset();
-  mocks.readGlobalWorkflowBundleFiles.mockResolvedValue([]);
-  mocks.writeGlobalWorkflowBundleFiles.mockResolvedValue(undefined);
   useTerminalStore.setState({
     bottomBarHidden: false,
     aiExplainDefaultProvider: 'claude',

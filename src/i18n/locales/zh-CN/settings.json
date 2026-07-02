@@ -60,7 +60,7 @@
   "close": "关闭设置",
   "dataIO": {
     "title": "设置导入与导出",
-    "description": "用一个安全 JSON 文件迁移 ThreadTerm 偏好、自定义主题、悬浮快捷键和全局工作流。",
+    "description": "用一个安全的 JSON 文件迁移 ThreadTerm 偏好、自定义主题和悬浮窗快捷键。",
     "exportJson": "导出设置 JSON",
     "exporting": "导出中...",
     "importJson": "导入设置 JSON",
@@ -71,13 +71,11 @@
     "previewDescription": "选择哪些部分覆盖当前设置。",
     "current": "当前",
     "incoming": "导入",
-    "desktopWorkflowHint": "全局工作流文件只会在桌面端包含。桥接 token、配对设备、审计日志、AI provider key、卡片和终端输出永远不会导出。",
     "sections": {
       "theme": "主题偏好",
       "customThemes": "自定义主题",
       "terminal": "终端偏好",
-      "overlay": "悬浮快捷键",
-      "workflows": "全局工作流"
+      "overlay": "悬浮快捷键"
     },
     "statusLabels": {
       "added": "新增",
@@ -91,7 +89,8 @@
       "importFailed": "设置导入失败：{{message}}",
       "importApplied": "已导入所选设置。",
       "applyFailed": "无法应用设置导入：{{message}}"
-    }
+    },
+    "safetyHint": "桥接 token、配对设备、审计日志、AI provider key、卡片和终端输出永远不会导出。"
   },
   "notifications": {
     "title": "系统通知",
@@ -170,31 +169,31 @@
     "stopped": "未启动",
     "start": "启动",
     "stop": "停止",
-  "refresh": "刷新",
-  "error": "操作失败：{{message}}",
-  "bind": {
-    "label": "桥接监听地址",
-    "loopback": "仅本机",
-    "lan": "局域网 / 所有接口"
-  },
-  "lanConfirm": "将移动端访问绑定到 0.0.0.0 会把 ThreadTerm 桥接流量暴露给当前网络。是否继续？",
-  "confirmLanStart": "确认启动局域网访问",
-  "cancelLanStart": "取消",
-  "listeningAddress": "监听地址：",
-  "docs": {
-    "tailscale": "Tailscale 文档",
-    "cloudflare": "Cloudflare Tunnel 文档"
-  },
-  "pairingTitle": "配对入口",
-  "pairingDescription": "生成 5 分钟有效的一次性配对二维码。用手机扫码，或复制链接作为备用。",
-  "publishHost": {
-    "label": "发布主机覆盖",
-    "placeholder": "可选：手机二维码使用的主机",
-    "hint": "留空时使用自动检测到的局域网地址。Tailscale、隧道或手动局域网主机名可在这里填写。",
-    "current": "二维码主机：",
-    "loopbackWarning": "当前二维码指向本机 loopback。分享给手机前请填写发布主机。"
-  },
-  "qrTitle": "ThreadTerm 移动端配对二维码",
+    "refresh": "刷新",
+    "error": "操作失败：{{message}}",
+    "bind": {
+      "label": "桥接监听地址",
+      "loopback": "仅本机",
+      "lan": "局域网 / 所有接口"
+    },
+    "lanConfirm": "将移动端访问绑定到 0.0.0.0 会把 ThreadTerm 桥接流量暴露给当前网络。是否继续？",
+    "confirmLanStart": "确认启动局域网访问",
+    "cancelLanStart": "取消",
+    "listeningAddress": "监听地址：",
+    "docs": {
+      "tailscale": "Tailscale 文档",
+      "cloudflare": "Cloudflare Tunnel 文档"
+    },
+    "pairingTitle": "配对入口",
+    "pairingDescription": "生成 5 分钟有效的一次性配对二维码。用手机扫码，或复制链接作为备用。",
+    "publishHost": {
+      "label": "发布主机覆盖",
+      "placeholder": "可选：手机二维码使用的主机",
+      "hint": "留空时使用自动检测到的局域网地址。Tailscale、隧道或手动局域网主机名可在这里填写。",
+      "current": "二维码主机：",
+      "loopbackWarning": "当前二维码指向本机 loopback。分享给手机前请填写发布主机。"
+    },
+    "qrTitle": "ThreadTerm 移动端配对二维码",
     "newPairCode": "生成配对码",
     "copyUrl": "复制链接",
     "devicesTitle": "已配对设备",

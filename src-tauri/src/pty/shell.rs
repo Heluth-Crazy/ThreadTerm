@@ -1,6 +1,6 @@
 use portable_pty::CommandBuilder;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use once_cell::sync::Lazy;
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -19,11 +19,20 @@ fn select_windows_shell(has_pwsh: bool, has_powershell: bool) -> &'static str {
     }
 }
 
+/// Which shells are installed can't change while the app is running, but the
+/// `where` probes cost ~0.5-0.8s *each* on a cold PATH scan — and they used to
+/// run inside PTY_SPAWN_LOCK on every pty_create, serializing multi-card
+/// startup into multi-second delays before the first prompt appeared. Probe
+/// once, reuse forever.
+#[cfg(target_os = "windows")]
+static WINDOWS_SHELL: Lazy<&'static str> =
+    Lazy::new(|| select_windows_shell(which_exists("pwsh.exe"), which_exists("powershell.exe")));
+
 /// Returns the default shell for the current platform.
 pub(super) fn default_shell() -> String {
     #[cfg(target_os = "windows")]
     {
-        select_windows_shell(which_exists("pwsh.exe"), which_exists("powershell.exe")).to_string()
+        (*WINDOWS_SHELL).to_string()
     }
     #[cfg(not(target_os = "windows"))]
     {

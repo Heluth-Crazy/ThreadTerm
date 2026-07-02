@@ -18,10 +18,6 @@ import {
   type SettingsBundleSectionId,
 } from '../../lib/settings/settingsBundle';
 import type { ThemePack } from '../../theme/themeTypes';
-import {
-  readGlobalWorkflowBundleFiles,
-  writeGlobalWorkflowBundleFiles,
-} from '../../lib/settings/settingsBundleWorkflowIO';
 
 type StatusState = {
   kind: 'success' | 'error';
@@ -38,7 +34,6 @@ const SECTION_DEFAULT_LABELS: Record<SettingsBundleSectionId, string> = {
   customThemes: 'Custom themes',
   terminal: 'Terminal preferences',
   overlay: 'Overlay hotkeys',
-  workflows: 'Global workflows',
 };
 
 const STATUS_DEFAULT_LABELS = {
@@ -90,7 +85,6 @@ export function SettingsDataIO() {
       customThemePacks: (themePacks as ThemePack[]).filter((pack) => pack.isCustom),
       terminalSettings: { bottomBarHidden, aiExplainDefaultProvider, osNotificationsEnabled },
       overlaySettings: { selectorMode, hotkeyA, hotkeyB },
-      workflowFiles: await readGlobalWorkflowBundleFiles(),
     });
 
   const handleExport = async () => {
@@ -198,10 +192,6 @@ export function SettingsDataIO() {
         await updateHotkey('A', sections.overlay.hotkeyA);
         await updateHotkey('B', sections.overlay.hotkeyB);
       }
-      if (selected.has('workflows') && sections.workflows) {
-        await writeGlobalWorkflowBundleFiles(sections.workflows.global);
-      }
-
       setPendingImport(null);
       setSelectedSections([]);
       setStatus({
@@ -238,7 +228,7 @@ export function SettingsDataIO() {
           <p className="mt-1 text-sm leading-5 text-muted-foreground">
             {t('dataIO.description', {
               defaultValue:
-                'Move ThreadTerm preferences, custom themes, overlay hotkeys, and global workflows with one safe JSON file.',
+                'Move ThreadTerm preferences, custom themes, and overlay hotkeys with one safe JSON file.',
             })}
           </p>
         </div>
@@ -275,9 +265,9 @@ export function SettingsDataIO() {
       </div>
 
       <p className="mt-3 text-xs leading-5 text-muted-foreground">
-        {t('dataIO.desktopWorkflowHint', {
+        {t('dataIO.safetyHint', {
           defaultValue:
-            'Global workflow files are included only in the desktop app. Bridge tokens, paired devices, audit logs, provider keys, cards, and terminal output are never exported.',
+            'Bridge tokens, paired devices, audit logs, provider keys, cards, and terminal output are never exported.',
         })}
       </p>
 

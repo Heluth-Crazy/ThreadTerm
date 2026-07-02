@@ -29,7 +29,7 @@ export default defineConfig(({ command, mode }) => {
     build: {
       outDir: 'dist',
       chunkSizeWarningLimit: 1000,
-      sourcemap: true,
+      sourcemap: false,
       rollupOptions: {
         // Multi-page build — each HTML entry becomes its own bundle served
         // by Tauri. `main` is the primary window; `selector` and `float`

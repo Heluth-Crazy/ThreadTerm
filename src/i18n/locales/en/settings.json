@@ -60,7 +60,7 @@
   "close": "Close settings",
   "dataIO": {
     "title": "Settings import and export",
-    "description": "Move ThreadTerm preferences, custom themes, overlay hotkeys, and global workflows with one safe JSON file.",
+    "description": "Move ThreadTerm preferences, custom themes, and overlay hotkeys with one safe JSON file.",
     "exportJson": "Export settings JSON",
     "exporting": "Exporting...",
     "importJson": "Import settings JSON",
@@ -71,13 +71,11 @@
     "previewDescription": "Choose which sections should overwrite your current setup.",
     "current": "Current",
     "incoming": "Import",
-    "desktopWorkflowHint": "Global workflow files are included only in the desktop app. Bridge tokens, paired devices, audit logs, provider keys, cards, and terminal output are never exported.",
     "sections": {
       "theme": "Theme preference",
       "customThemes": "Custom themes",
       "terminal": "Terminal preferences",
-      "overlay": "Overlay hotkeys",
-      "workflows": "Global workflows"
+      "overlay": "Overlay hotkeys"
     },
     "statusLabels": {
       "added": "New",
@@ -91,7 +89,8 @@
       "importFailed": "Settings import failed: {{message}}",
       "importApplied": "Selected settings were imported.",
       "applyFailed": "Could not apply settings import: {{message}}"
-    }
+    },
+    "safetyHint": "Bridge tokens, paired devices, audit logs, provider keys, cards, and terminal output are never exported."
   },
   "notifications": {
     "title": "System notifications",

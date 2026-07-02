@@ -11,7 +11,7 @@
  */
 import { useMemo, useState, type FormEvent } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
-import { Download, Folder, FolderOpen, Terminal, X } from 'lucide-react';
+import { Folder, FolderOpen, Terminal, X } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { terminalTypeMeta } from './terminalTypeMeta';
@@ -34,7 +34,6 @@ interface CreateTerminalDialogProps {
   open: boolean;
   onClose: () => void;
   onCreate: (options: TerminalCreateOptions) => void;
-  onImportWorkflow?: (projectPath: string, projectName: string) => void;
   recentProjects?: RecentProject[];
 }
 
@@ -44,7 +43,6 @@ export function CreateTerminalDialog({
   open,
   onClose,
   onCreate,
-  onImportWorkflow,
   recentProjects = [],
 }: CreateTerminalDialogProps) {
   const { t } = useTranslation('terminal');
@@ -55,7 +53,6 @@ export function CreateTerminalDialog({
   const [command, setCommand] = useState('');
 
   const canSubmit = name.trim().length > 0 && path.trim().length > 0;
-  const canImportWorkflow = path.trim().length > 0 && isTauriEnv();
 
   const uniqueProjects = useMemo(() => {
     const seen = new Set<string>();
@@ -119,12 +116,6 @@ export function CreateTerminalDialog({
       // eslint-disable-next-line no-console
       console.warn('[CreateTerminalDialog] folder picker failed:', err);
     }
-  };
-
-  const handleImportWorkflow = () => {
-    const projectPath = path.trim();
-    if (!projectPath) return;
-    onImportWorkflow?.(projectPath, name.trim() || pathBasename(projectPath));
   };
 
   if (!open) return null;
@@ -278,23 +269,7 @@ export function CreateTerminalDialog({
 
               {/* Footer */}
               <div className="flex items-center justify-between gap-2 border-t border-white/10 bg-muted/30 px-5 py-3">
-                <button
-                  type="button"
-                  onClick={handleImportWorkflow}
-                  disabled={!canImportWorkflow || !onImportWorkflow}
-                  title={
-                    isTauriEnv()
-                      ? t('workflow.importWorkflow', {
-                          defaultValue: 'Import workflow from URL...',
-                        })
-                      : t('dialog.browseDesktopOnly')
-                  }
-                  className="inline-flex items-center gap-1.5 rounded-[var(--radius-md)] px-2.5 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  {t('workflow.importWorkflowShort', { defaultValue: 'Import workflow' })}
-                </button>
-                <div className="flex items-center justify-end gap-2">
+                <div className="ml-auto flex items-center justify-end gap-2">
                   <button
                     type="button"
                     onClick={onClose}

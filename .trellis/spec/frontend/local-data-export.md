@@ -9,7 +9,7 @@
 ### 1. Scope / Trigger
 - Trigger: Any frontend feature that exports or imports app settings.
 - Applies to `src/lib/settings/**`, Settings data UI, theme preference state,
-  terminal preference state, overlay hotkey settings, and workflow YAML bundles.
+  terminal preference state, and overlay hotkey settings.
 
 ### 2. Signatures
 - `buildSettingsBundle(input): SettingsBundle`
@@ -23,8 +23,8 @@
   full `localStorage`, bridge state, paired device state, audit logs, provider
   keys, or provider session internals.
 - Import must preview a diff and apply only user-selected sections.
-- Workflow data must be exported as portable YAML file contents, not absolute
-  local file paths.
+- Removed workflow sections from older settings bundles must be ignored rather
+  than applied.
 
 ### 4. Validation & Error Matrix
 - Invalid JSON -> parse failure before state changes.
@@ -34,8 +34,8 @@
   value.
 
 ### 5. Good/Base/Bad Cases
-- Good: a user can move theme, custom themes, terminal focus preferences,
-  overlay hotkeys, and workflow YAML to another machine.
+- Good: a user can move theme, custom themes, terminal focus preferences, and
+  overlay hotkeys to another machine.
 - Base: an empty optional section produces no changes.
 - Bad: bridge tokens, paired devices, provider keys, provider sessions, audit
   records, and raw stores must not appear in exported JSON.
@@ -62,7 +62,6 @@ const bundle = buildSettingsBundle({
   customThemes,
   terminalFocusPreferences,
   overlayHotkeys,
-  workflowFiles,
 });
 ```
 

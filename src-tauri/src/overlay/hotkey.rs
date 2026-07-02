@@ -5,7 +5,7 @@ use once_cell::sync::Lazy;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
-use super::commands::{overlay_hide_selector, overlay_show_main, overlay_show_selector};
+use super::commands::{overlay_hide_selector, overlay_show_main, show_selector_impl};
 use super::state::OVERLAY_SETTINGS;
 use super::window::SELECTOR_LABEL;
 
@@ -141,7 +141,7 @@ fn toggle_selector_window(app: &AppHandle) {
         if let Err(e) = overlay_hide_selector(app.clone()) {
             tracing::warn!(error = %e, "overlay_hide_selector failed on hotkey toggle");
         }
-    } else if let Err(e) = overlay_show_selector(app.clone()) {
-        tracing::warn!(error = %e, "overlay_show_selector failed on hotkey toggle");
+    } else if let Err(e) = show_selector_impl(app) {
+        tracing::warn!(error = %e, "show_selector_impl failed on hotkey toggle");
     }
 }

@@ -49,6 +49,11 @@ function envValueDisables(value: string | undefined): boolean {
   return normalized === '0' || normalized === 'false' || normalized === 'off' || normalized === 'no';
 }
 
+function envValueEnables(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
+}
+
 export function detectNativePlatform(source: PlatformSource = navigator as PlatformSource): NativePlatform {
   const platformText = [
     source.userAgentData?.platform,
@@ -72,20 +77,25 @@ export function writeNativePlatformAttribute(root: HTMLElement = document.docume
 }
 
 /**
- * Pure first-paint material decision. Material defaults ON for supported
- * platforms (macOS/Windows) so the initial `data-platform-material` attribute
- * matches the backend's default-on state and avoids a white-flash before
- * `syncPlatformMaterialAttribute()` confirms. Disable only when the env value is
- * an explicit disable token (mirrors Rust `material_enabled_from_env`).
+ * Pure first-paint material decision, mirroring Rust `material_enabled_from_env`
+ * plus its platform default: macOS defaults ON (window-server-native vibrancy
+ * is effectively free); Windows defaults OFF (transparent windows force
+ * WebView2 into the slower visuals-based composition path). An explicit enable
+ * token overrides the Windows default-off; a disable token always wins. The
+ * initial `data-platform-material` attribute must match the backend decision
+ * to avoid a background flash before `syncPlatformMaterialAttribute()` confirms.
  */
 export function resolveInitialPlatformMaterial(
   platform: NativePlatform,
   envValue: string | undefined,
 ): boolean {
-  if (platform !== 'macos' && platform !== 'windows') {
-    return false;
+  if (platform === 'macos') {
+    return !envValueDisables(envValue);
   }
-  return !envValueDisables(envValue);
+  if (platform === 'windows') {
+    return envValueEnables(envValue);
+  }
+  return false;
 }
 
 function initialPlatformMaterialEnabled(): boolean {
@@ -255,20 +265,50 @@ export function installWebviewSpellcheckPolicy(doc: Document = document): () => 
 
 type AnimationFrameHost = Pick<Window, 'requestAnimationFrame' | 'cancelAnimationFrame'>;
 
-export function installOverlayKeepWarmLoop(host: AnimationFrameHost = window): () => void {
+/**
+ * Keeps the overlay webview's render loop warm so the first frame after a
+ * show() is instant. Only runs while the document is visible: when the
+ * overlay window is hidden the loop stops, letting WebView2 throttle or
+ * suspend the page instead of burning a CPU/GPU heartbeat in the background.
+ * Resumes automatically on the next visibilitychange back to visible.
+ */
+export function installOverlayKeepWarmLoop(
+  host: AnimationFrameHost = window,
+  doc: Document = document,
+): () => void {
   let active = true;
+  let running = false;
   let frameId = 0;
 
   const tick: FrameRequestCallback = () => {
-    if (!active) return;
+    if (!active || !running) return;
     frameId = host.requestAnimationFrame(tick);
   };
 
-  frameId = host.requestAnimationFrame(tick);
+  const start = () => {
+    if (!active || running) return;
+    running = true;
+    frameId = host.requestAnimationFrame(tick);
+  };
+
+  const stop = () => {
+    if (!running) return;
+    running = false;
+    host.cancelAnimationFrame(frameId);
+  };
+
+  const onVisibilityChange = () => {
+    if (doc.visibilityState === 'visible') start();
+    else stop();
+  };
+
+  doc.addEventListener('visibilitychange', onVisibilityChange);
+  if (doc.visibilityState === 'visible') start();
 
   return () => {
     active = false;
-    host.cancelAnimationFrame(frameId);
+    doc.removeEventListener('visibilitychange', onVisibilityChange);
+    stop();
   };
 }
 
