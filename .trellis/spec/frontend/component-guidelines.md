@@ -163,20 +163,36 @@ Tests for card preview changes should cover the thumbnail layer, one-line summar
 - Unregistering with a `Terminal` removes only that instance and must fall back to the previous registration for the same PTY.
 - Unregistering without a `Terminal` is a full cleanup escape hatch and removes all registrations for that PTY.
 - `getTerminal()`, `getAbsoluteCursorRow()`, and `readBufferRange()` must use the active registration.
+- A mounted `Shell` treats `paneId` as the PTY identity. If `paneId` changes, the
+  shell must detach listeners and unregister the old xterm before connecting to
+  the new PTY. Do not rely on React `key` remounts to hide stale connection
+  state.
+- Async PTY setup must guard stale awaits. Output/exit callbacks and ack calls
+  should close over the `connectedPtyId` from that setup, not read a mutable
+  `ptyIdRef` that may already point at a later pane.
 
 #### 4. Validation & Error Matrix
 - No registration -> `getTerminal` returns `undefined`, cursor row returns `0`, buffer range returns `''`.
 - Active float unregisters while main remains -> active terminal falls back to main.
 - Main claims foreground while float remains mounted -> cursor/buffer reads use main.
 - Invalid row range -> `readBufferRange()` returns `''`.
+- Same mounted Shell switches `pane-1` -> `pane-2` -> old output handler cannot
+  write or ack as the new pane.
+- Slow `pane-1` setup resolves after `pane-2` is selected -> stale setup must
+  not send `pane-1`'s initial command or overwrite current listeners.
 
 #### 5. Good/Base/Bad Cases
 - Good: float opens for an existing card, claims active, and block overlay reads from the float until it closes.
 - Base: one shell per PTY behaves exactly like the old registry.
 - Bad: unmounting one Shell deletes another Shell's registration for the same PTY.
+- Bad: adding `key={paneId}` at a parent boundary as the only fix for pane
+  changes; that recreates xterm/WebGL surfaces and can leave async PTY setup
+  racing the new pane.
 
 #### 6. Tests Required
 - Registry unit tests for two terminal instances sharing one PTY, active claim selection, per-instance unregister fallback, and full cleanup.
+- `Shell.test.tsx` should cover mounted pane switches, old-output suppression,
+  no kill when preserving PTYs, and stale async connect completion.
 - Affected frontend verification must include `npm run typecheck` and `npx vitest run`.
 
 #### 7. Wrong vs Correct

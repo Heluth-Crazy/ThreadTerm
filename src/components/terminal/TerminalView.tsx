@@ -292,7 +292,6 @@ export function TerminalView({
             className="relative min-h-0 flex-1 bg-[var(--terminal-background)]"
           >
             <Shell
-              key={paneId}
               selectedProject={selectedProject}
               initialCommand={initialCommand}
               minimal={true}

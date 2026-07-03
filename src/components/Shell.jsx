@@ -125,6 +125,8 @@ function Shell({
   const manuallyDisconnected = useRef(false);
   const lastPtySizeRef = useRef(null);
   const outputSequencerRef = useRef(null);
+  const connectGenerationRef = useRef(0);
+  const desiredPaneIdRef = useRef(paneId);
 
   const [isConnected, setIsConnected] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
@@ -171,6 +173,7 @@ function Shell({
     onInitialCommandSentRef.current = onInitialCommandSent;
     onUserSubmitRef.current = onUserSubmit;
     activeRef.current = active;
+    desiredPaneIdRef.current = paneId;
     preservePtyOnUnmountRef.current = preservePtyOnUnmount;
     autoReconnectOnExitRef.current = autoReconnectOnExit;
     suppressInitialCommandWhenPtyExistsRef.current = suppressInitialCommandWhenPtyExists;
@@ -303,6 +306,52 @@ function Shell({
     outputSequencerRef.current = null;
   }, []);
 
+  const detachCurrentPty = useCallback(({
+    clearTerminal = true,
+    kill = false,
+  } = {}) => {
+    connectGenerationRef.current += 1;
+
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    retryCountRef.current = 0;
+    setRetryAttempt(0);
+    setConnectError(null);
+    cleanupListeners();
+
+    if (ptyIdRef.current) {
+      if (terminal.current) {
+        unregisterTerminal(ptyIdRef.current, terminal.current);
+      } else {
+        unregisterTerminal(ptyIdRef.current);
+      }
+      if (kill && !preservePtyOnUnmountRef.current) {
+        pty.kill(ptyIdRef.current).catch(() => {});
+      }
+    }
+
+    ptyIdRef.current = null;
+    lastPtySizeRef.current = null;
+    exitedRef.current = false;
+    pendingNewLinesRef.current = 0;
+    scrolledUpRef.current = false;
+    setExitInfo(null);
+    setScrolledUp(false);
+    setNewOutputLines(0);
+
+    if (clearTerminal && terminal.current) {
+      terminal.current.clear();
+      terminal.current.write('\x1b[2J\x1b[H');
+    }
+
+    setConnected(false);
+    setConnecting(false);
+    setAuthUrlCopyStatus('idle');
+    setIsAuthPanelDismissed(false);
+  }, [cleanupListeners, setConnected, setConnecting]);
+
   const scheduleReconnect = useCallback((connectPty) => {
     if (manuallyDisconnected.current) return;
     const delay = computeReconnectDelay(retryCountRef.current);
@@ -338,6 +387,8 @@ function Shell({
     }
 
     setConnecting(true);
+    const setupGeneration = connectGenerationRef.current + 1;
+    connectGenerationRef.current = setupGeneration;
 
     const setup = async () => {
       try {
@@ -348,6 +399,9 @@ function Shell({
         const projectPath = project.fullPath || project.path;
         const ptySessionId = paneId || `shell-${Date.now()}`;
         let sessionAlreadyExists = false;
+        const isStaleSetup = () =>
+          connectGenerationRef.current !== setupGeneration ||
+          (paneId && desiredPaneIdRef.current !== paneId);
 
         try {
           await pty.getSessionState(ptySessionId);
@@ -355,26 +409,25 @@ function Shell({
         } catch {
           sessionAlreadyExists = false;
         }
+        if (isStaleSetup() || !terminal.current) return;
 
         cleanupListeners();
 
         const rows = terminal.current?.rows || 24;
         const cols = terminal.current?.cols || 120;
         const connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
+        if (isStaleSetup() || !terminal.current) return;
         ptyIdRef.current = connectedPtyId;
         if (terminal.current && connectedPtyId) {
           registerTerminal(connectedPtyId, terminal.current);
         }
 
         const textEncoder = new TextEncoder();
-        outputSequencerRef.current = createOutputSequencer((data, _seq, onWritten, meta) => {
+        const sequencer = createOutputSequencer((data, _seq, onWritten, meta) => {
           const term = terminal.current;
           const ackWritten = () => {
             if (meta.ack) {
-              const id = ptyIdRef.current;
-              if (id) {
-                pty.ack(id, textEncoder.encode(data).length).catch(() => {});
-              }
+              pty.ack(connectedPtyId, textEncoder.encode(data).length).catch(() => {});
             }
             onWritten();
           };
@@ -437,15 +490,26 @@ function Shell({
             term.write(data, finalize);
           }
         });
-        outputSequencerRef.current.reset();
+        outputSequencerRef.current = sequencer;
+        sequencer.reset();
 
         const unlistenOut = await pty.onOutput(({ id: sid, data, seq }) => {
-          if (sid !== ptyIdRef.current || !terminal.current) return;
-          outputSequencerRef.current?.receive({ seq, data });
+          if (
+            sid !== connectedPtyId ||
+            ptyIdRef.current !== connectedPtyId ||
+            !terminal.current
+          ) {
+            return;
+          }
+          sequencer.receive({ seq, data });
         });
+        if (isStaleSetup() || !terminal.current) {
+          unlistenOut?.();
+          return;
+        }
 
         const unlistenExit = await pty.onExit(({ id: sid, code }) => {
-          if (sid !== ptyIdRef.current) return;
+          if (sid !== connectedPtyId || ptyIdRef.current !== connectedPtyId) return;
           setConnected(false);
           setConnecting(false);
           // Audit P1-2: never wipe the viewport on exit — the final output
@@ -470,13 +534,19 @@ function Shell({
             setExitInfo({ code: typeof code === 'number' ? code : null });
           }
         });
+        if (isStaleSetup() || !terminal.current) {
+          unlistenOut?.();
+          unlistenExit?.();
+          return;
+        }
 
         unlistenOutputRef.current = unlistenOut;
         unlistenExitRef.current = unlistenExit;
 
         try {
           const snapshot = await pty.attachSnapshot(connectedPtyId);
-          if (snapshot && outputSequencerRef.current) {
+          if (isStaleSetup() || !terminal.current) return;
+          if (snapshot) {
             if (terminal.current) {
               terminal.current.clear();
               terminal.current.write('\x1b[2J\x1b[H');
@@ -485,15 +555,16 @@ function Shell({
                 lastPtySizeRef.current = { rows: snapshot.rows, cols: snapshot.cols };
               }
             }
-            outputSequencerRef.current.applySnapshot({
+            sequencer.applySnapshot({
               seq: snapshot.seq,
               data: `${snapshot.history || ''}${snapshot.data || ''}`,
             });
           } else {
-            outputSequencerRef.current?.applySnapshot({ seq: 0, data: '' });
+            sequencer.applySnapshot({ seq: 0, data: '' });
           }
         } catch {
-          outputSequencerRef.current?.applySnapshot({ seq: 0, data: '' });
+          if (isStaleSetup() || !terminal.current) return;
+          sequencer.applySnapshot({ seq: 0, data: '' });
         }
 
         setConnected(true);
@@ -510,9 +581,11 @@ function Shell({
 
         if (shouldSendInitialCommand) {
           await pty.input(connectedPtyId, `${command}\r`);
+          if (isStaleSetup()) return;
           onInitialCommandSentRef.current?.();
         }
       } catch (error) {
+        if (connectGenerationRef.current !== setupGeneration) return;
         logger.error('[Shell] PTY connection failed:', error);
         setConnectError(error instanceof Error ? error.message : String(error));
         setConnected(false);
@@ -542,37 +615,8 @@ function Shell({
 
   const disconnectFromShell = useCallback(() => {
     manuallyDisconnected.current = true;
-
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-    retryCountRef.current = 0;
-    cleanupListeners();
-
-    if (ptyIdRef.current) {
-      if (terminal.current) {
-        unregisterTerminal(ptyIdRef.current, terminal.current);
-      } else {
-        unregisterTerminal(ptyIdRef.current);
-      }
-      if (!preservePtyOnUnmountRef.current) {
-        pty.kill(ptyIdRef.current).catch(() => {});
-      }
-    }
-    ptyIdRef.current = null;
-    lastPtySizeRef.current = null;
-
-    if (terminal.current) {
-      terminal.current.clear();
-      terminal.current.write('\x1b[2J\x1b[H');
-    }
-
-    setConnected(false);
-    setConnecting(false);
-    setAuthUrlCopyStatus('idle');
-    setIsAuthPanelDismissed(false);
-  }, [cleanupListeners, setConnected, setConnecting]);
+    detachCurrentPty({ clearTerminal: true, kill: true });
+  }, [detachCurrentPty]);
 
   const restartShell = useCallback(() => {
     setIsRestarting(true);
@@ -814,6 +858,7 @@ function Shell({
     resizeObserver.observe(terminalRef.current);
 
     return () => {
+      connectGenerationRef.current += 1;
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       resizeObserver.disconnect();
       try {
@@ -906,6 +951,15 @@ function Shell({
     setRetryAttempt(0);
     setConnectError(null);
   }, [paneId]);
+
+  useEffect(() => {
+    if (!isInitialized || !paneId) return;
+    if (ptyIdRef.current === paneId) return;
+    if (!ptyIdRef.current && !isConnectingRef.current && !isConnectedRef.current) return;
+
+    manuallyDisconnected.current = false;
+    detachCurrentPty({ clearTerminal: true, kill: false });
+  }, [detachCurrentPty, isInitialized, paneId]);
 
   useEffect(() => {
     if (!autoConnect || !isInitialized) return;

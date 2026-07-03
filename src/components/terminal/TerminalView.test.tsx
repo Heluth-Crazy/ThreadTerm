@@ -97,7 +97,7 @@ afterEach(() => {
 });
 
 describe('TerminalView Shell lifecycle', () => {
-  it('remounts Shell when switching between same-project provider cards', () => {
+  it('passes updated pane and command without remounting Shell', () => {
     const first = makeCard();
     const second = makeCard({
       id: 'claude-b',
@@ -120,10 +120,6 @@ describe('TerminalView Shell lifecycle', () => {
       'data-initial-command',
       'claude --session-id 22222222-2222-4222-8222-222222222222',
     );
-    expect(shellMock.events).toEqual([
-      'mount:claude-a',
-      'unmount:claude-a',
-      'mount:claude-b',
-    ]);
+    expect(shellMock.events).toEqual(['mount:claude-a']);
   });
 });

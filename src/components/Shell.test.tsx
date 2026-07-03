@@ -141,11 +141,11 @@ import Shell from './Shell';
 
 const PROJECT = { name: 'proj', path: '/tmp/proj', fullPath: '/tmp/proj' };
 
-function renderMinimalShell(paneId = 'pane-1', active = true) {
+function renderMinimalShell(paneId = 'pane-1', active = true, initialCommand?: string) {
   return render(
     <Shell
       selectedProject={PROJECT}
-      initialCommand={undefined}
+      initialCommand={initialCommand}
       minimal={true}
       autoConnect={true}
       paneId={paneId}
@@ -168,6 +168,24 @@ async function waitForConnected() {
 
 function emitExit(payload: { id: string; code?: number | null }) {
   for (const handler of ptyMock.exitHandlers) handler(payload);
+}
+
+function renderShellProps(paneId: string, initialCommand?: string) {
+  return (
+    <Shell
+      selectedProject={PROJECT}
+      initialCommand={initialCommand}
+      minimal={true}
+      autoConnect={true}
+      paneId={paneId}
+      active={true}
+      preservePtyOnUnmount={true}
+      autoReconnectOnExit={false}
+      onDisconnect={undefined}
+      onInitialCommandSent={undefined}
+      onUserSubmit={undefined}
+    />
+  );
 }
 
 beforeEach(() => {
@@ -270,6 +288,57 @@ describe('Shell — connection failure surfacing (P1-4)', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('shell-reconnect-strip')).not.toBeInTheDocument(),
     );
+  });
+});
+
+describe('Shell — pane switching', () => {
+  it('detaches the old PTY and connects the new pane without killing the old session', async () => {
+    const { rerender } = renderMinimalShell('pane-1', true, 'first');
+    await waitForConnected();
+    await waitFor(() => expect(ptyMock.input).toHaveBeenCalledWith('pane-1', 'first\r'));
+    const oldOutputHandler = Array.from(ptyMock.outputHandlers)[0];
+    const term = xtermMock.instances[0];
+    term.write.mockClear();
+
+    rerender(renderShellProps('pane-2', 'second'));
+
+    await waitFor(() => expect(ptyMock.create).toHaveBeenCalledWith('pane-2', '/tmp/proj', 24, 80));
+    await waitFor(() => expect(ptyMock.input).toHaveBeenCalledWith('pane-2', 'second\r'));
+    expect(ptyMock.kill).not.toHaveBeenCalled();
+
+    act(() => {
+      oldOutputHandler?.({ id: 'pane-1', data: 'old output', seq: 1 });
+      for (const handler of ptyMock.outputHandlers) {
+        handler({ id: 'pane-2', data: 'new output', seq: 1 });
+      }
+    });
+
+    expect(term.write).not.toHaveBeenCalledWith('old output', expect.any(Function));
+    expect(term.write).toHaveBeenCalledWith('new output', expect.any(Function));
+  });
+
+  it('ignores a stale connect that resolves after the pane changed', async () => {
+    let resolveFirstCreate: ((id: string) => void) | null = null;
+    ptyMock.create
+      .mockImplementationOnce(
+        (id: string) =>
+          new Promise<string>((resolve) => {
+            resolveFirstCreate = () => resolve(id);
+          }),
+      )
+      .mockImplementationOnce(async (id: string) => id);
+
+    const { rerender } = renderMinimalShell('pane-1', true, 'first');
+    await waitFor(() => expect(ptyMock.create).toHaveBeenCalledWith('pane-1', '/tmp/proj', 24, 80));
+
+    rerender(renderShellProps('pane-2', 'second'));
+    act(() => {
+      resolveFirstCreate?.('pane-1');
+    });
+
+    await waitFor(() => expect(ptyMock.create).toHaveBeenCalledWith('pane-2', '/tmp/proj', 24, 80));
+    await waitFor(() => expect(ptyMock.input).toHaveBeenCalledWith('pane-2', 'second\r'));
+    expect(ptyMock.input).not.toHaveBeenCalledWith('pane-1', 'first\r');
   });
 });
 

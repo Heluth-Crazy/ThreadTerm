@@ -810,23 +810,30 @@ export function TerminalManager() {
     }
   }, [focusedCardId, focusedCard]);
 
+  const focusMountedCard = useCallback(
+    (cardId: string) => {
+      mountCardInBackground(cardId);
+      focusCard(cardId);
+      setViewMode('focus');
+    },
+    [focusCard, mountCardInBackground],
+  );
+
   useEffect(() => {
     if (!pendingFocusCardId) return;
     if (!cards.some((card) => card.id === pendingFocusCardId)) {
       setPendingFocusCardId(null);
       return;
     }
-    focusCard(pendingFocusCardId);
-    setViewMode('focus');
+    focusMountedCard(pendingFocusCardId);
     setPendingFocusCardId(null);
-  }, [cards, focusCard, pendingFocusCardId, setPendingFocusCardId]);
+  }, [cards, focusMountedCard, pendingFocusCardId, setPendingFocusCardId]);
 
   const handleOpenTerminal = useCallback(
     (cardId: string) => {
-      focusCard(cardId);
-      setViewMode('focus');
+      focusMountedCard(cardId);
     },
-    [focusCard],
+    [focusMountedCard],
   );
 
   const handleBackToGrid = useCallback(() => {
@@ -843,8 +850,7 @@ export function TerminalManager() {
 
   const handleSelectSessionDockCard = useCallback(
     (cardId: string) => {
-      focusCard(cardId);
-      setViewMode('focus');
+      focusMountedCard(cardId);
       setWorkspaceContentByCardId((current) => {
         const state = workspaceContentStateWithPanelDefaults(
           workspaceContentStateWithDefaults(current[cardId]),
@@ -859,7 +865,7 @@ export function TerminalManager() {
         };
       });
     },
-    [focusCard],
+    [focusMountedCard],
   );
 
   const handleRestoreArchivedCard = useCallback(
@@ -915,10 +921,9 @@ export function TerminalManager() {
         selectProject(options.projectPath);
       }
       setCreateOpen(false);
-      focusCard(id);
-      setViewMode('focus');
+      focusMountedCard(id);
     },
-    [createCard, focusCard, selectProject, selectWorktree],
+    [createCard, focusMountedCard, selectProject, selectWorktree],
   );
 
   const handleGridCreateTerminal = useCallback(
@@ -950,8 +955,7 @@ export function TerminalManager() {
           terminalType: 'shell',
         });
         selectWorktree(request.projectPath, worktree.path, request.branchLabel);
-        focusCard(id);
-        setViewMode('focus');
+        focusMountedCard(id);
         pushNotification({
           cardId: 'system:worktrees',
           kind: 'completed',
@@ -974,7 +978,7 @@ export function TerminalManager() {
         });
       }
     },
-    [cards, createCard, focusCard, pushNotification, selectWorktree, selectedProjectName, t],
+    [cards, createCard, focusMountedCard, pushNotification, selectWorktree, selectedProjectName, t],
   );
 
   // Expose imperative API.
