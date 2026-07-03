@@ -247,7 +247,7 @@ pub fn parse_codex_file(path: &Path) -> Option<(String, String, Vec<CallRecord>)
     let mut state = CodexFileState {
         session_id: None,
         cwd: String::new(),
-        model: String::new(),
+        model: "unknown".to_string(),
         prev_total: None,
         event_index: 0,
     };
@@ -607,6 +607,32 @@ mod tests {
             1,
             "zero-delta second event dropped, baseline kept"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn codex_legacy_session_without_model_still_counts_nonzero_deltas() {
+        let jsonl = r#"{"type":"session_meta","payload":{"id":"legacy-session","cwd":"/repo"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":10},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":10}}},"timestamp":"2021-01-01T00:00:00Z"}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":10},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":10}}},"timestamp":"2021-01-01T00:00:00Z"}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1300,"cached_input_tokens":700,"output_tokens":25},"last_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":15}}},"timestamp":"2021-01-01T00:00:01Z"}"#;
+        let path = write_temp_jsonl("codex_legacy_no_model.jsonl", jsonl);
+        let (sid, cwd, calls) = parse_codex_file(&path).unwrap();
+        assert_eq!(sid, "legacy-session");
+        assert_eq!(cwd, "/repo");
+        assert_eq!(
+            calls.len(),
+            2,
+            "duplicate cumulative snapshot must not count twice"
+        );
+        assert_eq!(calls[0].model, "unknown");
+        assert_eq!(calls[0].usage.input, 400);
+        assert_eq!(calls[0].usage.cache_read, 600);
+        assert_eq!(calls[0].usage.output, 10);
+        assert_eq!(calls[1].model, "unknown");
+        assert_eq!(calls[1].usage.input, 200);
+        assert_eq!(calls[1].usage.cache_read, 100);
+        assert_eq!(calls[1].usage.output, 15);
         let _ = std::fs::remove_file(&path);
     }
 

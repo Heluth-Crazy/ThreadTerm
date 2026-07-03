@@ -88,6 +88,9 @@
       "opencode": "OpenCode"
     },
     "tokens": "tokens",
+    "realTokens": "real tokens",
+    "inputOutputTokens": "input + output",
+    "cacheTokens": "cache",
     "sessions": "sessions",
     "calls": "calls",
     "usageInput": "input",

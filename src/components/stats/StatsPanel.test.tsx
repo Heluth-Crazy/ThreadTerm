@@ -33,6 +33,8 @@ vi.mock('../../lib/tauri-bridge', () => ({
 function makeStats(): AgentStats {
   return {
     totalTokens: 150,
+    inputOutputTokens: 150,
+    cacheTokens: 0,
     totalCostUsd: 0.001,
     totalCalls: 1,
     sessionCount: 1,
@@ -76,6 +78,24 @@ describe('StatsPanel', () => {
     const header = screen.getByRole('heading', { name: 'Token usage' }).parentElement?.parentElement;
 
     expect(header).toHaveClass('h-[61.5px]', 'shrink-0');
+  });
+
+  it('shows real, input/output, and cache token totals', () => {
+    useStatsStore.setState({
+      snapshot: {
+        ...makeStats(),
+        totalTokens: 500,
+        inputOutputTokens: 150,
+        cacheTokens: 350,
+        usage: { input: 100, output: 50, cacheCreation: 25, cacheRead: 325 },
+      },
+    });
+
+    render(<StatsPanel onClose={vi.fn()} />);
+
+    expect(screen.getByText(/500 real tokens/)).toBeInTheDocument();
+    expect(screen.getByText(/input \+ output 150/)).toBeInTheDocument();
+    expect(screen.getByText(/cache 350/)).toBeInTheDocument();
   });
 
   it('lets the user scope usage to OpenCode', () => {

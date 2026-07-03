@@ -62,8 +62,9 @@ const PROGRESS_EVERY: usize = 16;
 /// History: 1 = original parser; 2 = Claude snapshot-dedup + Codex per-call
 /// delta fixes (the "对齐 cc-switch" rework); 3 = dropped the shape+timestamp
 /// dedup that was under-counting Codex (no proxy → request_id dedup suffices);
-/// 4 = added opencode.db ingestion.
-const STATS_PARSER_VERSION: i64 = 4;
+/// 4 = added opencode.db ingestion; 5 = refresh Codex rows after token-shape
+/// fields and legacy session parsing fixes.
+const STATS_PARSER_VERSION: i64 = 5;
 
 /// Wipe `usage_records` + `session_log_sync` when the stored parser version
 /// doesn't match the current one, then stamp the new version. Returns true when

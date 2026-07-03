@@ -12,12 +12,16 @@ export interface StatBucket {
   label: string;
   usage: UsageSummary;
   totalTokens: number;
+  inputOutputTokens: number;
+  cacheTokens: number;
   costUsd: number;
   calls: number;
 }
 
 export interface AgentStats {
   totalTokens: number;
+  inputOutputTokens: number;
+  cacheTokens: number;
   totalCostUsd: number;
   totalCalls: number;
   sessionCount: number;

@@ -25,10 +25,16 @@ impl UsageSummary {
     }
 
     pub fn total(&self) -> u64 {
-        self.input
-            .saturating_add(self.output)
-            .saturating_add(self.cache_creation)
-            .saturating_add(self.cache_read)
+        self.input_output_tokens()
+            .saturating_add(self.cache_tokens())
+    }
+
+    pub fn input_output_tokens(&self) -> u64 {
+        self.input.saturating_add(self.output)
+    }
+
+    pub fn cache_tokens(&self) -> u64 {
+        self.cache_creation.saturating_add(self.cache_read)
     }
 
     /// True when every category is zero — such rows carry no billable signal
@@ -65,6 +71,8 @@ pub struct StatBucket {
     pub label: String,
     pub usage: UsageSummary,
     pub total_tokens: u64,
+    pub input_output_tokens: u64,
+    pub cache_tokens: u64,
     pub cost_usd: f64,
     pub calls: u64,
 }
@@ -74,6 +82,8 @@ pub struct StatBucket {
 #[serde(rename_all = "camelCase")]
 pub struct AgentStats {
     pub total_tokens: u64,
+    pub input_output_tokens: u64,
+    pub cache_tokens: u64,
     pub total_cost_usd: f64,
     pub total_calls: u64,
     pub session_count: u64,

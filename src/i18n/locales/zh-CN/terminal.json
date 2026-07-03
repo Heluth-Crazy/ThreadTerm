@@ -88,6 +88,9 @@
       "opencode": "OpenCode"
     },
     "tokens": "tokens",
+    "realTokens": "real tokens",
+    "inputOutputTokens": "输入 + 输出",
+    "cacheTokens": "缓存",
     "sessions": "会话",
     "calls": "调用",
     "usageInput": "输入",

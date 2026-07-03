@@ -88,6 +88,9 @@
       "opencode": "OpenCode"
     },
     "tokens": "トークン",
+    "realTokens": "実トークン",
+    "inputOutputTokens": "入力 + 出力",
+    "cacheTokens": "キャッシュ",
     "sessions": "セッション",
     "calls": "呼び出し",
     "usageInput": "入力",

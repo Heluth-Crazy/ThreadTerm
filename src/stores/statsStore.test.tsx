@@ -36,11 +36,15 @@ function makeStats(sessionId = 'session-1'): AgentStats {
     label: sessionId,
     usage: { input: 100, output: 50, cacheCreation: 0, cacheRead: 0 },
     totalTokens: 150,
+    inputOutputTokens: 150,
+    cacheTokens: 0,
     costUsd: 0.001,
     calls: 1,
   };
   return {
     totalTokens: 150,
+    inputOutputTokens: 150,
+    cacheTokens: 0,
     totalCostUsd: 0.001,
     totalCalls: 1,
     sessionCount: 1,

@@ -133,6 +133,8 @@ impl Aggregator {
     pub fn snapshot(&self) -> AgentStats {
         AgentStats {
             total_tokens: self.total.usage.total(),
+            input_output_tokens: self.total.usage.input_output_tokens(),
+            cache_tokens: self.total.usage.cache_tokens(),
             total_cost_usd: self.total.cost,
             total_calls: self.total.calls,
             session_count: self.session_count,
@@ -233,6 +235,8 @@ pub fn aggregate_from_db(
 
     Ok(AgentStats {
         total_tokens: total.usage.total(),
+        input_output_tokens: total.usage.input_output_tokens(),
+        cache_tokens: total.usage.cache_tokens(),
         total_cost_usd: total.cost,
         total_calls: total.calls,
         session_count,
@@ -251,6 +255,8 @@ fn to_buckets(map: &HashMap<String, Bucket>) -> Vec<StatBucket> {
             label: k.clone(),
             usage: b.usage,
             total_tokens: b.usage.total(),
+            input_output_tokens: b.usage.input_output_tokens(),
+            cache_tokens: b.usage.cache_tokens(),
             cost_usd: b.cost,
             calls: b.calls,
         })
@@ -320,6 +326,8 @@ mod tests {
         assert_eq!(snap.by_model.len(), 2);
         assert_eq!(snap.by_session.len(), 1);
         assert_eq!(snap.total_tokens, 45);
+        assert_eq!(snap.input_output_tokens, 45);
+        assert_eq!(snap.cache_tokens, 0);
     }
 
     // ── aggregate_from_db ──
@@ -410,6 +418,29 @@ mod tests {
         assert_eq!(snap.session_count, 2, "two distinct session_ids");
         assert_eq!(snap.by_model.len(), 3);
         assert_eq!(snap.by_project.len(), 2);
+    }
+
+    #[test]
+    fn aggregate_from_db_reports_token_shape_totals() {
+        let conn = mem_conn_with_rows();
+        conn.execute(
+            "INSERT INTO usage_records
+                (request_id, provider, model, input_tokens, output_tokens,
+                 cache_read_tokens, cache_creation_tokens, total_cost_usd,
+                 session_id, project_path, created_at)
+             VALUES ('r1','codex','gpt-5-codex',100,20,300,40,0.4,'s1','/a',1000)",
+            [],
+        )
+        .unwrap();
+
+        let snap = aggregate_from_db(&conn, "all", None, None).unwrap();
+
+        assert_eq!(snap.input_output_tokens, 120);
+        assert_eq!(snap.cache_tokens, 340);
+        assert_eq!(snap.total_tokens, 460);
+        assert_eq!(snap.by_model[0].input_output_tokens, 120);
+        assert_eq!(snap.by_model[0].cache_tokens, 340);
+        assert_eq!(snap.by_model[0].total_tokens, 460);
     }
 
     #[test]

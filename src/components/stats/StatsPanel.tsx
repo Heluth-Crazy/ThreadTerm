@@ -140,11 +140,13 @@ export function StatsPanel({ onClose }: StatsPanelProps) {
             <div className="mb-4 rounded-[var(--radius)] border border-border bg-foreground/5 p-3">
               <div className="text-2xl font-semibold tabular-nums">{formatCost(snapshot.totalCostUsd)}</div>
               <div className="mt-1 text-[11px] text-muted-foreground">
-                {formatTokens(snapshot.totalTokens)} {t('stats.tokens', { defaultValue: 'tokens' })} ·{' '}
+                {formatTokens(snapshot.totalTokens)} {t('stats.realTokens', { defaultValue: 'real tokens' })} ·{' '}
                 {snapshot.sessionCount} {t('stats.sessions', { defaultValue: 'sessions' })} ·{' '}
                 {snapshot.totalCalls} {t('stats.calls', { defaultValue: 'calls' })}
               </div>
               <div className="mt-2 grid grid-cols-2 gap-1 text-[10px] text-muted-foreground tabular-nums">
+                <span>{t('stats.inputOutputTokens', { defaultValue: 'input + output' })} {formatTokens(snapshot.inputOutputTokens)}</span>
+                <span>{t('stats.cacheTokens', { defaultValue: 'cache' })} {formatTokens(snapshot.cacheTokens)}</span>
                 <span>{t('stats.usageInput', { defaultValue: 'input' })} {formatTokens(snapshot.usage.input)}</span>
                 <span>{t('stats.usageOutput', { defaultValue: 'output' })} {formatTokens(snapshot.usage.output)}</span>
                 <span>{t('stats.usageCacheWrite', { defaultValue: 'cache write' })} {formatTokens(snapshot.usage.cacheCreation)}</span>
@@ -199,7 +201,7 @@ function BucketList({
               <span className="shrink-0 tabular-nums text-muted-foreground">{formatCost(b.costUsd)}</span>
             </div>
             <div className="relative mt-0.5 text-[10px] tabular-nums text-muted-foreground">
-              {formatTokens(b.totalTokens)}
+              {formatTokens(b.totalTokens)} total · {formatTokens(b.inputOutputTokens)} i/o · {formatTokens(b.cacheTokens)} cache
             </div>
           </li>
         ))}

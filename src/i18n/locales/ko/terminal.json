@@ -88,6 +88,9 @@
       "opencode": "OpenCode"
     },
     "tokens": "토큰",
+    "realTokens": "실제 토큰",
+    "inputOutputTokens": "입력 + 출력",
+    "cacheTokens": "캐시",
     "sessions": "세션",
     "calls": "호출",
     "usageInput": "입력",
