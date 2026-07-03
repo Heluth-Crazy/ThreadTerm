@@ -7,10 +7,14 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { AlertTriangle, FolderTree, GitCompare, Loader2, RefreshCw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { git, type GitStatusEntry } from '../../lib/tauri-bridge';
+import { type GitStatusEntry } from '../../lib/tauri-bridge';
 import { cn } from '../../lib/utils';
 import { basename, type DirEntry } from './fileMeta';
 import { FileTree } from './FileTree';
+import {
+  getCachedWorkspaceChanges,
+  loadWorkspaceChanges,
+} from './workspaceLoadCache';
 
 export type WorkspaceTab = 'explorer' | 'changes';
 
@@ -69,15 +73,22 @@ export function WorkspacePanel({
     [onStateChange, panelState, state],
   );
   const [changes, setChanges] = useState<GitStatusEntry[]>([]);
+  const [changesLoaded, setChangesLoaded] = useState(false);
   const [changesLoading, setChangesLoading] = useState(false);
   const [changesError, setChangesError] = useState<string | null>(null);
 
   const loadChanges = useCallback(async () => {
-    setChangesLoading(true);
+    const cached = getCachedWorkspaceChanges(rootCwd);
+    if (cached !== null) {
+      setChanges(cached);
+      setChangesLoaded(true);
+    }
+    setChangesLoading(cached === null);
     setChangesError(null);
     try {
-      const result = await git.changes.status(rootCwd);
+      const result = await loadWorkspaceChanges(rootCwd);
       setChanges(result);
+      setChangesLoaded(true);
       updatePanelState({
         selectedChangePath:
           panelState.selectedChangePath &&
@@ -86,9 +97,12 @@ export function WorkspacePanel({
             : null,
       });
     } catch (error) {
-      setChanges([]);
-      updatePanelState({ selectedChangePath: null });
-      setChangesError(error instanceof Error ? error.message : String(error));
+      if (cached === null) {
+        setChanges([]);
+        setChangesLoaded(false);
+        updatePanelState({ selectedChangePath: null });
+        setChangesError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setChangesLoading(false);
     }
@@ -162,6 +176,7 @@ export function WorkspacePanel({
         <ChangesList
           changes={changes}
           loading={changesLoading}
+          loaded={changesLoaded}
           error={changesError}
           selectedPath={activeDiffPath ?? panelState.selectedChangePath}
           onRefresh={() => void loadChanges()}
@@ -175,6 +190,7 @@ export function WorkspacePanel({
 function ChangesList({
   changes,
   loading,
+  loaded,
   error,
   selectedPath,
   onRefresh,
@@ -182,6 +198,7 @@ function ChangesList({
 }: {
   changes: GitStatusEntry[];
   loading: boolean;
+  loaded: boolean;
   error: string | null;
   selectedPath: string | null;
   onRefresh: () => void;
@@ -203,7 +220,7 @@ function ChangesList({
         <PanelMessage icon={<AlertTriangle className="h-4 w-4" />} tone="error">
           {error}
         </PanelMessage>
-      ) : loading ? (
+      ) : loading && !loaded ? (
         <PanelMessage icon={<Loader2 className="h-4 w-4 animate-spin" />} tone="muted">
           {t('workspace.loadingChanges', { defaultValue: 'Loading changes...' })}
         </PanelMessage>

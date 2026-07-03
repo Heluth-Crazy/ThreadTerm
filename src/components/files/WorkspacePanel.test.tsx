@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { WorkspacePanel } from './WorkspacePanel';
+import { clearWorkspaceLoadCaches } from './workspaceLoadCache';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock('react-i18next', async (importOriginal) => {
 });
 
 beforeEach(() => {
+  clearWorkspaceLoadCaches();
   mocks.invoke.mockResolvedValue([
     { name: 'README.md', path: '/repo/README.md', isDir: false, isHidden: false },
   ]);
@@ -52,7 +54,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  clearWorkspaceLoadCaches();
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 describe('WorkspacePanel', () => {
@@ -109,5 +113,85 @@ describe('WorkspacePanel', () => {
       });
     });
     expect(screen.queryByText(/\+changed/)).toBeNull();
+  });
+
+  it('shows cached file entries immediately when a remount refresh is still pending', async () => {
+    const first = render(
+      <WorkspacePanel
+        rootCwd="/repo"
+        onClose={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenDiff={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText('README.md')).toBeInTheDocument();
+    first.unmount();
+
+    mocks.invoke.mockReturnValue(new Promise(() => {}));
+
+    render(
+      <WorkspacePanel
+        rootCwd="/repo"
+        onClose={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenDiff={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('README.md')).toBeInTheDocument();
+    expect(screen.queryByText('Reading directory...')).toBeNull();
+  });
+
+  it('shows cached changes immediately when a remount refresh is still pending', async () => {
+    const first = render(
+      <WorkspacePanel
+        rootCwd="/repo"
+        onClose={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenDiff={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByText('Changes'));
+    expect(await screen.findByText('App.tsx')).toBeInTheDocument();
+    first.unmount();
+
+    mocks.gitStatus.mockReturnValue(new Promise(() => {}));
+
+    render(
+      <WorkspacePanel
+        rootCwd="/repo"
+        onClose={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenDiff={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByText('Changes'));
+
+    expect(screen.getByText('App.tsx')).toBeInTheDocument();
+    expect(screen.queryByText('Loading changes...')).toBeNull();
+  });
+
+  it('times out an uncached file load instead of spinning forever', async () => {
+    vi.useFakeTimers();
+    mocks.invoke.mockReturnValue(new Promise(() => {}));
+
+    render(
+      <WorkspacePanel
+        rootCwd="/slow"
+        onClose={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenDiff={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Reading directory...')).toBeInTheDocument();
+
+    vi.advanceTimersByTime(10_000);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/Workspace request timed out/)).toBeInTheDocument();
+    expect(screen.queryByText('Reading directory...')).toBeNull();
   });
 });

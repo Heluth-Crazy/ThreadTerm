@@ -6,9 +6,12 @@
 import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { invoke } from '../../lib/tauri-bridge';
 import { type DirEntry } from './fileMeta';
 import { FileTreeNode } from './FileTreeNode';
+import {
+  getCachedWorkspaceDirectory,
+  loadWorkspaceDirectory,
+} from './workspaceLoadCache';
 
 interface FileTreeProps {
   rootPath: string;
@@ -24,15 +27,16 @@ export function FileTree({ rootPath, selectedPath, onSelectFile }: FileTreeProps
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    const cached = getCachedWorkspaceDirectory(rootPath);
+    setEntries(cached);
+    setLoading(cached === null);
     setError(null);
-    setEntries(null);
     (async () => {
       try {
-        const result = await invoke<DirEntry[]>('read_directory', { path: rootPath });
+        const result = await loadWorkspaceDirectory(rootPath);
         if (!cancelled) setEntries(result ?? []);
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled && cached === null) setError(e instanceof Error ? e.message : String(e));
       } finally {
         if (!cancelled) setLoading(false);
       }
