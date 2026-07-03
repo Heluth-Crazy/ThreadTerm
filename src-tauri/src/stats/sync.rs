@@ -63,8 +63,9 @@ const PROGRESS_EVERY: usize = 16;
 /// delta fixes (the "对齐 cc-switch" rework); 3 = dropped the shape+timestamp
 /// dedup that was under-counting Codex (no proxy → request_id dedup suffices);
 /// 4 = added opencode.db ingestion; 5 = refresh Codex rows after token-shape
-/// fields and legacy session parsing fixes.
-const STATS_PARSER_VERSION: i64 = 5;
+/// fields and legacy session parsing fixes; 6 = parser rebuild scans all source
+/// logs instead of inheriting the caller's time window.
+const STATS_PARSER_VERSION: i64 = 6;
 
 /// Wipe `usage_records` + `session_log_sync` when the stored parser version
 /// doesn't match the current one, then stamp the new version. Returns true when
@@ -96,12 +97,24 @@ fn rebuild_if_parser_changed(conn: &rusqlite::Connection) -> bool {
     true
 }
 
+fn scan_lower_bound_after_rebuild(rebuilt: bool, lo_ms: Option<u64>) -> Option<u64> {
+    if rebuilt {
+        None
+    } else {
+        lo_ms
+    }
+}
+
 /// Force a full rebuild: drop ingested rows + sync cursors so the next
 /// `stats_compute` re-ingests every file from scratch with the current parser.
 pub fn rebuild_now() -> Result<(), String> {
     let conn = get_db()?;
-    conn.execute_batch("DELETE FROM usage_records; DELETE FROM session_log_sync;")
-        .map_err(|e| e.to_string())
+    conn.execute_batch(
+        "DELETE FROM usage_records;
+         DELETE FROM session_log_sync;
+         DELETE FROM stats_meta WHERE key = 'parser_version';",
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Sync all providers' session logs into `usage_records`. Scans only files
@@ -110,24 +123,24 @@ pub fn rebuild_now() -> Result<(), String> {
 /// periodically so the caller can stream progress to the UI.
 pub fn sync_all<F: FnMut(usize, usize)>(lo_ms: Option<u64>, mut on_progress: F) -> SyncResult {
     // One-time rebuild if the parser version changed since rows were ingested.
-    if let Ok(conn) = get_db() {
-        rebuild_if_parser_changed(&conn);
-    }
+    let rebuilt = get_db()
+        .map(|conn| rebuild_if_parser_changed(&conn))
+        .unwrap_or(false);
+    let scan_lo_ms = scan_lower_bound_after_rebuild(rebuilt, lo_ms);
 
     // Collect candidates from both providers up front so `total` is known
     // before the scan loop starts — the UI progress bar needs a denominator.
     let mut files: Vec<(PathBuf, &'static str)> = Vec::new();
     if let Some(root) = super::claude_root() {
-        for f in jsonl_files_recent_first(&root, lo_ms) {
+        for f in jsonl_files_recent_first(&root, scan_lo_ms) {
             files.push((f.path, "claude"));
         }
     }
     if let Some(root) = super::codex_root() {
-        for f in jsonl_files_recent_first(&root, lo_ms) {
+        for f in jsonl_files_recent_first(&root, scan_lo_ms) {
             files.push((f.path, "codex"));
         }
     }
-
     let total = files.len();
     let mut result = SyncResult::default();
 
@@ -759,5 +772,12 @@ mod tests {
             !rebuild_if_parser_changed(&conn),
             "matching version must not rebuild"
         );
+    }
+
+    #[test]
+    fn rebuild_scan_ignores_caller_time_window() {
+        assert_eq!(scan_lower_bound_after_rebuild(true, Some(123)), None);
+        assert_eq!(scan_lower_bound_after_rebuild(false, Some(123)), Some(123));
+        assert_eq!(scan_lower_bound_after_rebuild(false, None), None);
     }
 }
