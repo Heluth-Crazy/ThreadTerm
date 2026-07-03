@@ -31,6 +31,10 @@ pub fn register_default_shortcuts(app: &AppHandle) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
+    if settings.lightweight_mode {
+        tracing::info!("overlay lightweight mode enabled; global overlay shortcuts not registered");
+        return;
+    }
     let _ = register_hotkey(app, "A", &settings.hotkey_a);
     let _ = register_hotkey(app, "B", &settings.hotkey_b);
 }
@@ -40,18 +44,7 @@ pub(super) fn register_hotkey(app: &AppHandle, label: &str, accel: &str) -> Resu
         .parse()
         .map_err(|e| format!("invalid accelerator {accel}: {e:?}"))?;
 
-    // Unregister the previous binding for this slot (A/B), if any.
-    let slot = match label {
-        "A" => &REGISTERED_A,
-        "B" => &REGISTERED_B,
-        _ => return Err(format!("unknown slot {label}")),
-    };
-    let prev = slot.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if let Some(prev_accel) = prev {
-        if let Ok(prev_shortcut) = prev_accel.parse::<Shortcut>() {
-            let _ = app.global_shortcut().unregister(prev_shortcut);
-        }
-    }
+    unregister_hotkey(app, label)?;
 
     // Grab the stable numeric id of the shortcut *before* registering.
     // We key `HOTKEY_MAP` on this id because the user-facing accelerator
@@ -67,12 +60,41 @@ pub(super) fn register_hotkey(app: &AppHandle, label: &str, accel: &str) -> Resu
         .register(shortcut)
         .map_err(|e| format!("register failed: {e:?}"))?;
 
+    let slot = match label {
+        "A" => &REGISTERED_A,
+        "B" => &REGISTERED_B,
+        _ => return Err(format!("unknown slot {label}")),
+    };
     *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(accel.to_string());
 
     HOTKEY_MAP
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(shortcut_id, label.to_string());
+    Ok(())
+}
+
+pub(super) fn unregister_all_hotkeys(app: &AppHandle) {
+    let _ = unregister_hotkey(app, "A");
+    let _ = unregister_hotkey(app, "B");
+}
+
+fn unregister_hotkey(app: &AppHandle, label: &str) -> Result<(), String> {
+    let slot = match label {
+        "A" => &REGISTERED_A,
+        "B" => &REGISTERED_B,
+        _ => return Err(format!("unknown slot {label}")),
+    };
+    let prev = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(prev_accel) = prev {
+        if let Ok(prev_shortcut) = prev_accel.parse::<Shortcut>() {
+            HOTKEY_MAP
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&prev_shortcut.id());
+            let _ = app.global_shortcut().unregister(prev_shortcut);
+        }
+    }
     Ok(())
 }
 
@@ -102,6 +124,15 @@ pub(super) fn register_hotkey(app: &AppHandle, label: &str, accel: &str) -> Resu
 /// IMPORTANT: the plugin fires the handler twice per physical key press
 /// (Pressed + Released). The `lib.rs` handler filters to Pressed only.
 pub fn dispatch_hotkey(app: &AppHandle, shortcut: &Shortcut) {
+    if OVERLAY_SETTINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .lightweight_mode
+    {
+        tracing::info!("overlay hotkey ignored because lightweight mode is enabled");
+        return;
+    }
+
     let id = shortcut.id();
     let map = HOTKEY_MAP.lock().unwrap_or_else(|e| e.into_inner());
     let slot = map.get(&id).cloned();

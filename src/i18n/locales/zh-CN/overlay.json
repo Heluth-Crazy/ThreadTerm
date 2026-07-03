@@ -25,6 +25,10 @@
       "fullscreen": "全屏"
     }
   },
+  "lightweight": {
+    "title": "轻量模式",
+    "description": "禁用全局选择器和浮动终端 WebView，减少内存占用。固定卡片和主窗口内联选择器仍可使用。"
+  },
   "hotkeys": {
     "slotA": {
       "title": "浮层选择器",

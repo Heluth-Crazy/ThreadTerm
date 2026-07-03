@@ -25,6 +25,10 @@
       "fullscreen": "Fullscreen"
     }
   },
+  "lightweight": {
+    "title": "Lightweight mode",
+    "description": "Disable the global selector and floating terminal webviews to reduce memory use. Pinned cards and the inline selector stay available in the main window."
+  },
   "hotkeys": {
     "slotA": {
       "title": "Overlay selector",

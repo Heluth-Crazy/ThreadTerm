@@ -54,6 +54,8 @@ interface OverlayStoreInternal {
   /** How the float window opens (floating / maximized / fullscreen). Mirror of
    *  the Rust-persisted `overlay.float_launch_mode`. */
   floatLaunchMode: FloatLaunchMode;
+  /** Lightweight mode disables the global selector + floating terminal webviews. */
+  lightweightMode: boolean;
 
   // Hotkeys
   hotkeyA: string;
@@ -76,6 +78,7 @@ interface OverlayStoreInternal {
 
   setFloatBounds: (bounds: FloatBounds | null) => void;
   setFloatLaunchMode: (mode: FloatLaunchMode) => void;
+  setLightweightMode: (enabled: boolean) => Promise<void>;
 
   setHotkeys: (a: string, b: string) => void;
   updateHotkey: (slot: 'A' | 'B', accelerator: string) => Promise<void>;
@@ -86,12 +89,16 @@ const DEFAULT_HOTKEY_A = 'CmdOrCtrl+Shift+Space';
 const DEFAULT_HOTKEY_B = 'CmdOrCtrl+Shift+O';
 
 function overlayPreferenceSnapshotFromState(
-  state: Pick<OverlayStoreInternal, 'selectorMode' | 'hotkeyA' | 'hotkeyB'>,
+  state: Pick<
+    OverlayStoreInternal,
+    'selectorMode' | 'hotkeyA' | 'hotkeyB' | 'lightweightMode'
+  >,
 ): OverlayPreferenceSnapshot {
   return {
     selectorMode: state.selectorMode,
     hotkeyA: state.hotkeyA,
     hotkeyB: state.hotkeyB,
+    lightweightMode: state.lightweightMode,
   };
 }
 
@@ -128,12 +135,21 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
       floatCardId: null,
       floatWindowBounds: null,
       floatLaunchMode: 'floating',
+      lightweightMode: false,
 
       hotkeyA: DEFAULT_HOTKEY_A,
       hotkeyB: DEFAULT_HOTKEY_B,
 
       openSelector: (surface = 'inline') =>
         set((s) => {
+          if (surface === 'window' && s.lightweightMode) {
+            return {
+              selectorOpen: false,
+              selectorSurface: 'inline',
+              selectorSelectedIndex: 0,
+              floatHiddenByOverlay: false,
+            };
+          }
           // Hide float temporarily when selector takes over.
           const wasFloatOpen = s.floatOpen;
           if (surface === 'window') {
@@ -159,7 +175,7 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
           }
           // Restore float if we hid it.
           let floatOpen = s.floatOpen;
-          if (s.floatHiddenByOverlay && s.floatCardId) {
+          if (!s.lightweightMode && s.floatHiddenByOverlay && s.floatCardId) {
             floatOpen = true;
             void tauriInvoke('overlay_show_float', { cardId: s.floatCardId });
           }
@@ -194,7 +210,16 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
         }),
 
       confirmSelector: (cardId) => {
-        const { selectorSurface } = get();
+        const { selectorSurface, lightweightMode } = get();
+        if (lightweightMode) {
+          set({
+            selectorOpen: false,
+            floatOpen: false,
+            floatCardId: cardId,
+            floatHiddenByOverlay: false,
+          });
+          return;
+        }
         // Persist floatCardId before the show invoke: a lazily-created float
         // window misses the `overlay://float-shown` event and boots from the
         // persisted store value instead.
@@ -212,6 +237,15 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
       },
 
       openFloat: (cardId) => {
+        if (get().lightweightMode) {
+          set({
+            floatOpen: false,
+            floatCardId: cardId,
+            selectorOpen: false,
+            floatHiddenByOverlay: false,
+          });
+          return;
+        }
         // Same ordering as confirmSelector: persist before the show invoke.
         set({
           floatOpen: true,
@@ -232,6 +266,22 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
         // Rust persists it (overlay.float_launch_mode) and reflows a visible
         // float window; the store is just a mirror for the settings UI.
         void tauriInvoke('overlay_set_float_launch_mode', { mode });
+      },
+
+      setLightweightMode: async (enabled) => {
+        set({
+          lightweightMode: enabled,
+          ...(enabled
+            ? {
+                selectorOpen: false,
+                floatOpen: false,
+                floatHiddenByOverlay: false,
+                selectorSurface: 'inline' as SelectorSurface,
+              }
+            : {}),
+        });
+        await tauriInvoke('overlay_set_lightweight_mode', { enabled });
+        notifyOverlayPreferencesChanged(overlayPreferenceSnapshotFromState(get()));
       },
 
       recycleToMain: () => {
@@ -269,6 +319,7 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
         selectorMode: state.selectorMode,
         floatCardId: state.floatCardId,
         floatWindowBounds: state.floatWindowBounds,
+        lightweightMode: state.lightweightMode,
         hotkeyA: state.hotkeyA,
         hotkeyB: state.hotkeyB,
       }),

@@ -36,12 +36,28 @@ describe('settingsSync', () => {
         selectorMode: 'carousel',
         hotkeyA: 'CmdOrCtrl+Shift+Space',
         hotkeyB: 'CmdOrCtrl+Shift+O',
+        lightweightMode: true,
       },
     });
 
     expect(normalized?.terminalPreferences?.bottomBarHidden).toBe(true);
     expect(normalized?.terminalPreferences?.aiExplainDefaultProvider).toBe('codex');
     expect(normalized?.overlayPreferences?.selectorMode).toBe('carousel');
+    expect(normalized?.overlayPreferences?.lightweightMode).toBe(true);
+  });
+
+  it('defaults missing overlay lightweight mode to false for older payloads', () => {
+    const normalized = normalizeSettingsChangedPayload({
+      domain: 'overlay-preferences',
+      changedAt: 457,
+      overlayPreferences: {
+        selectorMode: 'tile',
+        hotkeyA: 'A',
+        hotkeyB: 'B',
+      },
+    });
+
+    expect(normalized?.overlayPreferences?.lightweightMode).toBe(false);
   });
 
   it('delivers browser-local settings events for non-Tauri tests and previews', async () => {

@@ -1,6 +1,6 @@
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager};
 
-use super::hotkey::register_hotkey;
+use super::hotkey::{register_default_shortcuts, register_hotkey, unregister_all_hotkeys};
 use super::platform::{
     activate_float_window_for_keyboard, configure_float_window_for_current_space,
     configure_selector_window_for_current_space, order_overlay_window_front,
@@ -23,7 +23,19 @@ pub async fn overlay_show_selector(app: AppHandle) -> Result<(), String> {
     show_selector_impl(&app)
 }
 
+fn lightweight_mode_enabled() -> bool {
+    OVERLAY_SETTINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .lightweight_mode
+}
+
 pub(super) fn show_selector_impl(app: &AppHandle) -> Result<(), String> {
+    if lightweight_mode_enabled() {
+        tracing::info!("overlay selector suppressed by lightweight mode");
+        return Ok(());
+    }
+
     ensure_selector(app)?;
     set_overlay_activation_policy(&app);
     // Hide float while selector is open (mutual exclusion). Restored on close.
@@ -123,6 +135,11 @@ pub async fn overlay_show_float(app: AppHandle, card_id: String) -> Result<(), S
 }
 
 pub(super) fn show_float_impl(app: &AppHandle, card_id: String) -> Result<(), String> {
+    if lightweight_mode_enabled() {
+        tracing::info!(card_id = %card_id, "overlay float suppressed by lightweight mode");
+        return Ok(());
+    }
+
     ensure_float(app)?;
     set_overlay_activation_policy(&app);
     // Hide selector if visible.
@@ -298,18 +315,41 @@ pub fn overlay_set_float_launch_mode(app: AppHandle, mode: String) -> Result<(),
 }
 
 #[tauri::command]
+pub fn overlay_set_lightweight_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
+    OVERLAY_SETTINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .lightweight_mode = enabled;
+    let _ = crate::db::set_setting(
+        "overlay.lightweight_mode",
+        if enabled { "true" } else { "false" },
+    );
+
+    if enabled {
+        unregister_all_hotkeys(&app);
+        let _ = overlay_hide_selector(app.clone());
+        let _ = overlay_hide_float(app);
+    } else {
+        register_default_shortcuts(&app);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn overlay_update_shortcut(
     app: AppHandle,
     label: String,
     accelerator: String,
 ) -> Result<(), String> {
-    register_hotkey(&app, &label, &accelerator)?;
-    // Persist
     let key = match label.as_str() {
         "A" => "overlay.hotkey_a",
         "B" => "overlay.hotkey_b",
         _ => return Err(format!("unknown slot {label}")),
     };
+    if !lightweight_mode_enabled() {
+        register_hotkey(&app, &label, &accelerator)?;
+    }
+    // Persist
     let _ = crate::db::set_setting(key, &accelerator);
     // Update in-memory settings.
     let mut settings = OVERLAY_SETTINGS.lock().unwrap_or_else(|e| e.into_inner());

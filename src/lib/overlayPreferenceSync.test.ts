@@ -11,6 +11,7 @@ function resetOverlay() {
     selectorMode: 'tile',
     hotkeyA: 'CmdOrCtrl+Shift+Space',
     hotkeyB: 'CmdOrCtrl+Shift+O',
+    lightweightMode: false,
   });
 }
 
@@ -25,6 +26,7 @@ describe('overlayPreferencePatchFromPayload', () => {
         selectorMode: 'carousel',
         hotkeyA: 'Ctrl+Alt+P',
         hotkeyB: 'Ctrl+Alt+F',
+        lightweightMode: true,
       },
     });
 
@@ -32,6 +34,7 @@ describe('overlayPreferencePatchFromPayload', () => {
       selectorMode: 'carousel',
       hotkeyA: 'Ctrl+Alt+P',
       hotkeyB: 'Ctrl+Alt+F',
+      lightweightMode: true,
     });
   });
 
@@ -43,6 +46,7 @@ describe('overlayPreferencePatchFromPayload', () => {
         selectorMode: 'tile',
         hotkeyA: 'A',
         hotkeyB: 'B',
+        lightweightMode: false,
       },
     });
 
@@ -73,6 +77,7 @@ describe('installOverlayPreferenceSync', () => {
         selectorMode: 'carousel',
         hotkeyA: 'Ctrl+Alt+1',
         hotkeyB: 'Ctrl+Alt+2',
+        lightweightMode: true,
       },
       changedAt: 100,
     });
@@ -81,6 +86,7 @@ describe('installOverlayPreferenceSync', () => {
     expect(st.selectorMode).toBe('carousel');
     expect(st.hotkeyA).toBe('Ctrl+Alt+1');
     expect(st.hotkeyB).toBe('Ctrl+Alt+2');
+    expect(st.lightweightMode).toBe(true);
 
     unlisten();
   });
@@ -118,6 +124,7 @@ describe('installOverlayPreferenceSync', () => {
         selectorMode: 'carousel',
         hotkeyA: 'A',
         hotkeyB: 'B',
+        lightweightMode: false,
       },
       changedAt: 102,
     });

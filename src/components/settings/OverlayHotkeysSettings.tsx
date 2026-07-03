@@ -121,6 +121,7 @@ function SlotRow({
   capturing,
   onStartCapture,
   onReset,
+  disabled,
   t,
 }: {
   meta: SlotMeta;
@@ -128,6 +129,7 @@ function SlotRow({
   capturing: boolean;
   onStartCapture: () => void;
   onReset: () => void;
+  disabled?: boolean;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const tokens = prettyTokens(current);
@@ -164,7 +166,7 @@ function SlotRow({
         <button
           type="button"
           onClick={onStartCapture}
-          disabled={capturing}
+          disabled={capturing || disabled}
           className="inline-flex items-center gap-1 rounded-[var(--radius-md)] border border-white/10 bg-background px-2 py-1 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
         >
           <Keyboard className="h-3 w-3" />
@@ -173,7 +175,7 @@ function SlotRow({
         <button
           type="button"
           onClick={onReset}
-          disabled={current === meta.defaultAccelerator}
+          disabled={disabled || current === meta.defaultAccelerator}
           title={t('hotkeys.resetTitle')}
           className="inline-flex items-center rounded-[var(--radius-md)] p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-40"
         >
@@ -191,6 +193,8 @@ export function OverlayHotkeysSettings() {
   const updateHotkey = useOverlayStore((s) => s.updateHotkey);
   const floatLaunchMode = useOverlayStore((s) => s.floatLaunchMode);
   const setFloatLaunchMode = useOverlayStore((s) => s.setFloatLaunchMode);
+  const lightweightMode = useOverlayStore((s) => s.lightweightMode);
+  const setLightweightMode = useOverlayStore((s) => s.setLightweightMode);
 
   const [capturing, setCapturing] = useState<Slot | null>(null);
   const [status, setStatus] = useState<{
@@ -205,6 +209,12 @@ export function OverlayHotkeysSettings() {
     timerRef.current = setTimeout(() => setStatus(null), 2400);
   }, []);
 
+  useEffect(() => {
+    if (lightweightMode) {
+      setCapturing(null);
+    }
+  }, [lightweightMode]);
+
   // Hydrate from Rust on first mount so the UI shows the real OS-level binding.
   useEffect(() => {
     if (!isTauriEnv()) return;
@@ -215,11 +225,15 @@ export function OverlayHotkeysSettings() {
           hotkey_a: string;
           hotkey_b: string;
           float_launch_mode?: FloatLaunchMode;
+          lightweight_mode?: boolean;
         } | null>('overlay_get_settings');
         if (!s || cancelled) return;
         useOverlayStore.getState().setHotkeys(s.hotkey_a, s.hotkey_b);
         if (s.float_launch_mode) {
           useOverlayStore.setState({ floatLaunchMode: s.float_launch_mode });
+        }
+        if (typeof s.lightweight_mode === 'boolean') {
+          useOverlayStore.setState({ lightweightMode: s.lightweight_mode });
         }
       } catch {
         /* noop */
@@ -264,6 +278,7 @@ export function OverlayHotkeysSettings() {
   }, [capturing, updateHotkey, clearStatusSoon, t]);
 
   const onStartCapture = useCallback((slot: Slot) => {
+    if (useOverlayStore.getState().lightweightMode) return;
     setCapturing(slot);
     setStatus(null);
   }, []);
@@ -300,6 +315,26 @@ export function OverlayHotkeysSettings() {
         </span>
       </div>
 
+      <label className="mb-3 flex items-center justify-between gap-4 rounded-[var(--radius-md)] border border-white/10 bg-background/70 px-3 py-2">
+        <span className="min-w-0">
+          <span className="block text-sm font-medium text-foreground">
+            {t('lightweight.title')}
+          </span>
+          <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
+            {t('lightweight.description')}
+          </span>
+        </span>
+        <input
+          type="checkbox"
+          role="switch"
+          checked={lightweightMode}
+          onChange={(event) => {
+            void setLightweightMode(event.currentTarget.checked);
+          }}
+          className="h-4 w-8 shrink-0 accent-primary"
+        />
+      </label>
+
       <div className="divide-y divide-border/40">
         {SLOTS.map((meta) => {
           const current = meta.label === 'A' ? hotkeyA : hotkeyB;
@@ -311,6 +346,7 @@ export function OverlayHotkeysSettings() {
               capturing={capturing === meta.label}
               onStartCapture={() => onStartCapture(meta.label)}
               onReset={() => onReset(meta.label, meta.defaultAccelerator)}
+              disabled={lightweightMode}
               t={t}
             />
           );
@@ -348,11 +384,13 @@ export function OverlayHotkeysSettings() {
               key={m.value}
               type="button"
               onClick={() => setFloatLaunchMode(m.value)}
+              disabled={lightweightMode}
               className={[
                 'flex-1 rounded-[var(--radius-md)] border px-2 py-1.5 text-xs font-medium transition-colors',
                 floatLaunchMode === m.value
                   ? 'border-primary bg-primary/10 text-primary'
                   : 'border-white/10 bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                lightweightMode ? 'cursor-not-allowed opacity-50' : '',
               ].join(' ')}
             >
               {t(m.labelKey)}

@@ -102,6 +102,7 @@ describe('settings bundle', () => {
         selectorMode: 'carousel',
         hotkeyA: 'CmdOrCtrl+Shift+A',
         hotkeyB: 'CmdOrCtrl+Shift+B',
+        lightweightMode: true,
         floatCardId: 'card-secret',
       } as never,
     });
@@ -117,6 +118,7 @@ describe('settings bundle', () => {
     expect(json).not.toContain('card-secret');
     expect(json).not.toContain('audit-secret');
     expect(bundle.sections.terminal?.osNotificationsEnabled).toBe(true);
+    expect(bundle.sections.overlay?.lightweightMode).toBe(true);
   });
 
   it('parses a bundle and normalizes custom themes to portable ids', () => {
@@ -151,6 +153,27 @@ describe('settings bundle', () => {
     expect(parsed.kind).toBe('success');
     if (parsed.kind === 'success') {
       expect(parsed.bundle.sections).not.toHaveProperty('workflows');
+    }
+  });
+
+  it('defaults missing overlay lightweight mode to false for older bundles', () => {
+    const parsed = parseSettingsBundle(JSON.stringify({
+      app: 'ThreadTerm',
+      kind: 'threadterm-settings-bundle',
+      schemaVersion: 1,
+      exportedAt: '2026-05-04T00:00:00.000Z',
+      sections: {
+        overlay: {
+          selectorMode: 'tile',
+          hotkeyA: 'A',
+          hotkeyB: 'B',
+        },
+      },
+    }));
+
+    expect(parsed.kind).toBe('success');
+    if (parsed.kind === 'success') {
+      expect(parsed.bundle.sections.overlay?.lightweightMode).toBe(false);
     }
   });
 

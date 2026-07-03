@@ -24,6 +24,8 @@ function resetStores() {
     floatHiddenByOverlay: false,
     floatCardId: null,
     floatWindowBounds: null,
+    floatLaunchMode: 'floating',
+    lightweightMode: false,
     hotkeyA: 'CmdOrCtrl+Shift+Space',
     hotkeyB: 'CmdOrCtrl+Shift+O',
   });
@@ -61,6 +63,19 @@ describe('openNotificationTarget', () => {
     expect(useOverlayStore.getState().floatCardId).toBe(id);
     expect(useTerminalStore.getState().pendingFocusCardId).toBe(id);
     expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(false);
+  });
+
+  it('focuses pinned cards in the main window when lightweight mode is enabled', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'repo', projectPath: '/repo', terminalType: 'claude' });
+    s.pinCard(id);
+    useOverlayStore.setState({ lightweightMode: true });
+
+    expect(openNotificationTarget(id)).toBe(true);
+
+    expect(useOverlayStore.getState().floatOpen).toBe(false);
+    expect(useTerminalStore.getState().focusedCardId).toBe(id);
+    expect(useTerminalStore.getState().pendingFocusCardId).toBe(id);
   });
 
   it('returns false for stale notification targets', () => {

@@ -36,6 +36,15 @@ pub const MAIN_LABEL: &str = "main";
 /// Failures are logged but not fatal — the lazy ensure_selector /
 /// ensure_float path still works as a fallback.
 pub fn prewarm_windows(app: &AppHandle) {
+    if OVERLAY_SETTINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .lightweight_mode
+    {
+        tracing::info!("overlay prewarm disabled by lightweight mode");
+        return;
+    }
+
     if !prewarm_enabled(
         std::env::var("THREADTERM_SKIP_OVERLAY_PREWARM")
             .ok()

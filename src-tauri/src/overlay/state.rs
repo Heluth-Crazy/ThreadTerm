@@ -43,6 +43,8 @@ pub struct OverlaySettings {
     pub float_bounds: Option<FloatBounds>,
     #[serde(default)]
     pub float_launch_mode: FloatLaunchMode,
+    #[serde(default)]
+    pub lightweight_mode: bool,
 }
 
 impl Default for OverlaySettings {
@@ -52,6 +54,7 @@ impl Default for OverlaySettings {
             hotkey_b: "CmdOrCtrl+Shift+O".to_string(),
             float_bounds: None,
             float_launch_mode: FloatLaunchMode::Floating,
+            lightweight_mode: false,
         }
     }
 }
@@ -68,6 +71,13 @@ pub struct FloatBounds {
 /// `db.rs` (keys: `overlay.hotkey_a`, `overlay.hotkey_b`, `overlay.float_bounds`).
 pub(super) static OVERLAY_SETTINGS: Lazy<Mutex<OverlaySettings>> =
     Lazy::new(|| Mutex::new(OverlaySettings::default()));
+
+fn setting_truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
 
 /// Load any persisted overlay settings from the SQLite settings table.
 pub fn load_settings() -> OverlaySettings {
@@ -92,6 +102,9 @@ pub fn load_settings() -> OverlaySettings {
             out.float_launch_mode = mode;
         }
     }
+    if let Ok(Some(v)) = crate::db::get_setting("overlay.lightweight_mode") {
+        out.lightweight_mode = setting_truthy(&v);
+    }
     // Poison-tolerant: a panic in another short critical section must not
     // permanently disable overlay settings. Recover the inner data instead.
     *OVERLAY_SETTINGS.lock().unwrap_or_else(|e| e.into_inner()) = out.clone();
@@ -108,6 +121,17 @@ mod tests {
         assert_eq!(s.hotkey_a, "CmdOrCtrl+Shift+Space");
         assert_eq!(s.hotkey_b, "CmdOrCtrl+Shift+O");
         assert!(s.float_bounds.is_none());
+        assert!(!s.lightweight_mode);
+    }
+
+    #[test]
+    fn setting_truthy_accepts_common_enabled_values() {
+        for value in ["1", "true", "yes", "on", " TRUE "] {
+            assert!(setting_truthy(value));
+        }
+        for value in ["0", "false", "no", "", "maybe"] {
+            assert!(!setting_truthy(value));
+        }
     }
 
     #[test]

@@ -20,11 +20,13 @@ import { useCallback, useEffect } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { invoke, isTauriEnv } from '../../lib/tauri-bridge';
 import { useOverlayStore } from '../../stores/overlayStore';
+import { useTerminalStore } from '../../stores/terminalStore';
 import { SelectorSurface } from '../../windows/selector/SelectorApp';
 
 interface OverlaySettingsPayload {
   hotkey_a: string;
   hotkey_b: string;
+  lightweight_mode?: boolean;
 }
 
 export function OverlayBridge(): JSX.Element | null {
@@ -39,6 +41,7 @@ export function OverlayBridge(): JSX.Element | null {
   const confirmSelector = useOverlayStore((s) => s.confirmSelector);
   const recycleToMain = useOverlayStore((s) => s.recycleToMain);
   const setHotkeys = useOverlayStore((s) => s.setHotkeys);
+  const lightweightMode = useOverlayStore((s) => s.lightweightMode);
 
   // Hydrate hotkey bindings from Rust settings on mount so the UI shows
   // what's actually registered at the OS level (may differ from the
@@ -51,6 +54,9 @@ export function OverlayBridge(): JSX.Element | null {
         const settings = await invoke<OverlaySettingsPayload>('overlay_get_settings');
         if (cancelled || !settings) return;
         setHotkeys(settings.hotkey_a, settings.hotkey_b);
+        if (typeof settings.lightweight_mode === 'boolean') {
+          useOverlayStore.setState({ lightweightMode: settings.lightweight_mode });
+        }
       } catch {
         /* noop */
       }
@@ -143,9 +149,16 @@ export function OverlayBridge(): JSX.Element | null {
 
   const onConfirmId = useCallback(
     (cardId: string) => {
+      if (lightweightMode) {
+        const terminalStore = useTerminalStore.getState();
+        recycleToMain();
+        terminalStore.setPendingFocusCardId(cardId);
+        terminalStore.focusCard(cardId);
+        return;
+      }
       confirmSelector(cardId);
     },
-    [confirmSelector],
+    [confirmSelector, lightweightMode, recycleToMain],
   );
 
   const onClose = useCallback(() => {

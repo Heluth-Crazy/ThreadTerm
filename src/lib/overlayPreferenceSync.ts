@@ -27,7 +27,10 @@ import { useOverlayStore } from '../stores/overlayStore';
  */
 export function overlayPreferencePatchFromPayload(
   payload: SettingsChangedPayload,
-): Pick<ReturnType<typeof useOverlayStore.getState>, 'selectorMode' | 'hotkeyA' | 'hotkeyB'> | null {
+): Pick<
+  ReturnType<typeof useOverlayStore.getState>,
+  'selectorMode' | 'hotkeyA' | 'hotkeyB' | 'lightweightMode'
+> | null {
   const isOverlayDomain =
     payload.domain === 'overlay-preferences' || payload.domain === 'all';
   if (!isOverlayDomain || !payload.overlayPreferences) return null;
@@ -36,6 +39,7 @@ export function overlayPreferencePatchFromPayload(
     selectorMode: payload.overlayPreferences.selectorMode,
     hotkeyA: payload.overlayPreferences.hotkeyA,
     hotkeyB: payload.overlayPreferences.hotkeyB,
+    lightweightMode: payload.overlayPreferences.lightweightMode,
   };
 }
 

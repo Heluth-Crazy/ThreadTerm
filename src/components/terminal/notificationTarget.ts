@@ -17,12 +17,13 @@ export function openNotificationTarget(cardId: string): boolean {
   // or from a generic notification (waiting/completed/failed).
   useSupervisorStore.getState().recordClickByCardId(cardId);
 
-  if (terminalStore.isPinned(cardId)) {
-    useOverlayStore.getState().openFloat(cardId);
+  const overlayStore = useOverlayStore.getState();
+  if (terminalStore.isPinned(cardId) && !overlayStore.lightweightMode) {
+    overlayStore.openFloat(cardId);
     return true;
   }
 
-  useOverlayStore.getState().recycleToMain();
+  overlayStore.recycleToMain();
   terminalStore.focusCard(cardId);
   return true;
 }

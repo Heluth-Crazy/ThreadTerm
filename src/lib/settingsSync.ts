@@ -29,6 +29,7 @@ export interface OverlayPreferenceSnapshot {
   selectorMode: 'tile' | 'carousel';
   hotkeyA: string;
   hotkeyB: string;
+  lightweightMode: boolean;
 }
 
 export interface SettingsChangedPayload {
@@ -108,6 +109,7 @@ function normalizeOverlayPreferences(value: unknown): OverlayPreferenceSnapshot 
     selectorMode: value.selectorMode,
     hotkeyA: value.hotkeyA,
     hotkeyB: value.hotkeyB,
+    lightweightMode: value.lightweightMode === true,
   };
 }
 

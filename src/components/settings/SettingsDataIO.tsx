@@ -70,6 +70,8 @@ export function SettingsDataIO() {
   const setSelectorMode = useOverlayStore((s) => s.setSelectorMode);
   const hotkeyA = useOverlayStore((s) => s.hotkeyA);
   const hotkeyB = useOverlayStore((s) => s.hotkeyB);
+  const lightweightMode = useOverlayStore((s) => s.lightweightMode);
+  const setLightweightMode = useOverlayStore((s) => s.setLightweightMode);
   const updateHotkey = useOverlayStore((s) => s.updateHotkey);
 
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -84,7 +86,7 @@ export function SettingsDataIO() {
       themePreference: { themeMode, themePackId },
       customThemePacks: (themePacks as ThemePack[]).filter((pack) => pack.isCustom),
       terminalSettings: { bottomBarHidden, aiExplainDefaultProvider, osNotificationsEnabled },
-      overlaySettings: { selectorMode, hotkeyA, hotkeyB },
+      overlaySettings: { selectorMode, hotkeyA, hotkeyB, lightweightMode },
     });
 
   const handleExport = async () => {
@@ -188,6 +190,7 @@ export function SettingsDataIO() {
         });
       }
       if (selected.has('overlay') && sections.overlay) {
+        await setLightweightMode(sections.overlay.lightweightMode);
         setSelectorMode(sections.overlay.selectorMode);
         await updateHotkey('A', sections.overlay.hotkeyA);
         await updateHotkey('B', sections.overlay.hotkeyB);

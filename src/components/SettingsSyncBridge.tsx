@@ -63,6 +63,7 @@ export function SettingsSyncBridge(): null {
           selectorMode: payload.overlayPreferences.selectorMode,
           hotkeyA: payload.overlayPreferences.hotkeyA,
           hotkeyB: payload.overlayPreferences.hotkeyB,
+          lightweightMode: payload.overlayPreferences.lightweightMode,
         });
       }
     });

@@ -18,6 +18,8 @@ function resetOverlay() {
     floatHiddenByOverlay: false,
     floatCardId: null,
     floatWindowBounds: null,
+    floatLaunchMode: 'floating',
+    lightweightMode: false,
     hotkeyA: 'CmdOrCtrl+Shift+Space',
     hotkeyB: 'CmdOrCtrl+Shift+O',
   });
@@ -98,6 +100,34 @@ describe('overlayStore — confirmSelector', () => {
     expect(st.floatOpen).toBe(true);
     expect(st.floatCardId).toBe('card-42');
     expect(st.floatHiddenByOverlay).toBe(false);
+  });
+
+  it('does not open the floating webview path in lightweight mode', () => {
+    useOverlayStore.setState({ lightweightMode: true });
+    useOverlayStore.getState().openSelector('inline');
+    useOverlayStore.getState().confirmSelector('card-42');
+    const st = useOverlayStore.getState();
+    expect(st.selectorOpen).toBe(false);
+    expect(st.floatOpen).toBe(false);
+    expect(st.floatCardId).toBe('card-42');
+  });
+});
+
+describe('overlayStore — lightweight mode', () => {
+  it('suppresses the dedicated selector window surface', () => {
+    useOverlayStore.setState({ lightweightMode: true });
+    useOverlayStore.getState().openSelector('window');
+    const st = useOverlayStore.getState();
+    expect(st.selectorOpen).toBe(false);
+    expect(st.selectorSurface).toBe('inline');
+  });
+
+  it('openFloat records the card without marking the float window open', () => {
+    useOverlayStore.setState({ lightweightMode: true });
+    useOverlayStore.getState().openFloat('card-1');
+    const st = useOverlayStore.getState();
+    expect(st.floatOpen).toBe(false);
+    expect(st.floatCardId).toBe('card-1');
   });
 });
 

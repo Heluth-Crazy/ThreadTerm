@@ -45,6 +45,7 @@ export interface SettingsBundleOverlaySection {
   selectorMode: SelectorMode;
   hotkeyA: string;
   hotkeyB: string;
+  lightweightMode: boolean;
 }
 
 export interface SettingsBundleSections {
@@ -131,6 +132,7 @@ function normalizeOverlaySettings(value: unknown): SettingsBundleOverlaySection 
       : 'tile',
     hotkeyA: optionalString(record.hotkeyA) ?? 'CmdOrCtrl+Shift+Space',
     hotkeyB: optionalString(record.hotkeyB) ?? 'CmdOrCtrl+Shift+O',
+    lightweightMode: record.lightweightMode === true,
   };
 }
 
@@ -261,7 +263,9 @@ export function summarizeSettingsBundleSection(
     case 'overlay': {
       const section = bundle.sections.overlay;
       if (!section) return 'Not set';
-      return `${section.selectorMode}, A ${section.hotkeyA}, B ${section.hotkeyB}`;
+      return `${section.selectorMode}, A ${section.hotkeyA}, B ${section.hotkeyB}, lightweight ${
+        section.lightweightMode ? 'on' : 'off'
+      }`;
     }
     default:
       return 'Not set';

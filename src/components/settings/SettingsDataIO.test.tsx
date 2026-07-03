@@ -60,6 +60,7 @@ beforeEach(() => {
     selectorMode: 'tile',
     hotkeyA: 'CmdOrCtrl+Shift+Space',
     hotkeyB: 'CmdOrCtrl+Shift+O',
+    lightweightMode: false,
   });
 });
 
@@ -87,6 +88,7 @@ describe('SettingsDataIO', () => {
               selectorMode: 'carousel',
               hotkeyA: 'CmdOrCtrl+Alt+A',
               hotkeyB: 'CmdOrCtrl+Alt+B',
+              lightweightMode: true,
             },
           }),
         ],
@@ -106,6 +108,7 @@ describe('SettingsDataIO', () => {
       expect(useOverlayStore.getState().selectorMode).toBe('carousel');
       expect(useOverlayStore.getState().hotkeyA).toBe('CmdOrCtrl+Alt+A');
       expect(useOverlayStore.getState().hotkeyB).toBe('CmdOrCtrl+Alt+B');
+      expect(useOverlayStore.getState().lightweightMode).toBe(true);
     });
   });
 
@@ -124,6 +127,7 @@ describe('SettingsDataIO', () => {
               selectorMode: 'carousel',
               hotkeyA: 'CmdOrCtrl+Alt+A',
               hotkeyB: 'CmdOrCtrl+Alt+B',
+              lightweightMode: true,
             },
           }),
         ],
