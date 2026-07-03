@@ -7,10 +7,10 @@
 //!
 //! Design constraints (see PRD § Decisions D1–D12):
 //! * Pure regex — zero LLM, zero token cost.
-//! * Triggered on `pty://block-finished` and on a 5-second idle tick when a
-//!   watched card has been silent for ≥ 60s.
+//! * Triggered on a 5-second idle tick when a watched card has been silent
+//!   for ≥ 60s.
 //! * Same `(cardId, ruleId)` is suppressed for 60s after firing.
-//! * Master-switch OFF means we hold no listener and no watcher state at all.
+//! * Master-switch OFF means we hold no watcher state at all.
 //!
 //! Public surface: [`init`] (call once during `setup`) and the
 //! `#[tauri::command]` [`supervisor_enable`].
@@ -21,8 +21,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, EventId, Listener};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 use tokio::time::interval;
 
 use crate::pty;
@@ -282,8 +282,6 @@ impl CardWatcher {
 struct SupervisorState {
     enabled: bool,
     watched: HashMap<String, CardWatcher>,
-    /// Drop guard for the `pty://block-finished` listener. `None` ↔ disabled.
-    block_listener: Option<EventId>,
 }
 
 impl SupervisorState {
@@ -291,7 +289,6 @@ impl SupervisorState {
         Self {
             enabled: false,
             watched: HashMap::new(),
-            block_listener: None,
         }
     }
 }
@@ -303,16 +300,6 @@ static IDLE_TASK_STARTED: OnceLock<()> = OnceLock::new();
 
 fn state() -> &'static Mutex<SupervisorState> {
     STATE.get_or_init(|| Mutex::new(SupervisorState::new()))
-}
-
-// ── Wire payloads ───────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BlockFinishedWire {
-    session_id: String,
-    // Other fields exist (block_id, exit_code, finished_at, duration_ms) but
-    // we only need session_id for routing.
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -330,10 +317,6 @@ struct AlertPayload {
 
 /// Install the supervisor singleton. Idempotent. Safe to call from
 /// `tauri::Builder::setup`.
-///
-/// We do NOT subscribe to `pty://block-finished` here — that happens lazily
-/// in [`supervisor_enable`] when the master switch flips ON, so a user who
-/// never enables the feature pays zero CPU cost.
 pub fn init(app_handle: AppHandle) {
     // Force the global state to exist so future locks don't race.
     let _ = state();
@@ -347,14 +330,14 @@ pub fn init(app_handle: AppHandle) {
 /// `pinnedCardIds` changes. Single entry-point keeps state mutation in one
 /// transaction.
 ///
-/// * `enabled = false` → drop every watcher + unlisten the block stream.
-/// * `enabled = true`  → ensure a listener, replace the watched-set with
-///   `watched_card_ids`, reset cooldowns for any newly-pinned card.
+/// * `enabled = false` → drop every watcher.
+/// * `enabled = true`  → replace the watched-set with `watched_card_ids`,
+///   reset cooldowns for any newly-pinned card.
 #[tauri::command]
 pub async fn supervisor_enable(
     enabled: bool,
     watched_card_ids: Vec<String>,
-    app_handle: AppHandle,
+    _app_handle: AppHandle,
 ) -> Result<(), String> {
     let now = Instant::now();
     let mut s = state()
@@ -362,24 +345,12 @@ pub async fn supervisor_enable(
         .map_err(|e| format!("supervisor state poisoned: {e}"))?;
 
     if !enabled {
-        // Tear down: drop listener + watcher state. Pending alerts in the
-        // frontend Notification Centre are unaffected (D2).
-        if let Some(id) = s.block_listener.take() {
-            app_handle.unlisten(id);
-        }
+        // Tear down watcher state. Pending alerts in the frontend
+        // Notification Centre are unaffected (D2).
         s.watched.clear();
         s.enabled = false;
         tracing::info!("supervisor disabled");
         return Ok(());
-    }
-
-    // Enabled path: set up the block-finished listener once.
-    if s.block_listener.is_none() {
-        let app_for_handler = app_handle.clone();
-        let id = app_handle.listen("pty://block-finished", move |event| {
-            handle_block_finished(event.payload(), &app_for_handler);
-        });
-        s.block_listener = Some(id);
     }
 
     // Reconcile the watched-set against the requested set.
@@ -395,54 +366,7 @@ pub async fn supervisor_enable(
     Ok(())
 }
 
-// ── Internal: event handler + scan ──────────────────────────────────────────
-
-fn handle_block_finished(payload: &str, app_handle: &AppHandle) {
-    let parsed: BlockFinishedWire = match serde_json::from_str(payload) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(error = %e, "supervisor: malformed block-finished payload");
-            return;
-        }
-    };
-    scan_card(&parsed.session_id, app_handle, Instant::now());
-}
-
-/// Pull recent output for the card and run it through the rules. Updates
-/// `last_output_ts` because a block just finished = we just observed output.
-fn scan_card(card_id: &str, app_handle: &AppHandle, now: Instant) {
-    // Read the buffer outside the lock — pty has its own RwLock and we want
-    // to keep our SupervisorState lock window tight.
-    let Some(raw) = pty::get_recent_output(card_id) else {
-        return;
-    };
-    let matches = match_rules(&raw, &RULES);
-
-    let mut s = match state().lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    if !s.enabled {
-        return;
-    }
-    let Some(watcher) = s.watched.get_mut(card_id) else {
-        return;
-    };
-    watcher.last_output_ts = now;
-    watcher.last_idle_check = Some(now);
-
-    for m in matches {
-        if try_fire(watcher, m.rule_id, now) {
-            let payload = AlertPayload {
-                card_id: card_id.to_string(),
-                rule_id: m.rule_id.as_str(),
-                sample_text: m.sample_text,
-                ts: now_millis(),
-            };
-            let _ = app_handle.emit("supervisor://alert", payload);
-        }
-    }
-}
+// ── Internal: scan ──────────────────────────────────────────────────────────
 
 /// Returns `true` iff the rule was eligible to fire (i.e. not in cooldown);
 /// caller is then responsible for actually emitting the alert. Factored out
@@ -742,7 +666,7 @@ mod tests {
     fn disable_drops_state() {
         // We can't await `supervisor_enable` here without a Tauri AppHandle,
         // so simulate the state mutation directly: disabled means watched is
-        // empty + listener is None.
+        // empty and the master switch is off.
         let mut s = SupervisorState::new();
         s.enabled = true;
         s.watched
@@ -753,7 +677,6 @@ mod tests {
         s.enabled = false;
         assert!(s.watched.is_empty());
         assert!(!s.enabled);
-        assert!(s.block_listener.is_none());
     }
 
     // ── Rule-id wire stability ──────────────────────────────────────────

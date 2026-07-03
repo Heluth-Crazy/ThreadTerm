@@ -60,27 +60,6 @@ export interface AttentionRequiredEvent {
   message: string;
 }
 
-export interface BlockStartedEvent {
-  sessionId: string;
-  blockId: string;
-  command: string;
-  cwd: string;
-  startedAt: number;
-}
-
-export interface BlockFinishedEvent {
-  sessionId: string;
-  blockId: string;
-  /**
-   * `null` represents an aborted block (the prompt restarted before the
-   * previous command's `D` arrived — see `pty/blocks.rs` S3-2 fix). The
-   * store maps `null/undefined → state: 'aborted'`.
-   */
-  exitCode: number | null;
-  finishedAt: number;
-  durationMs?: number | null;
-}
-
 export const pty = {
   create: (id: string, workingDir: string, rows: number, cols: number): Promise<string> =>
     invoke<string>('pty_create', { id, workingDir, rows, cols }),
@@ -128,17 +107,6 @@ export const pty = {
   onAttentionRequired: (cb: (payload: AttentionRequiredEvent) => void): Promise<() => void> =>
     listen<AttentionRequiredEvent>('attention-required', (e) => cb(e.payload)),
 
-  onBlockStarted: (cb: (payload: BlockStartedEvent) => void): Promise<() => void> =>
-    listen<BlockStartedEvent>('pty://block-started', (e) => cb(e.payload)),
-
-  onBlockFinished: (cb: (payload: BlockFinishedEvent) => void): Promise<() => void> =>
-    listen<BlockFinishedEvent>('pty://block-finished', (e) => cb(e.payload)),
-
-  setCommandBlocksEnabled: (enabled: boolean): Promise<boolean> =>
-    invoke<boolean>('set_command_blocks_enabled', { enabled }),
-
-  getCommandBlocksEnabled: (): Promise<boolean> =>
-    invoke<boolean>('get_command_blocks_enabled'),
 };
 
 export interface WorktreeInfo {
@@ -247,30 +215,6 @@ export const workspaceFiles = {
       contents,
       expectedModifiedUnixMs: expectedModifiedUnixMs ?? null,
     }),
-};
-
-export type SupportedShell = 'zsh' | 'bash' | 'fish' | 'pwsh';
-
-export interface ShellIntegrationPreview {
-  rcPath: string;
-  before: string;
-  after: string;
-  diff: string;
-  noChanges: boolean;
-}
-
-export const shellIntegration = {
-  detectShell: (): Promise<SupportedShell | null> =>
-    invoke<SupportedShell | null>('detect_shell'),
-
-  preview: (shell: SupportedShell): Promise<ShellIntegrationPreview> =>
-    invoke<ShellIntegrationPreview>('preview_shell_integration', { shell }),
-
-  install: (shell: SupportedShell): Promise<boolean> =>
-    invoke<boolean>('install_shell_integration', { shell }),
-
-  uninstall: (shell: SupportedShell): Promise<boolean> =>
-    invoke<boolean>('uninstall_shell_integration', { shell }),
 };
 
 export interface ProviderSessionInfo {

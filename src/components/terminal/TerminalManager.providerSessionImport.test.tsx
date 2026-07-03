@@ -72,10 +72,6 @@ vi.mock('../Settings', () => ({
 function resetStore() {
   useTerminalStore.setState({
     cards: [],
-    blocks: {},
-    collapsedBlockIds: [],
-    selectedBlockId: {},
-    bookmarks: [],
     focusedCardId: null,
     lastActiveCardId: null,
     selectedProjectPath: null,

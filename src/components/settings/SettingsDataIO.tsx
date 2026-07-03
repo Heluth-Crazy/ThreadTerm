@@ -63,8 +63,6 @@ export function SettingsDataIO() {
     setThemePreference,
     replaceCustomThemePacks,
   } = useTheme();
-  const bottomBarHidden = useTerminalStore((s) => s.bottomBarHidden);
-  const aiExplainDefaultProvider = useTerminalStore((s) => s.aiExplainDefaultProvider);
   const osNotificationsEnabled = useTerminalStore((s) => s.osNotificationsEnabled);
   const selectorMode = useOverlayStore((s) => s.selectorMode);
   const setSelectorMode = useOverlayStore((s) => s.setSelectorMode);
@@ -85,7 +83,7 @@ export function SettingsDataIO() {
     createSettingsBundle({
       themePreference: { themeMode, themePackId },
       customThemePacks: (themePacks as ThemePack[]).filter((pack) => pack.isCustom),
-      terminalSettings: { bottomBarHidden, aiExplainDefaultProvider, osNotificationsEnabled },
+      terminalSettings: { osNotificationsEnabled },
       overlaySettings: { selectorMode, hotkeyA, hotkeyB, lightweightMode },
     });
 
@@ -173,14 +171,10 @@ export function SettingsDataIO() {
       }
       if (selected.has('terminal') && sections.terminal) {
         const terminalPreferences = {
-          bottomBarHidden: sections.terminal.bottomBarHidden,
-          aiExplainDefaultProvider: sections.terminal.aiExplainDefaultProvider,
           osNotificationsEnabled: sections.terminal.osNotificationsEnabled,
           supervisorEnabled: useTerminalStore.getState().supervisorEnabled,
         };
         useTerminalStore.setState({
-          bottomBarHidden: terminalPreferences.bottomBarHidden,
-          aiExplainDefaultProvider: terminalPreferences.aiExplainDefaultProvider,
           osNotificationsEnabled: terminalPreferences.osNotificationsEnabled,
         });
         void emitSettingsChanged({

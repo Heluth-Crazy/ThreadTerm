@@ -111,16 +111,6 @@ export function KeyboardBridge(): null {
         return;
       }
 
-      // Ctrl+F — open cross-session block search (Stage 5.1).
-      // Capture phase + stopPropagation lets us win over xterm-js, which
-      // would otherwise interpret Ctrl+F as terminal input on Linux/Windows.
-      if (mod && (e.key === 'f' || e.key === 'F') && !e.shiftKey && !e.altKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        window.__terminalManager?.openSearch();
-        return;
-      }
-
       // Ctrl+N — open create dialog
       if (mod && (e.key === 'n' || e.key === 'N') && !e.shiftKey && !e.altKey) {
         e.preventDefault();

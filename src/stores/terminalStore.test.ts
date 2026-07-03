@@ -5,16 +5,11 @@ import {
   MAX_RECENTLY_VIEWED_CARDS,
   useTerminalStore,
 } from './terminalStore';
-import { MAX_BLOCKS_PER_CARD } from '../types/terminal';
 
 function resetStore() {
   useTerminalStore.setState({
     cards: [],
     archivedCards: [],
-    blocks: {},
-    collapsedBlockIds: [],
-    selectedBlockId: {},
-    bookmarks: [],
     focusedCardId: null,
     lastActiveCardId: null,
     recentlyViewedCardIds: [],
@@ -188,7 +183,7 @@ describe('terminalStore — card lifecycle', () => {
     expect(useTerminalStore.getState().cards).toHaveLength(0);
   });
 
-  it('archives a card without deleting blocks, bookmarks, or provider session binding', () => {
+  it('archives a card while preserving provider session binding', () => {
     const s = useTerminalStore.getState();
     const id = s.createCard({
       projectName: 'app',
@@ -205,16 +200,6 @@ describe('terminalStore — card lifecycle', () => {
       title: 'Needs input',
       body: 'Please respond',
     });
-    s.recordBlockStarted({
-      cardId: id,
-      blockId: 'blk-1',
-      command: 'npm test',
-      cwd: '/repo/app',
-      startedAt: 100,
-      bufferStart: 1,
-    });
-    s.addBookmark({ blockId: 'blk-1', cardId: id, command: 'npm test', cwd: '/repo/app' });
-
     useTerminalStore.getState().archiveCard(id);
     const state = useTerminalStore.getState();
 
@@ -234,8 +219,6 @@ describe('terminalStore — card lifecycle', () => {
     expect(state.selectedProjectPath).toBe('/repo/app');
     expect(state.pinnedCardIds).toEqual([]);
     expect(state.notifications).toEqual([]);
-    expect(state.blocks[id]).toHaveLength(1);
-    expect(state.bookmarks).toHaveLength(1);
   });
 
   it('restores archived cards to the front of project order without focusing them', () => {
@@ -336,27 +319,6 @@ describe('terminalStore — card lifecycle', () => {
     expect(useTerminalStore.getState().notifications).toHaveLength(1);
     useTerminalStore.getState().removeCard(id);
     expect(useTerminalStore.getState().notifications).toHaveLength(0);
-  });
-
-  it('removeCard drops related command blocks', () => {
-    const s = useTerminalStore.getState();
-    const id = s.createCard({
-      projectName: 'foo',
-      projectPath: '/tmp/foo',
-      terminalType: 'shell',
-    });
-    s.recordBlockStarted({
-      cardId: id,
-      blockId: 'block-1',
-      command: 'npm test',
-      cwd: '/tmp/foo',
-      startedAt: 1_000,
-      bufferStart: 4,
-    });
-
-    useTerminalStore.getState().removeCard(id);
-
-    expect(useTerminalStore.getState().blocks[id]).toBeUndefined();
   });
 
   it('persists pending auto restart attempts as cancelled metadata only', () => {
@@ -462,193 +424,6 @@ describe('terminalStore — renameCard', () => {
 
     expect(useTerminalStore.getState().getCardById(a)?.projectName).toBe('frontend');
     expect(useTerminalStore.getState().getCardById(b)?.projectName).toBe('app');
-  });
-});
-
-describe('terminalStore command blocks', () => {
-  it('starts and finishes command blocks by card id', () => {
-    const s = useTerminalStore.getState();
-    const id = s.createCard({ projectName: 'foo', projectPath: '/tmp/foo', terminalType: 'shell' });
-
-    s.recordBlockStarted({
-      cardId: id,
-      blockId: 'block-1',
-      command: 'npm test',
-      cwd: '/tmp/foo',
-      startedAt: 1_000,
-      bufferStart: 12,
-    });
-
-    expect(useTerminalStore.getState().blocks[id]).toEqual([
-      {
-        id: 'block-1',
-        cardId: id,
-        command: 'npm test',
-        cwd: '/tmp/foo',
-        startedAt: 1_000,
-        bufferStart: 12,
-        state: 'running',
-      },
-    ]);
-
-    s.recordBlockFinished({
-      cardId: id,
-      blockId: 'block-1',
-      exitCode: 1,
-      finishedAt: 1_250,
-      durationMs: 250,
-      bufferEnd: 18,
-    });
-
-    expect(useTerminalStore.getState().blocks[id]?.[0]).toMatchObject({
-      finishedAt: 1_250,
-      exitCode: 1,
-      durationMs: 250,
-      bufferEnd: 18,
-      state: 'failed',
-    });
-  });
-
-  it('recordBlockFinished caps output at MAX_BLOCK_OUTPUT_LENGTH', () => {
-    const big = 'x'.repeat(10_000);
-    const s = useTerminalStore.getState();
-    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
-    s.recordBlockStarted({
-      cardId: id,
-      blockId: 'b1',
-      command: 'foo',
-      cwd: '/',
-      startedAt: 0,
-      bufferStart: 0,
-    });
-    s.recordBlockFinished({
-      cardId: id,
-      blockId: 'b1',
-      exitCode: 0,
-      finishedAt: 1,
-      durationMs: 1,
-      output: big,
-    });
-    const stored = useTerminalStore.getState().blocks[id][0];
-    expect(stored.output?.length).toBe(4000);
-  });
-
-  it('recordBlockFinished stores short output verbatim', () => {
-    const s = useTerminalStore.getState();
-    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
-    s.recordBlockStarted({
-      cardId: id,
-      blockId: 'b1',
-      command: 'foo',
-      cwd: '/',
-      startedAt: 0,
-      bufferStart: 0,
-    });
-    s.recordBlockFinished({
-      cardId: id,
-      blockId: 'b1',
-      exitCode: 0,
-      finishedAt: 1,
-      durationMs: 1,
-      output: 'hello\nworld',
-    });
-    expect(useTerminalStore.getState().blocks[id][0].output).toBe('hello\nworld');
-  });
-
-  it('defaults missing legacy blocks state to an empty record', () => {
-    useTerminalStore.setState({ blocks: undefined as never });
-
-    useTerminalStore.getState().ensureBlocksState();
-
-    expect(useTerminalStore.getState().blocks).toEqual({});
-  });
-
-  it('evicts oldest blocks past MAX_BLOCKS_PER_CARD (audit P2-4)', () => {
-    const s = useTerminalStore.getState();
-    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
-
-    for (let i = 0; i < MAX_BLOCKS_PER_CARD + 5; i++) {
-      s.recordBlockStarted({
-        cardId: id,
-        blockId: `b-${i}`,
-        command: `cmd ${i}`,
-        cwd: '/',
-        startedAt: i,
-        bufferStart: i,
-      });
-    }
-
-    const blocks = useTerminalStore.getState().blocks[id];
-    expect(blocks).toHaveLength(MAX_BLOCKS_PER_CARD);
-    expect(blocks[0].id).toBe('b-5'); // b-0..b-4 evicted FIFO
-    expect(blocks[blocks.length - 1].id).toBe(`b-${MAX_BLOCKS_PER_CARD + 4}`);
-  });
-
-  it('eviction drops collapsed/bookmark/selection references to evicted blocks', () => {
-    const s = useTerminalStore.getState();
-    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
-
-    s.recordBlockStarted({
-      cardId: id,
-      blockId: 'b-0',
-      command: 'cmd 0',
-      cwd: '/',
-      startedAt: 0,
-      bufferStart: 0,
-    });
-    s.toggleBlockCollapsed('b-0');
-    s.addBookmark({ blockId: 'b-0', cardId: id, command: 'cmd 0', cwd: '/' });
-    s.selectBlock(id, 'b-0');
-
-    for (let i = 1; i <= MAX_BLOCKS_PER_CARD; i++) {
-      s.recordBlockStarted({
-        cardId: id,
-        blockId: `b-${i}`,
-        command: `cmd ${i}`,
-        cwd: '/',
-        startedAt: i,
-        bufferStart: i,
-      });
-    }
-
-    const state = useTerminalStore.getState();
-    expect(state.blocks[id].some((b) => b.id === 'b-0')).toBe(false);
-    expect(state.collapsedBlockIds).not.toContain('b-0');
-    expect(state.bookmarks.some((b) => b.blockId === 'b-0')).toBe(false);
-    expect(state.selectedBlockId[id]).toBeNull();
-  });
-
-  it('eviction leaves references to surviving blocks intact', () => {
-    const s = useTerminalStore.getState();
-    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
-
-    for (let i = 0; i < MAX_BLOCKS_PER_CARD; i++) {
-      s.recordBlockStarted({
-        cardId: id,
-        blockId: `b-${i}`,
-        command: `cmd ${i}`,
-        cwd: '/',
-        startedAt: i,
-        bufferStart: i,
-      });
-    }
-    const survivorId = `b-${MAX_BLOCKS_PER_CARD - 1}`;
-    s.toggleBlockCollapsed(survivorId);
-    s.addBookmark({ blockId: survivorId, cardId: id, command: 'x', cwd: '/' });
-
-    // Push one more — evicts only b-0.
-    s.recordBlockStarted({
-      cardId: id,
-      blockId: 'b-extra',
-      command: 'extra',
-      cwd: '/',
-      startedAt: 999,
-      bufferStart: 999,
-    });
-
-    const state = useTerminalStore.getState();
-    expect(state.collapsedBlockIds).toContain(survivorId);
-    expect(state.bookmarks.some((b) => b.blockId === survivorId)).toBe(true);
   });
 });
 
@@ -776,8 +551,6 @@ describe('terminalStore — session dock metadata', () => {
           },
         ],
         archivedCards: [],
-        blocks: {},
-        bookmarks: [],
         focusedCardId: null,
         lastActiveCardId: null,
         selectedProjectPath: null,
@@ -788,8 +561,6 @@ describe('terminalStore — session dock metadata', () => {
         recentlyViewedCardIds: ['missing', 'live', 'live'],
         notifications: [],
         notificationCentreOpen: false,
-        aiExplainDefaultProvider: 'claude',
-        bottomBarHidden: false,
         supervisorEnabled: false,
         osNotificationsEnabled: true,
       },
@@ -956,16 +727,12 @@ describe('terminalStore — project card order', () => {
     const v11Snapshot = {
       state: {
         cards: [],
-        blocks: {},
-        bookmarks: [],
         focusedCardId: null,
         lastActiveCardId: null,
         selectedProjectPath: null,
         pinnedCardIds: [],
         notifications: [],
         notificationCentreOpen: false,
-        aiExplainDefaultProvider: 'claude',
-        bottomBarHidden: false,
         supervisorEnabled: false,
         osNotificationsEnabled: true,
       },
@@ -981,8 +748,6 @@ describe('terminalStore — project card order', () => {
     const v12Snapshot = {
       state: {
         cards: [],
-        blocks: {},
-        bookmarks: [],
         focusedCardId: null,
         lastActiveCardId: null,
         selectedProjectPath: null,
@@ -990,8 +755,6 @@ describe('terminalStore — project card order', () => {
         pinnedCardIds: [],
         notifications: [],
         notificationCentreOpen: false,
-        aiExplainDefaultProvider: 'claude',
-        bottomBarHidden: false,
         supervisorEnabled: false,
         osNotificationsEnabled: true,
       },
@@ -1224,102 +987,6 @@ describe('terminalStore — purgeReadNotifications', () => {
   });
 });
 
-describe('terminalStore — block UI state', () => {
-  it('toggles a block collapsed state', () => {
-    const s = useTerminalStore.getState();
-    s.toggleBlockCollapsed('blk-1');
-    expect(useTerminalStore.getState().collapsedBlockIds).toEqual(['blk-1']);
-    s.toggleBlockCollapsed('blk-1');
-    expect(useTerminalStore.getState().collapsedBlockIds).toEqual([]);
-  });
-
-  it('records the selected block per card', () => {
-    const s = useTerminalStore.getState();
-    s.selectBlock('card-1', 'blk-1');
-    s.selectBlock('card-2', 'blk-7');
-    expect(useTerminalStore.getState().selectedBlockId).toEqual({
-      'card-1': 'blk-1',
-      'card-2': 'blk-7',
-    });
-    s.selectBlock('card-1', null);
-    expect(useTerminalStore.getState().selectedBlockId).toEqual({
-      'card-1': null,
-      'card-2': 'blk-7',
-    });
-  });
-
-  it('removeCard cleans up collapsedBlockIds and selectedBlockId for the removed card', () => {
-    const s = useTerminalStore.getState();
-    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
-    // Inject blocks for the card
-    useTerminalStore.setState((state) => ({
-      blocks: {
-        ...state.blocks,
-        [id]: [
-          { id: 'blk-a', cardId: id, cwd: '/a', command: 'ls', startedAt: 0, bufferStart: 0, state: 'success' },
-          { id: 'blk-b', cardId: id, cwd: '/a', command: 'pwd', startedAt: 0, bufferStart: 1, state: 'failed' },
-        ],
-      },
-    }));
-    s.toggleBlockCollapsed('blk-a');
-    s.toggleBlockCollapsed('blk-b');
-    s.toggleBlockCollapsed('blk-z'); // unrelated, must survive
-    s.selectBlock(id, 'blk-a');
-
-    s.removeCard(id);
-
-    const after = useTerminalStore.getState();
-    expect(after.collapsedBlockIds).toEqual(['blk-z']);
-    expect(after.selectedBlockId).not.toHaveProperty(id);
-  });
-});
-
-describe('terminalStore — bookmarks', () => {
-  it('addBookmark creates a bookmark with id, blockId, cardId and createdAt', () => {
-    const s = useTerminalStore.getState();
-    const cardId = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
-    s.addBookmark({ blockId: 'blk-1', cardId, command: 'ls', cwd: '/a' });
-    const after = useTerminalStore.getState().bookmarks;
-    expect(after).toHaveLength(1);
-    expect(after[0]).toMatchObject({ blockId: 'blk-1', cardId, command: 'ls', cwd: '/a' });
-    expect(after[0].id).toBeTruthy();
-    expect(typeof after[0].createdAt).toBe('number');
-  });
-
-  it('addBookmark refuses to insert a duplicate (same blockId)', () => {
-    const s = useTerminalStore.getState();
-    s.addBookmark({ blockId: 'blk-1', cardId: 'c1', command: 'ls', cwd: '/a' });
-    s.addBookmark({ blockId: 'blk-1', cardId: 'c1', command: 'ls', cwd: '/a' });
-    expect(useTerminalStore.getState().bookmarks).toHaveLength(1);
-  });
-
-  it('removeBookmark drops the entry', () => {
-    const s = useTerminalStore.getState();
-    s.addBookmark({ blockId: 'blk-1', cardId: 'c1', command: 'ls', cwd: '/a' });
-    const id = useTerminalStore.getState().bookmarks[0].id;
-    useTerminalStore.getState().removeBookmark(id);
-    expect(useTerminalStore.getState().bookmarks).toHaveLength(0);
-  });
-
-  it('isBookmarked returns true after adding', () => {
-    const s = useTerminalStore.getState();
-    expect(s.isBookmarked('blk-x')).toBe(false);
-    s.addBookmark({ blockId: 'blk-x', cardId: 'c1', command: 'pwd', cwd: '/' });
-    expect(useTerminalStore.getState().isBookmarked('blk-x')).toBe(true);
-  });
-
-  it('removeCard drops bookmarks belonging to deleted card', () => {
-    const s = useTerminalStore.getState();
-    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
-    s.addBookmark({ blockId: 'blk-1', cardId: id, command: 'ls', cwd: '/a' });
-    s.addBookmark({ blockId: 'blk-2', cardId: 'other-card', command: 'pwd', cwd: '/' });
-    useTerminalStore.getState().removeCard(id);
-    const after = useTerminalStore.getState().bookmarks;
-    expect(after).toHaveLength(1);
-    expect(after[0].blockId).toBe('blk-2');
-  });
-});
-
 describe('terminalStore — AI Supervisor master switch (PRD D3)', () => {
   it('defaults supervisorEnabled to false', () => {
     expect(useTerminalStore.getState().supervisorEnabled).toBe(false);
@@ -1338,16 +1005,12 @@ describe('terminalStore — AI Supervisor master switch (PRD D3)', () => {
     const v8Snapshot = {
       state: {
         cards: [],
-        blocks: {},
-        bookmarks: [],
         focusedCardId: null,
         lastActiveCardId: null,
         selectedProjectPath: null,
         pinnedCardIds: [],
         notifications: [],
         notificationCentreOpen: false,
-        aiExplainDefaultProvider: 'claude',
-        bottomBarHidden: false,
       },
       version: 8,
     };
@@ -1360,16 +1023,12 @@ describe('terminalStore — AI Supervisor master switch (PRD D3)', () => {
     const v9Snapshot = {
       state: {
         cards: [],
-        blocks: {},
-        bookmarks: [],
         focusedCardId: null,
         lastActiveCardId: null,
         selectedProjectPath: null,
         pinnedCardIds: [],
         notifications: [],
         notificationCentreOpen: false,
-        aiExplainDefaultProvider: 'claude',
-        bottomBarHidden: false,
         supervisorEnabled: true,
       },
       version: 9,
@@ -1389,16 +1048,12 @@ describe('terminalStore — AI Supervisor master switch (PRD D3)', () => {
     const upgradedSnapshot = {
       state: {
         cards: [],
-        blocks: {},
-        bookmarks: [],
         focusedCardId: null,
         lastActiveCardId: null,
         selectedProjectPath: null,
         pinnedCardIds: [],
         notifications: [],
         notificationCentreOpen: false,
-        aiExplainDefaultProvider: 'claude',
-        bottomBarHidden: false,
         supervisorEnabled: false,
         petConfig: {
           enabled: true,
@@ -1417,8 +1072,6 @@ describe('terminalStore — AI Supervisor master switch (PRD D3)', () => {
   it('v17 migration maps a legacy off/pet notificationMode to disabled', async () => {
     const upgradedSnapshot = {
       state: {
-        aiExplainDefaultProvider: 'claude',
-        bottomBarHidden: false,
         supervisorEnabled: false,
         petConfig: { enabled: true, notificationMode: 'pet' },
       },

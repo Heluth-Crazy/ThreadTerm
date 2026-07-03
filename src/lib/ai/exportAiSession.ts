@@ -1,7 +1,6 @@
-import type { AiExplainProvider } from './aiExplain';
 import type { TerminalAiIntent } from '../../types/terminal';
 
-export type AiSessionExportProvider = AiExplainProvider | 'unknown';
+export type AiSessionExportProvider = 'claude' | 'codex' | 'gemini' | 'unknown';
 export type AiSessionExportMessageRole = 'user' | 'assistant';
 export type AiSessionExportLaunchAction = 'start' | 'resume' | 'discover';
 
@@ -15,9 +14,8 @@ export interface AiSessionExportMessage {
 }
 
 export interface AiSessionExportSourceContext {
-  kind: 'block' | 'card';
+  kind: 'card';
   cardId?: string;
-  blockId?: string;
   projectName?: string;
   projectPath?: string;
   cwd?: string;
@@ -42,7 +40,7 @@ export function getAiSessionExportFilename(
   date = new Date(),
 ): string {
   const provider = source.provider ?? 'ai';
-  const contextId = source.sourceContext.blockId ?? source.sourceContext.cardId ?? 'session';
+  const contextId = source.sourceContext.cardId ?? 'session';
   const slug = sanitizeFilenamePart(`${provider}-${contextId}`) || 'ai-session';
   return `threadterm-ai-${slug}-${date.toISOString().slice(0, 10)}.md`;
 }
@@ -95,9 +93,6 @@ export function renderAiSessionMarkdown(source: AiSessionExportSource): string {
 }
 
 function defaultTitle(source: AiSessionExportSource): string {
-  if (source.sourceContext.kind === 'block') {
-    return 'ThreadTerm AI Block Session';
-  }
   return 'ThreadTerm AI Card Session';
 }
 
@@ -139,7 +134,6 @@ function formatSourceContext(context: AiSessionExportSourceContext): string {
     context.launchAction ? `launch ${context.launchAction}` : null,
     context.launchCommand ? `launch command ${context.launchCommand}` : null,
     context.cardId ? `card ${context.cardId}` : null,
-    context.blockId ? `block ${context.blockId}` : null,
   ].filter(Boolean);
   return parts.join('; ');
 }

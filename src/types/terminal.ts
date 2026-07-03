@@ -54,45 +54,6 @@ export interface TerminalEvent {
   summary: string;
 }
 
-// Command block model (Stage 3): metadata emitted by shell integration OSC.
-export type BlockState = 'running' | 'success' | 'failed' | 'aborted';
-
-export interface Block {
-  id: string;
-  cardId: string;
-  cwd: string;
-  command: string;
-  startedAt: number;
-  finishedAt?: number;
-  exitCode?: number;
-  durationMs?: number;
-  bufferStart: number;
-  bufferEnd?: number;
-  state: BlockState;
-  /** ANSI-stripped output captured at block-finish time. Used by
-   *  BlockInspector and cross-session search. Capped at MAX_BLOCK_OUTPUT_LENGTH. */
-  output?: string;
-}
-
-/** Cap on per-block output snapshot. 4KB is enough for ~50 lines of
- *  command output; anything bigger gets truncated head-style. */
-export const MAX_BLOCK_OUTPUT_LENGTH = 4000;
-
-// Stage 5 — block-level bookmarks (persisted)
-export interface Bookmark {
-  id: string;
-  blockId: string;
-  cardId: string;
-  /** Snapshot of the block's command at bookmark time so the entry survives
-   *  block eviction from xterm scrollback. */
-  command: string;
-  /** Snapshot of the block's working directory. */
-  cwd: string;
-  createdAt: number;
-  /** Optional user-supplied label. */
-  label?: string;
-}
-
 // ── Card auto restart (Stage 8.2) ────────────────────────────────────────────
 
 export type TerminalAutoRestartAttemptStatus = 'pending' | 'started' | 'cancelled';
@@ -234,26 +195,9 @@ export const MAX_LAST_OUTPUT_LENGTH = 2000;
 export const MAX_NOTIFICATIONS = 100;
 
 /**
- * Max blocks retained per card (FIFO). Blocks are persisted to localStorage
- * with up to MAX_BLOCK_OUTPUT_LENGTH chars of output each — without a cap a
- * long-lived shell session grows until the ~5MB quota is hit, after which
- * EVERY store persist (cards metadata included) silently fails (audit P2-4).
- * 200 blocks ≈ 800KB worst case for one busy card.
- */
-export const MAX_BLOCKS_PER_CARD = 200;
-
-/**
  * Max archived cards retained (FIFO, newest first). Archived cards persist to
- * localStorage with the same quota concern as blocks: without a cap the
- * archive grows for the lifetime of the install and every persist write slows
- * down with it. Restoring is the common path, long-tail archaeology is not,
+ * localStorage; without a cap the archive grows for the lifetime of the
+ * install and every persist write slows down with it. Restoring is the common path, long-tail archaeology is not,
  * so the oldest snapshots are dropped once the list is full.
  */
 export const MAX_ARCHIVED_CARDS = 100;
-
-/**
- * Max bookmarks retained (FIFO). Same localStorage quota rationale as
- * MAX_ARCHIVED_CARDS; bookmarks are tiny individually but unbounded growth
- * eventually taxes every persist cycle.
- */
-export const MAX_BOOKMARKS = 500;

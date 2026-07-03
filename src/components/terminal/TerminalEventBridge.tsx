@@ -19,8 +19,6 @@ import { useEffect, useRef } from 'react';
 import { isTauriEnv, pty } from '../../lib/tauri-bridge';
 import type {
   AttentionRequiredEvent,
-  BlockFinishedEvent,
-  BlockStartedEvent,
   SessionState,
 } from '../../lib/tauri-bridge';
 import { useTerminalStore } from '../../stores/terminalStore';
@@ -29,7 +27,6 @@ import { feedHeadless, disposeHeadless, disposeAllHeadless } from './headlessPre
 import { createCardOutputBuffer } from './outputBuffer';
 import { buildCardPreview } from './cardPreview';
 import { getMissingAiCliName } from './providerSession';
-import { getAbsoluteCursorRow, readBufferRange } from './xtermRegistry';
 import i18n from '../../i18n/config.js';
 import { getPendingAutoRestart } from '../../lib/autoRestart';
 
@@ -483,57 +480,6 @@ export function TerminalEventBridge(): null {
       }
       unlisteners.push(unsubAttention);
 
-      const unsubBlockStarted = await pty.onBlockStarted((payload: BlockStartedEvent) => {
-        const card = getCardForPtyId(payload.sessionId);
-        if (!card) return;
-        // Plan option A: read `baseY + cursorY` at event-arrival time. May
-        // differ from the *exact* emit position by ≤ 1 row; Stage 4 renders
-        // with a +1 tolerance. See `xtermRegistry.ts` for the trade-off.
-        const bufferStart = getAbsoluteCursorRow(payload.sessionId);
-        useTerminalStore.getState().recordBlockStarted({
-          cardId: card.id,
-          blockId: payload.blockId,
-          command: payload.command,
-          cwd: payload.cwd,
-          startedAt: payload.startedAt,
-          bufferStart,
-        });
-      });
-      if (cancelled) {
-        unsubBlockStarted?.();
-        return;
-      }
-      unlisteners.push(unsubBlockStarted);
-
-      const unsubBlockFinished = await pty.onBlockFinished((payload: BlockFinishedEvent) => {
-        const card = getCardForPtyId(payload.sessionId);
-        if (!card) return;
-        const bufferEnd = getAbsoluteCursorRow(payload.sessionId);
-        // Stage 5.1 — capture the command's output from the live xterm
-        // buffer so the Block Inspector + cross-session search can reach
-        // it later. `readBufferRange` returns '' when no terminal is
-        // registered (floating-only / persisted cards), which is fine —
-        // the store treats undefined-or-empty as "no snapshot".
-        const cardBlocks = useTerminalStore.getState().blocks?.[card.id] ?? [];
-        const started = cardBlocks.find((b) => b.id === payload.blockId);
-        const rawOutput = started
-          ? readBufferRange(payload.sessionId, started.bufferStart, bufferEnd)
-          : '';
-        useTerminalStore.getState().recordBlockFinished({
-          cardId: card.id,
-          blockId: payload.blockId,
-          exitCode: payload.exitCode,
-          finishedAt: payload.finishedAt,
-          durationMs: payload.durationMs,
-          bufferEnd,
-          output: rawOutput || undefined,
-        });
-      });
-      if (cancelled) {
-        unsubBlockFinished?.();
-        return;
-      }
-      unlisteners.push(unsubBlockFinished);
     })().catch((err) => {
       // Surfacing the error is not critical — the bridge simply won't update
       // the store. Log for diagnosis.

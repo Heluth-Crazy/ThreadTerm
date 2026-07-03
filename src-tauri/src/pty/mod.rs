@@ -10,7 +10,6 @@
 //!
 //! Only the items re-exported here form ThreadTerm's public PTY surface.
 
-pub mod blocks;
 mod emulator;
 mod events;
 mod registry;
@@ -30,7 +29,7 @@ pub fn live_session_snapshot(id: &str) -> Option<LivePtySessionSnapshot> {
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
@@ -41,31 +40,10 @@ use session::{
     OUTPUT_BUFFER_MAX_BYTES, RESIZE_OUTPUT_ACTIVITY_SUPPRESS, SESSION_SCROLLBACK_LINES,
 };
 
-/// Runtime gate for the OSC 133/6973 block parser. Spec L92 requires the
-/// command-blocks layer to default to **off**: no block events should fire
-/// until the user installs the shell integration via the settings UI and
-/// the frontend explicitly flips this on through `set_command_blocks_enabled`.
-static BLOCK_PARSER_ENABLED: AtomicBool = AtomicBool::new(false);
-
 /// Serializes PTY open+spawn so concurrent terminal creation can't race ConPTY
 /// initialization — a known source of Windows blank/stall on rapid open/close
 /// or multi-card spawn. Cheap and harmless elsewhere (spawns are infrequent).
 static PTY_SPAWN_LOCK: Mutex<()> = Mutex::new(());
-
-pub fn block_parser_enabled() -> bool {
-    BLOCK_PARSER_ENABLED.load(Ordering::Relaxed)
-}
-
-#[tauri::command]
-pub async fn set_command_blocks_enabled(enabled: bool) -> Result<bool, String> {
-    BLOCK_PARSER_ENABLED.store(enabled, Ordering::Relaxed);
-    Ok(enabled)
-}
-
-#[tauri::command]
-pub async fn get_command_blocks_enabled() -> Result<bool, String> {
-    Ok(block_parser_enabled())
-}
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
 

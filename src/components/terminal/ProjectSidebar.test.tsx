@@ -63,7 +63,6 @@ function resetStore() {
   useTerminalStore.setState({
     cards: [],
     archivedCards: [],
-    blocks: {},
     focusedCardId: null,
     lastActiveCardId: null,
     selectedProjectPath: null,

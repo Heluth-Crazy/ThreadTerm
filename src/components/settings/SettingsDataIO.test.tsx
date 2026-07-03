@@ -52,8 +52,6 @@ beforeEach(() => {
   mocks.themeState.setThemePreference.mockReset();
   mocks.themeState.replaceCustomThemePacks.mockReset();
   useTerminalStore.setState({
-    bottomBarHidden: false,
-    aiExplainDefaultProvider: 'claude',
     osNotificationsEnabled: true,
   });
   useOverlayStore.setState({
@@ -77,12 +75,7 @@ describe('SettingsDataIO', () => {
         files: [
           incomingFile({
             terminal: {
-              bottomBarHidden: true,
-              aiExplainDefaultProvider: 'gemini',
-              petConfig: {
-                enabled: true,
-                notificationMode: 'both',
-              },
+              osNotificationsEnabled: false,
             },
             overlay: {
               selectorMode: 'carousel',
@@ -102,9 +95,7 @@ describe('SettingsDataIO', () => {
     fireEvent.click(screen.getByText('Apply selected'));
 
     await waitFor(() => {
-      expect(useTerminalStore.getState().bottomBarHidden).toBe(true);
-      expect(useTerminalStore.getState().aiExplainDefaultProvider).toBe('gemini');
-      expect(useTerminalStore.getState().osNotificationsEnabled).toBe(true);
+      expect(useTerminalStore.getState().osNotificationsEnabled).toBe(false);
       expect(useOverlayStore.getState().selectorMode).toBe('carousel');
       expect(useOverlayStore.getState().hotkeyA).toBe('CmdOrCtrl+Alt+A');
       expect(useOverlayStore.getState().hotkeyB).toBe('CmdOrCtrl+Alt+B');
@@ -120,8 +111,7 @@ describe('SettingsDataIO', () => {
         files: [
           incomingFile({
             terminal: {
-              bottomBarHidden: true,
-              aiExplainDefaultProvider: 'codex',
+              osNotificationsEnabled: false,
             },
             overlay: {
               selectorMode: 'carousel',
@@ -139,7 +129,7 @@ describe('SettingsDataIO', () => {
     fireEvent.click(screen.getByText('Apply selected'));
 
     await waitFor(() => {
-      expect(useTerminalStore.getState().aiExplainDefaultProvider).toBe('codex');
+      expect(useTerminalStore.getState().osNotificationsEnabled).toBe(false);
       expect(useOverlayStore.getState().selectorMode).toBe('tile');
       expect(useOverlayStore.getState().hotkeyA).toBe('CmdOrCtrl+Shift+Space');
     });

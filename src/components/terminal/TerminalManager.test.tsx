@@ -140,7 +140,6 @@ function resetStore() {
   useTerminalStore.setState({
     cards: [],
     archivedCards: [],
-    blocks: {},
     focusedCardId: null,
     lastActiveCardId: null,
     selectedProjectPath: null,
@@ -249,8 +248,7 @@ describe('TerminalManager shortcut hint layout', () => {
     const hint = screen.getByText(/Ctrl\+Tab/).closest('div');
     expect(hint).toHaveClass('bottom-10');
     expect(hint).not.toHaveClass('bottom-3');
-    // Stage 5 fix — anchored left so the right-side BlockInspector /
-    // Bookmarks panel can't visually overlap the hint.
+    // Anchored left so the right-side panel can't visually overlap the hint.
     expect(hint).toHaveClass('left-3');
   });
 

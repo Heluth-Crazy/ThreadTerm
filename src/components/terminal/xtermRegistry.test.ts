@@ -2,9 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { Terminal } from '@xterm/xterm';
 import {
   claimTerminalActive,
-  getAbsoluteCursorRow,
   getTerminal,
-  readBufferRange,
   registerTerminal,
   unregisterTerminal,
 } from './xtermRegistry';
@@ -74,8 +72,6 @@ describe('xtermRegistry', () => {
     claimTerminalActive('pty-1', main);
 
     expect(getTerminal('pty-1')).toBe(main);
-    expect(getAbsoluteCursorRow('pty-1')).toBe(14);
-    expect(readBufferRange('pty-1', 10, 12)).toBe('main output\nmain tail');
   });
 
   it('clears all registrations when unregistering without a terminal instance', () => {

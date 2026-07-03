@@ -6,12 +6,11 @@
  * `run()` only invokes pre-existing terminalStore actions; we don't add new
  * surface area through the palette.
  */
-import type { TerminalCard, Block, TerminalAiIntent } from '../../types/terminal';
+import type { TerminalCard, TerminalAiIntent } from '../../types/terminal';
 import type { SettingsTab } from '../../lib/settingsWindow';
 
 export type CommandGroup =
   | 'jump-card'
-  | 'jump-block'
   | 'switch-project'
   | 'change-intent'
   | 'toggle-overlay'
@@ -31,7 +30,6 @@ export interface CommandEntry {
 export interface CommandRegistryActions {
   focusCard: (id: string) => void;
   selectProject: (path: string | null) => void;
-  selectBlock: (cardId: string, blockId: string | null) => void;
   toggleNotificationCentre: (open?: boolean) => void;
   openSettings: (tab?: SettingsTab) => void;
   /** Stage 5.2 — focused-card AI intent change. Optional so legacy
@@ -41,7 +39,6 @@ export interface CommandRegistryActions {
 
 export interface CommandRegistryInput {
   cards: TerminalCard[];
-  blocks: Record<string, Block[]>;
   projects: string[];
   /** Currently focused card id; gates `change-intent` entries. */
   focusedCardId?: string | null;
@@ -71,24 +68,6 @@ export function buildCommandRegistry(input: CommandRegistryInput): CommandEntry[
       group: 'jump-card',
       run: () => input.actions.focusCard(c.id),
     });
-  }
-
-  // Jump-to-block
-  for (const c of input.cards) {
-    const list = input.blocks[c.id] ?? [];
-    for (const b of list) {
-      out.push({
-        id: `block:${b.id}`,
-        label: b.command,
-        detail: `${c.projectName} · ${b.cwd}`,
-        searchText: `${b.command} ${b.cwd} ${c.projectName}`.toLowerCase(),
-        group: 'jump-block',
-        run: () => {
-          input.actions.focusCard(c.id);
-          input.actions.selectBlock(c.id, b.id);
-        },
-      });
-    }
   }
 
   // Switch project

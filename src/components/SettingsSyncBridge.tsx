@@ -41,8 +41,6 @@ export function SettingsSyncBridge(): null {
         && payload.terminalPreferences
       ) {
         useTerminalStore.setState({
-          bottomBarHidden: payload.terminalPreferences.bottomBarHidden,
-          aiExplainDefaultProvider: payload.terminalPreferences.aiExplainDefaultProvider,
           osNotificationsEnabled: payload.terminalPreferences.osNotificationsEnabled,
           supervisorEnabled: payload.terminalPreferences.supervisorEnabled,
         });

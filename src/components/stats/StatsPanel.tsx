@@ -1,7 +1,7 @@
 /**
  * StatsPanel — right sidebar showing token usage + cost aggregated across all
  * Claude/Codex/OpenCode sessions on the machine. Mounted by TerminalManager behind a
- * `statsOpen` toggle, same pattern as BookmarksSidebar / ArchivedCardsPanel.
+ * `statsOpen` toggle, same pattern as ArchivedCardsPanel.
  */
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';

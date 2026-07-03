@@ -6,18 +6,17 @@ import {
 } from './exportAiSession';
 
 describe('AI session Markdown export', () => {
-  it('renders block AI thread metadata and ordered prompt/reply content', () => {
+  it('renders card AI session metadata and ordered prompt/reply content', () => {
     const source: AiSessionExportSource = {
       title: 'Explain failed build',
       userIntent: 'fix',
       provider: 'claude',
-      sessionId: 'block:blk-1',
+      sessionId: 'card-session-1',
       startedAt: '2026-05-04T01:00:00.000Z',
       endedAt: '2026-05-04T01:00:03.000Z',
       sourceContext: {
-        kind: 'block',
+        kind: 'card',
         cardId: 'card-1',
-        blockId: 'blk-1',
         projectName: 'ThreadTerm',
         projectPath: '/repo/threadterm',
         cwd: '/repo/threadterm',
@@ -49,10 +48,10 @@ describe('AI session Markdown export', () => {
 
       - User intent: fix
       - Provider: claude
-      - Session id: block:blk-1
+      - Session id: card-session-1
       - Start time: 2026-05-04T01:00:00.000Z
       - End time: 2026-05-04T01:00:03.000Z
-      - Source: block; project ThreadTerm; path /repo/threadterm; cwd /repo/threadterm; command npm run build; card card-1; block blk-1
+      - Source: card; project ThreadTerm; path /repo/threadterm; cwd /repo/threadterm; command npm run build; card card-1
 
       ## Conversation
 
@@ -105,10 +104,10 @@ describe('AI session Markdown export', () => {
       getAiSessionExportFilename(
         {
           provider: 'claude',
-          sourceContext: { kind: 'block', blockId: 'Block 1/Unsafe' },
+          sourceContext: { kind: 'card', cardId: 'Card 1/Unsafe' },
         },
         new Date('2026-05-04T12:00:00.000Z'),
       ),
-    ).toBe('threadterm-ai-claude-block-1-unsafe-2026-05-04.md');
+    ).toBe('threadterm-ai-claude-card-1-unsafe-2026-05-04.md');
   });
 });

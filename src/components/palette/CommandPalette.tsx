@@ -1,5 +1,5 @@
 /**
- * CommandPalette — Cmd/Ctrl+K modal for jumping between cards / blocks /
+ * CommandPalette — Cmd/Ctrl+K modal for jumping between cards /
  * projects and triggering existing actions.
  *
  * Spec (Stage 5.2):
@@ -24,7 +24,6 @@ export interface CommandPaletteProps {
 
 const GROUP_ORDER: CommandGroup[] = [
   'jump-card',
-  'jump-block',
   'switch-project',
   'change-intent',
   'toggle-overlay',

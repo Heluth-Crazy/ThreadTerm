@@ -155,7 +155,7 @@ describe('CardActions', () => {
     expect(screen.getByTitle('card.revealProject')).toBeInTheDocument();
     expect(screen.queryByTitle('card.pin')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTitle('bottomBar.overflow'));
+    fireEvent.click(screen.getByTitle('view.more'));
     fireEvent.click(screen.getByTitle('card.pin'));
     fireEvent.click(screen.getByTitle('card.archive'));
     fireEvent.click(screen.getByTitle('aiExport.exportMarkdown'));
@@ -170,7 +170,7 @@ describe('CardActions', () => {
     const props = renderActions({ density: 'compact' });
 
     expect(screen.queryByTitle('card.pin')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTitle('bottomBar.overflow'));
+    fireEvent.click(screen.getByTitle('view.more'));
     fireEvent.click(screen.getByTitle('card.pin'));
 
     expect(props.onTogglePin).toHaveBeenCalledTimes(1);
@@ -195,7 +195,7 @@ describe('CardActions', () => {
     expect(screen.getByTitle('card.copyPath')).toBeInTheDocument();
     expect(screen.queryByTitle('card.revealProject')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTitle('bottomBar.overflow'));
+    fireEvent.click(screen.getByTitle('view.more'));
     fireEvent.click(screen.getByTitle('card.revealProject'));
 
     expect(onOpenDir).toHaveBeenCalledTimes(1);
@@ -209,7 +209,7 @@ describe('CardActions', () => {
     });
 
     expect(screen.queryByTitle('ai-intent-control')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTitle('bottomBar.overflow'));
+    fireEvent.click(screen.getByTitle('view.more'));
     expect(screen.getByTitle('ai-intent-control')).toBeInTheDocument();
   });
 });

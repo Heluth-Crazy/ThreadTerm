@@ -56,10 +56,6 @@ function resetStore() {
   useTerminalStore.setState({
     cards: [],
     archivedCards: [],
-    blocks: {},
-    collapsedBlockIds: [],
-    selectedBlockId: {},
-    bookmarks: [],
     focusedCardId: null,
     lastActiveCardId: null,
     selectedProjectPath: null,

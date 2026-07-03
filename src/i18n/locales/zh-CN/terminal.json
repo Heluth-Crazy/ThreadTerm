@@ -252,16 +252,6 @@
     "saved": "AI 会话 Markdown 已导出。",
     "failed": "AI 会话导出失败。"
   },
-  "bottomBar": {
-    "label": "焦点模式操作",
-    "notifications": "通知",
-    "bookmarks": "书签",
-    "fileExplorer": "文件管理器",
-    "richInput": "富文本输入",
-    "remoteControl": "远程控制",
-    "overflow": "更多",
-    "richInputComingSoon": "富文本输入将在 Stage 9 提供。"
-  },
   "aiIntent": {
     "label": "AI 意图",
     "none": "无意图",
@@ -372,11 +362,6 @@
     "completed": "已完成",
     "failed": "失败"
   },
-  "bookmarks": {
-    "title": "书签",
-    "empty": "暂无书签",
-    "toggle": "切换书签面板"
-  },
   "archive": {
     "open": "归档",
     "openTitle": "显示当前项目的归档卡片",
@@ -385,57 +370,16 @@
     "restore": "恢复",
     "archivedAt": "归档于 {{time}}"
   },
-  "search": {
-    "label": "搜索块",
-    "placeholder": "在所有块中搜索（命令、路径、项目）…",
-    "placeholderEmpty": "输入以搜索所有块",
-    "empty": "没有匹配项",
-    "loading": "搜索中…",
-    "field": {
-      "command": "命令",
-      "cwd": "路径",
-      "project": "项目",
-      "output": "输出"
-    }
-  },
   "palette": {
     "label": "命令面板",
     "placeholder": "输入命令…",
     "empty": "没有匹配项",
     "groups": {
       "jump-card": "跳转到卡片",
-      "jump-block": "跳转到块",
       "switch-project": "切换项目",
       "change-intent": "更改意图",
       "toggle-overlay": "切换悬浮窗",
       "settings": "设置"
-    }
-  },
-  "block": {
-    "copyCommand": "复制命令",
-    "copyOutput": "复制输出",
-    "copyBoth": "复制命令 + 输出",
-    "rerun": "重新运行",
-    "rerunConfirm": "再次点击以确认重新运行",
-    "explain": "用 AI 解释",
-    "bookmark": "收藏此块",
-    "unbookmark": "取消收藏",
-    "collapse": "折叠块",
-    "expand": "展开块",
-    "collapsed": "已折叠",
-    "navFailed": {
-      "none": "没有失败的块"
-    },
-    "inspector": {
-      "title": "块检查器",
-      "command": "命令",
-      "cwd": "目录",
-      "exitCode": "退出码",
-      "duration": "耗时",
-      "running": "运行中…",
-      "noBlock": "选择一个块以检查",
-      "output": "输出",
-      "explainPlaceholder": "用 AI 解释（将在 Stage 6 开放）"
     }
   },
   "types": {

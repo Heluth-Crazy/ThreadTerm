@@ -1,4 +1,3 @@
-mod ai_explain;
 mod bridge;
 mod codex_app;
 mod db;
@@ -10,14 +9,10 @@ mod overlay;
 mod platform_material;
 mod provider_sessions;
 pub mod pty;
-mod shell_integration;
 mod stats;
 mod supervisor;
 
 use tauri::Manager;
-
-#[cfg(test)]
-mod shell_integration_tests;
 
 pub fn run() {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -80,7 +75,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            ai_explain::ai_explain,
             supervisor::supervisor_enable,
             git::git_branch_overview,
             git::git_file_diff,
@@ -101,8 +95,6 @@ pub fn run() {
             pty::pty_get_recent_output,
             pty::pty_attach_snapshot,
             pty::pty_ack,
-            pty::set_command_blocks_enabled,
-            pty::get_command_blocks_enabled,
             notification::notification_send_os,
             provider_sessions::provider_find_recent_session,
             provider_sessions::provider_list_recent_sessions,
@@ -110,10 +102,6 @@ pub fn run() {
             stats::stats_cancel,
             stats::stats_rebuild,
             platform_material::native_platform_material_state,
-            shell_integration::detect_shell,
-            shell_integration::preview_shell_integration,
-            shell_integration::install_shell_integration,
-            shell_integration::uninstall_shell_integration,
             bridge::bridge_start,
             bridge::bridge_stop,
             bridge::bridge_status,

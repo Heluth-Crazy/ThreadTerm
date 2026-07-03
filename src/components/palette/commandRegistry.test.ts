@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildCommandRegistry, fuzzyFilter } from './commandRegistry';
-import type { TerminalCard, Block } from '../../types/terminal';
+import type { TerminalCard } from '../../types/terminal';
 
 function card(id: string, name: string): TerminalCard {
   return {
@@ -23,7 +23,6 @@ function emptyActions() {
   return {
     focusCard: vi.fn(),
     selectProject: vi.fn(),
-    selectBlock: vi.fn(),
     toggleNotificationCentre: vi.fn(),
     openSettings: vi.fn(),
   };
@@ -32,22 +31,15 @@ function emptyActions() {
 describe('buildCommandRegistry', () => {
   it('produces grouped entries from a store snapshot', () => {
     const cards = [card('c1', 'foo'), card('c2', 'bar')];
-    const blocks: Record<string, Block[]> = {
-      c1: [
-        { id: 'b1', cardId: 'c1', cwd: '/foo', command: 'npm test', startedAt: 0, bufferStart: 0, state: 'success' },
-      ],
-    };
 
     const reg = buildCommandRegistry({
       cards,
-      blocks,
       projects: ['/proj/foo', '/proj/bar'],
       actions: emptyActions(),
     });
 
     const groups = new Set(reg.map((e) => e.group));
     expect(groups.has('jump-card')).toBe(true);
-    expect(groups.has('jump-block')).toBe(true);
     expect(groups.has('switch-project')).toBe(true);
     expect(groups.has('toggle-overlay')).toBe(true);
     expect(groups.has('settings')).toBe(true);
@@ -57,7 +49,6 @@ describe('buildCommandRegistry', () => {
     const actions = emptyActions();
     const reg = buildCommandRegistry({
       cards: [card('c1', 'foo')],
-      blocks: {},
       projects: [],
       actions,
     });
@@ -71,7 +62,6 @@ describe('buildCommandRegistry', () => {
     const actions = { ...emptyActions(), updateCardAiIntent: vi.fn() };
     const reg = buildCommandRegistry({
       cards: [card('c1', 'foo')],
-      blocks: {},
       projects: [],
       focusedCardId: 'c1',
       actions,
@@ -87,7 +77,6 @@ describe('buildCommandRegistry', () => {
     const actions = { ...emptyActions(), updateCardAiIntent: vi.fn() };
     const reg = buildCommandRegistry({
       cards: [card('c1', 'foo')],
-      blocks: {},
       projects: [],
       focusedCardId: 'c1',
       actions,
@@ -101,7 +90,6 @@ describe('buildCommandRegistry', () => {
   it('omits change-intent entries when no card is focused', () => {
     const reg = buildCommandRegistry({
       cards: [card('c1', 'foo')],
-      blocks: {},
       projects: [],
       focusedCardId: null,
       actions: { ...emptyActions(), updateCardAiIntent: vi.fn() },
@@ -112,7 +100,6 @@ describe('buildCommandRegistry', () => {
   it('omits change-intent entries when updateCardAiIntent is not provided', () => {
     const reg = buildCommandRegistry({
       cards: [card('c1', 'foo')],
-      blocks: {},
       projects: [],
       focusedCardId: 'c1',
       actions: emptyActions(),
@@ -120,18 +107,6 @@ describe('buildCommandRegistry', () => {
     expect(reg.filter((e) => e.group === 'change-intent')).toHaveLength(0);
   });
 
-  it('jump-block entry calls focusCard then selectBlock', () => {
-    const actions = emptyActions();
-    const cards = [card('c1', 'foo')];
-    const blocks: Record<string, Block[]> = {
-      c1: [{ id: 'b1', cardId: 'c1', cwd: '/x', command: 'ls', startedAt: 0, bufferStart: 0, state: 'success' }],
-    };
-    const reg = buildCommandRegistry({ cards, blocks, projects: [], actions });
-    const entry = reg.find((e) => e.group === 'jump-block');
-    entry!.run();
-    expect(actions.focusCard).toHaveBeenCalledWith('c1');
-    expect(actions.selectBlock).toHaveBeenCalledWith('c1', 'b1');
-  });
 });
 
 describe('fuzzyFilter', () => {
@@ -140,7 +115,7 @@ describe('fuzzyFilter', () => {
       id,
       label,
       searchText: label.toLowerCase(),
-      group: 'jump-block' as const,
+      group: 'jump-card' as const,
       run: vi.fn(),
     };
   }

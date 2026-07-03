@@ -99,7 +99,7 @@
     "desktopOnly": "システム通知は Tauri デスクトップアプリでのみ利用できます。",
     "sendTest": "テスト通知を送信",
     "sending": "送信中…",
-    "sent": "OS 通知サービスへ送信しました。バナーが表示されない場合は集中モードを確認するか、正式ビルドで検証してください。",
+    "sent": "OS 通知サービスへ送信しました。バナーが表示されない場合はシステム通知設定を確認するか、正式ビルドで検証してください。",
     "failed": "送信に失敗しました。開発ログを確認してください。",
     "testTitle": "ThreadTerm テスト通知",
     "testBody": "この通知が表示されれば、システム通知経路は動作しています。"
@@ -150,16 +150,6 @@
       "allClear": "すべてクリア",
       "viewAll": "すべての通知を表示"
     }
-  },
-  "focusMode": {
-    "title": "フォーカスモード",
-    "description": "フォーカスモードのチップバーと、「AI で説明」で使う既定の AI プロバイダーを設定します。",
-    "chipStripLabel": "フォーカスモードのチップバーを表示",
-    "chipStripDescription": "フォーカス中のターミナル下部に固定されるクイックナビゲーション用チップ列です。",
-    "chipStripOn": "表示",
-    "chipStripOff": "非表示",
-    "defaultProviderLabel": "既定の AI 説明プロバイダー",
-    "defaultProviderDescription": "フォーカス中のターミナルが AI CLI ではない場合（shell、npm、docker など）に使用します。"
   },
   "mobileAccess": {
     "title": "モバイルアクセス",
@@ -244,34 +234,6 @@
       "ai-proceed": "{{cardLabel}}: {{sampleText}}",
       "ai-apply-diff": "{{cardLabel}}: {{sampleText}}",
       "arrow-select": "{{cardLabel}} でメニューが開いています。{{sampleText}}"
-    }
-  },
-  "commandBlocks": {
-    "title": "コマンドブロック",
-    "description": "シェルのコマンド境界を検出し、出力の折りたたみ・コマンド全体のコピー・失敗ブロックへの移動を可能にします。既定は無効。差分を確認してからシェルごとに有効化してください。",
-    "desktopOnly": "コマンドブロックは Tauri デスクトップアプリでのみ設定できます。",
-    "detectedShellLabel": "検出されたシェル",
-    "detectedShellUnknown": "不明 — 下から手動で選択してインストールしてください。",
-    "shellsLabel": "シェル統合",
-    "rcPathLabel": "書き込み先",
-    "preview": "インストールをプレビュー",
-    "previewing": "プレビュー中…",
-    "install": "インストール",
-    "installing": "インストール中…",
-    "uninstall": "アンインストール",
-    "uninstalling": "アンインストール中…",
-    "installed": "インストール済み",
-    "notInstalled": "未インストール",
-    "diffTitle": "Diff（インストール前に確認してください）",
-    "noChanges": "既にインストール済みのため変更はありません。",
-    "installSuccess": "{{shell}} 用にインストールしました。シェルを再読み込みするか、新しい ThreadTerm カードを開いて有効化してください。",
-    "uninstallSuccess": "{{shell}} の統合を削除しました。",
-    "error": "操作に失敗しました: {{message}}",
-    "shells": {
-      "zsh": "Zsh",
-      "bash": "Bash",
-      "fish": "Fish",
-      "pwsh": "PowerShell"
     }
   }
 }

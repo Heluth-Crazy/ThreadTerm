@@ -19,8 +19,6 @@ import { createThrottledLocalStorage } from './throttledStorage';
 import type {
   NotificationEntry,
   NotificationKind,
-  Block,
-  Bookmark,
   TerminalCard,
   TerminalCreateOptions,
   TerminalEvent,
@@ -29,12 +27,8 @@ import type {
   ProviderSessionImportInfo,
   TerminalStatus,
 } from '../types/terminal';
-import type { AiExplainProvider } from '../lib/ai/aiExplain';
 import {
   MAX_ARCHIVED_CARDS,
-  MAX_BLOCK_OUTPUT_LENGTH,
-  MAX_BLOCKS_PER_CARD,
-  MAX_BOOKMARKS,
   MAX_LAST_OUTPUT_LENGTH,
   MAX_NOTIFICATIONS,
   MAX_TIMELINE_EVENTS,
@@ -52,7 +46,6 @@ import i18n from '../i18n/config.js';
 import { isTauriEnv, pty } from '../lib/tauri-bridge';
 import { emitSettingsChanged, type TerminalPreferenceSnapshot } from '../lib/settingsSync';
 import { orderCardsByIdList } from '../lib/cardSort';
-import { useAiThreadStore } from './aiThreadStore';
 import {
   cardMatchesWorktree,
   effectiveWorktreePath,
@@ -181,7 +174,6 @@ interface TerminalStore {
   // Cards
   cards: TerminalCard[];
   archivedCards: ArchivedTerminalCard[];
-  blocks: Record<string, Block[]>;
   focusedCardId: string | null;
   lastActiveCardId: string | null;
   /** Global MRU queue for the focus-mode session dock. */
@@ -220,15 +212,6 @@ interface TerminalStore {
   // OS notifications
   osNotificationsEnabled: boolean;
   setOsNotificationsEnabled: (enabled: boolean) => void;
-
-  // ─── Stage 6: AI Explain + bottom chip strip settings ────────────────────
-  /** Default provider to use when the focused card is not an AI CLI. */
-  aiExplainDefaultProvider: AiExplainProvider;
-  /** Global toggle for the focus-mode bottom chip strip. Defaults to false
-   *  (i.e. the chip strip is visible). Per-card overrides deferred. */
-  bottomBarHidden: boolean;
-  setAiExplainDefaultProvider: (provider: AiExplainProvider) => void;
-  setBottomBarHidden: (hidden: boolean) => void;
 
   // ─── AI Supervisor v0.1 (PRD D3) ─────────────────────────────────────────
   /** Master switch for the AI Supervisor. Default OFF — when false, the
@@ -271,54 +254,6 @@ interface TerminalStore {
    */
   renameCard: (id: string, name: string) => void;
   moveProjectCard: (projectPath: string, id: string, toIndex: number) => void;
-  recordBlockStarted: (input: {
-    cardId: string;
-    blockId: string;
-    command: string;
-    cwd: string;
-    startedAt: number;
-    /**
-     * Absolute scrollback row index (`baseY + cursorY`) at the moment the
-     * block started — used by Stage 4 to anchor folding / "jump to failed
-     * block" / per-block copy actions to real xterm rows. The bridge
-     * resolves this from `xtermRegistry.getAbsoluteCursorRow` so callers
-     * never have to compute it themselves.
-     */
-    bufferStart: number;
-  }) => void;
-  recordBlockFinished: (input: {
-    cardId: string;
-    blockId: string;
-    exitCode?: number | null;
-    finishedAt: number;
-    durationMs?: number | null;
-    /** Absolute scrollback row index at the moment the block finished. */
-    bufferEnd?: number;
-    /** Stage 5.1 — ANSI-stripped output snapshot. Truncated to
-     *  MAX_BLOCK_OUTPUT_LENGTH by the store; callers may pass larger strings. */
-    output?: string;
-  }) => void;
-  ensureBlocksState: () => void;
-
-  // ─── block UI state (Stage 4, volatile — not persisted) ──────────────────
-  /** Set of block ids the user has collapsed. Reset to [] on app restart. */
-  collapsedBlockIds: string[];
-  /** Per-card selected block id for the Block Inspector. `null` = nothing selected. */
-  selectedBlockId: Record<string, string | null>;
-  toggleBlockCollapsed: (blockId: string) => void;
-  selectBlock: (cardId: string, blockId: string | null) => void;
-
-  // ─── bookmarks (Stage 5, persisted) ───────────────────────────────────
-  bookmarks: Bookmark[];
-  addBookmark: (input: {
-    blockId: string;
-    cardId: string;
-    command: string;
-    cwd: string;
-    label?: string;
-  }) => Bookmark | null;
-  removeBookmark: (id: string) => void;
-  isBookmarked: (blockId: string) => boolean;
 
   // ─── focus / switching ───────────────────────────────────────────────────
   focusCard: (id: string | null) => void;
@@ -365,12 +300,10 @@ interface TerminalStore {
 function terminalPreferenceSnapshotFromState(
   state: Pick<
     TerminalStore,
-    'bottomBarHidden' | 'aiExplainDefaultProvider' | 'osNotificationsEnabled' | 'supervisorEnabled'
+    'osNotificationsEnabled' | 'supervisorEnabled'
   >,
 ): TerminalPreferenceSnapshot {
   return {
-    bottomBarHidden: state.bottomBarHidden,
-    aiExplainDefaultProvider: state.aiExplainDefaultProvider,
     osNotificationsEnabled: state.osNotificationsEnabled,
     supervisorEnabled: state.supervisorEnabled,
   };
@@ -512,10 +445,6 @@ export const useTerminalStore = create<TerminalStore>()(
     (set, get) => ({
       cards: [],
       archivedCards: [],
-      blocks: {},
-      collapsedBlockIds: [],
-      selectedBlockId: {},
-      bookmarks: [],
       focusedCardId: null,
       lastActiveCardId: null,
       recentlyViewedCardIds: [],
@@ -531,25 +460,6 @@ export const useTerminalStore = create<TerminalStore>()(
       notificationCentreOpen: false,
       pendingFocusCardId: null,
       osNotificationsEnabled: DEFAULT_OS_NOTIFICATIONS_ENABLED,
-
-      aiExplainDefaultProvider: 'claude',
-      bottomBarHidden: false,
-      setAiExplainDefaultProvider: (provider) => {
-        const snapshot = terminalPreferenceSnapshotFromState({
-          ...get(),
-          aiExplainDefaultProvider: provider,
-        });
-        set({ aiExplainDefaultProvider: provider });
-        notifyTerminalPreferencesChanged(snapshot);
-      },
-      setBottomBarHidden: (hidden) => {
-        const snapshot = terminalPreferenceSnapshotFromState({
-          ...get(),
-          bottomBarHidden: hidden,
-        });
-        set({ bottomBarHidden: hidden });
-        notifyTerminalPreferencesChanged(snapshot);
-      },
 
       supervisorEnabled: false,
       setSupervisorEnabled: (enabled) => {
@@ -707,13 +617,6 @@ export const useTerminalStore = create<TerminalStore>()(
           void pty.kill(target.ptyId || target.id);
         }
 
-        // Drop AI explain threads for the card's blocks before the blocks map
-        // forgets them (they live in a separate non-persisted store).
-        const cardBlocks = (get().blocks ?? {})[id];
-        if (cardBlocks?.length) {
-          useAiThreadStore.getState().clearThreads(cardBlocks.map((b) => b.id));
-        }
-
         set((state) => {
           const cards = state.cards.filter((c) => c.id !== id);
           const focusedCardId = state.focusedCardId === id ? null : state.focusedCardId;
@@ -754,22 +657,6 @@ export const useTerminalStore = create<TerminalStore>()(
             (recentId) => recentId !== id,
           );
           const projectCardOrder = compactProjectCardOrder(state.projectCardOrder, cards);
-          const previousBlocks = (state.blocks ?? {})[id] ?? [];
-          const blocks = { ...(state.blocks ?? {}) };
-          delete blocks[id];
-          // Drop block-level UI state belonging to the removed card so it
-          // can't accumulate over a long session.
-          const removedBlockIds = new Set(previousBlocks.map((b) => b.id));
-          const collapsedBlockIds = state.collapsedBlockIds.filter(
-            (bid) => !removedBlockIds.has(bid),
-          );
-          // Drop the removed card's selection entry. `_removed` is the
-          // discarded value from the destructuring; `void` keeps TS quiet
-          // without enabling `noUnusedLocals`.
-          const { [id]: _removed, ...selectedBlockId } = state.selectedBlockId;
-          void _removed;
-          // Stage 5 — drop bookmarks belonging to the deleted card.
-          const bookmarks = state.bookmarks.filter((b) => b.cardId !== id);
           return {
             cards,
             focusedCardId,
@@ -781,10 +668,6 @@ export const useTerminalStore = create<TerminalStore>()(
             projectCardOrder,
             pinnedCardIds,
             recentlyViewedCardIds,
-            blocks,
-            collapsedBlockIds,
-            selectedBlockId,
-            bookmarks,
           };
         });
       },
@@ -1151,160 +1034,6 @@ export const useTerminalStore = create<TerminalStore>()(
           };
         }),
 
-      recordBlockStarted: (input) => {
-        let evictedBlockIds: Set<string> | null = null;
-        set((state) => {
-          const blocksByCard = state.blocks ?? {};
-          const existing = blocksByCard[input.cardId] ?? [];
-          const block: Block = {
-            id: input.blockId,
-            cardId: input.cardId,
-            cwd: input.cwd,
-            command: input.command,
-            startedAt: input.startedAt,
-            bufferStart: input.bufferStart,
-            state: 'running',
-          };
-
-          const next = [
-            ...existing.filter((candidate) => candidate.id !== input.blockId),
-            block,
-          ];
-
-          if (next.length <= MAX_BLOCKS_PER_CARD) {
-            return {
-              blocks: {
-                ...blocksByCard,
-                [input.cardId]: next,
-              },
-            };
-          }
-
-          // Audit P2-4 — FIFO eviction so a long-lived shell can't grow the
-          // persisted blocks map until the localStorage quota is hit. UI
-          // state and bookmarks pointing at evicted blocks are dropped with
-          // them so they can't accumulate as dead references.
-          const evicted = next.slice(0, next.length - MAX_BLOCKS_PER_CARD);
-          const kept = next.slice(next.length - MAX_BLOCKS_PER_CARD);
-          const evictedIds = new Set(evicted.map((candidate) => candidate.id));
-          evictedBlockIds = evictedIds;
-
-          const collapsedBlockIds = state.collapsedBlockIds.filter(
-            (id) => !evictedIds.has(id),
-          );
-          const bookmarks = state.bookmarks.filter(
-            (bookmark) => !evictedIds.has(bookmark.blockId),
-          );
-          const selectedForCard = state.selectedBlockId[input.cardId];
-          const selectedBlockId =
-            selectedForCard && evictedIds.has(selectedForCard)
-              ? { ...state.selectedBlockId, [input.cardId]: null }
-              : state.selectedBlockId;
-
-          return {
-            blocks: {
-              ...blocksByCard,
-              [input.cardId]: kept,
-            },
-            collapsedBlockIds,
-            bookmarks,
-            selectedBlockId,
-          };
-        });
-        // AI explain threads are keyed by block id in a separate store; drop
-        // them with their evicted blocks so the map can't grow unbounded.
-        if (evictedBlockIds) {
-          useAiThreadStore.getState().clearThreads(evictedBlockIds);
-        }
-      },
-
-      recordBlockFinished: (input) =>
-        set((state) => {
-          const blocksByCard = state.blocks ?? {};
-          const existing = blocksByCard[input.cardId];
-          if (!existing) return state;
-
-          let changed = false;
-          const blocks = existing.map((block) => {
-            if (block.id !== input.blockId) return block;
-            changed = true;
-            const exitCode = input.exitCode ?? undefined;
-            // Task 3 — preserve any previously-captured output when the
-            // caller doesn't pass one; cap to MAX_BLOCK_OUTPUT_LENGTH so a
-            // runaway subprocess can't bloat localStorage.
-            const rawOutput = input.output ?? block.output;
-            const output =
-              rawOutput !== undefined
-                ? rawOutput.slice(0, MAX_BLOCK_OUTPUT_LENGTH)
-                : undefined;
-            return {
-              ...block,
-              finishedAt: input.finishedAt,
-              exitCode,
-              durationMs: input.durationMs ?? undefined,
-              bufferEnd: input.bufferEnd,
-              output,
-              state:
-                exitCode === undefined
-                  ? 'aborted'
-                  : exitCode === 0
-                    ? 'success'
-                    : 'failed',
-            } satisfies Block;
-          });
-
-          if (!changed) return state;
-          return {
-            blocks: {
-              ...blocksByCard,
-              [input.cardId]: blocks,
-            },
-          };
-        }),
-
-      ensureBlocksState: () =>
-        set((state) => (state.blocks === undefined ? { blocks: {} } : state)),
-
-      toggleBlockCollapsed: (blockId) =>
-        set((state) => {
-          const ids = state.collapsedBlockIds;
-          return {
-            collapsedBlockIds: ids.includes(blockId)
-              ? ids.filter((id) => id !== blockId)
-              : [...ids, blockId],
-          };
-        }),
-
-      selectBlock: (cardId, blockId) =>
-        set((state) => ({
-          selectedBlockId: { ...state.selectedBlockId, [cardId]: blockId },
-        })),
-
-      // ─── bookmarks (Stage 5) ──────────────────────────────────────────────
-      addBookmark: (input) => {
-        const existing = get().bookmarks.find((b) => b.blockId === input.blockId);
-        if (existing) return null;
-        const bookmark: Bookmark = {
-          id: uid(),
-          blockId: input.blockId,
-          cardId: input.cardId,
-          command: input.command,
-          cwd: input.cwd,
-          createdAt: Date.now(),
-          label: input.label,
-        };
-        // Oldest-first append order; FIFO cap drops the oldest bookmarks.
-        set((state) => ({
-          bookmarks: [...state.bookmarks, bookmark].slice(-MAX_BOOKMARKS),
-        }));
-        return bookmark;
-      },
-
-      removeBookmark: (id) =>
-        set((state) => ({ bookmarks: state.bookmarks.filter((b) => b.id !== id) })),
-
-      isBookmarked: (blockId) => get().bookmarks.some((b) => b.blockId === blockId),
-
       // ─── focus / switching ────────────────────────────────────────────────
       focusCard: (id) =>
         set((state) => {
@@ -1615,8 +1344,6 @@ export const useTerminalStore = create<TerminalStore>()(
           unread: false,
           autoRestart: prepareAutoRestartForPersistence(card),
         })),
-        blocks: state.blocks ?? {},
-        bookmarks: state.bookmarks ?? [],
         focusedCardId: null,
         lastActiveCardId: state.lastActiveCardId,
         recentlyViewedCardIds: compactRecentCardIds(state.recentlyViewedCardIds, state.cards),
@@ -1629,15 +1356,19 @@ export const useTerminalStore = create<TerminalStore>()(
         notifications: state.notifications,
         notificationCentreOpen: state.notificationCentreOpen,
         osNotificationsEnabled: state.osNotificationsEnabled,
-        // Stage 6 — persist the global AI provider default + chip strip toggle.
-        aiExplainDefaultProvider: state.aiExplainDefaultProvider,
-        bottomBarHidden: state.bottomBarHidden,
         // AI Supervisor v0.1 (PRD D3) — master switch persisted; default OFF.
         supervisorEnabled: state.supervisorEnabled,
       }),
-      version: 17,
+      version: 18,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
+        const nextState = { ...state } as Partial<TerminalStore> & Record<string, unknown>;
+        delete nextState.blocks;
+        delete nextState.bookmarks;
+        delete nextState.collapsedBlockIds;
+        delete nextState.selectedBlockId;
+        delete nextState.aiExplainDefaultProvider;
+        delete nextState.bottomBarHidden;
         const cards = state.cards?.map((card) => ({
           ...card,
           status: isTransientStatus(card.status) ? 'idle' : card.status,
@@ -1656,14 +1387,8 @@ export const useTerminalStore = create<TerminalStore>()(
           autoRestart: prepareAutoRestartForPersistence(card),
         }));
         return {
-          ...state,
+          ...nextState,
           focusedCardId: null,
-          blocks: state.blocks ?? {},
-          // v6 — default bookmarks to [] for stores persisted at v≤5.
-          bookmarks: state.bookmarks ?? [],
-          // v7 — Stage 6 settings defaults for older snapshots.
-          aiExplainDefaultProvider: state.aiExplainDefaultProvider ?? 'claude',
-          bottomBarHidden: state.bottomBarHidden ?? false,
           // v9 — AI Supervisor master switch defaults to OFF on upgrade.
           supervisorEnabled: state.supervisorEnabled ?? false,
           // v16 — focus-mode session dock metadata.

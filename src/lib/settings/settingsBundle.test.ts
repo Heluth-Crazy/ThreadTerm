@@ -90,8 +90,6 @@ describe('settings bundle', () => {
         } as never,
       ],
       terminalSettings: {
-        bottomBarHidden: true,
-        aiExplainDefaultProvider: 'codex',
         osNotificationsEnabled: true,
         notificationMode: 'both',
         petSecret: 'pet-secret',
@@ -180,11 +178,11 @@ describe('settings bundle', () => {
   it('builds section diffs and selects only changed sections by default', () => {
     const current = createSettingsBundle({
       themePreference: { themeMode: 'system', themePackId: 'threadterm-default' },
-      terminalSettings: { bottomBarHidden: false, aiExplainDefaultProvider: 'claude' },
+      terminalSettings: { osNotificationsEnabled: true },
     });
     const incoming = createSettingsBundle({
       themePreference: { themeMode: 'system', themePackId: 'threadterm-default' },
-      terminalSettings: { bottomBarHidden: true, aiExplainDefaultProvider: 'gemini' },
+      terminalSettings: { osNotificationsEnabled: false },
     });
 
     const diffs = buildSettingsBundleDiff(current, incoming);

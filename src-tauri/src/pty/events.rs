@@ -247,7 +247,6 @@ pub(super) fn stream_pty_output(
     let (read_tx, read_rx) = mpsc::sync_channel(COALESCE_RAW_QUEUE_CAPACITY);
     spawn_pty_reader(reader, ses.clone(), read_tx);
 
-    let mut block_parser = super::blocks::BlockParser::new(id.clone());
     let mut last_attention_time = Instant::now() - Duration::from_secs(60);
     let attention_debounce = Duration::from_secs(5);
     // Start "stale" so the very first chunk flushes a preview immediately.
@@ -321,14 +320,6 @@ pub(super) fn stream_pty_output(
                 let data = decoder.decode(&bytes);
                 if data.is_empty() {
                     continue;
-                }
-
-                // Keep shell-integration parsing per decoded chunk so OSC state
-                // is not affected by the emit coalescing boundary.
-                if super::block_parser_enabled() {
-                    for event in block_parser.ingest(&data) {
-                        event.emit(&app_handle);
-                    }
                 }
 
                 if pending_since.is_none() {
@@ -411,12 +402,6 @@ pub(super) fn stream_pty_output(
 
     let trailing = decoder.flush_lossy();
     if !trailing.is_empty() {
-        if super::block_parser_enabled() {
-            for event in block_parser.ingest(&trailing) {
-                event.emit(&app_handle);
-            }
-        }
-
         if pending_since.is_none() {
             pending_since = Some(Instant::now());
         }

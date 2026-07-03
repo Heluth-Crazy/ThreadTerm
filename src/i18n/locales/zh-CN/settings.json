@@ -99,7 +99,7 @@
     "desktopOnly": "系统通知只在 Tauri 桌面应用中可用。",
     "sendTest": "发送测试通知",
     "sending": "发送中…",
-    "sent": "已发送到系统通知服务。如果没有看到横幅，请检查专注模式或使用正式包验证。",
+    "sent": "已发送到系统通知服务。如果没有看到横幅，请检查系统通知设置或使用正式包验证。",
     "failed": "发送失败，详情请查看开发日志。",
     "testTitle": "ThreadTerm 测试通知",
     "testBody": "如果你看到这条通知，说明系统通知链路可用。"
@@ -150,16 +150,6 @@
       "allClear": "当前无事项",
       "viewAll": "查看全部通知"
     }
-  },
-  "focusMode": {
-    "title": "专注模式",
-    "description": "配置专注模式底部芯片栏，以及“用 AI 解释”默认使用的 AI 提供方。",
-    "chipStripLabel": "显示专注模式芯片栏",
-    "chipStripDescription": "固定在当前终端底部的一排快捷导航芯片。",
-    "chipStripOn": "显示",
-    "chipStripOff": "隐藏",
-    "defaultProviderLabel": "默认 AI 解释提供方",
-    "defaultProviderDescription": "当当前终端不是 AI CLI（例如 shell、npm、docker）时使用。"
   },
   "mobileAccess": {
     "title": "移动端访问",
@@ -244,34 +234,6 @@
       "ai-proceed": "{{cardLabel}}：{{sampleText}}",
       "ai-apply-diff": "{{cardLabel}}：{{sampleText}}",
       "arrow-select": "{{cardLabel}} 打开了菜单。{{sampleText}}"
-    }
-  },
-  "commandBlocks": {
-    "title": "命令块",
-    "description": "识别 shell 命令边界，从而支持折叠输出、整体复制命令、跳转到失败的命令。默认关闭，逐个 shell 在确认 diff 后启用。",
-    "desktopOnly": "命令块功能仅在 Tauri 桌面应用中可用。",
-    "detectedShellLabel": "已检测到的 shell",
-    "detectedShellUnknown": "未识别 — 请在下方手动选择并安装。",
-    "shellsLabel": "Shell 集成",
-    "rcPathLabel": "写入位置",
-    "preview": "预览安装",
-    "previewing": "预览中…",
-    "install": "安装",
-    "installing": "安装中…",
-    "uninstall": "卸载",
-    "uninstalling": "卸载中…",
-    "installed": "已安装",
-    "notInstalled": "未安装",
-    "diffTitle": "Diff（请先核对再安装）",
-    "noChanges": "已安装，无需修改。",
-    "installSuccess": "已为 {{shell}} 安装。重新加载 shell 或新建 ThreadTerm 终端即可生效。",
-    "uninstallSuccess": "已移除 {{shell}} 的集成。",
-    "error": "操作失败：{{message}}",
-    "shells": {
-      "zsh": "Zsh",
-      "bash": "Bash",
-      "fish": "Fish",
-      "pwsh": "PowerShell"
     }
   }
 }

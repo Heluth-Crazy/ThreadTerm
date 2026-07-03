@@ -228,7 +228,7 @@ export function CardActions({
         : null;
   const showRevealInline = density !== 'narrow';
   const showWideActionsInline = density === 'wide';
-  const overflowLabel = t('bottomBar.overflow', { defaultValue: 'More' });
+  const overflowLabel = t('view.more', { defaultValue: 'More' });
   const autoRestartControls =
     onToggleAutoRestart && onChangeAutoRestartMaxRetries
       ? {

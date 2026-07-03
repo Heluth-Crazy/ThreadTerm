@@ -1,4 +1,3 @@
-import type { AiExplainProvider } from '../ai/aiExplain';
 import { DEFAULT_THEME_PACK_ID } from '../../theme/themePacks';
 import {
   parseCustomThemePack,
@@ -36,8 +35,6 @@ export interface SettingsBundleCustomThemesSection {
 }
 
 export interface SettingsBundleTerminalSection {
-  bottomBarHidden: boolean;
-  aiExplainDefaultProvider: AiExplainProvider;
   osNotificationsEnabled: boolean;
 }
 
@@ -84,7 +81,6 @@ export interface SettingsBundleSectionDiff {
   incomingSummary: string;
 }
 
-const AI_EXPLAIN_PROVIDERS = new Set<AiExplainProvider>(['claude', 'codex', 'gemini']);
 const SELECTOR_MODES = new Set<SelectorMode>(['tile', 'carousel']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -116,10 +112,6 @@ function normalizeCustomThemePacks(value: unknown): ThemePack[] {
 function normalizeTerminalSettings(value: unknown): SettingsBundleTerminalSection {
   const record = isRecord(value) ? value : {};
   return {
-    bottomBarHidden: record.bottomBarHidden === true,
-    aiExplainDefaultProvider: AI_EXPLAIN_PROVIDERS.has(record.aiExplainDefaultProvider as AiExplainProvider)
-      ? (record.aiExplainDefaultProvider as AiExplainProvider)
-      : 'claude',
     osNotificationsEnabled: readOsNotificationsEnabled(record),
   };
 }
@@ -256,9 +248,7 @@ export function summarizeSettingsBundleSection(
     case 'terminal': {
       const section = bundle.sections.terminal;
       if (!section) return 'Not set';
-      return `${section.aiExplainDefaultProvider}, chip strip ${
-        section.bottomBarHidden ? 'hidden' : 'visible'
-      }, notifications ${section.osNotificationsEnabled ? 'on' : 'off'}`;
+      return `notifications ${section.osNotificationsEnabled ? 'on' : 'off'}`;
     }
     case 'overlay': {
       const section = bundle.sections.overlay;
@@ -310,9 +300,6 @@ export function isSettingsBundleSectionId(value: string): value is SettingsBundl
   return SETTINGS_BUNDLE_SECTION_ORDER.includes(value as SettingsBundleSectionId);
 }
 
-export function isAiExplainProvider(value: unknown): value is AiExplainProvider {
-  return AI_EXPLAIN_PROVIDERS.has(value as AiExplainProvider);
-}
 
 export function isThemePreferenceMode(value: unknown): value is ThemeMode {
   return isThemeMode(value);

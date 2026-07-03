@@ -151,16 +151,6 @@
       "viewAll": "모든 알림 보기"
     }
   },
-  "focusMode": {
-    "title": "포커스 모드",
-    "description": "포커스 모드 칩 바와 “AI로 설명”에 사용할 기본 AI 제공자를 설정합니다.",
-    "chipStripLabel": "포커스 모드 칩 바 표시",
-    "chipStripDescription": "포커스된 터미널 하단에 고정되는 빠른 탐색 칩 행입니다.",
-    "chipStripOn": "표시",
-    "chipStripOff": "숨김",
-    "defaultProviderLabel": "기본 AI 설명 제공자",
-    "defaultProviderDescription": "포커스된 터미널이 AI CLI가 아닐 때(shell, npm, docker 등) 사용합니다."
-  },
   "mobileAccess": {
     "title": "모바일 접근",
     "description": "같은 LAN의 휴대폰에서 데스크톱 세션을 확인하고 제어할 수 있도록 로컬 HTTP/WebSocket 브리지를 시작합니다.",
@@ -244,34 +234,6 @@
       "ai-proceed": "{{cardLabel}}: {{sampleText}}",
       "ai-apply-diff": "{{cardLabel}}: {{sampleText}}",
       "arrow-select": "{{cardLabel}}에서 메뉴가 열려 있습니다. {{sampleText}}"
-    }
-  },
-  "commandBlocks": {
-    "title": "명령 블록",
-    "description": "셸 명령 경계를 감지하여 출력 접기, 전체 명령 복사, 실패 블록으로 이동을 지원합니다. 기본값은 꺼짐이며, diff를 확인한 뒤 셸별로 활성화하세요.",
-    "desktopOnly": "명령 블록은 Tauri 데스크톱 앱에서만 구성할 수 있습니다.",
-    "detectedShellLabel": "감지된 셸",
-    "detectedShellUnknown": "알 수 없음 — 아래에서 직접 선택하여 설치하세요.",
-    "shellsLabel": "셸 통합",
-    "rcPathLabel": "쓰기 위치",
-    "preview": "설치 미리보기",
-    "previewing": "미리보는 중…",
-    "install": "설치",
-    "installing": "설치 중…",
-    "uninstall": "제거",
-    "uninstalling": "제거 중…",
-    "installed": "설치됨",
-    "notInstalled": "설치되지 않음",
-    "diffTitle": "Diff (설치 전 확인하세요)",
-    "noChanges": "이미 설치되어 변경할 내용이 없습니다.",
-    "installSuccess": "{{shell}}에 설치했습니다. 셸을 다시 로드하거나 새 ThreadTerm 카드를 열어 활성화하세요.",
-    "uninstallSuccess": "{{shell}} 통합을 제거했습니다.",
-    "error": "작업 실패: {{message}}",
-    "shells": {
-      "zsh": "Zsh",
-      "bash": "Bash",
-      "fish": "Fish",
-      "pwsh": "PowerShell"
     }
   }
 }

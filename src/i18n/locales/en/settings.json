@@ -99,7 +99,7 @@
     "desktopOnly": "System notifications are only available in the Tauri desktop app.",
     "sendTest": "Send test notification",
     "sending": "Sending…",
-    "sent": "Sent to the OS notification service. If no banner appears, check Focus mode or verify with a packaged build.",
+    "sent": "Sent to the OS notification service. If no banner appears, check your system notification settings or verify with a packaged build.",
     "failed": "Send failed. Check the development logs for details.",
     "testTitle": "ThreadTerm test notification",
     "testBody": "If you see this notification, the system notification path is working."
@@ -150,16 +150,6 @@
       "allClear": "All clear",
       "viewAll": "View all notifications"
     }
-  },
-  "focusMode": {
-    "title": "Focus mode",
-    "description": "Configure the focus-mode chip strip and the default AI provider used by \"Explain with AI\".",
-    "chipStripLabel": "Show the focus-mode chip strip",
-    "chipStripDescription": "A row of quick navigation chips pinned to the bottom of the focused terminal.",
-    "chipStripOn": "Visible",
-    "chipStripOff": "Hidden",
-    "defaultProviderLabel": "Default AI Explain provider",
-    "defaultProviderDescription": "Used when the focused terminal is not already an AI CLI (e.g. shell, npm, docker)."
   },
   "mobileAccess": {
     "title": "Mobile access",
@@ -244,34 +234,6 @@
       "ai-proceed": "{{cardLabel}}: {{sampleText}}",
       "ai-apply-diff": "{{cardLabel}}: {{sampleText}}",
       "arrow-select": "{{cardLabel}} has a menu open. {{sampleText}}"
-    }
-  },
-  "commandBlocks": {
-    "title": "Command blocks",
-    "description": "Detects every shell command boundary so ThreadTerm can fold output, copy whole commands, and jump to failed runs. Off by default; enable per shell after reviewing the diff.",
-    "desktopOnly": "Command blocks can only be configured inside the Tauri desktop app.",
-    "detectedShellLabel": "Detected shell",
-    "detectedShellUnknown": "Unknown — pick one below to install manually.",
-    "shellsLabel": "Shell integration",
-    "rcPathLabel": "Will write to",
-    "preview": "Preview install",
-    "previewing": "Previewing…",
-    "install": "Install",
-    "installing": "Installing…",
-    "uninstall": "Uninstall",
-    "uninstalling": "Uninstalling…",
-    "installed": "Installed",
-    "notInstalled": "Not installed",
-    "diffTitle": "Diff (review before installing)",
-    "noChanges": "Already installed — no changes needed.",
-    "installSuccess": "Installed for {{shell}}. Reload your shell or open a new ThreadTerm card to activate.",
-    "uninstallSuccess": "Removed integration for {{shell}}.",
-    "error": "Action failed: {{message}}",
-    "shells": {
-      "zsh": "Zsh",
-      "bash": "Bash",
-      "fish": "Fish",
-      "pwsh": "PowerShell"
     }
   }
 }

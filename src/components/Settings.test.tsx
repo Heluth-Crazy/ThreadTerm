@@ -27,14 +27,6 @@ vi.mock('./LanguageSelector', () => ({
   default: () => <div>language selector</div>,
 }));
 
-vi.mock('./settings/CommandBlocksSettings', () => ({
-  CommandBlocksSettings: () => <div>command blocks settings</div>,
-}));
-
-vi.mock('./settings/FocusModeSettings', () => ({
-  FocusModeSettings: () => <div>focus mode settings</div>,
-}));
-
 vi.mock('./settings/NotificationSettings', () => ({
   NotificationSettings: () => <div>notification settings</div>,
 }));

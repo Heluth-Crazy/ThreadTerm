@@ -27,9 +27,9 @@ function makeEntries(): CommandEntry[] {
     },
     {
       id: 'b',
-      label: 'Block npm test',
-      searchText: 'block npm test',
-      group: 'jump-block',
+      label: 'Project foo',
+      searchText: 'project foo',
+      group: 'switch-project',
       run: vi.fn(),
     },
     {
@@ -53,7 +53,7 @@ describe('CommandPalette', () => {
   it('lists entries when open', () => {
     render(<CommandPalette open={true} entries={makeEntries()} onClose={vi.fn()} />);
     expect(screen.getByText('Card foo')).toBeTruthy();
-    expect(screen.getByText('Block npm test')).toBeTruthy();
+    expect(screen.getByText('Project foo')).toBeTruthy();
   });
 
   it('filters entries as the user types', () => {
@@ -61,7 +61,7 @@ describe('CommandPalette', () => {
     const input = screen.getByTestId('palette-input');
     fireEvent.change(input, { target: { value: 'foo' } });
     expect(screen.getByText('Card foo')).toBeTruthy();
-    expect(screen.queryByText('Block npm test')).toBeNull();
+    expect(screen.getByText('Project foo')).toBeTruthy();
   });
 
   it('runs the first entry on Enter and closes', () => {
@@ -112,7 +112,7 @@ describe('CommandPalette', () => {
     const list = makeEntries();
     const onClose = vi.fn();
     render(<CommandPalette open={true} entries={list} onClose={onClose} />);
-    fireEvent.click(screen.getByText('Block npm test'));
+    fireEvent.click(screen.getByText('Project foo'));
     expect(list[1].run).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
   });

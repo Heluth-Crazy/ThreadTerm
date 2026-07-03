@@ -252,16 +252,6 @@
     "saved": "AI session Markdown exported.",
     "failed": "AI session export failed."
   },
-  "bottomBar": {
-    "label": "Focus-mode actions",
-    "notifications": "Notifications",
-    "bookmarks": "Bookmarks",
-    "fileExplorer": "File explorer",
-    "richInput": "Rich input",
-    "remoteControl": "Remote control",
-    "overflow": "More",
-    "richInputComingSoon": "Rich input arrives in Stage 9."
-  },
   "aiIntent": {
     "label": "AI intent",
     "none": "No intent",
@@ -372,11 +362,6 @@
     "completed": "Completed",
     "failed": "Failed"
   },
-  "bookmarks": {
-    "title": "Bookmarks",
-    "empty": "No bookmarks yet",
-    "toggle": "Toggle bookmarks panel"
-  },
   "archive": {
     "open": "Archive",
     "openTitle": "Show archived cards for this project",
@@ -385,57 +370,16 @@
     "restore": "Restore",
     "archivedAt": "Archived {{time}}"
   },
-  "search": {
-    "label": "Search blocks",
-    "placeholder": "Search across all blocks (commands, paths, projects)…",
-    "placeholderEmpty": "Type to search across all blocks",
-    "empty": "No matches",
-    "loading": "Searching…",
-    "field": {
-      "command": "command",
-      "cwd": "path",
-      "project": "project",
-      "output": "output"
-    }
-  },
   "palette": {
     "label": "Command palette",
     "placeholder": "Type a command…",
     "empty": "No matches",
     "groups": {
       "jump-card": "Jump to card",
-      "jump-block": "Jump to block",
       "switch-project": "Switch project",
       "change-intent": "Change intent",
       "toggle-overlay": "Toggle overlay",
       "settings": "Settings"
-    }
-  },
-  "block": {
-    "copyCommand": "Copy command",
-    "copyOutput": "Copy output",
-    "copyBoth": "Copy command + output",
-    "rerun": "Re-run command",
-    "rerunConfirm": "Click again to re-run",
-    "explain": "Explain with AI",
-    "bookmark": "Bookmark this block",
-    "unbookmark": "Remove bookmark",
-    "collapse": "Collapse block",
-    "expand": "Expand block",
-    "collapsed": "collapsed",
-    "navFailed": {
-      "none": "No failed blocks"
-    },
-    "inspector": {
-      "title": "Block Inspector",
-      "command": "Command",
-      "cwd": "Directory",
-      "exitCode": "Exit code",
-      "duration": "Duration",
-      "running": "Running…",
-      "noBlock": "Select a block to inspect",
-      "output": "Output",
-      "explainPlaceholder": "Explain with AI (coming in Stage 6)"
     }
   },
   "types": {

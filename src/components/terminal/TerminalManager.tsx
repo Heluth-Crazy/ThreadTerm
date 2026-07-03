@@ -22,27 +22,23 @@ import {
   GitCompare,
   Layers,
   Settings as SettingsIcon,
-  Star,
   TerminalSquare,
   X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
-import { BOOKMARKS_VISIBLE } from '../../lib/featureFlags';
 import { CardGrid } from './CardGrid';
 import { MAX_MOUNTED_TERMINAL_VIEWS, touchMountedId } from './mountedViewsLru';
 import { TerminalView } from './TerminalView';
 import { CreateTerminalDialog } from './CreateTerminalDialog';
 import { ProjectSidebar } from './ProjectSidebar';
 import { MobileAccessSettings } from '../settings/MobileAccessSettings';
-import { BookmarksSidebar } from './BookmarksSidebar';
 import { ArchivedCardsPanel } from './ArchivedCardsPanel';
 import { SessionDock } from './SessionDock';
 import { StatsPanel } from '../stats/StatsPanel';
 import { useStatsAutoRefresh, useStatsSubscription } from '../../stores/statsStore';
 import { CommandPalette } from '../palette/CommandPalette';
 import { buildCommandRegistry, type CommandGroup } from '../palette/commandRegistry';
-import { BlockSearchPanel } from '../search/BlockSearchPanel';
 import type { TerminalCard, TerminalCreateOptions, TerminalStatus, TerminalType } from '../../types/terminal';
 import { useSupervisor } from '../../lib/supervisor/useSupervisor';
 import { git, isTauriEnv, mobileBridge, providerSessions, type GitStatusEntry } from '../../lib/tauri-bridge';
@@ -60,7 +56,7 @@ import {
 import type { DirEntry } from '../files/fileMeta';
 
 type ViewMode = 'grid' | 'focus';
-type RightSurface = 'stats' | 'archive' | 'bookmarks' | 'sessionDock';
+type RightSurface = 'stats' | 'archive' | 'sessionDock';
 type WorkspaceContentTab =
   | {
       id: string;
@@ -210,12 +206,10 @@ declare global {
     __terminalManager?: {
       openCreate: () => void;
       closeCreate: () => void;
-      focusMode: (mode: ViewMode) => void;
+      setViewMode: (mode: ViewMode) => void;
       openSettings: (tab?: SettingsTab) => void;
       openPalette: () => void;
       closePalette: () => void;
-      openSearch: () => void;
-      closeSearch: () => void;
     };
   }
 }
@@ -238,9 +232,6 @@ export function TerminalManager() {
   const selectedWorktreeLabel = useTerminalStore((s) => s.selectedWorktreeLabel);
   const pendingFocusCardId = useTerminalStore((s) => s.pendingFocusCardId);
   const setPendingFocusCardId = useTerminalStore((s) => s.setPendingFocusCardId);
-  const selectBlock = useTerminalStore((s) => s.selectBlock);
-  const bookmarkCount = useTerminalStore((s) => s.bookmarks.length);
-  const blocks = useTerminalStore((s) => s.blocks);
   const updateCardAiIntent = useTerminalStore((s) => s.updateCardAiIntent);
   const pushNotification = useTerminalStore((s) => s.pushNotification);
   const dockPinned = useTerminalStore((s) => s.dockPinned);
@@ -307,7 +298,6 @@ export function TerminalManager() {
   useStatsAutoRefresh();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteInitialGroup, setPaletteInitialGroup] = useState<CommandGroup | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
 
   // Shortcut hint: dismissible, persisted across sessions. Once the user
   // closes it, never show again unless they wipe localStorage.
@@ -363,17 +353,13 @@ export function TerminalManager() {
     [focusedCardId, cards],
   );
 
-  // Live working directory of the focused card: the latest block's cwd
-  // (updated by shell-integration as the user `cd`s), falling back to the
-  // card's worktree / project path before any command has produced a block.
+  // Live working directory of the focused card. Without command-block shell
+  // integration, this stays anchored to the card's worktree/project path.
   const focusedCwd = useMemo(() => {
     if (!focusedCardId) return null;
-    const cardBlocks = blocks[focusedCardId];
-    const latest =
-      cardBlocks && cardBlocks.length > 0 ? cardBlocks[cardBlocks.length - 1].cwd : '';
-    const cwd = (latest || focusedCard?.worktreePath || focusedCard?.projectPath || '').trim();
+    const cwd = (focusedCard?.worktreePath || focusedCard?.projectPath || '').trim();
     return cwd || null;
-  }, [focusedCardId, blocks, focusedCard]);
+  }, [focusedCardId, focusedCard]);
 
   const sessionDockAvailable = viewMode === 'focus' && Boolean(focusedCard);
 
@@ -384,8 +370,6 @@ export function TerminalManager() {
           return true;
         case 'archive':
           return Boolean(selectedProjectPath && selectedProjectName);
-        case 'bookmarks':
-          return BOOKMARKS_VISIBLE;
         case 'sessionDock':
           return sessionDockAvailable;
       }
@@ -427,7 +411,7 @@ export function TerminalManager() {
   // Auxiliary right-side surfaces share the fixed workspace rail. The most
   // recently opened surface wins, and closing it restores the workspace rail.
   const toggleRightPanel = useCallback(
-    (panel: 'stats' | 'archive' | 'bookmarks') => {
+    (panel: 'stats' | 'archive') => {
       setRightSurfaceStack((current) =>
         activeRightSurface === panel
           ? removeRightSurface(current, panel)
@@ -442,16 +426,14 @@ export function TerminalManager() {
   const statsPanelVisible = activeRightSurface === 'stats';
   const archivePanelVisible =
     activeRightSurface === 'archive' && !!selectedProjectPath && !!selectedProjectName;
-  const bookmarksPanelVisible = activeRightSurface === 'bookmarks' && BOOKMARKS_VISIBLE;
   const sessionDockPanelVisible = activeRightSurface === 'sessionDock' && sessionDockAvailable;
   const auxiliaryRightPanelOpen =
-    statsPanelVisible || archivePanelVisible || bookmarksPanelVisible || sessionDockPanelVisible;
+    statsPanelVisible || archivePanelVisible || sessionDockPanelVisible;
   const rightPanelOpen =
     workspaceRailVisible ||
     auxiliaryRightPanelOpen;
   const statsOpen = activeRightSurface === 'stats';
   const archiveOpen = activeRightSurface === 'archive';
-  const bookmarksOpen = activeRightSurface === 'bookmarks';
   const currentWorkspaceContent = workspaceContentStateWithPanelDefaults(
     workspaceContentStateWithDefaults(
       focusedCardId ? workspaceContentByCardId[focusedCardId] : undefined,
@@ -880,16 +862,6 @@ export function TerminalManager() {
     [focusCard],
   );
 
-  const handleJumpToBlock = useCallback(
-    ({ cardId, blockId }: { cardId: string; blockId: string }) => {
-      focusCard(cardId);
-      setViewMode('focus');
-      selectBlock(cardId, blockId);
-      closeRightSurface('bookmarks');
-    },
-    [closeRightSurface, focusCard, selectBlock],
-  );
-
   const handleRestoreArchivedCard = useCallback(
     (cardId: string) => {
       restoreArchivedCard(cardId);
@@ -912,13 +884,11 @@ export function TerminalManager() {
     () =>
       buildCommandRegistry({
         cards,
-        blocks,
         projects: paletteProjects,
         focusedCardId,
         actions: {
           focusCard,
           selectProject,
-          selectBlock,
           toggleNotificationCentre,
           updateCardAiIntent,
           openSettings: handleOpenSettings,
@@ -926,13 +896,11 @@ export function TerminalManager() {
       }),
     [
       cards,
-      blocks,
       paletteProjects,
       focusedCardId,
       focusCard,
       handleOpenSettings,
       selectProject,
-      selectBlock,
       updateCardAiIntent,
       toggleNotificationCentre,
     ],
@@ -1009,27 +977,12 @@ export function TerminalManager() {
     [cards, createCard, focusCard, pushNotification, selectWorktree, selectedProjectName, t],
   );
 
-  // Stage 5 — let Esc close the bookmarks side panel. Modals (palette /
-  // search) own their own Esc handlers; this listener is gated on those
-  // being closed so it never steals an Esc keystroke from them.
-  useEffect(() => {
-    if (!bookmarksOpen || paletteOpen || searchOpen) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        closeRightSurface('bookmarks');
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [bookmarksOpen, closeRightSurface, paletteOpen, searchOpen]);
-
   // Expose imperative API.
   useEffect(() => {
     window.__terminalManager = {
       openCreate: () => setCreateOpen(true),
       closeCreate: () => setCreateOpen(false),
-      focusMode: (mode) => setViewMode(mode),
+      setViewMode: (mode) => setViewMode(mode),
       openSettings: handleOpenSettings,
       openPalette: () => {
         setPaletteInitialGroup(null);
@@ -1039,8 +992,6 @@ export function TerminalManager() {
         setPaletteInitialGroup(null);
         setPaletteOpen(false);
       },
-      openSearch: () => setSearchOpen(true),
-      closeSearch: () => setSearchOpen(false),
     };
     return () => {
       delete window.__terminalManager;
@@ -1140,26 +1091,6 @@ export function TerminalManager() {
                   ? '99+'
                   : selectedProjectArchivedCards.length}
               </span>
-            </button>
-          )}
-          {BOOKMARKS_VISIBLE && (
-            <button
-              type="button"
-              onClick={() => toggleRightPanel('bookmarks')}
-              title={t('bookmarks.toggle', { defaultValue: 'Toggle bookmarks panel' })}
-              className={[
-                'relative rounded-[var(--radius-md)] p-1.5',
-                bookmarksOpen
-                  ? 'bg-primary/10 text-primary'
-                  : 'hover:bg-accent hover:text-accent-foreground',
-              ].join(' ')}
-            >
-              <Star className="h-4 w-4" />
-              {bookmarkCount > 0 && (
-                <span className="absolute right-0.5 top-0.5 flex min-h-[14px] min-w-[14px] items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-bold text-white">
-                  {bookmarkCount > 99 ? '99+' : bookmarkCount}
-                </span>
-              )}
             </button>
           )}
           <button
@@ -1284,10 +1215,6 @@ export function TerminalManager() {
                   card={c}
                   active={isCurrent}
                   onBack={handleBackToGrid}
-                  onOpenBookmarks={
-                    BOOKMARKS_VISIBLE ? () => toggleRightPanel('bookmarks') : undefined
-                  }
-                  onOpenSettings={handleOpenSettings}
                 />
               </div>
             );
@@ -1354,9 +1281,6 @@ export function TerminalManager() {
               onClose={() => closeRightSurface('archive')}
             />
           )}
-          {bookmarksPanelVisible && (
-            <BookmarksSidebar onJump={handleJumpToBlock} onClose={() => closeRightSurface('bookmarks')} />
-          )}
           {sessionDockVisible && (
             <SessionDock
               visible={sessionDockVisible}
@@ -1370,16 +1294,14 @@ export function TerminalManager() {
       </div>
 
       {/* Shortcut hint — dismissible. Anchored to the LEFT so it can't
-          overlap with the right-side BlockInspector / Bookmarks panel,
-          and hidden whenever a modal/panel is open so it never sits on
-          top of overlay UI. */}
+          overlap with the right-side panel, and hidden whenever a modal/panel
+          is open so it never sits on top of overlay UI. */}
       {cards.length > 0 &&
         terminalContentActive &&
         !hintDismissed &&
         !auxiliaryRightPanelOpen &&
         !sessionDockVisible &&
-        !paletteOpen &&
-        !searchOpen && (
+        !paletteOpen && (
         <div
           className={[
             'absolute left-3 z-10 flex select-none items-center gap-2 rounded-[var(--radius-md)] border border-white/10/60 bg-background/80 py-1 pl-2.5 pr-1 text-[10px] text-muted-foreground backdrop-blur',
@@ -1413,16 +1335,6 @@ export function TerminalManager() {
         onClose={() => {
           setPaletteInitialGroup(null);
           setPaletteOpen(false);
-        }}
-      />
-
-      {/* Cross-session block search (Cmd/Ctrl+F) */}
-      <BlockSearchPanel
-        open={searchOpen}
-        onClose={() => setSearchOpen(false)}
-        onJump={(target) => {
-          handleJumpToBlock(target);
-          setSearchOpen(false);
         }}
       />
 

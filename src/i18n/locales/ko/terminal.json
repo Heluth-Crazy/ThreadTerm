@@ -252,16 +252,6 @@
     "saved": "AI 세션 Markdown을 내보냈습니다.",
     "failed": "AI 세션 내보내기에 실패했습니다."
   },
-  "bottomBar": {
-    "label": "포커스 모드 작업",
-    "notifications": "알림",
-    "bookmarks": "북마크",
-    "fileExplorer": "파일 탐색기",
-    "richInput": "리치 입력",
-    "remoteControl": "원격 제어",
-    "overflow": "더 보기",
-    "richInputComingSoon": "리치 입력은 Stage 9에서 제공됩니다."
-  },
   "aiIntent": {
     "label": "AI 의도",
     "none": "의도 없음",
@@ -372,11 +362,6 @@
     "completed": "완료",
     "failed": "실패"
   },
-  "bookmarks": {
-    "title": "북마크",
-    "empty": "북마크 없음",
-    "toggle": "북마크 패널 토글"
-  },
   "archive": {
     "open": "보관함",
     "openTitle": "이 프로젝트의 보관된 카드 표시",
@@ -385,57 +370,16 @@
     "restore": "복원",
     "archivedAt": "{{time}}에 보관됨"
   },
-  "search": {
-    "label": "블록 검색",
-    "placeholder": "모든 블록에서 검색 (명령어, 경로, 프로젝트)…",
-    "placeholderEmpty": "입력하여 모든 블록 검색",
-    "empty": "일치 항목 없음",
-    "loading": "검색 중…",
-    "field": {
-      "command": "명령어",
-      "cwd": "경로",
-      "project": "프로젝트",
-      "output": "출력"
-    }
-  },
   "palette": {
     "label": "명령 팔레트",
     "placeholder": "명령 입력…",
     "empty": "일치 항목 없음",
     "groups": {
       "jump-card": "카드로 이동",
-      "jump-block": "블록으로 이동",
       "switch-project": "프로젝트 전환",
       "change-intent": "의도 변경",
       "toggle-overlay": "오버레이 토글",
       "settings": "설정"
-    }
-  },
-  "block": {
-    "copyCommand": "명령어 복사",
-    "copyOutput": "출력 복사",
-    "copyBoth": "명령어 + 출력 복사",
-    "rerun": "다시 실행",
-    "rerunConfirm": "다시 실행하려면 한 번 더 클릭",
-    "explain": "AI로 설명",
-    "bookmark": "이 블록을 북마크",
-    "unbookmark": "북마크 해제",
-    "collapse": "블록 접기",
-    "expand": "블록 펼치기",
-    "collapsed": "접힘",
-    "navFailed": {
-      "none": "실패한 블록 없음"
-    },
-    "inspector": {
-      "title": "블록 인스펙터",
-      "command": "명령어",
-      "cwd": "디렉토리",
-      "exitCode": "종료 코드",
-      "duration": "실행 시간",
-      "running": "실행 중…",
-      "noBlock": "검사할 블록을 선택하세요",
-      "output": "출력",
-      "explainPlaceholder": "AI로 설명 (Stage 6 예정)"
     }
   },
   "types": {

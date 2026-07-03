@@ -27,8 +27,6 @@ describe('settingsSync', () => {
       domain: 'all',
       changedAt: 456,
       terminalPreferences: {
-        bottomBarHidden: true,
-        aiExplainDefaultProvider: 'codex',
         supervisorEnabled: true,
         osNotificationsEnabled: true,
       },
@@ -40,8 +38,8 @@ describe('settingsSync', () => {
       },
     });
 
-    expect(normalized?.terminalPreferences?.bottomBarHidden).toBe(true);
-    expect(normalized?.terminalPreferences?.aiExplainDefaultProvider).toBe('codex');
+    expect(normalized?.terminalPreferences?.supervisorEnabled).toBe(true);
+    expect(normalized?.terminalPreferences?.osNotificationsEnabled).toBe(true);
     expect(normalized?.overlayPreferences?.selectorMode).toBe('carousel');
     expect(normalized?.overlayPreferences?.lightweightMode).toBe(true);
   });

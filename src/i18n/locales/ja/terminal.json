@@ -252,16 +252,6 @@
     "saved": "AI セッション Markdown をエクスポートしました。",
     "failed": "AI セッションのエクスポートに失敗しました。"
   },
-  "bottomBar": {
-    "label": "フォーカスモード操作",
-    "notifications": "通知",
-    "bookmarks": "ブックマーク",
-    "fileExplorer": "ファイラー",
-    "richInput": "リッチ入力",
-    "remoteControl": "リモートコントロール",
-    "overflow": "その他",
-    "richInputComingSoon": "リッチ入力はステージ 9 で提供されます。"
-  },
   "aiIntent": {
     "label": "AI の目的",
     "none": "目的なし",
@@ -372,11 +362,6 @@
     "completed": "完了",
     "failed": "失敗"
   },
-  "bookmarks": {
-    "title": "ブックマーク",
-    "empty": "ブックマークなし",
-    "toggle": "ブックマークパネル切替"
-  },
   "archive": {
     "open": "アーカイブ",
     "openTitle": "このプロジェクトのアーカイブ済みカードを表示",
@@ -385,57 +370,16 @@
     "restore": "復元",
     "archivedAt": "{{time}} にアーカイブ"
   },
-  "search": {
-    "label": "ブロック検索",
-    "placeholder": "すべてのブロックを検索（コマンド・パス・プロジェクト）…",
-    "placeholderEmpty": "入力して全ブロックを検索",
-    "empty": "一致なし",
-    "loading": "検索中…",
-    "field": {
-      "command": "コマンド",
-      "cwd": "パス",
-      "project": "プロジェクト",
-      "output": "出力"
-    }
-  },
   "palette": {
     "label": "コマンドパレット",
     "placeholder": "コマンドを入力…",
     "empty": "一致なし",
     "groups": {
       "jump-card": "カードへジャンプ",
-      "jump-block": "ブロックへジャンプ",
       "switch-project": "プロジェクト切替",
       "change-intent": "意図変更",
       "toggle-overlay": "オーバーレイ切替",
       "settings": "設定"
-    }
-  },
-  "block": {
-    "copyCommand": "コマンドをコピー",
-    "copyOutput": "出力をコピー",
-    "copyBoth": "コマンド + 出力をコピー",
-    "rerun": "再実行",
-    "rerunConfirm": "もう一度クリックして再実行",
-    "explain": "AIで説明",
-    "bookmark": "このブロックをブックマーク",
-    "unbookmark": "ブックマーク解除",
-    "collapse": "ブロックを折りたたむ",
-    "expand": "ブロックを展開",
-    "collapsed": "折りたたみ済み",
-    "navFailed": {
-      "none": "失敗したブロックなし"
-    },
-    "inspector": {
-      "title": "ブロックインスペクター",
-      "command": "コマンド",
-      "cwd": "ディレクトリ",
-      "exitCode": "終了コード",
-      "duration": "実行時間",
-      "running": "実行中…",
-      "noBlock": "検査するブロックを選択",
-      "output": "出力",
-      "explainPlaceholder": "AI で説明 (Stage 6 で提供予定)"
     }
   },
   "types": {
