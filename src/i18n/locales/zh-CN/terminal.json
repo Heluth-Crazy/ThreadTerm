@@ -147,7 +147,12 @@
     "revertedHunk": "已在草稿中回滚该块。",
     "revertedHunkFallback": "无法安全映射单行，已在草稿中回滚该块。",
     "previewEdit": "编辑",
-    "previewPreview": "预览"
+    "previewPreview": "预览",
+    "previewServiceRequiredTitle": "需要项目服务",
+    "previewServiceRequiredDescription": "这个 HTML 引用了需要由项目前端或静态服务解析的资源。ThreadTerm 没有自动启动任何服务。",
+    "previewServiceRequiredReason": "检测到的资源：",
+    "previewServiceRequiredAction": "请在终端中手动启动项目服务，然后通过该服务地址预览。",
+    "previewServiceRequiredCommand": "常见命令：npm run dev / pnpm dev / yarn dev"
   },
   "dialog": {
     "chooseProjectDirectory": "选择项目目录",

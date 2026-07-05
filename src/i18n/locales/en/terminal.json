@@ -147,7 +147,12 @@
     "revertedHunk": "Reverted hunk in draft.",
     "revertedHunkFallback": "Line mapping failed; reverted hunk in draft.",
     "previewEdit": "Edit",
-    "previewPreview": "Preview"
+    "previewPreview": "Preview",
+    "previewServiceRequiredTitle": "Project service required",
+    "previewServiceRequiredDescription": "This HTML references resources that need the project's frontend or static server. ThreadTerm did not start any service automatically.",
+    "previewServiceRequiredReason": "Detected resource:",
+    "previewServiceRequiredAction": "Start the project service manually in a terminal, then preview through that service URL.",
+    "previewServiceRequiredCommand": "Common commands: npm run dev / pnpm dev / yarn dev"
   },
   "dialog": {
     "chooseProjectDirectory": "Choose project directory",

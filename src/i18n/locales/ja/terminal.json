@@ -147,7 +147,12 @@
     "revertedHunk": "下書きで hunk を戻しました。",
     "revertedHunkFallback": "行を安全に対応できないため、hunk を戻しました。",
     "previewEdit": "編集",
-    "previewPreview": "プレビュー"
+    "previewPreview": "プレビュー",
+    "previewServiceRequiredTitle": "プロジェクトサービスが必要です",
+    "previewServiceRequiredDescription": "この HTML はプロジェクトのフロントエンドまたは静的サーバーで解決するリソースを参照しています。ThreadTerm はサービスを自動起動していません。",
+    "previewServiceRequiredReason": "検出したリソース:",
+    "previewServiceRequiredAction": "ターミナルでプロジェクトサービスを手動起動し、そのサービス URL でプレビューしてください。",
+    "previewServiceRequiredCommand": "よく使うコマンド: npm run dev / pnpm dev / yarn dev"
   },
   "dialog": {
     "chooseProjectDirectory": "プロジェクトディレクトリを選択",

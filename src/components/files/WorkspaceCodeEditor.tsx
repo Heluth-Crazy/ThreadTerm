@@ -78,6 +78,16 @@ export interface PreviewContext {
   fileSrc: (absPath: string) => string;
 }
 
+export type HtmlPreviewServiceRequirementKind =
+  | 'dev-runtime'
+  | 'workspace-source'
+  | 'root-absolute-resource';
+
+export interface HtmlPreviewServiceRequirement {
+  kind: HtmlPreviewServiceRequirementKind;
+  path?: string;
+}
+
 function defaultPreviewContext(): PreviewContext {
   return {
     tauri: isTauriEnv(),
@@ -120,10 +130,40 @@ function PreviewPane({
   rootPath?: string;
   contentVersion?: number;
 }) {
+  const { t } = useTranslation('terminal');
   const preview = useMemo(
     () => buildPreviewFrame(value, previewType, path, rootPath),
     [path, previewType, rootPath, value],
   );
+
+  if (preview.kind === 'service-required') {
+    return (
+      <div className="min-h-0 flex-1 w-full overflow-auto bg-[#111318] text-[#d4d4d4]">
+        <div className="mx-auto flex min-h-full max-w-2xl flex-col justify-center gap-3 px-8 py-10">
+          <h3 className="text-sm font-semibold text-[#f0f0f0]">
+            {t('workspace.previewServiceRequiredTitle')}
+          </h3>
+          <p className="text-sm leading-6 text-[#a8adbb]">
+            {t('workspace.previewServiceRequiredDescription')}
+          </p>
+          {preview.requirement.path ? (
+            <p className="text-xs leading-5 text-[#8f96a8]">
+              {t('workspace.previewServiceRequiredReason')}{' '}
+              <code className="rounded bg-[#1e2128] px-1.5 py-0.5 text-[#dfe3ec]">
+                {preview.requirement.path}
+              </code>
+            </p>
+          ) : null}
+          <p className="text-sm leading-6 text-[#a8adbb]">
+            {t('workspace.previewServiceRequiredAction')}
+          </p>
+          <code className="w-fit max-w-full overflow-x-auto rounded bg-[#1e2128] px-2 py-1 text-xs text-[#dfe3ec]">
+            {t('workspace.previewServiceRequiredCommand')}
+          </code>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <iframe
@@ -204,11 +244,17 @@ function renderMarkdown(
   }
 }
 
-export interface PreviewFrame {
-  src?: string;
-  srcDoc?: string;
-  sandbox: string;
-}
+export type PreviewFrame =
+  | {
+      kind: 'iframe';
+      src?: string;
+      srcDoc?: string;
+      sandbox: string;
+    }
+  | {
+      kind: 'service-required';
+      requirement: HtmlPreviewServiceRequirement;
+    };
 
 export function buildPreviewFrame(
   value: string,
@@ -218,13 +264,23 @@ export function buildPreviewFrame(
   ctx: PreviewContext = defaultPreviewContext(),
 ): PreviewFrame {
   if (previewType === 'html') {
+    const requirement = detectHtmlPreviewServiceRequirement(value);
+    if (requirement) {
+      return { kind: 'service-required', requirement };
+    }
+
     if (ctx.tauri) {
       // asset 协议直读磁盘上已保存的文件（Live-Server 语义）；
       // src 文档不继承宿主 CSP，内联脚本与相对资源全部可用
-      return { src: ctx.fileSrc(path), sandbox: 'allow-scripts allow-popups' };
+      return {
+        kind: 'iframe',
+        src: ctx.fileSrc(path),
+        sandbox: 'allow-scripts allow-popups',
+      };
     }
     // 纯浏览器 dev：srcdoc + <base> 注入，保持相对资源可解析
     return {
+      kind: 'iframe',
       srcDoc: injectPreviewBase(value, previewBaseHref(rootPath, path)),
       sandbox: 'allow-scripts allow-popups',
     };
@@ -233,9 +289,82 @@ export function buildPreviewFrame(
   // markdown 为静态渲染且 marked 不做 sanitize：
   // 靠不含 allow-scripts 的 sandbox 阻断内嵌脚本执行
   return {
+    kind: 'iframe',
     srcDoc: buildMarkdownDoc(renderMarkdown(value, path, rootPath, ctx)),
     sandbox: 'allow-popups',
   };
+}
+
+function detectHtmlPreviewServiceRequirement(value: string): HtmlPreviewServiceRequirement | null {
+  const tagPattern = /<(script|link)\b([^>]*)>/gi;
+  let tagMatch: RegExpExecArray | null;
+  while ((tagMatch = tagPattern.exec(value)) !== null) {
+    const tagName = tagMatch[1].toLowerCase();
+    const attrs = tagMatch[2];
+
+    if (tagName === 'script') {
+      const requirement = requirementFromPreviewResourcePath(getHtmlAttribute(attrs, 'src'));
+      if (requirement) return requirement;
+      continue;
+    }
+
+    const rel = getHtmlAttribute(attrs, 'rel')?.toLowerCase() ?? '';
+    if (!/\b(?:stylesheet|modulepreload|preload)\b/.test(rel)) continue;
+
+    const requirement = requirementFromPreviewResourcePath(getHtmlAttribute(attrs, 'href'));
+    if (requirement) return requirement;
+  }
+
+  return detectInlineModuleScriptRequirement(value);
+}
+
+function requirementFromPreviewResourcePath(rawPath: string | null): HtmlPreviewServiceRequirement | null {
+  const path = normalizePreviewResourcePath(rawPath);
+  if (!path) return null;
+
+  if (/^\/(?:@vite|@react-refresh|__vite_ping)(?:\/|$)/i.test(path)) {
+    return { kind: 'dev-runtime', path };
+  }
+
+  if (/^\/src(?:\/|$)/i.test(path) || /\.(?:ts|tsx|jsx|vue|svelte)(?:[?#].*)?$/i.test(path)) {
+    return { kind: 'workspace-source', path };
+  }
+
+  return { kind: 'root-absolute-resource', path };
+}
+
+function normalizePreviewResourcePath(rawPath: string | null): string | null {
+  const path = rawPath?.trim();
+  if (!path || !path.startsWith('/') || path.startsWith('//')) return null;
+  return path;
+}
+
+function getHtmlAttribute(attrs: string, name: string): string | null {
+  const attrPattern = /([^\s"'=<>`]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+  let attrMatch: RegExpExecArray | null;
+  while ((attrMatch = attrPattern.exec(attrs)) !== null) {
+    if (attrMatch[1].toLowerCase() !== name.toLowerCase()) continue;
+    return attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? null;
+  }
+  return null;
+}
+
+function detectInlineModuleScriptRequirement(value: string): HtmlPreviewServiceRequirement | null {
+  const scriptPattern =
+    /<script\b(?=[^>]*\btype\s*=\s*(?:"module"|'module'|module\b))(?![^>]*\bsrc\s*=)[^>]*>([\s\S]*?)<\/script>/gi;
+  let scriptMatch: RegExpExecArray | null;
+  while ((scriptMatch = scriptPattern.exec(value)) !== null) {
+    const requirement = detectInlineModuleImportRequirement(scriptMatch[1]);
+    if (requirement) return requirement;
+  }
+  return null;
+}
+
+function detectInlineModuleImportRequirement(source: string): HtmlPreviewServiceRequirement | null {
+  const match = source.match(
+    /\b(?:import\s*(?:\(\s*)?|from\s*)["'](\/(?:@vite|@react-refresh|__vite_ping|src|node_modules|\.vite)[^"']*)["']/i,
+  );
+  return match ? requirementFromPreviewResourcePath(match[1]) : null;
 }
 
 function workspaceRelativePath(rootPath: string, filePath: string): string | null {
