@@ -110,6 +110,7 @@
     "readDirectoryFailed": "无法读取目录：{{error}}",
     "emptyDirectory": "空目录",
     "loadingFile": "正在加载文件...",
+    "loadingEditor": "正在加载编辑器...",
     "selectFile": "选择一个文本文件进行预览和编辑。",
     "noFileSelected": "未选择文件",
     "save": "保存",
@@ -144,7 +145,9 @@
     "revertHunk": "回滚块",
     "revertedLine": "已在草稿中回滚该行。",
     "revertedHunk": "已在草稿中回滚该块。",
-    "revertedHunkFallback": "无法安全映射单行，已在草稿中回滚该块。"
+    "revertedHunkFallback": "无法安全映射单行，已在草稿中回滚该块。",
+    "previewEdit": "编辑",
+    "previewPreview": "预览"
   },
   "dialog": {
     "chooseProjectDirectory": "选择项目目录",

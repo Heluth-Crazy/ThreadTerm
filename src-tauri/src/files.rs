@@ -12,10 +12,13 @@
 //! `node_modules` cost nothing until opened.
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
+use tauri::Manager;
 
 const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
 
@@ -170,7 +173,7 @@ fn write_workspace_file_sync(
     contents: &str,
     expected_modified_unix_ms: Option<u64>,
 ) -> Result<WorkspaceFile, String> {
-    if contents.as_bytes().len() as u64 > MAX_TEXT_FILE_BYTES {
+    if contents.len() as u64 > MAX_TEXT_FILE_BYTES {
         return Err(format!(
             "file_too_large: File is larger than {} bytes.",
             MAX_TEXT_FILE_BYTES
@@ -248,11 +251,50 @@ pub async fn read_directory(path: String) -> Result<Vec<DirEntry>, String> {
         .map_err(|err| format!("Failed to read directory: {err}"))?
 }
 
+/// Workspace roots already added to the asset protocol scope, so each root is
+/// only registered once per app run.
+static PREVIEW_SCOPE_ROOTS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+/// Allow `root` (recursively) for the `asset:` protocol so the file preview
+/// can load workspace resources (images, HTML frames) via asset URLs.
+fn allow_preview_asset_scope(app: &tauri::AppHandle, root: &Path) {
+    let roots = PREVIEW_SCOPE_ROOTS.get_or_init(|| Mutex::new(HashSet::new()));
+    // 临界区内不 panic，poison 后集合数据仍可安全复用。
+    let mut allowed = roots.lock().unwrap_or_else(|err| err.into_inner());
+    if allowed.contains(root) {
+        return;
+    }
+    // 注册失败只影响 asset: 预览资源加载，不阻断本次文本读取；
+    // 失败的 root 不记入集合，后续读取可重试。scope 只增不减（Tauri 无
+    // revoke API），本次运行打开过的每个 root 都保持可被 asset: 读取，
+    // 属已接受的权衡。
+    match app.asset_protocol_scope().allow_directory(root, true) {
+        Ok(()) => {
+            allowed.insert(root.to_path_buf());
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, root = %root.display(), "failed to register asset scope for preview");
+        }
+    }
+}
+
 #[tauri::command]
-pub async fn workspace_read_file(root_path: String, path: String) -> Result<WorkspaceFile, String> {
-    tokio::task::spawn_blocking(move || read_workspace_file_sync(&root_path, &path))
-        .await
-        .map_err(|err| format!("Failed to read workspace file: {err}"))?
+pub async fn workspace_read_file(
+    app: tauri::AppHandle,
+    root_path: String,
+    path: String,
+) -> Result<WorkspaceFile, String> {
+    tokio::task::spawn_blocking(move || {
+        // 预览需要 workspace root 进入 asset protocol scope；root 解析失败时跳过，
+        // 让下方实际读取沿既有错误路径返回。canonicalize 是阻塞 syscall，
+        // 与读取一起放在 blocking 线程上执行。
+        if let Ok(root) = canonical_workspace_root(&root_path) {
+            allow_preview_asset_scope(&app, &root);
+        }
+        read_workspace_file_sync(&root_path, &path)
+    })
+    .await
+    .map_err(|err| format!("Failed to read workspace file: {err}"))?
 }
 
 #[tauri::command]

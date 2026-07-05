@@ -353,6 +353,84 @@ describe('terminalStore — card lifecycle', () => {
   });
 });
 
+describe('terminalStore — persistence shape contract', () => {
+  // slice 拆分前的安全网：锁定 partialize 输出的持久化形状。
+  // 纯移动重构不得改变顶层键集合、卡片对象键集合或 persist 版本号。
+  const PERSISTED_TOP_LEVEL_KEYS = [
+    'cards',
+    'archivedCards',
+    'focusedCardId',
+    'lastActiveCardId',
+    'recentlyViewedCardIds',
+    'dockPinned',
+    'selectedProjectPath',
+    'selectedWorktreePath',
+    'selectedWorktreeLabel',
+    'projectCardOrder',
+    'pinnedCardIds',
+    'notifications',
+    'notificationCentreOpen',
+    'osNotificationsEnabled',
+    'supervisorEnabled',
+  ].sort();
+
+  // JSON.stringify 丢弃 undefined 值，故未设置的可选字段（worktreePath /
+  // branchLabel / providerSessionId / providerSessionState / autoRestart）不在其中。
+  const PERSISTED_CARD_KEYS = [
+    'id',
+    'ptyId',
+    'projectPath',
+    'projectName',
+    'terminalType',
+    'status',
+    'createdAt',
+    'lastActivity',
+    'lastOutput',
+    'lastReplyPreview',
+    'messageCount',
+    'events',
+    'unread',
+  ].sort();
+
+  function readPersistedState() {
+    // FIX-3: persist 写入在 storage 层防抖，beforeunload 会 flush 待写值。
+    window.dispatchEvent(new Event('beforeunload'));
+    const raw = localStorage.getItem('threadterm-terminal-store');
+    expect(raw).toBeTruthy();
+    return JSON.parse(raw ?? '{}') as {
+      version?: number;
+      state?: Record<string, unknown> & { cards?: Array<Record<string, unknown>> };
+    };
+  }
+
+  it('persists exactly the partialized top-level keys and version', () => {
+    localStorage.removeItem('threadterm-terminal-store');
+    useTerminalStore.getState().createCard({
+      projectName: 'foo',
+      projectPath: '/tmp/foo',
+      terminalType: 'shell',
+    });
+
+    const persisted = readPersistedState();
+    expect(Object.keys(persisted.state ?? {}).sort()).toEqual(PERSISTED_TOP_LEVEL_KEYS);
+    expect(persisted.version).toBe(18);
+  });
+
+  it('persists each card with a stable key set', () => {
+    localStorage.removeItem('threadterm-terminal-store');
+    useTerminalStore.getState().createCard({
+      projectName: 'foo',
+      projectPath: '/tmp/foo',
+      terminalType: 'shell',
+    });
+
+    const persisted = readPersistedState();
+    const card = persisted.state?.cards?.[0];
+    expect(card).toBeTruthy();
+    expect(Object.keys(card ?? {}).sort()).toEqual(PERSISTED_CARD_KEYS);
+  });
+});
+
 describe('terminalStore — renameCard', () => {
   it('renames a card to a custom display name', () => {
     const s = useTerminalStore.getState();

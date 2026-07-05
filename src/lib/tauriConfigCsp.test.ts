@@ -34,4 +34,24 @@ describe('Tauri CSP config', () => {
     expect(devCsp).toContain('ws://localhost:*');
     expect(devCsp).toContain('ws://127.0.0.1:*');
   });
+
+  it('allows asset protocol and local dev HTML preview frames', () => {
+    const { csp, devCsp } = loadTauriSecurityConfig();
+
+    expect(directive(csp, 'frame-src')).toBe('frame-src blob: asset: http://asset.localhost');
+    expect(directive(devCsp, 'frame-src')).toBe(
+      'frame-src blob: http://localhost:* http://127.0.0.1:* asset: http://asset.localhost',
+    );
+  });
+
+  it('allows asset protocol and remote images for file previews', () => {
+    const { csp, devCsp } = loadTauriSecurityConfig();
+
+    expect(directive(csp, 'img-src')).toBe(
+      "img-src 'self' data: blob: asset: http://asset.localhost https:",
+    );
+    expect(directive(devCsp, 'img-src')).toBe(
+      "img-src 'self' data: blob: asset: http://asset.localhost https:",
+    );
+  });
 });

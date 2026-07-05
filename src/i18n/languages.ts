@@ -8,7 +8,13 @@
  * - nativeName: Native language name for display
  */
 
-export const languages = [
+export interface LanguageOption {
+  value: string;
+  label: string;
+  nativeName: string;
+}
+
+export const languages: LanguageOption[] = [
   {
     value: 'en',
     label: 'English',
@@ -36,7 +42,7 @@ export const languages = [
  * @param {string} value - Language code
  * @returns {Object|undefined} Language object or undefined if not found
  */
-export const getLanguage = (value) => {
+export const getLanguage = (value: string): LanguageOption | undefined => {
   return languages.find((lang) => lang.value === value);
 };
 
@@ -44,7 +50,7 @@ export const getLanguage = (value) => {
  * Get all language values
  * @returns {string[]} Array of language codes
  */
-export const getLanguageValues = () => {
+export const getLanguageValues = (): string[] => {
   return languages.map((lang) => lang.value);
 };
 
@@ -53,6 +59,6 @@ export const getLanguageValues = () => {
  * @param {string} value - Language code to check
  * @returns {boolean} True if language is supported
  */
-export const isLanguageSupported = (value) => {
+export const isLanguageSupported = (value: string): boolean => {
   return languages.some((lang) => lang.value === value);
 };

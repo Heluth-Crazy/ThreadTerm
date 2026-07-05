@@ -5,7 +5,15 @@
  * panel stays a compact navigator instead of squeezing an editor into a narrow
  * column.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 import { AlertTriangle, FileText, GitCompare, Loader2, RefreshCw, Save } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -18,9 +26,18 @@ import {
 import { confirmDialog } from '../../lib/nativeDialog';
 import { cn } from '../../lib/utils';
 import { basename, type DirEntry } from './fileMeta';
-import { WorkspaceCodeEditor, WorkspaceMergeDiffEditor } from './WorkspaceCodeEditor';
 
 type TerminalTranslator = ReturnType<typeof useTranslation>['t'];
+
+const WorkspaceCodeEditor = lazy(async () => {
+  const module = await import('./WorkspaceCodeEditor');
+  return { default: module.WorkspaceCodeEditor };
+});
+
+const WorkspaceMergeDiffEditor = lazy(async () => {
+  const module = await import('./WorkspaceCodeEditor');
+  return { default: module.WorkspaceMergeDiffEditor };
+});
 
 export interface WorkspaceFileEditorViewProps {
   rootPath: string;
@@ -157,16 +174,26 @@ export function WorkspaceFileEditorView({
         </PanelMessage>
       ) : openFile ? (
         <>
-          <WorkspaceCodeEditor
-            value={draft}
-            path={openFile.path}
-            active={active}
-            onChange={(nextDraft) => {
-              setDraft(nextDraft);
-              setStatus(null);
-            }}
-            onSave={saveFile}
-          />
+          <Suspense
+            fallback={
+              <PanelMessage icon={<Loader2 className="h-4 w-4 animate-spin" />} tone="muted">
+                {t('workspace.loadingEditor', { defaultValue: 'Loading editor...' })}
+              </PanelMessage>
+            }
+          >
+            <WorkspaceCodeEditor
+              value={draft}
+              path={openFile.path}
+              rootPath={rootPath}
+              active={active}
+              contentVersion={openFile.modifiedUnixMs ?? undefined}
+              onChange={(nextDraft) => {
+                setDraft(nextDraft);
+                setStatus(null);
+              }}
+              onSave={saveFile}
+            />
+          </Suspense>
           <div className="flex items-center gap-2 border-t border-white/10 px-3 py-1.5 text-[11px] text-muted-foreground">
             <span>{formatBytes(openFile.sizeBytes)}</span>
             {openFile.modifiedUnixMs && (
@@ -198,7 +225,7 @@ export function WorkspaceDiffView({
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
 
-  const sections = diff?.sections ?? [];
+  const sections = useMemo(() => diff?.sections ?? [], [diff]);
   const isDirty = useMemo(
     () =>
       sections.some((section) => {
@@ -455,32 +482,41 @@ function DiffBlock({
         <div className="border-r border-white/10" aria-hidden />
         <div className="px-3 py-1">{section.currentLabel}</div>
       </div>
-      <WorkspaceMergeDiffEditor
-        path={path}
-        baseValue={section.baseContents}
-        currentValue={draft}
-        editable={section.editable}
-        active={active}
-        labels={{
-          editableDiff: t('workspace.diffEditableHint', {
-            defaultValue: 'Right side is editable. Changes stay as a draft until saved.',
-          }),
-          readOnlyDiff: t('workspace.diffReadOnlyHint', {
-            defaultValue: 'This diff section is read-only.',
-          }),
-          editLine: t('workspace.editLine', { defaultValue: 'Edit line' }),
-          revertLine: t('workspace.revertLine', { defaultValue: 'Revert line' }),
-          revertHunk: t('workspace.revertHunk', { defaultValue: 'Revert hunk' }),
-          revertedLine: t('workspace.revertedLine', { defaultValue: 'Reverted line in draft.' }),
-          revertedHunk: t('workspace.revertedHunk', { defaultValue: 'Reverted hunk in draft.' }),
-          revertedHunkFallback: t('workspace.revertedHunkFallback', {
-            defaultValue: 'Line mapping failed; reverted hunk in draft.',
-          }),
-        }}
-        onCurrentChange={onDraftChange}
-        onSave={onSave}
-        onStatus={onStatus}
-      />
+      <Suspense
+        fallback={
+          <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-[12px] text-muted-foreground/75">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>{t('workspace.loadingEditor', { defaultValue: 'Loading editor...' })}</span>
+          </div>
+        }
+      >
+        <WorkspaceMergeDiffEditor
+          path={path}
+          baseValue={section.baseContents}
+          currentValue={draft}
+          editable={section.editable}
+          active={active}
+          labels={{
+            editableDiff: t('workspace.diffEditableHint', {
+              defaultValue: 'Right side is editable. Changes stay as a draft until saved.',
+            }),
+            readOnlyDiff: t('workspace.diffReadOnlyHint', {
+              defaultValue: 'This diff section is read-only.',
+            }),
+            editLine: t('workspace.editLine', { defaultValue: 'Edit line' }),
+            revertLine: t('workspace.revertLine', { defaultValue: 'Revert line' }),
+            revertHunk: t('workspace.revertHunk', { defaultValue: 'Revert hunk' }),
+            revertedLine: t('workspace.revertedLine', { defaultValue: 'Reverted line in draft.' }),
+            revertedHunk: t('workspace.revertedHunk', { defaultValue: 'Reverted hunk in draft.' }),
+            revertedHunkFallback: t('workspace.revertedHunkFallback', {
+              defaultValue: 'Line mapping failed; reverted hunk in draft.',
+            }),
+          }}
+          onCurrentChange={onDraftChange}
+          onSave={onSave}
+          onStatus={onStatus}
+        />
+      </Suspense>
     </section>
   );
 }

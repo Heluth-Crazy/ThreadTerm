@@ -4,8 +4,8 @@ import type { StateStorage } from 'zustand/middleware';
  * FIX-3 (deep-research-defect-fix / second-diagnosis 问题一-B):
  *
  * Wrap `localStorage` with a trailing-debounced `setItem` so a burst of
- * per-chunk store mutations (`updateCardOutput` / `updateCardReplyPreview`,
- * one per PTY output chunk) no longer triggers one synchronous full
+ * per-chunk store mutations (`updateCardOutput` / `updateCardReplyPreview`
+ * in ./terminal/cardsSlice, one per PTY output chunk) no longer triggers one synchronous full
  * `JSON.stringify(cards)` + blocking `localStorage` write *per chunk* —
  * that was the main-thread I/O / serialization jank under sustained
  * streaming output.

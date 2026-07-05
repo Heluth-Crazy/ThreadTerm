@@ -110,6 +110,7 @@
     "readDirectoryFailed": "디렉터리를 읽을 수 없습니다: {{error}}",
     "emptyDirectory": "빈 디렉터리",
     "loadingFile": "파일 로딩 중...",
+    "loadingEditor": "편집기 로딩 중...",
     "selectFile": "미리 보고 편집할 텍스트 파일을 선택하세요.",
     "noFileSelected": "선택한 파일 없음",
     "save": "저장",
@@ -144,7 +145,9 @@
     "revertHunk": "hunk 되돌리기",
     "revertedLine": "초안에서 줄을 되돌렸습니다.",
     "revertedHunk": "초안에서 hunk를 되돌렸습니다.",
-    "revertedHunkFallback": "줄을 안전하게 매핑할 수 없어 hunk를 되돌렸습니다."
+    "revertedHunkFallback": "줄을 안전하게 매핑할 수 없어 hunk를 되돌렸습니다.",
+    "previewEdit": "편집",
+    "previewPreview": "미리보기"
   },
   "dialog": {
     "chooseProjectDirectory": "프로젝트 디렉터리 선택",
