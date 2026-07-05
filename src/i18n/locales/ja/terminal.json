@@ -152,7 +152,13 @@
     "previewServiceRequiredDescription": "この HTML はプロジェクトのフロントエンドまたは静的サーバーで解決するリソースを参照しています。ThreadTerm はサービスを自動起動していません。",
     "previewServiceRequiredReason": "検出したリソース:",
     "previewServiceRequiredAction": "ターミナルでプロジェクトサービスを手動起動し、そのサービス URL でプレビューしてください。",
-    "previewServiceRequiredCommand": "よく使うコマンド: npm run dev / pnpm dev / yarn dev"
+    "previewServiceRequiredCommand": "よく使うコマンド: npm run dev / pnpm dev / yarn dev",
+    "previewServiceUrlLabel": "プロジェクトプレビュー URL",
+    "previewServiceUrlPlaceholder": "http://localhost:5173",
+    "previewServiceUrlOpen": "プレビュー",
+    "previewServiceUrlHint": "ここでは localhost または 127.0.0.1 のローカル http(s) URL のみ使用します。",
+    "previewServiceUrlInvalid": "有効なローカル http(s) URL を入力してください。例: http://localhost:5173",
+    "previewServiceUrlFrameTitle": "プロジェクトサービスプレビュー"
   },
   "dialog": {
     "chooseProjectDirectory": "プロジェクトディレクトリを選択",

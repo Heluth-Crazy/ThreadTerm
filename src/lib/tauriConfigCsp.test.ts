@@ -38,9 +38,11 @@ describe('Tauri CSP config', () => {
   it('allows asset protocol and local dev HTML preview frames', () => {
     const { csp, devCsp } = loadTauriSecurityConfig();
 
-    expect(directive(csp, 'frame-src')).toBe('frame-src blob: asset: http://asset.localhost');
+    expect(directive(csp, 'frame-src')).toBe(
+      'frame-src blob: http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:* asset: http://asset.localhost',
+    );
     expect(directive(devCsp, 'frame-src')).toBe(
-      'frame-src blob: http://localhost:* http://127.0.0.1:* asset: http://asset.localhost',
+      'frame-src blob: http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:* asset: http://asset.localhost',
     );
   });
 

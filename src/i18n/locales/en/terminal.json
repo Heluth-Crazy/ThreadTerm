@@ -152,7 +152,13 @@
     "previewServiceRequiredDescription": "This HTML references resources that need the project's frontend or static server. ThreadTerm did not start any service automatically.",
     "previewServiceRequiredReason": "Detected resource:",
     "previewServiceRequiredAction": "Start the project service manually in a terminal, then preview through that service URL.",
-    "previewServiceRequiredCommand": "Common commands: npm run dev / pnpm dev / yarn dev"
+    "previewServiceRequiredCommand": "Common commands: npm run dev / pnpm dev / yarn dev",
+    "previewServiceUrlLabel": "Project preview URL",
+    "previewServiceUrlPlaceholder": "http://localhost:5173",
+    "previewServiceUrlOpen": "Preview",
+    "previewServiceUrlHint": "Only local http(s) URLs such as localhost or 127.0.0.1 are used here.",
+    "previewServiceUrlInvalid": "Enter a valid local http(s) URL, for example http://localhost:5173.",
+    "previewServiceUrlFrameTitle": "Project service preview"
   },
   "dialog": {
     "chooseProjectDirectory": "Choose project directory",

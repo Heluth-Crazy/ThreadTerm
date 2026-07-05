@@ -152,7 +152,13 @@
     "previewServiceRequiredDescription": "这个 HTML 引用了需要由项目前端或静态服务解析的资源。ThreadTerm 没有自动启动任何服务。",
     "previewServiceRequiredReason": "检测到的资源：",
     "previewServiceRequiredAction": "请在终端中手动启动项目服务，然后通过该服务地址预览。",
-    "previewServiceRequiredCommand": "常见命令：npm run dev / pnpm dev / yarn dev"
+    "previewServiceRequiredCommand": "常见命令：npm run dev / pnpm dev / yarn dev",
+    "previewServiceUrlLabel": "项目预览地址",
+    "previewServiceUrlPlaceholder": "http://localhost:5173",
+    "previewServiceUrlOpen": "预览",
+    "previewServiceUrlHint": "这里只使用 localhost 或 127.0.0.1 这类本机 http(s) 地址。",
+    "previewServiceUrlInvalid": "请输入有效的本机 http(s) 地址，例如 http://localhost:5173。",
+    "previewServiceUrlFrameTitle": "项目服务预览"
   },
   "dialog": {
     "chooseProjectDirectory": "选择项目目录",

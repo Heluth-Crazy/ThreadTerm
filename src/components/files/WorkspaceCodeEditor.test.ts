@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  HTML_PREVIEW_SERVICE_URLS_STORAGE_KEY,
   buildPreviewFrame,
   dirnameOf,
   joinWorkspacePath,
+  normalizePreviewServiceUrl,
+  previewServiceUrlScopeKey,
+  readPreviewServiceUrlForScope,
   type PreviewContext,
   type PreviewFrame,
+  writePreviewServiceUrlForScope,
 } from './WorkspaceCodeEditor';
 
 const tauriCtx: PreviewContext = {
@@ -16,6 +21,18 @@ const browserCtx: PreviewContext = {
   tauri: false,
   fileSrc: (absPath) => absPath,
 };
+
+class MemoryStorage {
+  private readonly items = new Map<string, string>();
+
+  getItem(name: string): string | null {
+    return this.items.get(name) ?? null;
+  }
+
+  setItem(name: string, value: string): void {
+    this.items.set(name, value);
+  }
+}
 
 function expectIframeFrame(frame: PreviewFrame): Extract<PreviewFrame, { kind: 'iframe' }> {
   expect(frame.kind).toBe('iframe');
@@ -69,6 +86,44 @@ describe('buildPreviewFrame', () => {
     });
     expect(frame).not.toHaveProperty('src');
     expect(frame).not.toHaveProperty('srcDoc');
+  });
+
+  it('uses an explicit local project service URL for service-required HTML preview', () => {
+    const frame = expectIframeFrame(
+      buildPreviewFrame(
+        '<div id="root"></div><script type="module" src="/src/main.tsx"></script>',
+        'html',
+        '/repo/index.html',
+        '/repo',
+        tauriCtx,
+        'http://localhost:5173',
+      ),
+    );
+
+    expect(frame).toEqual({
+      kind: 'iframe',
+      src: 'http://localhost:5173/',
+      sandbox: 'allow-scripts allow-forms allow-popups allow-same-origin',
+      serviceUrl: true,
+    });
+  });
+
+  it('keeps service-required HTML in the message state when the service URL is invalid', () => {
+    const frame = expectServiceRequiredFrame(
+      buildPreviewFrame(
+        '<div id="root"></div><script type="module" src="/src/main.tsx"></script>',
+        'html',
+        '/repo/index.html',
+        '/repo',
+        tauriCtx,
+        'file:///repo/index.html',
+      ),
+    );
+
+    expect(frame.requirement).toEqual({
+      kind: 'workspace-source',
+      path: '/src/main.tsx',
+    });
   });
 
   it('shows a service-required state for root-absolute HTML resources', () => {
@@ -209,6 +264,44 @@ describe('buildPreviewFrame', () => {
 
     expect(frame.srcDoc).toContain('class="hljs language-ts"');
     expect(frame.srcDoc).toContain('hljs-keyword');
+  });
+});
+
+describe('preview service URLs', () => {
+  it('normalizes local http and https URLs', () => {
+    expect(normalizePreviewServiceUrl(' http://localhost:5173 ')).toBe('http://localhost:5173/');
+    expect(normalizePreviewServiceUrl('https://127.0.0.1:4173/app')).toBe(
+      'https://127.0.0.1:4173/app',
+    );
+  });
+
+  it('rejects unsupported or non-local preview URLs', () => {
+    expect(normalizePreviewServiceUrl('file:///repo/index.html')).toBeNull();
+    expect(normalizePreviewServiceUrl('https://example.com')).toBeNull();
+    expect(normalizePreviewServiceUrl('localhost:5173')).toBeNull();
+  });
+
+  it('keys service URLs by workspace root when available', () => {
+    expect(previewServiceUrlScopeKey('/repo', '/repo/index.html')).toBe('/repo');
+    expect(previewServiceUrlScopeKey(undefined, '/repo/docs/page.html')).toBe('/repo/docs');
+  });
+
+  it('persists service URLs per preview scope', () => {
+    const storage = new MemoryStorage();
+
+    const saved = writePreviewServiceUrlForScope('/repo', 'http://localhost:5173', storage);
+
+    expect(saved).toBe('http://localhost:5173/');
+    expect(readPreviewServiceUrlForScope('/repo', storage)).toBe('http://localhost:5173/');
+    expect(readPreviewServiceUrlForScope('/other', storage)).toBeNull();
+    expect(storage.getItem(HTML_PREVIEW_SERVICE_URLS_STORAGE_KEY)).toContain('/repo');
+  });
+
+  it('does not persist invalid service URLs', () => {
+    const storage = new MemoryStorage();
+
+    expect(writePreviewServiceUrlForScope('/repo', 'https://example.com', storage)).toBeNull();
+    expect(readPreviewServiceUrlForScope('/repo', storage)).toBeNull();
   });
 });
 

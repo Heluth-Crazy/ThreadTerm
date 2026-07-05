@@ -88,11 +88,28 @@ export interface HtmlPreviewServiceRequirement {
   path?: string;
 }
 
+interface PreviewServiceUrlStorage {
+  getItem(name: string): string | null;
+  setItem(name: string, value: string): void;
+}
+
+export const HTML_PREVIEW_SERVICE_URLS_STORAGE_KEY = 'threadterm-html-preview-service-urls';
+
 function defaultPreviewContext(): PreviewContext {
   return {
     tauri: isTauriEnv(),
     fileSrc: (absPath) => convertFileSrc(absPath),
   };
+}
+
+function defaultPreviewServiceUrlStorage(): PreviewServiceUrlStorage | null {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
 }
 
 // markdown 预览走 iframe srcdoc，样式只作用于 iframe 文档，与宿主页面天然隔离
@@ -131,15 +148,85 @@ function PreviewPane({
   contentVersion?: number;
 }) {
   const { t } = useTranslation('terminal');
-  const preview = useMemo(
-    () => buildPreviewFrame(value, previewType, path, rootPath),
-    [path, previewType, rootPath, value],
+  const previewServiceUrlScope = useMemo(
+    () => previewServiceUrlScopeKey(rootPath, path),
+    [path, rootPath],
   );
+  const [serviceUrlDraft, setServiceUrlDraft] = useState('');
+  const [activeServiceUrl, setActiveServiceUrl] = useState<string | null>(null);
+  const [serviceUrlError, setServiceUrlError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const savedUrl = readPreviewServiceUrlForScope(previewServiceUrlScope);
+    setServiceUrlDraft(savedUrl ?? '');
+    setActiveServiceUrl(savedUrl);
+    setServiceUrlError(null);
+  }, [previewServiceUrlScope]);
+
+  const preview = useMemo(
+    () => buildPreviewFrame(value, previewType, path, rootPath, undefined, activeServiceUrl),
+    [activeServiceUrl, path, previewType, rootPath, value],
+  );
+
+  const submitServiceUrl = useCallback(() => {
+    const savedUrl = writePreviewServiceUrlForScope(previewServiceUrlScope, serviceUrlDraft);
+    if (!savedUrl) {
+      setServiceUrlError(t('workspace.previewServiceUrlInvalid'));
+      setActiveServiceUrl(null);
+      return;
+    }
+
+    setServiceUrlDraft(savedUrl);
+    setActiveServiceUrl(savedUrl);
+    setServiceUrlError(null);
+  }, [previewServiceUrlScope, serviceUrlDraft, t]);
+
+  const serviceUrlControls =
+    preview.kind === 'service-required' || preview.serviceUrl ? (
+      <form
+        className="flex w-full flex-col gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submitServiceUrl();
+        }}
+      >
+        <label className="text-xs font-medium text-[#c8ceda]" htmlFor="workspace-preview-url">
+          {t('workspace.previewServiceUrlLabel')}
+        </label>
+        <div className="flex w-full flex-col gap-2 sm:flex-row">
+          <input
+            id="workspace-preview-url"
+            type="url"
+            inputMode="url"
+            value={serviceUrlDraft}
+            onChange={(event) => {
+              setServiceUrlDraft(event.currentTarget.value);
+              setServiceUrlError(null);
+            }}
+            placeholder={t('workspace.previewServiceUrlPlaceholder')}
+            className="min-h-9 min-w-0 flex-1 rounded border border-[#2c313a] bg-[#0f1116] px-3 py-2 text-sm text-[#f0f0f0] outline-none focus:border-[#4b83f1]"
+          />
+          <button
+            type="submit"
+            className="min-h-9 rounded bg-[#2563eb] px-3 py-2 text-sm font-medium text-white hover:bg-[#1d4ed8] focus:outline-none focus:ring-2 focus:ring-[#60a5fa]"
+          >
+            {t('workspace.previewServiceUrlOpen')}
+          </button>
+        </div>
+        {serviceUrlError ? (
+          <p className="text-xs leading-5 text-[#f87171]">{serviceUrlError}</p>
+        ) : (
+          <p className="text-xs leading-5 text-[#8f96a8]">
+            {t('workspace.previewServiceUrlHint')}
+          </p>
+        )}
+      </form>
+    ) : null;
 
   if (preview.kind === 'service-required') {
     return (
       <div className="min-h-0 flex-1 w-full overflow-auto bg-[#111318] text-[#d4d4d4]">
-        <div className="mx-auto flex min-h-full max-w-2xl flex-col justify-center gap-3 px-8 py-10">
+        <div className="mx-auto flex min-h-full max-w-2xl flex-col justify-center gap-4 px-8 py-10">
           <h3 className="text-sm font-semibold text-[#f0f0f0]">
             {t('workspace.previewServiceRequiredTitle')}
           </h3>
@@ -160,7 +247,23 @@ function PreviewPane({
           <code className="w-fit max-w-full overflow-x-auto rounded bg-[#1e2128] px-2 py-1 text-xs text-[#dfe3ec]">
             {t('workspace.previewServiceRequiredCommand')}
           </code>
+          {serviceUrlControls}
         </div>
+      </div>
+    );
+  }
+
+  if (preview.serviceUrl) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col w-full bg-[#111318] text-[#d4d4d4]">
+        <div className="flex-none border-b border-[#252a33] px-3 py-3">{serviceUrlControls}</div>
+        <iframe
+          key={preview.src}
+          src={preview.src}
+          className="min-h-0 flex-1 w-full border-none"
+          title={t('workspace.previewServiceUrlFrameTitle')}
+          sandbox={preview.sandbox}
+        />
       </div>
     );
   }
@@ -250,6 +353,7 @@ export type PreviewFrame =
       src?: string;
       srcDoc?: string;
       sandbox: string;
+      serviceUrl?: boolean;
     }
   | {
       kind: 'service-required';
@@ -262,10 +366,20 @@ export function buildPreviewFrame(
   path: string,
   rootPath?: string,
   ctx: PreviewContext = defaultPreviewContext(),
+  previewServiceUrl?: string | null,
 ): PreviewFrame {
   if (previewType === 'html') {
     const requirement = detectHtmlPreviewServiceRequirement(value);
     if (requirement) {
+      const normalizedServiceUrl = normalizePreviewServiceUrl(previewServiceUrl ?? '');
+      if (normalizedServiceUrl) {
+        return {
+          kind: 'iframe',
+          src: normalizedServiceUrl,
+          sandbox: 'allow-scripts allow-forms allow-popups allow-same-origin',
+          serviceUrl: true,
+        };
+      }
       return { kind: 'service-required', requirement };
     }
 
@@ -293,6 +407,81 @@ export function buildPreviewFrame(
     srcDoc: buildMarkdownDoc(renderMarkdown(value, path, rootPath, ctx)),
     sandbox: 'allow-popups',
   };
+}
+
+export function previewServiceUrlScopeKey(rootPath: string | undefined, filePath: string): string {
+  const root = rootPath ? normalizeFsPath(rootPath) : '';
+  if (root) return root;
+
+  const directory = dirnameOf(filePath);
+  return normalizeFsPath(directory || filePath);
+}
+
+export function normalizePreviewServiceUrl(value: string): string | null {
+  const candidate = value.trim();
+  if (!candidate) return null;
+
+  try {
+    const url = new URL(candidate);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (!isLoopbackPreviewHost(url.hostname)) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function isLoopbackPreviewHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+}
+
+function readPreviewServiceUrlMap(storage: PreviewServiceUrlStorage | null): Record<string, string> {
+  if (!storage) return {};
+
+  try {
+    const raw = storage.getItem(HTML_PREVIEW_SERVICE_URLS_STORAGE_KEY);
+    if (!raw) return {};
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+
+    const urls: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value !== 'string') continue;
+      const normalized = normalizePreviewServiceUrl(value);
+      if (normalized) urls[key] = normalized;
+    }
+    return urls;
+  } catch {
+    return {};
+  }
+}
+
+export function readPreviewServiceUrlForScope(
+  scopeKey: string,
+  storage: PreviewServiceUrlStorage | null = defaultPreviewServiceUrlStorage(),
+): string | null {
+  const urls = readPreviewServiceUrlMap(storage);
+  return urls[scopeKey] ?? null;
+}
+
+export function writePreviewServiceUrlForScope(
+  scopeKey: string,
+  value: string,
+  storage: PreviewServiceUrlStorage | null = defaultPreviewServiceUrlStorage(),
+): string | null {
+  const normalized = normalizePreviewServiceUrl(value);
+  if (!normalized || !storage) return null;
+
+  try {
+    const urls = readPreviewServiceUrlMap(storage);
+    urls[scopeKey] = normalized;
+    storage.setItem(HTML_PREVIEW_SERVICE_URLS_STORAGE_KEY, JSON.stringify(urls));
+    return normalized;
+  } catch {
+    return null;
+  }
 }
 
 function detectHtmlPreviewServiceRequirement(value: string): HtmlPreviewServiceRequirement | null {
