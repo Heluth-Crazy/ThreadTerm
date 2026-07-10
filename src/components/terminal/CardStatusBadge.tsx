@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { memo } from 'react';
 import type { TerminalStatus } from '../../types/terminal';
 import { getStatusMeta } from './statusMeta';
 
@@ -7,7 +8,7 @@ export interface CardStatusBadgeProps {
   size?: 'normal' | 'compact';
 }
 
-export function CardStatusBadge({ status, size = 'normal' }: CardStatusBadgeProps) {
+export const CardStatusBadge = memo(function CardStatusBadge({ status, size = 'normal' }: CardStatusBadgeProps) {
   const { t } = useTranslation('terminal');
   const statusInfo = getStatusMeta(status);
   const StatusIcon = statusInfo.Icon;
@@ -31,4 +32,4 @@ export function CardStatusBadge({ status, size = 'normal' }: CardStatusBadgeProp
       {t(`status.${status}`, statusInfo.label)}
     </span>
   );
-}
+});

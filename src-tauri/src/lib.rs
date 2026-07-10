@@ -1,3 +1,7 @@
+#[cfg(feature = "mobile-bridge")]
+mod bridge;
+#[cfg(not(feature = "mobile-bridge"))]
+#[path = "bridge_disabled.rs"]
 mod bridge;
 mod codex_app;
 mod db;
@@ -62,8 +66,8 @@ pub fn run() {
             })?;
 
             overlay::load_settings();
-            overlay::register_default_shortcuts(&app.handle());
-            overlay::prewarm_windows(&app.handle());
+            overlay::register_default_shortcuts(app.handle());
+            overlay::prewarm_windows(app.handle());
             supervisor::init(app.handle().clone());
             bridge::set_app_handle(app.handle().clone());
             bridge::restore_bridge_on_startup();
@@ -96,6 +100,7 @@ pub fn run() {
             pty::pty_attach_snapshot,
             pty::pty_ack,
             notification::notification_send_os,
+            notification::window_focus_main,
             provider_sessions::provider_find_recent_session,
             provider_sessions::provider_list_recent_sessions,
             stats::stats_compute,

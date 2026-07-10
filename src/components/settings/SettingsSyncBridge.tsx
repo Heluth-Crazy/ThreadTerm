@@ -1,9 +1,9 @@
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useTheme } from '../contexts/ThemeContext';
-import { listenSettingsChanged } from '../lib/settingsSync';
-import { useOverlayStore } from '../stores/overlayStore';
-import { useTerminalStore } from '../stores/terminalStore';
+import { useTheme } from '../../theme/ThemeContext';
+import { listenSettingsChanged } from '../../lib/settingsSync';
+import { useOverlayStore } from '../../stores/overlayStore';
+import { useTerminalStore } from '../../stores/terminalStore';
 
 type PersistableTerminalStore = typeof useTerminalStore & {
   persist?: {

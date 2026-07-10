@@ -11,7 +11,7 @@
  * supported via the `density` prop; only `grid` (default) and `compact`
  * have visual treatments — `list` is reserved for a future iteration.
  */
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { memo, useCallback, useMemo, useState, type ReactNode } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { FolderGit2 } from 'lucide-react';
@@ -32,6 +32,7 @@ import { CardHeader } from './CardHeader';
 import { CardPreviewPanel } from './CardPreviewPanel';
 import { normalizeAutoRestartConfig } from '../../lib/autoRestart';
 import { worktreeDisplayLabel } from '../../lib/worktreePaths';
+import { useNotificationHighlight } from './useNotificationHighlight';
 
 export interface TerminalCardProps {
   card: TerminalCardType;
@@ -66,7 +67,7 @@ function formatRelative(
   return t('card.ago', { time: formatDuration(d) });
 }
 
-export function TerminalCardComponent({
+export const TerminalCardComponent = memo(function TerminalCardComponent({
   card,
   isFocused,
   isSwitcherSelected = false,
@@ -82,6 +83,8 @@ export function TerminalCardComponent({
   const { t } = useTranslation('terminal');
   const reduceMotion = useReducedMotion();
   const [timelineOpen, setTimelineOpen] = useState(false);
+  const { highlighted, ref: highlightRef } =
+    useNotificationHighlight<HTMLDivElement>(card.id);
   const [aiSessionExporting, setAiSessionExporting] = useState(false);
   const [aiSessionExportStatus, setAiSessionExportStatus] = useState<'saved' | 'error' | null>(
     null,
@@ -207,6 +210,7 @@ export function TerminalCardComponent({
 
   return (
     <motion.div
+      ref={highlightRef}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       whileHover={reduceMotion ? undefined : { y: -2, scale: 1.003 }}
@@ -217,6 +221,7 @@ export function TerminalCardComponent({
         'relative flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius)] border border-border/70 bg-card/95 shadow-sm transition-colors duration-150 hover:border-border',
         isFocused ? 'ring-2 ring-primary/40' : '',
         card.unread ? 'ring-1 ring-amber-400/30' : '',
+        highlighted ? 'notification-locate-pulse' : '',
       ].join(' ')}
     >
       {card.unread && (
@@ -301,4 +306,4 @@ export function TerminalCardComponent({
       )}
     </motion.div>
   );
-}
+});

@@ -1,0 +1,130 @@
+#[path = "bridge/protocol.rs"]
+pub mod protocol;
+
+use crate::pty::{LivePtySessionSnapshot, SessionState};
+use protocol::{
+    AppThemeTokens, BridgeDevice, BridgeStatus, CardMeta, PairQrResponse, TerminalThemeTokens,
+    ThemeMode,
+};
+
+const DISABLED_MESSAGE: &str = "Mobile bridge is disabled in this build.";
+
+fn stopped_status() -> BridgeStatus {
+    BridgeStatus {
+        running: false,
+        host: None,
+        port: None,
+        url: None,
+    }
+}
+
+pub fn restore_bridge_on_startup() {}
+
+pub fn set_app_handle(_app_handle: tauri::AppHandle) {}
+
+#[tauri::command]
+pub async fn bridge_start(
+    _host: Option<String>,
+    _port: Option<u16>,
+) -> Result<BridgeStatus, String> {
+    Err(DISABLED_MESSAGE.to_string())
+}
+
+#[tauri::command]
+pub async fn bridge_stop() -> Result<BridgeStatus, String> {
+    Ok(stopped_status())
+}
+
+#[tauri::command]
+pub async fn bridge_status() -> Result<BridgeStatus, String> {
+    Ok(stopped_status())
+}
+
+#[tauri::command]
+pub async fn bridge_pair_qr(_host: Option<String>) -> Result<PairQrResponse, String> {
+    Err(DISABLED_MESSAGE.to_string())
+}
+
+#[tauri::command]
+pub async fn bridge_devices() -> Result<Vec<BridgeDevice>, String> {
+    Ok(Vec::new())
+}
+
+#[tauri::command]
+pub async fn bridge_revoke_device(_device_id: String) -> Result<bool, String> {
+    Ok(false)
+}
+
+#[tauri::command]
+pub async fn bridge_sync_cards(_cards: Vec<CardMeta>) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn bridge_resolve_mobile_spawn(
+    _request_id: String,
+    _ok: bool,
+    _card_id: Option<String>,
+    _error_code: Option<String>,
+    _message: Option<String>,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn bridge_resolve_mobile_activate(
+    _request_id: String,
+    _ok: bool,
+    _card_id: Option<String>,
+    _error_code: Option<String>,
+    _message: Option<String>,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn bridge_resolve_mobile_close(
+    _request_id: String,
+    _ok: bool,
+    _card_id: Option<String>,
+    _error_code: Option<String>,
+    _message: Option<String>,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn bridge_resolve_mobile_rename_card(
+    _request_id: String,
+    _ok: bool,
+    _card_id: Option<String>,
+    _error_code: Option<String>,
+    _message: Option<String>,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn bridge_broadcast_theme(
+    _app: AppThemeTokens,
+    _terminal: TerminalThemeTokens,
+    _mode: ThemeMode,
+) -> Result<(), String> {
+    Ok(())
+}
+
+pub fn broadcast_preview(_card_id: &str, _output: &str) {}
+
+pub fn broadcast_terminal_output(_card_id: &str, _data: &str, _seq: u64) {}
+
+pub fn broadcast_theme(_app: AppThemeTokens, _terminal: TerminalThemeTokens, _mode: ThemeMode) {}
+
+pub fn broadcast_state(_card_id: &str, _state: &SessionState) {}
+
+pub fn broadcast_attention(_card_id: &str, _kind: &str, _message: &str) {}
+
+pub fn broadcast_exit(_card_id: &str, _code: Option<u32>) {}
+
+pub fn broadcast_card_added(_card_id: &str) {}
+
+pub fn broadcast_card_removed(_snapshot: LivePtySessionSnapshot) {}

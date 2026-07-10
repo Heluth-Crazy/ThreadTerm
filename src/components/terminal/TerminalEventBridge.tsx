@@ -27,7 +27,7 @@ import { feedHeadless, disposeHeadless, disposeAllHeadless } from './headlessPre
 import { createCardOutputBuffer } from './outputBuffer';
 import { buildCardPreview } from './cardPreview';
 import { getMissingAiCliName } from './providerSession';
-import i18n from '../../i18n/config.js';
+import i18n from '../../i18n/config';
 import { getPendingAutoRestart } from '../../lib/autoRestart';
 
 // Map Rust SessionState → UI TerminalStatus.

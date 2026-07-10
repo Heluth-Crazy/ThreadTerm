@@ -1,3 +1,4 @@
+import type { ChangeEvent, MouseEvent } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import {
   Check,
@@ -16,19 +17,38 @@ import {
   X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useTheme } from '../contexts/ThemeContext';
-import { confirmDialog } from '../lib/nativeDialog';
+import { useTheme } from '../../theme/ThemeContext';
+import { confirmDialog } from '../../lib/nativeDialog';
 import LanguageSelector from './LanguageSelector';
-import KeyboardShortcutsSettings from './settings/KeyboardShortcutsSettings';
-import { NotificationSettings } from './settings/NotificationSettings';
-import { DesktopPetSettings } from './settings/DesktopPetSettings';
-import OverlayHotkeysSettings from './settings/OverlayHotkeysSettings';
-import { SettingsDataIO } from './settings/SettingsDataIO';
-import { SupervisorSettings } from './settings/SupervisorSettings';
+import KeyboardShortcutsSettings from './KeyboardShortcutsSettings';
+import { NotificationSettings } from './NotificationSettings';
+import { DesktopPetSettings } from './DesktopPetSettings';
+import OverlayHotkeysSettings from './OverlayHotkeysSettings';
+import { SettingsDataIO } from './SettingsDataIO';
+import { SupervisorSettings } from './SupervisorSettings';
+import type { ThemeMode, ThemePack } from '../../theme/themeTypes';
 
-const TABS = ['appearance', 'shortcuts', 'supervisor', 'data'];
+const TABS = ['appearance', 'shortcuts', 'supervisor', 'data'] as const;
+type SettingsTab = (typeof TABS)[number];
 
-function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedded = false }) {
+interface SettingsProps {
+  isOpen: boolean;
+  onClose?: () => void;
+  initialTab?: SettingsTab;
+  embedded?: boolean;
+}
+
+type ThemeImportStatus = {
+  type: 'success' | 'error';
+  message: string;
+};
+
+function Settings({
+  isOpen,
+  onClose = () => {},
+  initialTab = 'shortcuts',
+  embedded = false,
+}: SettingsProps) {
   const {
     themeMode,
     themePackId,
@@ -41,10 +61,11 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
     exportThemePack,
   } = useTheme();
   const { t } = useTranslation('settings');
-  const normalizeTab = (tab) => (TABS.includes(tab) ? tab : 'shortcuts');
+  const normalizeTab = (tab: unknown): SettingsTab =>
+    TABS.includes(tab as SettingsTab) ? (tab as SettingsTab) : 'shortcuts';
   const [activeTab, setActiveTab] = useState(normalizeTab(initialTab));
-  const [themeImportStatus, setThemeImportStatus] = useState(null);
-  const themeFileInputRef = useRef(null);
+  const [themeImportStatus, setThemeImportStatus] = useState<ThemeImportStatus | null>(null);
+  const themeFileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (isOpen || embedded) {
@@ -64,20 +85,20 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
     : 'flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl shadow-studio glass-reflection md:h-[86vh]';
   const contentPadding = embedded ? 'px-4 py-4 sm:px-6 lg:px-8' : 'p-4 md:p-6';
 
-  const tabButtonClassName = (tab) => [
+  const tabButtonClassName = (tab: SettingsTab) => [
     'inline-flex items-center gap-2 rounded-[var(--radius)] px-3 py-2 text-sm font-medium transition-colors',
     activeTab === tab
       ? 'bg-background text-foreground shadow-sm'
       : 'text-muted-foreground hover:text-foreground',
   ].join(' ');
 
-  const modeOptions = [
+  const modeOptions: Array<{ id: ThemeMode; icon: typeof Monitor }> = [
     { id: 'system', icon: Monitor },
     { id: 'light', icon: Sun },
     { id: 'dark', icon: Moon },
   ];
 
-  const downloadThemePack = (packId) => {
+  const downloadThemePack = (packId: string) => {
     const { filename, content } = exportThemePack(packId);
     const blob = new Blob([content], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -94,7 +115,7 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
     });
   };
 
-  const handleThemeFileChange = async (event) => {
+  const handleThemeFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
@@ -117,7 +138,10 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
     }
   };
 
-  const handleDeleteCustomTheme = async (event, pack) => {
+  const handleDeleteCustomTheme = async (
+    event: MouseEvent<HTMLButtonElement>,
+    pack: ThemePack,
+  ) => {
     event.stopPropagation();
     const confirmed = await confirmDialog(
       t('appearanceSettings.themePack.deleteConfirm', { name: pack.name }),
@@ -297,6 +321,9 @@ function Settings({ isOpen, onClose = () => {}, initialTab = 'shortcuts', embedd
                           ? 'dark'
                           : 'light';
                       const tokens = pack.modes[previewMode];
+                      if (!tokens) {
+                        return null;
+                      }
                       const isActive = themePackId === pack.id;
                       const attributionLabel =
                         pack.attribution.kind === 'original'

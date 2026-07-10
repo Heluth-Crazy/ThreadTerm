@@ -45,7 +45,7 @@ vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({ label: 'provider-import-test' }),
 }));
 
-vi.mock('../Shell', () => ({
+vi.mock('./Shell', () => ({
   default: () => <div data-testid="mock-shell" />,
 }));
 

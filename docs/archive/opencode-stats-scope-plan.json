@@ -1,0 +1,62 @@
+{
+    "formatVersion": 1,
+    "documentType": "opencode-stats-scope-plan",
+    "title": "OpenCode 用量统计补全(scope 选择器)— 计划",
+    "generatedAt": "2026-06-27",
+    "branch": "main",
+    "status": "plan-only(不实现、不提交)",
+    "designedBy": "Claude(规划)",
+    "sections": [
+        {
+            "level": 1,
+            "heading": "核查结论(main 现状)",
+            "body": [
+                "",
+                "opencode 的**后端统计已实现并合入 main**,口径完全对齐 cc-switch:",
+                "- 解析:`opencode_db_path` / `parse_opencode_message_data` / `query_sessions` / `query_assistant_messages`(`src-tauri/src/stats/opencode.rs`)。",
+                "- 同步:`sync_opencode` + `insert_opencode_record`(`stats/sync.rs:262/327`):毫秒/1000、output+reasoning、cost>0 直用 / =0 回退定价、db-wal mtime、文件级+会话级两级水位,含 2 个单测。",
+                "- 聚合:scope `\"opencode\"` 过滤(`stats/aggregate.rs:166`)。",
+                "- 前端类型:`types/stats.ts:30` `StatsScope` 已含 `'opencode'`;`types/terminal.ts:29` `TerminalType` 已含 `'opencode'`。",
+                "",
+                "**opencode 用量已正确计入统计总量(scope='all')。**"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "唯一缺口(UI)",
+            "body": [
+                "",
+                "`StatsPanel.tsx` **没有 scope 选择器**——只有时间范围(RANGES)。`statsStore` 有 `scope`/`setScope`,但未在 UI 暴露 → **无法单独筛出 opencode**(claude/codex 也同样无法单独看)。这就是『看不到 opencode 统计』的真正原因。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "方案(补 scope 选择器)",
+            "body": [
+                "",
+                "1. **`StatsPanel.tsx`**:在 RANGES 按钮组旁加一行 scope 选择器(同款按钮组),四选 `all / claude / codex / opencode`,`onClick={() => setScope(s)}`(store 已有,会自动触发 `compute`),选中态高亮(仿 `range === r` 样式)。",
+                "2. **i18n**:`src/i18n/locales/{en,zh-CN,ja,ko}/terminal.json` 加 `stats.scope.{all,claude,codex,opencode}`。",
+                "3. **复用不改**:`statsStore`(scope/setScope/compute 现成)、stats 后端(已就绪)。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "明确不做(超出 cc-switch 范围)",
+            "body": [
+                "",
+                "- **opencode per-card token 徽章**:cc-switch 是 menubar 工具、无『卡片』概念;opencode 卡片无 `providerSessionId` 绑定(session 在 opencode.db、id 不由 ThreadTerm 掌握),要做需额外『卡片↔opencode session』推断绑定 → 成本高,列为可选 Phase 2。",
+                "- by_project:opencode session 无 cwd → project_path 空(已知限制)。"
+            ]
+        },
+        {
+            "level": 2,
+            "heading": "关键文件 / 验证 / 工作量",
+            "body": [
+                "",
+                "文件:`src/components/stats/StatsPanel.tsx`(scope 选择器)、`src/i18n/locales/{en,zh-CN,ja,ko}/terminal.json`(stats.scope.*)。不改:`statsStore.ts`、stats 后端。",
+                "验证:打开统计面板切到 opencode → 只显示 opencode 的 token/成本/by-model;切 all 含 opencode;claude/codex 各自隔离。`npm run typecheck` + `npm run test`。",
+                "工作量:**小**(一个 UI 选择器 + 4 语言文案;后端零改动)。"
+            ]
+        }
+    ]
+}

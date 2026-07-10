@@ -57,6 +57,7 @@ pub struct CallRecord {
     /// Claude `stop_reason` (e.g. `end_turn`). Used to pick the final stream
     /// chunk over the `message_start` snapshot when deduping by `message_id`.
     /// `None` for Codex (no equivalent field).
+    #[allow(dead_code)]
     pub stop_reason: Option<String>,
     /// Session id parsed from the jsonl (Codex `session_meta.id`, Claude
     /// `sessionId` or file stem). Used to group calls into per-session buckets.

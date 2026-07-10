@@ -41,7 +41,7 @@ vi.mock('../../lib/tauri-bridge', () => ({
   mobileBridge: bridgeMocks,
 }));
 
-vi.mock('../../contexts/ThemeContext', () => ({
+vi.mock('../../theme/ThemeContext', () => ({
   useTheme: () => themeMocks,
 }));
 

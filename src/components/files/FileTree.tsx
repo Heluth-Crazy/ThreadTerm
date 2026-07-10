@@ -75,7 +75,7 @@ export function FileTree({ rootPath, selectedPath, onSelectFile }: FileTreeProps
   }
 
   return (
-    <div className="py-1">
+    <div className="min-w-max py-1">
       {entries.map((entry) => (
         <FileTreeNode
           key={entry.path}

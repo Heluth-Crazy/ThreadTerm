@@ -64,8 +64,9 @@ const PROGRESS_EVERY: usize = 16;
 /// dedup that was under-counting Codex (no proxy → request_id dedup suffices);
 /// 4 = added opencode.db ingestion; 5 = refresh Codex rows after token-shape
 /// fields and legacy session parsing fixes; 6 = parser rebuild scans all source
-/// logs instead of inheriting the caller's time window.
-const STATS_PARSER_VERSION: i64 = 6;
+/// logs instead of inheriting the caller's time window; 7 = refresh stored costs
+/// after adding Claude Fable/Mythos 5 pricing.
+const STATS_PARSER_VERSION: i64 = 7;
 
 /// Wipe `usage_records` + `session_log_sync` when the stored parser version
 /// doesn't match the current one, then stamp the new version. Returns true when
@@ -241,36 +242,34 @@ fn insert_record(
     created_at: i64,
 ) -> bool {
     let cb = pricing::cost_breakdown(&record.model, &record.usage);
-    let inserted = conn
-        .execute(
-            "INSERT OR IGNORE INTO usage_records
-                (request_id, provider, model,
-                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                 input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd,
-                 total_cost_usd, session_id, project_path, created_at, data_source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
-            params![
-                request_id,
-                provider,
-                record.model,
-                record.usage.input,
-                record.usage.output,
-                record.usage.cache_read,
-                record.usage.cache_creation,
-                cb.input,
-                cb.output,
-                cb.cache_read,
-                cb.cache_write,
-                cb.total,
-                record.session_id,
-                project_path,
-                created_at,
-                "session_log",
-            ],
-        )
-        .map(|n| n > 0)
-        .unwrap_or(false);
-    inserted
+    conn.execute(
+        "INSERT OR IGNORE INTO usage_records
+            (request_id, provider, model,
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+             input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd,
+             total_cost_usd, session_id, project_path, created_at, data_source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        params![
+            request_id,
+            provider,
+            record.model,
+            record.usage.input,
+            record.usage.output,
+            record.usage.cache_read,
+            record.usage.cache_creation,
+            cb.input,
+            cb.output,
+            cb.cache_read,
+            cb.cache_write,
+            cb.total,
+            record.session_id,
+            project_path,
+            created_at,
+            "session_log",
+        ],
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
 }
 
 fn insert_opencode_record(
@@ -434,8 +433,10 @@ fn sync_opencode() -> SyncResult {
 
 /// Sync one Claude session jsonl.
 fn sync_claude_file(path: &Path) -> SyncResult {
-    let mut result = SyncResult::default();
-    result.files_scanned = 1;
+    let mut result = SyncResult {
+        files_scanned: 1,
+        ..SyncResult::default()
+    };
 
     let Ok(conn) = get_db() else {
         result.errors.push("DB unavailable".into());
@@ -477,8 +478,10 @@ fn sync_claude_file(path: &Path) -> SyncResult {
 
 /// Sync one Codex session jsonl.
 fn sync_codex_file(path: &Path) -> SyncResult {
-    let mut result = SyncResult::default();
-    result.files_scanned = 1;
+    let mut result = SyncResult {
+        files_scanned: 1,
+        ..SyncResult::default()
+    };
 
     let Ok(conn) = get_db() else {
         result.errors.push("DB unavailable".into());

@@ -317,10 +317,8 @@ pub async fn pty_attach_snapshot(pty_id: String) -> Result<Option<PtyAttachSnaps
 }
 
 pub fn attach_snapshot_for_bridge(pty_id: &str) -> Option<PtyAttachSnapshot> {
-    let Some(session) = registry::get(&pty_id) else {
-        return None;
-    };
-    Some(session::attach_snapshot(&pty_id, &session))
+    let session = registry::get(pty_id)?;
+    Some(session::attach_snapshot(pty_id, &session))
 }
 
 #[tauri::command]

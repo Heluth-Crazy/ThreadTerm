@@ -27,26 +27,30 @@ vi.mock('react-i18next', async (importOriginal) => {
   };
 });
 
-vi.mock('../Shell', async () => {
+vi.mock('./Shell', async () => {
   const React = await import('react');
+  function MockShell(props: { paneId?: string; initialCommand?: string }) {
+    const initialPaneIdRef = React.useRef(props.paneId);
+    React.useEffect(() => {
+      const paneId = initialPaneIdRef.current;
+      shellMock.events.push(`mount:${paneId ?? ''}`);
+      return () => {
+        shellMock.events.push(`unmount:${paneId ?? ''}`);
+      };
+    }, []);
+    shellMock.props.push({
+      paneId: props.paneId,
+      initialCommand: props.initialCommand,
+    });
+    return React.createElement('div', {
+      'data-testid': 'mock-shell',
+      'data-pane-id': props.paneId,
+      'data-initial-command': props.initialCommand ?? '',
+    });
+  }
+
   return {
-    default: (props: { paneId?: string; initialCommand?: string }) => {
-      React.useEffect(() => {
-        shellMock.events.push(`mount:${props.paneId ?? ''}`);
-        return () => {
-          shellMock.events.push(`unmount:${props.paneId ?? ''}`);
-        };
-      }, []);
-      shellMock.props.push({
-        paneId: props.paneId,
-        initialCommand: props.initialCommand,
-      });
-      return React.createElement('div', {
-        'data-testid': 'mock-shell',
-        'data-pane-id': props.paneId,
-        'data-initial-command': props.initialCommand ?? '',
-      });
-    },
+    default: MockShell,
   };
 });
 

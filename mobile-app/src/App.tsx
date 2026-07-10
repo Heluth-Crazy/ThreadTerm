@@ -192,7 +192,7 @@ export function App() {
     [searchQuery, state.cards],
   );
   const canControl = permission === 'full' && bridge.state === 'open';
-  const canSend = canControl && Boolean(activeCard?.ptyLive);
+  const canSend = canControl && Boolean(activeCard && isCardLive(activeCard));
 
   useEffect(() => {
     if (detailOpen && !activeCard) {
@@ -830,7 +830,7 @@ function TerminalDetail({
 
       {permission === 'full' ? (
         <>
-          {activeCard && !activeCard.ptyLive && activeCard.attachable && (
+          {activeCard && !isCardLive(activeCard) && activeCard.attachable && (
             <div className="resume-strip">
               <span>{t('detail.notLive')}</span>
               <button type="button" onClick={() => onActivate(activeCard.id)}>

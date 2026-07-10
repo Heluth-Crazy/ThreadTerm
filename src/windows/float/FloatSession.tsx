@@ -21,7 +21,7 @@
  */
 import { useCallback, useEffect, useMemo } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
-import Shell from '../../components/Shell';
+import Shell from '../../components/terminal/Shell';
 import type { TerminalCard } from '../../types/terminal';
 import { getTerminalTypeMeta } from '../../components/terminal/terminalTypeMeta';
 import { buildTerminalLaunchCommand } from '../../components/terminal/providerSession';

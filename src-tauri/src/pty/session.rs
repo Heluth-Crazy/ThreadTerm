@@ -47,6 +47,7 @@ pub struct PtyAttachSnapshot {
 /// Maximum bytes retained in the per-session raw output ring used when a
 /// second webview attaches mid-session.
 pub(super) const OUTPUT_BUFFER_MAX_BYTES: usize = 256 * 1024;
+const OUTPUT_BUFFER_TRIM_THRESHOLD_BYTES: usize = OUTPUT_BUFFER_MAX_BYTES * 2;
 pub(super) const SESSION_SCROLLBACK_LINES: usize = 3000;
 
 /// Duration during which we suppress ERROR_PATTERNS firing after a session
@@ -112,7 +113,7 @@ pub(super) fn set_session_state(session: &PtySession, id: &str, new_state: Sessi
                     state: new_state,
                 },
             );
-            bridge::broadcast_state(id, &*state);
+            bridge::broadcast_state(id, &state);
         }
     }
 }
@@ -165,16 +166,15 @@ pub(super) fn mark_output_activity(session: &PtySession, id: &str) {
 }
 
 pub(super) fn trim_recent_output_buffer(buffer: &mut String) {
-    if buffer.len() <= OUTPUT_BUFFER_MAX_BYTES {
+    if buffer.len() <= OUTPUT_BUFFER_TRIM_THRESHOLD_BYTES {
         return;
     }
 
     let target_start = buffer.len() - OUTPUT_BUFFER_MAX_BYTES;
-    let start = buffer
-        .char_indices()
-        .map(|(idx, _)| idx)
-        .find(|idx| *idx >= target_start)
-        .unwrap_or(buffer.len());
+    let mut start = target_start;
+    while start < buffer.len() && !buffer.is_char_boundary(start) {
+        start += 1;
+    }
     buffer.drain(..start);
 }
 
@@ -389,6 +389,35 @@ mod tests {
         assert_eq!(*value.lock().expect("lock"), 60);
         subtract_unacked_from_mutex(&value, 1000);
         assert_eq!(*value.lock().expect("lock"), 0);
+    }
+
+    #[test]
+    fn trim_recent_output_buffer_keeps_small_overage_until_threshold() {
+        let mut buffer = "a".repeat(OUTPUT_BUFFER_MAX_BYTES + 1);
+        trim_recent_output_buffer(&mut buffer);
+        assert_eq!(buffer.len(), OUTPUT_BUFFER_MAX_BYTES + 1);
+    }
+
+    #[test]
+    fn trim_recent_output_buffer_trims_to_recent_tail_after_threshold() {
+        let mut buffer = "a".repeat(OUTPUT_BUFFER_TRIM_THRESHOLD_BYTES + 32);
+        trim_recent_output_buffer(&mut buffer);
+        assert_eq!(buffer.len(), OUTPUT_BUFFER_MAX_BYTES);
+        assert!(buffer.chars().all(|c| c == 'a'));
+    }
+
+    #[test]
+    fn trim_recent_output_buffer_preserves_utf8_boundary() {
+        let prefix_len = OUTPUT_BUFFER_MAX_BYTES + 1;
+        let mut buffer = "a".repeat(prefix_len);
+        buffer.push('界');
+        buffer.push_str(&"b".repeat(OUTPUT_BUFFER_MAX_BYTES));
+
+        trim_recent_output_buffer(&mut buffer);
+
+        assert!(buffer.is_char_boundary(0));
+        assert!(buffer.starts_with('界') || buffer.starts_with('b'));
+        assert!(buffer.len() <= OUTPUT_BUFFER_MAX_BYTES + '界'.len_utf8());
     }
 
     #[test]

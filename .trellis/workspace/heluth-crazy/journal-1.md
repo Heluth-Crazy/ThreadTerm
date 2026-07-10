@@ -681,3 +681,15 @@ Implemented expanded native-feel baseline: single-instance plugin, non-macOS ove
 ### Next Steps
 
 - None - task complete
+
+## 07-09 系统通知来源定位与最近通知记录（notification-source-locate-recent-list）
+
+- 现状盘点发现通知基础设施已有 ~70%（slice/抽屉/OS桥/定位），本任务为补缺口。
+- 关键实现：
+  - `notificationSource.ts`：来源标签纯函数（项目 · 类型 · 意图/分支），OS 通知 body 前缀 + 通知中心列表复用。
+  - Rust `window_focus_main`（show/unminimize/set_focus），`openNotificationTarget` 成功路径调用。
+  - `highlightCardId` + `HIGHLIGHT_TTL_MS=2400` 自动过期；CSS outline 脉冲（0.8s×3），reduce-motion 退化静态描边（全局 0.001ms 动画压缩会吞脉冲，必须显式静态 fallback）。
+  - 智能混合定位：决策放 `openNotificationTarget`（读 `focusedCardId`，无 effect 时序竞态）——focus 视图走 `pendingFocusCardId` 全屏通道（FloatApp 兼容），网格走新 `pendingLocateCardId` 一次性 locate 通道；store 级筛选（项目/worktree）在此修正，query 级由 CardGrid 清空。
+  - 卡片最近通知标记：CardFooter 中部槽位 kind 图标 + tooltip，来自 `notifications.find`（条目引用稳定，无多余重渲染），随 2h purge 自然过期。
+- 契约注意：`archiveCard`/`removeCard` 会删除该卡通知（spec 锁定），所以 cardClosed 降级只覆盖竞态窗口；`system:*` 伪卡通知新增"系统"标签避免误标"已关闭"。
+- 门禁：typecheck ✓ / vitest 629 ✓ / cargo check ✓ / eslint 0 errors（31 warnings 预算内，均为既有）。

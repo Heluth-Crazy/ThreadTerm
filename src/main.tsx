@@ -1,13 +1,12 @@
-import React from 'react'
 import ReactDOM from 'react-dom/client'
-import App from './App.tsx'
+import App from './App'
 import './index.css'
-import { logger } from './utils/logger'
+import { logger } from './lib/logger'
 import { applySavedTheme } from './theme/applyTheme'
 import { installNativeDesktopBehavior } from './lib/nativeDesktop'
 
 // Initialize i18n
-import './i18n/config.js'
+import './i18n/config'
 
 installNativeDesktopBehavior(document, { platformMaterial: true });
 applySavedTheme();
@@ -23,6 +22,9 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <App />,
-)
+const root = document.getElementById('root');
+if (!root) {
+  throw new Error('Root element #root was not found.');
+}
+
+ReactDOM.createRoot(root).render(<App />);

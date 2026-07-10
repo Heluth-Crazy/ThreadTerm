@@ -96,6 +96,20 @@ export interface NotificationsSlice {
   notificationCentreOpen: boolean;
   /** Pending cardId to focus once the app regains focus (system-notification click). */
   pendingFocusCardId: string | null;
+  /**
+   * One-shot "locate this card" request from a notification jump. Unlike
+   * `pendingFocusCardId` (always opens the full-screen focus view), the
+   * consumer resolves this with smart-hybrid semantics: stay in the grid and
+   * scroll + pulse when the grid is already showing, otherwise fall back to
+   * the focus view. Transient — never persisted.
+   */
+  pendingLocateCardId: string | null;
+  /**
+   * Card currently flashing its "you were looking for me" pulse after a
+   * notification jump. Transient UI state — never persisted; cleared
+   * automatically ~2.4s after `highlightCard`.
+   */
+  highlightCardId: string | null;
 
   // OS notifications
   osNotificationsEnabled: boolean;
@@ -117,6 +131,9 @@ export interface NotificationsSlice {
   purgeReadNotifications: (olderThanMs?: number) => number;
   toggleNotificationCentre: (open?: boolean) => void;
   setPendingFocusCardId: (id: string | null) => void;
+  setPendingLocateCardId: (id: string | null) => void;
+  /** Flash the notification-locate pulse on a card; auto-expires (default 2.4s). */
+  highlightCard: (id: string, ttlMs?: number) => void;
   getUnreadCount: () => number;
 }
 

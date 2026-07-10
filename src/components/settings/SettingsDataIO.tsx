@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { Download, FileJson, Upload, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useTheme } from '../../contexts/ThemeContext';
+import { useTheme } from '../../theme/ThemeContext';
 import { emitSettingsChanged } from '../../lib/settingsSync';
 import { useOverlayStore } from '../../stores/overlayStore';
 import { useTerminalStore } from '../../stores/terminalStore';

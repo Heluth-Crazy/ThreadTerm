@@ -23,6 +23,7 @@ import {
 import { useTerminalStore } from '../../stores/terminalStore';
 import type { NotificationEntry, NotificationKind } from '../../types/terminal';
 import { openNotificationTarget } from './notificationTarget';
+import { describeCardSource, formatCardSourceLabel } from './notificationSource';
 
 const kindIconMap: Record<NotificationKind, typeof AlertTriangle> = {
   waiting: Clock,
@@ -56,6 +57,7 @@ export function NotificationCenter() {
   const notifications = useTerminalStore((s) => s.notifications);
   const toggle = useTerminalStore((s) => s.toggleNotificationCentre);
   const markAll = useTerminalStore((s) => s.markAllNotificationsRead);
+  const markRead = useTerminalStore((s) => s.markNotificationRead);
   const removeOne = useTerminalStore((s) => s.removeNotification);
   const clearAll = useTerminalStore((s) => s.clearNotifications);
   const cards = useTerminalStore((s) => s.cards);
@@ -65,16 +67,23 @@ export function NotificationCenter() {
     [notifications],
   );
 
-  const cardNameById = useMemo(() => {
+  const sourceLabelById = useMemo(() => {
+    const translate = (key: string, fallback?: string) => t(key, { defaultValue: fallback ?? key });
     const map: Record<string, string> = {};
-    for (const c of cards) map[c.id] = c.projectName;
+    for (const c of cards) {
+      map[c.id] = formatCardSourceLabel(describeCardSource(c), translate);
+    }
     return map;
-  }, [cards]);
+  }, [cards, t]);
 
   const handleClick = (n: NotificationEntry) => {
     if (openNotificationTarget(n.cardId)) {
       toggle(false);
+      return;
     }
+    // Degraded targets (closed/archived card, `system:*` events) can't be
+    // located — clicking still acknowledges the entry instead of no-op'ing.
+    markRead(n.id);
   };
 
   return (
@@ -153,8 +162,9 @@ export function NotificationCenter() {
                   {notifications.map((n) => {
                     const Icon = kindIconMap[n.kind];
                     const tone = kindToneMap[n.kind];
-                    const projectName = cardNameById[n.cardId];
-                    const missing = !projectName;
+                    const isSystem = n.cardId.startsWith('system:');
+                    const sourceLabel = sourceLabelById[n.cardId];
+                    const missing = !isSystem && !sourceLabel;
                     return (
                       <li
                         key={n.id}
@@ -179,10 +189,12 @@ export function NotificationCenter() {
                           )}
                           <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
                             <span>{formatTime(n.at, t)}</span>
-                            {missing ? (
+                            {isSystem ? (
+                              <span className="truncate">· {t('notifications.systemSource')}</span>
+                            ) : missing ? (
                               <span className="italic opacity-70">{t('notifications.cardClosed')}</span>
                             ) : (
-                              <span className="truncate">· {projectName}</span>
+                              <span className="truncate">· {sourceLabel}</span>
                             )}
                           </div>
                         </div>

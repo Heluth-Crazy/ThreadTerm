@@ -165,7 +165,7 @@ export function WorkspacePanel({
       </div>
 
       {panelState.tab === 'explorer' ? (
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto" data-tree-scroller>
           <FileTree
             rootPath={rootCwd}
             selectedPath={activeFilePath ?? panelState.selectedFilePath}

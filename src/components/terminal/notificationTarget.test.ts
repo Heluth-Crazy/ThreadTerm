@@ -10,10 +10,14 @@ function resetStores() {
     focusedCardId: null,
     lastActiveCardId: null,
     selectedProjectPath: null,
+    selectedWorktreePath: null,
+    selectedWorktreeLabel: null,
     pinnedCardIds: [],
     notifications: [],
     notificationCentreOpen: false,
     pendingFocusCardId: null,
+    pendingLocateCardId: null,
+    highlightCardId: null,
   });
   useOverlayStore.setState({
     selectorOpen: false,
@@ -38,17 +42,72 @@ function resetStores() {
 beforeEach(resetStores);
 
 describe('openNotificationTarget', () => {
-  it('focuses unpinned cards in the main window path', () => {
+  it('routes unpinned cards to the grid locate channel when no card is focused', () => {
     const s = useTerminalStore.getState();
     const id = s.createCard({ projectName: 'repo', projectPath: '/repo', terminalType: 'codex' });
     s.pushNotification({ cardId: id, kind: 'waiting', title: 'Codex needs input', body: '' });
 
     expect(openNotificationTarget(id)).toBe(true);
 
-    expect(useTerminalStore.getState().focusedCardId).toBe(id);
-    expect(useTerminalStore.getState().pendingFocusCardId).toBe(id);
-    expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(false);
+    const state = useTerminalStore.getState();
+    // Grid path: locate one-shot set, focus view untouched.
+    expect(state.pendingLocateCardId).toBe(id);
+    expect(state.pendingFocusCardId).toBeNull();
+    expect(state.focusedCardId).toBeNull();
+    expect(state.getCardById(id)?.unread).toBe(false);
     expect(useOverlayStore.getState().floatOpen).toBe(false);
+  });
+
+  it('keeps full-screen semantics when the user is already in the focus view', () => {
+    const s = useTerminalStore.getState();
+    const focused = s.createCard({ projectName: 'other', projectPath: '/other', terminalType: 'shell' });
+    const id = s.createCard({ projectName: 'repo', projectPath: '/repo', terminalType: 'codex' });
+    useTerminalStore.getState().focusCard(focused);
+
+    expect(openNotificationTarget(id)).toBe(true);
+
+    const state = useTerminalStore.getState();
+    expect(state.pendingFocusCardId).toBe(id);
+    expect(state.pendingLocateCardId).toBeNull();
+  });
+
+  it('switches to the card project when another project filter hides it', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'repo', projectPath: '/repo', terminalType: 'codex' });
+    s.createCard({ projectName: 'other', projectPath: '/other', terminalType: 'shell' });
+    useTerminalStore.getState().selectProject('/other');
+
+    expect(openNotificationTarget(id)).toBe(true);
+
+    const state = useTerminalStore.getState();
+    expect(state.selectedProjectPath).toBe('/repo');
+    expect(state.selectedWorktreePath).toBeNull();
+    expect(state.pendingLocateCardId).toBe(id);
+  });
+
+  it('clears a worktree filter that hides the card', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'repo', projectPath: '/repo', terminalType: 'codex' });
+    useTerminalStore.getState().selectWorktree('/repo', '/repo-wt/feat', 'feat');
+
+    expect(openNotificationTarget(id)).toBe(true);
+
+    const state = useTerminalStore.getState();
+    expect(state.selectedProjectPath).toBe('/repo');
+    expect(state.selectedWorktreePath).toBeNull();
+    expect(state.pendingLocateCardId).toBe(id);
+  });
+
+  it('keeps the current filters when they already show the card', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'repo', projectPath: '/repo', terminalType: 'codex' });
+    useTerminalStore.getState().selectProject('/repo');
+
+    expect(openNotificationTarget(id)).toBe(true);
+
+    const state = useTerminalStore.getState();
+    expect(state.selectedProjectPath).toBe('/repo');
+    expect(state.pendingLocateCardId).toBe(id);
   });
 
   it('opens pinned cards in the floating terminal path', () => {
@@ -62,10 +121,11 @@ describe('openNotificationTarget', () => {
     expect(useOverlayStore.getState().floatOpen).toBe(true);
     expect(useOverlayStore.getState().floatCardId).toBe(id);
     expect(useTerminalStore.getState().pendingFocusCardId).toBe(id);
+    expect(useTerminalStore.getState().pendingLocateCardId).toBeNull();
     expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(false);
   });
 
-  it('focuses pinned cards in the main window when lightweight mode is enabled', () => {
+  it('locates pinned cards in the main grid when lightweight mode is enabled', () => {
     const s = useTerminalStore.getState();
     const id = s.createCard({ projectName: 'repo', projectPath: '/repo', terminalType: 'claude' });
     s.pinCard(id);
@@ -74,12 +134,13 @@ describe('openNotificationTarget', () => {
     expect(openNotificationTarget(id)).toBe(true);
 
     expect(useOverlayStore.getState().floatOpen).toBe(false);
-    expect(useTerminalStore.getState().focusedCardId).toBe(id);
-    expect(useTerminalStore.getState().pendingFocusCardId).toBe(id);
+    expect(useTerminalStore.getState().pendingLocateCardId).toBe(id);
+    expect(useTerminalStore.getState().focusedCardId).toBeNull();
   });
 
   it('returns false for stale notification targets', () => {
     expect(openNotificationTarget('missing-card')).toBe(false);
+    expect(useTerminalStore.getState().pendingLocateCardId).toBeNull();
   });
 
   it('credits a supervisor click telemetry when an alert exists for the card', () => {

@@ -253,10 +253,8 @@ async fn handle_socket(
     mut socket: WebSocket,
 ) {
     let mut rx = context.runtime.subscribe();
-    if device.is_some() {
-        if send_initial_messages(&context, &mut socket).await.is_err() {
-            return;
-        }
+    if device.is_some() && send_initial_messages(&context, &mut socket).await.is_err() {
+        return;
     }
 
     loop {

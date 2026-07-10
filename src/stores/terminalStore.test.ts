@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_CARD_NAME_LENGTH,
   MAX_PINNED_CARDS,
   MAX_RECENTLY_VIEWED_CARDS,
   useTerminalStore,
 } from './terminalStore';
+import { HIGHLIGHT_TTL_MS } from './terminal/notificationsSlice';
 
 function resetStore() {
   useTerminalStore.setState({
@@ -22,6 +23,7 @@ function resetStore() {
     notifications: [],
     notificationCentreOpen: false,
     pendingFocusCardId: null,
+    highlightCardId: null,
     osNotificationsEnabled: true,
     supervisorEnabled: false,
   });
@@ -983,6 +985,44 @@ describe('terminalStore — notifications', () => {
 
     expect(useTerminalStore.getState().notifications).toHaveLength(0);
     expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(false);
+  });
+
+  it('highlightCard sets the pulse target and auto-expires', () => {
+    vi.useFakeTimers();
+    try {
+      const s = useTerminalStore.getState();
+      const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+
+      s.highlightCard(id);
+      expect(useTerminalStore.getState().highlightCardId).toBe(id);
+
+      vi.advanceTimersByTime(HIGHLIGHT_TTL_MS + 1);
+      expect(useTerminalStore.getState().highlightCardId).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a newer highlight is not cleared by the previous highlight timer', () => {
+    vi.useFakeTimers();
+    try {
+      const s = useTerminalStore.getState();
+      const a = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+      const b = s.createCard({ projectName: 'b', projectPath: '/b', terminalType: 'shell' });
+
+      s.highlightCard(a);
+      vi.advanceTimersByTime(HIGHLIGHT_TTL_MS / 2);
+      s.highlightCard(b);
+
+      // Past the first highlight's original deadline — b must survive.
+      vi.advanceTimersByTime(HIGHLIGHT_TTL_MS / 2 + 10);
+      expect(useTerminalStore.getState().highlightCardId).toBe(b);
+
+      vi.advanceTimersByTime(HIGHLIGHT_TTL_MS);
+      expect(useTerminalStore.getState().highlightCardId).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

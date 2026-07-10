@@ -66,6 +66,8 @@ function resetStore() {
     notifications: [],
     notificationCentreOpen: false,
     pendingFocusCardId: null,
+    pendingLocateCardId: null,
+    highlightCardId: null,
     osNotificationsEnabled: true,
     supervisorEnabled: false,
   });
@@ -187,5 +189,59 @@ describe('CardGrid project ordering', () => {
     await waitFor(() => expect(screen.queryByTestId('terminal-card')).toBeNull());
     expect(useTerminalStore.getState().cards).toHaveLength(0);
     expect(useTerminalStore.getState().archivedCards).toHaveLength(1);
+  });
+});
+
+describe('CardGrid notification locate', () => {
+  function typeQuery(value: string) {
+    fireEvent.click(screen.getByTitle('Filter'));
+    fireEvent.change(screen.getByPlaceholderText('filter sessions…'), {
+      target: { value },
+    });
+  }
+
+  it('clears the search query when the highlight target is filtered out', async () => {
+    const store = useTerminalStore.getState();
+    const alpha = store.createCard({
+      projectName: 'alpha',
+      projectPath: '/repo/alpha',
+      terminalType: 'shell',
+    });
+    store.createCard({ projectName: 'beta', projectPath: '/repo/beta', terminalType: 'shell' });
+
+    render(<CardGrid />);
+    typeQuery('beta');
+    expect(
+      screen.getAllByTestId('terminal-card-name').map((node) => node.textContent),
+    ).toEqual(['beta']);
+
+    // Notification locate pulse lands on the query-hidden card.
+    useTerminalStore.setState({ highlightCardId: alpha });
+
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId('terminal-card-name').map((node) => node.textContent),
+      ).toContain('alpha'),
+    );
+  });
+
+  it('keeps the query when the highlight target already matches it', () => {
+    const store = useTerminalStore.getState();
+    const beta = store.createCard({
+      projectName: 'beta',
+      projectPath: '/repo/beta',
+      terminalType: 'shell',
+    });
+    store.createCard({ projectName: 'alpha', projectPath: '/repo/alpha', terminalType: 'shell' });
+
+    render(<CardGrid />);
+    typeQuery('beta');
+
+    useTerminalStore.setState({ highlightCardId: beta });
+
+    expect(
+      screen.getAllByTestId('terminal-card-name').map((node) => node.textContent),
+    ).toEqual(['beta']);
+    expect(screen.getByPlaceholderText('filter sessions…')).toHaveValue('beta');
   });
 });

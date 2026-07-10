@@ -22,8 +22,10 @@ import {
 import { useTerminalStore } from '../../stores/terminalStore';
 import type { NotificationEntry } from '../../types/terminal';
 import { invoke, isTauriEnv } from '../../lib/tauri-bridge';
-import { logger } from '../../utils/logger';
+import { logger } from '../../lib/logger';
+import i18n from '../../i18n/config';
 import { openNotificationTarget } from './notificationTarget';
+import { describeCardSource, formatCardSourceLabel } from './notificationSource';
 
 // Encodes a cardId into a numeric notification id that Tauri accepts.
 // We use a hash so repeated notifications for the same card share an id
@@ -126,10 +128,11 @@ export function NotificationBridge(): null {
 
 async function dispatchOsNotification(n: NotificationEntry): Promise<void> {
   if (!isTauriEnv()) return;
+  const body = buildOsNotificationBody(n);
   try {
     await invoke('notification_send_os', {
       title: n.title,
-      body: n.body,
+      body,
       cardId: n.cardId,
     });
     return;
@@ -149,7 +152,7 @@ async function dispatchOsNotification(n: NotificationEntry): Promise<void> {
     sendNotification({
       id: hashCardIdToNotifId(n.cardId),
       title: n.title,
-      body: n.body,
+      body,
       // `extra` is forwarded to the onAction callback so we can round-trip cardId.
       // This is an unknown field on `Options` but tolerated by the plugin.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -158,6 +161,20 @@ async function dispatchOsNotification(n: NotificationEntry): Promise<void> {
   } catch (error) {
     logger.warn('[NotificationBridge] Web Notification fallback failed', error);
   }
+}
+
+// Prefix the OS notification body with the originating card's source label
+// ("ThreadTerm · repo · Codex · Fix") so the user can tell which card fired
+// the toast without opening the app. Falls back to the raw body when the
+// notification isn't tied to a live card (e.g. `system:*` events).
+function buildOsNotificationBody(n: NotificationEntry): string {
+  const card = useTerminalStore.getState().getCardById(n.cardId);
+  if (!card) return n.body;
+  const source = formatCardSourceLabel(describeCardSource(card), (key, fallback) =>
+    i18n.t(`terminal:${key}`, fallback ?? key),
+  );
+  const header = `ThreadTerm · ${source}`;
+  return n.body ? `${header}\n${n.body}` : header;
 }
 
 // Fallback: in case `extra` isn't round-tripped by the plugin, some titles

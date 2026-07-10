@@ -9,8 +9,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import '../../index.css';
-import '../../i18n/config.js';
-import { ThemeProvider } from '../../contexts/ThemeContext';
+import '../../i18n/config';
+import { ThemeProvider } from '../../theme/ThemeContext';
 import { applySavedTheme } from '../../theme/applyTheme';
 import { installNativeDesktopBehavior, installOverlayKeepWarmLoop } from '../../lib/nativeDesktop';
 import { installOverlayPreferenceSync } from '../../lib/overlayPreferenceSync';

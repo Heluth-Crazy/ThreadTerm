@@ -1,15 +1,20 @@
+import type { ChangeEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Languages } from 'lucide-react';
-import { languages } from '../i18n/languages';
-import { emitSettingsChanged } from '../lib/settingsSync';
+import { languages } from '../../i18n/languages';
+import { emitSettingsChanged } from '../../lib/settingsSync';
 
-function LanguageSelector({ compact = false }) {
+interface LanguageSelectorProps {
+  compact?: boolean;
+}
+
+function LanguageSelector({ compact = false }: LanguageSelectorProps) {
   const { i18n, t } = useTranslation('settings');
   const selectedLanguage = languages.some((lang) => lang.value === i18n.language)
     ? i18n.language
     : 'zh-CN';
 
-  const handleLanguageChange = (event) => {
+  const handleLanguageChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const newLanguage = event.target.value;
     void i18n.changeLanguage(newLanguage).then(() =>
       emitSettingsChanged({

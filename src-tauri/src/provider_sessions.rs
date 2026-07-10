@@ -125,7 +125,7 @@ fn provider_sessions_from_root(
     }
 
     let mut sessions = Vec::new();
-    for file in jsonl_files_recent_first(&root, since_ms) {
+    for file in jsonl_files_recent_first(root, since_ms) {
         let Some((id, cwd)) = parse_meta(&file.path) else {
             continue;
         };

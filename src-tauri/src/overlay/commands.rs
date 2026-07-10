@@ -1,3 +1,6 @@
+#[cfg(target_os = "windows")]
+use std::time::Duration;
+
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager};
 
 use super::hotkey::{register_default_shortcuts, register_hotkey, unregister_all_hotkeys};
@@ -11,6 +14,9 @@ use super::state::{FloatBounds, FloatLaunchMode, OverlaySettings, OVERLAY_SETTIN
 use super::window::{
     ensure_float, ensure_selector, primary_monitor_bounds, FLOAT_LABEL, MAIN_LABEL, SELECTOR_LABEL,
 };
+
+#[cfg(target_os = "windows")]
+const FLOAT_IDLE_DESTROY_AFTER: Duration = Duration::from_secs(60);
 
 /// Async because `ensure_selector` may create a webview window: on Windows,
 /// creating a WebView2 window from a *synchronous* IPC command deadlocks the
@@ -37,7 +43,7 @@ pub(super) fn show_selector_impl(app: &AppHandle) -> Result<(), String> {
     }
 
     ensure_selector(app)?;
-    set_overlay_activation_policy(&app);
+    set_overlay_activation_policy(app);
     // Hide float while selector is open (mutual exclusion). Restored on close.
     if let Some(f) = app.get_webview_window(FLOAT_LABEL) {
         let _ = f.hide();
@@ -50,7 +56,7 @@ pub(super) fn show_selector_impl(app: &AppHandle) -> Result<(), String> {
         //     reported by the window server (logical_w fallback used)
         //   • the user unplugged or switched displays since prewarm
         //   • the resolution changed (e.g. external 4K → laptop retina)
-        let (mx, my, mw, mh) = primary_monitor_bounds(&app);
+        let (mx, my, mw, mh) = primary_monitor_bounds(app);
         let _ = w.set_position(tauri::PhysicalPosition::new(mx, my));
         let _ = w.set_size(tauri::PhysicalSize::new(mw, mh));
 
@@ -141,7 +147,7 @@ pub(super) fn show_float_impl(app: &AppHandle, card_id: String) -> Result<(), St
     }
 
     ensure_float(app)?;
-    set_overlay_activation_policy(&app);
+    set_overlay_activation_policy(app);
     // Hide selector if visible.
     #[cfg(target_os = "macos")]
     {
@@ -155,6 +161,7 @@ pub(super) fn show_float_impl(app: &AppHandle, card_id: String) -> Result<(), St
         let _ = s.hide();
     }
     if let Some(w) = app.get_webview_window(FLOAT_LABEL) {
+        set_float_memory_usage_normal(&w);
         // Same foregrounding ordering as selector — see overlay_show_selector.
         // Re-assert CanJoinAllSpaces so the float follows the user to
         // whichever Space they switched to while it was hidden.
@@ -207,11 +214,89 @@ pub fn overlay_hide_float(app: AppHandle) -> Result<(), String> {
 
     if let Some(w) = app.get_webview_window(FLOAT_LABEL) {
         let _ = w.hide();
+        set_float_memory_usage_low(&w);
+        schedule_float_idle_destroy(&app);
     }
     restore_regular_activation_policy_if_no_overlay_visible(&app);
     let _ = app.emit("overlay://float-hidden", ());
     Ok(())
 }
+
+#[cfg(target_os = "windows")]
+fn set_float_memory_usage_low(window: &tauri::WebviewWindow) {
+    set_float_memory_usage_level(
+        window,
+        webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+    );
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_float_memory_usage_low(_window: &tauri::WebviewWindow) {}
+
+#[cfg(target_os = "windows")]
+fn set_float_memory_usage_normal(window: &tauri::WebviewWindow) {
+    set_float_memory_usage_level(
+        window,
+        webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+    );
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_float_memory_usage_normal(_window: &tauri::WebviewWindow) {}
+
+#[cfg(target_os = "windows")]
+fn set_float_memory_usage_level(
+    window: &tauri::WebviewWindow,
+    level: webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL,
+) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_19;
+    use windows_core::Interface as _;
+
+    let label = window.label().to_string();
+    if let Err(error) = window.with_webview(move |webview| {
+        let result = unsafe {
+            webview
+                .controller()
+                .CoreWebView2()
+                .and_then(|webview| webview.cast::<ICoreWebView2_19>())
+                .and_then(|webview| webview.SetMemoryUsageTargetLevel(level))
+        };
+        if let Err(error) = result {
+            tracing::debug!(
+                window = %label,
+                error = %error,
+                "Failed to set WebView2 memory usage target level"
+            );
+        }
+    }) {
+        tracing::debug!(
+            window = %window.label(),
+            error = %error,
+            "Failed to access platform webview for memory usage target level"
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn schedule_float_idle_destroy(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(FLOAT_IDLE_DESTROY_AFTER).await;
+        let Some(window) = app.get_webview_window(FLOAT_LABEL) else {
+            return;
+        };
+        if window.is_visible().unwrap_or(true) {
+            return;
+        }
+        match window.close() {
+            Ok(()) => tracing::info!("Closed idle float window to release WebView2 memory"),
+            Err(error) => tracing::debug!(error = %error, "Failed to close idle float window"),
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn schedule_float_idle_destroy(_app: &AppHandle) {}
 
 #[tauri::command]
 pub fn overlay_show_main(app: AppHandle) -> Result<(), String> {
@@ -236,6 +321,8 @@ pub fn overlay_show_main(app: AppHandle) -> Result<(), String> {
     }
     if let Some(f) = app.get_webview_window(FLOAT_LABEL) {
         let _ = f.hide();
+        set_float_memory_usage_low(&f);
+        schedule_float_idle_destroy(&app);
     }
     restore_regular_activation_policy(&app);
     if let Some(m) = app.get_webview_window(MAIN_LABEL) {

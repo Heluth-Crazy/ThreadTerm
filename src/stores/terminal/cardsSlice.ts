@@ -259,6 +259,8 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
         state.lastActiveCardId === id ? null : state.lastActiveCardId;
       const pendingFocusCardId =
         state.pendingFocusCardId === id ? null : state.pendingFocusCardId;
+      const pendingLocateCardId =
+        state.pendingLocateCardId === id ? null : state.pendingLocateCardId;
       const notifications = state.notifications.filter((n) => n.cardId !== id);
       const pinnedCardIds = state.pinnedCardIds.filter((pinnedId) => pinnedId !== id);
       const recentlyViewedCardIds = state.recentlyViewedCardIds.filter(
@@ -272,6 +274,7 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
         focusedCardId,
         lastActiveCardId,
         pendingFocusCardId,
+        pendingLocateCardId,
         notifications,
         pinnedCardIds,
         recentlyViewedCardIds,

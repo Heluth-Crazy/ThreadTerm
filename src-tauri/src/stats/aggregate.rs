@@ -38,6 +38,7 @@ impl Bucket {
     }
 }
 
+#[allow(dead_code)]
 pub struct Aggregator {
     lo_ms: Option<u64>,
     hi_ms: Option<u64>,
@@ -49,6 +50,7 @@ pub struct Aggregator {
     by_session: HashMap<String, Bucket>,
 }
 
+#[allow(dead_code)]
 impl Aggregator {
     pub fn new(lo_ms: Option<u64>, hi_ms: Option<u64>) -> Self {
         Self {

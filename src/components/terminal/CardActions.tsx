@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { memo, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -188,7 +188,7 @@ function OverflowActionItem({
   );
 }
 
-export function CardActions({
+export const CardActions = memo(function CardActions({
   pinned,
   pinFull,
   onCopyCwd,
@@ -364,4 +364,4 @@ export function CardActions({
       )}
     </div>
   );
-}
+});

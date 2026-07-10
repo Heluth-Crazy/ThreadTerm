@@ -7,7 +7,15 @@
  *   • empty state invites the user to create the first terminal
  *   • always includes a "+ new terminal" tile at the end
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 import {
   closestCenter,
   DndContext,
@@ -122,6 +130,19 @@ export function CardGrid({
     () => visibleCards.filter((card) => matchesCardQuery(card, query)),
     [visibleCards, query],
   );
+
+  // Notification locate: if the pulse target exists in this view but the
+  // local search query filters it out, clear the query so the card can mount,
+  // scroll itself into view and show its pulse (requirement: cards hidden by
+  // search/filter switch to a visible context).
+  const highlightCardId = useTerminalStore((s) => s.highlightCardId);
+  useEffect(() => {
+    if (!highlightCardId || !query.trim()) return;
+    const hiddenByQuery =
+      visibleCards.some((card) => card.id === highlightCardId) &&
+      !displayCards.some((card) => card.id === highlightCardId);
+    if (hiddenByQuery) setQuery('');
+  }, [displayCards, highlightCardId, query, visibleCards]);
 
   const visibleCardIds = useMemo(() => displayCards.map((card) => card.id), [displayCards]);
   // Manual drag-reorder only makes sense in an unfiltered project view: a
@@ -435,17 +456,7 @@ export function CardGrid({
 const CARD_TILE_CLASS =
   'relative h-[300px] w-full sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] xl:w-[calc(25%-18px)]';
 
-function CardTile({
-  card,
-  dragLabel,
-  dragDisabledLabel,
-  isFocused,
-  onClick,
-  onClose,
-  onArchive,
-  sortingEnabled,
-  showDisabledHandle,
-}: {
+interface CardTileProps {
   card: TerminalCard;
   dragLabel: string;
   dragDisabledLabel: string;
@@ -455,7 +466,19 @@ function CardTile({
   onArchive: () => void;
   sortingEnabled: boolean;
   showDisabledHandle: boolean;
-}) {
+}
+
+const CardTile = memo(function CardTile({
+  card,
+  dragLabel,
+  dragDisabledLabel,
+  isFocused,
+  onClick,
+  onClose,
+  onArchive,
+  sortingEnabled,
+  showDisabledHandle,
+}: CardTileProps) {
   if (!sortingEnabled) {
     return (
       <div className={CARD_TILE_CLASS}>
@@ -491,23 +514,25 @@ function CardTile({
       onArchive={onArchive}
     />
   );
-}
+}, areCardTilePropsEqual);
 
-function SortableCardTile({
-  card,
-  dragLabel,
-  isFocused,
-  onClick,
-  onClose,
-  onArchive,
-}: {
+interface SortableCardTileProps {
   card: TerminalCard;
   dragLabel: string;
   isFocused: boolean;
   onClick: () => void;
   onClose: () => void;
   onArchive: () => void;
-}) {
+}
+
+const SortableCardTile = memo(function SortableCardTile({
+  card,
+  dragLabel,
+  isFocused,
+  onClick,
+  onClose,
+  onArchive,
+}: SortableCardTileProps) {
   const {
     attributes,
     isDragging,
@@ -549,4 +574,22 @@ function SortableCardTile({
       />
     </div>
   );
+}, areSortableCardTilePropsEqual);
+
+function areCardTilePropsEqual(prev: CardTileProps, next: CardTileProps): boolean {
+  return (
+    prev.card === next.card &&
+    prev.dragLabel === next.dragLabel &&
+    prev.dragDisabledLabel === next.dragDisabledLabel &&
+    prev.isFocused === next.isFocused &&
+    prev.sortingEnabled === next.sortingEnabled &&
+    prev.showDisabledHandle === next.showDisabledHandle
+  );
+}
+
+function areSortableCardTilePropsEqual(
+  prev: SortableCardTileProps,
+  next: SortableCardTileProps,
+): boolean {
+  return prev.card === next.card && prev.dragLabel === next.dragLabel && prev.isFocused === next.isFocused;
 }

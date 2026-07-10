@@ -98,8 +98,16 @@ fn mtok(input: f64, output: f64, cache_write: f64, cache_read: f64) -> ModelCost
 ///     set equal to input and cache_read to 0.1× input as a conservative guess.
 pub fn lookup(model: &str) -> Option<ModelCosts> {
     let c = canonical(model);
+    let compact = c.replace(['-', '_', ' '], "");
 
     // ── Anthropic Claude ──
+    if compact.starts_with("claudefable5")
+        || compact.starts_with("fable5")
+        || compact.starts_with("claudemythos5")
+        || compact.starts_with("mythos5")
+    {
+        return Some(mtok(10.0, 50.0, 12.5, 1.0));
+    }
     if c.starts_with("claude-opus") {
         return Some(mtok(15.0, 75.0, 18.75, 1.5));
     }
@@ -187,6 +195,7 @@ pub fn cost_breakdown(model: &str, usage: &UsageSummary) -> CostBreakdown {
 }
 
 /// Cost in USD for one call's usage. Unknown model → $0.
+#[allow(dead_code)]
 pub fn cost(model: &str, usage: &UsageSummary) -> f64 {
     cost_breakdown(model, usage).total
 }
@@ -228,6 +237,10 @@ mod tests {
 
     #[test]
     fn known_models_have_costs() {
+        assert!(lookup("claude-fable-5").is_some());
+        assert!(lookup("fable5").is_some());
+        assert!(lookup("Claude Fable 5").is_some());
+        assert!(lookup("claude-mythos-5").is_some());
         assert!(lookup("claude-opus-4-8").is_some());
         assert!(lookup("gpt-5-codex").is_some());
         assert!(lookup("totally-unknown-model").is_none());
@@ -240,6 +253,12 @@ mod tests {
         assert!(lookup("gpt-5.4-2026-03-05").is_some());
         assert!(lookup("claude-opus-4-6-20260206").is_some());
         assert!(lookup("openai/gpt-5.4-20260305").is_some());
+    }
+
+    #[test]
+    fn fable5_uses_anthropic_public_pricing() {
+        let costs = lookup("anthropic/claude-fable-5").expect("fable pricing");
+        assert_eq!(costs, mtok(10.0, 50.0, 12.5, 1.0));
     }
 
     #[test]

@@ -616,3 +616,33 @@
     box-shadow: 0 12px 30px -4px hsl(120 20% 10% / 0.1);
   }
 }
+
+/* ── 通知定位脉冲 ─────────────────────────────────────────────────────────
+   点击系统通知/最近通知跳转后，目标卡片边框做 3 次呼吸脉冲（0.8s × 3 =
+   2.4s，与 store 的 HIGHLIGHT_TTL_MS 对齐）。用 outline 而非 box-shadow，
+   避免与卡片既有 tailwind ring 冲突。类由 highlightCardId 驱动，过期即摘。 */
+.notification-locate-pulse {
+  animation: notification-locate-pulse 0.8s ease-in-out 3;
+}
+
+@keyframes notification-locate-pulse {
+  0%,
+  100% {
+    outline: 2px solid hsl(var(--primary) / 0);
+    outline-offset: 3px;
+  }
+  50% {
+    outline: 2px solid hsl(var(--primary) / 0.85);
+    outline-offset: 3px;
+  }
+}
+
+/* reduce-motion：全局动画被压到 0.001ms，这里退化为静态描边——
+   类移除（≈2.4s）时描边一并消失，仍是"短暂高亮"。 */
+@media (prefers-reduced-motion: reduce) {
+  .notification-locate-pulse {
+    animation: none;
+    outline: 2px solid hsl(var(--primary) / 0.7);
+    outline-offset: 3px;
+  }
+}

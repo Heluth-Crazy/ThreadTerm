@@ -1,6 +1,7 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { applyResolvedTheme, resolveTheme } from '../theme/applyTheme';
-import { themePacks, getThemePack } from '../theme/themePacks';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
+import { applyResolvedTheme, resolveTheme } from './applyTheme';
+import { themePacks, getThemePack } from './themePacks';
 import {
   getStoredCustomThemePacks,
   saveCustomThemePacks,
@@ -8,7 +9,7 @@ import {
   stringifyThemePack,
   getThemePackExportFilename,
   CUSTOM_THEME_PACKS_STORAGE_KEY,
-} from '../theme/customThemePacks';
+} from './customThemePacks';
 import {
   DEFAULT_THEME_MODE,
   getStoredThemePreference,
@@ -16,12 +17,44 @@ import {
   THEME_MODE_STORAGE_KEY,
   THEME_PACK_STORAGE_KEY,
   LEGACY_THEME_STORAGE_KEY,
-} from '../theme/themeStorage';
-import { toXtermTheme } from '../theme/xtermTheme';
+} from './themeStorage';
+import { toXtermTheme } from './xtermTheme';
 import { isTauriEnv, mobileBridge } from '../lib/tauri-bridge';
 import { emitSettingsChanged } from '../lib/settingsSync';
+import type {
+  StoredThemePreference,
+  ThemeMode,
+  ThemeModeTokens,
+  ThemePack,
+} from './themeTypes';
 
-const ThemeContext = createContext();
+interface ThemeSettingsSnapshot {
+  preference?: StoredThemePreference;
+  customThemePacks?: ThemePack[];
+}
+
+interface ThemeContextValue {
+  themeMode: ThemeMode;
+  themePackId: string;
+  resolvedMode: 'light' | 'dark';
+  activeThemePack: ThemePack;
+  activeThemeTokens: ThemeModeTokens;
+  terminalTheme: ReturnType<typeof toXtermTheme>;
+  themePacks: ThemePack[];
+  isDarkMode: boolean;
+  setThemeMode: (themeMode: ThemeMode) => void;
+  setThemePackId: (themePackId: string) => void;
+  importCustomThemePack: (json: string) => ThemePack;
+  replaceCustomThemePacks: (packs: ThemePack[]) => void;
+  setThemePreference: (nextPreference: Partial<StoredThemePreference>) => void;
+  deleteCustomThemePack: (themePackId: string) => void;
+  exportThemePack: (themePackId: string) => { filename: string; content: string };
+  toggleDarkMode: () => void;
+  applyThemeSettingsSnapshot: (snapshot?: ThemeSettingsSnapshot) => void;
+  resetTheme: () => void;
+}
+
+const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export const useTheme = () => {
   const context = useContext(ThemeContext);
@@ -31,7 +64,7 @@ export const useTheme = () => {
   return context;
 };
 
-export const ThemeProvider = ({ children }) => {
+export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   const [preference, setPreference] = useState(() => getStoredThemePreference());
   const [customThemePacks, setCustomThemePacks] = useState(() => getStoredCustomThemePacks());
   const [systemTick, setSystemTick] = useState(0);
@@ -41,10 +74,10 @@ export const ThemeProvider = ({ children }) => {
     [customThemePacks],
   );
 
-  const resolvedTheme = useMemo(
-    () => resolveTheme(preference.themePackId, preference.themeMode, availableThemePacks),
-    [availableThemePacks, preference.themeMode, preference.themePackId, systemTick],
-  );
+  const resolvedTheme = useMemo(() => {
+    void systemTick;
+    return resolveTheme(preference.themePackId, preference.themeMode, availableThemePacks);
+  }, [availableThemePacks, preference.themeMode, preference.themePackId, systemTick]);
 
   useEffect(() => {
     applyResolvedTheme(resolvedTheme);
@@ -101,7 +134,7 @@ export const ThemeProvider = ({ children }) => {
   }, []);
 
   useEffect(() => {
-    const handleStorage = (event) => {
+    const handleStorage = (event: StorageEvent) => {
       if (
         event.key !== THEME_MODE_STORAGE_KEY &&
         event.key !== THEME_PACK_STORAGE_KEY &&
@@ -120,7 +153,10 @@ export const ThemeProvider = ({ children }) => {
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
 
-  const emitThemeSettingsChanged = useCallback((nextPreference, nextCustomThemePacks) => {
+  const emitThemeSettingsChanged = useCallback((
+    nextPreference: StoredThemePreference,
+    nextCustomThemePacks?: ThemePack[],
+  ) => {
     void emitSettingsChanged({
       domain: 'theme',
       sourceWindow: 'settings',
@@ -131,13 +167,16 @@ export const ThemeProvider = ({ children }) => {
     });
   }, []);
 
-  const commitThemePreference = useCallback((nextPreference, nextCustomThemePacks) => {
+  const commitThemePreference = useCallback((
+    nextPreference: StoredThemePreference,
+    nextCustomThemePacks?: ThemePack[],
+  ) => {
     saveThemePreference(nextPreference);
     setPreference(nextPreference);
     emitThemeSettingsChanged(nextPreference, nextCustomThemePacks);
   }, [emitThemeSettingsChanged]);
 
-  const applyThemeSettingsSnapshot = useCallback((snapshot = {}) => {
+  const applyThemeSettingsSnapshot = useCallback((snapshot: ThemeSettingsSnapshot = {}) => {
     if (Array.isArray(snapshot.customThemePacks)) {
       setCustomThemePacks(snapshot.customThemePacks);
     } else {
@@ -147,21 +186,21 @@ export const ThemeProvider = ({ children }) => {
     setPreference(snapshot.preference ?? getStoredThemePreference());
   }, []);
 
-  const setThemeMode = useCallback((themeMode) => {
+  const setThemeMode = useCallback((themeMode: ThemeMode) => {
     commitThemePreference({
       ...preference,
       themeMode,
     });
   }, [commitThemePreference, preference]);
 
-  const setThemePackId = useCallback((themePackId) => {
+  const setThemePackId = useCallback((themePackId: string) => {
     commitThemePreference({
       ...preference,
       themePackId: getThemePack(themePackId, availableThemePacks).id,
     });
   }, [availableThemePacks, commitThemePreference, preference]);
 
-  const importCustomThemePack = useCallback((json) => {
+  const importCustomThemePack = useCallback((json: string) => {
     const pack = parseCustomThemePack(json);
     const nextCustomThemePacks = [
       pack,
@@ -178,21 +217,21 @@ export const ThemeProvider = ({ children }) => {
     return pack;
   }, [commitThemePreference, customThemePacks, preference]);
 
-  const replaceCustomThemePacks = useCallback((packs) => {
+  const replaceCustomThemePacks = useCallback((packs: ThemePack[]) => {
     const next = packs.filter((pack) => pack?.isCustom);
     saveCustomThemePacks(next);
     setCustomThemePacks(next);
     emitThemeSettingsChanged(preference, next);
   }, [emitThemeSettingsChanged, preference]);
 
-  const setThemePreference = useCallback((nextPreference) => {
+  const setThemePreference = useCallback((nextPreference: Partial<StoredThemePreference>) => {
     commitThemePreference({
       themeMode: nextPreference?.themeMode ?? preference.themeMode,
       themePackId: nextPreference?.themePackId ?? preference.themePackId,
     });
   }, [commitThemePreference, preference]);
 
-  const deleteCustomThemePack = useCallback((themePackId) => {
+  const deleteCustomThemePack = useCallback((themePackId: string) => {
     const nextCustomThemePacks = customThemePacks.filter((pack) => pack.id !== themePackId);
     const nextPreference = preference.themePackId === themePackId
       ? { ...preference, themePackId: getThemePack(null).id }
@@ -203,7 +242,7 @@ export const ThemeProvider = ({ children }) => {
     commitThemePreference(nextPreference, nextCustomThemePacks);
   }, [commitThemePreference, customThemePacks, preference]);
 
-  const exportThemePack = useCallback((themePackId) => {
+  const exportThemePack = useCallback((themePackId: string) => {
     const pack = getThemePack(themePackId, availableThemePacks);
     return {
       filename: getThemePackExportFilename(pack),

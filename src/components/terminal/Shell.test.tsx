@@ -25,7 +25,7 @@ vi.mock('react-i18next', async (importOriginal) => {
   };
 });
 
-vi.mock('../contexts/ThemeContext', () => ({
+vi.mock('../../theme/ThemeContext', () => ({
   useTheme: () => ({
     terminalTheme: { background: '#000000' },
     activeThemeTokens: { terminal: { background: '#000000', foreground: '#ffffff' } },
@@ -117,7 +117,7 @@ const ptyMock = vi.hoisted(() => {
   };
 });
 
-vi.mock('../lib/tauri-bridge', () => ({
+vi.mock('../../lib/tauri-bridge', () => ({
   isTauriEnv: () => ptyMock.isTauri.value,
   invoke: vi.fn(),
   pty: {
@@ -133,7 +133,7 @@ vi.mock('../lib/tauri-bridge', () => ({
   },
 }));
 
-vi.mock('../utils/logger', () => ({
+vi.mock('../../lib/logger', () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 

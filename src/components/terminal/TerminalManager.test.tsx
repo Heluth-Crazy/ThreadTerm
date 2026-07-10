@@ -37,7 +37,7 @@ vi.mock('../../lib/settingsWindow', () => ({
   openSettingsWindow: settingsWindowMocks.openSettingsWindow,
 }));
 
-vi.mock('../../contexts/ThemeContext', () => ({
+vi.mock('../../theme/ThemeContext', () => ({
   useTheme: () => ({
     activeThemeTokens: {
       app: {
@@ -92,7 +92,7 @@ vi.mock('../../lib/tauri-bridge', () => ({
   subscribeSupervisorAlert: (...args: unknown[]) => bridgeMocks.subscribeSupervisorAlert(...args),
 }));
 
-vi.mock('../Shell', () => ({
+vi.mock('./Shell', () => ({
   default: () => <div data-testid="mock-shell" />,
 }));
 

@@ -5,7 +5,9 @@ use std::{
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
-    verify_mobile_bundle()?;
+    if env::var_os("CARGO_FEATURE_MOBILE_BRIDGE").is_some() {
+        verify_mobile_bundle()?;
+    }
     configure_windows_resource_compiler()?;
     tauri_build::try_build(tauri_build::Attributes::default())?;
     Ok(())
@@ -59,7 +61,7 @@ fn configure_windows_resource_compiler() -> Result<(), Box<dyn Error>> {
 
     if let Some(existing) = rc_env_names
         .iter()
-        .filter_map(|name| env::var_os(name))
+        .filter_map(env::var_os)
         .filter_map(resolve_command_path)
         .next()
     {

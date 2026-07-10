@@ -21,7 +21,7 @@ import {
 import type { ThemeModeTokens } from '../../theme/themeTypes';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
-import { useTheme } from '../../contexts/ThemeContext';
+import { useTheme } from '../../theme/ThemeContext';
 
 type ActionState = 'idle' | 'busy' | 'failed';
 type BindHost = '127.0.0.1' | '0.0.0.0';

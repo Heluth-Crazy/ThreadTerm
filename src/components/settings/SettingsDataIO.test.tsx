@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../../contexts/ThemeContext', () => ({
+vi.mock('../../theme/ThemeContext', () => ({
   useTheme: () => mocks.themeState,
 }));
 

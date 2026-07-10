@@ -6,13 +6,16 @@ use once_cell::sync::Lazy;
 use portable_pty::ExitStatus;
 use regex::RegexSet;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::bridge;
 
 use super::registry;
 use super::session::{self, PtySession, SessionState, OUTPUT_IDLE_POLL, STARTUP_ERROR_SUPPRESS};
 use super::utf8::Utf8StreamDecoder;
+
+const MAIN_WINDOW_LABEL: &str = "main";
+const FLOAT_WINDOW_LABEL: &str = "float";
 
 // ── Regex patterns (compiled once) ───────────────────────────────────────────
 
@@ -325,7 +328,7 @@ pub(super) fn stream_pty_output(
                 if pending_since.is_none() {
                     pending_since = Some(Instant::now());
                 }
-                pending_bytes = pending_bytes.saturating_add(data.as_bytes().len());
+                pending_bytes = pending_bytes.saturating_add(data.len());
                 pending.push_str(&data);
 
                 let force_flush = output_requests_fast_flush(&pending, session_start);
@@ -405,7 +408,7 @@ pub(super) fn stream_pty_output(
         if pending_since.is_none() {
             pending_since = Some(Instant::now());
         }
-        pending_bytes = pending_bytes.saturating_add(trailing.as_bytes().len());
+        pending_bytes = pending_bytes.saturating_add(trailing.len());
         pending.push_str(&trailing);
         flush_pending_pty_output(
             &id,
@@ -487,6 +490,7 @@ fn exit_code_from_status(status: ExitStatus) -> Option<u32> {
     Some(status.exit_code())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn flush_pending_pty_output(
     id: &str,
     pending: &mut String,
@@ -528,6 +532,7 @@ fn flush_pending_pty_output(
     *prof_emit_chunks = prof_emit_chunks.saturating_add(1);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_pty_output_chunk(
     id: &str,
     data: &str,
@@ -540,8 +545,8 @@ fn emit_pty_output_chunk(
     session_start: Instant,
 ) {
     let seq = session::next_output_seq(ses);
-    let _ = app_handle.emit(
-        "pty-output",
+    emit_pty_output_to_terminal_windows(
+        app_handle,
         PtyOutputPayload {
             id: id.to_string(),
             data: data.to_string(),
@@ -549,7 +554,7 @@ fn emit_pty_output_chunk(
         },
     );
     let ack_bytes = if byte_count == 0 {
-        data.as_bytes().len()
+        data.len()
     } else {
         byte_count
     };
@@ -614,20 +619,19 @@ fn emit_pty_output_chunk(
     if !resize_redraw
         && session_start.elapsed() > STARTUP_ERROR_SUPPRESS
         && ERROR_PATTERNS.is_match(&cleaned)
+        && last_attention_time.elapsed() > attention_debounce
     {
-        if last_attention_time.elapsed() > attention_debounce {
-            *last_attention_time = Instant::now();
-            let _ = app_handle.emit(
-                "attention-required",
-                AttentionRequiredPayload {
-                    pty_id: id.to_string(),
-                    session_id: id.to_string(),
-                    attention_type: "error".to_string(),
-                    message: "Agent encountered an error".to_string(),
-                },
-            );
-            bridge::broadcast_attention(id, "failed", "Agent encountered an error");
-        }
+        *last_attention_time = Instant::now();
+        let _ = app_handle.emit(
+            "attention-required",
+            AttentionRequiredPayload {
+                pty_id: id.to_string(),
+                session_id: id.to_string(),
+                attention_type: "error".to_string(),
+                message: "Agent encountered an error".to_string(),
+            },
+        );
+        bridge::broadcast_attention(id, "failed", "Agent encountered an error");
     }
 
     // Coalesced snapshot + preview — the expensive part, kept off the per-chunk
@@ -635,6 +639,13 @@ fn emit_pty_output_chunk(
     if should_flush_preview(last_preview_flush.elapsed(), force_preview) {
         flush_preview(id, data, ses);
         *last_preview_flush = Instant::now();
+    }
+}
+
+fn emit_pty_output_to_terminal_windows(app_handle: &AppHandle, payload: PtyOutputPayload) {
+    let _ = app_handle.emit_to(MAIN_WINDOW_LABEL, "pty-output", payload.clone());
+    if app_handle.get_webview_window(FLOAT_WINDOW_LABEL).is_some() {
+        let _ = app_handle.emit_to(FLOAT_WINDOW_LABEL, "pty-output", payload);
     }
 }
 

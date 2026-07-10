@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import type { ReactNode } from 'react';
+import { memo, type ReactNode } from 'react';
 import type { TerminalCard as TerminalCardType } from '../../types/terminal';
 import {
   AI_CLI_SESSION_BADGE_CLASS,
@@ -26,7 +26,7 @@ export interface CardHeaderProps {
   onCancelEdit: () => void;
 }
 
-export function CardHeader({
+export const CardHeader = memo(function CardHeader({
   card,
   aiSessionBadge,
   dragHandle,
@@ -117,4 +117,4 @@ export function CardHeader({
       <CardStatusBadge status={card.status} />
     </div>
   );
-}
+});

@@ -15,10 +15,19 @@ import {
 } from './helpers';
 import type { NotificationsSlice, TerminalSliceCreator } from './types';
 
+/** 通知定位脉冲的默认时长 —— 需求为 2~3 秒的短暂高亮。 */
+export const HIGHLIGHT_TTL_MS = 2400;
+
+// 高亮过期定时器放在模块作用域：store 只持有可序列化状态
+// （见 state-management.md「Persisting Timer-Dependent State」）。
+let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+
 export const createNotificationsSlice: TerminalSliceCreator<NotificationsSlice> = (set, get) => ({
   notifications: [],
   notificationCentreOpen: false,
   pendingFocusCardId: null,
+  pendingLocateCardId: null,
+  highlightCardId: null,
   osNotificationsEnabled: DEFAULT_OS_NOTIFICATIONS_ENABLED,
   supervisorEnabled: false,
 
@@ -138,6 +147,18 @@ export const createNotificationsSlice: TerminalSliceCreator<NotificationsSlice> 
     })),
 
   setPendingFocusCardId: (id) => set({ pendingFocusCardId: id }),
+
+  setPendingLocateCardId: (id) => set({ pendingLocateCardId: id }),
+
+  highlightCard: (id, ttlMs = HIGHLIGHT_TTL_MS) => {
+    if (highlightTimer !== null) clearTimeout(highlightTimer);
+    set({ highlightCardId: id });
+    highlightTimer = setTimeout(() => {
+      highlightTimer = null;
+      // 仅当仍是本次高亮时才清除，避免误清后续更新的高亮。
+      set((state) => (state.highlightCardId === id ? { highlightCardId: null } : state));
+    }, ttlMs);
+  },
 
   getUnreadCount: () => get().notifications.filter((n) => !n.read).length,
 });

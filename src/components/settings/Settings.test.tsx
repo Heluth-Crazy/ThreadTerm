@@ -9,7 +9,7 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-vi.mock('../contexts/ThemeContext', () => ({
+vi.mock('../../theme/ThemeContext', () => ({
   useTheme: () => ({
     themeMode: 'dark',
     themePackId: 'threadterm-dark',
@@ -27,31 +27,31 @@ vi.mock('./LanguageSelector', () => ({
   default: () => <div>language selector</div>,
 }));
 
-vi.mock('./settings/NotificationSettings', () => ({
+vi.mock('./NotificationSettings', () => ({
   NotificationSettings: () => <div>notification settings</div>,
 }));
 
-vi.mock('./settings/DesktopPetSettings', () => ({
+vi.mock('./DesktopPetSettings', () => ({
   DesktopPetSettings: () => <div>desktop pet settings</div>,
 }));
 
-vi.mock('./settings/OverlayHotkeysSettings', () => ({
+vi.mock('./OverlayHotkeysSettings', () => ({
   default: () => <div>overlay hotkeys settings</div>,
 }));
 
-vi.mock('./settings/KeyboardShortcutsSettings', () => ({
+vi.mock('./KeyboardShortcutsSettings', () => ({
   default: () => <div>keyboard shortcuts settings</div>,
 }));
 
-vi.mock('./settings/SupervisorSettings', () => ({
+vi.mock('./SupervisorSettings', () => ({
   SupervisorSettings: () => <div>supervisor settings</div>,
 }));
 
-vi.mock('./settings/SettingsDataIO', () => ({
+vi.mock('./SettingsDataIO', () => ({
   SettingsDataIO: () => <div>settings data io</div>,
 }));
 
-vi.mock('../lib/nativeDialog', () => ({
+vi.mock('../../lib/nativeDialog', () => ({
   confirmDialog: vi.fn(),
 }));
 

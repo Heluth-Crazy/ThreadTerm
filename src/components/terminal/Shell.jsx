@@ -5,17 +5,17 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { useTranslation } from 'react-i18next';
-import { logger } from '../utils/logger';
-import { isTauriEnv, pty } from '../lib/tauri-bridge';
-import { useTheme } from '../contexts/ThemeContext';
-import { claimTerminalActive, registerTerminal, unregisterTerminal } from './terminal/xtermRegistry';
-import { createOutputSequencer } from './terminal/outputSequencer';
+import { logger } from '../../lib/logger';
+import { isTauriEnv, pty } from '../../lib/tauri-bridge';
+import { useTheme } from '../../theme/ThemeContext';
+import { claimTerminalActive, registerTerminal, unregisterTerminal } from './xtermRegistry';
+import { createOutputSequencer } from './outputSequencer';
 import {
   computeReconnectDelay,
   countNewlines,
   formatExitBanner,
   shouldFollowOutput,
-} from './terminal/shellBehavior';
+} from './shellBehavior';
 
 const xtermStyles = `
   .xterm .xterm-screen {

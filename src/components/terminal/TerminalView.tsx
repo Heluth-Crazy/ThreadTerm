@@ -20,7 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import Shell from '../Shell';
+import Shell from './Shell';
 import type { TerminalCard } from '../../types/terminal';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { getStatusMeta } from './statusMeta';

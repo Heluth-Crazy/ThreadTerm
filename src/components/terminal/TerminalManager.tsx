@@ -39,24 +39,29 @@ import { StatsPanel } from '../stats/StatsPanel';
 import { useStatsAutoRefresh, useStatsSubscription } from '../../stores/statsStore';
 import { CommandPalette } from '../palette/CommandPalette';
 import { buildCommandRegistry, type CommandGroup } from '../palette/commandRegistry';
-import type { TerminalCard, TerminalCreateOptions, TerminalStatus, TerminalType } from '../../types/terminal';
+import type { TerminalCard, TerminalCreateOptions, TerminalType } from '../../types/terminal';
 import { useSupervisor } from '../../lib/supervisor/useSupervisor';
 import { git, isTauriEnv, mobileBridge, providerSessions, type GitStatusEntry } from '../../lib/tauri-bridge';
 import { openSettingsWindow, type SettingsTab } from '../../lib/settingsWindow';
 import { confirmDialog } from '../../lib/nativeDialog';
-import type { CardMeta, TerminalStatus as MobileTerminalStatus } from '../../mobile/bridge/protocol';
+import { cardToMobileMeta } from '../../mobile/bridge/cardMeta';
 import { cardMatchesWorktree } from '../../lib/worktreePaths';
 import { clearProjectBranchCache } from './useProjectBranches';
 import { clearProjectWorktreeCache } from './useProjectWorktrees';
+import { useRightSurfaceStack, type RightSurface } from './useRightSurfaceStack';
 import { WorkspacePanel, type WorkspacePanelState } from '../files/WorkspacePanel';
 import {
   WorkspaceDiffView,
   WorkspaceFileEditorView,
 } from '../files/WorkspaceContentViews';
+import {
+  pathBasename,
+  workspaceDiffTabId,
+  workspaceFileTabId,
+} from '../files/workspaceContentTabs';
 import type { DirEntry } from '../files/fileMeta';
 
 type ViewMode = 'grid' | 'focus';
-type RightSurface = 'stats' | 'archive' | 'sessionDock';
 type WorkspaceContentTab =
   | {
       id: string;
@@ -92,25 +97,6 @@ const EMPTY_WORKSPACE_CONTENT_STATE: WorkspaceContentState = {
   panelState: DEFAULT_WORKSPACE_PANEL_STATE,
 };
 
-function pushRightSurface(stack: RightSurface[], surface: RightSurface): RightSurface[] {
-  return [...stack.filter((item) => item !== surface), surface];
-}
-
-function removeRightSurface(stack: RightSurface[], surface: RightSurface): RightSurface[] {
-  return stack.filter((item) => item !== surface);
-}
-
-function resolveActiveRightSurface(
-  stack: RightSurface[],
-  isAvailable: (surface: RightSurface) => boolean,
-): RightSurface | null {
-  for (let i = stack.length - 1; i >= 0; i -= 1) {
-    const surface = stack[i];
-    if (isAvailable(surface)) return surface;
-  }
-  return null;
-}
-
 function workspaceContentStateWithDefaults(
   state: WorkspaceContentState | undefined,
 ): WorkspaceContentState {
@@ -139,63 +125,6 @@ const TERMINAL_TYPES: TerminalType[] = [
   'node',
   'custom',
 ];
-
-function pathBasename(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/, '');
-  const parts = trimmed.split(/[\\/]/);
-  return parts[parts.length - 1] || trimmed;
-}
-
-function workspaceFileTabId(rootPath: string, path: string): string {
-  return `file:${encodeURIComponent(rootPath)}:${encodeURIComponent(path)}`;
-}
-
-function workspaceDiffTabId(repositoryRoot: string, path: string): string {
-  return `diff:${encodeURIComponent(repositoryRoot)}:${encodeURIComponent(path)}`;
-}
-
-function toMobileStatus(status: TerminalStatus): MobileTerminalStatus {
-  return status === 'waiting' ? 'waiting_for_input' : status;
-}
-
-function summaryLineFromCard(card: TerminalCard): string | null {
-  const source = card.lastReplyPreview || card.lastOutput;
-  const line = source
-    .split(/\r?\n/)
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .slice(-1)[0];
-  return line || null;
-}
-
-function byteLength(value: string): number {
-  return new TextEncoder().encode(value).length;
-}
-
-function cardToMobileMeta(card: TerminalCard): CardMeta {
-  return {
-    id: card.id,
-    ptyId: card.ptyId || card.id,
-    status: toMobileStatus(card.status),
-    projectPath: card.projectPath,
-    projectName: card.projectName,
-    worktreePath: card.worktreePath ?? null,
-    terminalType: card.terminalType,
-    command: card.command ?? null,
-    createdAt: card.createdAt,
-    lastActivity: card.lastActivity,
-    lastReplyPreview: card.lastReplyPreview || card.lastOutput,
-    summaryLine: summaryLineFromCard(card),
-    hiddenLineCount: 0,
-    recentOutputBytes: byteLength(card.lastOutput || card.lastReplyPreview || ''),
-    messageCount: card.messageCount,
-    unread: card.unread,
-    providerSessionState: card.providerSessionState ?? null,
-    ptyLive: false,
-    ptyState: null,
-    attachable: true,
-  };
-}
 
 function normalizeTerminalType(value: string): TerminalType {
   return TERMINAL_TYPES.includes(value as TerminalType) ? (value as TerminalType) : 'custom';
@@ -232,6 +161,9 @@ export function TerminalManager() {
   const selectedWorktreeLabel = useTerminalStore((s) => s.selectedWorktreeLabel);
   const pendingFocusCardId = useTerminalStore((s) => s.pendingFocusCardId);
   const setPendingFocusCardId = useTerminalStore((s) => s.setPendingFocusCardId);
+  const pendingLocateCardId = useTerminalStore((s) => s.pendingLocateCardId);
+  const setPendingLocateCardId = useTerminalStore((s) => s.setPendingLocateCardId);
+  const highlightCard = useTerminalStore((s) => s.highlightCard);
   const updateCardAiIntent = useTerminalStore((s) => s.updateCardAiIntent);
   const pushNotification = useTerminalStore((s) => s.pushNotification);
   const dockPinned = useTerminalStore((s) => s.dockPinned);
@@ -290,7 +222,6 @@ export function TerminalManager() {
   }, []);
   const [createOpen, setCreateOpen] = useState(false);
   const [mobileViewActive, setMobileViewActive] = useState(false);
-  const [rightSurfaceStack, setRightSurfaceStack] = useState<RightSurface[]>([]);
   const [workspaceContentByCardId, setWorkspaceContentByCardId] = useState<
     Record<string, WorkspaceContentState>
   >({});
@@ -377,18 +308,12 @@ export function TerminalManager() {
     [selectedProjectName, selectedProjectPath, sessionDockAvailable],
   );
 
-  const activeRightSurface = useMemo(
-    () => resolveActiveRightSurface(rightSurfaceStack, isRightSurfaceAvailable),
-    [isRightSurfaceAvailable, rightSurfaceStack],
-  );
-
-  const openRightSurface = useCallback((surface: RightSurface) => {
-    setRightSurfaceStack((current) => pushRightSurface(current, surface));
-  }, []);
-
-  const closeRightSurface = useCallback((surface: RightSurface) => {
-    setRightSurfaceStack((current) => removeRightSurface(current, surface));
-  }, []);
+  const {
+    activeRightSurface,
+    openRightSurface,
+    closeRightSurface,
+    toggleRightSurface,
+  } = useRightSurfaceStack(isRightSurfaceAvailable);
 
   useEffect(() => {
     closeRightSurface('archive');
@@ -412,13 +337,9 @@ export function TerminalManager() {
   // recently opened surface wins, and closing it restores the workspace rail.
   const toggleRightPanel = useCallback(
     (panel: 'stats' | 'archive') => {
-      setRightSurfaceStack((current) =>
-        activeRightSurface === panel
-          ? removeRightSurface(current, panel)
-          : pushRightSurface(current, panel),
-      );
+      toggleRightSurface(panel);
     },
-    [activeRightSurface],
+    [toggleRightSurface],
   );
 
   const workspaceRailVisible = viewMode === 'focus' && !!focusedCwd;
@@ -828,6 +749,17 @@ export function TerminalManager() {
     focusMountedCard(pendingFocusCardId);
     setPendingFocusCardId(null);
   }, [cards, focusMountedCard, pendingFocusCardId, setPendingFocusCardId]);
+
+  // Notification locate channel — the smart-hybrid grid path. The card is
+  // already visible at store level (openNotificationTarget fixed filters),
+  // so a pulse is enough: the highlighted card scrolls itself into view.
+  useEffect(() => {
+    if (!pendingLocateCardId) return;
+    if (cards.some((card) => card.id === pendingLocateCardId)) {
+      highlightCard(pendingLocateCardId);
+    }
+    setPendingLocateCardId(null);
+  }, [cards, highlightCard, pendingLocateCardId, setPendingLocateCardId]);
 
   const handleOpenTerminal = useCallback(
     (cardId: string) => {

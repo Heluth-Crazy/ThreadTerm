@@ -1,13 +1,13 @@
 import { I18nextProvider } from 'react-i18next';
-import { ThemeProvider } from './contexts/ThemeContext';
-import i18n from './i18n/config.js';
+import { ThemeProvider } from './theme/ThemeContext';
+import i18n from './i18n/config';
 import { TerminalManager } from './components/terminal/TerminalManager';
 import { TerminalEventBridge } from './components/terminal/TerminalEventBridge';
 import { NotificationBridge } from './components/terminal/NotificationBridge';
 import { KeyboardBridge } from './components/terminal/KeyboardBridge';
 import { OverlayBridge } from './components/overlays/OverlayBridge';
 import { NotificationCenter } from './components/terminal/NotificationCenter';
-import { SettingsSyncBridge } from './components/SettingsSyncBridge';
+import { SettingsSyncBridge } from './components/settings/SettingsSyncBridge';
 
 /**
  * Terminal Manager Lite — lightweight terminal orchestrator.

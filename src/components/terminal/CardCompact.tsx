@@ -1,4 +1,5 @@
 import { motion, useReducedMotion } from 'framer-motion';
+import { memo } from 'react';
 import type { TerminalCard as TerminalCardType } from '../../types/terminal';
 import type { CardPreview as CardPreviewData } from './cardPreview';
 import { isTechnicalPreviewLine } from './cardPreview';
@@ -13,7 +14,7 @@ export interface CardCompactProps {
   onClick?: () => void;
 }
 
-export function CardCompact({
+export const CardCompact = memo(function CardCompact({
   card,
   preview,
   isFocused,
@@ -64,4 +65,4 @@ export function CardCompact({
       </div>
     </motion.div>
   );
-}
+});

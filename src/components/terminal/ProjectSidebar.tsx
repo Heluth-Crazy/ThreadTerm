@@ -10,7 +10,14 @@
  *
  * No drag-and-drop, rename, or delete — keep surface small.
  */
-import { useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import {
+  memo,
+  useMemo,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 import {
   ChevronDown,
   ChevronLeft,
@@ -627,7 +634,7 @@ interface SidebarRowProps {
   onToggle?: (e: MouseEvent) => void;
 }
 
-function SidebarRow({
+const SidebarRow = memo(function SidebarRow({
   collapsed,
   selected,
   icon,
@@ -761,4 +768,32 @@ function SidebarRow({
       )}
     </button>
   );
+}, areSidebarRowPropsEqual);
+
+function areSidebarRowPropsEqual(prev: SidebarRowProps, next: SidebarRowProps): boolean {
+  return (
+    prev.collapsed === next.collapsed &&
+    prev.selected === next.selected &&
+    prev.label === next.label &&
+    prev.subLabel === next.subLabel &&
+    prev.count === next.count &&
+    prev.unread === next.unread &&
+    prev.hasChildren === next.hasChildren &&
+    prev.expanded === next.expanded &&
+    prev.toggleTitle === next.toggleTitle &&
+    auxActionsEqual(prev.auxActions, next.auxActions)
+  );
+}
+
+function auxActionsEqual(
+  prev: SidebarRowAuxAction[] | undefined,
+  next: SidebarRowAuxAction[] | undefined,
+): boolean {
+  const prevActions = prev ?? [];
+  const nextActions = next ?? [];
+  if (prevActions.length !== nextActions.length) return false;
+  return prevActions.every((action, index) => {
+    const nextAction = nextActions[index];
+    return action.key === nextAction.key && action.title === nextAction.title;
+  });
 }

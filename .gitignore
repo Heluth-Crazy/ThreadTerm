@@ -156,18 +156,11 @@ release/*.exe
 # Local documentation and planning artifacts
 !docs/
 docs/*
-!docs/windows-terminal-baseline-report.json
-!docs/windows-terminal-optimization-execution-plan.json
-!docs/windows终端卡顿验证清单.json
-!docs/windows-terminal-optimization-verification.json
-!docs/windows-pty-governance-verification.json
-!docs/pty-emit-coalescing-design.json
-!docs/worktree-terminal-design.json
-!docs/opencode-adaptation-design.json
-!docs/worktree-branch-terminal-design.json
-!docs/sidebar-branch-tree-ui-design.json
-!docs/branch-worktree-card-filter-design.json
-!docs/session-dock-keepalive-design.json
+!docs/archive/
+!docs/archive/**
+!docs/project-structure-and-performance-review.md
+!docs/windows-lightweight-feasibility-report.md
+!docs/local-and-windows-test-checklist.md
 !docs/card-token-live-display-design.json
 !docs/windows-webview-removal-assessment.json
 .gitnexus

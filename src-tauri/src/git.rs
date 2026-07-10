@@ -525,7 +525,7 @@ fn read_worktree_file(repo_root: &Path, path: &str) -> Result<Option<String>, St
     }
     let bytes = std::fs::read(&file)
         .map_err(|err| format!("file_read_failed: Failed to read file: {err}"))?;
-    bytes_to_text(bytes, &path).map(Some)
+    bytes_to_text(bytes, path).map(Some)
 }
 
 fn file_text_diff_for_directory(project_path: &str, path: &str) -> Result<GitTextDiff, String> {

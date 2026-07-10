@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import '../../index.css';
-import '../../i18n/config.js';
-import { ThemeProvider } from '../../contexts/ThemeContext';
-import Settings from '../../components/Settings';
+import '../../i18n/config';
+import { ThemeProvider } from '../../theme/ThemeContext';
+import Settings from '../../components/settings/Settings';
 import { applySavedTheme } from '../../theme/applyTheme';
 import { installNativeDesktopBehavior } from '../../lib/nativeDesktop';
 import {
