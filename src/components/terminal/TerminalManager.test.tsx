@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { clearWorkspaceLoadCaches } from '../files/workspaceLoadCache';
 import { TerminalManager } from './TerminalManager';
 
 const settingsWindowMocks = vi.hoisted(() => ({
@@ -148,12 +149,18 @@ function resetStore() {
     notifications: [],
     notificationCentreOpen: false,
     pendingFocusCardId: null,
+    pendingLocateCardId: null,
+    recentlyViewedCardIds: [],
+    dockPinned: false,
+    selectedWorktreePath: null,
+    selectedWorktreeLabel: null,
   });
 }
 
 describe('TerminalManager shortcut hint layout', () => {
   beforeEach(() => {
     resetStore();
+    clearWorkspaceLoadCaches();
     vi.clearAllMocks();
     try {
       localStorage.removeItem('threadterm-shortcut-hint-dismissed');
@@ -360,7 +367,9 @@ describe('TerminalManager shortcut hint layout', () => {
 
     expect(await screen.findByText('README.md')).toBeInTheDocument();
 
-    useTerminalStore.setState({ dockPinned: true });
+    act(() => {
+      useTerminalStore.setState({ dockPinned: true });
+    });
 
     const dock = await screen.findByTestId('session-dock');
     expect(dock).toHaveAttribute('aria-hidden', 'false');
@@ -415,9 +424,11 @@ describe('TerminalManager shortcut hint layout', () => {
     fireEvent.click(await screen.findByText('README.md'));
     expect(await screen.findByDisplayValue('repo file')).toBeInTheDocument();
 
-    useTerminalStore.setState({ dockPinned: true });
+    act(() => {
+      useTerminalStore.setState({ dockPinned: true });
+    });
     expect(await screen.findByTestId('session-dock')).toBeInTheDocument();
-    fireEvent.keyDown(window, { key: '1' });
+    fireEvent.click(screen.getByTestId(`session-dock-row-${otherId}`));
 
     expect(await screen.findByText('OTHER.md')).toBeInTheDocument();
     expect(screen.queryByDisplayValue('repo file')).toBeNull();
@@ -425,10 +436,11 @@ describe('TerminalManager shortcut hint layout', () => {
     expect(screen.getAllByTestId('mock-shell').length).toBeGreaterThan(0);
     expect(screen.queryByTestId('session-dock')).toBeNull();
 
-    useTerminalStore.setState({ dockPinned: true });
+    act(() => {
+      useTerminalStore.setState({ dockPinned: true });
+    });
     expect(await screen.findByTestId('session-dock')).toBeInTheDocument();
-    fireEvent.keyDown(window, { key: 'ArrowDown' });
-    fireEvent.keyDown(window, { key: 'Enter' });
+    fireEvent.click(screen.getByTestId(`session-dock-row-${repoId}`));
 
     expect(await screen.findByRole('button', { name: '终端' })).toHaveClass('bg-primary/15');
     expect(

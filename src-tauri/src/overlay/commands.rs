@@ -4,11 +4,12 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager};
 
 use super::hotkey::{register_default_shortcuts, register_hotkey, unregister_all_hotkeys};
+#[cfg(target_os = "macos")]
+use super::platform::activate_float_window_for_keyboard;
 use super::platform::{
-    activate_float_window_for_keyboard, configure_float_window_for_current_space,
-    configure_selector_window_for_current_space, order_overlay_window_front,
-    restore_regular_activation_policy, restore_regular_activation_policy_if_no_overlay_visible,
-    set_overlay_activation_policy,
+    configure_float_window_for_current_space, configure_selector_window_for_current_space,
+    order_overlay_window_front, restore_regular_activation_policy,
+    restore_regular_activation_policy_if_no_overlay_visible, set_overlay_activation_policy,
 };
 use super::state::{FloatBounds, FloatLaunchMode, OverlaySettings, OVERLAY_SETTINGS};
 use super::window::{

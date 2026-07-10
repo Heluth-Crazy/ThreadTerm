@@ -157,11 +157,6 @@ pub(super) fn configure_selector_window_for_current_space(_window: &WebviewWindo
 pub(super) fn configure_float_window_for_current_space(_window: &WebviewWindow) {}
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn activate_float_window_for_keyboard(window: &WebviewWindow) {
-    let _ = window.set_focus();
-}
-
-#[cfg(not(target_os = "macos"))]
 pub(super) fn set_overlay_activation_policy(_app: &AppHandle) {}
 
 #[cfg(not(target_os = "macos"))]

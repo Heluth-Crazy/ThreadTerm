@@ -197,7 +197,7 @@ describe('WorkspaceDiffView', () => {
 
     expect(await screen.findByText('Index')).toBeInTheDocument();
     expect(screen.getByText('Working tree')).toBeInTheDocument();
-    expect(screen.getByLabelText('diff editor')).toHaveValue('new\nunchanged\n');
+    expect(await screen.findByLabelText('diff editor')).toHaveValue('new\nunchanged\n');
     expect(mocks.gitTextDiff).toHaveBeenCalledWith('/repo', 'src/App.tsx');
   });
 

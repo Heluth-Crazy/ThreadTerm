@@ -95,6 +95,13 @@ async function waitForFonts() {
   }
 }
 
+function isDomViewportScrolledUp(host) {
+  const viewport = host?.querySelector?.('.xterm-viewport');
+  if (!viewport) return false;
+  const distanceFromBottom = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop;
+  return distanceFromBottom > 4;
+}
+
 function Shell({
   selectedProject,
   initialCommand,
@@ -446,7 +453,10 @@ function Shell({
           // when the viewport already sits at the bottom (or the app runs on
           // the alternate screen); a user reading history must not be yanked
           // back down by every incoming chunk.
-          const followOutput = shouldFollowOutput(term.buffer.active);
+          const followOutput =
+            term.buffer.active.type === 'alternate' ||
+            (shouldFollowOutput(term.buffer.active) &&
+              !isDomViewportScrolledUp(terminalRef.current));
           const needsRefresh = CLEANUP_SEQUENCE_RE.test(data) || data.includes('\r');
           const finalize = () => {
             if (followOutput) {
@@ -454,6 +464,8 @@ function Shell({
                 scrollTerminalToBottom();
               }
             } else {
+              scrolledUpRef.current = true;
+              setScrolledUp(true);
               pendingNewLinesRef.current += countNewlines(data);
               scheduleNewOutputFlush();
             }
@@ -809,7 +821,9 @@ function Shell({
       const term = terminal.current;
       if (!term) return;
       const buf = term.buffer.active;
-      const atBottom = buf.viewportY >= buf.baseY;
+      const atBottom =
+        buf.type === 'alternate' ||
+        (buf.viewportY >= buf.baseY && !isDomViewportScrolledUp(terminalRef.current));
       scrolledUpRef.current = !atBottom;
       setScrolledUp(!atBottom);
       if (atBottom) {

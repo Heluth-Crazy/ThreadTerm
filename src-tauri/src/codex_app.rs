@@ -669,7 +669,7 @@ fn codex_app_server_launch() -> CodexAppServerLaunch {
         // be launched reliably through CreateProcess as a bare `codex` binary.
         // Keep this shell fallback static so stdin/stdout still proxy directly
         // to `codex app-server --stdio` without user-controlled interpolation.
-        return CodexAppServerLaunch {
+        CodexAppServerLaunch {
             program: "cmd.exe".to_string(),
             args: vec![
                 "/d".to_string(),
@@ -677,7 +677,7 @@ fn codex_app_server_launch() -> CodexAppServerLaunch {
                 "/c".to_string(),
                 "codex app-server --stdio".to_string(),
             ],
-        };
+        }
     }
 
     #[cfg(not(windows))]
@@ -691,12 +691,9 @@ fn codex_app_server_launch() -> CodexAppServerLaunch {
 
 #[cfg(windows)]
 fn resolve_windows_codex_exe() -> Option<PathBuf> {
-    for candidate in windows_codex_exe_candidates() {
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+    windows_codex_exe_candidates()
+        .into_iter()
+        .find(|candidate| candidate.is_file())
 }
 
 #[cfg(windows)]
