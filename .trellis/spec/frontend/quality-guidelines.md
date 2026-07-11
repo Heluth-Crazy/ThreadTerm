@@ -395,7 +395,7 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 
 </spec-entry>
 
-<spec-entry category="quality" keywords="mobile-bridge,react-bundle,pairing,websocket,xterm,theme" date="2026-05-12" source="src-tauri/src/bridge/protocol.rs:238">
+<spec-entry category="quality" keywords="mobile-bridge,react-bundle,pairing,websocket,xterm,theme" date="2026-07-11" source="src-tauri/src/bridge/pairing.rs:59">
 
 ### Scenario: Mobile Bridge React Client
 
@@ -408,6 +408,11 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 - Static mobile shell: `GET /`, `GET /pair?otp=<code>&permission=<read_only|full>`, and extensionless SPA paths serve `index.html`.
 - Static assets: `GET /assets/index.css`, `GET /assets/index.js`, `GET /assets/vendor-react.js`, and `GET /assets/vendor-xterm.js` serve fixed bundle files.
 - Pairing request: `POST /pair` with `{ otp, deviceName, permission }`.
+- Desktop pairing command:
+  `bridge_pair_qr(host: Option<String>, permission: Option<DevicePermission>) -> PairQrResponse`.
+- Pairing authorization state: `PairingStore` owns the pending OTP permission
+  ceiling, high-entropy one-time secret, authorization leases, and
+  auth-revision notifications used by live WebSockets.
 - Live updates: `GET /ws?token=<deviceToken>` remains supported for compatibility, but the preferred WebSocket path is `GET /ws` followed by first-frame `{ protocol_version: 1, kind: "auth", token }`.
 - Snapshot fallback/API: `GET /snapshot` must authenticate with `Authorization: Bearer <deviceToken>`. `GET /snapshot?token=<deviceToken>` remains a compatibility path only.
 - Bridge CORS must stay explicit: allow browser mobile bridge flows with only the required HTTP methods and headers instead of using a fully permissive layer.
@@ -429,7 +434,10 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 #### 3. Contracts
 - The mobile page is a React app built under `mobile-app/`, not a hand-maintained Rust HTML string template.
 - Rust may embed only the fixed production bundle outputs listed above. If bundle filenames change, update both Vite output naming and `mobile_asset_bytes()`.
-- `src-tauri/build.rs` must fail early when `mobile-app/dist/index.html` is missing; build `mobile-app/dist` before `cargo build` / Tauri packaging.
+- `src-tauri/build.rs` must fail early when `mobile-app/dist/index.html` is
+  missing. Production packaging builds it unconditionally; development must
+  enter through `npm run dev:desktop`, which runs `build:mobile` before Vite so
+  a clean checkout reaches Rust compilation with all embedded assets present.
 - Static asset responses must set content type from the served file path. SPA fallback requests without an extension must still return `text/html`, not `application/octet-stream`.
 - Mobile bundle filenames are fixed (`assets/index.js`, `assets/index.css`,
   vendor chunks), so all embedded mobile responses must use `no-store`.
@@ -437,9 +445,41 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
   that previously cached immutable no-query assets fetch the current bundle.
   Do not use immutable asset caching unless the bundle switches to content-hashed
   filenames and Rust `mobile_asset_bytes()` is updated with the hashed names.
-- Pairing-page requests must set an explicit permission. Use `read_only` by default; enable `full` only from a deliberate full-control selection in the desktop pairing UI.
-- If a legacy or direct `POST /pair` request omits `permission`, backend pairing and persisted device rows must default to `read_only`, never `full`.
-- The desktop `PairQrResponse.url` command contract must stay permission-neutral. Append `permission=read_only|full` client-side when displaying/copying the pairing URL so the command response shape remains stable.
+- Pairing-page requests must set an explicit permission. Use `read_only` by
+  default; enable `full` only from a deliberate full-control selection in the
+  desktop pairing UI.
+- Authorization is server-authoritative: `bridge_pair_qr` binds the selected
+  maximum permission into the pending OTP before the URL is shown. The
+  untrusted `PairRequest.permission` may attenuate a `full` OTP to `read_only`,
+  but it must never elevate a read-only OTP.
+- If a legacy or direct `POST /pair` request omits `permission`, backend
+  pairing and persisted device rows must default to `read_only`, never `full`.
+- `PairQrResponse.url` stays permission-neutral for response-shape
+  compatibility. The desktop may append the same permission to the displayed
+  URL as mobile UX metadata, but the URL/query value is not authorization.
+- Issuing a new pairing code invalidates all older pending codes so switching
+  from full control back to read-only cannot leave a usable full-control OTP.
+- Pairing secrets carried by the QR URL must provide at least 128 bits of
+  entropy and remain URL-safe. A six-digit online code is not acceptable for a
+  LAN endpoint that can grant terminal control.
+- Every authenticated WebSocket must subscribe to bridge-stop and auth-revision
+  state. Revocation, expiry, or `bridge_stop` closes idle sockets; each inbound
+  control message is revalidated before dispatch. `bridge_stop` waits for the
+  server task and tracked HTTP/WebSocket work before reporting stopped.
+- Every Full-control side effect acquires a per-device authorization lease
+  atomically with revalidation and holds it through audit, PTY work, or desktop
+  event dispatch. Revoke tombstones first, blocks new leases, and waits for
+  existing leases; timeout is an explicit command error, never false success.
+- Authenticated snapshot generation/serialization and WebSocket initial,
+  resync, outbound, error, and close sends hold an active-device read/send
+  lease. Revoke waits for both read/send and Full leases; bytes already
+  serialized or accepted by the socket buffer are in-flight and not rollbackable.
+- The outermost Axum middleware tracks requests before extractors/auth/DB work;
+  WebSocket upgrade callbacks are tracked separately. Stop retains force-cancel
+  for late registrations and returns an error if synchronous work cannot drain.
+  A failed stop keeps its managed handle in runtime, reports conservative
+  running/stopping status, rejects a new start generation, and can be retried
+  after the tracked work exits.
 - Mobile pairing storage keys are `threadterm.bridgeToken` and `threadterm.bridgePermission`. Temporary or experimental key names may be read only for migration and must be cleared after storing the canonical keys.
 - A QR URL with `permission=read_only` must not inherit an existing stored `full` permission. Stored permission is used only for already-paired reconnects when no OTP is present.
 - After successful pairing, store the device token and connect to `/ws`.
@@ -501,6 +541,24 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 - Missing OTP without a stored token -> show missing-code guidance.
 - Pairing failure -> show retry button and error detail.
 - Read-only QR with old full-control storage -> pair/read as `read_only`, not `full`.
+- Read-only OTP with a tampered `permission: full` POST -> pair as
+  `read_only`; never trust the client field as the authorization ceiling.
+- Full OTP with missing/read-only request permission -> attenuate to
+  `read_only`; grant `full` only when both the server OTP and request are full.
+- New pairing code issued -> every previous pending OTP is invalid.
+- Device revoked or token expired while WebSocket is idle -> send a versioned
+  auth error and close the socket without waiting for a new client message.
+- Bridge stopped with active WebSockets -> send `bridge_stopped`, close all
+  sockets, and complete server shutdown before returning stopped status.
+- Full command already in flight when revoke begins -> revoke blocks until its
+  authorization lease drops; no later Full command can acquire a lease.
+- Snapshot or authenticated WebSocket send already in flight when revoke begins
+  -> revoke waits for its read/send lease and the socket's revocation close.
+- Blocking HTTP extractor or synchronous operation exceeds stop deadline ->
+  stop persists disabled state, returns a drain error, retains the stopping
+  handle, rejects start, and a later stop retry removes it after drain.
+- Pairing secret generation -> at least 128 bits, URL-safe, and collision-free
+  across a representative generation test.
 - WebSocket protocol mismatch -> show an error detail and do not render the raw payload.
 - WebSocket missing query token -> allow upgrade, require first-frame `auth`, then send initial `theme` and `snapshot`.
 - WebSocket invalid/missing first-frame auth -> send a versioned `error` and close.
@@ -543,7 +601,9 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
   recovery, and reconnect behavior.
 - Typecheck and production builds must include both roots: `src/**` and `mobile-app/src/**`.
 - Tauri packaging/build checks must run after `npm run build:mobile` so Rust `include_bytes!` paths point at current bundle files.
-- Desktop settings tests must assert the displayed/copied pairing URL appends the selected `permission` query parameter without changing the `bridge_pair_qr` invocation contract.
+- Desktop settings tests must assert `mobileBridge.pairQr(host, permission)` is
+  called for the initial code and every permission change, the displayed URL
+  mirrors that permission, and a failed refresh hides the stale code.
 - Bridge preview tests must cover mobile summary noise such as Trellis hook lines, MCP startup noise, duplicate line cleanup, and AI CLI composer/input prompt lines.
 - Rust bridge tests must cover first-frame WebSocket auth without query token, bearer token parsing, and the legacy query-token path until it is intentionally removed.
 - Rust bridge tests must cover CORS preflight, missing token, invalid token, bearer snapshot auth, and legacy query-token snapshot auth.
@@ -552,6 +612,15 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
   fallback globals.
 - Rust bridge tests must cover UTF-16LE PowerShell adapter output on the
   Windows LAN host parser.
+- Rust pairing tests must cover read-only tamper resistance, full grant,
+  attenuation, high-entropy/single-use secrets, and invalidation of older codes.
+- Real Axum/WebSocket integration tests must prove revoke, expiry, and stop
+  close already-authenticated idle sockets; a test that only rejects reconnect
+  is insufficient.
+- Bridge concurrency tests must prove revoke waits for an active Full lease,
+  passive expiry prevents paced-input tail writes, stop reports an
+  uninterruptible drain, force-cancel is retained for late registrations, and
+  HTTP tracking starts before JSON/auth extractors.
 - Mobile WS client tests must assert the token is sent in an `auth` frame before `subscribe`, and `buildBridgeWsUrl()` does not include a token query string.
 - Mobile terminal tests must assert preview/detail scrollback sizes, stale snapshot suppression after newer output, coalesced viewport fitting, and unchanged-size resize suppression.
 
@@ -579,6 +648,19 @@ const permission = storedPermission ?? permissionFromQr ?? 'read_only';
 Correct:
 ```typescript
 const permission = otp ? (permissionFromQr ?? 'read_only') : (storedPermission ?? 'read_only');
+```
+
+Wrong:
+```rust
+let permission = request.permission.unwrap_or(DevicePermission::ReadOnly);
+```
+
+Correct:
+```rust
+let permission = match (&pending.max_permission, &request.permission) {
+    (DevicePermission::Full, Some(DevicePermission::Full)) => DevicePermission::Full,
+    _ => DevicePermission::ReadOnly,
+};
 ```
 
 Wrong:

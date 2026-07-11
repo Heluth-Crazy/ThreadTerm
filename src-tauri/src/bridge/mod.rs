@@ -8,6 +8,7 @@ use std::{
     path::Path,
     process::Command,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use once_cell::sync::Lazy;
@@ -20,8 +21,9 @@ use crate::pty::{self, LivePtySessionSnapshot, SessionState};
 use pairing::PairingStore;
 use protocol::{
     AppThemeTokens, BridgeDevice, BridgeSnapshot, BridgeStatus, BridgeTheme, CardMeta,
-    MobileCardRequest, MobileRenameCardRequest, MobileSpawnCardRequest, PairQrResponse,
-    ServerMessage, TerminalSnapshotMessage, TerminalStatus, TerminalThemeTokens, ThemeMode,
+    DevicePermission, MobileCardRequest, MobileRenameCardRequest, MobileSpawnCardRequest,
+    PairQrResponse, ServerMessage, TerminalSnapshotMessage, TerminalStatus, TerminalThemeTokens,
+    ThemeMode,
 };
 
 const DEFAULT_BRIDGE_HOST: &str = "127.0.0.1";
@@ -41,6 +43,8 @@ static CONTROL_STRIP: Lazy<Regex> = Lazy::new(|| {
 });
 
 pub static BRIDGE_RUNTIME: Lazy<Arc<BridgeRuntime>> = Lazy::new(|| Arc::new(BridgeRuntime::new()));
+static BRIDGE_LIFECYCLE_GATE: Lazy<tokio::sync::Mutex<()>> =
+    Lazy::new(|| tokio::sync::Mutex::new(()));
 
 pub struct BridgeRuntime {
     tx: broadcast::Sender<ServerMessage>,
@@ -259,12 +263,7 @@ impl BridgeRuntime {
 }
 
 pub fn restore_bridge_on_startup() {
-    let enabled = crate::db::get_setting(BRIDGE_ENABLED_SETTING)
-        .ok()
-        .flatten()
-        .map(|value| value == "true")
-        .unwrap_or(false);
-    if !enabled {
+    if !persisted_bridge_enabled() {
         return;
     }
 
@@ -280,12 +279,17 @@ pub fn restore_bridge_on_startup() {
         .unwrap_or(DEFAULT_BRIDGE_PORT);
 
     tauri::async_runtime::spawn(async move {
-        match start_bridge_runtime(Some(host), Some(port), true).await {
-            Ok(status) => {
+        match restore_bridge_runtime(host, port).await {
+            Ok(Some(status)) => {
                 tracing::info!(
                     host = ?status.host,
                     port = ?status.port,
                     "Mobile bridge restored from settings"
+                );
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    "Skipped mobile bridge restore because it was disabled before startup completed"
                 );
             }
             Err(error) => {
@@ -387,17 +391,46 @@ async fn start_bridge_runtime(
     port: Option<u16>,
     persist_enabled: bool,
 ) -> Result<BridgeStatus, String> {
+    let _lifecycle = BRIDGE_LIFECYCLE_GATE.lock().await;
+    start_bridge_runtime_locked(host, port, persist_enabled).await
+}
+
+async fn restore_bridge_runtime(host: String, port: u16) -> Result<Option<BridgeStatus>, String> {
+    let _lifecycle = BRIDGE_LIFECYCLE_GATE.lock().await;
+    // Startup restoration is spawned asynchronously. A user can disable the
+    // bridge while that task is waiting to run, so the persisted intent must
+    // be re-read inside the same gate used by start and stop.
+    if !persisted_bridge_enabled() {
+        return Ok(None);
+    }
+    start_bridge_runtime_locked(Some(host), Some(port), true)
+        .await
+        .map(Some)
+}
+
+async fn start_bridge_runtime_locked(
+    host: Option<String>,
+    port: Option<u16>,
+    persist_enabled: bool,
+) -> Result<BridgeStatus, String> {
     let runtime = BRIDGE_RUNTIME.clone();
 
-    let already_running = {
+    let existing_server_stopping = {
         runtime
             .server
             .lock()
             .map_err(|e| format!("Bridge state unavailable: {e}"))?
-            .is_some()
+            .as_ref()
+            .map(|handle| handle.is_stopping())
     };
-    if already_running {
+    if let Some(stopping) = existing_server_stopping {
         let status = runtime.status();
+        if stopping {
+            return Err(
+                "Mobile bridge shutdown is incomplete; retry stop before starting it again."
+                    .to_string(),
+            );
+        }
         if persist_enabled {
             persist_bridge_running(&status);
         }
@@ -432,18 +465,23 @@ async fn start_bridge_runtime(
 
 #[tauri::command]
 pub async fn bridge_stop() -> Result<BridgeStatus, String> {
+    stop_bridge_runtime(Duration::from_secs(2)).await
+}
+
+async fn stop_bridge_runtime(timeout: Duration) -> Result<BridgeStatus, String> {
+    let _lifecycle = BRIDGE_LIFECYCLE_GATE.lock().await;
     let runtime = BRIDGE_RUNTIME.clone();
-    let handle = runtime
+    let mut handle = runtime
         .server
         .lock()
         .map_err(|e| format!("Bridge state unavailable: {e}"))?
         .take();
 
-    if let Some(mut handle) = handle {
-        if let Some(shutdown) = handle.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-    }
+    let stop_result = if let Some(handle) = handle.as_mut() {
+        handle.stop(timeout).await
+    } else {
+        Ok(())
+    };
 
     if !cfg!(test) {
         if let Err(error) = crate::db::set_setting(BRIDGE_ENABLED_SETTING, "false") {
@@ -451,7 +489,27 @@ pub async fn bridge_stop() -> Result<BridgeStatus, String> {
         }
     }
 
-    Ok(runtime.status())
+    match stop_result {
+        Ok(()) => Ok(runtime.status()),
+        Err(error) => {
+            if let Some(handle) = handle {
+                let mut server = runtime
+                    .server
+                    .lock()
+                    .unwrap_or_else(|lock_error| lock_error.into_inner());
+                *server = Some(handle);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn persisted_bridge_enabled() -> bool {
+    crate::db::get_setting(BRIDGE_ENABLED_SETTING)
+        .ok()
+        .flatten()
+        .map(|value| value == "true")
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -460,7 +518,10 @@ pub async fn bridge_status() -> Result<BridgeStatus, String> {
 }
 
 #[tauri::command]
-pub async fn bridge_pair_qr(host: Option<String>) -> Result<PairQrResponse, String> {
+pub async fn bridge_pair_qr(
+    host: Option<String>,
+    permission: Option<DevicePermission>,
+) -> Result<PairQrResponse, String> {
     let status = BRIDGE_RUNTIME.status();
     let port = status.port.unwrap_or(DEFAULT_BRIDGE_PORT);
     let pair_host = host
@@ -469,7 +530,11 @@ pub async fn bridge_pair_qr(host: Option<String>) -> Result<PairQrResponse, Stri
         .map(|value| public_host_for_url(&value))
         .unwrap_or_else(|| "127.0.0.1".to_string());
 
-    Ok(BRIDGE_RUNTIME.pairing.create_pair_qr(pair_host, port))
+    Ok(BRIDGE_RUNTIME.pairing.create_pair_qr(
+        pair_host,
+        port,
+        permission.unwrap_or(DevicePermission::ReadOnly),
+    ))
 }
 
 #[tauri::command]
@@ -479,7 +544,10 @@ pub async fn bridge_devices() -> Result<Vec<BridgeDevice>, String> {
 
 #[tauri::command]
 pub async fn bridge_revoke_device(device_id: String) -> Result<bool, String> {
-    Ok(BRIDGE_RUNTIME.pairing.revoke_device(&device_id))
+    let runtime = BRIDGE_RUNTIME.clone();
+    tokio::task::spawn_blocking(move || runtime.pairing.revoke_device(&device_id))
+        .await
+        .map_err(|error| format!("Failed to join mobile bridge revocation task: {error}"))?
 }
 
 #[tauri::command]
@@ -1260,6 +1328,62 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_bridge_starts_share_the_same_server() {
+        let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        runtime.block_on(async {
+            let _ = bridge_stop().await;
+
+            let (first, second) = tokio::join!(
+                bridge_start(Some("127.0.0.1".to_string()), Some(0)),
+                bridge_start(Some("127.0.0.1".to_string()), Some(0)),
+            );
+            let first = first.expect("first bridge_start should succeed");
+            let second = second.expect("second bridge_start should succeed");
+            assert!(first.running && second.running);
+            assert_eq!(first.host, second.host);
+            assert_eq!(first.port, second.port);
+
+            bridge_stop().await.expect("bridge_stop should succeed");
+        });
+    }
+
+    #[test]
+    fn failed_stop_keeps_managed_generation_until_retry_drains() {
+        let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        runtime.block_on(async {
+            let _ = bridge_stop().await;
+            bridge_start(Some("127.0.0.1".to_string()), Some(0))
+                .await
+                .expect("bridge_start should succeed");
+            let activity = BRIDGE_RUNTIME
+                .server
+                .lock()
+                .expect("bridge server state")
+                .as_ref()
+                .expect("bridge server handle")
+                .hold_activity_for_test();
+
+            let first_error = stop_bridge_runtime(Duration::from_millis(10))
+                .await
+                .expect_err("tracked work should make the first stop fail");
+            assert!(first_error.contains("remained after forced cancellation"));
+            assert!(bridge_status().await.expect("bridge status").running);
+            assert!(bridge_start(Some("127.0.0.1".to_string()), Some(0))
+                .await
+                .expect_err("start must not replace an incompletely stopped generation")
+                .contains("shutdown is incomplete"));
+
+            drop(activity);
+            let stopped = stop_bridge_runtime(Duration::from_secs(1))
+                .await
+                .expect("second stop should succeed after activity drains");
+            assert!(!stopped.running);
+        });
+    }
+
+    #[test]
     fn snapshot_auth_paths_and_cors_preflight_are_compatible_and_restricted() {
         let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
@@ -1271,7 +1395,7 @@ mod tests {
                 .expect("bridge_start should succeed");
             let port = status.port.expect("port should be bound");
 
-            let qr = bridge_pair_qr(Some("127.0.0.1".to_string()))
+            let qr = bridge_pair_qr(Some("127.0.0.1".to_string()), None)
                 .await
                 .expect("pair_qr should succeed");
             let pair_response = BRIDGE_RUNTIME
@@ -1394,7 +1518,7 @@ mod tests {
             let port = status.port.expect("port should be bound");
 
             // 1. Pair through the same code-path the real mobile UI uses.
-            let qr = bridge_pair_qr(Some("127.0.0.1".to_string()))
+            let qr = bridge_pair_qr(Some("127.0.0.1".to_string()), None)
                 .await
                 .expect("pair_qr should succeed");
             let pair_response = BRIDGE_RUNTIME
@@ -1548,7 +1672,7 @@ mod tests {
                 .expect("bridge_start should succeed");
             let port = status.port.expect("port should be bound");
 
-            let qr = bridge_pair_qr(Some("127.0.0.1".to_string()))
+            let qr = bridge_pair_qr(Some("127.0.0.1".to_string()), None)
                 .await
                 .expect("pair_qr should succeed");
             let pair_response = BRIDGE_RUNTIME
@@ -1601,6 +1725,187 @@ mod tests {
             assert_eq!(initial_value["kind"], "snapshot");
 
             bridge_stop().await.expect("bridge_stop should succeed");
+        });
+    }
+
+    #[test]
+    fn revoking_device_closes_idle_websocket() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        runtime.block_on(async {
+            let _ = bridge_stop().await;
+            let status = bridge_start(Some("127.0.0.1".to_string()), Some(0))
+                .await
+                .expect("bridge_start should succeed");
+            let port = status.port.expect("port should be bound");
+            let qr = bridge_pair_qr(Some("127.0.0.1".to_string()), None)
+                .await
+                .expect("pair_qr should succeed");
+            let paired = BRIDGE_RUNTIME
+                .pairing
+                .pair(super::protocol::PairRequest {
+                    otp: qr.otp,
+                    device_name: "revoke-live-socket".to_string(),
+                    permission: None,
+                })
+                .expect("pairing should succeed");
+
+            let url = format!("ws://127.0.0.1:{port}/ws?token={}", paired.device_token);
+            let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("websocket should connect");
+            for label in ["theme", "snapshot"] {
+                tokio::time::timeout(Duration::from_secs(2), ws.next())
+                    .await
+                    .unwrap_or_else(|_| panic!("{label} should arrive"))
+                    .expect("websocket should stay open")
+                    .expect("initial message should parse");
+            }
+
+            assert!(bridge_revoke_device(paired.device.id)
+                .await
+                .expect("revoke should succeed"));
+
+            let error = tokio::time::timeout(Duration::from_secs(2), ws.next())
+                .await
+                .expect("revocation error should arrive")
+                .expect("websocket should send an error before closing")
+                .expect("revocation message should parse");
+            let Message::Text(error) = error else {
+                panic!("expected revocation error text");
+            };
+            let error: serde_json::Value =
+                serde_json::from_str(&error).expect("revocation error should be JSON");
+            assert_eq!(error["code"], "auth_revoked");
+
+            let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
+                .await
+                .expect("close frame should arrive");
+            assert!(matches!(
+                close,
+                None | Some(Ok(Message::Close(_))) | Some(Err(_))
+            ));
+            bridge_stop().await.expect("bridge_stop should succeed");
+        });
+    }
+
+    #[test]
+    fn expired_device_closes_idle_websocket() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        runtime.block_on(async {
+            let _ = bridge_stop().await;
+            let status = bridge_start(Some("127.0.0.1".to_string()), Some(0))
+                .await
+                .expect("bridge_start should succeed");
+            let port = status.port.expect("port should be bound");
+            let qr = bridge_pair_qr(Some("127.0.0.1".to_string()), None)
+                .await
+                .expect("pair_qr should succeed");
+            let paired = BRIDGE_RUNTIME
+                .pairing
+                .pair(super::protocol::PairRequest {
+                    otp: qr.otp,
+                    device_name: "expire-live-socket".to_string(),
+                    permission: None,
+                })
+                .expect("pairing should succeed");
+
+            let url = format!("ws://127.0.0.1:{port}/ws?token={}", paired.device_token);
+            let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("websocket should connect");
+            for _ in 0..2 {
+                tokio::time::timeout(Duration::from_secs(2), ws.next())
+                    .await
+                    .expect("initial message should arrive")
+                    .expect("websocket should stay open")
+                    .expect("initial message should parse");
+            }
+
+            BRIDGE_RUNTIME.pairing.expire_device(&paired.device.id);
+            let error = tokio::time::timeout(Duration::from_secs(2), ws.next())
+                .await
+                .expect("expiry error should arrive")
+                .expect("websocket should send an error before closing")
+                .expect("expiry message should parse");
+            assert!(matches!(error, Message::Text(_)));
+            let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
+                .await
+                .expect("close frame should arrive");
+            assert!(matches!(
+                close,
+                None | Some(Ok(Message::Close(_))) | Some(Err(_))
+            ));
+            bridge_stop().await.expect("bridge_stop should succeed");
+        });
+    }
+
+    #[test]
+    fn bridge_stop_closes_active_websocket_before_returning() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        runtime.block_on(async {
+            let _ = bridge_stop().await;
+            let status = bridge_start(Some("127.0.0.1".to_string()), Some(0))
+                .await
+                .expect("bridge_start should succeed");
+            let port = status.port.expect("port should be bound");
+            let qr = bridge_pair_qr(Some("127.0.0.1".to_string()), None)
+                .await
+                .expect("pair_qr should succeed");
+            let paired = BRIDGE_RUNTIME
+                .pairing
+                .pair(super::protocol::PairRequest {
+                    otp: qr.otp,
+                    device_name: "stop-live-socket".to_string(),
+                    permission: None,
+                })
+                .expect("pairing should succeed");
+
+            let url = format!("ws://127.0.0.1:{port}/ws?token={}", paired.device_token);
+            let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("websocket should connect");
+            for _ in 0..2 {
+                tokio::time::timeout(Duration::from_secs(2), ws.next())
+                    .await
+                    .expect("initial message should arrive")
+                    .expect("websocket should stay open")
+                    .expect("initial message should parse");
+            }
+
+            let status = bridge_stop().await.expect("bridge_stop should succeed");
+            assert!(!status.running);
+
+            let error = tokio::time::timeout(Duration::from_secs(2), ws.next())
+                .await
+                .expect("shutdown error should already be buffered")
+                .expect("websocket should send an error before closing")
+                .expect("shutdown message should parse");
+            let Message::Text(error) = error else {
+                panic!("expected bridge shutdown error text");
+            };
+            let error: serde_json::Value =
+                serde_json::from_str(&error).expect("shutdown error should be JSON");
+            assert_eq!(error["code"], "bridge_stopped");
+
+            let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
+                .await
+                .expect("close frame should already be buffered");
+            assert!(matches!(
+                close,
+                None | Some(Ok(Message::Close(_))) | Some(Err(_))
+            ));
         });
     }
 

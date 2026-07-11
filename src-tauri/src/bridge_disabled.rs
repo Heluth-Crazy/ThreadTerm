@@ -3,8 +3,8 @@ pub mod protocol;
 
 use crate::pty::{LivePtySessionSnapshot, SessionState};
 use protocol::{
-    AppThemeTokens, BridgeDevice, BridgeStatus, CardMeta, PairQrResponse, TerminalThemeTokens,
-    ThemeMode,
+    AppThemeTokens, BridgeDevice, BridgeStatus, CardMeta, DevicePermission, PairQrResponse,
+    TerminalThemeTokens, ThemeMode,
 };
 
 const DISABLED_MESSAGE: &str = "Mobile bridge is disabled in this build.";
@@ -41,7 +41,10 @@ pub async fn bridge_status() -> Result<BridgeStatus, String> {
 }
 
 #[tauri::command]
-pub async fn bridge_pair_qr(_host: Option<String>) -> Result<PairQrResponse, String> {
+pub async fn bridge_pair_qr(
+    _host: Option<String>,
+    _permission: Option<DevicePermission>,
+) -> Result<PairQrResponse, String> {
     Err(DISABLED_MESSAGE.to_string())
 }
 

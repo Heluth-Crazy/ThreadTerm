@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Copy,
   ExternalLink,
@@ -24,6 +24,7 @@ import { Button } from '../ui/button';
 import { useTheme } from '../../theme/ThemeContext';
 
 type ActionState = 'idle' | 'busy' | 'failed';
+type PairQrRequestResult = 'success' | 'failed' | 'stale';
 type BindHost = '127.0.0.1' | '0.0.0.0';
 
 const LOOPBACK_BIND_HOST: BindHost = '127.0.0.1';
@@ -113,49 +114,95 @@ export function MobileAccessSettings() {
   const [lanConfirmVisible, setLanConfirmVisible] = useState(false);
   const [actionState, setActionState] = useState<ActionState>('idle');
   const [error, setError] = useState<string | null>(null);
+  const pairPermissionRef = useRef<BridgeDevicePermission>('read_only');
+  const pairQrIntentRef = useRef(0);
+  const pairQrQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const normalizedPublishHostOverride = normalizePublishHostOverride(publishHostOverride);
 
+  const beginPairQrIntent = () => {
+    const intent = pairQrIntentRef.current + 1;
+    pairQrIntentRef.current = intent;
+    setPairQr(null);
+    return intent;
+  };
+
+  const requestPairQr = (
+    intent: number,
+    host: string | undefined,
+    permission: BridgeDevicePermission,
+  ): Promise<PairQrRequestResult> => {
+    const request = pairQrQueueRef.current.then(async () => {
+      // A newer intent may arrive while this request waits behind an in-flight
+      // command. Skipping here prevents stale UI work from mutating server state.
+      if (intent !== pairQrIntentRef.current) return 'stale';
+
+      try {
+        const nextPairQr = await mobileBridge.pairQr(host, permission);
+        if (intent !== pairQrIntentRef.current) return 'stale';
+        setPairQr(nextPairQr);
+        return 'success';
+      } catch (err) {
+        if (intent !== pairQrIntentRef.current) return 'stale';
+        setError(err instanceof Error ? err.message : String(err));
+        return 'failed';
+      }
+    });
+
+    // Pairing commands are server-side mutations: keep them strictly ordered,
+    // even after a rejected command, so the newest permission is authoritative.
+    pairQrQueueRef.current = request.then(
+      () => undefined,
+      () => undefined,
+    );
+    return request;
+  };
+
   const createPairQrForStatus = async (
+    intent: number,
     nextStatus: BridgeStatus,
     fallbackHost?: string,
   ) => {
     if (!nextStatus.running) {
-      setPairQr(null);
-      return;
+      return 'stale' as const;
     }
 
-    try {
-      setPairQr(
-        await mobileBridge.pairQr(
-          normalizedPublishHostOverride ?? nextStatus.host ?? fallbackHost,
-        ),
-      );
-    } catch (err) {
-      setPairQr(null);
-      setError(err instanceof Error ? err.message : String(err));
-    }
+    return requestPairQr(
+      intent,
+      normalizedPublishHostOverride ?? nextStatus.host ?? fallbackHost,
+      pairPermissionRef.current,
+    );
   };
 
-  const loadDevices = async () => {
+  const loadDevices = async (intent?: number) => {
     try {
-      setDevices(await mobileBridge.devices());
+      const nextDevices = await mobileBridge.devices();
+      if (intent === undefined || intent === pairQrIntentRef.current) {
+        setDevices(nextDevices);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (intent === undefined || intent === pairQrIntentRef.current) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     }
   };
 
   const refresh = async () => {
     if (!isTauriEnv()) return;
 
+    const intent = beginPairQrIntent();
     setError(null);
     try {
       const nextStatus = await mobileBridge.status();
-      setStatus(nextStatus);
-      await createPairQrForStatus(nextStatus);
-      await loadDevices();
+      if (intent === pairQrIntentRef.current) {
+        setStatus(nextStatus);
+      }
+      await createPairQrForStatus(intent, nextStatus);
+      await loadDevices(intent);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (intent === pairQrIntentRef.current) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     }
   };
 
@@ -164,18 +211,25 @@ export function MobileAccessSettings() {
   }, []);
 
   const runStartBridge = async (host: BindHost) => {
+    const intent = beginPairQrIntent();
     setLanConfirmVisible(false);
     setActionState('busy');
     setError(null);
     try {
       const nextStatus = await mobileBridge.start(host);
-      setStatus(nextStatus);
-      await createPairQrForStatus(nextStatus, host);
-      await loadDevices();
-      setActionState('idle');
+      if (intent === pairQrIntentRef.current) {
+        setStatus(nextStatus);
+      }
+      await createPairQrForStatus(intent, nextStatus, host);
+      await loadDevices(intent);
+      if (intent === pairQrIntentRef.current) {
+        setActionState('idle');
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setActionState('failed');
+      if (intent === pairQrIntentRef.current) {
+        setError(err instanceof Error ? err.message : String(err));
+        setActionState('failed');
+      }
     }
   };
 
@@ -189,30 +243,54 @@ export function MobileAccessSettings() {
   };
 
   const stopBridge = async () => {
+    const intent = beginPairQrIntent();
     setActionState('busy');
     setError(null);
     try {
-      setStatus(await mobileBridge.stop());
-      setPairQr(null);
-      setLanConfirmVisible(false);
-      setActionState('idle');
+      const nextStatus = await mobileBridge.stop();
+      if (intent === pairQrIntentRef.current) {
+        setStatus(nextStatus);
+        setLanConfirmVisible(false);
+        setActionState('idle');
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setActionState('failed');
+      if (intent === pairQrIntentRef.current) {
+        setError(err instanceof Error ? err.message : String(err));
+        setActionState('failed');
+      }
     }
   };
 
   const createPairQr = async () => {
+    const intent = beginPairQrIntent();
     setActionState('busy');
     setError(null);
-    try {
-      setPairQr(
-        await mobileBridge.pairQr(normalizedPublishHostOverride ?? status.host ?? undefined),
-      );
-      setActionState('idle');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setActionState('failed');
+    const result = await requestPairQr(
+      intent,
+      normalizedPublishHostOverride ?? status.host ?? undefined,
+      pairPermissionRef.current,
+    );
+    if (result !== 'stale' && intent === pairQrIntentRef.current) {
+      setActionState(result === 'success' ? 'idle' : 'failed');
+    }
+  };
+
+  const changePairPermission = async (permission: BridgeDevicePermission) => {
+    if (permission === pairPermissionRef.current) return;
+    pairPermissionRef.current = permission;
+    setPairPermission(permission);
+    if (!status.running) return;
+
+    const intent = beginPairQrIntent();
+    setActionState('busy');
+    setError(null);
+    const result = await requestPairQr(
+      intent,
+      normalizedPublishHostOverride ?? status.host ?? undefined,
+      permission,
+    );
+    if (result !== 'stale' && intent === pairQrIntentRef.current) {
+      setActionState(result === 'success' ? 'idle' : 'failed');
     }
   };
 
@@ -434,7 +512,8 @@ export function MobileAccessSettings() {
                       name="mobile-bridge-pair-permission"
                       value={option.value}
                       checked={pairPermission === option.value}
-                      onChange={() => setPairPermission(option.value)}
+                      onChange={() => void changePairPermission(option.value)}
+                      disabled={isBusy}
                       aria-label={option.label}
                       className="h-3 w-3"
                     />
@@ -459,7 +538,7 @@ export function MobileAccessSettings() {
                     />
                   </div>
                   <div className="min-w-0 space-y-1">
-                    <div className="font-mono text-sm text-foreground">
+                    <div className="break-all font-mono text-sm text-foreground">
                       {pairQr.otp}
                     </div>
                     <div className="break-all font-mono text-[11px] text-muted-foreground">
