@@ -111,7 +111,9 @@ Fixed Block Inspector AI explain handling so Codex/default-provider empty stdout
 
 ### Main Changes
 
-(Add details)
+- 服务端绑定 Mobile Bridge 配对权限上限，引入高熵 secret、active authorization lease、revoke tombstone 与可重试 stop lifecycle。
+- PTY 改为显式 renderer/background consumer、process-global 累计 ACK、renderer TTL 与原子 snapshot barrier；前端增加消费后 ACK、失败重试和重连恢复。
+- 修复缺失 `mobile-app/dist` 时的 desktop dev 启动链，切换到仓库锁定的 Tauri CLI，并补齐首次运行、构建发布、Windows 与 overlay 验证文档。
 
 ### Git Commits
 
@@ -123,7 +125,10 @@ Fixed Block Inspector AI explain handling so Codex/default-provider empty stdout
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run check`：84 个文件、654 个 Vitest，TypeScript、mobile build 与 Clippy 通过。
+- [OK] Cargo：234 个测试；Bridge / PTY 定向分别 59 / 51 个测试；Rustfmt 与 `--no-default-features` 通过。
+- [OK] Playwright：desktop 4 / 4，mobile 20 / 20。
+- [OK] 生产前端与 macOS `.app` 打包通过；`npm audit --omit=dev` 为 0 个漏洞。
 
 ### Status
 
@@ -131,7 +136,8 @@ Fixed Block Inspector AI explain handling so Codex/default-provider empty stdout
 
 ### Next Steps
 
-- None - task complete
+- 闭环 OpenWork / Trellis / GitNexus 权利链与 NOTICE，建立 CI、签名、公证和真实 Windows 发布矩阵。
+- 补真实 Tauri 主窗 + 浮窗 PTY 压力验证，并继续处理可确认、可重试的 PTY 进程树 kill。
 
 
 ## Session 4: AI Supervisor v0.1 — rules-based attention notifier
@@ -693,3 +699,38 @@ Implemented expanded native-feel baseline: single-instance plugin, non-macOS ove
   - 卡片最近通知标记：CardFooter 中部槽位 kind 图标 + tooltip，来自 `notifications.find`（条目引用稳定，无多余重渲染），随 2h purge 自然过期。
 - 契约注意：`archiveCard`/`removeCard` 会删除该卡通知（spec 锁定），所以 cardClosed 降级只覆盖竞态窗口；`system:*` 伪卡通知新增"系统"标签避免误标"已关闭"。
 - 门禁：typecheck ✓ / vitest 629 ✓ / cargo check ✓ / eslint 0 errors（31 warnings 预算内，均为既有）。
+
+
+## Session 18: 完成全项目审查首批整改
+
+**Date**: 2026-07-11
+**Task**: 完成全项目审查首批整改
+**Branch**: `exp/windows-native-terminal-host`
+
+### Summary
+
+加固 Mobile Bridge 授权生命周期，重构 PTY 累计 ACK 与 consumer 流控，修复 clean-clone 启动链并补齐审查和发布文档；全量质量门与桌面/移动 E2E 通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `345d315` | (see git log) |
+| `881b55f` | (see git log) |
+| `c7511f7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

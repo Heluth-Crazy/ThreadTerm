@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 17
-- **Last Active**: 2026-06-26
+- **Total Sessions**: 18
+- **Last Active**: 2026-07-11
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~683 | Active |
+| `journal-1.md` | ~730 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 18 | 2026-07-11 | 完成全项目审查首批整改 | `345d315`, `881b55f`, `c7511f7` | `exp/windows-native-terminal-host` |
 | 17 | 2026-06-26 | 实现 sidebar 分支树 UI | `afe2e47` | `exp/windows-native-terminal-host` |
 | 16 | 2026-06-26 | 实现分支 worktree 终端 | `e73b96e` | `exp/windows-native-terminal-host` |
 | 15 | 2026-06-13 | 桌面/移动端终端审查修复（P0-P2 五阶段） | `0ecf1af`, `78b2ef7`, `241b1ee`, `b362fca`, `bdee023`, `3f94cf0`, `173e9c0`, `695d48e` | `audit/desktop-native-feel` |
