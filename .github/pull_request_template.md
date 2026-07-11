@@ -4,11 +4,9 @@
 
 ## Verification
 
-- [ ] `npm run typecheck`
-- [ ] `npx vitest run src/components/terminal/TerminalEventBridge.test.tsx src/components/terminal/providerSession.test.ts src/components/terminal/useProjectGroups.test.ts src/stores/overlayStore.test.ts src/stores/terminalStore.test.ts src/theme/themePacks.test.ts`
+- [ ] `npm run check`
 - [ ] `npm run build`
-- [ ] `cargo check --manifest-path src-tauri/Cargo.toml`
-- [ ] `cargo test --manifest-path src-tauri/Cargo.toml pty::tests`
+- [ ] `cargo test --manifest-path src-tauri/Cargo.toml`
 - [ ] Manual UI check, if this changes visible behavior
 
 ## Notes

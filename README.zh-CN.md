@@ -151,7 +151,6 @@ ThreadTerm 使用两层通知，避免你在继续当前工作的同时错过需
 | --- | --- |
 | Node.js 22 LTS 和 npm 10+ | 前端工具链和 package scripts。 |
 | Rust 工具链 | 从 <https://rustup.rs> 安装。 |
-| Tauri CLI | 使用 `cargo install tauri-cli` 安装。 |
 | 可选 AI CLI | 如需直接启动预设命令，将 `claude`、`codex`、`gemini` 等工具加入 `PATH`。 |
 
 ### 启动桌面应用
@@ -160,6 +159,11 @@ ThreadTerm 使用两层通知，避免你在继续当前工作的同时错过需
 npm install
 npm run tauri:dev
 ```
+
+项目固定版本的 Tauri CLI 会自动使用。首次运行时，ThreadTerm 也会在 Rust
+编译前构建内嵌移动端客户端，因此全新检出无需预先存在 `mobile-app/dist`
+目录。macOS/Linux 还可以运行 `./start.sh`，Windows PowerShell 则可以运行
+`.\start.ps1`；两个启动脚本都会执行对应平台的依赖检查。
 
 ### 仅启动前端预览
 
@@ -216,8 +220,9 @@ docs/                 公开指南、打包说明和媒体
 
 后端模块：
 
-- `src-tauri/src/pty.rs`：本地 PTY 生命周期、输出事件、会话状态和最近输出回放。
-- `src-tauri/src/overlay.rs`：全局快捷键、选择器/浮动终端窗口、macOS 全屏 Space 处理和非 macOS 回退行为。
+- `src-tauri/src/pty/`：本地 PTY 生命周期、输出事件、会话状态、快照和流控。
+- `src-tauri/src/bridge/`：内嵌移动端 Bridge、配对、协议和 WebSocket 生命周期。
+- `src-tauri/src/overlay/`：全局快捷键、选择器/浮动终端窗口、macOS 全屏 Space 处理和非 macOS 回退行为。
 - `src-tauri/src/db.rs`：用于浮窗快捷键和浮动终端位置的小型 SQLite 设置表。
 - `src-tauri/src/notification.rs`：正式桌面包中的系统通知分发。
 - `src-tauri/src/provider_sessions.rs`：Claude/Codex 原生会话的轻量发现，用于懒恢复。
@@ -230,11 +235,9 @@ docs/                 公开指南、打包说明和媒体
 <summary><strong>核心检查</strong></summary>
 
 ```bash
-npm run typecheck
-npx vitest run src/components/terminal/TerminalEventBridge.test.tsx src/components/terminal/providerSession.test.ts src/components/terminal/useProjectGroups.test.ts src/stores/overlayStore.test.ts src/stores/terminalStore.test.ts src/theme/themePacks.test.ts
+npm run check
 npm run build
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml pty::tests
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 全局浮窗的手动回归步骤见 [docs/global-overlay-manual-test.md](docs/global-overlay-manual-test.md)。
@@ -246,7 +249,7 @@ cargo test --manifest-path src-tauri/Cargo.toml pty::tests
 Windows 支持已保留：
 
 - Release 构建保留 `windows_subsystem = "windows"`，避免额外控制台窗口。
-- PTY 启动优先使用 `powershell.exe`，不可用时回退到 `cmd.exe`。
+- PTY 启动依次尝试 `pwsh.exe`、`powershell.exe`，最后回退到 `cmd.exe`。
 - Windows 图标和 Tauri 打包配置保留在 `src-tauri/icons/` 和 `src-tauri/tauri.conf.json`。
 
 ## 文档

@@ -40,3 +40,4 @@ if (-not (Test-Path (Join-Path $ProjectDir "node_modules"))) {
 
 Write-Info "Starting ThreadTerm Tauri desktop app"
 npm run tauri:dev
+if ($LASTEXITCODE -ne 0) { Write-Fail "ThreadTerm desktop app failed to start" }

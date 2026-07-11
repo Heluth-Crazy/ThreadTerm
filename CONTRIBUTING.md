@@ -6,7 +6,6 @@ ThreadTerm is currently scoped to the Tauri desktop terminal manager. Contributi
 
 - Node.js 22 LTS and npm 10+
 - Rust toolchain from <https://rustup.rs>
-- Tauri CLI: `cargo install tauri-cli`
 - Optional AI CLIs in `PATH`: `claude`, `codex`, `gemini`, etc.
 
 Windows contributors also need Visual Studio Build Tools 2022 with the `Desktop development with C++` workload.
@@ -18,14 +17,16 @@ npm install
 npm run tauri:dev
 ```
 
+The repository-pinned Tauri CLI is used automatically. For platform-aware
+prerequisite checks, run `./start.sh` on macOS/Linux or `.\start.ps1` from
+Windows PowerShell.
+
 Useful checks:
 
 ```bash
-npm run typecheck
-npx vitest run src/components/terminal/TerminalEventBridge.test.tsx src/components/terminal/providerSession.test.ts src/components/terminal/useProjectGroups.test.ts src/stores/overlayStore.test.ts src/stores/terminalStore.test.ts src/theme/themePacks.test.ts
+npm run check
 npm run build
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml pty::tests
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 ## Current Structure
@@ -34,7 +35,7 @@ cargo test --manifest-path src-tauri/Cargo.toml pty::tests
 src/                  React UI for the main, selector, and floating windows
 src/windows/          Secondary Vite window entries
 src/stores/           Zustand stores for terminal and overlay state
-src-tauri/src/        Tauri backend modules: db, notification, overlay, provider_sessions, pty
+src-tauri/src/        Tauri backend: PTY, bridge, overlay, files, stats, Codex, DB, notifications
 src-tauri/icons/      Tauri bundle icons, including Windows assets
 docs/                 Public guides, packaging notes, media, and manual regression steps
 ```

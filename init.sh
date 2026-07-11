@@ -32,6 +32,7 @@ fi
 npm install
 npm run typecheck
 npm run build
+npm run build:mobile
 cargo check --manifest-path src-tauri/Cargo.toml
 
 echo

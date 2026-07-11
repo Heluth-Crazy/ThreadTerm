@@ -122,6 +122,11 @@ temp/
 CLAUDE.md
 .mcp.json
 
+# Repository-owned GitHub metadata and CI must remain visible to Git. The
+# broad AI-tool ignore list above previously hid newly created workflows.
+!.github/
+!.github/**
+
 
 # Database files
 *.db
@@ -161,6 +166,11 @@ docs/*
 !docs/project-structure-and-performance-review.md
 !docs/windows-lightweight-feasibility-report.md
 !docs/local-and-windows-test-checklist.md
+!docs/first-run.md
+!docs/first-run.zh-CN.md
+!docs/build-release.md
+!docs/windows-exe-build.md
+!docs/global-overlay-manual-test.md
 !docs/card-token-live-display-design.json
 !docs/windows-webview-removal-assessment.json
 .gitnexus

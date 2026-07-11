@@ -1,7 +1,8 @@
 # ThreadTerm Local And Windows Verification Checklist
 
-> Last verified: 2026-07-04
+> Last verified: 2026-07-11
 > Scope: local release verification and reusable Windows test checklist for `exp/windows-native-terminal-host`.
+> Certification status: unsigned internal verification only; this is not release certification, notarization, or Windows signing evidence.
 > Privacy rule: this document uses `<repo-root>` and relative paths only. Do not add local usernames, absolute home directories, API keys, pairing tokens, QR codes, device names, remote URLs, prompts, terminal transcripts, or raw session paths.
 
 ## Local Verification Summary
@@ -13,20 +14,22 @@ Run all commands from `<repo-root>`.
 | Area | Command | Result | Notes |
 |---|---|---|---|
 | Aggregated check | `npm run check` | PASS | ESLint reported 31 warnings and 0 errors; TypeScript passed; Vitest passed; mobile build passed; Rust clippy passed. |
-| Unit tests | `npm run test` | PASS | 78 test files, 571 tests passed. |
-| Desktop production build | `npm run build` | PASS | `main` chunk: 292.34 kB; `WorkspaceCodeEditor` lazy chunk: 440.20 kB. |
-| Rust tests | `cargo test --manifest-path src-tauri/Cargo.toml` | PASS | 207 Rust tests passed. |
+| Unit tests | `npm run test` | PASS | 84 test files, 654 tests passed. |
+| Desktop production build | `npm run build` | PASS | 2,358 modules; `main` chunk: 297.38 kB; `WorkspaceCodeEditor` lazy chunk: 666.00 kB. |
+| Rust tests | `cargo test --manifest-path src-tauri/Cargo.toml` | PASS | 234 Rust tests passed. |
+| Rust formatting | `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | PASS | No formatting differences. |
 | Lite Rust compile check | `cargo check --manifest-path src-tauri/Cargo.toml --no-default-features` | PASS | 19 expected `dead_code` warnings from disabled mobile bridge stubs/protocol types. |
 | Desktop e2e | `npm run test:e2e:desktop` | PASS | 4 Playwright tests passed. |
 | Mobile e2e | `npm run test:e2e:mobile` | PASS | 20 Playwright tests passed after verifying optional `ptyLive` protocol compatibility. |
-| Release packaging | `npx tauri build` | PASS | Generated release executable, `.app`, and `.dmg`. |
+| Release packaging | `npm run tauri:build -- --bundles app` | PASS | Generated the current release executable and macOS `.app`; no current DMG was built. |
+| Production dependency audit | `npm audit --omit=dev` | PASS | 0 vulnerabilities. |
+| Rust dependency audit | `cargo audit` | NOT RUN / BLOCKING GAP | `cargo-audit` is not installed; add this to the release gate before certification. |
 | Size benchmark | `npm run bench:size` | PASS | See artifact table below. |
-| Startup benchmark | `npm run bench:startup` | PASS | Spawn-observed median: 0.39 ms across 3 iterations. |
+| Startup benchmark | Not a release gate | NOT RUN | The current script measures only child-process spawn notification, not app readiness or first interaction. |
 
 Environment notes:
 
-- `npm run tauri:build` uses `cargo tauri build` and requires the Rust `cargo-tauri` subcommand to be installed. On this machine it was not installed, so `npx tauri build` was used for the successful local package build.
-- `npm run tauri:build:windows` uses the Node Tauri CLI and should be used on Windows for NSIS verification.
+- `npm run tauri:build` and `npm run tauri:build:windows` use the repository-locked Node Tauri CLI; no global `cargo-tauri` installation is required.
 - Browserslist emitted an outdated `caniuse-lite` warning. This is non-blocking for the verification run.
 - Playwright emitted `NO_COLOR`/`FORCE_COLOR` warnings. These are non-blocking.
 - Vite emitted the known mixed dynamic/static import warning for `@tauri-apps/api/event`. This did not block production build or packaging.
@@ -37,12 +40,11 @@ These values came from `npm run bench:size` after the final local release build.
 
 | Artifact | Bytes | Display size | Relative path |
 |---|---:|---:|---|
-| Frontend dist | 2,194,013 | 2.09 MiB | `dist` |
-| Mobile dist | 583,216 | 0.56 MiB | `mobile-app/dist` |
-| macOS DMG | 6,847,068 | 6.53 MiB | `src-tauri/target/release/bundle/dmg/ThreadTerm_0.3.0_aarch64.dmg` |
-| macOS release binary | 14,914,720 | 14.22 MiB | `src-tauri/target/release/threadterm` |
+| Frontend dist | 2,739,734 | 2.61 MiB | `dist` |
+| Mobile dist | 585,027 | 0.56 MiB | `mobile-app/dist` |
+| macOS release binary | 15,364,080 | 14.65 MiB | `src-tauri/target/release/threadterm` |
 
-For Windows, record the same benchmark output after `npm run tauri:build:windows`. The primary comparison target is the NSIS installer byte size.
+The benchmark also discovered an older 6,847,068-byte DMG in `src-tauri/target`; it predates this verification build and is deliberately excluded from the current artifact table. For Windows, record the same benchmark output immediately after `npm run tauri:build:windows`. The primary comparison target is the fresh NSIS installer byte size.
 
 ## Standard Local Test Procedure
 
@@ -54,7 +56,7 @@ Use this sequence for local release validation. Stop at the first failure and re
    ```
 2. Install dependencies if needed:
    ```sh
-   npm install
+   npm ci
    ```
 3. Run the aggregated automated check:
    ```sh
@@ -68,30 +70,40 @@ Use this sequence for local release validation. Stop at the first failure and re
    ```sh
    cargo test --manifest-path src-tauri/Cargo.toml
    ```
-6. Verify the lite Rust configuration:
+6. Verify Rust formatting:
+   ```sh
+   cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+   ```
+7. Verify the lite Rust configuration:
    ```sh
    cargo check --manifest-path src-tauri/Cargo.toml --no-default-features
    ```
-7. Run desktop browser e2e:
+8. Run desktop browser e2e:
    ```sh
    npm run test:e2e:desktop
    ```
-8. Run mobile browser e2e:
+9. Run mobile browser e2e:
    ```sh
    npm run test:e2e:mobile
    ```
-9. Build the release package:
+10. Audit production npm dependencies:
    ```sh
-   npx tauri build
+   npm audit --omit=dev
    ```
-10. Record artifact sizes:
+11. Run the Rust dependency audit; a missing command or any unreviewed advisory blocks release certification:
+    ```sh
+    cargo audit
+    ```
+12. Build the current-platform release package:
+    ```sh
+    npm run tauri:build -- --bundles app
+    ```
+13. Record artifact sizes:
     ```sh
     npm run bench:size
     ```
-11. Record spawn-observed startup data:
-    ```sh
-    npm run bench:startup
-    ```
+
+Do not use `npm run bench:startup` as pass/fail evidence until it waits for explicit backend-ready, window-visible, and first-interactive markers.
 
 ## Windows Test Procedure
 
@@ -109,16 +121,19 @@ Run these commands from `<repo-root>` in PowerShell. Keep the output sanitized w
    ```
 3. Install dependencies:
    ```powershell
-   npm install
+   npm ci
    ```
 4. Run automated checks:
    ```powershell
    npm run check
    npm run build
    cargo test --manifest-path src-tauri/Cargo.toml
+   cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
    cargo check --manifest-path src-tauri/Cargo.toml --no-default-features
    npm run test:e2e:desktop
    npm run test:e2e:mobile
+   npm audit --omit=dev
+   cargo audit
    ```
 5. Build the Windows NSIS installer:
    ```powershell
@@ -128,12 +143,7 @@ Run these commands from `<repo-root>` in PowerShell. Keep the output sanitized w
    ```powershell
    npm run bench:size
    ```
-7. Optional startup benchmark:
-   ```powershell
-   $env:THREADTERM_STARTUP_TARGET = "<path-to-threadterm.exe>"
-   npm run bench:startup
-   Remove-Item Env:\THREADTERM_STARTUP_TARGET
-   ```
+7. Verify the generated installer on a clean standard-user Windows account, including signature/SmartScreen behavior, install, upgrade, launch, and uninstall.
 
 Record at minimum:
 
@@ -146,7 +156,9 @@ Record at minimum:
 | Installed directory size | `<bytes>` |
 | `dist` bytes | `<bytes>` |
 | `mobile-app/dist` bytes | `<bytes>` |
-| Startup benchmark median | `<ms>` |
+| Authenticode signature | `<valid / absent / invalid>` |
+| SmartScreen result | `<result>` |
+| Standard-user install / upgrade / uninstall | `<pass / fail>` |
 
 ## Manual Smoke Checklist
 
@@ -158,7 +170,7 @@ Use synthetic or non-sensitive terminal content. Do not paste raw command histor
 | Terminal creation | Create a local terminal card. | The card starts and output is visible. |
 | Terminal streaming | Run a command that prints multiple lines. | Output streams without freezing; scroll position is stable when scrolled up. |
 | Exit and restart | Exit a terminal with a non-zero code, then restart. | Exit banner appears; restart creates a working PTY. |
-| Session selector | Use `Ctrl+E` repeatedly and switch sessions at least 10 times. | Session list remains responsive. |
+| Session selector | Use `Cmd/Ctrl+E` repeatedly and switch sessions at least 10 times. | Session list remains responsive. |
 | Files and changes | After session switching, open Files and Changes views. | Both load normally; no permanent spinner. |
 | Code editor | Open a text file from Files. | Editor loads after lazy chunk fetch and displays file content. |
 | Git diff | Open a changed file diff. | Diff renders and remains usable after session switches. |
@@ -167,7 +179,7 @@ Use synthetic or non-sensitive terminal content. Do not paste raw command histor
 | Mobile bridge | Pair a test browser/device with full control. | Session list, terminal preview, detail xterm, and input round-trip work. |
 | Mobile read-only | Pair or switch to read-only mode. | Input controls are hidden and terminal output remains visible. |
 | Overlay lightweight mode | Enable lightweight mode on Windows. | Selector/float windows do not prewarm; overlay hotkeys are disabled as expected. |
-| Overlay normal mode | Disable lightweight mode and use selector/float. | Overlay windows open only on demand and can be hidden/reopened. |
+| Overlay normal mode | Disable lightweight mode and use selector/float. | Windows creates overlays on demand; macOS may prewarm them. Both can be hidden and reopened. |
 | External links | Click a safe URL in terminal output and an auth URL if available. | System browser opens the URL. If not, record as opener regression. |
 
 ## Windows WebView2 Memory Checks

@@ -17,6 +17,7 @@
   },
   "scripts": {
     "client": "vite --host",
+    "dev:desktop": "npm run build:mobile && npm run client",
     "dev:mobile": "vite --config mobile-app/vite.config.ts --host",
     "build": "vite build",
     "build:mobile": "vite build --config mobile-app/vite.config.ts",
@@ -30,11 +31,11 @@
     "test:e2e:mobile": "playwright test -c playwright.config.ts",
     "test:e2e:desktop": "playwright test -c e2e/desktop/playwright.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "release": "./release.sh",
+    "release": "release-it",
     "prepublishOnly": "npm run build",
-    "tauri:dev": "cargo tauri dev",
-    "tauri:build": "cargo tauri build",
-    "tauri:build:windows": "npx tauri build --config src-tauri/tauri.windows.conf.json --bundles nsis"
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:windows": "tauri build --config src-tauri/tauri.windows.conf.json --bundles nsis"
   },
   "keywords": [
     "threadterm",

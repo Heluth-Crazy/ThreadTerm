@@ -161,7 +161,6 @@ Clicking a notification brings you back to the relevant session. If the card is 
 | --- | --- |
 | Node.js 22 LTS and npm 10+ | Frontend tooling and package scripts. |
 | Rust toolchain | Install from <https://rustup.rs>. |
-| Tauri CLI | Install with `cargo install tauri-cli`. |
 | Optional AI CLIs | Add `claude`, `codex`, `gemini`, or other tools to `PATH` if you want those presets to launch directly. |
 
 ### Run the desktop app
@@ -170,6 +169,12 @@ Clicking a notification brings you back to the relevant session. If the card is 
 npm install
 npm run tauri:dev
 ```
+
+The repository-pinned Tauri CLI is used automatically. On the first run,
+ThreadTerm also builds the embedded mobile client before Rust compilation, so
+a clean checkout does not require a pre-existing `mobile-app/dist` directory.
+You can also run `./start.sh` on macOS/Linux or `.\start.ps1` from Windows
+PowerShell; both launchers perform the platform-specific prerequisite checks.
 
 ### Run the frontend-only preview
 
@@ -227,8 +232,9 @@ Runtime entries:
 
 Backend modules:
 
-- `src-tauri/src/pty.rs`: local PTY lifecycle, output events, session state, and recent-output replay.
-- `src-tauri/src/overlay.rs`: global shortcuts, selector/float windows, macOS full-screen Space handling, and non-macOS fallback behavior.
+- `src-tauri/src/pty/`: local PTY lifecycle, output events, session state, snapshots, and flow control.
+- `src-tauri/src/bridge/`: embedded mobile bridge, pairing, protocol, and WebSocket lifecycle.
+- `src-tauri/src/overlay/`: global shortcuts, selector/float windows, macOS full-screen Space handling, and non-macOS fallback behavior.
 - `src-tauri/src/db.rs`: small SQLite settings table for overlay hotkeys and floating terminal bounds.
 - `src-tauri/src/notification.rs`: OS notification dispatch for packaged desktop builds.
 - `src-tauri/src/provider_sessions.rs`: lightweight Claude/Codex session discovery for lazy resume.
@@ -241,11 +247,9 @@ Backend modules:
 <summary><strong>Core checks</strong></summary>
 
 ```bash
-npm run typecheck
-npx vitest run src/components/terminal/TerminalEventBridge.test.tsx src/components/terminal/providerSession.test.ts src/components/terminal/useProjectGroups.test.ts src/stores/overlayStore.test.ts src/stores/terminalStore.test.ts src/theme/themePacks.test.ts
+npm run check
 npm run build
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml pty::tests
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 Manual overlay regression steps are in [docs/global-overlay-manual-test.md](docs/global-overlay-manual-test.md).
@@ -257,7 +261,7 @@ Manual overlay regression steps are in [docs/global-overlay-manual-test.md](docs
 Windows support is preserved:
 
 - Release builds keep `windows_subsystem = "windows"` to avoid an extra console window.
-- PTY startup uses `powershell.exe` when available, falling back to `cmd.exe`.
+- PTY startup prefers `pwsh.exe`, then `powershell.exe`, and finally `cmd.exe`.
 - Windows icons and Tauri bundle configuration remain in `src-tauri/icons/` and `src-tauri/tauri.conf.json`.
 
 ## Documentation

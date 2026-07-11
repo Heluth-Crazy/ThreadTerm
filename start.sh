@@ -7,6 +7,7 @@ cd "$PROJECT_DIR"
 required_node_major=22
 
 info() { printf '[INFO] %s\n' "$1"; }
+warn() { printf '[WARN] %s\n' "$1" >&2; }
 fail() { printf '[ERROR] %s\n' "$1" >&2; exit 1; }
 
 info "Checking Node.js"
@@ -16,6 +17,19 @@ node_major="$(node -v | sed 's/^v//' | cut -d. -f1)"
 
 info "Checking Rust"
 command -v cargo >/dev/null 2>&1 || fail "Rust/Cargo is required. Install from https://rustup.rs"
+
+case "$(uname -s)" in
+  Darwin)
+    xcode-select -p >/dev/null 2>&1 || fail "Xcode Command Line Tools are required. Run: xcode-select --install"
+    ;;
+  Linux)
+    if ! command -v pkg-config >/dev/null 2>&1; then
+      warn "pkg-config was not found; install the Tauri Linux system prerequisites before compiling."
+    elif ! pkg-config --exists webkit2gtk-4.1 gtk+-3.0 2>/dev/null; then
+      warn "WebKitGTK 4.1 / GTK 3 development packages were not detected; Tauri compilation may fail."
+    fi
+    ;;
+esac
 
 if [ ! -d node_modules ]; then
   info "Installing npm dependencies"
