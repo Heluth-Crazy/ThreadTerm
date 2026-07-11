@@ -90,8 +90,19 @@ export const pty = {
   attachSnapshot: (ptyId: string): Promise<PtyAttachSnapshot | null> =>
     invoke<PtyAttachSnapshot | null>('pty_attach_snapshot', { ptyId }),
 
-  ack: (id: string, count: number): Promise<void> =>
-    invoke<void>('pty_ack', { id, count }),
+  registerOutputConsumer: (id: string, consumerId: string): Promise<void> =>
+    invoke<void>('pty_register_output_consumer', { id, consumerId }),
+
+  unregisterOutputConsumer: (id: string, consumerId: string): Promise<void> =>
+    invoke<void>('pty_unregister_output_consumer', { id, consumerId }),
+
+  ack: (
+    id: string,
+    throughSeq: number,
+    consumerKind: 'background' | 'renderer',
+    consumerId?: string,
+  ): Promise<void> =>
+    invoke<void>('pty_ack', { id, throughSeq, consumerKind, consumerId }),
 
   onOutput: (cb: (payload: PtyOutputPayload) => void): Promise<() => void> =>
     listen<PtyOutputPayload>('pty-output', (e) => cb(e.payload)),
@@ -456,9 +467,13 @@ export const mobileBridge = {
   status: (): Promise<BridgeStatus> =>
     invoke<BridgeStatus>('bridge_status'),
 
-  pairQr: (host?: string): Promise<PairQrResponse> =>
+  pairQr: (
+    host?: string,
+    permission: BridgeDevicePermission = 'read_only',
+  ): Promise<PairQrResponse> =>
     invoke<PairQrResponse>('bridge_pair_qr', {
       host: host ?? null,
+      permission,
     }),
 
   devices: (): Promise<BridgeDevice[]> =>

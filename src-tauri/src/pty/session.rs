@@ -1,6 +1,7 @@
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -64,6 +65,102 @@ pub(super) const RESIZE_OUTPUT_ACTIVITY_SUPPRESS: Duration = Duration::from_mill
 pub(super) const FLOW_CONTROL_HIGH_WATERMARK: usize = 200_000;
 pub(super) const FLOW_CONTROL_LOW_WATERMARK: usize = 20_000;
 pub(super) const FLOW_CONTROL_SLEEP: Duration = Duration::from_millis(2);
+pub(super) const RENDERER_CONSUMER_TTL: Duration = Duration::from_secs(30);
+
+static GLOBAL_OUTPUT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[derive(Debug)]
+struct OutputCredit {
+    seq: u64,
+    bytes: usize,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct OutputFlowControl {
+    pending: VecDeque<OutputCredit>,
+    unacked_bytes: usize,
+    renderer_acks: HashMap<String, RendererAck>,
+    background_acked_through: u64,
+}
+
+#[derive(Debug)]
+struct RendererAck {
+    acked_through: u64,
+    last_seen: Instant,
+}
+
+impl OutputFlowControl {
+    fn track(&mut self, seq: u64, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        self.pending.push_back(OutputCredit { seq, bytes });
+        self.unacked_bytes = self.unacked_bytes.saturating_add(bytes);
+    }
+
+    fn settle_through(&mut self, through_seq: u64) {
+        while self
+            .pending
+            .front()
+            .is_some_and(|credit| credit.seq <= through_seq)
+        {
+            if let Some(credit) = self.pending.pop_front() {
+                self.unacked_bytes = self.unacked_bytes.saturating_sub(credit.bytes);
+            }
+        }
+    }
+
+    fn settle_for_active_consumers(&mut self) {
+        let through_seq = self
+            .renderer_acks
+            .values()
+            .map(|renderer| renderer.acked_through)
+            .min()
+            .unwrap_or(self.background_acked_through);
+        self.settle_through(through_seq);
+    }
+
+    fn register_renderer(&mut self, consumer_id: String) {
+        self.renderer_acks
+            .entry(consumer_id)
+            .and_modify(|renderer| renderer.last_seen = Instant::now())
+            .or_insert(RendererAck {
+                acked_through: 0,
+                last_seen: Instant::now(),
+            });
+    }
+
+    fn unregister_renderer(&mut self, consumer_id: &str) {
+        self.renderer_acks.remove(consumer_id);
+        self.settle_for_active_consumers();
+    }
+
+    fn ack_renderer(&mut self, consumer_id: &str, through_seq: u64) {
+        let Some(acked_through) = self.renderer_acks.get_mut(consumer_id) else {
+            return;
+        };
+        acked_through.acked_through = acked_through.acked_through.max(through_seq);
+        acked_through.last_seen = Instant::now();
+        self.settle_for_active_consumers();
+    }
+
+    fn ack_background(&mut self, through_seq: u64) {
+        self.background_acked_through = self.background_acked_through.max(through_seq);
+        if self.renderer_acks.is_empty() {
+            self.settle_through(self.background_acked_through);
+        }
+    }
+
+    fn prune_stale_renderers(&mut self, now: Instant) {
+        let before = self.renderer_acks.len();
+        self.renderer_acks.retain(|_, renderer| {
+            now.saturating_duration_since(renderer.last_seen) <= RENDERER_CONSUMER_TTL
+        });
+        if self.renderer_acks.len() != before {
+            self.settle_for_active_consumers();
+        }
+    }
+}
 
 // ── PtySession struct ────────────────────────────────────────────────────────
 
@@ -78,8 +175,14 @@ pub(super) struct PtySession {
     pub(super) app_handle: tauri::AppHandle,
     /// Raw circular buffer used when a second webview attaches to the same PTY.
     pub(super) output_buffer: RwLock<String>,
+    /// Serializes output sequence assignment, screen-buffer advancement,
+    /// replay-buffer writes, and flow-credit registration into one commit.
+    /// Attach snapshots take the same lock so their payload and sequence form
+    /// an atomic catch-up barrier.
+    pub(super) output_commit: Mutex<()>,
     pub(super) output_seq: Mutex<u64>,
-    pub(super) unacked_bytes: Mutex<usize>,
+    pub(super) flow_control: Mutex<OutputFlowControl>,
+    pub(super) flow_control_changed: Condvar,
     pub(super) snapshot: Mutex<super::emulator::TerminalSnapshot>,
     pub(super) last_output_at: Mutex<Option<Instant>>,
     pub(super) last_size: Mutex<(u16, u16)>,
@@ -178,59 +281,117 @@ pub(super) fn trim_recent_output_buffer(buffer: &mut String) {
     buffer.drain(..start);
 }
 
-pub(super) fn next_output_seq(session: &PtySession) -> u64 {
-    next_output_seq_from_mutex(&session.output_seq)
+fn next_output_seq(session: &PtySession) -> u64 {
+    let seq = next_global_output_seq();
+    if let Ok(mut current) = session.output_seq.lock() {
+        *current = seq;
+    }
+    seq
 }
 
-fn next_output_seq_from_mutex(seq: &Mutex<u64>) -> u64 {
-    match seq.lock() {
-        Ok(mut guard) => {
-            *guard = guard.saturating_add(1);
-            *guard
-        }
-        Err(_) => 0,
-    }
+fn next_global_output_seq() -> u64 {
+    GLOBAL_OUTPUT_SEQ
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some(current.saturating_add(1))
+        })
+        .unwrap_or(u64::MAX)
+        .saturating_add(1)
 }
 
 pub(super) fn current_output_seq(session: &PtySession) -> u64 {
     session.output_seq.lock().map(|seq| *seq).unwrap_or(0)
 }
 
-pub(super) fn add_unacked(session: &PtySession, count: usize) {
-    add_unacked_to_mutex(&session.unacked_bytes, count);
+pub(super) fn register_renderer(session: &PtySession, consumer_id: String) {
+    if let Ok(mut flow) = session.flow_control.lock() {
+        flow.register_renderer(consumer_id);
+    }
 }
 
-pub(super) fn subtract_unacked(session: &PtySession, count: usize) {
-    subtract_unacked_from_mutex(&session.unacked_bytes, count);
+pub(super) fn unregister_renderer(session: &PtySession, consumer_id: &str) {
+    if let Ok(mut flow) = session.flow_control.lock() {
+        flow.unregister_renderer(consumer_id);
+    }
+    session.flow_control_changed.notify_all();
+}
+
+pub(super) fn ack_renderer(session: &PtySession, consumer_id: &str, through_seq: u64) {
+    if let Ok(mut flow) = session.flow_control.lock() {
+        flow.ack_renderer(consumer_id, through_seq);
+    }
+    session.flow_control_changed.notify_all();
+}
+
+pub(super) fn ack_background(session: &PtySession, through_seq: u64) {
+    if let Ok(mut flow) = session.flow_control.lock() {
+        flow.ack_background(through_seq);
+    }
+    session.flow_control_changed.notify_all();
+}
+
+/// Atomically publish a decoded PTY chunk into every backend representation.
+/// The returned duration covers emulator advancement for performance tracing.
+pub(super) fn commit_output(session: &PtySession, data: &str, bytes: usize) -> (u64, Duration) {
+    let _commit = session
+        .output_commit
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let seq = next_output_seq(session);
+
+    let apply_started = Instant::now();
+    if let Ok(mut snapshot) = session.snapshot.lock() {
+        snapshot.apply_output(data.as_bytes());
+    }
+    let apply_elapsed = apply_started.elapsed();
+
+    if let Ok(mut out) = session.output_buffer.write() {
+        out.push_str(data);
+        trim_recent_output_buffer(&mut out);
+    }
+
+    if let Ok(mut flow) = session.flow_control.lock() {
+        flow.track(seq, bytes);
+    }
+
+    (seq, apply_elapsed)
 }
 
 pub(super) fn unacked_bytes(session: &PtySession) -> usize {
     session
-        .unacked_bytes
+        .flow_control
         .lock()
-        .map(|value| *value)
+        .map(|flow| flow.unacked_bytes)
         .unwrap_or(0)
 }
 
-fn add_unacked_to_mutex(value: &Mutex<usize>, count: usize) {
-    if count == 0 {
+pub(super) fn wait_for_flow_capacity(session: &PtySession) {
+    let Ok(mut flow) = session.flow_control.lock() else {
+        return;
+    };
+    flow.prune_stale_renderers(Instant::now());
+    if flow.unacked_bytes < FLOW_CONTROL_HIGH_WATERMARK {
         return;
     }
-    if let Ok(mut guard) = value.lock() {
-        *guard = guard.saturating_add(count);
-    }
-}
 
-fn subtract_unacked_from_mutex(value: &Mutex<usize>, count: usize) {
-    if count == 0 {
-        return;
-    }
-    if let Ok(mut guard) = value.lock() {
-        *guard = guard.saturating_sub(count);
+    while flow.unacked_bytes > FLOW_CONTROL_LOW_WATERMARK && !is_killed(session) {
+        match session
+            .flow_control_changed
+            .wait_timeout(flow, FLOW_CONTROL_SLEEP)
+        {
+            Ok((next, _)) => {
+                flow = next;
+                flow.prune_stale_renderers(Instant::now());
+            }
+            Err(_) => return,
+        }
     }
 }
 
 pub(super) fn attach_snapshot(id: &str, session: &PtySession) -> PtyAttachSnapshot {
+    let _commit = session
+        .output_commit
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let raw_buffer = session
         .output_buffer
         .read()
@@ -361,6 +522,7 @@ pub(super) fn suppress_output_activity_for(session: &PtySession, window: Duratio
 /// exit code.
 pub(super) fn mark_killed(session: &PtySession) {
     session.killed.store(true, Ordering::SeqCst);
+    session.flow_control_changed.notify_all();
 }
 
 pub(super) fn is_killed(session: &PtySession) -> bool {
@@ -371,24 +533,133 @@ pub(super) fn is_killed(session: &PtySession) -> bool {
 mod tests {
     use super::*;
     use crate::pty::emulator::TerminalSnapshot;
-    use std::sync::Mutex;
 
     #[test]
     fn next_output_seq_is_monotonic() {
-        let seq = Mutex::new(0_u64);
-        assert_eq!(next_output_seq_from_mutex(&seq), 1);
-        assert_eq!(next_output_seq_from_mutex(&seq), 2);
-        assert_eq!(next_output_seq_from_mutex(&seq), 3);
+        let first = next_global_output_seq();
+        let second = next_global_output_seq();
+        let third = next_global_output_seq();
+        assert!(first < second);
+        assert!(second < third);
     }
 
     #[test]
-    fn ack_subtracts_without_underflow() {
-        let value = Mutex::new(0_usize);
-        add_unacked_to_mutex(&value, 100);
-        subtract_unacked_from_mutex(&value, 40);
-        assert_eq!(*value.lock().expect("lock"), 60);
-        subtract_unacked_from_mutex(&value, 1000);
-        assert_eq!(*value.lock().expect("lock"), 0);
+    fn ack_is_cumulative_and_idempotent() {
+        let mut flow = OutputFlowControl::default();
+        flow.track(10, 100);
+        flow.track(11, 50);
+
+        flow.ack_background(10);
+        assert_eq!(flow.unacked_bytes, 50);
+        flow.ack_background(10);
+        assert_eq!(flow.unacked_bytes, 50);
+        flow.ack_background(11);
+        assert_eq!(flow.unacked_bytes, 0);
+    }
+
+    #[test]
+    fn old_ack_does_not_release_future_output() {
+        let mut flow = OutputFlowControl::default();
+        flow.track(20, 100);
+        flow.track(21, 200);
+        flow.ack_background(21);
+        assert_eq!(flow.unacked_bytes, 0);
+
+        flow.track(22, 300);
+        flow.ack_background(21);
+        assert_eq!(flow.unacked_bytes, 300);
+    }
+
+    #[test]
+    fn high_watermark_requires_ack_down_to_low_watermark() {
+        let mut flow = OutputFlowControl::default();
+        flow.track(30, FLOW_CONTROL_HIGH_WATERMARK - 10_000);
+        flow.track(31, 20_000);
+        assert!(flow.unacked_bytes >= FLOW_CONTROL_HIGH_WATERMARK);
+
+        flow.ack_background(30);
+        assert_eq!(flow.unacked_bytes, 20_000);
+        assert!(flow.unacked_bytes <= FLOW_CONTROL_LOW_WATERMARK);
+    }
+
+    #[test]
+    fn renderer_ack_gates_background_settlement() {
+        let mut flow = OutputFlowControl::default();
+        flow.register_renderer("main".to_string());
+        flow.track(40, 100);
+
+        flow.ack_background(40);
+        assert_eq!(flow.unacked_bytes, 100);
+
+        flow.ack_renderer("main", 40);
+        assert_eq!(flow.unacked_bytes, 0);
+    }
+
+    #[test]
+    fn slowest_renderer_controls_settlement_until_unregistered() {
+        let mut flow = OutputFlowControl::default();
+        flow.register_renderer("main".to_string());
+        flow.register_renderer("float".to_string());
+        flow.track(50, 100);
+        flow.track(51, 200);
+
+        flow.ack_renderer("main", 51);
+        flow.ack_renderer("float", 50);
+        assert_eq!(flow.unacked_bytes, 200);
+
+        flow.unregister_renderer("float");
+        assert_eq!(flow.unacked_bytes, 0);
+    }
+
+    #[test]
+    fn stale_renderer_ack_cannot_release_output_after_unregister() {
+        let mut flow = OutputFlowControl::default();
+        flow.register_renderer("old".to_string());
+        flow.unregister_renderer("old");
+        flow.register_renderer("current".to_string());
+        flow.track(60, 100);
+
+        flow.ack_renderer("old", 60);
+        assert_eq!(flow.unacked_bytes, 100);
+        flow.ack_renderer("current", 60);
+        assert_eq!(flow.unacked_bytes, 0);
+    }
+
+    #[test]
+    fn stale_renderer_lease_expires_and_background_can_resume_flow() {
+        let mut flow = OutputFlowControl::default();
+        flow.register_renderer("crashed-window".to_string());
+        flow.track(70, 100);
+        flow.ack_background(70);
+        assert_eq!(flow.unacked_bytes, 100);
+
+        let now = Instant::now();
+        flow.renderer_acks
+            .get_mut("crashed-window")
+            .expect("renderer should be registered")
+            .last_seen = now;
+        flow.prune_stale_renderers(now + RENDERER_CONSUMER_TTL + Duration::from_millis(1));
+
+        assert!(flow.renderer_acks.is_empty());
+        assert_eq!(flow.unacked_bytes, 0);
+    }
+
+    #[test]
+    fn renderer_heartbeat_preserves_its_ack_watermark() {
+        let mut flow = OutputFlowControl::default();
+        flow.register_renderer("main".to_string());
+        flow.track(80, 100);
+        flow.ack_renderer("main", 80);
+        flow.register_renderer("main".to_string());
+        flow.track(81, 200);
+
+        assert_eq!(
+            flow.renderer_acks
+                .get("main")
+                .map(|renderer| renderer.acked_through),
+            Some(80)
+        );
+        assert_eq!(flow.unacked_bytes, 200);
     }
 
     #[test]

@@ -14,6 +14,7 @@
  * Control handle for tests: `window.__fakePty`
  *   - `emitOutput(id, data)` / `emitExit(id, code)`
  *   - `counts: { create, attachSnapshot, ack }` keyed by ptyId
+ *   - `ackedThrough` stores the highest cumulative ACK watermark per ptyId
  */
 import type { Page } from '@playwright/test';
 
@@ -132,6 +133,7 @@ function installInPage(seed: FakeSeed): void {
     attachSnapshot: Record<string, number>;
     ack: Record<string, number>;
   } = { create: {}, attachSnapshot: {}, ack: {} };
+  const ackedThrough: Record<string, number> = {};
 
   const emitEvent = (event: string, payload: unknown): void => {
     const ids = eventListeners.get(event);
@@ -144,12 +146,14 @@ function installInPage(seed: FakeSeed): void {
 
   win.__fakePty = {
     counts,
-    emitOutput(id: string, data: string): void {
+    ackedThrough,
+    emitOutput(id: string, data: string): number {
       const session = sessions.get(id);
-      if (!session || !session.alive) return;
+      if (!session || !session.alive) return 0;
       session.seq += 1;
       session.history += data;
       emitEvent('pty-output', { id, data, seq: session.seq });
+      return session.seq;
     },
     emitExit(id: string, code: number | null): void {
       const session = sessions.get(id);
@@ -199,11 +203,13 @@ function installInPage(seed: FakeSeed): void {
         const existing = sessions.get(id);
         if (!existing) {
           sessions.set(id, { seq: 0, alive: true, history: '' });
+          ackedThrough[id] = 0;
         } else if (!existing.alive) {
           // Real backend spawns a fresh process for a dead session id.
           existing.seq = 0;
           existing.history = '';
           existing.alive = true;
+          ackedThrough[id] = 0;
         }
         return id;
       }
@@ -240,8 +246,13 @@ function installInPage(seed: FakeSeed): void {
       case 'pty_ack': {
         const id = a.id as string;
         counts.ack[id] = (counts.ack[id] ?? 0) + 1;
+        const throughSeq = Number(a.throughSeq ?? 0);
+        ackedThrough[id] = Math.max(ackedThrough[id] ?? 0, throughSeq);
         return null;
       }
+      case 'pty_register_output_consumer':
+      case 'pty_unregister_output_consumer':
+        return null;
       case 'pty_kill': {
         const session = sessions.get(a.id as string);
         if (session) session.alive = false;

@@ -25,6 +25,7 @@ import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard, TerminalStatus } from '../../types/terminal';
 import { feedHeadless, disposeHeadless, disposeAllHeadless } from './headlessPreview';
 import { createCardOutputBuffer } from './outputBuffer';
+import { createOutputAcknowledger } from './outputAcknowledger';
 import { buildCardPreview } from './cardPreview';
 import { getMissingAiCliName } from './providerSession';
 import i18n from '../../i18n/config';
@@ -96,14 +97,23 @@ export function TerminalEventBridge(): null {
   const replyInputCheckpointRef = useRef<Map<string, number>>(new Map());
   /** Last backend output sequence applied to preview/store per PTY id. */
   const lastOutputSeqRef = useRef<Map<string, number>>(new Map());
+  /** Last sequence fully processed by the headless/background consumer. */
+  const lastProcessedOutputSeqRef = useRef<Map<string, number>>(new Map());
   /** Transient retry timers; persisted card state stores only serializable metadata. */
   const autoRestartTimersRef = useRef<Map<string, number>>(new Map());
   const bridgeMountedAtRef = useRef(Date.now());
 
   useEffect(() => {
+    // Effect replay/HMR creates a new ACK transport. Forget the prior
+    // in-memory watermarks so the mount-time atomic snapshot is processed and
+    // cumulatively ACKed again even if the previous transport failed mid-send.
+    lastOutputSeqRef.current.clear();
+    lastProcessedOutputSeqRef.current.clear();
     const unlisteners: Array<() => void> = [];
     let cancelled = false;
     let syncInFlight = false;
+    let backgroundSnapshotReady = false;
+    const pendingBackgroundOutput: Array<{ id: string; data: string; seq: number }> = [];
 
     // Resolve Rust PTY ids back to card ids. Most sessions are 1:1, but the
     // floating overlay must tolerate persisted cards where `ptyId` differs.
@@ -130,6 +140,115 @@ export function TerminalEventBridge(): null {
       },
       OUTPUT_FLUSH_MS,
     );
+    const outputAcknowledger = createOutputAcknowledger((request) =>
+      pty.ack(
+        request.id,
+        request.throughSeq,
+        request.consumerKind,
+        request.consumerId,
+      ),
+    );
+
+    const acknowledgeBackgroundOutput = (id: string, seq: number) => {
+      if (cancelled) return;
+      const processed = lastProcessedOutputSeqRef.current.get(id) ?? 0;
+      lastProcessedOutputSeqRef.current.set(id, Math.max(processed, seq));
+      outputAcknowledger.ack({ id, throughSeq: seq, consumerKind: 'background' });
+    };
+
+    const processBackgroundOutput = ({ id, data, seq }: { id: string; data: string; seq: number }) => {
+      const lastSeq = lastOutputSeqRef.current.get(id) ?? 0;
+      if (seq <= lastSeq) {
+        if (seq <= (lastProcessedOutputSeqRef.current.get(id) ?? 0)) {
+          outputAcknowledger.ack({ id, throughSeq: seq, consumerKind: 'background' });
+        }
+        return;
+      }
+      lastOutputSeqRef.current.set(id, seq);
+
+      const card = getCardForPtyId(id);
+      if (!card) {
+        acknowledgeBackgroundOutput(id, seq);
+        return;
+      }
+      outputBuffer.pushChunk(card.id, data);
+      if (!data) {
+        acknowledgeBackgroundOutput(id, seq);
+        return;
+      }
+      try {
+        feedHeadless(card.id, data, (preview) => {
+          if (!cancelled && getCardForPtyId(id)) {
+            outputBuffer.pushPreview(card.id, preview);
+          }
+          acknowledgeBackgroundOutput(id, seq);
+        });
+      } catch {
+        acknowledgeBackgroundOutput(id, seq);
+      }
+    };
+
+    const reconcileBackgroundSnapshots = async (): Promise<boolean> => {
+      let states: Record<string, SessionState>;
+      try {
+        states = await pty.getAllSessionStates();
+      } catch {
+        return false;
+      }
+
+      let succeeded = true;
+      await Promise.all(
+        Object.keys(states).map(async (id) => {
+          try {
+            const snapshot = await pty.attachSnapshot(id);
+            if (cancelled || !snapshot || snapshot.seq <= 0) return;
+            const data = `${snapshot.history || ''}${snapshot.data || ''}`;
+            await new Promise<void>((resolve) => {
+              const lastSeq = lastOutputSeqRef.current.get(id) ?? 0;
+              const lastProcessed = lastProcessedOutputSeqRef.current.get(id) ?? 0;
+              if (snapshot.seq <= lastProcessed) {
+                outputAcknowledger.ack({
+                  id,
+                  throughSeq: snapshot.seq,
+                  consumerKind: 'background',
+                });
+                resolve();
+                return;
+              }
+              lastOutputSeqRef.current.set(id, Math.max(lastSeq, snapshot.seq));
+              const card = getCardForPtyId(id);
+              if (!card) {
+                acknowledgeBackgroundOutput(id, snapshot.seq);
+                resolve();
+                return;
+              }
+              outputBuffer.pushChunk(card.id, data);
+              if (!data) {
+                acknowledgeBackgroundOutput(id, snapshot.seq);
+                resolve();
+                return;
+              }
+              disposeHeadless(card.id);
+              try {
+                feedHeadless(card.id, data, (preview) => {
+                  if (!cancelled && getCardForPtyId(id)) {
+                    outputBuffer.pushPreview(card.id, preview);
+                  }
+                  acknowledgeBackgroundOutput(id, snapshot.seq);
+                  resolve();
+                });
+              } catch {
+                acknowledgeBackgroundOutput(id, snapshot.seq);
+                resolve();
+              }
+            });
+          } catch {
+            succeeded = false;
+          }
+        }),
+      );
+      return succeeded;
+    };
 
     function clearAutoRestartTimer(cardId: string) {
       const timer = autoRestartTimersRef.current.get(cardId);
@@ -347,28 +466,35 @@ export function TerminalEventBridge(): null {
       //      non-blank rows → store.updateCardReplyPreview. This is
       //      the clean, wrap-aware view the card UI shows; it mirrors
       //      what the real xterm in the main window is rendering.
-      const unsubOutput = await pty.onOutput(({ id, data, seq }) => {
-        const lastSeq = lastOutputSeqRef.current.get(id) ?? 0;
-        if (seq <= lastSeq) return;
-        lastOutputSeqRef.current.set(id, seq);
-
-        const card = getCardForPtyId(id);
-        if (!card) return;
-        // Audit P0-2: store writes go through the coalescing buffer instead
-        // of mutating `cards` once per chunk. The headless emulator still
-        // sees every chunk so the preview stays frame-accurate.
-        outputBuffer.pushChunk(card.id, data);
-        feedHeadless(card.id, data, (preview) => {
-          // Guard against late callbacks after the card was removed.
-          if (!getCardForPtyId(id)) return;
-          outputBuffer.pushPreview(card.id, preview);
-        });
+      const unsubOutput = await pty.onOutput((output) => {
+        if (!backgroundSnapshotReady) {
+          pendingBackgroundOutput.push(output);
+          return;
+        }
+        processBackgroundOutput(output);
       });
       if (cancelled) {
         unsubOutput?.();
         return;
       }
       unlisteners.push(unsubOutput);
+
+      // The listener is installed before attach so output produced during HMR
+      // or WebView recreation is queued. The atomic snapshot establishes the
+      // cumulative background watermark; queued events newer than that barrier
+      // are then processed in sequence order. This resumes a PTY that reached
+      // its high watermark while no JS listener existed.
+      let reconcileDelayMs = 100;
+      while (!cancelled && !(await reconcileBackgroundSnapshots())) {
+        await new Promise((resolve) => window.setTimeout(resolve, reconcileDelayMs));
+        reconcileDelayMs = Math.min(reconcileDelayMs * 2, 2000);
+      }
+      if (cancelled) return;
+      backgroundSnapshotReady = true;
+      pendingBackgroundOutput
+        .sort((left, right) => left.seq - right.seq)
+        .forEach(processBackgroundOutput);
+      pendingBackgroundOutput.length = 0;
 
       // ── session-state-changed ─────────────────────────────────────────
       //
@@ -514,6 +640,7 @@ export function TerminalEventBridge(): null {
       // Flush whatever is still buffered so the persisted preview reflects
       // the last output seen before unmount / HMR.
       outputBuffer.dispose();
+      outputAcknowledger.dispose();
       // Hot-reload / bridge unmount: drop all headless emulators so we
       // don't accumulate duplicate listeners across HMR cycles.
       disposeAllHeadless();

@@ -10,6 +10,7 @@ import { isTauriEnv, pty } from '../../lib/tauri-bridge';
 import { useTheme } from '../../theme/ThemeContext';
 import { claimTerminalActive, registerTerminal, unregisterTerminal } from './xtermRegistry';
 import { createOutputSequencer } from './outputSequencer';
+import { createOutputAcknowledger } from './outputAcknowledger';
 import {
   computeReconnectDelay,
   countNewlines,
@@ -56,6 +57,31 @@ const CLEANUP_SEQUENCE_RE = /\x1b\[[0-9;]*[JKLMPX]/;
 // blocking write, so input/scroll stay responsive while a history-heavy session
 // restores. End state is identical — xterm's parser is stateful across writes.
 const SNAPSHOT_RESTORE_CHUNK_CHARS = 65536;
+const RENDERER_CONSUMER_HEARTBEAT_MS = 5000;
+
+function createRendererConsumerId() {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid || `renderer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function onceUnlisten(unlisten) {
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    unlisten?.();
+  };
+}
+
+function disposeRendererConsumer(consumer) {
+  if (!consumer || consumer.disposed) return;
+  consumer.disposed = true;
+  window.clearInterval(consumer.heartbeatTimer);
+  consumer.acknowledger.dispose();
+  // Best-effort immediate cleanup. The backend also expires renderer leases
+  // that stop heartbeating, so a crashed WebView cannot pin flow forever.
+  pty.unregisterOutputConsumer(consumer.ptyId, consumer.consumerId).catch(() => {});
+}
 
 function isCodexLoginCommand(command) {
   return typeof command === 'string' && /\bcodex\s+login\b/i.test(command);
@@ -132,6 +158,7 @@ function Shell({
   const manuallyDisconnected = useRef(false);
   const lastPtySizeRef = useRef(null);
   const outputSequencerRef = useRef(null);
+  const outputConsumerRef = useRef(null);
   const connectGenerationRef = useRef(0);
   const desiredPaneIdRef = useRef(paneId);
 
@@ -311,6 +338,9 @@ function Shell({
     unlistenExitRef.current = null;
     outputSequencerRef.current?.reset();
     outputSequencerRef.current = null;
+    const outputConsumer = outputConsumerRef.current;
+    outputConsumerRef.current = null;
+    disposeRendererConsumer(outputConsumer);
   }, []);
 
   const detachCurrentPty = useCallback(({
@@ -398,6 +428,30 @@ function Shell({
     connectGenerationRef.current = setupGeneration;
 
     const setup = async () => {
+      let localUnlistenOutput = null;
+      let localUnlistenExit = null;
+      let localSequencer = null;
+      let localOutputConsumer = null;
+      const cleanupLocalSetup = () => {
+        localUnlistenOutput?.();
+        localUnlistenExit?.();
+        localSequencer?.reset();
+        disposeRendererConsumer(localOutputConsumer);
+
+        if (unlistenOutputRef.current === localUnlistenOutput) {
+          unlistenOutputRef.current = null;
+        }
+        if (unlistenExitRef.current === localUnlistenExit) {
+          unlistenExitRef.current = null;
+        }
+        if (outputSequencerRef.current === localSequencer) {
+          outputSequencerRef.current = null;
+        }
+        if (outputConsumerRef.current === localOutputConsumer) {
+          outputConsumerRef.current = null;
+        }
+      };
+
       try {
         if (!isTauriEnv()) {
           throw new Error(t('shell.ptyDesktopOnly'));
@@ -424,20 +478,61 @@ function Shell({
         const cols = terminal.current?.cols || 120;
         const connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
         if (isStaleSetup() || !terminal.current) return;
+        const consumerId = createRendererConsumerId();
+        await pty.registerOutputConsumer(connectedPtyId, consumerId);
+        if (isStaleSetup() || !terminal.current) {
+          await pty.unregisterOutputConsumer(connectedPtyId, consumerId).catch(() => {});
+          return;
+        }
+        const outputAcknowledger = createOutputAcknowledger((request) =>
+          pty.ack(
+            request.id,
+            request.throughSeq,
+            request.consumerKind,
+            request.consumerId,
+          ),
+        );
+        const heartbeatTimer = window.setInterval(() => {
+          void pty.registerOutputConsumer(connectedPtyId, consumerId).catch(() => {});
+        }, RENDERER_CONSUMER_HEARTBEAT_MS);
+        localOutputConsumer = {
+          ptyId: connectedPtyId,
+          consumerId,
+          acknowledger: outputAcknowledger,
+          heartbeatTimer,
+          disposed: false,
+        };
+        outputConsumerRef.current = localOutputConsumer;
         ptyIdRef.current = connectedPtyId;
         if (terminal.current && connectedPtyId) {
           registerTerminal(connectedPtyId, terminal.current);
         }
 
-        const textEncoder = new TextEncoder();
-        const sequencer = createOutputSequencer((data, _seq, onWritten, meta) => {
+        const sequencer = createOutputSequencer((data, seq, onWritten, meta) => {
           const term = terminal.current;
+          const isCurrentConsumer = () =>
+            !isStaleSetup() &&
+            outputConsumerRef.current?.consumerId === consumerId;
           const ackWritten = () => {
+            if (!isCurrentConsumer()) {
+              onWritten();
+              return;
+            }
             if (meta.ack) {
-              pty.ack(connectedPtyId, textEncoder.encode(data).length).catch(() => {});
+              outputAcknowledger.ack({
+                id: connectedPtyId,
+                throughSeq: seq,
+                consumerKind: 'renderer',
+                consumerId,
+              });
             }
             onWritten();
           };
+
+          if (!isCurrentConsumer()) {
+            onWritten();
+            return;
+          }
 
           if (!meta.render) {
             ackWritten();
@@ -445,7 +540,7 @@ function Shell({
           }
 
           if (!term) {
-            ackWritten();
+            onWritten();
             return;
           }
 
@@ -459,6 +554,10 @@ function Shell({
               !isDomViewportScrolledUp(terminalRef.current));
           const needsRefresh = CLEANUP_SEQUENCE_RE.test(data) || data.includes('\r');
           const finalize = () => {
+            if (!isCurrentConsumer()) {
+              onWritten();
+              return;
+            }
             if (followOutput) {
               if (!term.hasSelection()) {
                 scrollTerminalToBottom();
@@ -481,14 +580,18 @@ function Shell({
             ackWritten();
           };
 
-          // W0.3: a large session-restore snapshot (`!meta.ack`) is otherwise one
+          // W0.3: a large session-restore snapshot is otherwise one
           // giant term.write that blocks input/scroll while xterm parses it.
           // Feed it in byte-budgeted slices, chaining on term.write's drain
           // callback so the main thread yields between slices. Realtime chunks
           // and small snapshots keep the single write (zero behavior change).
-          if (!meta.ack && data.length > SNAPSHOT_RESTORE_CHUNK_CHARS) {
+          if (meta.snapshot && data.length > SNAPSHOT_RESTORE_CHUNK_CHARS) {
             let offset = 0;
             const writeNextSlice = () => {
+              if (!isCurrentConsumer()) {
+                onWritten();
+                return;
+              }
               if (!terminal.current || offset >= data.length) {
                 finalize();
                 return;
@@ -502,10 +605,11 @@ function Shell({
             term.write(data, finalize);
           }
         });
+        localSequencer = sequencer;
         outputSequencerRef.current = sequencer;
         sequencer.reset();
 
-        const unlistenOut = await pty.onOutput(({ id: sid, data, seq }) => {
+        const unlistenOut = onceUnlisten(await pty.onOutput(({ id: sid, data, seq }) => {
           if (
             sid !== connectedPtyId ||
             ptyIdRef.current !== connectedPtyId ||
@@ -514,13 +618,14 @@ function Shell({
             return;
           }
           sequencer.receive({ seq, data });
-        });
+        }));
+        localUnlistenOutput = unlistenOut;
         if (isStaleSetup() || !terminal.current) {
-          unlistenOut?.();
+          cleanupLocalSetup();
           return;
         }
 
-        const unlistenExit = await pty.onExit(({ id: sid, code }) => {
+        const unlistenExit = onceUnlisten(await pty.onExit(({ id: sid, code }) => {
           if (sid !== connectedPtyId || ptyIdRef.current !== connectedPtyId) return;
           setConnected(false);
           setConnecting(false);
@@ -545,10 +650,10 @@ function Shell({
             exitedRef.current = true;
             setExitInfo({ code: typeof code === 'number' ? code : null });
           }
-        });
+        }));
+        localUnlistenExit = unlistenExit;
         if (isStaleSetup() || !terminal.current) {
-          unlistenOut?.();
-          unlistenExit?.();
+          cleanupLocalSetup();
           return;
         }
 
@@ -557,7 +662,10 @@ function Shell({
 
         try {
           const snapshot = await pty.attachSnapshot(connectedPtyId);
-          if (isStaleSetup() || !terminal.current) return;
+          if (isStaleSetup() || !terminal.current) {
+            cleanupLocalSetup();
+            return;
+          }
           if (snapshot) {
             if (terminal.current) {
               terminal.current.clear();
@@ -574,9 +682,17 @@ function Shell({
           } else {
             sequencer.applySnapshot({ seq: 0, data: '' });
           }
-        } catch {
-          if (isStaleSetup() || !terminal.current) return;
-          sequencer.applySnapshot({ seq: 0, data: '' });
+        } catch (error) {
+          if (isStaleSetup() || !terminal.current) {
+            cleanupLocalSetup();
+            return;
+          }
+          // A registered renderer with no snapshot watermark would keep ACK 0
+          // alive via heartbeat and permanently pin an already-backpressured
+          // PTY. Tear down this consumer and let the normal reconnect path
+          // retry the atomic attach instead of reporting a false connection.
+          cleanupLocalSetup();
+          throw error;
         }
 
         setConnected(true);
@@ -593,10 +709,14 @@ function Shell({
 
         if (shouldSendInitialCommand) {
           await pty.input(connectedPtyId, `${command}\r`);
-          if (isStaleSetup()) return;
+          if (isStaleSetup()) {
+            cleanupLocalSetup();
+            return;
+          }
           onInitialCommandSentRef.current?.();
         }
       } catch (error) {
+        cleanupLocalSetup();
         if (connectGenerationRef.current !== setupGeneration) return;
         logger.error('[Shell] PTY connection failed:', error);
         setConnectError(error instanceof Error ? error.message : String(error));

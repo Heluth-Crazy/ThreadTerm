@@ -16,6 +16,8 @@ const bridgeMocks = vi.hoisted(() => {
     listeners,
     pty: {
       getAllSessionStates: vi.fn(),
+      attachSnapshot: vi.fn((_id: string): Promise<unknown> => Promise.resolve(null)),
+      ack: vi.fn(() => Promise.resolve()),
       onOutput: vi.fn((cb) => {
         listeners.output = cb;
         return Promise.resolve(() => {});
@@ -43,7 +45,9 @@ vi.mock('../../lib/tauri-bridge', () => ({
 }));
 
 vi.mock('./headlessPreview', () => ({
-  feedHeadless: vi.fn(),
+  feedHeadless: vi.fn((_id: string, data: string, onRendered: (preview: string) => void) => {
+    onRendered(data);
+  }),
   disposeHeadless: vi.fn(),
   disposeAllHeadless: vi.fn(),
 }));
@@ -69,6 +73,14 @@ function createCard(terminalType: 'shell' | 'codex' = 'shell') {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
 describe('TerminalEventBridge status reconciliation', () => {
   beforeEach(() => {
     resetStore();
@@ -78,6 +90,7 @@ describe('TerminalEventBridge status reconciliation', () => {
     bridgeMocks.listeners.exit = undefined;
     bridgeMocks.listeners.attention = undefined;
     bridgeMocks.pty.getAllSessionStates.mockResolvedValue({});
+    bridgeMocks.pty.attachSnapshot.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -115,8 +128,69 @@ describe('TerminalEventBridge status reconciliation', () => {
       expect(useTerminalStore.getState().getCardById(idB)?.status).toBe('waiting');
       expect(useTerminalStore.getState().getCardById(idC)?.status).toBe('completed');
     });
-    // Audit P2-5: three cards must not cost three IPC round-trips.
-    expect(bridgeMocks.pty.getAllSessionStates).toHaveBeenCalledTimes(1);
+    // Status sync and background snapshot recovery each use one batch; neither
+    // scales IPC calls with the number of cards.
+    expect(bridgeMocks.pty.getAllSessionStates).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses an atomic attach snapshot to resume background ACK after listener recreation', async () => {
+    const id = createCard();
+    const snapshot = deferred<{
+      ptyId: string;
+      data: string;
+      seq: number;
+      rows: number;
+      cols: number;
+      cursorRow: number;
+      cursorCol: number;
+      history?: string;
+    } | null>();
+    bridgeMocks.pty.getAllSessionStates.mockResolvedValue({ [id]: 'Running' });
+    bridgeMocks.pty.attachSnapshot
+      .mockRejectedValueOnce(new Error('transient attach failure'))
+      .mockReturnValue(snapshot.promise);
+
+    render(<TerminalEventBridge />);
+    await waitFor(() => expect(bridgeMocks.listeners.output).toBeDefined());
+
+    act(() => {
+      bridgeMocks.listeners.output?.({ id, data: 'new-live', seq: 43 });
+    });
+    expect(feedHeadless).not.toHaveBeenCalled();
+
+    await act(async () => {
+      snapshot.resolve({
+        ptyId: id,
+        data: 'recovered-snapshot',
+        seq: 42,
+        rows: 24,
+        cols: 80,
+        cursorRow: 1,
+        cursorCol: 1,
+      });
+    });
+
+    await waitFor(() => {
+      expect(bridgeMocks.pty.attachSnapshot).toHaveBeenCalledTimes(2);
+      expect(feedHeadless).toHaveBeenNthCalledWith(
+        1,
+        id,
+        'recovered-snapshot',
+        expect.any(Function),
+      );
+      expect(feedHeadless).toHaveBeenNthCalledWith(
+        2,
+        id,
+        'new-live',
+        expect.any(Function),
+      );
+      expect(bridgeMocks.pty.ack).toHaveBeenCalledWith(
+        id,
+        43,
+        'background',
+        undefined,
+      );
+    });
   });
 
   it('falls transient PTYs missing from the batch map back to idle', async () => {
@@ -406,6 +480,66 @@ describe('TerminalEventBridge status reconciliation', () => {
     expect(useTerminalStore.getState().getCardById(id)?.lastOutput).toContain('one');
     expect(useTerminalStore.getState().getCardById(id)?.lastOutput).not.toContain('duplicate one');
     expect(useTerminalStore.getState().getCardById(id)?.lastOutput).not.toContain('stale zero');
+    await waitFor(() => {
+      expect(bridgeMocks.pty.ack.mock.calls).toEqual([
+        [id, 1, 'background', undefined],
+        [id, 2, 'background', undefined],
+      ]);
+    });
+  });
+
+  it('acks output even when no card or Shell consumer exists', async () => {
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(bridgeMocks.listeners.output).toBeDefined();
+    });
+
+    act(() => {
+      bridgeMocks.listeners.output?.({ id: 'unmounted-pty', data: 'background', seq: 42 });
+    });
+
+    await waitFor(() => {
+      expect(bridgeMocks.pty.ack).toHaveBeenCalledWith(
+        'unmounted-pty',
+        42,
+        'background',
+        undefined,
+      );
+    });
+    expect(feedHeadless).not.toHaveBeenCalled();
+  });
+
+  it('continues cumulative acking after a transient IPC rejection', async () => {
+    const id = createCard();
+    bridgeMocks.pty.ack.mockRejectedValueOnce(new Error('ipc dropped'));
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(bridgeMocks.listeners.output).toBeDefined();
+    });
+
+    act(() => {
+      bridgeMocks.listeners.output?.({ id, data: 'one', seq: 10 });
+      bridgeMocks.listeners.output?.({ id, data: 'two', seq: 11 });
+    });
+
+    await waitFor(() => {
+      expect(bridgeMocks.pty.ack).toHaveBeenNthCalledWith(
+        1,
+        id,
+        10,
+        'background',
+        undefined,
+      );
+      expect(bridgeMocks.pty.ack).toHaveBeenNthCalledWith(
+        2,
+        id,
+        11,
+        'background',
+        undefined,
+      );
+    });
   });
 
   it('coalesces an output burst into a single store write', async () => {

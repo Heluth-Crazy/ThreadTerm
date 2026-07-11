@@ -3,12 +3,12 @@ use tauri::{AppHandle, Manager, WebviewUrl};
 #[cfg(not(target_os = "macos"))]
 use tauri::WebviewWindowBuilder;
 
+#[cfg(target_os = "macos")]
+use super::platform::set_overlay_activation_policy;
 use super::platform::{
     configure_float_window_for_current_space, configure_selector_window_for_current_space,
     restore_regular_activation_policy_if_no_overlay_visible,
 };
-#[cfg(target_os = "macos")]
-use super::platform::set_overlay_activation_policy;
 use super::state::OVERLAY_SETTINGS;
 
 // ── Labels ───────────────────────────────────────────────────────────────────

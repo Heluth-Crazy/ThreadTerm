@@ -1,0 +1,74 @@
+import { describe, expect, it, vi } from 'vitest';
+import { createOutputAcknowledger, type OutputAckRequest } from './outputAcknowledger';
+
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
+const request = (throughSeq: number): OutputAckRequest => ({
+  id: 'pty-1',
+  throughSeq,
+  consumerKind: 'renderer',
+  consumerId: 'main-1',
+});
+
+describe('createOutputAcknowledger', () => {
+  it('coalesces newer cumulative ACKs while one IPC call is in flight', async () => {
+    const first = deferred();
+    const send = vi
+      .fn<(value: OutputAckRequest) => Promise<void>>()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue(undefined);
+    const acknowledger = createOutputAcknowledger(send);
+
+    acknowledger.ack(request(10));
+    acknowledger.ack(request(11));
+    acknowledger.ack(request(15));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    first.resolve();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(send.mock.calls.map(([value]) => value.throughSeq)).toEqual([10, 15]);
+  });
+
+  it('retries a failed ACK without requiring a later output event', async () => {
+    vi.useFakeTimers();
+    const send = vi
+      .fn<(value: OutputAckRequest) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('IPC dropped'))
+      .mockResolvedValue(undefined);
+    const acknowledger = createOutputAcknowledger(send, 50);
+
+    acknowledger.ack(request(20));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(send).toHaveBeenLastCalledWith(request(20));
+
+    acknowledger.dispose();
+    vi.useRealTimers();
+  });
+
+  it('cancels scheduled retries when disposed', async () => {
+    vi.useFakeTimers();
+    const first = deferred();
+    const send = vi.fn(() => first.promise);
+    const acknowledger = createOutputAcknowledger(send, 50);
+
+    acknowledger.ack(request(30));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    acknowledger.dispose();
+    first.reject(new Error('IPC dropped'));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
+  });
+});

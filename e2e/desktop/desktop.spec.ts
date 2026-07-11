@@ -8,8 +8,8 @@
  * Each test gets an isolated page with its own fake Tauri env + seeded
  * cards (see ./fakeTauri.ts). Terminal text renders into a WebGL canvas, so
  * assertions go through the fake PTY's call counters (`create`,
- * `attachSnapshot`, `ack` — ack fires only after xterm completed the write)
- * and the Stage 1 strip test-ids instead of DOM text.
+ * `attachSnapshot`) and cumulative ACK watermark (advanced only after xterm
+ * completed the write), plus Stage 1 strip test-ids instead of DOM text.
  */
 import { test, expect, type Page } from '@playwright/test';
 import { inflateSync } from 'node:zlib';
@@ -43,7 +43,7 @@ async function backToGrid(page: Page): Promise<void> {
 
 function waitForCount(
   page: Page,
-  kind: 'create' | 'attachSnapshot' | 'ack',
+  kind: 'create' | 'attachSnapshot',
   ptyId: string,
   atLeast: number,
 ): Promise<unknown> {
@@ -58,15 +58,32 @@ function waitForCount(
   );
 }
 
-function emitOutput(page: Page, ptyId: string, data: string, repeat = 1): Promise<void> {
+function waitForAckThrough(page: Page, ptyId: string, throughSeq: number): Promise<unknown> {
+  return page.waitForFunction(
+    ([id, seq]) => {
+      const fake = (window as unknown as {
+        __fakePty?: { ackedThrough: Record<string, number> };
+      }).__fakePty;
+      return (fake?.ackedThrough[id as string] ?? 0) >= (seq as number);
+    },
+    [ptyId, throughSeq] as const,
+  );
+}
+
+function emitOutput(page: Page, ptyId: string, data: string, repeat = 1): Promise<number> {
   return page.evaluate(
     ([id, chunk, count]) => {
       const fake = (window as unknown as {
-        __fakePty: { emitOutput: (id: string, data: string) => void };
+        __fakePty: { emitOutput: (id: string, data: string) => number };
       }).__fakePty;
+      let throughSeq = 0;
       for (let i = 0; i < (count as number); i += 1) {
-        fake.emitOutput(id as string, (chunk as string).replace('{i}', String(i)));
+        throughSeq = fake.emitOutput(
+          id as string,
+          (chunk as string).replace('{i}', String(i)),
+        );
       }
+      return throughSeq;
     },
     [ptyId, data, repeat] as const,
   );
@@ -209,8 +226,8 @@ test('exit banner appears on non-zero exit and restart respawns the PTY', async 
 
   // Live output reaches xterm — `ack` fires only after term.write() completes
   // (text itself lives in a WebGL canvas, not the DOM).
-  await emitOutput(page, ptyId, 'hello from pty\r\n');
-  await waitForCount(page, 'ack', ptyId, 1);
+  const throughSeq = await emitOutput(page, ptyId, 'hello from pty\r\n');
+  await waitForAckThrough(page, ptyId, throughSeq);
 
   // Non-zero exit → exit strip with restart entry; screen is NOT cleared.
   await emitExit(page, ptyId, 1);
@@ -243,10 +260,22 @@ test('evicted terminal view re-attaches its snapshot on re-focus', async ({ page
     await waitForCount(page, 'create', card.ptyId, 1);
     await waitForCount(page, 'attachSnapshot', card.ptyId, 1);
     // Give the evicted-but-preserved PTY some history to restore later.
-    await emitOutput(page, card.ptyId, `history for ${card.id}\r\n`);
-    await waitForCount(page, 'ack', card.ptyId, 1);
+    const throughSeq = await emitOutput(page, card.ptyId, `history for ${card.id}\r\n`);
+    await waitForAckThrough(page, card.ptyId, throughSeq);
     await backToGrid(page);
   }
+
+  // Card 1 is now LRU-evicted but its PTY is intentionally still alive.
+  // Stream more than the Rust 200 KB high-watermark while no Shell owns it;
+  // the always-mounted TerminalEventBridge must advance the cumulative ACK
+  // watermark through the final emitted sequence.
+  const throughSeq = await emitOutput(
+    page,
+    cards[0].ptyId,
+    `${'x'.repeat(1024)}{i}\r\n`,
+    256,
+  );
+  await waitForAckThrough(page, cards[0].ptyId, throughSeq);
 
   // Card 1 was evicted when card 7 mounted (cap 6). Re-focusing it must
   // create a fresh Shell that re-attaches the preserved session snapshot.
@@ -274,8 +303,8 @@ test('streaming output does not yank a scrolled-up viewport; button returns to b
   await waitForCount(page, 'create', ptyId, 1);
 
   // Fill the scrollback well past one viewport.
-  await emitOutput(page, ptyId, 'scrollback line {i}\r\n', 200);
-  await waitForCount(page, 'ack', ptyId, 200);
+  const scrollbackThroughSeq = await emitOutput(page, ptyId, 'scrollback line {i}\r\n', 200);
+  await waitForAckThrough(page, ptyId, scrollbackThroughSeq);
 
   // Scroll up over the terminal host. Note: a pure user wheel scroll goes
   // through xterm's Viewport with `suppressScrollEvent: true`, so the
@@ -298,8 +327,8 @@ test('streaming output does not yank a scrolled-up viewport; button returns to b
 
   // More output while reading history: the viewport must NOT be yanked back
   // to the bottom, and the "scroll to bottom" indicator must appear.
-  await emitOutput(page, ptyId, 'new output line {i}\r\n', 50);
-  await waitForCount(page, 'ack', ptyId, 250);
+  const liveThroughSeq = await emitOutput(page, ptyId, 'new output line {i}\r\n', 50);
+  await waitForAckThrough(page, ptyId, liveThroughSeq);
 
   const scrollButton = page.getByTestId('shell-scroll-to-bottom');
   await expect(scrollButton).toBeVisible();
@@ -334,8 +363,8 @@ test('codex chat to terminal restore shows terminal output without stale bottom 
   await page.locator('button[title="Terminal mode"]').click();
   await waitForCount(page, 'create', card.ptyId, 1);
   await waitForCount(page, 'attachSnapshot', card.ptyId, 1);
-  await emitOutput(page, card.ptyId, 'codex terminal line\r\n');
-  await waitForCount(page, 'ack', card.ptyId, 1);
+  const throughSeq = await emitOutput(page, card.ptyId, 'codex terminal line\r\n');
+  await waitForAckThrough(page, card.ptyId, throughSeq);
   await expectVisibleTerminalHasTextOrInk(page, 'codex terminal line');
   await expect(page.getByTestId('shell-scroll-to-bottom')).toBeHidden();
 

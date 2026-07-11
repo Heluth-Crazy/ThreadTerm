@@ -30,7 +30,7 @@ pub fn live_session_snapshot(id: &str) -> Option<LivePtySessionSnapshot> {
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tauri::{Manager, Window};
@@ -123,8 +123,10 @@ pub async fn pty_create(
         state: RwLock::new(SessionState::Idle),
         app_handle: window.app_handle().clone(),
         output_buffer: RwLock::new(String::with_capacity(OUTPUT_BUFFER_MAX_BYTES.min(8192))),
+        output_commit: Mutex::new(()),
         output_seq: Mutex::new(0),
-        unacked_bytes: Mutex::new(0),
+        flow_control: Mutex::new(session::OutputFlowControl::default()),
+        flow_control_changed: Condvar::new(),
         snapshot: Mutex::new(emulator::TerminalSnapshot::new(
             rows,
             cols,
@@ -313,7 +315,11 @@ pub async fn pty_get_recent_output(pty_id: String) -> Result<Option<String>, Str
 
 #[tauri::command]
 pub async fn pty_attach_snapshot(pty_id: String) -> Result<Option<PtyAttachSnapshot>, String> {
-    Ok(attach_snapshot_for_bridge(&pty_id))
+    let Some(session) = registry::get(&pty_id) else {
+        return Ok(None);
+    };
+    let snapshot = session::attach_snapshot(&pty_id, &session);
+    Ok(Some(snapshot))
 }
 
 pub fn attach_snapshot_for_bridge(pty_id: &str) -> Option<PtyAttachSnapshot> {
@@ -322,11 +328,46 @@ pub fn attach_snapshot_for_bridge(pty_id: &str) -> Option<PtyAttachSnapshot> {
 }
 
 #[tauri::command]
-pub async fn pty_ack(id: String, count: usize) -> Result<(), String> {
+pub async fn pty_register_output_consumer(id: String, consumer_id: String) -> Result<(), String> {
+    if consumer_id.trim().is_empty() {
+        return Err("Output consumer id cannot be empty".to_string());
+    }
     let Some(session) = registry::get(&id) else {
         return Ok(());
     };
-    session::subtract_unacked(&session, count);
+    session::register_renderer(&session, consumer_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn pty_unregister_output_consumer(id: String, consumer_id: String) -> Result<(), String> {
+    let Some(session) = registry::get(&id) else {
+        return Ok(());
+    };
+    session::unregister_renderer(&session, &consumer_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn pty_ack(
+    id: String,
+    through_seq: u64,
+    consumer_kind: String,
+    consumer_id: Option<String>,
+) -> Result<(), String> {
+    let Some(session) = registry::get(&id) else {
+        return Ok(());
+    };
+    match consumer_kind.as_str() {
+        "background" => session::ack_background(&session, through_seq),
+        "renderer" => {
+            let consumer_id = consumer_id
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| "Renderer ACK requires a consumer id".to_string())?;
+            session::ack_renderer(&session, &consumer_id, through_seq);
+        }
+        _ => return Err(format!("Unknown output consumer kind: {consumer_kind}")),
+    }
     Ok(())
 }
 

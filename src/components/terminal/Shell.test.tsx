@@ -104,6 +104,8 @@ const ptyMock = vi.hoisted(() => {
     input: vi.fn(async () => {}),
     resize: vi.fn(async () => {}),
     kill: vi.fn(async () => {}),
+    registerOutputConsumer: vi.fn(async (_id: string, _consumerId: string) => {}),
+    unregisterOutputConsumer: vi.fn(async (_id: string, _consumerId: string) => {}),
     ack: vi.fn(async () => {}),
     attachSnapshot: vi.fn(async () => null),
     onOutput: vi.fn(async (cb: (payload: { id: string; data: string; seq: number }) => void) => {
@@ -126,6 +128,8 @@ vi.mock('../../lib/tauri-bridge', () => ({
     input: ptyMock.input,
     resize: ptyMock.resize,
     kill: ptyMock.kill,
+    registerOutputConsumer: ptyMock.registerOutputConsumer,
+    unregisterOutputConsumer: ptyMock.unregisterOutputConsumer,
     ack: ptyMock.ack,
     attachSnapshot: ptyMock.attachSnapshot,
     onOutput: ptyMock.onOutput,
@@ -289,6 +293,19 @@ describe('Shell — connection failure surfacing (P1-4)', () => {
       expect(screen.queryByTestId('shell-reconnect-strip')).not.toBeInTheDocument(),
     );
   });
+
+  it('unregisters the renderer and reports failure when snapshot attach rejects', async () => {
+    ptyMock.attachSnapshot.mockRejectedValueOnce(new Error('snapshot IPC failed'));
+
+    renderMinimalShell();
+
+    expect(await screen.findByTestId('shell-reconnect-strip')).toBeInTheDocument();
+    const [ptyId, consumerId] = ptyMock.registerOutputConsumer.mock.calls[0];
+    await waitFor(() => {
+      expect(ptyMock.unregisterOutputConsumer).toHaveBeenCalledWith(ptyId, consumerId);
+    });
+    expect(ptyMock.ack).not.toHaveBeenCalled();
+  });
 });
 
 describe('Shell — pane switching', () => {
@@ -315,6 +332,14 @@ describe('Shell — pane switching', () => {
 
     expect(term.write).not.toHaveBeenCalledWith('old output', expect.any(Function));
     expect(term.write).toHaveBeenCalledWith('new output', expect.any(Function));
+    await waitFor(() =>
+      expect(ptyMock.ack).toHaveBeenCalledWith(
+        'pane-2',
+        1,
+        'renderer',
+        expect.any(String),
+      ),
+    );
   });
 
   it('ignores a stale connect that resolves after the pane changed', async () => {
@@ -339,6 +364,112 @@ describe('Shell — pane switching', () => {
     await waitFor(() => expect(ptyMock.create).toHaveBeenCalledWith('pane-2', '/tmp/proj', 24, 80));
     await waitFor(() => expect(ptyMock.input).toHaveBeenCalledWith('pane-2', 'second\r'));
     expect(ptyMock.input).not.toHaveBeenCalledWith('pane-1', 'first\r');
+  });
+
+  it('does not let a stale listener setup dispose the new pane consumer', async () => {
+    let resolveFirstOutputListener: (() => void) | undefined;
+    ptyMock.onOutput.mockImplementationOnce(
+      (callback: (payload: { id: string; data: string; seq: number }) => void) => {
+        ptyMock.outputHandlers.add(callback);
+        return new Promise<() => boolean>((resolve) => {
+          resolveFirstOutputListener = () =>
+            resolve(() => ptyMock.outputHandlers.delete(callback));
+        });
+      },
+    );
+
+    const { rerender } = renderMinimalShell('pane-1');
+    await waitFor(() => {
+      expect(ptyMock.registerOutputConsumer).toHaveBeenCalledWith(
+        'pane-1',
+        expect.any(String),
+      );
+      expect(ptyMock.onOutput).toHaveBeenCalledTimes(1);
+    });
+
+    rerender(renderShellProps('pane-2'));
+    await waitFor(() => {
+      expect(ptyMock.registerOutputConsumer).toHaveBeenCalledWith(
+        'pane-2',
+        expect.any(String),
+      );
+      expect(ptyMock.exitHandlers.size).toBeGreaterThan(0);
+    });
+    const pane2ConsumerId = ptyMock.registerOutputConsumer.mock.calls.find(
+      ([id]) => id === 'pane-2',
+    )?.[1];
+
+    act(() => resolveFirstOutputListener?.());
+    await waitFor(() => {
+      expect(ptyMock.unregisterOutputConsumer).not.toHaveBeenCalledWith(
+        'pane-2',
+        pane2ConsumerId,
+      );
+    });
+
+    ptyMock.ack.mockClear();
+    act(() => {
+      for (const handler of ptyMock.outputHandlers) {
+        handler({ id: 'pane-2', data: 'still-live', seq: 9 });
+      }
+    });
+    await waitFor(() => {
+      expect(ptyMock.ack).toHaveBeenCalledWith(
+        'pane-2',
+        9,
+        'renderer',
+        pane2ConsumerId,
+      );
+    });
+  });
+});
+
+describe('Shell — PTY output consumer lifecycle', () => {
+  it('registers a unique renderer consumer and unregisters it on unmount', async () => {
+    const { unmount } = renderMinimalShell();
+    await waitForConnected();
+
+    const [, consumerId] = ptyMock.registerOutputConsumer.mock.calls[0];
+    expect(ptyMock.registerOutputConsumer).toHaveBeenCalledWith(
+      'pane-1',
+      expect.any(String),
+    );
+
+    unmount();
+    await waitFor(() => {
+      expect(ptyMock.unregisterOutputConsumer).toHaveBeenCalledWith(
+        'pane-1',
+        consumerId,
+      );
+    });
+  });
+
+  it('acks renderer output only after xterm reports the write drained', async () => {
+    renderMinimalShell();
+    await waitForConnected();
+    const term = xtermMock.instances[0];
+    let drainWrite: (() => void) | undefined;
+    term.write.mockImplementationOnce((_data: string, callback?: () => void) => {
+      drainWrite = callback;
+    });
+    ptyMock.ack.mockClear();
+
+    act(() => {
+      for (const handler of ptyMock.outputHandlers) {
+        handler({ id: 'pane-1', data: 'render me', seq: 5 });
+      }
+    });
+    expect(ptyMock.ack).not.toHaveBeenCalled();
+
+    act(() => drainWrite?.());
+    await waitFor(() => {
+      expect(ptyMock.ack).toHaveBeenCalledWith(
+        'pane-1',
+        5,
+        'renderer',
+        expect.any(String),
+      );
+    });
   });
 });
 

@@ -285,21 +285,14 @@ pub(super) fn stream_pty_output(
                 &mut last_preview_flush,
                 attention_debounce,
                 session_start,
+                &mut prof_apply,
                 &mut prof_emit,
                 &mut prof_emit_chunks,
             );
         }
 
         let flow_t = Instant::now();
-        while session::unacked_bytes(&ses) >= session::FLOW_CONTROL_HIGH_WATERMARK {
-            if session::is_killed(&ses) {
-                break;
-            }
-            std::thread::sleep(session::FLOW_CONTROL_SLEEP);
-            if session::unacked_bytes(&ses) <= session::FLOW_CONTROL_LOW_WATERMARK {
-                break;
-            }
-        }
+        session::wait_for_flow_capacity(&ses);
         prof_flow += flow_t.elapsed();
         if session::is_killed(&ses) {
             break;
@@ -313,12 +306,6 @@ pub(super) fn stream_pty_output(
                 prof_read += read_elapsed;
                 prof_read_chunks += 1;
                 prof_bytes += bytes.len() as u64;
-
-                let apply_t = Instant::now();
-                if let Ok(mut snapshot) = ses.snapshot.lock() {
-                    snapshot.apply_output(&bytes);
-                }
-                prof_apply += apply_t.elapsed();
 
                 let data = decoder.decode(&bytes);
                 if data.is_empty() {
@@ -344,6 +331,7 @@ pub(super) fn stream_pty_output(
                         &mut last_preview_flush,
                         attention_debounce,
                         session_start,
+                        &mut prof_apply,
                         &mut prof_emit,
                         &mut prof_emit_chunks,
                     );
@@ -362,6 +350,7 @@ pub(super) fn stream_pty_output(
                     &mut last_preview_flush,
                     attention_debounce,
                     session_start,
+                    &mut prof_apply,
                     &mut prof_emit,
                     &mut prof_emit_chunks,
                 );
@@ -379,6 +368,7 @@ pub(super) fn stream_pty_output(
                     &mut last_preview_flush,
                     attention_debounce,
                     session_start,
+                    &mut prof_apply,
                     &mut prof_emit,
                     &mut prof_emit_chunks,
                 );
@@ -395,6 +385,7 @@ pub(super) fn stream_pty_output(
                     &mut last_preview_flush,
                     attention_debounce,
                     session_start,
+                    &mut prof_apply,
                     &mut prof_emit,
                     &mut prof_emit_chunks,
                 );
@@ -421,6 +412,7 @@ pub(super) fn stream_pty_output(
             &mut last_preview_flush,
             attention_debounce,
             session_start,
+            &mut prof_apply,
             &mut prof_emit,
             &mut prof_emit_chunks,
         );
@@ -502,6 +494,7 @@ fn flush_pending_pty_output(
     last_preview_flush: &mut Instant,
     attention_debounce: Duration,
     session_start: Instant,
+    prof_apply: &mut Duration,
     prof_emit: &mut Duration,
     prof_emit_chunks: &mut u64,
 ) {
@@ -517,7 +510,7 @@ fn flush_pending_pty_output(
     *pending_since = None;
 
     let emit_t = Instant::now();
-    emit_pty_output_chunk(
+    let apply_elapsed = emit_pty_output_chunk(
         id,
         &data,
         byte_count,
@@ -528,7 +521,8 @@ fn flush_pending_pty_output(
         attention_debounce,
         session_start,
     );
-    *prof_emit += emit_t.elapsed();
+    *prof_apply += apply_elapsed;
+    *prof_emit += emit_t.elapsed().saturating_sub(apply_elapsed);
     *prof_emit_chunks = prof_emit_chunks.saturating_add(1);
 }
 
@@ -543,8 +537,17 @@ fn emit_pty_output_chunk(
     last_preview_flush: &mut Instant,
     attention_debounce: Duration,
     session_start: Instant,
-) {
-    let seq = session::next_output_seq(ses);
+) -> Duration {
+    let ack_bytes = if byte_count == 0 {
+        data.len()
+    } else {
+        byte_count
+    };
+    // Commit the sequence, emulator snapshot, replay buffer, and flow credit
+    // under one lock before publishing the event. A concurrent attach can
+    // therefore observe either the whole chunk or none of it, never a payload
+    // paired with the previous sequence number.
+    let (seq, apply_elapsed) = session::commit_output(ses, data, ack_bytes);
     emit_pty_output_to_terminal_windows(
         app_handle,
         PtyOutputPayload {
@@ -553,20 +556,7 @@ fn emit_pty_output_chunk(
             seq,
         },
     );
-    let ack_bytes = if byte_count == 0 {
-        data.len()
-    } else {
-        byte_count
-    };
-    session::add_unacked(ses, ack_bytes);
     bridge::broadcast_terminal_output(id, data, seq);
-
-    // Keep raw PTY bytes so a second webview can replay the same terminal
-    // control stream until backend screen snapshots are enabled.
-    if let Ok(mut out) = ses.output_buffer.write() {
-        out.push_str(data);
-        session::trim_recent_output_buffer(&mut out);
-    }
 
     // Strip ANSI escape codes for pattern matching.
     let cleaned = ANSI_STRIP.replace_all(data, "");
@@ -640,6 +630,8 @@ fn emit_pty_output_chunk(
         flush_preview(id, data, ses);
         *last_preview_flush = Instant::now();
     }
+
+    apply_elapsed
 }
 
 fn emit_pty_output_to_terminal_windows(app_handle: &AppHandle, payload: PtyOutputPayload) {

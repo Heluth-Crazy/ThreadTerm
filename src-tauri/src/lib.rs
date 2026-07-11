@@ -98,6 +98,8 @@ pub fn run() {
             pty::pty_get_all_session_states,
             pty::pty_get_recent_output,
             pty::pty_attach_snapshot,
+            pty::pty_register_output_consumer,
+            pty::pty_unregister_output_consumer,
             pty::pty_ack,
             notification::notification_send_os,
             notification::window_focus_main,
