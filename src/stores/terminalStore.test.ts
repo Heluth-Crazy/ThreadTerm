@@ -289,6 +289,44 @@ describe('terminalStore — card lifecycle', () => {
     expect(out).toBe('helloworld!\n');
   });
 
+  it('keeps the same store and cards references for an identical reply preview', () => {
+    const id = useTerminalStore.getState().createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+    useTerminalStore.getState().updateCardReplyPreview(id, 'same preview');
+    const beforeState = useTerminalStore.getState();
+    const beforeCards = beforeState.cards;
+    const listener = vi.fn();
+    const unsubscribe = useTerminalStore.subscribe(listener);
+
+    useTerminalStore.getState().updateCardReplyPreview(id, 'same preview');
+
+    expect(useTerminalStore.getState()).toBe(beforeState);
+    expect(useTerminalStore.getState().cards).toBe(beforeCards);
+    expect(listener).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it('updates coalesced output and preview in one Zustand notification', () => {
+    const id = useTerminalStore.getState().createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+    const listener = vi.fn();
+    const unsubscribe = useTerminalStore.subscribe(listener);
+
+    useTerminalStore.getState().updateCardOutputAndPreview(id, 'hello\x1b[31m world', 'clean');
+
+    const card = useTerminalStore.getState().getCardById(id);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(card?.lastOutput).toContain('hello world');
+    expect(card?.lastReplyPreview).toBe('clean');
+    unsubscribe();
+  });
+
   it('recordUserSubmit increments message count and appends a user-input event', () => {
     const id = useTerminalStore.getState().createCard({
       projectName: 'foo',

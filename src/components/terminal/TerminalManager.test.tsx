@@ -98,8 +98,21 @@ vi.mock('./Shell', () => ({
 }));
 
 vi.mock('../files/WorkspaceCodeEditor', () => ({
-  WorkspaceCodeEditor: ({ value }: { value: string }) => (
-    <textarea aria-label="code editor" readOnly value={value} />
+  WorkspaceCodeEditor: ({
+    value,
+    onChange,
+  }: {
+    value: string;
+    onChange?: (value: string) => void;
+  }) => (
+    <div>
+      <textarea
+        aria-label="code editor"
+        value={value}
+        onChange={(event) => onChange?.(event.currentTarget.value)}
+      />
+      <input aria-label="editor local state" defaultValue="editor-local-initial" />
+    </div>
   ),
   WorkspaceMergeDiffEditor: ({
     baseValue,
@@ -446,6 +459,76 @@ describe('TerminalManager shortcut hint layout', () => {
     expect(
       document.querySelector('[data-terminal-context-menu="true"][title="/tmp/repo/README.md"]'),
     ).not.toBeNull();
+  });
+
+  it('retains dirty editor drafts and local component state across card switches', async () => {
+    const store = useTerminalStore.getState();
+    const firstId = store.createCard({
+      projectName: 'first',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+    const secondId = store.createCard({
+      projectName: 'second',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+    store.focusCard(firstId);
+
+    render(<TerminalManager />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'README.md' }));
+    const firstEditor = await screen.findByLabelText('code editor');
+    const firstLocalState = screen.getByLabelText('editor local state');
+
+    fireEvent.change(firstEditor, { target: { value: 'dirty draft from first card' } });
+    fireEvent.change(firstLocalState, { target: { value: 'first editor selection state' } });
+
+    await waitFor(() => {
+      expect(
+        document.querySelector(
+          '[data-terminal-context-menu][title="/tmp/repo/README.md"] .bg-amber-400',
+        ),
+      ).not.toBeNull();
+    });
+
+    act(() => {
+      useTerminalStore.getState().focusCard(secondId);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('code editor').closest('[aria-hidden]')).toHaveAttribute(
+        'aria-hidden',
+        'true',
+      );
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'README.md' }));
+
+    await waitFor(() => {
+      expect(screen.getAllByLabelText('code editor')).toHaveLength(2);
+    });
+    const secondEditor = screen
+      .getAllByLabelText('code editor')
+      .find((editor) => editor.closest('[aria-hidden]')?.getAttribute('aria-hidden') === 'false');
+    expect(secondEditor).toHaveValue('old');
+
+    act(() => {
+      useTerminalStore.getState().focusCard(firstId);
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByLabelText('code editor')).toHaveLength(1);
+    });
+    expect(screen.getByLabelText('code editor')).toHaveValue('dirty draft from first card');
+    expect(screen.getByLabelText('editor local state')).toHaveValue(
+      'first editor selection state',
+    );
+    expect(screen.getByLabelText('code editor').closest('[aria-hidden]')).toHaveAttribute(
+      'aria-hidden',
+      'false',
+    );
+    expect(bridgeMocks.readFile).toHaveBeenCalledTimes(2);
   });
 
   it('supports workspace tab context close actions without closing the terminal tab', async () => {

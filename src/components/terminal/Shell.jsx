@@ -12,6 +12,10 @@ import { claimTerminalActive, registerTerminal, unregisterTerminal } from './xte
 import { createOutputSequencer } from './outputSequencer';
 import { createOutputAcknowledger } from './outputAcknowledger';
 import {
+  TERMINAL_GEOMETRY_INVALIDATED_EVENT,
+  TERMINAL_SURFACE_SHOWN_EVENT,
+} from './terminalSurfaceEvents';
+import {
   computeReconnectDelay,
   countNewlines,
   formatExitBanner,
@@ -59,9 +63,10 @@ const CLEANUP_SEQUENCE_RE = /\x1b\[[0-9;]*[JKLMPX]/;
 const SNAPSHOT_RESTORE_CHUNK_CHARS = 65536;
 const RENDERER_CONSUMER_HEARTBEAT_MS = 5000;
 
-function createRendererConsumerId() {
+function createRendererConsumerId(scope = 'main') {
   const uuid = globalThis.crypto?.randomUUID?.();
-  return uuid || `renderer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const instanceId = uuid || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `renderer:${scope}:${instanceId}`;
 }
 
 function onceUnlisten(unlisten) {
@@ -136,6 +141,7 @@ function Shell({
   paneId,
   onDisconnect,
   active = true,
+  rendererScope = 'main',
   preservePtyOnUnmount = false,
   replayRecentOutput = false,
   suppressInitialCommandWhenPtyExists = false,
@@ -155,6 +161,9 @@ function Shell({
   const retryCountRef = useRef(0);
   const reconnectTimeoutRef = useRef(null);
   const surfaceRecoveryTimersRef = useRef([]);
+  const surfaceRecoveryFrameRef = useRef(null);
+  const surfaceRecoveryGenerationRef = useRef(0);
+  const terminalRefreshFrameRef = useRef(null);
   const manuallyDisconnected = useRef(false);
   const lastPtySizeRef = useRef(null);
   const outputSequencerRef = useRef(null);
@@ -246,7 +255,7 @@ function Shell({
     pty.resize(id, rows, cols).catch(() => {});
   }, []);
 
-  const scrollTerminalToBottom = useCallback((shouldFocus = false) => {
+  const scrollTerminalToBottom = useCallback((shouldFocus = false, shouldRefresh = true) => {
     const term = terminal.current;
     if (!term) return;
 
@@ -261,10 +270,12 @@ function Shell({
     setScrolledUp(false);
     setNewOutputLines(0);
 
-    try {
-      term.refresh(0, Math.max(0, term.rows - 1));
-    } catch {
-      // Best-effort repaint after programmatic scroll recovery.
+    if (shouldRefresh) {
+      try {
+        term.refresh(0, Math.max(0, term.rows - 1));
+      } catch {
+        // Best-effort repaint after programmatic scroll recovery.
+      }
     }
 
     if (shouldFocus) {
@@ -276,30 +287,87 @@ function Shell({
     }
   }, []);
 
+  const clearSurfaceRecoveryWork = useCallback(() => {
+    if (surfaceRecoveryFrameRef.current !== null) {
+      cancelAnimationFrame(surfaceRecoveryFrameRef.current);
+      surfaceRecoveryFrameRef.current = null;
+    }
+    for (const timer of surfaceRecoveryTimersRef.current) clearTimeout(timer);
+    surfaceRecoveryTimersRef.current = [];
+  }, []);
+
+  const cancelSurfaceRecovery = useCallback(() => {
+    surfaceRecoveryGenerationRef.current += 1;
+    clearSurfaceRecoveryWork();
+  }, [clearSurfaceRecoveryWork]);
+
+  const scheduleTerminalRefresh = useCallback(() => {
+    if (!activeRef.current || terminalRefreshFrameRef.current !== null) return;
+    terminalRefreshFrameRef.current = requestAnimationFrame(() => {
+      terminalRefreshFrameRef.current = null;
+      if (!activeRef.current) return;
+      const term = terminal.current;
+      if (!term) return;
+      try {
+        term.refresh(0, Math.max(0, term.rows - 1));
+      } catch {
+        // Renderer recovery is best-effort.
+      }
+    });
+  }, []);
+
   const recoverTerminalSurface = useCallback((shouldFocus = false, shouldScrollToBottom = false) => {
     if (!activeRef.current) return;
 
+    clearSurfaceRecoveryWork();
+    const generation = surfaceRecoveryGenerationRef.current + 1;
+    surfaceRecoveryGenerationRef.current = generation;
+    let geometrySettled = false;
+
     const run = () => {
+      if (
+        surfaceRecoveryGenerationRef.current !== generation ||
+        !activeRef.current
+      ) {
+        return;
+      }
       const term = terminal.current;
       const fit = fitAddon.current;
       const host = terminalRef.current;
       if (!term || !fit || !host) return;
 
-      const rect = host.getBoundingClientRect();
-      if (rect.width < 20 || rect.height < 20) return;
+      if (!geometrySettled) {
+        const rect = host.getBoundingClientRect();
+        if (rect.width < 20 || rect.height < 20) return;
 
-      try {
-        fit.fit();
-      } catch {
-        // xterm fit can throw while a hidden webview is becoming visible.
-      }
+        try {
+          fit.fit();
+        } catch {
+          // xterm fit can throw while a hidden webview is becoming visible.
+          return;
+        }
 
-      resizePtyIfNeeded(term.rows, term.cols);
+        resizePtyIfNeeded(term.rows, term.cols);
+        geometrySettled = true;
 
-      try {
-        term.refresh(0, Math.max(0, term.rows - 1));
-      } catch {
-        // Best-effort renderer recovery.
+        if (shouldScrollToBottom && !term.hasSelection()) {
+          // This helper also synchronizes the React scroll indicator and
+          // repaints after the programmatic scroll.
+          scrollTerminalToBottom(false, true);
+        } else {
+          try {
+            term.refresh(0, Math.max(0, term.rows - 1));
+          } catch {
+            // Best-effort renderer recovery.
+          }
+        }
+
+        // Geometry/scroll work is complete after the first valid fit. Keep
+        // the bounded late callbacks only when focus may need a later retry.
+        if (!shouldFocus) {
+          for (const timer of surfaceRecoveryTimersRef.current) clearTimeout(timer);
+          surfaceRecoveryTimersRef.current = [];
+        }
       }
 
       if (shouldFocus) {
@@ -309,13 +377,12 @@ function Shell({
           // Focus can fail before the webview becomes key; later passes retry.
         }
       }
-
-      if (shouldScrollToBottom && !term.hasSelection()) {
-        scrollTerminalToBottom();
-      }
     };
 
-    requestAnimationFrame(run);
+    surfaceRecoveryFrameRef.current = requestAnimationFrame(() => {
+      surfaceRecoveryFrameRef.current = null;
+      run();
+    });
     // Windows WebView2 reports a 0-sized host on the first frames after the
     // webview becomes visible, so the early passes hit the `rect.width < 20`
     // guard and `fit()` is skipped — the terminal stays at its default
@@ -324,12 +391,22 @@ function Shell({
     // simply succeed once the surface finally has a real size.
     for (const delay of [60, 180, 400, 800]) {
       const timer = window.setTimeout(() => {
-        run();
         surfaceRecoveryTimersRef.current = surfaceRecoveryTimersRef.current.filter((id) => id !== timer);
+        run();
       }, delay);
       surfaceRecoveryTimersRef.current.push(timer);
     }
-  }, [resizePtyIfNeeded, scrollTerminalToBottom]);
+  }, [clearSurfaceRecoveryWork, resizePtyIfNeeded, scrollTerminalToBottom]);
+
+  useEffect(() => {
+    if (!active) {
+      cancelSurfaceRecovery();
+      if (terminalRefreshFrameRef.current !== null) {
+        cancelAnimationFrame(terminalRefreshFrameRef.current);
+        terminalRefreshFrameRef.current = null;
+      }
+    }
+  }, [active, cancelSurfaceRecovery]);
 
   const cleanupListeners = useCallback(() => {
     unlistenOutputRef.current?.();
@@ -478,7 +555,7 @@ function Shell({
         const cols = terminal.current?.cols || 120;
         const connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
         if (isStaleSetup() || !terminal.current) return;
-        const consumerId = createRendererConsumerId();
+        const consumerId = createRendererConsumerId(rendererScope);
         await pty.registerOutputConsumer(connectedPtyId, consumerId);
         if (isStaleSetup() || !terminal.current) {
           await pty.unregisterOutputConsumer(connectedPtyId, consumerId).catch(() => {});
@@ -548,34 +625,35 @@ function Shell({
           // when the viewport already sits at the bottom (or the app runs on
           // the alternate screen); a user reading history must not be yanked
           // back down by every incoming chunk.
-          const followOutput =
+          const applyDisplayEffects = activeRef.current;
+          const followOutput = applyDisplayEffects && (
             term.buffer.active.type === 'alternate' ||
             (shouldFollowOutput(term.buffer.active) &&
-              !isDomViewportScrolledUp(terminalRef.current));
+              !isDomViewportScrolledUp(terminalRef.current))
+          );
           const needsRefresh = CLEANUP_SEQUENCE_RE.test(data) || data.includes('\r');
           const finalize = () => {
             if (!isCurrentConsumer()) {
               onWritten();
               return;
             }
-            if (followOutput) {
-              if (!term.hasSelection()) {
-                scrollTerminalToBottom();
-              }
-            } else {
-              scrolledUpRef.current = true;
-              setScrolledUp(true);
-              pendingNewLinesRef.current += countNewlines(data);
-              scheduleNewOutputFlush();
-            }
-            if (needsRefresh) {
-              requestAnimationFrame(() => {
-                try {
-                  term.refresh(0, Math.max(0, term.rows - 1));
-                } catch {
-                  // Renderer recovery is best-effort.
+            if (applyDisplayEffects && activeRef.current) {
+              if (followOutput) {
+                if (!term.hasSelection()) {
+                  // The xterm write has already painted normal output. Avoid
+                  // a full refresh for every chunk; CR/cleanup paths use the
+                  // coalesced scheduler below.
+                  scrollTerminalToBottom(false, false);
                 }
-              });
+              } else {
+                scrolledUpRef.current = true;
+                setScrolledUp(true);
+                pendingNewLinesRef.current += countNewlines(data);
+                scheduleNewOutputFlush();
+              }
+              if (needsRefresh) {
+                scheduleTerminalRefresh();
+              }
             }
             ackWritten();
           };
@@ -731,8 +809,10 @@ function Shell({
     cleanupListeners,
     paneId,
     recoverTerminalSurface,
+    rendererScope,
     scheduleNewOutputFlush,
     scheduleReconnect,
+    scheduleTerminalRefresh,
     scrollTerminalToBottom,
     setConnected,
     setConnecting,
@@ -938,6 +1018,7 @@ function Shell({
     // Track whether the viewport sits at the bottom; returning to the bottom
     // (manually or via the indicator button) clears the new-output counter.
     const scrollDisposable = terminal.current.onScroll(() => {
+      if (!activeRef.current) return;
       const term = terminal.current;
       if (!term) return;
       const buf = term.buffer.active;
@@ -1006,8 +1087,11 @@ function Shell({
       }
       pendingNewLinesRef.current = 0;
       scrolledUpRef.current = false;
-      for (const timer of surfaceRecoveryTimersRef.current) clearTimeout(timer);
-      surfaceRecoveryTimersRef.current = [];
+      cancelSurfaceRecovery();
+      if (terminalRefreshFrameRef.current !== null) {
+        cancelAnimationFrame(terminalRefreshFrameRef.current);
+        terminalRefreshFrameRef.current = null;
+      }
 
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -1042,8 +1126,10 @@ function Shell({
     minimal,
     copyAuthUrlToClipboard,
     cleanupListeners,
+    cancelSurfaceRecovery,
     recoverTerminalSurface,
     resizePtyIfNeeded,
+    scheduleTerminalRefresh,
     scrollTerminalToBottom,
   ]);
 
@@ -1054,11 +1140,33 @@ function Shell({
 
   useEffect(() => {
     if (!active || !isConnected || !ptyIdRef.current || !terminal.current) return;
+    const consumer = outputConsumerRef.current;
+    if (consumer && !consumer.disposed) {
+      // The backend removes float-scoped consumers before destroying an idle
+      // WebView. If native close fails, this mounted Shell becomes active
+      // again; restore its lease immediately instead of waiting for the next
+      // five-second heartbeat. Registration is idempotent and does not ACK.
+      void pty
+        .registerOutputConsumer(consumer.ptyId, consumer.consumerId)
+        .catch(() => {});
+    }
     claimTerminalActive(ptyIdRef.current, terminal.current);
   }, [active, isConnected]);
 
   useEffect(() => {
-    const handleSurfaceShown = () => recoverTerminalSurface(true);
+    const handleSurfaceShown = (event) => {
+      const shouldFocus = !(event instanceof CustomEvent && event.detail?.focus === false);
+      recoverTerminalSurface(shouldFocus);
+    };
+    const handleGeometryInvalidated = (event) => {
+      const targetPtyId = event instanceof CustomEvent ? event.detail?.ptyId : undefined;
+      if (!targetPtyId || targetPtyId === ptyIdRef.current) {
+        // Another WebView may have resized this shared ConPTY while our local
+        // xterm dimensions stayed unchanged. Clear only the local dedupe cache
+        // so the next surface recovery reasserts this renderer's geometry once.
+        lastPtySizeRef.current = null;
+      }
+    };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         recoverTerminalSurface(true);
@@ -1066,11 +1174,13 @@ function Shell({
     };
 
     window.addEventListener('focus', handleSurfaceShown);
-    window.addEventListener('threadterm-terminal-surface-shown', handleSurfaceShown);
+    window.addEventListener(TERMINAL_SURFACE_SHOWN_EVENT, handleSurfaceShown);
+    window.addEventListener(TERMINAL_GEOMETRY_INVALIDATED_EVENT, handleGeometryInvalidated);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
       window.removeEventListener('focus', handleSurfaceShown);
-      window.removeEventListener('threadterm-terminal-surface-shown', handleSurfaceShown);
+      window.removeEventListener(TERMINAL_SURFACE_SHOWN_EVENT, handleSurfaceShown);
+      window.removeEventListener(TERMINAL_GEOMETRY_INVALIDATED_EVENT, handleGeometryInvalidated);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [recoverTerminalSurface]);

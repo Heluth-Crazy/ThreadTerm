@@ -6,10 +6,11 @@
  *   3. scrolled-up output does not yank viewport (Stage 1 / P0-1)
  *
  * Each test gets an isolated page with its own fake Tauri env + seeded
- * cards (see ./fakeTauri.ts). Terminal text renders into a WebGL canvas, so
- * assertions go through the fake PTY's call counters (`create`,
- * `attachSnapshot`) and cumulative ACK watermark (advanced only after xterm
- * completed the write), plus Stage 1 strip test-ids instead of DOM text.
+ * cards (see ./fakeTauri.ts). Terminal text normally renders into a WebGL
+ * canvas, so most assertions use fake PTY counters and cumulative ACKs. The
+ * LRU recovery gate additionally reads the actual xterm model through the
+ * app's existing registry, allowing exact history/TUI/cursor assertions
+ * without a production test hook.
  */
 import { test, expect, type Page } from '@playwright/test';
 import { inflateSync } from 'node:zlib';
@@ -99,6 +100,70 @@ function emitExit(page: Page, ptyId: string, code: number): Promise<void> {
     },
     [ptyId, code] as const,
   );
+}
+
+interface TerminalBufferSnapshot {
+  activeType: string;
+  normalText: string;
+  alternateText: string;
+  activeText: string;
+  cursorX: number;
+  cursorY: number;
+}
+
+/**
+ * Read the actual xterm model registered by the running app. Vite serves the
+ * same ESM singleton that Shell imports, so this inspects the real terminal
+ * buffer without adding a production-only test hook or relying on WebGL
+ * canvas pixels.
+ */
+function readTerminalBuffer(
+  page: Page,
+  ptyId: string,
+): Promise<TerminalBufferSnapshot | null> {
+  return page.evaluate(async (id) => {
+    interface BufferLine {
+      translateToString(trimRight?: boolean): string;
+    }
+    interface BufferModel {
+      type: string;
+      length: number;
+      cursorX: number;
+      cursorY: number;
+      getLine(index: number): BufferLine | undefined;
+    }
+    interface RegisteredTerminal {
+      buffer: {
+        active: BufferModel;
+        normal: BufferModel;
+        alternate: BufferModel;
+      };
+    }
+
+    const registryModulePath = '/src/components/terminal/xtermRegistry.ts';
+    const registry = (await import(registryModulePath)) as {
+      getTerminal(candidateId: string): RegisteredTerminal | undefined;
+    };
+    const term = registry.getTerminal(id);
+    if (!term) return null;
+
+    const readBuffer = (buffer: BufferModel): string => {
+      const lines: string[] = [];
+      for (let index = 0; index < buffer.length; index += 1) {
+        lines.push(buffer.getLine(index)?.translateToString(true) ?? '');
+      }
+      return lines.join('\n');
+    };
+
+    return {
+      activeType: term.buffer.active.type,
+      normalText: readBuffer(term.buffer.normal),
+      alternateText: readBuffer(term.buffer.alternate),
+      activeText: readBuffer(term.buffer.active),
+      cursorX: term.buffer.active.cursorX,
+      cursorY: term.buffer.active.cursorY,
+    };
+  }, ptyId);
 }
 
 async function expectVisibleTerminalHasTextOrInk(page: Page, expectedText: string): Promise<void> {
@@ -243,7 +308,9 @@ test('exit banner appears on non-zero exit and restart respawns the PTY', async 
 
 // ── Journey 2: LRU eviction → re-focus restores via attachSnapshot ──────────
 
-test('evicted terminal view re-attaches its snapshot on re-focus', async ({ page }) => {
+test('evicted terminal view restores hidden history, cursor, and TUI state on re-focus', async ({
+  page,
+}) => {
   // 7 cards > MAX_MOUNTED_TERMINAL_VIEWS (6) → focusing all of them evicts
   // the first card's view; re-focusing it must go through attachSnapshot
   // again to restore screen + scrollback.
@@ -253,27 +320,56 @@ test('evicted terminal view re-attaches its snapshot on re-focus', async ({ page
 
   await page.goto('/');
 
-  for (const card of cards) {
+  const initialHistorySentinel = 'P0-3 history before LRU eviction';
+  const hiddenHistorySentinel = 'P0-3 output produced while renderer was evicted';
+  const finalTuiSentinel = 'P0-3 FINAL TUI FRAME';
+
+  for (const [index, card] of cards.entries()) {
     await openCard(page, card.projectName);
     // Wait until this card's Shell finished connecting (snapshot applied)
     // before navigating away, so LRU touches happen in a known order.
     await waitForCount(page, 'create', card.ptyId, 1);
     await waitForCount(page, 'attachSnapshot', card.ptyId, 1);
     // Give the evicted-but-preserved PTY some history to restore later.
-    const throughSeq = await emitOutput(page, card.ptyId, `history for ${card.id}\r\n`);
+    const historyLine = index === 0
+      ? `${initialHistorySentinel}\r\n`
+      : `history for ${card.id}\r\n`;
+    const throughSeq = await emitOutput(page, card.ptyId, historyLine);
     await waitForAckThrough(page, card.ptyId, throughSeq);
     await backToGrid(page);
   }
 
   // Card 1 is now LRU-evicted but its PTY is intentionally still alive.
+  await expect
+    .poll(() => readTerminalBuffer(page, cards[0].ptyId))
+    .toBeNull();
+
   // Stream more than the Rust 200 KB high-watermark while no Shell owns it;
   // the always-mounted TerminalEventBridge must advance the cumulative ACK
   // watermark through the final emitted sequence.
-  const throughSeq = await emitOutput(
+  let throughSeq = await emitOutput(
     page,
     cards[0].ptyId,
-    `${'x'.repeat(1024)}{i}\r\n`,
-    256,
+    `${hiddenHistorySentinel}\r\n`,
+  );
+  const hiddenOutputChunks = Array.from({ length: 28 }, (_, chunkIndex) =>
+    Array.from({ length: 100 }, (_, lineIndex) => {
+      const index = chunkIndex * 100 + lineIndex;
+      return `hidden-row-${String(index).padStart(4, '0')} ${'x'.repeat(58)}\r\n`;
+    }).join(''),
+  );
+  expect(Buffer.byteLength(hiddenOutputChunks.join(''), 'utf8')).toBeGreaterThan(200 * 1024);
+  for (const chunk of hiddenOutputChunks) {
+    throughSeq = await emitOutput(page, cards[0].ptyId, chunk);
+  }
+
+  // Finish in alternate-screen mode with a deterministic cursor position.
+  // A correct attach must restore both the normal-buffer history above and
+  // this final TUI frame, not merely reconnect an empty xterm.
+  throughSeq = await emitOutput(
+    page,
+    cards[0].ptyId,
+    `\x1b[?1049h\x1b[2J\x1b[H${finalTuiSentinel}\r\nstatus: restored\x1b[10;7H`,
   );
   await waitForAckThrough(page, cards[0].ptyId, throughSeq);
 
@@ -281,6 +377,19 @@ test('evicted terminal view re-attaches its snapshot on re-focus', async ({ page
   // create a fresh Shell that re-attaches the preserved session snapshot.
   await openCard(page, cards[0].projectName);
   await waitForCount(page, 'attachSnapshot', cards[0].ptyId, 2);
+
+  await expect
+    .poll(async () => (await readTerminalBuffer(page, cards[0].ptyId))?.activeText ?? '')
+    .toContain(finalTuiSentinel);
+
+  const restored = await readTerminalBuffer(page, cards[0].ptyId);
+  expect(restored).not.toBeNull();
+  expect(restored?.normalText).toContain(initialHistorySentinel);
+  expect(restored?.normalText).toContain(hiddenHistorySentinel);
+  expect(restored?.normalText).toContain('hidden-row-2799');
+  expect(restored?.activeType).toBe('alternate');
+  expect(restored?.alternateText).toContain(finalTuiSentinel);
+  expect({ x: restored?.cursorX, y: restored?.cursorY }).toEqual({ x: 6, y: 9 });
 
   // Restored view is healthy: no exit/reconnect strip, no JS errors.
   await expect(page.getByTestId('shell-exit-strip')).toBeHidden();

@@ -372,19 +372,41 @@ export function TerminalManager() {
   const activeWorkspaceDiffPath =
     activeWorkspaceTab?.kind === 'diff' ? activeWorkspaceTab.change.path : null;
 
-  const updateFocusedWorkspaceContent = useCallback(
-    (updater: (state: WorkspaceContentState) => WorkspaceContentState) => {
-      if (!focusedCardId) return;
+  const mountedWorkspaceContentViews = useMemo(() => {
+    const views: Array<{ cardId: string; tab: WorkspaceContentTab }> = [];
+    for (const card of cards) {
+      const state = workspaceContentStateWithPanelDefaults(
+        workspaceContentStateWithDefaults(workspaceContentByCardId[card.id]),
+      );
+      for (const tab of state.tabs) {
+        if (card.id === focusedCardId || state.dirtyTabIds[tab.id]) {
+          views.push({ cardId: card.id, tab });
+        }
+      }
+    }
+    return views;
+  }, [cards, focusedCardId, workspaceContentByCardId]);
+
+  const updateWorkspaceContentForCard = useCallback(
+    (cardId: string, updater: (state: WorkspaceContentState) => WorkspaceContentState) => {
       setWorkspaceContentByCardId((current) => {
         const previous = workspaceContentStateWithPanelDefaults(
-          workspaceContentStateWithDefaults(current[focusedCardId]),
+          workspaceContentStateWithDefaults(current[cardId]),
         );
         const next = updater(previous);
         if (next === previous) return current;
-        return { ...current, [focusedCardId]: next };
+        return { ...current, [cardId]: next };
       });
     },
-    [focusedCardId],
+    [],
+  );
+
+  const updateFocusedWorkspaceContent = useCallback(
+    (updater: (state: WorkspaceContentState) => WorkspaceContentState) => {
+      if (!focusedCardId) return;
+      updateWorkspaceContentForCard(focusedCardId, updater);
+    },
+    [focusedCardId, updateWorkspaceContentForCard],
   );
 
   const setActiveContentTabId = useCallback(
@@ -405,10 +427,10 @@ export function TerminalManager() {
     }
   }, [activeContentTabId, setActiveContentTabId, workspaceContentTabs]);
 
-  const openWorkspaceFile = useCallback(
-    (rootPath: string, entry: DirEntry) => {
+  const openWorkspaceFileForCard = useCallback(
+    (cardId: string, rootPath: string, entry: DirEntry) => {
       const id = workspaceFileTabId(rootPath, entry.path);
-      updateFocusedWorkspaceContent((state) => {
+      updateWorkspaceContentForCard(cardId, (state) => {
         const tabs = state.tabs.some((tab) => tab.id === id)
           ? state.tabs
           : [
@@ -424,7 +446,15 @@ export function TerminalManager() {
         return { ...state, tabs, activeTabId: id };
       });
     },
-    [updateFocusedWorkspaceContent],
+    [updateWorkspaceContentForCard],
+  );
+
+  const openWorkspaceFile = useCallback(
+    (rootPath: string, entry: DirEntry) => {
+      if (!focusedCardId) return;
+      openWorkspaceFileForCard(focusedCardId, rootPath, entry);
+    },
+    [focusedCardId, openWorkspaceFileForCard],
   );
 
   const openWorkspaceDiff = useCallback(
@@ -448,8 +478,8 @@ export function TerminalManager() {
   );
 
   const markWorkspaceTabDirty = useCallback(
-    (tabId: string, dirty: boolean) => {
-      updateFocusedWorkspaceContent((state) => {
+    (cardId: string, tabId: string, dirty: boolean) => {
+      updateWorkspaceContentForCard(cardId, (state) => {
         if (dirty) {
           if (state.dirtyTabIds[tabId]) return state;
           return { ...state, dirtyTabIds: { ...state.dirtyTabIds, [tabId]: true } };
@@ -459,7 +489,7 @@ export function TerminalManager() {
         return { ...state, dirtyTabIds: rest };
       });
     },
-    [updateFocusedWorkspaceContent],
+    [updateWorkspaceContentForCard],
   );
 
   const closeWorkspaceTabs = useCallback(
@@ -1156,11 +1186,14 @@ export function TerminalManager() {
             );
           })}
 
-        {workspaceContentTabs.map((tab) => {
-          const isCurrent = viewMode === 'focus' && activeContentTabId === tab.id;
+        {mountedWorkspaceContentViews.map(({ cardId, tab }) => {
+          const isCurrent =
+            viewMode === 'focus' &&
+            focusedCardId === cardId &&
+            activeContentTabId === tab.id;
           return (
             <div
-              key={tab.id}
+              key={`${cardId}\u001f${tab.id}`}
               aria-hidden={!isCurrent}
               style={{ visibility: isCurrent ? 'visible' : 'hidden' }}
               className={[
@@ -1175,14 +1208,16 @@ export function TerminalManager() {
                   rootPath={tab.rootPath}
                   path={tab.path}
                   active={isCurrent}
-                  onDirtyChange={(dirty) => markWorkspaceTabDirty(tab.id, dirty)}
+                  onDirtyChange={(dirty) => markWorkspaceTabDirty(cardId, tab.id, dirty)}
                 />
               ) : (
                 <WorkspaceDiffView
                   change={tab.change}
                   active={isCurrent}
-                  onOpenFile={openWorkspaceFile}
-                  onDirtyChange={(dirty) => markWorkspaceTabDirty(tab.id, dirty)}
+                  onOpenFile={(rootPath, entry) =>
+                    openWorkspaceFileForCard(cardId, rootPath, entry)
+                  }
+                  onDirtyChange={(dirty) => markWorkspaceTabDirty(cardId, tab.id, dirty)}
                 />
               )}
             </div>

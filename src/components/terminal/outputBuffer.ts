@@ -17,9 +17,18 @@
 
 export interface OutputBufferSink {
   /** Receives the joined chunk tail for a card at flush time. */
-  flushOutput: (cardId: string, joinedChunks: string) => void;
+  flushOutput?: (cardId: string, joinedChunks: string) => void;
   /** Receives the latest headless preview for a card at flush time. */
-  flushPreview: (cardId: string, preview: string) => void;
+  flushPreview?: (cardId: string, preview: string) => void;
+  /**
+   * Optional single-store-update sink. When provided, output and preview that
+   * land in the same coalescing window are delivered together.
+   */
+  flushCardUpdate?: (
+    cardId: string,
+    joinedChunks: string | null,
+    preview: string | null,
+  ) => void;
 }
 
 interface PendingEntry {
@@ -36,6 +45,11 @@ export interface CardOutputBuffer {
   flushCard: (cardId: string) => void;
   /** Drop a card's pending data without flushing (card removed). */
   discardCard: (cardId: string) => void;
+  getDiagnostics: () => {
+    pendingCardCount: number;
+    pendingCardIds: string[];
+    timerScheduled: boolean;
+  };
   /** Flush everything and cancel the timer (bridge unmount). */
   dispose: () => void;
 }
@@ -57,12 +71,13 @@ export function createCardOutputBuffer(
   }
 
   function flushEntry(cardId: string, entry: PendingEntry): void {
-    if (entry.chunks.length > 0) {
-      sink.flushOutput(cardId, entry.chunks.join(''));
+    const joinedChunks = entry.chunks.length > 0 ? entry.chunks.join('') : null;
+    if (sink.flushCardUpdate) {
+      sink.flushCardUpdate(cardId, joinedChunks, entry.preview);
+      return;
     }
-    if (entry.preview !== null) {
-      sink.flushPreview(cardId, entry.preview);
-    }
+    if (joinedChunks !== null) sink.flushOutput?.(cardId, joinedChunks);
+    if (entry.preview !== null) sink.flushPreview?.(cardId, entry.preview);
   }
 
   function cancelTimerIfIdle(): void {
@@ -112,6 +127,13 @@ export function createCardOutputBuffer(
     discardCard(cardId) {
       pending.delete(cardId);
       cancelTimerIfIdle();
+    },
+    getDiagnostics() {
+      return {
+        pendingCardCount: pending.size,
+        pendingCardIds: Array.from(pending.keys()),
+        timerScheduled: timer !== null,
+      };
     },
     dispose() {
       flushAll();

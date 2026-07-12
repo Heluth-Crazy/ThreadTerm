@@ -1,8 +1,11 @@
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTerminalStore } from '../../stores/terminalStore';
-import { TerminalEventBridge } from './TerminalEventBridge';
-import { feedHeadless } from './headlessPreview';
+import {
+  TerminalEventBridge,
+  getTerminalEventBridgeDiagnostics,
+} from './TerminalEventBridge';
+import { disposeHeadless, feedHeadless } from './headlessPreview';
 
 const bridgeMocks = vi.hoisted(() => {
   const listeners = {
@@ -14,6 +17,7 @@ const bridgeMocks = vi.hoisted(() => {
 
   return {
     listeners,
+    headlessIds: new Set<string>(),
     pty: {
       getAllSessionStates: vi.fn(),
       attachSnapshot: vi.fn((_id: string): Promise<unknown> => Promise.resolve(null)),
@@ -46,10 +50,19 @@ vi.mock('../../lib/tauri-bridge', () => ({
 
 vi.mock('./headlessPreview', () => ({
   feedHeadless: vi.fn((_id: string, data: string, onRendered: (preview: string) => void) => {
+    bridgeMocks.headlessIds.add(_id);
     onRendered(data);
   }),
-  disposeHeadless: vi.fn(),
-  disposeAllHeadless: vi.fn(),
+  disposeHeadless: vi.fn((id: string) => {
+    bridgeMocks.headlessIds.delete(id);
+  }),
+  disposeAllHeadless: vi.fn(() => {
+    bridgeMocks.headlessIds.clear();
+  }),
+  getHeadlessPreviewDiagnostics: vi.fn(() => ({
+    activeCount: bridgeMocks.headlessIds.size,
+    cardIds: Array.from(bridgeMocks.headlessIds),
+  })),
 }));
 
 function resetStore() {
@@ -89,6 +102,7 @@ describe('TerminalEventBridge status reconciliation', () => {
     bridgeMocks.listeners.state = undefined;
     bridgeMocks.listeners.exit = undefined;
     bridgeMocks.listeners.attention = undefined;
+    bridgeMocks.headlessIds.clear();
     bridgeMocks.pty.getAllSessionStates.mockResolvedValue({});
     bridgeMocks.pty.attachSnapshot.mockResolvedValue(null);
   });
@@ -566,5 +580,126 @@ describe('TerminalEventBridge status reconciliation', () => {
       expect(useTerminalStore.getState().getCardById(id)?.lastOutput).toContain('chunk-50;');
     });
     expect(useTerminalStore.getState().getCardById(id)?.lastOutput).toContain('chunk-1;');
+  });
+
+  it.each(['remove', 'archive'] as const)(
+    'cleans every per-PTY runtime resource when a card is %sd',
+    async (operation) => {
+      const id = createCard();
+      render(<TerminalEventBridge />);
+      await waitFor(() => expect(bridgeMocks.listeners.output).toBeDefined());
+
+      act(() => {
+        bridgeMocks.listeners.output?.({ id, data: 'pending output', seq: 70 });
+      });
+      await waitFor(() => {
+        expect(getTerminalEventBridgeDiagnostics()).toMatchObject({
+          activeRuntimeCount: 1,
+          activeHeadlessCount: 1,
+        });
+      });
+
+      act(() => {
+        if (operation === 'remove') useTerminalStore.getState().removeCard(id);
+        else useTerminalStore.getState().archiveCard(id);
+      });
+
+      await waitFor(() => {
+        expect(disposeHeadless).toHaveBeenCalledWith(id);
+        expect(getTerminalEventBridgeDiagnostics()).toMatchObject({
+          activeRuntimeCount: 0,
+          activeHeadlessCount: 0,
+          pendingOutputCardCount: 0,
+          pendingAckCount: 0,
+          lastOutputSeqCount: 0,
+          lastProcessedOutputSeqCount: 0,
+        });
+      });
+      if (operation === 'archive') {
+        expect(useTerminalStore.getState().archivedCards.some((card) => card.id === id)).toBe(true);
+      }
+    },
+  );
+
+  it('cleans runtime state on exit after flushing the final coalesced output', async () => {
+    const id = createCard();
+    render(<TerminalEventBridge />);
+    await waitFor(() => expect(bridgeMocks.listeners.exit).toBeDefined());
+
+    act(() => {
+      bridgeMocks.listeners.output?.({ id, data: 'final output', seq: 80 });
+      bridgeMocks.listeners.exit?.({ id, code: 0 });
+    });
+
+    await waitFor(() => {
+      expect(useTerminalStore.getState().getCardById(id)?.lastOutput).toContain('final output');
+      expect(getTerminalEventBridgeDiagnostics()).toMatchObject({
+        activeRuntimeCount: 0,
+        activeHeadlessCount: 0,
+        pendingOutputCardCount: 0,
+        lastOutputSeqCount: 0,
+        lastProcessedOutputSeqCount: 0,
+      });
+    });
+  });
+
+  it('ignores a delayed headless callback after auto-restart replaces the PTY', async () => {
+    const id = createCard();
+    let renderOldOutput: ((preview: string) => void) | undefined;
+    vi.mocked(feedHeadless).mockImplementationOnce((cardId, _data, onRendered) => {
+      bridgeMocks.headlessIds.add(cardId);
+      renderOldOutput = onRendered;
+    });
+    render(<TerminalEventBridge />);
+    await waitFor(() => expect(bridgeMocks.listeners.output).toBeDefined());
+
+    act(() => {
+      bridgeMocks.listeners.output?.({ id, data: 'old output', seq: 90 });
+    });
+    let replacementId: string | null = null;
+    act(() => {
+      replacementId = useTerminalStore.getState().startCardAutoRestart(id, {
+        attempt: 1,
+        now: 1000,
+      });
+    });
+    expect(replacementId).not.toBeNull();
+
+    act(() => {
+      bridgeMocks.listeners.output?.({ id: replacementId!, data: 'new output', seq: 91 });
+      renderOldOutput?.('stale preview');
+    });
+
+    await waitFor(() => {
+      const card = useTerminalStore.getState().getCardById(id);
+      expect(card?.lastOutput).toContain('new output');
+      expect(card?.lastOutput).not.toContain('old output');
+      expect(card?.lastReplyPreview).toBe('new output');
+      expect(getTerminalEventBridgeDiagnostics().activeRuntimeIds).toEqual([replacementId]);
+    });
+  });
+
+  it('drops all runtime resources when the bridge unmounts', async () => {
+    const id = createCard();
+    const view = render(<TerminalEventBridge />);
+    await waitFor(() => expect(bridgeMocks.listeners.output).toBeDefined());
+    act(() => {
+      bridgeMocks.listeners.output?.({ id, data: 'live', seq: 100 });
+    });
+    await waitFor(() => expect(getTerminalEventBridgeDiagnostics().activeRuntimeCount).toBe(1));
+
+    view.unmount();
+
+    expect(getTerminalEventBridgeDiagnostics()).toEqual({
+      activeRuntimeCount: 0,
+      activeRuntimeIds: [],
+      activeHeadlessCount: 0,
+      pendingOutputCardCount: 0,
+      pendingAckCount: 0,
+      lastOutputSeqCount: 0,
+      lastProcessedOutputSeqCount: 0,
+      autoRestartTimerCount: 0,
+      pendingBackgroundOutputCount: 0,
+    });
   });
 });

@@ -5741,6 +5741,7 @@ dependencies = [
  "axum",
  "dashmap",
  "dirs 5.0.1",
+ "embed-resource",
  "futures-util",
  "objc2",
  "objc2-app-kit",

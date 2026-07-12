@@ -327,6 +327,31 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
       return { cards };
     }),
 
+  updateCardOutputAndPreview: (id, chunk, preview) =>
+    set((state) => {
+      const idx = state.cards.findIndex((c) => c.id === id);
+      if (idx === -1) return state;
+
+      const existing = state.cards[idx];
+      let updated = existing;
+      if (chunk !== null) {
+        const cleaned = stripAnsi(chunk);
+        updated = {
+          ...updated,
+          lastOutput: tailJoin(existing.lastOutput, cleaned, MAX_LAST_OUTPUT_LENGTH),
+          lastActivity: Date.now(),
+        };
+      }
+      if (preview !== null && updated.lastReplyPreview !== preview) {
+        updated = { ...updated, lastReplyPreview: preview };
+      }
+      if (updated === existing) return state;
+
+      const cards = [...state.cards];
+      cards[idx] = updated;
+      return { cards };
+    }),
+
   updateCardStatus: (id, status) =>
     set((state) => {
       const idx = state.cards.findIndex((c) => c.id === id);
@@ -352,6 +377,7 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
     set((state) => {
       const idx = state.cards.findIndex((c) => c.id === id);
       if (idx === -1) return state;
+      if (state.cards[idx].lastReplyPreview === preview) return state;
       const cards = [...state.cards];
       cards[idx] = { ...cards[idx], lastReplyPreview: preview };
       return { cards };

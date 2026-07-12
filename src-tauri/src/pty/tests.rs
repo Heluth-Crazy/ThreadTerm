@@ -1,7 +1,63 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
+
+use portable_pty::{Child, ChildKiller, ExitStatus};
 
 use super::events::{ANSI_STRIP, ERROR_PATTERNS, WAITING_PATTERNS};
 use super::session::{should_idle_after_quiet, SessionState, OUTPUT_IDLE_GRACE};
+use super::terminate_child_process;
+
+#[derive(Clone, Debug)]
+struct TestChild {
+    killed: Arc<AtomicBool>,
+}
+
+impl ChildKiller for TestChild {
+    fn kill(&mut self) -> std::io::Result<()> {
+        self.killed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+        Box::new(self.clone())
+    }
+}
+
+impl Child for TestChild {
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        Ok(None)
+    }
+
+    fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        Ok(ExitStatus::with_exit_code(0))
+    }
+
+    fn process_id(&self) -> Option<u32> {
+        None
+    }
+
+    #[cfg(windows)]
+    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+        None
+    }
+}
+
+#[test]
+fn terminate_child_process_always_calls_portable_pty_kill() {
+    let killed = Arc::new(AtomicBool::new(false));
+    let mut child = TestChild {
+        killed: killed.clone(),
+    };
+
+    terminate_child_process(&mut child);
+
+    assert!(killed.load(Ordering::SeqCst));
+}
 
 #[test]
 fn test_session_state_default() {

@@ -54,6 +54,14 @@ pub struct BridgeRuntime {
     app_handle: Mutex<Option<tauri::AppHandle>>,
     card_mirror: Mutex<Vec<CardMeta>>,
     card_mirror_initialized: Mutex<bool>,
+    #[cfg(test)]
+    preview_snapshot_serializations: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    snapshot_card_enrichments: std::sync::atomic::AtomicUsize,
+}
+
+pub(crate) struct PreparedCardRemoval {
+    card: CardMeta,
 }
 
 impl BridgeRuntime {
@@ -67,6 +75,10 @@ impl BridgeRuntime {
             app_handle: Mutex::new(None),
             card_mirror: Mutex::new(Vec::new()),
             card_mirror_initialized: Mutex::new(false),
+            #[cfg(test)]
+            preview_snapshot_serializations: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            snapshot_card_enrichments: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -107,6 +119,13 @@ impl BridgeRuntime {
     }
 
     pub fn snapshot(&self) -> BridgeSnapshot {
+        self.snapshot_with_enricher(enrich_card_with_live_state)
+    }
+
+    fn snapshot_with_enricher<F>(&self, mut enrich: F) -> BridgeSnapshot
+    where
+        F: FnMut(CardMeta) -> CardMeta,
+    {
         let initialized = self
             .card_mirror_initialized
             .lock()
@@ -120,17 +139,28 @@ impl BridgeRuntime {
             };
         }
 
-        let cards = self
+        // F-01 lock discipline: CLONE under `card_mirror`, ENRICH outside
+        // the lock. `enrich_card_with_live_state` calls
+        // `pty::live_session_snapshot`, which reads PTY state. Acquiring the
+        // PTY state lock while holding `card_mirror` is the reverse order of
+        // `pty::session::set_session_state` -> `bridge::broadcast_state` ->
+        // `card_id_for_pty` (which locks `card_mirror`); together they can
+        // deadlock. The previous snapshot behavior (cards after enrichment)
+        // is preserved bit-for-bit — only the lock scope changes.
+        let cards: Vec<CardMeta> = self
             .card_mirror
             .lock()
-            .map(|cards| {
-                cards
-                    .iter()
-                    .cloned()
-                    .map(enrich_card_with_live_state)
-                    .collect()
-            })
+            .map(|cards| cards.iter().cloned().collect())
             .unwrap_or_default();
+        let cards = cards
+            .into_iter()
+            .map(|card| {
+                #[cfg(test)]
+                self.snapshot_card_enrichments
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                enrich(card)
+            })
+            .collect();
 
         BridgeSnapshot {
             cards,
@@ -145,6 +175,13 @@ impl BridgeRuntime {
         }
         if let Ok(mut initialized) = self.card_mirror_initialized.lock() {
             *initialized = true;
+        }
+        // The mirror is durable bridge state and must always be updated, even
+        // with no WebSocket clients. The enriched snapshot is broadcast-only
+        // work; a later HTTP/WebSocket client builds a fresh snapshot on
+        // demand, so there is no reason to serialize every live terminal now.
+        if !self.has_subscribers() {
+            return;
         }
         let snapshot = self.snapshot();
         self.broadcast(ServerMessage::from(snapshot.clone()));
@@ -193,6 +230,10 @@ impl BridgeRuntime {
     }
 
     fn mirrored_card_for_pty(&self, pty_id: &str) -> Option<CardMeta> {
+        self.mirrored_card_for_pty_with_enricher(pty_id, enrich_card_with_live_state)
+    }
+
+    fn cloned_mirrored_card_for_pty(&self, pty_id: &str) -> Option<CardMeta> {
         self.card_mirror.lock().ok().and_then(|cards| {
             cards
                 .iter()
@@ -205,8 +246,64 @@ impl BridgeRuntime {
                             .unwrap_or(false)
                 })
                 .cloned()
-                .map(enrich_card_with_live_state)
         })
+    }
+
+    fn mirrored_card_for_pty_with_enricher<F>(&self, pty_id: &str, enrich: F) -> Option<CardMeta>
+    where
+        F: FnOnce(CardMeta) -> CardMeta,
+    {
+        // F-01 lock discipline: find+clone under `card_mirror`, enrich
+        // outside. `enrich_card_with_live_state` reenters PTY state via
+        // `pty::live_session_snapshot`, which would reverse
+        // `set_session_state`'s lock order and risk deadlock.
+        self.cloned_mirrored_card_for_pty(pty_id).map(enrich)
+    }
+
+    fn mirrored_card_for_removal(&self, pty_id: &str) -> Option<CardMeta> {
+        self.cloned_mirrored_card_for_pty(pty_id).map(|mut card| {
+            card.pty_live = false;
+            card.pty_state = None;
+            card
+        })
+    }
+
+    fn prepare_card_removal(
+        &self,
+        pty_id: &str,
+        state: SessionState,
+        working_dir: &str,
+    ) -> PreparedCardRemoval {
+        let card = self
+            .mirrored_card_for_removal(pty_id)
+            .unwrap_or_else(|| card_meta_tombstone(pty_id, state, working_dir));
+        PreparedCardRemoval { card }
+    }
+
+    fn broadcast_preview_lazy<F>(&self, card_id: &str, build_output: F)
+    where
+        F: FnOnce() -> String,
+    {
+        if !self.has_subscribers() {
+            return;
+        }
+
+        #[cfg(test)]
+        self.preview_snapshot_serializations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let output = build_output();
+        let preview = preview_from_output(&output);
+        if preview.last_reply_preview.is_empty() {
+            return;
+        }
+        let bridge_card_id = self.card_id_for_pty(card_id);
+
+        self.broadcast(ServerMessage::Preview {
+            card_id: bridge_card_id,
+            last_reply_preview: preview.last_reply_preview,
+            summary_line: preview.summary_line,
+            hidden_line_count: preview.hidden_line_count,
+        });
     }
 
     pub fn emit_spawn_request(&self, request: MobileSpawnCardRequest) -> Result<(), String> {
@@ -580,22 +677,11 @@ fn persist_bridge_running(status: &BridgeStatus) {
     }
 }
 
-pub fn broadcast_preview(card_id: &str, output: &str) {
-    if !BRIDGE_RUNTIME.has_subscribers() {
-        return;
-    }
-    let preview = preview_from_output(output);
-    if preview.last_reply_preview.is_empty() {
-        return;
-    }
-    let bridge_card_id = BRIDGE_RUNTIME.card_id_for_pty(card_id);
-
-    BRIDGE_RUNTIME.broadcast(ServerMessage::Preview {
-        card_id: bridge_card_id,
-        last_reply_preview: preview.last_reply_preview,
-        summary_line: preview.summary_line,
-        hidden_line_count: preview.hidden_line_count,
-    });
+pub fn broadcast_preview<F>(card_id: &str, build_output: F)
+where
+    F: FnOnce() -> String,
+{
+    BRIDGE_RUNTIME.broadcast_preview_lazy(card_id, build_output);
 }
 
 pub fn broadcast_terminal_output(card_id: &str, data: &str, seq: u64) {
@@ -649,6 +735,9 @@ pub fn broadcast_exit(card_id: &str, code: Option<u32>) {
 /// snapshot is read from the registry, so this must be called *after* the
 /// session has been inserted.
 pub fn broadcast_card_added(card_id: &str) {
+    if !BRIDGE_RUNTIME.has_subscribers() {
+        return;
+    }
     let Some(snapshot) = pty::live_session_snapshot(card_id) else {
         return;
     };
@@ -661,16 +750,44 @@ pub fn broadcast_card_added(card_id: &str) {
 
 /// Broadcast that a desktop PTY session was explicitly closed (the
 /// `pty_kill` path, which also covers the mobile close entry) so connected
-/// mobile clients drop the card immediately. The caller must pass a
-/// snapshot taken *before* the session left the registry, because the
-/// protocol requires a full `CardMeta` and the mobile reducer keys removal
-/// on `card.id`.
-pub fn broadcast_card_removed(snapshot: LivePtySessionSnapshot) {
-    let pty_id = snapshot.id.clone();
-    let card = BRIDGE_RUNTIME
-        .mirrored_card_for_pty(&pty_id)
-        .unwrap_or_else(|| card_meta_from_live_session(snapshot));
-    BRIDGE_RUNTIME.broadcast(ServerMessage::CardRemoved { card });
+/// mobile clients drop the card immediately. `CardRemoved` keeps the v1 full
+/// `CardMeta` shape, but removal only needs identity and lightweight session
+/// metadata: never serialize the terminal merely to build this event.
+pub(crate) fn prepare_card_removed(
+    pty_id: &str,
+    state: SessionState,
+    working_dir: &str,
+) -> PreparedCardRemoval {
+    BRIDGE_RUNTIME.prepare_card_removal(pty_id, state, working_dir)
+}
+
+pub(crate) fn broadcast_card_removed(removal: PreparedCardRemoval) {
+    BRIDGE_RUNTIME.broadcast(ServerMessage::CardRemoved { card: removal.card });
+}
+
+fn card_meta_tombstone(pty_id: &str, state: SessionState, working_dir: &str) -> CardMeta {
+    CardMeta {
+        id: pty_id.to_string(),
+        pty_id: None,
+        status: TerminalStatus::from(state),
+        project_path: working_dir.to_string(),
+        project_name: project_name_from_path(working_dir),
+        worktree_path: None,
+        terminal_type: Some("shell".to_string()),
+        command: None,
+        created_at: None,
+        last_activity: None,
+        last_reply_preview: String::new(),
+        summary_line: None,
+        hidden_line_count: 0,
+        recent_output_bytes: 0,
+        message_count: None,
+        unread: None,
+        provider_session_state: None,
+        pty_live: false,
+        pty_state: None,
+        attachable: false,
+    }
 }
 
 fn card_meta_from_live_session(snapshot: LivePtySessionSnapshot) -> CardMeta {
@@ -1933,6 +2050,124 @@ mod tests {
             pty_state: None,
             attachable: true,
         }
+    }
+
+    #[test]
+    fn preview_snapshot_source_is_lazy_without_subscribers() {
+        let runtime = BridgeRuntime::new();
+
+        runtime.broadcast_preview_lazy("preview-card", || {
+            panic!("preview source must not be built without a receiver")
+        });
+        assert_eq!(
+            runtime
+                .preview_snapshot_serializations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+
+        let mut rx = runtime.subscribe();
+        runtime.broadcast_preview_lazy("preview-card", || "ready".to_string());
+        assert_eq!(
+            runtime
+                .preview_snapshot_serializations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ServerMessage::Preview {
+                card_id,
+                last_reply_preview,
+                ..
+            }) if card_id == "preview-card" && last_reply_preview == "ready"
+        ));
+    }
+
+    #[test]
+    fn sync_cards_skips_enrichment_without_subscribers_but_keeps_mirror_current() {
+        let runtime = BridgeRuntime::new();
+        runtime.sync_cards(vec![fix2_make_card("sync-lazy", true)]);
+
+        assert_eq!(
+            runtime
+                .snapshot_card_enrichments
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "broadcast-only snapshot enrichment must be skipped without receivers"
+        );
+
+        // HTTP /snapshot and a newly-authenticated WebSocket call snapshot()
+        // on demand, so the durable mirror must still be available.
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.cards.len(), 1);
+        assert_eq!(snapshot.cards[0].id, "sync-lazy");
+        assert_eq!(
+            runtime
+                .snapshot_card_enrichments
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn snapshot_and_mirrored_lookup_release_card_mirror_before_enriching() {
+        let runtime = BridgeRuntime::new();
+        runtime.sync_cards(vec![fix2_make_card("lock-scope", false)]);
+
+        let snapshot = runtime.snapshot_with_enricher(|card| {
+            assert!(
+                runtime.card_mirror.try_lock().is_ok(),
+                "snapshot enricher must run after card_mirror is released"
+            );
+            card
+        });
+        assert_eq!(snapshot.cards.len(), 1);
+
+        let mirrored = runtime
+            .mirrored_card_for_pty_with_enricher("lock-scope", |card| {
+                assert!(
+                    runtime.card_mirror.try_lock().is_ok(),
+                    "mirrored-card enricher must run after card_mirror is released"
+                );
+                card
+            })
+            .expect("mirrored card should exist");
+        assert_eq!(mirrored.id, "lock-scope");
+    }
+
+    #[test]
+    fn card_removed_prefers_raw_mirror_and_tombstone_keeps_v1_shape() {
+        let runtime = BridgeRuntime::new();
+        let mut mirrored = fix2_make_card("desktop-card", true);
+        mirrored.pty_id = Some("pty-card".to_string());
+        mirrored.last_reply_preview = "preserved mirror preview".to_string();
+        runtime.sync_cards(vec![mirrored]);
+
+        let removed = runtime
+            .prepare_card_removal("pty-card", SessionState::Idle, "ignored-fallback")
+            .card;
+        assert_eq!(removed.id, "desktop-card");
+        assert_eq!(removed.last_reply_preview, "preserved mirror preview");
+        assert!(!removed.pty_live);
+        assert!(removed.pty_state.is_none());
+
+        let tombstone = card_meta_tombstone("missing-pty", SessionState::Running, "C:\\repo");
+        assert_eq!(tombstone.id, "missing-pty");
+        assert_eq!(tombstone.project_path, "C:\\repo");
+        assert!(tombstone.last_reply_preview.is_empty());
+        assert_eq!(tombstone.recent_output_bytes, 0);
+        assert!(!tombstone.pty_live);
+        assert!(!tombstone.attachable);
+
+        let json = serde_json::to_value(protocol::versioned_server_message(
+            ServerMessage::CardRemoved { card: tombstone },
+        ))
+        .expect("CardRemoved tombstone should serialize");
+        assert_eq!(json["protocol_version"], protocol::PROTOCOL_VERSION);
+        assert_eq!(json["kind"], "card_removed");
+        assert_eq!(json["card"]["id"], "missing-pty");
+        assert_eq!(json["card"]["projectPath"], "C:\\repo");
     }
 
     #[test]

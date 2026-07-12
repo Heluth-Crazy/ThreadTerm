@@ -9,7 +9,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         verify_mobile_bundle()?;
     }
     configure_windows_resource_compiler()?;
-    tauri_build::try_build(tauri_build::Attributes::default())?;
+    let attributes = if is_windows_msvc_target()? {
+        tauri_build::Attributes::default()
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest())
+    } else {
+        tauri_build::Attributes::default()
+    };
+    tauri_build::try_build(attributes)?;
+    embed_windows_manifest_resource()?;
     Ok(())
 }
 
@@ -145,6 +152,31 @@ fn executable_name(name: &str) -> String {
 
 fn is_executable_file(path: &Path) -> bool {
     path.is_file()
+}
+
+fn is_windows_msvc_target() -> Result<bool, env::VarError> {
+    Ok(
+        env::var("CARGO_CFG_TARGET_OS")? == "windows"
+            && env::var("CARGO_CFG_TARGET_ENV")? == "msvc",
+    )
+}
+
+/// Embed the Common Controls v6 manifest into every Windows MSVC artifact.
+///
+/// Tauri still generates its normal icon/version resource, but its copy of the
+/// manifest is disabled above. Keeping the manifest in a separate resource lets
+/// `embed-resource` link it into binaries, cdylibs, and library unit-test
+/// harnesses without duplicating the application's VERSION or MANIFEST records.
+fn embed_windows_manifest_resource() -> Result<(), Box<dyn Error>> {
+    if !is_windows_msvc_target()? {
+        return Ok(());
+    }
+
+    println!("cargo:rerun-if-changed=windows/common-controls-v6.manifest");
+    println!("cargo:rerun-if-changed=windows/common-controls-v6.rc");
+    embed_resource::compile_for_everything("windows/common-controls-v6.rc", embed_resource::NONE)
+        .manifest_required()?;
+    Ok(())
 }
 
 fn resolve_command_path(value: std::ffi::OsString) -> Option<PathBuf> {

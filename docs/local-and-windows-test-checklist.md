@@ -30,6 +30,7 @@ Run all commands from `<repo-root>`.
 Environment notes:
 
 - `npm run tauri:build` and `npm run tauri:build:windows` use the repository-locked Node Tauri CLI; no global `cargo-tauri` installation is required.
+- A plain `cargo build --release` EXE is only Rust/resource evidence. It does not enable Tauri's production protocol and can open `http://localhost:5173`; always use the Tauri build output for native launch acceptance.
 - Browserslist emitted an outdated `caniuse-lite` warning. This is non-blocking for the verification run.
 - Playwright emitted `NO_COLOR`/`FORCE_COLOR` warnings. These are non-blocking.
 - Vite emitted the known mixed dynamic/static import warning for `@tauri-apps/api/event`. This did not block production build or packaging.
@@ -139,11 +140,12 @@ Run these commands from `<repo-root>` in PowerShell. Keep the output sanitized w
    ```powershell
    npm run tauri:build:windows
    ```
-6. Record package bytes:
+6. With no Vite server listening on port 5173, launch the freshly generated `src-tauri\target\release\threadterm.exe`. Confirm the embedded UI renders and no localhost error page appears.
+7. Record package bytes:
    ```powershell
    npm run bench:size
    ```
-7. Verify the generated installer on a clean standard-user Windows account, including signature/SmartScreen behavior, install, upgrade, launch, and uninstall.
+8. Verify the generated installer on a clean standard-user Windows account, including signature/SmartScreen behavior, install, upgrade, launch, and uninstall.
 
 Record at minimum:
 

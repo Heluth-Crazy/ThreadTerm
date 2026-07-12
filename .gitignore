@@ -122,6 +122,20 @@ temp/
 CLAUDE.md
 .mcp.json
 
+# Keep the Windows build-resource code spec visible while the rest of the
+# local Trellis runtime remains ignored.
+!.trellis/
+.trellis/*
+!.trellis/spec/
+.trellis/spec/*
+!.trellis/spec/backend/
+.trellis/spec/backend/*
+!.trellis/spec/backend/windows-build-resources.md
+!.trellis/spec/backend/windows-background-processes.md
+!.trellis/spec/frontend/
+.trellis/spec/frontend/*
+!.trellis/spec/frontend/terminal-surface-geometry.md
+
 # Repository-owned GitHub metadata and CI must remain visible to Git. The
 # broad AI-tool ignore list above previously hid newly created workflows.
 !.github/
@@ -166,6 +180,7 @@ docs/*
 !docs/project-structure-and-performance-review.md
 !docs/windows-lightweight-feasibility-report.md
 !docs/local-and-windows-test-checklist.md
+!docs/windows-performance-functional-impact-review-and-optimization-plan.md
 !docs/first-run.md
 !docs/first-run.zh-CN.md
 !docs/build-release.md

@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { logger } from '../../lib/logger';
 import type { TerminalCard } from '../../types/terminal';
 import { useTerminalStore } from '../../stores/terminalStore';
 import {
@@ -171,45 +172,6 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
     };
   }, [bindCodexAppThread, card.id, card.codexAppThreadId, card.providerSessionId, cwd, t]);
 
-  useEffect(() => {
-    if (!isTauriEnv()) return;
-    let cancelled = false;
-    let unlistenNotification: (() => void) | undefined;
-    let unlistenRequest: (() => void) | undefined;
-    let unlistenDisconnected: (() => void) | undefined;
-
-    void codexApp.onNotification((payload) => {
-      if (!cancelled && belongsToCard(payload, cardIdRef.current, threadIdRef.current)) {
-        handleNotification(payload);
-      }
-    }).then((unlisten) => {
-      unlistenNotification = unlisten;
-    });
-    void codexApp.onRequest((payload) => {
-      if (!cancelled && belongsToCard(payload, cardIdRef.current, threadIdRef.current)) {
-        handleRequest(payload);
-      }
-    }).then((unlisten) => {
-      unlistenRequest = unlisten;
-    });
-    void codexApp.onDisconnected((payload) => {
-      if (cancelled) return;
-      setConnectionState('error');
-      setError(payload.message);
-      setActiveTurnId(null);
-      setSending(false);
-    }).then((unlisten) => {
-      unlistenDisconnected = unlisten;
-    });
-
-    return () => {
-      cancelled = true;
-      unlistenNotification?.();
-      unlistenRequest?.();
-      unlistenDisconnected?.();
-    };
-  }, []);
-
   const handleNotification = useCallback(
     (payload: CodexAppNotificationPayload) => {
       const params = payload.params;
@@ -322,6 +284,68 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
       ];
     });
   }, []);
+
+  useEffect(() => {
+    if (!isTauriEnv()) return;
+    let disposed = false;
+    const listeners: Array<{ name: string; unlisten: () => void }> = [];
+
+    const disposeListener = (name: string, unlisten: () => void) => {
+      try {
+        unlisten();
+      } catch (error) {
+        logger.warn(`[CodexChatView] failed to unlisten ${name}`, error);
+      }
+    };
+
+    const registerListener = (name: string, registration: Promise<() => void>) => {
+      void registration
+        .then((unlisten) => {
+          if (disposed) {
+            disposeListener(name, unlisten);
+            return;
+          }
+          listeners.push({ name, unlisten });
+        })
+        .catch((error) => {
+          logger.warn(`[CodexChatView] failed to listen for ${name}`, error);
+        });
+    };
+
+    registerListener(
+      'notification',
+      codexApp.onNotification((payload) => {
+        if (!disposed && belongsToCard(payload, cardIdRef.current, threadIdRef.current)) {
+          handleNotification(payload);
+        }
+      }),
+    );
+    registerListener(
+      'request',
+      codexApp.onRequest((payload) => {
+        if (!disposed && belongsToCard(payload, cardIdRef.current, threadIdRef.current)) {
+          handleRequest(payload);
+        }
+      }),
+    );
+    registerListener(
+      'disconnect',
+      codexApp.onDisconnected((payload) => {
+        if (disposed) return;
+        setConnectionState('error');
+        setError(payload.message);
+        setActiveTurnId(null);
+        setSending(false);
+      }),
+    );
+
+    return () => {
+      disposed = true;
+      for (const listener of listeners.splice(0)) {
+        disposeListener(listener.name, listener.unlisten);
+      }
+    };
+  }, [handleNotification, handleRequest]);
 
   const removeRequest = useCallback((key: string) => {
     setRequests((previous) => previous.filter((request) => request.key !== key));

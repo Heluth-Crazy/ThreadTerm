@@ -64,7 +64,9 @@ pub(super) const OUTPUT_IDLE_POLL: Duration = Duration::from_millis(250);
 pub(super) const RESIZE_OUTPUT_ACTIVITY_SUPPRESS: Duration = Duration::from_millis(800);
 pub(super) const FLOW_CONTROL_HIGH_WATERMARK: usize = 200_000;
 pub(super) const FLOW_CONTROL_LOW_WATERMARK: usize = 20_000;
-pub(super) const FLOW_CONTROL_SLEEP: Duration = Duration::from_millis(2);
+/// Safety wake-up used only when no ACK/unregister/kill notification arrives.
+/// Renderer lease deadlines normally wake the flow-control waiter earlier.
+pub(super) const FLOW_CONTROL_WATCHDOG: Duration = Duration::from_secs(1);
 pub(super) const RENDERER_CONSUMER_TTL: Duration = Duration::from_secs(30);
 
 static GLOBAL_OUTPUT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -135,6 +137,17 @@ impl OutputFlowControl {
         self.settle_for_active_consumers();
     }
 
+    fn unregister_renderers_with_prefix(&mut self, prefix: &str) -> usize {
+        let before = self.renderer_acks.len();
+        self.renderer_acks
+            .retain(|consumer_id, _| !consumer_id.starts_with(prefix));
+        let removed = before.saturating_sub(self.renderer_acks.len());
+        if removed > 0 {
+            self.settle_for_active_consumers();
+        }
+        removed
+    }
+
     fn ack_renderer(&mut self, consumer_id: &str, through_seq: u64) {
         let Some(acked_through) = self.renderer_acks.get_mut(consumer_id) else {
             return;
@@ -154,11 +167,25 @@ impl OutputFlowControl {
     fn prune_stale_renderers(&mut self, now: Instant) {
         let before = self.renderer_acks.len();
         self.renderer_acks.retain(|_, renderer| {
-            now.saturating_duration_since(renderer.last_seen) <= RENDERER_CONSUMER_TTL
+            now.saturating_duration_since(renderer.last_seen) < RENDERER_CONSUMER_TTL
         });
         if self.renderer_acks.len() != before {
             self.settle_for_active_consumers();
         }
+    }
+
+    fn next_renderer_expiry(&self) -> Option<Instant> {
+        self.renderer_acks
+            .values()
+            .filter_map(|renderer| renderer.last_seen.checked_add(RENDERER_CONSUMER_TTL))
+            .min()
+    }
+
+    fn wait_duration(&self, now: Instant) -> Duration {
+        self.next_renderer_expiry()
+            .map(|deadline| deadline.saturating_duration_since(now))
+            .unwrap_or(FLOW_CONTROL_WATCHDOG)
+            .min(FLOW_CONTROL_WATCHDOG)
     }
 }
 
@@ -205,18 +232,35 @@ struct SessionStateChangedPayload {
 // ── State-machine helpers ────────────────────────────────────────────────────
 
 /// Update session state and emit `session-state-changed` if changed.
+///
+/// Lock discipline (F-01): state mutation and publication stay serialized by
+/// the state write guard so concurrent transitions cannot publish out of
+/// order. Bridge snapshot/enrichment paths must clone `card_mirror` entries
+/// and release that mutex before reading PTY state; this leaves only the
+/// state -> card-mirror direction used by `broadcast_state` and removes the
+/// former lock cycle without weakening event ordering.
 pub(super) fn set_session_state(session: &PtySession, id: &str, new_state: SessionState) {
-    if let Ok(mut state) = session.state.write() {
+    update_session_state_with_publish(&session.state, new_state, |state| {
+        let _ = session.app_handle.emit(
+            "session-state-changed",
+            SessionStateChangedPayload {
+                pty_id: id.to_string(),
+                state: state.clone(),
+            },
+        );
+        bridge::broadcast_state(id, state);
+    });
+}
+
+fn update_session_state_with_publish(
+    state: &RwLock<SessionState>,
+    new_state: SessionState,
+    publish: impl FnOnce(&SessionState),
+) {
+    if let Ok(mut state) = state.write() {
         if *state != new_state {
-            *state = new_state.clone();
-            let _ = session.app_handle.emit(
-                "session-state-changed",
-                SessionStateChangedPayload {
-                    pty_id: id.to_string(),
-                    state: new_state,
-                },
-            );
-            bridge::broadcast_state(id, &state);
+            *state = new_state;
+            publish(&state);
         }
     }
 }
@@ -315,6 +359,18 @@ pub(super) fn unregister_renderer(session: &PtySession, consumer_id: &str) {
     session.flow_control_changed.notify_all();
 }
 
+pub(super) fn unregister_renderers_with_prefix(session: &PtySession, prefix: &str) -> usize {
+    let removed = session
+        .flow_control
+        .lock()
+        .map(|mut flow| flow.unregister_renderers_with_prefix(prefix))
+        .unwrap_or(0);
+    if removed > 0 {
+        session.flow_control_changed.notify_all();
+    }
+    removed
+}
+
 pub(super) fn ack_renderer(session: &PtySession, consumer_id: &str, through_seq: u64) {
     if let Ok(mut flow) = session.flow_control.lock() {
         flow.ack_renderer(consumer_id, through_seq);
@@ -365,7 +421,19 @@ pub(super) fn unacked_bytes(session: &PtySession) -> usize {
 }
 
 pub(super) fn wait_for_flow_capacity(session: &PtySession) {
-    let Ok(mut flow) = session.flow_control.lock() else {
+    wait_for_flow_capacity_inner(
+        &session.flow_control,
+        &session.flow_control_changed,
+        &session.killed,
+    );
+}
+
+fn wait_for_flow_capacity_inner(
+    flow_control: &Mutex<OutputFlowControl>,
+    flow_control_changed: &Condvar,
+    killed: &AtomicBool,
+) {
+    let Ok(mut flow) = flow_control.lock() else {
         return;
     };
     flow.prune_stale_renderers(Instant::now());
@@ -373,13 +441,13 @@ pub(super) fn wait_for_flow_capacity(session: &PtySession) {
         return;
     }
 
-    while flow.unacked_bytes > FLOW_CONTROL_LOW_WATERMARK && !is_killed(session) {
-        match session
-            .flow_control_changed
-            .wait_timeout(flow, FLOW_CONTROL_SLEEP)
-        {
+    while flow.unacked_bytes > FLOW_CONTROL_LOW_WATERMARK && !killed.load(Ordering::SeqCst) {
+        let wait_for = flow.wait_duration(Instant::now());
+        match flow_control_changed.wait_timeout(flow, wait_for) {
             Ok((next, _)) => {
                 flow = next;
+                #[cfg(test)]
+                FLOW_CONTROL_TEST_WAKEUPS.fetch_add(1, Ordering::Relaxed);
                 flow.prune_stale_renderers(Instant::now());
             }
             Err(_) => return,
@@ -521,8 +589,27 @@ pub(super) fn suppress_output_activity_for(session: &PtySession, window: Duratio
 /// Mark the session as user-killed so the reader thread stops emitting an
 /// exit code.
 pub(super) fn mark_killed(session: &PtySession) {
-    session.killed.store(true, Ordering::SeqCst);
-    session.flow_control_changed.notify_all();
+    mark_killed_inner(
+        &session.flow_control,
+        &session.flow_control_changed,
+        &session.killed,
+    );
+}
+
+fn mark_killed_inner(
+    flow_control: &Mutex<OutputFlowControl>,
+    flow_control_changed: &Condvar,
+    killed: &AtomicBool,
+) {
+    // Synchronize the predicate change with the Condvar mutex. Without this,
+    // kill can notify between the waiter's predicate check and wait call,
+    // leaving the reader asleep until the watchdog/lease deadline.
+    let flow = flow_control
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    killed.store(true, Ordering::SeqCst);
+    drop(flow);
+    flow_control_changed.notify_all();
 }
 
 pub(super) fn is_killed(session: &PtySession) -> bool {
@@ -530,9 +617,15 @@ pub(super) fn is_killed(session: &PtySession) -> bool {
 }
 
 #[cfg(test)]
+static FLOW_CONTROL_TEST_WAKEUPS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::pty::emulator::TerminalSnapshot;
+    use std::sync::{mpsc, Arc};
+    use std::thread;
 
     #[test]
     fn next_output_seq_is_monotonic() {
@@ -541,6 +634,51 @@ mod tests {
         let third = next_global_output_seq();
         assert!(first < second);
         assert!(second < third);
+    }
+
+    #[test]
+    fn concurrent_state_transitions_publish_in_the_same_order_as_state_mutation() {
+        use std::sync::Barrier;
+
+        let state = Arc::new(RwLock::new(SessionState::Idle));
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let start = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+
+        for offset in 0..2 {
+            let state = Arc::clone(&state);
+            let published = Arc::clone(&published);
+            let start = Arc::clone(&start);
+            workers.push(thread::spawn(move || {
+                start.wait();
+                for index in 0..1_000 {
+                    let next = if (index + offset) % 2 == 0 {
+                        SessionState::Running
+                    } else {
+                        SessionState::WaitingForInput
+                    };
+                    update_session_state_with_publish(&state, next, |emitted| {
+                        published
+                            .lock()
+                            .expect("published state lock")
+                            .push(emitted.clone());
+                    });
+                }
+            }));
+        }
+
+        start.wait();
+        for worker in workers {
+            worker.join().expect("state worker should finish");
+        }
+
+        let final_state = state.read().expect("state lock").clone();
+        let last_published = published
+            .lock()
+            .expect("published state lock")
+            .last()
+            .cloned();
+        assert_eq!(last_published, Some(final_state));
     }
 
     #[test]
@@ -626,6 +764,26 @@ mod tests {
     }
 
     #[test]
+    fn unregister_renderer_scope_removes_float_consumers_and_preserves_main() {
+        let mut flow = OutputFlowControl::default();
+        flow.register_renderer("renderer:main:main-1".to_string());
+        flow.register_renderer("renderer:float:float-1".to_string());
+        flow.register_renderer("renderer:float:float-2".to_string());
+        flow.track(61, 100);
+        flow.ack_background(61);
+        flow.ack_renderer("renderer:main:main-1", 61);
+
+        // The two lagging float renderers keep the main renderer from
+        // settling credit until the float scope is explicitly detached.
+        assert_eq!(flow.unacked_bytes, 100);
+        assert_eq!(flow.unregister_renderers_with_prefix("renderer:float:"), 2);
+        assert!(flow.renderer_acks.contains_key("renderer:main:main-1"));
+        assert!(!flow.renderer_acks.contains_key("renderer:float:float-1"));
+        assert!(!flow.renderer_acks.contains_key("renderer:float:float-2"));
+        assert_eq!(flow.unacked_bytes, 0);
+    }
+
+    #[test]
     fn stale_renderer_lease_expires_and_background_can_resume_flow() {
         let mut flow = OutputFlowControl::default();
         flow.register_renderer("crashed-window".to_string());
@@ -642,6 +800,142 @@ mod tests {
 
         assert!(flow.renderer_acks.is_empty());
         assert_eq!(flow.unacked_bytes, 0);
+    }
+
+    #[test]
+    fn renderer_lease_expires_at_the_ttl_boundary() {
+        let mut flow = OutputFlowControl::default();
+        flow.register_renderer("expired".to_string());
+        let now = Instant::now();
+        flow.renderer_acks
+            .get_mut("expired")
+            .expect("renderer should be registered")
+            .last_seen = now;
+
+        flow.prune_stale_renderers(now + RENDERER_CONSUMER_TTL);
+
+        assert!(flow.renderer_acks.is_empty());
+    }
+
+    #[test]
+    fn flow_wait_deadline_uses_nearest_renderer_expiry_and_watchdog_cap() {
+        let mut flow = OutputFlowControl::default();
+        flow.register_renderer("near".to_string());
+        flow.register_renderer("far".to_string());
+        let now = Instant::now();
+        flow.renderer_acks
+            .get_mut("near")
+            .expect("near renderer should be registered")
+            .last_seen = now - RENDERER_CONSUMER_TTL + Duration::from_millis(125);
+        flow.renderer_acks
+            .get_mut("far")
+            .expect("far renderer should be registered")
+            .last_seen = now;
+
+        let wait = flow.wait_duration(now);
+        assert!(wait >= Duration::from_millis(120));
+        assert!(wait <= Duration::from_millis(130));
+
+        flow.renderer_acks
+            .get_mut("near")
+            .expect("near renderer should remain registered")
+            .last_seen = now;
+        assert_eq!(flow.wait_duration(now), FLOW_CONTROL_WATCHDOG);
+    }
+
+    #[test]
+    fn flow_wait_stays_blocked_for_slowest_renderer_until_it_unregisters() {
+        struct Harness {
+            flow: Mutex<OutputFlowControl>,
+            changed: Condvar,
+            killed: AtomicBool,
+        }
+
+        let harness = Arc::new(Harness {
+            flow: Mutex::new(OutputFlowControl::default()),
+            changed: Condvar::new(),
+            killed: AtomicBool::new(false),
+        });
+        {
+            let mut flow = harness.flow.lock().expect("flow lock");
+            flow.register_renderer("fast".to_string());
+            flow.register_renderer("slow".to_string());
+            flow.track(90, FLOW_CONTROL_HIGH_WATERMARK);
+            flow.track(91, 1);
+            flow.ack_background(91);
+            flow.ack_renderer("fast", 91);
+        }
+
+        let wakeups_before = FLOW_CONTROL_TEST_WAKEUPS.load(Ordering::Relaxed);
+        let (sentinel_tx, sentinel_rx) = mpsc::channel();
+        let waiter = Arc::clone(&harness);
+        let handle = thread::spawn(move || {
+            wait_for_flow_capacity_inner(&waiter.flow, &waiter.changed, &waiter.killed);
+            sentinel_tx.send("final-sentinel").expect("send sentinel");
+        });
+
+        assert!(sentinel_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        {
+            let mut flow = harness.flow.lock().expect("flow lock");
+            flow.unregister_renderer("fast");
+        }
+        harness.changed.notify_all();
+        assert!(sentinel_rx.recv_timeout(Duration::from_millis(50)).is_err());
+
+        {
+            let mut flow = harness.flow.lock().expect("flow lock");
+            flow.unregister_renderer("slow");
+        }
+        harness.changed.notify_all();
+        assert_eq!(
+            sentinel_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("slow renderer unregister should release flow"),
+            "final-sentinel"
+        );
+        handle.join().expect("waiter should finish");
+
+        let wakeups = FLOW_CONTROL_TEST_WAKEUPS
+            .load(Ordering::Relaxed)
+            .saturating_sub(wakeups_before);
+        assert!(
+            wakeups <= 3,
+            "expected notification-driven wakes, got {wakeups}"
+        );
+    }
+
+    #[test]
+    fn kill_notification_wakes_a_flow_control_waiter() {
+        struct Harness {
+            flow: Mutex<OutputFlowControl>,
+            changed: Condvar,
+            killed: AtomicBool,
+        }
+
+        let harness = Arc::new(Harness {
+            flow: Mutex::new(OutputFlowControl::default()),
+            changed: Condvar::new(),
+            killed: AtomicBool::new(false),
+        });
+        harness
+            .flow
+            .lock()
+            .expect("flow lock")
+            .track(100, FLOW_CONTROL_HIGH_WATERMARK);
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let waiter = Arc::clone(&harness);
+        let handle = thread::spawn(move || {
+            wait_for_flow_capacity_inner(&waiter.flow, &waiter.changed, &waiter.killed);
+            done_tx.send(()).expect("send completion");
+        });
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+
+        mark_killed_inner(&harness.flow, &harness.changed, &harness.killed);
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("kill should wake the waiter");
+        handle.join().expect("waiter should finish");
     }
 
     #[test]

@@ -30,9 +30,10 @@ import { useTerminalStore } from '../../stores/terminalStore';
 
 export interface FloatSessionProps {
   card: TerminalCard | null;
+  active?: boolean;
 }
 
-export function FloatSession({ card }: FloatSessionProps) {
+export function FloatSession({ card, active = true }: FloatSessionProps) {
   const { t } = useTranslation('overlay');
   const selectedProject = useMemo(
     () =>
@@ -113,7 +114,8 @@ export function FloatSession({ card }: FloatSessionProps) {
         minimal={true}
         autoConnect={true}
         paneId={paneId}
-        active={true}
+        active={active}
+        rendererScope="float"
         preservePtyOnUnmount={true}
         replayRecentOutput={true}
         suppressInitialCommandWhenPtyExists={true}

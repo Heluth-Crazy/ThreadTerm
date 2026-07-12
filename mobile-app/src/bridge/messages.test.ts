@@ -124,6 +124,46 @@ describe('mobile bridge message reducer', () => {
     expect(closed.activeCardId).toBeNull();
   });
 
+  it('removes card-scoped status and output caches with a card_removed event', () => {
+    const cardOne = {
+      id: 'card-1',
+      status: 'running' as const,
+      projectPath: '/tmp/one',
+      projectName: 'one',
+      lastReplyPreview: 'one',
+      summaryLine: 'one',
+      hiddenLineCount: 0,
+      recentOutputBytes: 11,
+    };
+    const cardTwo = {
+      id: 'card-2',
+      status: 'idle' as const,
+      projectPath: '/tmp/two',
+      projectName: 'two',
+      lastReplyPreview: 'two',
+      summaryLine: 'two',
+      hiddenLineCount: 0,
+      recentOutputBytes: 22,
+    };
+    const hydrated = applyServerMessage(initialBridgeState, {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'snapshot',
+      notifications: [],
+      cards: [cardOne, cardTwo],
+    });
+
+    const removed = applyServerMessage(hydrated, {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'card_removed',
+      card: cardOne,
+    });
+
+    expect(removed.cards.map((card) => card.id)).toEqual(['card-2']);
+    expect(removed.activeCardId).toBe('card-2');
+    expect(removed.ptyStatusByCardId).toEqual({ 'card-2': 'idle' });
+    expect(removed.recentOutputBytesByCardId).toEqual({ 'card-2': 22 });
+  });
+
   // ── FIX-1 (deep-research-defect-fix / second-diagnosis 问题二) ──────────
   function hydrateOneCard(status: 'running' | 'idle' | 'waiting_for_input') {
     return applyServerMessage(initialBridgeState, {

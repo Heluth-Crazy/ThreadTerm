@@ -170,6 +170,15 @@ Correct:
 - MergeView CSS may make `.cm-scroller` `overflow-y: visible` for root-level vertical scrolling, but must preserve horizontal scrolling with `overflow-x: auto`.
 - `Mod-s` is the only save shortcut in editor surfaces so macOS maps to `Cmd+S` and Windows/Linux maps to `Ctrl+S`.
 - Saving must preserve CRLF-dominant files through `normalizeDraftForSave`.
+- Workspace view identity is card-scoped even when two cards share the same
+  root/path: React keys and dirty/open callbacks include `cardId + tabId`.
+- Switching cards keeps dirty file/diff editors mounted so unsaved draft,
+  undo, selection, and scroll remain local to the correct card. Clean editors
+  may unmount to bound memory. Never use the currently focused card inside a
+  callback owned by a retained hidden editor.
+- Removing or archiving a card with dirty workspace tabs requires an explicit
+  discard/recovery product contract. Do not silently unmount and claim the
+  draft is preserved; until that UX exists, treat the path as a blocker.
 
 #### 4. Validation & Error Matrix
 - Repo-relative path is empty, absolute, parent-traversing, or Windows drive-like -> reject before running Git.
@@ -178,16 +187,27 @@ Correct:
 - File changed on disk after diff load -> `workspace_write_file` returns `file_conflict`.
 - Untracked file with no staged diff -> show no textual diff and offer normal file open behavior.
 - Soft-wrapped side-by-side diff lines with unequal gutter/content width -> unchanged sections can appear vertically misaligned.
+- Switch from card A with a dirty editor to card B -> A remains mounted and
+  hidden; updates from A continue to target A, never B.
+- Remove/archive a card with dirty tabs and no confirmed recovery policy ->
+  block or surface the unresolved product decision; do not silently discard.
 
 #### 5. Good/Base/Bad Cases
 - Good: click a modified file in Changes, edit the right diff pane, see dirty tab marker, save to working tree with the section mtime.
 - Good: `Revert line` changes only the draft; if single-line mapping is unsafe, revert the current hunk and show a status message.
 - Good: long unchanged lines in side-by-side diff wrap at the same visual column on both panes.
+- Good: two cards open the same absolute path; card A keeps a dirty draft while
+  card B loads a clean editor, with distinct component state and keys.
 - Base: staged-only changes are visible but read-only.
 - Bad: calling Git or writing files from the frontend directly, applying a revert immediately to disk without the explicit Save action, or enabling soft wrap while only one pane has an action gutter.
+- Bad: rendering only the focused card's tabs and keeping `dirtyTabIds` while
+  unmounting the actual editor; the marker survives but the unsaved draft does
+  not.
 
 #### 6. Tests Required
-- Component tests for file edit save, CRLF preservation, diff load, diff draft save, and dirty tab wiring.
+- Component tests for file edit save, CRLF preservation, diff load, diff draft
+  save, dirty tab wiring, same-path cards, and dirty draft/local component
+  state across card switches.
 - Rust tests for `git_file_text_diff` editable unstaged sections and `workspace_write_file` restoring a missing file inside the workspace.
 - Run `npm run typecheck`, targeted Vitest for workspace views/panels/tabs/i18n parity, `cargo check`, targeted Rust tests, `npm run build`, and `git diff --check`.
 

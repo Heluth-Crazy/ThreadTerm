@@ -43,6 +43,20 @@ describe('createCardOutputBuffer', () => {
     expect(sink.flushPreview).toHaveBeenCalledWith('a', 'fresh');
   });
 
+  it('delivers output and preview through one combined flush when available', () => {
+    const flushCardUpdate = vi.fn();
+    const buffer = createCardOutputBuffer({ flushCardUpdate }, 100);
+
+    buffer.pushChunk('a', 'one');
+    buffer.pushChunk('a', 'two');
+    buffer.pushPreview('a', 'preview');
+    vi.advanceTimersByTime(100);
+
+    expect(flushCardUpdate).toHaveBeenCalledTimes(1);
+    expect(flushCardUpdate).toHaveBeenCalledWith('a', 'onetwo', 'preview');
+    expect(buffer.getDiagnostics()).toMatchObject({ pendingCardCount: 0 });
+  });
+
   it('flushes cards independently of each other', () => {
     const sink = makeSink();
     const buffer = createCardOutputBuffer(sink, 100);

@@ -127,3 +127,11 @@ export function disposeAllHeadless(): void {
     disposeHeadless(id);
   }
 }
+
+/** Read-only lifecycle diagnostics used by regression tests and dev tooling. */
+export function getHeadlessPreviewDiagnostics(): { activeCount: number; cardIds: string[] } {
+  return {
+    activeCount: terms.size,
+    cardIds: Array.from(terms.keys()),
+  };
+}

@@ -12,6 +12,10 @@ run and recorded for the release candidate being shipped.
   `npm run dev:desktop`, which builds the mobile client before starting Vite.
 - `npm run tauri:build` invokes Tauri's `beforeBuildCommand`,
   `npm run build && npm run build:mobile`.
+- Do not treat `cargo build --release` as a launchable packaged application.
+  It is useful for Rust and Windows-resource checks, but without the Tauri
+  CLI's production protocol it can still load `build.devUrl` and show a
+  `localhost:5173` connection error. Use a Tauri build for launch acceptance.
 - Tauri builds native bundles for the host operating system. Create macOS
   artifacts on macOS and Windows artifacts on Windows; do not treat a
   cross-platform frontend build as a native packaging result.
@@ -36,6 +40,9 @@ npm run tauri:build
 The build command compiles both desktop and embedded mobile web assets. A
 clean checkout therefore must not depend on a pre-existing `dist` or
 `mobile-app/dist` directory.
+
+Before accepting the artifact, launch it with no Vite server running. The app
+must render its embedded UI and must not attempt to connect to port 5173.
 
 Inspect the generated artifacts under
 `src-tauri/target/release/bundle/`. Record the source commit, host OS and

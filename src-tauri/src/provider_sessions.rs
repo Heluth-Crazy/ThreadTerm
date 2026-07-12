@@ -248,7 +248,7 @@ pub(crate) fn jsonl_files_recent_first(
 
     let mut files = Vec::new();
     collect_jsonl_files(root, since_ms, &mut files);
-    files.sort_by(|a, b| b.modified_ms.unwrap_or(0).cmp(&a.modified_ms.unwrap_or(0)));
+    files.sort_by_key(|file| std::cmp::Reverse(file.modified_ms.unwrap_or(0)));
 
     if let Ok(mut cache) = JSONL_SCAN_CACHE.lock() {
         cache.retain(|_, entry| entry.collected_at.elapsed() <= JSONL_SCAN_CACHE_TTL);

@@ -946,7 +946,11 @@ bare
         assert_eq!(rows[0].unstaged, None);
         assert_eq!(rows[1].unstaged.as_deref(), Some("M"));
         assert!(rows[2].is_untracked);
-        assert_eq!(rows[2].absolute_path, "/repo/app/docs/new file.md");
+        assert_eq!(rows[2].path, "docs/new file.md");
+        assert_eq!(
+            PathBuf::from(&rows[2].absolute_path),
+            Path::new("/repo/app").join("docs/new file.md")
+        );
         assert_eq!(rows[3].path, "中文.txt");
     }
 

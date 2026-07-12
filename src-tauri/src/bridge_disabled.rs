@@ -1,13 +1,15 @@
 #[path = "bridge/protocol.rs"]
 pub mod protocol;
 
-use crate::pty::{LivePtySessionSnapshot, SessionState};
+use crate::pty::SessionState;
 use protocol::{
     AppThemeTokens, BridgeDevice, BridgeStatus, CardMeta, DevicePermission, PairQrResponse,
     TerminalThemeTokens, ThemeMode,
 };
 
 const DISABLED_MESSAGE: &str = "Mobile bridge is disabled in this build.";
+
+pub(crate) struct PreparedCardRemoval;
 
 fn stopped_status() -> BridgeStatus {
     BridgeStatus {
@@ -116,7 +118,11 @@ pub async fn bridge_broadcast_theme(
     Ok(())
 }
 
-pub fn broadcast_preview(_card_id: &str, _output: &str) {}
+pub fn broadcast_preview<F>(_card_id: &str, _build_output: F)
+where
+    F: FnOnce() -> String,
+{
+}
 
 pub fn broadcast_terminal_output(_card_id: &str, _data: &str, _seq: u64) {}
 
@@ -130,4 +136,12 @@ pub fn broadcast_exit(_card_id: &str, _code: Option<u32>) {}
 
 pub fn broadcast_card_added(_card_id: &str) {}
 
-pub fn broadcast_card_removed(_snapshot: LivePtySessionSnapshot) {}
+pub(crate) fn prepare_card_removed(
+    _pty_id: &str,
+    _state: SessionState,
+    _working_dir: &str,
+) -> PreparedCardRemoval {
+    PreparedCardRemoval
+}
+
+pub(crate) fn broadcast_card_removed(_removal: PreparedCardRemoval) {}

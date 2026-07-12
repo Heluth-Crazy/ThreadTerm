@@ -50,6 +50,11 @@ export interface CardsSlice {
   archiveCard: (id: string) => void;
   restoreArchivedCard: (id: string) => void;
   updateCardOutput: (id: string, chunk: string) => void;
+  updateCardOutputAndPreview: (
+    id: string,
+    chunk: string | null,
+    preview: string | null,
+  ) => void;
   updateCardStatus: (id: string, status: TerminalStatus) => void;
   updateCardReplyPreview: (id: string, preview: string) => void;
   appendEvent: (id: string, event: Omit<TerminalEvent, 'at'> & { at?: number }) => void;

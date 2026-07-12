@@ -71,4 +71,47 @@ describe('createOutputAcknowledger', () => {
 
     vi.useRealTimers();
   });
+
+  it('discards one PTY and ignores its late in-flight completion after replacement', async () => {
+    const oldSend = deferred();
+    const send = vi
+      .fn<(value: OutputAckRequest) => Promise<void>>()
+      .mockReturnValueOnce(oldSend.promise)
+      .mockResolvedValue(undefined);
+    const acknowledger = createOutputAcknowledger(send);
+
+    acknowledger.ack(request(30));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    acknowledger.discard('pty-1');
+    expect(acknowledger.getDiagnostics().pendingCount).toBe(0);
+
+    acknowledger.ack(request(40));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    oldSend.resolve();
+    await Promise.resolve();
+
+    expect(send.mock.calls.map(([value]) => value.throughSeq)).toEqual([30, 40]);
+    acknowledger.dispose();
+  });
+
+  it('cancels a per-PTY retry timer when that runtime is discarded', async () => {
+    vi.useFakeTimers();
+    const send = vi.fn<(value: OutputAckRequest) => Promise<void>>().mockRejectedValue(
+      new Error('IPC dropped'),
+    );
+    const acknowledger = createOutputAcknowledger(send, 50);
+
+    acknowledger.ack(request(50));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
+    acknowledger.discard('pty-1');
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(acknowledger.getDiagnostics().pendingCount).toBe(0);
+    acknowledger.dispose();
+    vi.useRealTimers();
+  });
 });

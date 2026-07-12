@@ -1,6 +1,11 @@
 #[cfg(target_os = "windows")]
 use std::time::Duration;
 
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "windows")]
+use std::sync::{Mutex, MutexGuard};
+
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager};
 
 use super::hotkey::{register_default_shortcuts, register_hotkey, unregister_all_hotkeys};
@@ -18,6 +23,11 @@ use super::window::{
 
 #[cfg(target_os = "windows")]
 const FLOAT_IDLE_DESTROY_AFTER: Duration = Duration::from_secs(60);
+
+#[cfg(target_os = "windows")]
+static FLOAT_HIDE_GENERATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "windows")]
+static FLOAT_VISIBILITY_TRANSITION: Mutex<()> = Mutex::new(());
 
 /// Async because `ensure_selector` may create a webview window: on Windows,
 /// creating a WebView2 window from a *synchronous* IPC command deadlocks the
@@ -46,8 +56,15 @@ pub(super) fn show_selector_impl(app: &AppHandle) -> Result<(), String> {
     ensure_selector(app)?;
     set_overlay_activation_policy(app);
     // Hide float while selector is open (mutual exclusion). Restored on close.
-    if let Some(f) = app.get_webview_window(FLOAT_LABEL) {
-        let _ = f.hide();
+    let float_was_hidden = {
+        let _transition = lock_float_visibility_transition();
+        hide_float_window_for_idle(app)
+    };
+    if float_was_hidden {
+        // Selector activation is also a native float-hide path. Keep both
+        // webviews' surface state in sync and ensure an abandoned selection
+        // cannot leave the hidden float WebView2 alive indefinitely.
+        let _ = app.emit("overlay://float-hidden", ());
     }
     if let Some(w) = app.get_webview_window(SELECTOR_LABEL) {
         // Re-align to the current primary monitor's physical bounds.
@@ -147,6 +164,10 @@ pub(super) fn show_float_impl(app: &AppHandle, card_id: String) -> Result<(), St
         return Ok(());
     }
 
+    let _transition = lock_float_visibility_transition();
+    invalidate_float_idle_destroy();
+    crate::pty::resume_float_output_consumers();
+
     ensure_float(app)?;
     set_overlay_activation_policy(app);
     // Hide selector if visible.
@@ -204,6 +225,17 @@ pub(super) fn show_float_impl(app: &AppHandle, card_id: String) -> Result<(), St
 
 #[tauri::command]
 pub fn overlay_hide_float(app: AppHandle) -> Result<(), String> {
+    let _transition = lock_float_visibility_transition();
+    hide_float_window_for_idle(&app);
+    restore_regular_activation_policy_if_no_overlay_visible(&app);
+    let _ = app.emit("overlay://float-hidden", ());
+    Ok(())
+}
+
+/// Single funnel for every native transition that hides the float surface.
+/// On Windows this also starts the idle WebView2 release deadline; on other
+/// platforms the memory and timer helpers are intentional no-ops.
+fn hide_float_window_for_idle(app: &AppHandle) -> bool {
     #[cfg(target_os = "macos")]
     {
         use tauri_nspanel::ManagerExt;
@@ -213,14 +245,13 @@ pub fn overlay_hide_float(app: AppHandle) -> Result<(), String> {
         }
     }
 
-    if let Some(w) = app.get_webview_window(FLOAT_LABEL) {
-        let _ = w.hide();
-        set_float_memory_usage_low(&w);
-        schedule_float_idle_destroy(&app);
-    }
-    restore_regular_activation_policy_if_no_overlay_visible(&app);
-    let _ = app.emit("overlay://float-hidden", ());
-    Ok(())
+    let Some(window) = app.get_webview_window(FLOAT_LABEL) else {
+        return false;
+    };
+    let _ = window.hide();
+    set_float_memory_usage_low(&window);
+    schedule_float_idle_destroy(app);
+    true
 }
 
 #[cfg(target_os = "windows")]
@@ -280,15 +311,27 @@ fn set_float_memory_usage_level(
 
 #[cfg(target_os = "windows")]
 fn schedule_float_idle_destroy(app: &AppHandle) {
+    let generation = next_float_hide_generation(&FLOAT_HIDE_GENERATION);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(FLOAT_IDLE_DESTROY_AFTER).await;
-        let Some(window) = app.get_webview_window(FLOAT_LABEL) else {
-            return;
-        };
-        if window.is_visible().unwrap_or(true) {
+        let _transition = lock_float_visibility_transition();
+        if !float_hide_generation_is_current(&FLOAT_HIDE_GENERATION, generation) {
             return;
         }
+        let window = app.get_webview_window(FLOAT_LABEL);
+        if window
+            .as_ref()
+            .is_some_and(|window| window.is_visible().unwrap_or(true))
+        {
+            return;
+        }
+        let removed = crate::pty::suspend_float_output_consumers();
+        tracing::debug!(
+            removed,
+            "Detached float renderer consumers before idle close"
+        );
+        let Some(window) = window else { return };
         match window.close() {
             Ok(()) => tracing::info!("Closed idle float window to release WebView2 memory"),
             Err(error) => tracing::debug!(error = %error, "Failed to close idle float window"),
@@ -296,11 +339,40 @@ fn schedule_float_idle_destroy(app: &AppHandle) {
     });
 }
 
+#[cfg(target_os = "windows")]
+fn invalidate_float_idle_destroy() {
+    next_float_hide_generation(&FLOAT_HIDE_GENERATION);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn invalidate_float_idle_destroy() {}
+
+#[cfg(target_os = "windows")]
+fn next_float_hide_generation(counter: &AtomicU64) -> u64 {
+    counter.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
+}
+
+#[cfg(target_os = "windows")]
+fn float_hide_generation_is_current(counter: &AtomicU64, generation: u64) -> bool {
+    counter.load(Ordering::SeqCst) == generation
+}
+
+#[cfg(target_os = "windows")]
+fn lock_float_visibility_transition() -> MutexGuard<'static, ()> {
+    FLOAT_VISIBILITY_TRANSITION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn lock_float_visibility_transition() {}
+
 #[cfg(not(target_os = "windows"))]
 fn schedule_float_idle_destroy(_app: &AppHandle) {}
 
 #[tauri::command]
 pub fn overlay_show_main(app: AppHandle) -> Result<(), String> {
+    let _transition = lock_float_visibility_transition();
     #[cfg(target_os = "macos")]
     {
         use tauri_nspanel::ManagerExt;
@@ -312,19 +384,11 @@ pub fn overlay_show_main(app: AppHandle) -> Result<(), String> {
     if let Some(s) = app.get_webview_window(SELECTOR_LABEL) {
         let _ = s.hide();
     }
-    #[cfg(target_os = "macos")]
-    {
-        use tauri_nspanel::ManagerExt;
-
-        if let Ok(panel) = app.get_webview_panel(FLOAT_LABEL) {
-            panel.hide();
-        }
-    }
-    if let Some(f) = app.get_webview_window(FLOAT_LABEL) {
-        let _ = f.hide();
-        set_float_memory_usage_low(&f);
-        schedule_float_idle_destroy(&app);
-    }
+    hide_float_window_for_idle(&app);
+    // `overlay_show_main` also runs from the global B hotkey and selector
+    // window, so the float renderer cannot rely on its local recycle handler
+    // to learn that the native surface is now hidden.
+    let _ = app.emit("overlay://float-hidden", ());
     restore_regular_activation_policy(&app);
     if let Some(m) = app.get_webview_window(MAIN_LABEL) {
         let _ = m.show();
@@ -463,4 +527,25 @@ pub fn overlay_resize_float(app: AppHandle, w: f64, h: f64) -> Result<(), String
         let _ = win.set_size(LogicalSize::new(w, h));
     }
     Ok(())
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_float_visibility_epoch_invalidates_the_previous_destroy_timer() {
+        let generation = AtomicU64::new(0);
+        let first_hide = next_float_hide_generation(&generation);
+        assert!(float_hide_generation_is_current(&generation, first_hide));
+
+        // Showing the window invalidates the first hide, and a later hide
+        // receives its own deadline generation.
+        next_float_hide_generation(&generation);
+        assert!(!float_hide_generation_is_current(&generation, first_hide));
+
+        let second_hide = next_float_hide_generation(&generation);
+        assert!(float_hide_generation_is_current(&generation, second_hide));
+        assert!(!float_hide_generation_is_current(&generation, first_hide));
+    }
 }

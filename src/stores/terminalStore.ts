@@ -20,8 +20,8 @@
  * `JSON.stringify(cards)` + `localStorage` write.
  */
 import { create } from 'zustand';
-import { persist, createJSONStorage } from 'zustand/middleware';
-import { createThrottledLocalStorage } from './throttledStorage';
+import { persist } from 'zustand/middleware';
+import { createThrottledPersistStorage } from './throttledStorage';
 import { readOsNotificationsEnabled } from '../lib/notificationPrefs';
 import { createCardsSlice } from './terminal/cardsSlice';
 import { createAutoRestartSlice } from './terminal/autoRestartSlice';
@@ -36,6 +36,27 @@ import {
   prepareAutoRestartForPersistence,
 } from './terminal/helpers';
 import type { TerminalStore } from './terminal/types';
+
+type PersistedTerminalState = Partial<
+  Pick<
+    TerminalStore,
+    | 'cards'
+    | 'archivedCards'
+    | 'focusedCardId'
+    | 'lastActiveCardId'
+    | 'recentlyViewedCardIds'
+    | 'dockPinned'
+    | 'selectedProjectPath'
+    | 'selectedWorktreePath'
+    | 'selectedWorktreeLabel'
+    | 'projectCardOrder'
+    | 'pinnedCardIds'
+    | 'notifications'
+    | 'notificationCentreOpen'
+    | 'osNotificationsEnabled'
+    | 'supervisorEnabled'
+  >
+>;
 
 export {
   MAX_PINNED_CARDS,
@@ -55,8 +76,9 @@ export const useTerminalStore = create<TerminalStore>()(
     }),
     {
       name: 'threadterm-terminal-store',
-      // FIX-3: debounce the per-chunk persist writes (see ./throttledStorage).
-      storage: createJSONStorage(() => createThrottledLocalStorage(500)),
+      // Delay stringify and localStorage I/O together. maxWait keeps other
+      // WebViews and restart previews bounded during continuous output.
+      storage: createThrottledPersistStorage<PersistedTerminalState>(500, 2000),
       partialize: (state) => ({
         cards: state.cards.map((card) => ({
           ...card,

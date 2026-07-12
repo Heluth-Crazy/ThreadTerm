@@ -16,6 +16,8 @@ const NOTIFICATION_EVENT: &str = "codex-app://notification";
 const REQUEST_EVENT: &str = "codex-app://request";
 const DISCONNECTED_EVENT: &str = "codex-app://disconnected";
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 type PendingRequest = oneshot::Sender<Result<Value, String>>;
 type PendingMap = Arc<Mutex<HashMap<u64, PendingRequest>>>;
@@ -385,6 +387,12 @@ impl CodexAppManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+
+        // The app-server is a background stdio transport, not an interactive
+        // console. Without CREATE_NO_WINDOW, Windows may surface a separate
+        // codex.exe/cmd.exe console that users can close, severing Chat Mode.
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
 
         let mut child = command
             .spawn()

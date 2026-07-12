@@ -18,6 +18,7 @@ default = ["mobile-bridge"]
 mobile-bridge = ["dep:axum", "dep:rand", "dep:sha2", "dep:tower-http"]
 
 [build-dependencies]
+embed-resource = "=3.0.9"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]

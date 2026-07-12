@@ -31,6 +31,12 @@ repository. Do not install or call a global `cargo tauri` command. The script
 applies `src-tauri/tauri.windows.conf.json`, requests the NSIS bundle, and uses
 the Windows-specific non-transparent main-window configuration.
 
+Do not launch `src-tauri\target\release\threadterm.exe` after overwriting it
+with plain `cargo build --release`. Plain Cargo does not enable Tauri's
+production protocol, so that EXE can load `http://localhost:5173` and report a
+refused connection when Vite is not running. If this occurs, leave `devUrl`
+unchanged and rerun `npm run tauri:build:windows`.
+
 Tauri's `beforeBuildCommand` runs `npm run build && npm run build:mobile`, so a
 clean checkout builds both desktop and embedded mobile assets before Rust
 packaging. It must not rely on an existing `dist` or `mobile-app/dist` folder.
@@ -40,6 +46,11 @@ After a successful build, inspect the newly generated installer under:
 ```text
 src-tauri/target/release/bundle/nsis/
 ```
+
+With no process listening on port 5173, launch the freshly generated
+`src-tauri\target\release\threadterm.exe` once before installer testing. The
+embedded ThreadTerm UI must render; a browser-style localhost error fails the
+build gate.
 
 The exact filename depends on the configured version and target architecture.
 Record the commit, toolchain versions, filename, byte size, and checksum rather

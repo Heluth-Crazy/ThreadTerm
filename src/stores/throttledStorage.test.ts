@@ -1,103 +1,139 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createThrottledLocalStorage } from './throttledStorage';
+import {
+  createThrottledPersistStorage,
+  type ThrottledPersistStorage,
+} from './throttledStorage';
 
-describe('createThrottledLocalStorage (FIX-3 / second-diagnosis 问题一-B)', () => {
+interface TestState {
+  value: string;
+}
+
+const storedValue = (value: string) => ({ state: { value }, version: 18 });
+
+describe('createThrottledPersistStorage', () => {
+  const storages: Array<ThrottledPersistStorage<TestState>> = [];
+  const createStorage = (delayMs = 500, maxWaitMs = 2000) => {
+    const storage = createThrottledPersistStorage<TestState>(delayMs, maxWaitMs);
+    storages.push(storage);
+    return storage;
+  };
+
   beforeEach(() => {
     vi.useFakeTimers();
     localStorage.clear();
   });
 
   afterEach(() => {
+    for (const storage of storages.splice(0)) storage.dispose();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  it('coalesces a burst of per-chunk setItem into a single delayed write', () => {
+  it('coalesces object updates and stringifies only at the flush boundary', () => {
     const setSpy = vi.spyOn(localStorage, 'setItem');
-    const storage = createThrottledLocalStorage(500);
+    const stringifySpy = vi.spyOn(JSON, 'stringify');
+    const storage = createStorage();
 
     for (let i = 0; i < 100; i += 1) {
-      storage.setItem('threadterm-terminal-store', `v${i}`);
+      storage.setItem('threadterm-terminal-store', storedValue(`v${i}`));
     }
-    // Nothing written yet — all 100 writes are debounced.
     expect(setSpy).not.toHaveBeenCalled();
+    expect(stringifySpy).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(500);
 
-    // Exactly one real write, carrying only the latest value.
     expect(setSpy).toHaveBeenCalledTimes(1);
-    expect(setSpy).toHaveBeenCalledWith('threadterm-terminal-store', 'v99');
-    expect(localStorage.getItem('threadterm-terminal-store')).toBe('v99');
+    expect(stringifySpy).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(localStorage.getItem('threadterm-terminal-store') ?? '{}'))
+      .toEqual(storedValue('v99'));
   });
 
-  it('passes getItem through synchronously', () => {
-    localStorage.setItem('k', 'direct');
-    const storage = createThrottledLocalStorage(500);
-    expect(storage.getItem('k')).toBe('direct');
+  it('parses getItem synchronously with the existing versioned JSON shape', () => {
+    localStorage.setItem('k', JSON.stringify(storedValue('direct')));
+    const storage = createStorage();
+    expect(storage.getItem('k')).toEqual(storedValue('direct'));
   });
 
   it('removeItem drops a pending write and clears synchronously', () => {
-    const storage = createThrottledLocalStorage(500);
-    storage.setItem('k', 'pending');
+    const storage = createStorage();
+    storage.setItem('k', storedValue('pending'));
     storage.removeItem('k');
 
-    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(2000);
 
-    // The pending debounced write must not resurrect the removed key.
     expect(localStorage.getItem('k')).toBeNull();
+    expect(storage.getDiagnostics()).toMatchObject({ pending: false });
   });
 
-  it('flushes the pending write on beforeunload (no data loss on close)', () => {
-    const storage = createThrottledLocalStorage(500);
-    storage.setItem('k', 'onunload');
-    expect(localStorage.getItem('k')).toBeNull();
+  it('flushes the pending write on beforeunload', () => {
+    const storage = createStorage();
+    storage.setItem('k', storedValue('onunload'));
 
     window.dispatchEvent(new Event('beforeunload'));
 
-    expect(localStorage.getItem('k')).toBe('onunload');
+    expect(storage.getItem('k')).toEqual(storedValue('onunload'));
   });
 
   it('flushes the pending write when the tab becomes hidden', () => {
-    const storage = createThrottledLocalStorage(500);
-    storage.setItem('k', 'late');
-    expect(localStorage.getItem('k')).toBeNull();
-
-    const spy = vi
+    const storage = createStorage();
+    storage.setItem('k', storedValue('hidden'));
+    const visibility = vi
       .spyOn(document, 'visibilityState', 'get')
       .mockReturnValue('hidden');
-    document.dispatchEvent(new Event('visibilitychange'));
-    spy.mockRestore();
 
-    expect(localStorage.getItem('k')).toBe('late');
+    document.dispatchEvent(new Event('visibilitychange'));
+    visibility.mockRestore();
+
+    expect(storage.getItem('k')).toEqual(storedValue('hidden'));
   });
 
-  it('warns once when persist fails (quota), then again after a recovery (audit P2-4)', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const setSpy = vi
-      .spyOn(localStorage, 'setItem')
-      .mockImplementation(() => {
-        throw new Error('QuotaExceededError');
-      });
-    const storage = createThrottledLocalStorage(500);
+  it('flushes within maxWait while updates continuously reset the trailing timer', () => {
+    const setSpy = vi.spyOn(localStorage, 'setItem');
+    const storage = createStorage(500, 1200);
 
-    // Two consecutive failures → exactly one warning (no log spam).
-    storage.setItem('k', 'v1');
+    storage.setItem('k', storedValue('v0'));
+    vi.advanceTimersByTime(300);
+    storage.setItem('k', storedValue('v1'));
+    vi.advanceTimersByTime(300);
+    storage.setItem('k', storedValue('v2'));
+    vi.advanceTimersByTime(300);
+    storage.setItem('k', storedValue('v3'));
+    vi.advanceTimersByTime(299);
+    expect(setSpy).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1);
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    expect(storage.getItem('k')).toEqual(storedValue('v3'));
+    expect(storage.getDiagnostics()).toMatchObject({
+      pending: false,
+      serializationCount: 1,
+      writeCount: 1,
+    });
+  });
+
+  it('warns once per consecutive persistence-failure period', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const setSpy = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      throw new Error('QuotaExceededError');
+    });
+    const storage = createStorage();
+
+    storage.setItem('k', storedValue('v1'));
     vi.advanceTimersByTime(500);
-    storage.setItem('k', 'v2');
+    storage.setItem('k', storedValue('v2'));
     vi.advanceTimersByTime(500);
     expect(warnSpy).toHaveBeenCalledTimes(1);
 
-    // A successful write resets the latch…
     setSpy.mockRestore();
-    storage.setItem('k', 'ok');
+    storage.setItem('k', storedValue('ok'));
     vi.advanceTimersByTime(500);
-    expect(localStorage.getItem('k')).toBe('ok');
+    expect(storage.getItem('k')).toEqual(storedValue('ok'));
 
-    // …so a NEW failure period warns again.
     vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
       throw new Error('QuotaExceededError');
     });
-    storage.setItem('k', 'v3');
+    storage.setItem('k', storedValue('v3'));
     vi.advanceTimersByTime(500);
     expect(warnSpy).toHaveBeenCalledTimes(2);
   });

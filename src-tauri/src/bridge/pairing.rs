@@ -385,7 +385,7 @@ impl PairingStore {
                         devices.extend(stored_devices.into_iter().map(|(_, stored)| stored.device));
                     }
 
-                    devices.sort_by(|a, b| b.last_seen_at.cmp(&a.last_seen_at));
+                    devices.sort_by_key(|device| std::cmp::Reverse(device.last_seen_at));
                     return devices;
                 }
                 Err(error) => {

@@ -25,6 +25,13 @@ export const initialBridgeState: MobileBridgeState = {
   theme: null,
 };
 
+function withoutRecordKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  if (!Object.prototype.hasOwnProperty.call(record, key)) return record;
+  const next = { ...record };
+  delete next[key];
+  return next;
+}
+
 export type MobileBridgeAction =
   | { type: 'ws-status'; status: MobileBridgeState['wsStatus'] }
   | { type: 'ws-error'; message: string }
@@ -94,6 +101,11 @@ export function applyServerMessage(
         ...state,
         cards,
         activeCardId: state.activeCardId === message.card.id ? cards[0]?.id ?? null : state.activeCardId,
+        ptyStatusByCardId: withoutRecordKey(state.ptyStatusByCardId, message.card.id),
+        recentOutputBytesByCardId: withoutRecordKey(
+          state.recentOutputBytesByCardId,
+          message.card.id,
+        ),
       };
     }
     case 'spawn_result':

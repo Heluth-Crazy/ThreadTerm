@@ -29,7 +29,7 @@ pub fn live_session_snapshot(id: &str) -> Option<LivePtySessionSnapshot> {
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
@@ -44,6 +44,30 @@ use session::{
 /// initialization — a known source of Windows blank/stall on rapid open/close
 /// or multi-card spawn. Cheap and harmless elsewhere (spawns are infrequent).
 static PTY_SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+const FLOAT_RENDERER_CONSUMER_PREFIX: &str = "renderer:float:";
+static OUTPUT_CONSUMER_SCOPE_GATE: Mutex<()> = Mutex::new(());
+static FLOAT_RENDERER_CONSUMERS_SUSPENDED: AtomicBool = AtomicBool::new(false);
+
+/// Prevent a closing float WebView from recreating a renderer lease through
+/// an in-flight heartbeat, then remove every existing float-scoped renderer.
+/// Main-window consumers use a different prefix and remain registered.
+pub(crate) fn suspend_float_output_consumers() -> usize {
+    let _scope_gate = OUTPUT_CONSUMER_SCOPE_GATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    FLOAT_RENDERER_CONSUMERS_SUSPENDED.store(true, Ordering::SeqCst);
+    registry::unregister_renderers_with_prefix(FLOAT_RENDERER_CONSUMER_PREFIX)
+}
+
+/// Re-enable float renderer registration before a float window is shown or
+/// lazily recreated.
+pub(crate) fn resume_float_output_consumers() {
+    let _scope_gate = OUTPUT_CONSUMER_SCOPE_GATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    FLOAT_RENDERER_CONSUMERS_SUSPENDED.store(false, Ordering::SeqCst);
+}
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
@@ -240,40 +264,62 @@ pub async fn pty_resize(id: String, rows: u16, cols: u16) -> Result<(), String> 
 }
 
 /// Kill a PTY session and clean up resources.
+fn terminate_child_process(child: &mut (dyn portable_pty::Child + Send + Sync)) {
+    // Windows: kill the whole process tree first so grandchildren
+    // (sub-shells, node, git, …) don't orphan after close. `child.kill()`
+    // alone only terminates the direct ConPTY child.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        if let Some(pid) = child.process_id() {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .output();
+        }
+    }
+    let _ = child.kill();
+}
+
+fn terminate_session_process(session: &PtySession) {
+    if let Ok(mut child) = session.child.lock() {
+        terminate_child_process(child.as_mut());
+    }
+}
+
 #[tauri::command]
 pub async fn pty_kill(id: String) -> Result<(), String> {
     if let Some(session) = registry::remove(&id) {
         mark_killed(&session);
-        // Snapshot the session *before* dropping it so the bridge can build
-        // a full CardMeta for the removal broadcast (the session has already
-        // left the registry, so a fresh lookup would fail). This explicit
-        // close path also covers the mobile close entry
-        // (bridge::server.rs -> pty_kill). Natural process exit
-        // (events.rs) is intentionally NOT touched: exited cards stay
-        // visible as completed/failed, matching desktop behaviour.
-        let removed_snapshot = registry::live_session_snapshot_from(&id, &session);
-        if let Ok(mut child) = session.child.lock() {
-            // Windows: kill the whole process tree first so grandchildren
-            // (sub-shells, node, git, …) don't orphan after close. `child.kill()`
-            // alone only terminates the direct ConPTY child.
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                if let Some(pid) = child.process_id() {
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/F", "/T", "/PID", &pid.to_string()])
-                        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-                        .output();
-                }
-            }
-            let _ = child.kill();
+        // CardRemoved only needs identity/session metadata. Avoid serializing
+        // the full emulator and raw replay buffer merely to remove a card on
+        // mobile; the bridge prefers its existing raw CardMeta mirror and
+        // falls back to a lightweight tombstone.
+        let removed_state = session
+            .state
+            .read()
+            .map(|state| state.clone())
+            .unwrap_or(SessionState::Idle);
+        let removed_working_dir = session._working_dir.clone();
+        let removed_card =
+            crate::bridge::prepare_card_removed(&id, removed_state, &removed_working_dir);
+
+        // `taskkill /T` and portable-pty termination are synchronous OS work.
+        // Keep them off Tauri/Tokio's async executor while preserving the
+        // command's existing wait-until-kill-attempt-completes behavior.
+        if let Err(error) = tokio::task::spawn_blocking(move || {
+            terminate_session_process(&session);
+            // Drop this Arc in the blocking worker. Once the reader thread
+            // drops its clone too, the master fd closes and it observes EOF.
+        })
+        .await
+        {
+            tracing::warn!(id = %id, error = %error, "PTY kill worker failed");
         }
-        // Drop the Arc<PtySession> — when the reader thread also drops its
-        // clone the master fd is closed and the reader gets EOF.
-        drop(session);
-        if let Some(snapshot) = removed_snapshot {
-            crate::bridge::broadcast_card_removed(snapshot);
-        }
+        // This explicit close path also covers the mobile close entry.
+        // Natural process exit (events.rs) intentionally remains unchanged:
+        // completed/failed cards stay visible, matching desktop behaviour.
+        crate::bridge::broadcast_card_removed(removed_card);
         tracing::info!(id = %id, "PTY session killed");
         Ok(())
     } else {
@@ -331,6 +377,14 @@ pub fn attach_snapshot_for_bridge(pty_id: &str) -> Option<PtyAttachSnapshot> {
 pub async fn pty_register_output_consumer(id: String, consumer_id: String) -> Result<(), String> {
     if consumer_id.trim().is_empty() {
         return Err("Output consumer id cannot be empty".to_string());
+    }
+    let _scope_gate = OUTPUT_CONSUMER_SCOPE_GATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if consumer_id.starts_with(FLOAT_RENDERER_CONSUMER_PREFIX)
+        && FLOAT_RENDERER_CONSUMERS_SUSPENDED.load(Ordering::SeqCst)
+    {
+        return Ok(());
     }
     let Some(session) = registry::get(&id) else {
         return Ok(());

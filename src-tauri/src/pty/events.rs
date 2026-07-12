@@ -169,10 +169,13 @@ fn coalesce_should_flush(
 /// Serialize the current screen snapshot and broadcast it as the card/mobile
 /// preview. Extracted so the per-chunk hot path can call it on a throttled
 /// cadence instead of every chunk; `data` is only a fallback when the snapshot
-/// is empty. `broadcast_preview` itself no-ops on empty content.
+/// is empty. The bridge invokes the closure only while a WebSocket receiver
+/// exists, so bridge-disabled and no-subscriber sessions do not serialize the
+/// emulator merely to discard the result.
 fn flush_preview(id: &str, data: &str, ses: &Arc<PtySession>) {
-    let preview_source = session::terminal_output_snapshot(ses).unwrap_or_else(|| data.to_string());
-    bridge::broadcast_preview(id, &preview_source);
+    bridge::broadcast_preview(id, || {
+        session::terminal_output_snapshot(ses).unwrap_or_else(|| data.to_string())
+    });
 }
 
 fn recv_next_pty_read(

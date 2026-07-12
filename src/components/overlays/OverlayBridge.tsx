@@ -22,11 +22,21 @@ import { invoke, isTauriEnv } from '../../lib/tauri-bridge';
 import { useOverlayStore } from '../../stores/overlayStore';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { SelectorSurface } from '../../windows/selector/SelectorApp';
+import {
+  invalidateTerminalGeometry,
+  notifyTerminalSurfaceShown,
+} from '../terminal/terminalSurfaceEvents';
 
 interface OverlaySettingsPayload {
   hotkey_a: string;
   hotkey_b: string;
   lightweight_mode?: boolean;
+}
+
+function resolveCardPtyId(cardId: string | null): string | undefined {
+  if (!cardId) return undefined;
+  const card = useTerminalStore.getState().cards.find((candidate) => candidate.id === cardId);
+  return card?.ptyId || cardId;
 }
 
 export function OverlayBridge(): JSX.Element | null {
@@ -110,6 +120,7 @@ export function OverlayBridge(): JSX.Element | null {
       offs.push(
         await listen('overlay://float-shown', (e) => {
           const cardId = typeof e.payload === 'string' ? e.payload : null;
+          invalidateTerminalGeometry(resolveCardPtyId(cardId));
           useOverlayStore.setState({
             floatOpen: true,
             floatCardId: cardId ?? useOverlayStore.getState().floatCardId,
@@ -120,7 +131,13 @@ export function OverlayBridge(): JSX.Element | null {
       );
       offs.push(
         await listen('overlay://float-hidden', () => {
+          const ptyId = resolveCardPtyId(useOverlayStore.getState().floatCardId);
+          invalidateTerminalGeometry(ptyId);
           useOverlayStore.setState({ floatOpen: false });
+          // The float may have been the last renderer to resize this shared
+          // ConPTY. Refit the active main surface without stealing selection,
+          // scrolling to the bottom, or forcing keyboard focus.
+          notifyTerminalSurfaceShown(false);
         }),
       );
       offs.push(

@@ -62,21 +62,11 @@ fn snapshot_from_session(id: &str, session: &PtySession) -> Option<LivePtySessio
 }
 
 /// Snapshot a single registered session by id. Used by the bridge to build
-/// a `CardMeta` for incremental card-added/card-removed broadcasts without
-/// rebuilding the entire live-session list.
+/// a `CardMeta` for incremental card-added broadcasts without rebuilding the
+/// entire live-session list.
 pub(super) fn live_session_snapshot(id: &str) -> Option<LivePtySessionSnapshot> {
     let session = PTY_SESSIONS.get(id)?;
     snapshot_from_session(id, session.value())
-}
-
-/// Snapshot a session the caller already holds an `Arc` to (e.g. the one
-/// returned by [`remove`]), so a removed card can still be described after
-/// it has left the registry.
-pub(super) fn live_session_snapshot_from(
-    id: &str,
-    session: &PtySession,
-) -> Option<LivePtySessionSnapshot> {
-    snapshot_from_session(id, session)
 }
 
 pub fn list_live_sessions() -> Vec<LivePtySessionSnapshot> {
@@ -101,6 +91,19 @@ pub(super) fn all_session_states() -> HashMap<String, SessionState> {
                 .map(|state| (entry.key().clone(), state))
         })
         .collect()
+}
+
+pub(super) fn unregister_renderers_with_prefix(prefix: &str) -> usize {
+    // Clone the Arcs before taking any per-session flow-control lock so no
+    // DashMap shard guard is held while unregister wakes blocked producers.
+    let sessions = PTY_SESSIONS
+        .iter()
+        .map(|entry| entry.value().clone())
+        .collect::<Vec<_>>();
+    sessions
+        .iter()
+        .map(|session| session::unregister_renderers_with_prefix(session, prefix))
+        .sum()
 }
 
 #[cfg(test)]

@@ -46,7 +46,10 @@ export function createOutputAcknowledger(
       .then(() => {
         if (disposed) return;
         const latest = pending.get(key);
-        if (!latest) return;
+        // A per-PTY cleanup may delete this entry and a replacement session
+        // may create the same key before the old IPC settles. Never let the
+        // old completion mutate the replacement entry.
+        if (latest !== state) return;
         latest.inFlight = false;
         if (latest.request.throughSeq > sentThroughSeq) {
           sendPending(key);
@@ -57,7 +60,7 @@ export function createOutputAcknowledger(
       .catch(() => {
         if (disposed) return;
         const latest = pending.get(key);
-        if (!latest) return;
+        if (latest !== state) return;
         latest.inFlight = false;
         latest.retryTimer = setTimeout(() => {
           const retry = pending.get(key);
@@ -85,6 +88,22 @@ export function createOutputAcknowledger(
         });
       }
       sendPending(key);
+    },
+
+    /** Drop queued/retrying ACK state for one PTY without affecting others. */
+    discard(id: string) {
+      for (const [key, state] of pending.entries()) {
+        if (state.request.id !== id) continue;
+        if (state.retryTimer) clearTimeout(state.retryTimer);
+        pending.delete(key);
+      }
+    },
+
+    getDiagnostics() {
+      return {
+        pendingCount: pending.size,
+        requests: Array.from(pending.values(), (state) => ({ ...state.request })),
+      };
     },
 
     dispose() {
