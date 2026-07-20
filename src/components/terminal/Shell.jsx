@@ -11,6 +11,7 @@ import { useTheme } from '../../theme/ThemeContext';
 import { claimTerminalActive, registerTerminal, unregisterTerminal } from './xtermRegistry';
 import { createOutputSequencer } from './outputSequencer';
 import { createOutputAcknowledger } from './outputAcknowledger';
+import { createSynchronizedOutputFilter } from '../../lib/synchronizedOutputFilter';
 import {
   TERMINAL_GEOMETRY_INVALIDATED_EVENT,
   TERMINAL_SURFACE_SHOWN_EVENT,
@@ -124,13 +125,6 @@ async function waitForFonts() {
   } catch {
     // Font readiness failure should not block terminal startup.
   }
-}
-
-function isDomViewportScrolledUp(host) {
-  const viewport = host?.querySelector?.('.xterm-viewport');
-  if (!viewport) return false;
-  const distanceFromBottom = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop;
-  return distanceFromBottom > 4;
 }
 
 function Shell({
@@ -585,6 +579,7 @@ function Shell({
           registerTerminal(connectedPtyId, terminal.current);
         }
 
+        const synchronizedOutputFilter = createSynchronizedOutputFilter();
         const sequencer = createOutputSequencer((data, seq, onWritten, meta) => {
           const term = terminal.current;
           const isCurrentConsumer = () =>
@@ -621,6 +616,12 @@ function Shell({
             return;
           }
 
+          // xterm 6 renders DEC 2026 updates atomically, but ED2/ED3 inside a
+          // synchronized frame can still mutate viewportY before that frame is
+          // committed. Filter only those frame-local clears and preserve every
+          // clear command emitted by ordinary shells and alternate-screen TUIs.
+          const renderData = synchronizedOutputFilter.write(data);
+
           // Audit P0-1: decide follow-or-not BEFORE the write. Follow only
           // when the viewport already sits at the bottom (or the app runs on
           // the alternate screen); a user reading history must not be yanked
@@ -628,10 +629,9 @@ function Shell({
           const applyDisplayEffects = activeRef.current;
           const followOutput = applyDisplayEffects && (
             term.buffer.active.type === 'alternate' ||
-            (shouldFollowOutput(term.buffer.active) &&
-              !isDomViewportScrolledUp(terminalRef.current))
+            shouldFollowOutput(term.buffer.active)
           );
-          const needsRefresh = CLEANUP_SEQUENCE_RE.test(data) || data.includes('\r');
+          const needsRefresh = CLEANUP_SEQUENCE_RE.test(renderData) || renderData.includes('\r');
           const finalize = () => {
             if (!isCurrentConsumer()) {
               onWritten();
@@ -648,7 +648,7 @@ function Shell({
               } else {
                 scrolledUpRef.current = true;
                 setScrolledUp(true);
-                pendingNewLinesRef.current += countNewlines(data);
+                pendingNewLinesRef.current += countNewlines(renderData);
                 scheduleNewOutputFlush();
               }
               if (needsRefresh) {
@@ -663,24 +663,26 @@ function Shell({
           // Feed it in byte-budgeted slices, chaining on term.write's drain
           // callback so the main thread yields between slices. Realtime chunks
           // and small snapshots keep the single write (zero behavior change).
-          if (meta.snapshot && data.length > SNAPSHOT_RESTORE_CHUNK_CHARS) {
+          if (!renderData) {
+            finalize();
+          } else if (meta.snapshot && renderData.length > SNAPSHOT_RESTORE_CHUNK_CHARS) {
             let offset = 0;
             const writeNextSlice = () => {
               if (!isCurrentConsumer()) {
                 onWritten();
                 return;
               }
-              if (!terminal.current || offset >= data.length) {
+              if (!terminal.current || offset >= renderData.length) {
                 finalize();
                 return;
               }
-              const slice = data.slice(offset, offset + SNAPSHOT_RESTORE_CHUNK_CHARS);
+              const slice = renderData.slice(offset, offset + SNAPSHOT_RESTORE_CHUNK_CHARS);
               offset += SNAPSHOT_RESTORE_CHUNK_CHARS;
               term.write(slice, writeNextSlice);
             };
             writeNextSlice();
           } else {
-            term.write(data, finalize);
+            term.write(renderData, finalize);
           }
         });
         localSequencer = sequencer;
@@ -920,9 +922,6 @@ function Shell({
       convertEol: true,
       scrollback: 3000,
       tabStopWidth: 4,
-      windowsMode:
-        typeof window !== 'undefined' &&
-        navigator.platform?.startsWith('Win'),
       macOptionIsMeta: true,
       macOptionClickForcesSelection: true,
       theme: terminalThemeRef.current,
@@ -1024,7 +1023,7 @@ function Shell({
       const buf = term.buffer.active;
       const atBottom =
         buf.type === 'alternate' ||
-        (buf.viewportY >= buf.baseY && !isDomViewportScrolledUp(terminalRef.current));
+        buf.viewportY >= buf.baseY;
       scrolledUpRef.current = !atBottom;
       setScrolledUp(!atBottom);
       if (atBottom) {

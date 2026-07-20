@@ -96,6 +96,21 @@ describe('MobileAccessSettings', () => {
     });
   });
 
+  it('shows a clear QR placeholder before the bridge starts', async () => {
+    render(<MobileAccessSettings />);
+
+    expect(await screen.findByText('mobileAccess.pairingStoppedTitle')).toBeInTheDocument();
+    expect(screen.getByText('mobileAccess.pairingStoppedDescription')).toBeInTheDocument();
+    expect(screen.queryByTestId('pair-qr-code')).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'mobileAccess.pairingStart' }),
+    );
+
+    expect(screen.getByText('mobileAccess.lanConfirm')).toBeInTheDocument();
+    expect(bridgeMocks.start).not.toHaveBeenCalled();
+  });
+
   it('uses LAN binding by default after inline confirmation', async () => {
     render(<MobileAccessSettings />);
 
@@ -199,6 +214,8 @@ describe('MobileAccessSettings', () => {
     });
     expect(screen.getByText('0.0.0.0:5174')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /mobileAccess.newPairCode/ })).toBeInTheDocument();
+    expect(screen.getByText('mobileAccess.pairingUnavailable')).toBeInTheDocument();
+    expect(screen.queryByTestId('pair-qr-code')).not.toBeInTheDocument();
   });
 
   it('creates a pair code automatically when the bridge is already running', async () => {

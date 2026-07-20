@@ -22,6 +22,7 @@ This directory contains guidelines for frontend development. Fill in each file w
 | [Local Data Export](./local-data-export.md) | Settings bundle and AI Markdown export contracts | Active |
 | [AI Supervisor](./supervisor.md) | Rules-based attention notifier IPC and telemetry contracts | Active |
 | [Terminal Surface Geometry](./terminal-surface-geometry.md) | Shared-PTY size ownership across main and float WebViews | Active |
+| [Terminal Output Rendering](./terminal-output-rendering.md) | Synchronized TUI frames, scroll-follow state, and renderer ACK contracts | Active |
 | [Workspace Preview](./workspace-preview.md) | md/HTML preview sandbox, CSP, and asset-channel contracts | Active |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | Active |
 | [Type Safety](./type-safety.md) | Type patterns, validation | To fill |

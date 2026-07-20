@@ -193,6 +193,23 @@ describe('MainTerminal', () => {
     expect(term.write).toHaveBeenLastCalledWith('B');
   });
 
+  it('filters synchronized ED2/ED3 output while preserving clears outside the frame', () => {
+    pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
+    render(<MainTerminal activeCardId="card-1" />, { wrapper });
+
+    const term = xtermMock.instances[0];
+    pushTerminalFeedMessage(outputMessage('card-1', 2, '\x1b[?2026hframe\x1b['));
+    pushTerminalFeedMessage(outputMessage('card-1', 3, '2Jdone\x1b[3J\x1b[?2026l'));
+    pushTerminalFeedMessage(outputMessage('card-1', 4, '\x1b[2J'));
+
+    expect(term.write.mock.calls.map(([data]) => data)).toEqual([
+      'SNAP',
+      '\x1b[?2026hframe',
+      'done\x1b[?2026l',
+      '\x1b[2J',
+    ]);
+  });
+
   it('does not apply a stale snapshot after newer output has already been written', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP1'));
     pushTerminalFeedMessage(outputMessage('card-1', 3, 'A'));

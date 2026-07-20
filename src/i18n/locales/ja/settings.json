@@ -176,6 +176,11 @@
     },
     "pairingTitle": "ペアリング入口",
     "pairingDescription": "5 分で期限切れになる一回限りのペアリング QR コードを生成します。スマートフォンでスキャンするか、予備として URL をコピーしてください。",
+    "pairingStoppedTitle": "QR コードは未生成です",
+    "pairingStoppedDescription": "モバイルアクセスを起動すると、5 分間有効なペアリング QR コードがここに表示されます。",
+    "pairingStart": "起動して QR コードを生成",
+    "pairingGenerating": "ペアリング QR コードを生成しています…",
+    "pairingUnavailable": "QR コードはまだ利用できません。新しいペアリングコードを生成して再試行してください。",
     "publishHost": {
       "label": "公開ホストの上書き",
       "placeholder": "任意: スマートフォン QR 用ホスト",

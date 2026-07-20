@@ -658,7 +658,7 @@ function InstancesScreen({
   );
 }
 
-function SettingsScreen({
+export function SettingsScreen({
   activeCard,
   bridgeAddress,
   lastError,
@@ -696,7 +696,7 @@ function SettingsScreen({
           <div className="profile-avatar">
             <Monitor size={36} />
           </div>
-          <h2>{activeCard?.projectName ?? t('settings.mobileBridge')}</h2>
+          <h2>ThreadTerm</h2>
           <span>{permissionLabel(permission, t)} · {bridgeAddress}</span>
         </section>
 

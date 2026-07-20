@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { createSynchronizedOutputFilter } from '@shared/lib/synchronizedOutputFilter';
 import { useI18n } from './i18n';
 import {
   getTerminalFeedBacklog,
@@ -150,6 +151,7 @@ export function MainTerminal({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const synchronizedOutputFilterRef = useRef(createSynchronizedOutputFilter());
   // Identity of the terminal_snapshot currently replayed into xterm. Reusing
   // the same snapshot must NOT re-reset (that would flash the screen on every
   // re-render). -1 means no snapshot has been applied to this card yet.
@@ -173,6 +175,7 @@ export function MainTerminal({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    const synchronizedOutputFilter = synchronizedOutputFilterRef.current;
 
     const terminal = new Terminal({
       convertEol: false,
@@ -200,6 +203,7 @@ export function MainTerminal({
       fitAddonRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
+      synchronizedOutputFilter.reset();
       appliedSnapshotSeqRef.current = -1;
       lastAppliedOutputSeqRef.current = -1;
     };
@@ -216,6 +220,7 @@ export function MainTerminal({
     lastAppliedOutputSeqRef.current = -1;
     lastReportedSizeRef.current = null;
     sourceSizeRef.current = null;
+    synchronizedOutputFilterRef.current.reset();
     terminalRef.current?.reset();
   }, [activeCardId]);
 
@@ -352,7 +357,8 @@ export function MainTerminal({
         if (appliedSnapshotSeqRef.current !== -1) return;
         const seq = Number(snapshot.seq ?? 0);
         terminal.reset();
-        terminal.write(snapshotPayload(snapshot));
+        synchronizedOutputFilterRef.current.reset();
+        terminal.write(synchronizedOutputFilterRef.current.write(snapshotPayload(snapshot)));
         // Kick a redraw of the full viewport. xterm's DOM renderer on iOS
         // WKWebView occasionally does not self-paint the first frame right
         // after a reset; an explicit refresh forces the initial screen to
@@ -367,7 +373,8 @@ export function MainTerminal({
         if (!sourceSizeRef.current && appliedSnapshotSeqRef.current === -1) return;
         const seq = Number(message.seq ?? 0);
         if (seq <= lastAppliedOutputSeqRef.current) return;
-        terminal.write(message.data);
+        const renderData = synchronizedOutputFilterRef.current.write(message.data);
+        if (renderData) terminal.write(renderData);
         lastAppliedOutputSeqRef.current = seq;
       }
     };

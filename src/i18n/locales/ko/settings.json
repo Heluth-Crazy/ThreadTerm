@@ -176,6 +176,11 @@
     },
     "pairingTitle": "페어링 항목",
     "pairingDescription": "5분 후 만료되는 일회용 페어링 QR 코드를 생성합니다. 휴대폰으로 스캔하거나 예비로 URL을 복사하세요.",
+    "pairingStoppedTitle": "QR 코드가 아직 생성되지 않았습니다",
+    "pairingStoppedDescription": "모바일 접근을 시작하면 5분 동안 유효한 페어링 QR 코드가 여기에 표시됩니다.",
+    "pairingStart": "시작하고 QR 코드 생성",
+    "pairingGenerating": "페어링 QR 코드를 생성하는 중…",
+    "pairingUnavailable": "QR 코드를 아직 사용할 수 없습니다. 새 페어링 코드를 생성해 다시 시도하세요.",
     "publishHost": {
       "label": "게시 호스트 재정의",
       "placeholder": "선택 사항: 휴대폰 QR용 호스트",

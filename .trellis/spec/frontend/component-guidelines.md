@@ -371,6 +371,86 @@ Correct:
 
 </spec-entry>
 
+<spec-entry category="contract" keywords="mobile-access,pairing,qr-code,empty-state,lan-confirmation" date="2026-07-14" source="src/components/settings/MobileAccessSettings.tsx:104">
+
+### Scenario: Mobile Pairing Keeps Its Security Gate Visible
+
+#### 1. Scope / Trigger
+- Trigger: changing the desktop Mobile Access surface, bridge start controls,
+  pairing-code state, or QR rendering.
+- Applies to `MobileAccessSettings`, its settings locale keys, and component
+  tests. Backend bridge authorization remains a separate contract.
+
+#### 2. Signatures
+- `MobileAccessSettings(): JSX.Element`
+- `BridgeStatus.running: boolean`
+- Existing actions: `startBridge()`, `runStartBridge(host)`, and
+  `createPairQr()`.
+
+#### 3. Contracts
+- The pairing surface is always rendered. A stopped bridge must show a QR-sized
+  placeholder, explain why no code exists, and provide a direct start action.
+- The placeholder start action must reuse `startBridge()`. It must not call the
+  backend directly or bypass the existing inline confirmation before binding
+  to `0.0.0.0`.
+- Entering the Mobile Access page must never start or expose the bridge merely
+  to make a QR code appear.
+- A running bridge with an in-flight pairing request shows a generating state.
+  A running bridge without a usable `PairQrResponse` shows a retry state rather
+  than an unexplained blank area.
+- Render the real QR, OTP, and URL only when both `pairQr` and the derived
+  `pairUrl` are present. Permission changes and retries continue through the
+  existing serialized pairing-request funnel.
+
+#### 4. Validation & Error Matrix
+- Bridge stopped -> placeholder and start CTA visible; no QR element and no
+  `pairQr` IPC call.
+- Stopped with LAN binding selected -> either start control opens the inline
+  LAN confirmation; `bridge_start` is not called before confirmation.
+- Bridge running and pair request pending -> generating state visible.
+- Bridge running and pair request fails -> error plus retry state visible; old
+  QR is absent.
+- Bridge running with a valid pair response -> QR, OTP, URL, permission controls,
+  refresh, and copy actions visible.
+
+#### 5. Good/Base/Bad Cases
+- Good: a first-time user immediately sees where the QR will appear and how to
+  generate it, while network exposure still requires explicit confirmation.
+- Base: reopening an already-running bridge creates and displays a fresh
+  five-minute code through the existing refresh flow.
+- Bad: hide the entire pairing section while stopped, leaving users to infer
+  that Start is required.
+- Bad: auto-bind to all interfaces when the panel mounts just to avoid the
+  stopped-state placeholder.
+
+#### 6. Tests Required
+- Component test: stopped state renders explanation and CTA, contains no QR,
+  and preserves LAN confirmation before `mobileBridge.start`.
+- Component test: pairing failure keeps the running status and renders an
+  explicit unavailable/retry state without a stale QR.
+- Existing tests must keep covering automatic pair-code creation for an
+  already-running bridge and permission-bound request serialization.
+- Update all four settings locales and run key-set parity, Vitest, typecheck,
+  lint, desktop/mobile builds, and `git diff --check`.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```tsx
+{status.running && <PairingQrSection />}
+```
+
+Correct:
+
+```tsx
+<PairingSection>
+  {status.running ? <PairingCodeState /> : <StoppedPairingPlaceholder />}
+</PairingSection>
+```
+
+</spec-entry>
+
 ---
 
 ## Accessibility

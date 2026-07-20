@@ -176,6 +176,11 @@
     },
     "pairingTitle": "Pairing entry",
     "pairingDescription": "Generate a one-time pairing QR code that expires in 5 minutes. Scan it from your phone or copy the URL as a fallback.",
+    "pairingStoppedTitle": "QR code not generated",
+    "pairingStoppedDescription": "Start mobile access and the 5-minute pairing QR code will appear here.",
+    "pairingStart": "Start and generate QR code",
+    "pairingGenerating": "Generating pairing QR code…",
+    "pairingUnavailable": "The QR code is not available yet. Generate a new pairing code to retry.",
     "publishHost": {
       "label": "Publish host override",
       "placeholder": "Optional host for phone QR",

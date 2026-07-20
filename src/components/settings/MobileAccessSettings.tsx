@@ -472,82 +472,123 @@ export function MobileAccessSettings() {
         </div>
       )}
 
-      {status.running && (
-        <div className="mt-4 rounded-[var(--radius)] border border-white/10 bg-background/70 p-3">
-          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-            <div>
-              <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-                <QrCode className="h-4 w-4 text-muted-foreground" />
-                {t('mobileAccess.pairingTitle')}
-              </div>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                {t('mobileAccess.pairingDescription')}
-              </p>
-              {showLoopbackPublishWarning && (
-                <p className="mt-2 text-xs leading-5 text-amber-600">
-                  {t('mobileAccess.publishHost.loopbackWarning')}
-                </p>
-              )}
-              <div
-                role="radiogroup"
-                aria-label={t('mobileAccess.permissionMode.label')}
-                className="mt-3 grid gap-1 rounded-[var(--radius-md)] border border-white/10/70 bg-white/5 backdrop-blur-md/70 p-1 text-xs sm:inline-grid"
-              >
-                {[
-                  {
-                    value: 'read_only' as const,
-                    label: t('mobileAccess.permissions.read_only'),
-                  },
-                  {
-                    value: 'full' as const,
-                    label: t('mobileAccess.permissions.full'),
-                  },
-                ].map((option) => (
-                  <label
-                    key={option.value}
-                    className="inline-flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
-                  >
-                    <input
-                      type="radio"
-                      name="mobile-bridge-pair-permission"
-                      value={option.value}
-                      checked={pairPermission === option.value}
-                      onChange={() => void changePairPermission(option.value)}
-                      disabled={isBusy}
-                      aria-label={option.label}
-                      className="h-3 w-3"
-                    />
-                    {option.label}
-                  </label>
-                ))}
-              </div>
-              <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
-                {t('mobileAccess.permissionMode.hint')}
-              </p>
-              {pairQr && pairUrl && (
-                <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-start">
-                  <div className="shrink-0 rounded-[var(--radius-md)] border border-border bg-white p-2 shadow-sm">
-                    <QRCodeSVG
-                      value={pairUrl}
-                      size={168}
-                      level="M"
-                      marginSize={3}
-                      bgColor="#ffffff"
-                      fgColor="#000000"
-                      title={t('mobileAccess.qrTitle')}
-                    />
-                  </div>
-                  <div className="min-w-0 space-y-1">
-                    <div className="break-all font-mono text-sm text-foreground">
-                      {pairQr.otp}
-                    </div>
-                    <div className="break-all font-mono text-[11px] text-muted-foreground">
-                      {pairUrl}
-                    </div>
-                  </div>
-                </div>
-              )}
+      <div className="mt-4 rounded-[var(--radius)] border border-white/10 bg-background/70 p-3">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+              <QrCode className="h-4 w-4 text-muted-foreground" />
+              {t('mobileAccess.pairingTitle')}
             </div>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              {t('mobileAccess.pairingDescription')}
+            </p>
+            {showLoopbackPublishWarning && (
+              <p className="mt-2 text-xs leading-5 text-amber-600">
+                {t('mobileAccess.publishHost.loopbackWarning')}
+              </p>
+            )}
+
+            {status.running ? (
+              <>
+                <div
+                  role="radiogroup"
+                  aria-label={t('mobileAccess.permissionMode.label')}
+                  className="mt-3 grid gap-1 rounded-[var(--radius-md)] border border-white/10/70 bg-white/5 backdrop-blur-md/70 p-1 text-xs sm:inline-grid"
+                >
+                  {[
+                    {
+                      value: 'read_only' as const,
+                      label: t('mobileAccess.permissions.read_only'),
+                    },
+                    {
+                      value: 'full' as const,
+                      label: t('mobileAccess.permissions.full'),
+                    },
+                  ].map((option) => (
+                    <label
+                      key={option.value}
+                      className="inline-flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
+                    >
+                      <input
+                        type="radio"
+                        name="mobile-bridge-pair-permission"
+                        value={option.value}
+                        checked={pairPermission === option.value}
+                        onChange={() => void changePairPermission(option.value)}
+                        disabled={isBusy}
+                        aria-label={option.label}
+                        className="h-3 w-3"
+                      />
+                      {option.label}
+                    </label>
+                  ))}
+                </div>
+                <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                  {t('mobileAccess.permissionMode.hint')}
+                </p>
+
+                {pairQr && pairUrl ? (
+                  <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-start">
+                    <div className="shrink-0 rounded-[var(--radius-md)] border border-border bg-white p-2 shadow-sm">
+                      <QRCodeSVG
+                        value={pairUrl}
+                        size={168}
+                        level="M"
+                        marginSize={3}
+                        bgColor="#ffffff"
+                        fgColor="#000000"
+                        title={t('mobileAccess.qrTitle')}
+                      />
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <div className="break-all font-mono text-sm text-foreground">
+                        {pairQr.otp}
+                      </div>
+                      <div className="break-all font-mono text-[11px] text-muted-foreground">
+                        {pairUrl}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-3 flex min-h-32 items-center justify-center rounded-[var(--radius-md)] border border-dashed border-border bg-white/5 p-4 text-center">
+                    <div className="max-w-xs">
+                      <QrCode className="mx-auto h-8 w-8 text-muted-foreground/70" />
+                      <p className="mt-2 text-xs leading-5 text-muted-foreground" role="status">
+                        {isBusy
+                          ? t('mobileAccess.pairingGenerating')
+                          : t('mobileAccess.pairingUnavailable')}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="mt-3 flex flex-col gap-3 rounded-[var(--radius-md)] border border-dashed border-border bg-white/5 p-4 sm:flex-row sm:items-center">
+                <div className="flex h-28 w-full shrink-0 flex-col items-center justify-center rounded-[var(--radius-md)] bg-background/80 text-center sm:w-28">
+                  <QrCode className="h-9 w-9 text-muted-foreground/70" />
+                  <span className="mt-2 text-[11px] font-medium text-muted-foreground">
+                    {t('mobileAccess.pairingStoppedTitle')}
+                  </span>
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    {t('mobileAccess.pairingStoppedDescription')}
+                  </p>
+                  <Button
+                    size="sm"
+                    className="mt-3"
+                    onClick={startBridge}
+                    disabled={!isTauriEnv() || isBusy}
+                  >
+                    <Power />
+                    {t('mobileAccess.pairingStart')}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {status.running && (
             <div className="flex shrink-0 flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={createPairQr} disabled={isBusy}>
                 <QrCode />
@@ -558,9 +599,9 @@ export function MobileAccessSettings() {
                 {t('mobileAccess.copyUrl')}
               </Button>
             </div>
-          </div>
+          )}
         </div>
-      )}
+      </div>
 
       <div className="mt-4">
         <div className="text-sm font-medium text-foreground">

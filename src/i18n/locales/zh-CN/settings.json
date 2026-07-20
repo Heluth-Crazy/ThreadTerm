@@ -176,6 +176,11 @@
     },
     "pairingTitle": "配对入口",
     "pairingDescription": "生成 5 分钟有效的一次性配对二维码。用手机扫码，或复制链接作为备用。",
+    "pairingStoppedTitle": "二维码尚未生成",
+    "pairingStoppedDescription": "启动移动端访问后，5 分钟有效的配对二维码会显示在这里。",
+    "pairingStart": "启动并生成二维码",
+    "pairingGenerating": "正在生成配对二维码…",
+    "pairingUnavailable": "二维码暂不可用，请点击“生成配对码”重试。",
     "publishHost": {
       "label": "发布主机覆盖",
       "placeholder": "可选：手机二维码使用的主机",

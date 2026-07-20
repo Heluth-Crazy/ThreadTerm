@@ -490,6 +490,35 @@ describe('Shell — PTY output consumer lifecycle', () => {
     });
   });
 
+  it('filters synchronized ED2/ED3 frames without stalling renderer acknowledgements', async () => {
+    renderMinimalShell();
+    await waitForConnected();
+    await waitFor(() => expect(ptyMock.attachSnapshot).toHaveBeenCalledWith('pane-1'));
+    const term = xtermMock.instances[0];
+    term.write.mockClear();
+    ptyMock.ack.mockClear();
+
+    act(() => {
+      for (const handler of ptyMock.outputHandlers) {
+        handler({ id: 'pane-1', data: '\x1b[?2026hframe', seq: 1 });
+        handler({ id: 'pane-1', data: '\x1b[2J\x1b[3J', seq: 2 });
+        handler({ id: 'pane-1', data: 'done\x1b[?2026l\x1b[2J', seq: 3 });
+      }
+    });
+
+    await waitFor(() => {
+      expect(ptyMock.ack).toHaveBeenCalledWith(
+        'pane-1',
+        3,
+        'renderer',
+        expect.any(String),
+      );
+    });
+    expect(term.write.mock.calls.map(([data]) => data).join('')).toBe(
+      '\x1b[?2026hframedone\x1b[?2026l\x1b[2J',
+    );
+  });
+
   it('uses a float-scoped consumer and restores its lease immediately when reactivated', async () => {
     const { rerender } = renderMinimalShell('pane-float', false, undefined, 'float');
     await waitForConnected();
