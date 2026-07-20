@@ -178,9 +178,24 @@ export interface TerminalCreateOptions {
 
 export interface ProviderSessionImportInfo {
   id: string;
-  provider: 'claude' | 'codex';
+  provider: 'claude' | 'codex' | 'opencode' | 'gemini';
   projectPath: string;
   updatedAt?: number | null;
+  /** Optional display name derived from catalog title; never stores full transcripts. */
+  projectNameHint?: string | null;
+}
+
+export type ProviderSessionImportOutcome =
+  | 'imported'
+  | 'alreadyActive'
+  | 'archived'
+  | 'invalid'
+  | 'unsupported';
+
+export interface ProviderSessionImportResult {
+  id: string;
+  provider: ProviderSessionImportInfo['provider'];
+  outcome: ProviderSessionImportOutcome;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

@@ -84,6 +84,15 @@ export function isProviderSessionType(type: TerminalCard['terminalType']): boole
   return type === 'claude' || type === 'codex';
 }
 
+/** Providers that can materialize bound resume cards from the session catalog. */
+export function isCatalogProviderSessionType(
+  type: TerminalCard['terminalType'] | ProviderSessionImportInfo['provider'],
+): type is ProviderSessionImportInfo['provider'] {
+  return (
+    type === 'claude' || type === 'codex' || type === 'opencode' || type === 'gemini'
+  );
+}
+
 export function providerSessionKey(
   provider: ProviderSessionImportInfo['provider'],
   id: string,
@@ -97,7 +106,7 @@ export function normalizeImportedProviderSession(
   const id = session.id.trim();
   const projectPath = session.projectPath.trim();
   if (!id || !projectPath) return null;
-  if (session.provider !== 'claude' && session.provider !== 'codex') return null;
+  if (!isCatalogProviderSessionType(session.provider)) return null;
 
   return {
     id,
@@ -107,6 +116,7 @@ export function normalizeImportedProviderSession(
       typeof session.updatedAt === 'number' && Number.isFinite(session.updatedAt)
         ? session.updatedAt
         : null,
+    projectNameHint: session.projectNameHint?.trim() || null,
   };
 }
 

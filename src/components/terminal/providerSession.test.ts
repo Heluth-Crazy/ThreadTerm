@@ -105,6 +105,39 @@ describe('providerSession launch command builder', () => {
     });
     expect(buildTerminalLaunchCommand(card({ terminalType: 'shell' }), '')).toEqual({});
   });
+
+  it('resumes bound OpenCode and Gemini sessions', () => {
+    expect(
+      buildTerminalLaunchCommand(
+        card({
+          terminalType: 'opencode',
+          providerSessionId: 'oc-1',
+          providerSessionState: 'bound',
+        }),
+        'opencode',
+      ),
+    ).toEqual({
+      command: 'opencode --session oc-1',
+      provider: 'opencode',
+      providerSessionId: 'oc-1',
+      action: 'resume',
+    });
+    expect(
+      buildTerminalLaunchCommand(
+        card({
+          terminalType: 'gemini',
+          providerSessionId: 'gem-1',
+          providerSessionState: 'bound',
+        }),
+        'gemini',
+      ),
+    ).toEqual({
+      command: 'gemini --resume gem-1',
+      provider: 'gemini',
+      providerSessionId: 'gem-1',
+      action: 'resume',
+    });
+  });
 });
 
 describe('providerSession AI CLI state badge', () => {
@@ -137,13 +170,24 @@ describe('providerSession AI CLI state badge', () => {
     expect(result?.values?.id).toBe('...8588f');
   });
 
-  it('describes Gemini as CLI-only until native resume support exists', () => {
+  it('describes Gemini as CLI-only until a session is bound', () => {
     const result = getAiCliSessionBadge(card({ terminalType: 'gemini' }));
     expect(result?.labelKey).toBe('aiSession.cliOnly');
     expect(result?.values?.cli).toBe('Gemini');
   });
 
-  it('describes OpenCode as CLI-only until native resume support exists', () => {
+  it('describes bound OpenCode as resume-ready', () => {
+    const result = getAiCliSessionBadge(
+      card({
+        terminalType: 'opencode',
+        providerSessionId: 'oc-bound-1',
+        providerSessionState: 'bound',
+      }),
+    );
+    expect(result?.labelKey).toBe('aiSession.resumeReady');
+  });
+
+  it('describes OpenCode as CLI-only until a session is bound', () => {
     const result = getAiCliSessionBadge(card({ terminalType: 'opencode' }));
     expect(result?.labelKey).toBe('aiSession.cliOnly');
     expect(result?.values?.cli).toBe('OpenCode');

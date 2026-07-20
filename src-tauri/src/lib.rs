@@ -1,3 +1,4 @@
+mod agent_sessions;
 #[cfg(feature = "mobile-bridge")]
 mod bridge;
 #[cfg(not(feature = "mobile-bridge"))]
@@ -105,6 +106,7 @@ pub fn run() {
             notification::window_focus_main,
             provider_sessions::provider_find_recent_session,
             provider_sessions::provider_list_recent_sessions,
+            agent_sessions::provider_list_agent_sessions,
             stats::stats_compute,
             stats::stats_cancel,
             stats::stats_rebuild,

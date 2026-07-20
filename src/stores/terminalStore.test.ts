@@ -133,7 +133,9 @@ describe('terminalStore — card lifecycle', () => {
 
     const state = useTerminalStore.getState();
     const card = state.cards.find((candidate) => candidate.providerSessionId === 'codex-session-1');
-    expect(imported).toBe(1);
+    expect(imported).toEqual([
+      { id: 'codex-session-1', provider: 'codex', outcome: 'imported' },
+    ]);
     expect(card).toMatchObject({
       ptyId: 'codex-session-1',
       projectName: 'app',
@@ -157,8 +159,12 @@ describe('terminalStore — card lifecycle', () => {
       updatedAt: 1234,
     };
 
-    expect(s.importProviderSessionCards([session])).toBe(1);
-    expect(s.importProviderSessionCards([session])).toBe(0);
+    expect(s.importProviderSessionCards([session])).toEqual([
+      { id: 'claude-session-1', provider: 'claude', outcome: 'imported' },
+    ]);
+    expect(s.importProviderSessionCards([session])).toEqual([
+      { id: 'claude-session-1', provider: 'claude', outcome: 'alreadyActive' },
+    ]);
     expect(
       useTerminalStore
         .getState()
@@ -175,14 +181,57 @@ describe('terminalStore — card lifecycle', () => {
       updatedAt: 1234,
     };
 
-    expect(s.importProviderSessionCards([session])).toBe(1);
+    expect(s.importProviderSessionCards([session])).toEqual([
+      { id: 'codex-session-archived', provider: 'codex', outcome: 'imported' },
+    ]);
     const id = useTerminalStore.getState().cards[0].id;
     useTerminalStore.getState().archiveCard(id);
 
     expect(useTerminalStore.getState().cards).toHaveLength(0);
     expect(useTerminalStore.getState().archivedCards).toHaveLength(1);
-    expect(useTerminalStore.getState().importProviderSessionCards([session])).toBe(0);
+    expect(useTerminalStore.getState().importProviderSessionCards([session])).toEqual([
+      { id: 'codex-session-archived', provider: 'codex', outcome: 'archived' },
+    ]);
     expect(useTerminalStore.getState().cards).toHaveLength(0);
+  });
+
+  it('imports OpenCode and Gemini bound resume cards without focusing them', () => {
+    const s = useTerminalStore.getState();
+    const results = s.importProviderSessionCards([
+      {
+        id: 'oc-1',
+        provider: 'opencode',
+        projectPath: '/repo/app',
+        updatedAt: 10,
+        projectNameHint: 'Build UI',
+      },
+      {
+        id: 'gem-1',
+        provider: 'gemini',
+        projectPath: '/repo/gemini',
+        updatedAt: 20,
+      },
+    ]);
+    expect(results.map((result) => result.outcome)).toEqual(['imported', 'imported']);
+    const state = useTerminalStore.getState();
+    expect(state.focusedCardId).toBeNull();
+    expect(state.cards).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          terminalType: 'opencode',
+          providerSessionId: 'oc-1',
+          providerSessionState: 'bound',
+          status: 'idle',
+          projectName: 'Build UI',
+        }),
+        expect.objectContaining({
+          terminalType: 'gemini',
+          providerSessionId: 'gem-1',
+          providerSessionState: 'bound',
+          status: 'idle',
+        }),
+      ]),
+    );
   });
 
   it('archives a card while preserving provider session binding', () => {

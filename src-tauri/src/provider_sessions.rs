@@ -229,10 +229,7 @@ fn parse_claude_session_meta(path: &Path) -> Option<(String, String)> {
     None
 }
 
-pub(crate) fn jsonl_files_recent_first(
-    root: &Path,
-    since_ms: Option<u64>,
-) -> Vec<SessionFileCandidate> {
+pub fn jsonl_files_recent_first(root: &Path, since_ms: Option<u64>) -> Vec<SessionFileCandidate> {
     let key = JsonlScanCacheKey {
         root: root.to_path_buf(),
         since_ms,

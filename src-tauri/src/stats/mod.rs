@@ -11,7 +11,7 @@
 
 mod aggregate;
 mod opencode;
-mod parse;
+pub(crate) mod parse;
 mod pricing;
 mod sync;
 mod types;

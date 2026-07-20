@@ -5,6 +5,7 @@ import { TerminalManager } from './TerminalManager';
 
 const bridgeMocks = vi.hoisted(() => ({
   listRecent: vi.fn(),
+  listAgentSessions: vi.fn(),
   syncCards: vi.fn(),
   onSpawnCard: vi.fn(),
   onActivateCard: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock('../../lib/tauri-bridge', () => ({
   isTauriEnv: () => true,
   providerSessions: {
     listRecent: bridgeMocks.listRecent,
+    listAgentSessions: bridgeMocks.listAgentSessions,
   },
   mobileBridge: {
     syncCards: bridgeMocks.syncCards,
@@ -88,6 +90,7 @@ describe('TerminalManager provider session startup import', () => {
   beforeEach(() => {
     resetStore();
     bridgeMocks.listRecent.mockReset();
+    bridgeMocks.listAgentSessions.mockReset();
     bridgeMocks.syncCards.mockReset();
     bridgeMocks.onSpawnCard.mockReset();
     bridgeMocks.onActivateCard.mockReset();
@@ -99,42 +102,15 @@ describe('TerminalManager provider session startup import', () => {
     bridgeMocks.subscribeSupervisorAlert.mockResolvedValue(() => {});
   });
 
-  it('imports existing provider sessions as idle bound cards without focusing them', async () => {
-    bridgeMocks.listRecent.mockResolvedValue([
-      {
-        id: 'codex-session-1',
-        provider: 'codex',
-        projectPath: '/repo/app',
-        updatedAt: 1234,
-      },
-    ]);
-
+  it('does not call history list APIs or import cards on mount', async () => {
     render(<TerminalManager />);
 
     await waitFor(() => {
-      expect(bridgeMocks.listRecent).toHaveBeenCalledTimes(1);
-    });
-    await waitFor(() => {
-      expect(
-        useTerminalStore
-          .getState()
-          .cards.some((card) => card.providerSessionId === 'codex-session-1'),
-      ).toBe(true);
+      expect(bridgeMocks.invokeSupervisorEnable).toHaveBeenCalled();
     });
 
-    const state = useTerminalStore.getState();
-    const card = state.cards.find(
-      (candidate) => candidate.providerSessionId === 'codex-session-1',
-    );
-    expect(card).toMatchObject({
-      projectName: 'app',
-      projectPath: '/repo/app',
-      terminalType: 'codex',
-      providerSessionState: 'bound',
-      status: 'idle',
-    });
-    expect(state.focusedCardId).toBeNull();
-    expect(state.lastActiveCardId).toBeNull();
-    expect(bridgeMocks.syncCards).not.toHaveBeenCalled();
+    expect(bridgeMocks.listRecent).not.toHaveBeenCalled();
+    expect(bridgeMocks.listAgentSessions).not.toHaveBeenCalled();
+    expect(useTerminalStore.getState().cards).toHaveLength(0);
   });
 });

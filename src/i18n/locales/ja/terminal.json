@@ -404,6 +404,7 @@
     "shell": "Shell",
     "claude": "Claude",
     "codex": "Codex",
+    "opencode": "OpenCode",
     "gemini": "Gemini",
     "npm": "npm",
     "yarn": "Yarn",
@@ -412,5 +413,27 @@
     "python": "Python",
     "node": "Node.js",
     "custom": "カスタム"
+  },
+  "sessionRecovery": {
+    "open": "セッション復元",
+    "openTitle": "ローカル Agent セッションを復元",
+    "title": "ローカルセッションを復元",
+    "localOnlyHint": "ローカルの Provider 履歴のみを読み取ります。アップロードはしません。",
+    "searchPlaceholder": "タイトル、プロンプト、プロジェクトを検索…",
+    "loadMore": "さらに読み込む",
+    "selectedCount": "{{count}} 件選択中",
+    "restoreSelected": "選択項目を復元",
+    "alreadyAdded": "追加済み",
+    "empty": "セッションが見つかりません",
+    "missingCli": "{{provider}} CLI が見つかりません",
+    "unavailable": "{{provider}} の履歴を利用できません",
+    "error": "セッションの読み込みに失敗しました",
+    "retry": "再試行",
+    "desktopOnly": "セッション復元はデスクトップアプリでのみ利用できます。",
+    "titleKind": {
+      "renamed": "名前変更済み",
+      "firstPrompt": "最初のプロンプト",
+      "providerTitle": "Provider タイトル"
+    }
   }
 }

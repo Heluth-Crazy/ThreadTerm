@@ -404,6 +404,7 @@
     "shell": "Shell",
     "claude": "Claude",
     "codex": "Codex",
+    "opencode": "OpenCode",
     "gemini": "Gemini",
     "npm": "npm",
     "yarn": "Yarn",
@@ -412,5 +413,27 @@
     "python": "Python",
     "node": "Node.js",
     "custom": "사용자 지정"
+  },
+  "sessionRecovery": {
+    "open": "세션 복원",
+    "openTitle": "로컬 Agent 세션 복원",
+    "title": "로컬 세션 복원",
+    "localOnlyHint": "로컬 Provider 기록만 읽습니다. 업로드하지 않습니다.",
+    "searchPlaceholder": "제목, 프롬프트, 프로젝트 검색…",
+    "loadMore": "더 보기",
+    "selectedCount": "{{count}}개 선택됨",
+    "restoreSelected": "선택 항목 복원",
+    "alreadyAdded": "이미 추가됨",
+    "empty": "세션을 찾을 수 없음",
+    "missingCli": "{{provider}} CLI를 찾을 수 없음",
+    "unavailable": "{{provider}} 기록을 사용할 수 없음",
+    "error": "세션을 불러오지 못함",
+    "retry": "다시 시도",
+    "desktopOnly": "세션 복원은 데스크톱 앱에서만 사용할 수 있습니다.",
+    "titleKind": {
+      "renamed": "이름 변경됨",
+      "firstPrompt": "첫 프롬프트",
+      "providerTitle": "Provider 제목"
+    }
   }
 }

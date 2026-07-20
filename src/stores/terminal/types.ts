@@ -14,6 +14,7 @@ import type {
   TerminalAiIntent,
   CodexAppThreadBinding,
   ProviderSessionImportInfo,
+  ProviderSessionImportResult,
   TerminalStatus,
 } from '../../types/terminal';
 import type { AutoRestartDecision } from '../../lib/autoRestart';
@@ -45,7 +46,9 @@ export interface CardsSlice {
   projectCardOrder: Record<string, string[]>;
 
   createCard: (options: TerminalCreateOptions) => string;
-  importProviderSessionCards: (sessions: ProviderSessionImportInfo[]) => number;
+  importProviderSessionCards: (
+    sessions: ProviderSessionImportInfo[],
+  ) => ProviderSessionImportResult[];
   removeCard: (id: string) => void;
   archiveCard: (id: string) => void;
   restoreArchivedCard: (id: string) => void;

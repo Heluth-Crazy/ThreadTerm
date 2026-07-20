@@ -1,6 +1,6 @@
 import type { TerminalCard, TerminalType } from '../../types/terminal';
 
-export type ProviderSessionProvider = 'claude' | 'codex';
+export type ProviderSessionProvider = 'claude' | 'codex' | 'opencode' | 'gemini';
 export type ProviderSessionLaunchAction = 'start' | 'resume' | 'discover';
 export type AiCliSessionBadgeTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
 
@@ -97,17 +97,6 @@ export function getAiCliSessionBadge(card: TerminalCard): AiCliSessionBadge | nu
     };
   }
 
-  if (card.terminalType === 'gemini' || card.terminalType === 'opencode') {
-    return {
-      labelKey: 'aiSession.cliOnly',
-      descriptionKey: 'aiSession.cliOnlyDescription',
-      fallbackLabel: 'CLI session',
-      fallbackDescription: `${cli} runs as a CLI session; native resume binding is not tracked yet.`,
-      tone: 'neutral',
-      values: { cli },
-    };
-  }
-
   if (card.providerSessionState === 'bound' && card.providerSessionId) {
     return {
       labelKey: 'aiSession.resumeReady',
@@ -116,6 +105,17 @@ export function getAiCliSessionBadge(card: TerminalCard): AiCliSessionBadge | nu
       fallbackDescription: `${cli} session ${suffixSessionId(card.providerSessionId)} is bound and can be resumed.`,
       tone: 'success',
       values: { cli, id: suffixSessionId(card.providerSessionId) },
+    };
+  }
+
+  if (card.terminalType === 'gemini' || card.terminalType === 'opencode') {
+    return {
+      labelKey: 'aiSession.cliOnly',
+      descriptionKey: 'aiSession.cliOnlyDescription',
+      fallbackLabel: 'CLI session',
+      fallbackDescription: `${cli} runs as a CLI session; native resume binding is not tracked yet.`,
+      tone: 'neutral',
+      values: { cli },
     };
   }
 
@@ -188,6 +188,32 @@ export function buildTerminalLaunchCommand(
       provider: 'codex',
       action: 'discover',
     };
+  }
+
+  if (card.terminalType === 'opencode') {
+    if (card.providerSessionId && card.providerSessionState === 'bound') {
+      return {
+        command: `opencode --session ${shellQuote(card.providerSessionId)}`,
+        provider: 'opencode',
+        providerSessionId: card.providerSessionId,
+        action: 'resume',
+      };
+    }
+    const command = defaultCommand?.trim() || 'opencode';
+    return { command };
+  }
+
+  if (card.terminalType === 'gemini') {
+    if (card.providerSessionId && card.providerSessionState === 'bound') {
+      return {
+        command: `gemini --resume ${shellQuote(card.providerSessionId)}`,
+        provider: 'gemini',
+        providerSessionId: card.providerSessionId,
+        action: 'resume',
+      };
+    }
+    const command = defaultCommand?.trim() || 'gemini';
+    return { command };
   }
 
   const command = defaultCommand?.trim();

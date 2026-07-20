@@ -235,6 +235,20 @@ export interface ProviderSessionInfo {
   updatedAt?: number | null;
 }
 
+export type {
+  AgentSessionAvailability,
+  AgentSessionPage,
+  AgentSessionProvider,
+  AgentSessionSummary,
+  ListAgentSessionsRequest,
+  TitleKind,
+} from '../types/agentSession';
+
+import type {
+  AgentSessionPage,
+  ListAgentSessionsRequest,
+} from '../types/agentSession';
+
 export const providerSessions = {
   listRecent: (limit?: number): Promise<ProviderSessionInfo[]> =>
     invoke<ProviderSessionInfo[]>('provider_list_recent_sessions', {
@@ -251,6 +265,10 @@ export const providerSessions = {
       projectPath,
       sinceMs: sinceMs ?? null,
     }),
+
+  /** On-demand paginated catalog. Does not create cards. */
+  listAgentSessions: (request: ListAgentSessionsRequest): Promise<AgentSessionPage> =>
+    invoke<AgentSessionPage>('provider_list_agent_sessions', { request }),
 };
 
 export interface CodexAppStatus {

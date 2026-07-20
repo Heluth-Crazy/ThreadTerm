@@ -417,3 +417,100 @@ change. Mobile UI must treat `ptyLive` as authoritative only after the bridge
 snapshot/mirror has applied — never trust the raw front-end placeholder.
 
 </spec-entry>
+
+<spec-entry category="contract" keywords="agent-session-catalog,provider-session,non-persist,recovery-panel,selection,timestamp" date="2026-07-14" source="src/stores/agentSessionCatalogStore.ts:1">
+
+### Scenario: Provider Session Catalog Is Non-Persisted And Explicitly Materialized
+
+#### 1. Scope / Trigger
+- Trigger: browsing or restoring local Claude/Codex/OpenCode/Gemini history.
+- Applies to `agentSessionCatalogStore`, `SessionRecoveryPanel`,
+  `provider_list_agent_sessions`, and `importProviderSessionCards`.
+
+#### 2. Signatures
+- Tauri command:
+  `provider_list_agent_sessions(request: ListAgentSessionsRequest) -> AgentSessionPage`.
+- Request fields: `provider`, optional `cursor`, optional `limit`, optional
+  `query`.
+- Page fields: `provider`, `availability`, `items`, optional `nextCursor`,
+  `scannedAt`, and optional `warning`.
+- Store selection state:
+  `selectedKeys: Set<string>` plus
+  `selectedSummaries: Map<string, AgentSessionSummary>`.
+
+#### 3. Contracts
+- Catalog pages/selection live only in a non-persisted store for the window lifetime.
+- Startup must not call Provider history list APIs or auto-import cards.
+- Browsing/search/select must not write `terminalStore.cards`; only Restore
+  selected materializes `idle + bound` cards.
+- Dedupe uses `provider + NUL + sessionId` across active and archived cards.
+- Provider `createdAt`, `updatedAt`, and page `scannedAt` are Unix epoch
+  **milliseconds**. Backend adapters normalize epoch seconds, epoch
+  milliseconds, numeric strings, and supported ISO-8601 strings before IPC.
+- `setQuery` replaces Provider result pages but preserves both selected keys and
+  the corresponding selected summary snapshots. A key without its summary is
+  insufficient because the selected row may no longer exist in current items.
+- `toggleSelected` may add a key only when the full summary exists in the
+  Provider's current page. Deselect, `clearSelection`, and `reset` remove the
+  key and summary together.
+- `getSelectedSummaries()` reads the selection map, not the currently visible
+  Provider rows. Restore may therefore include selections across Provider tabs
+  and query changes, then clears selection after import.
+- OpenCode usage SQLite ingestion remains independent from Session Catalog.
+
+#### 4. Validation & Error Matrix
+- App startup or `TerminalManager` mount -> zero catalog list calls and zero
+  legacy recent-session list calls.
+- Open recovery panel -> load only the active Provider tab.
+- Query changes while a request is in flight -> stale generation result is
+  discarded; selection remains intact.
+- Selected row disappears from filtered results -> restore still receives its
+  stored summary.
+- Toggle an id absent from current Provider items -> no selection state change.
+- Provider timestamp is seconds or ISO text -> IPC summary exposes milliseconds.
+- Active or archived card already has `provider + sessionId` -> import skips it.
+
+#### 5. Good/Base/Bad Cases
+- Good: select a Claude row, search for another row, select it, switch to Codex,
+  and restore all selections into idle bound cards with no PTY spawn.
+- Base: open the panel with no Provider history; the terminal card store remains
+  unchanged.
+- Bad: derive selected summaries by filtering only current query rows, or
+  persist catalog previews in local storage.
+
+#### 6. Tests Required
+- Store test: selection survives query-driven page replacement and returns the
+  original summary snapshot.
+- Store tests: deselect, clear, and reset keep `selectedKeys` and
+  `selectedSummaries` synchronized.
+- Rust adapter tests: seconds, milliseconds, numeric-string, and ISO timestamps
+  normalize to milliseconds.
+- Desktop E2E: cold startup makes zero history calls; opening/switching tabs is
+  lazy; cross-tab multi-select restore creates cards and zero PTYs.
+- Full gates: Vitest, Cargo tests, Clippy, typecheck, desktop build, desktop E2E,
+  locale-key parity, and `git diff --check`.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```typescript
+getSelectedSummaries: () =>
+  allVisibleRows().filter((row) => selectedKeys.has(selectionKey(row)))
+```
+
+Correct:
+
+```typescript
+toggleSelected: (summary) => {
+  selectedKeys.add(selectionKey(summary));
+  selectedSummaries.set(selectionKey(summary), summary);
+};
+
+getSelectedSummaries: () => Array.from(selectedSummaries.values());
+```
+
+Do not reintroduce mount-time `listRecent -> importProviderSessionCards`
+alongside the recovery panel.
+
+</spec-entry>

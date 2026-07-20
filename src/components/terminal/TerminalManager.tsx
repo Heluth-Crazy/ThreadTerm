@@ -20,6 +20,7 @@ import {
   BellDot,
   FileText,
   GitCompare,
+  History,
   Layers,
   Settings as SettingsIcon,
   TerminalSquare,
@@ -34,6 +35,7 @@ import { CreateTerminalDialog } from './CreateTerminalDialog';
 import { ProjectSidebar } from './ProjectSidebar';
 import { MobileAccessSettings } from '../settings/MobileAccessSettings';
 import { ArchivedCardsPanel } from './ArchivedCardsPanel';
+import { SessionRecoveryPanel } from './SessionRecoveryPanel';
 import { SessionDock } from './SessionDock';
 import { StatsPanel } from '../stats/StatsPanel';
 import { useStatsAutoRefresh, useStatsSubscription } from '../../stores/statsStore';
@@ -41,7 +43,7 @@ import { CommandPalette } from '../palette/CommandPalette';
 import { buildCommandRegistry, type CommandGroup } from '../palette/commandRegistry';
 import type { TerminalCard, TerminalCreateOptions, TerminalType } from '../../types/terminal';
 import { useSupervisor } from '../../lib/supervisor/useSupervisor';
-import { git, isTauriEnv, mobileBridge, providerSessions, type GitStatusEntry } from '../../lib/tauri-bridge';
+import { git, isTauriEnv, mobileBridge, type GitStatusEntry } from '../../lib/tauri-bridge';
 import { openSettingsWindow, type SettingsTab } from '../../lib/settingsWindow';
 import { confirmDialog } from '../../lib/nativeDialog';
 import { cardToMobileMeta } from '../../mobile/bridge/cardMeta';
@@ -151,7 +153,6 @@ export function TerminalManager() {
   const focusCard = useTerminalStore((s) => s.focusCard);
   const createCard = useTerminalStore((s) => s.createCard);
   const restoreArchivedCard = useTerminalStore((s) => s.restoreArchivedCard);
-  const importProviderSessionCards = useTerminalStore((s) => s.importProviderSessionCards);
   const selectProject = useTerminalStore((s) => s.selectProject);
   const selectWorktree = useTerminalStore((s) => s.selectWorktree);
   const toggleNotificationCentre = useTerminalStore((s) => s.toggleNotificationCentre);
@@ -299,6 +300,8 @@ export function TerminalManager() {
       switch (surface) {
         case 'stats':
           return true;
+        case 'sessionRecovery':
+          return true;
         case 'archive':
           return Boolean(selectedProjectPath && selectedProjectName);
         case 'sessionDock':
@@ -336,7 +339,7 @@ export function TerminalManager() {
   // Auxiliary right-side surfaces share the fixed workspace rail. The most
   // recently opened surface wins, and closing it restores the workspace rail.
   const toggleRightPanel = useCallback(
-    (panel: 'stats' | 'archive') => {
+    (panel: 'stats' | 'archive' | 'sessionRecovery') => {
       toggleRightSurface(panel);
     },
     [toggleRightSurface],
@@ -347,14 +350,19 @@ export function TerminalManager() {
   const statsPanelVisible = activeRightSurface === 'stats';
   const archivePanelVisible =
     activeRightSurface === 'archive' && !!selectedProjectPath && !!selectedProjectName;
+  const sessionRecoveryPanelVisible = activeRightSurface === 'sessionRecovery';
   const sessionDockPanelVisible = activeRightSurface === 'sessionDock' && sessionDockAvailable;
   const auxiliaryRightPanelOpen =
-    statsPanelVisible || archivePanelVisible || sessionDockPanelVisible;
+    statsPanelVisible ||
+    archivePanelVisible ||
+    sessionDockPanelVisible ||
+    sessionRecoveryPanelVisible;
   const rightPanelOpen =
     workspaceRailVisible ||
     auxiliaryRightPanelOpen;
   const statsOpen = activeRightSurface === 'stats';
   const archiveOpen = activeRightSurface === 'archive';
+  const sessionRecoveryOpen = activeRightSurface === 'sessionRecovery';
   const currentWorkspaceContent = workspaceContentStateWithPanelDefaults(
     workspaceContentStateWithDefaults(
       focusedCardId ? workspaceContentByCardId[focusedCardId] : undefined,
@@ -565,24 +573,6 @@ export function TerminalManager() {
     if (!focusedCardId) return;
     mountCardInBackground(focusedCardId);
   }, [focusedCardId, mountCardInBackground]);
-
-  useEffect(() => {
-    if (!isTauriEnv()) return;
-    let cancelled = false;
-
-    void providerSessions
-      .listRecent()
-      .then((sessions) => {
-        if (!cancelled) importProviderSessionCards(sessions);
-      })
-      .catch((error) => {
-        console.warn('[ProviderSessions] failed to import existing sessions', error);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [importProviderSessionCards]);
 
   useEffect(() => {
     if (!isTauriEnv()) return;
@@ -1059,6 +1049,22 @@ export function TerminalManager() {
               </span>
             </button>
           )}
+          {isTauriEnv() && (
+            <button
+              type="button"
+              onClick={() => toggleRightPanel('sessionRecovery')}
+              title={t('sessionRecovery.openTitle')}
+              className={[
+                'inline-flex items-center gap-1 rounded-[var(--radius-md)] px-2 py-1 text-[11px] font-medium',
+                sessionRecoveryOpen
+                  ? 'bg-primary/10 text-primary'
+                  : 'hover:bg-accent hover:text-accent-foreground',
+              ].join(' ')}
+            >
+              <History className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">{t('sessionRecovery.open')}</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => toggleRightPanel('stats')}
@@ -1244,6 +1250,9 @@ export function TerminalManager() {
             />
           )}
           {statsPanelVisible && <StatsPanel onClose={() => closeRightSurface('stats')} />}
+          {sessionRecoveryPanelVisible && (
+            <SessionRecoveryPanel onClose={() => closeRightSurface('sessionRecovery')} />
+          )}
           {archivePanelVisible && selectedProjectName && (
             <ArchivedCardsPanel
               projectName={selectedProjectName}

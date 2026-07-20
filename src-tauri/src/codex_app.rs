@@ -210,6 +210,13 @@ pub async fn codex_app_list_skills(app: AppHandle, cwd: String) -> Result<Value,
         .await
 }
 
+/// Paginated `thread/list` for the on-demand Agent Session Catalog.
+/// Discovery-only: does not create/resume threads or open cards.
+pub async fn list_threads_raw(app: &AppHandle, params: Value) -> Result<Value, String> {
+    CODEX_APP_MANAGER.ensure_initialized(app).await?;
+    CODEX_APP_MANAGER.send_request("thread/list", params).await
+}
+
 impl CodexAppManager {
     async fn status(&self) -> CodexAppStatus {
         let state = self.state.lock().await;

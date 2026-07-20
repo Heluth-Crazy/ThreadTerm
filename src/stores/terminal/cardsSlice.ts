@@ -10,6 +10,7 @@ import type {
   TerminalCard,
   CodexAppThreadBinding,
   ProviderSessionImportInfo,
+  ProviderSessionImportResult,
 } from '../../types/terminal';
 import { MAX_ARCHIVED_CARDS, MAX_LAST_OUTPUT_LENGTH } from '../../types/terminal';
 import i18n from '../../i18n/config';
@@ -26,6 +27,7 @@ import {
   archivedCardsForProject,
   cardsForProjectView,
   compactProjectCardOrder,
+  isCatalogProviderSessionType,
   isProviderSessionType,
   normalizeImportedProviderSession,
   prependProjectCardOrder,
@@ -101,16 +103,29 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
     }),
 
   importProviderSessionCards: (sessions) => {
-    if (sessions.length === 0) return 0;
+    if (sessions.length === 0) return [];
 
-    let imported = 0;
+    const results: ProviderSessionImportResult[] = [];
     set((state) => {
       const knownCards = [...state.cards, ...(state.archivedCards ?? [])];
-      const existingKeys = new Set(
-        knownCards
+      const activeKeys = new Set(
+        state.cards
           .filter(
             (card) =>
-              isProviderSessionType(card.terminalType) && Boolean(card.providerSessionId),
+              isCatalogProviderSessionType(card.terminalType) && Boolean(card.providerSessionId),
+          )
+          .map((card) =>
+            providerSessionKey(
+              card.terminalType as ProviderSessionImportInfo['provider'],
+              card.providerSessionId ?? '',
+            ),
+          ),
+      );
+      const archivedKeys = new Set(
+        (state.archivedCards ?? [])
+          .filter(
+            (card) =>
+              isCatalogProviderSessionType(card.terminalType) && Boolean(card.providerSessionId),
           )
           .map((card) =>
             providerSessionKey(
@@ -124,17 +139,45 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
       );
       const cards = [...state.cards];
       let projectCardOrder = state.projectCardOrder ?? {};
+      let imported = 0;
 
       for (const rawSession of sessions) {
         const session = normalizeImportedProviderSession(rawSession);
-        if (!session) continue;
+        if (!session) {
+          results.push({
+            id: rawSession.id,
+            provider: rawSession.provider,
+            outcome: isCatalogProviderSessionType(rawSession.provider)
+              ? 'invalid'
+              : 'unsupported',
+          });
+          continue;
+        }
 
         const key = providerSessionKey(session.provider, session.id);
-        if (existingKeys.has(key)) continue;
+        if (activeKeys.has(key)) {
+          results.push({
+            id: session.id,
+            provider: session.provider,
+            outcome: 'alreadyActive',
+          });
+          continue;
+        }
+        if (archivedKeys.has(key)) {
+          results.push({
+            id: session.id,
+            provider: session.provider,
+            outcome: 'archived',
+          });
+          continue;
+        }
 
         const now = Date.now();
+        const hint = session.projectNameHint?.trim();
         const projectName =
-          projectNames.get(session.projectPath) ?? pathBasename(session.projectPath);
+          (hint && hint.length > 0 && hint.length <= 80 ? hint : null) ??
+          projectNames.get(session.projectPath) ??
+          pathBasename(session.projectPath);
         const id = uid();
         cards.push({
           id,
@@ -164,15 +207,20 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
           unread: false,
         });
         projectCardOrder = prependProjectCardOrder(projectCardOrder, session.projectPath, id);
-        existingKeys.add(key);
+        activeKeys.add(key);
         projectNames.set(session.projectPath, projectName);
         imported += 1;
+        results.push({
+          id: session.id,
+          provider: session.provider,
+          outcome: 'imported',
+        });
       }
 
       return imported > 0 ? { cards, projectCardOrder } : state;
     });
 
-    return imported;
+    return results;
   },
 
   removeCard: (id) => {

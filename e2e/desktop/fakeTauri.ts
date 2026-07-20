@@ -36,6 +36,19 @@ export interface SeedCard {
   unread: boolean;
 }
 
+export interface SeedAgentSession {
+  provider: 'claude' | 'codex' | 'opencode' | 'gemini';
+  id: string;
+  projectPath: string;
+  nativeTitle?: string;
+  titleKind: 'explicit' | 'generated' | 'unknown' | 'firstPrompt';
+  firstUserMessagePreview?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  messageCount?: number;
+  resumable: boolean;
+}
+
 export function makeSeedCards(count: number): SeedCard[] {
   const now = Date.now();
   return Array.from({ length: count }, (_, index) => {
@@ -80,9 +93,10 @@ export function makeSeedCodexCard(): SeedCard {
 
 interface FakeSeed {
   persistedState: Record<string, unknown>;
+  agentSessions: SeedAgentSession[];
 }
 
-function buildSeed(cards: SeedCard[]): FakeSeed {
+function buildSeed(cards: SeedCard[], agentSessions: SeedAgentSession[]): FakeSeed {
   return {
     persistedState: {
       cards,
@@ -98,6 +112,7 @@ function buildSeed(cards: SeedCard[]): FakeSeed {
       bottomBarHidden: false,
       supervisorEnabled: false,
     },
+    agentSessions,
   };
 }
 
@@ -134,6 +149,10 @@ function installInPage(seed: FakeSeed): void {
     ack: Record<string, number>;
   } = { create: {}, attachSnapshot: {}, ack: {} };
   const ackedThrough: Record<string, number> = {};
+  const agentSessionState = {
+    catalogCalls: [] as Array<{ provider: string; query: string | null }>,
+    recentListCalls: 0,
+  };
 
   const emitEvent = (event: string, payload: unknown): void => {
     const ids = eventListeners.get(event);
@@ -161,6 +180,7 @@ function installInPage(seed: FakeSeed): void {
       emitEvent('pty-exit', { id, code });
     },
   };
+  win.__fakeAgentSessions = agentSessionState;
 
   const args = (raw: unknown): Record<string, unknown> =>
     (raw ?? {}) as Record<string, unknown>;
@@ -270,10 +290,37 @@ function installInPage(seed: FakeSeed): void {
         return false;
       case 'bridge_status':
         return { running: false };
-      case 'provider_list_recent_sessions':
       case 'git_branch_overview':
       case 'git_worktree_list':
         return [];
+      case 'provider_list_recent_sessions':
+        agentSessionState.recentListCalls += 1;
+        return [];
+      case 'provider_list_agent_sessions': {
+        const request = (a.request ?? {}) as Record<string, unknown>;
+        const provider = String(request.provider ?? 'claude');
+        const query = typeof request.query === 'string' ? request.query.trim() : '';
+        const needle = query.toLocaleLowerCase();
+        agentSessionState.catalogCalls.push({ provider, query: query || null });
+        const items = seed.agentSessions.filter((session) => {
+          if (session.provider !== provider) return false;
+          if (!needle) return true;
+          return [
+            session.id,
+            session.projectPath,
+            session.nativeTitle ?? '',
+            session.firstUserMessagePreview ?? '',
+          ].some((value) => value.toLocaleLowerCase().includes(needle));
+        });
+        return {
+          provider,
+          availability: 'available',
+          items,
+          nextCursor: null,
+          scannedAt: Date.now(),
+          warning: null,
+        };
+      }
       case 'native_platform_material_state':
         return { enabled: false, platform: 'macos' };
       default:
@@ -318,6 +365,10 @@ function installInPage(seed: FakeSeed): void {
  * Install the fake Tauri environment + seeded terminal cards. Must be called
  * before `page.goto()`.
  */
-export async function installFakeTauri(page: Page, cards: SeedCard[]): Promise<void> {
-  await page.addInitScript(installInPage, buildSeed(cards));
+export async function installFakeTauri(
+  page: Page,
+  cards: SeedCard[],
+  agentSessions: SeedAgentSession[] = [],
+): Promise<void> {
+  await page.addInitScript(installInPage, buildSeed(cards, agentSessions));
 }

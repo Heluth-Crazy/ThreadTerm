@@ -404,6 +404,7 @@
     "shell": "Shell",
     "claude": "Claude",
     "codex": "Codex",
+    "opencode": "OpenCode",
     "gemini": "Gemini",
     "npm": "npm",
     "yarn": "Yarn",
@@ -412,5 +413,27 @@
     "python": "Python",
     "node": "Node.js",
     "custom": "自定义"
+  },
+  "sessionRecovery": {
+    "open": "恢复会话",
+    "openTitle": "恢复本机 Agent 会话",
+    "title": "恢复本机会话",
+    "localOnlyHint": "仅读取本机 Provider 历史，不会上传任何内容。",
+    "searchPlaceholder": "搜索标题、Prompt、项目…",
+    "loadMore": "加载更多",
+    "selectedCount": "已选 {{count}} 项",
+    "restoreSelected": "恢复选中项",
+    "alreadyAdded": "已加入",
+    "empty": "未找到会话",
+    "missingCli": "未找到 {{provider}} CLI",
+    "unavailable": "{{provider}} 历史不可用",
+    "error": "加载会话失败",
+    "retry": "重试",
+    "desktopOnly": "会话恢复仅在桌面端可用。",
+    "titleKind": {
+      "renamed": "已重命名",
+      "firstPrompt": "首条 Prompt",
+      "providerTitle": "Provider 标题"
+    }
   }
 }

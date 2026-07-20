@@ -404,6 +404,7 @@
     "shell": "Shell",
     "claude": "Claude",
     "codex": "Codex",
+    "opencode": "OpenCode",
     "gemini": "Gemini",
     "npm": "npm",
     "yarn": "Yarn",
@@ -412,5 +413,27 @@
     "python": "Python",
     "node": "Node.js",
     "custom": "Custom"
+  },
+  "sessionRecovery": {
+    "open": "Restore sessions",
+    "openTitle": "Restore local Agent sessions",
+    "title": "Restore local sessions",
+    "localOnlyHint": "Reads local Provider history only. Nothing is uploaded.",
+    "searchPlaceholder": "Search title, prompt, project…",
+    "loadMore": "Load more",
+    "selectedCount": "{{count}} selected",
+    "restoreSelected": "Restore selected",
+    "alreadyAdded": "Already added",
+    "empty": "No sessions found",
+    "missingCli": "{{provider}} CLI was not found",
+    "unavailable": "{{provider}} history is unavailable",
+    "error": "Failed to load sessions",
+    "retry": "Retry",
+    "desktopOnly": "Session recovery is available in the desktop app.",
+    "titleKind": {
+      "renamed": "Renamed",
+      "firstPrompt": "First prompt",
+      "providerTitle": "Provider title"
+    }
   }
 }

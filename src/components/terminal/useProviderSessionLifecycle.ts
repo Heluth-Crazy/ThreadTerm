@@ -43,6 +43,7 @@ export function useProviderSessionLifecycle(
     const find = async () => {
       attempts += 1;
       try {
+        if (provider !== 'claude' && provider !== 'codex') return;
         const info = await providerSessions.findRecent(provider, projectPath, sinceMs);
         if (!cancelled && info?.id) {
           markProviderSessionBound(card.id, info.id);

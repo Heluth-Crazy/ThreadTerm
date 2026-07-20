@@ -14,7 +14,12 @@
  */
 import { test, expect, type Page } from '@playwright/test';
 import { inflateSync } from 'node:zlib';
-import { installFakeTauri, makeSeedCards, makeSeedCodexCard } from './fakeTauri';
+import {
+  installFakeTauri,
+  makeSeedCards,
+  makeSeedCodexCard,
+  type SeedAgentSession,
+} from './fakeTauri';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -109,6 +114,8 @@ interface TerminalBufferSnapshot {
   activeText: string;
   cursorX: number;
   cursorY: number;
+  viewportY: number;
+  baseY: number;
 }
 
 /**
@@ -130,6 +137,8 @@ function readTerminalBuffer(
       length: number;
       cursorX: number;
       cursorY: number;
+      viewportY: number;
+      baseY: number;
       getLine(index: number): BufferLine | undefined;
     }
     interface RegisteredTerminal {
@@ -162,6 +171,8 @@ function readTerminalBuffer(
       activeText: readBuffer(term.buffer.active),
       cursorX: term.buffer.active.cursorX,
       cursorY: term.buffer.active.cursorY,
+      viewportY: term.buffer.active.viewportY,
+      baseY: term.buffer.active.baseY,
     };
   }, ptyId);
 }
@@ -415,23 +426,19 @@ test('streaming output does not yank a scrolled-up viewport; button returns to b
   const scrollbackThroughSeq = await emitOutput(page, ptyId, 'scrollback line {i}\r\n', 200);
   await waitForAckThrough(page, ptyId, scrollbackThroughSeq);
 
-  // Scroll up over the terminal host. Note: a pure user wheel scroll goes
-  // through xterm's Viewport with `suppressScrollEvent: true`, so the
-  // indicator appears on the NEXT output chunk (the actual P0-1 scenario:
-  // streaming output while the user reads history).
-  const viewport = page.locator('.threadterm-xterm-host:visible .xterm-viewport');
-  const readScroll = () =>
-    viewport.evaluate((el) => ({
-      scrollTop: el.scrollTop,
-      bottom: el.scrollHeight - el.clientHeight,
-    }));
+  // Use xterm's public buffer coordinates instead of internal viewport DOM
+  // metrics. xterm 6 moved scrolling to a custom scrollable element, so
+  // `.xterm-viewport.scrollTop` no longer represents the visible buffer row.
+  const readScrollDistance = async () => {
+    const buffer = await readTerminalBuffer(page, ptyId);
+    return buffer ? buffer.baseY - buffer.viewportY : 0;
+  };
 
   const host = page.locator('.threadterm-xterm-host:visible');
   await host.hover();
   await expect(async () => {
     await page.mouse.wheel(0, -400);
-    const state = await readScroll();
-    expect(state.bottom - state.scrollTop).toBeGreaterThan(100);
+    expect(await readScrollDistance()).toBeGreaterThan(5);
   }).toPass({ timeout: 15_000 });
 
   // More output while reading history: the viewport must NOT be yanked back
@@ -441,15 +448,13 @@ test('streaming output does not yank a scrolled-up viewport; button returns to b
 
   const scrollButton = page.getByTestId('shell-scroll-to-bottom');
   await expect(scrollButton).toBeVisible();
-  const scrolledState = await readScroll();
-  expect(scrolledState.bottom - scrolledState.scrollTop).toBeGreaterThan(100);
+  expect(await readScrollDistance()).toBeGreaterThan(5);
 
   // Explicit return-to-bottom restores follow mode and hides the button.
   await scrollButton.click();
   await expect(scrollButton).toBeHidden();
   await expect(async () => {
-    const state = await readScroll();
-    expect(state.bottom - state.scrollTop).toBeLessThan(50);
+    expect(await readScrollDistance()).toBe(0);
   }).toPass({ timeout: 5_000 });
 
   expect(errors).toEqual([]);
@@ -485,5 +490,83 @@ test('codex chat to terminal restore shows terminal output without stale bottom 
   await expectVisibleTerminalHasTextOrInk(page, 'codex terminal line');
   await expect(page.getByTestId('shell-scroll-to-bottom')).toBeHidden();
 
+  expect(errors).toEqual([]);
+});
+
+// ── Journey 5: local history is lazy and materializes only selected cards ──
+
+test('session recovery stays lazy and restores selected provider sessions without spawning PTYs', async ({
+  page,
+}) => {
+  const agentSessions: SeedAgentSession[] = [
+    {
+      provider: 'claude',
+      id: 'claude-history-1',
+      projectPath: '/tmp/claude-history-project',
+      nativeTitle: 'Release checklist',
+      titleKind: 'explicit',
+      firstUserMessagePreview: 'Prepare the release checklist',
+      updatedAt: 1_700_000_000_000,
+      resumable: true,
+    },
+    {
+      provider: 'codex',
+      id: 'codex-history-1',
+      projectPath: '/tmp/codex-history-project',
+      nativeTitle: 'Fix auth race',
+      titleKind: 'explicit',
+      firstUserMessagePreview: 'Fix the auth race',
+      updatedAt: 1_700_000_100_000,
+      resumable: true,
+    },
+  ];
+  await installFakeTauri(page, [], agentSessions);
+  const errors = trackPageErrors(page);
+
+  await page.goto('/');
+  const recoveryButton = page.locator('button[title="Restore local Agent sessions"]');
+  await expect(recoveryButton).toBeVisible();
+
+  expect(
+    await page.evaluate(() => {
+      const state = (window as unknown as {
+        __fakeAgentSessions: { catalogCalls: unknown[]; recentListCalls: number };
+      }).__fakeAgentSessions;
+      return { catalogCalls: state.catalogCalls.length, recentListCalls: state.recentListCalls };
+    }),
+  ).toEqual({ catalogCalls: 0, recentListCalls: 0 });
+
+  await recoveryButton.click();
+  const dialog = page.getByRole('dialog', { name: 'Restore local sessions' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText('Release checklist', { exact: true })).toBeVisible();
+  await dialog.getByRole('checkbox', { name: 'Release checklist' }).check();
+
+  await dialog.getByRole('button', { name: 'Codex', exact: true }).click();
+  await expect(dialog.getByText('Fix auth race', { exact: true })).toBeVisible();
+  await dialog.getByRole('checkbox', { name: 'Fix auth race' }).check();
+
+  expect(
+    await page.evaluate(() =>
+      (window as unknown as {
+        __fakeAgentSessions: { catalogCalls: Array<{ provider: string }> };
+      }).__fakeAgentSessions.catalogCalls.map((call) => call.provider),
+    ),
+  ).toEqual(['claude', 'codex']);
+
+  await dialog.getByRole('button', { name: 'Restore selected' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText('Release checklist', { exact: true }).last()).toBeVisible();
+  await expect(page.getByText('Fix auth race', { exact: true }).last()).toBeVisible();
+
+  expect(
+    await page.evaluate(() =>
+      Object.values(
+        (window as unknown as {
+          __fakePty: { counts: { create: Record<string, number> } };
+        }).__fakePty.counts.create,
+      ).reduce((total, count) => total + count, 0),
+    ),
+  ).toBe(0);
   expect(errors).toEqual([]);
 });

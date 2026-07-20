@@ -151,7 +151,10 @@ export const TerminalCardComponent = memo(function TerminalCardComponent({
 
     const source: AiSessionExportSource = {
       userIntent: card.aiIntent ?? 'Not set',
-      provider: exportLaunch.provider ?? 'unknown',
+      provider:
+        exportLaunch.provider === 'claude' || exportLaunch.provider === 'codex'
+          ? exportLaunch.provider
+          : 'unknown',
       sessionId: exportLaunch.providerSessionId ?? card.providerSessionId ?? null,
       startedAt: card.createdAt,
       endedAt: card.lastActivity,
