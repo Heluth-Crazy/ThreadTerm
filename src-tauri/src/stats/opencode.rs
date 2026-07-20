@@ -21,6 +21,13 @@ pub struct OpenCodeUsage {
     pub timestamp_ms: i64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenCodeSession {
+    pub id: String,
+    pub watermark: i64,
+    pub project_path: String,
+}
+
 pub fn opencode_db_path() -> PathBuf {
     if let Some(raw) = std::env::var_os("OPENCODE_DB") {
         if !raw.is_empty() {
@@ -100,17 +107,24 @@ pub fn parse_opencode_message_data(value: &Value) -> Option<OpenCodeUsage> {
     })
 }
 
-pub fn query_sessions(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<(String, i64)>> {
+pub fn query_sessions(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<OpenCodeSession>> {
     let mut stmt = conn.prepare(
         "SELECT s.id,
-                MAX(s.time_updated, COALESCE(MAX(m.time_updated), s.time_updated)) AS watermark
+                MAX(s.time_updated, COALESCE(MAX(m.time_updated), s.time_updated)) AS watermark,
+                s.directory
          FROM session s
          LEFT JOIN message m ON m.session_id = s.id
-         GROUP BY s.id
+         GROUP BY s.id, s.directory
          ORDER BY watermark",
     )?;
     let sessions = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map([], |row| {
+            Ok(OpenCodeSession {
+                id: row.get(0)?,
+                watermark: row.get(1)?,
+                project_path: row.get(2)?,
+            })
+        })?
         .collect();
     sessions
 }
@@ -166,6 +180,7 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE session (
                 id TEXT PRIMARY KEY,
+                directory TEXT NOT NULL,
                 time_updated INTEGER NOT NULL
              );
              CREATE TABLE message (
@@ -226,7 +241,8 @@ mod tests {
     fn query_sessions_uses_latest_session_or_message_watermark() {
         let conn = mem_conn();
         conn.execute(
-            "INSERT INTO session (id, time_updated) VALUES ('s1', 10), ('s2', 50)",
+            "INSERT INTO session (id, directory, time_updated)
+             VALUES ('s1', '/projects/one', 10), ('s2', '/projects/two', 50)",
             [],
         )
         .unwrap();
@@ -240,7 +256,18 @@ mod tests {
         let sessions = query_sessions(&conn).unwrap();
         assert_eq!(
             sessions,
-            vec![("s1".to_string(), 30), ("s2".to_string(), 50)]
+            vec![
+                OpenCodeSession {
+                    id: "s1".to_string(),
+                    watermark: 30,
+                    project_path: "/projects/one".to_string(),
+                },
+                OpenCodeSession {
+                    id: "s2".to_string(),
+                    watermark: 50,
+                    project_path: "/projects/two".to_string(),
+                },
+            ]
         );
     }
 
@@ -248,7 +275,8 @@ mod tests {
     fn query_assistant_messages_skips_incomplete_usage() {
         let conn = mem_conn();
         conn.execute(
-            "INSERT INTO session (id, time_updated) VALUES ('s1', 1)",
+            "INSERT INTO session (id, directory, time_updated)
+             VALUES ('s1', '/projects/one', 1)",
             [],
         )
         .unwrap();

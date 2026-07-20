@@ -65,8 +65,9 @@ const PROGRESS_EVERY: usize = 16;
 /// 4 = added opencode.db ingestion; 5 = refresh Codex rows after token-shape
 /// fields and legacy session parsing fixes; 6 = parser rebuild scans all source
 /// logs instead of inheriting the caller's time window; 7 = refresh stored costs
-/// after adding Claude Fable/Mythos 5 pricing.
-const STATS_PARSER_VERSION: i64 = 7;
+/// after adding Claude Fable/Mythos 5 pricing; 8 = attribute OpenCode usage to
+/// the session project directory.
+const STATS_PARSER_VERSION: i64 = 8;
 
 /// Wipe `usage_records` + `session_log_sync` when the stored parser version
 /// doesn't match the current one, then stamp the new version. Returns true when
@@ -277,6 +278,7 @@ fn insert_opencode_record(
     request_id: &str,
     usage: &OpenCodeUsage,
     session_id: &str,
+    project_path: &str,
     created_at: i64,
 ) -> bool {
     let output_with_reasoning = usage.output.saturating_add(usage.reasoning);
@@ -316,7 +318,7 @@ fn insert_opencode_record(
             cost.cache_write,
             cost.total,
             session_id,
-            "",
+            project_path,
             created_at,
             "opencode_session",
         ],
@@ -387,15 +389,16 @@ fn sync_opencode() -> SyncResult {
         }
     };
 
-    for (session_id, watermark) in sessions {
+    for session in sessions {
+        let session_id = &session.id;
         let session_key = format!("{file_path}:{session_id}");
         let (last_session_modified, _last_offset) = get_sync_state(&conn, &session_key);
-        if watermark <= last_session_modified {
+        if session.watermark <= last_session_modified {
             continue;
         }
 
         let (messages, has_incomplete_usage) =
-            match opencode::query_assistant_messages(&opencode_conn, &session_id) {
+            match opencode::query_assistant_messages(&opencode_conn, session_id) {
                 Ok(messages) => messages,
                 Err(err) => {
                     result.errors.push(format!(
@@ -412,7 +415,14 @@ fn sync_opencode() -> SyncResult {
             } else {
                 fallback_created_at
             };
-            if insert_opencode_record(&conn, &request_id, &usage, &session_id, created_at) {
+            if insert_opencode_record(
+                &conn,
+                &request_id,
+                &usage,
+                session_id,
+                &session.project_path,
+                created_at,
+            ) {
                 result.imported += 1;
             } else {
                 result.skipped += 1;
@@ -420,7 +430,7 @@ fn sync_opencode() -> SyncResult {
         }
 
         if !has_incomplete_usage {
-            update_sync_state(&conn, &session_key, watermark, 0);
+            update_sync_state(&conn, &session_key, session.watermark, 0);
         }
     }
 
@@ -640,12 +650,13 @@ mod tests {
             "opencode_session:s1:m1",
             &usage,
             "s1",
+            "/projects/demo",
             1_609_459_200,
         ));
-        let row: (String, i64, i64, f64, f64, String) = conn
+        let row: (String, i64, i64, f64, f64, String, String) = conn
             .query_row(
                 "SELECT provider, output_tokens, cache_creation_tokens,
-                        total_cost_usd, input_cost_usd, data_source
+                        total_cost_usd, input_cost_usd, data_source, project_path
                  FROM usage_records
                  WHERE request_id='opencode_session:s1:m1'",
                 [],
@@ -657,6 +668,7 @@ mod tests {
                         row.get(3)?,
                         row.get(4)?,
                         row.get(5)?,
+                        row.get(6)?,
                     ))
                 },
             )
@@ -667,6 +679,7 @@ mod tests {
         assert!((row.3 - 0.123).abs() < f64::EPSILON);
         assert_eq!(row.4, 0.0, "reported aggregate cost cannot be split");
         assert_eq!(row.5, "opencode_session");
+        assert_eq!(row.6, "/projects/demo");
     }
 
     #[test]
@@ -688,6 +701,7 @@ mod tests {
             "opencode_session:s1:m2",
             &usage,
             "s1",
+            "/projects/demo",
             1_609_459_200,
         ));
         let (total_cost, input_cost): (f64, f64) = conn
