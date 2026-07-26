@@ -22,7 +22,8 @@
 ## Windows Acceptance
 
 - [ ] 最小化 10 分钟持续输出。
-- [ ] 退出后进程树清理。
+- [x] Windows 原生进程树清理：正常释放宿主、宿主异常退出、隐藏命令包装器
+  三种场景均实际创建进程并通过。
 - [x] 所有已知 Git、shell、网络探测后台命令均使用无窗口启动。
 - [ ] Release 真机目视确认背景查询无黑框。
 
@@ -45,3 +46,15 @@
   的产品规则。
 - 当前门禁运行在本机回环地址，预置测试卡片；它不等同于物理手机、真实 Wi-Fi
   或完整 Tauri 桌面应用验收。
+
+## Windows Run Record · 2026-07-27
+
+- 当前桌面资源与 Rust Release 均重新构建成功；
+  `src-tauri/target/release/threadterm.exe` 生成于 06:07，PE 子系统为
+  `Windows GUI`，应用自身不会附带控制台窗口。
+- `dropping_managed_windows_process_ends_descendant_tree`、
+  `managed_windows_process_tree_ends_after_owner_crash`、
+  `resolved_cmd_shim_runs_with_hidden_piped_process` 各实际执行 1 次并通过。
+- 最小化持续输出和 Release 目视检查未冒充通过：验收时已有另一个
+  `cargo run` 调试实例占用 ThreadTerm 单实例锁。为避免中断现有工作台和其它
+  agent 会话，本轮未最小化、关闭或接管该窗口。
