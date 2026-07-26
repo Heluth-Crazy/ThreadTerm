@@ -22,13 +22,13 @@
   - [x] 网络地址与安全隧道校验迁入 network。
   - [x] 服务生命周期迁入 runtime。
   - [x] Tauri 命令薄入口迁入 commands。
-- [ ] Shell 类型化并按生命周期拆 hooks。
+- [x] Shell 类型化并按生命周期拆 hooks。
   - [x] Shell 从 JSX 迁为严格类型的 TSX，保持对外 props 与运行顺序不变。
   - [x] 尺寸、聚焦、可见性恢复与重绘迁入终端表面 hooks。
   - [x] xterm 创建、插件、输入、滚动监听与卸载迁入实例 hook。
   - [x] 输出监听清理、消费租约释放与快照恢复迁入输出生命周期 hook。
   - [x] 实时输出写入、滚动跟随与写入后确认迁入独立输出管线。
-  - [ ] 会话创建、退出与重连迁入连接生命周期 hook。
+  - [x] 会话创建、退出与重连迁入连接生命周期 hook。
 - [ ] TerminalManager 模型/注册/协调拆分。
 
 ## Validation

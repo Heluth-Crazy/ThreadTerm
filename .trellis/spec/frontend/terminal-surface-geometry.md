@@ -44,6 +44,9 @@
   scroll listener, `ResizeObserver`, and terminal teardown. Its single effect
   stays between connection callbacks and surface-activation effects so cleanup
   and auto-connect ordering remain unchanged.
+- `usePtyConnectionLifecycle` runs after surface activation. Keep its pane reset,
+  stale-pane detach, and auto-connect effects in that order so a new card cannot
+  reconnect through the previous card's terminal surface.
 
 ### 4. Validation & Error Matrix
 

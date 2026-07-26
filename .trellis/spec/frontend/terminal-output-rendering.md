@@ -45,9 +45,12 @@
 - `useXtermLifecycle` owns xterm construction and input/scroll listeners.
   `usePtyOutputLifecycle` owns renderer-consumer disposal, listener cleanup,
   and snapshot recovery. `createTerminalOutputPipeline` owns byte-preserving
-  xterm writes, scroll-follow decisions, and post-write renderer ACKs. PTY
-  connection setup must preserve the same ordering while it is moved into the
-  remaining connection lifecycle.
+  xterm writes, scroll-follow decisions, and post-write renderer ACKs.
+  `usePtyConnectionController` owns session attach/create, output and exit
+  listener wiring, retry timing, and explicit restart actions.
+- `usePtyConnectionLifecycle` owns pane-change detachment and auto-connect
+  effects. It must remain after xterm creation and surface-activation effects;
+  the pane reset effect must remain before pane detachment and auto-connect.
 - Scroll-follow decisions and tests use xterm's public `baseY`/`viewportY`
   model. Do not infer scroll position from `.xterm-viewport.scrollTop`; xterm 6
   uses a custom scrollbar whose internal DOM metrics are not the buffer model.

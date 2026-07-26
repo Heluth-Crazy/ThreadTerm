@@ -2,28 +2,19 @@ import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from '
 import type { ITheme, Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
 import { useTranslation } from 'react-i18next';
-import { logger } from '../../lib/logger';
-import { isTauriEnv, pty } from '../../lib/tauri-bridge';
 import { useTheme } from '../../theme/ThemeContext';
-import { registerTerminal, unregisterTerminal } from './xtermRegistry';
-import { createOutputAcknowledger } from './outputAcknowledger';
-import { computeReconnectDelay, formatExitBanner } from './shellBehavior';
 import { CODEX_DEVICE_AUTH_URL, isCodexLoginCommand } from './shellAuth';
-import { createTerminalOutputPipeline } from './terminalOutputPipeline';
 import {
   useTerminalSurfaceController,
   useTerminalSurfaceLifecycle,
 } from './useTerminalSurfaceLifecycle';
 import {
-  createRendererConsumerId,
-  disposeRendererConsumer,
-  onceUnlisten,
-  RENDERER_CONSUMER_HEARTBEAT_MS,
-  usePtyOutputLifecycle,
-} from './usePtyOutputLifecycle';
+  usePtyConnectionController,
+  usePtyConnectionLifecycle,
+} from './usePtyConnectionLifecycle';
+import { usePtyOutputLifecycle } from './usePtyOutputLifecycle';
 import { useXtermLifecycle } from './useXtermLifecycle';
 import type {
-  DetachCurrentPtyOptions,
   OutputSequencer,
   RendererOutputConsumer,
   ShellExitInfo,
@@ -190,16 +181,6 @@ function Shell({
     }
   }, [terminalTheme]);
 
-  const setConnecting = useCallback((value: boolean) => {
-    isConnectingRef.current = value;
-    setIsConnecting(value);
-  }, []);
-
-  const setConnected = useCallback((value: boolean) => {
-    isConnectedRef.current = value;
-    setIsConnected(value);
-  }, []);
-
   const {
     restoreOutputConsumerFromSnapshot,
     cleanupListeners,
@@ -239,383 +220,60 @@ function Shell({
     setNewOutputLines,
   });
 
-  const detachCurrentPty = useCallback(({
-    clearTerminal = true,
-    kill = false,
-  }: DetachCurrentPtyOptions = {}) => {
-    connectGenerationRef.current += 1;
-
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-    retryCountRef.current = 0;
-    setRetryAttempt(0);
-    setConnectError(null);
-    cleanupListeners();
-
-    if (ptyIdRef.current) {
-      if (terminal.current) {
-        unregisterTerminal(ptyIdRef.current, terminal.current);
-      } else {
-        unregisterTerminal(ptyIdRef.current);
-      }
-      if (kill && !preservePtyOnUnmountRef.current) {
-        pty.kill(ptyIdRef.current).catch(() => {});
-      }
-    }
-
-    ptyIdRef.current = null;
-    lastPtySizeRef.current = null;
-    exitedRef.current = false;
-    pendingNewLinesRef.current = 0;
-    scrolledUpRef.current = false;
-    setExitInfo(null);
-    setScrolledUp(false);
-    setNewOutputLines(0);
-
-    if (clearTerminal && terminal.current) {
-      terminal.current.clear();
-      terminal.current.write('\x1b[2J\x1b[H');
-    }
-
-    setConnected(false);
-    setConnecting(false);
-    setAuthUrlCopyStatus('idle');
-    setIsAuthPanelDismissed(false);
-  }, [cleanupListeners, setConnected, setConnecting]);
-
-  const scheduleReconnect = useCallback((connectPty: () => void) => {
-    if (manuallyDisconnected.current) return;
-    const delay = computeReconnectDelay(retryCountRef.current);
-    retryCountRef.current += 1;
-    setRetryAttempt(retryCountRef.current);
-    reconnectTimeoutRef.current = setTimeout(() => {
-      connectPty();
-    }, delay);
-  }, []);
-
-  // Flush the buffered "new lines while scrolled up" count into render state
-  // at most every 200ms so a fast output burst doesn't re-render per chunk.
-  const scheduleNewOutputFlush = useCallback(() => {
-    if (newOutputFlushTimerRef.current) return;
-    newOutputFlushTimerRef.current = setTimeout(() => {
-      newOutputFlushTimerRef.current = null;
-      setNewOutputLines(pendingNewLinesRef.current);
-    }, 200);
-  }, []);
-
-  const connectPty: () => void = useCallback(() => {
-    if (isConnectingRef.current || isConnectedRef.current) return;
-    const project = selectedProjectRef.current;
-    if (!project || !terminal.current) return;
-
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
-    setConnecting(true);
-    const setupGeneration = connectGenerationRef.current + 1;
-    connectGenerationRef.current = setupGeneration;
-
-    const setup = async () => {
-      let localUnlistenOutput: Unlisten | null = null;
-      let localUnlistenExit: Unlisten | null = null;
-      let localSequencer: OutputSequencer | null = null;
-      let localOutputConsumer: RendererOutputConsumer | null = null;
-      const cleanupLocalSetup = () => {
-        localUnlistenOutput?.();
-        localUnlistenExit?.();
-        localSequencer?.reset();
-        disposeRendererConsumer(localOutputConsumer);
-
-        if (unlistenOutputRef.current === localUnlistenOutput) {
-          unlistenOutputRef.current = null;
-        }
-        if (unlistenExitRef.current === localUnlistenExit) {
-          unlistenExitRef.current = null;
-        }
-        if (outputSequencerRef.current === localSequencer) {
-          outputSequencerRef.current = null;
-        }
-        if (outputConsumerRef.current === localOutputConsumer) {
-          outputConsumerRef.current = null;
-        }
-      };
-
-      try {
-        if (!isTauriEnv()) {
-          throw new Error(t('shell.ptyDesktopOnly'));
-        }
-
-        const projectPath = project.fullPath || project.path;
-        const ptySessionId = paneId || `shell-${Date.now()}`;
-        let sessionAlreadyExists = false;
-        const isStaleSetup = () =>
-          connectGenerationRef.current !== setupGeneration ||
-          (paneId && desiredPaneIdRef.current !== paneId);
-
-        try {
-          await pty.getSessionState(ptySessionId);
-          sessionAlreadyExists = true;
-        } catch {
-          sessionAlreadyExists = false;
-        }
-        if (isStaleSetup() || !terminal.current) return;
-
-        cleanupListeners();
-
-        const rows = terminal.current?.rows || 24;
-        const cols = terminal.current?.cols || 120;
-        const connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
-        if (isStaleSetup() || !terminal.current) return;
-        const consumerId = createRendererConsumerId(rendererScope);
-        await pty.registerOutputConsumer(connectedPtyId, consumerId);
-        if (isStaleSetup() || !terminal.current) {
-          await pty.unregisterOutputConsumer(connectedPtyId, consumerId).catch(() => {});
-          return;
-        }
-        const outputAcknowledger = createOutputAcknowledger((request) =>
-          pty.ack(
-            request.id,
-            request.throughSeq,
-            request.consumerKind,
-            request.consumerId,
-          ),
-        );
-        localOutputConsumer = {
-          ptyId: connectedPtyId,
-          consumerId,
-          acknowledger: outputAcknowledger,
-          heartbeatTimer: null,
-          needsSnapshotRecovery: false,
-          recoveryPromise: null,
-          disposed: false,
-        };
-        localOutputConsumer.heartbeatTimer = window.setInterval(() => {
-          if (document.visibilityState !== 'visible') return;
-          if (localOutputConsumer?.needsSnapshotRecovery) {
-            void restoreOutputConsumerFromSnapshot(localOutputConsumer);
-            return;
-          }
-          void pty.registerOutputConsumer(connectedPtyId, consumerId).catch(() => {});
-        }, RENDERER_CONSUMER_HEARTBEAT_MS);
-        outputConsumerRef.current = localOutputConsumer;
-        ptyIdRef.current = connectedPtyId;
-        if (terminal.current && connectedPtyId) {
-          registerTerminal(connectedPtyId, terminal.current);
-        }
-
-        const sequencer = createTerminalOutputPipeline({
-          connectedPtyId,
-          consumerId,
-          outputAcknowledger,
-          isStaleSetup,
-          terminalRef: terminal,
-          outputConsumerRef,
-          activeRef,
-          scrolledUpRef,
-          pendingNewLinesRef,
-          setScrolledUp,
-          scrollTerminalToBottom,
-          scheduleNewOutputFlush,
-          scheduleTerminalRefresh,
-        });
-        localSequencer = sequencer;
-        outputSequencerRef.current = sequencer;
-        sequencer.reset();
-
-        const unlistenOut = onceUnlisten(await pty.onOutput(({ id: sid, data, seq }) => {
-          if (
-            sid !== connectedPtyId ||
-            ptyIdRef.current !== connectedPtyId ||
-            !terminal.current
-          ) {
-            return;
-          }
-          sequencer.receive({ seq, data });
-        }));
-        localUnlistenOutput = unlistenOut;
-        if (isStaleSetup() || !terminal.current) {
-          cleanupLocalSetup();
-          return;
-        }
-
-        const unlistenExit = onceUnlisten(await pty.onExit(({ id: sid, code }) => {
-          if (sid !== connectedPtyId || ptyIdRef.current !== connectedPtyId) return;
-          setConnected(false);
-          setConnecting(false);
-          // Audit P1-2: never wipe the viewport on exit — the final output
-          // (panic, stack trace, exit reason) is exactly what the user needs
-          // to see. Append a coloured banner instead.
-          const term = terminal.current;
-          if (term) {
-            const label =
-              typeof code === 'number'
-                ? t('shell.exitBannerCode', { code })
-                : t('shell.exitBannerClosed');
-            term.write(formatExitBanner(code ?? null, label));
-          }
-          if (autoReconnectOnExitRef.current) {
-            scheduleReconnect(connectPty);
-          } else {
-            // Block the autoConnect effect from silently respawning the
-            // session; the user restarts explicitly via the exit strip (or
-            // the auto-restart feature assigns a fresh ptyId, which clears
-            // this gate).
-            exitedRef.current = true;
-            setExitInfo({ code: typeof code === 'number' ? code : null });
-          }
-        }));
-        localUnlistenExit = unlistenExit;
-        if (isStaleSetup() || !terminal.current) {
-          cleanupLocalSetup();
-          return;
-        }
-
-        unlistenOutputRef.current = unlistenOut;
-        unlistenExitRef.current = unlistenExit;
-
-        try {
-          const snapshot = await pty.attachSnapshot(connectedPtyId);
-          if (isStaleSetup() || !terminal.current) {
-            cleanupLocalSetup();
-            return;
-          }
-          if (snapshot) {
-            if (terminal.current) {
-              terminal.current.clear();
-              terminal.current.write('\x1b[2J\x1b[H');
-              if (snapshot.rows && snapshot.cols) {
-                terminal.current.resize(snapshot.cols, snapshot.rows);
-                lastPtySizeRef.current = { rows: snapshot.rows, cols: snapshot.cols };
-              }
-            }
-            sequencer.applySnapshot({
-              seq: snapshot.seq,
-              data: `${snapshot.history || ''}${snapshot.data || ''}`,
-            });
-          } else {
-            sequencer.applySnapshot({ seq: 0, data: '' });
-          }
-        } catch (error) {
-          if (isStaleSetup() || !terminal.current) {
-            cleanupLocalSetup();
-            return;
-          }
-          // A registered renderer with no snapshot watermark would keep ACK 0
-          // alive via heartbeat and permanently pin an already-backpressured
-          // PTY. Tear down this consumer and let the normal reconnect path
-          // retry the atomic attach instead of reporting a false connection.
-          cleanupLocalSetup();
-          throw error;
-        }
-
-        setConnected(true);
-        setConnecting(false);
-        retryCountRef.current = 0;
-        setRetryAttempt(0);
-        setConnectError(null);
-        recoverTerminalSurface(true, true);
-
-        const command = initialCommandRef.current?.trim();
-        const shouldSendInitialCommand =
-          command &&
-          !(suppressInitialCommandWhenPtyExistsRef.current && sessionAlreadyExists);
-
-        if (shouldSendInitialCommand) {
-          await pty.input(connectedPtyId, `${command}\r`);
-          if (isStaleSetup()) {
-            cleanupLocalSetup();
-            return;
-          }
-          onInitialCommandSentRef.current?.();
-        }
-      } catch (error) {
-        cleanupLocalSetup();
-        if (connectGenerationRef.current !== setupGeneration) return;
-        logger.error('[Shell] PTY connection failed:', error);
-        setConnectError(error instanceof Error ? error.message : String(error));
-        setConnected(false);
-        setConnecting(false);
-        scheduleReconnect(connectPty);
-      }
-    };
-
-    setup();
-  }, [
-    cleanupListeners,
+  const {
+    detachCurrentPty,
+    connectToShell,
+    restartShell,
+    restartAfterExit,
+    retryConnectNow,
+  } = usePtyConnectionController({
     paneId,
-    recoverTerminalSurface,
     rendererScope,
-    restoreOutputConsumerFromSnapshot,
-    scheduleNewOutputFlush,
-    scheduleReconnect,
-    scheduleTerminalRefresh,
-    scrollTerminalToBottom,
-    setConnected,
-    setConnecting,
+    isInitialized,
     t,
-  ]);
-
-  const connectToShell = useCallback(() => {
-    if (!isInitialized || isConnectedRef.current || isConnectingRef.current) return;
-    manuallyDisconnected.current = false;
-    connectPty();
-  }, [connectPty, isInitialized]);
-
-  const disconnectFromShell = useCallback(() => {
-    manuallyDisconnected.current = true;
-    detachCurrentPty({ clearTerminal: true, kill: true });
-  }, [detachCurrentPty]);
-
-  const restartShell = useCallback(() => {
-    setIsRestarting(true);
-    disconnectFromShell();
-    manuallyDisconnected.current = false;
-
-    if (terminal.current) {
-      terminal.current.dispose();
-      terminal.current = null;
-      fitAddon.current = null;
-    }
-
-    setIsInitialized(false);
-    setTimeout(() => {
-      setIsRestarting(false);
-    }, 200);
-  }, [disconnectFromShell]);
-
-  // Audit P1-2: explicit user restart after the session exited. This is the
-  // only path (besides a fresh ptyId from auto-restart) that clears the
-  // screen — the user has read the exit banner and asked for a new session.
-  const restartAfterExit = useCallback(() => {
-    exitedRef.current = false;
-    setExitInfo(null);
-    retryCountRef.current = 0;
-    setRetryAttempt(0);
-    setConnectError(null);
-    manuallyDisconnected.current = false;
-    const term = terminal.current;
-    if (term) {
-      term.clear();
-      term.write('\x1b[2J\x1b[H');
-    }
-    connectToShell();
-  }, [connectToShell]);
-
-  // Audit P1-4: skip the backoff wait and reconnect immediately.
-  const retryConnectNow = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-    retryCountRef.current = 0;
-    setRetryAttempt(0);
-    manuallyDisconnected.current = false;
-    connectPty();
-  }, [connectPty]);
+    terminalRef: terminal,
+    fitAddonRef: fitAddon,
+    ptyIdRef,
+    unlistenOutputRef,
+    unlistenExitRef,
+    retryCountRef,
+    reconnectTimeoutRef,
+    manuallyDisconnectedRef: manuallyDisconnected,
+    lastPtySizeRef,
+    outputSequencerRef,
+    outputConsumerRef,
+    connectGenerationRef,
+    desiredPaneIdRef,
+    selectedProjectRef,
+    initialCommandRef,
+    onInitialCommandSentRef,
+    activeRef,
+    preservePtyOnUnmountRef,
+    autoReconnectOnExitRef,
+    suppressInitialCommandWhenPtyExistsRef,
+    isConnectingRef,
+    isConnectedRef,
+    exitedRef,
+    scrolledUpRef,
+    pendingNewLinesRef,
+    newOutputFlushTimerRef,
+    setIsConnected,
+    setIsConnecting,
+    setIsRestarting,
+    setIsInitialized,
+    setExitInfo,
+    setRetryAttempt,
+    setConnectError,
+    setScrolledUp,
+    setNewOutputLines,
+    setAuthUrlCopyStatus,
+    setIsAuthPanelDismissed,
+    cleanupListeners,
+    restoreOutputConsumerFromSnapshot,
+    recoverTerminalSurface,
+    scrollTerminalToBottom,
+    scheduleTerminalRefresh,
+  });
 
   const openAuthUrlInBrowser = useCallback((url: string): boolean => {
     if (!url) return false;
@@ -693,38 +351,25 @@ function Shell({
     restoreOutputConsumerFromSnapshot,
   });
 
-  // A fresh ptyId (auto-restart feature, or a different card reusing this
-  // Shell) clears the exit gate so the autoConnect effect below may run.
-  // Defined BEFORE the autoConnect effect — same-commit effect order matters.
-  useEffect(() => {
-    exitedRef.current = false;
-    setExitInfo(null);
-    retryCountRef.current = 0;
-    setRetryAttempt(0);
-    setConnectError(null);
-  }, [paneId]);
-
-  useEffect(() => {
-    if (!isInitialized || !paneId) return;
-    if (ptyIdRef.current === paneId) return;
-    if (!ptyIdRef.current && !isConnectingRef.current && !isConnectedRef.current) return;
-
-    manuallyDisconnected.current = false;
-    detachCurrentPty({ clearTerminal: true, kill: false });
-  }, [detachCurrentPty, isInitialized, paneId]);
-
-  useEffect(() => {
-    if (!autoConnect || !isInitialized) return;
-    if (isConnectingRef.current || isConnectedRef.current) return;
-    if (manuallyDisconnected.current) return;
-    // Audit P1-2: after a PTY exit the session stays down (banner + restart
-    // strip) instead of silently respawning with a cleared screen.
-    if (exitedRef.current) return;
-    // A failed connect already scheduled a backoff retry; re-triggering here
-    // would bypass the backoff and spin connect→fail→connect synchronously.
-    if (reconnectTimeoutRef.current) return;
-    connectToShell();
-  }, [autoConnect, isInitialized, isConnecting, isConnected, connectToShell]);
+  usePtyConnectionLifecycle({
+    paneId,
+    autoConnect,
+    isInitialized,
+    isConnecting,
+    isConnected,
+    ptyIdRef,
+    isConnectingRef,
+    isConnectedRef,
+    manuallyDisconnectedRef: manuallyDisconnected,
+    exitedRef,
+    reconnectTimeoutRef,
+    retryCountRef,
+    setExitInfo,
+    setRetryAttempt,
+    setConnectError,
+    detachCurrentPty,
+    connectToShell,
+  });
 
   if (!selectedProject) {
     return (
