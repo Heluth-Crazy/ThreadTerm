@@ -4,7 +4,7 @@
 
 - [x] 锁定全量测试与现有页面流程基线。
 - [x] GitNexus context/impact 建立小清理依赖图。
-- [ ] 等前序功能任务全部暂存且工作区稳定后再开始大模块搬迁。
+- [x] 前序功能任务均已独立提交，工作区除工具缓存外稳定后开始大模块搬迁。
 
 ## Small Cleanup
 
@@ -15,7 +15,7 @@
 
 ## Module Splits
 
-- [ ] bridge 纯函数/preview 先拆。
+- [x] bridge 纯函数/preview 先拆。
 - [ ] bridge projection/runtime/commands 分层。
 - [ ] Shell 类型化并按生命周期拆 hooks。
 - [ ] TerminalManager 模型/注册/协调拆分。
@@ -32,5 +32,5 @@
 
 ## Conflict Gate
 
-- [ ] `bridge`、`Shell`、`TerminalManager` 当前同时承载已暂存功能和本批修复，
-  且另一代理正在调整 UI；大拆分保持独立后续任务，禁止在此时强行搬文件。
+- [x] 开始拆分前确认工作区无重叠功能改动；后端 preview 首步与 UI 文件无交集，
+  并保持独立提交。

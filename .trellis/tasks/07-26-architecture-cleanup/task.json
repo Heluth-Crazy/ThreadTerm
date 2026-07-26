@@ -3,7 +3,7 @@
   "name": "architecture-cleanup",
   "title": "大型模块拆分与废弃代码收口",
   "description": "拆分持续膨胀的 bridge/Shell/TerminalManager，统一重复文本处理并删除确认无用的旧参数和脚手架",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
