@@ -1,5 +1,6 @@
 pub mod protocol;
 
+mod commands;
 mod network;
 mod pairing;
 mod preview;
@@ -7,10 +8,7 @@ mod projection;
 mod runtime;
 mod server;
 
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::sync::{Arc, Mutex};
 
 use once_cell::sync::{Lazy, OnceCell};
 use rand::{distributions::Alphanumeric, Rng};
@@ -19,7 +17,6 @@ use tokio::sync::broadcast;
 
 use crate::pty::{self, SessionState};
 
-use network::{normalize_pair_public_target, DEFAULT_BRIDGE_PORT};
 use pairing::PairingStore;
 use preview::preview_from_output;
 #[cfg(test)]
@@ -31,7 +28,9 @@ use protocol::{
     NotificationEntry, PairQrResponse, ServerMessage, TerminalStatus, TerminalThemeTokens,
     ThemeMode,
 };
-use runtime::{load_or_create_bridge_server_id, start_bridge_runtime, stop_bridge_runtime};
+use runtime::load_or_create_bridge_server_id;
+#[cfg(test)]
+use runtime::stop_bridge_runtime;
 
 const PREVIEW_CHANNEL_CAPACITY: usize = 1024;
 
@@ -236,13 +235,12 @@ pub fn set_app_handle(app_handle: tauri::AppHandle) {
 
 #[tauri::command]
 pub async fn bridge_start(host: Option<String>, port: Option<u16>) -> Result<BridgeStatus, String> {
-    start_bridge_runtime(host, port, !cfg!(test)).await
+    commands::start(host, port).await
 }
 
 #[tauri::command]
 pub async fn bridge_sync_cards(cards: Vec<CardMeta>) -> Result<(), String> {
-    BRIDGE_RUNTIME.sync_cards(cards);
-    Ok(())
+    commands::sync_cards(cards).await
 }
 
 #[tauri::command]
@@ -251,8 +249,7 @@ pub async fn bridge_sync_state(
     notifications: Vec<NotificationEntry>,
     workbench: Option<MobileWorkbenchProjection>,
 ) -> Result<(), String> {
-    BRIDGE_RUNTIME.sync_state(cards, notifications, workbench);
-    Ok(())
+    commands::sync_state(cards, notifications, workbench).await
 }
 
 #[tauri::command]
@@ -263,14 +260,7 @@ pub async fn bridge_resolve_mobile_spawn(
     error_code: Option<String>,
     message: Option<String>,
 ) -> Result<(), String> {
-    BRIDGE_RUNTIME.broadcast(ServerMessage::SpawnResult {
-        request_id,
-        ok,
-        card_id,
-        error_code,
-        message,
-    });
-    Ok(())
+    commands::resolve_spawn(request_id, ok, card_id, error_code, message).await
 }
 
 #[tauri::command]
@@ -281,14 +271,7 @@ pub async fn bridge_resolve_mobile_activate(
     error_code: Option<String>,
     message: Option<String>,
 ) -> Result<(), String> {
-    BRIDGE_RUNTIME.broadcast(ServerMessage::ActivateResult {
-        request_id,
-        ok,
-        card_id,
-        error_code,
-        message,
-    });
-    Ok(())
+    commands::resolve_activate(request_id, ok, card_id, error_code, message).await
 }
 
 #[tauri::command]
@@ -299,14 +282,7 @@ pub async fn bridge_resolve_mobile_close(
     error_code: Option<String>,
     message: Option<String>,
 ) -> Result<(), String> {
-    BRIDGE_RUNTIME.broadcast(ServerMessage::CloseResult {
-        request_id,
-        ok,
-        card_id,
-        error_code,
-        message,
-    });
-    Ok(())
+    commands::resolve_close(request_id, ok, card_id, error_code, message).await
 }
 
 #[tauri::command]
@@ -317,29 +293,22 @@ pub async fn bridge_resolve_mobile_rename_card(
     error_code: Option<String>,
     message: Option<String>,
 ) -> Result<(), String> {
-    BRIDGE_RUNTIME.broadcast(ServerMessage::RenameResult {
-        request_id,
-        ok,
-        card_id,
-        error_code,
-        message,
-    });
-    Ok(())
+    commands::resolve_rename_card(request_id, ok, card_id, error_code, message).await
 }
 
 #[tauri::command]
 pub async fn bridge_stop() -> Result<BridgeStatus, String> {
-    stop_bridge_runtime(Duration::from_secs(2)).await
+    commands::stop().await
 }
 
 #[tauri::command]
 pub async fn bridge_status(_refresh: Option<bool>) -> Result<BridgeStatus, String> {
-    Ok(BRIDGE_RUNTIME.status())
+    commands::status(_refresh).await
 }
 
 #[tauri::command]
 pub async fn bridge_has_subscribers() -> Result<bool, String> {
-    Ok(BRIDGE_RUNTIME.has_subscribers())
+    commands::has_subscribers().await
 }
 
 #[tauri::command]
@@ -347,34 +316,17 @@ pub async fn bridge_pair_qr(
     public_url: Option<String>,
     permission: Option<DevicePermission>,
 ) -> Result<PairQrResponse, String> {
-    let status = BRIDGE_RUNTIME.status();
-    if !status.running {
-        return Err("Start mobile access before creating a pairing code.".to_string());
-    }
-    let local_port = status.port.unwrap_or(DEFAULT_BRIDGE_PORT);
-    let target = normalize_pair_public_target(public_url.as_deref(), local_port)?;
-    let server_id = BRIDGE_RUNTIME.server_id().to_string();
-
-    Ok(BRIDGE_RUNTIME.pairing.create_pair_qr_for_target(
-        target.base_url,
-        target.host,
-        target.port,
-        server_id,
-        permission.unwrap_or(DevicePermission::ReadOnly),
-    ))
+    commands::pair_qr(public_url, permission).await
 }
 
 #[tauri::command]
 pub async fn bridge_devices() -> Result<Vec<BridgeDevice>, String> {
-    Ok(BRIDGE_RUNTIME.pairing.list_devices())
+    commands::devices().await
 }
 
 #[tauri::command]
 pub async fn bridge_revoke_device(device_id: String) -> Result<bool, String> {
-    let runtime = BRIDGE_RUNTIME.clone();
-    tokio::task::spawn_blocking(move || runtime.pairing.revoke_device(&device_id))
-        .await
-        .map_err(|error| format!("Failed to join mobile bridge revocation task: {error}"))?
+    commands::revoke_device(device_id).await
 }
 
 #[tauri::command]
@@ -383,8 +335,7 @@ pub async fn bridge_broadcast_theme(
     terminal: TerminalThemeTokens,
     mode: ThemeMode,
 ) -> Result<(), String> {
-    broadcast_theme(app, terminal, mode);
-    Ok(())
+    commands::publish_theme(app, terminal, mode).await
 }
 
 pub fn broadcast_preview<F>(card_id: &str, build_output: F)

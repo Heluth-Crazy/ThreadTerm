@@ -20,8 +20,12 @@
 - `bridge/runtime.rs` owns managed-server start/stop, startup restoration,
   lifecycle serialization, and persistence of bridge identity and running
   state.
+- `bridge/commands.rs` owns the command-handler behavior for bridge controls,
+  state synchronization, mobile action results, pairing, device management,
+  and theme publication.
 - `bridge/mod.rs` is the compatibility facade and currently coordinates the
-  outward bridge broadcasts.
+  outward bridge broadcasts. It retains the exact Tauri command function names
+  and signatures as thin registration wrappers.
 
 ## Preview Contract
 
@@ -41,8 +45,11 @@ network <- runtime
 preview <- projection -> protocol
 protocol <- pairing <- server
 protocol <- runtime -> server
-runtime facade -> preview
-runtime facade -> projection
+protocol <- commands -> runtime
+commands -> network
+compatibility facade -> commands
+compatibility facade -> preview
+compatibility facade -> projection
 ```
 
 Projection methods may read `BridgeRuntime` state but must not own server
