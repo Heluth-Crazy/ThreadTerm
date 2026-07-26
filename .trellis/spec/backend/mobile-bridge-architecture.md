@@ -17,8 +17,11 @@
 - `bridge/projection.rs` owns the desktop/mobile state mirror, card/PTY identity
   lookup, live-state enrichment, terminal snapshot message construction, and
   pure PTY-snapshot/tombstone-to-`CardMeta` projection.
+- `bridge/runtime.rs` owns managed-server start/stop, startup restoration,
+  lifecycle serialization, and persistence of bridge identity and running
+  state.
 - `bridge/mod.rs` is the compatibility facade and currently coordinates the
-  managed server runtime and outward bridge broadcasts.
+  outward bridge broadcasts.
 
 ## Preview Contract
 
@@ -34,10 +37,10 @@
 ## Dependency Direction
 
 ```text
-network <- runtime facade
+network <- runtime
 preview <- projection -> protocol
 protocol <- pairing <- server
-protocol <- runtime facade -> server
+protocol <- runtime -> server
 runtime facade -> preview
 runtime facade -> projection
 ```
