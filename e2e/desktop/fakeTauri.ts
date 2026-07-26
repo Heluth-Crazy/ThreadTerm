@@ -130,7 +130,7 @@ function installInPage(seed: FakeSeed): void {
   localStorage.setItem('threadterm-shortcut-hint-dismissed', '1');
   localStorage.setItem(
     'threadterm-terminal-store',
-    JSON.stringify({ state: seed.persistedState, version: 11 }),
+    JSON.stringify({ state: seed.persistedState, version: 18 }),
   );
 
   type EventCallback = (event: { event: string; id: number; payload: unknown }) => void;

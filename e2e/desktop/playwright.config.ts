@@ -9,7 +9,7 @@ const configDir = path.dirname(fileURLToPath(import.meta.url));
  *
  * Standalone config — intentionally NOT merged into the root
  * playwright.config.ts (which owns the mobile bridge e2e suite). Runs the
- * desktop Vite dev page in Chromium with a fake `__TAURI_INTERNALS__`
+ * desktop Vite page in Chromium with a fake `__TAURI_INTERNALS__`
  * injected per-test (see ./fakeTauri.ts); real WebView2/WKWebView rendering
  * differences stay covered by the manual dual-platform checklist.
  */
@@ -21,6 +21,7 @@ export default defineConfig({
   },
   fullyParallel: false,
   reporter: [['list']],
+  globalSetup: './globalSetup.ts',
   use: {
     baseURL: 'http://127.0.0.1:5176',
     trace: 'retain-on-failure',
@@ -29,7 +30,7 @@ export default defineConfig({
   webServer: {
     command: 'npx vite --host 127.0.0.1 --port 5176 --strictPort',
     url: 'http://127.0.0.1:5176',
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     timeout: 120_000,
     // webServer cwd defaults to this config's directory — point Vite at the
     // repo root where index.html lives.
