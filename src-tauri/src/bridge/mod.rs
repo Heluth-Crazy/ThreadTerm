@@ -19,12 +19,14 @@ use crate::pty::{self, SessionState};
 
 use pairing::PairingStore;
 use preview::preview_from_output;
-use projection::{card_meta_from_live_session, card_meta_tombstone};
+#[cfg(test)]
+use projection::card_meta_tombstone;
+use projection::{card_meta_from_live_session, terminal_snapshot_message, BridgeStateMirror};
 use protocol::{
-    AppThemeTokens, BridgeDevice, BridgeSnapshot, BridgeStatus, BridgeTheme, CardMeta,
-    DevicePermission, MobileCardRequest, MobileRenameCardRequest, MobileSpawnCardRequest,
-    MobileWorkbenchProjection, NotificationEntry, PairQrResponse, ServerMessage,
-    TerminalSnapshotMessage, TerminalStatus, TerminalThemeTokens, ThemeMode,
+    AppThemeTokens, BridgeDevice, BridgeStatus, BridgeTheme, CardMeta, DevicePermission,
+    MobileCardRequest, MobileRenameCardRequest, MobileSpawnCardRequest, MobileWorkbenchProjection,
+    NotificationEntry, PairQrResponse, ServerMessage, TerminalStatus, TerminalThemeTokens,
+    ThemeMode,
 };
 
 const DEFAULT_BRIDGE_HOST: &str = "127.0.0.1";
@@ -53,14 +55,6 @@ pub struct BridgeRuntime {
     preview_snapshot_serializations: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     snapshot_card_enrichments: std::sync::atomic::AtomicUsize,
-}
-
-#[derive(Default)]
-struct BridgeStateMirror {
-    cards: Vec<CardMeta>,
-    notifications: Vec<NotificationEntry>,
-    workbench: Option<MobileWorkbenchProjection>,
-    initialized: bool,
 }
 
 pub(crate) struct PreparedCardRemoval {
@@ -155,198 +149,6 @@ impl BridgeRuntime {
             .lock()
             .map(|theme| theme.clone())
             .unwrap_or_default()
-    }
-
-    pub fn snapshot(&self) -> BridgeSnapshot {
-        self.snapshot_with_enricher(enrich_card_with_live_state)
-    }
-
-    fn snapshot_with_enricher<F>(&self, mut enrich: F) -> BridgeSnapshot
-    where
-        F: FnMut(CardMeta) -> CardMeta,
-    {
-        let (initialized, cards, notifications, workbench) = self
-            .state_mirror
-            .lock()
-            .map(|state| {
-                (
-                    state.initialized,
-                    state.cards.clone(),
-                    state.notifications.clone(),
-                    state.workbench.clone(),
-                )
-            })
-            .unwrap_or_else(|_| (false, Vec::new(), Vec::new(), None));
-        if !initialized {
-            return BridgeSnapshot {
-                cards: Vec::new(),
-                notifications: Vec::new(),
-                workbench: None,
-                warming_up: true,
-                server_id: self.server_id().to_string(),
-                runtime_id: self.runtime_id.clone(),
-                stream_seq: self.current_terminal_stream_seq(),
-            };
-        }
-
-        // F-01 lock discipline: CLONE under `state_mirror`, ENRICH outside
-        // the lock. `enrich_card_with_live_state` calls
-        // `pty::live_session_snapshot`, which reads PTY state. Acquiring the
-        // PTY state lock while holding `state_mirror` is the reverse order of
-        // `pty::session::set_session_state` -> `bridge::broadcast_state` ->
-        // `card_id_for_pty` (which locks `state_mirror`); together they can
-        // deadlock. The previous snapshot behavior (cards after enrichment)
-        // is preserved bit-for-bit — only the lock scope changes.
-        let cards = cards
-            .into_iter()
-            .map(|card| {
-                #[cfg(test)]
-                self.snapshot_card_enrichments
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                enrich(card)
-            })
-            .collect();
-
-        BridgeSnapshot {
-            cards,
-            notifications,
-            workbench,
-            warming_up: false,
-            server_id: self.server_id().to_string(),
-            runtime_id: self.runtime_id.clone(),
-            stream_seq: self.current_terminal_stream_seq(),
-        }
-    }
-
-    pub fn sync_cards(&self, cards: Vec<CardMeta>) {
-        if let Ok(mut mirror) = self.state_mirror.lock() {
-            mirror.cards = cards;
-            mirror.initialized = true;
-        }
-        self.broadcast_state_snapshot_if_subscribed();
-    }
-
-    pub fn sync_state(
-        &self,
-        cards: Vec<CardMeta>,
-        notifications: Vec<NotificationEntry>,
-        workbench: Option<MobileWorkbenchProjection>,
-    ) {
-        if let Ok(mut mirror) = self.state_mirror.lock() {
-            mirror.cards = cards;
-            mirror.notifications = notifications;
-            mirror.workbench = workbench;
-            mirror.initialized = true;
-        }
-        self.broadcast_state_snapshot_if_subscribed();
-    }
-
-    fn broadcast_state_snapshot_if_subscribed(&self) {
-        // The mirror is durable bridge state and must always be updated, even
-        // with no WebSocket clients. The enriched snapshot is broadcast-only
-        // work; a later HTTP/WebSocket client builds a fresh snapshot on
-        // demand, so there is no reason to serialize every live terminal now.
-        if !self.has_subscribers() {
-            return;
-        }
-        let snapshot = self.snapshot();
-        self.broadcast(ServerMessage::from(snapshot.clone()));
-        // FIX-2 (deep-research-defect-fix / second-diagnosis 问题一-D):
-        // terminal_snapshot is sent ONLY on first connect / reconnect /
-        // Lagged-recovery (server.rs::initial_messages_for_client) and on
-        // single-card add (broadcast_card_added). Card-mirror metadata sync
-        // must NOT re-broadcast every live card's full screen snapshot —
-        // that was the dominant WS amplification under sustained output.
-        // Live screen content is already delivered incrementally via the
-        // independent broadcast_terminal_output channel, so dropping the
-        // per-sync full re-snapshot does not lose any client state.
-    }
-
-    pub fn pty_id_for_card(&self, card_id: &str) -> String {
-        self.state_mirror
-            .lock()
-            .ok()
-            .and_then(|state| {
-                state
-                    .cards
-                    .iter()
-                    .find(|card| card.id == card_id)
-                    .and_then(|card| card.pty_id.clone())
-            })
-            .unwrap_or_else(|| card_id.to_string())
-    }
-
-    pub fn card_id_for_pty(&self, pty_id: &str) -> String {
-        self.state_mirror
-            .lock()
-            .ok()
-            .and_then(|state| {
-                state
-                    .cards
-                    .iter()
-                    .find(|card| {
-                        card.id == pty_id
-                            || card
-                                .pty_id
-                                .as_deref()
-                                .map(|candidate| candidate == pty_id)
-                                .unwrap_or(false)
-                    })
-                    .map(|card| card.id.clone())
-            })
-            .unwrap_or_else(|| pty_id.to_string())
-    }
-
-    fn mirrored_card_for_pty(&self, pty_id: &str) -> Option<CardMeta> {
-        self.mirrored_card_for_pty_with_enricher(pty_id, enrich_card_with_live_state)
-    }
-
-    fn cloned_mirrored_card_for_pty(&self, pty_id: &str) -> Option<CardMeta> {
-        self.state_mirror.lock().ok().and_then(|state| {
-            state
-                .cards
-                .iter()
-                .find(|card| {
-                    card.id == pty_id
-                        || card
-                            .pty_id
-                            .as_deref()
-                            .map(|candidate| candidate == pty_id)
-                            .unwrap_or(false)
-                })
-                .cloned()
-        })
-    }
-
-    fn mirrored_card_for_pty_with_enricher<F>(&self, pty_id: &str, enrich: F) -> Option<CardMeta>
-    where
-        F: FnOnce(CardMeta) -> CardMeta,
-    {
-        // F-01 lock discipline: find+clone under `state_mirror`, enrich
-        // outside. `enrich_card_with_live_state` reenters PTY state via
-        // `pty::live_session_snapshot`, which would reverse
-        // `set_session_state`'s lock order and risk deadlock.
-        self.cloned_mirrored_card_for_pty(pty_id).map(enrich)
-    }
-
-    fn mirrored_card_for_removal(&self, pty_id: &str) -> Option<CardMeta> {
-        self.cloned_mirrored_card_for_pty(pty_id).map(|mut card| {
-            card.pty_live = false;
-            card.pty_state = None;
-            card
-        })
-    }
-
-    fn prepare_card_removal(
-        &self,
-        pty_id: &str,
-        state: SessionState,
-        working_dir: &str,
-    ) -> PreparedCardRemoval {
-        let card = self
-            .mirrored_card_for_removal(pty_id)
-            .unwrap_or_else(|| card_meta_tombstone(pty_id, state, working_dir));
-        PreparedCardRemoval { card }
     }
 
     fn broadcast_preview_lazy<F>(&self, card_id: &str, build_output: F)
@@ -949,27 +751,6 @@ pub(crate) fn broadcast_card_removed(removal: PreparedCardRemoval) {
     BRIDGE_RUNTIME.broadcast(ServerMessage::CardRemoved { card: removal.card });
 }
 
-pub(super) fn terminal_snapshot_message(
-    runtime: &BridgeRuntime,
-    card_id: &str,
-) -> Option<TerminalSnapshotMessage> {
-    let pty_id = runtime.pty_id_for_card(card_id);
-    let snapshot = pty::attach_snapshot_for_bridge(&pty_id)?;
-    let bridge_card_id = runtime.card_id_for_pty(&snapshot.pty_id);
-    Some(TerminalSnapshotMessage {
-        card_id: bridge_card_id,
-        data: snapshot.data,
-        seq: snapshot.seq,
-        runtime_id: runtime.runtime_id().to_string(),
-        stream_seq: runtime.current_terminal_stream_seq(),
-        rows: snapshot.rows,
-        cols: snapshot.cols,
-        cursor_row: snapshot.cursor_row,
-        cursor_col: snapshot.cursor_col,
-        history: snapshot.history,
-    })
-}
-
 fn broadcast_terminal_snapshots_for_cards(cards: &[CardMeta]) {
     for card in cards {
         if !card.pty_live {
@@ -979,29 +760,6 @@ fn broadcast_terminal_snapshots_for_cards(cards: &[CardMeta]) {
             BRIDGE_RUNTIME.broadcast(ServerMessage::TerminalSnapshot { snapshot });
         }
     }
-}
-
-fn enrich_card_with_live_state(mut card: CardMeta) -> CardMeta {
-    let pty_id = card.pty_id.clone().unwrap_or_else(|| card.id.clone());
-    let Some(snapshot) = pty::live_session_snapshot(&pty_id) else {
-        card.pty_live = false;
-        card.pty_state = None;
-        return card;
-    };
-
-    let preview = preview_from_output(&snapshot.terminal_output);
-    let status = TerminalStatus::from(snapshot.state);
-    card.pty_id = Some(snapshot.id);
-    card.status = status.clone();
-    card.pty_live = true;
-    card.pty_state = Some(status);
-    card.recent_output_bytes = snapshot.recent_output.len();
-    if !preview.last_reply_preview.is_empty() {
-        card.last_reply_preview = preview.last_reply_preview;
-        card.summary_line = preview.summary_line;
-        card.hidden_line_count = preview.hidden_line_count;
-    }
-    card
 }
 
 #[cfg(test)]

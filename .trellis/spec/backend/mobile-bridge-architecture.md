@@ -12,10 +12,11 @@
 - `bridge/server.rs` owns HTTP/WebSocket transport, authentication at the
   transport boundary, connection tracking, and request dispatch.
 - `bridge/preview.rs` owns pure terminal-text-to-card-preview projection.
-- `bridge/projection.rs` owns pure PTY-snapshot/tombstone-to-`CardMeta`
-  construction and project-name derivation.
+- `bridge/projection.rs` owns the desktop/mobile state mirror, card/PTY identity
+  lookup, live-state enrichment, terminal snapshot message construction, and
+  pure PTY-snapshot/tombstone-to-`CardMeta` projection.
 - `bridge/mod.rs` is the compatibility facade and currently coordinates the
-  managed server runtime and the desktop/mobile state mirror.
+  managed server runtime and outward bridge broadcasts.
 
 ## Preview Contract
 
@@ -38,9 +39,10 @@ runtime facade -> preview
 runtime facade -> projection
 ```
 
-Pure projection modules must not depend on the runtime facade. The facade may
-compose projections with PTY snapshots only after releasing the state-mirror
-lock, preserving the existing lock-order contract.
+Projection methods may read `BridgeRuntime` state but must not own server
+start/stop. They clone mirrored state under the mirror lock and enrich it with
+PTY state only after releasing that lock, preserving the existing lock-order
+contract.
 
 ## Refactoring Rules
 
