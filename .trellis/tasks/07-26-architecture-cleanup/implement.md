@@ -19,6 +19,7 @@
 - [ ] bridge projection/runtime/commands 分层。
   - [x] 纯卡片资料组装与项目名派生迁入 projection。
   - [x] 状态镜像与实时终端补全迁入 projection。
+  - [x] 网络地址与安全隧道校验迁入 network。
   - [ ] 服务生命周期迁入 runtime。
   - [ ] Tauri 命令薄入口迁入 commands。
 - [ ] Shell 类型化并按生命周期拆 hooks。

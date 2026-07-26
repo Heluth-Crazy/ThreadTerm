@@ -11,6 +11,8 @@
   revocation, and audit persistence.
 - `bridge/server.rs` owns HTTP/WebSocket transport, authentication at the
   transport boundary, connection tracking, and request dispatch.
+- `bridge/network.rs` owns loopback bind defaults and pairing-target
+  normalization for local access and secure tunnels.
 - `bridge/preview.rs` owns pure terminal-text-to-card-preview projection.
 - `bridge/projection.rs` owns the desktop/mobile state mirror, card/PTY identity
   lookup, live-state enrichment, terminal snapshot message construction, and
@@ -32,6 +34,7 @@
 ## Dependency Direction
 
 ```text
+network <- runtime facade
 preview <- projection -> protocol
 protocol <- pairing <- server
 protocol <- runtime facade -> server
