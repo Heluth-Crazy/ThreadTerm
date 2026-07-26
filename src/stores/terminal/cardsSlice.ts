@@ -33,11 +33,11 @@ import {
   prependProjectCardOrder,
   providerSessionKey,
   restoreArchivedCardSnapshot,
-  stripAnsi,
   tailJoin,
   uid,
   uuid,
 } from './helpers';
+import { stripAnsiTail } from '../../lib/ansiText';
 import type { CardsSlice, TerminalSliceCreator } from './types';
 import { MAX_CARD_NAME_LENGTH } from './types';
 
@@ -364,7 +364,7 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
     set((state) => {
       const idx = state.cards.findIndex((c) => c.id === id);
       if (idx === -1) return state;
-      const cleaned = stripAnsi(chunk);
+      const cleaned = stripAnsiTail(chunk, MAX_LAST_OUTPUT_LENGTH);
       const cards = [...state.cards];
       const existing = cards[idx];
       cards[idx] = {
@@ -383,7 +383,7 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
       const existing = state.cards[idx];
       let updated = existing;
       if (chunk !== null) {
-        const cleaned = stripAnsi(chunk);
+        const cleaned = stripAnsiTail(chunk, MAX_LAST_OUTPUT_LENGTH);
         updated = {
           ...updated,
           lastOutput: tailJoin(existing.lastOutput, cleaned, MAX_LAST_OUTPUT_LENGTH),

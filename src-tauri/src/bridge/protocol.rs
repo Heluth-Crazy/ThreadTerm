@@ -18,6 +18,8 @@ pub struct CardMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
@@ -45,12 +47,124 @@ pub struct CardMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NotificationRouting {
+    pub origin: String,
+    pub family: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NotificationEntry {
     pub id: String,
     pub card_id: String,
     pub kind: String,
     pub message: String,
     pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<NotificationRouting>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileAttentionCapability {
+    pub open_request: bool,
+    pub open_terminal: bool,
+    pub open_notification: bool,
+    pub open_evidence: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileAttentionItem {
+    pub id: String,
+    pub card_id: String,
+    pub kind: String,
+    pub severity: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub occurred_at: u64,
+    pub project_path: String,
+    pub project_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_label: Option<String>,
+    pub terminal_type: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub reason_code: String,
+    pub capability: MobileAttentionCapability,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileExecutionGroup {
+    pub id: String,
+    pub project_path: String,
+    pub project_name: String,
+    pub worktree_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_label: Option<String>,
+    pub card_ids: Vec<String>,
+    pub terminal_count: usize,
+    pub terminal_types: Vec<String>,
+    pub attention_count: usize,
+    pub status: String,
+    pub terminal_statuses: Vec<String>,
+    pub last_activity: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileWorkbenchSummary {
+    pub attention: usize,
+    pub normal_running: usize,
+    pub review: usize,
+    pub failed: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileWorkbenchRules {
+    pub include_waiting: bool,
+    pub include_failed: bool,
+    pub include_completed_review: bool,
+    pub stalled_enabled: bool,
+    pub stalled_threshold_minutes: u64,
+    pub stalled_excluded_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileWorkbenchCapabilities {
+    pub open_terminal: bool,
+    pub respond_to_structured_request: bool,
+    pub update_rules: bool,
+    pub update_notification_read_state: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileWorkbenchProjection {
+    pub generated_at: u64,
+    pub summary: MobileWorkbenchSummary,
+    pub attention_items: Vec<MobileAttentionItem>,
+    pub execution_groups: Vec<MobileExecutionGroup>,
+    pub rules: MobileWorkbenchRules,
+    pub capabilities: MobileWorkbenchCapabilities,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -58,8 +172,12 @@ pub struct NotificationEntry {
 pub struct BridgeSnapshot {
     pub cards: Vec<CardMeta>,
     pub notifications: Vec<NotificationEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workbench: Option<MobileWorkbenchProjection>,
     #[serde(default)]
     pub warming_up: bool,
+    pub runtime_id: String,
+    pub stream_seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,6 +186,8 @@ pub struct TerminalSnapshotMessage {
     pub card_id: String,
     pub data: String,
     pub seq: u64,
+    pub runtime_id: String,
+    pub stream_seq: u64,
     pub rows: u16,
     pub cols: u16,
     pub cursor_row: u16,
@@ -297,6 +417,7 @@ pub enum ClientMessage {
         card_id: String,
         project_name: String,
     },
+    TerminalResync,
     Ping,
 }
 
@@ -307,8 +428,14 @@ pub enum ServerMessage {
     Snapshot {
         cards: Vec<CardMeta>,
         notifications: Vec<NotificationEntry>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workbench: Option<MobileWorkbenchProjection>,
         #[serde(rename = "warmingUp")]
         warming_up: bool,
+        #[serde(rename = "runtimeId")]
+        runtime_id: String,
+        #[serde(rename = "streamSeq")]
+        stream_seq: u64,
     },
     CardAdded {
         card: CardMeta,
@@ -332,6 +459,10 @@ pub enum ServerMessage {
         card_id: String,
         data: String,
         seq: u64,
+        #[serde(rename = "runtimeId")]
+        runtime_id: String,
+        #[serde(rename = "streamSeq")]
+        stream_seq: u64,
     },
     Theme {
         app: AppThemeTokens,
@@ -455,7 +586,10 @@ impl From<BridgeSnapshot> for ServerMessage {
         ServerMessage::Snapshot {
             cards: value.cards,
             notifications: value.notifications,
+            workbench: value.workbench,
             warming_up: value.warming_up,
+            runtime_id: value.runtime_id,
+            stream_seq: value.stream_seq,
         }
     }
 }
@@ -541,6 +675,7 @@ mod tests {
             project_path: "/tmp/ThreadTerm".to_string(),
             project_name: "ThreadTerm".to_string(),
             worktree_path: None,
+            branch_label: Some("mobile".to_string()),
             terminal_type: Some("codex".to_string()),
             command: None,
             created_at: Some(123),
@@ -561,6 +696,7 @@ mod tests {
         assert_eq!(json["ptyId"], "pty-1");
         assert_eq!(json["projectPath"], "/tmp/ThreadTerm");
         assert_eq!(json["projectName"], "ThreadTerm");
+        assert_eq!(json["branchLabel"], "mobile");
         assert_eq!(json["terminalType"], "codex");
         assert_eq!(json["summaryLine"], "latest reply");
         assert_eq!(json["hiddenLineCount"], 2);
@@ -575,6 +711,8 @@ mod tests {
             card_id: "card-1".to_string(),
             data: "\u{1b}[1;1Hready".to_string(),
             seq: 42,
+            runtime_id: "runtime-a".to_string(),
+            stream_seq: 9,
             rows: 24,
             cols: 80,
             cursor_row: 1,
@@ -590,6 +728,8 @@ mod tests {
         assert_eq!(snapshot_json["protocol_version"], PROTOCOL_VERSION);
         assert_eq!(snapshot_json["kind"], "terminal_snapshot");
         assert_eq!(snapshot_json["snapshot"]["cardId"], "card-1");
+        assert_eq!(snapshot_json["snapshot"]["runtimeId"], "runtime-a");
+        assert_eq!(snapshot_json["snapshot"]["streamSeq"], 9);
         assert_eq!(snapshot_json["snapshot"]["cursorRow"], 1);
         assert_eq!(snapshot_json["snapshot"]["history"], "previous line\r\n");
 
@@ -598,12 +738,16 @@ mod tests {
                 card_id: "card-1".to_string(),
                 data: " streamed".to_string(),
                 seq: 43,
+                runtime_id: "runtime-a".to_string(),
+                stream_seq: 10,
             }))
             .expect("serialize terminal output");
         assert_eq!(output_json["kind"], "terminal_output");
         assert_eq!(output_json["card_id"], "card-1");
         assert_eq!(output_json["data"], " streamed");
         assert_eq!(output_json["seq"], 43);
+        assert_eq!(output_json["runtimeId"], "runtime-a");
+        assert_eq!(output_json["streamSeq"], 10);
     }
 
     #[test]
@@ -663,6 +807,14 @@ mod tests {
             ClientMessage::Auth { token } => assert_eq!(token, "device-token"),
             _ => panic!("expected auth message"),
         }
+    }
+
+    #[test]
+    fn parses_terminal_resync_message() {
+        let message = parse_client_message(r#"{"protocol_version":1,"kind":"terminal_resync"}"#)
+            .expect("parse terminal resync");
+
+        assert!(matches!(message, ClientMessage::TerminalResync));
     }
 
     #[test]

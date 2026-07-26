@@ -26,7 +26,7 @@ export const CardStatusBadge = memo(function CardStatusBadge({ status, size = 'n
 
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${statusInfo.chip}`}
+      className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-medium ${statusInfo.chip}`}
     >
       <StatusIcon className={`h-2.5 w-2.5 ${statusInfo.animate ? 'animate-spin' : ''}`} />
       {t(`status.${status}`, statusInfo.label)}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   Brain,
@@ -23,12 +23,14 @@ import { useTranslation } from 'react-i18next';
 import { logger } from '../../lib/logger';
 import type { TerminalCard } from '../../types/terminal';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { useCodexRequestStore } from '../../stores/codexRequestStore';
 import {
   codexApp,
   isTauriEnv,
   type CodexAppNotificationPayload,
-  type CodexAppRequestPayload,
 } from '../../lib/tauri-bridge';
+import type { PendingCodexRequest } from '../../lib/codexApp/pendingRequest';
+import { IconButton } from '../ui/icon-button';
 import {
   appendDelta,
   asString,
@@ -47,15 +49,6 @@ interface CodexChatViewProps {
 }
 
 type ConnectionState = 'opening' | 'ready' | 'error';
-
-interface PendingRequest {
-  key: string;
-  requestId: unknown;
-  method: string;
-  params: unknown;
-  raw: unknown;
-  createdAt: number;
-}
 
 interface SkillOption {
   name: string;
@@ -90,11 +83,15 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
   const bindCodexAppThread = useTerminalStore((s) => s.bindCodexAppThread);
   const recordUserSubmit = useTerminalStore((s) => s.recordUserSubmit);
   const updateCardReplyPreview = useTerminalStore((s) => s.updateCardReplyPreview);
+  const removeNotification = useTerminalStore((s) => s.removeNotification);
+  const pendingRequests = useCodexRequestStore((s) => s.requests);
+  const removePendingRequest = useCodexRequestStore((s) => s.removeRequest);
+  const disconnectedMessage = useCodexRequestStore((s) => s.disconnectedMessage);
+  const disconnectRevision = useCodexRequestStore((s) => s.disconnectRevision);
   const [connectionState, setConnectionState] = useState<ConnectionState>('opening');
   const [threadId, setThreadId] = useState<string | null>(card.codexAppThreadId ?? null);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
-  const [items, setItems] = useState<CodexDisplayItem[]>([]);
-  const [requests, setRequests] = useState<PendingRequest[]>([]);
+  const [items, setRenderedItems] = useState<CodexDisplayItem[]>([]);
   const [input, setInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -109,9 +106,49 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const threadIdRef = useRef<string | null>(threadId);
   const activeRef = useRef(active);
+  const itemsRef = useRef<CodexDisplayItem[]>([]);
   const cardIdRef = useRef(card.id);
+  const handledDisconnectRevisionRef = useRef(0);
 
   const cwd = card.worktreePath ?? card.projectPath;
+  const desktopOnlyMessage = t('codexChat.desktopOnly', {
+    defaultValue: 'Codex Chat requires the desktop app.',
+  });
+  const openCardSnapshotRef = useRef({
+    cardId: card.id,
+    cwd,
+    codexAppThreadId: card.codexAppThreadId,
+    providerSessionId: card.providerSessionId,
+  });
+  if (
+    openCardSnapshotRef.current.cardId !== card.id ||
+    openCardSnapshotRef.current.cwd !== cwd
+  ) {
+    openCardSnapshotRef.current = {
+      cardId: card.id,
+      cwd,
+      codexAppThreadId: card.codexAppThreadId,
+      providerSessionId: card.providerSessionId,
+    };
+  }
+  const requests = useMemo(
+    () => pendingRequests.filter((request) => request.cardId === card.id),
+    [card.id, pendingRequests],
+  );
+  const updateItems = useCallback((
+    update:
+      | CodexDisplayItem[]
+      | ((previous: CodexDisplayItem[]) => CodexDisplayItem[]),
+  ) => {
+    const next =
+      typeof update === 'function'
+        ? update(itemsRef.current)
+        : update;
+    itemsRef.current = next;
+    if (activeRef.current) {
+      setRenderedItems(next);
+    }
+  }, []);
 
   useEffect(() => {
     threadIdRef.current = threadId;
@@ -119,6 +156,9 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
 
   useEffect(() => {
     activeRef.current = active;
+    if (active) {
+      setRenderedItems(itemsRef.current);
+    }
   }, [active]);
 
   useEffect(() => {
@@ -131,34 +171,34 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
 
   useEffect(() => {
     let cancelled = false;
+    const openCardSnapshot = openCardSnapshotRef.current;
     setConnectionState('opening');
     setError(null);
-    setRequests([]);
-    setThreadId(card.codexAppThreadId ?? null);
-    setItems([]);
+    setThreadId(openCardSnapshot.codexAppThreadId ?? null);
+    updateItems([]);
 
     if (!isTauriEnv()) {
       setConnectionState('error');
-      setError(t('codexChat.desktopOnly', { defaultValue: 'Codex Chat requires the desktop app.' }));
+      setError(desktopOnlyMessage);
       return;
     }
 
     void codexApp
       .openCard({
-        cardId: card.id,
-        cwd,
-        codexAppThreadId: card.codexAppThreadId,
-        providerSessionId: card.providerSessionId,
+        cardId: openCardSnapshot.cardId,
+        cwd: openCardSnapshot.cwd,
+        codexAppThreadId: openCardSnapshot.codexAppThreadId,
+        providerSessionId: openCardSnapshot.providerSessionId,
       })
       .then((result) => {
         if (cancelled) return;
         setThreadId(result.threadId);
-        bindCodexAppThread(card.id, {
+        bindCodexAppThread(openCardSnapshot.cardId, {
           threadId: result.threadId,
           sessionId: result.sessionId,
           threadPath: result.threadPath,
         });
-        setItems(extractThreadItems(result.thread));
+        updateItems(extractThreadItems(result.thread));
         setConnectionState('ready');
       })
       .catch((err: unknown) => {
@@ -170,7 +210,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
     return () => {
       cancelled = true;
     };
-  }, [bindCodexAppThread, card.id, card.codexAppThreadId, card.providerSessionId, cwd, t]);
+  }, [bindCodexAppThread, card.id, cwd, desktopOnlyMessage, updateItems]);
 
   const handleNotification = useCallback(
     (payload: CodexAppNotificationPayload) => {
@@ -191,7 +231,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
           if (turnId) setActiveTurnId(turnId);
           const turnItems = itemsFromTurn(turn);
           if (turnItems.length > 0) {
-            setItems((previous) =>
+            updateItems((previous) =>
               turnItems.reduce<CodexDisplayItem[]>((acc, item) => upsertItem(acc, item), previous),
             );
           }
@@ -201,7 +241,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
           const turn = isRecord(params) ? params.turn : null;
           const turnItems = itemsFromTurn(turn);
           if (turnItems.length > 0) {
-            setItems((previous) =>
+            updateItems((previous) =>
               turnItems.reduce<CodexDisplayItem[]>((acc, item) => upsertItem(acc, item), previous),
             );
           }
@@ -213,7 +253,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
         case 'item/completed': {
           const item = isRecord(params) ? params.item : null;
           if (item) {
-            setItems((previous) => upsertItem(previous, item));
+            updateItems((previous) => upsertItem(previous, item));
             if (payload.method === 'item/completed' && getString(item, 'type') === 'agentMessage') {
               updateCardReplyPreview(cardIdRef.current, getString(item, 'text') ?? '');
             }
@@ -224,7 +264,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
           const itemId = getString(params, 'itemId');
           const delta = getString(params, 'delta') ?? '';
           if (itemId && delta) {
-            setItems((previous) => appendDelta(previous, itemId, delta, 'assistant', 'Codex'));
+            updateItems((previous) => appendDelta(previous, itemId, delta, 'assistant', 'Codex'));
           }
           break;
         }
@@ -235,12 +275,12 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
           if (itemId && delta) {
             const kind: CodexDisplayItemKind =
               payload.method === 'item/commandExecution/outputDelta' ? 'command' : 'file';
-            setItems((previous) => appendDelta(previous, itemId, delta, kind, kind === 'command' ? 'Command' : 'File changes'));
+            updateItems((previous) => appendDelta(previous, itemId, delta, kind, kind === 'command' ? 'Command' : 'File changes'));
           }
           break;
         }
         case 'turn/plan/updated': {
-          setItems((previous) => [
+          updateItems((previous) => [
             ...previous,
             systemItem('plan', t('codexChat.planUpdated', { defaultValue: 'Plan updated' }), stringifyCompact(params)),
           ]);
@@ -249,7 +289,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
         case 'thread/goal/updated':
         case 'thread/goal/cleared':
         case 'context/compacted': {
-          setItems((previous) => [
+          updateItems((previous) => [
             ...previous,
             systemItem(payload.method, eventTitle(payload.method), stringifyCompact(params)),
           ]);
@@ -264,26 +304,8 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
           break;
       }
     },
-    [bindCodexAppThread, t, updateCardReplyPreview],
+    [bindCodexAppThread, t, updateCardReplyPreview, updateItems],
   );
-
-  const handleRequest = useCallback((payload: CodexAppRequestPayload) => {
-    setRequests((previous) => {
-      const key = requestKey(payload.requestId);
-      if (previous.some((request) => request.key === key)) return previous;
-      return [
-        ...previous,
-        {
-          key,
-          requestId: payload.requestId,
-          method: payload.method,
-          params: payload.params,
-          raw: payload.raw,
-          createdAt: Date.now(),
-        },
-      ];
-    });
-  }, []);
 
   useEffect(() => {
     if (!isTauriEnv()) return;
@@ -320,44 +342,40 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
         }
       }),
     );
-    registerListener(
-      'request',
-      codexApp.onRequest((payload) => {
-        if (!disposed && belongsToCard(payload, cardIdRef.current, threadIdRef.current)) {
-          handleRequest(payload);
-        }
-      }),
-    );
-    registerListener(
-      'disconnect',
-      codexApp.onDisconnected((payload) => {
-        if (disposed) return;
-        setConnectionState('error');
-        setError(payload.message);
-        setActiveTurnId(null);
-        setSending(false);
-      }),
-    );
-
     return () => {
       disposed = true;
       for (const listener of listeners.splice(0)) {
         disposeListener(listener.name, listener.unlisten);
       }
     };
-  }, [handleNotification, handleRequest]);
+  }, [handleNotification]);
 
   const removeRequest = useCallback((key: string) => {
-    setRequests((previous) => previous.filter((request) => request.key !== key));
-  }, []);
+    const removed = removePendingRequest(key);
+    if (removed?.notificationId) removeNotification(removed.notificationId);
+  }, [removeNotification, removePendingRequest]);
 
   const respondToRequest = useCallback(
-    async (request: PendingRequest, response: unknown) => {
+    async (request: PendingCodexRequest, response: unknown) => {
       await codexApp.respondRequest(request.requestId, response);
       removeRequest(request.key);
     },
     [removeRequest],
   );
+
+  useEffect(() => {
+    if (
+      disconnectRevision === 0 ||
+      handledDisconnectRevisionRef.current === disconnectRevision
+    ) {
+      return;
+    }
+    handledDisconnectRevisionRef.current = disconnectRevision;
+    setConnectionState('error');
+    setError(disconnectedMessage);
+    setActiveTurnId(null);
+    setSending(false);
+  }, [disconnectRevision, disconnectedMessage]);
 
   const loadSkills = useCallback(async () => {
     if (!threadId) return;
@@ -376,14 +394,14 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
     if (!threadId) return;
     try {
       await codexApp.compact(threadId);
-      setItems((previous) => [
+      updateItems((previous) => [
         ...previous,
         systemItem('compact-started', t('codexChat.compactStarted', { defaultValue: 'Compaction started' }), ''),
       ]);
     } catch (err) {
       setError(errorMessage(err));
     }
-  }, [threadId, t]);
+  }, [threadId, t, updateItems]);
 
   const handleSetGoal = useCallback(async () => {
     if (!threadId) return;
@@ -618,9 +636,9 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="flex h-12 shrink-0 items-center justify-between gap-4 border-b border-white/10 px-5">
+        <div className="flex h-12 shrink-0 items-center justify-between gap-4 border-b border-border px-5">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-primary/10 text-primary">
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
               <Bot className="h-4 w-4" />
             </div>
             <div className="min-w-0">
@@ -629,14 +647,14 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
                 <span className="truncate text-xs font-normal text-muted-foreground">{cwd}</span>
               </div>
               {threadId && (
-                <div className="truncate font-mono text-[10px] text-muted-foreground/80">
+                <div className="truncate font-mono text-[11px] text-muted-foreground/80">
                   {threadId.slice(0, 12)}
                 </div>
               )}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
               {connectionState === 'opening' ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
               ) : (
@@ -650,7 +668,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
         </div>
 
         {goalOpen && (
-          <div className="flex shrink-0 items-center gap-2 border-b border-white/10 bg-muted/20 px-5 py-2">
+          <div className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/20 px-5 py-2">
             <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
             <input
               value={goalText}
@@ -662,7 +680,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
               type="button"
               onClick={handleSetGoal}
               disabled={!goalText.trim()}
-              className="inline-flex h-7 shrink-0 items-center rounded-[var(--radius-md)] bg-primary px-3 text-xs font-medium text-primary-foreground disabled:opacity-50"
+              className="inline-flex h-7 shrink-0 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground disabled:opacity-50"
             >
               {t('codexChat.apply', { defaultValue: 'Apply' })}
             </button>
@@ -679,7 +697,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
           {items.length === 0 ? (
             <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground">
-              <div className="flex h-10 w-10 items-center justify-center rounded-[var(--radius-md)] border border-white/10 bg-muted/30">
+              <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-muted/30">
                 {connectionState === 'opening' ? (
                   <Loader2 className="h-5 w-5 animate-spin" />
                 ) : (
@@ -695,7 +713,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
                 <CodexItemRow key={item.id} item={item} />
               ))}
               {error && (
-                <div className="rounded-[var(--radius-md)] border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                   {error}
                 </div>
               )}
@@ -706,7 +724,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
       </div>
 
       {requests.length > 0 && (
-        <div className="max-h-56 shrink-0 overflow-y-auto border-t border-white/10 bg-muted/20 px-3 py-2">
+        <div className="max-h-56 shrink-0 overflow-y-auto border-t border-border bg-muted/20 px-3 py-2">
           <div className="mx-auto flex max-w-4xl flex-col gap-2">
             {requests.map((request) => (
               <CodexRequestCard
@@ -720,7 +738,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
         </div>
       )}
 
-      <div className="shrink-0 border-t border-white/10 bg-background/95 px-4 py-3">
+      <div className="shrink-0 border-t border-border bg-background/95 px-4 py-3">
         <div className="relative mx-auto max-w-3xl">
           {menuOpen && (
             <ComposerMenu
@@ -732,9 +750,9 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
             />
           )}
 
-          <div className="overflow-hidden rounded-[var(--radius-md)] border border-white/10 bg-muted/20 shadow-lg shadow-black/20 focus-within:border-primary/70">
+          <div className="overflow-hidden rounded-md border border-border bg-muted/20 shadow-lg shadow-black/20 focus-within:border-primary/70">
             {selectedSkill && (
-              <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2">
+              <div className="flex items-center gap-2 border-b border-border px-3 py-2">
                 <div className="flex min-w-0 items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-1 text-[11px] text-primary">
                   <DollarSign className="h-3 w-3 shrink-0" />
                   <span className="truncate">{selectedSkill.name}</span>
@@ -795,17 +813,19 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
               })}
             />
 
-            <div className="flex items-center justify-between gap-2 border-t border-white/10 px-2 py-2">
+            <div className="flex items-center justify-between gap-2 border-t border-border px-2 py-2">
               <div className="flex min-w-0 items-center gap-1">
-                <ComposerIconButton
+                <IconButton
                   title={t('codexChat.slashButton', { defaultValue: 'Commands' })}
+                  className="text-muted-foreground"
                   disabled={!ready}
                   onClick={() => insertTrigger('/')}
                 >
                   <Slash className="h-3.5 w-3.5" />
-                </ComposerIconButton>
-                <ComposerIconButton
+                </IconButton>
+                <IconButton
                   title={t('codexChat.skillButton', { defaultValue: 'Skills' })}
+                  className="text-muted-foreground"
                   disabled={!ready || skillsLoading}
                   onClick={() => insertTrigger('$')}
                 >
@@ -814,38 +834,41 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
                   ) : (
                     <DollarSign className="h-3.5 w-3.5" />
                   )}
-                </ComposerIconButton>
-                <ComposerIconButton
+                </IconButton>
+                <IconButton
                   title={t('codexChat.goal', { defaultValue: 'Goal' })}
+                  className="text-muted-foreground"
                   disabled={!ready}
                   onClick={() => setGoalOpen((value) => !value)}
                 >
                   <ShieldCheck className="h-3.5 w-3.5" />
-                </ComposerIconButton>
-                <ComposerIconButton
+                </IconButton>
+                <IconButton
                   title={t('codexChat.compact', { defaultValue: 'Compact' })}
+                  className="text-muted-foreground"
                   disabled={!ready}
                   onClick={handleCompact}
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
-                </ComposerIconButton>
+                </IconButton>
               </div>
 
               <div className="flex shrink-0 items-center gap-1">
                 {activeTurnId && (
-                  <ComposerIconButton
+                  <IconButton
                     title={t('codexChat.stop', { defaultValue: 'Stop' })}
+                    className="text-muted-foreground"
                     disabled={!ready}
                     onClick={handleInterrupt}
                   >
                     <Square className="h-3.5 w-3.5" />
-                  </ComposerIconButton>
+                  </IconButton>
                 )}
                 <button
                   type="button"
                   onClick={() => void handleSend()}
                   disabled={!ready || sending || (!input.trim() && !selectedSkill)}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-primary text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
                   title={t('codexChat.send', { defaultValue: 'Send' })}
                 >
                   {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
@@ -874,7 +897,7 @@ function ComposerMenu({
 }) {
   const { t } = useTranslation('terminal');
   return (
-    <div className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-hidden rounded-[var(--radius-md)] border border-white/10 bg-popover shadow-xl shadow-black/30">
+    <div className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-hidden rounded-md border border-border bg-popover shadow-xl shadow-black/30">
       <div className="max-h-72 overflow-y-auto p-1">
         {loading && items.length === 0 ? (
           <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
@@ -900,12 +923,12 @@ function ComposerMenu({
                   onSelect(item);
                 }}
                 className={[
-                  'flex w-full min-w-0 items-center gap-3 rounded-[var(--radius-md)] px-3 py-2 text-left',
+                  'flex w-full min-w-0 items-center gap-3 rounded-md px-3 py-2 text-left',
                   active ? 'bg-accent text-accent-foreground' : 'text-foreground hover:bg-accent',
                   item.disabled ? 'opacity-45' : '',
                 ].join(' ')}
               >
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-background text-muted-foreground">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-background text-muted-foreground">
                   <Icon className="h-3.5 w-3.5" />
                 </span>
                 <span className="min-w-0 flex-1">
@@ -914,7 +937,7 @@ function ComposerMenu({
                     {item.description}
                   </span>
                 </span>
-                <span className="shrink-0 rounded bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                <span className="shrink-0 rounded bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
                   {item.marker}
                 </span>
               </button>
@@ -926,39 +949,15 @@ function ComposerMenu({
   );
 }
 
-function ComposerIconButton({
-  title,
-  disabled,
-  onClick,
-  children,
-}: {
-  title: string;
-  disabled?: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      disabled={disabled}
-      onClick={onClick}
-      className="inline-flex h-8 w-8 items-center justify-center rounded-[var(--radius-md)] text-muted-foreground transition hover:bg-accent hover:text-accent-foreground disabled:opacity-45"
-    >
-      {children}
-    </button>
-  );
-}
 
-function CodexItemRow({ item }: { item: CodexDisplayItem }) {
+const CodexItemRow = memo(function CodexItemRow({ item }: { item: CodexDisplayItem }) {
   const Icon = iconForItem(item.kind);
   const accent = accentForItem(item.kind);
   const compactBody = item.body.trim();
   if (item.kind === 'user') {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[78%] rounded-[var(--radius-md)] bg-primary px-3 py-2 text-sm leading-relaxed text-primary-foreground">
+        <div className="max-w-[78%] rounded-md bg-primary px-3 py-2 text-sm leading-relaxed text-primary-foreground">
           {compactBody}
         </div>
       </div>
@@ -968,7 +967,7 @@ function CodexItemRow({ item }: { item: CodexDisplayItem }) {
   if (item.kind === 'assistant') {
     return (
       <div className="flex gap-3">
-        <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-md)] ${accent}`}>
+        <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${accent}`}>
           <Icon className="h-3.5 w-3.5" />
         </div>
         <div className="min-w-0 flex-1 pt-0.5">
@@ -990,14 +989,14 @@ function CodexItemRow({ item }: { item: CodexDisplayItem }) {
 
   return (
     <div className="flex gap-3">
-      <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-md)] ${accent}`}>
+      <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${accent}`}>
         <Icon className="h-3.5 w-3.5" />
       </div>
-      <div className="min-w-0 flex-1 rounded-[var(--radius-md)] border border-white/10 bg-muted/20 px-3 py-2">
+      <div className="min-w-0 flex-1 rounded-md border border-border bg-muted/20 px-3 py-2">
         <div className="mb-1 flex min-w-0 items-center gap-2">
           <span className="truncate text-xs font-medium">{item.title}</span>
           {item.status && (
-            <span className="shrink-0 rounded-full bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            <span className="shrink-0 rounded-full bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground">
               {item.status}
             </span>
           )}
@@ -1012,15 +1011,15 @@ function CodexItemRow({ item }: { item: CodexDisplayItem }) {
       </div>
     </div>
   );
-}
+});
 
 function CodexRequestCard({
   request,
   onRespond,
   onCancel,
 }: {
-  request: PendingRequest;
-  onRespond: (request: PendingRequest, response: unknown) => Promise<void>;
+  request: PendingCodexRequest;
+  onRespond: (request: PendingCodexRequest, response: unknown) => Promise<void>;
   onCancel: () => void;
 }) {
   const { t } = useTranslation('terminal');
@@ -1047,14 +1046,14 @@ function CodexRequestCard({
   };
 
   return (
-    <div className="rounded-[var(--radius-md)] border border-primary/25 bg-primary/10 px-3 py-2 shadow-sm">
+    <div className="rounded-md border border-primary/25 bg-primary/10 px-3 py-2 shadow-sm">
       <div className="mb-2 flex items-center gap-2">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-primary/20 text-primary">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/20 text-primary">
           <ShieldCheck className="h-3.5 w-3.5" />
         </span>
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-medium">{title}</div>
-          <div className="truncate text-[10px] text-muted-foreground">{request.method}</div>
+          <div className="truncate text-[11px] text-muted-foreground">{request.method}</div>
         </div>
         <button type="button" onClick={onCancel} className="rounded p-0.5 hover:bg-accent">
           <X className="h-3.5 w-3.5" />
@@ -1062,11 +1061,11 @@ function CodexRequestCard({
       </div>
 
       {command && (
-        <pre className="mb-2 max-h-24 overflow-auto rounded-[var(--radius-md)] bg-background/80 px-2 py-1.5 text-xs">
+        <pre className="mb-2 max-h-24 overflow-auto rounded-md bg-background/80 px-2 py-1.5 text-xs">
           {command}
         </pre>
       )}
-      {cwd && <div className="mb-1 truncate text-[10px] text-muted-foreground">{cwd}</div>}
+      {cwd && <div className="mb-1 truncate text-[11px] text-muted-foreground">{cwd}</div>}
       {reason && <div className="mb-2 text-xs text-muted-foreground">{reason}</div>}
 
       {isToolInput && (
@@ -1092,7 +1091,7 @@ function CodexRequestCard({
                             'rounded-full border px-2 py-0.5 text-[11px]',
                             answers[id] === label
                               ? 'border-primary bg-primary text-primary-foreground'
-                              : 'border-white/10 hover:bg-accent',
+                              : 'border-border hover:bg-accent',
                           ].join(' ')}
                         >
                           {label}
@@ -1105,7 +1104,7 @@ function CodexRequestCard({
                   type={question.isSecret ? 'password' : 'text'}
                   value={answers[id] ?? ''}
                   onChange={(event) => setAnswers((previous) => ({ ...previous, [id]: event.target.value }))}
-                  className="w-full rounded-[var(--radius-md)] border border-white/10 bg-background px-2 py-1 text-xs outline-none focus:border-primary"
+                  className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-ring/40"
                 />
               </div>
             );
@@ -1114,7 +1113,7 @@ function CodexRequestCard({
       )}
 
       {!isApproval && !isToolInput && (
-        <pre className="mb-2 max-h-24 overflow-auto rounded-[var(--radius-md)] bg-background/80 px-2 py-1.5 text-[10px] text-muted-foreground">
+        <pre className="mb-2 max-h-24 overflow-auto rounded-md bg-background/80 px-2 py-1.5 text-[11px] text-muted-foreground">
           {stringifyCompact(request.params)}
         </pre>
       )}
@@ -1126,7 +1125,7 @@ function CodexRequestCard({
               type="button"
               disabled={submitting}
               onClick={() => void respond({ decision: 'accept' })}
-              className="inline-flex items-center gap-1 rounded-[var(--radius-md)] bg-primary px-2 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
+              className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
             >
               <Check className="h-3 w-3" />
               {t('codexChat.accept', { defaultValue: 'Accept' })}
@@ -1135,7 +1134,7 @@ function CodexRequestCard({
               type="button"
               disabled={submitting}
               onClick={() => void respond({ decision: 'acceptForSession' })}
-              className="rounded-[var(--radius-md)] border border-white/10 px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
+              className="rounded-md border border-border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
             >
               {t('codexChat.acceptSession', { defaultValue: 'Accept session' })}
             </button>
@@ -1143,7 +1142,7 @@ function CodexRequestCard({
               type="button"
               disabled={submitting}
               onClick={() => void respond({ decision: 'decline' })}
-              className="rounded-[var(--radius-md)] border border-white/10 px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
+              className="rounded-md border border-border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
             >
               {t('codexChat.decline', { defaultValue: 'Decline' })}
             </button>
@@ -1164,7 +1163,7 @@ function CodexRequestCard({
                 ),
               })
             }
-            className="rounded-[var(--radius-md)] bg-primary px-2 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
           >
             {t('codexChat.submit', { defaultValue: 'Submit' })}
           </button>
@@ -1173,7 +1172,7 @@ function CodexRequestCard({
             type="button"
             disabled={submitting}
             onClick={() => void respond(unsupportedResponseFor(request.method, params))}
-            className="rounded-[var(--radius-md)] border border-white/10 px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
+            className="rounded-md border border-border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
           >
             {t('codexChat.respondUnsupported', { defaultValue: 'Respond unsupported' })}
           </button>
@@ -1182,7 +1181,7 @@ function CodexRequestCard({
           type="button"
           disabled={submitting}
           onClick={() => void respond(cancelResponseFor(request.method))}
-          className="rounded-[var(--radius-md)] border border-white/10 px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
+          className="rounded-md border border-border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
         >
           {t('codexChat.cancel', { defaultValue: 'Cancel' })}
         </button>
@@ -1192,7 +1191,7 @@ function CodexRequestCard({
 }
 
 function belongsToCard(
-  payload: CodexAppNotificationPayload | CodexAppRequestPayload,
+  payload: CodexAppNotificationPayload,
   cardId: string,
   threadId: string | null,
 ): boolean {
@@ -1252,11 +1251,11 @@ function accentForItem(kind: CodexDisplayItemKind): string {
     case 'user':
       return 'bg-accent text-accent-foreground';
     case 'command':
-      return 'bg-emerald-500/20 text-emerald-400';
+      return 'bg-success/10 text-success';
     case 'file':
-      return 'bg-amber-500/20 text-amber-400';
+      return 'bg-warning/10 text-warning';
     case 'tool':
-      return 'bg-sky-500/20 text-sky-400';
+      return 'bg-info/10 text-info';
     case 'reasoning':
     case 'plan':
       return 'bg-violet-500/20 text-violet-300';
@@ -1273,11 +1272,6 @@ function systemItem(id: string, title: string, body: string): CodexDisplayItem {
     body,
     raw: null,
   };
-}
-
-function requestKey(requestId: unknown): string {
-  if (typeof requestId === 'string' || typeof requestId === 'number') return String(requestId);
-  return stringifyCompact(requestId);
 }
 
 function requestTitle(method: string, t: ReturnType<typeof useTranslation<'terminal'>>['t']): string {

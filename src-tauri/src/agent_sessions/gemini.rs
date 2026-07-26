@@ -47,7 +47,29 @@ pub async fn list_gemini_session_page(
         );
     }
 
-    let mut items = list_gemini_sessions_from_root(&root);
+    let cursor = cursor.map(ToOwned::to_owned);
+    let query = query.map(ToOwned::to_owned);
+    match tokio::task::spawn_blocking(move || {
+        list_gemini_session_page_from_root(&root, cursor.as_deref(), limit, query.as_deref())
+    })
+    .await
+    {
+        Ok(page) => page,
+        Err(_) => empty_page(
+            AgentSessionProvider::Gemini,
+            AgentSessionAvailability::Error,
+            Some("Gemini history scan failed".into()),
+        ),
+    }
+}
+
+fn list_gemini_session_page_from_root(
+    root: &Path,
+    cursor: Option<&str>,
+    limit: usize,
+    query: Option<&str>,
+) -> AgentSessionPage {
+    let mut items = list_gemini_sessions_from_root(root);
     if let Some(q) = query.map(str::trim).filter(|v| !v.is_empty()) {
         let needle = q.to_ascii_lowercase();
         items.retain(|item| {

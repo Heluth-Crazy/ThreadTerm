@@ -21,6 +21,7 @@ function hasPermission(identifier: string): boolean {
 describe('AI session export Tauri capability contract', () => {
   it('permits dialog-selected Markdown saves through dialog save plus fs text writes', () => {
     expect(defaultCapability.windows).toContain('main');
+    expect(defaultCapability.windows).not.toContain('pet');
     expect(hasPermission('dialog:allow-save')).toBe(true);
     expect(hasPermission('fs:allow-write-text-file')).toBe(true);
   });

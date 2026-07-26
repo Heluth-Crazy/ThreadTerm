@@ -7,6 +7,7 @@ const bridgeMocks = vi.hoisted(() => ({
   listRecent: vi.fn(),
   listAgentSessions: vi.fn(),
   syncCards: vi.fn(),
+  syncState: vi.fn(),
   onSpawnCard: vi.fn(),
   onActivateCard: vi.fn(),
   onRemoveCard: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock('../../lib/tauri-bridge', () => ({
   },
   mobileBridge: {
     syncCards: bridgeMocks.syncCards,
+    syncState: bridgeMocks.syncState,
     onSpawnCard: bridgeMocks.onSpawnCard,
     onActivateCard: bridgeMocks.onActivateCard,
     onRemoveCard: bridgeMocks.onRemoveCard,

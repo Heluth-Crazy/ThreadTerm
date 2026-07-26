@@ -34,11 +34,15 @@ export interface OutputBufferSink {
 interface PendingEntry {
   chunks: string[];
   preview: string | null;
+  previewReader: (() => string) | null;
 }
 
 export interface CardOutputBuffer {
   pushChunk: (cardId: string, data: string) => void;
   pushPreview: (cardId: string, preview: string) => void;
+  /** Request one preview read at flush time. Repeated requests in the same
+   * window replace each other without repeatedly scanning the terminal. */
+  requestPreview: (cardId: string, reader: () => string) => void;
   /** Synchronously flush one card — call before exit/status handling so
    *  downstream readers (notification snippet, reply detector) see the
    *  freshest output. */
@@ -64,7 +68,7 @@ export function createCardOutputBuffer(
   function entryFor(cardId: string): PendingEntry {
     let entry = pending.get(cardId);
     if (!entry) {
-      entry = { chunks: [], preview: null };
+      entry = { chunks: [], preview: null, previewReader: null };
       pending.set(cardId, entry);
     }
     return entry;
@@ -72,12 +76,20 @@ export function createCardOutputBuffer(
 
   function flushEntry(cardId: string, entry: PendingEntry): void {
     const joinedChunks = entry.chunks.length > 0 ? entry.chunks.join('') : null;
+    let preview = entry.preview;
+    if (entry.previewReader) {
+      try {
+        preview = entry.previewReader();
+      } catch {
+        preview = null;
+      }
+    }
     if (sink.flushCardUpdate) {
-      sink.flushCardUpdate(cardId, joinedChunks, entry.preview);
+      sink.flushCardUpdate(cardId, joinedChunks, preview);
       return;
     }
     if (joinedChunks !== null) sink.flushOutput?.(cardId, joinedChunks);
-    if (entry.preview !== null) sink.flushPreview?.(cardId, entry.preview);
+    if (preview !== null) sink.flushPreview?.(cardId, preview);
   }
 
   function cancelTimerIfIdle(): void {
@@ -114,7 +126,15 @@ export function createCardOutputBuffer(
       schedule();
     },
     pushPreview(cardId, preview) {
-      entryFor(cardId).preview = preview;
+      const entry = entryFor(cardId);
+      entry.preview = preview;
+      entry.previewReader = null;
+      schedule();
+    },
+    requestPreview(cardId, reader) {
+      const entry = entryFor(cardId);
+      entry.preview = null;
+      entry.previewReader = reader;
       schedule();
     },
     flushCard(cardId) {

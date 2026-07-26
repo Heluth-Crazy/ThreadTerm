@@ -1,0 +1,2185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ThreadTerm - V4 概念稿 · AI 总控管家</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0a0d14;
+    --fg: #e2e8f0;
+    --muted: #1a2030;
+    --muted-fg: #64748b;
+    --accent: #1e293b;
+    --border: #1e293b;
+    --terminal-bg: #020617;
+    --teal: #37d6c2;
+    --teal-dim: rgba(55,214,194,0.12);
+    --wait: #f59e0b;
+    --wait-dim: rgba(245,158,11,0.12);
+    --fail: #ef4444;
+    --fail-dim: rgba(239,68,68,0.12);
+    --done: #60a5fa;
+    --done-dim: rgba(96,165,250,0.12);
+    --run: #22c55e;
+    --run-dim: rgba(34,197,94,0.12);
+    --radius: 0.625rem;
+    --radius-md: 0.5rem;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    overflow: hidden;
+    height: 100vh;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  ::selection { background: #334155; }
+  button { font-family: inherit; }
+  input, select { font-family: inherit; }
+
+  .app-shell {
+    display: flex;
+    height: 100vh;
+    width: 100vw;
+    background-color: var(--bg);
+    background-image:
+      radial-gradient(at 0% 0%, rgba(55,214,194,0.04) 0px, transparent 50%),
+      radial-gradient(at 100% 0%, rgba(226,232,240,0.03) 0px, transparent 50%);
+    background-size: 100% 100%, 100% 100%;
+    background-repeat: no-repeat;
+  }
+
+  /* ─── Sidebar ─── */
+  .sidebar {
+    width: 240px;
+    min-width: 240px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: rgba(10,13,20,0.85);
+    backdrop-filter: blur(20px);
+    border-right: 1px solid rgba(226,232,240,0.08);
+  }
+  .sidebar-header {
+    display: flex;
+    align-items: center;
+    height: 48px;
+    padding: 0 12px;
+    border-bottom: 1px solid rgba(226,232,240,0.08);
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .sidebar-logo { width: 22px; height: 22px; flex-shrink: 0; }
+
+  /* 管家迷你状态卡 */
+  .steward-mini {
+    margin: 12px;
+    padding: 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(55,214,194,0.25);
+    background: var(--teal-dim);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .steward-mini:hover { border-color: rgba(55,214,194,0.5); }
+  .steward-mini.offline {
+    border-color: rgba(239,68,68,0.3);
+    background: var(--fail-dim);
+  }
+  .steward-mini .row1 {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600;
+  }
+  .steward-mini .row2 {
+    font-size: 11px; color: var(--muted-fg);
+    margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .steward-mini.offline .row2 { color: rgba(239,68,68,0.8); }
+  .online-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--run); flex-shrink: 0; }
+  .online-dot.off { background: var(--fail); }
+
+  .sidebar-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 8px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .sidebar-body::-webkit-scrollbar { width: 6px; }
+  .sidebar-body::-webkit-scrollbar-thumb { background: rgba(226,232,240,0.12); border-radius: 3px; }
+
+  .nav-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px;
+    border-radius: var(--radius-md);
+    border: none; background: none;
+    font-size: 12px; line-height: 1.35;
+    color: rgba(226,232,240,0.5);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    text-align: left;
+    width: 100%;
+  }
+  .nav-row:hover { background: var(--accent); color: var(--fg); }
+  .nav-row.active { background: rgba(226,232,240,0.07); color: var(--fg); }
+  .nav-row .icon { width: 14px; height: 14px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .kbd {
+    margin-left: auto;
+    font-size: 11px;
+    opacity: 0.6;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-weight: 400;
+  }
+  .nav-row .count {
+    margin-left: auto;
+    font-size: 11px;
+    background: var(--wait-dim);
+    color: var(--wait);
+    padding: 1px 6px;
+    border-radius: 10px;
+    min-width: 20px;
+    text-align: center;
+    font-weight: 600;
+  }
+  .sidebar-section {
+    margin-top: 12px;
+    padding: 0 8px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted-fg);
+  }
+  .goal-nav-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 8px;
+    border-radius: var(--radius-md);
+    font-size: 12px; line-height: 1.35;
+    color: rgba(226,232,240,0.5);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .goal-nav-row:hover { background: var(--accent); color: var(--fg); }
+  .goal-nav-row .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .goal-state-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .goal-state-dot.blocked { background: var(--wait); animation: pulse 1.6s ease-in-out infinite; }
+  .goal-state-dot.running { background: var(--run); }
+  .goal-state-dot.done { background: var(--done); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(245,158,11,0.5); }
+    50% { opacity: 0.6; box-shadow: 0 0 0 3px rgba(245,158,11,0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .goal-state-dot.blocked { animation: none; }
+  }
+
+  .sidebar-footer {
+    border-top: 1px solid rgba(226,232,240,0.08);
+    padding: 12px;
+  }
+  .cost-mini {
+    font-size: 11px;
+    color: var(--muted-fg);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .cost-mini b { color: var(--fg); font-weight: 600; }
+
+  /* ─── Main ─── */
+  .main-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  /* 管家状态栏 */
+  .steward-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 48px;
+    padding: 0 16px;
+    background: rgba(10,13,20,0.6);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid rgba(226,232,240,0.08);
+  }
+  .steward-id {
+    display: flex; align-items: center; gap: 8px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: var(--radius-md);
+    border: none;
+    background: none;
+    color: var(--fg);
+    transition: background 0.15s;
+    text-align: left;
+  }
+  .steward-id:hover { background: var(--accent); }
+  .steward-id .name { font-size: 13px; font-weight: 600; }
+  .steward-id .cfg { font-size: 11px; color: var(--muted-fg); }
+  .steward-id .cfg b { color: rgba(226,232,240,0.75); font-weight: 500; }
+  .steward-bar .sep { width: 1px; height: 20px; background: rgba(226,232,240,0.08); }
+  .mode-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; font-weight: 500;
+    padding: 3px 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(226,232,240,0.12);
+    background: rgba(226,232,240,0.04);
+    color: var(--fg);
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .mode-chip:hover { border-color: rgba(226,232,240,0.25); }
+  .mode-chip.cautious { border-color: rgba(245,158,11,0.35); background: var(--wait-dim); color: var(--wait); }
+  .mode-chip.auto { border-color: rgba(239,68,68,0.35); background: var(--fail-dim); color: var(--fail); }
+  .steward-stats {
+    display: flex; gap: 12px;
+    font-size: 11px; color: var(--muted-fg);
+    white-space: nowrap;
+  }
+  .steward-stats b { color: var(--fg); font-weight: 600; }
+  .steward-bar .spacer { flex: 1; }
+  .btn-icon {
+    display: flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px;
+    border: none; background: none;
+    color: var(--muted-fg);
+    cursor: pointer;
+    border-radius: var(--radius-md);
+    position: relative;
+  }
+  .btn-icon:hover { background: var(--accent); color: var(--fg); }
+  .demo-toggle {
+    font-size: 11px;
+    color: var(--muted-fg);
+    background: none;
+    border: 1px dashed rgba(226,232,240,0.15);
+    border-radius: var(--radius-md);
+    padding: 4px 8px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+  }
+  .demo-toggle:hover { color: var(--fg); border-color: rgba(226,232,240,0.3); }
+
+  /* ─── 工作区滚动区 ─── */
+  .workbench {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 20px 24px 32px;
+  }
+  .workbench::-webkit-scrollbar { width: 8px; }
+  .workbench::-webkit-scrollbar-thumb { background: rgba(226,232,240,0.1); border-radius: 4px; }
+  @media (min-width: 1440px) {
+    .workbench-inner { max-width: 960px; margin: 0 auto; }
+  }
+
+  /* 目标输入框 */
+  .goal-input-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 10px 10px 14px;
+    background: rgba(15,19,28,0.9);
+    border: 1px solid rgba(55,214,194,0.25);
+    border-radius: 10px;
+    margin-bottom: 16px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .goal-input-card:focus-within {
+    border-color: rgba(55,214,194,0.55);
+    box-shadow: 0 0 0 3px rgba(55,214,194,0.08);
+  }
+  .goal-input-card .sparkle { color: var(--teal); flex-shrink: 0; display: flex; }
+  .goal-input-card input {
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--fg);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .goal-input-card input::placeholder { color: var(--muted-fg); }
+  .goal-input-card.disabled { opacity: 0.55; border-style: dashed; pointer-events: none; }
+  .goal-submit {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600;
+    padding: 6px 14px;
+    border-radius: var(--radius-md);
+    border: none;
+    background: var(--teal);
+    color: #06251f;
+    cursor: pointer;
+    transition: filter 0.15s;
+    white-space: nowrap;
+  }
+  .goal-submit:hover { filter: brightness(1.1); }
+
+  /* 管家简报 */
+  .briefing {
+    display: flex;
+    gap: 12px;
+    padding: 12px 14px;
+    background: rgba(15,19,28,0.85);
+    border: 1px solid rgba(226,232,240,0.07);
+    border-left: 2px solid var(--teal);
+    border-radius: var(--radius);
+    margin-bottom: 24px;
+  }
+  .briefing-avatar {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: var(--teal-dim);
+    border: 1px solid rgba(55,214,194,0.3);
+    color: var(--teal);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .briefing-body { flex: 1; min-width: 0; }
+  .briefing-head {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; color: var(--muted-fg);
+    margin-bottom: 4px;
+  }
+  .briefing-head b { color: var(--fg); font-size: 12px; }
+  .briefing-text { font-size: 12.5px; line-height: 1.6; color: rgba(226,232,240,0.85); }
+  .briefing-text .hl-wait { color: var(--wait); }
+  .briefing-text .hl-done { color: var(--done); }
+  .briefing-text .hl-teal { color: var(--teal); }
+  .briefing-foot { display: flex; gap: 12px; margin-top: 8px; }
+  .link-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px;
+    color: var(--teal);
+    background: none; border: none;
+    cursor: pointer;
+    padding: 0;
+  }
+  .link-btn:hover { text-decoration: underline; }
+  .link-btn.grey { color: var(--muted-fg); }
+  .link-btn.grey:hover { color: var(--fg); }
+
+  /* ─── 分区标题 ─── */
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .section-head h2 { font-size: 13px; font-weight: 600; }
+  .section-head .hint { font-size: 11px; color: var(--muted-fg); }
+  .section-head .right { margin-left: auto; }
+
+  /* ─── 决策卡 ─── */
+  .decision-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 28px; }
+  .decision-card {
+    background: rgba(15,19,28,0.9);
+    border: 1px solid rgba(226,232,240,0.08);
+    border-left: 2px solid var(--wait);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    transition: border-color 0.15s, opacity 0.3s;
+  }
+  .decision-card:hover { border-color: rgba(226,232,240,0.16); border-left-color: var(--wait); }
+  .decision-card.resolved { opacity: 0.45; border-left-color: var(--run); pointer-events: none; }
+  .decision-top {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .goal-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 500;
+    color: var(--teal);
+    background: var(--teal-dim);
+    padding: 1px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+  }
+  .risk-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 600;
+    padding: 1px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+  }
+  .risk-chip.r2 { background: var(--wait-dim); color: var(--wait); }
+  .risk-chip.r1 { background: var(--done-dim); color: var(--done); }
+  .risk-chip.r3 { background: var(--fail-dim); color: var(--fail); }
+  .decision-top .kind { font-size: 11px; color: var(--muted-fg); }
+  .decision-top .time { font-size: 11px; color: var(--muted-fg); margin-left: auto; white-space: nowrap; }
+  .decision-what { font-size: 13px; font-weight: 600; line-height: 1.45; margin-bottom: 6px; }
+  .decision-what code, .briefing-text code, .report-body code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    background: rgba(226,232,240,0.07);
+    padding: 0 4px;
+    border-radius: 3px;
+  }
+  .decision-rows { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .decision-row { display: flex; gap: 8px; font-size: 12px; line-height: 1.5; }
+  .decision-row .k {
+    color: var(--muted-fg);
+    flex-shrink: 0;
+    min-width: 62px;
+  }
+  .decision-row .v { color: rgba(226,232,240,0.8); }
+  .decision-row .v.advice { color: var(--teal); font-weight: 500; }
+  .decision-actions {
+    display: flex; align-items: center; gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(226,232,240,0.06);
+    flex-wrap: wrap;
+  }
+  .qbtn {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(226,232,240,0.12);
+    background: rgba(226,232,240,0.05);
+    color: var(--fg);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .qbtn:hover { background: rgba(226,232,240,0.1); }
+  .qbtn.primary { background: var(--teal-dim); border-color: rgba(55,214,194,0.35); color: var(--teal); }
+  .qbtn.primary:hover { background: rgba(55,214,194,0.2); }
+  .qbtn.danger { color: var(--fail); border-color: rgba(239,68,68,0.3); background: var(--fail-dim); }
+  .qbtn.danger:hover { background: rgba(239,68,68,0.2); }
+  .qbtn .kbd { margin-left: 6px; opacity: 0.55; }
+  .decision-actions .evidence { margin-left: auto; }
+  .resolved-stamp {
+    display: none;
+    align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 600;
+    color: var(--run);
+  }
+  .decision-card.resolved .resolved-stamp { display: inline-flex; }
+  .decision-card.resolved .decision-actions { display: none; }
+
+  /* ─── 目标卡（进行中） ─── */
+  .goal-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 28px; }
+  .goal-card {
+    background: rgba(15,19,28,0.85);
+    border: 1px solid rgba(226,232,240,0.07);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: border-color 0.15s;
+  }
+  .goal-card:hover { border-color: rgba(226,232,240,0.14); }
+  .goal-card.blocked { border-left: 2px solid var(--wait); }
+  .goal-card.flash { animation: cardFlash 1.2s ease-out; }
+  @keyframes cardFlash {
+    0% { border-color: rgba(55,214,194,0.7); box-shadow: 0 0 0 3px rgba(55,214,194,0.15); }
+    100% { border-color: rgba(226,232,240,0.07); box-shadow: none; }
+  }
+  .goal-main { padding: 12px 14px; cursor: pointer; }
+  .goal-title-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .goal-title { font-size: 13.5px; font-weight: 600; flex: 1; min-width: 0; }
+  .goal-stage {
+    font-size: 11px; font-weight: 500;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: rgba(226,232,240,0.06);
+    color: rgba(226,232,240,0.7);
+    white-space: nowrap;
+  }
+  .goal-stage.blocked { background: var(--wait-dim); color: var(--wait); }
+  .goal-stage.verifying { background: var(--done-dim); color: var(--done); }
+  .goal-summary { font-size: 12px; color: rgba(226,232,240,0.65); margin-bottom: 8px; }
+  .goal-facts {
+    display: flex; gap: 14px; flex-wrap: wrap;
+    font-size: 11px; color: var(--muted-fg);
+  }
+  .goal-facts b { color: rgba(226,232,240,0.75); font-weight: 500; }
+  .goal-facts .next b { color: var(--teal); }
+  .goal-expand-hint {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 11px; color: var(--muted-fg);
+    margin-left: auto;
+  }
+  /* 任务行（展开后） */
+  .goal-tasks {
+    display: none;
+    border-top: 1px solid rgba(226,232,240,0.06);
+    background: rgba(10,13,20,0.4);
+    padding: 8px 14px 10px;
+  }
+  .goal-card.expanded .goal-tasks { display: block; }
+  .goal-card.expanded .goal-expand-hint svg { transform: rotate(90deg); }
+  .goal-expand-hint svg { transition: transform 0.15s; }
+  .task-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 0;
+    font-size: 12px;
+    border-bottom: 1px dashed rgba(226,232,240,0.05);
+  }
+  .task-row:last-child { border-bottom: none; }
+  .agent-tag {
+    font-size: 11px; font-weight: 500;
+    padding: 0 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .agent-tag.claude { background: rgba(217,119,6,0.2); color: #f59e0b; }
+  .agent-tag.codex { background: rgba(147,51,234,0.2); color: #c084fc; }
+  .agent-tag.shell { background: rgba(59,130,246,0.2); color: #60a5fa; }
+  .agent-tag.opencode { background: rgba(55,214,194,0.15); color: var(--teal); }
+  .task-name { flex: 1; min-width: 0; color: rgba(226,232,240,0.8); }
+  .task-state { font-size: 11px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+  .task-state.running { color: var(--run); }
+  .task-state.waiting { color: var(--wait); }
+  .task-state.queued { color: var(--muted-fg); }
+  .task-state.verified { color: var(--done); }
+  .task-open-term {
+    font-size: 11px;
+    color: var(--muted-fg);
+    background: none; border: none;
+    cursor: pointer;
+    display: inline-flex; align-items: center; gap: 3px;
+    white-space: nowrap;
+  }
+  .task-open-term:hover { color: var(--teal); }
+
+  /* ─── 完成报告卡 ─── */
+  .report-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+  .report-card {
+    background: rgba(15,19,28,0.85);
+    border: 1px solid rgba(226,232,240,0.07);
+    border-left: 2px solid var(--done);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+  }
+  .report-card.flash { animation: cardFlash 1.2s ease-out; }
+  .report-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+  .report-title { font-size: 13px; font-weight: 600; flex: 1; min-width: 0; }
+  .verify-chip {
+    font-size: 11px; font-weight: 600;
+    padding: 1px 8px; border-radius: 10px;
+    background: var(--run-dim); color: var(--run);
+    white-space: nowrap;
+  }
+  .verify-chip.pending { background: var(--wait-dim); color: var(--wait); }
+  .report-body { font-size: 12px; color: rgba(226,232,240,0.7); line-height: 1.6; }
+  .report-meta {
+    display: flex; gap: 12px; flex-wrap: wrap;
+    font-size: 11px; color: var(--muted-fg);
+    margin-top: 8px;
+  }
+  .report-actions {
+    display: flex; gap: 8px; align-items: center;
+    margin-top: 10px; padding-top: 10px;
+    border-top: 1px solid rgba(226,232,240,0.06);
+    flex-wrap: wrap;
+  }
+
+  /* ─── 离线横幅 ─── */
+  .offline-banner {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: rgba(239,68,68,0.08);
+    border-bottom: 1px solid rgba(239,68,68,0.25);
+    font-size: 12px;
+    color: rgba(226,232,240,0.85);
+  }
+  .offline-banner.show { display: flex; }
+  .offline-banner .warn-icon { color: var(--fail); display: flex; flex-shrink: 0; }
+  .offline-banner .ok-note { color: var(--run); font-size: 11px; }
+  .offline-banner .actions { margin-left: auto; display: flex; gap: 6px; }
+  .offline-banner .qbtn { padding: 3px 10px; }
+
+  /* ─── 右侧上下文抽屉 ─── */
+  .drawer-mask {
+    position: fixed; inset: 0;
+    background: rgba(4,6,10,0.5);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+    z-index: 40;
+  }
+  .drawer-mask.open { opacity: 1; pointer-events: auto; }
+  .drawer {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: 420px;
+    max-width: 92vw;
+    background: #0d1119;
+    border-left: 1px solid rgba(226,232,240,0.1);
+    transform: translateX(100%);
+    transition: transform 0.22s ease;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+  }
+  .drawer.open { transform: translateX(0); }
+  .drawer-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(226,232,240,0.08);
+  }
+  .drawer-title { font-size: 13px; font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .drawer-tabs {
+    display: flex; gap: 2px;
+    padding: 8px 14px 0;
+    border-bottom: 1px solid rgba(226,232,240,0.08);
+  }
+  .drawer-tab {
+    font-size: 11px; font-weight: 500;
+    padding: 6px 10px;
+    border: none; background: none;
+    color: var(--muted-fg);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .drawer-tab:hover { color: var(--fg); }
+  .drawer-tab.active { color: var(--teal); border-bottom-color: var(--teal); }
+  .drawer-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 14px;
+    font-size: 12px;
+  }
+  .drawer-body::-webkit-scrollbar { width: 6px; }
+  .drawer-body::-webkit-scrollbar-thumb { background: rgba(226,232,240,0.12); border-radius: 3px; }
+  .drawer-panel { display: none; }
+  .drawer-panel.active { display: block; }
+
+  /* 对话 */
+  .chat-list { display: flex; flex-direction: column; gap: 10px; }
+  .chat-msg { display: flex; gap: 8px; }
+  .chat-msg .bubble {
+    padding: 8px 10px;
+    border-radius: 10px;
+    font-size: 12px;
+    line-height: 1.55;
+    max-width: 100%;
+  }
+  .chat-msg.steward .bubble {
+    background: rgba(55,214,194,0.08);
+    border: 1px solid rgba(55,214,194,0.18);
+    border-top-left-radius: 2px;
+    color: rgba(226,232,240,0.85);
+  }
+  .chat-msg.user { justify-content: flex-end; }
+  .chat-msg.user .bubble {
+    background: rgba(226,232,240,0.07);
+    border: 1px solid rgba(226,232,240,0.1);
+    border-top-right-radius: 2px;
+    color: var(--fg);
+  }
+  .chat-msg .mini-avatar {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--teal-dim);
+    border: 1px solid rgba(55,214,194,0.3);
+    color: var(--teal);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 700;
+  }
+  .chat-input-row {
+    display: flex; gap: 8px;
+    padding: 10px 14px;
+    border-top: 1px solid rgba(226,232,240,0.08);
+  }
+  .chat-input-row input {
+    flex: 1;
+    background: rgba(226,232,240,0.05);
+    border: 1px solid rgba(226,232,240,0.1);
+    border-radius: var(--radius-md);
+    padding: 7px 10px;
+    color: var(--fg);
+    font-size: 12px;
+    outline: none;
+  }
+  .chat-input-row input:focus { border-color: rgba(55,214,194,0.4); }
+  .chat-input-row input:disabled { opacity: 0.5; }
+  .typing { color: var(--muted-fg); font-size: 11px; padding: 2px 0 0 30px; display: none; }
+  .typing.show { display: block; }
+
+  /* 依据 / 时间线 / 证据 通用 */
+  .ev-block {
+    background: rgba(226,232,240,0.03);
+    border: 1px solid rgba(226,232,240,0.07);
+    border-radius: var(--radius-md);
+    padding: 10px;
+    margin-bottom: 8px;
+  }
+  .ev-block .ev-title { font-size: 11px; font-weight: 600; color: var(--muted-fg); margin-bottom: 6px; }
+  .ev-block pre {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    line-height: 1.6;
+    color: rgba(226,232,240,0.7);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .diff-add { color: var(--run); }
+  .diff-del { color: var(--fail); }
+  .timeline { display: flex; flex-direction: column; gap: 0; }
+  .tl-item { display: flex; gap: 10px; position: relative; padding-bottom: 14px; }
+  .tl-item::before {
+    content: '';
+    position: absolute;
+    left: 5px; top: 14px; bottom: 0;
+    width: 1px;
+    background: rgba(226,232,240,0.1);
+  }
+  .tl-item:last-child::before { display: none; }
+  .tl-dot {
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    border: 2px solid var(--muted-fg);
+    background: var(--bg);
+    flex-shrink: 0;
+    margin-top: 3px;
+  }
+  .tl-dot.teal { border-color: var(--teal); }
+  .tl-dot.wait { border-color: var(--wait); }
+  .tl-dot.done { border-color: var(--done); }
+  .tl-body { font-size: 12px; line-height: 1.5; }
+  .tl-body .t { font-size: 11px; color: var(--muted-fg); }
+
+  /* ─── 计划确认弹窗 ─── */
+  .modal-mask {
+    position: fixed; inset: 0;
+    background: rgba(4,6,10,0.6);
+    backdrop-filter: blur(4px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 60;
+  }
+  .modal-mask.open { display: flex; }
+  .modal {
+    width: 560px;
+    max-width: 94vw;
+    max-height: 86vh;
+    overflow-y: auto;
+    background: #0d1119;
+    border: 1px solid rgba(226,232,240,0.12);
+    border-radius: 12px;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+  }
+  .modal::-webkit-scrollbar { width: 6px; }
+  .modal::-webkit-scrollbar-thumb { background: rgba(226,232,240,0.12); border-radius: 3px; }
+  .modal-head {
+    padding: 16px 18px 0;
+  }
+  .modal-kicker { font-size: 11px; color: var(--teal); font-weight: 600; letter-spacing: 0.04em; }
+  .modal-title { font-size: 15px; font-weight: 600; margin-top: 2px; }
+  .modal-goal-text {
+    font-size: 12px;
+    color: rgba(226,232,240,0.7);
+    background: rgba(226,232,240,0.04);
+    border-radius: var(--radius-md);
+    padding: 8px 10px;
+    margin-top: 10px;
+    line-height: 1.55;
+  }
+  .modal-section { padding: 14px 18px 0; }
+  .modal-section h3 {
+    font-size: 11px; font-weight: 600;
+    color: var(--muted-fg);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .plan-task {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px;
+    background: rgba(226,232,240,0.03);
+    border: 1px solid rgba(226,232,240,0.07);
+    border-radius: var(--radius-md);
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+  .plan-task .num {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: var(--teal-dim);
+    color: var(--teal);
+    font-size: 11px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .plan-task .tname { flex: 1; min-width: 0; }
+  .plan-task .tmeta { font-size: 11px; color: var(--muted-fg); white-space: nowrap; }
+  .plan-facts { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+  .plan-facts .row { display: flex; gap: 8px; }
+  .plan-facts .k { color: var(--muted-fg); min-width: 90px; flex-shrink: 0; }
+  .plan-facts .v { color: rgba(226,232,240,0.8); }
+  .modal-actions {
+    display: flex; gap: 8px; align-items: center;
+    padding: 16px 18px 18px;
+  }
+  .modal-actions .note { font-size: 11px; color: var(--muted-fg); margin-right: auto; }
+
+  /* ─── 设置抽屉 ─── */
+  .settings-panel {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: 440px;
+    max-width: 94vw;
+    background: #0d1119;
+    border-left: 1px solid rgba(226,232,240,0.1);
+    transform: translateX(100%);
+    transition: transform 0.22s ease;
+    z-index: 55;
+    display: flex;
+    flex-direction: column;
+  }
+  .settings-panel.open { transform: translateX(0); }
+  .settings-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 16px;
+  }
+  .settings-body::-webkit-scrollbar { width: 6px; }
+  .settings-body::-webkit-scrollbar-thumb { background: rgba(226,232,240,0.12); border-radius: 3px; }
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted-fg);
+    margin-bottom: 5px;
+  }
+  .field input, .field select {
+    width: 100%;
+    background: rgba(226,232,240,0.05);
+    border: 1px solid rgba(226,232,240,0.1);
+    border-radius: var(--radius-md);
+    padding: 7px 10px;
+    color: var(--fg);
+    font-size: 12px;
+    outline: none;
+  }
+  .field input:focus, .field select:focus { border-color: rgba(55,214,194,0.4); }
+  .field select option { background: #0d1119; }
+  .field .inline-hint { font-size: 11px; color: var(--muted-fg); margin-top: 4px; }
+  .apikey-row { display: flex; gap: 6px; }
+  .apikey-row input { flex: 1; }
+  .eye-btn {
+    width: 34px;
+    flex-shrink: 0;
+    background: rgba(226,232,240,0.05);
+    border: 1px solid rgba(226,232,240,0.1);
+    border-radius: var(--radius-md);
+    color: var(--muted-fg);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .eye-btn:hover { color: var(--fg); }
+  .provider-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+  .provider-opt {
+    font-size: 11px; font-weight: 500;
+    padding: 5px 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(226,232,240,0.1);
+    background: rgba(226,232,240,0.03);
+    color: rgba(226,232,240,0.6);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .provider-opt:hover { border-color: rgba(226,232,240,0.25); color: var(--fg); }
+  .provider-opt.sel {
+    border-color: rgba(55,214,194,0.5);
+    background: var(--teal-dim);
+    color: var(--teal);
+  }
+  .cap-list { display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+  .cap-row { display: flex; align-items: center; gap: 8px; color: rgba(226,232,240,0.75); }
+  .cap-row .ok { color: var(--run); display: flex; }
+  .cap-row .no { color: var(--muted-fg); display: flex; }
+  .cap-row .cap-note { margin-left: auto; font-size: 11px; color: var(--muted-fg); }
+  .data-notice {
+    display: flex; gap: 8px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: rgba(226,232,240,0.7);
+    background: rgba(245,158,11,0.07);
+    border: 1px solid rgba(245,158,11,0.2);
+    border-radius: var(--radius-md);
+    padding: 8px 10px;
+    margin-bottom: 14px;
+  }
+  .data-notice .warn { color: var(--wait); flex-shrink: 0; display: flex; }
+  .data-notice b { color: var(--fg); }
+  .switch-row {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 12px;
+    padding: 4px 0;
+  }
+  .switch-row .desc { flex: 1; }
+  .switch-row .desc .sub { font-size: 11px; color: var(--muted-fg); }
+  .switch {
+    width: 32px; height: 18px;
+    border-radius: 9px;
+    background: rgba(226,232,240,0.12);
+    border: none;
+    cursor: pointer;
+    position: relative;
+    transition: background 0.15s;
+    flex-shrink: 0;
+  }
+  .switch::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--fg);
+    transition: left 0.15s;
+  }
+  .switch.on { background: var(--teal); }
+  .switch.on::after { left: 16px; background: #06251f; }
+  .settings-foot {
+    display: flex; gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid rgba(226,232,240,0.08);
+  }
+  .test-result { font-size: 11px; margin-left: auto; display: none; align-items: center; gap: 4px; }
+  .test-result.show { display: inline-flex; }
+  .test-result.ok { color: var(--run); }
+  .test-result.fail { color: var(--fail); }
+  .test-result.loading { color: var(--muted-fg); }
+  .spinner {
+    width: 10px; height: 10px;
+    border: 2px solid rgba(226,232,240,0.2);
+    border-top-color: var(--teal);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ─── Toast ─── */
+  .toast-wrap {
+    position: fixed;
+    bottom: 20px; right: 20px;
+    display: flex; flex-direction: column; gap: 8px;
+    z-index: 80;
+  }
+  .toast {
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(15,19,28,0.97);
+    border: 1px solid rgba(226,232,240,0.12);
+    border-left: 2px solid var(--teal);
+    border-radius: var(--radius-md);
+    padding: 9px 14px;
+    font-size: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    animation: toastIn 0.25s ease;
+    max-width: 360px;
+  }
+  .toast.warn { border-left-color: var(--wait); }
+  .toast.success { border-left-color: var(--run); }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .toast.out { opacity: 0; transform: translateY(4px); transition: all 0.25s; }
+
+  /* ─── 焦点样式 ─── */
+  :where(button, input, select, [tabindex]):focus-visible {
+    outline: 1px solid rgba(55,214,194,0.5);
+    outline-offset: -1px;
+  }
+</style>
+</head>
+
+</html>
+<body>
+
+<div class="app-shell">
+  <!-- ─── SIDEBAR ─── -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <svg class="sidebar-logo" viewBox="0 0 512 512" fill="none">
+        <rect width="512" height="512" rx="112" fill="#071017"/>
+        <rect x="72" y="92" width="368" height="328" rx="62" fill="#0D1B24" stroke="#1F3A46" stroke-width="20"/>
+        <path d="M128 184C188 124 269 124 329 184C358 213 386 227 424 224" stroke="#37D6C2" stroke-width="30" stroke-linecap="round"/>
+        <path d="M128 256C202 196 280 316 354 256C380 235 398 228 424 232" stroke="#7AA7FF" stroke-width="30" stroke-linecap="round"/>
+        <path d="M128 328C188 388 269 388 329 328C358 299 386 285 424 288" stroke="#B8F36B" stroke-width="30" stroke-linecap="round"/>
+        <path d="M151 214L208 256L151 298" stroke="#F8FAFC" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M238 303H344" stroke="#F8FAFC" stroke-width="28" stroke-linecap="round"/>
+      </svg>
+      ThreadTerm
+    </div>
+
+    <!-- 管家迷你状态（点击进入配置） -->
+    <div class="steward-mini" id="stewardMini" tabindex="0" role="button" title="管家配置">
+      <div class="row1">
+        <span class="online-dot" id="miniDot"></span>
+        <span id="miniName">工作管家</span>
+      </div>
+      <div class="row2" id="miniCfg">Claude Sonnet 4 · 标准模式</div>
+    </div>
+
+    <div class="sidebar-body">
+      <button type="button" class="nav-row active">
+        <span class="icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span>
+        工作台
+        <span class="kbd">⌘1</span>
+      </button>
+      <button type="button" class="nav-row" id="navInbox">
+        <span class="icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg></span>
+        异常与决策收件箱
+        <span class="count" id="inboxCount">2</span>
+      </button>
+      <button type="button" class="nav-row" id="navActivity">
+        <span class="icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
+        活动审计
+      </button>
+      <button type="button" class="nav-row" id="navTerminals">
+        <span class="icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>
+        原始终端
+        <span class="kbd">⌃E</span>
+      </button>
+
+      <div class="sidebar-section">目标</div>
+      <div class="goal-nav-row" tabindex="0" role="button" data-goal="auth">
+        <span class="goal-state-dot blocked"></span>
+        <span class="label">完成认证模块重构</span>
+      </div>
+      <div class="goal-nav-row" tabindex="0" role="button" data-goal="api">
+        <span class="goal-state-dot blocked"></span>
+        <span class="label">启动 api-server</span>
+      </div>
+      <div class="goal-nav-row" tabindex="0" role="button" data-goal="worker">
+        <span class="goal-state-dot done"></span>
+        <span class="label">修复 worker pool 死锁</span>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="cost-mini">
+        <span>今日成本</span>
+        <b>$3.42 / 预算 $10</b>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ─── MAIN ─── -->
+  <div class="main-content">
+    <!-- 管家状态栏 -->
+    <div class="steward-bar">
+      <button type="button" class="steward-id" id="stewardIdBtn" title="管家配置">
+        <span class="online-dot" id="barDot"></span>
+        <span>
+          <span class="name" id="barName">工作管家</span>
+          <span class="cfg" id="barCfg">· <b>Claude Sonnet 4</b> · Anthropic</span>
+        </span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted-fg);"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <span class="sep"></span>
+      <button type="button" class="mode-chip" id="modeChip" title="权限模式（点击切换）">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <span id="modeLabel">标准模式</span>
+      </button>
+      <span class="steward-stats">
+        <span>目标 <b id="statGoals">2</b></span>
+        <span>执行节点 <b id="statNodes">5</b></span>
+      </span>
+      <span class="spacer"></span>
+      <button type="button" class="demo-toggle" id="offlineToggle">模拟管家离线</button>
+      <button type="button" class="btn-icon" id="settingsBtn" title="管家设置">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06-.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+
+    <!-- 离线横幅 -->
+    <div class="offline-banner" id="offlineBanner">
+      <span class="warn-icon">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </span>
+      <span>
+        管家离线：模型服务不可达，暂停规划与建议。
+        <span class="ok-note">本地终端运行中 · 规则监控（Attention Detector）仍然有效 · 决策可手动处理</span>
+      </span>
+      <span class="actions">
+        <button type="button" class="qbtn primary" id="reconnectBtn">重新连接</button>
+        <button type="button" class="qbtn" id="switchProviderBtn">切换 Provider</button>
+        <button type="button" class="qbtn" id="takeoverBtn">手动接管</button>
+      </span>
+    </div>
+
+    <!-- 工作区 -->
+    <div class="workbench">
+      <div class="workbench-inner">
+
+        <!-- 目标输入 -->
+        <div class="goal-input-card" id="goalInputCard">
+          <span class="sparkle">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.9z"/><path d="M19 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg>
+          </span>
+          <input id="goalInput" type="text" placeholder="告诉管家你想完成什么……例如：完成认证模块重构，安排实现、测试和代码审查，遇到依赖变更时先询问我。" />
+          <button type="button" class="goal-submit" id="goalSubmit">
+            生成计划
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </button>
+        </div>
+
+        <!-- 管家简报 -->
+        <div class="briefing" id="briefing">
+          <span class="briefing-avatar">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.9z"/></svg>
+          </span>
+          <div class="briefing-body">
+            <div class="briefing-head"><b>管家简报</b><span id="briefingTime">刚刚更新</span></div>
+            <div class="briefing-text" id="briefingText">
+              当前有 <b>2 个目标</b>进行中。<span class="hl-wait">认证重构等待一项依赖审批</span>（jsonwebtoken，风险 R2）；api-server 因 8080 端口冲突暂停，<span class="hl-teal">我可以切换到 8081 并重启</span>。worker pool 修复<span class="hl-done">已完成并验证通过</span>，3 个文件改动待你验收。今日已完成 1 个目标，成本 $1.82。建议你优先处理依赖审批，它阻塞了 2 个后续任务。
+            </div>
+            <div class="briefing-foot">
+              <button type="button" class="link-btn" id="openActivityBtn">查看详细活动 →</button>
+              <button type="button" class="link-btn grey" id="askBriefingBtn">追问管家</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 需要你决定 -->
+        <div class="section-head">
+          <h2>需要你决定</h2>
+          <span class="hint" id="decisionHint">2 项 · 管家已给出建议</span>
+        </div>
+        <div class="decision-list" id="decisionList">
+
+          <!-- 决策 1：依赖审批 -->
+          <div class="decision-card" id="decisionAuth">
+            <div class="decision-top">
+              <span class="goal-tag">目标 · 认证模块重构</span>
+              <span class="risk-chip r2">R2 · 目标级批准</span>
+              <span class="kind">权限审批</span>
+              <span class="time">等待 4 分钟</span>
+            </div>
+            <div class="decision-what">实现登录态校验需要新增依赖 <code>jsonwebtoken@9</code></div>
+            <div class="decision-rows">
+              <div class="decision-row"><span class="k">发生了什么</span><span class="v">Claude 在实现认证中间件时需要签发/校验 JWT，仓库当前无相关依赖。</span></div>
+              <div class="decision-row"><span class="k">管家建议</span><span class="v advice">批准。该依赖为社区主流方案（周下载 900 万），无原生模块，不引入系统级安装。</span></div>
+              <div class="decision-row"><span class="k">影响范围</span><span class="v">仅修改 <code>package.json</code>、lockfile 与 <code>src/auth/middleware.ts</code>；网络访问仅限 registry.npmjs.org。</span></div>
+              <div class="decision-row"><span class="k">批准后</span><span class="v">Shell 执行 <code>pnpm add jsonwebtoken@9</code> → Claude 继续实现 → Shell 运行测试 → Codex 安全审查。</span></div>
+            </div>
+            <div class="decision-actions">
+              <button type="button" class="qbtn primary" data-act="approve" data-target="decisionAuth">批准<span class="kbd">⌃1</span></button>
+              <button type="button" class="qbtn" data-act="adjust" data-target="decisionAuth">调整方案</button>
+              <button type="button" class="qbtn danger" data-act="reject" data-target="decisionAuth">拒绝</button>
+              <button type="button" class="qbtn" data-act="ask" data-target="decisionAuth">询问管家</button>
+              <span class="evidence">
+                <button type="button" class="link-btn grey" data-act="evidence" data-target="decisionAuth">证据 · diff / 日志 →</button>
+              </span>
+            </div>
+            <div class="resolved-stamp">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              <span class="resolved-text">已批准 · 管家已继续执行</span>
+            </div>
+          </div>
+
+          <!-- 决策 2：端口冲突 -->
+          <div class="decision-card" id="decisionApi">
+            <div class="decision-top">
+              <span class="goal-tag">目标 · 启动 api-server</span>
+              <span class="risk-chip r1">R1 · 条件允许</span>
+              <span class="kind">异常处理</span>
+              <span class="time">12 分钟前</span>
+            </div>
+            <div class="decision-what">8080 端口被占用，服务无法启动</div>
+            <div class="decision-rows">
+              <div class="decision-row"><span class="k">发生了什么</span><span class="v">Shell 启动时报 <code>EADDRINUSE :8080</code>；占用进程为本机另一个 dev 服务（PID 4821）。</span></div>
+              <div class="decision-row"><span class="k">管家建议</span><span class="v advice">切换到 8081 重启（改动仅在本次启动命令，不改配置文件）。不建议直接 kill 4821，它可能属于你另一个工作区。</span></div>
+              <div class="decision-row"><span class="k">影响范围</span><span class="v">仅当前目标内有效；不影响其他项目。</span></div>
+              <div class="decision-row"><span class="k">批准后</span><span class="v">Shell 以 <code>PORT=8081 go run .</code> 重启 → 管家验证健康检查通过 → 目标完成。</span></div>
+            </div>
+            <div class="decision-actions">
+              <button type="button" class="qbtn primary" data-act="approve" data-target="decisionApi">批准<span class="kbd">⌃2</span></button>
+              <button type="button" class="qbtn" data-act="adjust" data-target="decisionApi">调整方案</button>
+              <button type="button" class="qbtn danger" data-act="reject" data-target="decisionApi">拒绝</button>
+              <button type="button" class="qbtn" data-act="ask" data-target="decisionApi">询问管家</button>
+              <span class="evidence">
+                <button type="button" class="link-btn grey" data-act="evidence" data-target="decisionApi">证据 · 日志 →</button>
+              </span>
+            </div>
+            <div class="resolved-stamp">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              <span class="resolved-text">已批准 · 管家已继续执行</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 进行中的目标 -->
+        <div class="section-head">
+          <h2>进行中的目标</h2>
+          <span class="hint" id="goalHint">2 个 · 点击展开执行节点</span>
+        </div>
+        <div class="goal-list" id="goalList">
+
+          <!-- 目标卡 1：认证模块重构 -->
+          <div class="goal-card blocked" id="goalAuth">
+            <div class="goal-main" data-act="toggle" data-target="goalAuth" tabindex="0" role="button">
+              <div class="goal-title-row">
+                <span class="goal-title">完成认证模块重构</span>
+                <span class="goal-stage blocked" id="goalAuthStage">阻塞 · 等待依赖审批</span>
+                <span class="goal-expand-hint">执行节点 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></span>
+              </div>
+              <div class="goal-summary">阶段：实现认证中间件 → 测试 → 安全审查。当前阻塞：jsonwebtoken 依赖审批。</div>
+              <div class="goal-facts">
+                <span>任务 <b>1/4 已验证</b></span>
+                <span>节点 <b>3</b></span>
+                <span>已耗时 <b>26 分钟</b></span>
+                <span>成本 <b>$0.86 / $3</b></span>
+                <span class="next">下一步 <b>批准依赖后继续实现</b></span>
+              </div>
+            </div>
+            <div class="goal-tasks">
+              <div class="task-row">
+                <span class="agent-tag claude">Claude</span>
+                <span class="task-name">设计并实现认证中间件</span>
+                <span class="task-state waiting" id="authTaskClaude">● 等待依赖审批</span>
+                <button type="button" class="task-open-term" data-act="terminal">原始终端 →</button>
+              </div>
+              <div class="task-row">
+                <span class="agent-tag shell">Shell</span>
+                <span class="task-name">安装依赖并运行单元测试</span>
+                <span class="task-state queued">○ 排队中</span>
+                <button type="button" class="task-open-term" data-act="terminal">原始终端 →</button>
+              </div>
+              <div class="task-row">
+                <span class="agent-tag codex">Codex</span>
+                <span class="task-name">认证逻辑安全审查（只读）</span>
+                <span class="task-state queued">○ 排队中</span>
+                <button type="button" class="task-open-term" data-act="terminal">原始终端 →</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 目标卡 2：启动 api-server -->
+          <div class="goal-card blocked" id="goalApi">
+            <div class="goal-main" data-act="toggle" data-target="goalApi" tabindex="0" role="button">
+              <div class="goal-title-row">
+                <span class="goal-title">启动 api-server</span>
+                <span class="goal-stage blocked" id="goalApiStage">阻塞 · 端口冲突</span>
+                <span class="goal-expand-hint">执行节点 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></span>
+              </div>
+              <div class="goal-summary">启动本地开发服务并通过健康检查。当前阻塞：8080 端口被占用。</div>
+              <div class="goal-facts">
+                <span>任务 <b>0/2 已验证</b></span>
+                <span>节点 <b>1</b></span>
+                <span>已耗时 <b>12 分钟</b></span>
+                <span>成本 <b>$0.02 / $1</b></span>
+                <span class="next">下一步 <b>等待你决定是否切换端口</b></span>
+              </div>
+            </div>
+            <div class="goal-tasks">
+              <div class="task-row">
+                <span class="agent-tag shell">Shell</span>
+                <span class="task-name" id="apiTaskName">go run .（:8080）</span>
+                <span class="task-state waiting" id="apiTaskState">● 启动失败 · 等待决策</span>
+                <button type="button" class="task-open-term" data-act="terminal">原始终端 →</button>
+              </div>
+              <div class="task-row">
+                <span class="agent-tag shell">Shell</span>
+                <span class="task-name">健康检查 /health</span>
+                <span class="task-state queued" id="apiHealthState">○ 排队中</span>
+                <button type="button" class="task-open-term" data-act="terminal">原始终端 →</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 最近完成 -->
+        <div class="section-head">
+          <h2>最近完成</h2>
+          <span class="hint" id="reportHint">1 个目标 · 待验收</span>
+        </div>
+        <div class="report-list" id="reportList">
+
+          <div class="report-card" id="reportWorker">
+            <div class="report-head">
+              <span class="report-title">修复 worker pool 关闭死锁</span>
+              <span class="verify-chip">✓ 验证通过</span>
+              <span class="verify-chip pending" id="acceptChip">待你验收</span>
+            </div>
+            <div class="report-body">
+              Codex 定位到 shutdown 顺序问题并修复：<code>src/worker/pool.ts</code>、<code>src/worker/supervisor.ts</code>、<code>tests/pool.test.ts</code> 共 3 个文件改动。单元测试 42/42 通过，新增回归用例 3 个。遗留风险：低（仅影响关闭路径，运行期行为不变）。
+            </div>
+            <div class="report-meta">
+              <span>总耗时 38 分钟</span>
+              <span>成本 $0.94</span>
+              <span>执行节点 Codex ×1 · Shell ×1</span>
+            </div>
+            <div class="report-actions">
+              <button type="button" class="qbtn primary" data-act="accept" data-target="reportWorker">验收</button>
+              <button type="button" class="qbtn" data-act="diff" data-target="reportWorker">查看改动</button>
+              <button type="button" class="qbtn" data-act="reopen" data-target="reportWorker">重新打开目标</button>
+              <span class="evidence" style="margin-left:auto;">
+                <button type="button" class="link-btn grey" data-act="report-evidence">完整报告 · 时间线 →</button>
+              </span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── 右侧上下文抽屉 ─── -->
+<div class="drawer-mask" id="drawerMask"></div>
+<aside class="drawer" id="drawer" aria-label="上下文抽屉">
+  <div class="drawer-head">
+    <span class="drawer-title" id="drawerTitle">目标 · 认证模块重构</span>
+    <button type="button" class="btn-icon" id="drawerClose" title="关闭">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="drawer-tabs">
+    <button type="button" class="drawer-tab active" data-tab="chat">对话</button>
+    <button type="button" class="drawer-tab" data-tab="why">判断依据</button>
+    <button type="button" class="drawer-tab" data-tab="timeline">时间线</button>
+    <button type="button" class="drawer-tab" data-tab="evidence">证据</button>
+  </div>
+  <div class="drawer-body">
+    <!-- 对话 -->
+    <div class="drawer-panel active" data-panel="chat">
+      <div class="chat-list" id="chatList">
+        <div class="chat-msg steward">
+          <span class="mini-avatar">管</span>
+          <div class="bubble" id="chatSeed">我在跟踪这个目标。你可以问我：为什么建议批准、风险在哪里、或者让我换个方案。</div>
+        </div>
+      </div>
+      <div class="typing" id="typing">管家正在输入…</div>
+    </div>
+    <!-- 判断依据 -->
+    <div class="drawer-panel" data-panel="why">
+      <div class="ev-block">
+        <div class="ev-title">建议来源</div>
+        <pre id="whySource">依据：Attention Detector 观察事件 + 终端输出分析 + 依赖元数据（registry 周下载量、是否含原生模块、维护状态）。</pre>
+      </div>
+      <div class="ev-block">
+        <div class="ev-title">置信度与边界</div>
+        <pre>置信度：高。
+管家只给出建议，不会自行批准 R2 及以上操作。
+模型切换只影响建议质量，目标/任务/审批的权威状态保存在本地控制面。</pre>
+      </div>
+      <div class="ev-block">
+        <div class="ev-title">被拒绝时</div>
+        <pre>若你拒绝，管家会让 Claude 改用仓库已有依赖（如手写 HMAC 校验），并在计划中标注额外工时与风险。</pre>
+      </div>
+    </div>
+    <!-- 时间线 -->
+    <div class="drawer-panel" data-panel="timeline">
+      <div class="timeline">
+        <div class="tl-item"><span class="tl-dot done"></span><div class="tl-body">目标创建，计划获批准<div class="t">26 分钟前</div></div></div>
+        <div class="tl-item"><span class="tl-dot teal"></span><div class="tl-body">任务拆分：实现（Claude）/ 测试（Shell）/ 审查（Codex）<div class="t">25 分钟前</div></div></div>
+        <div class="tl-item"><span class="tl-dot teal"></span><div class="tl-body">Claude 开始实现认证中间件<div class="t">24 分钟前</div></div></div>
+        <div class="tl-item"><span class="tl-dot wait"></span><div class="tl-body">检测到依赖安装请求 → 形成 Decision Request（R2）提交给你<div class="t">4 分钟前</div></div></div>
+      </div>
+    </div>
+    <!-- 证据 -->
+    <div class="drawer-panel" data-panel="evidence">
+      <div class="ev-block">
+        <div class="ev-title">拟执行命令（规范化）</div>
+        <pre>操作：安装依赖
+命令：pnpm add jsonwebtoken@9
+工作区：threadterm/m-a3f9/t-auth-impl
+网络域名：registry.npmjs.org
+有效范围：仅本次 Attempt · 10 分钟</pre>
+      </div>
+      <div class="ev-block">
+        <div class="ev-title">相关终端输出</div>
+        <pre>❯ pnpm add jsonwebtoken@9
+ERR_PNPM_BLOCKED  需要目标级批准（R2）
+policy: dependency.install requires approval</pre>
+      </div>
+      <div class="ev-block">
+        <div class="ev-title">将修改的文件</div>
+        <pre><span class="diff-add">+ package.json        dependencies.jsonwebtoken ^9.0.2</span>
+<span class="diff-add">+ pnpm-lock.yaml      +18 行</span>
+<span class="diff-add">+ src/auth/middleware.ts  新增</span></pre>
+      </div>
+    </div>
+  </div>
+  <div class="chat-input-row">
+    <input id="chatInput" type="text" placeholder="询问管家…" />
+    <button type="button" class="goal-submit" id="chatSend">发送</button>
+  </div>
+</aside>
+
+<!-- ─── 计划确认弹窗 ─── -->
+<div class="modal-mask" id="planModal">
+  <div class="modal" role="dialog" aria-label="管家执行计划">
+    <div class="modal-head">
+      <div class="modal-kicker">管家执行计划 · 待你确认</div>
+      <div class="modal-title" id="planTitle">完成认证模块重构</div>
+      <div class="modal-goal-text" id="planGoalText">完成认证模块重构，安排实现、测试和代码审查，遇到依赖变更时先询问我。</div>
+    </div>
+    <div class="modal-section">
+      <h3>任务拆分与执行节点</h3>
+      <div class="plan-task">
+        <span class="num">1</span>
+        <span class="agent-tag claude">Claude</span>
+        <span class="tname">设计并实现认证中间件（JWT 签发/校验）</span>
+        <span class="tmeta">可写 worktree</span>
+      </div>
+      <div class="plan-task">
+        <span class="num">2</span>
+        <span class="agent-tag shell">Shell</span>
+        <span class="tname">安装依赖并运行单元测试</span>
+        <span class="tmeta">依赖 1</span>
+      </div>
+      <div class="plan-task">
+        <span class="num">3</span>
+        <span class="agent-tag codex">Codex</span>
+        <span class="tname">认证逻辑安全审查（只读，独立上下文）</span>
+        <span class="tmeta">依赖 1</span>
+      </div>
+      <div class="plan-task">
+        <span class="num">4</span>
+        <span class="agent-tag opencode">管家</span>
+        <span class="tname">汇总验证结果，生成完成报告</span>
+        <span class="tmeta">依赖 2 · 3</span>
+      </div>
+    </div>
+    <div class="modal-section">
+      <h3>权限 · 预算 · 风险</h3>
+      <div class="plan-facts">
+        <div class="row"><span class="k">权限</span><span class="v">标准模式：R0/R1 自动执行，R2 及以上提交你批准（如依赖安装）</span></div>
+        <div class="row"><span class="k">工作区</span><span class="v">独立 worktree + 写 Lease，单 Agent 写入，不直接改主分支</span></div>
+        <div class="row"><span class="k">预算上限</span><span class="v">$3.00 或 90 分钟，超限自动暂停并通知你</span></div>
+        <div class="row"><span class="k">网络</span><span class="v">默认关闭外网；依赖安装时按域名临时授权（registry.npmjs.org）</span></div>
+        <div class="row"><span class="k">主要风险</span><span class="v">中 — 涉及认证路径，合并前需 Codex 审查 + 你验收</span></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <span class="note">批准后目标进入「进行中」，管家开始派发任务</span>
+      <button type="button" class="qbtn" id="planCancel">取消</button>
+      <button type="button" class="qbtn" id="planAdjust">调整计划</button>
+      <button type="button" class="qbtn primary" id="planApprove">批准计划</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── 管家设置抽屉 ─── -->
+<aside class="settings-panel" id="settingsPanel" aria-label="管家设置">
+  <div class="drawer-head">
+    <span class="drawer-title">管家配置</span>
+    <button type="button" class="btn-icon" id="settingsClose" title="关闭">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="settings-body">
+    <div class="data-notice">
+      <span class="warn">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </span>
+      <span id="dataNotice">当前管家数据将发送到 <b>Anthropic</b>（api.anthropic.com）。目标、任务与审批状态始终保存在本地，不会随 Provider 切换而丢失。</span>
+    </div>
+
+    <div class="field">
+      <label>Provider</label>
+      <div class="provider-grid" id="providerGrid">
+        <button type="button" class="provider-opt" data-provider="OpenAI">OpenAI</button>
+        <button type="button" class="provider-opt sel" data-provider="Anthropic">Anthropic</button>
+        <button type="button" class="provider-opt" data-provider="DeepSeek">DeepSeek</button>
+        <button type="button" class="provider-opt" data-provider="OpenAI 兼容">OpenAI 兼容</button>
+        <button type="button" class="provider-opt" data-provider="Local">Local</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>模型</label>
+      <input id="cfgModel" type="text" value="claude-sonnet-4-20250514" />
+    </div>
+    <div class="field">
+      <label>Base URL</label>
+      <input id="cfgBase" type="text" value="https://api.anthropic.com" />
+    </div>
+    <div class="field">
+      <label>API Key</label>
+      <div class="apikey-row">
+        <input id="cfgKey" type="password" value="sk-ant-api03-x7Kd9mQ2pLwN4vB8" />
+        <button type="button" class="eye-btn" id="keyToggle" title="显示/隐藏">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+      <div class="inline-hint">仅保存在本地，遮罩显示；不会写入任何日志。</div>
+    </div>
+
+    <div class="field">
+      <label>能力检测</label>
+      <div class="cap-list" id="capList">
+        <div class="cap-row"><span class="ok"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg></span>结构化输出<span class="cap-note">JSON schema</span></div>
+        <div class="cap-row"><span class="ok"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg></span>工具调用<span class="cap-note">tool use</span></div>
+        <div class="cap-row"><span class="ok"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg></span>上下文长度<span class="cap-note">200K</span></div>
+        <div class="cap-row"><span class="no"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span>流式中断恢复<span class="cap-note">不支持 · 已显式降级</span></div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>权限策略</label>
+      <select id="cfgMode">
+        <option value="cautious">谨慎模式 — 所有 R1 以上操作都需批准</option>
+        <option value="standard" selected>标准模式 — R0/R1 自动，R2+ 提交批准</option>
+        <option value="auto">自动执行模式 — R0–R2 自动，仅 R3 打扰你</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>单目标预算上限</label>
+      <input id="cfgBudget" type="text" value="$3.00 / 90 分钟" />
+    </div>
+    <div class="field">
+      <div class="switch-row">
+        <span class="desc">
+          跨厂商故障切换
+          <div class="sub">主 Provider 不可达时自动切换到备选（默认关闭，切换只影响建议质量，不影响权威状态）</div>
+        </span>
+        <button type="button" class="switch" id="failoverSwitch" role="switch" aria-checked="false"></button>
+      </div>
+    </div>
+  </div>
+  <div class="settings-foot">
+    <button type="button" class="qbtn" id="testConnBtn">测试连接</button>
+    <button type="button" class="qbtn primary" id="saveCfgBtn">保存并应用</button>
+    <span class="test-result" id="testResult"></span>
+  </div>
+</aside>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script>
+/* ═══ 基础工具 ═══ */
+const $ = id => document.getElementById(id);
+
+const state = {
+  online: true,
+  provider: 'Anthropic',
+  model: 'claude-sonnet-4-20250514',
+  mode: 'standard',           // cautious | standard | auto
+  failover: false,
+  pendingDecisions: ['decisionAuth', 'decisionApi'],
+  goalSeq: 0,
+};
+
+function toast(msg, kind = '') {
+  const wrap = $('toastWrap');
+  const t = document.createElement('div');
+  t.className = 'toast' + (kind ? ' ' + kind : '');
+  t.textContent = msg;
+  wrap.appendChild(t);
+  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 300); }, 3200);
+}
+
+/* ═══ 上下文抽屉 ═══ */
+const drawer = $('drawer'), mask = $('drawerMask');
+
+function openDrawer(title, tab = 'chat', seed = '') {
+  $('drawerTitle').textContent = title;
+  if (seed) {
+    const list = $('chatList');
+    list.innerHTML = '';
+    addChatBubble('steward', seed, false);
+  }
+  setTab(tab);
+  drawer.classList.add('open');
+  mask.classList.add('open');
+}
+function closeDrawer() {
+  drawer.classList.remove('open');
+  if (!$('settingsPanel').classList.contains('open')) mask.classList.remove('open');
+}
+function setTab(tab) {
+  document.querySelectorAll('.drawer-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.drawer-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === tab));
+}
+document.querySelectorAll('.drawer-tab').forEach(b => b.addEventListener('click', () => setTab(b.dataset.tab)));
+$('drawerClose').addEventListener('click', closeDrawer);
+mask.addEventListener('click', () => { closeDrawer(); closeSettings(); });
+
+/* ═══ 对话（模拟管家回复） ═══ */
+function addChatBubble(who, text, scroll = true) {
+  const list = $('chatList');
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + who;
+  if (who === 'steward') {
+    const av = document.createElement('span');
+    av.className = 'mini-avatar';
+    av.textContent = '管';
+    div.appendChild(av);
+  }
+  const b = document.createElement('div');
+  b.className = 'bubble';
+  b.textContent = text;
+  div.appendChild(b);
+  list.appendChild(div);
+  if (scroll) list.parentElement.scrollTop = list.parentElement.scrollHeight;
+}
+
+function stewardReply(q) {
+  if (!state.online) return '我当前处于离线状态，无法生成新建议。本地终端和规则监控仍在运行，你可以重新连接、切换 Provider，或先手动接管。';
+  const s = q.toLowerCase();
+  if (/风险|risk/.test(s)) return '主要风险有两点：① jsonwebtoken 版本锁定在 9.x，避免未来的 breaking change；② 中间件覆盖所有路由前的回归测试必须全绿。详细依据见「判断依据」页。';
+  if (/为什么|依据|reason/.test(s)) return '我的建议基于三点：终端原始输出、依赖元数据（下载量/维护状态/是否含原生模块）、以及当前权限策略（R2 需要你批准）。证据和命令指纹都在「证据」页。';
+  if (/方案|调整|替代|alternative/.test(s)) return '替代方案：不引入新依赖，用 Node 内置 crypto 手写 HMAC 签名。代价是多约 40 分钟实现与测试时间，且自实现更容易出错。我仍然建议批准 jsonwebtoken。';
+  if (/端口|8080|8081/.test(s)) return '8080 被 PID 4821（另一个 dev 服务）占用。我建议改用 8081 是因为 kill 对方进程可能影响你另一个工作区；如果你确认 4821 可以结束，我也可以改用它。';
+  if (/进度|多久|时间/.test(s)) return '按当前速率，认证重构预计还需约 25 分钟（实现 15m + 测试 5m + 审查 5m），预算消耗预计在 $1.4 左右，低于 $3 上限。';
+  return '已收到。我会结合目标状态回答——相关的判断依据、时间线和原始证据都可以在这个抽屉的对应页查看。';
+}
+
+function sendChat() {
+  const input = $('chatInput');
+  const text = input.value.trim();
+  if (!text) return;
+  addChatBubble('user', text);
+  input.value = '';
+  $('typing').classList.add('show');
+  setTimeout(() => {
+    $('typing').classList.remove('show');
+    addChatBubble('steward', stewardReply(text));
+  }, 900);
+}
+$('chatSend').addEventListener('click', sendChat);
+$('chatInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+</script>
+
+<script>
+/* ═══ 管家设置（Provider 配置） ═══ */
+const PRESETS = {
+  'OpenAI':      { model: 'gpt-4o',                    base: 'https://api.openai.com',   ctx: '128K', tools: true,  stream: true  },
+  'Anthropic':   { model: 'claude-sonnet-4-20250514',  base: 'https://api.anthropic.com',ctx: '200K', tools: true,  stream: false },
+  'DeepSeek':    { model: 'deepseek-chat',             base: 'https://api.deepseek.com', ctx: '64K',  tools: true,  stream: false },
+  'OpenAI 兼容': { model: 'your-model',                base: 'http://localhost:8000/v1', ctx: '未知', tools: true,  stream: false },
+  'Local':       { model: 'qwen2.5-14b',               base: 'http://127.0.0.1:11434',   ctx: '32K',  tools: false, stream: false },
+};
+const MODE_LABEL = { cautious: '谨慎模式', standard: '标准模式', auto: '自动执行模式' };
+
+const settingsPanel = $('settingsPanel');
+function openSettings() { settingsPanel.classList.add('open'); mask.classList.add('open'); }
+function closeSettings() { settingsPanel.classList.remove('open'); if (!drawer.classList.contains('open')) mask.classList.remove('open'); }
+$('settingsBtn').addEventListener('click', openSettings);
+$('stewardIdBtn').addEventListener('click', openSettings);
+$('stewardMini').addEventListener('click', openSettings);
+$('settingsClose').addEventListener('click', closeSettings);
+
+/* Provider 选择 */
+$('providerGrid').addEventListener('click', e => {
+  const btn = e.target.closest('.provider-opt');
+  if (!btn) return;
+  document.querySelectorAll('.provider-opt').forEach(b => b.classList.remove('sel'));
+  btn.classList.add('sel');
+  const p = PRESETS[btn.dataset.provider];
+  $('cfgModel').value = p.model;
+  $('cfgBase').value = p.base;
+  renderCaps(p);
+  renderNotice(btn.dataset.provider, p.base);
+});
+
+function renderCaps(p) {
+  const ok = '<span class="ok"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg></span>';
+  const no = '<span class="no"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span>';
+  $('capList').innerHTML =
+    `<div class="cap-row">${ok}结构化输出<span class="cap-note">JSON schema</span></div>` +
+    `<div class="cap-row">${p.tools ? ok : no}工具调用<span class="cap-note">${p.tools ? 'tool use' : '不支持 · 已显式降级为文本约定'}</span></div>` +
+    `<div class="cap-row">${ok}上下文长度<span class="cap-note">${p.ctx}</span></div>` +
+    `<div class="cap-row">${p.stream ? ok : no}流式中断恢复<span class="cap-note">${p.stream ? '支持' : '不支持 · 已显式降级'}</span></div>`;
+}
+function renderNotice(provider, base) {
+  let host = base;
+  try { host = new URL(base).host; } catch (_) {}
+  const isLocal = /^127\.|^localhost/.test(host);
+  $('dataNotice').innerHTML = isLocal
+    ? `当前管家数据将发送到 <b>${provider}</b>（${host}，本机端点，不离开这台设备）。目标、任务与审批状态始终保存在本地。`
+    : `当前管家数据将发送到 <b>${provider}</b>（${host}）。目标、任务与审批状态始终保存在本地，不会随 Provider 切换而丢失。`;
+}
+
+/* API Key 遮罩切换 */
+$('keyToggle').addEventListener('click', () => {
+  const k = $('cfgKey');
+  k.type = k.type === 'password' ? 'text' : 'password';
+});
+
+/* 故障切换开关 */
+$('failoverSwitch').addEventListener('click', function () {
+  this.classList.toggle('on');
+  state.failover = this.classList.contains('on');
+  this.setAttribute('aria-checked', state.failover);
+  toast(state.failover ? '已开启跨厂商故障切换（备选：DeepSeek）' : '已关闭跨厂商故障切换');
+});
+
+/* 测试连接 */
+$('testConnBtn').addEventListener('click', () => {
+  const r = $('testResult');
+  r.className = 'test-result show loading';
+  r.innerHTML = '<span class="spinner"></span> 正在连接…';
+  setTimeout(() => {
+    if (!$('cfgModel').value.trim()) {
+      r.className = 'test-result show fail';
+      r.textContent = '连接失败：模型名称为空';
+      return;
+    }
+    r.className = 'test-result show ok';
+    r.textContent = `连接正常 · ${28 + Math.floor(Math.random() * 40)}ms`;
+    if (!state.online) setOnline(true);
+  }, 1100);
+});
+
+/* 保存并应用 */
+$('saveCfgBtn').addEventListener('click', () => {
+  const sel = document.querySelector('.provider-opt.sel');
+  state.provider = sel.dataset.provider;
+  state.model = $('cfgModel').value.trim() || PRESETS[state.provider].model;
+  state.mode = $('cfgMode').value;
+  renderStewardBar();
+  closeSettings();
+  toast(`管家配置已更新：${state.provider} · ${state.model}`, 'success');
+});
+
+/* 权限模式 chip 循环切换 */
+$('modeChip').addEventListener('click', () => {
+  const order = ['cautious', 'standard', 'auto'];
+  state.mode = order[(order.indexOf(state.mode) + 1) % 3];
+  $('cfgMode').value = state.mode;
+  renderStewardBar();
+  toast(`权限模式已切换为「${MODE_LABEL[state.mode]}」`);
+});
+
+function renderStewardBar() {
+  const shortModel = state.model.length > 22 ? state.model.slice(0, 22) + '…' : state.model;
+  $('barCfg').innerHTML = `· <b>${shortModel}</b> · ${state.provider}`;
+  $('miniCfg').textContent = `${shortModel} · ${MODE_LABEL[state.mode]}`;
+  $('modeLabel').textContent = MODE_LABEL[state.mode];
+  const chip = $('modeChip');
+  chip.classList.toggle('cautious', state.mode === 'cautious');
+  chip.classList.toggle('auto', state.mode === 'auto');
+}
+
+/* ═══ 离线 / 恢复 ═══ */
+const briefOrig = $('briefingText').innerHTML;
+function setOnline(on) {
+  state.online = on;
+  $('offlineBanner').classList.toggle('show', !on);
+  $('barDot').classList.toggle('off', !on);
+  $('miniDot').classList.toggle('off', !on);
+  $('stewardMini').classList.toggle('offline', !on);
+  $('goalInputCard').classList.toggle('disabled', !on);
+  $('offlineToggle').textContent = on ? '模拟管家离线' : '恢复管家连接';
+  if (on) {
+    $('barName').textContent = '工作管家';
+    $('briefingText').innerHTML = briefOrig;
+    $('briefingTime').textContent = '刚刚更新';
+    renderStewardBar();
+  } else {
+    $('barName').textContent = '工作管家（离线）';
+    $('miniCfg').textContent = '离线 · 模型不可达';
+    $('briefingText').innerHTML = '我暂时无法连接模型服务，<span class="hl-wait">规划与建议已暂停</span>。<span class="hl-teal">本地终端、规则监控（Attention Detector）和你的审批操作不受影响</span>——下边的决策仍可处理，我会在恢复后同步结果。';
+    $('briefingTime').textContent = '离线前生成';
+  }
+}
+$('offlineToggle').addEventListener('click', () => {
+  setOnline(!state.online);
+  if (!state.online) toast('管家已离线（演示）· 本地功能不受影响', 'warn');
+  else toast('管家已恢复在线', 'success');
+});
+$('reconnectBtn').addEventListener('click', () => {
+  $('reconnectBtn').innerHTML = '<span class="spinner"></span> 连接中';
+  setTimeout(() => { setOnline(true); $('reconnectBtn').textContent = '重新连接'; toast('已重新连接 · 管家恢复在线', 'success'); }, 1200);
+});
+$('switchProviderBtn').addEventListener('click', () => { openSettings(); toast('切换 Provider 后管家将自动恢复'); });
+$('takeoverBtn').addEventListener('click', () => {
+  $('offlineBanner').classList.remove('show');
+  $('modeLabel').textContent = '手动接管';
+  $('modeChip').classList.add('auto');
+  toast('已手动接管：自动派发暂停，可直接操作原始终端；Lease 已标记为你持有', 'warn');
+});
+</script>
+
+<script>
+/* ═══ 目标下达 → 计划确认 → 执行 ═══ */
+const planModal = $('planModal');
+let pendingGoalText = '';
+
+function openPlan() {
+  if (!state.online) { toast('管家离线中：目标可以稍后下达，或先手动接管', 'warn'); return; }
+  pendingGoalText = $('goalInput').value.trim()
+    || '完成认证模块重构，安排实现、测试和代码审查，遇到依赖变更时先询问我。';
+  $('planGoalText').textContent = pendingGoalText;
+  $('planTitle').textContent = pendingGoalText.split(/[，。,.]/)[0].slice(0, 24) || '新目标';
+  planModal.classList.add('open');
+}
+$('goalSubmit').addEventListener('click', openPlan);
+$('goalInput').addEventListener('keydown', e => { if (e.key === 'Enter') openPlan(); });
+$('planCancel').addEventListener('click', () => planModal.classList.remove('open'));
+$('planAdjust').addEventListener('click', () => {
+  planModal.classList.remove('open');
+  openDrawer('调整计划 · 与管家讨论', 'chat', '可以。告诉我你想调整的部分：任务拆分、执行节点、预算上限，还是权限策略？我会给出修订后的计划。');
+});
+$('planApprove').addEventListener('click', () => {
+  planModal.classList.remove('open');
+  $('goalInput').value = '';
+  createDemoGoal($('planTitle').textContent);
+});
+
+/* 新目标生命周期模拟 */
+function createDemoGoal(title) {
+  const id = 'goalDemo' + (++state.goalSeq);
+  const card = document.createElement('div');
+  card.className = 'goal-card flash';
+  card.id = id;
+  card.innerHTML = `
+    <div class="goal-main" data-act="toggle" data-target="${id}" tabindex="0" role="button">
+      <div class="goal-title-row">
+        <span class="goal-title">${title}</span>
+        <span class="goal-stage" id="${id}Stage">进行中 · 实现阶段</span>
+        <span class="goal-expand-hint">执行节点 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></span>
+      </div>
+      <div class="goal-summary" id="${id}Summary">计划已批准：Claude 实现 → Shell 测试 → Codex 审查，管家汇总验证。</div>
+      <div class="goal-facts">
+        <span>任务 <b id="${id}Tasks">0/4 已验证</b></span>
+        <span>节点 <b>3</b></span>
+        <span>已耗时 <b>刚刚</b></span>
+        <span>成本 <b>$0.00 / $3</b></span>
+        <span class="next">下一步 <b id="${id}Next">Claude 开始实现</b></span>
+      </div>
+    </div>
+    <div class="goal-tasks">
+      <div class="task-row"><span class="agent-tag claude">Claude</span><span class="task-name">设计并实现认证中间件</span><span class="task-state running" id="${id}T1">● 实现中</span><button type="button" class="task-open-term" data-act="terminal">原始终端 →</button></div>
+      <div class="task-row"><span class="agent-tag shell">Shell</span><span class="task-name">安装依赖并运行单元测试</span><span class="task-state queued" id="${id}T2">○ 排队中</span><button type="button" class="task-open-term" data-act="terminal">原始终端 →</button></div>
+      <div class="task-row"><span class="agent-tag codex">Codex</span><span class="task-name">认证逻辑安全审查（只读）</span><span class="task-state queued" id="${id}T3">○ 排队中</span><button type="button" class="task-open-term" data-act="terminal">原始终端 →</button></div>
+    </div>`;
+  $('goalList').prepend(card);
+  bumpGoals(1, 3);
+  toast('目标已创建，管家开始派发任务', 'success');
+
+  /* 6 秒后出现依赖审批（演示异常决策） */
+  setTimeout(() => {
+    if (!document.getElementById(id)) return;
+    const did = id + 'Decision';
+    const card2 = document.createElement('div');
+    card2.className = 'decision-card';
+    card2.id = did;
+    card2.innerHTML = `
+      <div class="decision-top">
+        <span class="goal-tag">目标 · ${title}</span>
+        <span class="risk-chip r2">R2 · 目标级批准</span>
+        <span class="kind">权限审批</span>
+        <span class="time">刚刚</span>
+      </div>
+      <div class="decision-what">密码哈希需要新增依赖 <code>bcrypt@5</code>（含原生模块）</div>
+      <div class="decision-rows">
+        <div class="decision-row"><span class="k">发生了什么</span><span class="v">Claude 实现到密码存储环节，需要哈希算法；仓库当前无可用依赖。</span></div>
+        <div class="decision-row"><span class="k">管家建议</span><span class="v advice">批准。bcrypt 为行业标准；含原生模块但提供预编译二进制，正常网络下无需本地编译。</span></div>
+        <div class="decision-row"><span class="k">影响范围</span><span class="v"><code>package.json</code>、lockfile；网络仅限 registry.npmjs.org；有效范围仅本次 Attempt。</span></div>
+        <div class="decision-row"><span class="k">批准后</span><span class="v">Shell 安装依赖 → Claude 完成实现 → 测试 → Codex 审查 → 生成完成报告。</span></div>
+      </div>
+      <div class="decision-actions">
+        <button type="button" class="qbtn primary" data-act="approve-demo" data-target="${did}" data-goal="${id}">批准<span class="kbd">⌃1</span></button>
+        <button type="button" class="qbtn" data-act="adjust" data-target="${did}">调整方案</button>
+        <button type="button" class="qbtn danger" data-act="reject-demo" data-target="${did}" data-goal="${id}">拒绝</button>
+        <button type="button" class="qbtn" data-act="ask" data-target="${did}">询问管家</button>
+        <span class="evidence"><button type="button" class="link-btn grey" data-act="evidence" data-target="${did}">证据 · diff / 日志 →</button></span>
+      </div>
+      <div class="resolved-stamp">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <span class="resolved-text">已批准 · 管家已继续执行</span>
+      </div>`;
+    $('decisionList').prepend(card2);
+    card2.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    state.pendingDecisions.unshift(did);
+    syncInbox();
+    $(id + 'Stage').textContent = '阻塞 · 等待依赖审批';
+    $(id + 'Stage').classList.add('blocked');
+    document.getElementById(id).classList.add('blocked');
+    $(id + 'Next').textContent = '等待你批准 bcrypt 依赖';
+    toast('新的决策请求：bcrypt 依赖安装审批（R2）', 'warn');
+  }, 6000);
+}
+
+function demoDecisionDone(did, goalId, approved) {
+  const card = document.getElementById(did);
+  card.querySelector('.resolved-text').textContent = approved
+    ? '已批准 · 管家已继续执行'
+    : '已拒绝 · 改用 Node 内置 crypto.scrypt 实现';
+  resolveDecision(did);
+  const g = document.getElementById(goalId);
+  if (!g) return;
+  g.classList.remove('blocked');
+  $(goalId + 'Stage').classList.remove('blocked');
+  $(goalId + 'Stage').textContent = '进行中 · 实现阶段';
+  $(goalId + 'Next').textContent = approved ? 'Shell 安装依赖，Claude 继续实现' : 'Claude 使用 scrypt 替代方案继续';
+  $(goalId + 'T1').className = 'task-state running';
+  $(goalId + 'T1').textContent = '● 实现中';
+
+  /* 推进到完成 */
+  setTimeout(() => {
+    if (!document.getElementById(goalId)) return;
+    $(goalId + 'T1').className = 'task-state verified'; $(goalId + 'T1').textContent = '✓ 已验证';
+    $(goalId + 'T2').className = 'task-state running'; $(goalId + 'T2').textContent = '● 测试运行中';
+    $(goalId + 'Tasks').textContent = '1/4 已验证';
+    $(goalId + 'Stage').textContent = '进行中 · 测试阶段';
+  }, 5000);
+  setTimeout(() => {
+    if (!document.getElementById(goalId)) return;
+    $(goalId + 'T2').className = 'task-state verified'; $(goalId + 'T2').textContent = '✓ 42/42 通过';
+    $(goalId + 'T3').className = 'task-state running'; $(goalId + 'T3').textContent = '● 审查中';
+    $(goalId + 'Tasks').textContent = '2/4 已验证';
+    $(goalId + 'Stage').textContent = '进行中 · 安全审查';
+  }, 9000);
+  setTimeout(() => {
+    const g2 = document.getElementById(goalId);
+    if (!g2) return;
+    $(goalId + 'T3').className = 'task-state verified'; $(goalId + 'T3').textContent = '✓ 无高危发现';
+    const title = g2.querySelector('.goal-title').textContent;
+    g2.remove();
+    bumpGoals(-1, -3);
+    addReport(title, approved
+      ? 'Claude 完成认证中间件实现（bcrypt 哈希），单元测试 42/42 通过，Codex 安全审查无高危发现。改动 4 个文件：middleware.ts、routes/login.ts、package.json、lockfile。遗留风险：低。'
+      : 'Claude 使用 Node 内置 crypto.scrypt 完成密码哈希（未新增依赖），单元测试 42/42 通过，Codex 审查无高危发现。改动 3 个文件。遗留风险：低 — 自实现 KDF 参数已在审查中确认。');
+    toast('目标完成 · 管家已生成完成报告', 'success');
+  }, 13000);
+}
+
+function addReport(title, body) {
+  const r = document.createElement('div');
+  r.className = 'report-card flash';
+  r.innerHTML = `
+    <div class="report-head">
+      <span class="report-title">${title}</span>
+      <span class="verify-chip">✓ 验证通过</span>
+      <span class="verify-chip pending">待你验收</span>
+    </div>
+    <div class="report-body">${body}</div>
+    <div class="report-meta"><span>总耗时 21 分钟</span><span>成本 $1.36</span><span>执行节点 Claude · Shell · Codex</span></div>
+    <div class="report-actions">
+      <button type="button" class="qbtn primary" data-act="accept">验收</button>
+      <button type="button" class="qbtn" data-act="diff">查看改动</button>
+      <button type="button" class="qbtn" data-act="reopen">重新打开目标</button>
+      <span class="evidence" style="margin-left:auto;"><button type="button" class="link-btn grey" data-act="report-evidence">完整报告 · 时间线 →</button></span>
+    </div>`;
+  $('reportList').prepend(r);
+  $('reportHint').textContent = `${$('reportList').children.length} 个目标 · 待验收`;
+}
+
+/* ═══ 决策处理 ═══ */
+function resolveDecision(id) {
+  const card = document.getElementById(id);
+  if (card) card.classList.add('resolved');
+  state.pendingDecisions = state.pendingDecisions.filter(d => d !== id);
+  syncInbox();
+}
+function syncInbox() {
+  const n = state.pendingDecisions.length;
+  $('inboxCount').textContent = n;
+  $('inboxCount').style.display = n ? '' : 'none';
+  $('decisionHint').textContent = n ? `${n} 项 · 管家已给出建议` : '全部处理完毕';
+}
+function bumpGoals(dg, dn) {
+  $('statGoals').textContent = +$('statGoals').textContent + dg;
+  $('statNodes').textContent = +$('statNodes').textContent + dn;
+  const n = $('goalList').children.length;
+  $('goalHint').textContent = `${n} 个 · 点击展开执行节点`;
+}
+</script>
+
+<script>
+/* ═══ 既有决策的执行效果 ═══ */
+function approveAuth() {
+  resolveDecision('decisionAuth');
+  const g = $('goalAuth');
+  g.classList.remove('blocked');
+  const st = $('goalAuthStage');
+  st.classList.remove('blocked');
+  st.textContent = '进行中 · 实现阶段';
+  g.querySelector('.goal-summary').textContent = '依赖已批准：Shell 正在安装 jsonwebtoken，Claude 继续实现认证中间件。';
+  g.querySelector('.next b').textContent = 'Shell 安装依赖 → 运行测试';
+  $('authTaskClaude').className = 'task-state running';
+  $('authTaskClaude').textContent = '● 实现中';
+  toast('已批准依赖安装 · 管家已继续执行', 'success');
+  setTimeout(() => {
+    if (!document.getElementById('goalAuth')) return;
+    $('authTaskClaude').className = 'task-state verified';
+    $('authTaskClaude').textContent = '✓ 实现完成';
+    st.textContent = '进行中 · 测试阶段';
+    g.querySelector('.goal-facts b').textContent = '2/4 已验证';
+    toast('认证中间件实现完成，Shell 正在运行测试', 'success');
+  }, 8000);
+}
+function approveApi() {
+  resolveDecision('decisionApi');
+  const g = $('goalApi');
+  g.classList.remove('blocked');
+  const st = $('goalApiStage');
+  st.classList.remove('blocked');
+  st.textContent = '进行中 · 重启中';
+  g.querySelector('.goal-summary').textContent = '已切换到 8081：Shell 正在重启服务，随后管家验证健康检查。';
+  g.querySelector('.next b').textContent = '健康检查通过后目标完成';
+  $('apiTaskName').textContent = 'PORT=8081 go run .（:8081）';
+  $('apiTaskState').className = 'task-state running';
+  $('apiTaskState').textContent = '● 启动中';
+  toast('已批准端口切换 · api-server 正在 :8081 重启', 'success');
+  setTimeout(() => {
+    if (!document.getElementById('goalApi')) return;
+    $('apiTaskState').className = 'task-state verified';
+    $('apiTaskState').textContent = '✓ 运行中（:8081）';
+    $('apiHealthState').className = 'task-state running';
+    $('apiHealthState').textContent = '● 检查中';
+  }, 4000);
+  setTimeout(() => {
+    const g2 = document.getElementById('goalApi');
+    if (!g2) return;
+    g2.remove();
+    bumpGoals(-1, -1);
+    addReport('启动 api-server', '服务已在 :8081 启动，健康检查 /health 通过（200 · 12ms）。配置文件未改动，仅本次启动命令使用 PORT 环境变量。遗留风险：无。');
+    document.querySelector('[data-goal="api"] .goal-state-dot').className = 'goal-state-dot done';
+    toast('api-server 已在 :8081 运行 · 目标完成', 'success');
+  }, 7500);
+}
+
+/* ═══ 证据内容切换 ═══ */
+const EVIDENCE = {
+  worker: `
+    <div class="ev-block"><div class="ev-title">改动摘要（3 个文件，+96 −41）</div>
+    <pre><span class="diff-add">+ src/worker/pool.ts        shutdown 先停再 drain</span>
+<span class="diff-add">+ src/worker/supervisor.ts  增加关闭超时 5s</span>
+<span class="diff-add">+ tests/pool.test.ts        新增回归用例 ×3</span></pre></div>
+    <div class="ev-block"><div class="ev-title">验证结果</div>
+    <pre>pnpm test  42/42 通过（含 3 个新回归用例）
+验证方式：Verification Pipeline（程序判定，非 Worker 自述）</pre></div>`,
+  api: `
+    <div class="ev-block"><div class="ev-title">相关终端输出</div>
+    <pre>❯ go run .
+[GIN] listening :8080
+Error: listen EADDRINUSE :8080
+占用进程：PID 4821（另一个 dev 服务）</pre></div>
+    <div class="ev-block"><div class="ev-title">拟执行操作（规范化）</div>
+    <pre>操作：重启服务
+命令：PORT=8081 go run .
+有效范围：仅本次 Attempt · 不改配置文件</pre></div>`,
+};
+function setEvidence(key) {
+  const panel = document.querySelector('[data-panel="evidence"]');
+  if (EVIDENCE[key]) panel.innerHTML = EVIDENCE[key];
+}
+
+/* ═══ 动作委托 ═══ */
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  const act = el.dataset.act;
+  const target = el.dataset.target;
+
+  switch (act) {
+    case 'toggle':
+      document.getElementById(target).classList.toggle('expanded');
+      break;
+    case 'approve':
+      if (target === 'decisionAuth') approveAuth();
+      else if (target === 'decisionApi') approveApi();
+      break;
+    case 'approve-demo':
+      demoDecisionDone(target, el.dataset.goal, true);
+      break;
+    case 'reject': {
+      const card = document.getElementById(target);
+      card.querySelector('.resolved-text').textContent = '已拒绝 · 管家将提出替代方案';
+      resolveDecision(target);
+      toast('已拒绝 · 管家会分析替代方案后再次提交', 'warn');
+      break;
+    }
+    case 'reject-demo':
+      demoDecisionDone(target, el.dataset.goal, false);
+      break;
+    case 'adjust':
+      openDrawer('调整方案 · 与管家讨论', 'chat', '可以，说说你想怎么调整？例如更换依赖、限定版本、缩小影响范围，或改由我给出别的实现路径。');
+      $('chatInput').value = '我想调整方案：';
+      $('chatInput').focus();
+      break;
+    case 'ask':
+      openDrawer('询问管家 · 依赖审批', 'chat', '我在。关于这个审批，你可以问：为什么建议批准、风险在哪里、有没有替代方案。');
+      break;
+    case 'evidence':
+      if (target === 'decisionApi') setEvidence('api');
+      openDrawer('证据 · 依赖与日志', 'evidence');
+      break;
+    case 'terminal':
+      toast('下钻到原始终端视图（V3 网格/详情）· 演示略');
+      break;
+    case 'accept': {
+      const card = el.closest('.report-card');
+      const chip = card.querySelector('.verify-chip.pending');
+      if (chip) { chip.classList.remove('pending'); chip.textContent = '✓ 已验收'; }
+      el.disabled = true;
+      toast('已验收 · 目标归档', 'success');
+      break;
+    }
+    case 'diff':
+      setEvidence('worker');
+      openDrawer('改动 · worker pool 死锁修复', 'evidence');
+      break;
+    case 'reopen':
+      toast('目标已重新打开 · 管家重新评估剩余工作（演示）');
+      break;
+    case 'report-evidence':
+      openDrawer('完整报告 · 执行时间线', 'timeline');
+      break;
+  }
+});
+
+/* ═══ 导航与入口 ═══ */
+$('navInbox').addEventListener('click', () => $('decisionList').scrollIntoView({ behavior: 'smooth', block: 'start' }));
+$('navActivity').addEventListener('click', () => openDrawer('活动审计', 'timeline'));
+$('openActivityBtn').addEventListener('click', () => openDrawer('活动审计', 'timeline'));
+$('askBriefingBtn').addEventListener('click', () => openDrawer('管家简报 · 追问', 'chat', '简报基于当前控制面投影生成。你可以追问：哪个决策最紧急、今天花了多少、或者让我重新评估优先级。'));
+$('navTerminals').addEventListener('click', () => toast('打开原始终端视图（V3 网格）· 演示略'));
+document.querySelectorAll('.goal-nav-row').forEach(row => {
+  row.addEventListener('click', () => {
+    const map = {
+      auth: ['目标 · 认证模块重构', 'chat', '这个目标当前阻塞在 jsonwebtoken 依赖审批。批准约 25 分钟后可进入测试阶段。'],
+      api: ['目标 · 启动 api-server', 'chat', '8080 被 PID 4821 占用。我建议改用 8081，原因和证据都可以问我。'],
+      worker: ['目标 · worker pool 死锁修复', 'timeline', ''],
+    };
+    const [title, tab, seed] = map[row.dataset.goal];
+    if (row.dataset.goal === 'worker') setEvidence('worker');
+    openDrawer(title, tab, seed || undefined);
+  });
+});
+
+/* ═══ 键盘 ═══ */
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    planModal.classList.remove('open');
+    closeDrawer();
+    closeSettings();
+  }
+  if (e.ctrlKey && (e.key === '1' || e.key === '2')) {
+    e.preventDefault();
+    const id = state.pendingDecisions[e.key === '1' ? 0 : 1];
+    if (!id) return;
+    const card = document.getElementById(id);
+    if (card) card.querySelector('[data-act^="approve"]').click();
+  }
+});
+</script>
+
+</body>
+</html>

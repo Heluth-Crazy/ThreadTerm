@@ -4,11 +4,12 @@
  * The panel intentionally stays compact: it lists files and git changes, then
  * asks the main content area to open heavyweight editor or diff tabs.
  */
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { AlertTriangle, FolderTree, GitCompare, Loader2, RefreshCw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { type GitStatusEntry } from '../../lib/tauri-bridge';
 import { cn } from '../../lib/utils';
+import { IconButton } from '../ui/icon-button';
 import { basename, type DirEntry } from './fileMeta';
 import { FileTree } from './FileTree';
 import {
@@ -57,20 +58,27 @@ export function WorkspacePanel({
     DEFAULT_WORKSPACE_PANEL_STATE,
   );
   const panelState = state ?? internalState;
+  const panelStateRef = useRef(panelState);
+  const onStateChangeRef = useRef(onStateChange);
+  panelStateRef.current = panelState;
+  onStateChangeRef.current = onStateChange;
+  const controlled = state !== undefined;
   const updatePanelState = useCallback(
     (patch: Partial<WorkspacePanelState>) => {
-      const next = { ...panelState, ...patch };
+      const current = panelStateRef.current;
+      const next = { ...current, ...patch };
       if (
-        next.tab === panelState.tab &&
-        next.selectedFilePath === panelState.selectedFilePath &&
-        next.selectedChangePath === panelState.selectedChangePath
+        next.tab === current.tab &&
+        next.selectedFilePath === current.selectedFilePath &&
+        next.selectedChangePath === current.selectedChangePath
       ) {
         return;
       }
-      if (!state) setInternalState(next);
-      onStateChange?.(next);
+      panelStateRef.current = next;
+      if (!controlled) setInternalState(next);
+      onStateChangeRef.current?.(next);
     },
-    [onStateChange, panelState, state],
+    [controlled],
   );
   const [changes, setChanges] = useState<GitStatusEntry[]>([]);
   const [changesLoaded, setChangesLoaded] = useState(false);
@@ -89,11 +97,12 @@ export function WorkspacePanel({
       const result = await loadWorkspaceChanges(rootCwd);
       setChanges(result);
       setChangesLoaded(true);
+      const selectedChangePath = panelStateRef.current.selectedChangePath;
       updatePanelState({
         selectedChangePath:
-          panelState.selectedChangePath &&
-          result.some((entry) => entry.path === panelState.selectedChangePath)
-            ? panelState.selectedChangePath
+          selectedChangePath &&
+          result.some((entry) => entry.path === selectedChangePath)
+            ? selectedChangePath
             : null,
       });
     } catch (error) {
@@ -106,7 +115,7 @@ export function WorkspacePanel({
     } finally {
       setChangesLoading(false);
     }
-  }, [panelState.selectedChangePath, rootCwd, updatePanelState]);
+  }, [rootCwd, updatePanelState]);
 
   useEffect(() => {
     if (panelState.tab === 'changes') void loadChanges();
@@ -130,7 +139,7 @@ export function WorkspacePanel({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-1 border-b border-white/10 px-2 py-1.5">
+      <div className="flex items-center gap-1 border-b border-border px-2 py-1.5">
         <TabButton
           active={panelState.tab === 'explorer'}
           onClick={() => updatePanelState({ tab: 'explorer' })}
@@ -157,7 +166,7 @@ export function WorkspacePanel({
       </div>
 
       <div
-        className="truncate border-b border-white/5 px-3 py-1 font-mono text-[10px] text-muted-foreground"
+        className="truncate border-b border-border px-3 py-1 font-mono text-[11px] text-muted-foreground"
         title={rootCwd}
         dir="rtl"
       >
@@ -208,11 +217,16 @@ function ChangesList({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex min-h-[34px] items-center gap-2 border-b border-white/10 px-2 py-1">
+      <div className="flex min-h-[34px] items-center gap-2 border-b border-border px-2 py-1">
         <span className="text-[11px] font-medium text-foreground">
           {t('workspace.changedFiles', { count: changes.length, defaultValue: '{{count}} changed files' })}
         </span>
-        <IconButton title={t('workspace.refresh', { defaultValue: 'Refresh' })} onClick={onRefresh}>
+        <IconButton
+          title={t('workspace.refresh', { defaultValue: 'Refresh' })}
+          size="sm"
+          className="text-muted-foreground"
+          onClick={onRefresh}
+        >
           <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
         </IconButton>
       </div>
@@ -258,7 +272,7 @@ function ChangeStatusPill({ entry }: { entry: GitStatusEntry }) {
   return (
     <span
       className={cn(
-        'w-10 shrink-0 rounded px-1 py-0.5 text-center text-[9px] font-semibold uppercase',
+        'w-10 shrink-0 rounded px-1 py-0.5 text-center text-[11px] font-semibold uppercase',
         status.className,
       )}
       title={status.title}
@@ -278,34 +292,34 @@ function changeStatus(entry: GitStatusEntry): {
     return {
       label: 'New',
       title: 'Untracked file',
-      className: 'bg-emerald-500/15 text-emerald-300',
+      className: 'bg-success/10 text-success',
     };
   }
   if (raw.includes('D')) {
     return {
       label: 'Del',
       title: 'Deleted file',
-      className: 'bg-red-500/15 text-red-300',
+      className: 'bg-destructive/10 text-destructive',
     };
   }
   if (raw.includes('R')) {
     return {
       label: 'Ren',
       title: 'Renamed file',
-      className: 'bg-sky-500/15 text-sky-300',
+      className: 'bg-info/10 text-info',
     };
   }
   if (raw.includes('A')) {
     return {
       label: 'Add',
       title: 'Added file',
-      className: 'bg-emerald-500/15 text-emerald-300',
+      className: 'bg-success/10 text-success',
     };
   }
   return {
     label: 'Mod',
     title: 'Modified file',
-    className: 'bg-amber-500/15 text-amber-300',
+    className: 'bg-warning/10 text-warning',
   };
 }
 
@@ -321,38 +335,13 @@ function PanelMessage({
   return (
     <div
       className={cn(
-        'flex h-full min-h-[120px] items-center justify-center gap-2 px-4 text-center text-[12px]',
+        'flex h-full min-h-[120px] items-center justify-center gap-2 px-4 text-center text-xs',
         tone === 'error' ? 'text-destructive' : 'text-muted-foreground/75',
       )}
     >
       {icon}
       <span>{children}</span>
     </div>
-  );
-}
-
-function IconButton({
-  title,
-  disabled,
-  onClick,
-  children,
-}: {
-  title: string;
-  disabled?: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      disabled={disabled}
-      onClick={onClick}
-      className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45"
-    >
-      {children}
-    </button>
   );
 }
 
@@ -372,7 +361,7 @@ function TabButton({
       type="button"
       onClick={onClick}
       className={cn(
-        'flex items-center gap-1.5 rounded-[var(--radius-md)] px-2.5 py-1 text-[11px] font-medium transition-colors',
+        'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors',
         active
           ? 'bg-primary/15 text-foreground'
           : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',

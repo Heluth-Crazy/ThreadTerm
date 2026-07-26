@@ -5,7 +5,10 @@ use std::collections::HashMap;
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -23,6 +26,7 @@ type PendingRequest = oneshot::Sender<Result<Value, String>>;
 type PendingMap = Arc<Mutex<HashMap<u64, PendingRequest>>>;
 
 static CODEX_APP_MANAGER: Lazy<CodexAppManager> = Lazy::new(CodexAppManager::default);
+static CLIENT_MESSAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
 struct CodexAppManager {
@@ -246,31 +250,53 @@ impl CodexAppManager {
         card_id: String,
         cwd: String,
         codex_app_thread_id: Option<String>,
-        _provider_session_id: Option<String>,
+        provider_session_id: Option<String>,
     ) -> Result<CodexAppOpenCardResult, String> {
         self.ensure_initialized(&app).await?;
+        let provider_session_id = clean_optional_string(provider_session_id);
 
+        // A cwd is not a session ownership boundary: the raw Codex TUI may
+        // already be driving its latest CLI thread. Only resume the card's
+        // explicit app thread after inspecting it, otherwise create a fresh one.
         if let Some(thread_id) = clean_optional_string(codex_app_thread_id) {
-            match self.resume_thread(&thread_id, &cwd).await {
-                Ok(thread) => {
-                    return self
-                        .open_result(card_id, thread, "resumed".to_string())
-                        .await;
+            match self.read_thread(&thread_id).await {
+                Ok(candidate)
+                    if is_safe_app_thread_resume(
+                        &candidate,
+                        &thread_id,
+                        provider_session_id.as_deref(),
+                    ) =>
+                {
+                    match self.resume_thread(&thread_id, &cwd).await {
+                        Ok(thread) => {
+                            return self
+                                .open_result(card_id, thread, "resumed".to_string())
+                                .await;
+                        }
+                        Err(err) => {
+                            tracing::debug!(
+                                thread_id = %thread_id,
+                                error = %err,
+                                "Codex app-server resume candidate failed"
+                            );
+                        }
+                    }
+                }
+                Ok(candidate) => {
+                    tracing::debug!(
+                        thread_id = %thread_id,
+                        source = ?thread_source_kind(&candidate),
+                        "Skipped a Codex CLI-owned thread for app-server isolation"
+                    );
                 }
                 Err(err) => {
                     tracing::debug!(
                         thread_id = %thread_id,
                         error = %err,
-                        "Codex app-server resume candidate failed"
+                        "Codex app-server could not inspect its resume candidate"
                     );
                 }
             }
-        }
-
-        if let Some(thread) = self.latest_thread_for_cwd(&cwd).await? {
-            return self
-                .open_result(card_id, thread, "listed".to_string())
-                .await;
         }
 
         let started = self
@@ -308,6 +334,20 @@ impl CodexAppManager {
         })
     }
 
+    async fn read_thread(&self, thread_id: &str) -> Result<Value, String> {
+        let response = self
+            .send_request(
+                "thread/read",
+                json!({
+                    "threadId": thread_id,
+                    "includeTurns": false,
+                }),
+            )
+            .await?;
+        extract_thread(response)
+            .ok_or_else(|| "Codex app-server returned no thread for thread/read".to_string())
+    }
+
     async fn resume_thread(&self, thread_id: &str, cwd: &str) -> Result<Value, String> {
         let resumed = self
             .send_request(
@@ -320,32 +360,6 @@ impl CodexAppManager {
             .await?;
         extract_thread(resumed)
             .ok_or_else(|| "Codex app-server returned no thread for thread/resume".to_string())
-    }
-
-    async fn latest_thread_for_cwd(&self, cwd: &str) -> Result<Option<Value>, String> {
-        let response = self
-            .send_request(
-                "thread/list",
-                json!({
-                    "cwd": cwd,
-                    "limit": 1,
-                    "sortKey": "updated_at",
-                    "sortDirection": "desc",
-                }),
-            )
-            .await?;
-        let Some(thread_id) = response
-            .get("data")
-            .and_then(Value::as_array)
-            .and_then(|threads| threads.first())
-            .and_then(|thread| thread.get("id"))
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-        else {
-            return Ok(None);
-        };
-
-        self.resume_thread(&thread_id, cwd).await.map(Some)
     }
 
     async fn ensure_initialized(&self, app: &AppHandle) -> Result<(), String> {
@@ -777,6 +791,32 @@ fn summarize_thread(thread: &Value) -> Option<ThreadSummary> {
     })
 }
 
+fn thread_source_kind(thread: &Value) -> Option<&str> {
+    ["source", "sourceKind", "threadSource"]
+        .into_iter()
+        .find_map(|key| {
+            let source = thread.get(key)?;
+            source
+                .as_str()
+                .or_else(|| source.get("type").and_then(Value::as_str))
+        })
+}
+
+fn is_safe_app_thread_resume(
+    thread: &Value,
+    thread_id: &str,
+    provider_session_id: Option<&str>,
+) -> bool {
+    if provider_session_id.is_some_and(|provider_session_id| {
+        provider_session_id == thread_id
+            || thread.get("sessionId").and_then(Value::as_str) == Some(provider_session_id)
+    }) {
+        return false;
+    }
+
+    !thread_source_kind(thread).is_some_and(|source| source.eq_ignore_ascii_case("cli"))
+}
+
 fn normalize_turn_input(text: String, input: Option<Value>) -> Result<Vec<Value>, String> {
     if let Some(Value::Array(items)) = input {
         if items.is_empty() {
@@ -808,7 +848,8 @@ fn next_client_message_suffix() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or_default();
-    millis.to_string()
+    let sequence = CLIENT_MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{millis}-{}-{sequence}", std::process::id())
 }
 
 #[cfg(test)]
@@ -826,6 +867,14 @@ mod tests {
     }
 
     #[test]
+    fn client_message_suffix_is_unique_during_bursts() {
+        let suffixes = (0..1_000)
+            .map(|_| next_client_message_suffix())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(suffixes.len(), 1_000);
+    }
+
+    #[test]
     fn summarizes_thread_binding_fields() {
         let summary = summarize_thread(&json!({
             "id": "thread-1",
@@ -840,6 +889,67 @@ mod tests {
                 path: Some("/tmp/thread.jsonl".to_string()),
             })
         );
+    }
+
+    #[test]
+    fn app_thread_resume_rejects_cli_owned_threads() {
+        assert!(!is_safe_app_thread_resume(
+            &json!({
+                "id": "thread-cli",
+                "sessionId": "session-cli",
+                "source": "cli"
+            }),
+            "thread-cli",
+            None,
+        ));
+        assert!(!is_safe_app_thread_resume(
+            &json!({
+                "id": "thread-cli",
+                "sourceKind": {"type": "CLI"}
+            }),
+            "thread-cli",
+            None,
+        ));
+    }
+
+    #[test]
+    fn app_thread_resume_rejects_provider_session_aliases() {
+        assert!(!is_safe_app_thread_resume(
+            &json!({
+                "id": "thread-shared",
+                "sessionId": "provider-session",
+                "source": "vscode"
+            }),
+            "thread-shared",
+            Some("thread-shared"),
+        ));
+        assert!(!is_safe_app_thread_resume(
+            &json!({
+                "id": "thread-app",
+                "sessionId": "provider-session",
+                "source": "vscode"
+            }),
+            "thread-app",
+            Some("provider-session"),
+        ));
+    }
+
+    #[test]
+    fn app_thread_resume_accepts_isolated_app_threads() {
+        assert!(is_safe_app_thread_resume(
+            &json!({
+                "id": "thread-app",
+                "sessionId": "session-app",
+                "source": "vscode"
+            }),
+            "thread-app",
+            Some("provider-session"),
+        ));
+        assert!(is_safe_app_thread_resume(
+            &json!({"id": "thread-future"}),
+            "thread-future",
+            None,
+        ));
     }
 
     #[test]

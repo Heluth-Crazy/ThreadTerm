@@ -450,6 +450,21 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 - Preview events: `kind: "preview"` must include `card_id`, `last_reply_preview`, `summary_line`, and `hidden_line_count`.
 - Theme events: `kind: "theme"` must include `app`, `terminal`, and `mode`.
 - Full-control input: mobile sends `{ kind: "input", card_id, data }`; Enter appends `\r`, Esc sends `\x1b`, and Ctrl-C sends `\x03`.
+- Connection liveness: `useBridgeConnection` sends existing
+  `{ kind: "ping" }` frames every `BRIDGE_HEARTBEAT_INTERVAL_MS` (5 seconds)
+  and treats `BRIDGE_HEARTBEAT_TIMEOUT_MS` (15 seconds) without any server
+  message as a stale connection.
+- User-facing connection state extends transport state with `reconnecting` and
+  `revoked`; the low-level `BridgeWsClient` still emits only
+  `idle | connecting | open | closed | error`.
+- Terminal transport identity: `snapshot.runtimeId`, `snapshot.streamSeq`,
+  `terminal_output.runtimeId`, and `terminal_output.streamSeq`.
+- Recovery request: mobile sends `{ kind: "terminal_resync" }`; the server
+  responds to that device with the current state snapshot followed by every
+  active terminal snapshot.
+- Mobile feed budgets:
+  `TERMINAL_FEED_CARD_BUDGET_BYTES = 4 * 1024 * 1024` and
+  `TERMINAL_FEED_GLOBAL_BUDGET_BYTES = 32 * 1024 * 1024`.
 
 #### 3. Contracts
 - The mobile page is a React app built under `mobile-app/`, not a hand-maintained Rust HTML string template.
@@ -486,6 +501,39 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
   state. Revocation, expiry, or `bridge_stop` closes idle sockets; each inbound
   control message is revalidated before dispatch. `bridge_stop` waits for the
   server task and tracked HTTP/WebSocket work before reporting stopped.
+- Mobile connection lifecycle events (`visibilitychange`, `online`,
+  `pageshow`) must probe the existing socket. A healthy socket receives one
+  `ping`; it must not be closed, replaced, or trigger an extra full snapshot
+  request. A connecting socket is left alone. A missing, closed, or stale
+  socket may start one deduplicated reconnect.
+- Any valid server message refreshes the mobile liveness timestamp. The
+  heartbeat timer closes and retries only after 15 seconds of server silence,
+  using the existing capped exponential backoff.
+- A new desktop process must create a new opaque `runtimeId`. Mobile treats a
+  changed runtime id as an epoch boundary: clear old per-card output and
+  sequence watermarks, then accept the new snapshots. Never compare a new
+  process's PTY sequence with the previous process's sequence.
+- `streamSeq` is a bridge-wide counter incremented only for terminal output
+  broadcasts. PTY `seq` remains a per-card ordering guard; it cannot detect
+  transport gaps because interleaved cards legitimately skip PTY sequence
+  values from each other's perspective.
+- A same-runtime `streamSeq` gap requests one deduplicated
+  `terminal_resync`. Applying the returned state snapshot emits a local
+  `recovery_boundary` before terminal snapshots so mounted xterm instances
+  reset their old epoch without depending on a React rerender.
+- Retained incremental terminal output is measured as UTF-8 bytes, not message
+  count or JavaScript character count. Keep at most 4 MiB per card and 32 MiB
+  globally; evict the least-recently-used card output first at the global
+  boundary. Keep the latest server snapshot as the recovery baseline.
+- Feed eviction must surface one local `history_truncated` notice with the
+  cumulative omitted byte count. The notice is UI metadata and must never be
+  written into xterm as if it were PTY output.
+- Removing/archiving a card disposes its feed bucket immediately. A runtime
+  change clears every retained output bucket and old transport watermark.
+- Versioned `error` messages with `code: "auth_revoked"` or
+  `code: "auth_expired"` are terminal for the current token: clear heartbeat
+  and retry timers, close the socket, show re-pair guidance, and do not
+  reconnect until the token changes. `bridge_stopped` remains recoverable.
 - Every Full-control side effect acquires a per-device authorization lease
   atomically with revalidation and holds it through audit, PTY work, or desktop
   event dispatch. Revoke tombstones first, blocks new leases, and waits for
@@ -592,20 +640,50 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
   desktop-only mobile bridge controls remain enabled.
 - WebSocket close/error -> keep the page visible, show retry/reconnect, and do not clear the stored token automatically.
 - Deliberate cleanup/reconnect -> close the stale client without scheduling a duplicate reconnect loop.
+- Healthy foreground/online/pageshow event -> send `ping` on the existing
+  socket; create zero new sockets and issue zero snapshot fallback requests.
+- No server message for 15 seconds -> close the stale socket, show
+  `reconnecting`, and enter capped backoff.
+- `auth_revoked` or `auth_expired` -> show explicit re-pair guidance and create
+  zero reconnect sockets until a replacement token is supplied.
+- Old server closes without an auth error -> retain ordinary reconnect behavior
+  for compatibility.
 - Lag/backpressure message -> fetch `/snapshot` and merge it without clearing current terminal snapshots prematurely.
+- Desktop runtime changes while the mobile page remains open -> clear old feed
+  content and accept the new runtime's state and terminal snapshots.
+- Same-runtime `streamSeq` jumps forward by more than one -> send exactly one
+  `terminal_resync` until its state snapshot establishes a new baseline.
+- Duplicate or older `streamSeq` -> ignore without requesting another resync.
+- One card exceeds 4 MiB or all cards exceed 32 MiB of retained UTF-8 output ->
+  discard oldest retained increments, preserve the latest snapshot, and expose
+  one cumulative truncation notice.
+- Card removed/archived -> its retained byte count reaches zero immediately.
 - Missing production mobile bundle -> cargo build fails in `build.rs` before producing a broken app.
 - Empty `cards` array -> show an empty session message, not a blank panel.
 - Unknown static asset with an extension -> return `404`, not the app shell.
 
 #### 5. Good/Base/Bad Cases
 - Good: paired page connects live, applies the desktop app theme while keeping the terminal surface visibly dark, shows tappable project cards, opens xterm detail with project path, summary, preview lines, and full-control input only when paired as `full`.
+- Good: returning to a healthy paired page reuses its socket; a revoked device
+  stops retrying and explains that the desktop QR link must be opened again.
+- Good: the desktop restarts while the phone stays open; the phone detects the
+  new runtime, drops the obsolete sequence watermark, and resumes from fresh
+  snapshots without a page refresh.
 - Base: no live terminal sessions shows "No live terminal sessions yet."
+- Base: old servers omit `runtimeId` / `streamSeq`; the client keeps the legacy
+  snapshot/backpressure path rather than inventing false gaps.
 - Good: a long markdown or terminal line wraps inside the phone viewport and does not resize the page horizontally.
 - Bad: `JSON.stringify(await snapshot.json(), null, 2)` displayed directly in the mobile page.
 - Bad: one long terminal line forces the page wider than the phone viewport.
 - Bad: a card title/summary displays the AI CLI composer placeholder (for example `› Summarize recent commits`) instead of the last assistant response.
 - Bad: a read-only QR opens a full-control input bar because an old `full` permission was already in local storage.
 - Bad: a touch Enter button preserves focus but sends nothing because the click was suppressed.
+- Bad: every `pageshow` destroys a healthy socket and fetches another full
+  snapshot, or an explicitly revoked token retries forever.
+- Bad: use per-card PTY `seq` to infer WebSocket packet loss, because normal
+  multi-card output creates legitimate gaps.
+- Bad: retain 2,000 messages regardless of their byte size, or write
+  "history truncated" into the terminal byte stream.
 
 #### 6. Tests Required
 - Rust bridge tests must assert static mobile assets are served, SPA fallback returns the built index with `text/html`, and unknown file assets return `404`.
@@ -642,7 +720,22 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
   uninterruptible drain, force-cancel is retained for late registrations, and
   HTTP tracking starts before JSON/auth extractors.
 - Mobile WS client tests must assert the token is sent in an `auth` frame before `subscribe`, and `buildBridgeWsUrl()` does not include a token query string.
+- Mobile connection-hook fake-timer tests must cover healthy lifecycle probes,
+  continuing pong responses, the 15-second silence timeout, terminal
+  revoke/expiry behavior, and recovery after a replacement pairing token.
+- Mobile e2e must assert foreground lifecycle events preserve one socket and do
+  not fetch another snapshot, ordinary close reconnects, and revocation stops
+  further socket creation on both Android Chrome and iOS Safari projects.
 - Mobile terminal tests must assert preview/detail scrollback sizes, stale snapshot suppression after newer output, coalesced viewport fitting, and unchanged-size resize suppression.
+- Protocol tests must assert camelCase `runtimeId` / `streamSeq` fields and
+  parse `{ kind: "terminal_resync" }`.
+- Feed tests must cover runtime rollover without page reload, one deduplicated
+  resync for a stream gap, duplicate transport messages, 4 MiB per-card and
+  32 MiB global byte limits, LRU eviction, truncation notice behavior, and
+  immediate cleanup after card removal.
+- Desktop sync tests must prove that sustained output cannot postpone mobile
+  state publication beyond one second and that serialization is skipped when
+  no mobile subscriber exists.
 
 #### 7. Wrong vs Correct
 
@@ -694,6 +787,161 @@ Correct:
 const ws = new WebSocket('/ws');
 ws.send(JSON.stringify({ protocol_version: 1, kind: 'auth', token: deviceToken }));
 await fetch('/snapshot', { headers: { Authorization: `Bearer ${deviceToken}` } });
+```
+
+Wrong:
+```typescript
+window.addEventListener('pageshow', () => {
+  socket.close();
+  connect();
+  fetchSnapshot();
+});
+```
+
+Correct:
+```typescript
+window.addEventListener('pageshow', () => {
+  if (socketIsOpenAndFresh()) socket.send({ kind: 'ping' });
+  else ensureOneReconnect();
+});
+```
+
+Wrong:
+```typescript
+// PTY seq is card-local evidence and cannot identify global transport gaps.
+if (message.seq > lastCardSeq + 1) requestResync();
+```
+
+Correct:
+```typescript
+if (message.runtimeId !== activeRuntimeId) resetRuntime();
+if (message.streamSeq > lastStreamSeq + 1) requestTerminalResyncOnce();
+```
+
+</spec-entry>
+
+<spec-entry category="quality" keywords="mobile-workbench,bridge,snapshot,projection,notifications,pty-state,theme" date="2026-07-26" source="src/mobile/bridge/workbenchProjection.ts:1">
+
+### Scenario: Recoverable Mobile Workbench Projection
+
+#### 1. Scope / Trigger
+- Trigger: Any change to the mobile Workbench, its desktop projection, Bridge
+  snapshot state, notification mirroring, mobile terminal-status display, or
+  mobile app/terminal theme ownership.
+- Applies to `src/mobile/bridge/**`, `TerminalManager`, `tauri-bridge`,
+  `src-tauri/src/bridge/**`, and `mobile-app/src/**`.
+
+#### 2. Signatures
+- Desktop projection:
+  `buildMobileWorkbenchProjection(input: MobileWorkbenchProjectionInput): MobileWorkbenchProjection`
+- Notification projection:
+  `notificationsToMobile(notifications): NotificationEntry[]`
+- Frontend Tauri boundary:
+  `mobileBridge.syncState(cards, notifications, workbench): Promise<void>`
+- Rust command:
+  `bridge_sync_state(cards, notifications, workbench) -> Result<(), String>`
+- Recoverable snapshot field:
+  `Snapshot.workbench?: MobileWorkbenchProjection | null`
+
+#### 3. Contracts
+- Desktop `useWorkbenchModel` is the only owner of attention, summary,
+  execution-group, and rule derivation. Mobile receives a bounded serializable
+  projection and must not recreate those rules from cards or notifications.
+- The mobile projection is global and must not inherit the desktop Workbench's
+  current project/worktree UI filter.
+- Cards, notifications, and Workbench projection update one Rust mirror under
+  one lock and emit one snapshot. The legacy `bridge_sync_cards` command may
+  update cards for compatibility but must preserve the current notification and
+  Workbench mirrors.
+- `workbench` and expanded notification fields are additive v1 fields. Missing
+  `workbench` replaces any stale mobile projection with `null`; it must not
+  reuse data from a previous connection.
+- Mobile capabilities describe real actions. Until the Bridge implements them,
+  structured-request response, rule edits, and notification read-state updates
+  remain `false` and the UI renders explanation text instead of fake controls.
+- Incremental `state` and `exit` messages must update both `CardMeta.status` and
+  `CardMeta.ptyState`. Mobile status rendering prefers `ptyState` when present,
+  so updating only `status` leaves stale snapshot state visible.
+- Mobile app theme preference may override the application chrome mode, but
+  xterm and terminal chrome continue to consume the latest Bridge
+  `terminal` tokens without remounting the xterm instance.
+- The root navigation is `workbench | terminal | settings`; only a pushed
+  terminal detail mounts xterm. Workbench/list navigation must not create
+  hidden xterm instances.
+- Project/worktree scope labels must avoid redundant names. A card whose
+  effective worktree path equals its project path displays only the project
+  name; a distinct worktree displays `projectName · branchLabel`, falling back
+  to the worktree directory label only when branch metadata is absent and
+  suppressing the suffix if it is still identical to the project name.
+
+#### 4. Validation & Error Matrix
+- Legacy snapshot without `workbench` -> keep cards/notifications compatible
+  and show the explicit Workbench compatibility state.
+- Reconnect after desktop state changed -> one snapshot restores cards,
+  notifications, rules, attention items, and execution groups consistently.
+- Legacy `bridge_sync_cards` after a full state sync -> replace cards without
+  clearing the current notification/projection mirrors.
+- `exit(code != 0)` after a snapshot with
+  `ptyState = waiting_for_input` -> both status fields become `failed`, and the
+  terminal list displays failed.
+- Read-only pairing -> Workbench remains visible, terminal detail has no input,
+  and unsupported mutation actions remain absent.
+- Mobile light-mode override with a dark server terminal palette -> app chrome
+  becomes light while xterm keeps the server terminal background/foreground.
+
+#### 5. Good/Base/Bad Cases
+- Good: the desktop derives one global projection, atomically syncs it with
+  notifications and cards, and a reconnect restores the same Workbench view.
+- Good: an `exit(137)` event immediately changes a previously waiting terminal
+  badge to failed without waiting for another full snapshot.
+- Base: an older desktop omits `workbench`; the mobile terminal and settings
+  surfaces still work and Workbench reports that projection data is unavailable.
+- Bad: mobile infers approval/review/stalled items from `CardMeta`, creating a
+  second rules engine that can disagree with desktop.
+- Bad: sync cards, notifications, and projection through separate commands,
+  exposing mixed-generation snapshots.
+- Bad: update `card.status` but leave `card.ptyState` unchanged.
+
+#### 6. Tests Required
+- Pure projection tests must assert stable field mapping, bounded payloads,
+  notification routing metadata, capabilities, and no inferred progress.
+- Tauri-wrapper and `TerminalManager` tests must assert one
+  `bridge_sync_state` call with global project/worktree data.
+- Rust tests must assert notification/projection recovery from a later snapshot,
+  atomic mirror behavior, and legacy card-sync preservation.
+- Mobile reducer tests must assert missing-projection replacement and
+  `status`/`ptyState` parity for state and exit messages.
+- Mobile component/E2E tests must cover default Workbench navigation,
+  full-screen return context, read-only input removal, 360 px width containment,
+  server terminal-theme retention, and reconnect/backpressure recovery in both
+  Chromium and WebKit.
+- Terminal scope-label tests must cover a root project such as `Test` without
+  rendering `Test · Test`, plus a linked worktree with a distinct branch label.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+await mobileBridge.syncCards(cards);
+await mobileBridge.syncNotifications(notifications);
+await mobileBridge.syncWorkbench(workbench);
+```
+
+Correct:
+```typescript
+await mobileBridge.syncState(cards, notifications, workbench);
+```
+
+Wrong:
+```typescript
+card.id === message.card_id ? { ...card, status: message.status } : card;
+```
+
+Correct:
+```typescript
+card.id === message.card_id
+  ? { ...card, status: message.status, ptyState: message.status }
+  : card;
 ```
 
 </spec-entry>
@@ -840,6 +1088,361 @@ PanelBuilder::<_, OverlayPetPanel>::new(app, PET_LABEL)
 - Tests should cover restoring the workspace rail after a shortcut-opened session dock closes.
 - Tests should cover number-key and arrow/Enter session selection from the dock.
 - Tests should cover xterm-like `textarea` focus and `KeyboardBridge` forwarding while `[data-session-dock-active="true"]` is present.
+
+</spec-entry>
+
+<spec-entry category="quality" keywords="workbench,attention,codex,requests,terminal,navigation" date="2026-07-25" source="src/lib/workbench/deriveAttentionItems.ts:1">
+
+### Scenario: Deterministic Terminal Attention Workbench
+
+#### 1. Scope / Trigger
+- Trigger: Any change to the Workbench page, primary terminal navigation,
+  attention rules, provider request adapters, or Workbench side-panel actions.
+- Applies to `src/lib/workbench/**`, `src/components/workbench/**`,
+  `codexRequestStore`, `CodexRequestBridge`, `CodexChatView`,
+  `ProjectSidebar`, and `TerminalManager`.
+- The Workbench is a deterministic read model over existing terminal state. It
+  is not a task orchestrator, mission graph, verification engine, or LLM steward.
+
+#### 2. Signatures
+
+```typescript
+type PrimaryView = 'workbench' | 'terminals';
+
+interface WorkbenchRules {
+  includeWaiting: boolean;
+  includeFailed: boolean;
+  includeCompletedReview: boolean;
+  stalledEnabled: boolean;
+  stalledThresholdMinutes: number;
+  stalledExcludedCardIds: string[];
+}
+
+function deriveAttentionItems(input: {
+  cards: readonly TerminalCard[];
+  notifications: readonly NotificationEntry[];
+  supervisorAlerts: readonly SupervisorAlert[];
+  codexRequests: readonly PendingCodexRequest[];
+  rules: WorkbenchRules;
+  now: number;
+  selectedProjectPath?: string | null;
+  selectedWorktreePath?: string | null;
+}): AttentionItem[];
+```
+
+Codex request observation is application-scoped:
+
+```typescript
+codexApp.onRequest(handler): Promise<() => void>;
+codexApp.onDisconnected(handler): Promise<() => void>;
+codexApp.respondRequest(requestId, response): Promise<void>;
+```
+
+`CodexRequestBridge` owns observation and notification projection.
+`CodexChatView` remains the only UI that calls `respondRequest`.
+
+#### 3. Contracts
+- `primaryView` selects Workbench or the existing `CardGrid`; `viewMode`
+  continues to own `grid | focus`. Switching primary pages must not kill,
+  archive, recreate, or unmount an already-mounted PTY merely for navigation.
+- Workbench code must not import or render `TerminalView`, `Shell`, xterm, or a
+  WebGL preview. It consumes bounded card previews, events, notifications, and
+  request metadata.
+- Apply the existing exact project/worktree matching helpers before deriving
+  counts, attention items, or execution-context groups.
+- Source priority for the same waiting semantic is:
+  structured request > unacted Supervisor alert > unread notification >
+  terminal state. Distinct structured requests remain distinct.
+- A failed card is hidden while an automatic restart attempt is pending.
+  Workbench rules never create a second retry limit.
+- Completion evidence is disjunctive: an unread `completed` notification or
+  `card.status === "completed"` independently projects one `review` item.
+  A normal agent reply commonly transitions `running -> idle` while emitting
+  the notification, so the projection must not also require the card to remain
+  `completed`. An idle card leaves Workbench only after that completion signal
+  is acknowledged; an idle card with no unread signal remains in All terminals.
+- No-progress detection is off by default. Enabling it is an explicit opt-in
+  across provider and custom terminal types; users may exclude dev servers,
+  watchers, and other long-running cards individually. Do not branch Workbench
+  behavior on model brand names.
+- Execution contexts are grouped by `projectPath + effectiveWorktreePath`.
+  They are not tasks and must not show inferred dependencies or percentages.
+- Workbench actions are navigation-only. Approval, rejection, terminal input,
+  restart, archive, file writes, and verification remain in their authoritative
+  existing surfaces.
+- Workbench detail panels must remain width-contained on narrow windows. The
+  panel root and vertical scroll body use `min-width: 0`, `max-width: 100%`,
+  and horizontal overflow containment so descendant min-content cannot widen
+  the shared flex `aside`.
+- Terminal-derived detail previews preserve producer line breaks but allow
+  arbitrary wrapping for unbroken prompt/box-drawing runs. A repeated Unicode
+  rule, long path, or command token must wrap inside the preview card rather
+  than extend beyond its border or create document-level horizontal scrolling.
+- Do not render cost, token, test, diff, port, or verification claims unless a
+  real structured source for that exact field is available.
+- `CodexRequestBridge` is mounted once near the other application bridges.
+  Pending request payloads are bounded, deduplicated, and memory-only.
+- A successful Codex response removes the pending request and its notification.
+  A failed response retains both so the user can retry. Disconnect removes
+  requests that can no longer be executed and records a disconnect generation.
+
+#### 4. Validation & Error Matrix
+- Request has a valid `cardId` -> bind directly to that card.
+- Request lacks `cardId` but has a bound thread id -> resolve through
+  `TerminalCard.codexAppThreadId`.
+- Request cannot resolve to a live card -> log and drop it; do not create a
+  dead-end Workbench action.
+- Duplicate request id -> keep the first pending request and do not push a
+  second notification.
+- Listener registration resolves after component cleanup -> call the returned
+  unlistener immediately.
+- Codex app-server disconnects -> remove request notifications, clear pending
+  executable projections, and surface the disconnect in mounted Chat views.
+- Non-structured provider signal -> show `Open terminal`, never synthetic
+  Approve/Reject actions.
+- Selected project/worktree contains no cards -> show a scoped empty state,
+  not the global first-run message.
+- Unbroken terminal preview at a 407 px viewport -> signal bounds stay inside
+  the detail panel, `signal.scrollWidth <= signal.clientWidth`, and document
+  width does not exceed the viewport.
+
+#### 5. Good/Base/Bad Cases
+- Good: a Codex approval arrives while its Chat view is unmounted; the
+  application bridge records it, Workbench shows `View request`, and opening it
+  focuses the existing Codex terminal where the response is sent.
+- Good: a Grok or custom CLI reaches `waiting` through generic PTY state;
+  Workbench shows a provider-neutral waiting item and opens its terminal.
+- Base: an idle card with no unread signal remains available in All terminals
+  but does not consume Workbench execution-context space.
+- Good: a terminal preview containing a long box-drawing rule wraps within the
+  latest-signal card while retaining its explicit line breaks.
+- Bad: putting Approve/Reject buttons in an attention row and writing directly
+  to a PTY based on regex output.
+- Bad: calling an execution-context group a verified task or inventing progress,
+  cost, test counts, or diffs from output text.
+- Bad: relying on `overflow-y: auto` alone in the side panel; an unbroken child
+  can still contribute a large flex min-content width and escape the panel.
+
+#### 6. Tests Required
+- Pure projection tests: source precedence, structured-request multiplicity,
+  recovery removal, project/worktree filtering, pending-restart suppression,
+  provider-neutral no-progress opt-in/exclusions, group severity, and the
+  `normal running -> idle with unread completed notification -> review ->
+  acknowledged idle removal` transition.
+- Store/bridge tests: request dedup and cap, thread fallback, unresolved
+  request degradation, disconnect cleanup, and late-listener cleanup.
+- Chat tests: card isolation, unchanged response payload, success cleanup, and
+  notification cleanup.
+- Component tests: exactly three primary actions, default Workbench, lossless
+  Workbench/All terminals switching, return-to-origin behavior, capability
+  degradation, local-only rules, hidden unavailable evidence, and explicit
+  width/wrapping classes for unbroken terminal signals.
+- Desktop browser regression: use a narrow viewport and assert both document
+  and latest-signal geometry have no horizontal overflow.
+- Required gates: `npm run typecheck`, targeted Workbench/Codex/terminal
+  Vitest, `npm run check`, and `git diff --check`.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```typescript
+// A row guesses that every AI CLI supports direct approval.
+onClick={() => pty.write(card.id, 'y\r')}
+```
+
+Correct:
+
+```typescript
+// The Workbench only navigates to the authoritative interaction surface.
+onClick={() => onOpenTerminal(item.cardId)}
+```
+
+Wrong:
+
+```typescript
+// Requests disappear when this card view is unmounted.
+useEffect(() => codexApp.onRequest(setLocalRequests), []);
+```
+
+Correct:
+
+```typescript
+// One application bridge observes requests; card views select their subset.
+<CodexRequestBridge />
+const requests = useCodexRequestStore(
+  (state) => state.requests.filter((request) => request.cardId === card.id),
+);
+```
+
+Wrong:
+
+```tsx
+<aside className="flex flex-col">
+  <p>{group.preview}</p>
+</aside>
+```
+
+Correct:
+
+```tsx
+<aside className="flex min-w-0 max-w-full flex-col overflow-x-hidden">
+  <p className="max-w-full whitespace-pre-wrap break-all overflow-hidden">
+    {group.preview}
+  </p>
+</aside>
+```
+
+</spec-entry>
+
+<spec-entry category="quality" keywords="notifications,tauri,pty,supervisor,codex,dedup,focus" date="2026-07-26" source="src/lib/osNotificationPolicy.ts:1">
+
+### Scenario: Semantic OS Notification Boundary
+
+#### 1. Scope / Trigger
+- Trigger: Any change to automatic desktop OS notifications, terminal
+  `attention-required` events, reply-completion notifications, Supervisor
+  alerts, Codex structured requests, or worktree result notifications.
+- Applies to `NotificationBridge`, `osNotificationPolicy`,
+  `TerminalEventBridge`, `CodexRequestBridge`, Supervisor store/hook,
+  `NotificationEntry`, and Rust PTY attention payloads.
+
+#### 2. Signatures
+
+```typescript
+interface NotificationRouting {
+  origin: 'pty' | 'reply' | 'codex_request' | 'supervisor' | 'auto_restart';
+  family: 'interaction' | 'completion' | 'failure' | 'system';
+  episodeKey?: string;
+  fingerprint?: string;
+}
+
+interface NotificationEntry {
+  // existing persisted fields...
+  routing?: NotificationRouting;
+}
+
+interface AttentionRequiredEvent {
+  ptyId: string;
+  sessionId: string;
+  type: 'waiting' | 'error';
+  message: string;
+  fingerprint?: string;
+}
+
+buildInteractionEpisodeKey(cardId: string, generation: number): string;
+shouldDispatchOsNotification(
+  notification: NotificationEntry,
+  environment: {
+    enabled: boolean;
+    foreground: boolean;
+    focusedCardId: string | null;
+  },
+): boolean;
+```
+
+Rust `AttentionRequiredPayload` adds camelCase `fingerprint`; the frontend
+field is optional so an older backend or persisted notification remains valid.
+
+#### 3. Contracts
+- `terminalStore.pushNotification()` records in-app evidence only. Automatic OS
+  dispatch belongs exclusively in `NotificationBridge`; do not add native
+  notification calls to producers or Zustand actions.
+- The settings-page manual test notification remains a direct Rust command and
+  intentionally bypasses automatic routing policy.
+- `routing` is optional and must be copied intact by the notifications slice.
+  Adding routing metadata must not require a persist migration.
+- `completed` sends an OS toast only while the main window is in the
+  background. A foreground signal for `focusedCardId` is suppressed at the OS
+  boundary while its in-app entry remains.
+- `system:worktrees + completed` is in-app only.
+  `system:worktrees + failed` is OS-visible only in the background.
+- Interaction episode identity is
+  `interaction:<cardId>:<messageCount>`. The 500 ms priority order is
+  `codex_request > supervisor > pty`.
+- PTY notification identity is generation + attention type + normalized Rust
+  matching-line fingerprint. Exact redraws are suppressed; a new user submit
+  or changed fingerprint rearms immediately.
+- Supervisor in-app dedup identity is card + rule + generation + normalized
+  sample. A 60-second cooldown is not permission to enqueue a sticky prompt
+  again.
+- Distinct Codex request fingerprints remain distinct even in one generation.
+  Generic PTY/Supervisor signals must not create an additional toast for an
+  already represented structured request.
+- Delayed candidates must re-read the OS preference, document focus, and
+  focused card at flush time. Coordinator maps are bounded and every timer is
+  cancelled on Bridge unmount/HMR.
+- Rust derives the fingerprint from the last line matched by the relevant
+  `RegexSet`, collapses whitespace, and bounds it to 240 characters without
+  changing the user-visible generic message.
+
+#### 4. Validation & Error Matrix
+- `routing` absent -> preserve in-app display and apply kind/card-based legacy
+  OS visibility rules; never throw.
+- fingerprint absent from an older PTY backend -> normalize type + message as a
+  conservative fallback.
+- OS notifications disabled at accept or flush -> no OS toast.
+- app becomes focused on the target card during the 500 ms window -> cancel
+  delivery while keeping the in-app entry.
+- Rust OS command fails -> keep the existing Web Notification fallback.
+- duplicate notification id, exact episode fingerprint, StrictMode replay, or
+  HMR listener replay -> no second OS toast.
+- changed fingerprint or increased `messageCount` -> allow a new interaction.
+- Bridge unmount with a pending candidate -> clear timer; no ghost toast.
+
+#### 5. Good/Base/Bad Cases
+- Good: one Codex approval simultaneously matches PTY and Supervisor; all
+  authoritative evidence remains, and the OS receives one Codex toast.
+- Good: a TUI redraws `Continue? [y/n]` after 61 seconds; no new notification
+  is created until the user submits again or the matched line changes.
+- Base: an old persisted notification has no routing; it still renders and a
+  background failure still follows the conservative legacy policy.
+- Bad: increasing the PTY debounce from 5 to 30 seconds and calling that
+  deduplication. A sticky prompt will still fire again after 30 seconds.
+- Bad: deleting lower-priority in-app notifications to reduce OS noise; this
+  removes Workbench evidence instead of coordinating the side effect.
+
+#### 6. Tests Required
+- Pure policy tests: disabled preference, foreground focused target,
+  foreground/background completion, and worktree success/failure.
+- Fake-timer coordinator tests: PTY/Supervisor/Codex priority, exact redraw
+  dedup, changed fingerprint, new generation, distinct Codex requests, focus
+  recheck, and dispose cleanup.
+- `NotificationBridge` integration must prove three in-app interaction entries
+  can yield one OS command and unmount cancels pending delivery.
+- Producer tests must assert routing metadata for reply, PTY, Supervisor, and
+  Codex entries.
+- Rust tests must assert last matching line selection and whitespace-stable
+  fingerprinting.
+- Required gates: targeted ESLint with zero warnings, `npm run check`,
+  `npm run build`, full `cargo test`, Rustfmt, and `git diff --check`.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```typescript
+if (Date.now() - lastNotificationAt > 60_000) {
+  sendNotification(prompt);
+}
+```
+
+Correct:
+
+```typescript
+pushNotification({
+  ...prompt,
+  routing: {
+    origin: 'supervisor',
+    family: 'interaction',
+    episodeKey: buildInteractionEpisodeKey(cardId, messageCount),
+    fingerprint: normalizeNotificationFingerprint(`${ruleId}:${sampleText}`),
+  },
+});
+```
+
+The correct version preserves evidence and lets one OS boundary combine
+semantic identity, source priority, and current focus state.
 
 </spec-entry>
 

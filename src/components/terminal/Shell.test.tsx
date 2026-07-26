@@ -10,6 +10,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { PtyAttachSnapshot } from '../../lib/tauri-bridge';
 
 vi.mock('react-i18next', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-i18next')>();
@@ -107,7 +108,9 @@ const ptyMock = vi.hoisted(() => {
     registerOutputConsumer: vi.fn(async (_id: string, _consumerId: string) => {}),
     unregisterOutputConsumer: vi.fn(async (_id: string, _consumerId: string) => {}),
     ack: vi.fn(async () => {}),
-    attachSnapshot: vi.fn(async () => null),
+    attachSnapshot: vi.fn<(_id: string) => Promise<PtyAttachSnapshot | null>>(
+      async () => null,
+    ),
     onOutput: vi.fn(async (cb: (payload: { id: string; data: string; seq: number }) => void) => {
       outputHandlers.add(cb);
       return () => outputHandlers.delete(cb);
@@ -490,11 +493,12 @@ describe('Shell — PTY output consumer lifecycle', () => {
     });
   });
 
-  it('filters synchronized ED2/ED3 frames without stalling renderer acknowledgements', async () => {
+  it('preserves synchronized ED2/ED3 frames without stalling renderer acknowledgements', async () => {
     renderMinimalShell();
     await waitForConnected();
     await waitFor(() => expect(ptyMock.attachSnapshot).toHaveBeenCalledWith('pane-1'));
     const term = xtermMock.instances[0];
+    expect(term.options.scrollOnEraseInDisplay).toBe(false);
     term.write.mockClear();
     ptyMock.ack.mockClear();
 
@@ -515,7 +519,7 @@ describe('Shell — PTY output consumer lifecycle', () => {
       );
     });
     expect(term.write.mock.calls.map(([data]) => data).join('')).toBe(
-      '\x1b[?2026hframedone\x1b[?2026l\x1b[2J',
+      '\x1b[?2026hframe\x1b[2J\x1b[3Jdone\x1b[?2026l\x1b[2J',
     );
   });
 
@@ -541,6 +545,101 @@ describe('Shell — PTY output consumer lifecycle', () => {
     });
     expect(ptyMock.attachSnapshot).not.toHaveBeenCalled();
     expect(ptyMock.ack).not.toHaveBeenCalled();
+  });
+
+  it('does not keep renewing a renderer lease while the whole window is hidden', async () => {
+    let visibilityState: DocumentVisibilityState = 'visible';
+    const visibilitySpy = vi
+      .spyOn(document, 'visibilityState', 'get')
+      .mockImplementation(() => visibilityState);
+    const intervalSpy = vi.spyOn(window, 'setInterval');
+    const { unmount } = renderMinimalShell('pane-background');
+
+    try {
+      await waitForConnected();
+      const heartbeatHandler = intervalSpy.mock.calls.find(
+        ([, delay]) => delay === 5_000,
+      )?.[0];
+      const heartbeat =
+        typeof heartbeatHandler === 'function' ? heartbeatHandler : undefined;
+      expect(heartbeat).toBeDefined();
+      ptyMock.registerOutputConsumer.mockClear();
+
+      visibilityState = 'hidden';
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+        heartbeat?.();
+      });
+
+      expect(ptyMock.registerOutputConsumer).not.toHaveBeenCalled();
+    } finally {
+      unmount();
+      intervalSpy.mockRestore();
+      visibilitySpy.mockRestore();
+    }
+  });
+
+  it('restores the current terminal screen after the whole window was hidden past its lease', async () => {
+    let visibilityState: DocumentVisibilityState = 'visible';
+    let now = 1_000;
+    const visibilitySpy = vi
+      .spyOn(document, 'visibilityState', 'get')
+      .mockImplementation(() => visibilityState);
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const { unmount } = renderMinimalShell('pane-long-background');
+
+    try {
+      await waitForConnected();
+      await waitFor(() =>
+        expect(ptyMock.attachSnapshot).toHaveBeenCalledWith('pane-long-background'),
+      );
+      const term = xtermMock.instances[0];
+      term.clear.mockClear();
+      term.write.mockClear();
+      term.resize.mockClear();
+      ptyMock.attachSnapshot.mockClear();
+      ptyMock.registerOutputConsumer.mockClear();
+      ptyMock.ack.mockClear();
+
+      visibilityState = 'hidden';
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+      now += 30_000;
+      ptyMock.attachSnapshot.mockResolvedValueOnce({
+        ptyId: 'pane-long-background',
+        data: 'current screen',
+        history: 'recent history\n',
+        seq: 19,
+        rows: 32,
+        cols: 104,
+        cursorRow: 4,
+        cursorCol: 7,
+      });
+
+      visibilityState = 'visible';
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+
+      await waitFor(() => {
+        expect(ptyMock.attachSnapshot).toHaveBeenCalledWith('pane-long-background');
+        expect(term.clear).toHaveBeenCalledTimes(1);
+        expect(term.resize).toHaveBeenCalledWith(104, 32);
+        expect(term.write).toHaveBeenCalledWith(
+          'recent history\ncurrent screen',
+          expect.any(Function),
+        );
+      });
+      await waitFor(() => {
+        expect(ptyMock.ack).toHaveBeenCalledWith(
+          'pane-long-background',
+          19,
+          'renderer',
+          expect.any(String),
+        );
+      });
+    } finally {
+      unmount();
+      nowSpy.mockRestore();
+      visibilitySpy.mockRestore();
+    }
   });
 });
 
@@ -724,6 +823,22 @@ describe('Shell — Windows surface recovery and hidden rendering (O-04 / C-03p)
     } as DOMRect));
     return { geometry, spy };
   }
+
+  it('uses ordinary pointer clicks only to focus, without a full surface recovery', async () => {
+    const view = renderMinimalShell('pane-focus-only');
+    await waitForConnected();
+    const term = xtermMock.instances[0];
+    const fitAddon = fitAddonFor(term);
+    term.focus.mockClear();
+    fitAddon?.fit.mockClear();
+    ptyMock.resize.mockClear();
+
+    fireEvent.mouseDown(view.container.firstElementChild as Element);
+
+    expect(term.focus).toHaveBeenCalledTimes(1);
+    expect(fitAddon?.fit).not.toHaveBeenCalled();
+    expect(ptyMock.resize).not.toHaveBeenCalled();
+  });
 
   it('reasserts shared PTY geometry once after another renderer invalidates the local cache', async () => {
     const { spy: rectSpy } = installGeometry(800, 600);

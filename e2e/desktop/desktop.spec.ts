@@ -31,8 +31,19 @@ function trackPageErrors(page: Page): string[] {
   return errors;
 }
 
-/** Click a card in the (visible) grid by its seeded project name. */
+/** Switch from the V4 workbench landing view to the terminal-card grid. */
+async function showAllTerminals(page: Page): Promise<void> {
+  const primaryNavigation = page.getByRole('group', {
+    name: 'Primary navigation',
+  });
+  await primaryNavigation
+    .getByRole('button', { name: /^All terminals\b/ })
+    .click();
+}
+
+/** Open a seeded card from the terminal-card grid by project name. */
 async function openCard(page: Page, projectName: string): Promise<void> {
+  await showAllTerminals(page);
   // Click the visible card title instead of matching Tailwind class strings:
   // xterm/card class names may include slash variants such as `bg-card/95`.
   const cardName = page.getByText(projectName).last();
@@ -286,6 +297,66 @@ function paethPredictor(left: number, up: number, upLeft: number): number {
   return upLeft;
 }
 
+test('workbench detail contains an unbroken terminal signal at narrow width', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 407, height: 471 });
+  const [seedCard] = makeSeedCards(1);
+  const cards = [
+    {
+      ...seedCard,
+      // Persisted transient states intentionally migrate back to idle; use a
+      // durable completed card so the execution group survives app startup.
+      status: 'completed',
+      lastReplyPreview: `| > | ${'─'.repeat(180)}`,
+    },
+  ] as unknown as ReturnType<typeof makeSeedCards>;
+  await installFakeTauri(page, cards);
+  const errors = trackPageErrors(page);
+
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  const groupCard = page
+    .locator('section[aria-labelledby="workbench-groups-heading"]')
+    .getByRole('button', { name: new RegExp(seedCard.projectName) });
+  await expect(groupCard).toBeVisible();
+  await groupCard.click();
+
+  const panel = page.getByTestId('workbench-detail-panel');
+  const signal = page.getByTestId('workbench-latest-signal');
+  await expect(panel).toBeVisible();
+  await expect(signal).toBeVisible();
+
+  const geometry = await panel.evaluate((panelElement) => {
+    const signalElement = panelElement.querySelector(
+      '[data-testid="workbench-latest-signal"]',
+    );
+    if (!(signalElement instanceof HTMLElement)) return null;
+    const panelRect = panelElement.getBoundingClientRect();
+    const signalRect = signalElement.getBoundingClientRect();
+    return {
+      viewportWidth: window.innerWidth,
+      documentScrollWidth: document.documentElement.scrollWidth,
+      panelLeft: panelRect.left,
+      panelRight: panelRect.right,
+      signalLeft: signalRect.left,
+      signalRight: signalRect.right,
+      signalClientWidth: signalElement.clientWidth,
+      signalScrollWidth: signalElement.scrollWidth,
+    };
+  });
+
+  expect(geometry).not.toBeNull();
+  expect(geometry?.documentScrollWidth).toBeLessThanOrEqual(
+    geometry?.viewportWidth ?? 0,
+  );
+  expect(geometry?.signalLeft).toBeGreaterThanOrEqual(geometry?.panelLeft ?? 0);
+  expect(geometry?.signalRight).toBeLessThanOrEqual((geometry?.panelRight ?? 0) + 1);
+  expect(geometry?.signalScrollWidth).toBeLessThanOrEqual(
+    (geometry?.signalClientWidth ?? 0) + 1,
+  );
+  expect(errors).toEqual([]);
+});
+
 // ── Journey 1: exit banner + restart ─────────────────────────────────────────
 
 test('exit banner appears on non-zero exit and restart respawns the PTY', async ({ page }) => {
@@ -460,6 +531,47 @@ test('streaming output does not yank a scrolled-up viewport; button returns to b
   expect(errors).toEqual([]);
 });
 
+test('synchronized agent repaint clears the old prompt layout before drawing the new one', async ({
+  page,
+}) => {
+  const cards = makeSeedCards(1);
+  const ptyId = cards[0].ptyId;
+  await installFakeTauri(page, cards);
+  const errors = trackPageErrors(page);
+
+  await page.goto('/');
+  await openCard(page, cards[0].projectName);
+  await waitForCount(page, 'create', ptyId, 1);
+
+  const staleLayout = [
+    'You have 3 usage limit resets available. Run /',
+    '  usage to use one.',
+    '╭ stale input ╮',
+  ].join('\r\n');
+  let throughSeq = await emitOutput(page, ptyId, staleLayout);
+  await waitForAckThrough(page, ptyId, throughSeq);
+
+  const stableLayout = [
+    '\x1b[?2026h\x1b[2J\x1b[H',
+    '• You have 3 usage limit resets available. Run /usage to use one.\r\n',
+    '╭ stable input ╮',
+    '\x1b[?2026l',
+  ].join('');
+  throughSeq = await emitOutput(page, ptyId, stableLayout);
+  await waitForAckThrough(page, ptyId, throughSeq);
+
+  await expect(async () => {
+    const buffer = await readTerminalBuffer(page, ptyId);
+    expect(buffer?.activeText).toContain(
+      '• You have 3 usage limit resets available. Run /usage to use one.\n╭ stable input ╮',
+    );
+    expect(buffer?.activeText).not.toContain('usage to use one.\n╭ stale input ╮');
+    expect(buffer?.activeText).not.toContain('stale input');
+  }).toPass({ timeout: 5_000 });
+
+  expect(errors).toEqual([]);
+});
+
 // ── Journey 4: Codex chat ↔ terminal keeps xterm visible ────────────────────
 
 test('codex chat to terminal restore shows terminal output without stale bottom prompt', async ({
@@ -495,9 +607,11 @@ test('codex chat to terminal restore shows terminal output without stale bottom 
 
 // ── Journey 5: local history is lazy and materializes only selected cards ──
 
-test('session recovery stays lazy and restores selected provider sessions without spawning PTYs', async ({
+test('session recovery stays lazy and resumes selected Codex history only when opened', async ({
   page,
 }) => {
+  const codexChildId = '019f514a-8678-7c33-b6cf-3a8c40e53052';
+  const codexRootId = '019f513b-d9ae-7833-8e9e-d878ac9e9fe5';
   const agentSessions: SeedAgentSession[] = [
     {
       provider: 'claude',
@@ -511,7 +625,8 @@ test('session recovery stays lazy and restores selected provider sessions withou
     },
     {
       provider: 'codex',
-      id: 'codex-history-1',
+      id: codexChildId,
+      resumeTargetId: codexRootId,
       projectPath: '/tmp/codex-history-project',
       nativeTitle: 'Fix auth race',
       titleKind: 'explicit',
@@ -556,6 +671,7 @@ test('session recovery stays lazy and restores selected provider sessions withou
 
   await dialog.getByRole('button', { name: 'Restore selected' }).click();
   await expect(dialog).toBeHidden();
+  await showAllTerminals(page);
   await expect(page.getByText('Release checklist', { exact: true }).last()).toBeVisible();
   await expect(page.getByText('Fix auth race', { exact: true }).last()).toBeVisible();
 
@@ -568,5 +684,42 @@ test('session recovery stays lazy and restores selected provider sessions withou
       ).reduce((total, count) => total + count, 0),
     ),
   ).toBe(0);
+
+  await page
+    .getByText('/tmp/codex-history-project', { exact: true })
+    .last()
+    .click();
+  await waitForCount(page, 'create', codexChildId, 1);
+  await expect
+    .poll(() =>
+      page.evaluate((ptyId) => {
+        const fake = (window as unknown as {
+          __fakePty: { inputs: Record<string, string[]> };
+        }).__fakePty;
+        return fake.inputs[ptyId] ?? [];
+      }, codexChildId),
+    )
+    .toContain(`codex resume ${codexRootId} --no-alt-screen\r`);
+
+  expect(
+    await page.evaluate(() => {
+      const state = (window as unknown as {
+        __fakeAgentSessions: {
+          resumeResolveCalls: Array<{ provider: string; sessionId: string }>;
+          codexAppOpenCardCalls: number;
+        };
+      }).__fakeAgentSessions;
+      return {
+        resumeResolveCalls: state.resumeResolveCalls,
+        codexAppOpenCardCalls: state.codexAppOpenCardCalls,
+      };
+    }),
+  ).toEqual({
+    resumeResolveCalls: [
+      { provider: 'codex', sessionId: codexChildId },
+      { provider: 'codex', sessionId: codexRootId },
+    ],
+    codexAppOpenCardCalls: 0,
+  });
   expect(errors).toEqual([]);
 });

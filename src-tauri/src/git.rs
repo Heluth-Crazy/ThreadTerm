@@ -3,8 +3,19 @@ use std::process::Command;
 use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 const MAX_TEXT_DIFF_BYTES: usize = 1024 * 1024;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -246,7 +257,7 @@ fn merge_branch_worktree(
 
 fn list_worktrees_for_directory(project_path: &str) -> Result<Vec<WorktreeInfo>, String> {
     let dir = validate_git_project_directory(project_path)?;
-    let output = match Command::new("git")
+    let output = match git_command()
         .arg("-C")
         .arg(&dir)
         .arg("worktree")
@@ -268,7 +279,7 @@ fn list_worktrees_for_directory(project_path: &str) -> Result<Vec<WorktreeInfo>,
 
 fn list_branches_for_directory(project_path: &str) -> Result<Vec<BranchRecord>, String> {
     let dir = validate_git_project_directory(project_path)?;
-    let output = match Command::new("git")
+    let output = match git_command()
         .arg("-C")
         .arg(&dir)
         .arg("for-each-ref")
@@ -365,7 +376,7 @@ fn status_for_directory(project_path: &str) -> Result<Vec<GitStatusEntry>, Strin
         Ok(root) => root,
         Err(_) => return Ok(Vec::new()),
     };
-    let output = match Command::new("git")
+    let output = match git_command()
         .arg("-C")
         .arg(&repo_root)
         .arg("status")
@@ -386,7 +397,7 @@ fn status_for_directory(project_path: &str) -> Result<Vec<GitStatusEntry>, Strin
 }
 
 fn git_repo_root(project_path: &Path) -> Result<PathBuf, String> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(project_path)
         .arg("rev-parse")
@@ -430,7 +441,7 @@ fn looks_like_windows_drive_path(path: &str) -> bool {
 }
 
 fn run_git_diff(repo_root: &Path, path: &str, cached: bool) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = git_command();
     command
         .arg("-C")
         .arg(repo_root)
@@ -500,7 +511,7 @@ fn bytes_to_text(bytes: Vec<u8>, label: &str) -> Result<String, String> {
 }
 
 fn read_git_blob(repo_root: &Path, revision: &str, path: &str) -> Result<Option<String>, String> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(repo_root)
         .arg("show")
@@ -659,7 +670,7 @@ fn add_worktree_for_branch(
         ));
     }
 
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(&repo_root)
         .arg("worktree")

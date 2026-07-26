@@ -1,7 +1,11 @@
 import { invoke as tauriInvoke, isTauri as tauriIsTauri } from '@tauri-apps/api/core';
 import { listen as tauriListen } from '@tauri-apps/api/event';
 import type { ResolvedThemeMode, ThemeModeTokens } from '../theme/themeTypes';
-import type { CardMeta } from '../mobile/bridge/protocol';
+import type {
+  CardMeta,
+  MobileWorkbenchProjection,
+  NotificationEntry as MobileNotificationEntry,
+} from '../mobile/bridge/protocol';
 import type {
   StatsDoneEvent,
   StatsErrorEvent,
@@ -58,6 +62,8 @@ export interface AttentionRequiredEvent {
   sessionId: string;
   type: 'waiting' | 'error';
   message: string;
+  /** Stable normalized matching line; absent for older backend builds. */
+  fingerprint?: string;
 }
 
 export const pty = {
@@ -266,6 +272,15 @@ export const providerSessions = {
       sinceMs: sinceMs ?? null,
     }),
 
+  resolveResume: (
+    provider: 'claude' | 'codex',
+    sessionId: string,
+  ): Promise<ProviderSessionInfo | null> =>
+    invoke<ProviderSessionInfo | null>('provider_resolve_resume_session', {
+      provider,
+      sessionId,
+    }),
+
   /** On-demand paginated catalog. Does not create cards. */
   listAgentSessions: (request: ListAgentSessionsRequest): Promise<AgentSessionPage> =>
     invoke<AgentSessionPage>('provider_list_agent_sessions', { request }),
@@ -399,6 +414,9 @@ export interface BridgeStatus {
   url?: string | null;
 }
 
+export const mobileBridgeHasSubscribers = (): Promise<boolean> =>
+  invoke<boolean>('bridge_has_subscribers');
+
 export interface PairQrResponse {
   host: string;
   port: number;
@@ -482,8 +500,8 @@ export const mobileBridge = {
   stop: (): Promise<BridgeStatus> =>
     invoke<BridgeStatus>('bridge_stop'),
 
-  status: (): Promise<BridgeStatus> =>
-    invoke<BridgeStatus>('bridge_status'),
+  status: (refreshNetworkAddress = false): Promise<BridgeStatus> =>
+    invoke<BridgeStatus>('bridge_status', { refresh: refreshNetworkAddress }),
 
   pairQr: (
     host?: string,
@@ -502,6 +520,13 @@ export const mobileBridge = {
 
   syncCards: (cards: CardMeta[]): Promise<void> =>
     invoke<void>('bridge_sync_cards', { cards }),
+
+  syncState: (
+    cards: CardMeta[],
+    notifications: MobileNotificationEntry[],
+    workbench: MobileWorkbenchProjection | null,
+  ): Promise<void> =>
+    invoke<void>('bridge_sync_state', { cards, notifications, workbench }),
 
   resolveSpawn: (result: MobileCommandResult): Promise<void> =>
     invoke<void>('bridge_resolve_mobile_spawn', { ...result }),

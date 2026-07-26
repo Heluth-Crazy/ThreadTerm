@@ -24,6 +24,7 @@ import { useTerminalStore } from '../../stores/terminalStore';
 import type { NotificationEntry, NotificationKind } from '../../types/terminal';
 import { openNotificationTarget } from './notificationTarget';
 import { describeCardSource, formatCardSourceLabel } from './notificationSource';
+import { AttentionDot } from './AttentionDot';
 
 const kindIconMap: Record<NotificationKind, typeof AlertTriangle> = {
   waiting: Clock,
@@ -33,9 +34,9 @@ const kindIconMap: Record<NotificationKind, typeof AlertTriangle> = {
 };
 
 const kindToneMap: Record<NotificationKind, string> = {
-  waiting: 'text-amber-500',
-  completed: 'text-sky-500',
-  failed: 'text-red-500',
+  waiting: 'text-warning',
+  completed: 'text-info',
+  failed: 'text-destructive',
   attention: 'text-muted-foreground',
 };
 
@@ -68,13 +69,14 @@ export function NotificationCenter() {
   );
 
   const sourceLabelById = useMemo(() => {
+    if (!open) return {};
     const translate = (key: string, fallback?: string) => t(key, { defaultValue: fallback ?? key });
     const map: Record<string, string> = {};
     for (const c of cards) {
       map[c.id] = formatCardSourceLabel(describeCardSource(c), translate);
     }
     return map;
-  }, [cards, t]);
+  }, [cards, open, t]);
 
   const handleClick = (n: NotificationEntry) => {
     if (openNotificationTarget(n.cardId)) {
@@ -97,7 +99,7 @@ export function NotificationCenter() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
             onClick={() => toggle(false)}
-            className="fixed inset-0 z-40 bg-black/30"
+            className="fixed inset-0 z-40 bg-background/60 backdrop-blur-sm"
           />
           <motion.aside
             key="nc-drawer"
@@ -105,15 +107,15 @@ export function NotificationCenter() {
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
             transition={{ duration: reduceMotion ? 0 : 0.18, ease: [0.22, 1, 0.36, 1] }}
-            className="fixed right-0 top-0 z-50 flex h-full w-[360px] max-w-full flex-col border-l border-white/10 bg-background shadow-2xl"
+            className="fixed right-0 top-0 z-50 flex h-full w-[360px] max-w-full flex-col border-l border-border bg-background shadow-2xl"
           >
             {/* Header */}
-            <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
               <div className="flex items-center gap-2">
                 <Inbox className="h-4 w-4 text-muted-foreground" />
                 <h2 className="text-sm font-semibold">{t('notifications.title')}</h2>
                 {unreadCount > 0 && (
-                  <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600">
+                  <span className="rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
                     {t('notifications.unread', { count: unreadCount })}
                   </span>
                 )}
@@ -124,7 +126,7 @@ export function NotificationCenter() {
                   title={t('notifications.markAllRead')}
                   onClick={markAll}
                   disabled={unreadCount === 0}
-                  className="rounded-[var(--radius-md)] p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-40"
+                  className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
                 >
                   <CheckCheck className="h-4 w-4" />
                 </button>
@@ -133,14 +135,14 @@ export function NotificationCenter() {
                   title={t('notifications.clearAll')}
                   onClick={clearAll}
                   disabled={notifications.length === 0}
-                  className="rounded-[var(--radius-md)] p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+                  className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
                 <button
                   type="button"
                   onClick={() => toggle(false)}
-                  className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
+                  className="rounded-md p-1.5 hover:bg-accent hover:text-accent-foreground"
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -179,7 +181,7 @@ export function NotificationCenter() {
                           <div className="flex items-center gap-1.5">
                             <p className="truncate text-sm font-medium">{n.title}</p>
                             {!n.read && (
-                              <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500" />
+                              <AttentionDot size="sm" />
                             )}
                           </div>
                           {n.body && (
@@ -187,7 +189,7 @@ export function NotificationCenter() {
                               {n.body}
                             </p>
                           )}
-                          <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
+                          <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
                             <span>{formatTime(n.at, t)}</span>
                             {isSystem ? (
                               <span className="truncate">· {t('notifications.systemSource')}</span>

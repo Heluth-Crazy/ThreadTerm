@@ -1,7 +1,6 @@
-import { useEffect, useRef } from 'react';
-import { Terminal } from '@xterm/xterm';
+import { useEffect, useRef, useState } from 'react';
+import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { createSynchronizedOutputFilter } from '@shared/lib/synchronizedOutputFilter';
 import { useI18n } from './i18n';
 import {
   getTerminalFeedBacklog,
@@ -14,9 +13,8 @@ import {
 //   - terminal_snapshot = a wezterm full-screen serialization. It is a RESET
 //     boundary: reset() then write(history + screen).
 //   - terminal_output   = incremental data. It is an APPEND: write(data).
-// The AnsiStreamClassifier / ChatBlock / TuiBlock path is intentionally no
-// longer referenced here (kept on disk for rollback), so streaming AI CLI
-// output is mirrored exactly like the desktop terminal without block chrome.
+// Streaming AI CLI output is mirrored exactly like the desktop terminal
+// without a second block-rendering layer.
 //
 // Renderer strategy: xterm's DEFAULT DOM renderer.
 // Canvas/WebGL renderers can reduce scroll paint cost, but real iOS WKWebView
@@ -39,12 +37,12 @@ interface MainTerminalProps {
   // applied as a recovery reset and the dropped output segment is repainted.
   // Plain reconnects never bump this, so the issue-5 guard is unaffected.
   recoveryNonce?: number;
+  // Desktop-owned terminal tokens. The DOM renderer remains the reliability
+  // choice on iOS, while colors follow the same Bridge theme as the PC.
+  theme?: ITheme;
 }
 
-// Forced dark palette. iOS WKWebView in system light mode otherwise paints the
-// xterm canvas white (known regression). The desktop theme is intentionally not
-// applied here — the mobile terminal stays a fixed dark surface.
-const DARK_THEME = {
+const FALLBACK_TERMINAL_THEME = {
   background: '#000000',
   foreground: '#ffffff',
   cursor: '#ffffff',
@@ -146,12 +144,13 @@ export function MainTerminal({
   className = '',
   onResize,
   recoveryNonce = 0,
+  theme,
 }: MainTerminalProps) {
   const { t } = useI18n();
+  const [historyTruncated, setHistoryTruncated] = useState(false);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const synchronizedOutputFilterRef = useRef(createSynchronizedOutputFilter());
   // Identity of the terminal_snapshot currently replayed into xterm. Reusing
   // the same snapshot must NOT re-reset (that would flash the screen on every
   // re-render). -1 means no snapshot has been applied to this card yet.
@@ -163,19 +162,21 @@ export function MainTerminal({
   const onResizeRef = useRef<typeof onResize>(onResize);
   const lastReportedSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const sourceSizeRef = useRef<TerminalSize | null>(null);
+  const runtimeIdRef = useRef<string | null>(null);
+  const themeRef = useRef<ITheme | undefined>(theme);
   // The backpressure nonce already observed. Initialized to the mount value so
   // a surface that mounts after a prior backpressure does NOT spuriously
   // re-arm; only a genuine increment while this instance is alive does.
   const lastRecoveryNonceRef = useRef<number>(recoveryNonce);
 
   onResizeRef.current = onResize;
+  themeRef.current = theme;
 
   // Create the single xterm instance once. open(host) and dispose() happen
   // exactly once per mount.
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const synchronizedOutputFilter = synchronizedOutputFilterRef.current;
 
     const terminal = new Terminal({
       convertEol: false,
@@ -185,11 +186,14 @@ export function MainTerminal({
       fontSize: mode === 'preview' ? PREVIEW_FONT_SIZE : DETAIL_FONT_SIZE,
       lineHeight: 1.2,
       scrollback: mode === 'preview' ? PREVIEW_SCROLLBACK : DETAIL_SCROLLBACK,
+      // Match the desktop xterm contract: ED2 clears the viewport in place
+      // while the mirrored ANSI stream itself remains untouched.
+      scrollOnEraseInDisplay: false,
       // Instant (non-animated) scroll: animated smooth-scroll runs a
       // main-thread rAF loop that compounds the DOM renderer's per-row repaint
       // cost during a large-output burst on mobile. 0 = jump directly.
       smoothScrollDuration: 0,
-      theme: { ...DARK_THEME },
+      theme: { ...(themeRef.current ?? FALLBACK_TERMINAL_THEME) },
     });
     terminalRef.current = terminal;
 
@@ -203,13 +207,19 @@ export function MainTerminal({
       fitAddonRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
-      synchronizedOutputFilter.reset();
       appliedSnapshotSeqRef.current = -1;
       lastAppliedOutputSeqRef.current = -1;
     };
     // mode only affects the initial font size; remount on mode change is fine
     // and avoids reconfiguring a live terminal.
   }, [mode]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || !theme) return;
+    terminal.options.theme = { ...theme };
+    terminal.refresh(0, Math.max(0, terminal.rows - 1));
+  }, [theme]);
 
   // Reset epoch tracking when the active card changes so the next snapshot is
   // treated as a fresh reset boundary for the new card.
@@ -220,7 +230,8 @@ export function MainTerminal({
     lastAppliedOutputSeqRef.current = -1;
     lastReportedSizeRef.current = null;
     sourceSizeRef.current = null;
-    synchronizedOutputFilterRef.current.reset();
+    runtimeIdRef.current = null;
+    setHistoryTruncated(false);
     terminalRef.current?.reset();
   }, [activeCardId]);
 
@@ -308,15 +319,10 @@ export function MainTerminal({
     };
   }, [mode]);
 
-  // Backpressure recovery: when App bumps recoveryNonce (server broadcast
-  // Lagged -> error/backpressure), re-arm the snapshot epoch ONCE so the
-  // recovery terminal_snapshot fetched right after is applied as a recovery
-  // reset and the dropped terminal_output segment is repainted. This does NOT
-  // touch lastAppliedOutputSeqRef: the snapshot branch sets it to snapshot.seq
-  // (same monotonic output_seq source), so any stale lower/equal-seq output
-  // replayed afterward is still correctly dropped by the :seq guard. Plain
-  // reconnects never bump recoveryNonce, so issue-5 (history survives a
-  // reconnect snapshot) is fully preserved.
+  // Recovery is armed when the bridge reports backpressure or the mobile
+  // transport detects a missing frame. The next full snapshot repaints the
+  // current screen without treating an ordinary reconnect as a destructive
+  // reset.
   useEffect(() => {
     if (recoveryNonce === lastRecoveryNonceRef.current) return;
     lastRecoveryNonceRef.current = recoveryNonce;
@@ -336,29 +342,44 @@ export function MainTerminal({
     if (!terminal || !activeCardId) return;
 
     const applyFeedMessage = (message: TerminalFeedMessage) => {
+      if (message.kind === 'recovery_boundary') {
+        appliedSnapshotSeqRef.current = -1;
+        lastAppliedOutputSeqRef.current = -1;
+        if (message.runtimeId) runtimeIdRef.current = message.runtimeId;
+        setHistoryTruncated(false);
+        return;
+      }
+      if (message.kind === 'history_truncated') {
+        if (message.card_id === activeCardId) setHistoryTruncated(true);
+        return;
+      }
       if (message.kind === 'terminal_snapshot') {
         const snapshot = message.snapshot;
         if (snapshot.cardId !== activeCardId) return;
+        const runtimeId = snapshot.runtimeId ?? null;
+        if (
+          runtimeId &&
+          runtimeIdRef.current &&
+          runtimeIdRef.current !== runtimeId
+        ) {
+          appliedSnapshotSeqRef.current = -1;
+          lastAppliedOutputSeqRef.current = -1;
+          setHistoryTruncated(false);
+        }
+        if (runtimeId) runtimeIdRef.current = runtimeId;
         const nextSourceSize = snapshotSize(snapshot);
         if (nextSourceSize) {
           sourceSizeRef.current = nextSourceSize;
           applyMirroredTerminalSize(terminal, hostRef.current, nextSourceSize, mode);
         }
-        // Protocol invariant: terminal_snapshot is ONLY emitted on (re)connect
-        // (server initial_messages_for_client). In-session screen redraws
-        // (alt-screen, full repaints) arrive as raw ANSI in terminal_output,
-        // never as a new snapshot. Therefore the FIRST snapshot for this
-        // card-epoch is the real screen and gets a destructive reset; every
-        // later snapshot is a reconnect resync. Resetting on a resync wipes
-        // the scrollback the user is actively reading — that is the "history
-        // disappears after send + reply" bug (a send easily triggers a
-        // visibility/keyboard reconnect). So skip later snapshots entirely and
-        // let seq-guarded terminal_output continue the live stream in place.
+        // The first snapshot, a desktop-runtime change, or an explicitly armed
+        // recovery is a reset boundary. Repeated snapshots from an ordinary
+        // reconnect are ignored so the scrollback the user is reading does not
+        // disappear.
         if (appliedSnapshotSeqRef.current !== -1) return;
         const seq = Number(snapshot.seq ?? 0);
         terminal.reset();
-        synchronizedOutputFilterRef.current.reset();
-        terminal.write(synchronizedOutputFilterRef.current.write(snapshotPayload(snapshot)));
+        terminal.write(snapshotPayload(snapshot));
         // Kick a redraw of the full viewport. xterm's DOM renderer on iOS
         // WKWebView occasionally does not self-paint the first frame right
         // after a reset; an explicit refresh forces the initial screen to
@@ -373,8 +394,10 @@ export function MainTerminal({
         if (!sourceSizeRef.current && appliedSnapshotSeqRef.current === -1) return;
         const seq = Number(message.seq ?? 0);
         if (seq <= lastAppliedOutputSeqRef.current) return;
-        const renderData = synchronizedOutputFilterRef.current.write(message.data);
-        if (renderData) terminal.write(renderData);
+        // Mirror synchronized redraw frames byte-for-byte. Desktop agent TUIs
+        // rely on frame-local ED2/ED3 commands to remove the previous prompt
+        // layout before painting a height-adjusted replacement.
+        if (message.data) terminal.write(message.data);
         lastAppliedOutputSeqRef.current = seq;
       }
     };
@@ -401,6 +424,11 @@ export function MainTerminal({
   return (
     <div className={scrollClassName} aria-label="Terminal output">
       <div className="terminal-xterm-host" ref={hostRef} />
+      {activeCardId && historyTruncated && (
+        <div className="terminal-history-notice" role="status">
+          {t('detail.historyTrimmed')}
+        </div>
+      )}
       {!activeCardId && (
         <div
           className={`terminal-empty-overlay ${

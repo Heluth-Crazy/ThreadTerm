@@ -23,6 +23,9 @@
     --border: 220 13% 91%;
     --input: 220 13% 91%;
     --ring: 224 71.4% 4.1%;
+    --success: 162 94% 24%;
+    --warning: 28 91% 37%;
+    --info: 201 96% 32%;
     --terminal-background: #020617;
     --terminal-foreground: #f8fafc;
     --terminal-cursor: #ffffff;
@@ -53,106 +56,115 @@
     --border: 217.2 32.6% 15%;
     --input: 217.2 32.6% 15%;
     --ring: 212.7 26.8% 83.9%;
+    --success: 158 64% 52%;
+    --warning: 43 96% 56%;
+    --info: 198 93% 60%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 20% 98%;
+    /* 默认终端本来就是深色的，与 :root 保持一致 */
+    --terminal-background: #020617;
+    --terminal-foreground: #f8fafc;
+    --terminal-cursor: #ffffff;
+    --terminal-cursor-accent: #020617;
+    --terminal-selection: #334155;
+    --terminal-selection-foreground: #ffffff;
   }
+}
 
-  @layer utilities {
-    .bg-mesh {
-      background-color: hsl(var(--background));
-      background-image:
-        radial-gradient(at 0% 0%, hsl(var(--primary) / 0.08) 0px, transparent 50%),
-        radial-gradient(at 100% 0%, hsl(var(--primary) / 0.05) 0px, transparent 50%),
-        radial-gradient(at 50% 100%, hsl(var(--primary) / 0.03) 0px, transparent 50%),
-        url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.015'/%3E%3C/svg%3E");
-    }
-    .bg-grid {
-      background-size: 40px 40px;
-      background-image:
-        linear-gradient(to right, hsl(var(--foreground) / 0.03) 1px, transparent 1px),
-        linear-gradient(to bottom, hsl(var(--foreground) / 0.03) 1px, transparent 1px);
-    }
-    .bg-radial-vignette {
-      background: radial-gradient(circle at center, transparent 0%, hsl(var(--background) / 0.4) 100%);
-    }
-    .etched-border-b {
-      border-bottom: 1px solid hsl(var(--foreground) / 0.08);
-      box-shadow: 0 1px 0 0 hsl(var(--background) / 0.2);
-    }
-    .etched-border-r {
-      border-right: 1px solid hsl(var(--foreground) / 0.08);
-      box-shadow: 1px 0 0 0 hsl(var(--background) / 0.2);
-    }
-    .glass-border {
-      position: relative;
-    }
-    .glass-border::before {
-      content: "";
-      position: absolute;
-      inset: 0;
-      border-radius: inherit;
-      padding: 1px;
-      background: linear-gradient(135deg, hsl(var(--foreground) / 0.15), hsl(var(--foreground) / 0.02) 50%, hsl(var(--foreground) / 0.05));
-      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-      -webkit-mask-composite: xor;
-      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-      mask-composite: exclude;
-      pointer-events: none;
-    }
-    .glass-reflection {
-      position: relative;
-      overflow: hidden;
-    }
-    .glass-reflection::after {
-      content: "";
-      position: absolute;
-      top: -50%;
-      left: -50%;
-      width: 200%;
-      height: 200%;
-      background: radial-gradient(circle at 30% 30%, hsl(var(--foreground) / 0.05) 0%, transparent 60%);
-      pointer-events: none;
-    }
-    .shadow-studio {
-      box-shadow:
-        0 0 0 1px hsl(var(--foreground) / 0.03),
-        0 8px 18px -10px rgba(0, 0, 0, 0.18);
-    }
-    .glass-card {
-      background-color: hsl(var(--card) / 0.94);
-      backdrop-filter: blur(8px) saturate(120%);
-      -webkit-backdrop-filter: blur(8px) saturate(120%);
-      border: 1px solid hsl(var(--border) / 0.9);
-      box-shadow:
-        0 0 0 1px hsl(var(--foreground) / 0.02),
-        0 8px 18px -12px rgba(0, 0, 0, 0.18);
-    }
-    .dark .glass-card {
-      background-color: hsl(var(--card) / 0.92);
-      border: 1px solid hsl(var(--border) / 0.85);
-      box-shadow:
-        0 0 0 1px hsl(var(--foreground) / 0.04),
-        0 10px 22px -14px rgba(0, 0, 0, 0.55);
-    }
-    .glass-card-hover {
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    .glass-card-hover:hover {
-      background-color: hsl(var(--background) / 0.9);
-      border-color: hsl(var(--foreground) / 0.2);
-      transform: translateY(-4px);
-      box-shadow:
-        0 20px 25px -5px rgba(0, 0, 0, 0.1),
-        0 10px 10px -5px rgba(0, 0, 0, 0.04);
-    }
-    .dark .glass-card-hover:hover {
-      background-color: hsl(var(--foreground) / 0.08);
-      border-color: hsl(var(--foreground) / 0.2);
-      box-shadow:
-        0 0 0 1px hsl(var(--foreground) / 0.1),
-        0 20px 25px -5px rgba(0, 0, 0, 0.5),
-        0 40px 60px -15px rgba(0, 0, 0, 0.7);
-    }
+@layer utilities {
+  .bg-mesh {
+    background-color: hsl(var(--background));
+    background-image:
+      radial-gradient(at 0% 0%, hsl(var(--primary) / 0.08) 0px, transparent 50%),
+      radial-gradient(at 100% 0%, hsl(var(--primary) / 0.05) 0px, transparent 50%),
+      radial-gradient(at 50% 100%, hsl(var(--primary) / 0.03) 0px, transparent 50%),
+      url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.015'/%3E%3C/svg%3E");
   }
+  .bg-grid {
+    background-size: 40px 40px;
+    background-image:
+      linear-gradient(to right, hsl(var(--foreground) / 0.03) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--foreground) / 0.03) 1px, transparent 1px);
+  }
+  .bg-radial-vignette {
+    background: radial-gradient(circle at center, transparent 0%, hsl(var(--background) / 0.4) 100%);
+  }
+  .etched-border-b {
+    border-bottom: 1px solid hsl(var(--foreground) / 0.08);
+    box-shadow: 0 1px 0 0 hsl(var(--background) / 0.2);
+  }
+  .etched-border-r {
+    border-right: 1px solid hsl(var(--foreground) / 0.08);
+    box-shadow: 1px 0 0 0 hsl(var(--background) / 0.2);
+  }
+  .etched-border-t {
+    border-top: 1px solid hsl(var(--foreground) / 0.08);
+    box-shadow: 0 -1px 0 0 hsl(var(--background) / 0.2);
+  }
+  .glass-reflection {
+    position: relative;
+    overflow: hidden;
+  }
+  .glass-reflection::after {
+    content: "";
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(circle at 30% 30%, hsl(var(--foreground) / 0.05) 0%, transparent 60%);
+    pointer-events: none;
+  }
+  .shadow-studio {
+    box-shadow:
+      0 0 0 1px hsl(var(--foreground) / 0.03),
+      0 8px 18px -10px rgba(0, 0, 0, 0.18);
+  }
+  .glass-card {
+    background-color: hsl(var(--card) / 0.94);
+    backdrop-filter: blur(8px) saturate(120%);
+    -webkit-backdrop-filter: blur(8px) saturate(120%);
+    border: 1px solid hsl(var(--border) / 0.9);
+    box-shadow:
+      0 0 0 1px hsl(var(--foreground) / 0.02),
+      0 8px 18px -12px rgba(0, 0, 0, 0.18);
+  }
+  .dark .glass-card {
+    background-color: hsl(var(--card) / 0.92);
+    border: 1px solid hsl(var(--border) / 0.85);
+    box-shadow:
+      0 0 0 1px hsl(var(--foreground) / 0.04),
+      0 10px 22px -14px rgba(0, 0, 0, 0.55);
+  }
+  .glass-card-hover {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .glass-card-hover:hover {
+    background-color: hsl(var(--background) / 0.9);
+    border-color: hsl(var(--foreground) / 0.2);
+    transform: translateY(-4px);
+    box-shadow:
+      0 20px 25px -5px rgba(0, 0, 0, 0.1),
+      0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  }
+  .dark .glass-card-hover:hover {
+    background-color: hsl(var(--foreground) / 0.08);
+    border-color: hsl(var(--foreground) / 0.2);
+    box-shadow:
+      0 0 0 1px hsl(var(--foreground) / 0.1),
+      0 20px 25px -5px rgba(0, 0, 0, 0.5),
+      0 40px 60px -15px rgba(0, 0, 0, 0.7);
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
 
+@layer base {
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
@@ -169,6 +181,10 @@
     box-sizing: border-box;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.25);
   }
 
   html,
@@ -277,22 +293,13 @@
 
   textarea {
     color-scheme: light dark;
+    color: hsl(var(--foreground));
+    caret-color: hsl(var(--foreground));
   }
 
   textarea::placeholder {
-    color: rgb(156 163 175);
+    color: hsl(var(--muted-foreground));
     opacity: 1;
-  }
-
-  .dark textarea,
-  .dark textarea:focus {
-    color: rgb(243 244 246);
-    -webkit-text-fill-color: rgb(243 244 246);
-    caret-color: rgb(243 244 246);
-  }
-
-  .dark textarea::placeholder {
-    color: rgb(75 85 99);
   }
 
   .cm-editor {
@@ -374,27 +381,31 @@
     color: hsl(var(--foreground));
   }
 
+  /* 子串选择器保留：badge.tsx 用了 focus:ring-offset-2 但未声明 ring-offset 颜色类，
+     收窄到 button 会让 badge 在深色下回退到默认白色 offset。 */
   .dark [class*="ring-offset"],
-  .dark button:focus {
-    --tw-ring-offset-color: rgb(31 41 55);
+  .dark button:focus-visible {
+    --tw-ring-offset-color: hsl(var(--background));
   }
 
+  /* data-URI SVG 无法跟随主题变量，改用 linear-gradient 画 v 形箭头，
+     颜色取 --muted-foreground，深浅色/主题包自适应，无需 .dark 覆盖。 */
   select {
-    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236B7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+    background-image:
+      linear-gradient(45deg, transparent 50%, hsl(var(--muted-foreground)) 50%),
+      linear-gradient(135deg, hsl(var(--muted-foreground)) 50%, transparent 50%);
     background-repeat: no-repeat;
-    background-position: right 0.5rem center;
-    background-size: 1.5em 1.5em;
+    background-position:
+      calc(100% - 18px) 50%,
+      calc(100% - 13px) 50%;
+    background-size: 5px 5px, 5px 5px;
     padding-right: 2.5rem;
     appearance: none;
   }
 
-  .dark select {
-    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239CA3AF' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
-  }
-
   :where(html[data-platform="windows"], html[data-platform="linux"], html[data-platform="unknown"]) * {
     scrollbar-width: thin;
-    scrollbar-color: hsl(var(--border)) transparent;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
   }
 
   :where(html[data-platform="windows"], html[data-platform="linux"], html[data-platform="unknown"]) ::-webkit-scrollbar {
@@ -407,7 +418,7 @@
   }
 
   :where(html[data-platform="windows"], html[data-platform="linux"], html[data-platform="unknown"]) ::-webkit-scrollbar-thumb {
-    background-color: hsl(var(--border));
+    background-color: hsl(var(--muted-foreground) / 0.3);
     border-radius: 9999px;
     border: 1px solid transparent;
     background-clip: padding-box;
@@ -421,8 +432,11 @@
     color-scheme: dark;
   }
 
-  /* Mobile & Small Viewport Refinements */
-  @media (max-width: 768px) {
+  /* Mobile & Small Viewport Refinements
+     仅触屏设备生效：mobile-app 是独立构建（mobile-app/styles.css），不吃这份 CSS；
+     桌面端的唯一消费者是窄窗口（float 可缩到 480px 宽、selector 在小屏上、主窗口被拖窄），
+     不加 pointer: coarse 会误伤这些桌面窄窗口。 */
+  @media (max-width: 768px) and (pointer: coarse) {
     :root {
       --radius: 1rem;
       --radius-lg: 1.25rem;
@@ -484,18 +498,10 @@
     html[data-theme-pack="botanical"] aside {
       background-color: hsl(var(--card)) !important;
     }
-
-    .no-scrollbar::-webkit-scrollbar {
-      display: none;
-    }
-    .no-scrollbar {
-      -ms-overflow-style: none;
-      scrollbar-width: none;
-    }
   }
 
   /* 针对超小屏幕的微调 */
-  @media (max-width: 480px) {
+  @media (max-width: 480px) and (pointer: coarse) {
     :root {
       --radius: 0.875rem;
     }
@@ -514,7 +520,7 @@
   }
 
   html[data-theme-pack="acme-mono"] body {
-    font-family: "Geist", "Geist Sans", "Inter", system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-family: "Geist Sans", "Inter", system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
     letter-spacing: -0.005em;
     font-feature-settings: "cv11", "ss01";
   }
@@ -538,24 +544,11 @@
   }
 
   /* ── Botanical Theme Pack ────────────────────────────────────────────────── */
+  /* 颜色变量由 applyTheme.ts 以 themePacks.ts 的 botanicalLight 内联注入到 <html>，
+     此处曾重复定义且值已漂移（如 --primary 此处 142 45% 25% vs 注入的 120 26% 24%），
+     属双源死代码，已删除。--radius-* 不在注入范围（APP_CSS_VARIABLES 无 radius），
+     这份仍是唯一来源，保留。 */
   html[data-theme-pack="botanical"] {
-    --background: 80 30% 98%; /* 柔和纸白 */
-    --foreground: 120 20% 15%; /* 深苔绿文字 */
-    --card: 80 30% 96%;
-    --card-foreground: 120 20% 15%;
-    --popover: 80 30% 96%;
-    --popover-foreground: 120 20% 15%;
-    --primary: 142 45% 25%; /* 苔藓绿 */
-    --primary-foreground: 80 30% 98%;
-    --secondary: 40 30% 92%; /* 土褐淡色 */
-    --secondary-foreground: 120 20% 15%;
-    --muted: 40 10% 94%;
-    --muted-foreground: 120 10% 40%;
-    --accent: 195 60% 45%; /* 天光蓝 */
-    --accent-foreground: 80 30% 98%;
-    --border: 120 15% 88%;
-    --input: 120 15% 88%;
-    --ring: 142 45% 25%;
     --radius: 1.5rem; /* 更大的有机圆角 */
     --radius-md: 1rem;
     --radius-sm: 0.75rem;
@@ -604,8 +597,7 @@
     box-shadow: none !important;
   }
 
-  html[data-theme-pack="botanical"] button,
-  html[data-theme-pack="botanical"] .rounded-\[var\(--radius\)\] {
+  html[data-theme-pack="botanical"] button {
     border-radius: var(--radius) !important;
   }
 

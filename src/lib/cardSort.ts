@@ -52,6 +52,11 @@ function isLive(card: CardActivitySortFields): boolean {
   return isDesktopCardLive(card.status);
 }
 
+/** Priority bucket used to keep equally active cards stable during output. */
+export function cardActivityPriority(card: CardActivitySortFields): number {
+  return Number(isLive(card)) * 2 + Number(Boolean(card.unread));
+}
+
 /**
  * Comparator implementing the "activity first" ordering. Stable for equal
  * cards (returns 0), so `Array.prototype.sort` preserves their relative order.
@@ -60,11 +65,8 @@ export function compareCardsByActivity(
   a: CardActivitySortFields,
   b: CardActivitySortFields,
 ): number {
-  const liveDelta = Number(isLive(b)) - Number(isLive(a));
-  if (liveDelta !== 0) return liveDelta;
-
-  const unreadDelta = Number(Boolean(b.unread)) - Number(Boolean(a.unread));
-  if (unreadDelta !== 0) return unreadDelta;
+  const priorityDelta = cardActivityPriority(b) - cardActivityPriority(a);
+  if (priorityDelta !== 0) return priorityDelta;
 
   const recencyA = a.lastActivity ?? a.createdAt ?? 0;
   const recencyB = b.lastActivity ?? b.createdAt ?? 0;

@@ -9,7 +9,7 @@
  * smooth expand/collapse transition courtesy of Framer Motion.
  *
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Archive,
   ArrowLeft,
@@ -27,10 +27,11 @@ import { getStatusMeta } from './statusMeta';
 import { getTerminalTypeMeta } from './terminalTypeMeta';
 import {
   AI_CLI_SESSION_BADGE_CLASS,
-  buildTerminalLaunchCommand,
   getAiCliSessionBadge,
 } from './providerSession';
 import { useProviderSessionLifecycle } from './useProviderSessionLifecycle';
+import { useValidatedProviderSessionLaunch } from './useValidatedProviderSessionLaunch';
+import { ProviderSessionLaunchPlaceholder } from './ProviderSessionLaunchPlaceholder';
 import { AiIntentSelect } from './AiIntentSelect';
 import { AutoRestartControls } from './AutoRestartControls';
 import { AutoRestartStatus } from './AutoRestartStatus';
@@ -42,23 +43,41 @@ interface TerminalViewProps {
   card: TerminalCard;
   active?: boolean;
   onBack: () => void;
+  onRemoveCard: (cardId: string) => Promise<boolean>;
+  onArchiveCard: (cardId: string) => Promise<boolean>;
 }
 
-export function TerminalView({
+function defaultCodexViewMode(
+  terminalType: TerminalCard['terminalType'],
+  providerSessionState: TerminalCard['providerSessionState'],
+  providerSessionId: TerminalCard['providerSessionId'],
+): 'chat' | 'terminal' {
+  if (terminalType !== 'codex') return 'terminal';
+  return providerSessionState === 'bound' && providerSessionId
+    ? 'terminal'
+    : 'chat';
+}
+
+export const TerminalView = memo(function TerminalView({
   card,
   active = true,
   onBack,
+  onRemoveCard,
+  onArchiveCard,
 }: TerminalViewProps) {
   const { t } = useTranslation('terminal');
-  const removeCard = useTerminalStore((s) => s.removeCard);
-  const archiveCard = useTerminalStore((s) => s.archiveCard);
   const recordUserSubmit = useTerminalStore((s) => s.recordUserSubmit);
   const markCardRead = useTerminalStore((s) => s.markCardRead);
   const setCardAutoRestartEnabled = useTerminalStore((s) => s.setCardAutoRestartEnabled);
   const setCardAutoRestartMaxRetries = useTerminalStore((s) => s.setCardAutoRestartMaxRetries);
 
+  const preferredCodexViewMode = defaultCodexViewMode(
+    card.terminalType,
+    card.providerSessionState,
+    card.providerSessionId,
+  );
   const [codexViewMode, setCodexViewMode] = useState<'chat' | 'terminal'>(
-    card.terminalType === 'codex' ? 'chat' : 'terminal',
+    preferredCodexViewMode,
   );
 
   // Note: no PTY guard is needed even when the float window also hosts
@@ -87,16 +106,25 @@ export function TerminalView({
 
   // Treat the card's optional `command` as an initial command to execute
   // in the PTY right after spawn.
-  const launch = useMemo(
-    () => buildTerminalLaunchCommand(card, typeMeta.defaultCommand),
-    [card, typeMeta.defaultCommand],
+  const {
+    lifecycleCard,
+    launch,
+    status: providerSessionLaunchStatus,
+    retry: retryProviderSessionLaunch,
+  } = useValidatedProviderSessionLaunch(
+    card,
+    typeMeta.defaultCommand,
   );
-  const initialCommand = launch.command;
-  const onProviderInitialCommandSent = useProviderSessionLifecycle(card, launch, active);
+  const initialCommand = launch?.command;
+  const onProviderInitialCommandSent = useProviderSessionLifecycle(
+    lifecycleCard,
+    launch,
+    active,
+  );
 
   useEffect(() => {
-    setCodexViewMode(card.terminalType === 'codex' ? 'chat' : 'terminal');
-  }, [card.id, card.terminalType]);
+    setCodexViewMode(preferredCodexViewMode);
+  }, [card.id, preferredCodexViewMode]);
 
   const recordSubmit = useCallback(() => {
     recordUserSubmit(card.id, t('view.sentInput'));
@@ -127,39 +155,41 @@ export function TerminalView({
     }
   }, [active, card.id, card.unread, markCardRead]);
 
-  const handleClose = () => {
-    removeCard(card.id);
-    onBack();
+  const handleClose = async () => {
+    if (await onRemoveCard(card.id)) {
+      onBack();
+    }
   };
-  const handleArchive = () => {
-    archiveCard(card.id);
-    onBack();
+  const handleArchive = async () => {
+    if (await onArchiveCard(card.id)) {
+      onBack();
+    }
   };
 
   return (
     <div className="flex h-full w-full flex-col bg-background">
       {/* Header */}
-      <div className="flex h-[61.5px] shrink-0 items-center justify-between gap-2 border-b border-white/10 px-2 py-2 sm:gap-3 sm:px-3">
+      <div className="flex h-15 shrink-0 items-center justify-between gap-2 border-b border-border px-2 py-2 sm:gap-3 sm:px-3">
         <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
           <button
             type="button"
             onClick={onBack}
             title={t('view.backToGrid')}
-            className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground shrink-0"
+            className="rounded-md p-1.5 hover:bg-accent hover:text-accent-foreground shrink-0"
           >
             <ArrowLeft className="h-4 w-4" />
           </button>
-          <div className={`flex h-8 w-8 items-center justify-center rounded-[var(--radius-md)] bg-muted shrink-0 ${typeMeta.accent}`}>
+          <div className={`flex h-8 w-8 items-center justify-center rounded-md bg-muted shrink-0 ${typeMeta.accent}`}>
             <TypeIcon className="h-4 w-4" />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <span className="truncate text-sm font-semibold">{card.projectName}</span>
-              <span className="shrink-0 whitespace-nowrap text-[9px] sm:text-[10px] text-muted-foreground opacity-70">
+              <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground opacity-70">
                 · {t(`types.${card.terminalType}`, typeMeta.label)}
               </span>
             </div>
-            <div className="truncate text-[9px] sm:text-[10px] text-muted-foreground opacity-60" title={card.projectPath}>
+            <div className="truncate text-[11px] text-muted-foreground opacity-60" title={card.projectPath}>
               {card.worktreePath ? t('view.worktree', { path: card.worktreePath }) : card.projectPath}
             </div>
           </div>
@@ -178,7 +208,7 @@ export function TerminalView({
                 defaultValue: aiSessionBadge.fallbackDescription,
               })}
               className={[
-                'hidden max-w-[190px] items-center rounded-full border px-2 py-0.5 text-[10px] font-medium leading-none sm:inline-flex',
+                'hidden max-w-[190px] items-center rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none sm:inline-flex',
                 AI_CLI_SESSION_BADGE_CLASS[aiSessionBadge.tone],
               ].join(' ')}
             >
@@ -202,13 +232,13 @@ export function TerminalView({
           />
           <AutoRestartStatus card={card} compact />
           {isCodexCard && (
-            <div className="flex shrink-0 rounded-[var(--radius-md)] border border-white/10 bg-muted/30 p-0.5">
+            <div className="flex shrink-0 rounded-md border border-border bg-muted/30 p-0.5">
               <button
                 type="button"
                 onClick={() => setCodexViewMode('chat')}
                 title={t('codexChat.chatMode', { defaultValue: 'Chat mode' })}
                 className={[
-                  'inline-flex h-7 items-center gap-1 rounded-[calc(var(--radius-md)-2px)] px-2 text-[11px]',
+                  'inline-flex h-7 items-center gap-1 rounded-sm px-2 text-[11px]',
                   codexViewMode === 'chat'
                     ? 'bg-primary text-primary-foreground'
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
@@ -224,7 +254,7 @@ export function TerminalView({
                 onClick={() => setCodexViewMode('terminal')}
                 title={t('codexChat.terminalMode', { defaultValue: 'Terminal mode' })}
                 className={[
-                  'inline-flex h-7 items-center gap-1 rounded-[calc(var(--radius-md)-2px)] px-2 text-[11px]',
+                  'inline-flex h-7 items-center gap-1 rounded-sm px-2 text-[11px]',
                   codexViewMode === 'terminal'
                     ? 'bg-primary text-primary-foreground'
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
@@ -238,7 +268,7 @@ export function TerminalView({
             </div>
           )}
           <span
-            className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] sm:text-[10px] font-medium ${statusInfo.chip}`}
+            className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${statusInfo.chip}`}
           >
             <StatusIcon className={`h-2.5 w-2.5 sm:h-3 sm:w-3 ${statusInfo.animate ? 'animate-spin' : ''}`} />
             <span className="hidden xs:inline">{t(`status.${card.status}`, statusInfo.label)}</span>
@@ -247,23 +277,23 @@ export function TerminalView({
           <div className="group relative">
             <button
               type="button"
-              className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
+              className="rounded-md p-1.5 hover:bg-accent hover:text-accent-foreground"
               title={t('view.more')}
             >
               <MoreVertical className="h-4 w-4" />
             </button>
-            <div className="absolute right-0 top-full z-10 mt-1 hidden w-44 rounded-[var(--radius-md)] border border-white/10 bg-popover p-1 text-sm shadow-lg group-hover:block">
+            <div className="absolute right-0 top-full z-10 mt-1 hidden w-44 rounded-md border border-border bg-popover p-1 text-sm shadow-lg group-hover:block">
               <button
                 type="button"
                 onClick={handleArchive}
-                className="flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
               >
                 <Archive className="h-3.5 w-3.5" /> {t('view.archiveTerminal')}
               </button>
               <button
                 type="button"
                 onClick={handleClose}
-                className="flex w-full items-center gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-left text-destructive hover:bg-destructive/10"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-destructive hover:bg-destructive/10"
               >
                 <Trash2 className="h-3.5 w-3.5" /> {t('view.closeTerminal')}
               </button>
@@ -273,7 +303,7 @@ export function TerminalView({
             type="button"
             onClick={onBack}
             title={t('view.close')}
-            className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
+            className="rounded-md p-1.5 hover:bg-accent hover:text-accent-foreground"
           >
             <X className="h-4 w-4" />
           </button>
@@ -291,27 +321,33 @@ export function TerminalView({
             id={`terminal-shell-${card.id}`}
             className="relative min-h-0 flex-1 bg-[var(--terminal-background)]"
           >
-            <Shell
-              selectedProject={selectedProject}
-              initialCommand={initialCommand}
-              minimal={true}
-              autoConnect={true}
-              paneId={paneId}
-              active={active}
-              preservePtyOnUnmount={true}
-              replayRecentOutput={true}
-              suppressInitialCommandWhenPtyExists={true}
-              autoReconnectOnExit={false}
-              onInitialCommandSent={handleInitialCommandSent}
-              onUserSubmit={recordSubmit}
-              onDisconnect={undefined}
-            />
+            {launch ? (
+              <Shell
+                selectedProject={selectedProject}
+                initialCommand={initialCommand}
+                minimal={true}
+                autoConnect={true}
+                paneId={paneId}
+                active={active}
+                preservePtyOnUnmount={true}
+                suppressInitialCommandWhenPtyExists={true}
+                autoReconnectOnExit={false}
+                onInitialCommandSent={handleInitialCommandSent}
+                onUserSubmit={recordSubmit}
+                onDisconnect={undefined}
+              />
+            ) : (
+              <ProviderSessionLaunchPlaceholder
+                status={providerSessionLaunchStatus}
+                onRetry={retryProviderSessionLaunch}
+              />
+            )}
           </div>
         )}
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between border-t border-white/10 px-3 py-1 text-[10px] text-muted-foreground">
+      <div className="flex items-center justify-between border-t border-border px-3 py-1 text-[11px] text-muted-foreground">
         <span>
           id:&nbsp;<span className="font-mono">{card.id.slice(0, 10)}</span>
         </span>
@@ -324,4 +360,4 @@ export function TerminalView({
       </div>
     </div>
   );
-}
+});

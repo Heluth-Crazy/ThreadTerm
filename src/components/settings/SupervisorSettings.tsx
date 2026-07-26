@@ -15,6 +15,7 @@ import { useTranslation } from 'react-i18next';
 import { Activity, RefreshCw, ShieldAlert } from 'lucide-react';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { useSupervisorStore } from '../../lib/supervisor/supervisorStore';
+import { SettingsSection } from './SettingsSection';
 
 export function SupervisorSettings() {
   const { t } = useTranslation('settings');
@@ -26,7 +27,7 @@ export function SupervisorSettings() {
   const resetTelemetry = useSupervisorStore((s) => s.resetTelemetry);
 
   return (
-    <section className="rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
+    <SettingsSection>
       <div className="flex items-center gap-2">
         <ShieldAlert className="h-4 w-4 text-muted-foreground" />
         <h3 className="text-base font-semibold text-foreground">
@@ -40,7 +41,7 @@ export function SupervisorSettings() {
       </p>
 
       {/* Master switch toggle */}
-      <div className="mt-4 flex items-center justify-between rounded-[var(--radius)] border border-white/10 bg-background/70 p-3">
+      <div className="mt-4 flex items-center justify-between rounded-lg border border-border bg-background/70 p-3">
         <div className="min-w-0">
           <div className="text-sm font-medium text-foreground">
             {t('supervisorSettings.enableLabel', { defaultValue: 'Enable supervisor' })}
@@ -68,7 +69,7 @@ export function SupervisorSettings() {
       </div>
 
       {/* How it works */}
-      <div className="mt-3 rounded-[var(--radius)] border border-white/10 bg-background/70 p-3">
+      <div className="mt-3 rounded-lg border border-border bg-background/70 p-3">
         <div className="text-sm font-medium text-foreground">
           {t('supervisorSettings.howItWorksTitle', { defaultValue: 'How it works' })}
         </div>
@@ -81,7 +82,7 @@ export function SupervisorSettings() {
       </div>
 
       {/* Telemetry panel (PRD D11) */}
-      <div className="mt-3 rounded-[var(--radius)] border border-white/10 bg-background/70 p-3">
+      <div className="mt-3 rounded-lg border border-border bg-background/70 p-3">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
             <Activity className="h-4 w-4 text-muted-foreground" />
@@ -93,7 +94,7 @@ export function SupervisorSettings() {
             type="button"
             data-testid="supervisor-telemetry-reset"
             onClick={() => resetTelemetry()}
-            className="inline-flex items-center gap-1 rounded-[var(--radius-md)] border border-white/10 bg-background px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             <RefreshCw className="h-3 w-3" />
             {t('supervisorSettings.telemetryReset', { defaultValue: 'Reset stats' })}
@@ -119,7 +120,7 @@ export function SupervisorSettings() {
           />
         </div>
       </div>
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -131,7 +132,7 @@ interface TelemetryCardProps {
 
 function TelemetryCard({ testId, label, value }: TelemetryCardProps) {
   return (
-    <div className="flex flex-col items-center justify-center rounded-[var(--radius-md)] border border-white/10 bg-white/5 backdrop-blur-md/60 p-2 text-center">
+    <div className="flex flex-col items-center justify-center rounded-md border border-border bg-card/80 backdrop-blur-md p-2 text-center">
       <span className="text-xs leading-tight text-muted-foreground">{label}</span>
       <span
         className="mt-1 text-lg font-semibold text-foreground tabular-nums"

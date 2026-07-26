@@ -1,0 +1,1732 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ThreadTerm · V4 Lite 注意力工作台</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080b12;
+      --panel: #0e131d;
+      --panel-2: #111824;
+      --panel-3: #151d2a;
+      --line: rgba(226, 232, 240, .09);
+      --line-strong: rgba(226, 232, 240, .16);
+      --fg: #e5edf7;
+      --muted: #8491a4;
+      --faint: #586477;
+      --teal: #37d6c2;
+      --teal-dim: rgba(55, 214, 194, .11);
+      --blue: #60a5fa;
+      --blue-dim: rgba(96, 165, 250, .11);
+      --amber: #f59e0b;
+      --amber-dim: rgba(245, 158, 11, .11);
+      --red: #ef4444;
+      --red-dim: rgba(239, 68, 68, .11);
+      --green: #22c55e;
+      --green-dim: rgba(34, 197, 94, .11);
+      --violet: #a78bfa;
+      --radius: 9px;
+      --sidebar: 232px;
+      font-family: Inter, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+    button, input, select { font: inherit; }
+    button { color: inherit; }
+    code, pre, .mono { font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; }
+    ::selection { background: rgba(55, 214, 194, .25); }
+
+    .app {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      background:
+        radial-gradient(circle at 12% -10%, rgba(55, 214, 194, .045), transparent 36%),
+        var(--bg);
+    }
+
+    .sidebar {
+      width: var(--sidebar);
+      min-width: var(--sidebar);
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--line);
+      background: rgba(8, 11, 18, .9);
+    }
+
+    .brand {
+      height: 52px;
+      padding: 0 14px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .brand-mark {
+      width: 23px;
+      height: 23px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(55, 214, 194, .35);
+      border-radius: 7px;
+      color: var(--teal);
+      background: var(--teal-dim);
+      flex: 0 0 auto;
+    }
+
+    .sidebar-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 10px 8px;
+    }
+
+    .nav-item, .project-item {
+      width: 100%;
+      min-height: 34px;
+      padding: 0 9px;
+      border: 0;
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      text-align: left;
+      font-size: 12px;
+    }
+
+    .nav-item:hover, .project-item:hover { color: var(--fg); background: rgba(226, 232, 240, .045); }
+    .nav-item.active, .project-item.active { color: var(--fg); background: rgba(226, 232, 240, .085); }
+    .nav-item.nav-create {
+      margin-top: 5px;
+      border: 1px solid rgba(55, 214, 194, .25);
+      color: var(--teal);
+      background: var(--teal-dim);
+    }
+    .nav-item.nav-create:hover { border-color: rgba(55, 214, 194, .45); background: rgba(55, 214, 194, .16); }
+    .nav-icon { width: 16px; display: grid; place-items: center; flex: 0 0 auto; }
+    .nav-label, .project-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .nav-count {
+      margin-left: auto;
+      min-width: 20px;
+      height: 18px;
+      padding: 0 6px;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      color: var(--amber);
+      background: var(--amber-dim);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .section-label {
+      padding: 17px 9px 7px;
+      color: var(--faint);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .project-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
+    .project-dot.wait { background: var(--amber); }
+    .project-dot.run { background: var(--green); }
+    .project-dot.done { background: var(--blue); }
+    .project-meta { margin-left: auto; color: var(--faint); font-size: 10px; }
+
+    .sidebar-footer {
+      padding: 10px 10px 12px;
+      border-top: 1px solid var(--line);
+    }
+
+    .cost-line {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 9px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .cost-line b { color: var(--fg); font-size: 11px; }
+    .rule-button {
+      width: 100%;
+      height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: rgba(226, 232, 240, .035);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .rule-button:hover { color: var(--fg); border-color: var(--line-strong); }
+
+    .surface { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .topbar {
+      height: 52px;
+      padding: 0 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(8, 11, 18, .82);
+      flex: 0 0 auto;
+    }
+
+    .top-title { font-size: 13px; font-weight: 700; white-space: nowrap; }
+    .scope-chip {
+      height: 26px;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(226, 232, 240, .035);
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .top-divider { width: 1px; height: 19px; background: var(--line); }
+    .top-stats { color: var(--faint); font-size: 11px; white-space: nowrap; }
+    .top-stats b { color: var(--fg); }
+    .top-spacer { flex: 1; }
+
+    .searchbox {
+      width: min(310px, 28vw);
+      height: 32px;
+      padding: 0 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(15, 19, 28, .75);
+      color: var(--muted);
+    }
+    .searchbox:focus-within { border-color: rgba(55, 214, 194, .38); }
+    .searchbox input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--fg); font-size: 11px; }
+    .searchbox input::placeholder { color: var(--faint); }
+
+    .toolbar-button {
+      height: 30px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: rgba(226, 232, 240, .035);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .toolbar-button:hover { color: var(--fg); border-color: var(--line-strong); }
+    .toolbar-button.primary { border-color: rgba(55, 214, 194, .32); color: #06251f; background: var(--teal); font-weight: 700; }
+
+    .workbench { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px 28px; }
+    .workbench::-webkit-scrollbar, .drawer-body::-webkit-scrollbar { width: 7px; }
+    .workbench::-webkit-scrollbar-thumb, .drawer-body::-webkit-scrollbar-thumb { background: rgba(226, 232, 240, .11); border-radius: 4px; }
+    .workbench-inner { width: 100%; max-width: 1180px; margin: 0 auto; }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 9px;
+      margin-bottom: 16px;
+    }
+
+    .summary-card {
+      min-height: 65px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-rows: auto auto;
+      align-items: center;
+      gap: 1px 8px;
+      background: rgba(14, 19, 29, .72);
+      cursor: pointer;
+      text-align: left;
+    }
+    .summary-card:hover { border-color: var(--line-strong); background: rgba(17, 24, 36, .85); }
+    .summary-label { color: var(--muted); font-size: 11px; }
+    .summary-value { grid-row: 1 / 3; grid-column: 2; font-size: 24px; font-weight: 720; line-height: 1; }
+    .summary-note { color: var(--faint); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .summary-card.attention .summary-value { color: var(--amber); }
+    .summary-card.running .summary-value { color: var(--green); }
+    .summary-card.review .summary-value { color: var(--blue); }
+    .summary-card.failed .summary-value { color: var(--red); }
+
+    .section-head {
+      min-height: 30px;
+      margin-bottom: 7px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+    .section-head h2 { margin: 0; font-size: 13px; font-weight: 700; }
+    .section-hint { color: var(--faint); font-size: 10px; }
+    .section-spacer { flex: 1; }
+
+    .filter-chips { display: flex; align-items: center; gap: 5px; }
+    .filter-chip {
+      height: 24px;
+      padding: 0 8px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 10px;
+    }
+    .filter-chip:hover { color: var(--fg); background: rgba(226, 232, 240, .04); }
+    .filter-chip.active { color: var(--fg); border-color: var(--line); background: rgba(226, 232, 240, .07); }
+
+    .attention-list {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      margin-bottom: 17px;
+    }
+
+    .attention-row {
+      min-height: 74px;
+      padding: 9px 11px;
+      border: 1px solid var(--line);
+      border-left: 2px solid var(--amber);
+      border-radius: var(--radius);
+      display: grid;
+      grid-template-columns: 32px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 11px;
+      background: rgba(14, 19, 29, .8);
+      transition: border-color .15s, background .15s, opacity .2s, transform .2s;
+    }
+    .attention-row:hover { border-color: var(--line-strong); border-left-color: var(--amber); background: rgba(17, 24, 36, .9); }
+    .attention-row[data-type="failed"] { border-left-color: var(--red); }
+    .attention-row[data-type="review"] { border-left-color: var(--blue); }
+    .attention-row.hidden { display: none; }
+    .attention-row.resolving { opacity: .45; transform: translateX(8px); pointer-events: none; }
+
+    .attention-icon {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      color: var(--amber);
+      background: var(--amber-dim);
+      font-size: 14px;
+      font-weight: 800;
+    }
+    [data-type="failed"] .attention-icon { color: var(--red); background: var(--red-dim); }
+    [data-type="review"] .attention-icon { color: var(--blue); background: var(--blue-dim); }
+
+    .attention-main { min-width: 0; }
+    .attention-meta {
+      margin-bottom: 3px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      color: var(--faint);
+      font-size: 10px;
+    }
+    .type-chip {
+      padding: 1px 6px;
+      border-radius: 6px;
+      color: var(--amber);
+      background: var(--amber-dim);
+      font-weight: 700;
+    }
+    [data-type="failed"] .type-chip { color: var(--red); background: var(--red-dim); }
+    [data-type="review"] .type-chip { color: var(--blue); background: var(--blue-dim); }
+    .agent-chip { color: var(--fg); }
+    .attention-project { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .attention-title { margin-bottom: 3px; overflow: hidden; color: var(--fg); font-size: 12px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
+    .attention-detail { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .attention-detail code { color: #abb8c9; font-size: 10px; }
+
+    .attention-side {
+      min-width: 184px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 7px;
+    }
+    .wait-time { color: var(--faint); font-size: 10px; }
+    .row-actions { display: flex; align-items: center; gap: 6px; }
+
+    .btn {
+      height: 27px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: rgba(226, 232, 240, .045);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 10px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .btn:hover { color: var(--fg); border-color: var(--line-strong); background: rgba(226, 232, 240, .08); }
+    .btn.primary { color: var(--teal); border-color: rgba(55, 214, 194, .3); background: var(--teal-dim); }
+    .btn.primary:hover { background: rgba(55, 214, 194, .17); }
+    .btn.danger { color: var(--red); border-color: rgba(239, 68, 68, .25); background: var(--red-dim); }
+    .btn.blue { color: var(--blue); border-color: rgba(96, 165, 250, .26); background: var(--blue-dim); }
+    .btn.large { height: 31px; padding: 0 13px; font-size: 11px; }
+    .btn:disabled { opacity: .45; pointer-events: none; }
+
+    .empty-state {
+      display: none;
+      padding: 28px;
+      border: 1px dashed var(--line);
+      border-radius: var(--radius);
+      color: var(--muted);
+      text-align: center;
+      font-size: 11px;
+      margin-bottom: 17px;
+    }
+    .empty-state.show { display: block; }
+
+    .work-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .work-card {
+      min-width: 0;
+      min-height: 126px;
+      padding: 11px 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      display: flex;
+      flex-direction: column;
+      background: rgba(14, 19, 29, .7);
+      cursor: pointer;
+      transition: border-color .15s, transform .15s, background .15s;
+    }
+    .work-card:hover { border-color: var(--line-strong); transform: translateY(-1px); background: rgba(17, 24, 36, .86); }
+    .work-card.hidden { display: none; }
+    .work-top { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; min-width: 0; }
+    .work-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; }
+    .status-pill {
+      margin-left: auto;
+      padding: 2px 7px;
+      border-radius: 8px;
+      color: var(--green);
+      background: var(--green-dim);
+      font-size: 9px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .status-pill.blocked { color: var(--amber); background: var(--amber-dim); }
+    .status-pill.done { color: var(--blue); background: var(--blue-dim); }
+    .work-context { margin-bottom: 7px; color: var(--faint); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .work-last { min-height: 32px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .work-last b { color: var(--fg); font-weight: 600; }
+    .work-foot { margin-top: auto; padding-top: 8px; display: flex; align-items: center; gap: 8px; border-top: 1px solid rgba(226, 232, 240, .06); }
+    .node-stack { display: flex; align-items: center; }
+    .node {
+      width: 22px;
+      height: 22px;
+      margin-left: -4px;
+      border: 2px solid var(--panel);
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: var(--panel-3);
+      color: var(--muted);
+      font-size: 8px;
+      font-weight: 800;
+    }
+    .node:first-child { margin-left: 0; }
+    .node.claude { color: var(--amber); }
+    .node.codex { color: var(--violet); }
+    .node.shell { color: var(--blue); }
+    .work-metrics { margin-left: auto; color: var(--faint); font-size: 9px; white-space: nowrap; }
+
+    .recent-bar {
+      width: 100%;
+      height: 38px;
+      padding: 0 11px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      background: rgba(14, 19, 29, .55);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 11px;
+      text-align: left;
+    }
+    .recent-bar:hover { color: var(--fg); border-color: var(--line-strong); }
+    .recent-bar .recent-title { color: var(--fg); font-weight: 650; }
+    .recent-bar .recent-result { margin-left: auto; color: var(--green); font-size: 10px; }
+
+    .page-hidden { display: none !important; }
+    .terminal-view-head {
+      min-height: 38px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .terminal-view-head h2 { margin: 0; font-size: 13px; }
+    .terminal-view-head p { margin: 0; color: var(--faint); font-size: 10px; }
+    .terminal-view-head .section-spacer { flex: 1; }
+    .terminal-view-stats { color: var(--muted); font-size: 10px; }
+
+    .terminal-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 9px;
+    }
+
+    .terminal-card {
+      min-width: 0;
+      height: 190px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: rgba(14, 19, 29, .78);
+      transition: border-color .15s, transform .15s;
+    }
+    .terminal-card:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+    .terminal-card.hidden { display: none; }
+    .terminal-card-head {
+      height: 39px;
+      padding: 0 11px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      border-bottom: 1px solid var(--line);
+    }
+    .terminal-agent {
+      padding: 2px 6px;
+      border-radius: 5px;
+      color: var(--blue);
+      background: var(--blue-dim);
+      font-size: 9px;
+      font-weight: 700;
+    }
+    .terminal-agent.claude { color: var(--amber); background: var(--amber-dim); }
+    .terminal-agent.codex { color: var(--violet); background: rgba(167, 139, 250, .11); }
+    .terminal-agent.opencode { color: var(--teal); background: var(--teal-dim); }
+    .terminal-card-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 700; }
+    .terminal-state {
+      margin-left: auto;
+      padding: 2px 7px;
+      border-radius: 8px;
+      color: var(--green);
+      background: var(--green-dim);
+      font-size: 9px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .terminal-state.wait { color: var(--amber); background: var(--amber-dim); }
+    .terminal-state.fail { color: var(--red); background: var(--red-dim); }
+    .terminal-state.done { color: var(--blue); background: var(--blue-dim); }
+    .terminal-card-body { flex: 1; min-height: 0; padding: 10px 11px; display: flex; flex-direction: column; gap: 6px; }
+    .terminal-task { flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 650; line-height: 1.35; }
+    .terminal-preview {
+      min-height: 50px;
+      padding: 8px;
+      border-radius: 7px;
+      overflow: hidden;
+      background: #030712;
+      color: #8392a8;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 9px;
+      line-height: 1.5;
+    }
+    .terminal-preview .ok { color: var(--green); }
+    .terminal-preview .warn { color: var(--amber); }
+    .terminal-preview .fail { color: #fb7185; }
+    .terminal-metrics { flex: 0 0 auto; display: flex; gap: 5px; margin-top: auto; }
+    .terminal-metric { padding: 2px 6px; border-radius: 6px; color: var(--faint); background: rgba(226, 232, 240, .04); font-size: 9px; }
+    .terminal-card-foot {
+      height: 34px;
+      padding: 0 11px;
+      border-top: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--faint);
+      font-size: 9px;
+    }
+    .terminal-path { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .terminal-open { border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; }
+    .terminal-open:hover { color: var(--teal); }
+
+    .mask {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      background: rgba(3, 5, 9, .58);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .18s;
+    }
+    .mask.open { opacity: 1; pointer-events: auto; }
+
+    .drawer {
+      position: fixed;
+      z-index: 70;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 460px;
+      max-width: 94vw;
+      border-left: 1px solid var(--line-strong);
+      display: flex;
+      flex-direction: column;
+      background: #0b1018;
+      transform: translateX(100%);
+      transition: transform .2s ease;
+    }
+    .drawer.open { transform: translateX(0); }
+    .drawer-head { min-height: 52px; padding: 0 14px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); }
+    .drawer-heading { min-width: 0; flex: 1; }
+    .drawer-kicker { color: var(--faint); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+    .drawer-title { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; }
+    .icon-button {
+      width: 30px;
+      height: 30px;
+      border: 0;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .icon-button:hover { color: var(--fg); background: rgba(226, 232, 240, .06); }
+
+    .drawer-tabs { height: 39px; padding: 0 12px; display: flex; align-items: flex-end; gap: 2px; border-bottom: 1px solid var(--line); }
+    .drawer-tab {
+      height: 38px;
+      padding: 0 10px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 10px;
+    }
+    .drawer-tab:hover { color: var(--fg); }
+    .drawer-tab.active { color: var(--teal); border-bottom-color: var(--teal); }
+    .drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; }
+    .drawer-footer { min-height: 56px; padding: 11px 14px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 7px; }
+    .drawer-footer .footer-note { margin-right: auto; color: var(--faint); font-size: 9px; }
+
+    .detail-section { margin-bottom: 17px; }
+    .detail-section h3 { margin: 0 0 8px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+    .detail-summary { padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); font-size: 12px; line-height: 1.55; }
+    .fact-list { display: flex; flex-direction: column; gap: 1px; }
+    .fact-row { padding: 8px 0; border-bottom: 1px solid rgba(226, 232, 240, .055); display: grid; grid-template-columns: 92px 1fr; gap: 10px; font-size: 11px; line-height: 1.5; }
+    .fact-row:last-child { border-bottom: 0; }
+    .fact-key { color: var(--faint); }
+    .fact-value { color: #bac5d4; min-width: 0; overflow-wrap: anywhere; }
+    .fact-value code { color: var(--fg); font-size: 10px; }
+    .rule-hit { padding: 9px 10px; border: 1px solid rgba(245, 158, 11, .22); border-radius: 8px; background: var(--amber-dim); color: #d8bd86; font-size: 10px; line-height: 1.55; }
+
+    .timeline { position: relative; padding-left: 14px; }
+    .timeline::before { content: ""; position: absolute; left: 4px; top: 5px; bottom: 8px; width: 1px; background: var(--line); }
+    .timeline-item { position: relative; padding: 0 0 13px 11px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .timeline-item::before { content: ""; position: absolute; left: -13px; top: 5px; width: 7px; height: 7px; border: 2px solid #0b1018; border-radius: 50%; background: var(--blue); }
+    .timeline-item.warn::before { background: var(--amber); }
+    .timeline-item.fail::before { background: var(--red); }
+    .timeline-time { margin-top: 2px; color: var(--faint); font-size: 9px; }
+
+    .terminal {
+      min-height: 260px;
+      padding: 12px;
+      border: 1px solid #162238;
+      border-radius: 8px;
+      background: #030712;
+      color: #9fb0c7;
+      font-size: 10px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .terminal .prompt { color: var(--teal); }
+    .terminal .error { color: #fb7185; }
+    .terminal .ok { color: #4ade80; }
+    .terminal .muted { color: #526174; }
+
+    .diff { padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #060a11; font-size: 10px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .diff .add { color: #4ade80; }
+    .diff .del { color: #fb7185; }
+    .diff .file { color: #60a5fa; }
+
+    .rules-form { display: flex; flex-direction: column; gap: 10px; }
+    .rule-row { min-height: 54px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; display: flex; align-items: center; gap: 10px; background: var(--panel); }
+    .rule-copy { flex: 1; min-width: 0; }
+    .rule-name { margin-bottom: 3px; font-size: 11px; font-weight: 650; }
+    .rule-desc { color: var(--faint); font-size: 9px; line-height: 1.4; }
+    .switch { width: 34px; height: 19px; padding: 2px; border: 0; border-radius: 10px; background: #293242; cursor: pointer; }
+    .switch::after { content: ""; display: block; width: 15px; height: 15px; border-radius: 50%; background: #8b98aa; transition: transform .15s, background .15s; }
+    .switch.on { background: rgba(55, 214, 194, .32); }
+    .switch.on::after { transform: translateX(15px); background: var(--teal); }
+    .select-line { display: flex; align-items: center; gap: 7px; }
+    .select-line select { height: 27px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-3); color: var(--fg); font-size: 10px; outline: 0; }
+
+    .toast {
+      position: fixed;
+      z-index: 100;
+      right: 18px;
+      bottom: 18px;
+      max-width: min(390px, 88vw);
+      padding: 10px 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: #151c28;
+      box-shadow: 0 18px 45px rgba(0, 0, 0, .35);
+      color: var(--fg);
+      font-size: 11px;
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+      transition: opacity .18s, transform .18s;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.success { border-color: rgba(34, 197, 94, .3); }
+    .toast.warn { border-color: rgba(245, 158, 11, .35); }
+
+    body.comfortable .attention-row { min-height: 88px; padding-block: 13px; }
+    body.comfortable .work-card { min-height: 144px; padding: 14px; }
+    body.comfortable .summary-card { min-height: 74px; }
+
+    :where(button, input, select, [tabindex]):focus-visible { outline: 1px solid rgba(55, 214, 194, .6); outline-offset: 2px; }
+
+    @media (max-width: 1120px) {
+      :root { --sidebar: 68px; }
+      .brand { justify-content: center; padding: 0; }
+      .brand-text, .nav-label, .project-label, .project-meta, .section-label, .cost-line { display: none; }
+      .sidebar-scroll { padding-inline: 8px; }
+      .nav-item, .project-item { justify-content: center; padding: 0; }
+      .nav-count { position: absolute; margin: -20px 0 0 26px; min-width: 15px; height: 15px; padding: 0 4px; font-size: 8px; }
+      .rule-button { font-size: 0; }
+      .rule-button::after { content: "⚙"; font-size: 14px; }
+      .top-stats, .top-divider { display: none; }
+      .searchbox { width: min(290px, 33vw); }
+    }
+
+    @media (max-width: 860px) {
+      .workbench { padding-inline: 13px; }
+      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .work-grid { grid-template-columns: 1fr 1fr; }
+      .terminal-grid { grid-template-columns: 1fr 1fr; }
+      .scope-chip, #densityBtn { display: none; }
+      .attention-row { grid-template-columns: 30px minmax(0, 1fr); }
+      .attention-side { grid-column: 2; min-width: 0; flex-direction: row; align-items: center; justify-content: space-between; }
+    }
+
+    @media (max-height: 790px) and (min-width: 861px) {
+      .workbench { padding-top: 12px; }
+      .summary-card { min-height: 59px; padding-block: 8px; }
+      .summary-grid { margin-bottom: 12px; }
+      .attention-row { min-height: 68px; padding-block: 7px; }
+      .attention-list { margin-bottom: 13px; }
+      .work-card { min-height: 116px; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">⌁</span>
+      <span class="brand-text">ThreadTerm</span>
+    </div>
+
+    <div class="sidebar-scroll">
+      <button class="nav-item active" type="button" data-nav="workbench">
+        <span class="nav-icon">▦</span><span class="nav-label">工作台</span>
+      </button>
+      <button class="nav-item" type="button" data-nav="terminals">
+        <span class="nav-icon">›_</span><span class="nav-label">所有终端</span>
+      </button>
+      <button class="nav-item nav-create" id="newTerminalBtn" type="button">
+        <span class="nav-icon">＋</span><span class="nav-label">新建终端</span>
+      </button>
+
+      <div class="section-label">项目筛选</div>
+      <button class="project-item active" type="button" data-project="all">
+        <span class="project-dot run"></span><span class="project-label">全部项目</span><span class="project-meta">8</span>
+      </button>
+      <button class="project-item" type="button" data-project="threadterm">
+        <span class="project-dot wait"></span><span class="project-label">ThreadTerm</span><span class="project-meta">4</span>
+      </button>
+      <button class="project-item" type="button" data-project="api">
+        <span class="project-dot wait"></span><span class="project-label">api-server</span><span class="project-meta">2</span>
+      </button>
+      <button class="project-item" type="button" data-project="docs">
+        <span class="project-dot run"></span><span class="project-label">docs-site</span><span class="project-meta">1</span>
+      </button>
+      <button class="project-item" type="button" data-project="myapp">
+        <span class="project-dot run"></span><span class="project-label">my-app</span><span class="project-meta">1</span>
+      </button>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="cost-line"><span>今日执行成本</span><b>$3.42 / $10</b></div>
+      <button class="rule-button" id="rulesBtn" type="button">注意力规则</button>
+    </div>
+  </aside>
+
+  <section class="surface">
+    <header class="topbar">
+      <span class="top-title" id="topTitle">注意力工作台</span>
+      <span class="scope-chip">全部项目⌄</span>
+      <span class="top-divider"></span>
+      <span class="top-stats">需处理 <b id="topAttentionCount">3</b> · 工作项 <b>4</b> · 终端 <b>8</b></span>
+      <span class="top-spacer"></span>
+
+      <label class="searchbox" title="搜索">
+        <span>⌕</span>
+        <input id="searchInput" type="search" placeholder="搜索工作项、终端、分支…" />
+      </label>
+      <button class="toolbar-button" id="densityBtn" type="button">舒适密度</button>
+    </header>
+
+    <main class="workbench" id="workbench">
+      <div class="workbench-inner" id="workbenchView">
+        <section class="summary-grid" aria-label="状态摘要">
+          <button class="summary-card attention" type="button" data-summary="attention">
+            <span class="summary-label">需要处理</span>
+            <span class="summary-note">1 权限 · 1 异常 · 1 验收</span>
+            <span class="summary-value" id="summaryAttentionCount">3</span>
+          </button>
+          <button class="summary-card running" type="button" data-summary="running">
+            <span class="summary-label">正常运行</span>
+            <span class="summary-note">4 个终端持续执行</span>
+            <span class="summary-value">4</span>
+          </button>
+          <button class="summary-card review" type="button" data-summary="review">
+            <span class="summary-label">完成待验收</span>
+            <span class="summary-note">worker pool 修复</span>
+            <span class="summary-value" id="summaryReviewCount">1</span>
+          </button>
+          <button class="summary-card failed" type="button" data-summary="failed">
+            <span class="summary-label">异常未恢复</span>
+            <span class="summary-note">api-server 已重试 2 次</span>
+            <span class="summary-value" id="summaryFailedCount">1</span>
+          </button>
+        </section>
+
+        <section id="attentionSection">
+          <div class="section-head">
+            <h2>需要处理</h2>
+            <span class="section-hint" id="attentionHint">3 项 · 按等待时间排序</span>
+            <span class="section-spacer"></span>
+            <div class="filter-chips" aria-label="处理项筛选">
+              <button class="filter-chip active" type="button" data-filter="all">全部</button>
+              <button class="filter-chip" type="button" data-filter="approval">权限</button>
+              <button class="filter-chip" type="button" data-filter="failed">异常</button>
+              <button class="filter-chip" type="button" data-filter="review">待验收</button>
+            </div>
+          </div>
+
+          <div class="attention-list" id="attentionList">
+            <article class="attention-row" id="attentionAuth" data-type="approval" data-project="threadterm" data-item="auth">
+              <span class="attention-icon">!</span>
+              <div class="attention-main">
+                <div class="attention-meta">
+                  <span class="type-chip">权限请求</span>
+                  <span class="agent-chip">Claude</span>
+                  <span class="attention-project">ThreadTerm · feature/auth</span>
+                </div>
+                <div class="attention-title">安装 jsonwebtoken@9 后继续认证模块</div>
+                <div class="attention-detail">命令 <code>pnpm add jsonwebtoken@9</code> · 将修改 package.json 与 lockfile</div>
+              </div>
+              <div class="attention-side">
+                <span class="wait-time">等待 4 分钟</span>
+                <div class="row-actions">
+                  <button class="btn primary" type="button" data-action="open" data-item="auth">查看审批</button>
+                  <button class="btn" type="button" data-action="terminal" data-item="auth">终端</button>
+                </div>
+              </div>
+            </article>
+
+            <article class="attention-row" id="attentionApi" data-type="failed" data-project="api" data-item="api">
+              <span class="attention-icon">×</span>
+              <div class="attention-main">
+                <div class="attention-meta">
+                  <span class="type-chip">异常</span>
+                  <span class="agent-chip">Shell</span>
+                  <span class="attention-project">api-server · dev</span>
+                </div>
+                <div class="attention-title">8080 端口被占用，自动重试 2 次仍失败</div>
+                <div class="attention-detail"><code>EADDRINUSE :8080</code> · 占用进程 PID 4821</div>
+              </div>
+              <div class="attention-side">
+                <span class="wait-time">12 分钟前</span>
+                <div class="row-actions">
+                  <button class="btn primary" type="button" data-action="open" data-item="api">处理异常</button>
+                  <button class="btn" type="button" data-action="terminal" data-item="api">日志</button>
+                </div>
+              </div>
+            </article>
+
+            <article class="attention-row" id="attentionWorker" data-type="review" data-project="threadterm" data-item="worker">
+              <span class="attention-icon">✓</span>
+              <div class="attention-main">
+                <div class="attention-meta">
+                  <span class="type-chip">待验收</span>
+                  <span class="agent-chip">Codex</span>
+                  <span class="attention-project">ThreadTerm · fix-bug-42</span>
+                </div>
+                <div class="attention-title">worker pool 关闭死锁已修复，等待查看改动</div>
+                <div class="attention-detail">3 个文件 · 18 项测试通过 · 工作区无未预期改动</div>
+              </div>
+              <div class="attention-side">
+                <span class="wait-time">28 分钟前</span>
+                <div class="row-actions">
+                  <button class="btn blue" type="button" data-action="open" data-item="worker">查看改动</button>
+                  <button class="btn" type="button" data-action="terminal" data-item="worker">详情</button>
+                </div>
+              </div>
+            </article>
+          </div>
+          <div class="empty-state" id="attentionEmpty">当前筛选下没有需要处理的事项。</div>
+        </section>
+
+        <section id="runningSection">
+          <div class="section-head">
+            <h2>进行中的工作项</h2>
+            <span class="section-hint">按项目、分支和任务自动归组</span>
+            <span class="section-spacer"></span>
+            <button class="filter-chip" type="button" data-nav="terminals">查看全部终端 →</button>
+          </div>
+
+          <div class="work-grid" id="workGrid">
+            <article class="work-card" tabindex="0" data-work="auth" data-project="threadterm">
+              <div class="work-top">
+                <span class="work-title">认证模块重构</span>
+                <span class="status-pill blocked" id="authWorkStatus">阻塞 1</span>
+              </div>
+              <div class="work-context">ThreadTerm · feature/auth · 3 个节点</div>
+              <div class="work-last" id="authWorkLast">Claude 等待依赖权限；Shell 与 Codex 已进入队列。</div>
+              <div class="work-foot">
+                <div class="node-stack"><span class="node claude">C</span><span class="node shell">S</span><span class="node codex">Co</span></div>
+                <span class="work-metrics">26m · $0.86</span>
+              </div>
+            </article>
+
+            <article class="work-card" tabindex="0" data-work="docs" data-project="docs">
+              <div class="work-top">
+                <span class="work-title">撰写 first-run 指南</span>
+                <span class="status-pill">执行中</span>
+              </div>
+              <div class="work-context">docs-site · docs/onboarding · 1 个节点</div>
+              <div class="work-last">Claude 正在整理安装与首次启动流程，最近更新 35 秒前。</div>
+              <div class="work-foot">
+                <div class="node-stack"><span class="node claude">C</span></div>
+                <span class="work-metrics">12m · $0.41</span>
+              </div>
+            </article>
+
+            <article class="work-card" tabindex="0" data-work="api" data-project="api">
+              <div class="work-top">
+                <span class="work-title">启动 api-server</span>
+                <span class="status-pill blocked" id="apiWorkStatus">异常</span>
+              </div>
+              <div class="work-context">api-server · dev · 1 个节点</div>
+              <div class="work-last" id="apiWorkLast">端口 8080 被占用，自动恢复策略已用尽。</div>
+              <div class="work-foot">
+                <div class="node-stack"><span class="node shell">S</span></div>
+                <span class="work-metrics">18m · CPU 0%</span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <button class="recent-bar" type="button" data-action="open" data-item="recent">
+          <span>⌄</span>
+          <span class="recent-title">最近完成</span>
+          <span>my-app release build · docs-site 预览服务</span>
+          <span class="recent-result">2 项正常完成 →</span>
+        </button>
+      </div>
+
+      <div class="workbench-inner page-hidden" id="terminalsView">
+        <div class="terminal-view-head">
+          <div>
+            <h2>所有终端</h2>
+            <p>保留此前的卡片视图，直接查看和操作每个终端</p>
+          </div>
+          <span class="section-spacer"></span>
+          <span class="terminal-view-stats">8 个终端 · 4 运行 · 1 等待 · 1 异常</span>
+          <button class="btn primary" type="button" data-create-terminal>＋ 新建终端</button>
+        </div>
+
+        <section class="terminal-grid" id="terminalGrid">
+          <article class="terminal-card" data-terminal="claude-auth" data-project="threadterm">
+            <div class="terminal-card-head">
+              <span class="terminal-agent claude">Claude</span>
+              <span class="terminal-card-name">feature/auth</span>
+              <span class="terminal-state wait">等待输入</span>
+            </div>
+            <div class="terminal-card-body">
+              <div class="terminal-task">实现认证中间件</div>
+              <div class="terminal-preview"><span class="warn">approval required</span><br>pnpm add jsonwebtoken@9<br>waiting for user…</div>
+              <div class="terminal-metrics"><span class="terminal-metric">86K tokens</span><span class="terminal-metric">$0.86</span><span class="terminal-metric">26m</span></div>
+            </div>
+            <div class="terminal-card-foot"><span class="terminal-path">~/project/ThreadTerm</span><button class="terminal-open" type="button" data-terminal-open="auth">打开终端 →</button></div>
+          </article>
+
+          <article class="terminal-card" data-terminal="shell-dev" data-project="threadterm">
+            <div class="terminal-card-head">
+              <span class="terminal-agent">Shell</span>
+              <span class="terminal-card-name">ThreadTerm · dev</span>
+              <span class="terminal-state">运行中</span>
+            </div>
+            <div class="terminal-card-body">
+              <div class="terminal-task">前端开发服务器</div>
+              <div class="terminal-preview"><span class="ok">➜ Local: http://localhost:5173/</span><br>ready in 428ms</div>
+              <div class="terminal-metrics"><span class="terminal-metric">运行 2h 14m</span><span class="terminal-metric">CPU 3%</span></div>
+            </div>
+            <div class="terminal-card-foot"><span class="terminal-path">~/project/ThreadTerm</span><button class="terminal-open" type="button" data-terminal-open="shell-dev">打开终端 →</button></div>
+          </article>
+
+          <article class="terminal-card" data-terminal="codex-worker" data-project="threadterm">
+            <div class="terminal-card-head">
+              <span class="terminal-agent codex">Codex</span>
+              <span class="terminal-card-name">fix-bug-42</span>
+              <span class="terminal-state done">已完成</span>
+            </div>
+            <div class="terminal-card-body">
+              <div class="terminal-task">修复 worker pool 关闭死锁</div>
+              <div class="terminal-preview"><span class="ok">test result: ok</span><br>18 passed; 0 failed<br>3 files changed</div>
+              <div class="terminal-metrics"><span class="terminal-metric">124K tokens</span><span class="terminal-metric">$0.55</span><span class="terminal-metric">34m</span></div>
+            </div>
+            <div class="terminal-card-foot"><span class="terminal-path">~/project/ThreadTerm</span><button class="terminal-open" type="button" data-terminal-open="worker">打开终端 →</button></div>
+          </article>
+
+          <article class="terminal-card" data-terminal="claude-docs" data-project="docs">
+            <div class="terminal-card-head">
+              <span class="terminal-agent claude">Claude</span>
+              <span class="terminal-card-name">docs/onboarding</span>
+              <span class="terminal-state">执行中</span>
+            </div>
+            <div class="terminal-card-body">
+              <div class="terminal-task">撰写 first-run 指南</div>
+              <div class="terminal-preview">Editing docs/first-run.md<br>Working: Windows setup<br><span class="ok">3 sections added</span></div>
+              <div class="terminal-metrics"><span class="terminal-metric">64K tokens</span><span class="terminal-metric">$0.41</span><span class="terminal-metric">12m</span></div>
+            </div>
+            <div class="terminal-card-foot"><span class="terminal-path">~/project/docs-site</span><button class="terminal-open" type="button" data-terminal-open="docs">打开终端 →</button></div>
+          </article>
+
+          <article class="terminal-card" data-terminal="shell-api" data-project="api">
+            <div class="terminal-card-head">
+              <span class="terminal-agent">Shell</span>
+              <span class="terminal-card-name">api-server · dev</span>
+              <span class="terminal-state fail">异常</span>
+            </div>
+            <div class="terminal-card-body">
+              <div class="terminal-task">启动 api-server</div>
+              <div class="terminal-preview"><span class="fail">EADDRINUSE :8080</span><br>retry 2/2 failed<br>process paused</div>
+              <div class="terminal-metrics"><span class="terminal-metric">运行 18m</span><span class="terminal-metric">CPU 0%</span></div>
+            </div>
+            <div class="terminal-card-foot"><span class="terminal-path">~/project/api-server</span><button class="terminal-open" type="button" data-terminal-open="api">打开终端 →</button></div>
+          </article>
+
+          <article class="terminal-card" data-terminal="shell-build" data-project="myapp">
+            <div class="terminal-card-head">
+              <span class="terminal-agent">Shell</span>
+              <span class="terminal-card-name">my-app · cargo</span>
+              <span class="terminal-state">运行中</span>
+            </div>
+            <div class="terminal-card-body">
+              <div class="terminal-task">cargo build --release</div>
+              <div class="terminal-preview">Compiling my-app v0.2.0<br><span class="ok">42 / 62 crates</span><br>building optimized target</div>
+              <div class="terminal-metrics"><span class="terminal-metric">运行 6m</span><span class="terminal-metric">CPU 87%</span></div>
+            </div>
+            <div class="terminal-card-foot"><span class="terminal-path">~/project/my-app</span><button class="terminal-open" type="button" data-terminal-open="shell-build">打开终端 →</button></div>
+          </article>
+        </section>
+      </div>
+    </main>
+  </section>
+</div>
+
+<div class="mask" id="mask"></div>
+<aside class="drawer" id="drawer" aria-label="上下文详情">
+  <div class="drawer-head">
+    <div class="drawer-heading">
+      <div class="drawer-kicker" id="drawerKicker">需要处理</div>
+      <div class="drawer-title" id="drawerTitle">详情</div>
+    </div>
+    <button class="icon-button" id="drawerClose" type="button" aria-label="关闭">×</button>
+  </div>
+  <div class="drawer-tabs" id="drawerTabs">
+    <button class="drawer-tab active" type="button" data-tab="detail">详情</button>
+    <button class="drawer-tab" type="button" data-tab="activity">活动</button>
+    <button class="drawer-tab" type="button" data-tab="terminal">终端</button>
+    <button class="drawer-tab" type="button" data-tab="evidence">改动 / 证据</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+  <div class="drawer-footer" id="drawerFooter"></div>
+</aside>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const state = {
+    filter: "all",
+    project: "all",
+    query: "",
+    view: "workbench",
+    density: "compact",
+    activeItem: null,
+    activeTab: "detail",
+    handled: new Set()
+  };
+
+  const items = {
+    auth: {
+      kind: "权限请求",
+      title: "安装 jsonwebtoken@9 后继续认证模块",
+      summary: "Claude 在实现认证中间件时请求新增运行时依赖。当前规则要求所有新增生产依赖由用户明确批准。",
+      facts: [
+        ["来源", "Claude · ThreadTerm / feature/auth"],
+        ["精确命令", "<code>pnpm add jsonwebtoken@9</code>"],
+        ["写入范围", "<code>package.json</code>、<code>pnpm-lock.yaml</code>"],
+        ["网络范围", "<code>registry.npmjs.org</code>"],
+        ["后续动作", "安装成功后继续实现，随后运行测试并交由 Codex 只读审查"]
+      ],
+      rule: "命中规则：新增生产依赖必须人工批准。该规则来自项目级注意力策略，不是 AI 风险判断。",
+      timeline: [
+        ["Claude 开始实现认证中间件", "26 分钟前", ""],
+        ["发现仓库没有 JWT 依赖", "5 分钟前", "warn"],
+        ["安装命令被本地策略拦截，进入需要处理", "4 分钟前", "warn"]
+      ],
+      terminal: `<span class="muted">$ threadterm attach claude-auth</span>
+正在实现 src/auth/middleware.ts
+需要 JWT 签发和校验能力
+
+<span class="prompt">›</span> pnpm add jsonwebtoken@9
+ERR_THREADTERM_APPROVAL_REQUIRED
+category: dependency.install.runtime
+scope: current-goal
+status: waiting_for_user`,
+      evidence: `<span class="file">待执行变更</span>
+  package.json
+  pnpm-lock.yaml
+
+<span class="file">当前工作区改动</span>
+<span class="add">+ src/auth/middleware.ts</span>
+
+安装命令尚未执行，因此 lockfile 还没有变化。`,
+      actions: [
+        ["approve-auth", "安装并继续", "primary"],
+        ["reject-auth", "暂不安装", "danger"]
+      ]
+    },
+    api: {
+      kind: "运行异常",
+      title: "8080 端口被占用，自动重试 2 次仍失败",
+      summary: "Shell 启动 api-server 时发现 8080 已被本机另一个开发服务占用。重复执行原命令没有恢复。",
+      facts: [
+        ["来源", "Shell · api-server / dev"],
+        ["失败命令", "<code>go run .</code>"],
+        ["错误", "<code>EADDRINUSE :8080</code>"],
+        ["占用进程", "PID 4821 · 另一个工作区的开发服务"],
+        ["可选处理", "仅本次改用 8081，或者打开终端手动处理"]
+      ],
+      rule: "命中规则：同一命令自动重试达到 2 次后停止继续尝试。切换端口不会写入配置文件。",
+      timeline: [
+        ["首次启动失败：8080 被占用", "14 分钟前", "fail"],
+        ["自动重试 1/2，仍然失败", "13 分钟前", "fail"],
+        ["自动重试 2/2，进入需要处理", "12 分钟前", "warn"]
+      ],
+      terminal: `<span class="prompt">$</span> go run .
+Starting api-server...
+<span class="error">Error: listen tcp :8080: bind: Only one usage of each socket address is normally permitted.</span>
+
+retry 1/2 ... failed
+retry 2/2 ... failed
+<span class="muted">process 4821 is listening on :8080</span>`,
+      evidence: `<span class="file">端口探测</span>
+TCP  127.0.0.1:8080  LISTENING  4821
+
+<span class="file">建议的确定性动作</span>
+PORT=8081 go run .
+
+作用域：仅本次进程
+配置文件：不修改`,
+      actions: [
+        ["restart-api", "使用 8081 重启", "primary"],
+        ["keep-paused", "保持暂停", ""]
+      ]
+    },
+    worker: {
+      kind: "完成待验收",
+      title: "worker pool 关闭死锁已修复",
+      summary: "Codex 完成修复并运行了相关测试。工作台根据退出码、测试报告和 git diff 汇总出待验收结果。",
+      facts: [
+        ["来源", "Codex · ThreadTerm / fix-bug-42"],
+        ["修改文件", "3 个"],
+        ["测试结果", "18/18 通过"],
+        ["工作区检查", "未发现任务范围外的文件改动"],
+        ["总耗时", "34 分钟"]
+      ],
+      rule: "命中规则：代码任务完成且存在文件改动时进入“待验收”。摘要来自结构化执行结果，不使用 LLM。",
+      timeline: [
+        ["复现 worker pool 关闭死锁", "62 分钟前", ""],
+        ["完成 shutdown 顺序修复", "35 分钟前", ""],
+        ["18 项测试通过，生成待验收项", "28 分钟前", ""]
+      ],
+      terminal: `<span class="prompt">$</span> cargo test worker_pool
+running 18 tests
+test worker_pool::shutdown_order ... <span class="ok">ok</span>
+test worker_pool::cancel_pending ... <span class="ok">ok</span>
+test worker_pool::drain_on_close ... <span class="ok">ok</span>
+
+<span class="ok">test result: ok. 18 passed; 0 failed</span>
+Process exited with code 0`,
+      evidence: `<span class="file">src-tauri/src/worker_pool.rs</span>
+<span class="del">- sender.take();</span>
+<span class="del">- join_workers();</span>
+<span class="add">+ stop_accepting_tasks();</span>
+<span class="add">+ drain_pending_tasks();</span>
+<span class="add">+ drop(sender.take());</span>
+<span class="add">+ join_workers();</span>
+
+<span class="file">tests/worker_pool_shutdown.rs</span>
+<span class="add">+ adds shutdown ordering regression coverage</span>`,
+      actions: [
+        ["accept-worker", "验收并归档", "primary"],
+        ["reopen-worker", "重新打开", ""]
+      ]
+    },
+    recent: {
+      kind: "最近完成",
+      title: "最近完成的工作项",
+      summary: "这里保留轻量结果，不占用首页主要注意力。点击单项可以继续查看原始终端和执行证据。",
+      facts: [
+        ["my-app release build", "62 个 crate 编译完成 · 产物 18.4 MB"],
+        ["docs-site 预览服务", "VitePress 已启动 · http://localhost:5174"],
+        ["归档策略", "完成 24 小时后自动归档"]
+      ],
+      rule: "完成且不需要验收的工作项只进入最近完成，不进入需要处理。",
+      timeline: [
+        ["docs-site 预览服务启动成功", "昨天 18:42", ""],
+        ["my-app release build 完成", "今天 09:14", ""]
+      ],
+      terminal: `<span class="prompt">$</span> cargo build --release
+Finished release [optimized] target(s) in 6m 18s
+
+<span class="prompt">$</span> pnpm docs:dev
+Local: http://localhost:5174/`,
+      evidence: `无待验收改动。两个工作项均可从归档视图恢复。`,
+      actions: []
+    }
+  };
+
+  const workItems = {
+    auth: {
+      kind: "进行中的工作项",
+      title: "认证模块重构",
+      summary: "由项目、分支和任务名称自动归组。当前包含 3 个执行节点，其中 Claude 因依赖权限阻塞。",
+      facts: [
+        ["项目 / 分支", "ThreadTerm / feature/auth"],
+        ["Claude", "等待依赖权限"],
+        ["Shell", "测试任务排队中"],
+        ["Codex", "安全审查排队中"],
+        ["最近活动", "4 分钟前"]
+      ],
+      rule: "工作项状态由底层终端状态聚合：任一关键节点等待用户输入时，工作项标记为阻塞。",
+      timeline: items.auth.timeline,
+      terminal: items.auth.terminal,
+      evidence: items.auth.evidence,
+      actions: [["jump-auth", "处理阻塞", "primary"]]
+    },
+    docs: {
+      kind: "进行中的工作项",
+      title: "撰写 first-run 指南",
+      summary: "Claude 正常执行，当前没有需要用户处理的事项。",
+      facts: [
+        ["项目 / 分支", "docs-site / docs/onboarding"],
+        ["执行节点", "Claude"],
+        ["当前阶段", "整理首次启动流程"],
+        ["最近活动", "35 秒前"],
+        ["累计成本", "$0.41"]
+      ],
+      rule: "正常运行的工作项不会进入注意力收件箱；只有阻塞、失败、等待输入或完成待验收才会上浮。",
+      timeline: [
+        ["读取现有 README 与安装脚本", "12 分钟前", ""],
+        ["生成 first-run 指南目录", "8 分钟前", ""],
+        ["正在编写 Windows 启动说明", "35 秒前", ""]
+      ],
+      terminal: `<span class="prompt">›</span> Editing docs/first-run.md
+Added: prerequisites
+Added: first launch
+Working: Windows terminal setup
+
+<span class="muted">Compacting conversation…</span>`,
+      evidence: `<span class="file">docs/first-run.md</span>
+<span class="add">+ Prerequisites</span>
+<span class="add">+ First launch</span>
+<span class="add">+ Project selection</span>`,
+      actions: []
+    },
+    api: {
+      kind: "进行中的工作项",
+      title: "启动 api-server",
+      summary: "工作项包含一个 Shell 节点。启动失败并达到自动重试上限，因此已进入需要处理。",
+      facts: [
+        ["项目 / 分支", "api-server / dev"],
+        ["执行节点", "Shell"],
+        ["当前状态", "暂停，等待处理异常"],
+        ["最近活动", "12 分钟前"]
+      ],
+      rule: items.api.rule,
+      timeline: items.api.timeline,
+      terminal: items.api.terminal,
+      evidence: items.api.evidence,
+      actions: [["jump-api", "处理异常", "primary"]]
+    }
+  };
+
+  let toastTimer;
+  function toast(message, kind = "") {
+    const el = $("toast");
+    el.textContent = message;
+    el.className = `toast show ${kind}`;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.className = "toast"; }, 2600);
+  }
+
+  function detailHtml(data) {
+    const facts = data.facts.map(([key, value]) =>
+      `<div class="fact-row"><span class="fact-key">${key}</span><span class="fact-value">${value}</span></div>`
+    ).join("");
+    return `
+      <section class="detail-section">
+        <h3>摘要</h3>
+        <div class="detail-summary">${data.summary}</div>
+      </section>
+      <section class="detail-section">
+        <h3>确定性信息</h3>
+        <div class="fact-list">${facts}</div>
+      </section>
+      <section class="detail-section">
+        <h3>为何出现在这里</h3>
+        <div class="rule-hit">${data.rule}</div>
+      </section>`;
+  }
+
+  function activityHtml(data) {
+    return `<section class="detail-section"><h3>状态时间线</h3><div class="timeline">${
+      data.timeline.map(([text, time, cls]) =>
+        `<div class="timeline-item ${cls}">${text}<div class="timeline-time">${time}</div></div>`
+      ).join("")
+    }</div></section>`;
+  }
+
+  function terminalHtml(data) {
+    return `<section class="detail-section"><h3>原始终端片段</h3><div class="terminal">${data.terminal}</div></section>`;
+  }
+
+  function evidenceHtml(data) {
+    return `<section class="detail-section"><h3>本地证据</h3><div class="diff">${data.evidence}</div></section>`;
+  }
+
+  function resolveHandle(handle) {
+    if (!handle) return null;
+    const [scope, key] = handle.includes(":") ? handle.split(":") : ["item", handle];
+    const data = scope === "work" ? workItems[key] : items[key];
+    return data ? { scope, key, data } : null;
+  }
+
+  function setTab(tab) {
+    state.activeTab = tab;
+    document.querySelectorAll(".drawer-tab").forEach(button => {
+      button.classList.toggle("active", button.dataset.tab === tab);
+    });
+
+    const resolved = resolveHandle(state.activeItem);
+    if (!resolved) return;
+    const data = resolved.data;
+    const renderers = {
+      detail: detailHtml,
+      activity: activityHtml,
+      terminal: terminalHtml,
+      evidence: evidenceHtml
+    };
+    $("drawerBody").innerHTML = renderers[tab](data);
+  }
+
+  function renderFooter(data) {
+    if (!data.actions.length) {
+      $("drawerFooter").innerHTML = `<span class="footer-note">没有需要处理的动作 · 所有证据保存在本地</span>`;
+      return;
+    }
+    $("drawerFooter").innerHTML =
+      `<span class="footer-note">动作由本地控制面执行并记录</span>` +
+      data.actions.map(([action, label, cls]) =>
+        `<button class="btn large ${cls}" type="button" data-drawer-action="${action}">${label}</button>`
+      ).join("");
+  }
+
+  function openDrawer(handle, tab = "detail") {
+    const resolved = resolveHandle(handle);
+    if (!resolved) return;
+    state.activeItem = handle.includes(":") ? handle : `item:${handle}`;
+    $("drawerKicker").textContent = resolved.data.kind;
+    $("drawerTitle").textContent = resolved.data.title;
+    $("drawerTabs").style.display = "flex";
+    renderFooter(resolved.data);
+    $("drawer").classList.add("open");
+    $("mask").classList.add("open");
+    setTab(tab);
+  }
+
+  function closeDrawer() {
+    $("drawer").classList.remove("open");
+    $("mask").classList.remove("open");
+  }
+
+  function rulesHtml() {
+    return `
+      <section class="detail-section">
+        <h3>进入“需要处理”的条件</h3>
+        <div class="rules-form">
+          <div class="rule-row">
+            <div class="rule-copy"><div class="rule-name">等待用户输入或权限</div><div class="rule-desc">Agent 明确进入 waiting 状态时立即上浮。</div></div>
+            <button class="switch on" type="button" role="switch" aria-checked="true"></button>
+          </div>
+          <div class="rule-row">
+            <div class="rule-copy"><div class="rule-name">自动恢复失败</div><div class="rule-desc">相同动作达到重试上限后上浮，不转发第一次临时错误。</div></div>
+            <button class="switch on" type="button" role="switch" aria-checked="true"></button>
+          </div>
+          <div class="rule-row">
+            <div class="rule-copy"><div class="rule-name">存在改动的任务完成</div><div class="rule-desc">测试通过且产生文件改动时进入待验收。</div></div>
+            <button class="switch on" type="button" role="switch" aria-checked="true"></button>
+          </div>
+          <div class="rule-row">
+            <div class="rule-copy"><div class="rule-name">长时间无进展</div><div class="rule-desc">排除 dev server 等长期进程，只检测 Agent 工作会话。</div></div>
+            <div class="select-line"><select aria-label="无进展阈值"><option>10 分钟</option><option selected>15 分钟</option><option>30 分钟</option></select></div>
+          </div>
+          <div class="rule-row">
+            <div class="rule-copy"><div class="rule-name">自动重试上限</div><div class="rule-desc">仅重试同一个确定性动作，不自行改变实现方案。</div></div>
+            <div class="select-line"><select aria-label="重试上限"><option>1 次</option><option selected>2 次</option><option>3 次</option></select></div>
+          </div>
+        </div>
+      </section>
+      <section class="detail-section">
+        <div class="rule-hit">V4 Lite 的过滤完全由本地规则和结构化状态完成，不调用 LLM。以后接入管家时，AI 建议只会作为可选信息增加，不会覆盖这些规则。</div>
+      </section>`;
+  }
+
+  function openRules() {
+    state.activeItem = null;
+    $("drawerKicker").textContent = "本地设置";
+    $("drawerTitle").textContent = "注意力规则";
+    $("drawerTabs").style.display = "none";
+    $("drawerBody").innerHTML = rulesHtml();
+    $("drawerFooter").innerHTML = `<span class="footer-note">规则保存在本地项目配置</span><button class="btn large primary" type="button" data-drawer-action="save-rules">保存规则</button>`;
+    $("drawer").classList.add("open");
+    $("mask").classList.add("open");
+  }
+
+  function openTerminalIndex() {
+    state.activeItem = null;
+    $("drawerKicker").textContent = "原始视图";
+    $("drawerTitle").textContent = "全部终端 · 8";
+    $("drawerTabs").style.display = "none";
+    $("drawerBody").innerHTML = `
+      <section class="detail-section">
+        <h3>终端列表</h3>
+        <div class="fact-list">
+          <div class="fact-row"><span class="fact-key">Claude</span><span class="fact-value">ThreadTerm / feature-auth · 等待权限</span></div>
+          <div class="fact-row"><span class="fact-key">Shell</span><span class="fact-value">api-server / dev · 已暂停</span></div>
+          <div class="fact-row"><span class="fact-key">Codex</span><span class="fact-value">ThreadTerm / fix-bug-42 · 完成</span></div>
+          <div class="fact-row"><span class="fact-key">Claude</span><span class="fact-value">docs-site / onboarding · 执行中</span></div>
+          <div class="fact-row"><span class="fact-key">Shell</span><span class="fact-value">ThreadTerm / dev · 运行中</span></div>
+          <div class="fact-row"><span class="fact-key">Shell</span><span class="fact-value">my-app / cargo · 运行中</span></div>
+        </div>
+      </section>
+      <section class="detail-section">
+        <div class="rule-hit">正式产品中这里复用现有终端网格。工作台是过滤入口，不会取代原始终端控制能力。</div>
+      </section>`;
+    $("drawerFooter").innerHTML = `<span class="footer-note">可从任一终端返回过滤工作台</span><button class="btn large primary" type="button" data-drawer-action="new-terminal">新建终端</button>`;
+    $("drawer").classList.add("open");
+    $("mask").classList.add("open");
+  }
+
+  function unresolvedRows() {
+    return [...document.querySelectorAll(".attention-row")].filter(row => !state.handled.has(row.dataset.item));
+  }
+
+  function updateCounts() {
+    const rows = unresolvedRows();
+    const total = rows.length;
+    const failed = rows.filter(row => row.dataset.type === "failed").length;
+    const review = rows.filter(row => row.dataset.type === "review").length;
+    $("topAttentionCount").textContent = total;
+    $("summaryAttentionCount").textContent = total;
+    $("summaryFailedCount").textContent = failed;
+    $("summaryReviewCount").textContent = review;
+  }
+
+  function applyFilters() {
+    let visibleAttention = 0;
+    unresolvedRows().forEach(row => {
+      const typeMatch = state.filter === "all" || row.dataset.type === state.filter;
+      const projectMatch = state.project === "all" || row.dataset.project === state.project;
+      const queryMatch = !state.query || row.textContent.toLowerCase().includes(state.query);
+      const show = typeMatch && projectMatch && queryMatch;
+      row.classList.toggle("hidden", !show);
+      if (show) visibleAttention += 1;
+    });
+
+    document.querySelectorAll(".attention-row").forEach(row => {
+      if (state.handled.has(row.dataset.item)) row.classList.add("hidden");
+    });
+
+    let visibleWork = 0;
+    document.querySelectorAll(".work-card").forEach(card => {
+      const projectMatch = state.project === "all" || card.dataset.project === state.project;
+      const queryMatch = !state.query || card.textContent.toLowerCase().includes(state.query);
+      const show = projectMatch && queryMatch;
+      card.classList.toggle("hidden", !show);
+      if (show) visibleWork += 1;
+    });
+
+    document.querySelectorAll(".terminal-card").forEach(card => {
+      const projectMatch = state.project === "all" || card.dataset.project === state.project;
+      const queryMatch = !state.query || card.textContent.toLowerCase().includes(state.query);
+      card.classList.toggle("hidden", !(projectMatch && queryMatch));
+    });
+
+    $("attentionHint").textContent = `${visibleAttention} 项 · 按等待时间排序`;
+    $("attentionEmpty").classList.toggle("show", visibleAttention === 0);
+    $("runningSection").style.display = visibleWork ? "block" : "none";
+    updateCounts();
+  }
+
+  function showView(view) {
+    state.view = view;
+    const showTerminals = view === "terminals";
+    $("workbenchView").classList.toggle("page-hidden", showTerminals);
+    $("terminalsView").classList.toggle("page-hidden", !showTerminals);
+    $("topTitle").textContent = showTerminals ? "所有终端" : "注意力工作台";
+    document.querySelectorAll(".nav-item[data-nav]").forEach(button => {
+      button.classList.toggle("active", button.dataset.nav === view);
+    });
+    $("workbench").scrollTo({ top: 0, behavior: "smooth" });
+    applyFilters();
+  }
+
+  function resolveAttention(key, message, kind = "success") {
+    const row = document.querySelector(`.attention-row[data-item="${key}"]`);
+    if (row) row.classList.add("resolving");
+    state.handled.add(key);
+    closeDrawer();
+    toast(message, kind);
+    setTimeout(() => {
+      if (row) row.classList.add("hidden");
+      applyFilters();
+    }, 220);
+  }
+
+  function runDrawerAction(action) {
+    switch (action) {
+      case "approve-auth":
+        $("authWorkStatus").textContent = "执行中";
+        $("authWorkStatus").classList.remove("blocked");
+        $("authWorkLast").textContent = "依赖已授权，Shell 正在安装；Claude 将在完成后继续实现。";
+        resolveAttention("auth", "已允许本次依赖安装 · 工作项继续执行");
+        break;
+      case "reject-auth":
+        $("authWorkStatus").textContent = "已暂停";
+        $("authWorkLast").textContent = "依赖安装被拒绝，工作项保持暂停，等待手动调整。";
+        resolveAttention("auth", "已拒绝依赖安装 · 工作项保持暂停", "warn");
+        break;
+      case "restart-api":
+        $("apiWorkStatus").textContent = "启动中";
+        $("apiWorkStatus").classList.remove("blocked");
+        $("apiWorkLast").textContent = "正在以 PORT=8081 重启，并等待健康检查。";
+        resolveAttention("api", "api-server 正在使用 8081 重启");
+        setTimeout(() => {
+          $("apiWorkStatus").textContent = "运行中";
+          $("apiWorkLast").textContent = "已在 8081 启动，健康检查通过。";
+          toast("api-server 健康检查通过 · 运行于 8081", "success");
+        }, 1400);
+        break;
+      case "keep-paused":
+        $("apiWorkStatus").textContent = "已暂停";
+        $("apiWorkLast").textContent = "按用户选择保持暂停，可从原始终端恢复。";
+        resolveAttention("api", "api-server 保持暂停", "warn");
+        break;
+      case "accept-worker":
+        resolveAttention("worker", "worker pool 修复已验收并归档");
+        break;
+      case "reopen-worker":
+        closeDrawer();
+        toast("工作项已重新打开 · 将返回运行中列表");
+        break;
+      case "jump-auth":
+        openDrawer("item:auth");
+        break;
+      case "jump-api":
+        openDrawer("item:api");
+        break;
+      case "save-rules":
+        closeDrawer();
+        toast("注意力规则已保存到本地", "success");
+        break;
+      case "new-terminal":
+        closeDrawer();
+        toast("打开新建终端流程（原型演示）");
+        break;
+    }
+  }
+
+  document.addEventListener("click", (event) => {
+    const filter = event.target.closest("[data-filter]");
+    if (filter) {
+      state.filter = filter.dataset.filter;
+      document.querySelectorAll("[data-filter]").forEach(button => button.classList.toggle("active", button === filter));
+      applyFilters();
+      return;
+    }
+
+    const project = event.target.closest("[data-project].project-item");
+    if (project) {
+      state.project = project.dataset.project;
+      document.querySelectorAll(".project-item").forEach(button => button.classList.toggle("active", button === project));
+      applyFilters();
+      return;
+    }
+
+    const action = event.target.closest("[data-action]");
+    if (action) {
+      const key = action.dataset.item;
+      openDrawer(`item:${key}`, action.dataset.action === "terminal" ? "terminal" : "detail");
+      return;
+    }
+
+    const terminalOpen = event.target.closest("[data-terminal-open]");
+    if (terminalOpen) {
+      const key = terminalOpen.dataset.terminalOpen;
+      if (items[key]) openDrawer(`item:${key}`, "terminal");
+      else if (workItems[key]) openDrawer(`work:${key}`, "terminal");
+      else toast("打开原始终端会话（原型演示）");
+      return;
+    }
+
+    const createTerminal = event.target.closest("[data-create-terminal]");
+    if (createTerminal) {
+      toast("打开新建终端流程（原型演示）");
+      return;
+    }
+
+    const work = event.target.closest("[data-work]");
+    if (work) {
+      openDrawer(`work:${work.dataset.work}`);
+      return;
+    }
+
+    const tab = event.target.closest("[data-tab]");
+    if (tab) {
+      setTab(tab.dataset.tab);
+      return;
+    }
+
+    const drawerAction = event.target.closest("[data-drawer-action]");
+    if (drawerAction) {
+      runDrawerAction(drawerAction.dataset.drawerAction);
+      return;
+    }
+
+    const nav = event.target.closest("[data-nav]");
+    if (nav) {
+      const target = nav.dataset.nav;
+      if (target === "terminals") showView("terminals");
+      else showView("workbench");
+    }
+  });
+
+  document.querySelectorAll("[data-summary]").forEach(card => {
+    card.addEventListener("click", () => {
+      const target = card.dataset.summary;
+      if (target === "failed" || target === "review") {
+        state.filter = target;
+        document.querySelectorAll("[data-filter]").forEach(button => button.classList.toggle("active", button.dataset.filter === target));
+        applyFilters();
+        $("attentionSection").scrollIntoView({ behavior: "smooth", block: "start" });
+      } else if (target === "running") {
+        $("runningSection").scrollIntoView({ behavior: "smooth", block: "start" });
+      } else {
+        state.filter = "all";
+        document.querySelectorAll("[data-filter]").forEach(button => button.classList.toggle("active", button.dataset.filter === "all"));
+        applyFilters();
+        $("attentionSection").scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
+  });
+
+  $("searchInput").addEventListener("input", (event) => {
+    state.query = event.target.value.trim().toLowerCase();
+    applyFilters();
+  });
+
+  $("densityBtn").addEventListener("click", () => {
+    state.density = state.density === "compact" ? "comfortable" : "compact";
+    document.body.classList.toggle("comfortable", state.density === "comfortable");
+    $("densityBtn").textContent = state.density === "compact" ? "舒适密度" : "紧凑密度";
+    toast(state.density === "compact" ? "已切换到紧凑密度" : "已切换到舒适密度");
+  });
+
+  $("newTerminalBtn").addEventListener("click", () => toast("打开新建终端流程（原型演示）"));
+  $("rulesBtn").addEventListener("click", openRules);
+  $("drawerClose").addEventListener("click", closeDrawer);
+  $("mask").addEventListener("click", closeDrawer);
+
+  document.addEventListener("click", (event) => {
+    const toggle = event.target.closest(".switch");
+    if (!toggle) return;
+    toggle.classList.toggle("on");
+    toggle.setAttribute("aria-checked", String(toggle.classList.contains("on")));
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeDrawer();
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      $("searchInput").focus();
+    }
+  });
+
+  applyFilters();
+
+  const demoParams = new URLSearchParams(window.location.search);
+  const demoView = demoParams.get("view");
+  if (demoView === "rules") openRules();
+  else if (demoView === "terminals") showView("terminals");
+  else if (demoView && items[demoView]) openDrawer(`item:${demoView}`, demoParams.get("tab") || "detail");
+</script>
+</body>
+</html>

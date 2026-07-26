@@ -28,8 +28,8 @@
     ],
     "security": {
       "assetProtocol": { "enable": true, "scope": [] },
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: asset: http://asset.localhost https:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://*; object-src 'none'; frame-src blob: http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:* asset: http://asset.localhost; base-uri 'self'",
-      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: asset: http://asset.localhost https:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://*; object-src 'none'; frame-src blob: http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:* asset: http://asset.localhost; base-uri 'self'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: asset: http://asset.localhost https:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; object-src 'none'; frame-src blob: http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:* asset: http://asset.localhost; base-uri 'self'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: asset: http://asset.localhost https:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; object-src 'none'; frame-src blob: http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:* asset: http://asset.localhost; base-uri 'self'"
     }
   },
   "bundle": {

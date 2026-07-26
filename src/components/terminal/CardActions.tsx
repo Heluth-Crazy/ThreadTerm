@@ -135,7 +135,7 @@ function CardActionOverflowMenu({ label, children }: CardActionOverflowMenuProps
           role="menu"
           onClick={stopMenuPropagation}
           onMouseDown={stopMenuPropagation}
-          className="fixed z-[9999] flex max-h-[min(320px,calc(100vh-16px))] flex-col gap-1 overflow-y-auto rounded-[var(--radius-md)] border border-white/10 bg-popover p-1.5 text-xs text-popover-foreground shadow-xl"
+          className="fixed z-popover flex max-h-[min(320px,calc(100vh-16px))] flex-col gap-1 overflow-y-auto rounded-md border border-border bg-popover p-1.5 text-xs text-popover-foreground shadow-xl"
           style={{
             left: menuRect.left,
             top: menuRect.top,
@@ -304,14 +304,12 @@ export const CardActions = memo(function CardActions({
         </button>
       )}
       {showWideActionsInline && autoRestartControls && (
-        <div className="scale-90 origin-left">
-          <AutoRestartControls
-            enabled={autoRestartEnabled}
-            maxRetries={autoRestartMaxRetries}
-            onToggle={autoRestartControls.onToggle}
-            onMaxRetriesChange={autoRestartControls.onMaxRetriesChange}
-          />
-        </div>
+        <AutoRestartControls
+          enabled={autoRestartEnabled}
+          maxRetries={autoRestartMaxRetries}
+          onToggle={autoRestartControls.onToggle}
+          onMaxRetriesChange={autoRestartControls.onMaxRetriesChange}
+        />
       )}
       {hasOverflowMenu && (
         <CardActionOverflowMenu label={overflowLabel}>

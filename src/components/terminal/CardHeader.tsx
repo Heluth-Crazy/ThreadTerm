@@ -46,7 +46,7 @@ export const CardHeader = memo(function CardHeader({
     <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
       {dragHandle}
       <div
-        className={`flex h-7 w-7 items-center justify-center rounded-[var(--radius-md)] bg-muted ${typeMeta.accent}`}
+        className={`flex h-7 w-7 items-center justify-center rounded-md bg-muted ${typeMeta.accent}`}
       >
         <TypeIcon className="h-4 w-4" />
       </div>
@@ -73,12 +73,12 @@ export const CardHeader = memo(function CardHeader({
             />
           </div>
           {!editing && (
-            <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">
+            <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">
               · {t(`types.${card.terminalType}`, typeMeta.label)}
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+        <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
           <span className="truncate">{card.projectPath}</span>
         </div>
         {aiSessionBadge && (
@@ -89,7 +89,7 @@ export const CardHeader = memo(function CardHeader({
                 defaultValue: aiSessionBadge.fallbackDescription,
               })}
               className={[
-                'inline-flex max-w-full items-center rounded-full border px-1.5 py-0.5 text-[9.5px] font-medium leading-none',
+                'inline-flex max-w-full items-center rounded-full border px-1.5 py-0.5 text-[11px] font-medium leading-none',
                 AI_CLI_SESSION_BADGE_CLASS[aiSessionBadge.tone],
               ].join(' ')}
             >
@@ -106,7 +106,7 @@ export const CardHeader = memo(function CardHeader({
           <div className="mt-0.5 flex">
             <span
               title={t('stats.title', { defaultValue: 'Token usage' })}
-              className="inline-flex max-w-full items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9.5px] font-medium leading-none text-emerald-500"
+              className="inline-flex max-w-full items-center gap-1 rounded-full border border-success/30 bg-success/10 px-1.5 py-0.5 text-[11px] font-medium leading-none text-success"
             >
               {formatTokens(tokenBucket.totalTokens)} · {formatCost(tokenBucket.costUsd)}
             </span>

@@ -1,0 +1,3567 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#10151d">
+  <title>ThreadTerm Mobile Workbench · 完整交互原型</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1017;
+      --app-bg: #10151d;
+      --surface: #151b24;
+      --surface-2: #1a222d;
+      --surface-3: #202a38;
+      --glass: rgba(16, 21, 29, .9);
+      --text: #e8edf5;
+      --text-2: #bdc7d4;
+      --muted: #8f9cac;
+      --subtle: #667486;
+      --border: #2d3948;
+      --border-soft: rgba(143, 156, 172, .16);
+      --primary: #4f8bd6;
+      --primary-strong: #65a4f1;
+      --primary-soft: rgba(79, 139, 214, .16);
+      --green: #35c66b;
+      --green-soft: rgba(53, 198, 107, .13);
+      --orange: #f0a23a;
+      --orange-soft: rgba(240, 162, 58, .14);
+      --red: #ef5b61;
+      --red-soft: rgba(239, 91, 97, .14);
+      --purple: #a879e8;
+      --purple-soft: rgba(168, 121, 232, .14);
+      --cyan: #49b8c7;
+      /* 终端表面 chrome（默认锁深色画布；主题包可整组覆盖，对应 PC 端 terminal token） */
+      --terminal-canvas: #090c11;
+      --terminal-chrome: #0e1218;
+      --terminal-chrome-border: #232a34;
+      --terminal-fg: #d6ded7;
+      --terminal-dim: #778291;
+      --terminal-green: #7bd88f;
+      --terminal-blue: #72aeea;
+      --terminal-yellow: #e7be71;
+      --terminal-red: #f07b80;
+      --terminal-key-bg: #171d26;
+      --terminal-key-border: #2c3542;
+      --terminal-key-fg: #aab5c1;
+      --shadow: 0 24px 80px rgba(0, 0, 0, .48);
+      --radius: 12px;
+      --radius-sm: 8px;
+      --tap: 44px;
+      --phone-w: 390px;
+      --phone-h: 844px;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+        "Microsoft YaHei UI", sans-serif;
+    }
+
+    html[data-theme="light"] {
+      color-scheme: light;
+      --bg: #dfe5ec;
+      --app-bg: #f4f6f9;
+      --surface: #ffffff;
+      --surface-2: #f7f9fb;
+      --surface-3: #e9eef4;
+      --glass: rgba(244, 246, 249, .9);
+      --text: #15202e;
+      --text-2: #344255;
+      --muted: #667488;
+      --subtle: #8390a0;
+      --border: #d6dee8;
+      --border-soft: rgba(53, 68, 87, .12);
+      --primary: #3378c5;
+      --primary-strong: #2469b7;
+      --primary-soft: rgba(51, 120, 197, .12);
+      /* 浅色主题下状态色需要更深的变体（亮绿/亮橙在白底上对比度不足） */
+      --green: #1e9b52;
+      --orange: #c56a10;
+      --red: #d63c44;
+      --purple: #8b53c9;
+      --cyan: #2e8f9c;
+      --green-soft: rgba(30, 155, 82, .1);
+      --orange-soft: rgba(213, 128, 16, .11);
+      --red-soft: rgba(214, 60, 68, .1);
+      --purple-soft: rgba(137, 83, 201, .11);
+      --shadow: 0 24px 70px rgba(43, 59, 78, .25);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 18% 10%, color-mix(in srgb, var(--primary) 14%, transparent), transparent 27rem),
+        radial-gradient(circle at 82% 84%, color-mix(in srgb, var(--cyan) 9%, transparent), transparent 30rem),
+        var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button, input, textarea, select { font: inherit; }
+    button { color: inherit; }
+    button, [role="button"] { -webkit-tap-highlight-color: transparent; }
+    button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+      outline: 2px solid var(--primary-strong);
+      outline-offset: 2px;
+    }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    /* 触屏没有 hover，按压反馈统一用 :active（tap-highlight 已全局关闭） */
+    .icon-button:active, .primary-button:active, .secondary-button:active, .danger-button:active,
+    .text-button:active, .chip:active, .summary-card:active, .attention-card:active,
+    .group-card:active, .session-main:active, .session-menu:active, .nav-button:active,
+    .settings-row:active, .sheet-option:active, .choice-card:active, .scope-button:active,
+    .key-button:active, .review-button:active, .banner-action:active, .search-clear:active {
+      opacity: .72;
+    }
+    svg { display: block; }
+    .icon { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .icon-sm { width: 16px; height: 16px; }
+    .icon-lg { width: 24px; height: 24px; }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
+
+    .prototype-stage {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 272px var(--phone-w);
+      justify-content: center;
+      align-items: center;
+      gap: 44px;
+      padding: 36px;
+    }
+
+    .review-panel {
+      align-self: center;
+      color: var(--text-2);
+    }
+    .review-kicker {
+      margin: 0 0 8px;
+      color: var(--primary-strong);
+      font-size: 11px;
+      font-weight: 750;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .review-panel h1 {
+      margin: 0;
+      color: var(--text);
+      font-size: 25px;
+      line-height: 1.2;
+      letter-spacing: -.02em;
+    }
+    .review-copy { margin: 12px 0 22px; color: var(--muted); font-size: 13px; }
+    .review-group { margin-top: 20px; }
+    .review-label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--subtle);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .review-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+    .review-button {
+      min-height: 36px;
+      padding: 7px 11px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(21, 27, 36, .72);
+      color: var(--text-2);
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .review-button:hover { border-color: var(--primary); color: var(--text); }
+    .review-button[aria-pressed="true"] {
+      border-color: var(--primary);
+      background: var(--primary-soft);
+      color: var(--primary-strong);
+    }
+    .review-note {
+      display: flex;
+      gap: 9px;
+      margin-top: 22px;
+      padding: 11px 12px;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-sm);
+      background: rgba(21, 27, 36, .48);
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .phone-shell {
+      position: relative;
+      width: var(--phone-w);
+      height: var(--phone-h);
+      overflow: hidden;
+      border: 1px solid rgba(143, 156, 172, .28);
+      border-radius: 36px;
+      background: var(--app-bg);
+      box-shadow: var(--shadow);
+      isolation: isolate;
+    }
+    .phone-shell::after {
+      content: "";
+      pointer-events: none;
+      position: absolute;
+      inset: 0;
+      z-index: 100;
+      border: 7px solid rgba(255, 255, 255, .035);
+      border-radius: inherit;
+    }
+    .status-bar {
+      position: absolute;
+      inset: 0 0 auto;
+      z-index: 40;
+      height: 29px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      padding: 0 19px 5px;
+      background: var(--glass);
+      backdrop-filter: blur(18px);
+      color: var(--text-2);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .status-icons { display: flex; align-items: center; gap: 6px; }
+    .status-signal { display: flex; align-items: flex-end; gap: 1px; height: 10px; }
+    .status-signal i { display: block; width: 2px; border-radius: 1px; background: currentColor; }
+    .status-signal i:nth-child(1) { height: 3px; }
+    .status-signal i:nth-child(2) { height: 5px; }
+    .status-signal i:nth-child(3) { height: 7px; }
+    .status-signal i:nth-child(4) { height: 9px; }
+    .battery { width: 20px; height: 9px; border: 1px solid currentColor; border-radius: 2px; padding: 1px; }
+    .battery::after { content: ""; display: block; width: 76%; height: 100%; border-radius: 1px; background: currentColor; }
+
+    .app-screen {
+      position: absolute;
+      inset: 29px 0 74px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-width: none;
+      background: var(--app-bg);
+    }
+    .app-screen::-webkit-scrollbar, .chip-row::-webkit-scrollbar, .key-row::-webkit-scrollbar { display: none; }
+    .page { min-height: 100%; padding-bottom: 24px; }
+    .page-header {
+      position: sticky;
+      top: 0;
+      z-index: 12;
+      padding: 13px 16px 11px;
+      border-bottom: 1px solid transparent;
+      background: var(--glass);
+      backdrop-filter: blur(18px);
+    }
+    .page-header.scrolled { border-color: var(--border-soft); }
+    .header-row { display: flex; align-items: center; gap: 9px; min-height: 44px; }
+    .header-title { min-width: 0; flex: 1; }
+    .header-title h2 { margin: 0; font-size: 21px; line-height: 1.2; letter-spacing: -.02em; }
+    .header-subtitle {
+      display: flex; align-items: center; gap: 5px; margin-top: 3px;
+      color: var(--muted); font-size: 11px;
+    }
+    .online-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+    .online-dot.offline { background: var(--orange); box-shadow: 0 0 0 3px var(--orange-soft); }
+
+    .icon-button {
+      position: relative;
+      width: var(--tap);
+      height: var(--tap);
+      flex: 0 0 auto;
+      display: inline-grid;
+      place-items: center;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--text-2);
+      cursor: pointer;
+    }
+    .icon-button:hover { background: var(--surface-3); color: var(--text); }
+    .icon-button.filled { background: var(--surface-2); }
+    .notification-badge {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      min-width: 17px;
+      height: 17px;
+      display: grid;
+      place-items: center;
+      padding: 0 4px;
+      border: 2px solid var(--app-bg);
+      border-radius: 10px;
+      background: var(--red);
+      color: white;
+      font-size: 9px;
+      font-weight: 800;
+    }
+
+    .primary-button, .secondary-button, .danger-button, .text-button {
+      min-height: var(--tap);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 15px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .primary-button { border: 1px solid var(--primary); background: var(--primary); color: #fff; }
+    .primary-button:hover { background: var(--primary-strong); }
+    .secondary-button { border: 1px solid var(--border); background: var(--surface-2); color: var(--text); }
+    .secondary-button:hover { border-color: var(--primary); }
+    .danger-button { border: 1px solid rgba(239, 91, 97, .45); background: var(--red-soft); color: var(--red); }
+    .text-button { min-height: 38px; padding: 0 9px; border: 0; background: transparent; color: var(--primary-strong); }
+    .full-button { width: 100%; }
+
+    .content { padding: 0 16px; }
+    .section { margin-top: 20px; }
+    .section-head {
+      min-height: 30px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 9px;
+    }
+    .section-head h3 { margin: 0; flex: 1; font-size: 15px; }
+    .section-note { color: var(--muted); font-size: 11px; }
+    .count { color: var(--muted); font-weight: 500; }
+
+    .scope-button {
+      max-width: 100%;
+      min-height: 38px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--text-2);
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .scope-button:hover { border-color: var(--primary); color: var(--text); }
+    .scope-label { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .connection-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin: 4px 16px 0;
+      padding: 11px 12px;
+      border: 1px solid rgba(240, 162, 58, .3);
+      border-radius: var(--radius-sm);
+      background: var(--orange-soft);
+      color: var(--text-2);
+      font-size: 12px;
+    }
+    .connection-banner .icon { flex: 0 0 auto; color: var(--orange); }
+    .connection-copy { min-width: 0; flex: 1; }
+    .connection-copy strong { display: block; margin-bottom: 2px; color: var(--text); }
+    .banner-action {
+      min-height: 28px;
+      padding: 0 7px;
+      border: 0;
+      background: transparent;
+      color: var(--orange);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .search-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 9px;
+      padding: 0 11px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface);
+      color: var(--muted);
+    }
+    .search-wrap:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+    .search-wrap input {
+      min-width: 0;
+      height: 42px;
+      flex: 1;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--text);
+      font-size: 16px;
+    }
+    .search-clear {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px;
+      margin-top: 14px;
+    }
+    .summary-card {
+      min-height: 82px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding: 11px 12px;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      text-align: left;
+    }
+    .summary-card:hover, .summary-card[aria-pressed="true"] { border-color: var(--tone, var(--primary)); background: var(--tone-bg, var(--primary-soft)); }
+    .summary-top { width: 100%; display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; }
+    .summary-value { font-size: 25px; font-weight: 750; line-height: 1; letter-spacing: -.03em; }
+    .summary-card.action { --tone: var(--orange); --tone-bg: var(--orange-soft); }
+    .summary-card.running { --tone: var(--green); --tone-bg: var(--green-soft); }
+    .summary-card.review { --tone: var(--purple); --tone-bg: var(--purple-soft); }
+    .summary-card.failed { --tone: var(--red); --tone-bg: var(--red-soft); }
+    .overlap-note { margin: 7px 2px 0; color: var(--subtle); font-size: 10px; }
+
+    .chip-row {
+      display: flex;
+      gap: 7px;
+      margin: 0 -16px;
+      padding: 0 16px 2px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .chip {
+      min-height: 36px;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 11px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--text-2);
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .chip[aria-pressed="true"] { border-color: var(--primary); background: var(--primary-soft); color: var(--primary-strong); }
+    .chip-count { color: var(--muted); font-size: 10px; }
+
+    .stack { display: grid; gap: 9px; }
+    .attention-card, .group-card, .session-card {
+      position: relative;
+      width: 100%;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+    }
+    .attention-card {
+      display: grid;
+      grid-template-columns: 4px minmax(0, 1fr) 24px;
+      gap: 11px;
+      padding: 12px 10px 12px 0;
+      cursor: pointer;
+      text-align: left;
+    }
+    .attention-card:hover, .group-card:hover { border-color: var(--border); background: var(--surface-2); }
+    .severity-line { align-self: stretch; border-radius: 0 4px 4px 0; background: var(--tone); }
+    .tone-approval { --tone: var(--orange); --tone-bg: var(--orange-soft); }
+    .tone-input { --tone: var(--primary); --tone-bg: var(--primary-soft); }
+    .tone-failed { --tone: var(--red); --tone-bg: var(--red-soft); }
+    .tone-review { --tone: var(--purple); --tone-bg: var(--purple-soft); }
+    .tone-stalled { --tone: var(--cyan); --tone-bg: rgba(73, 184, 199, .13); }
+    .card-main { min-width: 0; }
+    .card-topline { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+    .status-pill {
+      min-height: 22px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 7px;
+      border-radius: 999px;
+      background: var(--tone-bg, var(--surface-3));
+      color: var(--tone, var(--text-2));
+      font-size: 10px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+    .card-time { margin-left: auto; color: var(--subtle); font-size: 10px; white-space: nowrap; }
+    .card-title { margin: 0; font-size: 13px; line-height: 1.4; font-weight: 700; }
+    .card-evidence {
+      display: -webkit-box;
+      margin-top: 5px;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 11px;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    .card-meta {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin-top: 8px;
+      overflow: hidden;
+      color: var(--subtle);
+      font-size: 10px;
+    }
+    .card-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chevron { align-self: center; color: var(--subtle); }
+
+    .group-card {
+      display: block;
+      padding: 12px;
+      cursor: pointer;
+      text-align: left;
+    }
+    .group-head { display: flex; align-items: flex-start; gap: 9px; }
+    .group-icon {
+      width: 34px;
+      height: 34px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      background: var(--surface-3);
+      color: var(--text-2);
+    }
+    .group-info { min-width: 0; flex: 1; }
+    .group-title { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+    .group-path { margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 10px/1.4 "SFMono-Regular", Consolas, monospace; }
+    .group-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .mini-stat { min-height: 24px; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border-radius: 7px; background: var(--surface-2); color: var(--muted); font-size: 10px; }
+    .mini-stat.attention { background: var(--orange-soft); color: var(--orange); }
+    .mini-stat.failure { background: var(--red-soft); color: var(--red); }
+    .mini-stat.live { background: var(--green-soft); color: var(--green); }
+
+    .empty-state {
+      display: grid;
+      justify-items: center;
+      padding: 28px 16px 14px;
+      color: var(--muted);
+      text-align: center;
+    }
+    .empty-icon { width: 52px; height: 52px; display: grid; place-items: center; margin-bottom: 12px; border-radius: 16px; background: var(--surface-2); color: var(--subtle); }
+    .empty-state h4 { margin: 0 0 5px; color: var(--text); font-size: 14px; }
+    .empty-state p { max-width: 260px; margin: 0 0 15px; font-size: 12px; }
+
+    .bottom-nav {
+      position: absolute;
+      inset: auto 0 0;
+      z-index: 30;
+      height: 74px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      padding: 5px 13px max(8px, env(safe-area-inset-bottom));
+      border-top: 1px solid var(--border-soft);
+      background: var(--glass);
+      backdrop-filter: blur(20px);
+    }
+    .nav-button {
+      position: relative;
+      min-width: 0;
+      min-height: 55px;
+      display: grid;
+      place-items: center;
+      align-content: center;
+      gap: 3px;
+      border: 0;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 10px;
+    }
+    .nav-button[aria-current="page"] { color: var(--primary-strong); }
+    .nav-button[aria-current="page"]::before {
+      content: "";
+      position: absolute;
+      top: 1px;
+      width: 28px;
+      height: 3px;
+      border-radius: 2px;
+      background: var(--primary);
+    }
+    .nav-dot { position: absolute; top: 5px; left: calc(50% + 7px); width: 7px; height: 7px; border: 2px solid var(--glass); border-radius: 50%; background: var(--red); }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 3px;
+      padding: 3px;
+      border-radius: 10px;
+      background: var(--surface-3);
+    }
+    .segment {
+      min-height: 38px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .segment[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, .15); }
+
+    .session-group { margin-top: 18px; }
+    .session-group-head { display: flex; align-items: center; gap: 7px; margin: 0 2px 7px; color: var(--muted); font-size: 11px; }
+    .session-group-head strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: 12px; }
+    .session-group-head span:last-child { margin-left: auto; }
+    .session-card { display: flex; align-items: stretch; overflow: hidden; }
+    .session-main {
+      min-width: 0;
+      min-height: 72px;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 4px 10px 11px;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      text-align: left;
+    }
+    .session-main:hover { background: var(--surface-2); }
+    .terminal-mark {
+      width: 34px;
+      height: 34px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: #0b0e13;
+      color: #a8d8ac;
+    }
+    .session-info { min-width: 0; flex: 1; }
+    .session-name-row { display: flex; align-items: center; gap: 5px; }
+    .session-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; }
+    .pin-icon { color: var(--orange); }
+    .session-detail { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10px; }
+    .session-preview { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--subtle); font: 10px/1.4 "SFMono-Regular", Consolas, monospace; }
+    .session-menu { width: 44px; flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+    .session-menu:hover { background: var(--surface-2); color: var(--text); }
+    .status-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--subtle); }
+    .status-dot.running { background: var(--green); }
+    .status-dot.waiting { background: var(--orange); }
+    .status-dot.failed { background: var(--red); }
+    .status-dot.review { background: var(--purple); }
+
+    .settings-hero {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 7px;
+      padding: 14px;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, var(--surface), var(--surface-2));
+    }
+    .device-avatar { width: 46px; height: 46px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 13px; background: var(--primary-soft); color: var(--primary-strong); }
+    .settings-hero-info { min-width: 0; flex: 1; }
+    .settings-hero-info strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .settings-hero-info span { color: var(--muted); font-size: 11px; }
+    .settings-group { margin-top: 20px; }
+    .settings-group-title { margin: 0 0 7px 3px; color: var(--muted); font-size: 11px; font-weight: 650; }
+    .settings-list { overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--surface); }
+    .settings-row {
+      width: 100%;
+      min-height: 57px;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 8px 11px;
+      border: 0;
+      border-bottom: 1px solid var(--border-soft);
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      text-align: left;
+    }
+    .settings-row:last-child { border-bottom: 0; }
+    .settings-row:hover { background: var(--surface-2); }
+    .settings-icon { width: 31px; height: 31px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 8px; background: var(--surface-3); color: var(--text-2); }
+    .settings-info { min-width: 0; flex: 1; }
+    .settings-info strong { display: block; font-size: 13px; }
+    .settings-info span { display: block; margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .row-value { max-width: 105px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+    .switch {
+      position: relative;
+      width: 46px;
+      height: 28px;
+      flex: 0 0 auto;
+      padding: 0;
+      border: 0;
+      border-radius: 15px;
+      background: var(--surface-3);
+      cursor: pointer;
+      transition: background .18s ease;
+    }
+    .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,.25); transition: transform .18s ease; }
+    .switch[aria-checked="true"] { background: var(--primary); }
+    .switch[aria-checked="true"]::after { transform: translateX(18px); }
+
+    .push-layer {
+      position: absolute;
+      inset: 29px 0 0;
+      z-index: 50;
+      overflow: hidden;
+      background: var(--app-bg);
+      transform: translateX(102%);
+      transition: transform .24s cubic-bezier(.22, .82, .28, 1);
+    }
+    .push-layer.open { transform: translateX(0); }
+    .push-page { height: 100%; display: flex; flex-direction: column; background: var(--app-bg); }
+    .push-header {
+      min-height: 58px;
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--border-soft);
+      background: var(--glass);
+      backdrop-filter: blur(18px);
+    }
+    .push-header h2 { min-width: 0; flex: 1; margin: 0; overflow: hidden; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
+    .push-body { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
+    .push-body::-webkit-scrollbar { display: none; }
+    .push-content { padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); }
+    .push-footer {
+      flex: 0 0 auto;
+      padding: 10px 16px max(12px, env(safe-area-inset-bottom));
+      border-top: 1px solid var(--border-soft);
+      background: var(--glass);
+      backdrop-filter: blur(18px);
+    }
+
+    .detail-hero { padding: 14px; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--surface); }
+    .detail-hero h3 { margin: 10px 0 6px; font-size: 18px; line-height: 1.35; }
+    .detail-hero p { margin: 0; color: var(--muted); font-size: 12px; }
+    .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+    .detail-field { min-width: 0; padding: 10px; border-radius: 9px; background: var(--surface-2); }
+    .detail-field span { display: block; color: var(--subtle); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+    .detail-field strong { display: block; margin-top: 4px; overflow-wrap: anywhere; color: var(--text-2); font-size: 11px; }
+    .evidence-box { margin-top: 14px; padding: 12px; border-left: 3px solid var(--tone, var(--primary)); border-radius: 0 9px 9px 0; background: var(--surface-2); color: var(--text-2); font: 11px/1.55 "SFMono-Regular", Consolas, monospace; overflow-wrap: anywhere; }
+    .timeline { display: grid; gap: 0; }
+    .timeline-item { position: relative; display: grid; grid-template-columns: 22px 1fr; gap: 8px; padding-bottom: 15px; color: var(--text-2); font-size: 11px; }
+    .timeline-item:not(:last-child)::before { content: ""; position: absolute; left: 10px; top: 18px; bottom: 0; width: 1px; background: var(--border); }
+    .timeline-dot { position: relative; z-index: 1; width: 21px; height: 21px; display: grid; place-items: center; border-radius: 50%; background: var(--surface-3); color: var(--muted); }
+    .timeline-item time { display: block; margin-top: 3px; color: var(--subtle); font-size: 9px; }
+
+    .sheet-backdrop {
+      position: absolute;
+      inset: 0;
+      z-index: 70;
+      border: 0;
+      background: rgba(0, 0, 0, .58);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .2s ease;
+    }
+    .sheet-backdrop.open { opacity: 1; pointer-events: auto; }
+    .sheet {
+      position: absolute;
+      inset: auto 0 0;
+      z-index: 71;
+      max-height: calc(100% - 54px);
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--border);
+      border-bottom: 0;
+      border-radius: 20px 20px 0 0;
+      background: var(--app-bg);
+      box-shadow: 0 -20px 60px rgba(0,0,0,.35);
+      transform: translateY(102%);
+      transition: transform .24s cubic-bezier(.22, .82, .28, 1);
+    }
+    .sheet.open { transform: translateY(0); }
+    .sheet-handle { width: 38px; height: 4px; flex: 0 0 auto; margin: 8px auto 2px; border-radius: 2px; background: var(--border); }
+    .sheet-header { min-height: 50px; display: flex; align-items: center; gap: 8px; padding: 5px 12px 5px 16px; border-bottom: 1px solid var(--border-soft); }
+    .sheet-header h3 { min-width: 0; flex: 1; margin: 0; font-size: 16px; }
+    .sheet-body { min-height: 0; overflow-y: auto; padding: 10px 16px calc(16px + env(safe-area-inset-bottom)); }
+    .sheet-option {
+      width: 100%;
+      min-height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 4px;
+      border: 0;
+      border-bottom: 1px solid var(--border-soft);
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      text-align: left;
+    }
+    .sheet-option:last-child { border-bottom: 0; }
+    .sheet-option:hover { color: var(--primary-strong); }
+    .sheet-option .option-copy { min-width: 0; flex: 1; }
+    .sheet-option strong, .sheet-option span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sheet-option span { margin-top: 2px; color: var(--muted); font-size: 10px; }
+    .check-mark { color: var(--primary-strong); }
+
+    .form-grid { display: grid; gap: 14px; }
+    .field label, .field-label { display: block; margin: 0 0 6px 2px; color: var(--text-2); font-size: 11px; font-weight: 650; }
+    .field input, .field textarea, .field select {
+      width: 100%;
+      min-height: 46px;
+      padding: 10px 11px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      outline: 0;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 16px;
+    }
+    .field textarea { min-height: 80px; resize: vertical; }
+    .field input:focus, .field textarea:focus, .field select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+    .field-hint { margin: 5px 2px 0; color: var(--subtle); font-size: 10px; }
+    .field-error { margin: 5px 2px 0; color: var(--red); font-size: 10px; }
+    .choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .choice-card { min-height: 72px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text-2); cursor: pointer; text-align: left; }
+    .choice-card[aria-pressed="true"] { border-color: var(--primary); background: var(--primary-soft); color: var(--text); }
+    .choice-card strong { display: block; font-size: 12px; }
+    .choice-card span { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
+    .pack-swatch {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      margin-right: 2px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: linear-gradient(135deg, var(--swatch-bg) 62%, var(--swatch-primary) 62%);
+      vertical-align: -2px;
+    }
+
+    .dialog {
+      width: calc(100% - 34px);
+      max-width: 340px;
+      margin: auto;
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .dialog h3 { margin: 0 0 7px; font-size: 17px; }
+    .dialog p { margin: 0; color: var(--muted); font-size: 12px; }
+    .dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 17px; }
+
+    .toast {
+      position: absolute;
+      z-index: 90;
+      left: 50%;
+      bottom: calc(84px + env(safe-area-inset-bottom));
+      max-width: calc(100% - 32px);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 13px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--text);
+      color: var(--app-bg);
+      box-shadow: 0 8px 30px rgba(0,0,0,.3);
+      opacity: 0;
+      pointer-events: none;
+      transform: translate(-50%, 10px);
+      transition: opacity .18s ease, transform .18s ease;
+      font-size: 11px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .toast.show { opacity: 1; transform: translate(-50%, 0); }
+    .push-layer.open ~ .toast { bottom: calc(18px + env(safe-area-inset-bottom)); }
+
+    .terminal-page { height: 100%; display: flex; flex-direction: column; background: var(--terminal-canvas); color: var(--terminal-fg); }
+    .terminal-header { min-height: 58px; flex: 0 0 auto; display: flex; align-items: center; gap: 5px; padding: 7px 10px; border-bottom: 1px solid var(--terminal-chrome-border); background: var(--terminal-chrome); }
+    .terminal-header-title { min-width: 0; flex: 1; }
+    .terminal-header-title strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+    .terminal-header-title span { display: flex; align-items: center; gap: 5px; margin-top: 2px; color: var(--terminal-dim); font-size: 9px; }
+    .terminal-output { min-height: 0; flex: 1; overflow: auto; padding: 12px 12px 24px; overscroll-behavior: contain; font: 11px/1.55 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .terminal-line { min-height: 17px; }
+    .terminal-line.dim { color: var(--terminal-dim); }
+    .terminal-line.green { color: var(--terminal-green); }
+    .terminal-line.blue { color: var(--terminal-blue); }
+    .terminal-line.yellow { color: var(--terminal-yellow); }
+    .terminal-line.red { color: var(--terminal-red); }
+    .terminal-input-zone { flex: 0 0 auto; border-top: 1px solid var(--terminal-chrome-border); background: var(--terminal-chrome); padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+    .key-row { display: flex; gap: 5px; padding: 7px 9px 5px; overflow-x: auto; scrollbar-width: none; }
+    .key-button { min-width: 42px; min-height: 38px; flex: 0 0 auto; padding: 0 10px; border: 1px solid var(--terminal-key-border); border-radius: 7px; background: var(--terminal-key-bg); color: var(--terminal-key-fg); cursor: pointer; font: 10px "SFMono-Regular", Consolas, monospace; }
+    .key-button[aria-pressed="true"] { border-color: var(--primary); background: var(--primary-soft); color: var(--primary-strong); }
+    .input-row { display: flex; align-items: flex-end; gap: 7px; padding: 3px 9px 0; }
+    .input-row textarea { min-height: 44px; max-height: 104px; flex: 1; resize: none; padding: 10px 11px; border: 1px solid var(--terminal-key-border); border-radius: 10px; outline: 0; background: var(--terminal-key-bg); color: var(--terminal-fg); font-size: 16px; }
+    .input-row textarea:focus { border-color: var(--primary); }
+    .send-button { width: 44px; height: 44px; flex: 0 0 auto; display: grid; place-items: center; border: 0; border-radius: 10px; background: var(--primary); color: var(--primary-foreground, #fff); cursor: pointer; }
+    .readonly-note { display: flex; align-items: center; gap: 7px; margin: 7px 9px 0; padding: 8px 9px; border-radius: 8px; background: var(--orange-soft); color: var(--orange); font-size: 10px; }
+
+    .qr-card { display: grid; justify-items: center; padding: 18px; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--surface); }
+    .qr-code { width: 154px; height: 154px; padding: 12px; border-radius: 12px; background: #fff; box-shadow: inset 0 0 0 1px #d4d8de; }
+    .qr-grid { width: 100%; height: 100%; display: grid; grid-template-columns: repeat(13, 1fr); grid-template-rows: repeat(13, 1fr); gap: 1px; background: #fff; }
+    .qr-grid i { background: transparent; }
+    .qr-grid i.on { background: #0c1219; }
+    .pair-code { margin-top: 12px; color: var(--text); font: 700 18px/1.2 "SFMono-Regular", Consolas, monospace; letter-spacing: .16em; }
+    .pair-note { margin-top: 6px; color: var(--muted); font-size: 10px; text-align: center; }
+
+    .notification-item { width: 100%; display: grid; grid-template-columns: 9px minmax(0,1fr) 20px; gap: 9px; padding: 12px 3px; border: 0; border-bottom: 1px solid var(--border-soft); background: transparent; color: var(--text); cursor: pointer; text-align: left; }
+    .notification-item:last-child { border-bottom: 0; }
+    .notification-item.read { opacity: .62; }
+    .unread-dot { width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; background: var(--primary); }
+    .notification-item.read .unread-dot { background: transparent; }
+    .notification-copy strong { display: block; font-size: 12px; }
+    .notification-copy span { display: -webkit-box; margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 10px; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .notification-copy time { display: block; margin-top: 5px; color: var(--subtle); font-size: 9px; }
+
+    .info-card { padding: 12px; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--surface); color: var(--text-2); font-size: 11px; }
+    .info-card strong { display: block; margin-bottom: 4px; color: var(--text); font-size: 12px; }
+    .warning-card { border-color: rgba(240, 162, 58, .25); background: var(--orange-soft); }
+    .danger-zone { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border-soft); }
+    .range-row { display: flex; align-items: center; gap: 10px; }
+    .range-row input { min-width: 0; flex: 1; accent-color: var(--primary); }
+    .range-value { width: 48px; color: var(--muted); font-size: 11px; text-align: right; }
+
+    @media (max-width: 720px) {
+      body { overflow: hidden; background: var(--app-bg); }
+      .prototype-stage { display: block; min-height: 100dvh; padding: 0; }
+      .review-panel { display: none; }
+      .phone-shell { width: 100vw; height: 100dvh; border: 0; border-radius: 0; box-shadow: none; }
+      .phone-shell::after { display: none; }
+    }
+
+    @media (max-width: 370px) {
+      .page-header, .content { padding-left: 12px; padding-right: 12px; }
+      .connection-banner { margin-left: 12px; margin-right: 12px; }
+      .chip-row { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
+      .summary-card { min-height: 76px; padding: 9px 10px; }
+      .summary-value { font-size: 23px; }
+      .scope-label { max-width: 145px; }
+    }
+
+    @media (orientation: landscape) and (max-height: 520px) {
+      .status-bar { height: 22px; padding-bottom: 2px; }
+      .app-screen { inset: 22px 0 60px; }
+      .bottom-nav { height: 60px; padding-top: 2px; padding-bottom: 3px; }
+      .nav-button { min-height: 50px; }
+      .push-layer { inset: 22px 0 0; }
+      .page-header { position: relative; }
+      .summary-grid { grid-template-columns: repeat(4, minmax(0,1fr)); }
+      .summary-card { min-height: 64px; }
+      .terminal-header { min-height: 48px; }
+      .key-row { padding-top: 4px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .001ms !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
+    }
+  </style>
+</head>
+<body>
+  <svg class="sr-only" aria-hidden="true">
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1.03-1.56V3h4v.08A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.56 1.03H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9m-8 13h4"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v11H3z"/></symbol>
+    <symbol id="i-git-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="7" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10m2-8h5a5 5 0 0 0 5-5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2.5 20h19z"/><path d="M12 9v4m0 3h.01"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5"/><path d="M18 9a7 7 0 0 0-12-2L4 11m2 4a7 7 0 0 0 12 2l2-4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="m14 4 6 6-3 1-4 4v4l-2 2-2-6-6-6 2-2h4l4-4z"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM3 4h18v3H3zm6 8h6"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16zm9-13 4 4"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m3 0-1 14H7L6 7"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m3 3 18 9-18 9 4-9zm4 9h14"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M3 9a14 14 0 0 1 18 0M6 13a9 9 0 0 1 12 0m-9 4a4 4 0 0 1 6 0m-3 3h.01"/></symbol>
+    <symbol id="i-wifi-off" viewBox="0 0 24 24"><path d="M2 2l20 20M8.5 8.5A14 14 0 0 1 21 9m-18 0a14 14 0 0 1 2.3-1.6M6 13a9 9 0 0 1 5-1.9m4.5 1.4A9 9 0 0 1 18 13m-9 4a4 4 0 0 1 6 0m-3 3h.01"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 3.4 8 8 9 4.6-1 8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0 0 18h1.5a2 2 0 0 0 0-4H12a2 2 0 0 1 0-4h3a6 6 0 0 0 0-12z"/><circle cx="7" cy="10" r="1"/><circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/></symbol>
+    <symbol id="i-language" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/></symbol>
+    <symbol id="i-bug" viewBox="0 0 24 24"><path d="M8 8a4 4 0 0 1 8 0v8a4 4 0 0 1-8 0zm-3 4h3m8 0h3M6 6l3 3m9-3-3 3M6 18l3-3m9 3-3-3"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></symbol>
+    <symbol id="i-slider" viewBox="0 0 24 24"><path d="M4 6h7m4 0h5M4 12h2m4 0h10M4 18h10m4 0h2"/><circle cx="13" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></symbol>
+    <symbol id="i-smartphone" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="2"/><path d="M10 18h4"/></symbol>
+    <symbol id="i-log-out" viewBox="0 0 24 24"><path d="M10 5H4v14h6m5-4 4-3-4-3m4 3H9"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 15a8 8 0 0 1-11-11 9 9 0 1 0 11 11Z"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="13" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M10 14h.01M14 14h4M7 17h10"/></symbol>
+  </svg>
+
+  <main class="prototype-stage">
+    <aside class="review-panel" aria-label="原型评审控制">
+      <p class="review-kicker">ThreadTerm · Mobile</p>
+      <h1>工作台完整前端原型</h1>
+      <p class="review-copy">无真实 Bridge / PTY，保留完整 UI、交互状态和移动端返回路径。</p>
+
+      <div class="review-group">
+        <span class="review-label">演示场景</span>
+        <div class="review-actions" id="scenario-controls">
+          <button class="review-button" data-action="scenario" data-value="attention">高优先级</button>
+          <button class="review-button" data-action="scenario" data-value="running">正常运行</button>
+          <button class="review-button" data-action="scenario" data-value="empty">空工作区</button>
+          <button class="review-button" data-action="scenario" data-value="warming">正在同步</button>
+          <button class="review-button" data-action="scenario" data-value="offline">离线快照</button>
+        </div>
+      </div>
+
+      <div class="review-group">
+        <span class="review-label">设备视口</span>
+        <div class="review-actions" id="viewport-controls">
+          <button class="review-button" data-action="viewport" data-value="390x844">390 × 844</button>
+          <button class="review-button" data-action="viewport" data-value="360x800">360 × 800</button>
+          <button class="review-button" data-action="viewport" data-value="430x932">430 × 932</button>
+          <button class="review-button" data-action="viewport" data-value="844x390">横屏</button>
+        </div>
+      </div>
+
+      <div class="review-group">
+        <span class="review-label">PC 主题联动（主题包）</span>
+        <div class="review-actions" id="themepack-controls">
+          <button class="review-button" data-action="themepack" data-value="">默认外观</button>
+          <button class="review-button" data-action="themepack" data-value="threadterm-dark">ThreadTerm 深色</button>
+          <button class="review-button" data-action="themepack" data-value="threadterm-light">ThreadTerm 浅色</button>
+          <button class="review-button" data-action="themepack" data-value="catppuccin">Catppuccin</button>
+          <button class="review-button" data-action="themepack" data-value="tokyo-night">Tokyo Night</button>
+          <button class="review-button" data-action="themepack" data-value="gruvbox">Gruvbox</button>
+          <button class="review-button" data-action="themepack" data-value="everforest-light">Everforest 浅色</button>
+          <button class="review-button" data-action="themepack" data-value="nord">Nord</button>
+        </div>
+      </div>
+
+      <div class="review-group">
+        <span class="review-label">快速入口</span>
+        <div class="review-actions">
+          <button class="review-button" data-action="open-pairing">配对门禁</button>
+          <button class="review-button" data-action="open-route" data-route="new-terminal">新建终端</button>
+          <button class="review-button" data-action="reset-prototype">重置原型</button>
+        </div>
+      </div>
+
+      <div class="review-note">
+        <svg class="icon icon-sm"><use href="#i-info"></use></svg>
+        <span>桌面评审控制不属于应用 UI；窄屏打开时自动隐藏。所有应用内按钮均有纯前端行为。</span>
+      </div>
+    </aside>
+
+    <section class="phone-shell" id="phone" aria-label="ThreadTerm 移动端应用原型">
+      <div class="status-bar" aria-hidden="true">
+        <span id="status-time">9:41</span>
+        <span class="status-icons">
+          <span class="status-signal"><i></i><i></i><i></i><i></i></span>
+          <svg class="icon icon-sm"><use href="#i-wifi"></use></svg>
+          <span class="battery"></span>
+        </span>
+      </div>
+
+      <div class="app-screen" id="app-screen"></div>
+      <nav class="bottom-nav" id="bottom-nav" aria-label="主导航"></nav>
+      <section class="push-layer" id="push-layer" aria-live="polite"></section>
+      <button class="sheet-backdrop" id="sheet-backdrop" data-action="close-sheet" aria-label="关闭弹层"></button>
+      <section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-hidden="true"></section>
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (selector, root = document) => root.querySelector(selector);
+    const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+    const clone = (value) => JSON.parse(JSON.stringify(value));
+    const escapeHTML = (value = "") => String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+    const icon = (name, className = "") =>
+      `<svg class="icon ${className}" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
+
+    const BASE_SESSIONS = [
+      {
+        id: "s-threadterm-ui",
+        name: "mobile-workbench",
+        project: "ThreadTerm",
+        projectPath: "D:\\project\\ThreadTerm\\ThreadTerm",
+        worktree: "feature/mobile-workbench",
+        type: "Codex",
+        status: "waiting",
+        statusLabel: "等待审批",
+        lastActive: "刚刚",
+        preview: "Allow command: git push origin feature/mobile-workbench?",
+        pinned: true,
+        archived: false,
+        output: [
+          { text: "› 正在检查移动端工作台变更...", tone: "blue" },
+          { text: "✓ 748 tests passed", tone: "green" },
+          { text: "✓ Typecheck and lint completed", tone: "green" },
+          { text: "" },
+          { text: "$ git push origin feature/mobile-workbench" },
+          { text: "Waiting for approval before external write.", tone: "yellow" }
+        ]
+      },
+      {
+        id: "s-deploy",
+        name: "release-preview",
+        project: "Customer Portal",
+        projectPath: "D:\\work\\customer-portal",
+        worktree: "release/2.8",
+        type: "Claude Code",
+        status: "waiting",
+        statusLabel: "等待输入",
+        lastActive: "2 分钟前",
+        preview: "Select deployment target: [staging / production]",
+        pinned: false,
+        archived: false,
+        output: [
+          { text: "$ pnpm deploy", tone: "blue" },
+          { text: "Build completed in 42.7s", tone: "green" },
+          { text: "" },
+          { text: "Select deployment target:" },
+          { text: "  1) staging", tone: "yellow" },
+          { text: "  2) production", tone: "yellow" },
+          { text: "› " }
+        ]
+      },
+      {
+        id: "s-tests",
+        name: "api-regression",
+        project: "Customer Portal",
+        projectPath: "D:\\work\\customer-portal",
+        worktree: "main",
+        type: "Shell",
+        status: "failed",
+        statusLabel: "异常",
+        lastActive: "8 分钟前",
+        preview: "FAIL auth/session-refresh.test.ts · 2 failed",
+        pinned: false,
+        archived: false,
+        output: [
+          { text: "$ pnpm test:api", tone: "blue" },
+          { text: "PASS users/profile.test.ts", tone: "green" },
+          { text: "FAIL auth/session-refresh.test.ts", tone: "red" },
+          { text: "Expected status 200, received 401", tone: "red" },
+          { text: "" },
+          { text: "Tests: 2 failed, 117 passed", tone: "yellow" }
+        ]
+      },
+      {
+        id: "s-review",
+        name: "settings-refactor",
+        project: "ThreadTerm",
+        projectPath: "D:\\project\\ThreadTerm\\ThreadTerm",
+        worktree: "feature/settings-ui",
+        type: "Codex",
+        status: "review",
+        statusLabel: "待复核",
+        lastActive: "12 分钟前",
+        preview: "Implementation complete. Review 14 changed files.",
+        pinned: false,
+        archived: false,
+        output: [
+          { text: "✓ Settings sections refactored", tone: "green" },
+          { text: "✓ Component tests passed", tone: "green" },
+          { text: "✓ No production behavior changed", tone: "green" },
+          { text: "" },
+          { text: "Ready for review: 14 changed files.", tone: "blue" }
+        ]
+      },
+      {
+        id: "s-docs",
+        name: "docs-index",
+        project: "Docs",
+        projectPath: "D:\\work\\docs",
+        worktree: "main",
+        type: "Kimi",
+        status: "running",
+        statusLabel: "正常运行",
+        lastActive: "1 分钟前",
+        preview: "Indexing 428 Markdown files… 76%",
+        pinned: false,
+        archived: false,
+        output: [
+          { text: "$ threadterm index ./docs", tone: "blue" },
+          { text: "Discovered 428 documents", tone: "dim" },
+          { text: "Building search index…", tone: "yellow" },
+          { text: "[███████████████░░░░░] 76%", tone: "green" }
+        ]
+      },
+      {
+        id: "s-archived",
+        name: "legacy-cleanup",
+        project: "ThreadTerm",
+        projectPath: "D:\\project\\ThreadTerm\\ThreadTerm",
+        worktree: "chore/legacy-cleanup",
+        type: "Shell",
+        status: "review",
+        statusLabel: "已归档",
+        lastActive: "昨天",
+        preview: "Cleanup completed.",
+        pinned: false,
+        archived: true,
+        output: [{ text: "Cleanup completed.", tone: "green" }]
+      }
+    ];
+
+    const BASE_ATTENTION = [
+      {
+        id: "a-approval",
+        kind: "approval",
+        label: "审批",
+        tone: "approval",
+        title: "Codex 请求执行外部写操作",
+        evidence: "git push origin feature/mobile-workbench",
+        project: "ThreadTerm",
+        worktree: "feature/mobile-workbench",
+        sessionId: "s-threadterm-ui",
+        source: "结构化请求",
+        reason: "外部写操作需要明确授权",
+        time: "刚刚",
+        capability: "desktop-required",
+        activity: [
+          ["命令已准备，等待用户授权", "刚刚"],
+          ["全量测试通过：748 项", "1 分钟前"],
+          ["检测到外部仓库写入", "1 分钟前"]
+        ]
+      },
+      {
+        id: "a-input",
+        kind: "input",
+        label: "待输入",
+        tone: "input",
+        title: "部署脚本等待选择目标环境",
+        evidence: "Select deployment target: staging / production",
+        project: "Customer Portal",
+        worktree: "release/2.8",
+        sessionId: "s-deploy",
+        source: "终端状态",
+        reason: "进程正在等待标准输入",
+        time: "2 分钟前",
+        capability: "terminal",
+        activity: [
+          ["进程进入等待输入状态", "2 分钟前"],
+          ["预览构建完成", "3 分钟前"]
+        ]
+      },
+      {
+        id: "a-failed",
+        kind: "failed",
+        label: "异常",
+        tone: "failed",
+        title: "API 回归测试退出，尚未恢复",
+        evidence: "session-refresh.test.ts: expected 200, received 401",
+        project: "Customer Portal",
+        worktree: "main",
+        sessionId: "s-tests",
+        source: "终端状态",
+        reason: "进程异常退出且未进入自动恢复",
+        time: "8 分钟前",
+        capability: "terminal",
+        activity: [
+          ["进程以退出码 1 结束", "8 分钟前"],
+          ["2 项测试失败，117 项通过", "8 分钟前"],
+          ["最后一次正常输出", "9 分钟前"]
+        ]
+      },
+      {
+        id: "a-review",
+        kind: "review",
+        label: "待复核",
+        tone: "review",
+        title: "设置页重构已完成，等待查看",
+        evidence: "14 files changed · tests and typecheck passed",
+        project: "ThreadTerm",
+        worktree: "feature/settings-ui",
+        sessionId: "s-review",
+        source: "未读通知",
+        reason: "终端完成工作并产生未读结果",
+        time: "12 分钟前",
+        capability: "terminal",
+        activity: [
+          ["实现完成，等待查看变更", "12 分钟前"],
+          ["组件测试通过", "13 分钟前"],
+          ["类型检查通过", "13 分钟前"]
+        ]
+      },
+      {
+        id: "a-stalled",
+        kind: "stalled",
+        label: "无进展",
+        tone: "stalled",
+        title: "文档索引 6 分钟没有新输出",
+        evidence: "Indexing 428 Markdown files… 76%",
+        project: "Docs",
+        worktree: "main",
+        sessionId: "s-docs",
+        source: "注意力规则",
+        reason: "超过 5 分钟没有可见活动",
+        time: "6 分钟前",
+        capability: "terminal",
+        activity: [
+          ["达到无进展阈值", "刚刚"],
+          ["最后输出：索引进度 76%", "6 分钟前"]
+        ]
+      }
+    ];
+
+    const BASE_GROUPS = [
+      { id: "g-mobile", project: "ThreadTerm", path: "D:\\project\\ThreadTerm\\ThreadTerm", worktree: "feature/mobile-workbench", status: "action", label: "需处理", sessionIds: ["s-threadterm-ui"], attention: 1, lastActive: "刚刚" },
+      { id: "g-settings", project: "ThreadTerm", path: "D:\\project\\ThreadTerm\\ThreadTerm", worktree: "feature/settings-ui", status: "review", label: "待复核", sessionIds: ["s-review"], attention: 1, lastActive: "12 分钟前" },
+      { id: "g-portal-release", project: "Customer Portal", path: "D:\\work\\customer-portal", worktree: "release/2.8", status: "action", label: "需处理", sessionIds: ["s-deploy"], attention: 1, lastActive: "2 分钟前" },
+      { id: "g-portal-main", project: "Customer Portal", path: "D:\\work\\customer-portal", worktree: "main", status: "failed", label: "异常", sessionIds: ["s-tests"], attention: 1, lastActive: "8 分钟前" },
+      { id: "g-docs", project: "Docs", path: "D:\\work\\docs", worktree: "main", status: "running", label: "运行中", sessionIds: ["s-docs"], attention: 1, lastActive: "1 分钟前" }
+    ];
+
+    const BASE_NOTIFICATIONS = [
+      { id: "n1", title: "请求授权", body: "mobile-workbench 请求执行 git push", time: "刚刚", read: false, attentionId: "a-approval" },
+      { id: "n2", title: "等待输入", body: "release-preview 正在等待部署目标", time: "2 分钟前", read: false, attentionId: "a-input" },
+      { id: "n3", title: "终端异常", body: "api-regression 以退出码 1 结束", time: "8 分钟前", read: false, attentionId: "a-failed" },
+      { id: "n4", title: "工作完成", body: "settings-refactor 已完成，等待复核", time: "12 分钟前", read: true, attentionId: "a-review" }
+    ];
+
+    const SCOPES = [
+      { id: "all", label: "全部项目", detail: "所有项目与 Worktree" },
+      { id: "ThreadTerm", label: "ThreadTerm", detail: "全部 Worktree" },
+      { id: "ThreadTerm/feature/mobile-workbench", label: "ThreadTerm · mobile-workbench", detail: "feature/mobile-workbench" },
+      { id: "Customer Portal", label: "Customer Portal", detail: "全部 Worktree" },
+      { id: "Docs", label: "Docs", detail: "main" }
+    ];
+
+    const FILTERS = [
+      ["all", "全部"],
+      ["approval", "审批"],
+      ["input", "待输入"],
+      ["failed", "异常"],
+      ["review", "待复核"],
+      ["stalled", "无进展"]
+    ];
+
+    const DEFAULT_SETTINGS = {
+      theme: "dark",
+      themePack: null,
+      language: "zh-CN",
+      permission: "full",
+      osNotifications: true,
+      sounds: false,
+      badge: true,
+      ruleWaiting: true,
+      ruleFailed: true,
+      ruleReview: true,
+      ruleStalled: false,
+      stalledMinutes: 5,
+      compactTerminal: false
+    };
+
+    /* ================= PC 主题联动层 =================
+     * 与 src/theme/themePacks.ts 同源的精简主题包（hex 取自 PC 端真实定义，
+     * 含 Wave B 对比度修正后的值）。联动机制与 mobile-app/src/theme.ts 的
+     * MobileThemeController 对齐：PC 端经移动 Bridge 推送 { app, terminal, mode }，
+     * 移动端把 token 注入 CSS 变量。此处用同等机制演示——生产环境只需把
+     * THEME_PACKS 换成 Bridge 推送的消息体，派生与注入逻辑可以直接保留。
+     */
+    const THEME_PACKS = {
+      "threadterm-dark": {
+        label: "ThreadTerm 深色", mode: "dark",
+        app: { background: "#020817", foreground: "#f8fafc", card: "#021327", primary: "#3b82f6", mutedForeground: "#94a3b8", border: "#1e293b" },
+        terminal: { background: "#020817", foreground: "#f8fafc", dim: "#666666", green: "#0dbc79", brightGreen: "#23d18b", blue: "#2472c8", brightBlue: "#3b8eea", yellow: "#e5e510", brightYellow: "#f5f543", red: "#cd3131", brightRed: "#f14c4c", cyan: "#11a8cd", magenta: "#bc3fbc" }
+      },
+      "threadterm-light": {
+        label: "ThreadTerm 浅色", mode: "light",
+        app: { background: "#fafafa", foreground: "#020817", card: "#ffffff", primary: "#2563eb", mutedForeground: "#64748b", border: "#e2e8f0" },
+        terminal: { background: "#fcfcfc", foreground: "#1f1f1f", dim: "#666666", green: "#1a7f37", brightGreen: "#1ca76f", blue: "#2472c8", brightBlue: "#3b8eea", yellow: "#9a6700", brightYellow: "#969608", red: "#cd3131", brightRed: "#f14c4c", cyan: "#0a7ea4", magenta: "#ba3eba" }
+      },
+      "catppuccin": {
+        label: "Catppuccin Mocha", mode: "dark",
+        app: { background: "#1e1e2e", foreground: "#cdd6f4", card: "#313244", primary: "#89b4fa", mutedForeground: "#a6adc8", border: "#45475a" },
+        terminal: { background: "#1e1e2e", foreground: "#cdd6f4", dim: "#585b70", green: "#a6e3a1", brightGreen: "#89d88b", blue: "#89b4fa", brightBlue: "#74a8fc", yellow: "#f9e2af", brightYellow: "#ebd391", red: "#f38ba8", brightRed: "#f37799", cyan: "#94e2d5", magenta: "#f5c2e7" }
+      },
+      "tokyo-night": {
+        label: "Tokyo Night", mode: "dark",
+        app: { background: "#1a1b26", foreground: "#c0caf5", card: "#24283b", primary: "#7aa2f7", mutedForeground: "#7b82a8", border: "#414868" },
+        terminal: { background: "#1a1b26", foreground: "#c0caf5", dim: "#414868", green: "#9ece6a", brightGreen: "#9ece6a", blue: "#7aa2f7", brightBlue: "#7aa2f7", yellow: "#e0af68", brightYellow: "#e0af68", red: "#f7768e", brightRed: "#f7768e", cyan: "#7dcfff", magenta: "#bb9af7" }
+      },
+      "gruvbox": {
+        label: "Gruvbox Dark", mode: "dark",
+        app: { background: "#282828", foreground: "#ebdbb2", card: "#32302f", primary: "#fabd2f", mutedForeground: "#a89984", border: "#504945" },
+        terminal: { background: "#282828", foreground: "#ebdbb2", dim: "#928374", green: "#98971a", brightGreen: "#b8bb26", blue: "#458588", brightBlue: "#83a598", yellow: "#d79921", brightYellow: "#fabd2f", red: "#cc241d", brightRed: "#fb4934", cyan: "#689d6a", magenta: "#b16286" }
+      },
+      "everforest-light": {
+        label: "Everforest 浅色", mode: "light",
+        app: { background: "#efebd4", foreground: "#5c6a72", card: "#f4f0d9", primary: "#6c7b01", mutedForeground: "#646c63", border: "#d8d3ba" },
+        terminal: { background: "#efebd4", foreground: "#5c6a72", dim: "#7d8b74", green: "#5c713d", brightGreen: "#7c8e01", blue: "#3d736c", brightBlue: "#388ebe", yellow: "#7f6634", brightYellow: "#b07e00", red: "#ca272a", brightRed: "#f7423f", cyan: "#3c764b", magenta: "#ad4576" }
+      },
+      "nord": {
+        label: "Nord", mode: "dark",
+        app: { background: "#242933", foreground: "#eceff4", card: "#2e3440", primary: "#88c0d0", mutedForeground: "#d8dee9", border: "#3b4252" },
+        terminal: { background: "#242933", foreground: "#e5e9f0", dim: "#4c566a", green: "#a3be8c", brightGreen: "#b8d59d", blue: "#81a1c1", brightBlue: "#91b5d4", yellow: "#ebcb8b", brightYellow: "#f5d794", red: "#bf616a", brightRed: "#d08770", cyan: "#8fbcbb", magenta: "#b48ead" }
+      }
+    };
+
+    const hexChannels = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    const mixHex = (a, b, ratio) => {
+      const ca = hexChannels(a);
+      const cb = hexChannels(b);
+      return "#" + ca.map((v, i) => Math.round(v + (cb[i] - v) * ratio).toString(16).padStart(2, "0")).join("");
+    };
+    const rgbaHex = (hex, alpha) => {
+      const [r, g, b] = hexChannels(hex);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    };
+
+    // 由 6 个 app token + 终端 ANSI 派生出原型整套 CSS 变量。
+    // 状态色映射与 PC 端语义 token 对齐：green=success、orange=warning、red=destructive、
+    // cyan=info；亮色主题用正常色（对比度 ≥4.5），暗色主题用 bright 变体。
+    function derivePackVars(pack) {
+      const dark = pack.mode === "dark";
+      const { app, terminal: term } = pack;
+      const statusGreen = dark ? term.brightGreen : term.green;
+      const statusOrange = dark ? term.brightYellow : term.yellow;
+      const statusRed = dark ? term.brightRed : term.red;
+      return {
+        "--bg": mixHex(app.background, "#000000", dark ? 0.25 : 0.06),
+        "--app-bg": app.background,
+        "--surface": app.card,
+        "--surface-2": mixHex(app.card, app.foreground, 0.04),
+        "--surface-3": mixHex(app.card, app.foreground, 0.08),
+        "--glass": rgbaHex(app.background, 0.9),
+        "--text": app.foreground,
+        "--text-2": mixHex(app.foreground, app.background, 0.18),
+        "--muted": app.mutedForeground,
+        "--subtle": mixHex(app.mutedForeground, app.background, 0.28),
+        "--border": app.border,
+        "--border-soft": rgbaHex(app.mutedForeground, 0.16),
+        "--primary": app.primary,
+        "--primary-strong": mixHex(app.primary, dark ? "#ffffff" : "#000000", dark ? 0.15 : 0.12),
+        "--primary-soft": rgbaHex(app.primary, dark ? 0.16 : 0.12),
+        "--green": statusGreen,
+        "--green-soft": rgbaHex(statusGreen, 0.13),
+        "--orange": statusOrange,
+        "--orange-soft": rgbaHex(statusOrange, 0.14),
+        "--red": statusRed,
+        "--red-soft": rgbaHex(statusRed, 0.14),
+        "--purple": term.magenta,
+        "--purple-soft": rgbaHex(term.magenta, 0.14),
+        "--cyan": term.cyan,
+        "--shadow": dark ? "0 24px 80px rgba(0, 0, 0, .48)" : "0 24px 70px rgba(43, 59, 78, .25)",
+        "--terminal-canvas": term.background,
+        "--terminal-chrome": mixHex(term.background, term.foreground, 0.05),
+        "--terminal-chrome-border": mixHex(term.background, term.foreground, 0.14),
+        "--terminal-fg": term.foreground,
+        "--terminal-dim": term.dim,
+        "--terminal-green": dark ? term.brightGreen : term.green,
+        "--terminal-blue": dark ? term.brightBlue : term.blue,
+        "--terminal-yellow": dark ? term.brightYellow : term.yellow,
+        "--terminal-red": dark ? term.brightRed : term.red,
+        "--terminal-key-bg": mixHex(term.background, term.foreground, 0.09),
+        "--terminal-key-border": mixHex(term.background, term.foreground, 0.16),
+        "--terminal-key-fg": mixHex(term.foreground, term.background, 0.25)
+      };
+    }
+
+    const PACK_VAR_NAMES = Object.keys(derivePackVars(THEME_PACKS["threadterm-dark"]));
+
+    function clearPackVars() {
+      const root = document.documentElement;
+      PACK_VAR_NAMES.forEach((name) => root.style.removeProperty(name));
+    }
+
+    function applyThemePack(packId) {
+      const pack = THEME_PACKS[packId];
+      if (!pack) return;
+      const root = document.documentElement;
+      root.dataset.theme = pack.mode;
+      Object.entries(derivePackVars(pack)).forEach(([name, value]) => {
+        root.style.setProperty(name, value);
+      });
+      const meta = $('meta[name="theme-color"]');
+      if (meta) meta.content = pack.app.background;
+    }
+    /* ================= PC 主题联动层 END ================= */
+
+    const state = {
+      scenario: new URLSearchParams(location.search).get("scenario") || "attention",
+      viewport: "390x844",
+      tab: "workbench",
+      route: null,
+      routePayload: null,
+      routeOrigin: null,
+      routeStack: [],
+      sheet: null,
+      sheetPayload: null,
+      scope: "all",
+      attentionFilter: "all",
+      workbenchSearch: "",
+      workbenchSearchOpen: false,
+      terminalSearch: "",
+      terminalSegment: "active",
+      terminalInput: "",
+      terminalModifier: null,
+      sessions: clone(BASE_SESSIONS),
+      notifications: clone(BASE_NOTIFICATIONS),
+      settings: clone(DEFAULT_SETTINGS),
+      paired: true,
+      connected: true,
+      readOnly: false,
+      scrollByTab: { workbench: 0, terminal: 0, settings: 0 },
+      toastTimer: null,
+      formErrors: {}
+    };
+
+    if (!["attention", "running", "empty", "warming", "offline"].includes(state.scenario)) {
+      state.scenario = "attention";
+    }
+
+    function scenarioSnapshot() {
+      const activeSessions = state.sessions.filter((session) => !session.archived);
+      const createdGroups = activeSessions
+        .filter((session) => session.demoCreated)
+        .map((session) => ({
+          id: `g-${session.id}`,
+          project: session.project,
+          path: session.projectPath,
+          worktree: session.worktree,
+          status: session.status,
+          label: session.statusLabel,
+          sessionIds: [session.id],
+          attention: 0,
+          lastActive: session.lastActive
+        }));
+      if (state.scenario === "empty") {
+        const sessions = activeSessions.filter((session) => session.demoCreated);
+        return { sessions, attention: [], groups: createdGroups };
+      }
+      if (state.scenario === "warming") {
+        return { sessions: [], attention: [], groups: [] };
+      }
+      if (state.scenario === "running") {
+        const sessions = activeSessions.map((session) => ({
+          ...session,
+          status: "running",
+          statusLabel: "正常运行",
+          preview: session.id === "s-docs" ? session.preview : "持续输出中，没有需要处理的信号"
+        }));
+        const groups = [...BASE_GROUPS, ...createdGroups].map((group) => ({
+          ...group,
+          status: "running",
+          label: "运行中",
+          attention: 0
+        })).filter((group) => group.sessionIds.some((id) => sessions.some((session) => session.id === id)));
+        return { sessions, attention: [], groups };
+      }
+      const sessionIds = new Set(activeSessions.map((session) => session.id));
+      const ruleAllows = (item) => {
+        if (item.kind === "approval" || item.kind === "input") return state.settings.ruleWaiting;
+        if (item.kind === "failed") return state.settings.ruleFailed;
+        if (item.kind === "review") return state.settings.ruleReview;
+        if (item.kind === "stalled") return state.settings.ruleStalled;
+        return true;
+      };
+      const attention = BASE_ATTENTION.filter((item) => sessionIds.has(item.sessionId) && ruleAllows(item));
+      return {
+        sessions: activeSessions,
+        attention,
+        groups: [...BASE_GROUPS, ...createdGroups]
+          .filter((group) => group.sessionIds.some((id) => sessionIds.has(id)))
+          .map((group) => ({
+            ...group,
+            sessionIds: group.sessionIds.filter((id) => sessionIds.has(id)),
+            attention: attention.filter((item) => group.sessionIds.includes(item.sessionId)).length
+          }))
+      };
+    }
+
+    function scopeMatches(entity) {
+      if (state.scope === "all") return true;
+      const [project, ...worktreeParts] = state.scope.split("/");
+      const worktree = worktreeParts.join("/");
+      if (entity.project !== project) return false;
+      return !worktree || entity.worktree === worktree;
+    }
+
+    function selectedScope() {
+      return SCOPES.find((scope) => scope.id === state.scope) || SCOPES[0];
+    }
+
+    function attentionCounts(items) {
+      return FILTERS.reduce((counts, [key]) => {
+        counts[key] = key === "all" ? items.length : items.filter((item) => item.kind === key).length;
+        return counts;
+      }, {});
+    }
+
+    function filteredWorkbenchData() {
+      const snapshot = scenarioSnapshot();
+      const scopedAttention = snapshot.attention.filter(scopeMatches);
+      const scopedGroups = snapshot.groups.filter(scopeMatches);
+      const query = state.workbenchSearch.trim().toLocaleLowerCase();
+      const matchesQuery = (entry) => !query || [
+        entry.title, entry.evidence, entry.project, entry.worktree, entry.path
+      ].filter(Boolean).some((value) => value.toLocaleLowerCase().includes(query));
+      return {
+        snapshot,
+        scopedAttention,
+        visibleAttention: scopedAttention
+          .filter((item) => state.attentionFilter === "all" || item.kind === state.attentionFilter)
+          .filter(matchesQuery),
+        scopedGroups: scopedGroups.filter(matchesQuery)
+      };
+    }
+
+    function statusIcon(status) {
+      if (status === "failed") return "alert";
+      if (status === "running") return "play";
+      if (status === "review") return "eye";
+      return "clock";
+    }
+
+    function unreadCount() {
+      return state.notifications.filter((notification) => !notification.read).length;
+    }
+
+    function connectionLabel() {
+      if (!state.paired) return "未配对";
+      if (state.scenario === "warming") return "已连接 · 正在同步快照";
+      if (!state.connected || state.scenario === "offline") return "离线 · 显示缓存快照";
+      if (state.readOnly || state.settings.permission === "readonly") return "已连接 · 只读";
+      return "已安全连接";
+    }
+
+    function syncTheme() {
+      if (state.settings.themePack && THEME_PACKS[state.settings.themePack]) {
+        applyThemePack(state.settings.themePack);
+        return;
+      }
+      clearPackVars();
+      const theme = state.settings.theme === "system"
+        ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+        : state.settings.theme;
+      document.documentElement.dataset.theme = theme;
+      const meta = $('meta[name="theme-color"]');
+      if (meta) meta.content = theme === "light" ? "#f4f6f9" : "#10151d";
+    }
+
+    function renderBottomNav() {
+      const nav = $("#bottom-nav");
+      const items = [
+        ["workbench", "grid", "工作台"],
+        ["terminal", "terminal", "终端"],
+        ["settings", "settings", "设置"]
+      ];
+      nav.innerHTML = items.map(([id, iconName, label]) => `
+        <button class="nav-button" data-action="tab" data-value="${id}"
+          aria-current="${state.tab === id ? "page" : "false"}">
+          ${icon(iconName, "icon-lg")}
+          <span>${label}</span>
+          ${id === "workbench" && unreadCount() ? '<i class="nav-dot" aria-hidden="true"></i>' : ""}
+        </button>
+      `).join("");
+      nav.hidden = Boolean(state.route);
+    }
+
+    function connectionBanner() {
+      if (state.scenario === "warming") {
+        return `
+          <div class="connection-banner" role="status" style="border-color:rgba(79,139,214,.3);background:var(--primary-soft)">
+            ${icon("refresh")}
+            <div class="connection-copy">
+              <strong>正在同步工作台</strong>
+              已建立安全连接，正在获取终端、通知和执行上下文快照。
+            </div>
+          </div>
+        `;
+      }
+      if (state.connected && state.scenario !== "offline") return "";
+      return `
+        <div class="connection-banner" role="status">
+          ${icon("wifi-off")}
+          <div class="connection-copy">
+            <strong>连接已中断</strong>
+            正在显示最近一次缓存快照，交互操作暂不可用。
+          </div>
+          <button class="banner-action" data-action="reconnect">重试</button>
+        </div>
+      `;
+    }
+
+    function searchMarkup(value, context, placeholder) {
+      return `
+        <div class="search-wrap">
+          ${icon("search", "icon-sm")}
+          <label class="sr-only" for="${context}-search">${escapeHTML(placeholder)}</label>
+          <input id="${context}-search" data-input="${context}-search" value="${escapeHTML(value)}"
+            placeholder="${escapeHTML(placeholder)}" autocomplete="off">
+          ${value ? `<button class="search-clear" data-action="clear-search" data-value="${context}" aria-label="清空搜索">${icon("x", "icon-sm")}</button>` : ""}
+        </div>
+      `;
+    }
+
+    function emptyState(iconName, title, copy, actionLabel = "", action = "") {
+      return `
+        <div class="empty-state">
+          <div class="empty-icon">${icon(iconName, "icon-lg")}</div>
+          <h4>${escapeHTML(title)}</h4>
+          <p>${escapeHTML(copy)}</p>
+          ${actionLabel ? `<button class="secondary-button" data-action="${action}">${escapeHTML(actionLabel)}</button>` : ""}
+        </div>
+      `;
+    }
+
+    function attentionCard(item) {
+      return `
+        <button class="attention-card tone-${item.tone}" data-action="attention-detail" data-id="${item.id}">
+          <i class="severity-line" aria-hidden="true"></i>
+          <span class="card-main">
+            <span class="card-topline">
+              <span class="status-pill">${escapeHTML(item.label)}</span>
+              <time class="card-time">${escapeHTML(item.time)}</time>
+            </span>
+            <strong class="card-title">${escapeHTML(item.title)}</strong>
+            <span class="card-evidence">${escapeHTML(item.evidence)}</span>
+            <span class="card-meta">
+              ${icon("folder", "icon-sm")}
+              <span>${escapeHTML(item.project)} · ${escapeHTML(item.worktree)}</span>
+            </span>
+          </span>
+          ${icon("chevron-right", "chevron icon-sm")}
+        </button>
+      `;
+    }
+
+    function groupCard(group) {
+      const toneClass = group.status === "failed" ? "failure" : group.attention ? "attention" : "live";
+      return `
+        <button class="group-card" data-action="group-detail" data-id="${group.id}">
+          <span class="group-head">
+            <span class="group-icon">${icon("git-branch")}</span>
+            <span class="group-info">
+              <strong class="group-title">${escapeHTML(group.project)}</strong>
+              <span class="group-path">${escapeHTML(group.worktree)}</span>
+            </span>
+            ${icon("chevron-right", "chevron icon-sm")}
+          </span>
+          <span class="group-stats">
+            <span class="mini-stat ${toneClass}">${icon(statusIcon(group.status), "icon-sm")} ${escapeHTML(group.label)}</span>
+            <span class="mini-stat">${group.sessionIds.length} 个终端</span>
+            ${group.attention ? `<span class="mini-stat attention">${group.attention} 项需关注</span>` : ""}
+            <span class="mini-stat">${escapeHTML(group.lastActive)}</span>
+          </span>
+        </button>
+      `;
+    }
+
+    function renderWorkbench() {
+      const { scopedAttention, visibleAttention, scopedGroups } = filteredWorkbenchData();
+      const counts = attentionCounts(scopedAttention);
+      const snapshot = scenarioSnapshot();
+      const scopedSessions = snapshot.sessions.filter(scopeMatches);
+      const running = scopedSessions.filter((session) => session.status === "running").length;
+      const review = scopedAttention.filter((item) => item.kind === "review").length;
+      const failed = scopedAttention.filter((item) => item.kind === "failed").length;
+      const searchActive = state.workbenchSearch.trim().length > 0;
+      const scope = selectedScope();
+      const warming = state.scenario === "warming";
+
+      $("#app-screen").innerHTML = `
+        <section class="page" data-page="workbench">
+          <header class="page-header">
+            <div class="header-row">
+              <div class="header-title">
+                <h2>工作台</h2>
+                <div class="header-subtitle">
+                  <i class="online-dot ${state.connected && state.scenario !== "offline" ? "" : "offline"}"></i>
+                  ${escapeHTML(connectionLabel())}
+                </div>
+              </div>
+              <button class="icon-button" data-action="toggle-workbench-search" aria-label="搜索"
+                aria-pressed="${state.workbenchSearchOpen}">${icon("search")}</button>
+              <button class="icon-button" data-action="open-route" data-route="notifications" aria-label="通知">
+                ${icon("bell")}
+                ${unreadCount() ? `<span class="notification-badge">${unreadCount()}</span>` : ""}
+              </button>
+            </div>
+            <button class="scope-button" data-action="open-scope" aria-label="选择项目与 Worktree 范围">
+              ${icon("folder", "icon-sm")}
+              <span class="scope-label">${escapeHTML(scope.label)}</span>
+              ${icon("chevron-down", "icon-sm")}
+            </button>
+            ${state.workbenchSearchOpen ? searchMarkup(state.workbenchSearch, "workbench", "搜索事项、项目或 Worktree") : ""}
+          </header>
+
+          ${connectionBanner()}
+
+          <div class="content">
+            <div class="summary-grid" aria-label="状态摘要">
+              <button class="summary-card action" data-action="summary-filter" data-value="all"
+                aria-pressed="${state.attentionFilter === "all"}">
+                <span class="summary-top"><span>需要处理</span>${icon("alert", "icon-sm")}</span>
+                <strong class="summary-value">${counts.all}</strong>
+              </button>
+              <button class="summary-card running" data-action="summary-running">
+                <span class="summary-top"><span>正常运行</span>${icon("play", "icon-sm")}</span>
+                <strong class="summary-value">${running}</strong>
+              </button>
+              <button class="summary-card review" data-action="summary-filter" data-value="review"
+                aria-pressed="${state.attentionFilter === "review"}">
+                <span class="summary-top"><span>待复核</span>${icon("eye", "icon-sm")}</span>
+                <strong class="summary-value">${review}</strong>
+              </button>
+              <button class="summary-card failed" data-action="summary-filter" data-value="failed"
+                aria-pressed="${state.attentionFilter === "failed"}">
+                <span class="summary-top"><span>异常</span>${icon("alert", "icon-sm")}</span>
+                <strong class="summary-value">${failed}</strong>
+              </button>
+            </div>
+            <p class="overlap-note">状态维度可能重叠，不代表会话总数。</p>
+
+            <section class="section" id="attention-section">
+              <div class="section-head">
+                <h3>需要处理 <span class="count">${counts.all}</span></h3>
+                <button class="text-button" data-action="open-route" data-route="rules">${icon("slider", "icon-sm")} 规则</button>
+              </div>
+              <div class="chip-row" aria-label="注意事项分类">
+                ${FILTERS.map(([key, label]) => `
+                  <button class="chip" data-action="attention-filter" data-value="${key}"
+                    aria-pressed="${state.attentionFilter === key}">
+                    ${label}<span class="chip-count">${counts[key]}</span>
+                  </button>
+                `).join("")}
+              </div>
+              <div class="stack" style="margin-top:10px">
+                ${visibleAttention.length
+                  ? visibleAttention.map(attentionCard).join("")
+                  : emptyState(
+                      searchActive ? "search" : (warming ? "refresh" : (counts.all ? "slider" : "check")),
+                      searchActive ? "没有匹配结果" : (warming ? "正在同步注意事项" : (counts.all ? "此分类没有事项" : "当前无需处理")),
+                      searchActive ? "尝试更换关键词或范围。" : (warming ? "快照到达后会自动填充。" : (counts.all ? "选择其他分类查看。" : "需要介入的信号会集中出现在这里。")),
+                      searchActive ? "清空搜索" : (!warming && counts.all ? "查看全部" : ""),
+                      searchActive ? "clear-workbench-search" : (!warming && counts.all ? "show-all-attention" : "")
+                    )}
+              </div>
+            </section>
+
+            <section class="section" id="groups-section">
+              <div class="section-head">
+                <h3>执行上下文 <span class="count">${scopedGroups.length}</span></h3>
+                <span class="section-note">项目 + Worktree</span>
+              </div>
+              <div class="stack">
+                ${scopedGroups.length
+                  ? scopedGroups.map(groupCard).join("")
+                  : emptyState(
+                      searchActive ? "search" : (warming ? "refresh" : "terminal"),
+                      searchActive ? "没有匹配的执行上下文" : (warming ? "正在获取执行上下文" : "还没有终端"),
+                      searchActive ? "清空搜索或切换项目范围。" : (warming ? "首次同步完成后会自动显示。" : "在终端页新建会话后，会自动按项目与 Worktree 聚合。"),
+                      searchActive ? "清空搜索" : (warming ? "" : "去新建终端"),
+                      searchActive ? "clear-workbench-search" : (warming ? "" : "go-new-terminal")
+                    )}
+              </div>
+            </section>
+
+            <div class="info-card" style="margin-top:20px">
+              <strong>确定性监管视图</strong>
+              工作台只展示已有信号，不推测任务进度。处理操作始终在对应终端中完成。
+            </div>
+          </div>
+        </section>
+      `;
+    }
+
+    function sessionCard(session) {
+      return `
+        <article class="session-card">
+          <button class="session-main" data-action="open-terminal" data-id="${session.id}">
+            <span class="terminal-mark">${icon("terminal")}</span>
+            <span class="session-info">
+              <span class="session-name-row">
+                <i class="status-dot ${session.status}"></i>
+                <strong class="session-name">${escapeHTML(session.name)}</strong>
+                ${session.pinned ? icon("pin", "pin-icon icon-sm") : ""}
+              </span>
+              <span class="session-detail">${escapeHTML(session.type)} · ${escapeHTML(session.worktree)}</span>
+              <span class="session-preview">${escapeHTML(session.preview)}</span>
+            </span>
+          </button>
+          <button class="session-menu" data-action="session-menu" data-id="${session.id}" aria-label="${escapeHTML(session.name)} 更多操作">
+            ${icon("more")}
+          </button>
+        </article>
+      `;
+    }
+
+    function renderTerminalList() {
+      const isArchived = state.terminalSegment === "archived";
+      const query = state.terminalSearch.trim().toLocaleLowerCase();
+      const snapshot = scenarioSnapshot();
+      const scenarioIds = new Set(snapshot.sessions.map((session) => session.id));
+      let sessions = state.sessions.filter((session) => session.archived === isArchived);
+      if (!isArchived && state.scenario === "empty") {
+        sessions = sessions.filter((session) => session.demoCreated);
+      } else if (!isArchived && state.scenario !== "attention" && state.scenario !== "offline") {
+        sessions = sessions
+          .filter((session) => scenarioIds.has(session.id))
+          .map((session) => snapshot.sessions.find((item) => item.id === session.id) || session);
+      }
+      sessions = sessions.filter((session) => scopeMatches(session));
+      if (query) {
+        sessions = sessions.filter((session) =>
+          [session.name, session.project, session.worktree, session.type, session.preview]
+            .some((value) => value.toLocaleLowerCase().includes(query))
+        );
+      }
+      sessions.sort((a, b) => Number(b.pinned) - Number(a.pinned));
+      const grouped = sessions.reduce((result, session) => {
+        const key = `${session.project}|||${session.worktree}`;
+        (result[key] ||= []).push(session);
+        return result;
+      }, {});
+
+      $("#app-screen").innerHTML = `
+        <section class="page" data-page="terminal">
+          <header class="page-header">
+            <div class="header-row">
+              <div class="header-title">
+                <h2>终端</h2>
+                <div class="header-subtitle">${sessions.length} 个${isArchived ? "已归档" : "可见"}会话</div>
+              </div>
+              <button class="icon-button filled" data-action="open-route" data-route="new-terminal" aria-label="新建终端">
+                ${icon("plus")}
+              </button>
+            </div>
+            ${searchMarkup(state.terminalSearch, "terminal", "搜索终端、项目或 Worktree")}
+            <div style="display:flex;gap:8px;margin-top:9px">
+              <div class="segmented" style="flex:1">
+                <button class="segment" data-action="terminal-segment" data-value="active"
+                  aria-pressed="${!isArchived}">正在运行</button>
+                <button class="segment" data-action="terminal-segment" data-value="archived"
+                  aria-pressed="${isArchived}">已归档</button>
+              </div>
+              <button class="scope-button" data-action="open-scope" aria-label="筛选项目">
+                ${icon("folder", "icon-sm")}<span class="scope-label">${escapeHTML(selectedScope().label)}</span>
+              </button>
+            </div>
+          </header>
+
+          ${connectionBanner()}
+
+          <div class="content">
+            ${Object.keys(grouped).length ? Object.entries(grouped).map(([key, groupSessions]) => {
+              const [project, worktree] = key.split("|||");
+              return `
+                <section class="session-group">
+                  <div class="session-group-head">
+                    ${icon("git-branch", "icon-sm")}
+                    <strong>${escapeHTML(project)} · ${escapeHTML(worktree)}</strong>
+                    <span>${groupSessions.length}</span>
+                  </div>
+                  <div class="stack">${groupSessions.map(sessionCard).join("")}</div>
+                </section>
+              `;
+            }).join("") : emptyState(
+              state.terminalSearch ? "search" : (state.scenario === "warming" ? "refresh" : (isArchived ? "archive" : "terminal")),
+              state.terminalSearch ? "没有匹配的终端" : (state.scenario === "warming" ? "正在同步终端" : (isArchived ? "没有已归档终端" : "还没有终端")),
+              state.terminalSearch ? "尝试更换关键词或项目范围。" : (state.scenario === "warming" ? "已连接桌面端，正在获取最新会话快照。" : (isArchived ? "归档后的终端会保留在这里。" : "创建一个会话，开始从手机监管和接管终端。")),
+              state.terminalSearch ? "清空搜索" : (state.scenario === "warming" ? "" : (!isArchived ? "新建终端" : "")),
+              state.terminalSearch ? "clear-terminal-search" : (state.scenario === "warming" ? "" : (!isArchived ? "go-new-terminal" : ""))
+            )}
+          </div>
+        </section>
+      `;
+    }
+
+    function settingsRow(iconName, title, subtitle, route, value = "") {
+      return `
+        <button class="settings-row" data-action="open-route" data-route="${route}">
+          <span class="settings-icon">${icon(iconName, "icon-sm")}</span>
+          <span class="settings-info"><strong>${escapeHTML(title)}</strong><span>${escapeHTML(subtitle)}</span></span>
+          ${value ? `<span class="row-value">${escapeHTML(value)}</span>` : ""}
+          ${icon("chevron-right", "icon-sm")}
+        </button>
+      `;
+    }
+
+    function renderSettings() {
+      const themeLabels = { dark: "深色", light: "浅色", system: "跟随系统" };
+      const languageLabels = { "zh-CN": "简体中文", en: "English", ja: "日本語", ko: "한국어" };
+      $("#app-screen").innerHTML = `
+        <section class="page" data-page="settings">
+          <header class="page-header">
+            <div class="header-row">
+              <div class="header-title">
+                <h2>设置</h2>
+                <div class="header-subtitle">移动端偏好与连接</div>
+              </div>
+            </div>
+          </header>
+
+          <div class="content">
+            <button class="settings-hero" data-action="open-route" data-route="connection" style="width:100%;color:inherit;text-align:left;cursor:pointer">
+              <span class="device-avatar">${icon("smartphone", "icon-lg")}</span>
+              <span class="settings-hero-info">
+                <strong>ThreadTerm · DESKTOP-8K2M</strong>
+                <span>${escapeHTML(connectionLabel())} · 192.168.1.18</span>
+              </span>
+              ${icon("chevron-right", "icon-sm")}
+            </button>
+
+            <section class="settings-group">
+              <h3 class="settings-group-title">连接与权限</h3>
+              <div class="settings-list">
+                ${settingsRow("wifi", "连接与配对", "地址、二维码、连接状态与诊断", "connection", state.connected ? "已连接" : "离线")}
+                ${settingsRow("shield", "设备权限", "控制移动端可执行的操作范围", "permissions", state.settings.permission === "full" ? "完全控制" : "只读")}
+              </div>
+            </section>
+
+            <section class="settings-group">
+              <h3 class="settings-group-title">工作台</h3>
+              <div class="settings-list">
+                ${settingsRow("bell", "通知", "系统通知、声音和应用角标", "notification-settings", state.settings.osNotifications ? "已开启" : "已关闭")}
+                ${settingsRow("slider", "注意力规则", "等待、异常、复核与无进展", "rules", "桌面同步")}
+              </div>
+            </section>
+
+            <section class="settings-group">
+              <h3 class="settings-group-title">通用</h3>
+              <div class="settings-list">
+                ${settingsRow("palette", "外观", "主题与终端显示密度", "appearance", themeLabels[state.settings.theme])}
+                ${settingsRow("language", "语言", "界面显示语言", "language", languageLabels[state.settings.language])}
+              </div>
+            </section>
+
+            <section class="settings-group">
+              <h3 class="settings-group-title">支持</h3>
+              <div class="settings-list">
+                ${settingsRow("bug", "连接诊断", "快照、延迟与调试信息", "diagnostics")}
+                ${settingsRow("info", "关于 ThreadTerm", "版本、隐私与开源许可", "about", "v0.3 原型")}
+              </div>
+            </section>
+
+            <p class="overlap-note" style="margin:18px 4px 0;text-align:center">
+              原型状态仅保存在当前页面，刷新后重置。
+            </p>
+          </div>
+        </section>
+      `;
+    }
+
+    function renderApp() {
+      syncTheme();
+      if (state.tab === "terminal") renderTerminalList();
+      else if (state.tab === "settings") renderSettings();
+      else renderWorkbench();
+      renderBottomNav();
+      renderRoute();
+      renderReviewControls();
+      requestAnimationFrame(() => {
+        $("#app-screen").scrollTop = state.scrollByTab[state.tab] || 0;
+      });
+    }
+
+    function renderReviewControls() {
+      $$('[data-action="scenario"]').forEach((button) => {
+        button.setAttribute("aria-pressed", String(button.dataset.value === state.scenario));
+      });
+      $$('[data-action="viewport"]').forEach((button) => {
+        button.setAttribute("aria-pressed", String(button.dataset.value === state.viewport));
+      });
+      $$('[data-action="themepack"]').forEach((button) => {
+        button.setAttribute("aria-pressed", String((state.settings.themePack || "") === button.dataset.value));
+      });
+    }
+
+    function pushShell(title, body, options = {}) {
+      const {
+        footer = "",
+        trailing = "",
+        backAction = "close-route",
+        className = ""
+      } = options;
+      return `
+        <article class="push-page ${className}">
+          <header class="push-header">
+            ${backAction
+              ? `<button class="icon-button" data-action="${backAction}" aria-label="返回">${icon("arrow-left")}</button>`
+              : '<span style="width:44px" aria-hidden="true"></span>'}
+            <h2>${escapeHTML(title)}</h2>
+            ${trailing || '<span style="width:44px" aria-hidden="true"></span>'}
+          </header>
+          <div class="push-body"><div class="push-content">${body}</div></div>
+          ${footer ? `<footer class="push-footer">${footer}</footer>` : ""}
+        </article>
+      `;
+    }
+
+    function attentionDetailRoute(id) {
+      const item = BASE_ATTENTION.find((entry) => entry.id === id);
+      if (!item) return pushShell("事项已消失", emptyState("info", "来源已不可用", "该信号可能已被桌面端处理。", "返回工作台", "close-route"));
+      const session = state.sessions.find((entry) => entry.id === item.sessionId);
+      const unavailable = !state.connected || state.scenario === "offline";
+      const desktopRequired = item.capability === "desktop-required";
+      const footer = `
+        ${desktopRequired ? `
+          <div class="info-card warning-card" style="margin-bottom:8px">
+            <strong>需要桌面端确认</strong>
+            移动 Bridge 尚不支持直接响应结构化审批；可打开终端查看上下文。
+          </div>
+        ` : ""}
+        <button class="primary-button full-button" data-action="open-terminal" data-id="${item.sessionId}"
+          ${unavailable || !session ? "disabled" : ""}>
+          ${icon("terminal")} ${unavailable ? "离线时无法打开终端" : (desktopRequired ? "查看对应终端" : "打开终端处理")}
+        </button>
+      `;
+      return pushShell("事项详情", `
+        <div class="detail-hero tone-${item.tone}">
+          <span class="status-pill">${escapeHTML(item.label)}</span>
+          <h3>${escapeHTML(item.title)}</h3>
+          <p>${escapeHTML(item.reason)}</p>
+          <div class="detail-grid">
+            <div class="detail-field"><span>来源</span><strong>${escapeHTML(item.source)}</strong></div>
+            <div class="detail-field"><span>出现时间</span><strong>${escapeHTML(item.time)}</strong></div>
+            <div class="detail-field"><span>项目</span><strong>${escapeHTML(item.project)}</strong></div>
+            <div class="detail-field"><span>Worktree</span><strong>${escapeHTML(item.worktree)}</strong></div>
+          </div>
+          <div class="evidence-box">${escapeHTML(item.evidence)}</div>
+        </div>
+        <section class="section">
+          <div class="section-head"><h3>最近活动</h3><span class="section-note">真实信号</span></div>
+          <div class="timeline">
+            ${item.activity.map(([text, time], index) => `
+              <div class="timeline-item">
+                <span class="timeline-dot">${index === 0 ? icon(statusIcon(session?.status || "waiting"), "icon-sm") : icon("clock", "icon-sm")}</span>
+                <span>${escapeHTML(text)}<time>${escapeHTML(time)}</time></span>
+              </div>
+            `).join("")}
+          </div>
+        </section>
+        <div class="info-card">
+          <strong>处理边界</strong>
+          工作台只提供证据和导航，不在这里执行批准、输入、重启或文件写入。
+        </div>
+      `, { footer });
+    }
+
+    function groupDetailRoute(id) {
+      const snapshot = scenarioSnapshot();
+      const group = snapshot.groups.find((entry) => entry.id === id) || BASE_GROUPS.find((entry) => entry.id === id);
+      if (!group) return pushShell("执行上下文", emptyState("info", "执行上下文已消失", "返回工作台刷新当前快照。"));
+      const sessions = group.sessionIds
+        .map((sessionId) => snapshot.sessions.find((session) => session.id === sessionId) || state.sessions.find((session) => session.id === sessionId))
+        .filter(Boolean);
+      const related = snapshot.attention.filter((item) => group.sessionIds.includes(item.sessionId));
+      return pushShell("执行上下文", `
+        <div class="detail-hero">
+          <span class="status-pill tone-${group.status === "failed" ? "failed" : group.attention ? "approval" : "review"}">${escapeHTML(group.label)}</span>
+          <h3>${escapeHTML(group.project)}</h3>
+          <p>${escapeHTML(group.path)}</p>
+          <div class="detail-grid">
+            <div class="detail-field"><span>Worktree</span><strong>${escapeHTML(group.worktree)}</strong></div>
+            <div class="detail-field"><span>最近活动</span><strong>${escapeHTML(group.lastActive)}</strong></div>
+            <div class="detail-field"><span>终端数量</span><strong>${sessions.length}</strong></div>
+            <div class="detail-field"><span>需关注</span><strong>${group.attention}</strong></div>
+          </div>
+        </div>
+        ${related.length ? `
+          <section class="section">
+            <div class="section-head"><h3>相关事项</h3><span class="count">${related.length}</span></div>
+            <div class="stack">${related.map(attentionCard).join("")}</div>
+          </section>
+        ` : ""}
+        <section class="section">
+          <div class="section-head"><h3>终端</h3><span class="count">${sessions.length}</span></div>
+          <div class="stack">${sessions.length ? sessions.map(sessionCard).join("") : emptyState("terminal", "没有可见终端", "终端可能已关闭或被归档。")}</div>
+        </section>
+      `);
+    }
+
+    function notificationsRoute() {
+      return pushShell("通知", `
+        ${state.notifications.length ? `
+          <div class="info-card" style="margin-bottom:12px">
+            <strong>通知与工作台已合流</strong>
+            需要处理的信号会同时出现在工作台；这里保留完整通知历史。
+          </div>
+          <div>
+            ${state.notifications.map((notification) => `
+              <button class="notification-item ${notification.read ? "read" : ""}" data-action="notification-open" data-id="${notification.id}">
+                <i class="unread-dot"></i>
+                <span class="notification-copy">
+                  <strong>${escapeHTML(notification.title)}</strong>
+                  <span>${escapeHTML(notification.body)}</span>
+                  <time>${escapeHTML(notification.time)}</time>
+                </span>
+                ${icon("chevron-right", "icon-sm")}
+              </button>
+            `).join("")}
+          </div>
+        ` : emptyState("bell", "没有通知", "新的完成、异常和等待信号会出现在这里。")}
+      `, {
+        trailing: state.notifications.length ? `
+          <button class="text-button" data-action="${unreadCount() ? "mark-all-read" : "clear-notifications"}">
+            ${unreadCount() ? "全部已读" : "清空"}
+          </button>
+        ` : ""
+      });
+    }
+
+    function ruleRow(key, title, subtitle) {
+      const enabled = state.settings[key];
+      return `
+        <div class="settings-row" style="cursor:default">
+          <span class="settings-info"><strong>${escapeHTML(title)}</strong><span>${escapeHTML(subtitle)}</span></span>
+          <button class="switch" role="switch" data-action="toggle-setting" data-key="${key}"
+            aria-label="${escapeHTML(title)}" aria-checked="${enabled}"></button>
+        </div>
+      `;
+    }
+
+    function rulesRoute() {
+      return pushShell("注意力规则", `
+        <div class="info-card warning-card">
+          <strong>原型状态 · 后续由桌面同步</strong>
+          规则只影响工作台显示，不控制自动重启。生产实现前需补充共享规则契约，
+          避免移动端形成第二套判断。
+        </div>
+        <section class="settings-group">
+          <h3 class="settings-group-title">信号来源</h3>
+          <div class="settings-list">
+            ${ruleRow("ruleWaiting", "等待用户操作", "审批或终端等待输入时显示")}
+            ${ruleRow("ruleFailed", "异常未恢复", "进程退出且没有待执行的自动恢复")}
+            ${ruleRow("ruleReview", "完成待复核", "完成通知仍未查看时显示")}
+            ${ruleRow("ruleStalled", "无进展", "超过阈值没有新的可见活动")}
+          </div>
+        </section>
+        <section class="settings-group">
+          <h3 class="settings-group-title">无进展阈值</h3>
+          <div class="info-card">
+            <div class="range-row">
+              <input type="range" min="3" max="30" step="1" value="${state.settings.stalledMinutes}"
+                data-input="stalled-minutes" aria-label="无进展阈值">
+              <span class="range-value">${state.settings.stalledMinutes} 分钟</span>
+            </div>
+          </div>
+        </section>
+        <button class="secondary-button full-button" style="margin-top:18px" data-action="reset-rules">
+          ${icon("refresh")} 恢复默认规则
+        </button>
+      `, {
+        trailing: `<button class="text-button" data-action="save-rules">完成</button>`
+      });
+    }
+
+    function currentSession(id) {
+      const snapshotSession = scenarioSnapshot().sessions.find((session) => session.id === id);
+      const stored = state.sessions.find((session) => session.id === id);
+      return snapshotSession ? { ...stored, ...snapshotSession, output: stored?.output || snapshotSession.output } : stored;
+    }
+
+    function terminalDetailRoute(id) {
+      const session = currentSession(id);
+      if (!session) return pushShell("终端", emptyState("terminal", "终端已不可用", "它可能已关闭或被其他设备移除。"));
+      const unavailable = !state.connected || state.scenario === "offline";
+      const readOnly = unavailable || state.readOnly || state.settings.permission === "readonly";
+      return `
+        <article class="terminal-page">
+          <header class="terminal-header">
+            <button class="icon-button" data-action="close-route" aria-label="返回">${icon("arrow-left")}</button>
+            <div class="terminal-header-title">
+              <strong>${escapeHTML(session.name)}</strong>
+              <span><i class="status-dot ${session.status}"></i>${escapeHTML(session.statusLabel)} · ${escapeHTML(session.type)}</span>
+            </div>
+            <button class="icon-button" data-action="session-menu" data-id="${session.id}" aria-label="终端操作">${icon("more")}</button>
+          </header>
+          <div class="terminal-output" id="terminal-output" role="log" aria-live="polite">
+            <div class="terminal-line dim">ThreadTerm Mobile · ${escapeHTML(session.project)} / ${escapeHTML(session.worktree)}</div>
+            <div class="terminal-line dim">────────────────────────────────────────</div>
+            ${session.output.map((line) => `<div class="terminal-line ${line.tone || ""}">${escapeHTML(line.text)}</div>`).join("")}
+          </div>
+          <div class="terminal-input-zone">
+            ${readOnly ? `
+              <div class="readonly-note">${icon(unavailable ? "wifi-off" : "lock", "icon-sm")}
+                ${unavailable ? "离线快照不可输入；重连后可继续操作。" : "当前设备为只读权限，只能查看输出。"}
+              </div>
+            ` : `
+              <div class="key-row" aria-label="终端快捷键">
+                <button class="key-button" data-action="terminal-modifier" data-value="Ctrl" aria-pressed="${state.terminalModifier === "Ctrl"}">Ctrl</button>
+                <button class="key-button" data-action="terminal-modifier" data-value="Alt" aria-pressed="${state.terminalModifier === "Alt"}">Alt</button>
+                <button class="key-button" data-action="terminal-key" data-value="Tab">Tab</button>
+                <button class="key-button" data-action="terminal-key" data-value="Escape">Esc</button>
+                <button class="key-button" data-action="terminal-key" data-value="ArrowUp">↑</button>
+                <button class="key-button" data-action="terminal-key" data-value="ArrowDown">↓</button>
+                <button class="key-button" data-action="terminal-key" data-value="|">|</button>
+                <button class="key-button" data-action="terminal-key" data-value="/">/</button>
+              </div>
+              <form class="input-row" id="terminal-input-form" data-session-id="${session.id}">
+                <label class="sr-only" for="terminal-command">终端输入</label>
+                <textarea id="terminal-command" rows="1" placeholder="输入命令…" autocomplete="off">${escapeHTML(state.terminalInput)}</textarea>
+                <button class="send-button" type="submit" aria-label="发送">${icon("send")}</button>
+              </form>
+            `}
+          </div>
+        </article>
+      `;
+    }
+
+    function newTerminalRoute() {
+      const projects = [...new Set(state.sessions.map((session) => session.projectPath))];
+      return pushShell("新建终端", `
+        <form class="form-grid" id="new-terminal-form" novalidate>
+          <div class="field">
+            <label for="new-name">会话名称</label>
+            <input id="new-name" name="name" placeholder="例如：修复登录问题" maxlength="48" value="">
+            <p class="field-hint">留空时根据终端类型自动命名。</p>
+            <p class="field-error" data-error-for="name"></p>
+          </div>
+          <div class="field">
+            <label for="new-project">项目路径</label>
+            <input id="new-project" name="projectPath" list="project-paths"
+              placeholder="D:\\project\\my-app" value="${escapeHTML(projects[0] || "D:\\project\\ThreadTerm\\ThreadTerm")}">
+            <datalist id="project-paths">${projects.map((path) => `<option value="${escapeHTML(path)}"></option>`).join("")}</datalist>
+            <p class="field-error" data-error-for="projectPath"></p>
+          </div>
+          <div class="field">
+            <label for="new-worktree">Worktree / 分支</label>
+            <input id="new-worktree" name="worktree" placeholder="main" value="main">
+            <p class="field-hint">仅用于展示上下文；原型不会访问文件系统。</p>
+          </div>
+          <div class="field">
+            <span class="field-label">终端类型</span>
+            <div class="choice-grid" data-choice-group="terminal-type">
+              ${[
+                ["Codex", "AI 编程会话"],
+                ["Claude Code", "Claude CLI"],
+                ["Shell", "系统 Shell"],
+                ["Kimi", "Kimi CLI"]
+              ].map(([type, copy], index) => `
+                <button type="button" class="choice-card" data-action="form-choice"
+                  data-group="terminal-type" data-value="${escapeHTML(type)}" aria-pressed="${index === 0}">
+                  <strong>${escapeHTML(type)}</strong><span>${escapeHTML(copy)}</span>
+                </button>
+              `).join("")}
+            </div>
+            <input type="hidden" name="type" value="Codex">
+          </div>
+          <div class="field">
+            <span class="field-label">启动方式</span>
+            <div class="choice-grid" data-choice-group="launch-mode">
+              <button type="button" class="choice-card" data-action="form-choice"
+                data-group="launch-mode" data-value="new" aria-pressed="true">
+                <strong>新会话</strong><span>创建新的终端进程</span>
+              </button>
+              <button type="button" class="choice-card" data-action="form-choice"
+                data-group="launch-mode" data-value="resume" aria-pressed="false">
+                <strong>恢复历史</strong><span>选择已有 Provider 会话</span>
+              </button>
+            </div>
+            <input type="hidden" name="launchMode" value="new">
+          </div>
+          <div class="info-card">
+            <strong>原型行为</strong>
+            提交后会在前端内存中创建一个模拟终端，并进入终端详情；不会启动真实 PTY。
+          </div>
+        </form>
+      `, {
+        footer: `<button class="primary-button full-button" type="submit" form="new-terminal-form">${icon("plus")} 创建终端</button>`
+      });
+    }
+
+    function pairingRoute() {
+      return pushShell("连接 ThreadTerm", `
+        <div class="qr-card">
+          <div class="qr-code" aria-label="模拟配对二维码">
+            <div class="qr-grid" id="qr-grid"></div>
+          </div>
+          <div class="pair-code">482 917</div>
+          <div class="pair-note">在桌面端「设置 → 移动访问」中确认此配对码</div>
+        </div>
+        <div class="section-head" style="margin-top:18px"><h3>或手动连接</h3></div>
+        <form class="form-grid" id="pairing-form" novalidate>
+          <div class="field">
+            <label for="pair-address">桌面端地址</label>
+            <input id="pair-address" name="address" inputmode="url" value="ws://192.168.1.18:3976">
+            <p class="field-error" data-error-for="address"></p>
+          </div>
+          <div class="field">
+            <label for="pair-token">一次性配对码</label>
+            <input id="pair-token" name="token" inputmode="numeric" maxlength="6" placeholder="6 位数字" value="482917">
+            <p class="field-error" data-error-for="token"></p>
+          </div>
+          <div class="info-card warning-card">
+            <strong>同一局域网</strong>
+            手机和桌面端需要位于同一网络；实际连接会经过设备授权和加密握手。
+          </div>
+        </form>
+      `, {
+        backAction: state.paired ? "close-route" : null,
+        footer: `<button class="primary-button full-button" type="submit" form="pairing-form">${icon("wifi")} 安全连接</button>`
+      });
+    }
+
+    function connectionRoute() {
+      return pushShell("连接与配对", `
+        <div class="detail-hero">
+          <span class="status-pill tone-${state.connected ? "review" : "approval"}">
+            ${state.connected ? icon("check", "icon-sm") : icon("wifi-off", "icon-sm")}
+            ${escapeHTML(connectionLabel())}
+          </span>
+          <h3>DESKTOP-8K2M</h3>
+          <p>ThreadTerm Desktop · Windows 11</p>
+          <div class="detail-grid">
+            <div class="detail-field"><span>地址</span><strong>192.168.1.18:3976</strong></div>
+            <div class="detail-field"><span>延迟</span><strong>${state.connected ? "18 ms" : "不可用"}</strong></div>
+            <div class="detail-field"><span>快照版本</span><strong>#1842</strong></div>
+            <div class="detail-field"><span>权限</span><strong>${state.settings.permission === "full" ? "完全控制" : "只读"}</strong></div>
+          </div>
+        </div>
+
+        <section class="settings-group">
+          <h3 class="settings-group-title">连接操作</h3>
+          <div class="settings-list">
+            <button class="settings-row" data-action="reconnect">
+              <span class="settings-icon">${icon("refresh", "icon-sm")}</span>
+              <span class="settings-info"><strong>重新连接</strong><span>重新建立 WebSocket 并拉取最新快照</span></span>
+              ${icon("chevron-right", "icon-sm")}
+            </button>
+            <button class="settings-row" data-action="copy-address">
+              <span class="settings-icon">${icon("copy", "icon-sm")}</span>
+              <span class="settings-info"><strong>复制连接地址</strong><span>ws://192.168.1.18:3976</span></span>
+              ${icon("chevron-right", "icon-sm")}
+            </button>
+            <button class="settings-row" data-action="open-pairing">
+              <span class="settings-icon">${icon("smartphone", "icon-sm")}</span>
+              <span class="settings-info"><strong>配对另一台桌面设备</strong><span>扫描二维码或输入一次性配对码</span></span>
+              ${icon("chevron-right", "icon-sm")}
+            </button>
+          </div>
+        </section>
+
+        <div class="danger-zone">
+          <button class="danger-button full-button" data-action="confirm-disconnect">${icon("log-out")} 断开并移除此设备</button>
+        </div>
+      `);
+    }
+
+    function permissionsRoute() {
+      const permission = state.settings.permission;
+      return pushShell("设备权限", `
+        <div class="info-card">
+          <strong>当前设备：iPhone 15 Pro</strong>
+          权限由桌面端最终校验。移动端切换仅演示界面状态。
+        </div>
+        <section class="section">
+          <div class="choice-grid" style="grid-template-columns:1fr">
+            <button class="choice-card" style="min-height:92px" data-action="set-permission" data-value="full" aria-pressed="${permission === "full"}">
+              <strong>${icon("shield", "icon-sm")} 完全控制</strong>
+              <span>查看输出、发送输入、创建终端和执行会话管理操作。</span>
+            </button>
+            <button class="choice-card" style="min-height:92px" data-action="set-permission" data-value="readonly" aria-pressed="${permission === "readonly"}">
+              <strong>${icon("eye", "icon-sm")} 只读访问</strong>
+              <span>查看工作台和终端快照，但不能输入或改变会话状态。</span>
+            </button>
+          </div>
+        </section>
+        <div class="info-card warning-card" style="margin-top:16px">
+          <strong>高风险操作</strong>
+          即使拥有完全控制权限，结构化审批和外部写操作仍需在桌面端确认。
+        </div>
+      `, {
+        trailing: `<button class="text-button" data-action="save-permissions">完成</button>`
+      });
+    }
+
+    function notificationSettingRow(key, title, subtitle) {
+      return `
+        <div class="settings-row" style="cursor:default">
+          <span class="settings-info"><strong>${escapeHTML(title)}</strong><span>${escapeHTML(subtitle)}</span></span>
+          <button class="switch" role="switch" data-action="toggle-setting" data-key="${key}"
+            aria-label="${escapeHTML(title)}" aria-checked="${state.settings[key]}"></button>
+        </div>
+      `;
+    }
+
+    function notificationSettingsRoute() {
+      return pushShell("通知设置", `
+        <div class="info-card">
+          <strong>只通知需要介入的变化</strong>
+          同一事项会按稳定标识去重；回到前台后不会重复发送系统通知。
+        </div>
+        <section class="settings-group">
+          <h3 class="settings-group-title">提醒方式</h3>
+          <div class="settings-list">
+            ${notificationSettingRow("osNotifications", "系统通知", "应用不在前台时显示系统通知")}
+            ${notificationSettingRow("sounds", "提示音", "收到高优先级事项时播放提示音")}
+            ${notificationSettingRow("badge", "应用角标", "显示尚未阅读的通知数量")}
+          </div>
+        </section>
+        <button class="secondary-button full-button" style="margin-top:18px" data-action="test-notification">
+          ${icon("bell")} 发送测试通知
+        </button>
+        <p class="field-hint" style="text-align:center">原型只显示应用内反馈，不调用系统通知 API。</p>
+      `);
+    }
+
+    function appearanceRoute() {
+      const activePack = state.settings.themePack ? THEME_PACKS[state.settings.themePack] : null;
+      return pushShell("外观", `
+        <section>
+          <h3 class="settings-group-title">界面主题</h3>
+          <div class="choice-grid">
+            ${[
+              ["dark", "moon", "深色", "弱光环境"],
+              ["light", "sun", "浅色", "明亮环境"],
+              ["system", "smartphone", "跟随系统", "自动切换"]
+            ].map(([value, iconName, label, copy]) => `
+              <button class="choice-card" data-action="set-theme" data-value="${value}"
+                aria-pressed="${!activePack && state.settings.theme === value}">
+                <strong>${icon(iconName, "icon-sm")} ${label}</strong><span>${copy}</span>
+              </button>
+            `).join("")}
+          </div>
+          ${activePack ? `<p class="field-hint">当前由主题包「${escapeHTML(activePack.label)}」接管外观，选择上方选项可恢复。</p>` : ""}
+        </section>
+        <section class="settings-group">
+          <h3 class="settings-group-title">主题包 · 联动桌面外观</h3>
+          <div class="choice-grid">
+            ${Object.entries(THEME_PACKS).map(([id, pack]) => `
+              <button class="choice-card" data-action="set-theme-pack" data-value="${id}"
+                aria-pressed="${state.settings.themePack === id}">
+                <strong><i class="pack-swatch" style="--swatch-bg:${pack.app.background};--swatch-primary:${pack.app.primary}"></i> ${escapeHTML(pack.label)}</strong>
+                <span>${pack.mode === "dark" ? "深色" : "浅色"} · 与 PC 端同源 token</span>
+              </button>
+            `).join("")}
+          </div>
+          <p class="field-hint">
+            演示 PC 端「设置 → 外观」主题包联动：生产环境由桌面端经移动 Bridge 推送同一组
+            token（app + terminal + mode），移动端注入 CSS 变量——与本页效果同源。
+          </p>
+          ${activePack ? `<button class="text-button" data-action="set-theme-pack" data-value="">${icon("refresh", "icon-sm")} 恢复默认外观</button>` : ""}
+        </section>
+        <section class="settings-group">
+          <h3 class="settings-group-title">终端显示</h3>
+          <div class="settings-list">
+            <div class="settings-row" style="cursor:default">
+              <span class="settings-info"><strong>紧凑终端工具栏</strong><span>横屏或小尺寸设备显示更多输出</span></span>
+              <button class="switch" role="switch" data-action="toggle-setting" data-key="compactTerminal"
+                aria-label="紧凑终端工具栏" aria-checked="${state.settings.compactTerminal}"></button>
+            </div>
+          </div>
+        </section>
+        <div class="terminal-mark" style="width:100%;height:90px;margin-top:18px;display:flex;align-items:flex-start;justify-content:flex-start;padding:12px;font:11px/1.5 monospace;background:var(--terminal-canvas);border-color:var(--terminal-key-border);color:var(--terminal-fg)">
+          <span><span style="color:var(--terminal-blue)">$</span> threadterm preview<br><span style="color:var(--terminal-green)">✓</span> 主题实时预览</span>
+        </div>
+      `);
+    }
+
+    function languageRoute() {
+      const languages = [
+        ["zh-CN", "简体中文", "Chinese (Simplified)"],
+        ["en", "English", "English"],
+        ["ja", "日本語", "Japanese"],
+        ["ko", "한국어", "Korean"]
+      ];
+      return pushShell("语言", `
+        <div class="settings-list">
+          ${languages.map(([value, label, subtitle]) => `
+            <button class="settings-row" data-action="set-language" data-value="${value}">
+              <span class="settings-info"><strong>${label}</strong><span>${subtitle}</span></span>
+              ${state.settings.language === value ? icon("check", "check-mark") : ""}
+            </button>
+          `).join("")}
+        </div>
+        <p class="field-hint" style="margin-top:10px">原型保留中文内容，仅演示语言选择和状态反馈。</p>
+      `);
+    }
+
+    function diagnosticsRoute() {
+      return pushShell("连接诊断", `
+        <div class="detail-grid" style="margin-top:0">
+          <div class="detail-field"><span>连接</span><strong>${state.connected ? "正常" : "离线"}</strong></div>
+          <div class="detail-field"><span>往返延迟</span><strong>${state.connected ? "18 ms" : "—"}</strong></div>
+          <div class="detail-field"><span>快照</span><strong>#1842</strong></div>
+          <div class="detail-field"><span>事件队列</span><strong>0 pending</strong></div>
+          <div class="detail-field"><span>移动协议</span><strong>v1</strong></div>
+          <div class="detail-field"><span>最后同步</span><strong>刚刚</strong></div>
+        </div>
+        <section class="settings-group">
+          <h3 class="settings-group-title">调试操作</h3>
+          <div class="settings-list">
+            <button class="settings-row" data-action="reconnect">
+              <span class="settings-icon">${icon("refresh", "icon-sm")}</span>
+              <span class="settings-info"><strong>重新连接并拉取快照</strong><span>不改变现有会话</span></span>
+              ${icon("chevron-right", "icon-sm")}
+            </button>
+            <button class="settings-row" data-action="copy-diagnostics">
+              <span class="settings-icon">${icon("copy", "icon-sm")}</span>
+              <span class="settings-info"><strong>复制诊断信息</strong><span>不包含终端输出和敏感令牌</span></span>
+              ${icon("chevron-right", "icon-sm")}
+            </button>
+            <button class="settings-row" data-action="simulate-offline">
+              <span class="settings-icon">${icon("wifi-off", "icon-sm")}</span>
+              <span class="settings-info"><strong>模拟离线</strong><span>检查缓存快照和禁用状态</span></span>
+              ${icon("chevron-right", "icon-sm")}
+            </button>
+          </div>
+        </section>
+        <div class="info-card warning-card" style="margin-top:18px">
+          <strong>Workbench Projection 缺口</strong>
+          当前移动协议尚缺结构化请求、Supervisor alert、稳定通知和共享规则；
+          生产实现需先扩展可恢复快照。
+        </div>
+      `);
+    }
+
+    function aboutRoute() {
+      return pushShell("关于 ThreadTerm", `
+        <div class="empty-state" style="padding-top:6px">
+          <div class="empty-icon" style="background:var(--primary-soft);color:var(--primary-strong)">${icon("terminal", "icon-lg")}</div>
+          <h4 style="font-size:18px">ThreadTerm Mobile</h4>
+          <p>完整前端交互原型 · v0.3</p>
+        </div>
+        <div class="settings-list">
+          <button class="settings-row" data-action="show-prototype-info">
+            <span class="settings-info"><strong>原型说明</strong><span>范围、能力边界与数据契约</span></span>
+            ${icon("chevron-right", "icon-sm")}
+          </button>
+          <button class="settings-row" data-action="show-licenses">
+            <span class="settings-info"><strong>开源许可</strong><span>第三方组件与许可信息</span></span>
+            ${icon("chevron-right", "icon-sm")}
+          </button>
+          <button class="settings-row" data-action="copy-version">
+            <span class="settings-info"><strong>复制版本信息</strong><span>ThreadTerm Mobile Prototype v0.3</span></span>
+            ${icon("copy", "icon-sm")}
+          </button>
+        </div>
+        <div class="info-card" style="margin-top:18px">
+          <strong>隐私</strong>
+          原型不会联网、读取本地文件或持久化输入；所有演示数据仅存在于当前浏览器页面。
+        </div>
+      `);
+    }
+
+    function infoDocumentRoute(kind) {
+      const licenses = kind === "licenses";
+      return pushShell(licenses ? "开源许可" : "原型说明", licenses ? `
+        <div class="info-card">
+          <strong>零外部运行时依赖</strong>
+          此独立 HTML 原型没有加载 CDN、外部字体、第三方脚本或生产 Store。
+        </div>
+        <section class="section">
+          <div class="section-head"><h3>视觉参考</h3></div>
+          <p style="color:var(--muted);font-size:12px">
+            图标为原型内嵌 SVG 路径；界面使用系统字体栈。生产应用中的开源许可
+            应由构建系统生成，本页仅表达最终 UI 位置。
+          </p>
+        </section>
+      ` : `
+        <div class="info-card">
+          <strong>完整前端、无真实后端</strong>
+          可走查连接、工作台、通知、终端、设置和全部确认/反馈状态；
+          不会启动 PTY、执行命令、响应审批或写入系统配置。
+        </div>
+        <section class="section">
+          <div class="section-head"><h3>生产实现前置条件</h3></div>
+          <div class="timeline">
+            ${[
+              "新增可恢复的 WorkbenchProjection 快照",
+              "复用桌面端注意力规则和信号优先级",
+              "补充 structured request capability",
+              "使用明确 route stack 替代布尔页面状态"
+            ].map((text, index) => `
+              <div class="timeline-item"><span class="timeline-dot">${index + 1}</span><span>${text}</span></div>
+            `).join("")}
+          </div>
+        </section>
+      `);
+    }
+
+    function renderRoute() {
+      const layer = $("#push-layer");
+      if (!state.route) {
+        layer.classList.remove("open");
+        layer.innerHTML = "";
+        layer.setAttribute("aria-hidden", "true");
+        return;
+      }
+      let markup = "";
+      switch (state.route) {
+        case "attention-detail": markup = attentionDetailRoute(state.routePayload); break;
+        case "group-detail": markup = groupDetailRoute(state.routePayload); break;
+        case "notifications": markup = notificationsRoute(); break;
+        case "rules": markup = rulesRoute(); break;
+        case "terminal-detail": markup = terminalDetailRoute(state.routePayload); break;
+        case "new-terminal": markup = newTerminalRoute(); break;
+        case "pairing": markup = pairingRoute(); break;
+        case "connection": markup = connectionRoute(); break;
+        case "permissions": markup = permissionsRoute(); break;
+        case "notification-settings": markup = notificationSettingsRoute(); break;
+        case "appearance": markup = appearanceRoute(); break;
+        case "language": markup = languageRoute(); break;
+        case "diagnostics": markup = diagnosticsRoute(); break;
+        case "about": markup = aboutRoute(); break;
+        case "prototype-info": markup = infoDocumentRoute("prototype"); break;
+        case "licenses": markup = infoDocumentRoute("licenses"); break;
+        default: markup = pushShell("页面不可用", emptyState("info", "未知页面", "返回后重试。"));
+      }
+      layer.innerHTML = markup;
+      layer.classList.add("open");
+      layer.setAttribute("aria-hidden", "false");
+      $("#bottom-nav").hidden = true;
+      if (state.route === "pairing") renderQrPattern();
+      if (state.route === "terminal-detail") {
+        requestAnimationFrame(() => {
+          const output = $("#terminal-output");
+          if (output) output.scrollTop = output.scrollHeight;
+        });
+      }
+    }
+
+    function openRoute(route, payload = null) {
+      if (state.route) {
+        state.routeStack.push({ route: state.route, payload: state.routePayload });
+      } else {
+        state.scrollByTab[state.tab] = $("#app-screen").scrollTop;
+        state.routeOrigin = { tab: state.tab, scroll: state.scrollByTab[state.tab] };
+      }
+      state.route = route;
+      state.routePayload = payload;
+      closeSheet(false);
+      renderApp();
+      requestAnimationFrame(() => {
+        const heading = $(".push-header h2");
+        if (heading) heading.setAttribute("tabindex", "-1");
+        heading?.focus({ preventScroll: true });
+      });
+    }
+
+    function closeRoute() {
+      if (state.route === "pairing" && !state.paired) {
+        showToast("请先完成配对", "lock");
+        return;
+      }
+      const previous = state.routeStack.pop();
+      state.route = previous?.route || null;
+      state.routePayload = previous?.payload || null;
+      state.terminalModifier = null;
+      state.terminalInput = "";
+      renderApp();
+    }
+
+    function renderQrPattern() {
+      const grid = $("#qr-grid");
+      if (!grid) return;
+      const cells = [];
+      for (let row = 0; row < 13; row += 1) {
+        for (let col = 0; col < 13; col += 1) {
+          const finder = (
+            (row < 5 && col < 5) ||
+            (row < 5 && col > 7) ||
+            (row > 7 && col < 5)
+          );
+          const finderOn = finder && (
+            row % 6 === 0 || col % 8 === 0 ||
+            ((row % 6 > 1 && row % 6 < 4) && (col % 8 > 1 && col % 8 < 4))
+          );
+          const noise = ((row * 7 + col * 11 + row * col) % 5) < 2;
+          cells.push(`<i class="${finderOn || (!finder && noise) ? "on" : ""}"></i>`);
+        }
+      }
+      grid.innerHTML = cells.join("");
+    }
+
+    function openSheet(type, payload = null) {
+      state.sheet = type;
+      state.sheetPayload = payload;
+      renderSheet();
+    }
+
+    function closeSheet(render = true) {
+      state.sheet = null;
+      state.sheetPayload = null;
+      $("#sheet").classList.remove("open");
+      $("#sheet-backdrop").classList.remove("open");
+      $("#sheet").setAttribute("aria-hidden", "true");
+      if (render) setTimeout(() => { $("#sheet").innerHTML = ""; }, 220);
+    }
+
+    function sheetShell(title, body) {
+      return `
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <header class="sheet-header">
+          <h3>${escapeHTML(title)}</h3>
+          <button class="icon-button" data-action="close-sheet" aria-label="关闭">${icon("x")}</button>
+        </header>
+        <div class="sheet-body">${body}</div>
+      `;
+    }
+
+    function scopeSheet() {
+      return sheetShell("项目与 Worktree", `
+        ${SCOPES.map((scope) => `
+          <button class="sheet-option" data-action="select-scope" data-value="${escapeHTML(scope.id)}">
+            <span class="group-icon">${icon(scope.id === "all" ? "grid" : "git-branch", "icon-sm")}</span>
+            <span class="option-copy"><strong>${escapeHTML(scope.label)}</strong><span>${escapeHTML(scope.detail)}</span></span>
+            ${state.scope === scope.id ? icon("check", "check-mark") : ""}
+          </button>
+        `).join("")}
+      `);
+    }
+
+    function sessionMenuSheet(id) {
+      const session = state.sessions.find((item) => item.id === id);
+      if (!session) return sheetShell("终端操作", `<p class="field-error">终端已不可用。</p>`);
+      return sheetShell(session.name, `
+        <button class="sheet-option" data-action="open-terminal" data-id="${session.id}">
+          ${icon("terminal")}<span class="option-copy"><strong>打开终端</strong><span>查看输出并继续操作</span></span>
+        </button>
+        <button class="sheet-option" data-action="rename-session" data-id="${session.id}">
+          ${icon("edit")}<span class="option-copy"><strong>重命名</strong><span>修改移动端显示名称</span></span>
+        </button>
+        <button class="sheet-option" data-action="toggle-pin" data-id="${session.id}">
+          ${icon("pin")}<span class="option-copy"><strong>${session.pinned ? "取消置顶" : "置顶终端"}</strong><span>调整终端列表顺序</span></span>
+        </button>
+        <button class="sheet-option" data-action="${session.archived ? "restore-session" : "confirm-archive"}" data-id="${session.id}">
+          ${icon("archive")}<span class="option-copy"><strong>${session.archived ? "恢复到运行列表" : "归档终端"}</strong><span>${session.archived ? "恢复终端记录" : "保留记录并从运行列表移除"}</span></span>
+        </button>
+        <button class="sheet-option" data-action="confirm-close-session" data-id="${session.id}" style="color:var(--red)">
+          ${icon("trash")}<span class="option-copy"><strong>关闭并删除</strong><span>此原型动作不可撤销</span></span>
+        </button>
+      `);
+    }
+
+    function renameSheet(id) {
+      const session = state.sessions.find((item) => item.id === id);
+      return sheetShell("重命名终端", `
+        <form class="form-grid" id="rename-form" data-session-id="${id}" novalidate>
+          <div class="field">
+            <label for="rename-value">显示名称</label>
+            <input id="rename-value" name="name" maxlength="48" value="${escapeHTML(session?.name || "")}" autofocus>
+            <p class="field-error" data-error-for="rename"></p>
+          </div>
+          <button class="primary-button full-button" type="submit">保存名称</button>
+        </form>
+      `);
+    }
+
+    function confirmSheet(payload) {
+      return `
+        <div class="dialog">
+          <h3>${escapeHTML(payload.title)}</h3>
+          <p>${escapeHTML(payload.copy)}</p>
+          <div class="dialog-actions">
+            <button class="secondary-button" data-action="close-sheet">取消</button>
+            <button class="${payload.danger ? "danger-button" : "primary-button"}"
+              data-action="${payload.confirmAction}" data-id="${payload.id || ""}">
+              ${escapeHTML(payload.confirmLabel)}
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderSheet() {
+      if (!state.sheet) return closeSheet(false);
+      let markup = "";
+      if (state.sheet === "scope") markup = scopeSheet();
+      else if (state.sheet === "session-menu") markup = sessionMenuSheet(state.sheetPayload);
+      else if (state.sheet === "rename") markup = renameSheet(state.sheetPayload);
+      else if (state.sheet === "confirm") markup = confirmSheet(state.sheetPayload);
+      const sheet = $("#sheet");
+      sheet.innerHTML = markup;
+      sheet.classList.add("open");
+      $("#sheet-backdrop").classList.add("open");
+      sheet.setAttribute("aria-hidden", "false");
+      requestAnimationFrame(() => {
+        const focusTarget = $("input, button", sheet);
+        focusTarget?.focus({ preventScroll: true });
+      });
+    }
+
+    function showToast(message, iconName = "check") {
+      const toast = $("#toast");
+      toast.innerHTML = `${icon(iconName, "icon-sm")}<span>${escapeHTML(message)}</span>`;
+      toast.classList.add("show");
+      clearTimeout(state.toastTimer);
+      state.toastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
+    }
+
+    function setScenario(value) {
+      state.scenario = value;
+      state.connected = value !== "offline";
+      state.tab = "workbench";
+      state.route = null;
+      state.routeStack = [];
+      state.sheet = null;
+      state.scope = "all";
+      state.attentionFilter = "all";
+      state.workbenchSearch = "";
+      state.workbenchSearchOpen = false;
+      state.terminalSearch = "";
+      state.terminalSegment = "active";
+      state.sessions = clone(BASE_SESSIONS);
+      state.notifications = clone(BASE_NOTIFICATIONS);
+      const url = new URL(location.href);
+      url.searchParams.set("scenario", value);
+      try {
+        history.replaceState({}, "", url);
+      } catch {
+        // file:// 直接打开时，部分 WebView 不允许改写当前 URL。
+      }
+      closeSheet(false);
+      renderApp();
+      showToast({
+        attention: "已切换：高优先级场景",
+        running: "已切换：正常运行场景",
+        empty: "已切换：空工作区场景",
+        warming: "已切换：正在同步场景",
+        offline: "已切换：离线快照场景"
+      }[value], "grid");
+    }
+
+    function resetPrototype() {
+      state.viewport = "390x844";
+      state.settings = clone(DEFAULT_SETTINGS);
+      state.paired = true;
+      state.readOnly = false;
+      document.documentElement.style.setProperty("--phone-w", "390px");
+      document.documentElement.style.setProperty("--phone-h", "844px");
+      setScenario("attention");
+      showToast("原型已重置", "refresh");
+    }
+
+    function switchTab(tab) {
+      if (state.tab === tab && !state.route) {
+        $("#app-screen").scrollTo({ top: 0, behavior: "smooth" });
+        return;
+      }
+      state.scrollByTab[state.tab] = $("#app-screen").scrollTop;
+      state.tab = tab;
+      state.route = null;
+      state.routePayload = null;
+      state.routeStack = [];
+      renderApp();
+    }
+
+    function setViewport(value) {
+      const [width, height] = value.split("x");
+      state.viewport = value;
+      document.documentElement.style.setProperty("--phone-w", `${width}px`);
+      document.documentElement.style.setProperty("--phone-h", `${height}px`);
+      renderReviewControls();
+      showToast(`视口 ${width} × ${height}`, "smartphone");
+    }
+
+    function requestConfirmation(payload) {
+      openSheet("confirm", payload);
+    }
+
+    function handleAction(button) {
+      const action = button.dataset.action;
+      const value = button.dataset.value;
+      const id = button.dataset.id;
+
+      switch (action) {
+        case "scenario":
+          setScenario(value);
+          break;
+        case "viewport":
+          setViewport(value);
+          break;
+        case "reset-prototype":
+          resetPrototype();
+          break;
+        case "tab":
+          switchTab(value);
+          break;
+        case "open-route":
+          openRoute(button.dataset.route);
+          break;
+        case "open-pairing":
+          openRoute("pairing");
+          break;
+        case "close-route":
+          closeRoute();
+          break;
+        case "toggle-workbench-search":
+          state.workbenchSearchOpen = !state.workbenchSearchOpen;
+          if (!state.workbenchSearchOpen) state.workbenchSearch = "";
+          renderApp();
+          if (state.workbenchSearchOpen) requestAnimationFrame(() => $("#workbench-search")?.focus());
+          break;
+        case "clear-search":
+          if (value === "workbench") {
+            state.workbenchSearch = "";
+            renderApp();
+            requestAnimationFrame(() => $("#workbench-search")?.focus());
+          } else {
+            state.terminalSearch = "";
+            renderApp();
+            requestAnimationFrame(() => $("#terminal-search")?.focus());
+          }
+          break;
+        case "clear-workbench-search":
+          state.workbenchSearch = "";
+          state.workbenchSearchOpen = true;
+          renderApp();
+          requestAnimationFrame(() => $("#workbench-search")?.focus());
+          break;
+        case "clear-terminal-search":
+          state.terminalSearch = "";
+          renderApp();
+          requestAnimationFrame(() => $("#terminal-search")?.focus());
+          break;
+        case "open-scope":
+          openSheet("scope");
+          break;
+        case "select-scope":
+          state.scope = value;
+          closeSheet(false);
+          state.scrollByTab[state.tab] = 0;
+          renderApp();
+          showToast(`范围：${selectedScope().label}`, "folder");
+          break;
+        case "summary-filter":
+          state.attentionFilter = value;
+          renderApp();
+          requestAnimationFrame(() => $("#attention-section")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+          break;
+        case "summary-running":
+          state.attentionFilter = "all";
+          renderApp();
+          requestAnimationFrame(() => $("#groups-section")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+          showToast("已定位到执行上下文", "play");
+          break;
+        case "attention-filter":
+          state.attentionFilter = value;
+          renderApp();
+          break;
+        case "show-all-attention":
+          state.attentionFilter = "all";
+          renderApp();
+          break;
+        case "attention-detail":
+          openRoute("attention-detail", id);
+          break;
+        case "group-detail":
+          openRoute("group-detail", id);
+          break;
+        case "go-new-terminal":
+          state.tab = "terminal";
+          openRoute("new-terminal");
+          break;
+        case "terminal-segment":
+          state.terminalSegment = value;
+          state.scrollByTab.terminal = 0;
+          renderApp();
+          break;
+        case "open-terminal":
+          closeSheet(false);
+          openRoute("terminal-detail", id);
+          break;
+        case "session-menu":
+          openSheet("session-menu", id);
+          break;
+        case "rename-session":
+          openSheet("rename", id);
+          break;
+        case "toggle-pin": {
+          const session = state.sessions.find((item) => item.id === id);
+          if (session) session.pinned = !session.pinned;
+          closeSheet(false);
+          renderApp();
+          showToast(session?.pinned ? "终端已置顶" : "已取消置顶", "pin");
+          break;
+        }
+        case "confirm-archive":
+          requestConfirmation({
+            title: "归档这个终端？",
+            copy: "终端会从运行列表移除，但名称和最后输出仍可在“已归档”中查看。",
+            confirmLabel: "确认归档",
+            confirmAction: "do-archive",
+            id
+          });
+          break;
+        case "do-archive": {
+          const session = state.sessions.find((item) => item.id === id);
+          if (session) session.archived = true;
+          closeSheet(false);
+          if (state.route === "terminal-detail") state.route = null;
+          if (!state.route) state.routeStack = [];
+          renderApp();
+          showToast("终端已归档", "archive");
+          break;
+        }
+        case "restore-session": {
+          const session = state.sessions.find((item) => item.id === id);
+          if (session) session.archived = false;
+          state.terminalSegment = "active";
+          closeSheet(false);
+          renderApp();
+          showToast("终端已恢复", "refresh");
+          break;
+        }
+        case "confirm-close-session":
+          requestConfirmation({
+            title: "关闭并删除终端？",
+            copy: "原型会移除这条会话记录。生产环境还需要检查未保存的工作区草稿。",
+            confirmLabel: "关闭并删除",
+            confirmAction: "do-close-session",
+            id,
+            danger: true
+          });
+          break;
+        case "do-close-session":
+          state.sessions = state.sessions.filter((item) => item.id !== id);
+          state.notifications = state.notifications.filter((item) => {
+            const attention = BASE_ATTENTION.find((entry) => entry.id === item.attentionId);
+            return attention?.sessionId !== id;
+          });
+          closeSheet(false);
+          if (state.route === "terminal-detail") state.route = null;
+          if (!state.route) state.routeStack = [];
+          renderApp();
+          showToast("终端已关闭并删除", "trash");
+          break;
+        case "notification-open": {
+          const notification = state.notifications.find((entry) => entry.id === id);
+          if (notification) notification.read = true;
+          if (notification?.attentionId) openRoute("attention-detail", notification.attentionId);
+          else renderApp();
+          break;
+        }
+        case "mark-all-read":
+          state.notifications.forEach((notification) => { notification.read = true; });
+          renderApp();
+          showToast("通知已全部标为已读", "check");
+          break;
+        case "clear-notifications":
+          requestConfirmation({
+            title: "清空通知历史？",
+            copy: "这不会改变终端或工作台事项，只移除当前原型中的通知记录。",
+            confirmLabel: "清空",
+            confirmAction: "do-clear-notifications",
+            danger: true
+          });
+          break;
+        case "do-clear-notifications":
+          state.notifications = [];
+          closeSheet(false);
+          renderApp();
+          showToast("通知历史已清空", "trash");
+          break;
+        case "reconnect":
+          state.connected = true;
+          if (state.scenario === "offline") state.scenario = "attention";
+          renderApp();
+          showToast("连接已恢复，快照已更新", "wifi");
+          break;
+        case "copy-address":
+          copyText("ws://192.168.1.18:3976", "连接地址已复制");
+          break;
+        case "confirm-disconnect":
+          requestConfirmation({
+            title: "移除此设备？",
+            copy: "移动端将清除配对状态，需要重新扫描二维码或输入配对码才能连接。",
+            confirmLabel: "断开并移除",
+            confirmAction: "do-disconnect",
+            danger: true
+          });
+          break;
+        case "do-disconnect":
+          state.paired = false;
+          state.connected = false;
+          closeSheet(false);
+          state.route = "pairing";
+          state.routeStack = [];
+          renderApp();
+          showToast("设备已移除", "log-out");
+          break;
+        case "set-permission":
+          state.settings.permission = value;
+          state.readOnly = value === "readonly";
+          renderApp();
+          break;
+        case "save-permissions":
+          closeRoute();
+          showToast("设备权限已更新", "shield");
+          break;
+        case "toggle-setting": {
+          const key = button.dataset.key;
+          state.settings[key] = !state.settings[key];
+          renderApp();
+          showToast(state.settings[key] ? "已开启" : "已关闭", "check");
+          break;
+        }
+        case "reset-rules":
+          Object.assign(state.settings, {
+            ruleWaiting: true,
+            ruleFailed: true,
+            ruleReview: true,
+            ruleStalled: false,
+            stalledMinutes: 5
+          });
+          renderApp();
+          showToast("已恢复默认规则", "refresh");
+          break;
+        case "save-rules":
+          closeRoute();
+          showToast("规则已保存到原型状态", "check");
+          break;
+        case "test-notification":
+          state.notifications.unshift({
+            id: `n-${Date.now()}`,
+            title: "测试通知",
+            body: "ThreadTerm 移动通知设置正常。",
+            time: "刚刚",
+            read: false
+          });
+          renderApp();
+          showToast("测试通知已加入通知中心", "bell");
+          break;
+        case "set-theme":
+          state.settings.theme = value;
+          state.settings.themePack = null;
+          renderApp();
+          showToast(`主题已切换为${{ dark: "深色", light: "浅色", system: "跟随系统" }[value]}`, value === "light" ? "sun" : "moon");
+          break;
+        case "set-theme-pack":
+        case "themepack": {
+          state.settings.themePack = value || null;
+          renderApp();
+          const pack = THEME_PACKS[value];
+          showToast(pack ? `主题包：${pack.label}（PC 联动演示）` : "已恢复默认外观", "palette");
+          break;
+        }
+        case "set-language":
+          state.settings.language = value;
+          renderApp();
+          showToast("语言偏好已更新（原型内容保持中文）", "language");
+          break;
+        case "copy-diagnostics":
+          copyText("ThreadTerm Mobile Prototype v0.3\nconnection=ok\nsnapshot=1842\nlatency=18ms", "诊断信息已复制");
+          break;
+        case "simulate-offline":
+          state.connected = false;
+          state.scenario = "offline";
+          state.route = null;
+          state.routeStack = [];
+          state.tab = "workbench";
+          renderApp();
+          showToast("已进入离线快照模式", "wifi-off");
+          break;
+        case "show-prototype-info":
+          openRoute("prototype-info");
+          break;
+        case "show-licenses":
+          openRoute("licenses");
+          break;
+        case "copy-version":
+          copyText("ThreadTerm Mobile Prototype v0.3", "版本信息已复制");
+          break;
+        case "terminal-modifier":
+          state.terminalModifier = state.terminalModifier === value ? null : value;
+          renderRoute();
+          break;
+        case "terminal-key":
+          handleTerminalKey(value);
+          break;
+        case "form-choice":
+          selectFormChoice(button);
+          break;
+        case "close-sheet":
+          closeSheet();
+          break;
+        default:
+          break;
+      }
+    }
+
+    async function copyText(text, successMessage) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const area = document.createElement("textarea");
+        area.value = text;
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.append(area);
+        area.select();
+        document.execCommand("copy");
+        area.remove();
+      }
+      showToast(successMessage, "copy");
+    }
+
+    function selectFormChoice(button) {
+      const group = button.dataset.group;
+      const container = button.closest(`[data-choice-group="${group}"]`);
+      $$(`[data-action="form-choice"]`, container).forEach((choice) => {
+        choice.setAttribute("aria-pressed", String(choice === button));
+      });
+      const form = button.closest("form");
+      const input = $(`input[name="${group === "terminal-type" ? "type" : "launchMode"}"]`, form);
+      if (input) input.value = button.dataset.value;
+      showToast(`已选择：${button.dataset.value}`, "check");
+    }
+
+    function handleTerminalKey(key) {
+      const session = currentSession(state.routePayload);
+      if (!session) return;
+      if (state.terminalModifier) {
+        const combo = `${state.terminalModifier}+${key}`;
+        session.output.push({ text: `⌨ ${combo}（模拟快捷键）`, tone: "dim" });
+        state.terminalModifier = null;
+        renderRoute();
+        showToast(`${combo} 已发送`, "keyboard");
+        return;
+      }
+      if (key === "ArrowUp") state.terminalInput = "pnpm test";
+      else if (key === "ArrowDown") state.terminalInput = "";
+      else if (key === "Escape") {
+        session.output.push({ text: "^Esc", tone: "dim" });
+        showToast("Esc 已发送", "keyboard");
+      } else if (key === "Tab") state.terminalInput += "\t";
+      else state.terminalInput += key;
+      renderRoute();
+      requestAnimationFrame(() => {
+        const input = $("#terminal-command");
+        if (input) {
+          input.focus();
+          input.selectionStart = input.selectionEnd = input.value.length;
+        }
+      });
+    }
+
+    function showFormError(form, field, message) {
+      const target = $(`[data-error-for="${field}"]`, form);
+      if (target) target.textContent = message;
+    }
+
+    function submitNewTerminal(form) {
+      const values = Object.fromEntries(new FormData(form));
+      showFormError(form, "name", "");
+      showFormError(form, "projectPath", "");
+      const projectPath = String(values.projectPath || "").trim();
+      if (!projectPath) {
+        showFormError(form, "projectPath", "请输入项目路径。");
+        $("#new-project", form)?.focus();
+        return;
+      }
+      if (!/^[A-Za-z]:[\\/]/.test(projectPath) && !projectPath.startsWith("/")) {
+        showFormError(form, "projectPath", "请输入 Windows 盘符路径或绝对路径。");
+        $("#new-project", form)?.focus();
+        return;
+      }
+      const rawName = String(values.name || "").trim();
+      if (rawName.length > 48) {
+        showFormError(form, "name", "名称不能超过 48 个字符。");
+        return;
+      }
+      const project = projectPath.split(/[\\/]/).filter(Boolean).at(-1) || "Project";
+      const type = String(values.type || "Codex");
+      const restored = values.launchMode === "resume";
+      const id = `s-created-${Date.now()}`;
+      state.sessions.unshift({
+        id,
+        name: rawName || `${type.toLowerCase().replaceAll(" ", "-")}-${state.sessions.length + 1}`,
+        project,
+        projectPath,
+        worktree: String(values.worktree || "main").trim() || "main",
+        type,
+        status: "running",
+        statusLabel: "正常运行",
+        lastActive: "刚刚",
+        preview: restored ? "历史会话已恢复（原型）" : "新终端已启动（原型）",
+        pinned: false,
+        archived: false,
+        demoCreated: true,
+        output: [
+          { text: `ThreadTerm ${restored ? "resumed" : "started"} ${type}`, tone: "blue" },
+          { text: `Project: ${projectPath}`, tone: "dim" },
+          { text: restored ? "历史 Provider 会话已恢复（模拟）。" : "PTY 已就绪（模拟）。", tone: "green" },
+          { text: "" }
+        ]
+      });
+      state.tab = "terminal";
+      state.route = "terminal-detail";
+      state.routePayload = id;
+      state.routeStack = [];
+      renderApp();
+      showToast(restored ? "历史会话已恢复（模拟）" : "终端已创建（模拟）", "terminal");
+    }
+
+    function submitPairing(form) {
+      const values = Object.fromEntries(new FormData(form));
+      const address = String(values.address || "").trim();
+      const token = String(values.token || "").replace(/\s/g, "");
+      showFormError(form, "address", "");
+      showFormError(form, "token", "");
+      let valid = true;
+      if (!/^wss?:\/\/[^ ]+$/i.test(address)) {
+        showFormError(form, "address", "请输入 ws:// 或 wss:// 连接地址。");
+        valid = false;
+      }
+      if (!/^\d{6}$/.test(token)) {
+        showFormError(form, "token", "配对码应为 6 位数字。");
+        valid = false;
+      }
+      if (!valid) return;
+      state.paired = true;
+      state.connected = true;
+      if (state.scenario === "offline") state.scenario = "attention";
+      state.route = null;
+      state.routePayload = null;
+      state.routeStack = [];
+      state.tab = "workbench";
+      renderApp();
+      showToast("设备配对成功（模拟）", "shield");
+    }
+
+    function submitRename(form) {
+      const id = form.dataset.sessionId;
+      const name = String(new FormData(form).get("name") || "").trim();
+      if (!name) {
+        showFormError(form, "rename", "名称不能为空。");
+        return;
+      }
+      const session = state.sessions.find((item) => item.id === id);
+      if (session) session.name = name;
+      closeSheet(false);
+      renderApp();
+      showToast("终端名称已更新", "edit");
+    }
+
+    function submitTerminalInput(form) {
+      const id = form.dataset.sessionId;
+      const input = $("#terminal-command", form);
+      const command = String(input?.value || "").trim();
+      if (!command) {
+        showToast("请输入命令", "keyboard");
+        input?.focus();
+        return;
+      }
+      const session = state.sessions.find((item) => item.id === id);
+      if (!session) return;
+      session.output.push({ text: `$ ${command}` });
+      state.terminalInput = "";
+      renderRoute();
+      setTimeout(() => {
+        const target = state.sessions.find((item) => item.id === id);
+        if (!target) return;
+        target.output.push(
+          { text: `模拟执行完成：${command}`, tone: "green" },
+          { text: "真实版本会通过移动 Bridge 写入 PTY。", tone: "dim" }
+        );
+        target.preview = `模拟执行完成：${command}`;
+        target.lastActive = "刚刚";
+        if (state.route === "terminal-detail" && state.routePayload === id) renderRoute();
+      }, 520);
+    }
+
+    document.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-action]");
+      if (!button || button.disabled) return;
+      event.preventDefault();
+      handleAction(button);
+    });
+
+    document.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const form = event.target;
+      if (form.id === "new-terminal-form") submitNewTerminal(form);
+      else if (form.id === "pairing-form") submitPairing(form);
+      else if (form.id === "rename-form") submitRename(form);
+      else if (form.id === "terminal-input-form") submitTerminalInput(form);
+    });
+
+    document.addEventListener("input", (event) => {
+      const input = event.target;
+      if (input.dataset.input === "workbench-search") {
+        const cursor = input.selectionStart;
+        state.workbenchSearch = input.value;
+        renderApp();
+        requestAnimationFrame(() => {
+          const next = $("#workbench-search");
+          next?.focus();
+          if (next && cursor != null) next.setSelectionRange(cursor, cursor);
+        });
+      } else if (input.dataset.input === "terminal-search") {
+        const cursor = input.selectionStart;
+        state.terminalSearch = input.value;
+        renderApp();
+        requestAnimationFrame(() => {
+          const next = $("#terminal-search");
+          next?.focus();
+          if (next && cursor != null) next.setSelectionRange(cursor, cursor);
+        });
+      } else if (input.dataset.input === "stalled-minutes") {
+        state.settings.stalledMinutes = Number(input.value);
+        const value = $(".range-value", input.closest(".info-card"));
+        if (value) value.textContent = `${input.value} 分钟`;
+      } else if (input.id === "terminal-command") {
+        state.terminalInput = input.value;
+        input.style.height = "auto";
+        input.style.height = `${Math.min(input.scrollHeight, 104)}px`;
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      if (state.sheet) {
+        event.preventDefault();
+        closeSheet();
+      } else if (state.route) {
+        event.preventDefault();
+        closeRoute();
+      }
+    });
+
+    $("#app-screen").addEventListener("scroll", (event) => {
+      state.scrollByTab[state.tab] = event.currentTarget.scrollTop;
+      const header = $(".page-header", event.currentTarget);
+      header?.classList.toggle("scrolled", event.currentTarget.scrollTop > 4);
+    }, { passive: true });
+
+    function initialize() {
+      state.connected = state.scenario !== "offline";
+      const now = new Date();
+      $("#status-time").textContent = `${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")}`;
+      // 跟随系统模式下，系统主题切换时实时重算（主题包激活时不干预）
+      matchMedia("(prefers-color-scheme: light)").addEventListener?.("change", () => {
+        if (state.settings.theme === "system" && !state.settings.themePack) syncTheme();
+      });
+      renderApp();
+    }
+
+    initialize();
+  </script>
+</body>
+</html>

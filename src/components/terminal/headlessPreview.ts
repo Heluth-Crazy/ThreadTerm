@@ -63,12 +63,18 @@ function getOrCreate(id: string): Terminal {
 export function feedHeadless(
   id: string,
   data: string,
-  onRendered: (preview: string) => void,
+  onRendered: () => void,
 ): void {
   const term = getOrCreate(id);
   term.write(data, () => {
-    onRendered(readPreview(term));
+    onRendered();
   });
+}
+
+/** Read the current screen only when the coalescing buffer is ready to flush. */
+export function readHeadlessPreview(id: string): string {
+  const term = terms.get(id);
+  return term ? readPreview(term) : '';
 }
 
 /**

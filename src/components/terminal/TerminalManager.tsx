@@ -23,6 +23,7 @@ import {
   History,
   Layers,
   Settings as SettingsIcon,
+  Smartphone,
   TerminalSquare,
   X,
 } from 'lucide-react';
@@ -37,16 +38,27 @@ import { MobileAccessSettings } from '../settings/MobileAccessSettings';
 import { ArchivedCardsPanel } from './ArchivedCardsPanel';
 import { SessionRecoveryPanel } from './SessionRecoveryPanel';
 import { SessionDock } from './SessionDock';
+import { AttentionDot } from './AttentionDot';
 import { StatsPanel } from '../stats/StatsPanel';
 import { useStatsAutoRefresh, useStatsSubscription } from '../../stores/statsStore';
 import { CommandPalette } from '../palette/CommandPalette';
 import { buildCommandRegistry, type CommandGroup } from '../palette/commandRegistry';
 import type { TerminalCard, TerminalCreateOptions, TerminalType } from '../../types/terminal';
 import { useSupervisor } from '../../lib/supervisor/useSupervisor';
-import { git, isTauriEnv, mobileBridge, type GitStatusEntry } from '../../lib/tauri-bridge';
+import {
+  git,
+  isTauriEnv,
+  mobileBridge,
+  mobileBridgeHasSubscribers,
+  type GitStatusEntry,
+} from '../../lib/tauri-bridge';
 import { openSettingsWindow, type SettingsTab } from '../../lib/settingsWindow';
 import { confirmDialog } from '../../lib/nativeDialog';
 import { cardToMobileMeta } from '../../mobile/bridge/cardMeta';
+import {
+  buildMobileWorkbenchProjection,
+  notificationsToMobile,
+} from '../../mobile/bridge/workbenchProjection';
 import { cardMatchesWorktree } from '../../lib/worktreePaths';
 import { clearProjectBranchCache } from './useProjectBranches';
 import { clearProjectWorktreeCache } from './useProjectWorktrees';
@@ -62,6 +74,13 @@ import {
   workspaceFileTabId,
 } from '../files/workspaceContentTabs';
 import type { DirEntry } from '../files/fileMeta';
+import { WorkbenchView } from '../workbench/WorkbenchView';
+import { WorkbenchDetailPanel } from '../workbench/WorkbenchDetailPanel';
+import { useWorkbenchModel } from '../workbench/useWorkbenchModel';
+import type {
+  PrimaryView,
+  WorkbenchPanelState,
+} from '../../lib/workbench/types';
 
 type ViewMode = 'grid' | 'focus';
 type WorkspaceContentTab =
@@ -86,6 +105,8 @@ interface WorkspaceContentState {
 }
 
 const MOBILE_SYNC_DEBOUNCE_MS = 100;
+const MOBILE_SYNC_MAX_WAIT_MS = 1000;
+const MOBILE_SUBSCRIBER_POLL_MS = 1000;
 const TERMINAL_CONTENT_TAB_ID = 'terminal';
 const DEFAULT_WORKSPACE_PANEL_STATE: WorkspacePanelState = {
   tab: 'explorer',
@@ -141,6 +162,8 @@ declare global {
       openSettings: (tab?: SettingsTab) => void;
       openPalette: () => void;
       closePalette: () => void;
+      requestRemoveCard: (cardId: string) => Promise<boolean>;
+      requestArchiveCard: (cardId: string) => Promise<boolean>;
     };
   }
 }
@@ -207,13 +230,21 @@ export function TerminalManager() {
   );
 
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  const [primaryView, setPrimaryView] = useState<PrimaryView>('workbench');
+  const returnPrimaryViewRef = useRef<PrimaryView>('workbench');
+  const previousFocusedCardIdRef = useRef<string | null>(null);
+  const [workbenchPanel, setWorkbenchPanel] = useState<WorkbenchPanelState | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
+  const [isSidebarCompact, setIsSidebarCompact] = useState(
+    typeof window !== 'undefined' && window.innerWidth >= 768 && window.innerWidth < 1180,
+  );
 
   useEffect(() => {
     const handleResize = () => {
       const mobile = window.innerWidth < 768;
       setIsMobile(mobile);
+      setIsSidebarCompact(window.innerWidth >= 768 && window.innerWidth < 1180);
       if (!mobile) {
         setSidebarOpen(false);
       }
@@ -223,9 +254,16 @@ export function TerminalManager() {
   }, []);
   const [createOpen, setCreateOpen] = useState(false);
   const [mobileViewActive, setMobileViewActive] = useState(false);
+  const { mobileWorkbenchModel, workbenchModel } = useWorkbenchModel({
+    cards,
+    selectedProjectPath,
+    selectedWorktreePath,
+  });
   const [workspaceContentByCardId, setWorkspaceContentByCardId] = useState<
     Record<string, WorkspaceContentState>
   >({});
+  const workspaceContentByCardIdRef = useRef(workspaceContentByCardId);
+  workspaceContentByCardIdRef.current = workspaceContentByCardId;
   useStatsSubscription();
   useStatsAutoRefresh();
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -260,7 +298,14 @@ export function TerminalManager() {
   const mountedIdsRef = useRef<string[]>([]);
   const [, bumpRender] = useState(0);
   const [mobileBridgeSyncEnabled, setMobileBridgeSyncEnabled] = useState(false);
+  const [mobileBridgeSyncActive, setMobileBridgeSyncActive] = useState(false);
   const lastMobileSyncPayloadRef = useRef('');
+  const pendingMobileSyncRef = useRef<{
+    fingerprint: string;
+    args: Parameters<typeof mobileBridge.syncState>;
+  } | null>(null);
+  const mobileSyncTrailingTimerRef = useRef<number | null>(null);
+  const mobileSyncMaxWaitTimerRef = useRef<number | null>(null);
 
   const mountCardInBackground = useCallback((cardId: string) => {
     const current = mountedIdsRef.current;
@@ -284,6 +329,10 @@ export function TerminalManager() {
     () => (focusedCardId ? cards.find((c) => c.id === focusedCardId) : undefined),
     [focusedCardId, cards],
   );
+  const primaryPageVisible =
+    (viewMode === 'grid' || !focusedCard) && !mobileViewActive;
+  const workbenchVisible = primaryPageVisible && primaryView === 'workbench';
+  const terminalsVisible = primaryPageVisible && primaryView === 'terminals';
 
   // Live working directory of the focused card. Without command-block shell
   // integration, this stays anchored to the card's worktree/project path.
@@ -306,9 +355,18 @@ export function TerminalManager() {
           return Boolean(selectedProjectPath && selectedProjectName);
         case 'sessionDock':
           return sessionDockAvailable;
+        case 'workbench':
+          return Boolean(workbenchPanel && primaryView === 'workbench' && primaryPageVisible);
       }
     },
-    [selectedProjectName, selectedProjectPath, sessionDockAvailable],
+    [
+      primaryPageVisible,
+      primaryView,
+      selectedProjectName,
+      selectedProjectPath,
+      sessionDockAvailable,
+      workbenchPanel,
+    ],
   );
 
   const {
@@ -336,6 +394,17 @@ export function TerminalManager() {
     }
   }, [closeRightSurface, dockPinned, openRightSurface, sessionDockAvailable]);
 
+  useEffect(() => {
+    if (!workbenchPanel || primaryView !== 'workbench' || !primaryPageVisible) {
+      closeRightSurface('workbench');
+    }
+  }, [
+    closeRightSurface,
+    primaryPageVisible,
+    primaryView,
+    workbenchPanel,
+  ]);
+
   // Auxiliary right-side surfaces share the fixed workspace rail. The most
   // recently opened surface wins, and closing it restores the workspace rail.
   const toggleRightPanel = useCallback(
@@ -352,11 +421,17 @@ export function TerminalManager() {
     activeRightSurface === 'archive' && !!selectedProjectPath && !!selectedProjectName;
   const sessionRecoveryPanelVisible = activeRightSurface === 'sessionRecovery';
   const sessionDockPanelVisible = activeRightSurface === 'sessionDock' && sessionDockAvailable;
+  const workbenchPanelVisible =
+    activeRightSurface === 'workbench' &&
+    Boolean(workbenchPanel) &&
+    primaryView === 'workbench' &&
+    primaryPageVisible;
   const auxiliaryRightPanelOpen =
     statsPanelVisible ||
     archivePanelVisible ||
     sessionDockPanelVisible ||
-    sessionRecoveryPanelVisible;
+    sessionRecoveryPanelVisible ||
+    workbenchPanelVisible;
   const rightPanelOpen =
     workspaceRailVisible ||
     auxiliaryRightPanelOpen;
@@ -559,6 +634,55 @@ export function TerminalManager() {
     [closeWorkspaceTabs, workspaceContentTabs],
   );
 
+  const requestCardExit = useCallback(
+    async (cardId: string, action: 'remove' | 'archive'): Promise<boolean> => {
+      const cardExists = useTerminalStore
+        .getState()
+        .cards
+        .some((card) => card.id === cardId);
+      if (!cardExists) return false;
+
+      const workspaceState = workspaceContentByCardIdRef.current[cardId];
+      const hasDirtyDraft = Object.values(workspaceState?.dirtyTabIds ?? {}).some(Boolean);
+      if (hasDirtyDraft) {
+        const shouldDiscard = await confirmDialog(
+          t('workspace.discardChangesConfirm', {
+            defaultValue: 'Discard unsaved file changes?',
+          }),
+          t('workspace.unsavedTitle', { defaultValue: 'Unsaved changes' }),
+        );
+        if (!shouldDiscard) return false;
+      }
+
+      const store = useTerminalStore.getState();
+      if (!store.cards.some((card) => card.id === cardId)) return false;
+
+      setWorkspaceContentByCardId((current) => {
+        if (!(cardId in current)) return current;
+        const { [cardId]: _discarded, ...next } = current;
+        workspaceContentByCardIdRef.current = next;
+        return next;
+      });
+
+      if (action === 'archive') {
+        store.archiveCard(cardId);
+      } else {
+        store.removeCard(cardId);
+      }
+      return true;
+    },
+    [t],
+  );
+
+  const requestRemoveCard = useCallback(
+    (cardId: string) => requestCardExit(cardId, 'remove'),
+    [requestCardExit],
+  );
+  const requestArchiveCard = useCallback(
+    (cardId: string) => requestCardExit(cardId, 'archive'),
+    [requestCardExit],
+  );
+
   const handleWorkspacePanelStateChange = useCallback(
     (panelState: WorkspacePanelState) => {
       updateFocusedWorkspaceContent((state) => ({ ...state, panelState }));
@@ -593,21 +717,129 @@ export function TerminalManager() {
   }, []);
 
   const mobileBridgeCards = useMemo(() => cards.map(cardToMobileMeta), [cards]);
+  const mobileBridgeNotifications = useMemo(
+    () => notificationsToMobile(mobileWorkbenchModel.notifications),
+    [mobileWorkbenchModel.notifications],
+  );
+  const mobileWorkbenchProjection = useMemo(
+    () =>
+      buildMobileWorkbenchProjection({
+        generatedAt: mobileWorkbenchModel.now,
+        summary: mobileWorkbenchModel.summary,
+        attentionItems: mobileWorkbenchModel.attentionItems,
+        groups: mobileWorkbenchModel.groups,
+        rules: mobileWorkbenchModel.rules,
+      }),
+    [
+      mobileWorkbenchModel.attentionItems,
+      mobileWorkbenchModel.groups,
+      mobileWorkbenchModel.now,
+      mobileWorkbenchModel.rules,
+      mobileWorkbenchModel.summary,
+    ],
+  );
+
+  const clearMobileSyncTimers = useCallback(() => {
+    if (mobileSyncTrailingTimerRef.current !== null) {
+      window.clearTimeout(mobileSyncTrailingTimerRef.current);
+      mobileSyncTrailingTimerRef.current = null;
+    }
+    if (mobileSyncMaxWaitTimerRef.current !== null) {
+      window.clearTimeout(mobileSyncMaxWaitTimerRef.current);
+      mobileSyncMaxWaitTimerRef.current = null;
+    }
+  }, []);
+
+  const flushMobileSync = useCallback(() => {
+    clearMobileSyncTimers();
+    const pending = pendingMobileSyncRef.current;
+    pendingMobileSyncRef.current = null;
+    if (!pending || pending.fingerprint === lastMobileSyncPayloadRef.current) return;
+
+    lastMobileSyncPayloadRef.current = pending.fingerprint;
+    void mobileBridge.syncState(...pending.args).catch((error) => {
+      console.warn('[MobileBridge] failed to sync state', error);
+    });
+  }, [clearMobileSyncTimers]);
 
   useEffect(() => {
-    if (!mobileBridgeSyncEnabled) return;
-    const payload = JSON.stringify(mobileBridgeCards);
-    if (payload === lastMobileSyncPayloadRef.current) return;
+    if (!mobileBridgeSyncEnabled) {
+      setMobileBridgeSyncActive(false);
+      return;
+    }
+    let cancelled = false;
 
-    const timer = window.setTimeout(() => {
-      lastMobileSyncPayloadRef.current = payload;
-      void mobileBridge.syncCards(mobileBridgeCards).catch((error) => {
-        console.warn('[MobileBridge] failed to sync cards', error);
-      });
-    }, MOBILE_SYNC_DEBOUNCE_MS);
+    const refreshSubscriberState = async () => {
+      try {
+        const active = await mobileBridgeHasSubscribers();
+        if (!cancelled) setMobileBridgeSyncActive(active);
+      } catch {
+        if (!cancelled) setMobileBridgeSyncActive(false);
+      }
+    };
 
-    return () => window.clearTimeout(timer);
-  }, [mobileBridgeCards, mobileBridgeSyncEnabled]);
+    void refreshSubscriberState();
+    const interval = window.setInterval(
+      () => void refreshSubscriberState(),
+      MOBILE_SUBSCRIBER_POLL_MS,
+    );
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [mobileBridgeSyncEnabled]);
+
+  useEffect(() => {
+    if (!mobileBridgeSyncActive) {
+      pendingMobileSyncRef.current = null;
+      clearMobileSyncTimers();
+      lastMobileSyncPayloadRef.current = '';
+      return;
+    }
+    const fingerprint = JSON.stringify({
+      cards: mobileBridgeCards,
+      notifications: mobileBridgeNotifications,
+      workbench: mobileWorkbenchProjection,
+    });
+    if (fingerprint === lastMobileSyncPayloadRef.current) return;
+
+    pendingMobileSyncRef.current = {
+      fingerprint,
+      args: [
+        mobileBridgeCards,
+        mobileBridgeNotifications,
+        mobileWorkbenchProjection,
+      ],
+    };
+    if (mobileSyncTrailingTimerRef.current !== null) {
+      window.clearTimeout(mobileSyncTrailingTimerRef.current);
+    }
+    mobileSyncTrailingTimerRef.current = window.setTimeout(
+      flushMobileSync,
+      MOBILE_SYNC_DEBOUNCE_MS,
+    );
+    if (mobileSyncMaxWaitTimerRef.current === null) {
+      mobileSyncMaxWaitTimerRef.current = window.setTimeout(
+        flushMobileSync,
+        MOBILE_SYNC_MAX_WAIT_MS,
+      );
+    }
+  }, [
+    clearMobileSyncTimers,
+    flushMobileSync,
+    mobileBridgeCards,
+    mobileBridgeNotifications,
+    mobileBridgeSyncActive,
+    mobileWorkbenchProjection,
+  ]);
+
+  useEffect(
+    () => () => {
+      pendingMobileSyncRef.current = null;
+      clearMobileSyncTimers();
+    },
+    [clearMobileSyncTimers],
+  );
 
   useEffect(() => {
     if (!mobileBridgeSyncEnabled) return;
@@ -676,7 +908,7 @@ export function TerminalManager() {
         mountCardInBackground(card.id);
         resolveActivate({ requestId: payload.requestId, ok: true, cardId: card.id });
       }),
-      mobileBridge.onRemoveCard((payload) => {
+      mobileBridge.onRemoveCard(async (payload) => {
         const exists = useTerminalStore
           .getState()
           .cards
@@ -692,7 +924,17 @@ export function TerminalManager() {
           return;
         }
 
-        useTerminalStore.getState().removeCard(payload.cardId);
+        const removed = await requestRemoveCard(payload.cardId);
+        if (!removed) {
+          resolveClose({
+            requestId: payload.requestId,
+            ok: false,
+            cardId: payload.cardId,
+            errorCode: 'user_cancelled',
+            message: 'Close cancelled.',
+          });
+          return;
+        }
         resolveClose({ requestId: payload.requestId, ok: true, cardId: payload.cardId });
       }),
       mobileBridge.onRenameCard((payload) => {
@@ -730,7 +972,7 @@ export function TerminalManager() {
       cancelled = true;
       unsubscribers.forEach((unsubscribe) => unsubscribe());
     };
-  }, [mobileBridgeSyncEnabled, mountCardInBackground]);
+  }, [mobileBridgeSyncEnabled, mountCardInBackground, requestRemoveCard]);
 
   // Drop mount entries for cards that no longer exist (user removed them).
   useEffect(() => {
@@ -745,11 +987,15 @@ export function TerminalManager() {
   // Automatically enter focus mode when a card is focused, back to grid when cleared.
   useEffect(() => {
     if (focusedCardId && focusedCard) {
+      if (!previousFocusedCardIdRef.current) {
+        returnPrimaryViewRef.current = primaryView;
+      }
       setViewMode('focus');
     } else {
       setViewMode('grid');
     }
-  }, [focusedCardId, focusedCard]);
+    previousFocusedCardIdRef.current = focusedCardId;
+  }, [focusedCardId, focusedCard, primaryView]);
 
   const focusMountedCard = useCallback(
     (cardId: string) => {
@@ -766,9 +1012,20 @@ export function TerminalManager() {
       setPendingFocusCardId(null);
       return;
     }
+    returnPrimaryViewRef.current = primaryView;
+    setWorkbenchPanel(null);
+    closeRightSurface('workbench');
+    setMobileViewActive(false);
     focusMountedCard(pendingFocusCardId);
     setPendingFocusCardId(null);
-  }, [cards, focusMountedCard, pendingFocusCardId, setPendingFocusCardId]);
+  }, [
+    cards,
+    closeRightSurface,
+    focusMountedCard,
+    pendingFocusCardId,
+    primaryView,
+    setPendingFocusCardId,
+  ]);
 
   // Notification locate channel — the smart-hybrid grid path. The card is
   // already visible at store level (openNotificationTarget fixed filters),
@@ -776,22 +1033,80 @@ export function TerminalManager() {
   useEffect(() => {
     if (!pendingLocateCardId) return;
     if (cards.some((card) => card.id === pendingLocateCardId)) {
-      highlightCard(pendingLocateCardId);
+      if (terminalsVisible) {
+        highlightCard(pendingLocateCardId);
+      } else {
+        returnPrimaryViewRef.current = primaryView;
+        setWorkbenchPanel(null);
+        closeRightSurface('workbench');
+        setMobileViewActive(false);
+        focusMountedCard(pendingLocateCardId);
+      }
     }
     setPendingLocateCardId(null);
-  }, [cards, highlightCard, pendingLocateCardId, setPendingLocateCardId]);
+  }, [
+    cards,
+    closeRightSurface,
+    focusMountedCard,
+    highlightCard,
+    pendingLocateCardId,
+    primaryView,
+    setPendingLocateCardId,
+    terminalsVisible,
+  ]);
 
   const handleOpenTerminal = useCallback(
     (cardId: string) => {
+      returnPrimaryViewRef.current = primaryView;
+      setWorkbenchPanel(null);
+      closeRightSurface('workbench');
+      setMobileViewActive(false);
       focusMountedCard(cardId);
     },
-    [focusMountedCard],
+    [closeRightSurface, focusMountedCard, primaryView],
   );
 
   const handleBackToGrid = useCallback(() => {
     focusCard(null);
+    setPrimaryView(returnPrimaryViewRef.current);
+    setMobileViewActive(false);
     setViewMode('grid');
   }, [focusCard]);
+
+  const handleSelectPrimaryView = useCallback(
+    (view: PrimaryView) => {
+      returnPrimaryViewRef.current = view;
+      setPrimaryView(view);
+      setMobileViewActive(false);
+      setWorkbenchPanel(null);
+      closeRightSurface('workbench');
+      setSidebarOpen(false);
+      if (focusedCardId) focusCard(null);
+      setViewMode('grid');
+    },
+    [closeRightSurface, focusCard, focusedCardId],
+  );
+
+  const handleOpenMobileAccess = useCallback(() => {
+    setMobileViewActive(true);
+    setWorkbenchPanel(null);
+    closeRightSurface('workbench');
+    if (focusedCardId) focusCard(null);
+    setViewMode('grid');
+  }, [closeRightSurface, focusCard, focusedCardId]);
+
+  const handleOpenWorkbenchPanel = useCallback(
+    (panel: WorkbenchPanelState) => {
+      setWorkbenchPanel(panel);
+      openRightSurface('workbench');
+    },
+    [openRightSurface],
+  );
+
+  const handleCloseWorkbenchPanel = useCallback(() => {
+    setWorkbenchPanel(null);
+    closeRightSurface('workbench');
+  }, [closeRightSurface]);
 
   const sessionDockVisible = sessionDockPanelVisible;
 
@@ -839,8 +1154,9 @@ export function TerminalManager() {
     [cards],
   );
   const paletteEntries = useMemo(
-    () =>
-      buildCommandRegistry({
+    () => {
+      if (!paletteOpen) return [];
+      return buildCommandRegistry({
         cards,
         projects: paletteProjects,
         focusedCardId,
@@ -851,8 +1167,10 @@ export function TerminalManager() {
           updateCardAiIntent,
           openSettings: handleOpenSettings,
         },
-      }),
+      });
+    },
     [
+      paletteOpen,
       cards,
       paletteProjects,
       focusedCardId,
@@ -948,17 +1266,21 @@ export function TerminalManager() {
         setPaletteInitialGroup(null);
         setPaletteOpen(false);
       },
+      requestRemoveCard,
+      requestArchiveCard,
     };
     return () => {
       delete window.__terminalManager;
     };
-  }, [handleOpenSettings]);
+  }, [handleOpenSettings, requestArchiveCard, requestRemoveCard]);
 
   const recentProjects = useMemo(
     () => cards.map((c) => ({ path: c.projectPath, name: c.projectName })),
     [cards],
   );
-  const gridVisible = (viewMode === 'grid' || !focusedCard) && !mobileViewActive;
+  const workbenchScopeLabel = selectedProjectName
+    ? [selectedProjectName, selectedWorktreeLabel].filter(Boolean).join(' · ')
+    : null;
 
   return (
     <div className="relative flex h-full w-full bg-mesh overflow-hidden">
@@ -973,29 +1295,32 @@ export function TerminalManager() {
         <ProjectSidebar
           onCloseMobile={() => setSidebarOpen(false)}
           onCreateTerminal={() => setCreateOpen(true)}
-          onOpenMobileAccess={() => setMobileViewActive(true)}
+          primaryView={primaryView}
+          onSelectPrimaryView={handleSelectPrimaryView}
+          attentionCount={workbenchModel.summary.attention}
+          compact={isSidebarCompact}
+          isMobile={isMobile}
           onExitMobileView={() => setMobileViewActive(false)}
-          mobileViewActive={mobileViewActive}
         />
       </div>
 
       {/* Mobile Sidebar Backdrop */}
       {isMobile && sidebarOpen && (
         <div
-          className="absolute inset-0 z-30 bg-background/40 backdrop-blur-sm"
+          className="absolute inset-0 z-30 bg-background/60 backdrop-blur-sm"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
       <div className="relative flex min-w-0 flex-1 flex-col glass-reflection">
       {/* Top bar */}
-      <div className="flex items-center justify-between etched-border-b bg-background/60 px-4 py-3 backdrop-blur-xl">
+      <div className="flex h-12 shrink-0 items-center justify-between etched-border-b bg-background/60 px-4 backdrop-blur-xl">
         <div className="flex min-w-0 items-center gap-2">
           {isMobile && (
             <button
               type="button"
               onClick={() => setSidebarOpen(true)}
-              className="mr-1 rounded-[var(--radius-md)] p-1.5 hover:bg-accent"
+              className="mr-1 rounded-md p-1.5 hover:bg-accent"
             >
               <Layers className="h-4 w-4" />
             </button>
@@ -1005,7 +1330,7 @@ export function TerminalManager() {
             <>
               <span className="text-muted-foreground md:inline hidden">/</span>
               <span
-                className="truncate rounded-[var(--radius-md)] bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary"
+                className="truncate rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary"
                 title={selectedProjectPath ?? undefined}
               >
                 {selectedProjectName}
@@ -1016,14 +1341,14 @@ export function TerminalManager() {
             <>
               <span className="text-muted-foreground md:inline hidden">/</span>
               <span
-                className="truncate rounded-[var(--radius-md)] bg-foreground/[0.06] px-1.5 py-0.5 text-[11px] font-medium text-foreground/80"
+                className="truncate rounded-md bg-foreground/[0.06] px-1.5 py-0.5 text-[11px] font-medium text-foreground/80"
                 title={selectedWorktreePath ?? undefined}
               >
                 {selectedWorktreeLabel}
               </span>
             </>
           )}
-          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground sm:inline hidden">
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground sm:inline hidden">
             {t('app.count', { visible: visibleCards.length, total: cards.length, count: cards.length })}
           </span>
         </div>
@@ -1034,7 +1359,7 @@ export function TerminalManager() {
               onClick={() => toggleRightPanel('archive')}
               title={t('archive.openTitle')}
               className={[
-                'relative inline-flex items-center gap-1 rounded-[var(--radius-md)] px-2 py-1 text-[11px] font-medium',
+                'relative inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium',
                 archiveOpen
                   ? 'bg-primary/10 text-primary'
                   : 'hover:bg-accent hover:text-accent-foreground',
@@ -1042,7 +1367,7 @@ export function TerminalManager() {
             >
               <Archive className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">{t('archive.open')}</span>
-              <span className="flex min-h-[14px] min-w-[14px] items-center justify-center rounded-full bg-muted px-1 text-[9px] font-bold text-muted-foreground">
+              <span className="flex min-h-[14px] min-w-[14px] items-center justify-center rounded-full bg-muted px-1 text-[11px] font-bold text-muted-foreground">
                 {selectedProjectArchivedCards.length > 99
                   ? '99+'
                   : selectedProjectArchivedCards.length}
@@ -1055,7 +1380,7 @@ export function TerminalManager() {
               onClick={() => toggleRightPanel('sessionRecovery')}
               title={t('sessionRecovery.openTitle')}
               className={[
-                'inline-flex items-center gap-1 rounded-[var(--radius-md)] px-2 py-1 text-[11px] font-medium',
+                'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium',
                 sessionRecoveryOpen
                   ? 'bg-primary/10 text-primary'
                   : 'hover:bg-accent hover:text-accent-foreground',
@@ -1067,10 +1392,24 @@ export function TerminalManager() {
           )}
           <button
             type="button"
+            onClick={handleOpenMobileAccess}
+            title={t('sidebar.mobileAccess', { defaultValue: 'Mobile access' })}
+            aria-pressed={mobileViewActive}
+            className={[
+              'rounded-md p-1.5',
+              mobileViewActive
+                ? 'bg-primary/10 text-primary'
+                : 'hover:bg-accent hover:text-accent-foreground',
+            ].join(' ')}
+          >
+            <Smartphone className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
             onClick={() => toggleRightPanel('stats')}
             title={t('stats.toggle', { defaultValue: 'Token usage' })}
             className={[
-              'rounded-[var(--radius-md)] p-1.5',
+              'rounded-md p-1.5',
               statsOpen
                 ? 'bg-primary/10 text-primary'
                 : 'hover:bg-accent hover:text-accent-foreground',
@@ -1082,7 +1421,7 @@ export function TerminalManager() {
             type="button"
             onClick={() => handleOpenSettings('shortcuts')}
             title={t('app.settingsTitle')}
-            className="rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
+            className="rounded-md p-1.5 hover:bg-accent hover:text-accent-foreground"
           >
             <SettingsIcon className="h-4 w-4" />
           </button>
@@ -1090,15 +1429,15 @@ export function TerminalManager() {
             type="button"
             onClick={() => toggleNotificationCentre()}
             title={t('app.notificationsTitle')}
-            className="relative rounded-[var(--radius-md)] p-1.5 hover:bg-accent hover:text-accent-foreground"
+            className="relative rounded-md p-1.5 hover:bg-accent hover:text-accent-foreground"
           >
             {unreadCount > 0 ? (
-              <BellDot className="h-4 w-4 text-amber-500" />
+              <BellDot className="h-4 w-4 text-warning" />
             ) : (
               <Bell className="h-4 w-4" />
             )}
             {unreadCount > 0 && (
-              <span className="absolute right-0.5 top-0.5 flex min-h-[14px] min-w-[14px] items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-bold text-white">
+              <span className="absolute right-0.5 top-0.5 flex min-h-[14px] min-w-[14px] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white">
                 {unreadCount > 99 ? '99+' : unreadCount}
               </span>
             )}
@@ -1110,7 +1449,7 @@ export function TerminalManager() {
           open panel becomes its own column that squeezes the terminal (not a
           floating overlay) and stays below the top bar — never covering the
           shortcut buttons. */}
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {workspaceTabsVisible && (
           <WorkspaceContentTabStrip
@@ -1129,19 +1468,53 @@ export function TerminalManager() {
           />
         )}
 
-      {/* Main body — grid + all ever-mounted terminal views share the same
+      {/* Main body — workbench, card grid, and all ever-mounted terminal views share the same
           container; only the active focused view is visible. This is what keeps
           the PTY alive across navigation so CLIs don't re-initialise. */}
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        {/* Grid layer */}
+        {/* Workbench layer — deterministic projections only, never xterm. */}
         <motion.div
-          animate={{ opacity: gridVisible ? 1 : 0 }}
+          animate={{ opacity: workbenchVisible ? 1 : 0 }}
           transition={{ duration: 0.18, ease: 'easeOut' }}
-          aria-hidden={!gridVisible}
-          style={{ visibility: gridVisible ? 'visible' : 'hidden' }}
+          aria-hidden={!workbenchVisible}
+          style={{ visibility: workbenchVisible ? 'visible' : 'hidden' }}
           className={[
             'absolute inset-0',
-            gridVisible
+            workbenchVisible ? '' : 'pointer-events-none',
+          ].join(' ')}
+        >
+          <WorkbenchView
+            cards={workbenchModel.filteredCards}
+            attentionItems={workbenchModel.attentionItems}
+            groups={workbenchModel.groups}
+            summary={workbenchModel.summary}
+            now={workbenchModel.now}
+            scopeLabel={workbenchScopeLabel}
+            onOpenTerminal={handleOpenTerminal}
+            onOpenAttention={(item) =>
+              handleOpenWorkbenchPanel({
+                kind: 'attention',
+                attentionId: item.id,
+              })
+            }
+            onOpenGroup={(group) =>
+              handleOpenWorkbenchPanel({ kind: 'group', groupId: group.id })
+            }
+            onOpenRules={() => handleOpenWorkbenchPanel({ kind: 'rules' })}
+            onNavigateTerminals={() => handleSelectPrimaryView('terminals')}
+            onCreateTerminal={() => setCreateOpen(true)}
+          />
+        </motion.div>
+
+        {/* Existing CardGrid is the complete "All terminals" page. */}
+        <motion.div
+          animate={{ opacity: terminalsVisible ? 1 : 0 }}
+          transition={{ duration: 0.18, ease: 'easeOut' }}
+          aria-hidden={!terminalsVisible}
+          style={{ visibility: terminalsVisible ? 'visible' : 'hidden' }}
+          className={[
+            'absolute inset-0',
+            terminalsVisible
               ? ''
               : 'pointer-events-none',
           ].join(' ')}
@@ -1150,6 +1523,8 @@ export function TerminalManager() {
             onCreateTerminal={handleGridCreateTerminal}
             onCreateWorktreeTerminal={handleCreateWorktreeTerminal}
             onOpenTerminal={handleOpenTerminal}
+            onRemoveCard={requestRemoveCard}
+            onArchiveCard={requestArchiveCard}
           />
         </motion.div>
 
@@ -1157,7 +1532,7 @@ export function TerminalManager() {
         {mobileViewActive && (
           <div
             data-testid="mobile-access-view"
-            className="absolute inset-0 overflow-y-auto bg-background/40 backdrop-blur-sm"
+            className="absolute inset-0 overflow-y-auto bg-background/60 backdrop-blur-sm"
           >
             <div className="min-h-full w-full px-4 py-4 sm:px-6 lg:px-8">
               <MobileAccessSettings />
@@ -1187,6 +1562,8 @@ export function TerminalManager() {
                   card={c}
                   active={isCurrent}
                   onBack={handleBackToGrid}
+                  onRemoveCard={requestRemoveCard}
+                  onArchiveCard={requestArchiveCard}
                 />
               </div>
             );
@@ -1237,7 +1614,14 @@ export function TerminalManager() {
           horizontal flex so it squeezes the terminal and stays within the
           terminal-area height, below the top bar (never covers the toolbar). */}
       {rightPanelOpen && (
-        <aside className="flex w-80 shrink-0 flex-col border-l border-white/10 bg-background/90 backdrop-blur-2xl shadow-studio">
+        <aside
+          className={[
+            'flex flex-col border-l border-border bg-background/95 backdrop-blur-2xl shadow-studio',
+            isMobile
+              ? 'absolute inset-y-0 right-0 z-50 w-full max-w-sm'
+              : 'w-80 shrink-0',
+          ].join(' ')}
+        >
           {workspacePanelVisible && focusedCwd && (
             <WorkspacePanel
               rootCwd={focusedCwd}
@@ -1269,6 +1653,18 @@ export function TerminalManager() {
               onSelectCard={handleSelectSessionDockCard}
             />
           )}
+          {workbenchPanelVisible && workbenchPanel && (
+            <WorkbenchDetailPanel
+              panel={workbenchPanel}
+              attentionItems={workbenchModel.attentionItems}
+              groups={workbenchModel.groups}
+              cards={workbenchModel.filteredCards}
+              notifications={workbenchModel.notifications}
+              now={workbenchModel.now}
+              onOpenTerminal={handleOpenTerminal}
+              onClose={handleCloseWorkbenchPanel}
+            />
+          )}
         </aside>
       )}
       </div>
@@ -1278,13 +1674,14 @@ export function TerminalManager() {
           is open so it never sits on top of overlay UI. */}
       {cards.length > 0 &&
         terminalContentActive &&
+        (viewMode === 'focus' || primaryView === 'terminals') &&
         !hintDismissed &&
         !auxiliaryRightPanelOpen &&
         !sessionDockVisible &&
         !paletteOpen && (
         <div
           className={[
-            'absolute left-3 z-10 flex select-none items-center gap-2 rounded-[var(--radius-md)] border border-white/10/60 bg-background/80 py-1 pl-2.5 pr-1 text-[10px] text-muted-foreground backdrop-blur',
+            'absolute left-3 z-10 flex select-none items-center gap-2 rounded-md border border-border bg-background/80 py-1 pl-2.5 pr-1 text-[11px] text-muted-foreground backdrop-blur',
             viewMode === 'focus' && focusedCard ? 'bottom-10' : 'bottom-3',
           ].join(' ')}
         >
@@ -1394,14 +1791,14 @@ function WorkspaceContentTabStrip({
 
   return (
     <div
-      className="flex min-h-[34px] items-center gap-1 overflow-x-auto border-b border-white/10 bg-background/95 px-2 py-1"
+      className="flex min-h-[34px] items-center gap-1 overflow-x-auto border-b border-border bg-background/95 px-2 py-1"
       data-terminal-context-menu
     >
       <button
         type="button"
         onClick={() => onActivate(TERMINAL_CONTENT_TAB_ID)}
         className={[
-          'inline-flex h-7 max-w-[180px] shrink-0 items-center gap-1.5 rounded-[var(--radius-md)] px-2 text-[11px] transition-colors',
+          'inline-flex h-7 max-w-[180px] shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] transition-colors',
           activeTabId === TERMINAL_CONTENT_TAB_ID
             ? 'bg-primary/15 text-foreground'
             : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
@@ -1417,7 +1814,7 @@ function WorkspaceContentTabStrip({
           onContextMenu={(event) => openMenu(event, tab.id)}
           data-terminal-context-menu
           className={[
-            'inline-flex h-7 max-w-[240px] shrink-0 items-center overflow-hidden rounded-[var(--radius-md)] text-[11px] transition-colors',
+            'inline-flex h-7 max-w-[240px] shrink-0 items-center overflow-hidden rounded-md text-[11px] transition-colors',
             activeTabId === tab.id
               ? 'bg-primary/15 text-foreground'
               : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
@@ -1435,7 +1832,7 @@ function WorkspaceContentTabStrip({
             )}
             <span className="truncate">{tab.title}</span>
             {dirtyTabIds[tab.id] && (
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" aria-hidden />
+              <AttentionDot size="sm" />
             )}
           </button>
           <button
@@ -1455,7 +1852,7 @@ function WorkspaceContentTabStrip({
             role="menu"
             data-testid="workspace-tab-context-menu"
             data-terminal-context-menu
-            className="fixed z-50 w-40 overflow-hidden rounded-[var(--radius-md)] border border-white/10 bg-popover py-1 text-[11px] text-popover-foreground shadow-xl shadow-black/30"
+            className="fixed z-50 w-40 overflow-hidden rounded-md border border-border bg-popover py-1 text-[11px] text-popover-foreground shadow-xl shadow-black/30"
             style={{ left: menu.left, top: menu.top }}
             onMouseDown={(event) => event.stopPropagation()}
           >

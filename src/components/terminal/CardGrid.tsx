@@ -37,7 +37,11 @@ import { useTranslation } from 'react-i18next';
 import { motion, useReducedMotion } from 'framer-motion';
 import { isTauriEnv } from '../../lib/tauri-bridge';
 import { openLocalDirectory } from '../../lib/localDirectory';
-import { compareCardsByActivity, orderCardsByIdList } from '../../lib/cardSort';
+import {
+  cardActivityPriority,
+  compareCardsByActivity,
+  orderCardsByIdList,
+} from '../../lib/cardSort';
 import { matchesCardQuery } from '../../lib/cardSearch';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { TerminalCardComponent } from './TerminalCard';
@@ -58,12 +62,16 @@ interface CardGridProps {
   onCreateTerminal?: (options?: TerminalCreateOptions) => void;
   onCreateWorktreeTerminal?: (request: PendingWorktreeCreateRequest) => void;
   onOpenTerminal?: (cardId: string) => void;
+  onRemoveCard: (cardId: string) => void | Promise<boolean>;
+  onArchiveCard: (cardId: string) => void | Promise<boolean>;
 }
 
 export function CardGrid({
   onCreateTerminal,
   onCreateWorktreeTerminal,
   onOpenTerminal,
+  onRemoveCard,
+  onArchiveCard,
 }: CardGridProps) {
   const { t } = useTranslation('terminal');
   const reduceMotion = useReducedMotion();
@@ -71,8 +79,6 @@ export function CardGrid({
   const projectCardOrder = useTerminalStore((s) => s.projectCardOrder);
   const focusedCardId = useTerminalStore((s) => s.focusedCardId);
   const focusCard = useTerminalStore((s) => s.focusCard);
-  const removeCard = useTerminalStore((s) => s.removeCard);
-  const archiveCard = useTerminalStore((s) => s.archiveCard);
   const moveProjectCard = useTerminalStore((s) => s.moveProjectCard);
   const selectedProjectPath = useTerminalStore((s) => s.selectedProjectPath);
   const selectedWorktreePath = useTerminalStore((s) => s.selectedWorktreePath);
@@ -86,6 +92,10 @@ export function CardGrid({
       coordinateGetter: sortableKeyboardCoordinates,
     }),
   );
+  const activityOrderRef = useRef<{
+    ids: string[];
+    priorityById: Map<string, number>;
+  } | null>(null);
 
   // All terminals keeps the shared "activity first" order. A selected project
   // switches to persisted manual order so cards do not jump while the user is
@@ -100,9 +110,37 @@ export function CardGrid({
         )
       : cards;
     if (selectedProjectPath) {
+      activityOrderRef.current = null;
       return orderCardsByIdList(filtered, projectCardOrder[selectedProjectPath]);
     }
-    return [...filtered].sort(compareCardsByActivity);
+
+    const previous = activityOrderRef.current;
+    const currentIds = filtered.map((card) => card.id);
+    const priorityById = new Map(
+      filtered.map((card) => [card.id, cardActivityPriority(card)]),
+    );
+    const membershipChanged =
+      !previous ||
+      previous.ids.length !== currentIds.length ||
+      currentIds.some((id) => !previous.priorityById.has(id));
+    const priorityChanged =
+      !membershipChanged &&
+      currentIds.some(
+        (id) => previous.priorityById.get(id) !== priorityById.get(id),
+      );
+
+    // A new/removed card or a real state transition may legitimately move
+    // cards. Pure output timestamps within the same activity bucket must not
+    // make two running cards swap under the user's pointer.
+    const ordered =
+      membershipChanged || priorityChanged
+        ? [...filtered].sort(compareCardsByActivity)
+        : orderCardsByIdList(filtered, previous.ids);
+    activityOrderRef.current = {
+      ids: ordered.map((card) => card.id),
+      priorityById,
+    };
+    return ordered;
   }, [cards, projectCardOrder, selectedProjectPath, selectedWorktreePath]);
 
   const [query, setQuery] = useState('');
@@ -236,7 +274,7 @@ export function CardGrid({
   if (cards.length === 0 && !selectedProjectPath) {
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-6 p-8">
-        <div className="flex h-20 w-20 items-center justify-center rounded-[var(--radius)] bg-muted">
+        <div className="flex h-20 w-20 items-center justify-center rounded-lg bg-muted">
           <TerminalSquare className="h-10 w-10 text-muted-foreground" />
         </div>
         <div className="text-center">
@@ -248,16 +286,16 @@ export function CardGrid({
         <button
           type="button"
           onClick={() => onCreateTerminal?.()}
-          className="inline-flex items-center gap-2 rounded-[var(--radius-md)] bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
           <Plus className="h-4 w-4" /> {t('grid.createFirst')}
         </button>
         <p className="text-[11px] text-muted-foreground/70">
-          {t('grid.tipPrefix')} <kbd className="rounded border border-white/10 px-1">⌘/Ctrl</kbd>
+          {t('grid.tipPrefix')} <kbd className="rounded border border-border px-1">⌘/Ctrl</kbd>
           {' '}
           +
           {' '}
-          <kbd className="rounded border border-white/10 px-1">N</kbd>
+          <kbd className="rounded border border-border px-1">N</kbd>
           {' '}{t('grid.tipSuffix')}
         </p>
       </div>
@@ -290,7 +328,7 @@ export function CardGrid({
       : t('grid.newHere');
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-8 text-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-[var(--radius)] bg-muted">
+        <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-muted">
           <FolderOpen className="h-7 w-7 text-muted-foreground" />
         </div>
         <div>
@@ -303,14 +341,14 @@ export function CardGrid({
           <button
             type="button"
             onClick={isWorktreeEmpty ? createForEmptyWorktree : () => onCreateTerminal?.()}
-            className="inline-flex items-center gap-1.5 rounded-[var(--radius-md)] bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
             <Plus className="h-3.5 w-3.5" /> {primaryLabel}
           </button>
           <button
             type="button"
             onClick={() => (isWorktreeEmpty ? selectProject(selectedProjectPath) : selectProject(null))}
-            className="rounded-[var(--radius-md)] border border-white/10 px-3 py-1.5 text-xs hover:bg-accent"
+            className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-accent"
           >
             {isWorktreeEmpty ? t('grid.showProjectAll') : t('grid.showAll')}
           </button>
@@ -341,8 +379,8 @@ export function CardGrid({
           }
           isFocused={focusedCardId === card.id}
           onClick={() => onOpenTerminal?.(card.id)}
-          onClose={() => removeCard(card.id)}
-          onArchive={() => archiveCard(card.id)}
+          onClose={() => void onRemoveCard(card.id)}
+          onArchive={() => void onArchiveCard(card.id)}
         />
       ))}
 
@@ -354,7 +392,7 @@ export function CardGrid({
         onClick={createTerminalInCurrentScope}
         whileHover={reduceMotion ? undefined : { y: -2, scale: 1.003 }}
         transition={reduceMotion ? { duration: 0 } : { duration: 0.16, ease: 'easeOut' }}
-        className="group relative flex h-[300px] w-full flex-col items-center justify-center gap-3 overflow-hidden rounded-[var(--radius)] border border-dashed border-white/10 bg-white/[0.02] text-muted-foreground transition-all duration-300 hover:border-primary/40 hover:bg-white/[0.05] hover:text-primary sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] xl:w-[calc(25%-18px)] glass-reflection"
+        className="group relative flex h-[300px] flex-col items-center justify-center gap-3 overflow-hidden rounded-lg border border-dashed border-border bg-muted/50 text-muted-foreground transition-all duration-300 hover:border-primary/40 hover:bg-accent hover:text-primary glass-reflection"
       >
         <div className="absolute inset-0 bg-grid opacity-[0.03] pointer-events-none" />
         <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/5 border border-primary/10 transition-transform duration-500 group-hover:scale-110 group-hover:bg-primary/10">
@@ -362,7 +400,7 @@ export function CardGrid({
         </div>
         <div className="text-center">
           <div className="text-sm font-semibold tracking-tight">{t('app.newTerminal')}</div>
-          <div className="mt-1 text-[10px] opacity-60 font-mono">⌘/Ctrl + N</div>
+          <div className="mt-1 text-[11px] opacity-60 font-mono">⌘/Ctrl + N</div>
         </div>
       </motion.button>
       )}
@@ -417,19 +455,19 @@ export function CardGrid({
             type="button"
             onClick={openSearch}
             title={t('cardSearch.filter', { defaultValue: 'Filter' })}
-            className="inline-flex items-center gap-2 rounded-[var(--radius-md)] border border-border bg-foreground/[0.04] px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            className="inline-flex items-center gap-2 rounded-md border border-border bg-foreground/[0.04] px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
           >
             <Search className="h-4 w-4" />
             {t('cardSearch.filter', { defaultValue: 'Filter' })}
-            <kbd className="rounded border border-border px-1 font-mono text-[10px] leading-tight">/</kbd>
+            <kbd className="rounded border border-border px-1 font-mono text-[11px] leading-tight">/</kbd>
           </button>
         )}
       </div>
 
-      <div className="flex flex-1 flex-wrap content-start items-stretch gap-6 overflow-y-auto p-6 md:p-8">
+      <div className="grid flex-1 grid-cols-1 content-start gap-6 overflow-y-auto p-6 sm:grid-cols-2 md:p-8 lg:grid-cols-3 xl:grid-cols-4">
         {noMatches ? (
-          <div className="flex w-full flex-col items-center justify-center gap-3 py-16 text-center">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/5">
+          <div className="col-span-full flex w-full flex-col items-center justify-center gap-3 py-16 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted/50">
               <Search className="h-5 w-5 text-muted-foreground/50" />
             </div>
             <p className="text-sm text-muted-foreground">
@@ -453,8 +491,7 @@ export function CardGrid({
   );
 }
 
-const CARD_TILE_CLASS =
-  'relative h-[300px] w-full sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] xl:w-[calc(25%-18px)]';
+const CARD_TILE_CLASS = 'relative h-[300px]';
 
 interface CardTileProps {
   card: TerminalCard;
@@ -493,7 +530,7 @@ const CardTile = memo(function CardTile({
               <span
                 aria-label={dragDisabledLabel}
                 title={dragDisabledLabel}
-                className="inline-flex h-7 w-5 shrink-0 cursor-not-allowed items-center justify-center rounded-[var(--radius-md)] text-muted-foreground/30"
+                className="inline-flex h-7 w-5 shrink-0 cursor-not-allowed items-center justify-center rounded-md text-muted-foreground/30"
               >
                 <GripVertical className="h-4 w-4" aria-hidden="true" />
               </span>
@@ -563,7 +600,7 @@ const SortableCardTile = memo(function SortableCardTile({
             type="button"
             aria-label={`${dragLabel}: ${card.projectName}`}
             title={dragLabel}
-            className="inline-flex h-7 w-5 shrink-0 items-center justify-center rounded-[var(--radius-md)] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground active:scale-95 active:bg-accent"
+            className="inline-flex h-7 w-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground active:scale-95 active:bg-accent"
             onClick={(event) => event.stopPropagation()}
             {...attributes}
             {...listeners}

@@ -133,13 +133,13 @@ export function CommandPalette({
 
   return (
     <div
-      className="fixed inset-0 z-[200] flex items-start justify-center bg-background/40 backdrop-blur-md pt-[15vh]"
+      className="fixed inset-0 z-modal flex items-start justify-center bg-background/40 backdrop-blur-md pt-[15vh]"
       onClick={onClose}
     >
       <div
         role="dialog"
         aria-label={t('palette.label', { defaultValue: 'Command palette' })}
-        className="w-full max-w-xl rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl shadow-studio glass-reflection"
+        className="w-full max-w-xl rounded-lg border border-border bg-background/80 backdrop-blur-2xl shadow-studio glass-reflection"
         onClick={(e) => e.stopPropagation()}
       >
         <input
@@ -151,12 +151,12 @@ export function CommandPalette({
             setSelectedIndex(0);
           }}
           placeholder={t('palette.placeholder', { defaultValue: 'Type a command…' })}
-          className="w-full rounded-t-[var(--radius)] border-b border-white/5 bg-transparent px-3 py-3 text-sm outline-none placeholder:text-muted-foreground transition-all focus:bg-white/5"
+          className="w-full rounded-t-[var(--radius)] border-b border-border bg-transparent px-3 py-3 text-sm outline-none placeholder:text-muted-foreground transition-all focus:bg-accent"
         />
 
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/5 border border-white/10 mb-4 shadow-sm">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted/50 border border-border mb-4 shadow-sm">
               <Search className="h-5 w-5 text-muted-foreground/50" />
             </div>
             <div className="text-sm font-medium text-foreground/80 mb-1">
@@ -170,7 +170,7 @@ export function CommandPalette({
           <ul role="listbox" className="max-h-[50vh] overflow-y-auto p-1">
             {grouped.map(({ group, items }) => (
               <li key={group}>
-                <div className="px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <div className="px-2 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                   {t(`palette.groups.${group}`, { defaultValue: group })}
                 </div>
                 <ul>
@@ -183,10 +183,10 @@ export function CommandPalette({
                         role="option"
                         aria-selected={isSelected}
                         className={[
-                          'flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-2 text-xs transition-all duration-200',
+                          'flex items-center gap-2 rounded-md px-2 py-2 text-xs transition-all duration-200',
                           isSelected 
-                            ? 'bg-primary/10 text-primary shadow-[0_0_15px_rgba(var(--primary),0.05)] ring-1 ring-primary/20' 
-                            : 'hover:bg-white/5',
+                            ? 'bg-primary/10 text-primary shadow-[0_0_15px_hsl(var(--primary)/0.05)] ring-1 ring-primary/20'
+                            : 'hover:bg-accent',
                         ].join(' ')}
                         onMouseEnter={() => setSelectedIndex(flatIdx)}
                         onClick={() => {
@@ -197,7 +197,7 @@ export function CommandPalette({
                         <div className="min-w-0 flex-1">
                           <div className="truncate">{e.label}</div>
                           {e.detail && (
-                            <div className="truncate text-[10px] text-muted-foreground">
+                            <div className="truncate text-[11px] text-muted-foreground">
                               {e.detail}
                             </div>
                           )}

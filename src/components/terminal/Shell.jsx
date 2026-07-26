@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -11,7 +11,6 @@ import { useTheme } from '../../theme/ThemeContext';
 import { claimTerminalActive, registerTerminal, unregisterTerminal } from './xtermRegistry';
 import { createOutputSequencer } from './outputSequencer';
 import { createOutputAcknowledger } from './outputAcknowledger';
-import { createSynchronizedOutputFilter } from '../../lib/synchronizedOutputFilter';
 import {
   TERMINAL_GEOMETRY_INVALIDATED_EVENT,
   TERMINAL_SURFACE_SHOWN_EVENT,
@@ -63,6 +62,7 @@ const CLEANUP_SEQUENCE_RE = /\x1b\[[0-9;]*[JKLMPX]/;
 // restores. End state is identical — xterm's parser is stateful across writes.
 const SNAPSHOT_RESTORE_CHUNK_CHARS = 65536;
 const RENDERER_CONSUMER_HEARTBEAT_MS = 5000;
+const RENDERER_CONSUMER_TTL_MS = 30000;
 
 function createRendererConsumerId(scope = 'main') {
   const uuid = globalThis.crypto?.randomUUID?.();
@@ -137,7 +137,6 @@ function Shell({
   active = true,
   rendererScope = 'main',
   preservePtyOnUnmount = false,
-  replayRecentOutput = false,
   suppressInitialCommandWhenPtyExists = false,
   autoReconnectOnExit = true,
   onInitialCommandSent,
@@ -162,6 +161,11 @@ function Shell({
   const lastPtySizeRef = useRef(null);
   const outputSequencerRef = useRef(null);
   const outputConsumerRef = useRef(null);
+  const documentHiddenAtRef = useRef(
+    typeof document !== 'undefined' && document.visibilityState !== 'visible'
+      ? Date.now()
+      : null,
+  );
   const connectGenerationRef = useRef(0);
   const desiredPaneIdRef = useRef(paneId);
 
@@ -392,6 +396,78 @@ function Shell({
     }
   }, [clearSurfaceRecoveryWork, resizePtyIfNeeded, scrollTerminalToBottom]);
 
+  const restoreOutputConsumerFromSnapshot = useCallback((consumer) => {
+    if (!consumer || consumer.disposed) return Promise.resolve(false);
+    if (consumer.recoveryPromise) return consumer.recoveryPromise;
+
+    const sequencer = outputSequencerRef.current;
+    const term = terminal.current;
+    if (!sequencer || !term || outputConsumerRef.current !== consumer) {
+      return Promise.resolve(false);
+    }
+
+    consumer.needsSnapshotRecovery = true;
+    // Buffer live output until the attach snapshot establishes a fresh,
+    // process-ordered watermark. This prevents a long-hidden WebView from
+    // painting stale output over the recovered screen.
+    sequencer.reset();
+
+    const isCurrentRecovery = () =>
+      !consumer.disposed &&
+      outputConsumerRef.current === consumer &&
+      outputSequencerRef.current === sequencer &&
+      terminal.current === term &&
+      ptyIdRef.current === consumer.ptyId;
+
+    let registered = false;
+    const recoveryPromise = (async () => {
+      try {
+        await pty.registerOutputConsumer(consumer.ptyId, consumer.consumerId);
+        registered = true;
+        if (!isCurrentRecovery()) return false;
+
+        const snapshot = await pty.attachSnapshot(consumer.ptyId);
+        if (!isCurrentRecovery()) return false;
+        if (!snapshot) {
+          throw new Error('PTY session is unavailable during renderer recovery');
+        }
+
+        term.clear();
+        term.write('\x1b[2J\x1b[H');
+        if (snapshot.rows && snapshot.cols) {
+          term.resize(snapshot.cols, snapshot.rows);
+          lastPtySizeRef.current = { rows: snapshot.rows, cols: snapshot.cols };
+        }
+        sequencer.applySnapshot({
+          seq: snapshot.seq,
+          data: `${snapshot.history || ''}${snapshot.data || ''}`,
+        });
+        consumer.needsSnapshotRecovery = false;
+        scrolledUpRef.current = false;
+        pendingNewLinesRef.current = 0;
+        setScrolledUp(false);
+        setNewOutputLines(0);
+        return true;
+      } catch (error) {
+        if (isCurrentRecovery()) {
+          logger.warn('[Shell] Renderer snapshot recovery failed:', error);
+        }
+        return false;
+      } finally {
+        if (registered && consumer.needsSnapshotRecovery) {
+          await pty
+            .unregisterOutputConsumer(consumer.ptyId, consumer.consumerId)
+            .catch(() => {});
+        }
+        if (consumer.recoveryPromise === recoveryPromise) {
+          consumer.recoveryPromise = null;
+        }
+      }
+    })();
+    consumer.recoveryPromise = recoveryPromise;
+    return recoveryPromise;
+  }, []);
+
   useEffect(() => {
     if (!active) {
       cancelSurfaceRecovery();
@@ -484,6 +560,15 @@ function Shell({
     scrollTerminalToBottom(true);
   }, [scrollTerminalToBottom]);
 
+  const focusTerminal = useCallback(() => {
+    try {
+      terminal.current?.focus();
+    } catch {
+      // Full surface recovery still runs from visibility/geometry lifecycle
+      // events when a background WebView becomes usable again.
+    }
+  }, []);
+
   const connectPty = useCallback(() => {
     if (isConnectingRef.current || isConnectedRef.current) return;
     const project = selectedProjectRef.current;
@@ -563,23 +648,29 @@ function Shell({
             request.consumerId,
           ),
         );
-        const heartbeatTimer = window.setInterval(() => {
-          void pty.registerOutputConsumer(connectedPtyId, consumerId).catch(() => {});
-        }, RENDERER_CONSUMER_HEARTBEAT_MS);
         localOutputConsumer = {
           ptyId: connectedPtyId,
           consumerId,
           acknowledger: outputAcknowledger,
-          heartbeatTimer,
+          heartbeatTimer: null,
+          needsSnapshotRecovery: false,
+          recoveryPromise: null,
           disposed: false,
         };
+        localOutputConsumer.heartbeatTimer = window.setInterval(() => {
+          if (document.visibilityState !== 'visible') return;
+          if (localOutputConsumer?.needsSnapshotRecovery) {
+            void restoreOutputConsumerFromSnapshot(localOutputConsumer);
+            return;
+          }
+          void pty.registerOutputConsumer(connectedPtyId, consumerId).catch(() => {});
+        }, RENDERER_CONSUMER_HEARTBEAT_MS);
         outputConsumerRef.current = localOutputConsumer;
         ptyIdRef.current = connectedPtyId;
         if (terminal.current && connectedPtyId) {
           registerTerminal(connectedPtyId, terminal.current);
         }
 
-        const synchronizedOutputFilter = createSynchronizedOutputFilter();
         const sequencer = createOutputSequencer((data, seq, onWritten, meta) => {
           const term = terminal.current;
           const isCurrentConsumer = () =>
@@ -616,12 +707,6 @@ function Shell({
             return;
           }
 
-          // xterm 6 renders DEC 2026 updates atomically, but ED2/ED3 inside a
-          // synchronized frame can still mutate viewportY before that frame is
-          // committed. Filter only those frame-local clears and preserve every
-          // clear command emitted by ordinary shells and alternate-screen TUIs.
-          const renderData = synchronizedOutputFilter.write(data);
-
           // Audit P0-1: decide follow-or-not BEFORE the write. Follow only
           // when the viewport already sits at the bottom (or the app runs on
           // the alternate screen); a user reading history must not be yanked
@@ -631,7 +716,7 @@ function Shell({
             term.buffer.active.type === 'alternate' ||
             shouldFollowOutput(term.buffer.active)
           );
-          const needsRefresh = CLEANUP_SEQUENCE_RE.test(renderData) || renderData.includes('\r');
+          const needsRefresh = CLEANUP_SEQUENCE_RE.test(data) || data.includes('\r');
           const finalize = () => {
             if (!isCurrentConsumer()) {
               onWritten();
@@ -648,7 +733,7 @@ function Shell({
               } else {
                 scrolledUpRef.current = true;
                 setScrolledUp(true);
-                pendingNewLinesRef.current += countNewlines(renderData);
+                pendingNewLinesRef.current += countNewlines(data);
                 scheduleNewOutputFlush();
               }
               if (needsRefresh) {
@@ -663,26 +748,30 @@ function Shell({
           // Feed it in byte-budgeted slices, chaining on term.write's drain
           // callback so the main thread yields between slices. Realtime chunks
           // and small snapshots keep the single write (zero behavior change).
-          if (!renderData) {
+          if (!data) {
             finalize();
-          } else if (meta.snapshot && renderData.length > SNAPSHOT_RESTORE_CHUNK_CHARS) {
+          } else if (meta.snapshot && data.length > SNAPSHOT_RESTORE_CHUNK_CHARS) {
             let offset = 0;
             const writeNextSlice = () => {
               if (!isCurrentConsumer()) {
                 onWritten();
                 return;
               }
-              if (!terminal.current || offset >= renderData.length) {
+              if (!terminal.current || offset >= data.length) {
                 finalize();
                 return;
               }
-              const slice = renderData.slice(offset, offset + SNAPSHOT_RESTORE_CHUNK_CHARS);
+              const slice = data.slice(offset, offset + SNAPSHOT_RESTORE_CHUNK_CHARS);
               offset += SNAPSHOT_RESTORE_CHUNK_CHARS;
               term.write(slice, writeNextSlice);
             };
             writeNextSlice();
           } else {
-            term.write(renderData, finalize);
+            // Preserve DEC 2026 frames byte-for-byte. Agent TUIs use ED2/ED3
+            // inside those frames when history or composer height changes;
+            // removing the clears leaves the previous layout underneath the
+            // new one and makes prompt rows visibly jump between redraws.
+            term.write(data, finalize);
           }
         });
         localSequencer = sequencer;
@@ -921,6 +1010,9 @@ function Shell({
       allowTransparency: false,
       convertEol: true,
       scrollback: 3000,
+      // Preserve ED2 semantics without turning a full-screen TUI repaint into
+      // scrollback movement. Agent control sequences remain byte-identical.
+      scrollOnEraseInDisplay: false,
       tabStopWidth: 4,
       macOptionIsMeta: true,
       macOptionClickForcesSelection: true,
@@ -1130,6 +1222,7 @@ function Shell({
     resizePtyIfNeeded,
     scheduleTerminalRefresh,
     scrollTerminalToBottom,
+    restoreOutputConsumerFromSnapshot,
   ]);
 
   useEffect(() => {
@@ -1140,17 +1233,25 @@ function Shell({
   useEffect(() => {
     if (!active || !isConnected || !ptyIdRef.current || !terminal.current) return;
     const consumer = outputConsumerRef.current;
-    if (consumer && !consumer.disposed) {
+    if (
+      consumer &&
+      !consumer.disposed &&
+      document.visibilityState === 'visible'
+    ) {
       // The backend removes float-scoped consumers before destroying an idle
       // WebView. If native close fails, this mounted Shell becomes active
       // again; restore its lease immediately instead of waiting for the next
       // five-second heartbeat. Registration is idempotent and does not ACK.
-      void pty
-        .registerOutputConsumer(consumer.ptyId, consumer.consumerId)
-        .catch(() => {});
+      if (consumer.needsSnapshotRecovery) {
+        void restoreOutputConsumerFromSnapshot(consumer);
+      } else {
+        void pty
+          .registerOutputConsumer(consumer.ptyId, consumer.consumerId)
+          .catch(() => {});
+      }
     }
     claimTerminalActive(ptyIdRef.current, terminal.current);
-  }, [active, isConnected]);
+  }, [active, isConnected, restoreOutputConsumerFromSnapshot]);
 
   useEffect(() => {
     const handleSurfaceShown = (event) => {
@@ -1167,9 +1268,30 @@ function Shell({
       }
     };
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        recoverTerminalSurface(true);
+      if (document.visibilityState !== 'visible') {
+        documentHiddenAtRef.current ??= Date.now();
+        return;
       }
+
+      const hiddenAt = documentHiddenAtRef.current;
+      documentHiddenAtRef.current = null;
+      const consumer = outputConsumerRef.current;
+      const requiresSnapshot =
+        hiddenAt !== null && Date.now() - hiddenAt >= RENDERER_CONSUMER_TTL_MS;
+
+      if (consumer && !consumer.disposed) {
+        if (requiresSnapshot) {
+          consumer.needsSnapshotRecovery = true;
+          void restoreOutputConsumerFromSnapshot(consumer).then((restored) => {
+            if (restored) recoverTerminalSurface(true, true);
+          });
+        } else {
+          void pty
+            .registerOutputConsumer(consumer.ptyId, consumer.consumerId)
+            .catch(() => {});
+        }
+      }
+      recoverTerminalSurface(true);
     };
 
     window.addEventListener('focus', handleSurfaceShown);
@@ -1182,7 +1304,7 @@ function Shell({
       window.removeEventListener(TERMINAL_GEOMETRY_INVALIDATED_EVENT, handleGeometryInvalidated);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [recoverTerminalSurface]);
+  }, [recoverTerminalSurface, restoreOutputConsumerFromSnapshot]);
 
   // A fresh ptyId (auto-restart feature, or a different card reusing this
   // Shell) clears the exit gate so the autoConnect effect below may run.
@@ -1242,7 +1364,7 @@ function Shell({
       <div
         className="relative h-full w-full"
         style={terminalShellStyle}
-        onMouseDown={() => recoverTerminalSurface(true)}
+        onMouseDown={focusTerminal}
       >
         <div
           ref={terminalRef}
@@ -1256,7 +1378,7 @@ function Shell({
             data-testid="shell-scroll-to-bottom"
             onClick={scrollToBottomNow}
             className={[
-              'absolute left-1/2 z-20 -translate-x-1/2 rounded-full border border-white/15 bg-gray-900/90 px-3 py-1.5 text-[11px] font-medium text-gray-100 shadow-lg backdrop-blur-sm hover:bg-gray-700',
+              'absolute left-1/2 z-20 -translate-x-1/2 rounded-full border border-border bg-gray-900/90 px-3 py-1.5 text-[11px] font-medium text-gray-100 shadow-lg backdrop-blur-sm hover:bg-gray-700',
               exitInfo !== null || (!isConnected && retryAttempt > 0) ? 'bottom-12' : 'bottom-3',
             ].join(' ')}
           >
@@ -1269,7 +1391,7 @@ function Shell({
         {exitInfo !== null && (
           <div
             data-testid="shell-exit-strip"
-            className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-3 border-t border-white/10 bg-gray-900/90 px-3 py-2 backdrop-blur-sm"
+            className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-3 border-t border-border bg-gray-900/90 px-3 py-2 backdrop-blur-sm"
           >
             <span className="min-w-0 truncate text-xs text-gray-300">
               {typeof exitInfo.code === 'number'
@@ -1288,7 +1410,7 @@ function Shell({
         {exitInfo === null && !isConnected && retryAttempt > 0 && (
           <div
             data-testid="shell-reconnect-strip"
-            className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-3 border-t border-white/10 bg-gray-900/90 px-3 py-2 backdrop-blur-sm"
+            className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-3 border-t border-border bg-gray-900/90 px-3 py-2 backdrop-blur-sm"
           >
             <span
               className="flex min-w-0 items-center gap-2 text-xs text-amber-300"
@@ -1311,14 +1433,14 @@ function Shell({
           </div>
         )}
         {showAuthPanel && (
-          <div className="absolute bottom-3 right-3 z-20 w-[min(420px,calc(100%-1.5rem))] rounded-[var(--radius)] border border-gray-700/80 bg-gray-900/95 p-3 shadow-xl backdrop-blur-sm">
+          <div className="absolute bottom-3 right-3 z-20 w-[min(420px,calc(100%-1.5rem))] rounded-lg border border-gray-700/80 bg-gray-900/95 p-3 shadow-xl backdrop-blur-sm">
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs text-gray-300">{t('shell.authPrompt')}</p>
                 <button
                   type="button"
                   onClick={() => setIsAuthPanelDismissed(true)}
-                  className="rounded bg-gray-700 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-gray-100 hover:bg-gray-600"
+                  className="rounded bg-gray-700 px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-gray-100 hover:bg-gray-600"
                 >
                   {t('shell.dismiss')}
                 </button>
@@ -1372,7 +1494,7 @@ function Shell({
     <div
       className="flex h-full w-full flex-col"
       style={terminalShellStyle}
-      onMouseDown={() => recoverTerminalSurface(true)}
+      onMouseDown={focusTerminal}
     >
       <div className="flex-shrink-0 border-b border-gray-700 bg-gray-800 px-4 py-2">
         <div className="flex items-center justify-between">
@@ -1434,7 +1556,7 @@ function Shell({
               <button
                 type="button"
                 onClick={restartShell}
-                className="rounded-[var(--radius-md)] bg-green-600 px-6 py-3 text-base font-medium text-white transition-colors hover:bg-green-700"
+                className="rounded-md bg-green-600 px-6 py-3 text-base font-medium text-white transition-colors hover:bg-green-700"
               >
                 {t('shell.connect')}
               </button>
@@ -1473,4 +1595,4 @@ function Shell({
   );
 }
 
-export default Shell;
+export default memo(Shell);

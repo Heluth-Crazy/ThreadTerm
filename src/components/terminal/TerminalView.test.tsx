@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { TerminalView } from './TerminalView';
 import type { TerminalCard } from '../../types/terminal';
 
@@ -101,6 +101,34 @@ afterEach(() => {
 });
 
 describe('TerminalView Shell lifecycle', () => {
+  it('does not rerender the terminal when an unrelated parent update keeps its props unchanged', () => {
+    const card = makeCard();
+    const onBack = vi.fn();
+    const onRemoveCard = vi.fn().mockResolvedValue(true);
+    const onArchiveCard = vi.fn().mockResolvedValue(true);
+    const { rerender } = render(
+      <TerminalView
+        card={card}
+        onBack={onBack}
+        onRemoveCard={onRemoveCard}
+        onArchiveCard={onArchiveCard}
+      />,
+    );
+
+    expect(shellMock.props).toHaveLength(1);
+    rerender(
+      <TerminalView
+        card={card}
+        onBack={onBack}
+        onRemoveCard={onRemoveCard}
+        onArchiveCard={onArchiveCard}
+      />,
+    );
+
+    expect(shellMock.props).toHaveLength(1);
+    expect(shellMock.events).toEqual(['mount:claude-a']);
+  });
+
   it('passes updated pane and command without remounting Shell', () => {
     const first = makeCard();
     const second = makeCard({
@@ -109,7 +137,14 @@ describe('TerminalView Shell lifecycle', () => {
       providerSessionId: '22222222-2222-4222-8222-222222222222',
     });
 
-    const { rerender } = render(<TerminalView card={first} onBack={vi.fn()} />);
+    const { rerender } = render(
+      <TerminalView
+        card={first}
+        onBack={vi.fn()}
+        onRemoveCard={async () => true}
+        onArchiveCard={async () => true}
+      />,
+    );
 
     expect(screen.getByTestId('mock-shell')).toHaveAttribute('data-pane-id', 'claude-a');
     expect(screen.getByTestId('mock-shell')).toHaveAttribute(
@@ -117,7 +152,14 @@ describe('TerminalView Shell lifecycle', () => {
       'claude --session-id 11111111-1111-4111-8111-111111111111',
     );
 
-    rerender(<TerminalView card={second} onBack={vi.fn()} />);
+    rerender(
+      <TerminalView
+        card={second}
+        onBack={vi.fn()}
+        onRemoveCard={async () => true}
+        onArchiveCard={async () => true}
+      />,
+    );
 
     expect(screen.getByTestId('mock-shell')).toHaveAttribute('data-pane-id', 'claude-b');
     expect(screen.getByTestId('mock-shell')).toHaveAttribute(
@@ -125,5 +167,71 @@ describe('TerminalView Shell lifecycle', () => {
       'claude --session-id 22222222-2222-4222-8222-222222222222',
     );
     expect(shellMock.events).toEqual(['mount:claude-a']);
+  });
+
+  it('opens a restored Codex history in terminal mode and resumes its bound id', () => {
+    const sessionId = '019f7fa3-f711-7553-83cf-d83df858ffd8';
+    render(
+      <TerminalView
+        card={makeCard({
+          id: 'restored-codex',
+          ptyId: sessionId,
+          terminalType: 'codex',
+          providerSessionId: sessionId,
+          providerSessionState: 'bound',
+        })}
+        onBack={vi.fn()}
+        onRemoveCard={async () => true}
+        onArchiveCard={async () => true}
+      />,
+    );
+
+    expect(screen.queryByTestId('mock-codex-chat')).not.toBeInTheDocument();
+    expect(screen.getByTestId('mock-shell')).toHaveAttribute(
+      'data-initial-command',
+      `codex resume ${sessionId} --no-alt-screen`,
+    );
+  });
+
+  it('keeps a new unbound Codex card in chat mode', () => {
+    render(
+      <TerminalView
+        card={makeCard({
+          id: 'new-codex',
+          ptyId: 'new-codex',
+          terminalType: 'codex',
+          providerSessionId: undefined,
+          providerSessionState: 'unbound',
+        })}
+        onBack={vi.fn()}
+        onRemoveCard={async () => true}
+        onArchiveCard={async () => true}
+      />,
+    );
+
+    expect(screen.getByTestId('mock-codex-chat')).toBeInTheDocument();
+    expect(screen.queryByTestId('mock-shell')).not.toBeInTheDocument();
+  });
+
+  it('navigates back only after the guarded close or archive action succeeds', async () => {
+    const onBack = vi.fn();
+    const onRemoveCard = vi.fn().mockResolvedValue(false);
+    const onArchiveCard = vi.fn().mockResolvedValue(true);
+    render(
+      <TerminalView
+        card={makeCard()}
+        onBack={onBack}
+        onRemoveCard={onRemoveCard}
+        onArchiveCard={onArchiveCard}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'view.closeTerminal' }));
+    await waitFor(() => expect(onRemoveCard).toHaveBeenCalledWith('claude-a'));
+    expect(onBack).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'view.archiveTerminal' }));
+    await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
+    expect(onArchiveCard).toHaveBeenCalledWith('claude-a');
   });
 });

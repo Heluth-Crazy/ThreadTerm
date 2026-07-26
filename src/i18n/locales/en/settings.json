@@ -102,53 +102,12 @@
     "sent": "Sent to the OS notification service. If no banner appears, check your system notification settings or verify with a packaged build.",
     "failed": "Send failed. Check the development logs for details.",
     "testTitle": "ThreadTerm test notification",
-    "testBody": "If you see this notification, the system notification path is working."
-  },
-  "desktopPet": {
-    "title": "Desktop pet",
-    "description": "Keep a small always-on-top status companion on your desktop for sessions that need attention.",
-    "desktopOnly": "Desktop pet is only available in the Tauri desktop app.",
-    "enabled": "Enabled",
-    "disabled": "Disabled",
-    "notificationMode": {
-      "label": "Notification mode",
-      "off": "Off",
-      "system": "System only",
-      "pet": "Pet only",
-      "both": "Both"
-    },
-    "position": {
-      "label": "Default position",
-      "rightBottom": "Bottom right",
-      "leftBottom": "Bottom left",
-      "lastDragged": "Last dragged"
-    },
-    "size": "Pet size",
-    "idleTranslucent": "Dim when there is no unread work",
-    "notify": {
-      "label": "Notifications",
-      "petBubble": "Show on the pet",
-      "os": "Also send a system notification"
-    },
-    "skin": {
-      "label": "Pet skin",
-      "classic": "Classic grey",
-      "orange": "Orange tabby",
-      "cream": "Cream",
-      "tuxedo": "Tuxedo",
-      "theme": "Match theme"
-    },
-    "resetPosition": "Reset to default position",
-    "hint": "Drag the pet by its top edge or panel header. Click it to open the session panel.",
-    "expand": "Expand desktop pet",
-    "collapse": "Collapse desktop pet",
-    "disable": "Disable desktop pet",
-    "panel": {
-      "ariaLabel": "Desktop pet session panel",
-      "unread": "{{count}} unread",
-      "noUnread": "No unread sessions",
-      "allClear": "All clear",
-      "viewAll": "View all notifications"
+    "testBody": "If you see this notification, the system notification path is working.",
+    "preference": {
+      "title": "Notification delivery",
+      "description": "Allow ThreadTerm to send system notifications for session events.",
+      "enabled": "Enabled",
+      "disabled": "Disabled"
     }
   },
   "mobileAccess": {
@@ -167,6 +126,7 @@
       "lan": "LAN / all interfaces"
     },
     "lanConfirm": "Binding mobile access to 0.0.0.0 exposes ThreadTerm bridge traffic to your network. Continue?",
+    "lanPlaintextWarning": "LAN mode currently uses unencrypted HTTP/WebSocket. Anyone who can observe this network may read terminal output or a full-control credential. Use it only on a trusted network or through an encrypted tunnel.",
     "confirmLanStart": "Confirm LAN start",
     "cancelLanStart": "Cancel",
     "listeningAddress": "Listening:",

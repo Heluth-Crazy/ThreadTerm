@@ -24,6 +24,7 @@ import { Keyboard, RotateCcw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { invoke, isTauriEnv } from '../../lib/tauri-bridge';
 import { useOverlayStore, type FloatLaunchMode } from '../../stores/overlayStore';
+import { SettingsSection } from './SettingsSection';
 
 type Slot = 'A' | 'B';
 
@@ -142,10 +143,10 @@ function SlotRow({
       </div>
       <div className="flex items-center gap-2">
         <div
-          className={`flex items-center gap-1 rounded-[var(--radius-md)] border px-2 py-1 ${
+          className={`flex items-center gap-1 rounded-md border px-2 py-1 ${
             capturing
               ? 'border-primary bg-primary/10'
-              : 'border-white/10 bg-background'
+              : 'border-border bg-background'
           }`}
         >
           {capturing ? (
@@ -156,7 +157,7 @@ function SlotRow({
             tokens.map((tok, i) => (
               <kbd
                 key={i}
-                className="inline-flex h-6 min-w-[24px] items-center justify-center rounded bg-muted px-1.5 font-mono text-[11px] text-muted-foreground"
+                className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-md border border-border bg-muted px-1.5 font-mono text-[11px] text-muted-foreground"
               >
                 {tok}
               </kbd>
@@ -167,7 +168,7 @@ function SlotRow({
           type="button"
           onClick={onStartCapture}
           disabled={capturing || disabled}
-          className="inline-flex items-center gap-1 rounded-[var(--radius-md)] border border-white/10 bg-background px-2 py-1 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
         >
           <Keyboard className="h-3 w-3" />
           {t('hotkeys.rebind')}
@@ -177,7 +178,7 @@ function SlotRow({
           onClick={onReset}
           disabled={disabled || current === meta.defaultAccelerator}
           title={t('hotkeys.resetTitle')}
-          className="inline-flex items-center rounded-[var(--radius-md)] p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-40"
+          className="inline-flex items-center rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
         >
           <RotateCcw className="h-3.5 w-3.5" />
         </button>
@@ -302,7 +303,7 @@ export function OverlayHotkeysSettings() {
   );
 
   return (
-    <div className="rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
+    <SettingsSection>
       <div className="mb-2 flex items-center gap-2">
         <span className="text-sm" role="img" aria-hidden="true">
           🎯
@@ -310,12 +311,12 @@ export function OverlayHotkeysSettings() {
         <h4 className="text-[11px] font-semibold uppercase tracking-wider text-foreground">
           {t('hotkeys.title')}
         </h4>
-        <span className="rounded-full bg-muted/80 px-2 py-0.5 text-[10px] text-muted-foreground">
+        <span className="rounded-full bg-muted/80 px-2 py-0.5 text-[11px] text-muted-foreground">
           {t('hotkeys.scope')}
         </span>
       </div>
 
-      <label className="mb-3 flex items-center justify-between gap-4 rounded-[var(--radius-md)] border border-white/10 bg-background/70 px-3 py-2">
+      <label className="mb-3 flex items-center justify-between gap-4 rounded-md border border-border bg-background/70 px-3 py-2">
         <span className="min-w-0">
           <span className="block text-sm font-medium text-foreground">
             {t('lightweight.title')}
@@ -355,7 +356,7 @@ export function OverlayHotkeysSettings() {
 
       {status && (
         <div
-          className={`mt-3 flex items-start gap-2 rounded-[var(--radius-md)] px-3 py-2 text-[11px] ${
+          className={`mt-3 flex items-start gap-2 rounded-md px-3 py-2 text-[11px] ${
             status.kind === 'ok'
               ? 'bg-primary/10 text-primary'
               : 'bg-destructive/10 text-destructive'
@@ -386,10 +387,10 @@ export function OverlayHotkeysSettings() {
               onClick={() => setFloatLaunchMode(m.value)}
               disabled={lightweightMode}
               className={[
-                'flex-1 rounded-[var(--radius-md)] border px-2 py-1.5 text-xs font-medium transition-colors',
+                'flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors',
                 floatLaunchMode === m.value
                   ? 'border-primary bg-primary/10 text-primary'
-                  : 'border-white/10 bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  : 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                 lightweightMode ? 'cursor-not-allowed opacity-50' : '',
               ].join(' ')}
             >
@@ -402,7 +403,7 @@ export function OverlayHotkeysSettings() {
       <div className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
         {t('hotkeys.tips')}
       </div>
-    </div>
+    </SettingsSection>
   );
 }
 

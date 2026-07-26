@@ -36,14 +36,15 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tauri::{Manager, Window};
 
 use session::{
-    clear_waiting_for_input, mark_killed, suppress_output_activity_for, PtySession,
-    OUTPUT_BUFFER_MAX_BYTES, RESIZE_OUTPUT_ACTIVITY_SUPPRESS, SESSION_SCROLLBACK_LINES,
+    clear_waiting_for_input, mark_killed, suppress_output_activity_for, PtyInputRequest,
+    PtySession, OUTPUT_BUFFER_MAX_BYTES, RESIZE_OUTPUT_ACTIVITY_SUPPRESS, SESSION_SCROLLBACK_LINES,
 };
 
 /// Serializes PTY open+spawn so concurrent terminal creation can't race ConPTY
 /// initialization — a known source of Windows blank/stall on rapid open/close
 /// or multi-card spawn. Cheap and harmless elsewhere (spawns are infrequent).
 static PTY_SPAWN_LOCK: Mutex<()> = Mutex::new(());
+const PTY_INPUT_QUEUE_CAPACITY: usize = 1024;
 
 const FLOAT_RENDERER_CONSUMER_PREFIX: &str = "renderer:float:";
 static OUTPUT_CONSUMER_SCOPE_GATE: Mutex<()> = Mutex::new(());
@@ -138,9 +139,10 @@ pub async fn pty_create(
         .master
         .try_clone_reader()
         .map_err(|e| format!("Failed to clone PTY reader: {e}"))?;
+    let (input_tx, input_rx) = tokio::sync::mpsc::channel(PTY_INPUT_QUEUE_CAPACITY);
 
     let session = Arc::new(PtySession {
-        writer: Mutex::new(writer),
+        input_tx,
         master: Mutex::new(pair.master),
         child: Mutex::new(child),
         _working_dir: working_dir,
@@ -161,6 +163,24 @@ pub async fn pty_create(
         suppress_output_activity_until: Mutex::new(None),
         killed: AtomicBool::new(false),
     });
+
+    let input_session = Arc::downgrade(&session);
+    let input_id = id.clone();
+    if let Err(error) = std::thread::Builder::new()
+        .name(format!("threadterm-pty-input-{id}"))
+        .spawn(move || {
+            run_pty_input_writer(writer, input_rx, move || {
+                if let Some(session) = input_session.upgrade() {
+                    session::mark_input_activity(&session, &input_id);
+                }
+            });
+        })
+    {
+        if let Ok(mut child) = session.child.lock() {
+            let _ = child.kill();
+        }
+        return Err(format!("Failed to start PTY input writer: {error}"));
+    }
 
     if let Err(rejected) = registry::insert_if_absent(id.clone(), session.clone()) {
         // Idempotent: if a PTY with this id already exists (e.g. a
@@ -206,22 +226,41 @@ pub async fn pty_input(id: String, data: String) -> Result<(), String> {
     // once the PTY emits output again.
     clear_waiting_for_input(&session, &id);
 
-    let mut writer = session
-        .writer
-        .lock()
-        .map_err(|e| format!("Failed to lock PTY writer: {e}"))?;
+    let (completion, completed) = tokio::sync::oneshot::channel();
+    session
+        .input_tx
+        .send(PtyInputRequest {
+            data: data.into_bytes(),
+            completion,
+        })
+        .await
+        .map_err(|_| format!("PTY input writer for '{id}' is unavailable"))?;
+    completed
+        .await
+        .map_err(|_| format!("PTY input writer for '{id}' stopped before completing the write"))?
+}
 
-    writer
-        .write_all(data.as_bytes())
-        .map_err(|e| format!("Failed to write to PTY: {e}"))?;
-
-    writer
-        .flush()
-        .map_err(|e| format!("Failed to flush PTY: {e}"))?;
-
-    session::mark_input_activity(&session, &id);
-
-    Ok(())
+fn run_pty_input_writer<F>(
+    mut writer: Box<dyn Write + Send>,
+    mut receiver: tokio::sync::mpsc::Receiver<PtyInputRequest>,
+    mut on_written: F,
+) where
+    F: FnMut(),
+{
+    while let Some(request) = receiver.blocking_recv() {
+        let result = writer
+            .write_all(&request.data)
+            .and_then(|_| writer.flush())
+            .map_err(|error| format!("Failed to write to PTY: {error}"));
+        if result.is_ok() {
+            on_written();
+        }
+        let failed = result.is_err();
+        let _ = request.completion.send(result);
+        if failed {
+            break;
+        }
+    }
 }
 
 /// Resize a PTY session.

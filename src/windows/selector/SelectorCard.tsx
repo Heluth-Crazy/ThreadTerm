@@ -73,7 +73,7 @@ export const SelectorCard = memo(function SelectorCard({
       whileHover={reduceMotion ? undefined : { y: -2, scale: size === 'lead' ? 1.003 : 1.01 }}
       transition={reduceMotion ? { duration: 0 } : { duration: 0.16, ease: 'easeOut' }}
       className={[
-        'group relative flex flex-col overflow-hidden rounded-[var(--radius)] border text-card-foreground transition-colors duration-150',
+        'group relative flex flex-col overflow-hidden rounded-lg border text-card-foreground transition-colors duration-150',
         dims,
         selected
           ? 'border-primary/50 bg-background/95 shadow-sm ring-1 ring-primary/20'
@@ -81,30 +81,30 @@ export const SelectorCard = memo(function SelectorCard({
       ].join(' ')}
     >
       {/* Header */}
-      <div className="flex items-center gap-2 border-b border-white/5 px-3 pb-2 pt-3 bg-white/5 backdrop-blur-sm">
-        <div className={`flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] bg-primary/10 ${typeMeta.accent}`}>
+      <div className="flex items-center gap-2 border-b border-border px-3 pb-2 pt-3 bg-muted/50 backdrop-blur-sm">
+        <div className={`flex h-8 w-8 items-center justify-center rounded-sm bg-primary/10 ${typeMeta.accent}`}>
           <TypeIcon className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="truncate font-semibold">{card.projectName}</span>
-            <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">
+            <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">
               · {t(`types.${card.terminalType}`, typeMeta.label)}
             </span>
             {typeof indexLabel === 'number' && size === 'tile' && (
               <kbd
                 className={[
-                  'ml-auto shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none shadow-sm',
+                  'ml-auto shrink-0 rounded border px-1.5 py-0.5 font-mono text-[11px] font-semibold leading-none shadow-sm',
                   selected
                     ? 'border-primary/30 bg-primary/20 text-primary'
-                    : 'border-white/10 bg-white/5 text-muted-foreground',
+                    : 'border-border bg-muted/50 text-muted-foreground',
                 ].join(' ')}
               >
                 {indexLabel}
               </kbd>
             )}
           </div>
-          <div className="truncate text-[10px] text-muted-foreground">{card.projectPath}</div>
+          <div className="truncate text-[11px] text-muted-foreground">{card.projectPath}</div>
         </div>
       </div>
 
@@ -162,9 +162,9 @@ export const SelectorCard = memo(function SelectorCard({
       </div>
 
       {/* Footer */}
-      <div className="flex items-center gap-2 border-t border-white/5 bg-white/5 px-3 py-2 text-[10px] text-muted-foreground backdrop-blur-sm">
+      <div className="flex items-center gap-2 border-t border-border bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground backdrop-blur-sm">
         <span
-          className={`inline-flex items-center rounded-full px-2 py-0.5 font-bold uppercase tracking-wider text-[9px] ${statusInfo.chip} bg-opacity-20`}
+          className={`inline-flex items-center rounded-full px-2 py-0.5 font-bold uppercase tracking-wider text-[11px] ${statusInfo.chip} bg-opacity-20`}
         >
           {t(`status.${card.status}`, statusInfo.label)}
         </span>

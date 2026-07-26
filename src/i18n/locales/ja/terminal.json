@@ -15,6 +15,10 @@
   },
   "sidebar": {
     "projects": "プロジェクト",
+    "primaryNavigation": "メインナビゲーション",
+    "workbench": "ワークベンチ",
+    "projectFilter": "プロジェクト絞り込み",
+    "allProjects": "すべてのプロジェクト",
     "expand": "サイドバーを展開",
     "collapse": "サイドバーを折りたたむ",
     "allTerminals": "すべてのターミナル",
@@ -36,6 +40,125 @@
     "bareWorktree": "bare",
     "emptyLine1": "まだプロジェクトがありません。",
     "emptyLine2": "ターミナルを作成して開始します。"
+  },
+  "workbench": {
+    "title": "ワークベンチ",
+    "subtitle": "現在のターミナルから確定的なローカル信号を集約します",
+    "searchLabel": "ワークベンチを検索",
+    "searchPlaceholder": "プロジェクト、ブランチ、出力を検索",
+    "summary": {
+      "attention": "対応が必要",
+      "normalRunning": "正常に実行中",
+      "review": "確認待ち",
+      "failed": "未復旧の異常"
+    },
+    "attention": {
+      "title": "対応が必要",
+      "count": "{{count}} 件"
+    },
+    "filters": {
+      "label": "注意項目を絞り込み",
+      "all": "すべて",
+      "approval": "承認",
+      "waiting": "待機",
+      "failed": "異常",
+      "review": "確認待ち",
+      "stalled": "進展なし"
+    },
+    "groups": {
+      "title": "実行コンテキスト",
+      "subtitle": "推測したタスクではなく、プロジェクトと worktree で集約"
+    },
+    "group": {
+      "terminals": "{{count}} ターミナル",
+      "attention": "{{count}} 件の対応が必要"
+    },
+    "groupStatus": {
+      "failed": "異常",
+      "attention": "対応が必要",
+      "stalled": "進展なし",
+      "running": "実行中",
+      "review": "確認待ち",
+      "idle": "アイドル"
+    },
+    "kind": {
+      "approval": "承認待ち",
+      "waiting_input": "入力待ち",
+      "failed": "実行異常",
+      "review": "結果の確認待ち",
+      "stalled": "最近の進展なし"
+    },
+    "reason": {
+      "structured_approval": "構造化リクエストが承認を待っています。",
+      "structured_input": "構造化リクエストに入力が必要です。",
+      "supervisor_prompt": "ターミナル監視が対話プロンプトを検出しました。",
+      "waiting_state": "ターミナルが入力を待っています。",
+      "failed_state": "ターミナルが失敗し、自動再起動の予定がありません。",
+      "completed_unread": "ターミナルは完了しましたが、結果は未確認です。",
+      "stalled_running": "設定した時間内に Agent ターミナルの新しい活動がありません。"
+    },
+    "source": {
+      "structured_request": "構造化リクエスト",
+      "supervisor_alert": "監視プロンプト",
+      "notification": "ターミナル通知",
+      "terminal_state": "ターミナル状態"
+    },
+    "action": {
+      "openRequest": "リクエストを表示",
+      "openResult": "結果を表示",
+      "openTerminal": "ターミナルを開く",
+      "details": "詳細",
+      "viewAllTerminals": "すべてのターミナルを表示"
+    },
+    "empty": {
+      "noTerminalsTitle": "ターミナルがありません",
+      "noTerminalsBody": "ターミナルを作成すると、ローカル状態信号の集約が始まります。",
+      "noScopeTerminalsTitle": "この範囲にはターミナルがありません",
+      "noScopeTerminalsBody": "別のプロジェクトまたはワークツリーを選ぶか、この範囲にターミナルを作成してください。",
+      "noSearchResults": "検索に一致する注意項目はありません。",
+      "noAttention": "この範囲で対応が必要な項目はありません。",
+      "noActiveContexts": "この範囲にアクティブな実行コンテキストはありません。"
+    },
+    "notifications": {
+      "approvalTitle": "Codex の承認が必要です",
+      "inputTitle": "Codex に入力が必要です",
+      "openRequest": "Codex セッションを開いてリクエストを確認してください。"
+    },
+    "rules": {
+      "title": "注意ルール",
+      "localOnly": "これらのローカルルールは表示内容だけを決めます。ターミナル入力やプロセス再起動は行いません。",
+      "includeWaiting": "入力待ち",
+      "includeWaitingHint": "構造化リクエストとターミナルプロンプトを含めます。",
+      "includeFailed": "未復旧の異常",
+      "includeFailedHint": "自動再起動の待機中は失敗を表示しません。",
+      "includeReview": "完了結果の確認待ち",
+      "includeReviewHint": "完了済みで結果が未読のターミナルを含めます。",
+      "stalled": "進展なしの検出",
+      "stalledHint": "既定では無効です。有効化後、dev server や watcher などを除外できます。",
+      "threshold": "進展なしのしきい値",
+      "minutes": "{{count}} 分",
+      "exclusions": "長時間実行セッションを除外",
+      "retryNote": "自動再起動の上限は各ターミナルカードの設定を使用します。ワークベンチは別の再試行ポリシーを作りません。",
+      "reset": "ルールをリセット"
+    },
+    "detail": {
+      "settings": "ローカル設定",
+      "title": "ワークベンチ詳細",
+      "unavailable": "項目を利用できません",
+      "sourceGone": "元の状態が変化し、この項目はアクティブではありません。",
+      "readonly": "ここは読み取り専用です。操作はターミナルで行ってください。",
+      "source": "ソース",
+      "reason": "表示理由",
+      "context": "コンテキスト",
+      "observed": "検出時刻",
+      "activity": "ターミナル活動",
+      "notifications": "通知",
+      "status": "状態",
+      "path": "パス",
+      "lastActivity": "最終活動",
+      "latestSignal": "最新の実信号",
+      "terminals": "ターミナル"
+    }
   },
   "grid": {
     "emptyTitle": "ターミナルはまだありません",
@@ -218,7 +341,10 @@
     "cliOnly": "CLI セッション",
     "cliOnlyDescription": "{{cli}} は CLI セッションとして実行されます。ネイティブ再開の紐づけはまだ追跡しません。",
     "customCommand": "カスタムコマンド",
-    "customCommandDescription": "この AI カードは既定の provider コマンドではなくカスタムコマンドを実行します。"
+    "customCommandDescription": "この AI カードは既定の provider コマンドではなくカスタムコマンドを実行します。",
+    "resolvingHistory": "元の Codex 履歴セッションを解決しています…",
+    "historyUnavailable": "元の Codex 履歴セッションを解決できませんでした。紐付けは保持され、新規セッションは開始されていません。",
+    "historyResolutionFailed": "ThreadTerm は元の Codex 履歴セッションを確認できませんでした。新規セッションは開始されていません。"
   },
   "aiThread": {
     "empty": "AI に説明を依頼すると、回答がここに表示されます。",

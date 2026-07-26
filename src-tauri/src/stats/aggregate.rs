@@ -296,7 +296,7 @@ mod tests {
     fn dedups_by_message_id() {
         let mut agg = Aggregator::new(None, None);
         let c = call("claude-opus-4-8", Some("msg_1"), 100, 50, Some(1000));
-        agg.feed_session("s1", "/a", Some(1000), &[c.clone()]);
+        agg.feed_session("s1", "/a", Some(1000), std::slice::from_ref(&c));
         agg.feed_session("s2", "/a", Some(1000), &[c]); // same id, another file
         assert_eq!(agg.snapshot().total_calls, 1);
     }
@@ -355,6 +355,7 @@ mod tests {
         conn
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_row(
         conn: &rusqlite::Connection,
         rid: &str,

@@ -25,9 +25,9 @@ const recentKindIconMap: Record<NotificationKind, typeof AlertTriangle> = {
 };
 
 const recentKindToneMap: Record<NotificationKind, string> = {
-  waiting: 'text-amber-500',
-  completed: 'text-sky-500',
-  failed: 'text-red-500',
+  waiting: 'text-warning',
+  completed: 'text-info',
+  failed: 'text-destructive',
   attention: 'text-muted-foreground',
 };
 
@@ -148,9 +148,9 @@ export const CardFooter = memo(function CardFooter({
     <div
       ref={footerRef}
       data-card-footer-density={density}
-      className="flex shrink-0 items-center border-t border-white/10/40 bg-muted/20 px-1 py-1.5 overflow-hidden sm:px-1.5"
+      className="flex shrink-0 items-center border-t border-border bg-muted/20 px-1 py-1.5 overflow-hidden sm:px-1.5"
     >
-      <div className="flex shrink-0 items-center scale-90 origin-left sm:scale-100">
+      <div className="flex shrink-0 items-center">
         <CardActions
           pinned={pinned}
           pinFull={pinFull}
@@ -180,7 +180,7 @@ export const CardFooter = memo(function CardFooter({
         }
       >
         {card.status === 'failed' && attentionHint ? (
-          <span className="inline-flex items-center gap-0.5 text-[10px] text-red-500">
+          <span className="inline-flex items-center gap-0.5 text-[11px] text-destructive">
             <AlertCircle className="h-3.5 w-3.5 shrink-0" />
           </span>
         ) : recentNotification ? (
@@ -192,18 +192,18 @@ export const CardFooter = memo(function CardFooter({
               ? 'text-muted-foreground/70'
               : recentKindToneMap[recentNotification.kind];
             return (
-              <span className={`inline-flex items-center gap-0.5 text-[10px] ${tone}`}>
+              <span className={`inline-flex items-center gap-0.5 text-[11px] ${tone}`}>
                 <RecentIcon className="h-3.5 w-3.5 shrink-0" />
               </span>
             );
           })()
         ) : attentionHint ? (
-          <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-600">
+          <span className="inline-flex items-center gap-0.5 text-[11px] text-warning">
             <BellRing className="h-3.5 w-3.5 shrink-0" />
             {/* Never show text hint in grid cards footer, icons are enough for small space */}
           </span>
         ) : null}
-        <div className="shrink-0 scale-90">
+        <div className="shrink-0">
           <AutoRestartStatus card={card} />
         </div>
       </div>

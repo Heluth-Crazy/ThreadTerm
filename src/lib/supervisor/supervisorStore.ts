@@ -18,6 +18,7 @@
  */
 import { create } from 'zustand';
 
+import { normalizeNotificationFingerprint } from '../osNotificationPolicy';
 import type { SupervisorRuleId } from './rules';
 
 /** Frontend mirror of the backend `AlertPayload` plus click bookkeeping. */
@@ -30,6 +31,8 @@ export interface SupervisorAlert {
   sampleText: string;
   /** Unix epoch milliseconds at which the backend fired the event. */
   ts: number;
+  /** User-submit generation observed when this alert arrived. */
+  generation?: number;
   clicked: boolean;
   /** Epoch ms when the user clicked the corresponding notification. */
   clickedAt: number | null;
@@ -52,6 +55,7 @@ export interface SupervisorAlertInput {
   ruleId: SupervisorRuleId;
   sampleText: string;
   ts: number;
+  generation?: number;
 }
 
 interface SupervisorState {
@@ -72,7 +76,10 @@ interface SupervisorState {
   clearAlerts: () => void;
 }
 
-/** Same window as the backend cooldown (PRD D6). Exposed for tests. */
+/**
+ * Legacy backend cooldown duration. Frontend dedup is semantic now, but the
+ * export remains for compatibility with diagnostics and older callers.
+ */
 export const SUPERVISOR_DEDUP_WINDOW_MS = 60_000;
 /** Window in which a `pty.write` after a click counts as `acted` (PRD D10). */
 export const SUPERVISOR_ACTION_WINDOW_MS = 60_000;
@@ -99,14 +106,17 @@ export const useSupervisorStore = create<SupervisorState>((set, get) => ({
 
   ingestAlert: (payload) => {
     const { alerts } = get();
-    // Dedup window — backend already filters but we double-check to stay
-    // resilient against duplicate IPC events (e.g. listener attached twice
-    // during HMR).
+    const generation = payload.generation ?? 0;
+    const fingerprint = normalizeNotificationFingerprint(payload.sampleText);
+    // Semantic dedup — the backend cooldown can re-fire a sticky prompt every
+    // minute. Keep one alert for the exact card/rule/input-generation/sample,
+    // while a new user submit or changed prompt rearms immediately.
     const isDuplicate = alerts.some(
       (a) =>
         a.cardId === payload.cardId &&
         a.ruleId === payload.ruleId &&
-        payload.ts - a.ts < SUPERVISOR_DEDUP_WINDOW_MS,
+        (a.generation ?? 0) === generation &&
+        normalizeNotificationFingerprint(a.sampleText) === fingerprint,
     );
     if (isDuplicate) return null;
 
@@ -116,6 +126,7 @@ export const useSupervisorStore = create<SupervisorState>((set, get) => ({
       ruleId: payload.ruleId,
       sampleText: payload.sampleText,
       ts: payload.ts,
+      generation,
       clicked: false,
       clickedAt: null,
       acted: false,

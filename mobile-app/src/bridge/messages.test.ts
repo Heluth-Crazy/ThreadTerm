@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { BRIDGE_PROTOCOL_VERSION, type ServerMessage } from '@shared/mobile/bridge/protocol';
+import {
+  BRIDGE_PROTOCOL_VERSION,
+  type MobileWorkbenchProjection,
+  type ServerMessage,
+} from '@shared/mobile/bridge/protocol';
 import { applyServerMessage, initialBridgeState } from './messages';
 import { fallbackTheme } from '../theme';
 
@@ -124,6 +128,46 @@ describe('mobile bridge message reducer', () => {
     expect(closed.activeCardId).toBeNull();
   });
 
+  it('hydrates the recoverable workbench projection and clears stale data when absent', () => {
+    const workbench: MobileWorkbenchProjection = {
+      generatedAt: 123,
+      summary: { attention: 1, normalRunning: 2, review: 0, failed: 0 },
+      attentionItems: [],
+      executionGroups: [],
+      rules: {
+        includeWaiting: true,
+        includeFailed: true,
+        includeCompletedReview: true,
+        stalledEnabled: true,
+        stalledThresholdMinutes: 15,
+        stalledExcludedCount: 0,
+      },
+      capabilities: {
+        openTerminal: true,
+        respondToStructuredRequest: false,
+        updateRules: false,
+        updateNotificationReadState: false,
+      },
+    };
+    const hydrated = applyServerMessage(initialBridgeState, {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'snapshot',
+      cards: [],
+      notifications: [],
+      workbench,
+    });
+
+    expect(hydrated.workbench).toEqual(workbench);
+
+    const legacySnapshot = applyServerMessage(hydrated, {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'snapshot',
+      cards: [],
+      notifications: [],
+    });
+    expect(legacySnapshot.workbench).toBeNull();
+  });
+
   it('removes card-scoped status and output caches with a card_removed event', () => {
     const cardOne = {
       id: 'card-1',
@@ -181,6 +225,7 @@ describe('mobile bridge message reducer', () => {
           hiddenLineCount: 0,
           recentOutputBytes: 0,
           ptyLive: true,
+          ptyState: status,
           attachable: true,
         },
       ],
@@ -195,6 +240,7 @@ describe('mobile bridge message reducer', () => {
       code: 0,
     });
     expect(exited.cards[0]?.status).toBe('completed');
+    expect(exited.cards[0]?.ptyState).toBe('completed');
     expect(exited.ptyStatusByCardId['card-1']).toBe('completed');
   });
 
@@ -206,6 +252,7 @@ describe('mobile bridge message reducer', () => {
       code: null,
     });
     expect(exited.cards[0]?.status).toBe('idle');
+    expect(exited.cards[0]?.ptyState).toBe('idle');
     expect(exited.ptyStatusByCardId['card-1']).toBe('idle');
   });
 
@@ -217,6 +264,7 @@ describe('mobile bridge message reducer', () => {
       code: 137,
     });
     expect(exited.cards[0]?.status).toBe('failed');
+    expect(exited.cards[0]?.ptyState).toBe('failed');
     expect(exited.ptyStatusByCardId['card-1']).toBe('failed');
   });
 
@@ -234,6 +282,7 @@ describe('mobile bridge message reducer', () => {
       code: null,
     });
     expect(afterExit.cards[0]?.status).toBe('idle');
+    expect(afterExit.cards[0]?.ptyState).toBe('idle');
     expect(afterExit.ptyStatusByCardId['card-1']).toBe('idle');
   });
 });

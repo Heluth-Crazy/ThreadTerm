@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CardGrid } from './CardGrid';
 import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard } from '../../types/terminal';
@@ -33,16 +33,23 @@ vi.mock('./TerminalCard', () => ({
   TerminalCardComponent: ({
     card,
     dragHandle,
+    onClose,
     onArchive,
   }: {
     card: TerminalCard;
     dragHandle?: React.ReactNode;
+    onClose?: () => void;
     onArchive?: () => void;
   }) => (
     <div data-testid="terminal-card">
       {dragHandle}
       <span data-testid="terminal-card-name">{card.projectName}</span>
       <span data-testid="terminal-card-worktree">{card.worktreePath ?? card.projectPath}</span>
+      {onClose && (
+        <button type="button" onClick={onClose}>
+          close {card.projectName}
+        </button>
+      )}
       {onArchive && (
         <button type="button" onClick={onArchive}>
           archive {card.projectName}
@@ -80,6 +87,55 @@ afterEach(() => {
 });
 
 describe('CardGrid project ordering', () => {
+  it('keeps equally active running cards stable during output and reorders on a state change', async () => {
+    const store = useTerminalStore.getState();
+    const olderId = store.createCard({
+      projectName: 'Older',
+      projectPath: '/repo/older',
+      terminalType: 'shell',
+    });
+    const newerId = store.createCard({
+      projectName: 'Newer',
+      projectPath: '/repo/newer',
+      terminalType: 'shell',
+    });
+    useTerminalStore.setState((state) => ({
+      cards: state.cards.map((card) =>
+        card.id === olderId
+          ? { ...card, status: 'running', lastActivity: 100 }
+          : card.id === newerId
+            ? { ...card, status: 'running', lastActivity: 200 }
+            : card,
+      ),
+    }));
+
+    render(<CardGrid onRemoveCard={vi.fn()} onArchiveCard={vi.fn()} />);
+    expect(screen.getAllByTestId('terminal-card-name').map((node) => node.textContent))
+      .toEqual(['Newer', 'Older']);
+
+    act(() => {
+      useTerminalStore.setState((state) => ({
+        cards: state.cards.map((card) =>
+          card.id === olderId ? { ...card, lastActivity: 300 } : card,
+        ),
+      }));
+    });
+    expect(screen.getAllByTestId('terminal-card-name').map((node) => node.textContent))
+      .toEqual(['Newer', 'Older']);
+
+    act(() => {
+      useTerminalStore.setState((state) => ({
+        cards: state.cards.map((card) =>
+          card.id === newerId ? { ...card, status: 'completed' } : card,
+        ),
+      }));
+    });
+    await waitFor(() => {
+      expect(screen.getAllByTestId('terminal-card-name').map((node) => node.textContent))
+        .toEqual(['Older', 'Newer']);
+    });
+  });
+
   it('does not show drag handles in the all-terminals view', () => {
     useTerminalStore.getState().createCard({
       projectName: 'ThreadTerm',
@@ -87,7 +143,7 @@ describe('CardGrid project ordering', () => {
       terminalType: 'shell',
     });
 
-    render(<CardGrid />);
+    render(<CardGrid onRemoveCard={vi.fn()} onArchiveCard={vi.fn()} />);
 
     expect(screen.queryByLabelText(/Drag to reorder card/)).toBeNull();
   });
@@ -98,7 +154,7 @@ describe('CardGrid project ordering', () => {
     store.createCard({ projectName: 'Second', projectPath: '/repo/threadterm', terminalType: 'shell' });
     useTerminalStore.getState().selectProject('/repo/threadterm');
 
-    render(<CardGrid />);
+    render(<CardGrid onRemoveCard={vi.fn()} onArchiveCard={vi.fn()} />);
 
     expect(screen.getAllByLabelText(/Drag to reorder card/)).toHaveLength(2);
     expect(screen.getAllByTestId('terminal-card-name').map((node) => node.textContent)).toEqual([
@@ -122,7 +178,7 @@ describe('CardGrid project ordering', () => {
     });
     store.selectWorktree('/repo/threadterm', '/repo/threadterm-feature', 'feature/worktree-ui');
 
-    render(<CardGrid />);
+    render(<CardGrid onRemoveCard={vi.fn()} onArchiveCard={vi.fn()} />);
 
     expect(screen.getAllByTestId('terminal-card-name').map((node) => node.textContent)).toEqual([
       'Feature',
@@ -142,7 +198,13 @@ describe('CardGrid project ordering', () => {
     store.selectWorktree('/repo/threadterm', '/repo/threadterm-feature', 'feature/worktree-ui');
     const onCreateTerminal = vi.fn();
 
-    render(<CardGrid onCreateTerminal={onCreateTerminal} />);
+    render(
+      <CardGrid
+        onCreateTerminal={onCreateTerminal}
+        onRemoveCard={vi.fn()}
+        onArchiveCard={vi.fn()}
+      />,
+    );
     fireEvent.click(screen.getByRole('button', { name: /app.newTerminal/ }));
 
     expect(onCreateTerminal).toHaveBeenCalledWith({
@@ -163,7 +225,13 @@ describe('CardGrid project ordering', () => {
     });
     const onCreateWorktreeTerminal = vi.fn();
 
-    render(<CardGrid onCreateWorktreeTerminal={onCreateWorktreeTerminal} />);
+    render(
+      <CardGrid
+        onCreateWorktreeTerminal={onCreateWorktreeTerminal}
+        onRemoveCard={vi.fn()}
+        onArchiveCard={vi.fn()}
+      />,
+    );
     fireEvent.click(screen.getByRole('button', { name: 'grid.createWorktreeHere' }));
 
     expect(onCreateWorktreeTerminal).toHaveBeenCalledWith({
@@ -175,20 +243,39 @@ describe('CardGrid project ordering', () => {
 
   it('archives cards from the grid without deleting the archived snapshot', async () => {
     const store = useTerminalStore.getState();
-    store.createCard({
+    const cardId = store.createCard({
       projectName: 'ThreadTerm',
       projectPath: '/repo/threadterm',
       terminalType: 'shell',
     });
     store.selectProject('/repo/threadterm');
 
-    render(<CardGrid />);
+    const onArchiveCard = vi.fn((id: string) => {
+      useTerminalStore.getState().archiveCard(id);
+    });
+    render(<CardGrid onRemoveCard={vi.fn()} onArchiveCard={onArchiveCard} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'archive ThreadTerm' }));
 
     await waitFor(() => expect(screen.queryByTestId('terminal-card')).toBeNull());
+    expect(onArchiveCard).toHaveBeenCalledWith(cardId);
     expect(useTerminalStore.getState().cards).toHaveLength(0);
     expect(useTerminalStore.getState().archivedCards).toHaveLength(1);
+  });
+
+  it('routes close requests through the supplied guard without mutating the store itself', () => {
+    const cardId = useTerminalStore.getState().createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+    const onRemoveCard = vi.fn();
+
+    render(<CardGrid onRemoveCard={onRemoveCard} onArchiveCard={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'close ThreadTerm' }));
+
+    expect(onRemoveCard).toHaveBeenCalledWith(cardId);
+    expect(useTerminalStore.getState().cards).toHaveLength(1);
   });
 });
 
@@ -209,7 +296,7 @@ describe('CardGrid notification locate', () => {
     });
     store.createCard({ projectName: 'beta', projectPath: '/repo/beta', terminalType: 'shell' });
 
-    render(<CardGrid />);
+    render(<CardGrid onRemoveCard={vi.fn()} onArchiveCard={vi.fn()} />);
     typeQuery('beta');
     expect(
       screen.getAllByTestId('terminal-card-name').map((node) => node.textContent),
@@ -234,7 +321,7 @@ describe('CardGrid notification locate', () => {
     });
     store.createCard({ projectName: 'alpha', projectPath: '/repo/alpha', terminalType: 'shell' });
 
-    render(<CardGrid />);
+    render(<CardGrid onRemoveCard={vi.fn()} onArchiveCard={vi.fn()} />);
     typeQuery('beta');
 
     useTerminalStore.setState({ highlightCardId: beta });

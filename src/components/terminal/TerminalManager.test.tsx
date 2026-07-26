@@ -8,7 +8,12 @@ const settingsWindowMocks = vi.hoisted(() => ({
   openSettingsWindow: vi.fn().mockResolvedValue(true),
 }));
 
+const nativeDialogMocks = vi.hoisted(() => ({
+  confirmDialog: vi.fn(),
+}));
+
 const bridgeMocks = vi.hoisted(() => ({
+  isTauriEnv: vi.fn(),
   invoke: vi.fn(),
   readFile: vi.fn(),
   writeFile: vi.fn(),
@@ -16,7 +21,10 @@ const bridgeMocks = vi.hoisted(() => ({
   gitTextDiff: vi.fn(),
   addWorktree: vi.fn(),
   listRecent: vi.fn(),
+  bridgeStatus: vi.fn(),
+  bridgeHasSubscribers: vi.fn(),
   syncCards: vi.fn(),
+  syncState: vi.fn(),
   onSpawnCard: vi.fn(),
   onActivateCard: vi.fn(),
   onRemoveCard: vi.fn(),
@@ -38,6 +46,14 @@ vi.mock('../../lib/settingsWindow', () => ({
   openSettingsWindow: settingsWindowMocks.openSettingsWindow,
 }));
 
+vi.mock('../../lib/nativeDialog', () => ({
+  confirmDialog: (...args: unknown[]) => nativeDialogMocks.confirmDialog(...args),
+}));
+
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => ({ label: 'main' }),
+}));
+
 vi.mock('../../theme/ThemeContext', () => ({
   useTheme: () => ({
     activeThemeTokens: {
@@ -53,13 +69,14 @@ vi.mock('../../theme/ThemeContext', () => ({
 
 vi.mock('../../lib/tauri-bridge', () => ({
   invoke: (...args: unknown[]) => bridgeMocks.invoke(...args),
-  isTauriEnv: () => false,
+  isTauriEnv: () => bridgeMocks.isTauriEnv(),
   providerSessions: {
     listRecent: (...args: unknown[]) => bridgeMocks.listRecent(...args),
   },
   mobileBridge: {
-    status: () => Promise.resolve({ running: false }),
+    status: (...args: unknown[]) => bridgeMocks.bridgeStatus(...args),
     syncCards: (...args: unknown[]) => bridgeMocks.syncCards(...args),
+    syncState: (...args: unknown[]) => bridgeMocks.syncState(...args),
     onSpawnCard: (...args: unknown[]) => bridgeMocks.onSpawnCard(...args),
     onActivateCard: (...args: unknown[]) => bridgeMocks.onActivateCard(...args),
     onRemoveCard: (...args: unknown[]) => bridgeMocks.onRemoveCard(...args),
@@ -69,6 +86,8 @@ vi.mock('../../lib/tauri-bridge', () => ({
     resolveClose: (...args: unknown[]) => bridgeMocks.resolveClose(...args),
     resolveRenameCard: (...args: unknown[]) => bridgeMocks.resolveRenameCard(...args),
   },
+  mobileBridgeHasSubscribers: (...args: unknown[]) =>
+    bridgeMocks.bridgeHasSubscribers(...args),
   git: {
     worktrees: {
       add: (...args: unknown[]) => bridgeMocks.addWorktree(...args),
@@ -137,10 +156,20 @@ vi.mock('./CreateTerminalDialog', () => ({
 }));
 
 vi.mock('./ProjectSidebar', () => ({
-  ProjectSidebar: ({ onOpenMobileAccess }: { onOpenMobileAccess?: () => void }) => (
+  ProjectSidebar: ({
+    primaryView,
+    onSelectPrimaryView,
+  }: {
+    primaryView?: 'workbench' | 'terminals';
+    onSelectPrimaryView?: (view: 'workbench' | 'terminals') => void;
+  }) => (
     <aside data-testid="mock-project-sidebar">
-      <button type="button" onClick={onOpenMobileAccess}>
-        open mobile access
+      <span data-testid="mock-primary-view">{primaryView}</span>
+      <button type="button" onClick={() => onSelectPrimaryView?.('workbench')}>
+        open workbench
+      </button>
+      <button type="button" onClick={() => onSelectPrimaryView?.('terminals')}>
+        open all terminals
       </button>
     </aside>
   ),
@@ -228,6 +257,20 @@ describe('TerminalManager shortcut hint layout', () => {
     bridgeMocks.tokenStatsOnProgress.mockResolvedValue(() => {});
     bridgeMocks.tokenStatsOnDone.mockResolvedValue(() => {});
     bridgeMocks.tokenStatsOnError.mockResolvedValue(() => {});
+    bridgeMocks.isTauriEnv.mockReturnValue(false);
+    bridgeMocks.onSpawnCard.mockResolvedValue(() => {});
+    bridgeMocks.onActivateCard.mockResolvedValue(() => {});
+    bridgeMocks.onRemoveCard.mockResolvedValue(() => {});
+    bridgeMocks.onRenameCard.mockResolvedValue(() => {});
+    bridgeMocks.bridgeStatus.mockResolvedValue({ running: false });
+    bridgeMocks.bridgeHasSubscribers.mockResolvedValue(false);
+    bridgeMocks.syncCards.mockResolvedValue(undefined);
+    bridgeMocks.syncState.mockResolvedValue(undefined);
+    bridgeMocks.resolveSpawn.mockResolvedValue(undefined);
+    bridgeMocks.resolveActivate.mockResolvedValue(undefined);
+    bridgeMocks.resolveClose.mockResolvedValue(undefined);
+    bridgeMocks.resolveRenameCard.mockResolvedValue(undefined);
+    nativeDialogMocks.confirmDialog.mockResolvedValue(false);
   });
 
   it('opens the native settings window from the toolbar gear', () => {
@@ -238,16 +281,194 @@ describe('TerminalManager shortcut hint layout', () => {
     expect(settingsWindowMocks.openSettingsWindow).toHaveBeenCalledWith('shortcuts');
   });
 
-  it('opens mobile access as a full-width main content view from the sidebar', async () => {
+  it('opens mobile access as a full-width main content view from the toolbar', async () => {
     render(<TerminalManager />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'open mobile access' }));
+    fireEvent.click(screen.getByTitle('移动端'));
 
     const view = await screen.findByTestId('mobile-access-view');
     const content = view.firstElementChild;
 
     expect(content).toHaveClass('w-full');
     expect(content).not.toHaveClass('max-w-3xl');
+  });
+
+  it('syncs cards, notifications, and the global Workbench projection atomically', async () => {
+    bridgeMocks.isTauriEnv.mockReturnValue(true);
+    bridgeMocks.bridgeStatus.mockResolvedValue({ running: true });
+    bridgeMocks.bridgeHasSubscribers.mockResolvedValue(true);
+    const store = useTerminalStore.getState();
+    const cardId = store.createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      worktreePath: '/tmp/repo/.worktrees/mobile',
+      branchLabel: 'mobile',
+      terminalType: 'codex',
+    });
+    store.updateCardStatus(cardId, 'waiting');
+    store.pushNotification({
+      cardId,
+      kind: 'waiting',
+      title: 'Waiting for input',
+      body: 'Choose an option',
+    });
+
+    render(<TerminalManager />);
+
+    await waitFor(() => {
+      expect(bridgeMocks.syncState).toHaveBeenCalled();
+    });
+    const [cards, notifications, workbench] = bridgeMocks.syncState.mock.calls.at(-1) ?? [];
+
+    expect(cards).toEqual([
+      expect.objectContaining({
+        id: cardId,
+        branchLabel: 'mobile',
+        worktreePath: '/tmp/repo/.worktrees/mobile',
+      }),
+    ]);
+    expect(notifications).toEqual([
+      expect.objectContaining({
+        cardId,
+        title: 'Waiting for input',
+        body: 'Choose an option',
+        read: false,
+      }),
+    ]);
+    expect(workbench).toEqual(
+      expect.objectContaining({
+        summary: expect.objectContaining({ attention: 1 }),
+        executionGroups: [
+          expect.objectContaining({
+            worktreePath: '/tmp/repo/.worktrees/mobile',
+            cardIds: [cardId],
+          }),
+        ],
+      }),
+    );
+    expect(bridgeMocks.syncCards).not.toHaveBeenCalled();
+  });
+
+  it('publishes the latest mobile state within one second during continuous terminal activity', async () => {
+    vi.useFakeTimers();
+    bridgeMocks.isTauriEnv.mockReturnValue(true);
+    bridgeMocks.bridgeStatus.mockResolvedValue({ running: true });
+    bridgeMocks.bridgeHasSubscribers.mockResolvedValue(true);
+    const store = useTerminalStore.getState();
+    const cardId = store.createCard({
+      projectName: 'streaming-repo',
+      projectPath: '/tmp/streaming-repo',
+      terminalType: 'codex',
+    });
+    const view = render(<TerminalManager />);
+
+    try {
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(bridgeMocks.bridgeHasSubscribers).toHaveBeenCalled();
+      bridgeMocks.syncState.mockClear();
+
+      for (let index = 0; index < 12; index += 1) {
+        act(() => {
+          useTerminalStore.getState().updateCardOutput(cardId, `chunk-${index}`);
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(90);
+        });
+      }
+
+      expect(bridgeMocks.syncState).toHaveBeenCalled();
+      expect(bridgeMocks.syncState.mock.calls.at(-1)?.[0]).toEqual([
+        expect.objectContaining({
+          id: cardId,
+          lastReplyPreview: expect.stringContaining('chunk-11'),
+        }),
+      ]);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses Workbench as the default page and navigates to All terminals without remounting it', async () => {
+    render(<TerminalManager />);
+
+    expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workbench');
+    expect(screen.getByTestId('workbench-view').closest('[aria-hidden]')).toHaveAttribute(
+      'aria-hidden',
+      'false',
+    );
+    expect(screen.getByTestId('mock-card-grid').closest('[aria-hidden]')).toHaveAttribute(
+      'aria-hidden',
+      'true',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'open all terminals' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('terminals');
+      expect(screen.getByTestId('mock-card-grid').closest('[aria-hidden]')).toHaveAttribute(
+        'aria-hidden',
+        'false',
+      );
+    });
+    expect(screen.getByTestId('workbench-view')).toBeInTheDocument();
+  });
+
+  it('returns a focused terminal to the Workbench when it was opened there', async () => {
+    const id = useTerminalStore.getState().createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+
+    render(<TerminalManager />);
+
+    act(() => {
+      useTerminalStore.getState().focusCard(id);
+    });
+    expect(await screen.findByTestId('mock-shell')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('返回网格（⌘/Ctrl+Shift+M）'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workbench');
+      expect(screen.getByTestId('workbench-view').closest('[aria-hidden]')).toHaveAttribute(
+        'aria-hidden',
+        'false',
+      );
+    });
+    expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
+  });
+
+  it('returns a focused terminal to All terminals when it was opened there', async () => {
+    const id = useTerminalStore.getState().createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+
+    render(<TerminalManager />);
+    fireEvent.click(screen.getByRole('button', { name: 'open all terminals' }));
+
+    act(() => {
+      useTerminalStore.getState().focusCard(id);
+    });
+    expect(await screen.findByTestId('mock-shell')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('返回网格（⌘/Ctrl+Shift+M）'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('terminals');
+      expect(screen.getByTestId('mock-card-grid').closest('[aria-hidden]')).toHaveAttribute(
+        'aria-hidden',
+        'false',
+      );
+    });
+    expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
   });
 
   it('keeps the shortcut hint above the focused terminal footer', async () => {
@@ -280,6 +501,7 @@ describe('TerminalManager shortcut hint layout', () => {
     });
 
     render(<TerminalManager />);
+    fireEvent.click(screen.getByRole('button', { name: 'open all terminals' }));
 
     await waitFor(() => screen.getByTestId('shortcut-hint-dismiss'));
     fireEvent.click(screen.getByTestId('shortcut-hint-dismiss'));
@@ -295,11 +517,13 @@ describe('TerminalManager shortcut hint layout', () => {
     });
 
     const { unmount } = render(<TerminalManager />);
+    fireEvent.click(screen.getByRole('button', { name: 'open all terminals' }));
     await waitFor(() => screen.getByTestId('shortcut-hint-dismiss'));
     fireEvent.click(screen.getByTestId('shortcut-hint-dismiss'));
     unmount();
 
     render(<TerminalManager />);
+    fireEvent.click(screen.getByRole('button', { name: 'open all terminals' }));
     expect(screen.queryByTestId('shortcut-hint-dismiss')).toBeNull();
   });
 
@@ -487,7 +711,7 @@ describe('TerminalManager shortcut hint layout', () => {
     await waitFor(() => {
       expect(
         document.querySelector(
-          '[data-terminal-context-menu][title="/tmp/repo/README.md"] .bg-amber-400',
+          '[data-terminal-context-menu][title="/tmp/repo/README.md"] .bg-warning',
         ),
       ).not.toBeNull();
     });
@@ -529,6 +753,116 @@ describe('TerminalManager shortcut hint layout', () => {
       'false',
     );
     expect(bridgeMocks.readFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a dirty Workspace draft and card when removal is cancelled', async () => {
+    const store = useTerminalStore.getState();
+    const cardId = store.createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+    store.focusCard(cardId);
+    render(<TerminalManager />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'README.md' }));
+    fireEvent.change(await screen.findByLabelText('code editor'), {
+      target: { value: 'unsaved draft' },
+    });
+    nativeDialogMocks.confirmDialog.mockResolvedValueOnce(false);
+
+    let removed = true;
+    await act(async () => {
+      removed = await window.__terminalManager!.requestRemoveCard(cardId);
+    });
+
+    expect(removed).toBe(false);
+    expect(nativeDialogMocks.confirmDialog).toHaveBeenCalledTimes(1);
+    expect(useTerminalStore.getState().cards.some((card) => card.id === cardId)).toBe(true);
+    expect(screen.getByLabelText('code editor')).toHaveValue('unsaved draft');
+  });
+
+  it('discards a dirty Workspace draft only after archive confirmation', async () => {
+    const store = useTerminalStore.getState();
+    const cardId = store.createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+    store.focusCard(cardId);
+    render(<TerminalManager />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'README.md' }));
+    fireEvent.change(await screen.findByLabelText('code editor'), {
+      target: { value: 'discard me' },
+    });
+    nativeDialogMocks.confirmDialog.mockResolvedValueOnce(true);
+
+    let archived = false;
+    await act(async () => {
+      archived = await window.__terminalManager!.requestArchiveCard(cardId);
+    });
+
+    expect(archived).toBe(true);
+    expect(nativeDialogMocks.confirmDialog).toHaveBeenCalledTimes(1);
+    expect(useTerminalStore.getState().cards).toHaveLength(0);
+    expect(useTerminalStore.getState().archivedCards.map((card) => card.id)).toEqual([cardId]);
+    expect(screen.queryByLabelText('code editor')).toBeNull();
+  });
+
+  it('removes a clean card without prompting', async () => {
+    const cardId = useTerminalStore.getState().createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+    render(<TerminalManager />);
+
+    let removed = false;
+    await act(async () => {
+      removed = await window.__terminalManager!.requestRemoveCard(cardId);
+    });
+
+    expect(removed).toBe(true);
+    expect(nativeDialogMocks.confirmDialog).not.toHaveBeenCalled();
+    expect(useTerminalStore.getState().cards).toHaveLength(0);
+  });
+
+  it('reports a cancelled mobile close without dropping a dirty draft', async () => {
+    bridgeMocks.isTauriEnv.mockReturnValue(true);
+    const store = useTerminalStore.getState();
+    const cardId = store.createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+    store.focusCard(cardId);
+    render(<TerminalManager />);
+
+    await waitFor(() => expect(bridgeMocks.onRemoveCard).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByRole('button', { name: 'README.md' }));
+    fireEvent.change(await screen.findByLabelText('code editor'), {
+      target: { value: 'mobile-safe draft' },
+    });
+    nativeDialogMocks.confirmDialog.mockResolvedValueOnce(false);
+    const onRemove = bridgeMocks.onRemoveCard.mock.calls[0]?.[0] as
+      | ((payload: { requestId: string; cardId: string }) => Promise<void>)
+      | undefined;
+    expect(onRemove).toBeTypeOf('function');
+
+    await act(async () => {
+      await onRemove?.({ requestId: 'close-1', cardId });
+    });
+
+    expect(bridgeMocks.resolveClose).toHaveBeenCalledWith({
+      requestId: 'close-1',
+      ok: false,
+      cardId,
+      errorCode: 'user_cancelled',
+      message: 'Close cancelled.',
+    });
+    expect(useTerminalStore.getState().cards.some((card) => card.id === cardId)).toBe(true);
+    expect(screen.getByLabelText('code editor')).toHaveValue('mobile-safe draft');
   });
 
   it('supports workspace tab context close actions without closing the terminal tab', async () => {

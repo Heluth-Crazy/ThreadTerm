@@ -22,10 +22,11 @@ import { confirmDialog } from '../../lib/nativeDialog';
 import LanguageSelector from './LanguageSelector';
 import KeyboardShortcutsSettings from './KeyboardShortcutsSettings';
 import { NotificationSettings } from './NotificationSettings';
-import { DesktopPetSettings } from './DesktopPetSettings';
+import { NotificationPreferenceSettings } from './NotificationPreferenceSettings';
 import OverlayHotkeysSettings from './OverlayHotkeysSettings';
 import { SettingsDataIO } from './SettingsDataIO';
 import { SupervisorSettings } from './SupervisorSettings';
+import { SettingsSection } from './SettingsSection';
 import type { ThemeMode, ThemePack } from '../../theme/themeTypes';
 
 const TABS = ['appearance', 'shortcuts', 'supervisor', 'data'] as const;
@@ -79,14 +80,14 @@ function Settings({
 
   const containerClassName = embedded
     ? 'h-full overflow-y-auto bg-background'
-    : 'modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/40 backdrop-blur-md p-4';
+    : 'modal-backdrop fixed inset-0 z-modal flex items-center justify-center bg-background/40 backdrop-blur-md p-4';
   const panelClassName = embedded
     ? 'mx-auto flex h-full w-full max-w-5xl flex-col bg-background'
-    : 'flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-[var(--radius)] border border-white/10 bg-background/80 backdrop-blur-2xl shadow-studio glass-reflection md:h-[86vh]';
+    : 'flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-border bg-background/80 backdrop-blur-2xl shadow-studio glass-reflection md:h-[86vh]';
   const contentPadding = embedded ? 'px-4 py-4 sm:px-6 lg:px-8' : 'p-4 md:p-6';
 
   const tabButtonClassName = (tab: SettingsTab) => [
-    'inline-flex items-center gap-2 rounded-[var(--radius)] px-3 py-2 text-sm font-medium transition-colors',
+    'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
     activeTab === tab
       ? 'bg-background text-foreground shadow-sm'
       : 'text-muted-foreground hover:text-foreground',
@@ -165,9 +166,9 @@ function Settings({
   return (
     <div className={containerClassName}>
       <div className={panelClassName}>
-        <div className="flex shrink-0 items-center justify-between border-b border-white/5 p-4 md:p-6 backdrop-blur-md bg-white/5">
+        <div className="flex shrink-0 items-center justify-between border-b border-border p-4 md:p-6 backdrop-blur-md bg-card/80">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-[var(--radius)] bg-muted text-foreground">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-foreground">
               <SettingsIcon className="h-5 w-5" />
             </div>
             <div>
@@ -183,7 +184,7 @@ function Settings({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-[var(--radius)] p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
               aria-label={t('close', 'Close settings')}
             >
               <X className="h-5 w-5" />
@@ -191,8 +192,8 @@ function Settings({
           )}
         </div>
 
-        <div className="border-b border-white/5 px-4 py-2 md:px-6 backdrop-blur-sm bg-white/5 overflow-x-auto no-scrollbar">
-          <div className="inline-flex min-w-full sm:min-w-0 rounded-[var(--radius)] border border-white/10 bg-white/5 p-1">
+        <div className="border-b border-border px-4 py-2 md:px-6 backdrop-blur-sm bg-card/80 overflow-x-auto no-scrollbar">
+          <div className="inline-flex min-w-full sm:min-w-0 rounded-lg border border-border bg-muted/50 p-1">
             <button
               type="button"
               onClick={() => setActiveTab('appearance')}
@@ -232,7 +233,7 @@ function Settings({
           <div className={contentPadding}>
             {activeTab === 'appearance' && (
               <div className="space-y-5">
-                <section className="rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
+                <SettingsSection>
                   <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                     <div>
                       <div className="font-medium text-foreground">
@@ -242,14 +243,14 @@ function Settings({
                         {t('appearanceSettings.mode.description')}
                       </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-2 rounded-[var(--radius)] border border-white/10/70 bg-muted/50 p-1">
+                    <div className="grid grid-cols-3 gap-2 rounded-lg border border-border bg-muted/50 p-1">
                       {modeOptions.map(({ id, icon: Icon }) => (
                         <button
                           key={id}
                           type="button"
                           onClick={() => setThemeMode(id)}
                           className={[
-                            'inline-flex items-center justify-center gap-2 rounded-[var(--radius)] px-3 py-2 text-sm font-medium transition-colors',
+                            'inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
                             themeMode === id
                               ? 'bg-background text-foreground shadow-sm'
                               : 'text-muted-foreground hover:text-foreground',
@@ -262,9 +263,9 @@ function Settings({
                       ))}
                     </div>
                   </div>
-                </section>
+                </SettingsSection>
 
-                <section className="rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
+                <SettingsSection>
                   <div className="mb-4 flex flex-col gap-3 md:flex-row md:flex-wrap md:items-start md:justify-between">
                     <div>
                       <div className="font-medium text-foreground">
@@ -285,7 +286,7 @@ function Settings({
                       <button
                         type="button"
                         onClick={() => themeFileInputRef.current?.click()}
-                        className="inline-flex items-center gap-2 rounded-[var(--radius)] border border-white/10 bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
+                        className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
                       >
                         <Upload className="h-4 w-4" />
                         {t('appearanceSettings.themePack.importJson')}
@@ -293,7 +294,7 @@ function Settings({
                       <button
                         type="button"
                         onClick={() => downloadThemePack(themePackId)}
-                        className="inline-flex items-center gap-2 rounded-[var(--radius)] border border-white/10 bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
+                        className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent"
                       >
                         <Download className="h-4 w-4" />
                         {t('appearanceSettings.themePack.exportCurrent')}
@@ -302,7 +303,7 @@ function Settings({
                     {themeImportStatus && (
                       <div
                         className={[
-                          'basis-full rounded-[var(--radius)] border px-3 py-2 text-sm',
+                          'basis-full rounded-lg border px-3 py-2 text-sm',
                           themeImportStatus.type === 'error'
                             ? 'border-destructive/40 bg-destructive/10 text-destructive'
                             : 'border-primary/30 bg-primary/10 text-foreground',
@@ -349,24 +350,24 @@ function Settings({
                             }
                           }}
                           className={[
-                            'group flex h-full min-h-[320px] flex-col rounded-[var(--radius)] border p-3 text-left transition-all',
+                            'group flex h-full min-h-[320px] flex-col rounded-lg border p-3 text-left transition-all',
                             isActive
-                              ? 'border-primary/50 bg-primary/5 shadow-[0_0_20px_rgba(var(--primary),0.1)] ring-1 ring-primary/20'
-                              : 'border-white/5 bg-white/5 hover:border-white/20 hover:bg-white/10',
+                              ? 'border-primary/50 bg-primary/5 shadow-[0_0_20px_hsl(var(--primary)/0.1)] ring-1 ring-primary/20'
+                              : 'border-border bg-card/80 hover:border-primary/40 hover:bg-accent',
                           ].join(' ')}
                           aria-pressed={isActive}
                         >
                           <div className="flex min-h-[76px] items-start justify-between gap-3">
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2">
-                                <span className="text-sm font-semibold text-foreground">{pack.name}</span>
+                                <span className="min-w-0 truncate text-sm font-semibold text-foreground">{pack.name}</span>
                                 {!pack.modes.light && (
-                                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                                     {t('appearanceSettings.themePack.darkOnly')}
                                   </span>
                                 )}
                                 {pack.isCustom && (
-                                  <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-primary">
+                                  <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-primary">
                                     {t('appearanceSettings.themePack.custom')}
                                   </span>
                                 )}
@@ -382,20 +383,20 @@ function Settings({
                                 'flex h-6 w-6 shrink-0 items-center justify-center rounded-full border',
                                 isActive
                                   ? 'border-primary bg-primary text-primary-foreground'
-                                  : 'border-white/10 bg-white/5 backdrop-blur-md text-transparent',
+                                  : 'border-border bg-card/80 backdrop-blur-md text-transparent',
                               ].join(' ')}
                             >
                               <Check className="h-3.5 w-3.5" />
                             </span>
                           </div>
 
-                          <div className="mt-auto overflow-hidden rounded-[var(--radius)] border border-white/10">
+                          <div className="mt-auto overflow-hidden rounded-lg border border-border">
                             <div
                               className="flex h-12 items-center gap-2 px-3"
                               style={{ backgroundColor: tokens.app.background, color: tokens.app.foreground }}
                             >
                               <span
-                                className="h-6 w-10 rounded-[var(--radius-md)] border"
+                                className="h-6 w-10 rounded-md border"
                                 style={{
                                   backgroundColor: tokens.app.card,
                                   borderColor: tokens.app.border,
@@ -409,7 +410,7 @@ function Settings({
                                 className="h-6 w-6 rounded-full"
                                 style={{ backgroundColor: tokens.app.accent }}
                               />
-                              <span className="ml-auto text-[10px] font-medium opacity-80">
+                              <span className="ml-auto text-[11px] font-medium opacity-80">
                                 {previewMode === 'dark'
                                   ? t('appearanceSettings.mode.options.dark')
                                   : t('appearanceSettings.mode.options.light')}
@@ -436,7 +437,7 @@ function Settings({
                                   style={{ backgroundColor: color }}
                                 />
                               ))}
-                              <span className="ml-auto font-mono text-[10px] opacity-80">xterm</span>
+                              <span className="ml-auto font-mono text-[11px] opacity-80">xterm</span>
                             </div>
                           </div>
 
@@ -460,7 +461,7 @@ function Settings({
                             <button
                               type="button"
                               onClick={(event) => handleDeleteCustomTheme(event, pack)}
-                              className="mt-2 inline-flex w-fit items-center gap-1 rounded-[var(--radius-md)] px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/10"
+                              className="mt-2 inline-flex w-fit items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/10"
                             >
                               <Trash2 className="h-3 w-3" />
                               {t('appearanceSettings.themePack.delete')}
@@ -470,7 +471,7 @@ function Settings({
                       );
                     })}
                   </div>
-                </section>
+                </SettingsSection>
 
                 <LanguageSelector />
               </div>
@@ -479,7 +480,7 @@ function Settings({
             {activeTab === 'shortcuts' && (
               <div className="space-y-6">
                 <NotificationSettings />
-                <DesktopPetSettings />
+                <NotificationPreferenceSettings />
                 <OverlayHotkeysSettings />
                 <KeyboardShortcutsSettings />
               </div>

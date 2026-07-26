@@ -25,6 +25,7 @@ import {
 } from '../../lib/tauri-bridge';
 import { confirmDialog } from '../../lib/nativeDialog';
 import { cn } from '../../lib/utils';
+import { IconButton } from '../ui/icon-button';
 import { basename, type DirEntry } from './fileMeta';
 
 type TerminalTranslator = ReturnType<typeof useTranslation>['t'];
@@ -133,23 +134,25 @@ export function WorkspaceFileEditorView({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
-      <div className="flex min-h-[38px] items-center gap-2 border-b border-white/10 px-3 py-1.5">
+      <div className="flex min-h-[38px] items-center gap-2 border-b border-border px-3 py-1.5">
         <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <div className="truncate font-mono text-[12px] text-foreground/90">
+          <div className="truncate font-mono text-xs text-foreground/90">
             {openFile ? basename(openFile.path) : basename(path)}
           </div>
-          <div className="truncate font-mono text-[10px] text-muted-foreground" title={path}>
+          <div className="truncate font-mono text-[11px] text-muted-foreground" title={path}>
             {path}
           </div>
         </div>
         {isDirty && (
-          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
+          <span className="rounded bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning">
             {t('workspace.unsaved', { defaultValue: 'Unsaved' })}
           </span>
         )}
         <IconButton
           title={t('workspace.reload', { defaultValue: 'Reload' })}
+          size="sm"
+          className="text-muted-foreground"
           disabled={loading || saving}
           onClick={() => void reloadFile()}
         >
@@ -157,6 +160,8 @@ export function WorkspaceFileEditorView({
         </IconButton>
         <IconButton
           title={t('workspace.save', { defaultValue: 'Save' })}
+          size="sm"
+          className="text-muted-foreground"
           disabled={loading || saving || !isDirty}
           onClick={() => void saveFile()}
         >
@@ -194,12 +199,12 @@ export function WorkspaceFileEditorView({
               onSave={saveFile}
             />
           </Suspense>
-          <div className="flex items-center gap-2 border-t border-white/10 px-3 py-1.5 text-[11px] text-muted-foreground">
+          <div className="flex items-center gap-2 border-t border-border px-3 py-1.5 text-[11px] text-muted-foreground">
             <span>{formatBytes(openFile.sizeBytes)}</span>
             {openFile.modifiedUnixMs && (
               <span>{new Date(openFile.modifiedUnixMs).toLocaleString()}</span>
             )}
-            {status && <span className="ml-auto text-emerald-400">{status}</span>}
+            {status && <span className="ml-auto text-success">{status}</span>}
           </div>
         </>
       ) : (
@@ -319,19 +324,19 @@ export function WorkspaceDiffView({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
-      <div className="flex min-h-[38px] items-center gap-2 border-b border-white/10 px-3 py-1.5">
+      <div className="flex min-h-[38px] items-center gap-2 border-b border-border px-3 py-1.5">
         <GitCompare className="h-4 w-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <div className="truncate font-mono text-[12px] text-foreground/90">{basename(change.path)}</div>
+          <div className="truncate font-mono text-xs text-foreground/90">{basename(change.path)}</div>
           <div
-            className="truncate font-mono text-[10px] text-muted-foreground"
+            className="truncate font-mono text-[11px] text-muted-foreground"
             title={`${change.path} · ${change.repositoryRoot}`}
           >
             {change.path} · {change.repositoryRoot}
           </div>
         </div>
         {isDirty && (
-          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
+          <span className="rounded bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning">
             {t('workspace.unsaved', { defaultValue: 'Unsaved' })}
           </span>
         )}
@@ -344,6 +349,8 @@ export function WorkspaceDiffView({
         </button>
         <IconButton
           title={t('workspace.reload', { defaultValue: 'Reload' })}
+          size="sm"
+          className="text-muted-foreground"
           disabled={loading || saving}
           onClick={() => void reloadDiff()}
         >
@@ -351,6 +358,8 @@ export function WorkspaceDiffView({
         </IconButton>
         <IconButton
           title={t('workspace.save', { defaultValue: 'Save' })}
+          size="sm"
+          className="text-muted-foreground"
           disabled={loading || saving || !isDirty}
           onClick={() => void saveDiff()}
         >
@@ -387,9 +396,9 @@ export function WorkspaceDiffView({
               onStatus={setStatus}
             />
           </div>
-          <div className="flex items-center gap-2 border-t border-white/10 px-3 py-1.5 text-[11px] text-muted-foreground">
+          <div className="flex items-center gap-2 border-t border-border px-3 py-1.5 text-[11px] text-muted-foreground">
             <span>{t('workspace.diffDraftHint', { defaultValue: 'Diff edits are saved to the working tree.' })}</span>
-            {status && <span className="ml-auto text-emerald-400">{status}</span>}
+            {status && <span className="ml-auto text-success">{status}</span>}
           </div>
         </>
       ) : (
@@ -468,23 +477,23 @@ function DiffBlock({
       : t('workspace.unstagedDiff', { defaultValue: 'Unstaged diff' });
 
   return (
-    <section className="flex h-[min(72vh,760px)] min-h-[420px] flex-col overflow-hidden rounded border border-white/10 bg-black/15">
-      <div className="flex items-center gap-2 border-b border-white/10 px-3 py-1.5 text-[11px] font-medium text-muted-foreground">
+    <section className="flex h-[min(72vh,760px)] min-h-[420px] flex-col overflow-hidden rounded border border-border bg-black/15">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-[11px] font-medium text-muted-foreground">
         <span>{title}</span>
-        <span className={cn('rounded px-1.5 py-0.5 text-[10px]', section.editable ? 'bg-emerald-500/10 text-emerald-300' : 'bg-muted/40 text-muted-foreground')}>
+        <span className={cn('rounded px-1.5 py-0.5 text-[11px]', section.editable ? 'bg-success/10 text-success' : 'bg-muted/40 text-muted-foreground')}>
           {section.editable
             ? t('workspace.diffEditable', { defaultValue: 'Editable' })
             : t('workspace.diffReadOnly', { defaultValue: 'Read-only' })}
         </span>
       </div>
-      <div className="grid grid-cols-[minmax(0,1fr)_1.75rem_minmax(0,1fr)] border-b border-white/10 bg-muted/20 text-[10px] font-medium text-muted-foreground">
-        <div className="border-r border-white/10 px-3 py-1">{section.baseLabel}</div>
-        <div className="border-r border-white/10" aria-hidden />
+      <div className="grid grid-cols-[minmax(0,1fr)_1.75rem_minmax(0,1fr)] border-b border-border bg-muted/20 text-[11px] font-medium text-muted-foreground">
+        <div className="border-r border-border px-3 py-1">{section.baseLabel}</div>
+        <div className="border-r border-border" aria-hidden />
         <div className="px-3 py-1">{section.currentLabel}</div>
       </div>
       <Suspense
         fallback={
-          <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-[12px] text-muted-foreground/75">
+          <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-xs text-muted-foreground/75">
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>{t('workspace.loadingEditor', { defaultValue: 'Loading editor...' })}</span>
           </div>
@@ -537,38 +546,13 @@ function PanelMessage({
   return (
     <div
       className={cn(
-        'flex h-full min-h-[160px] items-center justify-center gap-2 px-4 text-center text-[12px]',
+        'flex h-full min-h-[160px] items-center justify-center gap-2 px-4 text-center text-xs',
         tone === 'error' ? 'text-destructive' : 'text-muted-foreground/75',
       )}
     >
       {icon}
       <span>{children}</span>
     </div>
-  );
-}
-
-function IconButton({
-  title,
-  disabled,
-  onClick,
-  children,
-}: {
-  title: string;
-  disabled?: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      disabled={disabled}
-      onClick={onClick}
-      className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45"
-    >
-      {children}
-    </button>
   );
 }
 

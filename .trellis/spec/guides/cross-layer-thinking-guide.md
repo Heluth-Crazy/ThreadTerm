@@ -149,3 +149,79 @@ non-English UI.
 namespace file (`supervisor.json`), do not also stash copies of the same keys
 under `settings.json` "for fallback". Dead duplicate keys rot — they get
 edited in one place and not the other, then someone wires up the wrong one.
+
+---
+
+## Gotcha: Identity Repair Must Not Become Data Replacement
+
+**Problem**: A persisted external id can point to a non-interactive child,
+alias, or stale record. Treating validation failure as permission to clear the
+id and create a new entity destroys the user's intent while making the UI look
+successful.
+
+**Prevention checklist**:
+- [ ] Decide whether the id is invalid, or whether it can be canonicalized to
+      an ancestor/root id.
+- [ ] Return the canonical identity across the backend/frontend boundary; do
+      not reduce resolution to a boolean when the caller needs the replacement
+      id.
+- [ ] On missing/error results, preserve the original identity, block the
+      destructive fallback, surface the state, and offer retry.
+- [ ] Test the full restore-to-open path, including the exact command or API
+      invoked—not only parser and command-builder units.
+- [ ] If two UI modes own different persistence domains, make restored state
+      select the mode that owns that history.
+
+Concrete Codex rules and test points live in
+[`../backend/provider-session-resume.md`](../backend/provider-session-resume.md).
+
+---
+
+## Gotcha: Alternative Evidence Must Stay Alternative
+
+**Problem**: A producer can represent the same semantic transition through
+different fields. For example, terminal completion is either a physical
+`completed` card state or an unread `completed` notification after the common
+`running -> idle` reply transition. A consumer that accidentally requires both
+signals drops valid items between layers.
+
+**Prevention checklist**:
+- [ ] Write multi-source contracts explicitly as AND/OR truth tables before
+      implementing the projection.
+- [ ] Trace at least one real transition for every producer shape, including
+      the final status after transient states settle.
+- [ ] Add a composed regression that feeds producer output into the consumer;
+      isolated producer and consumer unit tests are not sufficient.
+- [ ] Test acknowledgement/recovery separately so broadening admission does
+      not make stale items permanent.
+
+Concrete Workbench completion rules and transition assertions live in
+[`../frontend/quality-guidelines.md`](../frontend/quality-guidelines.md).
+
+---
+
+## Gotcha: Transport Frequency Is Not Semantic Event Identity
+
+**Problem**: Multiple producers can describe one user-facing event, and a
+terminal TUI can redraw the same prompt indefinitely. Per-source cooldowns
+reduce frequency but do not identify whether the user has a new interaction.
+Once the cooldown expires, the same prompt becomes a duplicate side effect.
+
+**Prevention checklist**:
+- [ ] Inventory every producer and every side-effect sink before changing
+      notification, sound, badge, or auto-open behavior.
+- [ ] Give events a semantic episode key (for example card + user-submit
+      generation) and a stable producer fingerprint; do not use elapsed time or
+      random transport ids as identity.
+- [ ] Keep source evidence in its authoritative stores, then coordinate the
+      external side effect once at a single boundary.
+- [ ] Define precedence for structured and heuristic sources, and test them
+      arriving together—not only in isolated unit tests.
+- [ ] When Rust adds event metadata, use additive camelCase payload fields and
+      keep the TypeScript field optional for mixed-version/persisted consumers.
+- [ ] Recheck mutable delivery conditions such as focus and preferences when a
+      delayed candidate actually flushes, and dispose every pending timer.
+
+Concrete OS notification routing, visibility, and regression-test contracts
+live in
+[`../frontend/quality-guidelines.md`](../frontend/quality-guidelines.md).

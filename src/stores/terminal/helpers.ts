@@ -20,6 +20,7 @@ import { orderCardsByIdList } from '../../lib/cardSort';
 import { cardMatchesWorktree } from '../../lib/worktreePaths';
 import type { ArchivedTerminalCard, TerminalStore } from './types';
 import { MAX_RECENTLY_VIEWED_CARDS } from './types';
+export { stripAnsi } from '../../lib/ansiText';
 
 export function uid(): string {
   // Not security-sensitive; time + random is plenty.
@@ -51,33 +52,6 @@ export function tailJoin(buffer: string, chunk: string, limit: number): string {
   const next = buffer + chunk;
   if (next.length <= limit) return next;
   return next.slice(next.length - limit);
-}
-
-// Strip ANSI escape sequences and non-printable control characters so the
-// preview on cards stays readable. Handles:
-//   • CSI  ESC [ ... final-byte         (cursor moves, SGR, erase, DECSET/DECRST...)
-//   • OSC  ESC ] ... (BEL | ESC \)      (titles, hyperlinks)
-//   • DCS / SOS / PM / APC              (similar structure to OSC)
-//   • 2-byte ESC sequences  ESC <single>
-//   • single-char C0 controls           (keeping \t \n)
-//   • DEL (0x7f) and all C1 controls (0x80-0x9f)
-/* eslint-disable no-control-regex */
-const ANSI_RE = new RegExp(
-  [
-    // CSI sequences (ESC [ ... with optional private markers + intermediates + final)
-    '\\x1b\\[[0-?]*[ -/]*[@-~]',
-    // OSC / DCS / SOS / PM / APC — terminated by BEL or ST (ESC \)
-    '\\x1b[\\]PX^_][^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)',
-    // Escape sequences per VT100 spec: ESC (intermediate 0x20-0x2F)* (final 0x30-0x7E)
-    '\\x1b[\\x20-\\x2f]*[\\x30-\\x7e]',
-  ].join('|'),
-  'g',
-);
-const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
-/* eslint-enable no-control-regex */
-
-export function stripAnsi(input: string): string {
-  return input.replace(ANSI_RE, '').replace(CONTROL_RE, '').replace(/\r/g, '');
 }
 
 export function isProviderSessionType(type: TerminalCard['terminalType']): boolean {

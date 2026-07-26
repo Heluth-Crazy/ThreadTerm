@@ -38,7 +38,7 @@ export function TileMode({ cards, selectedIndex, onSelect, onConfirm }: TileMode
   if (n === 0) {
     return (
       <div className="flex h-full w-full items-center justify-center">
-        <div className="rounded-2xl border border-white/10 bg-black/40 px-8 py-6 text-center text-white/80 backdrop-blur-md">
+        <div className="rounded-2xl border border-border bg-card/80 px-8 py-6 text-center text-card-foreground backdrop-blur-md">
           <div className="text-lg font-semibold">{t('selector.emptyTitle')}</div>
           <div className="mt-2 text-sm opacity-80">
             {t('selector.emptyDescription')}

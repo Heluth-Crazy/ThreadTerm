@@ -20,6 +20,7 @@ export interface CardMeta {
   projectPath: string;
   projectName: string;
   worktreePath?: string | null;
+  branchLabel?: string | null;
   terminalType?: string | null;
   command?: string | null;
   createdAt?: number | null;
@@ -42,12 +43,106 @@ export interface NotificationEntry {
   kind: string;
   message: string;
   createdAt: number;
+  title?: string;
+  body?: string;
+  read?: boolean;
+  routing?: {
+    origin: string;
+    family: string;
+    episodeKey?: string | null;
+    fingerprint?: string | null;
+  } | null;
+}
+
+export type MobileAttentionKind =
+  | 'approval'
+  | 'waiting_input'
+  | 'failed'
+  | 'review'
+  | 'stalled';
+
+export type MobileAttentionSeverity = 'info' | 'warning' | 'critical';
+
+export type MobileExecutionContextStatus =
+  | 'failed'
+  | 'attention'
+  | 'stalled'
+  | 'running'
+  | 'review'
+  | 'idle';
+
+export interface MobileAttentionItem {
+  id: string;
+  cardId: string;
+  kind: MobileAttentionKind;
+  severity: MobileAttentionSeverity;
+  sourceKind: string;
+  sourceId: string;
+  occurredAt: number;
+  projectPath: string;
+  projectName: string;
+  worktreePath?: string | null;
+  branchLabel?: string | null;
+  terminalType: string;
+  title: string;
+  detail?: string | null;
+  reasonCode: string;
+  capability: {
+    openRequest: boolean;
+    openTerminal: boolean;
+    openNotification: boolean;
+    openEvidence: boolean;
+  };
+}
+
+export interface MobileExecutionGroup {
+  id: string;
+  projectPath: string;
+  projectName: string;
+  worktreePath: string;
+  branchLabel?: string | null;
+  cardIds: string[];
+  terminalCount: number;
+  terminalTypes: string[];
+  attentionCount: number;
+  status: MobileExecutionContextStatus;
+  terminalStatuses: string[];
+  lastActivity: number;
+  preview?: string | null;
+}
+
+export interface MobileWorkbenchProjection {
+  generatedAt: number;
+  summary: {
+    attention: number;
+    normalRunning: number;
+    review: number;
+    failed: number;
+  };
+  attentionItems: MobileAttentionItem[];
+  executionGroups: MobileExecutionGroup[];
+  rules: {
+    includeWaiting: boolean;
+    includeFailed: boolean;
+    includeCompletedReview: boolean;
+    stalledEnabled: boolean;
+    stalledThresholdMinutes: number;
+    stalledExcludedCount: number;
+  };
+  capabilities: {
+    openTerminal: boolean;
+    respondToStructuredRequest: boolean;
+    updateRules: boolean;
+    updateNotificationReadState: boolean;
+  };
 }
 
 export interface TerminalSnapshotMessage {
   cardId: string;
   data: string;
   seq: number;
+  runtimeId?: string;
+  streamSeq?: number;
   rows: number;
   cols: number;
   cursorRow: number;
@@ -73,6 +168,7 @@ export type ClientCommand =
   | { kind: 'set_intent'; card_id: string; intent: string | null }
   | { kind: 'mark_read'; card_id: string }
   | { kind: 'rename_card'; request_id: string; card_id: string; project_name: string }
+  | { kind: 'terminal_resync' }
   | { kind: 'ping' };
 
 export type ClientMessage = VersionedBridgeMessage & ClientCommand;
@@ -89,6 +185,7 @@ export const CLIENT_MESSAGE_KINDS = [
   'set_intent',
   'mark_read',
   'rename_card',
+  'terminal_resync',
   'ping',
 ] as const satisfies readonly ClientCommand['kind'][];
 
@@ -97,7 +194,10 @@ export type ServerCommand =
       kind: 'snapshot';
       cards: CardMeta[];
       notifications: NotificationEntry[];
+      workbench?: MobileWorkbenchProjection | null;
       warmingUp?: boolean;
+      runtimeId?: string;
+      streamSeq?: number;
     }
   | { kind: 'card_added' | 'card_updated' | 'card_removed'; card: CardMeta }
   | {
@@ -108,7 +208,14 @@ export type ServerCommand =
       hidden_line_count: number;
     }
   | { kind: 'terminal_snapshot'; snapshot: TerminalSnapshotMessage }
-  | { kind: 'terminal_output'; card_id: string; data: string; seq: number }
+  | {
+      kind: 'terminal_output';
+      card_id: string;
+      data: string;
+      seq: number;
+      runtimeId?: string;
+      streamSeq?: number;
+    }
   | {
       kind: 'theme';
       app: AppThemeTokens;

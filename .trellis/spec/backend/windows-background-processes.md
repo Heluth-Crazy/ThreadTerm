@@ -84,6 +84,91 @@ let child = command.spawn()?;
 
 ---
 
+## Scenario: Synchronous Background Discovery Commands Stay Invisible
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing a synchronous `std::process::Command` used only
+  to discover repository or executable metadata in the desktop backend.
+- Applies to the Git readers in `src-tauri/src/git.rs` and the Windows shell
+  probe in `src-tauri/src/pty/shell.rs`.
+- Does not apply to interactive terminal cards or commands intentionally opened
+  for the user.
+
+### 2. Signatures
+
+- `git_command() -> std::process::Command`
+- `which_exists(name: &str) -> bool`
+- Windows process flag: `CREATE_NO_WINDOW = 0x0800_0000`.
+
+### 3. Contracts
+
+- All production Git reads and worktree commands in `git.rs` must construct the
+  child through `git_command()`; do not add a new raw
+  `Command::new("git")` call in production code.
+- `git_command()` changes only the Windows creation flag. Program lookup,
+  arguments, working directory, captured output, exit-status handling, and
+  error mapping stay at each caller.
+- `which_exists()` must run `where <name>` with `CREATE_NO_WINDOW` and preserve
+  its current boolean failure fallback.
+- Platform-only imports and constants remain guarded with `#[cfg(windows)]` or
+  `#[cfg(target_os = "windows")]`.
+- Test fixtures may use raw Git commands when they are setting up repositories
+  rather than exercising production command construction.
+
+### 4. Validation & Error Matrix
+
+- Windows Git is present -> the existing Git result is returned without a
+  visible console window.
+- Git is missing -> each caller keeps its existing empty-list or error result;
+  the command builder must not reclassify failures.
+- `where` finds the requested executable -> return `true`.
+- `where` exits non-zero or cannot spawn -> return `false`.
+- Non-Windows build -> compile without importing Windows process extensions and
+  construct the same command as before.
+
+### 5. Good/Base/Bad Cases
+
+- Good: repeated Workbench Git-status polling remains invisible on Windows.
+- Good: the one-time `pwsh` / `powershell` probe does not flash a console.
+- Base: macOS and Linux continue to resolve `git` through `PATH`.
+- Bad: apply `CREATE_NO_WINDOW` to the PTY shell process or change Git stderr
+  handling while fixing a window-flash issue.
+
+### 6. Tests Required
+
+- A Git integration test must exercise a production reader against a temporary
+  repository and assert the returned data remains correct.
+- On Windows, `which_exists("cmd.exe")` must return `true`.
+- Run the Git and shell test modules, full Cargo test, Clippy with warnings
+  denied, Rustfmt check, and `git diff --check`.
+- The lack of a visible console is a Windows smoke-test assertion because
+  `std::process::Command` does not expose configured creation flags for unit
+  inspection.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```rust
+let output = Command::new("git")
+    .args(["status", "--porcelain=v1"])
+    .output()?;
+```
+
+Correct:
+
+```rust
+let output = git_command()
+    .args(["status", "--porcelain=v1"])
+    .output()?;
+```
+
+The correct version centralizes the Windows-only process attribute while
+leaving each Git operation's functional contract at its existing caller.
+
+---
+
 ## Scenario: Background Discovery CLIs Resolve Windows Package Shims Safely
 
 ### 1. Scope / Trigger

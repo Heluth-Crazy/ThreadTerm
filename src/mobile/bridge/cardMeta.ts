@@ -27,6 +27,7 @@ export function cardToMobileMeta(card: TerminalCard): CardMeta {
     projectPath: card.projectPath,
     projectName: card.projectName,
     worktreePath: card.worktreePath ?? null,
+    branchLabel: card.branchLabel ?? null,
     terminalType: card.terminalType,
     command: card.command ?? null,
     createdAt: card.createdAt,

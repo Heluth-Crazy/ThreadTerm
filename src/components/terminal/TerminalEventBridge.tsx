@@ -28,6 +28,7 @@ import {
   disposeHeadless,
   disposeAllHeadless,
   getHeadlessPreviewDiagnostics,
+  readHeadlessPreview,
 } from './headlessPreview';
 import { createCardOutputBuffer } from './outputBuffer';
 import { createOutputAcknowledger } from './outputAcknowledger';
@@ -36,6 +37,11 @@ import { buildCardPreview } from './cardPreview';
 import { getMissingAiCliName } from './providerSession';
 import i18n from '../../i18n/config';
 import { getPendingAutoRestart } from '../../lib/autoRestart';
+import { logger } from '../../lib/logger';
+import {
+  buildInteractionEpisodeKey,
+  normalizeNotificationFingerprint,
+} from '../../lib/osNotificationPolicy';
 
 // Map Rust SessionState → UI TerminalStatus.
 function mapSessionState(state: SessionState): TerminalStatus {
@@ -84,9 +90,15 @@ const SESSION_STATE_SYNC_MS = 5000;
  *  most every OUTPUT_FLUSH_MS per card; the real xterm and the headless
  *  preview emulator still receive every chunk immediately. */
 const OUTPUT_FLUSH_MS = 100;
+const MAX_PENDING_BACKGROUND_OUTPUT_BYTES = 4 * 1024 * 1024;
 
 interface RunningState {
   runningSince: number;
+}
+
+interface AttentionEpisode {
+  generation: number;
+  fingerprints: Set<string>;
 }
 
 export interface TerminalEventBridgeDiagnostics {
@@ -99,6 +111,8 @@ export interface TerminalEventBridgeDiagnostics {
   lastProcessedOutputSeqCount: number;
   autoRestartTimerCount: number;
   pendingBackgroundOutputCount: number;
+  pendingBackgroundOutputBytes: number;
+  backgroundOutputGapCount: number;
 }
 
 const EMPTY_DIAGNOSTICS: TerminalEventBridgeDiagnostics = {
@@ -111,6 +125,8 @@ const EMPTY_DIAGNOSTICS: TerminalEventBridgeDiagnostics = {
   lastProcessedOutputSeqCount: 0,
   autoRestartTimerCount: 0,
   pendingBackgroundOutputCount: 0,
+  pendingBackgroundOutputBytes: 0,
+  backgroundOutputGapCount: 0,
 };
 
 let readBridgeDiagnostics = (): TerminalEventBridgeDiagnostics => ({ ...EMPTY_DIAGNOSTICS });
@@ -125,7 +141,7 @@ function isTransientStatus(status: TerminalStatus): boolean {
 }
 
 export function TerminalEventBridge(): null {
-  const attentionDebounceRef = useRef<Map<string, number>>(new Map());
+  const attentionEpisodesRef = useRef<Map<string, AttentionEpisode>>(new Map());
   /** Per-card state for the Running→Idle reply detector. */
   const runningStateRef = useRef<Map<string, RunningState>>(new Map());
   /** Per-card last reply notification timestamp, for debouncing. */
@@ -150,8 +166,17 @@ export function TerminalEventBridge(): null {
     let cancelled = false;
     let syncInFlight = false;
     let backgroundSnapshotReady = false;
-    const pendingBackgroundOutput: Array<{ id: string; data: string; seq: number }> = [];
-    const attentionDebounce = attentionDebounceRef.current;
+    const pendingBackgroundOutput: Array<{
+      id: string;
+      data: string;
+      seq: number;
+      byteLength: number;
+    }> = [];
+    const droppedBackgroundThrough = new Map<string, number>();
+    let pendingBackgroundOutputBytes = 0;
+    let backgroundOutputGapCount = 0;
+    let lastSnapshotSessionIds = new Set<string>();
+    const attentionEpisodes = attentionEpisodesRef.current;
     const runningState = runningStateRef.current;
     const replyDebounce = replyDebounceRef.current;
     const replyInputCheckpoint = replyInputCheckpointRef.current;
@@ -194,16 +219,21 @@ export function TerminalEventBridge(): null {
       outputAcknowledger.discard(runtime.ptyId);
       lastOutputSeqRef.current.delete(runtime.ptyId);
       lastProcessedOutputSeqRef.current.delete(runtime.ptyId);
-      attentionDebounceRef.current.delete(runtime.cardId);
+      attentionEpisodesRef.current.delete(runtime.cardId);
       runningStateRef.current.delete(runtime.cardId);
       replyDebounceRef.current.delete(runtime.cardId);
       replyInputCheckpointRef.current.delete(runtime.cardId);
       clearAutoRestartTimer(runtime.cardId);
       for (let index = pendingBackgroundOutput.length - 1; index >= 0; index -= 1) {
         if (pendingBackgroundOutput[index].id === runtime.ptyId) {
-          pendingBackgroundOutput.splice(index, 1);
+          const [removed] = pendingBackgroundOutput.splice(index, 1);
+          pendingBackgroundOutputBytes = Math.max(
+            0,
+            pendingBackgroundOutputBytes - removed.byteLength,
+          );
         }
       }
+      droppedBackgroundThrough.delete(runtime.ptyId);
     });
 
     const diagnosticsReader = (): TerminalEventBridgeDiagnostics => {
@@ -218,6 +248,8 @@ export function TerminalEventBridge(): null {
         lastProcessedOutputSeqCount: lastProcessedOutputSeqRef.current.size,
         autoRestartTimerCount: autoRestartTimersRef.current.size,
         pendingBackgroundOutputCount: pendingBackgroundOutput.length,
+        pendingBackgroundOutputBytes,
+        backgroundOutputGapCount,
       };
     };
     readBridgeDiagnostics = diagnosticsReader;
@@ -239,6 +271,61 @@ export function TerminalEventBridge(): null {
     const acknowledgeMissingBackgroundOutput = (id: string, seq: number) => {
       if (cancelled) return;
       outputAcknowledger.ack({ id, throughSeq: seq, consumerKind: 'background' });
+    };
+
+    const queuePendingBackgroundOutput = (
+      output: { id: string; data: string; seq: number },
+    ) => {
+      const byteLength = new TextEncoder().encode(output.data).byteLength;
+      pendingBackgroundOutput.push({ ...output, byteLength });
+      pendingBackgroundOutputBytes += byteLength;
+
+      while (
+        pendingBackgroundOutputBytes > MAX_PENDING_BACKGROUND_OUTPUT_BYTES &&
+        pendingBackgroundOutput.length > 0
+      ) {
+        const dropped = pendingBackgroundOutput.shift();
+        if (!dropped) break;
+        pendingBackgroundOutputBytes = Math.max(
+          0,
+          pendingBackgroundOutputBytes - dropped.byteLength,
+        );
+        droppedBackgroundThrough.set(
+          dropped.id,
+          Math.max(droppedBackgroundThrough.get(dropped.id) ?? 0, dropped.seq),
+        );
+        backgroundOutputGapCount += 1;
+        if (
+          backgroundOutputGapCount === 1 ||
+          (backgroundOutputGapCount & (backgroundOutputGapCount - 1)) === 0
+        ) {
+          logger.warn(
+            '[TerminalEventBridge] Background output queue reached its memory limit; awaiting an authoritative snapshot.',
+            {
+              droppedChunks: backgroundOutputGapCount,
+              pendingBytes: pendingBackgroundOutputBytes,
+            },
+          );
+        }
+      }
+    };
+
+    const backgroundGapsCoveredBySnapshot = () => {
+      for (const [id, droppedThrough] of droppedBackgroundThrough) {
+        if (!getCardForPtyId(id) || !lastSnapshotSessionIds.has(id)) {
+          logger.warn(
+            '[TerminalEventBridge] Background preview gap could not be snapshot-recovered because the PTY is no longer live.',
+            { id, droppedThrough },
+          );
+          droppedBackgroundThrough.delete(id);
+          continue;
+        }
+        if ((lastProcessedOutputSeqRef.current.get(id) ?? 0) < droppedThrough) {
+          return false;
+        }
+        droppedBackgroundThrough.delete(id);
+      }
+      return true;
     };
 
     const processBackgroundOutput = ({ id, data, seq }: { id: string; data: string; seq: number }) => {
@@ -263,13 +350,13 @@ export function TerminalEventBridge(): null {
         return;
       }
       try {
-        feedHeadless(card.id, data, (preview) => {
+        feedHeadless(card.id, data, () => {
           if (
             !cancelled &&
             lifecycle.isCurrent(id, runtime.generation) &&
             getCardForPtyId(id)?.id === card.id
           ) {
-            outputBuffer.pushPreview(card.id, preview);
+            outputBuffer.requestPreview(card.id, () => readHeadlessPreview(card.id));
           }
           acknowledgeBackgroundOutput(id, seq, runtime.generation);
         });
@@ -285,6 +372,7 @@ export function TerminalEventBridge(): null {
       } catch {
         return false;
       }
+      lastSnapshotSessionIds = new Set(Object.keys(states));
 
       let succeeded = true;
       await Promise.all(
@@ -321,13 +409,13 @@ export function TerminalEventBridge(): null {
               }
               disposeHeadless(card.id);
               try {
-                feedHeadless(card.id, data, (preview) => {
+                feedHeadless(card.id, data, () => {
                   if (
                     !cancelled &&
                     lifecycle.isCurrent(id, runtime.generation) &&
                     getCardForPtyId(id)?.id === card.id
                   ) {
-                    outputBuffer.pushPreview(card.id, preview);
+                    outputBuffer.requestPreview(card.id, () => readHeadlessPreview(card.id));
                   }
                   acknowledgeBackgroundOutput(id, snapshot.seq, runtime.generation);
                   resolve();
@@ -371,6 +459,12 @@ export function TerminalEventBridge(): null {
           body: i18n.t('terminal:notifications.autoRestartLimitBody', {
             max: decision.maxRetries,
           }),
+          routing: {
+            origin: 'auto_restart',
+            family: 'failure',
+            episodeKey: `failure:${card.id}:auto-restart-limit:${decision.maxRetries}`,
+            fingerprint: `auto-restart-limit:${decision.maxRetries}`,
+          },
         });
         store.markUnread(card.id, true);
         store.appendEvent(card.id, {
@@ -469,6 +563,12 @@ export function TerminalEventBridge(): null {
           kind: 'completed',
           title: i18n.t('terminal:notifications.replyReadyTitle', { project: latestCard.projectName }),
           body: snippet.slice(0, 240),
+          routing: {
+            origin: 'reply',
+            family: 'completion',
+            episodeKey: `completion:${cardId}:${currentInputCount}`,
+            fingerprint: normalizeNotificationFingerprint(snippet),
+          },
         });
         store.markUnread(cardId, true);
         store.appendEvent(cardId, {
@@ -563,7 +663,11 @@ export function TerminalEventBridge(): null {
       //      what the real xterm in the main window is rendering.
       const unsubOutput = await pty.onOutput((output) => {
         if (!backgroundSnapshotReady) {
-          pendingBackgroundOutput.push(output);
+          if (!getCardForPtyId(output.id)) {
+            acknowledgeMissingBackgroundOutput(output.id, output.seq);
+            return;
+          }
+          queuePendingBackgroundOutput(output);
           return;
         }
         processBackgroundOutput(output);
@@ -580,7 +684,9 @@ export function TerminalEventBridge(): null {
       // are then processed in sequence order. This resumes a PTY that reached
       // its high watermark while no JS listener existed.
       let reconcileDelayMs = 100;
-      while (!cancelled && !(await reconcileBackgroundSnapshots())) {
+      while (!cancelled) {
+        const reconciled = await reconcileBackgroundSnapshots();
+        if (reconciled && backgroundGapsCoveredBySnapshot()) break;
         await new Promise((resolve) => window.setTimeout(resolve, reconcileDelayMs));
         reconcileDelayMs = Math.min(reconcileDelayMs * 2, 2000);
       }
@@ -590,6 +696,7 @@ export function TerminalEventBridge(): null {
         .sort((left, right) => left.seq - right.seq)
         .forEach(processBackgroundOutput);
       pendingBackgroundOutput.length = 0;
+      pendingBackgroundOutputBytes = 0;
 
       // ── session-state-changed ─────────────────────────────────────────
       //
@@ -657,13 +764,6 @@ export function TerminalEventBridge(): null {
         if (!card) return;
         const cardId = card.id;
 
-        // frontend-side debounce to avoid notification spam even if the
-        // Rust debounce window is short
-        const now = Date.now();
-        const last = attentionDebounceRef.current.get(cardId) ?? 0;
-        if (now - last < 4000) return;
-        attentionDebounceRef.current.set(cardId, now);
-
         const store = useTerminalStore.getState();
 
         // getMissingAiCliName inspects card.lastOutput — drain pending
@@ -672,6 +772,19 @@ export function TerminalEventBridge(): null {
 
         const kind = type === 'error' ? 'failed' : 'waiting';
         const latestCard = store.getCardById(cardId) ?? card;
+        const generation = latestCard.messageCount;
+        const fingerprint = normalizeNotificationFingerprint(
+          `${type}:${payload.fingerprint ?? message}`,
+        );
+        const previousEpisode = attentionEpisodesRef.current.get(cardId);
+        const episode =
+          previousEpisode?.generation === generation
+            ? previousEpisode
+            : { generation, fingerprints: new Set<string>() };
+        if (episode.fingerprints.has(fingerprint)) return;
+        episode.fingerprints.add(fingerprint);
+        attentionEpisodesRef.current.set(cardId, episode);
+
         const missingCli = kind === 'failed' ? getMissingAiCliName(latestCard, message) : null;
         const title = missingCli
           ? i18n.t('terminal:notifications.missingCliTitle', { cli: missingCli })
@@ -689,6 +802,15 @@ export function TerminalEventBridge(): null {
               (kind === 'failed'
                 ? i18n.t('terminal:notifications.errorBodyFallback')
                 : i18n.t('terminal:notifications.inputBodyFallback')),
+          routing: {
+            origin: 'pty',
+            family: kind === 'waiting' ? 'interaction' : 'failure',
+            episodeKey:
+              kind === 'waiting'
+                ? buildInteractionEpisodeKey(cardId, generation)
+                : `failure:${cardId}:${generation}`,
+            fingerprint,
+          },
         });
         store.markUnread(cardId, true);
         store.appendEvent(cardId, { kind: 'notification', summary: title });
@@ -757,13 +879,15 @@ export function TerminalEventBridge(): null {
         window.clearTimeout(timer);
       }
       autoRestartTimers.clear();
-      attentionDebounce.clear();
+      attentionEpisodes.clear();
       runningState.clear();
       replyDebounce.clear();
       replyInputCheckpoint.clear();
       lastOutputSeq.clear();
       lastProcessedOutputSeq.clear();
       pendingBackgroundOutput.length = 0;
+      pendingBackgroundOutputBytes = 0;
+      droppedBackgroundThrough.clear();
       if (readBridgeDiagnostics === diagnosticsReader) {
         readBridgeDiagnostics = () => ({ ...EMPTY_DIAGNOSTICS });
       }

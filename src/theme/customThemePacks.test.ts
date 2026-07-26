@@ -102,6 +102,28 @@ describe('custom theme packs', () => {
     expect(() => parseCustomThemePack(JSON.stringify(lowContrastTheme))).toThrow(/contrast/i);
   });
 
+  it('rejects themes with low-contrast muted, primary, or accent pairs', () => {
+    const variants = [
+      { mutedForeground: '#9ca3af' }, // 2.84 on the white background
+      { primary: '#cc7a00' }, // 3.31 behind the white primaryForeground
+      { accent: '#4a90e2', accentForeground: '#ffffff' }, // 3.29
+    ];
+
+    for (const overrides of variants) {
+      const theme = {
+        ...validTheme,
+        modes: {
+          light: {
+            app: { ...appTokens, ...overrides },
+            terminal: terminalTokens,
+          },
+        },
+      };
+
+      expect(() => parseCustomThemePack(JSON.stringify(theme))).toThrow(/contrast/i);
+    }
+  });
+
   it('exports portable JSON without the internal custom prefix', () => {
     const pack = parseCustomThemePack(JSON.stringify(validTheme));
     const exported = JSON.parse(stringifyThemePack(pack));

@@ -31,6 +31,11 @@ describe('ConnectionBanner', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Reconnecting…');
   });
 
+  it('shows a reconnecting banner during retry backoff', () => {
+    renderBanner('reconnecting');
+    expect(screen.getByRole('status')).toHaveTextContent('Reconnecting…');
+  });
+
   it('shows an offline banner when the bridge is closed', () => {
     renderBanner('closed');
     expect(screen.getByRole('status')).toHaveTextContent('Connection lost');
@@ -39,6 +44,13 @@ describe('ConnectionBanner', () => {
   it('shows an offline banner on error', () => {
     renderBanner('error');
     expect(screen.getByRole('status')).toHaveTextContent('Connection lost');
+  });
+
+  it('explains that a revoked device must be paired again', () => {
+    renderBanner('revoked');
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Device access ended. Reopen the desktop QR link to pair again.',
+    );
   });
 
   it('uses Chinese copy when the desktop language is Chinese', () => {

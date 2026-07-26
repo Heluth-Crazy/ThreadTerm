@@ -53,3 +53,44 @@ describe('isTauriEnv', () => {
     expect(isTauriEnv()).toBe(true);
   });
 });
+
+describe('mobileBridge state sync', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    coreMocks.isTauri.mockReturnValue(true);
+    coreMocks.invoke.mockResolvedValue(undefined);
+  });
+
+  it('sends one coherent state payload to the Rust bridge', async () => {
+    const { mobileBridge } = await import('./tauri-bridge');
+    const workbench = {
+      generatedAt: 1,
+      summary: { attention: 0, normalRunning: 0, review: 0, failed: 0 },
+      attentionItems: [],
+      executionGroups: [],
+      rules: {
+        includeWaiting: true,
+        includeFailed: true,
+        includeCompletedReview: true,
+        stalledEnabled: true,
+        stalledThresholdMinutes: 15,
+        stalledExcludedCount: 0,
+      },
+      capabilities: {
+        openTerminal: true,
+        respondToStructuredRequest: false,
+        updateRules: false,
+        updateNotificationReadState: false,
+      },
+    };
+
+    await mobileBridge.syncState([], [], workbench);
+
+    expect(coreMocks.invoke).toHaveBeenCalledWith('bridge_sync_state', {
+      cards: [],
+      notifications: [],
+      workbench,
+    });
+  });
+});

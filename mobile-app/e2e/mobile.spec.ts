@@ -1,67 +1,194 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 
-// xterm's DOM renderer paints the visible terminal text into `.xterm-rows`
-// (spans positioned by the renderer). Playwright's getByText().toBeVisible()
-// is unreliable on those rows (per-glyph spans + helper layers), but the row
-// container's textContent is the authoritative "what the user sees" signal —
-// it is empty when the terminal is black/unpainted and contains the text once
-// the DOM renderer has drawn a frame. This is the decisive black-screen guard.
+const ARTIFACT_DIR = path.resolve(process.cwd(), 'e2e-artifacts');
+const SNAPSHOT_TEXT = 'ThreadTerm mobile e2e ready';
+const OUTPUT_TEXT = 'mobile e2e incremental output line';
+
 async function expectXtermText(scope: Locator, needle: string): Promise<void> {
   await expect
     .poll(
       async () =>
-        scope.locator('.xterm-rows').first().evaluate((el) => el.textContent ?? ''),
+        scope.locator('.xterm-rows').first().evaluate((element) => element.textContent ?? ''),
       { timeout: 10_000 },
     )
     .toContain(needle);
 }
 
-// E2E for the P2 single-xterm mobile shell. There is no chat/TUI block
-// architecture anymore: MainTerminal renders ONE xterm instance with the
-// default DOM renderer (the WebGL addon was removed because iOS WKWebView can
-// return a non-compositing webgl2 context and leave a black screen). With the
-// DOM renderer, xterm writes the visible text into `.xterm-rows` in the DOM,
-// so the decisive proof is that the snapshot/output text is actually visible
-// (and captured in a real WebKit/Chromium screenshot).
-
-const ARTIFACT_DIR = path.resolve(process.cwd(), 'e2e-artifacts');
+async function openTerminal(page: Page, cardName = 'ThreadTerm'): Promise<Locator> {
+  const terminalTab = page.getByRole('button', { name: 'Terminal', exact: true });
+  if (await terminalTab.isVisible().catch(() => false)) {
+    await terminalTab.click();
+  }
+  const row = page.locator('.instance-row', { hasText: cardName });
+  await expect(row).toHaveCount(1);
+  await row.locator('.instance-row-main').click();
+  const detail = page.locator('.terminal-detail-screen');
+  await expect(detail).toBeVisible();
+  return detail;
+}
 
 const snapshot = {
   protocol_version: 1,
   kind: 'snapshot',
+  runtimeId: 'runtime-e2e',
+  streamSeq: 0,
+  warmingUp: false,
   notifications: [
     {
       id: 'notify-1',
       cardId: 'card-1',
       kind: 'waiting',
       message: 'Input requested by the active session',
-      createdAt: 123,
+      title: 'Terminal waiting for input',
+      body: 'Input requested by the active session',
+      read: false,
+      createdAt: Date.now() - 60_000,
+      routing: {
+        origin: 'pty',
+        family: 'interaction',
+        episodeKey: 'card-1:waiting',
+      },
     },
   ],
   cards: [
     {
       id: 'card-1',
-      status: 'running',
+      status: 'waiting_for_input',
       projectPath: '/Users/me/projects/ThreadTerm',
       projectName: 'ThreadTerm',
-      lastReplyPreview: 'ThreadTerm mobile e2e ready',
-      summaryLine: 'ThreadTerm mobile e2e ready',
+      worktreePath: '/Users/me/projects/ThreadTerm/.worktrees/mobile-workbench',
+      branchLabel: 'mobile-workbench',
+      terminalType: 'codex',
+      lastReplyPreview: SNAPSHOT_TEXT,
+      summaryLine: SNAPSHOT_TEXT,
       hiddenLineCount: 0,
       recentOutputBytes: 4096,
+      ptyLive: true,
+      ptyState: 'waiting_for_input',
+      attachable: true,
     },
     {
       id: 'card-2',
       status: 'completed',
       projectPath: '/Users/me/projects/docs',
       projectName: 'docs-builder',
+      worktreePath: '/Users/me/projects/docs',
+      branchLabel: 'main',
+      terminalType: 'shell',
       lastReplyPreview: 'Build completed yesterday',
       summaryLine: 'Build completed yesterday',
       hiddenLineCount: 2,
       recentOutputBytes: 1024,
+      ptyLive: false,
+      ptyState: 'completed',
+      attachable: true,
     },
   ],
+  workbench: {
+    generatedAt: Date.now(),
+    summary: {
+      attention: 2,
+      normalRunning: 0,
+      review: 1,
+      failed: 0,
+    },
+    attentionItems: [
+      {
+        id: 'attention-approval',
+        cardId: 'card-1',
+        kind: 'approval',
+        severity: 'critical',
+        sourceKind: 'structured_request',
+        sourceId: 'request-1',
+        occurredAt: Date.now() - 60_000,
+        projectPath: '/Users/me/projects/ThreadTerm',
+        projectName: 'ThreadTerm',
+        worktreePath: '/Users/me/projects/ThreadTerm/.worktrees/mobile-workbench',
+        branchLabel: 'mobile-workbench',
+        terminalType: 'codex',
+        title: 'Confirm workspace write',
+        detail: 'Codex requests permission to update the mobile Workbench implementation.',
+        reasonCode: 'structured_approval',
+        capability: {
+          openRequest: true,
+          openTerminal: true,
+          openNotification: false,
+          openEvidence: true,
+        },
+      },
+      {
+        id: 'attention-review',
+        cardId: 'card-2',
+        kind: 'review',
+        severity: 'info',
+        sourceKind: 'notification',
+        sourceId: 'notify-review',
+        occurredAt: Date.now() - 120_000,
+        projectPath: '/Users/me/projects/docs',
+        projectName: 'docs-builder',
+        worktreePath: '/Users/me/projects/docs',
+        branchLabel: 'main',
+        terminalType: 'shell',
+        title: 'Documentation build completed',
+        detail: 'The completed result is still unread.',
+        reasonCode: 'completed_unread',
+        capability: {
+          openRequest: false,
+          openTerminal: true,
+          openNotification: true,
+          openEvidence: true,
+        },
+      },
+    ],
+    executionGroups: [
+      {
+        id: 'group-threadterm',
+        projectPath: '/Users/me/projects/ThreadTerm',
+        projectName: 'ThreadTerm',
+        worktreePath: '/Users/me/projects/ThreadTerm/.worktrees/mobile-workbench',
+        branchLabel: 'mobile-workbench',
+        cardIds: ['card-1'],
+        terminalCount: 1,
+        terminalTypes: ['codex'],
+        attentionCount: 1,
+        status: 'attention',
+        terminalStatuses: ['waiting'],
+        lastActivity: Date.now() - 60_000,
+        preview: SNAPSHOT_TEXT,
+      },
+      {
+        id: 'group-docs',
+        projectPath: '/Users/me/projects/docs',
+        projectName: 'docs-builder',
+        worktreePath: '/Users/me/projects/docs',
+        branchLabel: 'main',
+        cardIds: ['card-2'],
+        terminalCount: 1,
+        terminalTypes: ['shell'],
+        attentionCount: 1,
+        status: 'review',
+        terminalStatuses: ['completed'],
+        lastActivity: Date.now() - 120_000,
+        preview: 'Build completed yesterday',
+      },
+    ],
+    rules: {
+      includeWaiting: true,
+      includeFailed: true,
+      includeCompletedReview: true,
+      stalledEnabled: true,
+      stalledThresholdMinutes: 15,
+      stalledExcludedCount: 0,
+    },
+    capabilities: {
+      openTerminal: true,
+      respondToStructuredRequest: false,
+      updateRules: false,
+      updateNotificationReadState: false,
+    },
+  },
 };
 
 const theme = {
@@ -90,10 +217,10 @@ const theme = {
     ring: '#4f8bd6',
   },
   terminal: {
-    background: '#000000',
-    foreground: '#f8fafc',
-    cursor: '#f8fafc',
-    cursorAccent: '#000000',
+    background: '#0b0f14',
+    foreground: '#e8edf5',
+    cursor: '#e8edf5',
+    cursorAccent: '#0b0f14',
     selection: '#334155',
     selectionForeground: '#f8fafc',
     black: '#0f172a',
@@ -114,15 +241,6 @@ const theme = {
     brightWhite: '#f8fafc',
   },
 };
-
-// Snapshot line + a short incremental output line. Both must stay on-screen
-// together: real terminals scroll the oldest rows off the viewport, and xterm's
-// DOM renderer only paints rows currently in the viewport. A multi-screen burst
-// of output would legitimately scroll SNAPSHOT_TEXT out of `.xterm-rows`, so the
-// fixture keeps the live screen small enough that both lines remain visible —
-// that is the honest "the terminal is actually painting" assertion.
-const SNAPSHOT_TEXT = 'ThreadTerm mobile e2e ready';
-const OUTPUT_TEXT = 'mobile e2e incremental output line';
 
 let snapshotRequests = 0;
 
@@ -158,16 +276,18 @@ test.beforeEach(async ({ page }) => {
       onerror: ((event: Event) => void) | null = null;
       onmessage: ((event: MessageEvent<string>) => void) | null = null;
       private seq = 4;
+      private streamSeq = 3;
+      private runtimeId = 'runtime-e2e';
 
       constructor(public url: string) {
-        ((window as unknown) as { __threadtermWs: MockWebSocket[] }).__threadtermWs ??= [];
-        ((window as unknown) as { __threadtermWs: MockWebSocket[] }).__threadtermWs.push(this);
+        const scope = window as unknown as { __threadtermWs: MockWebSocket[] };
+        scope.__threadtermWs ??= [];
+        scope.__threadtermWs.push(this);
         window.setTimeout(() => {
           this.readyState = MockWebSocket.OPEN;
           this.onopen?.(new Event('open'));
           this.emit(themeMessage);
           this.emit(snapshotMessage);
-          // terminal_snapshot history establishes the initial visible screen.
           this.emit({
             protocol_version: 1,
             kind: 'terminal_snapshot',
@@ -175,32 +295,32 @@ test.beforeEach(async ({ page }) => {
               cardId: 'card-1',
               data: '',
               seq: 1,
+              runtimeId: this.runtimeId,
+              streamSeq: 0,
               rows: 24,
               cols: 80,
               cursorRow: 1,
               cursorCol: 1,
-              history: '[32mThreadTerm mobile e2e ready[0m\n',
+              history: '\u001b[32mThreadTerm mobile e2e ready\u001b[0m\n',
             },
           });
-          // Incremental output: one short line that stays on the same visible
-          // screen as the snapshot line (realistic AI CLI screen size).
           this.emit({
             protocol_version: 1,
             kind: 'terminal_output',
             card_id: 'card-1',
             data: 'mobile e2e incremental output line\n',
             seq: 2,
+            runtimeId: this.runtimeId,
+            streamSeq: 1,
           });
-          // Raw alt-screen / box-drawing control codes: the single xterm must
-          // not crash when it receives them (no block classifier in P2). The
-          // alt buffer is entered and immediately exited so the main screen
-          // (snapshot + output) is restored.
           this.emit({
             protocol_version: 1,
             kind: 'terminal_output',
             card_id: 'card-1',
-            data: '[?1049h[1;1H┌──────── status ────────┐[2;1H│ codex reconnecting │[?1049l',
+            data: '\u001b[?1049h\u001b[1;1H┌──── status ────┐\u001b[2;1H│ reconnecting │\u001b[?1049l',
             seq: 3,
+            runtimeId: this.runtimeId,
+            streamSeq: 2,
           });
         }, 0);
       }
@@ -209,6 +329,15 @@ test.beforeEach(async ({ page }) => {
         this.sent.push(data);
         try {
           const parsed = JSON.parse(data) as { kind?: string; data?: string };
+          if (parsed.kind === 'ping') {
+            window.setTimeout(() => {
+              this.emit({
+                protocol_version: 1,
+                kind: 'pong',
+                t: Date.now(),
+              });
+            }, 0);
+          }
           if (parsed.kind === 'input') {
             window.setTimeout(() => {
               this.emit({
@@ -217,11 +346,38 @@ test.beforeEach(async ({ page }) => {
                 card_id: 'card-1',
                 data: `\nmobile command acknowledged: ${parsed.data ?? ''}\n`,
                 seq: this.seq++,
+                runtimeId: this.runtimeId,
+                streamSeq: this.streamSeq++,
               });
             }, 5);
           }
+          if (parsed.kind === 'terminal_resync') {
+            window.setTimeout(() => {
+              this.emit({
+                ...snapshotMessage,
+                runtimeId: this.runtimeId,
+                streamSeq: this.streamSeq - 1,
+              });
+              this.emit({
+                protocol_version: 1,
+                kind: 'terminal_snapshot',
+                snapshot: {
+                  cardId: 'card-1',
+                  data: '',
+                  seq: 900,
+                  runtimeId: this.runtimeId,
+                  streamSeq: this.streamSeq - 1,
+                  rows: 24,
+                  cols: 80,
+                  cursorRow: 1,
+                  cursorCol: 1,
+                  history: 'MOBILE GAP RECOVERY MARKER repainted\n',
+                },
+              });
+            }, 0);
+          }
         } catch {
-          // Test transport only records malformed sends.
+          // The test transport only records malformed sends.
         }
       }
 
@@ -231,178 +387,162 @@ test.beforeEach(async ({ page }) => {
       }
 
       emit(message: unknown) {
+        const sequenced = message as {
+          runtimeId?: string;
+          streamSeq?: number;
+          snapshot?: { runtimeId?: string; streamSeq?: number };
+        };
+        const runtimeId = sequenced.runtimeId ?? sequenced.snapshot?.runtimeId;
+        const streamSeq = sequenced.streamSeq ?? sequenced.snapshot?.streamSeq;
+        if (runtimeId && runtimeId !== this.runtimeId) {
+          this.runtimeId = runtimeId;
+          this.streamSeq = typeof streamSeq === 'number' ? streamSeq + 1 : 0;
+        } else if (typeof streamSeq === 'number') {
+          this.streamSeq = Math.max(this.streamSeq, streamSeq + 1);
+        }
         this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(message) }));
       }
     }
 
-    ((window as unknown) as { WebSocket: typeof WebSocket }).WebSocket =
+    (window as unknown as { WebSocket: typeof WebSocket }).WebSocket =
       MockWebSocket as unknown as typeof WebSocket;
   }, { snapshotMessage: snapshot, themeMessage: theme });
 });
 
-test('mobile shell renders preview + detail xterm content, theme lock, and input round-trip', async ({
+test('Workbench is default and terminal detail renders themed xterm with input round-trip', async ({
   page,
   browserName,
 }, testInfo) => {
   await page.goto('/pair');
 
-  await expect(page.getByRole('heading', { name: 'ThreadTerm' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Workbench' })).toBeVisible();
+  await expect(page.getByText('Confirm workspace write')).toBeVisible();
+  await expect(page.locator('.execution-group-card')).toHaveCount(2);
+  await expect(page.locator('.xterm')).toHaveCount(0);
+  await page.screenshot({
+    path: path.join(
+      ARTIFACT_DIR,
+      browserName === 'webkit'
+        ? 'mobile-workbench-webkit.png'
+        : 'mobile-workbench-chromium.png',
+    ),
+  });
 
-  // --- Multi-session overview: the Terminal home lists ALL bridge sessions
-  // (the desktop can run several terminals at once), not just the active one.
-  // The fixture publishes card-1 (running) and card-2 (completed); both must
-  // be present and openable from the home screen. ---
-  const allSessions = page.locator('.section-block', { hasText: 'All Sessions' });
-  await expect(allSessions).toBeVisible();
-  const sessionRows = allSessions.locator('.instance-row');
-  await expect(sessionRows).toHaveCount(2);
-  await expect(sessionRows.filter({ hasText: 'ThreadTerm' })).toHaveCount(1);
-  await expect(sessionRows.filter({ hasText: 'docs-builder' })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Terminals' })).toBeVisible();
+  const rows = page.locator('.instance-row');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.filter({ hasText: 'ThreadTerm' })).toHaveCount(1);
+  await expect(rows.filter({ hasText: 'docs-builder' })).toHaveCount(1);
+  await expect(page.locator('.xterm')).toHaveCount(0);
 
-  // --- Active Session preview: xterm exists, has real layout, and the DOM
-  // renderer has actually painted the snapshot text into the DOM. The preview
-  // frame is pointer-events:none, so nothing here depends on a click. ---
-  const previewXterm = page.locator('.terminal-preview-frame .xterm');
-  await expect(previewXterm).toBeVisible();
-  const previewBox = await previewXterm.boundingBox();
-  expect(previewBox?.width ?? 0).toBeGreaterThan(0);
-  expect(previewBox?.height ?? 0).toBeGreaterThan(0);
-  await expectXtermText(page.locator('.terminal-preview-frame'), SNAPSHOT_TEXT);
-
-  // --- Open detail: tap the preview ("Tap to focus"). ---
-  await page.getByText('Tap to focus').click();
-  await expect(page.getByRole('button', { name: 'Back' })).toBeVisible();
-
-  const detailScreen = page.locator('.terminal-detail-screen');
-  const detailXterm = detailScreen.locator('.xterm');
+  const detail = await openTerminal(page);
+  const detailXterm = detail.locator('.xterm');
   await expect(detailXterm).toBeVisible();
-  const detailBox = await detailXterm.boundingBox();
-  expect(detailBox?.width ?? 0).toBeGreaterThan(0);
-  expect(detailBox?.height ?? 0).toBeGreaterThan(0);
+  expect((await detailXterm.boundingBox())?.width ?? 0).toBeGreaterThan(0);
+  await expectXtermText(detail, SNAPSHOT_TEXT);
+  await expectXtermText(detail, OUTPUT_TEXT);
 
-  // Snapshot text + incremental output text are painted in the detail xterm.
-  await expectXtermText(detailScreen, SNAPSHOT_TEXT);
-  await expectXtermText(detailScreen, OUTPUT_TEXT);
-  // With an active card there is no empty-state overlay.
-  await expect(detailScreen.locator('.terminal-empty-overlay')).toHaveCount(0);
-
-  // --- Decisive forensic screenshot of the live terminal area. ---
-  await expect
-    .poll(async () =>
-      detailScreen.locator('.xterm-rows').evaluate((el) => (el.textContent ?? '').trim().length),
-    )
-    .toBeGreaterThan(0);
-  const shotName =
-    browserName === 'webkit' ? 'terminal-detail-webkit.png' : 'terminal-detail-chromium.png';
-  await page
-    .locator('[aria-label="Terminal output"]')
-    .screenshot({ path: path.join(ARTIFACT_DIR, shotName) });
-  await testInfo.attach(shotName, {
-    path: path.join(ARTIFACT_DIR, shotName),
+  const screenshotName =
+    browserName === 'webkit' ? 'mobile-workbench-terminal-webkit.png' : 'mobile-workbench-terminal-chromium.png';
+  await detail.locator('[aria-label="Terminal output"]').screenshot({
+    path: path.join(ARTIFACT_DIR, screenshotName),
+  });
+  await testInfo.attach(screenshotName, {
+    path: path.join(ARTIFACT_DIR, screenshotName),
     contentType: 'image/png',
   });
 
-  // --- Input round-trip: type a command, the bridge echoes a sentinel. ---
   await page.getByLabel('Mobile terminal input').fill('hello from mobile');
   await page.locator('.input-bar').getByRole('button', { name: 'Enter' }).click();
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const sockets = ((window as unknown) as { __threadtermWs?: Array<{ sent: string[] }> })
+        const sockets = (window as unknown as { __threadtermWs?: Array<{ sent: string[] }> })
           .__threadtermWs;
         return sockets?.at(-1)?.sent ?? [];
       }),
     )
     .toContainEqual(expect.stringContaining('"data":"hello from mobile\\r"'));
-  await expectXtermText(detailScreen, 'mobile command acknowledged');
+  await expectXtermText(detail, 'mobile command acknowledged');
 
-  // --- Light system theme must NOT lighten the terminal: it stays locked to
-  // pure black regardless of the desktop/system theme. ---
   await page.getByRole('button', { name: 'Back' }).click();
-  await page.getByRole('button', { name: 'Settings' }).click();
-  await expect(page.getByText('Input requested by the active session')).toBeVisible();
-  await page.getByRole('button', { name: /light/ }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'light', exact: true }).click();
   await expect
     .poll(() => page.evaluate(() => document.documentElement.dataset.mobileThemeMode))
     .toBe('light');
 
-  await page.getByRole('button', { name: 'Terminal' }).click();
-  await page.getByText('Tap to focus').click();
-  const hostBg = await page
+  const themedDetail = await openTerminal(page);
+  const hostBackground = await themedDetail
     .locator('.terminal-xterm-host')
-    .first()
-    .evaluate((el) => getComputedStyle(el).backgroundColor);
-  expect(hostBg).toBe('rgb(0, 0, 0)');
-  const viewportBg = await page
+    .evaluate((element) => getComputedStyle(element).backgroundColor);
+  expect(hostBackground).toBe('rgb(11, 15, 20)');
+  const viewportBackground = await themedDetail
     .locator('.xterm-viewport')
-    .first()
-    .evaluate((el) => getComputedStyle(el).backgroundColor);
-  expect(viewportBg).toBe('rgb(0, 0, 0)');
+    .evaluate((element) => getComputedStyle(element).backgroundColor);
+  expect(viewportBackground).toBe('rgb(11, 15, 20)');
 });
 
-test('terminal content survives viewport changes, lifecycle resume, and lag snapshot fetch', async ({
+test('360px Workbench routes preserve context and never overflow horizontally', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/pair');
+
+  await page.getByText('Confirm workspace write').click();
+  await expect(page.getByRole('heading', { name: 'Signal details' })).toBeVisible();
+  await expect(page.getByText('Desktop confirmation required')).toBeVisible();
+  await page.getByRole('button', { name: 'Open terminal' }).click();
+  await expectXtermText(page.locator('.terminal-detail-screen'), SNAPSHOT_TEXT);
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByRole('heading', { name: 'Signal details' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByRole('heading', { name: 'Workbench' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Notifications' }).click();
+  await expect(page.getByRole('heading', { name: 'Notifications' })).toBeVisible();
+  await expect(page.getByText('Terminal waiting for input')).toBeVisible();
+
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
+});
+
+test('terminal transcript survives viewport changes, remount, resume, and lag refresh', async ({
   page,
 }) => {
   await page.goto('/pair');
+  let detail = await openTerminal(page);
+  await expectXtermText(detail, SNAPSHOT_TEXT);
 
-  await expectXtermText(page.locator('.terminal-preview-frame'), SNAPSHOT_TEXT);
-  await expect(page.locator('.ios-header.safe-top')).toBeVisible();
-  await expect(page.locator('.tab-bar.safe-bottom')).toBeVisible();
-
-  // Viewport resize + zoom-like change: stored terminal messages must replay
-  // so the snapshot text survives a refit.
   await page.setViewportSize({ width: 390, height: 620 });
   await page.evaluate(() => {
     window.dispatchEvent(new Event('resize'));
     window.visualViewport?.dispatchEvent(new Event('resize'));
   });
-  await expectXtermText(page.locator('.terminal-preview-frame'), SNAPSHOT_TEXT);
-  await page.evaluate(() => {
-    document.documentElement.style.zoom = '1.15';
-    window.dispatchEvent(new Event('resize'));
-    window.visualViewport?.dispatchEvent(new Event('resize'));
-  });
-  await expectXtermText(page.locator('.terminal-preview-frame'), SNAPSHOT_TEXT);
-  await page.evaluate(() => {
-    document.documentElement.style.zoom = '';
-    window.dispatchEvent(new Event('resize'));
-  });
-
-  // Enter detail and stream a large output burst; the xterm scrollback must
-  // keep the new content and allow scrolling.
-  await page.getByText('Tap to focus').click();
-  await expect(page.locator('.terminal-nav.safe-top')).toBeVisible();
-  await expect(page.locator('.input-bar-shell.safe-bottom')).toBeVisible();
-  const detailScreen = page.locator('.terminal-detail-screen');
-  await expectXtermText(detailScreen, SNAPSHOT_TEXT);
+  await expectXtermText(detail, SNAPSHOT_TEXT);
 
   await page.evaluate(() => {
-    const sockets = ((window as unknown) as {
+    const sockets = (window as unknown as {
       __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
     }).__threadtermWs;
     sockets?.at(-1)?.emit({
       protocol_version: 1,
       kind: 'terminal_output',
       card_id: 'card-1',
-      data: Array.from({ length: 80 }, (_, index) => `scroll sentinel ${index}`).join('\n') + '\n',
+      data: `${Array.from({ length: 80 }, (_, index) => `scroll sentinel ${index}`).join('\n')}\n`,
       seq: 88,
     });
   });
-  // The burst scrolled the snapshot line out of the 24-row viewport (real
-  // terminal behavior). The decisive "not black / live stream" signal is that
-  // the LATEST streamed content is painted in the DOM.
-  await expectXtermText(detailScreen, 'scroll sentinel 79');
+  await expectXtermText(detail, 'scroll sentinel 79');
 
-  // Back to the preview: the preview xterm is a separate mount replaying the
-  // SAME stored transcript, so it ends scrolled to the same latest content.
-  // This proves the transcript survives the detail->preview remount.
   await page.getByRole('button', { name: 'Back' }).click();
-  await expectXtermText(page.locator('.terminal-preview-frame'), 'scroll sentinel 79');
+  await expect(page.locator('.xterm')).toHaveCount(0);
+  detail = await openTerminal(page);
+  await expectXtermText(detail, 'scroll sentinel 79');
 
-  // Backpressure error -> the app fetches /snapshot again and merges it
-  // without losing the rendered terminal content.
   await page.evaluate(() => {
-    const sockets = ((window as unknown) as {
+    const sockets = (window as unknown as {
       __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
     }).__threadtermWs;
     sockets?.at(-1)?.emit({
@@ -413,10 +553,9 @@ test('terminal content survives viewport changes, lifecycle resume, and lag snap
     });
   });
   await expect.poll(() => snapshotRequests).toBeGreaterThan(1);
-  await expectXtermText(page.locator('.terminal-preview-frame'), 'scroll sentinel 79');
+  await expectXtermText(detail, 'scroll sentinel 79');
+  const requestsBeforeResume = snapshotRequests;
 
-  // Visibility / pagehide-pageshow recovery reconnects and replays without
-  // dropping content.
   await page.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     document.dispatchEvent(new Event('visibilitychange'));
@@ -428,43 +567,73 @@ test('terminal content survives viewport changes, lifecycle resume, and lag snap
   await expect
     .poll(() =>
       page.evaluate(
-        () => ((window as unknown) as { __threadtermWs?: unknown[] }).__threadtermWs?.length ?? 0,
+        () => (window as unknown as { __threadtermWs?: unknown[] }).__threadtermWs?.length ?? 0,
       ),
     )
-    .toBeGreaterThan(1);
-  await expectXtermText(page.locator('.terminal-preview-frame'), 'scroll sentinel 79');
+    .toBe(1);
+  expect(snapshotRequests).toBe(requestsBeforeResume);
+  await expectXtermText(detail, 'scroll sentinel 79');
 });
 
-test('history survives a reconnect snapshot with a higher seq (issue 5)', async ({ page }) => {
+test('closed connections recover, while revoked devices stop retrying', async ({ page }) => {
   await page.goto('/pair');
-  await page.getByText('Tap to focus').click();
-  const detailScreen = page.locator('.terminal-detail-screen');
-  await expectXtermText(detailScreen, SNAPSHOT_TEXT);
+  await expect(page.getByRole('heading', { name: 'Workbench' })).toBeVisible();
 
-  // Build up real scrollback the user would be reading.
   await page.evaluate(() => {
-    const sockets = ((window as unknown) as {
+    const sockets = (window as unknown as {
+      __threadtermWs?: Array<{ close: () => void }>;
+    }).__threadtermWs;
+    sockets?.at(-1)?.close();
+  });
+
+  await expect(page.getByRole('status')).toHaveText('Reconnecting…');
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as unknown as { __threadtermWs?: unknown[] }).__threadtermWs?.length ?? 0,
+      ),
+    )
+    .toBe(2);
+  await expect(page.getByRole('status')).toHaveCount(0);
+
+  await page.evaluate(() => {
+    const sockets = (window as unknown as {
+      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
+    }).__threadtermWs;
+    sockets?.at(-1)?.emit({
+      protocol_version: 1,
+      kind: 'error',
+      code: 'auth_revoked',
+      message: 'Device authorization was revoked',
+    });
+  });
+
+  await expect(page.getByRole('status')).toHaveText(
+    'Device access ended. Reopen the desktop QR link to pair again.',
+  );
+  await page.waitForTimeout(750);
+  expect(
+    await page.evaluate(
+      () => (window as unknown as { __threadtermWs?: unknown[] }).__threadtermWs?.length ?? 0,
+    ),
+  ).toBe(2);
+});
+
+test('plain reconnect snapshot does not destroy terminal history', async ({ page }) => {
+  await page.goto('/pair');
+  const detail = await openTerminal(page);
+
+  await page.evaluate(() => {
+    const sockets = (window as unknown as {
       __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
     }).__threadtermWs;
     sockets?.at(-1)?.emit({
       protocol_version: 1,
       kind: 'terminal_output',
       card_id: 'card-1',
-      data: Array.from({ length: 80 }, (_, index) => `scroll sentinel ${index}`).join('\n') + '\n',
+      data: `${Array.from({ length: 80 }, (_, index) => `history sentinel ${index}`).join('\n')}\n`,
       seq: 88,
     });
-  });
-  await expectXtermText(detailScreen, 'scroll sentinel 79');
-
-  // A real reconnect re-sends a FRESH terminal_snapshot whose seq is the live
-  // PTY seq (much higher than the first one) and whose serialized history is
-  // only the current screen — NOT the full scrollback. The old code reset the
-  // xterm on it and the user's history vanished. It must now be ignored as a
-  // non-destructive resync, and continued output must still stream in.
-  await page.evaluate(() => {
-    const sockets = ((window as unknown) as {
-      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
-    }).__threadtermWs;
     sockets?.at(-1)?.emit({
       protocol_version: 1,
       kind: 'terminal_snapshot',
@@ -488,44 +657,15 @@ test('history survives a reconnect snapshot with a higher seq (issue 5)', async 
     });
   });
 
-  // The pre-reconnect history is still there AND the new output streamed in.
-  await expectXtermText(detailScreen, 'post-reconnect streamed line');
-  await expectXtermText(detailScreen, 'scroll sentinel 79');
+  await expectXtermText(detail, 'post-reconnect streamed line');
+  await expectXtermText(detail, 'history sentinel 79');
 });
 
-test('backpressure recovery snapshot is applied and repaints the dropped segment (D1)', async ({
-  page,
-}) => {
-  // The /snapshot HTTP endpoint is what onLagged -> loadSnapshot fetches. For
-  // this test it must return a RECOVERY terminal_snapshot (higher seq, carrying
-  // the repainted segment) instead of the card-list snapshot. The route is
-  // re-registered AFTER the initial load so the home screen still boots
-  // normally, then a backpressure error triggers the recovery fetch.
+test('backpressure recovery snapshot repaints the dropped segment', async ({ page }) => {
   await page.goto('/pair');
-  await page.getByText('Tap to focus').click();
-  const detailScreen = page.locator('.terminal-detail-screen');
-  await expectXtermText(detailScreen, SNAPSHOT_TEXT);
+  const detail = await openTerminal(page);
+  await expectXtermText(detail, SNAPSHOT_TEXT);
 
-  // Build visible sentinel history the user would be reading. seq 88 is the
-  // last applied terminal_output seq before backpressure.
-  await page.evaluate(() => {
-    const sockets = ((window as unknown) as {
-      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
-    }).__threadtermWs;
-    sockets?.at(-1)?.emit({
-      protocol_version: 1,
-      kind: 'terminal_output',
-      card_id: 'card-1',
-      data: Array.from({ length: 80 }, (_, index) => `scroll sentinel ${index}`).join('\n') + '\n',
-      seq: 88,
-    });
-  });
-  await expectXtermText(detailScreen, 'scroll sentinel 79');
-
-  // Re-point /snapshot at the recovery terminal_snapshot. Its history carries
-  // the segment the broadcast Lagged dropped (RECOVERY MARKER) and its seq is
-  // far higher than the last applied output seq (same monotonic output_seq
-  // source on the server).
   await page.route('**/snapshot*', async (route) => {
     snapshotRequests += 1;
     await route.fulfill({
@@ -547,10 +687,8 @@ test('backpressure recovery snapshot is applied and repaints the dropped segment
     });
   });
 
-  // Server broadcast Lagged -> error/backpressure. The app must arm a one-shot
-  // snapshot re-apply and fetch the recovery snapshot.
   await page.evaluate(() => {
-    const sockets = ((window as unknown) as {
+    const sockets = (window as unknown as {
       __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
     }).__threadtermWs;
     sockets?.at(-1)?.emit({
@@ -561,147 +699,99 @@ test('backpressure recovery snapshot is applied and repaints the dropped segment
     });
   });
 
-  // The recovery snapshot was actually APPLIED (not swallowed by the issue-5
-  // epoch guard): the dropped segment is repainted on screen.
-  await expectXtermText(detailScreen, 'BACKPRESSURE RECOVERY MARKER repainted');
+  await expectXtermText(detail, 'BACKPRESSURE RECOVERY MARKER repainted');
   await expect.poll(() => snapshotRequests).toBeGreaterThan(1);
-
-  // A stale lower/equal-seq terminal_output replayed after recovery must NOT
-  // be re-written (the seq guard still holds: snapshot reset seq to 900).
-  await page.evaluate(() => {
-    const sockets = ((window as unknown) as {
-      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
-    }).__threadtermWs;
-    sockets?.at(-1)?.emit({
-      protocol_version: 1,
-      kind: 'terminal_output',
-      card_id: 'card-1',
-      data: 'STALE REPLAYED LINE must not appear\n',
-      seq: 88,
-    });
-    // A genuinely new post-recovery line (seq > 900) DOES stream in, proving
-    // the live stream continues from the recovered epoch.
-    sockets?.at(-1)?.emit({
-      protocol_version: 1,
-      kind: 'terminal_output',
-      card_id: 'card-1',
-      data: 'post-recovery streamed line\n',
-      seq: 901,
-    });
-  });
-
-  await expectXtermText(detailScreen, 'post-recovery streamed line');
-  // The recovery marker is still on-screen and the stale low-seq replay was
-  // dropped by the seq guard.
-  await expect
-    .poll(async () =>
-      detailScreen.locator('.xterm-rows').first().evaluate((el) => el.textContent ?? ''),
-    )
-    .not.toContain('STALE REPLAYED LINE');
 });
 
-test('a plain reconnect snapshot still does NOT destroy history (issue-5 guard, no nonce bump)', async ({
-  page,
-}) => {
-  // Twin of the D1 test: verifies the recovery nonce is NOT bumped on a plain
-  // reconnect path. Without a backpressure error, a higher-seq reconnect
-  // terminal_snapshot must still be ignored as a non-destructive resync so the
-  // pre-existing scrollback sentinel survives.
+test('a missing mobile output frame requests one full terminal refresh', async ({ page }) => {
   await page.goto('/pair');
-  await page.getByText('Tap to focus').click();
-  const detailScreen = page.locator('.terminal-detail-screen');
-  await expectXtermText(detailScreen, SNAPSHOT_TEXT);
+  const detail = await openTerminal(page);
+  await expectXtermText(detail, SNAPSHOT_TEXT);
 
   await page.evaluate(() => {
-    const sockets = ((window as unknown) as {
+    const socket = (window as unknown as {
       __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
-    }).__threadtermWs;
-    sockets?.at(-1)?.emit({
+    }).__threadtermWs?.at(-1);
+    socket?.emit({
       protocol_version: 1,
       kind: 'terminal_output',
       card_id: 'card-1',
-      data: Array.from({ length: 80 }, (_, index) => `scroll sentinel ${index}`).join('\n') + '\n',
-      seq: 88,
+      data: 'frame after a missing mobile message\n',
+      seq: 100,
+      runtimeId: 'runtime-e2e',
+      streamSeq: 4,
+    });
+    socket?.emit({
+      protocol_version: 1,
+      kind: 'terminal_output',
+      card_id: 'card-1',
+      data: 'second frame while recovery is pending\n',
+      seq: 101,
+      runtimeId: 'runtime-e2e',
+      streamSeq: 6,
     });
   });
-  await expectXtermText(detailScreen, 'scroll sentinel 79');
 
-  // Visibility / pageshow recovery reconnect (NOT backpressure): a fresh
-  // higher-seq terminal_snapshot arrives over the socket. The recovery nonce
-  // must stay put, so the issue-5 guard ignores this snapshot and history
-  // survives.
-  await page.evaluate(() => {
-    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
-    document.dispatchEvent(new Event('visibilitychange'));
-    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
-    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
-    document.dispatchEvent(new Event('visibilitychange'));
-    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
-  });
+  await expectXtermText(detail, 'MOBILE GAP RECOVERY MARKER repainted');
   await expect
     .poll(() =>
-      page.evaluate(
-        () => ((window as unknown) as { __threadtermWs?: unknown[] }).__threadtermWs?.length ?? 0,
-      ),
+      page.evaluate(() => {
+        const sent = (window as unknown as {
+          __threadtermWs?: Array<{ sent: string[] }>;
+        }).__threadtermWs?.at(-1)?.sent ?? [];
+        return sent
+          .map((entry) => JSON.parse(entry) as { kind?: string })
+          .filter((entry) => entry.kind === 'terminal_resync').length;
+      }),
     )
-    .toBeGreaterThan(1);
+    .toBe(1);
+});
 
-  await page.evaluate(() => {
-    const sockets = ((window as unknown) as {
+test('desktop process restart repaints the terminal even when sequence numbers restart', async ({
+  page,
+}) => {
+  await page.goto('/pair');
+  const detail = await openTerminal(page);
+  await expectXtermText(detail, SNAPSHOT_TEXT);
+
+  await page.evaluate((nextSnapshot) => {
+    const socket = (window as unknown as {
       __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
-    }).__threadtermWs;
-    sockets?.at(-1)?.emit({
+    }).__threadtermWs?.at(-1);
+    socket?.emit({
+      ...nextSnapshot,
+      runtimeId: 'runtime-after-desktop-restart',
+      streamSeq: 0,
+    });
+    socket?.emit({
       protocol_version: 1,
       kind: 'terminal_snapshot',
       snapshot: {
         cardId: 'card-1',
         data: '',
-        seq: 600,
+        seq: 1,
+        runtimeId: 'runtime-after-desktop-restart',
+        streamSeq: 0,
         rows: 24,
         cols: 80,
         cursorRow: 1,
         cursorCol: 1,
-        history: 'reconnect screen only\n',
+        history: 'DESKTOP RESTART RECOVERY MARKER\n',
       },
     });
-    sockets?.at(-1)?.emit({
-      protocol_version: 1,
-      kind: 'terminal_output',
-      card_id: 'card-1',
-      data: 'post-reconnect streamed line\n',
-      seq: 601,
-    });
-  });
+  }, snapshot);
 
-  await expectXtermText(detailScreen, 'post-reconnect streamed line');
-  // Decisive issue-5 assertion: pre-reconnect history was NOT wiped because the
-  // plain reconnect did not bump the recovery nonce.
-  await expectXtermText(detailScreen, 'scroll sentinel 79');
+  await expectXtermText(detail, 'DESKTOP RESTART RECOVERY MARKER');
 });
 
-// --- D4: desktop session add/remove must reflect on mobile in real time ---
-// The backend now broadcasts ServerMessage::CardAdded on pty_create and
-// ServerMessage::CardRemoved on pty_kill (the explicit-close path, which also
-// covers the mobile close entry). The mobile reducer already handled
-// card_added/card_removed; these tests prove the live session list stays in
-// sync WITHOUT a reconnect, and that a natural process exit still only marks
-// the card completed/failed (it stays visible, matching desktop behaviour).
-
-test('a desktop card_added appears in the session list without a reconnect (D4)', async ({
-  page,
-}) => {
+test('incremental card add/remove and natural exit update the terminal list', async ({ page }) => {
   await page.goto('/pair');
+  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+  const rows = page.locator('.instance-row');
+  await expect(rows).toHaveCount(2);
 
-  const allSessions = page.locator('.section-block', { hasText: 'All Sessions' });
-  await expect(allSessions).toBeVisible();
-  const sessionRows = allSessions.locator('.instance-row');
-  // Fixture snapshot publishes card-1 + card-2.
-  await expect(sessionRows).toHaveCount(2);
-
-  // Backend broadcast: a new desktop PTY session was created. No reconnect,
-  // no /snapshot fetch — just the incremental CardAdded message.
   await page.evaluate(() => {
-    const sockets = ((window as unknown) as {
+    const sockets = (window as unknown as {
       __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
     }).__threadtermWs;
     sockets?.at(-1)?.emit({
@@ -712,6 +802,9 @@ test('a desktop card_added appears in the session list without a reconnect (D4)'
         status: 'running',
         projectPath: '/Users/me/projects/api-server',
         projectName: 'api-server',
+        worktreePath: '/Users/me/projects/api-server',
+        branchLabel: 'main',
+        terminalType: 'shell',
         lastReplyPreview: 'api-server booting',
         summaryLine: 'api-server booting',
         hiddenLineCount: 0,
@@ -719,28 +812,11 @@ test('a desktop card_added appears in the session list without a reconnect (D4)'
       },
     });
   });
+  await expect(rows).toHaveCount(3);
+  await expect(rows.filter({ hasText: 'api-server' })).toHaveCount(1);
 
-  // The list grew by exactly one and the new desktop card is present.
-  await expect(sessionRows).toHaveCount(3);
-  await expect(sessionRows.filter({ hasText: 'api-server' })).toHaveCount(1);
-  // Snapshot was NOT re-fetched: this was a pure incremental update.
-  expect(snapshotRequests).toBe(1);
-});
-
-test('a desktop card_removed disappears from the session list without a reconnect (D4)', async ({
-  page,
-}) => {
-  await page.goto('/pair');
-
-  const allSessions = page.locator('.section-block', { hasText: 'All Sessions' });
-  const sessionRows = allSessions.locator('.instance-row');
-  await expect(sessionRows).toHaveCount(2);
-  await expect(sessionRows.filter({ hasText: 'docs-builder' })).toHaveCount(1);
-
-  // Backend broadcast: card-2 was explicitly closed on the desktop (or via
-  // the mobile close entry, which routes through the same pty_kill path).
   await page.evaluate(() => {
-    const sockets = ((window as unknown) as {
+    const sockets = (window as unknown as {
       __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
     }).__threadtermWs;
     sockets?.at(-1)?.emit({
@@ -751,100 +827,42 @@ test('a desktop card_removed disappears from the session list without a reconnec
         status: 'completed',
         projectPath: '/Users/me/projects/docs',
         projectName: 'docs-builder',
-        lastReplyPreview: 'Build completed yesterday',
-        summaryLine: 'Build completed yesterday',
-        hiddenLineCount: 2,
-        recentOutputBytes: 1024,
+        lastReplyPreview: '',
+        summaryLine: null,
+        hiddenLineCount: 0,
+        recentOutputBytes: 0,
       },
     });
-  });
-
-  // The closed card is gone; the other session is untouched.
-  await expect(sessionRows).toHaveCount(1);
-  await expect(sessionRows.filter({ hasText: 'docs-builder' })).toHaveCount(0);
-  await expect(sessionRows.filter({ hasText: 'ThreadTerm' })).toHaveCount(1);
-  expect(snapshotRequests).toBe(1);
-});
-
-test('a natural process exit keeps the card visible as completed/failed (D4 guard)', async ({
-  page,
-}) => {
-  // The natural-exit path (pty/events.rs) is intentionally NOT changed: it
-  // still broadcasts exit -> status, never CardRemoved. The mobile card must
-  // stay in the list (matching the desktop "exited card does not vanish"
-  // behaviour) — proving we did not mask the defect by deleting functionality.
-  await page.goto('/pair');
-
-  const allSessions = page.locator('.section-block', { hasText: 'All Sessions' });
-  const sessionRows = allSessions.locator('.instance-row');
-  await expect(sessionRows).toHaveCount(2);
-
-  // card-1 process exits with a failure code; card-2 exits cleanly (code 0).
-  await page.evaluate(() => {
-    const sockets = ((window as unknown) as {
-      __threadtermWs?: Array<{ emit: (message: unknown) => void }>;
-    }).__threadtermWs;
     sockets?.at(-1)?.emit({
       protocol_version: 1,
       kind: 'exit',
       card_id: 'card-1',
       code: 137,
     });
-    sockets?.at(-1)?.emit({
-      protocol_version: 1,
-      kind: 'exit',
-      card_id: 'card-2',
-      code: 0,
-    });
   });
-
-  // BOTH cards remain in the list — exit does NOT remove them.
-  await expect(sessionRows).toHaveCount(2);
-  // card-1 (non-zero exit) is marked failed; card-2 (exit 0) is completed.
-  await expect(
-    sessionRows.filter({ hasText: 'ThreadTerm' }).locator('.status-badge-failed'),
-  ).toHaveCount(1);
-  await expect(
-    sessionRows.filter({ hasText: 'docs-builder' }).locator('.status-badge-completed'),
-  ).toHaveCount(1);
+  await expect(rows).toHaveCount(2);
+  await expect(rows.filter({ hasText: 'docs-builder' })).toHaveCount(0);
+  await expect(rows.filter({ hasText: 'ThreadTerm' }).locator('.status-badge-failed')).toHaveCount(1);
   expect(snapshotRequests).toBe(1);
 });
 
-test('mobile shell follows the desktop language injected into the pair URL', async ({ page }) => {
-  // The desktop injects ?lang=<i18n.language> into the pairing URL (same
-  // pattern as the theme_* colors). With lang=zh-CN the mobile chrome must
-  // render Chinese instead of the English default.
+test('desktop language, touch input, and read-only capability remain correct', async ({ page }) => {
   await page.goto('/pair?lang=zh-CN');
+  await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible();
+  await page.getByRole('button', { name: '终端', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '终端' })).toBeVisible();
+  await page.locator('.instance-row', { hasText: 'ThreadTerm' }).locator('.instance-row-main').click();
 
-  await expect(page.getByRole('heading', { name: 'ThreadTerm' })).toBeVisible();
-  await expect(page.locator('.section-block', { hasText: '全部会话' })).toBeVisible();
-  await expect(page.getByText('点击进入')).toBeVisible();
-  await expect(page.locator('.tab-bar').getByText('终端')).toBeVisible();
-  await expect(page.locator('.tab-bar').getByText('设置')).toBeVisible();
-
-  // The Settings screen exposes a language switcher; "跟随桌面" (follow
-  // desktop) is the active default and English can still be chosen manually.
-  await page.locator('.tab-bar').getByText('设置').click();
-  await expect(page.getByRole('heading', { name: '语言' })).toBeVisible();
-  await page.getByRole('button', { name: 'English' }).click();
-  await expect(page.locator('.tab-bar').getByText('Terminal')).toBeVisible();
-});
-
-test('mobile input touch sends exactly once and read-only mode hides controls', async ({ page }) => {
-  await page.goto('/pair');
-  await page.getByText('Tap to focus').click();
-
-  await page.getByLabel('Mobile terminal input').fill('touch once');
+  await page.getByLabel('移动终端输入').fill('touch once');
   const enter = page.locator('.input-bar').getByRole('button', { name: 'Enter' });
   await enter.evaluate((button) => {
     button.dispatchEvent(new Event('touchstart', { bubbles: true, cancelable: true }));
     button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   });
-
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const sockets = ((window as unknown) as { __threadtermWs?: Array<{ sent: string[] }> })
+        const sockets = (window as unknown as { __threadtermWs?: Array<{ sent: string[] }> })
           .__threadtermWs;
         return sockets?.at(-1)?.sent.filter((item) => item.includes('touch once')) ?? [];
       }),
@@ -855,13 +873,18 @@ test('mobile input touch sends exactly once and read-only mode hides controls', 
     window.localStorage.setItem('threadterm.bridgePermission', 'read_only');
     window.location.reload();
   });
-  await expect(page.getByText('Read-only').first()).toBeVisible();
-  await page.getByText('Tap to focus').click();
-  await expect(page.getByText('Read-only device')).toBeVisible();
-  await expect(page.getByLabel('Mobile terminal input')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible();
+  await page.getByRole('button', { name: '终端', exact: true }).click();
+  await page.locator('.instance-row', { hasText: 'ThreadTerm' }).locator('.instance-row-main').click();
+  await expect(page.getByText('只读设备')).toBeVisible();
+  await expect(page.getByLabel('移动终端输入')).toHaveCount(0);
 
-  const overflow = await page.evaluate(
-    () => document.documentElement.scrollWidth - window.innerWidth,
-  );
-  expect(overflow).toBeLessThanOrEqual(1);
+  await page.getByRole('button', { name: '返回' }).click();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('button', { name: /语言/ }).click();
+  await expect(page.getByRole('heading', { name: '语言' })).toBeVisible();
+  await page.getByRole('button', { name: 'English English', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Language' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toBeVisible();
 });

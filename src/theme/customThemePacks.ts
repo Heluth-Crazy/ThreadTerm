@@ -72,6 +72,9 @@ const READABILITY_PAIRS: Array<[
   ['app background', (tokens) => tokens.app.foreground, (tokens) => tokens.app.background],
   ['card', (tokens) => tokens.app.cardForeground, (tokens) => tokens.app.card],
   ['popover', (tokens) => tokens.app.popoverForeground, (tokens) => tokens.app.popover],
+  ['muted foreground', (tokens) => tokens.app.mutedForeground, (tokens) => tokens.app.background],
+  ['primary', (tokens) => tokens.app.primaryForeground, (tokens) => tokens.app.primary],
+  ['accent', (tokens) => tokens.app.accentForeground, (tokens) => tokens.app.accent],
   ['terminal', (tokens) => tokens.terminal.foreground, (tokens) => tokens.terminal.background],
 ];
 

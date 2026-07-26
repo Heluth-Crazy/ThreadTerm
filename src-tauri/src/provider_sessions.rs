@@ -1,8 +1,9 @@
 use once_cell::sync::Lazy;
 use serde::Serialize;
-use std::collections::HashMap;
-use std::fs;
+use std::collections::{HashMap, HashSet};
+use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -10,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const JSONL_SCAN_CACHE_TTL: Duration = Duration::from_millis(2_500);
 const SESSION_FILE_GRACE_MS: u64 = 120_000;
 const DEFAULT_PROVIDER_SESSION_LIST_LIMIT: usize = 200;
+const MAX_CODEX_SESSION_ANCESTRY_DEPTH: usize = 32;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,6 +20,14 @@ pub struct ProviderSessionInfo {
     pub provider: String,
     pub project_path: String,
     pub updated_at: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct CodexSessionMeta {
+    id: String,
+    cwd: String,
+    parent_session_id: Option<String>,
+    resumable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +87,29 @@ pub async fn provider_list_recent_sessions(
     tokio::task::spawn_blocking(move || Ok(list_recent_provider_sessions(limit)))
         .await
         .map_err(|e| format!("Provider session discovery task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn provider_resolve_resume_session(
+    provider: String,
+    session_id: String,
+) -> Result<Option<ProviderSessionInfo>, String> {
+    tokio::task::spawn_blocking(move || {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return Ok(None);
+        }
+
+        match provider.as_str() {
+            "codex" => resolve_codex_resume_session(session_id),
+            "claude" => Ok(list_claude_sessions(None)
+                .into_iter()
+                .find(|session| session.id == session_id)),
+            other => Err(format!("Unsupported provider: {other}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("Provider session validation task failed: {e}"))?
 }
 
 fn find_recent_codex_session(
@@ -198,25 +231,179 @@ fn normalize_provider_session_limit(limit: Option<usize>) -> usize {
 }
 
 fn parse_codex_session_meta(path: &Path) -> Option<(String, String)> {
-    let content = fs::read_to_string(path).ok()?;
-    for line in content.lines().take(24) {
-        let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let meta = parse_codex_session_record(path)?;
+    meta.resumable.then_some((meta.id, meta.cwd))
+}
+
+fn parse_codex_session_record(path: &Path) -> Option<CodexSessionMeta> {
+    let file = File::open(path).ok()?;
+    for line in BufReader::new(file).lines().take(24) {
+        let line = line.ok()?;
+        let value: serde_json::Value = serde_json::from_str(&line).ok()?;
         if value.get("type")?.as_str()? != "session_meta" {
             continue;
         }
         let payload = value.get("payload")?;
         let id = payload.get("id")?.as_str()?.to_string();
         let cwd = payload.get("cwd")?.as_str()?.to_string();
-        return Some((id, cwd));
+        return Some(CodexSessionMeta {
+            id,
+            cwd,
+            parent_session_id: codex_parent_session_id(payload),
+            resumable: is_resumable_codex_session_payload(payload),
+        });
     }
     None
 }
 
+fn codex_parent_session_id(payload: &serde_json::Value) -> Option<String> {
+    [
+        "parent_thread_id",
+        "parentThreadId",
+        "parent_id",
+        "parentId",
+    ]
+    .iter()
+    .find_map(|key| {
+        payload
+            .get(*key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+    .or_else(|| {
+        payload
+            .pointer("/source/subagent/thread_spawn/parent_thread_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn is_resumable_codex_session_payload(payload: &serde_json::Value) -> bool {
+    if payload
+        .get("ephemeral")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return false;
+    }
+
+    if codex_parent_session_id(payload).is_some() {
+        return false;
+    }
+
+    if let Some(thread_source) = payload
+        .get("thread_source")
+        .or_else(|| payload.get("threadSource"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let source = thread_source.to_ascii_lowercase();
+        if !matches!(
+            source.as_str(),
+            "user" | "cli" | "vscode" | "appserver" | "app_server"
+        ) {
+            return false;
+        }
+    }
+
+    let Some(source) = payload.get("source") else {
+        // Older Codex session metadata did not always record a source.
+        return true;
+    };
+    let Some(source) = source
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        // Structured sources are used for child/internal sessions (for
+        // example {"subagent": {"thread_spawn": ...}}) and are not safe
+        // roots for an interactive `codex resume`.
+        return false;
+    };
+    matches!(
+        source.to_ascii_lowercase().as_str(),
+        "cli" | "vscode" | "appserver" | "app_server" | "user"
+    )
+}
+
+fn resolve_codex_resume_session(session_id: &str) -> Result<Option<ProviderSessionInfo>, String> {
+    let Some(root) = dirs::home_dir().map(|home| home.join(".codex").join("sessions")) else {
+        return Ok(None);
+    };
+    resolve_codex_resume_session_from_root(&root, session_id)
+}
+
+fn resolve_codex_resume_session_from_root(
+    root: &Path,
+    session_id: &str,
+) -> Result<Option<ProviderSessionInfo>, String> {
+    if !root.is_dir() {
+        return Ok(None);
+    }
+
+    let files = jsonl_files_recent_first(root, None);
+    let mut current_id = session_id.to_string();
+    let mut visited = HashSet::new();
+
+    for _ in 0..MAX_CODEX_SESSION_ANCESTRY_DEPTH {
+        if !visited.insert(current_id.clone()) {
+            return Err(format!(
+                "Codex session ancestry contains a cycle at {current_id}"
+            ));
+        }
+
+        let Some((meta, updated_at)) = find_codex_session_record(&files, &current_id) else {
+            return Ok(None);
+        };
+        if meta.resumable {
+            return Ok(Some(ProviderSessionInfo {
+                id: meta.id,
+                provider: "codex".to_string(),
+                project_path: meta.cwd,
+                updated_at,
+            }));
+        }
+
+        let Some(parent_session_id) = meta.parent_session_id else {
+            return Ok(None);
+        };
+        current_id = parent_session_id;
+    }
+
+    Err(format!(
+        "Codex session ancestry exceeds {MAX_CODEX_SESSION_ANCESTRY_DEPTH} levels"
+    ))
+}
+
+fn find_codex_session_record(
+    files: &[SessionFileCandidate],
+    session_id: &str,
+) -> Option<(CodexSessionMeta, Option<u64>)> {
+    files
+        .iter()
+        .filter(|file| {
+            file.path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(session_id))
+        })
+        .filter_map(|file| {
+            parse_codex_session_record(&file.path).map(|meta| (meta, file.modified_ms))
+        })
+        .find(|(meta, _)| meta.id == session_id)
+}
+
 fn parse_claude_session_meta(path: &Path) -> Option<(String, String)> {
     let session_id_from_name = path.file_stem()?.to_str()?.to_string();
-    let content = fs::read_to_string(path).ok()?;
-    for line in content.lines().take(40) {
-        let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let file = File::open(path).ok()?;
+    for line in BufReader::new(file).lines().take(40) {
+        let line = line.ok()?;
+        let value: serde_json::Value = serde_json::from_str(&line).ok()?;
         let cwd = value.get("cwd").and_then(|v| v.as_str());
         if let Some(cwd) = cwd {
             let id = value
@@ -392,6 +579,84 @@ mod tests {
     }
 
     #[test]
+    fn parse_codex_session_meta_rejects_subagent_thread_spawn_payload() {
+        let _guard = TEST_LOCK.lock().expect("provider session test lock");
+        let root = temp_root("codex-subagent");
+        let file =
+            root.join("rollout-2026-07-11T21-07-51-019f514a-8678-7c33-b6cf-3a8c40e53052.jsonl");
+        write_jsonl(
+            &file,
+            r#"{"type":"session_meta","payload":{"id":"019f514a-8678-7c33-b6cf-3a8c40e53052","cwd":"/repo/app","thread_source":"subagent","parent_thread_id":"019f513b-d9ae-7833-8e9e-d878ac9e9fe5","source":{"subagent":{"thread_spawn":{"parent_thread_id":"019f513b-d9ae-7833-8e9e-d878ac9e9fe5","depth":1,"agent_path":"/root/rust_checks","agent_nickname":"Pasteur"}}},"agent_path":"/root/rust_checks"}}"#,
+        );
+
+        assert_eq!(parse_codex_session_meta(&file), None);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn codex_resume_resolution_follows_subagent_parent_without_losing_history() {
+        let _guard = TEST_LOCK.lock().expect("provider session test lock");
+        clear_scan_cache();
+        let root = temp_root("codex-resolution");
+        let interactive_id = "019f513b-d9ae-7833-8e9e-d878ac9e9fe5";
+        let subagent_id = "019f514a-8678-7c33-b6cf-3a8c40e53052";
+        write_jsonl(
+            &root.join(format!("rollout-{interactive_id}.jsonl")),
+            &format!(
+                r#"{{"type":"session_meta","payload":{{"id":"{interactive_id}","cwd":"/repo/app","thread_source":"user","source":"vscode"}}}}"#
+            ),
+        );
+        write_jsonl(
+            &root.join(format!("rollout-{subagent_id}.jsonl")),
+            &format!(
+                r#"{{"type":"session_meta","payload":{{"id":"{subagent_id}","cwd":"/repo/app","thread_source":"subagent","parent_thread_id":"{interactive_id}","source":{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{interactive_id}","depth":1,"agent_path":"/root/rust_checks","agent_nickname":"Pasteur"}}}}}},"agent_path":"/root/rust_checks"}}}}"#
+            ),
+        );
+
+        let direct = resolve_codex_resume_session_from_root(&root, interactive_id)
+            .expect("resolve direct")
+            .expect("interactive root");
+        assert_eq!(direct.id, interactive_id);
+
+        let migrated = resolve_codex_resume_session_from_root(&root, subagent_id)
+            .expect("resolve child")
+            .expect("parent root");
+        assert_eq!(migrated.id, interactive_id);
+        assert_eq!(migrated.provider, "codex");
+        assert_eq!(migrated.project_path, "/repo/app");
+
+        assert!(resolve_codex_resume_session_from_root(&root, "missing")
+            .expect("missing lookup")
+            .is_none());
+
+        let _ = fs::remove_dir_all(&root);
+        clear_scan_cache();
+    }
+
+    #[test]
+    fn codex_resume_resolution_rejects_ancestry_cycles() {
+        let _guard = TEST_LOCK.lock().expect("provider session test lock");
+        clear_scan_cache();
+        let root = temp_root("codex-cycle");
+        for (id, parent) in [("child-a", "child-b"), ("child-b", "child-a")] {
+            write_jsonl(
+                &root.join(format!("rollout-{id}.jsonl")),
+                &format!(
+                    r#"{{"type":"session_meta","payload":{{"id":"{id}","cwd":"/repo/app","thread_source":"subagent","parent_thread_id":"{parent}","source":{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{parent}"}}}}}}}}}}"#
+                ),
+            );
+        }
+
+        let error =
+            resolve_codex_resume_session_from_root(&root, "child-a").expect_err("cycle must fail");
+        assert!(error.contains("cycle"));
+
+        let _ = fs::remove_dir_all(&root);
+        clear_scan_cache();
+    }
+
+    #[test]
     fn parse_claude_session_meta_reads_cwd_and_falls_back_to_file_stem() {
         let _guard = TEST_LOCK.lock().expect("provider session test lock");
         let root = temp_root("claude-parse");
@@ -401,6 +666,27 @@ mod tests {
         assert_eq!(
             parse_claude_session_meta(&file),
             Some(("claude-session-1".to_string(), "/repo/app".to_string()))
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn parse_claude_session_meta_stops_after_finding_header_metadata() {
+        let _guard = TEST_LOCK.lock().expect("provider session test lock");
+        let root = temp_root("claude-bounded-read");
+        let file = root.join("claude-session-2.jsonl");
+        fs::create_dir_all(&root).expect("create root");
+        let mut bytes = br#"{"sessionId":"claude-2","cwd":"/repo/bounded","message":"hello"}
+"#
+        .to_vec();
+        bytes.extend(std::iter::repeat_n(b'x', 2 * 1024 * 1024));
+        bytes.extend([0xff, 0xfe, 0xfd]);
+        fs::write(&file, bytes).expect("write fixture");
+
+        assert_eq!(
+            parse_claude_session_meta(&file),
+            Some(("claude-2".to_string(), "/repo/bounded".to_string()))
         );
 
         let _ = fs::remove_dir_all(&root);

@@ -14,7 +14,7 @@ That means the near-term roadmap prioritizes:
 - a trustworthy first run on macOS and Windows
 - clear AI CLI session state
 - reliable notifications and one-click return paths
-- small, well-documented workflows contributors can test
+- small, well-documented interaction paths contributors can test
 
 ## v0.2 - Stable AI CLI Workbench
 
@@ -37,11 +37,11 @@ Non-goals for v0.2:
 - team sync or cloud accounts
 - replacing the user's normal shell configuration
 
-## v0.3 - AI Session Workflow
+## v0.3 - AI Session Management
 
 Goal: make ThreadTerm especially good at managing multiple AI CLI threads.
 
-v0.3 starts with session visibility before adding heavier workflow controls:
+v0.3 starts with session visibility before adding heavier session controls:
 
 | Slice | Scope | Acceptance |
 | --- | --- | --- |

@@ -15,6 +15,10 @@
   },
   "sidebar": {
     "projects": "Projects",
+    "primaryNavigation": "Primary navigation",
+    "workbench": "Workbench",
+    "projectFilter": "Project filter",
+    "allProjects": "All projects",
     "expand": "Expand sidebar",
     "collapse": "Collapse sidebar",
     "allTerminals": "All terminals",
@@ -36,6 +40,125 @@
     "bareWorktree": "bare",
     "emptyLine1": "No projects yet.",
     "emptyLine2": "Create a terminal to start."
+  },
+  "workbench": {
+    "title": "Workbench",
+    "subtitle": "Deterministic local signals from your current terminals",
+    "searchLabel": "Search workbench",
+    "searchPlaceholder": "Search project, branch, or output",
+    "summary": {
+      "attention": "Needs attention",
+      "normalRunning": "Running normally",
+      "review": "Ready to review",
+      "failed": "Unrecovered failures"
+    },
+    "attention": {
+      "title": "Needs attention",
+      "count": "{{count}} items"
+    },
+    "filters": {
+      "label": "Filter attention items",
+      "all": "All",
+      "approval": "Approval",
+      "waiting": "Waiting",
+      "failed": "Failed",
+      "review": "Review",
+      "stalled": "No progress"
+    },
+    "groups": {
+      "title": "Execution contexts",
+      "subtitle": "Grouped by project and worktree, without inferred tasks"
+    },
+    "group": {
+      "terminals": "{{count}} terminals",
+      "attention": "{{count}} need attention"
+    },
+    "groupStatus": {
+      "failed": "Failed",
+      "attention": "Needs attention",
+      "stalled": "No progress",
+      "running": "Running",
+      "review": "Ready to review",
+      "idle": "Idle"
+    },
+    "kind": {
+      "approval": "Waiting for approval",
+      "waiting_input": "Waiting for input",
+      "failed": "Execution failed",
+      "review": "Result ready to review",
+      "stalled": "No recent progress"
+    },
+    "reason": {
+      "structured_approval": "A structured request is waiting for approval.",
+      "structured_input": "A structured request needs your input.",
+      "supervisor_prompt": "The terminal supervisor detected an interactive prompt.",
+      "waiting_state": "The terminal is currently waiting for input.",
+      "failed_state": "The terminal failed and has no pending automatic restart.",
+      "completed_unread": "The terminal completed and its result has not been viewed.",
+      "stalled_running": "The agent terminal has had no activity within the configured threshold."
+    },
+    "source": {
+      "structured_request": "Structured request",
+      "supervisor_alert": "Supervisor prompt",
+      "notification": "Terminal notification",
+      "terminal_state": "Terminal state"
+    },
+    "action": {
+      "openRequest": "View request",
+      "openResult": "View result",
+      "openTerminal": "Open terminal",
+      "details": "Details",
+      "viewAllTerminals": "View all terminals"
+    },
+    "empty": {
+      "noTerminalsTitle": "No terminals yet",
+      "noTerminalsBody": "Create a terminal to start collecting local status signals.",
+      "noScopeTerminalsTitle": "No terminals in this scope",
+      "noScopeTerminalsBody": "Choose another project or worktree, or create a terminal in this scope.",
+      "noSearchResults": "No attention items match this search.",
+      "noAttention": "Nothing needs your attention in this scope.",
+      "noActiveContexts": "No active execution contexts in this scope."
+    },
+    "notifications": {
+      "approvalTitle": "Codex needs approval",
+      "inputTitle": "Codex needs your input",
+      "openRequest": "Open the Codex session to review this request."
+    },
+    "rules": {
+      "title": "Attention rules",
+      "localOnly": "These local rules only decide what appears here. They never send terminal input or restart a process.",
+      "includeWaiting": "Waiting for input",
+      "includeWaitingHint": "Include structured requests and terminal prompts.",
+      "includeFailed": "Unrecovered failures",
+      "includeFailedHint": "Hide failures while an automatic restart is pending.",
+      "includeReview": "Completed results to review",
+      "includeReviewHint": "Include completed terminals with unread results.",
+      "stalled": "No-progress detection",
+      "stalledHint": "Disabled by default. Exclude dev servers and watchers after enabling it.",
+      "threshold": "No-progress threshold",
+      "minutes": "{{count}} minutes",
+      "exclusions": "Exclude long-running sessions",
+      "retryNote": "Automatic restart limits remain card-specific. This workbench does not create a second retry policy.",
+      "reset": "Reset rules"
+    },
+    "detail": {
+      "settings": "Local settings",
+      "title": "Workbench detail",
+      "unavailable": "Item unavailable",
+      "sourceGone": "The source state changed and this item is no longer active.",
+      "readonly": "Read-only here; act in the terminal.",
+      "source": "Source",
+      "reason": "Why it appears",
+      "context": "Context",
+      "observed": "Observed",
+      "activity": "Terminal activity",
+      "notifications": "Notifications",
+      "status": "Status",
+      "path": "Path",
+      "lastActivity": "Last activity",
+      "latestSignal": "Latest real signal",
+      "terminals": "Terminals"
+    }
   },
   "grid": {
     "emptyTitle": "No terminals yet",
@@ -218,7 +341,10 @@
     "cliOnly": "CLI session",
     "cliOnlyDescription": "{{cli}} runs as a CLI session; native resume binding is not tracked yet.",
     "customCommand": "Custom command",
-    "customCommandDescription": "This AI card runs a custom command instead of the default provider command."
+    "customCommandDescription": "This AI card runs a custom command instead of the default provider command.",
+    "resolvingHistory": "Resolving the original Codex history…",
+    "historyUnavailable": "The original Codex history could not be resolved. Its binding was preserved and no new session was started.",
+    "historyResolutionFailed": "ThreadTerm could not verify the original Codex history. No new session was started."
   },
   "aiThread": {
     "empty": "Ask AI to explain — answers appear here.",

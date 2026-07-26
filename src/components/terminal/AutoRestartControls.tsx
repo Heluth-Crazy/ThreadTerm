@@ -43,7 +43,7 @@ export function AutoRestartControls({
         className={[
           'rounded p-1',
           enabled
-            ? 'text-emerald-600 hover:bg-emerald-500/10'
+            ? 'text-success hover:bg-success/10'
             : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
         ].join(' ')}
       >
@@ -57,7 +57,7 @@ export function AutoRestartControls({
           onClick={stopClick}
           onMouseDown={stopClick}
           onChange={handleChange}
-          className="h-5 rounded border border-white/10 bg-background px-1 text-[10px] text-foreground"
+          className="h-5 rounded border border-border bg-background px-1 text-[11px] text-foreground"
         >
           {RETRY_OPTIONS.map((value) => (
             <option key={value} value={value}>

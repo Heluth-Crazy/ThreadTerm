@@ -15,7 +15,7 @@ function getLineTone(line: string): string {
     return 'text-destructive';
   }
   if (/\b(warning|warn|deprecated)\b/i.test(line)) {
-    return 'text-[hsl(var(--primary))]';
+    return 'text-primary';
   }
   if (isTechnicalPreviewLine(line)) {
     return 'text-[color:var(--terminal-foreground)] opacity-90';
@@ -39,7 +39,7 @@ export function CardPreviewPanel({ preview, activeFor, messageCount }: CardPrevi
     return (
       <div
         data-testid="card-preview-empty"
-        className="flex h-full min-h-[120px] items-center justify-center overflow-hidden rounded-[var(--radius-md)] border border-white/10/40 px-3 text-[11px] italic opacity-65"
+        className="flex h-full min-h-[120px] items-center justify-center overflow-hidden rounded-md border border-border px-3 text-[11px] italic opacity-65"
         style={terminalSurfaceStyle}
       >
         {t('card.noOutput')}
@@ -51,10 +51,10 @@ export function CardPreviewPanel({ preview, activeFor, messageCount }: CardPrevi
 
   return (
     <div
-      className="flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius-md)] border border-white/10/50 shadow-inner"
+      className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-border shadow-inner"
       style={terminalSurfaceStyle}
     >
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10/30 px-2.5 py-1 text-[10px]">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-2.5 py-1 text-[11px]">
         <span className="min-w-0 truncate font-semibold uppercase tracking-wide text-muted-foreground/80">
           {t(`card.preview.${preview.kind}`, preview.kind)}
         </span>
@@ -77,7 +77,7 @@ export function CardPreviewPanel({ preview, activeFor, messageCount }: CardPrevi
             {messageCount}
           </span>
           {preview.hiddenLineCount > 0 && (
-            <span className="text-[9px] text-muted-foreground/60">
+            <span className="text-[11px] text-muted-foreground/60">
               {t('card.preview.more', { count: preview.hiddenLineCount })}
             </span>
           )}
@@ -98,7 +98,7 @@ export function CardPreviewPanel({ preview, activeFor, messageCount }: CardPrevi
               <div
                 key={`${line}-${index}`}
                 className={[
-                  'line-clamp-2 whitespace-normal break-words rounded-[var(--radius-sm)]',
+                  'line-clamp-2 whitespace-normal break-words rounded-sm',
                   getLineTone(line),
                   isTechnicalPreviewLine(line)
                     ? 'bg-[color-mix(in_srgb,var(--terminal-foreground)_8%,transparent)] px-1'
@@ -120,7 +120,7 @@ export function CardPreviewPanel({ preview, activeFor, messageCount }: CardPrevi
         {summaryLine && (
           <div
             data-testid="card-preview-summary"
-            className="absolute inset-x-0 bottom-0 border-t border-white/10/35 px-2.5 py-1 shadow-[0_-6px_14px_rgba(0,0,0,0.14)] backdrop-blur-sm"
+            className="absolute inset-x-0 bottom-0 border-t border-border px-2.5 py-1 shadow-[0_-6px_14px_rgba(0,0,0,0.14)] backdrop-blur-sm"
             style={{
               backgroundColor:
                 'color-mix(in srgb, var(--terminal-background) 66%, hsl(var(--card)) 34%)',
@@ -128,7 +128,7 @@ export function CardPreviewPanel({ preview, activeFor, messageCount }: CardPrevi
           >
             <div
               className={[
-                'line-clamp-1 break-words font-mono text-[10.5px] leading-snug',
+                'line-clamp-1 break-words font-mono text-[11px] leading-snug',
                 getLineTone(summaryLine),
               ].join(' ')}
             >

@@ -57,7 +57,7 @@ export function StatsPanel({ onClose }: StatsPanelProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-[61.5px] shrink-0 items-center justify-between border-b border-border px-3">
+      <div className="flex h-15 shrink-0 items-center justify-between border-b border-border px-3">
         <div className="flex min-w-0 items-center gap-2">
           <BarChart3 className="h-4 w-4 shrink-0 text-primary" />
           <h2 className="truncate text-sm font-semibold">{t('stats.title', { defaultValue: 'Token usage' })}</h2>
@@ -94,7 +94,7 @@ export function StatsPanel({ onClose }: StatsPanelProps) {
               type="button"
               aria-pressed={range === r}
               onClick={() => setRange(r)}
-              className={`rounded-[var(--radius-md)] px-2 py-1 text-[11px] transition-colors ${
+              className={`rounded-md px-2 py-1 text-[11px] transition-colors ${
                 range === r ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent'
               }`}
             >
@@ -113,7 +113,7 @@ export function StatsPanel({ onClose }: StatsPanelProps) {
               type="button"
               aria-pressed={scope === s}
               onClick={() => setScope(s)}
-              className={`rounded-[var(--radius-md)] px-2 py-1 text-[11px] transition-colors ${
+              className={`rounded-md px-2 py-1 text-[11px] transition-colors ${
                 scope === s ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent'
               }`}
             >
@@ -125,7 +125,7 @@ export function StatsPanel({ onClose }: StatsPanelProps) {
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {error ? (
-          <p className="text-xs text-red-500">{error}</p>
+          <p className="text-xs text-destructive">{error}</p>
         ) : loading && !snapshot ? (
           <p className="text-xs text-muted-foreground">
             {t('stats.loading', { defaultValue: 'Scanning sessions…' })}
@@ -137,14 +137,14 @@ export function StatsPanel({ onClose }: StatsPanelProps) {
           </p>
         ) : (
           <>
-            <div className="mb-4 rounded-[var(--radius)] border border-border bg-foreground/5 p-3">
+            <div className="mb-4 rounded-lg border border-border bg-foreground/5 p-3">
               <div className="text-2xl font-semibold tabular-nums">{formatCost(snapshot.totalCostUsd)}</div>
               <div className="mt-1 text-[11px] text-muted-foreground">
                 {formatTokens(snapshot.totalTokens)} {t('stats.realTokens', { defaultValue: 'real tokens' })} ·{' '}
                 {snapshot.sessionCount} {t('stats.sessions', { defaultValue: 'sessions' })} ·{' '}
                 {snapshot.totalCalls} {t('stats.calls', { defaultValue: 'calls' })}
               </div>
-              <div className="mt-2 grid grid-cols-2 gap-1 text-[10px] text-muted-foreground tabular-nums">
+              <div className="mt-2 grid grid-cols-2 gap-1 text-[11px] text-muted-foreground tabular-nums">
                 <span>{t('stats.inputOutputTokens', { defaultValue: 'input + output' })} {formatTokens(snapshot.inputOutputTokens)}</span>
                 <span>{t('stats.cacheTokens', { defaultValue: 'cache' })} {formatTokens(snapshot.cacheTokens)}</span>
                 <span>{t('stats.usageInput', { defaultValue: 'input' })} {formatTokens(snapshot.usage.input)}</span>
@@ -187,7 +187,7 @@ function BucketList({
         {buckets.slice(0, 12).map((b) => (
           <li
             key={b.key}
-            className="relative overflow-hidden rounded-[var(--radius-md)] border border-border/60 bg-foreground/[0.03] px-2 py-1.5"
+            className="relative overflow-hidden rounded-md border border-border/60 bg-foreground/[0.03] px-2 py-1.5"
           >
             <div
               className="absolute inset-y-0 left-0 bg-primary/10"
@@ -200,7 +200,7 @@ function BucketList({
               </span>
               <span className="shrink-0 tabular-nums text-muted-foreground">{formatCost(b.costUsd)}</span>
             </div>
-            <div className="relative mt-0.5 text-[10px] tabular-nums text-muted-foreground">
+            <div className="relative mt-0.5 text-[11px] tabular-nums text-muted-foreground">
               {formatTokens(b.totalTokens)} total · {formatTokens(b.inputOutputTokens)} i/o · {formatTokens(b.cacheTokens)} cache
             </div>
           </li>

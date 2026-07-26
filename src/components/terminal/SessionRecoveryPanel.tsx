@@ -125,7 +125,7 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
     const key = providerSessionKey(summary.provider, summary.id);
     if (knownStatus.active.has(key) || knownStatus.archived.has(key)) {
       return (
-        <span className="shrink-0 text-[10px] text-emerald-600">
+        <span className="shrink-0 text-[11px] text-success">
           {t('sessionRecovery.alreadyAdded')}
         </span>
       );
@@ -148,7 +148,7 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
-              className="h-12 animate-pulse rounded-[var(--radius-md)] bg-white/[0.04]"
+              className="h-12 animate-pulse rounded-md bg-muted/50"
             />
           ))}
         </div>
@@ -169,7 +169,7 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
           <button
             type="button"
             onClick={() => void retry(activeProvider)}
-            className="inline-flex items-center gap-1 rounded-[var(--radius-md)] border border-white/10 px-2 py-1 text-[11px] hover:bg-accent"
+            className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] hover:bg-accent"
           >
             <RotateCcw className="h-3 w-3" />
             {t('sessionRecovery.retry')}
@@ -230,10 +230,10 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
             <li key={key}>
               <label
                 className={[
-                  'flex cursor-pointer items-start gap-2 rounded-[var(--radius-md)] border px-2 py-2',
+                  'flex cursor-pointer items-start gap-2 rounded-md border px-2 py-2',
                   selected
                     ? 'border-primary/40 bg-primary/5'
-                    : 'border-white/10 bg-white/[0.03]',
+                    : 'border-border bg-muted/50',
                   alreadyAdded ? 'opacity-60' : '',
                 ].join(' ')}
               >
@@ -246,7 +246,7 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
                   aria-label={title.primary}
                 />
                 <div
-                  className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-muted ${typeMeta.accent}`}
+                  className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted ${typeMeta.accent}`}
                 >
                   <TypeIcon className="h-3.5 w-3.5" />
                 </div>
@@ -256,11 +256,11 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
                     {renderStatus(summary)}
                   </div>
                   {title.secondary && (
-                    <div className="truncate text-[10px] text-muted-foreground">
+                    <div className="truncate text-[11px] text-muted-foreground">
                       {title.secondary}
                     </div>
                   )}
-                  <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+                  <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
                     <span title={summary.projectPath}>{pathLeaf(summary.projectPath)}</span>
                     <span>{formatUpdatedAt(summary.updatedAt)}</span>
                     <span>{titleKindLabel}</span>
@@ -276,7 +276,7 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
 
   return (
     <div ref={panelRef} className="flex h-full flex-col" role="dialog" aria-label={t('sessionRecovery.title')}>
-      <div className="flex items-center gap-1.5 border-b border-white/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+      <div className="flex h-15 shrink-0 items-center gap-1.5 border-b border-border px-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
         <History className="h-3 w-3" />
         <span className="min-w-0 flex-1 truncate">{t('sessionRecovery.title')}</span>
         <button
@@ -290,18 +290,18 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
         </button>
       </div>
 
-      <p className="border-b border-white/5 px-3 py-1.5 text-[10px] text-muted-foreground">
+      <p className="border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">
         {t('sessionRecovery.localOnlyHint')}
       </p>
 
-      <div className="flex gap-1 overflow-x-auto border-b border-white/10 px-2 py-1.5">
+      <div className="flex gap-1 overflow-x-auto border-b border-border px-2 py-1.5">
         {AGENT_SESSION_PROVIDERS.map((provider) => (
           <button
             key={provider}
             type="button"
             onClick={() => setActiveProvider(provider as AgentSessionProvider)}
             className={[
-              'rounded-[var(--radius-md)] px-2 py-1 text-[11px] font-medium',
+              'rounded-md px-2 py-1 text-[11px] font-medium',
               activeProvider === provider
                 ? 'bg-primary/10 text-primary'
                 : 'hover:bg-accent hover:text-accent-foreground',
@@ -312,8 +312,8 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
         ))}
       </div>
 
-      <div className="border-b border-white/10 px-2 py-1.5">
-        <label className="flex items-center gap-1.5 rounded-[var(--radius-md)] border border-white/10 bg-white/[0.02] px-2 py-1">
+      <div className="border-b border-border px-2 py-1.5">
+        <label className="flex items-center gap-1.5 rounded-md border border-border bg-muted/50 px-2 py-1">
           <Search className="h-3 w-3 text-muted-foreground" />
           <input
             value={query}
@@ -327,12 +327,12 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
       {renderBody()}
 
       {providerState.nextCursor && providerState.loadState !== 'error' && (
-        <div className="border-t border-white/10 p-2">
+        <div className="border-t border-border p-2">
           <button
             type="button"
             onClick={() => void loadMore(activeProvider)}
             disabled={providerState.loadState === 'loading'}
-            className="inline-flex w-full items-center justify-center gap-1.5 rounded-[var(--radius-md)] border border-white/10 px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-50"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-50"
           >
             {providerState.loadState === 'loading' ? (
               <Loader2 className="h-3 w-3 animate-spin" />
@@ -342,15 +342,15 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
         </div>
       )}
 
-      <div className="flex items-center gap-2 border-t border-white/10 p-2">
-        <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">
+      <div className="flex items-center gap-2 border-t border-border p-2">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
           {t('sessionRecovery.selectedCount', { count: selectedCount })}
         </span>
         <button
           type="button"
           onClick={handleRestore}
           disabled={selectedCount === 0 || !isTauriEnv()}
-          className="inline-flex items-center justify-center gap-1.5 rounded-[var(--radius-md)] bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground disabled:opacity-40"
+          className="inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground disabled:opacity-50"
         >
           {t('sessionRecovery.restoreSelected')}
         </button>

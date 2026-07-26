@@ -22,6 +22,10 @@ import {
   subscribeSupervisorAlert,
   type SupervisorAlertPayload,
 } from '../tauri-bridge';
+import {
+  buildInteractionEpisodeKey,
+  normalizeNotificationFingerprint,
+} from '../osNotificationPolicy';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { useSupervisorStore } from './supervisorStore';
 import { isSupervisorRuleId } from './rules';
@@ -67,11 +71,20 @@ export function useSupervisor(): void {
     const handleAlert = (payload: SupervisorAlertPayload): void => {
       if (!payload || !isSupervisorRuleId(payload.ruleId)) return;
 
+      const terminalState = useTerminalStore.getState();
+      const card = terminalState.cards.find(
+        (candidate) => candidate.id === payload.cardId,
+      );
+      const generation = card?.messageCount ?? 0;
+      const fingerprint = normalizeNotificationFingerprint(
+        `${payload.ruleId}:${payload.sampleText}`,
+      );
       const alert = useSupervisorStore.getState().ingestAlert({
         cardId: payload.cardId,
         ruleId: payload.ruleId,
         sampleText: payload.sampleText,
         ts: payload.ts,
+        generation,
       });
       if (!alert) return; // Frontend dedup window swallowed it.
 
@@ -86,6 +99,12 @@ export function useSupervisor(): void {
           sampleText: payload.sampleText,
         }),
         at: payload.ts,
+        routing: {
+          origin: 'supervisor',
+          family: 'interaction',
+          episodeKey: buildInteractionEpisodeKey(payload.cardId, generation),
+          fingerprint,
+        },
       });
       useSupervisorStore.getState().attachNotification(alert.id, entry.id);
     };

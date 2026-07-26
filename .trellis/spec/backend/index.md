@@ -20,6 +20,7 @@ and the bridge server.
 | [Overlay Lightweight Mode](./overlay-lightweight-mode.md) | Cross-layer contract for disabling selector/float WebViews and global overlay shortcuts | Active |
 | [Windows Build Resources](./windows-build-resources.md) | MSVC app/libtest manifest, icon/version resource, and fresh-target validation contract | Active |
 | [Windows Background Processes](./windows-background-processes.md) | Hidden stdio services versus user-visible ConPTY process contracts | Active |
+| [Provider Session Resume](./provider-session-resume.md) | Interactive-root eligibility and pre-PTY validation for provider session bindings | Active |
 | [Stats OpenCode Usage Ingestion](./stats-opencode.md) | OpenCode SQLite token usage ingestion and `opencode` provider contracts | Active |
 | [Stats Token Usage](./stats-token-usage.md) | Token usage aggregation payloads, parser-version rebuilds, and frontend stats contracts | Active |
 

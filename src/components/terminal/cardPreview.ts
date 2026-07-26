@@ -1,4 +1,5 @@
 import type { TerminalCard, TerminalStatus } from '../../types/terminal';
+import { stripAnsiAndControlCharacters } from '../../lib/ansiText';
 
 export type CardPreviewKind = 'empty' | 'thinking' | 'reply' | 'waiting' | 'error' | 'shell';
 
@@ -17,18 +18,6 @@ interface BuildCardPreviewOptions {
 
 const DEFAULT_MAX_LINES = 5;
 const DEFAULT_MAX_LINE_LENGTH = 320;
-
-/* eslint-disable no-control-regex */
-const ANSI_RE = new RegExp(
-  [
-    '\\x1b\\[[0-?]*[ -/]*[@-~]',
-    '\\x1b[\\]PX^_][^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)',
-    '\\x1b[\\x20-\\x2f]*[\\x30-\\x7e]',
-  ].join('|'),
-  'g',
-);
-const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
-/* eslint-enable no-control-regex */
 
 const BORDER_ONLY_RE = /^[\s╭╮╰╯─│┌┐└┘├┤┬┴┼═║╔╗╚╝╟╢╠╣╦╩╬━┃┏┓┗┛┠┨┯┷┿╾╼╺╸╴╶]+$/;
 const EDGE_RE = /^[\s│┃║▌▐▏▕>]+|[\s│┃║▌▐▏▕]+$/g;
@@ -231,7 +220,7 @@ function isAiComposerChromeLine(rawLine: string): boolean {
 }
 
 function isAiComposerInputLine(rawLine: string, sawComposerChrome: boolean): boolean {
-  const normalized = rawLine.replace(ANSI_RE, '').replace(CONTROL_RE, '').trim();
+  const normalized = stripAnsiAndControlCharacters(rawLine).trim();
   if (AI_COMPOSER_UNICODE_PROMPT_RE.test(normalized)) return true;
   if (AI_COMPOSER_ASCII_PROMPT_RE.test(normalized)) return true;
   return sawComposerChrome && isNoiseLine(normalizePreviewLine(normalized) ?? '');
@@ -239,9 +228,7 @@ function isAiComposerInputLine(rawLine: string, sawComposerChrome: boolean): boo
 
 function splitCandidateLines(raw: string | undefined): string[] {
   if (!raw) return [];
-  return raw
-    .replace(ANSI_RE, '')
-    .replace(CONTROL_RE, '')
+  return stripAnsiAndControlCharacters(raw)
     .replace(/\r/g, '\n')
     .split('\n')
     .map((line) => line.replace(/\s+/g, ' ').trim())

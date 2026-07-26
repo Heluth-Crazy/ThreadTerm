@@ -31,8 +31,8 @@ vi.mock('./NotificationSettings', () => ({
   NotificationSettings: () => <div>notification settings</div>,
 }));
 
-vi.mock('./DesktopPetSettings', () => ({
-  DesktopPetSettings: () => <div>desktop pet settings</div>,
+vi.mock('./NotificationPreferenceSettings', () => ({
+  NotificationPreferenceSettings: () => <div>notification preference settings</div>,
 }));
 
 vi.mock('./OverlayHotkeysSettings', () => ({

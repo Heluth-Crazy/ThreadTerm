@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { SettingsSection } from './SettingsSection';
 
 interface ShortcutEntry {
   keys: string[];
@@ -78,16 +79,13 @@ export default function KeyboardShortcutsSettings() {
 
       <div className="space-y-6">
         {sections.map((section) => (
-          <div
-            key={section.title}
-            className="rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm"
-          >
+          <SettingsSection key={section.title}>
             <div className="mb-3 flex items-center gap-2">
               <span className="text-sm" role="img" aria-hidden="true">{section.icon}</span>
               <h4 className="text-[11px] font-semibold uppercase tracking-wider text-foreground">
                 {section.title}
               </h4>
-              <span className="rounded-full bg-muted/80 px-2 py-0.5 text-[10px] text-muted-foreground">
+              <span className="rounded-full bg-muted/80 px-2 py-0.5 text-[11px] text-muted-foreground">
                 {section.context}
               </span>
             </div>
@@ -97,12 +95,12 @@ export default function KeyboardShortcutsSettings() {
                   key={entry.label}
                   className="flex items-center justify-between py-2.5 text-sm"
                 >
-                  <span className="text-foreground">{entry.label}</span>
-                  <div className="flex items-center gap-1">
+                  <span className="min-w-0 truncate text-foreground">{entry.label}</span>
+                  <div className="flex shrink-0 items-center gap-1">
                     {entry.keys.map((key) => (
                       <kbd
                         key={key}
-                        className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-[var(--radius-md)] border border-white/10 bg-muted px-1.5 font-mono text-[11px] text-muted-foreground"
+                        className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-md border border-border bg-muted px-1.5 font-mono text-[11px] text-muted-foreground"
                       >
                         {key}
                       </kbd>
@@ -111,7 +109,7 @@ export default function KeyboardShortcutsSettings() {
                 </div>
               ))}
             </div>
-          </div>
+          </SettingsSection>
         ))}
       </div>
     </div>

@@ -18,10 +18,12 @@ function dispatchKeyDown(init: KeyboardEventInit): KeyboardEvent {
 beforeEach(() => {
   useTerminalStore.setState({ dockPinned: false });
   useOverlayStore.setState({ selectorOpen: false });
+  delete window.__terminalManager;
 });
 
 afterEach(() => {
   cleanup();
+  delete window.__terminalManager;
   document.querySelectorAll('[data-session-dock-active]').forEach((node) => node.remove());
 });
 
@@ -74,5 +76,32 @@ describe('KeyboardBridge', () => {
       'ArrowDown',
     ]);
     window.removeEventListener(SESSION_DOCK_KEY_EVENT, forwarded);
+  });
+
+  it('routes Ctrl+W through the TerminalManager removal guard', () => {
+    const cardId = useTerminalStore.getState().createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+    useTerminalStore.getState().focusCard(cardId);
+    const requestRemoveCard = vi.fn().mockResolvedValue(false);
+    window.__terminalManager = {
+      openCreate: vi.fn(),
+      closeCreate: vi.fn(),
+      setViewMode: vi.fn(),
+      openSettings: vi.fn(),
+      openPalette: vi.fn(),
+      closePalette: vi.fn(),
+      requestRemoveCard,
+      requestArchiveCard: vi.fn().mockResolvedValue(false),
+    };
+    render(<KeyboardBridge />);
+
+    const event = dispatchKeyDown({ key: 'w', ctrlKey: true });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(requestRemoveCard).toHaveBeenCalledWith(cardId);
+    expect(useTerminalStore.getState().cards).toHaveLength(1);
   });
 });

@@ -43,6 +43,24 @@ describe('createCardOutputBuffer', () => {
     expect(sink.flushPreview).toHaveBeenCalledWith('a', 'fresh');
   });
 
+  it('reads a headless preview only once at the edge of a burst', () => {
+    const sink = makeSink();
+    const buffer = createCardOutputBuffer(sink, 100);
+    const staleReader = vi.fn(() => 'stale');
+    const freshReader = vi.fn(() => 'fresh');
+
+    buffer.requestPreview('a', staleReader);
+    buffer.requestPreview('a', freshReader);
+    buffer.requestPreview('a', freshReader);
+    expect(staleReader).not.toHaveBeenCalled();
+    expect(freshReader).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(100);
+    expect(staleReader).not.toHaveBeenCalled();
+    expect(freshReader).toHaveBeenCalledTimes(1);
+    expect(sink.flushPreview).toHaveBeenCalledWith('a', 'fresh');
+  });
+
   it('delivers output and preview through one combined flush when available', () => {
     const flushCardUpdate = vi.fn();
     const buffer = createCardOutputBuffer({ flushCardUpdate }, 100);
@@ -125,5 +143,47 @@ describe('createCardOutputBuffer', () => {
 
     expect(sink.flushOutput).toHaveBeenCalledTimes(2);
     expect(sink.flushOutput).toHaveBeenLastCalledWith('a', 'second');
+  });
+
+  it('keeps three interleaved high-frequency streams isolated when one card is removed', () => {
+    const flushCardUpdate = vi.fn();
+    const buffer = createCardOutputBuffer({ flushCardUpdate }, 100);
+    const expected = new Map([
+      ['card-a', ''],
+      ['card-b', ''],
+      ['card-c', ''],
+    ]);
+
+    for (let index = 0; index < 1_000; index += 1) {
+      for (const cardId of expected.keys()) {
+        const chunk = `${cardId}:${index}|`;
+        expected.set(cardId, `${expected.get(cardId)}${chunk}`);
+        buffer.pushChunk(cardId, chunk);
+        buffer.requestPreview(cardId, () => `${cardId}-preview-${index}`);
+      }
+    }
+
+    buffer.discardCard('card-b');
+    buffer.flushCard('card-a');
+    vi.advanceTimersByTime(100);
+
+    expect(flushCardUpdate).toHaveBeenCalledTimes(2);
+    expect(flushCardUpdate).toHaveBeenCalledWith(
+      'card-a',
+      expected.get('card-a'),
+      'card-a-preview-999',
+    );
+    expect(flushCardUpdate).toHaveBeenCalledWith(
+      'card-c',
+      expected.get('card-c'),
+      'card-c-preview-999',
+    );
+    expect(
+      flushCardUpdate.mock.calls.some(([cardId]) => cardId === 'card-b'),
+    ).toBe(false);
+    expect(buffer.getDiagnostics()).toMatchObject({
+      pendingCardCount: 0,
+      timerScheduled: false,
+    });
   });
 });

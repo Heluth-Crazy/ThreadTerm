@@ -34,16 +34,21 @@ const pushNotificationMock = vi.fn((input: { cardId: string }) => ({
 let storeState: {
   supervisorEnabled: boolean;
   pinnedCardIds: string[];
+  cards: Array<{ id: string; messageCount: number }>;
   pushNotification: typeof pushNotificationMock;
 } = {
   supervisorEnabled: false,
   pinnedCardIds: [],
+  cards: [{ id: 'a', messageCount: 3 }],
   pushNotification: pushNotificationMock,
 };
 
-vi.mock('../../stores/terminalStore', () => ({
-  useTerminalStore: <T,>(selector: (s: typeof storeState) => T) => selector(storeState),
-}));
+vi.mock('../../stores/terminalStore', () => {
+  const useTerminalStore = <T,>(selector: (s: typeof storeState) => T): T =>
+    selector(storeState);
+  useTerminalStore.getState = () => storeState;
+  return { useTerminalStore };
+});
 
 // react-i18next: identity translator, returns the key untouched so we can
 // assert what was passed without loading a locale bundle.
@@ -67,6 +72,7 @@ beforeEach(() => {
   storeState = {
     supervisorEnabled: false,
     pinnedCardIds: [],
+    cards: [{ id: 'a', messageCount: 3 }],
     pushNotification: pushNotificationMock,
   };
   useSupervisorStore.setState({
@@ -161,6 +167,12 @@ describe('useSupervisor — alert handling', () => {
       cardId: 'a',
       kind: 'attention',
       title: 'alertTitle.sudo-password',
+      routing: {
+        origin: 'supervisor',
+        family: 'interaction',
+        episodeKey: 'interaction:a:3',
+        fingerprint: 'sudo-password:[sudo] password for user:',
+      },
     });
   });
 
@@ -174,7 +186,6 @@ describe('useSupervisor — alert handling', () => {
 
     alertHandler!({
       cardId: 'a',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ruleId: 'totally-bogus' as any,
       sampleText: 'x',
       ts: Date.now(),
@@ -184,7 +195,7 @@ describe('useSupervisor — alert handling', () => {
     expect(useSupervisorStore.getState().telemetry.triggered).toBe(0);
   });
 
-  it('drops a duplicate alert via the supervisorStore dedup window', async () => {
+  it('drops a duplicate alert for the same semantic episode', async () => {
     storeState = { ...storeState, supervisorEnabled: true, pinnedCardIds: ['a'] };
     renderHook(() => useSupervisor());
 
@@ -194,10 +205,35 @@ describe('useSupervisor — alert handling', () => {
 
     const ts = Date.now();
     alertHandler!({ cardId: 'a', ruleId: 'sudo-password', sampleText: 'x', ts });
-    alertHandler!({ cardId: 'a', ruleId: 'sudo-password', sampleText: 'x', ts: ts + 1_000 });
+    alertHandler!({ cardId: 'a', ruleId: 'sudo-password', sampleText: 'x', ts: ts + 61_000 });
 
     expect(pushNotificationMock).toHaveBeenCalledTimes(1);
     expect(useSupervisorStore.getState().telemetry.triggered).toBe(1);
+  });
+
+  it('accepts the same supervisor prompt after a new user submit', async () => {
+    storeState = { ...storeState, supervisorEnabled: true, pinnedCardIds: ['a'] };
+    renderHook(() => useSupervisor());
+
+    await waitFor(() => {
+      expect(alertHandler).not.toBeNull();
+    });
+
+    const ts = Date.now();
+    alertHandler!({ cardId: 'a', ruleId: 'sudo-password', sampleText: 'x', ts });
+    storeState = {
+      ...storeState,
+      cards: [{ id: 'a', messageCount: 4 }],
+    };
+    alertHandler!({
+      cardId: 'a',
+      ruleId: 'sudo-password',
+      sampleText: 'x',
+      ts: ts + 1_000,
+    });
+
+    expect(pushNotificationMock).toHaveBeenCalledTimes(2);
+    expect(useSupervisorStore.getState().telemetry.triggered).toBe(2);
   });
 
   it('unsubscribes from the alert event on unmount', async () => {

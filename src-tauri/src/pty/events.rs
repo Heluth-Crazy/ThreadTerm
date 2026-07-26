@@ -81,6 +81,7 @@ struct AttentionRequiredPayload {
     #[serde(rename = "type")]
     attention_type: String,
     message: String,
+    fingerprint: String,
 }
 
 // ── Background workers ───────────────────────────────────────────────────────
@@ -121,6 +122,7 @@ const PREVIEW_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 const COALESCE_WINDOW: Duration = Duration::from_millis(16);
 const COALESCE_MAX_BYTES: usize = 65_536;
 const COALESCE_RAW_QUEUE_CAPACITY: usize = 16;
+const FAST_FLUSH_TAIL_BYTES: usize = 2_048;
 
 enum PtyReadMessage {
     Chunk {
@@ -199,10 +201,30 @@ fn recv_next_pty_read(
     }
 }
 
-fn output_requests_fast_flush(data: &str, session_start: Instant) -> bool {
-    let cleaned = ANSI_STRIP.replace_all(data, "");
-    WAITING_PATTERNS.is_match(&cleaned)
-        || (session_start.elapsed() > STARTUP_ERROR_SUPPRESS && ERROR_PATTERNS.is_match(&cleaned))
+#[derive(Default)]
+struct FastFlushDetector {
+    cleaned_tail: String,
+}
+
+impl FastFlushDetector {
+    fn observe(&mut self, data: &str, session_start: Instant) -> bool {
+        self.cleaned_tail
+            .push_str(&ANSI_STRIP.replace_all(data, ""));
+        if self.cleaned_tail.len() > FAST_FLUSH_TAIL_BYTES {
+            let mut start = self.cleaned_tail.len() - FAST_FLUSH_TAIL_BYTES;
+            while !self.cleaned_tail.is_char_boundary(start) {
+                start += 1;
+            }
+            self.cleaned_tail.drain(..start);
+        }
+        WAITING_PATTERNS.is_match(&self.cleaned_tail)
+            || (session_start.elapsed() > STARTUP_ERROR_SUPPRESS
+                && ERROR_PATTERNS.is_match(&self.cleaned_tail))
+    }
+
+    fn clear(&mut self) {
+        self.cleaned_tail.clear();
+    }
 }
 
 fn spawn_pty_reader(
@@ -262,6 +284,7 @@ pub(super) fn stream_pty_output(
     let mut pending = String::new();
     let mut pending_bytes = 0usize;
     let mut pending_since: Option<Instant> = None;
+    let mut fast_flush_detector = FastFlushDetector::default();
 
     // Throughput profile (emitted at EOF for large outputs): splits stream time
     // across flow-control backpressure, ConPTY read, emulator advance, and
@@ -282,6 +305,7 @@ pub(super) fn stream_pty_output(
                 &mut pending,
                 &mut pending_bytes,
                 &mut pending_since,
+                &mut fast_flush_detector,
                 &ses,
                 &app_handle,
                 &mut last_attention_time,
@@ -321,13 +345,14 @@ pub(super) fn stream_pty_output(
                 pending_bytes = pending_bytes.saturating_add(data.len());
                 pending.push_str(&data);
 
-                let force_flush = output_requests_fast_flush(&pending, session_start);
+                let force_flush = fast_flush_detector.observe(&data, session_start);
                 if coalesce_should_flush(pending_bytes, pending_since, force_flush) {
                     flush_pending_pty_output(
                         &id,
                         &mut pending,
                         &mut pending_bytes,
                         &mut pending_since,
+                        &mut fast_flush_detector,
                         &ses,
                         &app_handle,
                         &mut last_attention_time,
@@ -347,6 +372,7 @@ pub(super) fn stream_pty_output(
                     &mut pending,
                     &mut pending_bytes,
                     &mut pending_since,
+                    &mut fast_flush_detector,
                     &ses,
                     &app_handle,
                     &mut last_attention_time,
@@ -365,6 +391,7 @@ pub(super) fn stream_pty_output(
                     &mut pending,
                     &mut pending_bytes,
                     &mut pending_since,
+                    &mut fast_flush_detector,
                     &ses,
                     &app_handle,
                     &mut last_attention_time,
@@ -382,6 +409,7 @@ pub(super) fn stream_pty_output(
                     &mut pending,
                     &mut pending_bytes,
                     &mut pending_since,
+                    &mut fast_flush_detector,
                     &ses,
                     &app_handle,
                     &mut last_attention_time,
@@ -409,6 +437,7 @@ pub(super) fn stream_pty_output(
             &mut pending,
             &mut pending_bytes,
             &mut pending_since,
+            &mut fast_flush_detector,
             &ses,
             &app_handle,
             &mut last_attention_time,
@@ -491,6 +520,7 @@ fn flush_pending_pty_output(
     pending: &mut String,
     pending_bytes: &mut usize,
     pending_since: &mut Option<Instant>,
+    fast_flush_detector: &mut FastFlushDetector,
     ses: &Arc<PtySession>,
     app_handle: &AppHandle,
     last_attention_time: &mut Instant,
@@ -504,6 +534,7 @@ fn flush_pending_pty_output(
     if pending.is_empty() {
         *pending_bytes = 0;
         *pending_since = None;
+        fast_flush_detector.clear();
         return;
     }
 
@@ -511,6 +542,7 @@ fn flush_pending_pty_output(
     let byte_count = *pending_bytes;
     *pending_bytes = 0;
     *pending_since = None;
+    fast_flush_detector.clear();
 
     let emit_t = Instant::now();
     let apply_elapsed = emit_pty_output_chunk(
@@ -592,6 +624,7 @@ fn emit_pty_output_chunk(
 
         if last_attention_time.elapsed() > attention_debounce {
             *last_attention_time = Instant::now();
+            let fingerprint = matching_line_fingerprint(&cleaned, &WAITING_PATTERNS);
             let _ = app_handle.emit(
                 "attention-required",
                 AttentionRequiredPayload {
@@ -599,6 +632,7 @@ fn emit_pty_output_chunk(
                     session_id: id.to_string(),
                     attention_type: "waiting".to_string(),
                     message: "Agent needs your input".to_string(),
+                    fingerprint,
                 },
             );
             bridge::broadcast_attention(id, "waiting", "Agent needs your input");
@@ -615,6 +649,7 @@ fn emit_pty_output_chunk(
         && last_attention_time.elapsed() > attention_debounce
     {
         *last_attention_time = Instant::now();
+        let fingerprint = matching_line_fingerprint(&cleaned, &ERROR_PATTERNS);
         let _ = app_handle.emit(
             "attention-required",
             AttentionRequiredPayload {
@@ -622,6 +657,7 @@ fn emit_pty_output_chunk(
                 session_id: id.to_string(),
                 attention_type: "error".to_string(),
                 message: "Agent encountered an error".to_string(),
+                fingerprint,
             },
         );
         bridge::broadcast_attention(id, "failed", "Agent encountered an error");
@@ -635,6 +671,21 @@ fn emit_pty_output_chunk(
     }
 
     apply_elapsed
+}
+
+fn matching_line_fingerprint(cleaned: &str, patterns: &RegexSet) -> String {
+    let matching_line = cleaned
+        .lines()
+        .rev()
+        .find(|line| patterns.is_match(line))
+        .unwrap_or(cleaned);
+    matching_line
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(240)
+        .collect()
 }
 
 fn emit_pty_output_to_terminal_windows(app_handle: &AppHandle, payload: PtyOutputPayload) {
@@ -659,6 +710,17 @@ mod tests {
         ));
         // At or past the interval → flush.
         assert!(should_flush_preview(PREVIEW_FLUSH_INTERVAL, false));
+    }
+
+    #[test]
+    fn matching_line_fingerprint_is_stable_across_spacing_and_uses_last_match() {
+        let first = matching_line_fingerprint(
+            "noise\nContinue?   [y/n]\nother\nApprove   request? [y/n]\n",
+            &WAITING_PATTERNS,
+        );
+        let second = matching_line_fingerprint("Approve request?   [y/n]\r\n", &WAITING_PATTERNS);
+        assert_eq!(first, "Approve request? [y/n]");
+        assert_eq!(second, first);
     }
 
     #[test]
@@ -689,6 +751,24 @@ mod tests {
             Some(Instant::now() - COALESCE_WINDOW),
             false,
         ));
+    }
+
+    #[test]
+    fn fast_flush_detector_preserves_short_matches_split_across_reads() {
+        let mut detector = FastFlushDetector::default();
+        let session_start = Instant::now();
+
+        assert!(!detector.observe("\u{1b}[33mpress ", session_start));
+        assert!(detector.observe("enter\u{1b}[0m", session_start));
+    }
+
+    #[test]
+    fn fast_flush_detector_keeps_only_a_bounded_recent_tail() {
+        let mut detector = FastFlushDetector::default();
+        let session_start = Instant::now();
+
+        assert!(!detector.observe(&"x".repeat(100_000), session_start));
+        assert!(detector.cleaned_tail.len() <= FAST_FLUSH_TAIL_BYTES);
     }
 
     #[test]

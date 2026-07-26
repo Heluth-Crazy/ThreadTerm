@@ -51,6 +51,9 @@ const readOnlyPairUrl =
 const fullPairUrl =
   'http://192.168.1.67:5174/pair?otp=123456&permission=full&theme_bg=%2310151d&theme_card=%23151b24&theme_primary=%234f8bd6&theme_fg=%23e8edf5&lang=en';
 
+const loopbackReadOnlyPairUrl =
+  'http://127.0.0.1:5174/pair?otp=123456&permission=read_only&theme_bg=%2310151d&theme_card=%23151b24&theme_primary=%234f8bd6&theme_fg=%23e8edf5&lang=en';
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -81,18 +84,25 @@ describe('MobileAccessSettings', () => {
       url: null,
     });
     bridgeMocks.devices.mockResolvedValue([]);
-    bridgeMocks.start.mockResolvedValue({
+    bridgeMocks.start.mockImplementation(async (host: string) => ({
       running: true,
-      host: '0.0.0.0',
+      host,
       port: 5174,
-      url: 'http://192.168.1.67:5174',
-    });
-    bridgeMocks.pairQr.mockResolvedValue({
-      host: '192.168.1.67',
-      port: 5174,
-      otp: '123456',
-      url: 'http://192.168.1.67:5174/pair?otp=123456',
-      expiresInSeconds: 300,
+      url:
+        host === '0.0.0.0'
+          ? 'http://192.168.1.67:5174'
+          : 'http://127.0.0.1:5174',
+    }));
+    bridgeMocks.pairQr.mockImplementation(async (host?: string) => {
+      const publishedHost =
+        host === '0.0.0.0' || !host ? '192.168.1.67' : host;
+      return {
+        host: publishedHost,
+        port: 5174,
+        otp: '123456',
+        url: `http://${publishedHost}:5174/pair?otp=123456`,
+        expiresInSeconds: 300,
+      };
     });
   });
 
@@ -107,24 +117,28 @@ describe('MobileAccessSettings', () => {
       screen.getByRole('button', { name: 'mobileAccess.pairingStart' }),
     );
 
-    expect(screen.getByText('mobileAccess.lanConfirm')).toBeInTheDocument();
-    expect(bridgeMocks.start).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(bridgeMocks.start).toHaveBeenCalledWith('127.0.0.1');
+    });
+    expect(screen.queryByText('mobileAccess.lanConfirm')).not.toBeInTheDocument();
+    expect(await screen.findByText(loopbackReadOnlyPairUrl)).toBeInTheDocument();
   });
 
-  it('uses LAN binding by default after inline confirmation', async () => {
+  it('uses local-only binding by default without a LAN confirmation', async () => {
     render(<MobileAccessSettings />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /mobileAccess.start/ }));
+    expect(
+      await screen.findByLabelText('mobileAccess.bind.loopback'),
+    ).toBeChecked();
+    expect(screen.getByLabelText('mobileAccess.bind.lan')).not.toBeChecked();
 
-    expect(screen.getByText('mobileAccess.lanConfirm')).toBeInTheDocument();
-    expect(bridgeMocks.start).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: /mobileAccess.confirmLanStart/ }));
+    fireEvent.click(screen.getByRole('button', { name: /mobileAccess.start/ }));
 
     await waitFor(() => {
-      expect(bridgeMocks.start).toHaveBeenCalledWith('0.0.0.0');
+      expect(bridgeMocks.start).toHaveBeenCalledWith('127.0.0.1');
     });
-    expect(bridgeMocks.pairQr).toHaveBeenCalledWith('0.0.0.0', 'read_only');
+    expect(screen.queryByText('mobileAccess.lanConfirm')).not.toBeInTheDocument();
+    expect(bridgeMocks.pairQr).toHaveBeenCalledWith('127.0.0.1', 'read_only');
   });
 
   it('uses a publish-host override for pairing without changing the bind host', async () => {
@@ -134,10 +148,9 @@ describe('MobileAccessSettings', () => {
       target: { value: 'phone.threadterm.test' },
     });
     fireEvent.click(screen.getByRole('button', { name: /mobileAccess.start/ }));
-    fireEvent.click(screen.getByRole('button', { name: /mobileAccess.confirmLanStart/ }));
 
     await waitFor(() => {
-      expect(bridgeMocks.start).toHaveBeenCalledWith('0.0.0.0');
+      expect(bridgeMocks.start).toHaveBeenCalledWith('127.0.0.1');
     });
     expect(bridgeMocks.pairQr).toHaveBeenCalledWith(
       'phone.threadterm.test',
@@ -159,11 +172,15 @@ describe('MobileAccessSettings', () => {
     });
     render(<MobileAccessSettings />);
 
+    fireEvent.click(
+      await screen.findByLabelText('mobileAccess.bind.lan'),
+    );
     fireEvent.click(screen.getByRole('button', { name: /mobileAccess.start/ }));
 
     expect(confirm).not.toHaveBeenCalled();
     expect(bridgeMocks.start).not.toHaveBeenCalled();
     expect(screen.getByText('mobileAccess.lanConfirm')).toBeInTheDocument();
+    expect(screen.getByText('mobileAccess.lanPlaintextWarning')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /mobileAccess.confirmLanStart/ }));
 
@@ -185,15 +202,14 @@ describe('MobileAccessSettings', () => {
 
     const start = await screen.findByRole('button', { name: /mobileAccess.start/ });
     fireEvent.click(start);
-    fireEvent.click(screen.getByRole('button', { name: /mobileAccess.confirmLanStart/ }));
 
     expect(start).toBeDisabled();
 
     resolveStart({
       running: true,
-      host: '0.0.0.0',
+      host: '127.0.0.1',
       port: 5174,
-      url: 'http://192.168.1.67:5174',
+      url: 'http://127.0.0.1:5174',
     });
 
     await waitFor(() => {
@@ -207,12 +223,11 @@ describe('MobileAccessSettings', () => {
     render(<MobileAccessSettings />);
 
     fireEvent.click(await screen.findByRole('button', { name: /mobileAccess.start/ }));
-    fireEvent.click(screen.getByRole('button', { name: /mobileAccess.confirmLanStart/ }));
 
     await waitFor(() => {
       expect(screen.getByText('mobileAccess.running')).toBeInTheDocument();
     });
-    expect(screen.getByText('0.0.0.0:5174')).toBeInTheDocument();
+    expect(screen.getByText('127.0.0.1:5174')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /mobileAccess.newPairCode/ })).toBeInTheDocument();
     expect(screen.getByText('mobileAccess.pairingUnavailable')).toBeInTheDocument();
     expect(screen.queryByTestId('pair-qr-code')).not.toBeInTheDocument();
@@ -231,6 +246,8 @@ describe('MobileAccessSettings', () => {
     await waitFor(() => {
       expect(bridgeMocks.pairQr).toHaveBeenCalledWith('0.0.0.0', 'read_only');
     });
+    expect(screen.getByLabelText('mobileAccess.bind.lan')).toBeChecked();
+    expect(screen.getByText('mobileAccess.lanPlaintextWarning')).toBeInTheDocument();
     expect(await screen.findByText('123456')).toBeInTheDocument();
     expect(screen.getByText(readOnlyPairUrl)).toBeInTheDocument();
     expect(screen.getByTestId('pair-qr-code')).toHaveAttribute('data-value', readOnlyPairUrl);
@@ -265,10 +282,9 @@ describe('MobileAccessSettings', () => {
     render(<MobileAccessSettings />);
 
     fireEvent.click(await screen.findByRole('button', { name: /mobileAccess.start/ }));
-    fireEvent.click(screen.getByRole('button', { name: /mobileAccess.confirmLanStart/ }));
 
     expect(await screen.findByText('123456')).toBeInTheDocument();
-    expect(screen.getByText(readOnlyPairUrl)).toBeInTheDocument();
+    expect(screen.getByText(loopbackReadOnlyPairUrl)).toBeInTheDocument();
     expect(screen.getByText('mobileAccess.running')).toBeInTheDocument();
   });
 
@@ -301,6 +317,7 @@ describe('MobileAccessSettings', () => {
 
     render(<MobileAccessSettings />);
     expect(await screen.findByText(readOnlyPairUrl)).toBeInTheDocument();
+    expect(bridgeMocks.status).toHaveBeenNthCalledWith(1, false);
 
     bridgeMocks.pairQr.mockRejectedValueOnce(new Error('permission refresh failed'));
     fireEvent.click(screen.getByLabelText('mobileAccess.permissions.full'));
@@ -331,6 +348,7 @@ describe('MobileAccessSettings', () => {
     await waitFor(() => {
       expect(bridgeMocks.status).toHaveBeenCalledTimes(2);
     });
+    expect(bridgeMocks.status).toHaveBeenLastCalledWith(true);
 
     fireEvent.click(screen.getByLabelText('mobileAccess.permissions.read_only'));
     await waitFor(() => {

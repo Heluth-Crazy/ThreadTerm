@@ -3,7 +3,7 @@
  * time a folder opens, it fetches its children via `read_directory`; collapsed
  * folders cost nothing, so even `node_modules` is cheap until opened.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, File, Folder, FolderOpen, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '../../lib/tauri-bridge';
@@ -32,7 +32,12 @@ function scrollToRevealDepth(button: HTMLButtonElement, depth: number) {
   scroller.scrollTo({ left: Math.max(0, textX - LEFT_PEEK), behavior: 'smooth' });
 }
 
-export function FileTreeNode({ entry, depth, selectedPath, onSelectFile }: FileTreeNodeProps) {
+export const FileTreeNode = memo(function FileTreeNode({
+  entry,
+  depth,
+  selectedPath,
+  onSelectFile,
+}: FileTreeNodeProps) {
   const { t } = useTranslation('terminal');
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<DirEntry[] | null>(null);
@@ -92,7 +97,7 @@ export function FileTreeNode({ entry, depth, selectedPath, onSelectFile }: FileT
         onClick={handleClick}
         title={entry.name}
         className={cn(
-          'group flex min-w-full items-center gap-1 py-[3px] pr-2 text-left text-[12px] leading-tight transition-colors',
+          'group flex min-w-full items-center gap-1 py-[3px] pr-2 text-left text-xs leading-tight transition-colors',
           isSelected
             ? 'bg-primary/15 text-foreground'
             : 'text-foreground/85 hover:bg-accent/60',
@@ -150,4 +155,4 @@ export function FileTreeNode({ entry, depth, selectedPath, onSelectFile }: FileT
       )}
     </div>
   );
-}
+});

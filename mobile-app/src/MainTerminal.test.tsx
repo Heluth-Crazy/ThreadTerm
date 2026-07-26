@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,7 +14,7 @@ function I18nWrapper({ children }: { children: ReactNode }) {
 const wrapper = I18nWrapper;
 
 // Mock @xterm/xterm. Hoisted because vi.mock factories run before the module
-// imports below. Style mirrors blocks/TuiBlock.test.tsx.
+// imports below.
 const xtermMock = vi.hoisted(() => {
   const instances: Array<{
     dispose: ReturnType<typeof vi.fn>;
@@ -75,7 +75,8 @@ import { MainTerminal } from './MainTerminal';
 import {
   pushTerminalFeedMessage,
   resetTerminalFeed,
-  type TerminalFeedMessage,
+  type TerminalFeedOutput,
+  type TerminalFeedSnapshot,
 } from './terminalFeed';
 
 // Stage 5 (audit P1-3): messages no longer flow in as a React prop array.
@@ -89,7 +90,8 @@ function snapshotMessage(
   seq: number,
   data: string,
   size: { rows: number; cols: number } = { rows: 24, cols: 80 },
-): TerminalFeedMessage {
+  runtimeId?: string,
+): TerminalFeedSnapshot {
   return {
     protocol_version: 1,
     kind: 'terminal_snapshot',
@@ -97,22 +99,23 @@ function snapshotMessage(
       cardId,
       data,
       seq,
+      runtimeId,
       rows: size.rows,
       cols: size.cols,
       cursorRow: 0,
       cursorCol: 0,
     },
-  } as unknown as TerminalFeedMessage;
+  } as TerminalFeedSnapshot;
 }
 
-function outputMessage(cardId: string, seq: number, data: string): TerminalFeedMessage {
+function outputMessage(cardId: string, seq: number, data: string): TerminalFeedOutput {
   return {
     protocol_version: 1,
     kind: 'terminal_output',
     card_id: cardId,
     seq,
     data,
-  } as unknown as TerminalFeedMessage;
+  } as TerminalFeedOutput;
 }
 
 describe('MainTerminal', () => {
@@ -159,6 +162,24 @@ describe('MainTerminal', () => {
     expect(xtermMock.instances[0].options.smoothScrollDuration).toBe(0);
   });
 
+  it('applies desktop terminal tokens without remounting the DOM renderer', () => {
+    const firstTheme = { background: '#10151d', foreground: '#e8edf5' };
+    const nextTheme = { background: '#f4f1e8', foreground: '#3c3836' };
+    const { rerender } = render(
+      <MainTerminal activeCardId="card-1" theme={firstTheme} />,
+      { wrapper },
+    );
+
+    const term = xtermMock.instances[0];
+    expect(term.options.theme).toEqual(firstTheme);
+
+    rerender(<MainTerminal activeCardId="card-1" theme={nextTheme} />);
+
+    expect(xtermMock.Terminal).toHaveBeenCalledTimes(1);
+    expect(term.options.theme).toEqual(nextTheme);
+    expect(term.refresh).toHaveBeenCalled();
+  });
+
   it('skips re-applying a snapshot with the same seq (no flicker on re-render)', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
     const { rerender } = render(<MainTerminal activeCardId="card-1" />, { wrapper });
@@ -193,19 +214,20 @@ describe('MainTerminal', () => {
     expect(term.write).toHaveBeenLastCalledWith('B');
   });
 
-  it('filters synchronized ED2/ED3 output while preserving clears outside the frame', () => {
+  it('preserves synchronized ED2/ED3 output byte-for-byte across feed chunks', () => {
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
     render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     const term = xtermMock.instances[0];
+    expect(term.options.scrollOnEraseInDisplay).toBe(false);
     pushTerminalFeedMessage(outputMessage('card-1', 2, '\x1b[?2026hframe\x1b['));
     pushTerminalFeedMessage(outputMessage('card-1', 3, '2Jdone\x1b[3J\x1b[?2026l'));
     pushTerminalFeedMessage(outputMessage('card-1', 4, '\x1b[2J'));
 
     expect(term.write.mock.calls.map(([data]) => data)).toEqual([
       'SNAP',
-      '\x1b[?2026hframe',
-      'done\x1b[?2026l',
+      '\x1b[?2026hframe\x1b[',
+      '2Jdone\x1b[3J\x1b[?2026l',
       '\x1b[2J',
     ]);
   });
@@ -433,19 +455,44 @@ describe('MainTerminal', () => {
   });
 
   it('remounts from a capped transcript after a large output burst', () => {
+    const twoMiBChunk = (label: string) =>
+      label + 'x'.repeat(2 * 1024 * 1024 - label.length);
+    const first = twoMiBChunk('chunk-1:');
+    const second = twoMiBChunk('chunk-2:');
+    const third = twoMiBChunk('chunk-3:');
     pushTerminalFeedMessage(snapshotMessage('card-1', 1, 'SNAP'));
-    for (let index = 0; index < 2100; index += 1) {
-      pushTerminalFeedMessage(outputMessage('card-1', index + 2, `chunk-${index}`));
-    }
+    pushTerminalFeedMessage(outputMessage('card-1', 2, first));
+    pushTerminalFeedMessage(outputMessage('card-1', 3, second));
+    pushTerminalFeedMessage(outputMessage('card-1', 4, third));
 
     render(<MainTerminal activeCardId="card-1" />, { wrapper });
 
     const term = xtermMock.instances[0];
     expect(term.reset).toHaveBeenCalledTimes(1);
     expect(term.write).toHaveBeenNthCalledWith(1, 'SNAP');
-    expect(term.write).toHaveBeenLastCalledWith('chunk-2099');
-    // Backlog replay is bounded by the per-card cap: snapshot + 1999 outputs.
-    expect(term.write).toHaveBeenCalledTimes(2000);
+    expect(term.write).toHaveBeenNthCalledWith(2, second);
+    expect(term.write).toHaveBeenLastCalledWith(third);
+    expect(term.write).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Older output was trimmed to keep mobile stable.',
+    );
+  });
+
+  it('repaints a lower-sequence snapshot after the desktop process restarts', () => {
+    pushTerminalFeedMessage(
+      snapshotMessage('card-1', 40, 'OLD RUNTIME', { rows: 24, cols: 80 }, 'runtime-a'),
+    );
+    render(<MainTerminal activeCardId="card-1" />, { wrapper });
+
+    const term = xtermMock.instances[0];
+    expect(term.write).toHaveBeenLastCalledWith('OLD RUNTIME');
+
+    pushTerminalFeedMessage(
+      snapshotMessage('card-1', 1, 'NEW RUNTIME', { rows: 24, cols: 80 }, 'runtime-b'),
+    );
+
+    expect(term.reset).toHaveBeenCalledTimes(2);
+    expect(term.write).toHaveBeenLastCalledWith('NEW RUNTIME');
   });
 
   it('writes the snapshot after activeCardId goes null -> non-null without remount or mode change (root cause 2)', () => {

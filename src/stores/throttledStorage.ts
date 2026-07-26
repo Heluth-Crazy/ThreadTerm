@@ -85,7 +85,16 @@ export function createThrottledPersistStorage<S>(
   return {
     getItem: (name) => {
       const raw = storage.getItem(name);
-      return raw === null ? null : (JSON.parse(raw) as StorageValue<S>);
+      if (raw === null) return null;
+      try {
+        return JSON.parse(raw) as StorageValue<S>;
+      } catch (error) {
+        console.warn(
+          '[throttledStorage] persisted state is invalid and will be ignored; the original value was left untouched:',
+          error,
+        );
+        return null;
+      }
     },
     setItem: (name, value) => {
       // Zustand creates a new partialized state object for each mutation; keep

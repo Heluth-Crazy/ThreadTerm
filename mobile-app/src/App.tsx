@@ -1,11 +1,15 @@
 import {
+  Activity,
+  Archive,
   Bell,
   Boxes,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Circle,
+  ClipboardCopy,
   Gauge,
+  Info,
   Languages,
   Monitor,
   Moon,
@@ -16,24 +20,33 @@ import {
   ScanLine,
   Search,
   Settings,
+  ShieldCheck,
   Smartphone,
   SquareTerminal,
   Sun,
   Trash2,
+  Wrench,
   Wifi,
   WifiOff,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type * as React from 'react';
+import type { ITheme } from '@xterm/xterm';
 import type {
   CardMeta,
   ClientCommand,
+  MobileWorkbenchProjection,
   NotificationEntry,
   ServerMessage,
   TerminalStatus,
 } from '@shared/mobile/bridge/protocol';
 import type { BridgeConnectionState } from '@shared/mobile/bridge/wsClient';
 import { compareCardsByActivity } from '@shared/lib/cardSort';
+import {
+  normalizeComparablePath,
+  pathBasename,
+  worktreeDisplayLabel,
+} from '@shared/lib/worktreePaths';
 import { ConnectionBanner } from './ConnectionBanner';
 import { InputBar } from './input/InputBar';
 import { MainTerminal } from './MainTerminal';
@@ -50,7 +63,12 @@ import {
   storePairing,
 } from './bridge/pairing';
 import { fetchSnapshot, useBridgeConnection } from './bridge/useBridgeConnection';
-import { pushTerminalFeedMessage } from './terminalFeed';
+import {
+  disposeTerminalFeed,
+  observeTerminalFeedSnapshot,
+  pushTerminalFeedMessage,
+  retainTerminalFeedCards,
+} from './terminalFeed';
 import {
   MobileThemeController,
   createFallbackThemeFromUrl,
@@ -58,8 +76,33 @@ import {
   type MobileThemePreference,
 } from './theme';
 import { useI18n, type MobileLanguagePreference, type MobileI18n } from './i18n';
+import {
+  AttentionDetailScreen,
+  DetailScaffold,
+  ExecutionGroupDetailScreen,
+  NotificationsScreen,
+  RulesScreen,
+  WorkbenchScreen,
+} from './workbench/MobileWorkbenchScreens';
 
-type TabId = 'terminal' | 'instances' | 'settings';
+type TabId = 'workbench' | 'terminal' | 'settings';
+type SettingsSection =
+  | 'connection'
+  | 'permissions'
+  | 'notifications'
+  | 'appearance'
+  | 'language'
+  | 'diagnostics'
+  | 'about';
+type MobileRoute =
+  | { name: 'attention'; id: string }
+  | { name: 'execution-group'; id: string }
+  | { name: 'notifications' }
+  | { name: 'rules' }
+  | { name: 'terminal'; cardId: string }
+  | { name: 'new-terminal' }
+  | { name: 'scanner' }
+  | { name: 'settings-detail'; section: SettingsSection };
 type NewSessionInput = {
   projectPath: string;
   terminalType: string;
@@ -69,10 +112,13 @@ type ProjectCardGroup = {
   key: string;
   projectName: string;
   projectPath: string;
+  worktreePath: string;
+  branchLabel?: string | null;
   cards: CardMeta[];
 };
 
 export function App() {
+  const { language } = useI18n();
   const pairing = useMemo(() => readPairingConfig(window.location), []);
   const themeControllerRef = useRef<MobileThemeController | null>(null);
   if (!themeControllerRef.current) {
@@ -92,24 +138,46 @@ export function App() {
   // (broadcast Lagged -> error/backpressure -> onLagged). A bump tells
   // MainTerminal to treat the very next terminal_snapshot as a one-shot
   // recovery reset so the dropped terminal_output segment is repainted.
-  // Plain reconnects (visibility/online/pageshow -> onResume) MUST NOT bump
+  // Plain reconnects MUST NOT bump
   // this so issue-5 (history survives a reconnect snapshot) is unchanged.
   const [recoveryNonce, setRecoveryNonce] = useState(0);
-  const [tab, setTab] = useState<TabId>('terminal');
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [scannerOpen, setScannerOpen] = useState(false);
-  const [newSessionOpen, setNewSessionOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [tab, setTab] = useState<TabId>('workbench');
+  const [routeStack, setRouteStack] = useState<MobileRoute[]>([]);
   const [themePreference, setThemePreference] = useState<MobileThemePreference>(
     themeControllerRef.current.getPreference(),
   );
+  const [terminalTheme, setTerminalTheme] = useState<ITheme>(
+    themeControllerRef.current.getTerminalTheme(),
+  );
+  const bridgeSendRef = useRef<((command: ClientCommand) => void) | null>(null);
+  const activeRoute = routeStack[routeStack.length - 1] ?? null;
+
+  const pushRoute = useCallback((route: MobileRoute) => {
+    setRouteStack((stack) => [...stack, route]);
+  }, []);
+  const popRoute = useCallback(() => {
+    setRouteStack((stack) => stack.slice(0, -1));
+  }, []);
+  const clearRoutes = useCallback(() => {
+    setRouteStack([]);
+  }, []);
 
   const applyMessage = useCallback((message: ServerMessage) => {
+    let shouldArmRecovery = false;
     if (message.kind === 'theme') {
-      // App/page tokens still follow the desktop theme. The mobile terminal
-      // itself is intentionally a fixed dark surface (see MainTerminal), so the
-      // xterm theme is not threaded through here anymore.
       themeControllerRef.current?.applyServerTheme(message);
+      const nextTerminalTheme = themeControllerRef.current?.getTerminalTheme();
+      if (nextTerminalTheme) setTerminalTheme(nextTerminalTheme);
+    }
+
+    if (message.kind === 'snapshot') {
+      const feedState = observeTerminalFeedSnapshot(message);
+      retainTerminalFeedCards(message.cards.map((card) => card.id));
+      shouldArmRecovery = feedState.runtimeChanged;
+    } else if (message.kind === 'card_removed') {
+      disposeTerminalFeed(message.card.id);
+    } else if (message.kind === 'close_result' && message.ok && message.card_id) {
+      disposeTerminalFeed(message.card_id);
     }
 
     if (message.kind === 'terminal_output' || message.kind === 'terminal_snapshot') {
@@ -117,10 +185,22 @@ export function App() {
       // per-card feed buckets the chunk and notifies subscribed MainTerminal
       // instances directly, so a hot output stream no longer re-renders the
       // whole App tree per chunk.
-      pushTerminalFeedMessage(message);
+      const feedResult = pushTerminalFeedMessage(message);
+      shouldArmRecovery ||= feedResult.runtimeChanged || feedResult.needsResync;
+      if (feedResult.needsResync) {
+        bridgeSendRef.current?.({ kind: 'terminal_resync' });
+      }
     }
 
+    if (shouldArmRecovery) {
+      setRecoveryNonce((nonce) => nonce + 1);
+    }
     dispatch({ type: 'server-message', message });
+    if (message.kind === 'spawn_result' && message.ok && message.card_id) {
+      dispatch({ type: 'select-card', cardId: message.card_id });
+      setTab('terminal');
+      setRouteStack([{ name: 'terminal', cardId: message.card_id }]);
+    }
   }, []);
 
   const loadSnapshot = useCallback(async () => {
@@ -137,7 +217,7 @@ export function App() {
 
   // Backpressure recovery: arm a one-shot snapshot re-apply in MainTerminal,
   // THEN fetch the fresh snapshot. The bump is exclusive to this path (never
-  // onResume) so the issue-5 reconnect guard stays intact.
+  // a normal reconnect) so the issue-5 reconnect guard stays intact.
   const handleLagged = useCallback(() => {
     setRecoveryNonce((nonce) => nonce + 1);
     void loadSnapshot();
@@ -148,8 +228,8 @@ export function App() {
     onMessage: applyMessage,
     onLagged: handleLagged,
     onError: (message) => dispatch({ type: 'ws-error', message }),
-    onResume: loadSnapshot,
   });
+  bridgeSendRef.current = bridge.send;
 
   const handlePair = useCallback(async () => {
     if (!pairing.otp) return;
@@ -187,18 +267,17 @@ export function App() {
   }, []);
 
   const activeCard = state.cards.find((card) => card.id === state.activeCardId) ?? null;
-  const filteredCards = useMemo(
-    () => filterCards(state.cards, searchQuery),
-    [searchQuery, state.cards],
-  );
   const canControl = permission === 'full' && bridge.state === 'open';
   const canSend = canControl && Boolean(activeCard && isCardLive(activeCard));
 
   useEffect(() => {
-    if (detailOpen && !activeCard) {
-      setDetailOpen(false);
+    if (
+      activeRoute?.name === 'terminal' &&
+      !state.cards.some((card) => card.id === activeRoute.cardId)
+    ) {
+      popRoute();
     }
-  }, [activeCard, detailOpen]);
+  }, [activeRoute, popRoute, state.cards]);
 
   const updateThemePreference = (preference: MobileThemePreference) => {
     themeControllerRef.current?.setPreference(preference);
@@ -207,8 +286,7 @@ export function App() {
 
   const openCard = (cardId: string) => {
     dispatch({ type: 'select-card', cardId });
-    setDetailOpen(true);
-    setScannerOpen(false);
+    pushRoute({ name: 'terminal', cardId });
     void loadSnapshot();
   };
 
@@ -239,9 +317,15 @@ export function App() {
   const requestClose = useCallback(
     (cardId: string) => {
       if (!canControl) return;
+      const confirmed = window.confirm(
+        language === 'zh'
+          ? '关闭并删除这个终端？此操作会结束对应会话。'
+          : 'Close and delete this terminal? The session will be terminated.',
+      );
+      if (!confirmed) return;
       sendCommand({ kind: 'close', request_id: createRequestId('close'), card_id: cardId });
     },
-    [canControl, createRequestId, sendCommand],
+    [canControl, createRequestId, language, sendCommand],
   );
 
   const requestRenameCard = useCallback(
@@ -272,10 +356,10 @@ export function App() {
         project_path: trimmedProjectPath,
         ...(trimmedCommand ? { command: trimmedCommand } : {}),
       });
-      setNewSessionOpen(false);
-      setTab('instances');
+      setTab('terminal');
+      clearRoutes();
     },
-    [canControl, createRequestId, sendCommand],
+    [canControl, clearRoutes, createRequestId, sendCommand],
   );
 
   const sendInput = (data: string) => {
@@ -297,82 +381,159 @@ export function App() {
     );
   }
 
+  const routeAttention =
+    activeRoute?.name === 'attention'
+      ? state.workbench?.attentionItems.find((item) => item.id === activeRoute.id) ?? null
+      : null;
+  const routeGroup =
+    activeRoute?.name === 'execution-group'
+      ? state.workbench?.executionGroups.find((group) => group.id === activeRoute.id) ?? null
+      : null;
+  const routeCard =
+    activeRoute?.name === 'terminal'
+      ? state.cards.find((card) => card.id === activeRoute.cardId) ?? null
+      : null;
+
   return (
     <div className="ios-shell">
-      {scannerOpen ? (
-        <ScannerScreen
-          bridgeAddress={window.location.host}
-          onClose={() => setScannerOpen(false)}
-          permission={permission}
+      <div className={`mobile-root-layer ${tab === 'workbench' ? 'active' : ''}`} aria-hidden={tab !== 'workbench'}>
+        <WorkbenchScreen
+          cards={state.cards}
+          notifications={state.notifications}
+          onOpenAttention={(id) => pushRoute({ name: 'attention', id })}
+          onOpenGroup={(id) => pushRoute({ name: 'execution-group', id })}
+          onOpenNewTerminal={() => pushRoute({ name: 'new-terminal' })}
+          onOpenNotifications={() => pushRoute({ name: 'notifications' })}
+          onOpenRules={() => pushRoute({ name: 'rules' })}
+          projection={state.workbench}
+          warmingUp={state.warmingUp}
           wsStatus={bridge.state}
         />
-      ) : detailOpen ? (
-        <TerminalDetail
+      </div>
+
+      <div className={`mobile-root-layer ${tab === 'terminal' ? 'active' : ''}`} aria-hidden={tab !== 'terminal'}>
+        <TerminalScreen
+          activeCardId={state.activeCardId}
+          cards={state.cards}
+          canControl={canControl}
+          onActivateCard={requestActivate}
+          onDeleteCard={requestClose}
+          onNewSession={() => pushRoute({ name: 'new-terminal' })}
+          onOpenCard={openCard}
+          onRenameCard={requestRenameCard}
+          warmingUp={state.warmingUp}
+          wsStatus={bridge.state}
+        />
+      </div>
+
+      <div className={`mobile-root-layer ${tab === 'settings' ? 'active' : ''}`} aria-hidden={tab !== 'settings'}>
+        <SettingsScreen
           activeCard={activeCard}
-          canSend={canSend}
-          recoveryNonce={recoveryNonce}
-          onBack={() => setDetailOpen(false)}
-          onActivate={requestActivate}
-          onCloseCard={requestClose}
-          onOpenSettings={() => {
-            setDetailOpen(false);
-            setTab('settings');
-          }}
-          onSend={sendInput}
+          bridgeAddress={window.location.host}
+          lastError={state.lastError}
+          notifications={state.notifications}
+          onOpenNotifications={() => pushRoute({ name: 'notifications' })}
+          onOpenRules={() => pushRoute({ name: 'rules' })}
+          onOpenSection={(section) => pushRoute({ name: 'settings-detail', section })}
+          onThemePreferenceChange={updateThemePreference}
           permission={permission}
+          themePreference={themePreference}
           wsStatus={bridge.state}
         />
-      ) : (
-        <>
-          {tab === 'terminal' && (
-            <TerminalHome
-              activeCard={activeCard}
+      </div>
+
+      {!activeRoute && <TabBar activeTab={tab} onChange={setTab} unreadCount={state.workbench?.summary.attention ?? 0} />}
+
+      {activeRoute && (
+        <div className="mobile-route-layer">
+          {activeRoute.name === 'scanner' && (
+            <ScannerScreen
               bridgeAddress={window.location.host}
-              cards={state.cards}
-              canControl={canControl}
-              recoveryNonce={recoveryNonce}
-              onActivateCard={requestActivate}
-              onDeleteCard={requestClose}
-              onOpenCard={openCard}
-              onOpenScanner={() => setScannerOpen(true)}
-              onRenameCard={requestRenameCard}
-              onSearchChange={setSearchQuery}
+              onClose={popRoute}
               permission={permission}
-              searchQuery={searchQuery}
               wsStatus={bridge.state}
             />
           )}
-          {tab === 'instances' && (
-            <InstancesScreen
-              activeCardId={state.activeCardId}
-              cards={filteredCards}
-              canControl={canControl}
-              newSessionOpen={newSessionOpen}
-              onActivateCard={requestActivate}
-              onCreateSession={requestSpawn}
-              onDeleteCard={requestClose}
-              onNewSessionOpenChange={setNewSessionOpen}
-              onOpenCard={openCard}
-              onRenameCard={requestRenameCard}
-              onSearchChange={setSearchQuery}
-              searchQuery={searchQuery}
-              warmingUp={state.warmingUp}
+          {activeRoute.name === 'terminal' && (
+            <TerminalDetail
+              activeCard={routeCard}
+              canSend={canSend}
+              recoveryNonce={recoveryNonce}
+              onBack={popRoute}
+              onActivate={requestActivate}
+              onCloseCard={requestClose}
+              onOpenSettings={() => {
+                clearRoutes();
+                setTab('settings');
+              }}
+              onSend={sendInput}
+              permission={permission}
+              terminalTheme={terminalTheme}
+              wsStatus={bridge.state}
             />
           )}
-          {tab === 'settings' && (
-            <SettingsScreen
+          {activeRoute.name === 'attention' && (
+            <AttentionDetailScreen
+              item={routeAttention}
+              onBack={popRoute}
+              onOpenTerminal={openCard}
+              terminalAvailable={Boolean(routeAttention && state.cards.some((card) => card.id === routeAttention.cardId))}
+              wsStatus={bridge.state}
+            />
+          )}
+          {activeRoute.name === 'execution-group' && (
+            <ExecutionGroupDetailScreen
+              cards={state.cards}
+              group={routeGroup}
+              onBack={popRoute}
+              onOpenAttention={(id) => pushRoute({ name: 'attention', id })}
+              onOpenTerminal={openCard}
+              relatedAttention={(state.workbench?.attentionItems ?? []).filter((item) =>
+                routeGroup?.cardIds.includes(item.cardId),
+              )}
+            />
+          )}
+          {activeRoute.name === 'notifications' && (
+            <NotificationsScreen
+              notifications={state.notifications}
+              onBack={popRoute}
+              onOpenTerminal={(cardId) => {
+                if (state.cards.some((card) => card.id === cardId)) openCard(cardId);
+              }}
+            />
+          )}
+          {activeRoute.name === 'rules' && (
+            <RulesScreen onBack={popRoute} projection={state.workbench} />
+          )}
+          {activeRoute.name === 'new-terminal' && (
+            <NewTerminalScreen
+              canControl={canControl}
+              onBack={popRoute}
+              onCreate={requestSpawn}
+              permission={permission}
+              wsStatus={bridge.state}
+            />
+          )}
+          {activeRoute.name === 'settings-detail' && (
+            <SettingsDetailScreen
               activeCard={activeCard}
               bridgeAddress={window.location.host}
               lastError={state.lastError}
               notifications={state.notifications}
+              onBack={popRoute}
+              onOpenNotifications={() => pushRoute({ name: 'notifications' })}
+              onOpenScanner={() => pushRoute({ name: 'scanner' })}
+              onOpenRules={() => pushRoute({ name: 'rules' })}
+              onRefresh={() => void loadSnapshot()}
               onThemePreferenceChange={updateThemePreference}
               permission={permission}
+              projection={state.workbench}
+              section={activeRoute.section}
               themePreference={themePreference}
               wsStatus={bridge.state}
             />
           )}
-          <TabBar activeTab={tab} onChange={setTab} />
-        </>
+        </div>
       )}
     </div>
   );
@@ -426,217 +587,126 @@ function PairingScreen({
   );
 }
 
-function TerminalHome({
-  activeCard,
-  bridgeAddress,
-  cards,
-  canControl,
-  recoveryNonce,
-  onActivateCard,
-  onDeleteCard,
-  onOpenCard,
-  onOpenScanner,
-  onRenameCard,
-  onSearchChange,
-  permission,
-  searchQuery,
-  wsStatus,
-}: {
-  activeCard: CardMeta | null;
-  bridgeAddress: string;
-  cards: CardMeta[];
-  canControl: boolean;
-  recoveryNonce: number;
-  onActivateCard: (cardId: string) => void;
-  onDeleteCard: (cardId: string) => void;
-  onOpenCard: (cardId: string) => void;
-  onOpenScanner: () => void;
-  onRenameCard?: (cardId: string, projectName: string) => void;
-  onSearchChange: (value: string) => void;
-  permission: string;
-  searchQuery: string;
-  wsStatus: BridgeConnectionState;
-}) {
-  const { t } = useI18n();
-  // Mirror InstancesScreen: the home search field filters the "All sessions"
-  // list too, otherwise the field on this screen would do nothing.
-  const visibleCards = useMemo(() => filterCards(cards, searchQuery), [cards, searchQuery]);
-  return (
-    <main className="ios-screen">
-      <IosHeader
-        action={
-          <button className="nav-icon-button" type="button" onClick={onOpenScanner} aria-label={t('home.syncQr')}>
-            <QrCode size={22} />
-          </button>
-        }
-        title="ThreadTerm"
-      />
-      <div className="screen-content">
-        <ConnectionBanner wsStatus={wsStatus} />
-        <SearchField value={searchQuery} onChange={onSearchChange} />
-
-        <section className="ios-list-card">
-          <button className="ios-list-item" type="button" onClick={onOpenScanner}>
-            <span className="list-icon list-icon-blue">
-              <QrCode size={18} />
-            </span>
-            <span className="list-main">
-              <strong>{t('home.syncQr')}</strong>
-              <span>{bridgeAddress}</span>
-            </span>
-            <ChevronRight size={18} />
-          </button>
-          <div className="ios-list-item">
-            <span className="list-icon list-icon-gray">
-              {wsStatus === 'open' ? <Wifi size={18} /> : <WifiOff size={18} />}
-            </span>
-            <span className="list-main">
-              <strong>{t('home.connection')}</strong>
-              <span>
-                {cards.length} {cards.length === 1 ? t('home.session') : t('home.sessions')} ·{' '}
-                {permissionLabel(permission, t)}
-              </span>
-            </span>
-            <StatusBadge status={wsStatus} />
-          </div>
-        </section>
-
-        <section className="section-block">
-          <div className="section-heading">
-            <h2>{t('home.activeSession')}</h2>
-            <StatusBadge status={wsStatus} />
-          </div>
-          {activeCard ? (
-            <div
-              className="session-preview"
-              role="button"
-              tabIndex={0}
-              onClick={() => onOpenCard(activeCard.id)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  onOpenCard(activeCard.id);
-                }
-              }}
-            >
-              <div className="terminal-preview-frame">
-                <MainTerminal
-                  activeCardId={activeCard.id}
-                  recoveryNonce={recoveryNonce}
-                  mode="preview"
-                />
-              </div>
-              <div className="preview-footer">
-                <span>
-                  <strong>{activeCard.projectName || activeCard.id}</strong>
-                  <small>{displayCardSummary(activeCard)}</small>
-                </span>
-                <span className="preview-action">{t('home.tapFocus')}</span>
-              </div>
-            </div>
-          ) : (
-            <EmptyState label={t('home.noSessions')} />
-          )}
-        </section>
-
-        {cards.length > 0 && (
-          <section className="section-block">
-            <div className="section-heading">
-              <h2>{t('home.allSessions')}</h2>
-              <span>{searchQuery.trim() ? visibleCards.length : cards.length}</span>
-            </div>
-            <div className="ios-list-card">
-              {visibleCards.length === 0 ? (
-                <p className="empty-copy">{t('home.noMatches')}</p>
-              ) : (
-                groupCardsByProject(visibleCards).map((group) => (
-                  <ProjectSessionGroup
-                    activeCardId={activeCard?.id ?? null}
-                    canControl={canControl}
-                    group={group}
-                    key={group.key}
-                    onActivateCard={onActivateCard}
-                    onDeleteCard={onDeleteCard}
-                    onOpenCard={onOpenCard}
-                    onRenameCard={onRenameCard}
-                    showHeader
-                  />
-                ))
-              )}
-            </div>
-          </section>
-        )}
-      </div>
-    </main>
-  );
-}
-
-function InstancesScreen({
+function TerminalScreen({
   activeCardId,
   cards,
   canControl,
-  newSessionOpen,
   onActivateCard,
-  onCreateSession,
   onDeleteCard,
-  onNewSessionOpenChange,
+  onNewSession,
   onOpenCard,
   onRenameCard,
-  onSearchChange,
-  searchQuery,
   warmingUp,
+  wsStatus,
 }: {
   activeCardId: string | null;
   cards: CardMeta[];
   canControl: boolean;
-  newSessionOpen: boolean;
   onActivateCard: (cardId: string) => void;
-  onCreateSession: (input: NewSessionInput) => void;
   onDeleteCard: (cardId: string) => void;
-  onNewSessionOpenChange: (open: boolean) => void;
+  onNewSession: () => void;
   onOpenCard: (cardId: string) => void;
   onRenameCard?: (cardId: string, projectName: string) => void;
-  onSearchChange: (value: string) => void;
-  searchQuery: string;
   warmingUp: boolean;
+  wsStatus: BridgeConnectionState;
 }) {
-  const { t } = useI18n();
-  const groups = groupCardsByProject(cards);
+  const { language, t } = useI18n();
+  const zh = language === 'zh';
+  const [searchQuery, setSearchQuery] = useState('');
+  const [segment, setSegment] = useState<'active' | 'archived'>('active');
+  const [scopeKey, setScopeKey] = useState('all');
+  const allGroups = useMemo(() => groupCardsByProject(cards), [cards]);
+  const visibleCards = useMemo(() => {
+    if (segment === 'archived') return [];
+    const searched = filterCards(cards, searchQuery);
+    if (scopeKey === 'all') return searched;
+    return searched.filter((card) => executionContextKey(card) === scopeKey);
+  }, [cards, scopeKey, searchQuery, segment]);
+  const groups = groupCardsByProject(visibleCards);
 
   return (
-    <main className="ios-screen">
-      <IosHeader
-        action={
+    <main className="mobile-root-screen">
+      <header className="mobile-page-header safe-top">
+        <div className="mobile-header-row">
+          <div className="mobile-header-title">
+            <h1>{zh ? '终端' : 'Terminals'}</h1>
+            <span>
+              {segment === 'archived'
+                ? (zh ? '已归档会话' : 'Archived sessions')
+                : `${visibleCards.length} ${zh ? '个可见会话' : 'visible sessions'}`}
+            </span>
+          </div>
           <button
-            className="nav-icon-button"
+            className="mobile-icon-button filled"
             type="button"
-            onClick={() => onNewSessionOpenChange(!newSessionOpen)}
+            onClick={onNewSession}
             aria-label={t('instances.newSession')}
             disabled={!canControl}
           >
             <Plus size={22} />
           </button>
-        }
-        title={t('instances.title')}
-      />
-      <div className="screen-content">
-        <SearchField value={searchQuery} onChange={onSearchChange} />
-        {newSessionOpen && (
-          <NewSessionForm
-            disabled={!canControl}
-            onCancel={() => onNewSessionOpenChange(false)}
-            onCreate={onCreateSession}
-          />
-        )}
+        </div>
+        <SearchField value={searchQuery} onChange={setSearchQuery} />
+        <div className="terminal-filter-row">
+          <div className="segmented terminal-segmented">
+            <button
+              className={segment === 'active' ? 'segmented-active' : ''}
+              type="button"
+              aria-pressed={segment === 'active'}
+              onClick={() => setSegment('active')}
+            >
+              {zh ? '正在运行' : 'Active'}
+            </button>
+            <button
+              className={segment === 'archived' ? 'segmented-active' : ''}
+              type="button"
+              aria-pressed={segment === 'archived'}
+              onClick={() => setSegment('archived')}
+            >
+              <Archive size={14} />
+              {zh ? '已归档' : 'Archived'}
+            </button>
+          </div>
+          <label className="scope-select compact">
+            <Boxes size={15} />
+            <span className="sr-only">{zh ? '筛选项目' : 'Filter project'}</span>
+            <select value={scopeKey} onChange={(event) => setScopeKey(event.target.value)}>
+              <option value="all">{zh ? '全部范围' : 'All scopes'}</option>
+              {allGroups.map((group) => (
+                <option value={group.key} key={group.key}>
+                  {projectGroupDisplayLabel(group)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </header>
+      <ConnectionBanner wsStatus={wsStatus} />
+      <div className="mobile-page-content">
         {warmingUp ? (
           <EmptyState label={t('instances.warmingUp')} />
+        ) : segment === 'archived' ? (
+          <div className="workbench-empty-state">
+            <span><Archive size={22} /></span>
+            <strong>{zh ? '归档记录尚未同步到移动端' : 'Archived records are not synced yet'}</strong>
+            <p>
+              {zh
+                ? '请在桌面端查看或恢复归档终端；移动端不会伪造本地归档状态。'
+                : 'View or restore archived terminals on desktop.'}
+            </p>
+          </div>
         ) : groups.length === 0 ? (
-          <EmptyState label={t('instances.empty')} />
+          <div className="workbench-empty-state">
+            <span><SquareTerminal size={22} /></span>
+            <strong>{searchQuery ? (zh ? '没有匹配的终端' : 'No matching terminals') : (zh ? '还没有终端' : 'No terminals yet')}</strong>
+            <p>{searchQuery ? (zh ? '尝试更换关键词或项目范围。' : 'Try another keyword or scope.') : t('instances.empty')}</p>
+            {!searchQuery && canControl && <button type="button" onClick={onNewSession}>{t('instances.newSession')}</button>}
+          </div>
         ) : (
           groups.map((group) => (
             <section className="section-block" key={group.key}>
               <div className="section-heading project-heading">
-                <h2>{group.projectName}</h2>
+                <h2>{projectGroupDisplayLabel(group)}</h2>
                 <span>{group.cards.length}</span>
               </div>
               <div className="ios-list-card">
@@ -663,6 +733,9 @@ export function SettingsScreen({
   bridgeAddress,
   lastError,
   notifications,
+  onOpenNotifications,
+  onOpenRules,
+  onOpenSection,
   onThemePreferenceChange,
   permission,
   themePreference,
@@ -672,48 +745,124 @@ export function SettingsScreen({
   bridgeAddress: string;
   lastError: string | null;
   notifications: NotificationEntry[];
+  onOpenNotifications?: () => void;
+  onOpenRules?: () => void;
+  onOpenSection?: (section: SettingsSection) => void;
   onThemePreferenceChange: (preference: MobileThemePreference) => void;
   permission: string;
   themePreference: MobileThemePreference;
   wsStatus: BridgeConnectionState;
 }) {
-  const { t, preference: languagePreference, setPreference: onLanguagePreferenceChange } = useI18n();
+  const { language, t } = useI18n();
+  const zh = language === 'zh';
   const appearanceLabel: Record<MobileThemePreference, string> = {
     auto: t('settings.appearance.auto'),
     dark: t('settings.appearance.dark'),
     light: t('settings.appearance.light'),
   };
-  const languageLabel: Record<MobileLanguagePreference, string> = {
-    auto: t('settings.language.auto'),
-    zh: t('settings.language.zh'),
-    en: t('settings.language.en'),
-  };
+  const openSection = (section: SettingsSection) => onOpenSection?.(section);
+  const unreadCount = notifications.filter((entry) => entry.read !== true).length;
   return (
-    <main className="ios-screen">
-      <IosHeader title={t('settings.title')} />
-      <div className="screen-content">
-        <section className="profile-block">
-          <div className="profile-avatar">
-            <Monitor size={36} />
+    <main className="mobile-root-screen">
+      <header className="mobile-page-header safe-top">
+        <div className="mobile-header-row">
+          <div className="mobile-header-title">
+            <h1>{t('settings.title')}</h1>
+            <span>{zh ? '移动端偏好与连接' : 'Mobile preferences and connection'}</span>
           </div>
-          <h2>ThreadTerm</h2>
-          <span>{permissionLabel(permission, t)} · {bridgeAddress}</span>
+        </div>
+      </header>
+      <div className="mobile-page-content">
+        <button className="settings-hero" type="button" onClick={() => openSection('connection')}>
+          <span className="device-avatar"><Monitor size={26} /></span>
+          <span>
+            <h2>ThreadTerm</h2>
+            <small>{connectionStatusLabel(wsStatus, zh)} · {bridgeAddress}</small>
+          </span>
+          <ChevronRight size={18} />
+        </button>
+
+        <section className="mobile-settings-group">
+          <h2>{zh ? '连接与权限' : 'Connection & access'}</h2>
+          <div className="mobile-settings-list">
+            <SettingsNavRow
+              icon={<Wifi size={17} />}
+              title={zh ? '连接与配对' : 'Connection & pairing'}
+              subtitle={zh ? '地址、二维码、状态与快照' : 'Address, QR code, status and snapshot'}
+              value={connectionStatusLabel(wsStatus, zh)}
+              onClick={() => openSection('connection')}
+            />
+            <SettingsNavRow
+              icon={<ShieldCheck size={17} />}
+              title={zh ? '设备权限' : 'Device permission'}
+              subtitle={zh ? '查看当前设备可执行的操作范围' : 'Review this device capability'}
+              value={permissionLabel(permission, t)}
+              onClick={() => openSection('permissions')}
+            />
+          </div>
         </section>
 
-        <section className="ios-list-card">
-          <InfoRow icon={<Gauge size={18} />} label={t('settings.websocket')} value={wsStatus} />
-          <InfoRow icon={<SquareTerminal size={18} />} label={t('settings.pty')} value={activeCard ? displayRuntimeStatus(activeCard) : 'idle'} />
-          <InfoRow
-            icon={<Boxes size={18} />}
-            label={t('settings.recentOutput')}
-            value={activeCard ? `${activeCard.recentOutputBytes} bytes` : '0 bytes'}
-          />
-          <InfoRow icon={<Smartphone size={18} />} label={t('settings.device')} value={permissionLabel(permission, t)} />
-          {lastError && <InfoRow danger icon={<WifiOff size={18} />} label={t('settings.lastError')} value={lastError} />}
+        <section className="mobile-settings-group">
+          <h2>{zh ? '工作台' : 'Workbench'}</h2>
+          <div className="mobile-settings-list">
+            <SettingsNavRow
+              icon={<Bell size={17} />}
+              title={zh ? '通知' : 'Notifications'}
+              subtitle={zh ? '真实通知历史与介入信号' : 'Notification history and intervention signals'}
+              value={unreadCount ? String(unreadCount) : ''}
+              onClick={onOpenNotifications ?? (() => openSection('notifications'))}
+            />
+            <SettingsNavRow
+              icon={<Gauge size={17} />}
+              title={zh ? '注意力规则' : 'Attention rules'}
+              subtitle={zh ? '等待、异常、复核与无进展' : 'Waiting, failures, review and stalled'}
+              value={zh ? '桌面同步' : 'Desktop sync'}
+              onClick={onOpenRules ?? (() => {})}
+            />
+          </div>
         </section>
 
-        <section className="settings-section">
-          <h2>{t('settings.appearance')}</h2>
+        <section className="mobile-settings-group">
+          <h2>{zh ? '偏好' : 'Preferences'}</h2>
+          <div className="mobile-settings-list">
+            <SettingsNavRow
+              icon={<Moon size={17} />}
+              title={zh ? '外观' : 'Appearance'}
+              subtitle={zh ? '跟随 PC 主题与终端色板' : 'Desktop theme and terminal palette'}
+              value={appearanceLabel[themePreference]}
+              onClick={() => openSection('appearance')}
+            />
+            <SettingsNavRow
+              icon={<Languages size={17} />}
+              title={zh ? '语言' : 'Language'}
+              subtitle={zh ? '跟随桌面、中文或 English' : 'Follow desktop, Chinese or English'}
+              value={zh ? '简体中文' : 'English'}
+              onClick={() => openSection('language')}
+            />
+          </div>
+        </section>
+
+        <section className="mobile-settings-group">
+          <h2>{zh ? '支持' : 'Support'}</h2>
+          <div className="mobile-settings-list">
+            <SettingsNavRow
+              icon={<Wrench size={17} />}
+              title={zh ? '连接诊断' : 'Connection diagnostics'}
+              subtitle={lastError || (zh ? '协议、快照与当前会话状态' : 'Protocol, snapshot and session status')}
+              value={lastError ? (zh ? '需检查' : 'Check') : ''}
+              onClick={() => openSection('diagnostics')}
+            />
+            <SettingsNavRow
+              icon={<Info size={17} />}
+              title={zh ? '关于 ThreadTerm' : 'About ThreadTerm'}
+              subtitle={zh ? '版本、能力边界与开源许可' : 'Version, boundaries and licenses'}
+              onClick={() => openSection('about')}
+            />
+          </div>
+        </section>
+
+        <section className="settings-quick-theme">
+          <h2>{zh ? '快速外观' : 'Quick appearance'}</h2>
           <div className="segmented">
             {(['auto', 'dark', 'light'] as const).map((mode) => (
               <button
@@ -729,44 +878,396 @@ export function SettingsScreen({
           </div>
         </section>
 
-        <section className="settings-section">
-          <h2>{t('settings.language')}</h2>
-          <div className="segmented">
-            {(['auto', 'zh', 'en'] as const).map((lang) => (
-              <button
-                className={languagePreference === lang ? 'segmented-active' : ''}
-                type="button"
-                key={lang}
-                onClick={() => onLanguagePreferenceChange(lang)}
-              >
-                <Languages size={15} />
-                {languageLabel[lang]}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="settings-section">
-          <div className="section-heading">
-            <h2>{t('settings.notifications')}</h2>
-            <Bell size={16} />
-          </div>
-          {notifications.length === 0 ? (
-            <EmptyState label={t('settings.noNotifications')} />
-          ) : (
-            <ul className="attention-list">
-              {notifications.map((entry) => (
-                <li key={entry.id}>
-                  <strong>{entry.kind}</strong>
-                  <span>{entry.message}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+        <div className="settings-runtime-note">
+          <Activity size={16} />
+          <span>
+            {activeCard
+              ? `${activeCard.projectName} · ${displayRuntimeStatus(activeCard)}`
+              : (zh ? '当前没有活动终端' : 'No active terminal')}
+          </span>
+          {lastError && <WifiOff size={16} />}
+        </div>
       </div>
     </main>
   );
+}
+
+function NewTerminalScreen({
+  canControl,
+  onBack,
+  onCreate,
+  permission,
+  wsStatus,
+}: {
+  canControl: boolean;
+  onBack: () => void;
+  onCreate: (input: NewSessionInput) => void;
+  permission: string;
+  wsStatus: BridgeConnectionState;
+}) {
+  const { language, t } = useI18n();
+  const zh = language === 'zh';
+  return (
+    <DetailScaffold title={t('instances.newSession')} onBack={onBack}>
+      {!canControl && (
+        <div className="mobile-info-card warning">
+          <strong>
+            {permission !== 'full'
+              ? (zh ? '当前设备为只读权限' : 'This device is read-only')
+              : (zh ? '桌面连接当前不可用' : 'Desktop connection unavailable')}
+          </strong>
+          <span>
+            {zh
+              ? '创建终端需要桌面端在线并授予完全控制权限。'
+              : 'Creating a terminal requires an online desktop and full-control permission.'}
+          </span>
+        </div>
+      )}
+      <div className="new-terminal-intro">
+        <SquareTerminal size={24} />
+        <span>
+          <strong>{zh ? '创建真实桌面会话' : 'Create a real desktop session'}</strong>
+          <small>
+            {zh
+              ? `命令会通过已认证 Bridge 发送；当前连接：${statusText(wsStatus)}。`
+              : `The command is sent through the authenticated Bridge (${statusText(wsStatus)}).`}
+          </small>
+        </span>
+      </div>
+      <NewSessionForm disabled={!canControl} onCancel={onBack} onCreate={onCreate} />
+    </DetailScaffold>
+  );
+}
+
+function SettingsDetailScreen({
+  activeCard,
+  bridgeAddress,
+  lastError,
+  notifications,
+  onBack,
+  onOpenNotifications,
+  onOpenRules,
+  onOpenScanner,
+  onRefresh,
+  onThemePreferenceChange,
+  permission,
+  projection,
+  section,
+  themePreference,
+  wsStatus,
+}: {
+  activeCard: CardMeta | null;
+  bridgeAddress: string;
+  lastError: string | null;
+  notifications: NotificationEntry[];
+  onBack: () => void;
+  onOpenNotifications: () => void;
+  onOpenRules: () => void;
+  onOpenScanner: () => void;
+  onRefresh: () => void;
+  onThemePreferenceChange: (preference: MobileThemePreference) => void;
+  permission: string;
+  projection: MobileWorkbenchProjection | null;
+  section: SettingsSection;
+  themePreference: MobileThemePreference;
+  wsStatus: BridgeConnectionState;
+}) {
+  const {
+    language,
+    preference: languagePreference,
+    setPreference: setLanguagePreference,
+    t,
+  } = useI18n();
+  const zh = language === 'zh';
+  const titles: Record<SettingsSection, string> = {
+    connection: zh ? '连接与配对' : 'Connection & pairing',
+    permissions: zh ? '设备权限' : 'Device permission',
+    notifications: zh ? '通知设置' : 'Notification settings',
+    appearance: zh ? '外观' : 'Appearance',
+    language: zh ? '语言' : 'Language',
+    diagnostics: zh ? '连接诊断' : 'Connection diagnostics',
+    about: zh ? '关于 ThreadTerm' : 'About ThreadTerm',
+  };
+
+  return (
+    <DetailScaffold title={titles[section]} onBack={onBack}>
+      {section === 'connection' && (
+        <>
+          <div className="settings-hero static">
+            <span className="device-avatar"><Monitor size={26} /></span>
+            <span>
+              <strong>ThreadTerm Desktop</strong>
+              <small>{connectionStatusLabel(wsStatus, zh)} · {bridgeAddress}</small>
+            </span>
+          </div>
+          <div className="detail-grid">
+            <SettingsMetric label="WebSocket" value={statusText(wsStatus)} />
+            <SettingsMetric label={zh ? '协议' : 'Protocol'} value="v1" />
+            <SettingsMetric label={zh ? '权限' : 'Permission'} value={permissionLabel(permission, t)} />
+            <SettingsMetric
+              label={zh ? '快照时间' : 'Snapshot'}
+              value={projection ? new Date(projection.generatedAt).toLocaleTimeString() : '—'}
+            />
+          </div>
+          <div className="settings-action-list">
+            <button type="button" onClick={onRefresh}>
+              <Activity size={18} />
+              <span><strong>{zh ? '重新连接并拉取快照' : 'Reconnect and fetch snapshot'}</strong><small>{zh ? '不会改变现有会话' : 'Existing sessions are unchanged'}</small></span>
+              <ChevronRight size={17} />
+            </button>
+            <button type="button" onClick={onOpenScanner}>
+              <QrCode size={18} />
+              <span><strong>{zh ? '查看配对入口' : 'Open pairing view'}</strong><small>{zh ? '显示当前 Bridge 地址与权限' : 'Show Bridge address and permission'}</small></span>
+              <ChevronRight size={17} />
+            </button>
+            <button type="button" onClick={() => void copyText(bridgeAddress)}>
+              <ClipboardCopy size={18} />
+              <span><strong>{zh ? '复制连接地址' : 'Copy connection address'}</strong><small>{bridgeAddress}</small></span>
+              <ChevronRight size={17} />
+            </button>
+          </div>
+        </>
+      )}
+
+      {section === 'permissions' && (
+        <>
+          <div className="mobile-info-card">
+            <strong>{zh ? '权限由桌面端最终校验' : 'Desktop enforces permission'}</strong>
+            <span>
+              {zh
+                ? '更改权限需要在桌面端撤销并重新配对；移动端不会本地提升权限。'
+                : 'Changing permission requires revoking and pairing again on desktop.'}
+            </span>
+          </div>
+          <div className="permission-choice-list">
+            <div className={permission === 'full' ? 'selected' : ''}>
+              <ShieldCheck size={21} />
+              <span><strong>{zh ? '完全控制' : 'Full control'}</strong><small>{zh ? '查看输出、发送输入、创建和管理会话' : 'View output, send input, create and manage sessions'}</small></span>
+              {permission === 'full' && <CheckCircle2 size={19} />}
+            </div>
+            <div className={permission !== 'full' ? 'selected' : ''}>
+              <EyeIcon />
+              <span><strong>{zh ? '只读访问' : 'Read-only access'}</strong><small>{zh ? '查看工作台与终端快照，不改变会话' : 'View snapshots without changing sessions'}</small></span>
+              {permission !== 'full' && <CheckCircle2 size={19} />}
+            </div>
+          </div>
+          <div className="mobile-info-card warning">
+            <strong>{zh ? '结构化审批仍在桌面端' : 'Structured approvals stay on desktop'}</strong>
+            <span>{zh ? '即使拥有完全控制权限，审批和外部写操作也不会在此页面执行。' : 'Full control does not enable approvals on this page.'}</span>
+          </div>
+        </>
+      )}
+
+      {section === 'notifications' && (
+        <>
+          <div className="mobile-info-card">
+            <strong>{zh ? '真实通知镜像' : 'Real notification mirror'}</strong>
+            <span>
+              {zh
+                ? '通知随 Bridge 快照恢复；已读状态当前由桌面端统一管理。'
+                : 'Notifications recover with the Bridge snapshot; desktop owns read state.'}
+            </span>
+          </div>
+          <div className="detail-grid">
+            <SettingsMetric label={zh ? '通知总数' : 'Notifications'} value={String(notifications.length)} />
+            <SettingsMetric label={zh ? '未读' : 'Unread'} value={String(notifications.filter((entry) => entry.read !== true).length)} />
+          </div>
+          <button className="secondary-full-button" type="button" onClick={onOpenNotifications}>
+            <Bell size={17} />
+            {zh ? '打开通知中心' : 'Open notification center'}
+          </button>
+          <p className="field-hint">
+            {zh
+              ? '系统级通知开关仍由桌面端「通知设置」控制。'
+              : 'OS notification preferences remain in desktop Notification Settings.'}
+          </p>
+        </>
+      )}
+
+      {section === 'appearance' && (
+        <>
+          <section className="mobile-settings-group">
+            <h2>{zh ? '界面主题' : 'Interface theme'}</h2>
+            <div className="appearance-choice-grid">
+              {(['auto', 'dark', 'light'] as const).map((mode) => (
+                <button
+                  type="button"
+                  key={mode}
+                  aria-pressed={themePreference === mode}
+                  onClick={() => onThemePreferenceChange(mode)}
+                >
+                  {mode === 'light' ? <Sun size={19} /> : mode === 'dark' ? <Moon size={19} /> : <Monitor size={19} />}
+                  <strong>
+                    {mode === 'auto'
+                      ? (zh ? '跟随 PC' : 'Follow desktop')
+                      : mode === 'dark'
+                        ? (zh ? '深色' : 'Dark')
+                        : (zh ? '浅色' : 'Light')}
+                  </strong>
+                  <small>
+                    {mode === 'auto'
+                      ? (zh ? '应用与终端 token 同步' : 'Sync app and terminal tokens')
+                      : (zh ? '仅覆盖移动界面模式' : 'Override mobile app mode')}
+                  </small>
+                </button>
+              ))}
+            </div>
+          </section>
+          <div className="mobile-info-card">
+            <strong>{zh ? 'PC 主题联动（主题包）' : 'Desktop theme-pack linkage'}</strong>
+            <span>
+              {zh
+                ? '跟随 PC 时直接消费 Bridge 下发的 app + terminal + mode 令牌，不在移动端复制主题包常量。'
+                : 'Follow desktop consumes Bridge app + terminal + mode tokens without duplicated theme-pack constants.'}
+            </span>
+          </div>
+          <div className="terminal-theme-preview" aria-label={zh ? '终端主题预览' : 'Terminal theme preview'}>
+            <span><i>$</i> threadterm preview</span>
+            <span><b>✓</b> {zh ? '主题实时预览' : 'Live theme preview'}</span>
+          </div>
+        </>
+      )}
+
+      {section === 'language' && (
+        <>
+          <div className="language-choice-list">
+            {(['auto', 'zh', 'en'] as const).map((value) => {
+              const labels: Record<MobileLanguagePreference, [string, string]> = {
+                auto: [zh ? '跟随桌面' : 'Follow desktop', zh ? '使用配对链接中的桌面语言' : 'Use the desktop language from pairing'],
+                zh: ['简体中文', 'Chinese (Simplified)'],
+                en: ['English', 'English'],
+              };
+              return (
+                <button
+                  type="button"
+                  key={value}
+                  aria-pressed={languagePreference === value}
+                  onClick={() => setLanguagePreference(value)}
+                >
+                  <Languages size={18} />
+                  <span><strong>{labels[value][0]}</strong><small>{labels[value][1]}</small></span>
+                  {languagePreference === value && <CheckCircle2 size={19} />}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {section === 'diagnostics' && (
+        <>
+          <div className="detail-grid">
+            <SettingsMetric label={zh ? '连接' : 'Connection'} value={connectionStatusLabel(wsStatus, zh)} />
+            <SettingsMetric label={zh ? '移动协议' : 'Protocol'} value="v1" />
+            <SettingsMetric label={zh ? '终端数' : 'Terminals'} value={activeCard ? '1+' : '0'} />
+            <SettingsMetric label={zh ? '投影' : 'Projection'} value={projection ? 'ready' : 'missing'} />
+          </div>
+          {lastError && (
+            <div className="mobile-info-card warning">
+              <strong>{zh ? '最近错误' : 'Last error'}</strong>
+              <span className="breakable-path">{lastError}</span>
+            </div>
+          )}
+          <div className="settings-action-list">
+            <button type="button" onClick={onRefresh}>
+              <Activity size={18} />
+              <span><strong>{zh ? '重新连接并拉取快照' : 'Reconnect and fetch snapshot'}</strong><small>{zh ? '不改变现有会话' : 'Does not change sessions'}</small></span>
+              <ChevronRight size={17} />
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                void copyText(
+                  JSON.stringify(
+                    {
+                      bridgeAddress,
+                      protocol: 1,
+                      wsStatus,
+                      permission,
+                      projectionGeneratedAt: projection?.generatedAt ?? null,
+                      notificationCount: notifications.length,
+                    },
+                    null,
+                    2,
+                  ),
+                )
+              }
+            >
+              <ClipboardCopy size={18} />
+              <span><strong>{zh ? '复制脱敏诊断信息' : 'Copy redacted diagnostics'}</strong><small>{zh ? '不包含终端输出和配对令牌' : 'No terminal output or pairing token'}</small></span>
+              <ChevronRight size={17} />
+            </button>
+          </div>
+        </>
+      )}
+
+      {section === 'about' && (
+        <>
+          <div className="about-hero">
+            <span><SquareTerminal size={30} /></span>
+            <h2>ThreadTerm Mobile</h2>
+            <p>v0.3 · Bridge Protocol v1</p>
+          </div>
+          <div className="mobile-info-card">
+            <strong>{zh ? '移动工作台' : 'Mobile Workbench'}</strong>
+            <span>
+              {zh
+                ? '用于监管桌面端真实会话、定位确定性信号并在需要时接管终端。'
+                : 'Supervise real desktop sessions, locate deterministic signals and take over terminals when needed.'}
+            </span>
+          </div>
+          <div className="settings-action-list">
+            <button type="button" onClick={onOpenRules}>
+              <Gauge size={18} />
+              <span><strong>{zh ? '查看能力边界' : 'Review capability boundaries'}</strong><small>{zh ? '注意力规则与只读约束' : 'Attention rules and read-only constraints'}</small></span>
+              <ChevronRight size={17} />
+            </button>
+            <button type="button" onClick={() => void copyText('ThreadTerm Mobile v0.3 · Bridge Protocol v1')}>
+              <ClipboardCopy size={18} />
+              <span><strong>{zh ? '复制版本信息' : 'Copy version information'}</strong><small>ThreadTerm Mobile v0.3</small></span>
+              <ChevronRight size={17} />
+            </button>
+          </div>
+        </>
+      )}
+    </DetailScaffold>
+  );
+}
+
+function SettingsNavRow({
+  icon,
+  onClick,
+  subtitle,
+  title,
+  value = '',
+}: {
+  icon: React.ReactNode;
+  onClick: () => void;
+  subtitle: string;
+  title: string;
+  value?: string;
+}) {
+  return (
+    <button className="mobile-settings-row" type="button" onClick={onClick}>
+      <span className="settings-row-icon">{icon}</span>
+      <span><strong>{title}</strong><small>{subtitle}</small></span>
+      {value && <em>{value}</em>}
+      <ChevronRight size={17} />
+    </button>
+  );
+}
+
+function SettingsMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="detail-field">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function EyeIcon() {
+  return <Circle size={21} />;
 }
 
 function TerminalDetail({
@@ -779,6 +1280,7 @@ function TerminalDetail({
   onOpenSettings,
   onSend,
   permission,
+  terminalTheme,
   wsStatus,
 }: {
   activeCard: CardMeta | null;
@@ -790,6 +1292,7 @@ function TerminalDetail({
   onOpenSettings: () => void;
   onSend: (data: string) => void;
   permission: string;
+  terminalTheme: ITheme;
   wsStatus: BridgeConnectionState;
 }) {
   const { t } = useI18n();
@@ -826,6 +1329,7 @@ function TerminalDetail({
         activeCardId={activeCard?.id ?? null}
         className="terminal-detail-output"
         recoveryNonce={recoveryNonce}
+        theme={terminalTheme}
       />
 
       {permission === 'full' ? (
@@ -839,12 +1343,11 @@ function TerminalDetail({
               </button>
             </div>
           )}
-          <div className="terminal-toolbar" aria-label="Terminal controls">
-            <button type="button" disabled={!canSend} onClick={() => onSend('\r')}>Enter</button>
-            <button type="button" disabled={!canSend} onClick={() => onSend('\x1b')}>Esc</button>
-            <button type="button" disabled={!canSend} onClick={() => onSend('\x03')}>Ctrl-C</button>
-          </div>
-          <InputBar disabled={!canSend} onSend={onSend} />
+          <InputBar
+            ariaLabel={t('detail.inputLabel')}
+            disabled={!canSend}
+            onSend={onSend}
+          />
         </>
       ) : (
         <div className="readonly-strip detail-readonly">{t('detail.readonly')}</div>
@@ -886,15 +1389,6 @@ function ScannerScreen({
         </div>
       </div>
     </main>
-  );
-}
-
-function IosHeader({ action, title }: { action?: React.ReactNode; title: string }) {
-  return (
-    <header className="ios-header safe-top">
-      <h1>{title}</h1>
-      <div className="header-action">{action}</div>
-    </header>
   );
 }
 
@@ -1101,51 +1595,41 @@ function SessionRow({
   );
 }
 
-function InfoRow({
-  danger = false,
-  icon,
-  label,
-  value,
+function TabBar({
+  activeTab,
+  onChange,
+  unreadCount,
 }: {
-  danger?: boolean;
-  icon: React.ReactNode;
-  label: string;
-  value: string;
+  activeTab: TabId;
+  onChange: (tab: TabId) => void;
+  unreadCount: number;
 }) {
-  return (
-    <div className={`ios-list-item ${danger ? 'info-row-danger' : ''}`}>
-      <span className="list-icon list-icon-gray">{icon}</span>
-      <span className="list-main">
-        <strong>{label}</strong>
-      </span>
-      <span className="info-value">{value}</span>
-    </div>
-  );
-}
-
-function TabBar({ activeTab, onChange }: { activeTab: TabId; onChange: (tab: TabId) => void }) {
   const { t } = useI18n();
   return (
     <footer className="tab-bar safe-bottom">
       <button
+        className={activeTab === 'workbench' ? 'tab-active' : ''}
+        type="button"
+        aria-current={activeTab === 'workbench' ? 'page' : undefined}
+        onClick={() => onChange('workbench')}
+      >
+        <Gauge size={22} />
+        <span>{t('tab.workbench')}</span>
+        {unreadCount > 0 && <i className="tab-attention-dot" />}
+      </button>
+      <button
         className={activeTab === 'terminal' ? 'tab-active' : ''}
         type="button"
+        aria-current={activeTab === 'terminal' ? 'page' : undefined}
         onClick={() => onChange('terminal')}
       >
         <SquareTerminal size={22} />
         <span>{t('tab.terminal')}</span>
       </button>
       <button
-        className={activeTab === 'instances' ? 'tab-active' : ''}
-        type="button"
-        onClick={() => onChange('instances')}
-      >
-        <Boxes size={22} />
-        <span>{t('tab.instances')}</span>
-      </button>
-      <button
         className={activeTab === 'settings' ? 'tab-active' : ''}
         type="button"
+        aria-current={activeTab === 'settings' ? 'page' : undefined}
         onClick={() => onChange('settings')}
       >
         <Settings size={22} />
@@ -1187,19 +1671,24 @@ function filterCards(cards: CardMeta[], query: string): CardMeta[] {
   });
 }
 
-function groupCardsByProject(cards: CardMeta[]): ProjectCardGroup[] {
+export function groupCardsByProject(cards: CardMeta[]): ProjectCardGroup[] {
   const groups = new Map<string, ProjectCardGroup>();
   for (const card of cards) {
-    const key = card.projectPath || card.worktreePath || 'unknown';
+    const key = executionContextKey(card);
+    const projectPath = card.projectPath || card.worktreePath || 'unknown';
+    const worktreePath = card.worktreePath || projectPath;
     const existing = groups.get(key);
     if (existing) {
       existing.cards.push(card);
+      existing.branchLabel ??= card.branchLabel;
       continue;
     }
     groups.set(key, {
       key,
-      projectName: card.projectName || pathLeaf(key),
-      projectPath: key,
+      projectName: card.projectName || pathBasename(projectPath),
+      projectPath,
+      worktreePath,
+      branchLabel: card.branchLabel,
       cards: [card],
     });
   }
@@ -1217,6 +1706,12 @@ function groupCardsByProject(cards: CardMeta[]): ProjectCardGroup[] {
     });
 }
 
+function executionContextKey(card: CardMeta): string {
+  const projectPath = (card.projectPath || card.worktreePath || 'unknown').replace(/[\\/]+$/, '');
+  const worktreePath = (card.worktreePath || projectPath).replace(/[\\/]+$/, '');
+  return JSON.stringify([projectPath, worktreePath]);
+}
+
 function sortCardsForMobile(a: CardMeta, b: CardMeta): number {
   // Reuse the shared "activity first" comparator (live > unread > recency) so
   // mobile and desktop CardGrid stay in lockstep. Mobile liveness keeps its
@@ -1228,10 +1723,24 @@ function sortCardsForMobile(a: CardMeta, b: CardMeta): number {
   );
 }
 
-function pathLeaf(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/, '');
-  const parts = trimmed.split(/[\\/]/);
-  return parts[parts.length - 1] || trimmed || 'Unknown project';
+export function projectGroupDisplayLabel(
+  group: Pick<ProjectCardGroup, 'branchLabel' | 'projectName' | 'projectPath' | 'worktreePath'>,
+): string {
+  if (
+    normalizeComparablePath(group.projectPath) ===
+    normalizeComparablePath(group.worktreePath)
+  ) {
+    return group.projectName;
+  }
+
+  const worktreeLabel = worktreeDisplayLabel(group);
+  if (
+    !worktreeLabel ||
+    worktreeLabel.localeCompare(group.projectName, undefined, { sensitivity: 'accent' }) === 0
+  ) {
+    return group.projectName;
+  }
+  return `${group.projectName} · ${worktreeLabel}`;
 }
 
 function displayCardTitle(card: CardMeta): string {
@@ -1263,6 +1772,24 @@ function isLiveStatus(status: TerminalStatus): boolean {
 
 function permissionLabel(permission: string, t: MobileI18n['t']): string {
   return permission === 'full' ? t('common.fullControl') : t('common.readonly');
+}
+
+function connectionStatusLabel(status: BridgeConnectionState, zh: boolean): string {
+  if (status === 'open') return zh ? '已连接' : 'Connected';
+  if (status === 'connecting' || status === 'reconnecting') {
+    return zh ? '重连中' : 'Reconnecting';
+  }
+  if (status === 'revoked') return zh ? '需重新配对' : 'Pair again';
+  if (status === 'error') return zh ? '连接错误' : 'Connection error';
+  return zh ? '离线' : 'Offline';
+}
+
+async function copyText(value: string): Promise<void> {
+  try {
+    await navigator.clipboard?.writeText(value);
+  } catch {
+    // Clipboard permission can be denied in non-secure browser contexts.
+  }
 }
 
 function statusText(status: BridgeConnectionState | TerminalStatus): string {

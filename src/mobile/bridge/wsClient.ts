@@ -5,7 +5,8 @@ import {
   type ServerMessage,
 } from './protocol';
 
-export type BridgeConnectionState = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
+export type BridgeTransportState = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
+export type BridgeConnectionState = BridgeTransportState | 'reconnecting' | 'revoked';
 
 export interface BridgeWsClientOptions {
   baseUrl: string;
@@ -15,7 +16,7 @@ export interface BridgeWsClientOptions {
 
 export interface BridgeWsClientEvents {
   onMessage?: (message: ServerMessage) => void;
-  onStateChange?: (state: BridgeConnectionState) => void;
+  onStateChange?: (state: BridgeTransportState) => void;
   onError?: (error: Error) => void;
 }
 
@@ -24,7 +25,7 @@ export class BridgeWsClient {
   private readonly token: string;
   private readonly WebSocketImpl: typeof WebSocket;
   private socket: WebSocket | null = null;
-  private state: BridgeConnectionState = 'idle';
+  private state: BridgeTransportState = 'idle';
   private events: BridgeWsClientEvents = {};
 
   constructor(options: BridgeWsClientOptions) {
@@ -79,11 +80,11 @@ export class BridgeWsClient {
     this.socket.send(JSON.stringify(withProtocolVersion(message)));
   }
 
-  getState(): BridgeConnectionState {
+  getState(): BridgeTransportState {
     return this.state;
   }
 
-  private setState(state: BridgeConnectionState) {
+  private setState(state: BridgeTransportState) {
     if (this.state === state) return;
     this.state = state;
     this.events.onStateChange?.(state);

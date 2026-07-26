@@ -39,6 +39,8 @@ export interface SeedCard {
 export interface SeedAgentSession {
   provider: 'claude' | 'codex' | 'opencode' | 'gemini';
   id: string;
+  /** Optional canonical resume id used to model child → root resolution. */
+  resumeTargetId?: string;
   projectPath: string;
   nativeTitle?: string;
   titleKind: 'explicit' | 'generated' | 'unknown' | 'firstPrompt';
@@ -149,9 +151,12 @@ function installInPage(seed: FakeSeed): void {
     ack: Record<string, number>;
   } = { create: {}, attachSnapshot: {}, ack: {} };
   const ackedThrough: Record<string, number> = {};
+  const inputs: Record<string, string[]> = {};
   const agentSessionState = {
     catalogCalls: [] as Array<{ provider: string; query: string | null }>,
     recentListCalls: 0,
+    resumeResolveCalls: [] as Array<{ provider: string; sessionId: string }>,
+    codexAppOpenCardCalls: 0,
   };
 
   const emitEvent = (event: string, payload: unknown): void => {
@@ -166,6 +171,7 @@ function installInPage(seed: FakeSeed): void {
   win.__fakePty = {
     counts,
     ackedThrough,
+    inputs,
     emitOutput(id: string, data: string): number {
       const session = sessions.get(id);
       if (!session || !session.alive) return 0;
@@ -187,6 +193,9 @@ function installInPage(seed: FakeSeed): void {
 
   const invoke = async (cmd: string, rawArgs?: unknown): Promise<unknown> => {
     const a = args(rawArgs);
+    if (cmd === 'codex_app_open_card') {
+      agentSessionState.codexAppOpenCardCalls += 1;
+    }
     switch (cmd) {
       // ── Tauri event plugin ──────────────────────────────────────────────
       case 'plugin:event|listen': {
@@ -206,15 +215,6 @@ function installInPage(seed: FakeSeed): void {
       case 'plugin:event|emit':
       case 'plugin:event|emit_to':
         return null;
-
-      // ── path / fs plugins (workflow discovery) ──────────────────────────
-      case 'plugin:path|resolve_directory':
-        return '/e2e-fake-home';
-      case 'plugin:path|join':
-        return ((a.paths as string[] | undefined) ?? []).filter(Boolean).join('/');
-      case 'plugin:fs|read_dir':
-        // Missing workflow directory → discovery treats it as empty.
-        throw new Error('fake-fs: directory does not exist');
 
       // ── fake PTY ────────────────────────────────────────────────────────
       case 'pty_create': {
@@ -278,7 +278,12 @@ function installInPage(seed: FakeSeed): void {
         if (session) session.alive = false;
         return null;
       }
-      case 'pty_input':
+      case 'pty_input': {
+        const id = a.id as string;
+        if (!inputs[id]) inputs[id] = [];
+        inputs[id]?.push(String(a.data ?? ''));
+        return null;
+      }
       case 'pty_resize':
         return null;
       case 'pty_get_recent_output':
@@ -296,6 +301,31 @@ function installInPage(seed: FakeSeed): void {
       case 'provider_list_recent_sessions':
         agentSessionState.recentListCalls += 1;
         return [];
+      case 'provider_resolve_resume_session': {
+        const provider = String(a.provider);
+        const sessionId = String(a.sessionId);
+        agentSessionState.resumeResolveCalls.push({ provider, sessionId });
+        const session = seed.agentSessions.find(
+          (candidate) =>
+            candidate.provider === provider
+            && (
+              candidate.id === sessionId
+              || candidate.resumeTargetId === sessionId
+            ),
+        );
+        if (
+          !session
+          || (session.provider !== 'claude' && session.provider !== 'codex')
+        ) {
+          return null;
+        }
+        return {
+          id: session.resumeTargetId ?? session.id,
+          provider: session.provider,
+          projectPath: session.projectPath,
+          updatedAt: session.updatedAt ?? null,
+        };
+      }
       case 'provider_list_agent_sessions': {
         const request = (a.request ?? {}) as Record<string, unknown>;
         const provider = String(request.provider ?? 'claude');

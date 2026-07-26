@@ -10,7 +10,11 @@
  * exactly the property we depend on here, and the spec L142 requires it.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { disposeAllHeadless, feedHeadless } from './headlessPreview';
+import {
+  disposeAllHeadless,
+  feedHeadless,
+  readHeadlessPreview,
+} from './headlessPreview';
 
 afterEach(() => {
   disposeAllHeadless();
@@ -18,7 +22,7 @@ afterEach(() => {
 
 function feedAndRead(id: string, data: string): Promise<string> {
   return new Promise((resolve) => {
-    feedHeadless(id, data, (preview) => resolve(preview));
+    feedHeadless(id, data, () => resolve(readHeadlessPreview(id)));
   });
 }
 
@@ -48,5 +52,52 @@ describe('headlessPreview — OSC visual transparency', () => {
     expect(renderedWithOsc).toBe(renderedWithoutOsc);
     expect(renderedWithOsc).not.toContain('133');
     expect(renderedWithOsc).not.toContain('6973');
+  });
+});
+
+describe('headlessPreview — terminal redraw behavior', () => {
+  it('drops stale rows after a full-screen redraw', async () => {
+    await feedAndRead('full-redraw', 'stale top\r\nstale bottom');
+
+    const preview = await feedAndRead(
+      'full-redraw',
+      '\x1b[2J\x1b[Hcurrent top\r\ncurrent bottom',
+    );
+
+    expect(preview).toBe('current top\ncurrent bottom');
+    expect(preview).not.toContain('stale');
+  });
+
+  it('keeps only the latest carriage-return progress value', async () => {
+    const preview = await feedAndRead(
+      'progress',
+      'Downloading 10%\rDownloading 45%\rDownloading 100%',
+    );
+
+    expect(preview).toBe('Downloading 100%');
+    expect(preview).not.toContain('10%');
+    expect(preview).not.toContain('45%');
+  });
+
+  it('handles a control sequence split across output chunks', async () => {
+    await feedAndRead('split-control', 'obsolete output');
+    await feedAndRead('split-control', '\x1b[');
+    const preview = await feedAndRead(
+      'split-control',
+      '2J\x1b[Hfresh output',
+    );
+
+    expect(preview).toBe('fresh output');
+    expect(preview).not.toContain('obsolete');
+    expect(preview).not.toContain('[2J');
+  });
+
+  it('preserves CJK and wide glyphs in the visible preview', async () => {
+    const preview = await feedAndRead(
+      'wide-glyphs',
+      '任务状态：运行中\r\n进度：完成 ✅',
+    );
+
+    expect(preview).toBe('任务状态：运行中\n进度：完成 ✅');
   });
 });

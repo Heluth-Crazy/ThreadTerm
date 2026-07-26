@@ -78,7 +78,7 @@ export function EditableCardName({
       onMouseDown={stop}
       onKeyDown={handleKeyDown}
       onBlur={handleBlur}
-      className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-primary/40 bg-background/80 px-1 py-0.5 text-sm font-semibold outline-none focus:border-primary"
+      className="min-w-0 flex-1 rounded-sm border border-primary/40 bg-background/80 px-1 py-0.5 text-sm font-semibold outline-none focus:ring-2 focus:ring-ring/40"
     />
   );
 }

@@ -24,8 +24,9 @@ import { Trans, useTranslation } from 'react-i18next';
 import Shell from '../../components/terminal/Shell';
 import type { TerminalCard } from '../../types/terminal';
 import { getTerminalTypeMeta } from '../../components/terminal/terminalTypeMeta';
-import { buildTerminalLaunchCommand } from '../../components/terminal/providerSession';
 import { useProviderSessionLifecycle } from '../../components/terminal/useProviderSessionLifecycle';
+import { useValidatedProviderSessionLaunch } from '../../components/terminal/useValidatedProviderSessionLaunch';
+import { ProviderSessionLaunchPlaceholder } from '../../components/terminal/ProviderSessionLaunchPlaceholder';
 import { useTerminalStore } from '../../stores/terminalStore';
 
 export interface FloatSessionProps {
@@ -47,11 +48,16 @@ export function FloatSession({ card, active = true }: FloatSessionProps) {
     [card?.projectName, card?.projectPath, card?.worktreePath],
   );
   const typeMeta = card ? getTerminalTypeMeta(card.terminalType) : null;
-  const launch = useMemo(
-    () => (card && typeMeta ? buildTerminalLaunchCommand(card, typeMeta.defaultCommand) : null),
-    [card, typeMeta?.defaultCommand],
+  const {
+    lifecycleCard,
+    launch,
+    status: providerSessionLaunchStatus,
+    retry: retryProviderSessionLaunch,
+  } = useValidatedProviderSessionLaunch(
+    card,
+    typeMeta?.defaultCommand,
   );
-  const onInitialCommandSent = useProviderSessionLifecycle(card, launch, true);
+  const onInitialCommandSent = useProviderSessionLifecycle(lifecycleCard, launch, true);
   const markCardRead = useTerminalStore((s) => s.markCardRead);
   const recordUserSubmit = useTerminalStore((s) => s.recordUserSubmit);
 
@@ -74,8 +80,7 @@ export function FloatSession({ card, active = true }: FloatSessionProps) {
   if (!card || !selectedProject) {
     return (
       <div
-        className="flex flex-1 items-center justify-center bg-[var(--terminal-background)] p-8 text-center"
-        style={{ color: 'var(--terminal-foreground)' }}
+        className="flex flex-1 items-center justify-center bg-[var(--terminal-background)] p-8 text-center text-[var(--terminal-foreground)]"
       >
         <div className="max-w-sm space-y-2">
           <div className="text-sm font-semibold">
@@ -87,7 +92,7 @@ export function FloatSession({ card, active = true }: FloatSessionProps) {
               ns="overlay"
               values={{ shortcut: '⌘/Ctrl + Shift + Space' }}
               components={{
-                kbd: <kbd className="rounded bg-white/10 px-1" />,
+                kbd: <kbd className="rounded border border-border bg-muted/50 px-1" />,
               }}
             />
           </div>
@@ -104,25 +109,31 @@ export function FloatSession({ card, active = true }: FloatSessionProps) {
 
   return (
     <div id={`float-shell-${card.id}`} className="flex-1 min-h-0 bg-[var(--terminal-background)]">
-      <Shell
-        key={paneId}
-        selectedProject={selectedProject}
-        // If the PTY already exists, Shell suppresses this command and only
-        // attaches. If it does not, the float starts the same command that
-        // the main TerminalView would have started for this card.
-        initialCommand={initialCommand}
-        minimal={true}
-        autoConnect={true}
-        paneId={paneId}
-        active={active}
-        rendererScope="float"
-        preservePtyOnUnmount={true}
-        replayRecentOutput={true}
-        suppressInitialCommandWhenPtyExists={true}
-        onInitialCommandSent={handleInitialCommandSent}
-        onUserSubmit={recordSubmit}
-        onDisconnect={undefined}
-      />
+      {launch ? (
+        <Shell
+          key={paneId}
+          selectedProject={selectedProject}
+          // If the PTY already exists, Shell suppresses this command and only
+          // attaches. If it does not, the float starts the same command that
+          // the main TerminalView would have started for this card.
+          initialCommand={initialCommand}
+          minimal={true}
+          autoConnect={true}
+          paneId={paneId}
+          active={active}
+          rendererScope="float"
+          preservePtyOnUnmount={true}
+          suppressInitialCommandWhenPtyExists={true}
+          onInitialCommandSent={handleInitialCommandSent}
+          onUserSubmit={recordSubmit}
+          onDisconnect={undefined}
+        />
+      ) : (
+        <ProviderSessionLaunchPlaceholder
+          status={providerSessionLaunchStatus}
+          onRetry={retryProviderSessionLaunch}
+        />
+      )}
     </div>
   );
 }

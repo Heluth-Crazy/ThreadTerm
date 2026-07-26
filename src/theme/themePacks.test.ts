@@ -61,8 +61,18 @@ describe('themePacks tokens', () => {
     expect(acmeMono?.modes.light).toBeUndefined();
   });
 
-  it('defines a dark mode for every bundled pack', () => {
+  it('registers Botanical as a bundled light-only theme', () => {
+    const botanical = themePacks.find((pack) => pack.id === 'botanical');
+
+    expect(botanical).toBeDefined();
+    expect(botanical?.name).toBe('Botanical Garden');
+    expect(botanical?.modes.light).toBeDefined();
+    expect(botanical?.modes.dark).toBeUndefined();
+  });
+
+  it('defines a dark mode for every bundled pack except light-only Botanical', () => {
     for (const pack of themePacks) {
+      if (pack.id === 'botanical') continue;
       expect(pack.modes.dark, pack.id).toBeDefined();
     }
   });
@@ -108,6 +118,13 @@ describe('themePacks tokens', () => {
 
     expect(resolved.pack.id).toBe('acme-mono');
     expect(resolved.mode).toBe('dark');
+  });
+
+  it('falls back to light mode when Botanical is requested in dark mode', () => {
+    const resolved = resolveTheme('botanical', 'dark');
+
+    expect(resolved.pack.id).toBe('botanical');
+    expect(resolved.mode).toBe('light');
   });
 
   it('converts hex colors into Tailwind-compatible HSL tokens', () => {

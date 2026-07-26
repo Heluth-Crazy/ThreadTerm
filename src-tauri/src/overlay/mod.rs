@@ -63,10 +63,9 @@ pub use state::load_settings;
 pub use window::prewarm_windows;
 
 pub use commands::{
-    overlay_get_settings, overlay_hide_float, overlay_hide_selector, overlay_move_float,
-    overlay_resize_float, overlay_save_float_bounds, overlay_set_float_launch_mode,
-    overlay_set_lightweight_mode, overlay_show_float, overlay_show_main, overlay_show_selector,
-    overlay_update_shortcut,
+    overlay_get_settings, overlay_hide_float, overlay_hide_selector, overlay_save_float_bounds,
+    overlay_set_float_launch_mode, overlay_set_lightweight_mode, overlay_show_float,
+    overlay_show_main, overlay_show_selector, overlay_update_shortcut,
 };
 
 // `tauri::generate_handler!` resolves both the function AND a sibling
@@ -75,8 +74,7 @@ pub use commands::{
 // shorthand instead of the longer `overlay::commands::…` path.
 pub use commands::{
     __cmd__overlay_get_settings, __cmd__overlay_hide_float, __cmd__overlay_hide_selector,
-    __cmd__overlay_move_float, __cmd__overlay_resize_float, __cmd__overlay_save_float_bounds,
-    __cmd__overlay_set_float_launch_mode, __cmd__overlay_set_lightweight_mode,
-    __cmd__overlay_show_float, __cmd__overlay_show_main, __cmd__overlay_show_selector,
-    __cmd__overlay_update_shortcut,
+    __cmd__overlay_save_float_bounds, __cmd__overlay_set_float_launch_mode,
+    __cmd__overlay_set_lightweight_mode, __cmd__overlay_show_float, __cmd__overlay_show_main,
+    __cmd__overlay_show_selector, __cmd__overlay_update_shortcut,
 };

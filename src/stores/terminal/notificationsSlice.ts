@@ -58,6 +58,7 @@ export const createNotificationsSlice: TerminalSliceCreator<NotificationsSlice> 
       kind: input.kind,
       title: input.title,
       body: input.body,
+      routing: input.routing,
     };
     set((state) => {
       const notifications = [entry, ...state.notifications];

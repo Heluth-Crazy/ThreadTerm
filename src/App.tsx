@@ -8,6 +8,7 @@ import { KeyboardBridge } from './components/terminal/KeyboardBridge';
 import { OverlayBridge } from './components/overlays/OverlayBridge';
 import { NotificationCenter } from './components/terminal/NotificationCenter';
 import { SettingsSyncBridge } from './components/settings/SettingsSyncBridge';
+import { CodexRequestBridge } from './components/codex/CodexRequestBridge';
 
 /**
  * Terminal Manager Lite — lightweight terminal orchestrator.
@@ -24,6 +25,7 @@ export default function App() {
     <I18nextProvider i18n={i18n}>
       <ThemeProvider>
         <TerminalEventBridge />
+        <CodexRequestBridge />
         <NotificationBridge />
         <KeyboardBridge />
         <SettingsSyncBridge />

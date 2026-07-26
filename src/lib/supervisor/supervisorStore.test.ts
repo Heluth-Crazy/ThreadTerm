@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   SUPERVISOR_ALERTS_MAX,
-  SUPERVISOR_DEDUP_WINDOW_MS,
   useSupervisorStore,
 } from './supervisorStore';
 
@@ -41,7 +40,7 @@ describe('ingestAlert', () => {
     expect(useSupervisorStore.getState().telemetry.triggered).toBe(1);
   });
 
-  it('drops a duplicate (cardId, ruleId) within the 60s window', () => {
+  it('drops the exact same card/rule/generation/sample episode', () => {
     const ingest = useSupervisorStore.getState().ingestAlert;
     const baseTs = Date.now();
     expect(ingest({ cardId: 'c1', ruleId: 'yes-no-bracket', sampleText: 'a [y/N]', ts: baseTs })).not.toBeNull();
@@ -49,26 +48,54 @@ describe('ingestAlert', () => {
       cardId: 'c1',
       ruleId: 'yes-no-bracket',
       sampleText: 'a [y/N]',
-      ts: baseTs + 30_000, // < 60s window
+      ts: baseTs + 120_000,
     });
     expect(dup).toBeNull();
     expect(useSupervisorStore.getState().alerts).toHaveLength(1);
     expect(useSupervisorStore.getState().telemetry.triggered).toBe(1);
   });
 
-  it('accepts the same (cardId, ruleId) once the dedup window elapses', () => {
+  it('rearms when the user-submit generation changes', () => {
     const ingest = useSupervisorStore.getState().ingestAlert;
     const baseTs = Date.now();
-    ingest({ cardId: 'c1', ruleId: 'sudo-password', sampleText: 'x', ts: baseTs });
+    ingest({
+      cardId: 'c1',
+      ruleId: 'sudo-password',
+      sampleText: 'x',
+      ts: baseTs,
+      generation: 1,
+    });
     const second = ingest({
       cardId: 'c1',
       ruleId: 'sudo-password',
       sampleText: 'x',
-      ts: baseTs + SUPERVISOR_DEDUP_WINDOW_MS + 1_000, // > 60s
+      ts: baseTs + 1_000,
+      generation: 2,
     });
     expect(second).not.toBeNull();
     expect(useSupervisorStore.getState().alerts).toHaveLength(2);
     expect(useSupervisorStore.getState().telemetry.triggered).toBe(2);
+  });
+
+  it('rearms when the normalized prompt sample changes', () => {
+    const ingest = useSupervisorStore.getState().ingestAlert;
+    const baseTs = Date.now();
+    ingest({
+      cardId: 'c1',
+      ruleId: 'sudo-password',
+      sampleText: 'Password for alice:',
+      ts: baseTs,
+      generation: 1,
+    });
+    const second = ingest({
+      cardId: 'c1',
+      ruleId: 'sudo-password',
+      sampleText: 'Password for bob:',
+      ts: baseTs + 1_000,
+      generation: 1,
+    });
+    expect(second).not.toBeNull();
+    expect(useSupervisorStore.getState().alerts).toHaveLength(2);
   });
 
   it('does not de-dup across different cards or rules', () => {

@@ -18,6 +18,7 @@ import {
   type SettingsBundleSectionId,
 } from '../../lib/settings/settingsBundle';
 import type { ThemePack } from '../../theme/themeTypes';
+import { SettingsSection } from './SettingsSection';
 
 type StatusState = {
   kind: 'success' | 'error';
@@ -213,7 +214,7 @@ export function SettingsDataIO() {
   const selectedSet = new Set(selectedSections);
 
   return (
-    <section className="rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
+    <SettingsSection>
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -242,7 +243,7 @@ export function SettingsDataIO() {
           <button
             type="button"
             onClick={() => importInputRef.current?.click()}
-            className="inline-flex items-center justify-center gap-2 rounded-[var(--radius-md)] border border-white/10 bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-accent"
+            className="inline-flex items-center justify-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-accent"
           >
             <Upload className="h-3.5 w-3.5" />
             {t('dataIO.importJson', { defaultValue: 'Import settings JSON' })}
@@ -251,7 +252,7 @@ export function SettingsDataIO() {
             type="button"
             onClick={handleExport}
             disabled={exporting}
-            className="inline-flex items-center justify-center gap-2 rounded-[var(--radius-md)] bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Download className="h-3.5 w-3.5" />
             {exporting
@@ -271,7 +272,7 @@ export function SettingsDataIO() {
       {status && (
         <div
           className={[
-            'mt-3 rounded-[var(--radius-md)] border px-3 py-2 text-xs',
+            'mt-3 rounded-md border px-3 py-2 text-xs',
             status.kind === 'error'
               ? 'border-destructive/40 bg-destructive/10 text-destructive'
               : 'border-primary/30 bg-primary/10 text-foreground',
@@ -282,7 +283,7 @@ export function SettingsDataIO() {
       )}
 
       {pendingImport && (
-        <div className="mt-4 rounded-[var(--radius)] border border-white/10 bg-background/70 p-3">
+        <div className="mt-4 rounded-lg border border-border bg-background/70 p-3">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-sm font-semibold text-foreground">
@@ -300,18 +301,18 @@ export function SettingsDataIO() {
                 setPendingImport(null);
                 setSelectedSections([]);
               }}
-              className="rounded-[var(--radius-md)] p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               title={t('dataIO.clearPreview', { defaultValue: 'Clear preview' })}
             >
               <X className="h-3.5 w-3.5" />
             </button>
           </div>
 
-          <div className="mt-3 divide-y divide-border/50 overflow-hidden rounded-[var(--radius-md)] border border-white/10">
+          <div className="mt-3 divide-y divide-border/50 overflow-hidden rounded-md border border-border">
             {pendingImport.diffs.map((diff) => (
               <label
                 key={diff.id}
-                className="grid gap-3 bg-white/5 backdrop-blur-md/50 p-3 text-sm md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]"
+                className="grid gap-3 bg-card/80 backdrop-blur-md p-3 text-sm md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]"
               >
                 <span className="flex min-w-0 items-start gap-3">
                   <input
@@ -335,7 +336,7 @@ export function SettingsDataIO() {
                 </span>
 
                 <span className="grid min-w-0 gap-2 text-xs md:grid-cols-2">
-                  <span className="min-w-0 rounded-[var(--radius-md)] bg-background/80 p-2">
+                  <span className="min-w-0 rounded-md bg-background/80 p-2">
                     <span className="block font-medium text-muted-foreground">
                       {t('dataIO.current', { defaultValue: 'Current' })}
                     </span>
@@ -343,7 +344,7 @@ export function SettingsDataIO() {
                       {diff.currentSummary}
                     </span>
                   </span>
-                  <span className="min-w-0 rounded-[var(--radius-md)] bg-background/80 p-2">
+                  <span className="min-w-0 rounded-md bg-background/80 p-2">
                     <span className="block font-medium text-muted-foreground">
                       {t('dataIO.incoming', { defaultValue: 'Import' })}
                     </span>
@@ -361,7 +362,7 @@ export function SettingsDataIO() {
               type="button"
               onClick={handleApplyImport}
               disabled={applying || selectedSections.length === 0}
-              className="inline-flex items-center justify-center gap-2 rounded-[var(--radius-md)] bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {applying
                 ? t('dataIO.applying', { defaultValue: 'Applying...' })
@@ -370,6 +371,6 @@ export function SettingsDataIO() {
           </div>
         </div>
       )}
-    </section>
+    </SettingsSection>
   );
 }

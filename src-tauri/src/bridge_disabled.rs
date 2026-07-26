@@ -3,8 +3,8 @@ pub mod protocol;
 
 use crate::pty::SessionState;
 use protocol::{
-    AppThemeTokens, BridgeDevice, BridgeStatus, CardMeta, DevicePermission, PairQrResponse,
-    TerminalThemeTokens, ThemeMode,
+    AppThemeTokens, BridgeDevice, BridgeStatus, CardMeta, DevicePermission,
+    MobileWorkbenchProjection, NotificationEntry, PairQrResponse, TerminalThemeTokens, ThemeMode,
 };
 
 const DISABLED_MESSAGE: &str = "Mobile bridge is disabled in this build.";
@@ -38,8 +38,13 @@ pub async fn bridge_stop() -> Result<BridgeStatus, String> {
 }
 
 #[tauri::command]
-pub async fn bridge_status() -> Result<BridgeStatus, String> {
+pub async fn bridge_status(_refresh: Option<bool>) -> Result<BridgeStatus, String> {
     Ok(stopped_status())
+}
+
+#[tauri::command]
+pub async fn bridge_has_subscribers() -> Result<bool, String> {
+    Ok(false)
 }
 
 #[tauri::command]
@@ -62,6 +67,15 @@ pub async fn bridge_revoke_device(_device_id: String) -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn bridge_sync_cards(_cards: Vec<CardMeta>) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn bridge_sync_state(
+    _cards: Vec<CardMeta>,
+    _notifications: Vec<NotificationEntry>,
+    _workbench: Option<MobileWorkbenchProjection>,
+) -> Result<(), String> {
     Ok(())
 }
 

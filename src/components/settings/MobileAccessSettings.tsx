@@ -21,6 +21,7 @@ import {
 import type { ThemeModeTokens } from '../../theme/themeTypes';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
+import { SettingsSection } from './SettingsSection';
 import { useTheme } from '../../theme/ThemeContext';
 
 type ActionState = 'idle' | 'busy' | 'failed';
@@ -29,7 +30,7 @@ type BindHost = '127.0.0.1' | '0.0.0.0';
 
 const LOOPBACK_BIND_HOST: BindHost = '127.0.0.1';
 const LAN_BIND_HOST: BindHost = '0.0.0.0';
-const DEFAULT_BIND_HOST: BindHost = LAN_BIND_HOST;
+const DEFAULT_BIND_HOST: BindHost = LOOPBACK_BIND_HOST;
 
 const stoppedStatus: BridgeStatus = {
   running: false,
@@ -187,15 +188,21 @@ export function MobileAccessSettings() {
     }
   };
 
-  const refresh = async () => {
+  const refresh = async (refreshNetworkAddress = false) => {
     if (!isTauriEnv()) return;
 
     const intent = beginPairQrIntent();
     setError(null);
     try {
-      const nextStatus = await mobileBridge.status();
+      const nextStatus = await mobileBridge.status(refreshNetworkAddress);
       if (intent === pairQrIntentRef.current) {
         setStatus(nextStatus);
+        if (
+          nextStatus.host === LOOPBACK_BIND_HOST ||
+          nextStatus.host === LAN_BIND_HOST
+        ) {
+          setBindHost(nextStatus.host);
+        }
       }
       await createPairQrForStatus(intent, nextStatus);
       await loadDevices(intent);
@@ -207,7 +214,7 @@ export function MobileAccessSettings() {
   };
 
   useEffect(() => {
-    refresh();
+    void refresh(false);
   }, []);
 
   const runStartBridge = async (host: BindHost) => {
@@ -219,6 +226,7 @@ export function MobileAccessSettings() {
       const nextStatus = await mobileBridge.start(host);
       if (intent === pairQrIntentRef.current) {
         setStatus(nextStatus);
+        setBindHost(host);
       }
       await createPairQrForStatus(intent, nextStatus, host);
       await loadDevices(intent);
@@ -313,6 +321,8 @@ export function MobileAccessSettings() {
     status.host === LAN_BIND_HOST &&
     !normalizedPublishHostOverride &&
     isLoopbackHost(pairQr?.host);
+  const lanExposureActive =
+    status.running && status.host === LAN_BIND_HOST;
 
   const copyPairUrl = async () => {
     if (!pairUrl || !navigator.clipboard) return;
@@ -322,7 +332,7 @@ export function MobileAccessSettings() {
   const isBusy = actionState === 'busy';
 
   return (
-    <section className="rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm">
+    <SettingsSection>
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -338,7 +348,7 @@ export function MobileAccessSettings() {
             {t('mobileAccess.description')}
           </p>
           {!isTauriEnv() && (
-            <p className="mt-2 text-xs text-amber-600">
+            <p className="mt-2 text-xs text-warning">
               {t('mobileAccess.desktopOnly')}
             </p>
           )}
@@ -382,6 +392,11 @@ export function MobileAccessSettings() {
                   <ExternalLink className="h-3 w-3" />
                 </a>
               </p>
+              {lanExposureActive && (
+                <p className="leading-5 text-warning">
+                  {t('mobileAccess.lanPlaintextWarning')}
+                </p>
+              )}
             </div>
           )}
           {error && (
@@ -395,7 +410,7 @@ export function MobileAccessSettings() {
           <div
             role="radiogroup"
             aria-label={t('mobileAccess.bind.label')}
-            className="grid gap-1 rounded-[var(--radius-md)] border border-white/10/70 bg-background/70 p-1 text-xs"
+            className="grid gap-1 rounded-md border border-border bg-background/70 p-1 text-xs"
           >
             {[
               { value: LOOPBACK_BIND_HOST, label: t('mobileAccess.bind.loopback') },
@@ -403,7 +418,7 @@ export function MobileAccessSettings() {
             ].map((option) => (
               <label
                 key={option.value}
-                className="inline-flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
+                className="inline-flex items-center gap-2 rounded-md px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
               >
                 <input
                   type="radio"
@@ -433,7 +448,7 @@ export function MobileAccessSettings() {
               placeholder={t('mobileAccess.publishHost.placeholder')}
               disabled={isBusy}
               aria-label={t('mobileAccess.publishHost.label')}
-              className="h-8 rounded-[var(--radius-md)] border border-white/10 bg-background/80 px-2 font-mono text-xs text-foreground outline-none focus:border-primary"
+              className="h-8 rounded-md border border-border bg-background/80 px-2 font-mono text-xs text-foreground outline-none focus:border-primary"
             />
             <span>{t('mobileAccess.publishHost.hint')}</span>
           </label>
@@ -442,7 +457,12 @@ export function MobileAccessSettings() {
               <Power />
               {status.running ? t('mobileAccess.stop') : t('mobileAccess.start')}
             </Button>
-            <Button size="sm" variant="outline" onClick={refresh} disabled={!isTauriEnv() || isBusy}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void refresh(true)}
+              disabled={!isTauriEnv() || isBusy}
+            >
               <RefreshCw />
               {t('mobileAccess.refresh')}
             </Button>
@@ -451,9 +471,12 @@ export function MobileAccessSettings() {
       </div>
 
       {lanConfirmVisible && !status.running && (
-        <div className="mt-4 rounded-[var(--radius)] border border-amber-500/35 bg-amber-500/10 p-3">
+        <div className="mt-4 rounded-lg border border-warning/30 bg-warning/10 p-3">
           <p className="text-xs leading-5 text-foreground">
             {t('mobileAccess.lanConfirm')}
+          </p>
+          <p className="mt-1 text-xs leading-5 text-warning">
+            {t('mobileAccess.lanPlaintextWarning')}
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <Button size="sm" onClick={() => runStartBridge(LAN_BIND_HOST)} disabled={isBusy}>
@@ -472,7 +495,7 @@ export function MobileAccessSettings() {
         </div>
       )}
 
-      <div className="mt-4 rounded-[var(--radius)] border border-white/10 bg-background/70 p-3">
+      <div className="mt-4 rounded-lg border border-border bg-background/70 p-3">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -483,7 +506,7 @@ export function MobileAccessSettings() {
               {t('mobileAccess.pairingDescription')}
             </p>
             {showLoopbackPublishWarning && (
-              <p className="mt-2 text-xs leading-5 text-amber-600">
+              <p className="mt-2 text-xs leading-5 text-warning">
                 {t('mobileAccess.publishHost.loopbackWarning')}
               </p>
             )}
@@ -493,7 +516,7 @@ export function MobileAccessSettings() {
                 <div
                   role="radiogroup"
                   aria-label={t('mobileAccess.permissionMode.label')}
-                  className="mt-3 grid gap-1 rounded-[var(--radius-md)] border border-white/10/70 bg-white/5 backdrop-blur-md/70 p-1 text-xs sm:inline-grid"
+                  className="mt-3 grid gap-1 rounded-md border border-border bg-card/80 backdrop-blur-md p-1 text-xs sm:inline-grid"
                 >
                   {[
                     {
@@ -507,7 +530,7 @@ export function MobileAccessSettings() {
                   ].map((option) => (
                     <label
                       key={option.value}
-                      className="inline-flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
+                      className="inline-flex items-center gap-2 rounded-md px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
                     >
                       <input
                         type="radio"
@@ -529,7 +552,7 @@ export function MobileAccessSettings() {
 
                 {pairQr && pairUrl ? (
                   <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-start">
-                    <div className="shrink-0 rounded-[var(--radius-md)] border border-border bg-white p-2 shadow-sm">
+                    <div className="shrink-0 rounded-md border border-border bg-white p-2 shadow-sm">
                       <QRCodeSVG
                         value={pairUrl}
                         size={168}
@@ -550,7 +573,7 @@ export function MobileAccessSettings() {
                     </div>
                   </div>
                 ) : (
-                  <div className="mt-3 flex min-h-32 items-center justify-center rounded-[var(--radius-md)] border border-dashed border-border bg-white/5 p-4 text-center">
+                  <div className="mt-3 flex min-h-32 items-center justify-center rounded-md border border-dashed border-border bg-muted/50 p-4 text-center">
                     <div className="max-w-xs">
                       <QrCode className="mx-auto h-8 w-8 text-muted-foreground/70" />
                       <p className="mt-2 text-xs leading-5 text-muted-foreground" role="status">
@@ -563,8 +586,8 @@ export function MobileAccessSettings() {
                 )}
               </>
             ) : (
-              <div className="mt-3 flex flex-col gap-3 rounded-[var(--radius-md)] border border-dashed border-border bg-white/5 p-4 sm:flex-row sm:items-center">
-                <div className="flex h-28 w-full shrink-0 flex-col items-center justify-center rounded-[var(--radius-md)] bg-background/80 text-center sm:w-28">
+              <div className="mt-3 flex flex-col gap-3 rounded-md border border-dashed border-border bg-muted/50 p-4 sm:flex-row sm:items-center">
+                <div className="flex h-28 w-full shrink-0 flex-col items-center justify-center rounded-md bg-background/80 text-center sm:w-28">
                   <QrCode className="h-9 w-9 text-muted-foreground/70" />
                   <span className="mt-2 text-[11px] font-medium text-muted-foreground">
                     {t('mobileAccess.pairingStoppedTitle')}
@@ -612,7 +635,7 @@ export function MobileAccessSettings() {
             {t('mobileAccess.noDevices')}
           </p>
         ) : (
-          <div className="mt-2 divide-y divide-border/60 overflow-hidden rounded-[var(--radius)] border border-white/10">
+          <div className="mt-2 divide-y divide-border/60 overflow-hidden rounded-lg border border-border">
             {devices.map((device) => (
               <div
                 key={device.id}
@@ -641,6 +664,6 @@ export function MobileAccessSettings() {
           </div>
         )}
       </div>
-    </section>
+    </SettingsSection>
   );
 }

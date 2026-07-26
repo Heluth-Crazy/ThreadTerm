@@ -3,6 +3,7 @@ import { useRef, useState } from 'react';
 import type { MouseEvent, ReactNode, TouchEvent } from 'react';
 
 interface InputBarProps {
+  ariaLabel?: string;
   disabled: boolean;
   onSend: (data: string) => void;
 }
@@ -19,7 +20,11 @@ const CONTROL_KEYS: { label: string; data: string; ariaLabel: string }[] = [
   { label: 'Ctrl-D', data: '\x04', ariaLabel: 'Ctrl-D' },
 ];
 
-export function InputBar({ disabled, onSend }: InputBarProps) {
+export function InputBar({
+  ariaLabel = 'Mobile terminal input',
+  disabled,
+  onSend,
+}: InputBarProps) {
   const [value, setValue] = useState('');
   const pendingInputBuffer = useRef('');
   const suppressNextClick = useRef(false);
@@ -102,7 +107,7 @@ export function InputBar({ disabled, onSend }: InputBarProps) {
       </div>
       <div className="input-bar">
         <textarea
-          aria-label="Mobile terminal input"
+          aria-label={ariaLabel}
           disabled={disabled}
           ref={textareaRef}
           value={value}

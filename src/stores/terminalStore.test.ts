@@ -518,6 +518,84 @@ describe('terminalStore — persistence shape contract', () => {
     expect(card).toBeTruthy();
     expect(Object.keys(card ?? {}).sort()).toEqual(PERSISTED_CARD_KEYS);
   });
+
+  it('round-trips the complete current-version workspace state', async () => {
+    localStorage.removeItem('threadterm-terminal-store');
+    const store = useTerminalStore.getState();
+    const liveId = store.createCard({
+      projectName: 'live',
+      projectPath: '/workspace/live',
+      terminalType: 'shell',
+    });
+    const archivedId = store.createCard({
+      projectName: 'history',
+      projectPath: '/workspace/history',
+      terminalType: 'claude',
+    });
+    store.renameCard(liveId, 'renamed live session');
+    store.updateCardOutputAndPreview(
+      liveId,
+      'latest terminal output',
+      'latest assistant preview',
+    );
+    store.pinCard(liveId);
+    store.focusCard(liveId);
+    store.focusCard(archivedId);
+    store.archiveCard(archivedId);
+    store.toggleDockPin();
+    store.selectWorktree('/workspace/live', '/workspace/live-feature', 'feature');
+    store.pushNotification({
+      cardId: liveId,
+      kind: 'waiting',
+      title: 'Needs input',
+      body: 'Continue?',
+    });
+    store.setOsNotificationsEnabled(false);
+    store.setSupervisorEnabled(true);
+
+    const persisted = readPersistedState();
+    const expected = persisted.state ?? {};
+    resetStore();
+    await useTerminalStore.persist.rehydrate();
+    const restored = useTerminalStore.getState() as unknown as Record<
+      string,
+      unknown
+    >;
+
+    for (const key of PERSISTED_TOP_LEVEL_KEYS) {
+      expect(restored[key], `persisted key ${key}`).toEqual(expected[key]);
+    }
+  });
+
+  it('restores a large current-version workspace without losing card output', async () => {
+    localStorage.removeItem('threadterm-terminal-store');
+    const cardIds: string[] = [];
+    for (let index = 0; index < 180; index += 1) {
+      const id = useTerminalStore.getState().createCard({
+        projectName: `project-${index}`,
+        projectPath: `/workspace/project-${index}`,
+        terminalType: 'shell',
+      });
+      useTerminalStore
+        .getState()
+        .updateCardOutput(id, `card-${index}:${'界'.repeat(900)}`);
+      cardIds.push(id);
+    }
+
+    const persisted = readPersistedState();
+    const raw = localStorage.getItem('threadterm-terminal-store') ?? '';
+    expect(raw.length).toBeGreaterThan(200_000);
+
+    resetStore();
+    await useTerminalStore.persist.rehydrate();
+    const restoredCards = useTerminalStore.getState().cards;
+
+    expect(restoredCards).toHaveLength(cardIds.length);
+    expect(restoredCards.map((card) => card.id)).toEqual(cardIds);
+    expect(restoredCards[0]?.lastOutput).toContain('card-0:');
+    expect(restoredCards.at(-1)?.lastOutput).toContain('card-179:');
+    expect(persisted.version).toBe(18);
+  });
 });
 
 describe('terminalStore — renameCard', () => {

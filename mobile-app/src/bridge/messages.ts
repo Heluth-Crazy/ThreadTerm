@@ -1,11 +1,18 @@
-import type { ServerMessage, CardMeta, NotificationEntry } from '@shared/mobile/bridge/protocol';
+import type {
+  ServerMessage,
+  CardMeta,
+  MobileWorkbenchProjection,
+  NotificationEntry,
+} from '@shared/mobile/bridge/protocol';
+import type { BridgeConnectionState } from '@shared/mobile/bridge/wsClient';
 import type { MobileThemeMessage } from '../theme';
 
 export interface MobileBridgeState {
   cards: CardMeta[];
   notifications: NotificationEntry[];
+  workbench: MobileWorkbenchProjection | null;
   activeCardId: string | null;
-  wsStatus: 'idle' | 'connecting' | 'open' | 'closed' | 'error';
+  wsStatus: BridgeConnectionState;
   lastError: string | null;
   warmingUp: boolean;
   ptyStatusByCardId: Record<string, CardMeta['status']>;
@@ -16,6 +23,7 @@ export interface MobileBridgeState {
 export const initialBridgeState: MobileBridgeState = {
   cards: [],
   notifications: [],
+  workbench: null,
   activeCardId: null,
   wsStatus: 'idle',
   lastError: null,
@@ -66,6 +74,7 @@ export function applyServerMessage(
         ...state,
         cards: message.cards,
         notifications: message.notifications,
+        workbench: message.workbench ?? null,
         warmingUp: Boolean(message.warmingUp),
         activeCardId:
           state.activeCardId && message.cards.some((card) => card.id === state.activeCardId)
@@ -147,7 +156,9 @@ export function applyServerMessage(
       return {
         ...state,
         cards: state.cards.map((card) =>
-          card.id === message.card_id ? { ...card, status: message.status } : card,
+          card.id === message.card_id
+            ? { ...card, status: message.status, ptyState: message.status }
+            : card,
         ),
         ptyStatusByCardId: {
           ...state.ptyStatusByCardId,
@@ -169,7 +180,7 @@ export function applyServerMessage(
       return {
         ...state,
         cards: state.cards.map((card) =>
-          card.id === message.card_id ? { ...card, status } : card,
+          card.id === message.card_id ? { ...card, status, ptyState: status } : card,
         ),
         ptyStatusByCardId: {
           ...state.ptyStatusByCardId,

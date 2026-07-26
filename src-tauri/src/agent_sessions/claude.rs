@@ -376,6 +376,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_root(label: &str) -> PathBuf {
         let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -430,6 +431,7 @@ mod tests {
 
     #[test]
     fn cache_reuses_unchanged_mtime_and_invalidates_on_change() {
+        let _cache_test_guard = CACHE_TEST_LOCK.lock().expect("cache test lock");
         CLAUDE_PARSE_CACHE.lock().expect("cache").clear();
         let root = temp_root("cache");
         let file = root.join("sess.jsonl");
@@ -475,6 +477,7 @@ mod tests {
 
     #[test]
     fn catalog_search_matches_title_and_prompt_not_present_in_file_path() {
+        let _cache_test_guard = CACHE_TEST_LOCK.lock().expect("cache test lock");
         CLAUDE_PARSE_CACHE.lock().expect("cache").clear();
         let root = temp_root("search");
         let file = root.join("project-hash").join("session-id.jsonl");
@@ -498,6 +501,7 @@ mod tests {
 
     #[test]
     fn catalog_cursor_advances_without_dropping_sessions() {
+        let _cache_test_guard = CACHE_TEST_LOCK.lock().expect("cache test lock");
         CLAUDE_PARSE_CACHE.lock().expect("cache").clear();
         let root = temp_root("pagination");
         for id in ["one", "two"] {

@@ -59,7 +59,7 @@ objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSResponder", "NSRunningApplication", "NSWindow"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSKeyValueCoding", "NSObject", "NSString", "NSValue"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["objc2-app-kit", "WKWebView"] }
-tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 window-vibrancy = "0.6.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]

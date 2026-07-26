@@ -1,11 +1,11 @@
 use std::collections::{HashMap, VecDeque};
-use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::Emitter;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::bridge;
 
@@ -68,6 +68,7 @@ pub(super) const FLOW_CONTROL_LOW_WATERMARK: usize = 20_000;
 /// Renderer lease deadlines normally wake the flow-control waiter earlier.
 pub(super) const FLOW_CONTROL_WATCHDOG: Duration = Duration::from_secs(1);
 pub(super) const RENDERER_CONSUMER_TTL: Duration = Duration::from_secs(30);
+pub(super) const BACKGROUND_CONSUMER_TTL: Duration = Duration::from_secs(30);
 
 static GLOBAL_OUTPUT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -77,18 +78,31 @@ struct OutputCredit {
     bytes: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct OutputFlowControl {
     pending: VecDeque<OutputCredit>,
     unacked_bytes: usize,
     renderer_acks: HashMap<String, RendererAck>,
     background_acked_through: u64,
+    background_last_seen: Option<Instant>,
 }
 
 #[derive(Debug)]
 struct RendererAck {
     acked_through: u64,
     last_seen: Instant,
+}
+
+impl Default for OutputFlowControl {
+    fn default() -> Self {
+        Self {
+            pending: VecDeque::new(),
+            unacked_bytes: 0,
+            renderer_acks: HashMap::new(),
+            background_acked_through: 0,
+            background_last_seen: Some(Instant::now()),
+        }
+    }
 }
 
 impl OutputFlowControl {
@@ -98,6 +112,7 @@ impl OutputFlowControl {
         }
         self.pending.push_back(OutputCredit { seq, bytes });
         self.unacked_bytes = self.unacked_bytes.saturating_add(bytes);
+        self.settle_for_active_consumers();
     }
 
     fn settle_through(&mut self, through_seq: u64) {
@@ -113,13 +128,18 @@ impl OutputFlowControl {
     }
 
     fn settle_for_active_consumers(&mut self) {
-        let through_seq = self
+        if let Some(through_seq) = self
             .renderer_acks
             .values()
             .map(|renderer| renderer.acked_through)
             .min()
-            .unwrap_or(self.background_acked_through);
-        self.settle_through(through_seq);
+        {
+            self.settle_through(through_seq);
+        } else if self.background_last_seen.is_some() {
+            self.settle_through(self.background_acked_through);
+        } else if let Some(latest) = self.pending.back().map(|credit| credit.seq) {
+            self.settle_through(latest);
+        }
     }
 
     fn register_renderer(&mut self, consumer_id: String) {
@@ -159,30 +179,41 @@ impl OutputFlowControl {
 
     fn ack_background(&mut self, through_seq: u64) {
         self.background_acked_through = self.background_acked_through.max(through_seq);
+        self.background_last_seen = Some(Instant::now());
         if self.renderer_acks.is_empty() {
             self.settle_through(self.background_acked_through);
         }
     }
 
-    fn prune_stale_renderers(&mut self, now: Instant) {
+    fn prune_stale_consumers(&mut self, now: Instant) {
         let before = self.renderer_acks.len();
         self.renderer_acks.retain(|_, renderer| {
             now.saturating_duration_since(renderer.last_seen) < RENDERER_CONSUMER_TTL
         });
-        if self.renderer_acks.len() != before {
+        let background_expired = self.background_last_seen.is_some_and(|last_seen| {
+            now.saturating_duration_since(last_seen) >= BACKGROUND_CONSUMER_TTL
+        });
+        if background_expired {
+            self.background_last_seen = None;
+        }
+        if self.renderer_acks.len() != before || background_expired {
             self.settle_for_active_consumers();
         }
     }
 
-    fn next_renderer_expiry(&self) -> Option<Instant> {
+    fn next_consumer_expiry(&self) -> Option<Instant> {
         self.renderer_acks
             .values()
             .filter_map(|renderer| renderer.last_seen.checked_add(RENDERER_CONSUMER_TTL))
+            .chain(
+                self.background_last_seen
+                    .and_then(|last_seen| last_seen.checked_add(BACKGROUND_CONSUMER_TTL)),
+            )
             .min()
     }
 
     fn wait_duration(&self, now: Instant) -> Duration {
-        self.next_renderer_expiry()
+        self.next_consumer_expiry()
             .map(|deadline| deadline.saturating_duration_since(now))
             .unwrap_or(FLOW_CONTROL_WATCHDOG)
             .min(FLOW_CONTROL_WATCHDOG)
@@ -191,10 +222,15 @@ impl OutputFlowControl {
 
 // ── PtySession struct ────────────────────────────────────────────────────────
 
+pub(super) struct PtyInputRequest {
+    pub(super) data: Vec<u8>,
+    pub(super) completion: oneshot::Sender<Result<(), String>>,
+}
+
 /// Represents a live PTY session.
 /// All interior-mutable fields are protected by Mutex so the struct is Sync.
 pub(super) struct PtySession {
-    pub(super) writer: Mutex<Box<dyn Write + Send>>,
+    pub(super) input_tx: mpsc::Sender<PtyInputRequest>,
     pub(super) master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
     pub(super) child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     pub(super) _working_dir: String,
@@ -216,9 +252,6 @@ pub(super) struct PtySession {
     pub(super) suppress_output_activity_until: Mutex<Option<Instant>>,
     pub(super) killed: AtomicBool,
 }
-
-// Safety: every non-Sync field is behind a Mutex / RwLock.
-unsafe impl Sync for PtySession {}
 
 // ── Event payload (sibling needs to emit it) ────────────────────────────────
 
@@ -436,7 +469,7 @@ fn wait_for_flow_capacity_inner(
     let Ok(mut flow) = flow_control.lock() else {
         return;
     };
-    flow.prune_stale_renderers(Instant::now());
+    flow.prune_stale_consumers(Instant::now());
     if flow.unacked_bytes < FLOW_CONTROL_HIGH_WATERMARK {
         return;
     }
@@ -448,7 +481,7 @@ fn wait_for_flow_capacity_inner(
                 flow = next;
                 #[cfg(test)]
                 FLOW_CONTROL_TEST_WAKEUPS.fetch_add(1, Ordering::Relaxed);
-                flow.prune_stale_renderers(Instant::now());
+                flow.prune_stale_consumers(Instant::now());
             }
             Err(_) => return,
         }
@@ -796,7 +829,7 @@ mod tests {
             .get_mut("crashed-window")
             .expect("renderer should be registered")
             .last_seen = now;
-        flow.prune_stale_renderers(now + RENDERER_CONSUMER_TTL + Duration::from_millis(1));
+        flow.prune_stale_consumers(now + RENDERER_CONSUMER_TTL + Duration::from_millis(1));
 
         assert!(flow.renderer_acks.is_empty());
         assert_eq!(flow.unacked_bytes, 0);
@@ -812,9 +845,77 @@ mod tests {
             .expect("renderer should be registered")
             .last_seen = now;
 
-        flow.prune_stale_renderers(now + RENDERER_CONSUMER_TTL);
+        flow.prune_stale_consumers(now + RENDERER_CONSUMER_TTL);
 
         assert!(flow.renderer_acks.is_empty());
+    }
+
+    #[test]
+    fn stale_background_consumer_releases_flow_when_no_renderer_is_active() {
+        let mut flow = OutputFlowControl::default();
+        flow.track(71, FLOW_CONTROL_HIGH_WATERMARK);
+        let last_seen = Instant::now();
+        flow.background_last_seen = Some(last_seen);
+
+        flow.prune_stale_consumers(last_seen + BACKGROUND_CONSUMER_TTL);
+
+        assert!(flow.background_last_seen.is_none());
+        assert_eq!(flow.unacked_bytes, 0);
+        assert!(flow.pending.is_empty());
+    }
+
+    #[test]
+    fn active_background_consumer_holds_flow_until_it_acknowledges_output() {
+        let mut flow = OutputFlowControl::default();
+        flow.track(72, 100);
+        let last_seen = Instant::now();
+        flow.background_last_seen = Some(last_seen);
+
+        flow.prune_stale_consumers(last_seen + BACKGROUND_CONSUMER_TTL - Duration::from_millis(1));
+
+        assert!(flow.background_last_seen.is_some());
+        assert_eq!(flow.unacked_bytes, 100);
+        flow.ack_background(72);
+        assert_eq!(flow.unacked_bytes, 0);
+    }
+
+    #[test]
+    fn stale_background_consumer_does_not_bypass_an_active_renderer() {
+        let mut flow = OutputFlowControl::default();
+        flow.register_renderer("main".to_string());
+        flow.track(73, 100);
+        flow.track(74, 200);
+        flow.ack_renderer("main", 73);
+        let now = Instant::now();
+        flow.background_last_seen = Some(now - BACKGROUND_CONSUMER_TTL);
+        flow.renderer_acks
+            .get_mut("main")
+            .expect("renderer should remain registered")
+            .last_seen = now;
+
+        flow.prune_stale_consumers(now);
+
+        assert!(flow.background_last_seen.is_none());
+        assert_eq!(flow.unacked_bytes, 200);
+        flow.ack_renderer("main", 74);
+        assert_eq!(flow.unacked_bytes, 0);
+    }
+
+    #[test]
+    fn flow_wait_deadline_includes_background_consumer_expiry() {
+        let mut flow = OutputFlowControl::default();
+        flow.register_renderer("main".to_string());
+        let now = Instant::now();
+        flow.renderer_acks
+            .get_mut("main")
+            .expect("renderer should be registered")
+            .last_seen = now;
+        flow.background_last_seen = Some(now - BACKGROUND_CONSUMER_TTL + Duration::from_millis(75));
+
+        let wait = flow.wait_duration(now);
+
+        assert!(wait >= Duration::from_millis(70));
+        assert!(wait <= Duration::from_millis(80));
     }
 
     #[test]

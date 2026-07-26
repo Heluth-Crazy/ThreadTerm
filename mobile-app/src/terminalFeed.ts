@@ -1,59 +1,107 @@
 import type { ServerMessage } from '@shared/mobile/bridge/protocol';
 
-// Per-card terminal transport store (Stage 5, audit P1-3).
-//
-// Previously every terminal_output / terminal_snapshot chunk flowed through a
-// single React state array in App (terminalMessages), which meant each chunk
-// re-filtered the whole array, re-rendered the entire App tree, and made both
-// MainTerminal instances (home preview + detail) loop the full transcript.
-// This module replaces that with a plain per-card bucket + subscription model:
-// pushing a chunk only touches one card's bucket (O(ring)), and subscribed
-// MainTerminal instances receive the increment directly without any React
-// re-render.
-//
-// The transcript semantics are carried over verbatim from the retired
-// terminalTranscript.ts:
-//   - a terminal_snapshot replaces the bucket's snapshot and drops outputs
-//     whose seq is <= snapshot.seq (they are covered by the snapshot)
-//   - a terminal_output is dropped when covered by the latest snapshot or
-//     already recorded (seq guard de-dup)
-//   - each card keeps at most MAX_MESSAGES_PER_CARD entries (snapshot counts
-//     as one), trimming the oldest outputs first
-//
-// No React imports here on purpose: pure module singleton + functions so the
-// push path stays trivially unit-testable.
+// Per-card terminal transport store. Terminal output bypasses React state so a
+// hot stream only touches the relevant card bucket and its mounted xterm.
 
-export type TerminalFeedMessage = Extract<
+export type BridgeTerminalFeedMessage = Extract<
   ServerMessage,
   { kind: 'terminal_output' | 'terminal_snapshot' }
 >;
-export type TerminalFeedSnapshot = Extract<TerminalFeedMessage, { kind: 'terminal_snapshot' }>;
-export type TerminalFeedOutput = Extract<TerminalFeedMessage, { kind: 'terminal_output' }>;
-
+export type TerminalFeedSnapshot = Extract<
+  BridgeTerminalFeedMessage,
+  { kind: 'terminal_snapshot' }
+>;
+export type TerminalFeedOutput = Extract<
+  BridgeTerminalFeedMessage,
+  { kind: 'terminal_output' }
+>;
+export interface TerminalFeedTruncationNotice {
+  kind: 'history_truncated';
+  card_id: string;
+  omittedBytes: number;
+}
+export interface TerminalFeedRecoveryBoundary {
+  kind: 'recovery_boundary';
+  runtimeId: string | null;
+}
+export type TerminalFeedMessage =
+  | BridgeTerminalFeedMessage
+  | TerminalFeedTruncationNotice
+  | TerminalFeedRecoveryBoundary;
 export type TerminalFeedListener = (message: TerminalFeedMessage) => void;
 
-// Same per-card transcript budget as the previous React-state transcript.
-const MAX_MESSAGES_PER_CARD = 2000;
+export interface TerminalFeedPushResult {
+  accepted: boolean;
+  runtimeChanged: boolean;
+  needsResync: boolean;
+  duplicateTransport: boolean;
+}
+
+export interface TerminalFeedRuntimeResult {
+  runtimeChanged: boolean;
+  resyncCompleted: boolean;
+}
+
+export const TERMINAL_FEED_CARD_BUDGET_BYTES = 4 * 1024 * 1024;
+export const TERMINAL_FEED_GLOBAL_BUDGET_BYTES = 32 * 1024 * 1024;
+
+interface RetainedOutput {
+  message: TerminalFeedOutput;
+  bytes: number;
+}
 
 interface CardFeedBucket {
   snapshot: TerminalFeedSnapshot | null;
-  outputs: TerminalFeedOutput[];
+  outputs: RetainedOutput[];
   listeners: Set<TerminalFeedListener>;
+  outputBytes: number;
+  truncated: boolean;
+  omittedBytes: number;
+  lastTouched: number;
 }
 
+const encoder = new TextEncoder();
 const buckets = new Map<string, CardFeedBucket>();
+let activeRuntimeId: string | null = null;
+let streamBaselineEstablished = false;
+let lastStreamSeq = 0;
+let resyncPending = false;
+let totalOutputBytes = 0;
+let touchCounter = 0;
 
 function ensureBucket(cardId: string): CardFeedBucket {
   let bucket = buckets.get(cardId);
   if (!bucket) {
-    bucket = { snapshot: null, outputs: [], listeners: new Set() };
+    bucket = {
+      snapshot: null,
+      outputs: [],
+      listeners: new Set(),
+      outputBytes: 0,
+      truncated: false,
+      omittedBytes: 0,
+      lastTouched: 0,
+    };
     buckets.set(cardId, bucket);
   }
+  touchBucket(bucket);
   return bucket;
+}
+
+function touchBucket(bucket: CardFeedBucket): void {
+  touchCounter += 1;
+  bucket.lastTouched = touchCounter;
 }
 
 function messageSeq(value: number | undefined): number {
   return Number(value || 0);
+}
+
+function messageStreamSeq(value: number | undefined): number {
+  return Number(value || 0);
+}
+
+function outputBytes(message: TerminalFeedOutput): number {
+  return encoder.encode(message.data).byteLength;
 }
 
 function notify(bucket: CardFeedBucket, message: TerminalFeedMessage): void {
@@ -62,13 +110,113 @@ function notify(bucket: CardFeedBucket, message: TerminalFeedMessage): void {
   }
 }
 
-function trimBucket(bucket: CardFeedBucket): void {
-  const outputBudget = bucket.snapshot
-    ? Math.max(0, MAX_MESSAGES_PER_CARD - 1)
-    : MAX_MESSAGES_PER_CARD;
-  if (bucket.outputs.length > outputBudget) {
-    bucket.outputs = bucket.outputs.slice(-outputBudget);
+function truncationNotice(cardId: string, bucket: CardFeedBucket): TerminalFeedTruncationNotice {
+  return {
+    kind: 'history_truncated',
+    card_id: cardId,
+    omittedBytes: bucket.omittedBytes,
+  };
+}
+
+function trimOldestOutputBytes(
+  cardId: string,
+  bucket: CardFeedBucket,
+  bytesToFree: number,
+): number {
+  let freed = 0;
+  let removeCount = 0;
+  while (removeCount < bucket.outputs.length && freed < bytesToFree) {
+    freed += bucket.outputs[removeCount].bytes;
+    removeCount += 1;
   }
+  if (removeCount === 0) return 0;
+  bucket.outputs.splice(0, removeCount);
+  bucket.outputBytes = Math.max(0, bucket.outputBytes - freed);
+  totalOutputBytes = Math.max(0, totalOutputBytes - freed);
+  bucket.truncated = true;
+  bucket.omittedBytes += freed;
+  notify(bucket, truncationNotice(cardId, bucket));
+  return freed;
+}
+
+function trimCard(cardId: string, bucket: CardFeedBucket): void {
+  const excess = bucket.outputBytes - TERMINAL_FEED_CARD_BUDGET_BYTES;
+  if (excess > 0) trimOldestOutputBytes(cardId, bucket, excess);
+}
+
+function trimGlobal(): void {
+  while (totalOutputBytes > TERMINAL_FEED_GLOBAL_BUDGET_BYTES) {
+    let candidateCardId: string | null = null;
+    let candidate: CardFeedBucket | null = null;
+    for (const [cardId, bucket] of buckets) {
+      if (bucket.outputs.length === 0) continue;
+      if (!candidate || bucket.lastTouched < candidate.lastTouched) {
+        candidateCardId = cardId;
+        candidate = bucket;
+      }
+    }
+    if (!candidate || !candidateCardId) return;
+    const excess = totalOutputBytes - TERMINAL_FEED_GLOBAL_BUDGET_BYTES;
+    if (trimOldestOutputBytes(candidateCardId, candidate, excess) === 0) return;
+  }
+}
+
+function clearBucketContent(bucket: CardFeedBucket): void {
+  bucket.snapshot = null;
+  bucket.outputs = [];
+  bucket.outputBytes = 0;
+  bucket.truncated = false;
+  bucket.omittedBytes = 0;
+}
+
+function observeRuntime(runtimeId: string | undefined): boolean {
+  if (!runtimeId) return false;
+  if (activeRuntimeId === null) {
+    activeRuntimeId = runtimeId;
+    if (buckets.size === 0) return false;
+  } else if (activeRuntimeId === runtimeId) {
+    return false;
+  } else {
+    activeRuntimeId = runtimeId;
+  }
+
+  totalOutputBytes = 0;
+  lastStreamSeq = 0;
+  streamBaselineEstablished = false;
+  resyncPending = false;
+  for (const bucket of buckets.values()) {
+    clearBucketContent(bucket);
+  }
+  return true;
+}
+
+/**
+ * Apply identity from the authoritative state snapshot. Ordinary metadata
+ * snapshots do not advance the output waterline because doing so could hide a
+ * missing terminal frame. The first snapshot and an explicit resync establish
+ * a new baseline.
+ */
+export function observeTerminalFeedSnapshot(
+  message: Extract<ServerMessage, { kind: 'snapshot' }>,
+): TerminalFeedRuntimeResult {
+  const runtimeChanged = observeRuntime(message.runtimeId);
+  const streamSeq = messageStreamSeq(message.streamSeq);
+  const resyncCompleted = resyncPending;
+  if (message.runtimeId && (!streamBaselineEstablished || runtimeChanged || resyncPending)) {
+    lastStreamSeq = streamSeq;
+    streamBaselineEstablished = true;
+    resyncPending = false;
+  }
+  if (runtimeChanged || resyncCompleted) {
+    const boundary: TerminalFeedRecoveryBoundary = {
+      kind: 'recovery_boundary',
+      runtimeId: message.runtimeId ?? activeRuntimeId,
+    };
+    for (const bucket of buckets.values()) {
+      notify(bucket, boundary);
+    }
+  }
+  return { runtimeChanged, resyncCompleted };
 }
 
 export function terminalFeedCardId(message: ServerMessage): string | null {
@@ -78,67 +226,125 @@ export function terminalFeedCardId(message: ServerMessage): string | null {
 }
 
 /**
- * Ingest a bridge terminal message into its card bucket and fan it out to that
- * card's subscribers. Only the single card bucket is touched: O(ring), never
- * O(all cards' transcripts).
+ * Ingest one bridge terminal message. `streamSeq` detects missing WebSocket
+ * frames across all cards; the existing PTY `seq` remains the per-card
+ * snapshot/output ordering guard.
  */
-export function pushTerminalFeedMessage(message: TerminalFeedMessage): void {
+export function pushTerminalFeedMessage(
+  message: BridgeTerminalFeedMessage,
+): TerminalFeedPushResult {
+  const runtimeId =
+    message.kind === 'terminal_snapshot' ? message.snapshot.runtimeId : message.runtimeId;
+  const streamSeq =
+    message.kind === 'terminal_snapshot' ? message.snapshot.streamSeq : message.streamSeq;
+  const runtimeChanged = observeRuntime(runtimeId);
   const cardId = terminalFeedCardId(message);
-  if (!cardId) return;
-  const bucket = ensureBucket(cardId);
-
-  if (message.kind === 'terminal_snapshot') {
-    const snapshotSeq = messageSeq(message.snapshot.seq);
-    bucket.snapshot = message;
-    // Outputs covered by the snapshot are superseded by its payload; outputs
-    // ahead of it (a lagging snapshot behind the live stream) are retained.
-    bucket.outputs = bucket.outputs.filter((output) => messageSeq(output.seq) > snapshotSeq);
-    trimBucket(bucket);
-    notify(bucket, message);
-    // Re-deliver retained outputs after the snapshot. This mirrors the old
-    // array-replay semantics: an output that arrived BEFORE the first snapshot
-    // was skipped by MainTerminal (no source dimensions yet) but stayed in the
-    // transcript and was re-applied once the snapshot landed. Live consumers
-    // that already wrote these outputs drop the re-delivery via their seq
-    // guard, so this is a no-op for them.
-    for (const output of [...bucket.outputs]) {
-      notify(bucket, output);
-    }
-    return;
+  if (!cardId) {
+    return {
+      accepted: false,
+      runtimeChanged,
+      needsResync: false,
+      duplicateTransport: false,
+    };
   }
 
-  const seq = messageSeq(message.seq);
-  const snapshotSeq = bucket.snapshot ? messageSeq(bucket.snapshot.snapshot.seq) : 0;
-  // Same guard as the retired terminalTranscript.appendTerminalMessage: an
-  // output already covered by the latest snapshot is stale and dropped.
-  if (snapshotSeq > 0 && seq <= snapshotSeq) return;
-  // Seq de-dup: MainTerminal's write-time lastAppliedOutputSeq guard already
-  // skipped duplicates/out-of-order replays; enforcing it at the feed keeps
-  // the bucket (and therefore remount backlogs) equally clean.
-  const lastOutput = bucket.outputs[bucket.outputs.length - 1];
-  if (lastOutput && seq > 0 && seq <= messageSeq(lastOutput.seq)) return;
+  if (message.kind === 'terminal_output' && runtimeId && streamSeq) {
+    const nextStreamSeq = messageStreamSeq(streamSeq);
+    if (!streamBaselineEstablished || runtimeChanged) {
+      lastStreamSeq = nextStreamSeq;
+      streamBaselineEstablished = true;
+    } else if (nextStreamSeq <= lastStreamSeq) {
+      return {
+        accepted: false,
+        runtimeChanged,
+        needsResync: false,
+        duplicateTransport: true,
+      };
+    } else {
+      const gapDetected = nextStreamSeq > lastStreamSeq + 1;
+      lastStreamSeq = nextStreamSeq;
+      if (gapDetected && !resyncPending) {
+        resyncPending = true;
+        const accepted = appendTerminalOutput(cardId, message);
+        return {
+          accepted,
+          runtimeChanged,
+          needsResync: true,
+          duplicateTransport: false,
+        };
+      }
+    }
+  }
 
-  bucket.outputs.push(message);
-  trimBucket(bucket);
-  notify(bucket, message);
+  if (message.kind === 'terminal_snapshot') {
+    const bucket = ensureBucket(cardId);
+    const snapshotSeq = messageSeq(message.snapshot.seq);
+    bucket.snapshot = message;
+    const retained: RetainedOutput[] = [];
+    let removedBytes = 0;
+    for (const output of bucket.outputs) {
+      if (messageSeq(output.message.seq) > snapshotSeq) {
+        retained.push(output);
+      } else {
+        removedBytes += output.bytes;
+      }
+    }
+    bucket.outputs = retained;
+    bucket.outputBytes = Math.max(0, bucket.outputBytes - removedBytes);
+    totalOutputBytes = Math.max(0, totalOutputBytes - removedBytes);
+    trimCard(cardId, bucket);
+    trimGlobal();
+    notify(bucket, message);
+    if (bucket.truncated) notify(bucket, truncationNotice(cardId, bucket));
+    for (const output of [...bucket.outputs]) {
+      notify(bucket, output.message);
+    }
+    return {
+      accepted: true,
+      runtimeChanged,
+      needsResync: false,
+      duplicateTransport: false,
+    };
+  }
+
+  return {
+    accepted: appendTerminalOutput(cardId, message),
+    runtimeChanged,
+    needsResync: false,
+    duplicateTransport: false,
+  };
 }
 
-/**
- * Current bucket content for a card: latest snapshot (if any) followed by the
- * retained outputs, in apply order. Used by MainTerminal on mount / card
- * switch to replay the transcript into a fresh xterm epoch.
- */
+function appendTerminalOutput(cardId: string, message: TerminalFeedOutput): boolean {
+  if (!message.data) return false;
+  const bucket = ensureBucket(cardId);
+  const seq = messageSeq(message.seq);
+  const snapshotSeq = bucket.snapshot ? messageSeq(bucket.snapshot.snapshot.seq) : 0;
+  if (snapshotSeq > 0 && seq <= snapshotSeq) return false;
+  const lastOutput = bucket.outputs[bucket.outputs.length - 1]?.message;
+  if (lastOutput && seq > 0 && seq <= messageSeq(lastOutput.seq)) return false;
+
+  const bytes = outputBytes(message);
+  bucket.outputs.push({ message, bytes });
+  bucket.outputBytes += bytes;
+  totalOutputBytes += bytes;
+  trimCard(cardId, bucket);
+  trimGlobal();
+  notify(bucket, message);
+  return true;
+}
+
 export function getTerminalFeedBacklog(cardId: string): TerminalFeedMessage[] {
   const bucket = buckets.get(cardId);
   if (!bucket) return [];
-  return bucket.snapshot ? [bucket.snapshot, ...bucket.outputs] : [...bucket.outputs];
+  touchBucket(bucket);
+  const messages: TerminalFeedMessage[] = [];
+  if (bucket.snapshot) messages.push(bucket.snapshot);
+  if (bucket.truncated) messages.push(truncationNotice(cardId, bucket));
+  messages.push(...bucket.outputs.map((output) => output.message));
+  return messages;
 }
 
-/**
- * Subscribe to a card's incremental feed messages. The listener receives every
- * message accepted into the bucket from the moment of subscription; pair with
- * getTerminalFeedBacklog() for the content that landed before.
- */
 export function subscribeTerminalFeed(
   cardId: string,
   listener: TerminalFeedListener,
@@ -150,7 +356,52 @@ export function subscribeTerminalFeed(
   };
 }
 
-/** Test-only helper: drop all buckets and subscriptions. */
+export function disposeTerminalFeed(cardId: string): void {
+  const bucket = buckets.get(cardId);
+  if (!bucket) return;
+  totalOutputBytes = Math.max(0, totalOutputBytes - bucket.outputBytes);
+  buckets.delete(cardId);
+}
+
+export function retainTerminalFeedCards(cardIds: readonly string[]): void {
+  const retained = new Set(cardIds);
+  for (const cardId of [...buckets.keys()]) {
+    if (!retained.has(cardId)) disposeTerminalFeed(cardId);
+  }
+}
+
+export function getTerminalFeedMemoryUsage(): {
+  runtimeId: string | null;
+  lastStreamSeq: number;
+  resyncPending: boolean;
+  totalOutputBytes: number;
+  cards: Record<string, { outputBytes: number; truncated: boolean; omittedBytes: number }>;
+} {
+  return {
+    runtimeId: activeRuntimeId,
+    lastStreamSeq,
+    resyncPending,
+    totalOutputBytes,
+    cards: Object.fromEntries(
+      [...buckets.entries()].map(([cardId, bucket]) => [
+        cardId,
+        {
+          outputBytes: bucket.outputBytes,
+          truncated: bucket.truncated,
+          omittedBytes: bucket.omittedBytes,
+        },
+      ]),
+    ),
+  };
+}
+
+/** Test-only helper: drop all buckets, subscriptions, and transport identity. */
 export function resetTerminalFeed(): void {
   buckets.clear();
+  activeRuntimeId = null;
+  streamBaselineEstablished = false;
+  lastStreamSeq = 0;
+  resyncPending = false;
+  totalOutputBytes = 0;
+  touchCounter = 0;
 }

@@ -190,7 +190,7 @@ function PreviewPane({
           submitServiceUrl();
         }}
       >
-        <label className="text-xs font-medium text-[#c8ceda]" htmlFor="workspace-preview-url">
+        <label className="text-xs font-medium text-foreground" htmlFor="workspace-preview-url">
           {t('workspace.previewServiceUrlLabel')}
         </label>
         <div className="flex w-full flex-col gap-2 sm:flex-row">
@@ -204,19 +204,19 @@ function PreviewPane({
               setServiceUrlError(null);
             }}
             placeholder={t('workspace.previewServiceUrlPlaceholder')}
-            className="min-h-9 min-w-0 flex-1 rounded border border-[#2c313a] bg-[#0f1116] px-3 py-2 text-sm text-[#f0f0f0] outline-none focus:border-[#4b83f1]"
+            className="min-h-9 min-w-0 flex-1 rounded border border-border bg-muted px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
           />
           <button
             type="submit"
-            className="min-h-9 rounded bg-[#2563eb] px-3 py-2 text-sm font-medium text-white hover:bg-[#1d4ed8] focus:outline-none focus:ring-2 focus:ring-[#60a5fa]"
+            className="min-h-9 rounded bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-ring/40"
           >
             {t('workspace.previewServiceUrlOpen')}
           </button>
         </div>
         {serviceUrlError ? (
-          <p className="text-xs leading-5 text-[#f87171]">{serviceUrlError}</p>
+          <p className="text-xs leading-5 text-destructive">{serviceUrlError}</p>
         ) : (
-          <p className="text-xs leading-5 text-[#8f96a8]">
+          <p className="text-xs leading-5 text-muted-foreground">
             {t('workspace.previewServiceUrlHint')}
           </p>
         )}
@@ -225,26 +225,26 @@ function PreviewPane({
 
   if (preview.kind === 'service-required') {
     return (
-      <div className="min-h-0 flex-1 w-full overflow-auto bg-[#111318] text-[#d4d4d4]">
+      <div className="min-h-0 flex-1 w-full overflow-auto bg-card text-foreground">
         <div className="mx-auto flex min-h-full max-w-2xl flex-col justify-center gap-4 px-8 py-10">
-          <h3 className="text-sm font-semibold text-[#f0f0f0]">
+          <h3 className="text-sm font-semibold text-foreground">
             {t('workspace.previewServiceRequiredTitle')}
           </h3>
-          <p className="text-sm leading-6 text-[#a8adbb]">
+          <p className="text-sm leading-6 text-muted-foreground">
             {t('workspace.previewServiceRequiredDescription')}
           </p>
           {preview.requirement.path ? (
-            <p className="text-xs leading-5 text-[#8f96a8]">
+            <p className="text-xs leading-5 text-muted-foreground">
               {t('workspace.previewServiceRequiredReason')}{' '}
-              <code className="rounded bg-[#1e2128] px-1.5 py-0.5 text-[#dfe3ec]">
+              <code className="rounded bg-muted px-1.5 py-0.5 text-foreground">
                 {preview.requirement.path}
               </code>
             </p>
           ) : null}
-          <p className="text-sm leading-6 text-[#a8adbb]">
+          <p className="text-sm leading-6 text-muted-foreground">
             {t('workspace.previewServiceRequiredAction')}
           </p>
-          <code className="w-fit max-w-full overflow-x-auto rounded bg-[#1e2128] px-2 py-1 text-xs text-[#dfe3ec]">
+          <code className="w-fit max-w-full overflow-x-auto rounded bg-muted px-2 py-1 text-xs text-foreground">
             {t('workspace.previewServiceRequiredCommand')}
           </code>
           {serviceUrlControls}
@@ -255,8 +255,8 @@ function PreviewPane({
 
   if (preview.serviceUrl) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col w-full bg-[#111318] text-[#d4d4d4]">
-        <div className="flex-none border-b border-[#252a33] px-3 py-3">{serviceUrlControls}</div>
+      <div className="flex min-h-0 flex-1 flex-col w-full bg-card text-foreground">
+        <div className="flex-none border-b border-border px-3 py-3">{serviceUrlControls}</div>
         <iframe
           key={preview.src}
           src={preview.src}
@@ -760,12 +760,12 @@ export function WorkspaceCodeEditor({
       }
     >
       {previewType && (
-        <div className="flex min-h-[30px] shrink-0 items-center border-b border-white/10 px-2">
+        <div className="flex min-h-[30px] shrink-0 items-center border-b border-border px-2">
           <button
             type="button"
             onClick={() => setPreviewMode(false)}
             className={cn(
-              'rounded px-2.5 py-1 text-[11px] font-medium transition-colors',
+              'rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors',
               !previewMode
                 ? 'bg-primary/15 text-foreground'
                 : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
@@ -777,7 +777,7 @@ export function WorkspaceCodeEditor({
             type="button"
             onClick={() => setPreviewMode(true)}
             className={cn(
-              'rounded px-2.5 py-1 text-[11px] font-medium transition-colors',
+              'rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors',
               previewMode
                 ? 'bg-primary/15 text-foreground'
                 : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
@@ -1005,7 +1005,7 @@ export function WorkspaceMergeDiffEditor({
 
   return (
     <div className={cn('flex min-h-0 flex-1 flex-col overflow-hidden', className)}>
-      <div className="flex min-h-[32px] items-center gap-2 border-b border-white/10 px-3 py-1.5 text-[11px] text-muted-foreground">
+      <div className="flex min-h-[32px] items-center gap-2 border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">
         <span className="mr-auto">
           {editable ? labels.editableDiff : labels.readOnlyDiff}
         </span>

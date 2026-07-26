@@ -54,6 +54,27 @@ describe('createThrottledPersistStorage', () => {
     expect(storage.getItem('k')).toEqual(storedValue('direct'));
   });
 
+  it('round-trips a large current-version payload without truncation', () => {
+    const storage = createStorage();
+    const largeValue = storedValue('界'.repeat(750_000));
+
+    storage.setItem('k', largeValue);
+    vi.advanceTimersByTime(500);
+
+    expect(storage.getItem('k')).toEqual(largeValue);
+  });
+
+  it('ignores corrupted persisted data without deleting the original value', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const corrupted = '{"state":{"value":"unfinished"';
+    localStorage.setItem('k', corrupted);
+    const storage = createStorage();
+
+    expect(storage.getItem('k')).toBeNull();
+    expect(localStorage.getItem('k')).toBe(corrupted);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('removeItem drops a pending write and clears synchronously', () => {
     const storage = createStorage();
     storage.setItem('k', storedValue('pending'));

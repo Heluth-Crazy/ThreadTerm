@@ -235,9 +235,8 @@ export class MobileThemeController {
 
     const appTokens = this.resolvedAppTokens();
     applyAppTokens(appTokens);
-    // Terminal ANSI tokens still track the server theme. The mobile terminal
-    // surface itself stays a fixed black canvas (iOS WKWebView light-mode
-    // white-canvas regression), so this only affects non-surface consumers.
+    // Terminal ANSI and surface tokens always track the server theme, including
+    // when the mobile app chrome is explicitly overridden to dark or light.
     applyTerminalTokens(this.latest.terminal);
 
     const themeColorMeta = document.querySelector('meta[name="theme-color"]');

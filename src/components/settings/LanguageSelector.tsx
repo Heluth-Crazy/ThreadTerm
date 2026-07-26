@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Languages } from 'lucide-react';
 import { languages } from '../../i18n/languages';
 import { emitSettingsChanged } from '../../lib/settingsSync';
+import { SettingsSection } from './SettingsSection';
 
 interface LanguageSelectorProps {
   compact?: boolean;
@@ -27,7 +28,7 @@ function LanguageSelector({ compact = false }: LanguageSelectorProps) {
 
   if (compact) {
     return (
-      <div className="flex items-center justify-between rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-3 transition-all hover:bg-white/10 hover:border-white/20">
+      <div className="flex items-center justify-between rounded-lg border border-border bg-card/80 backdrop-blur-md p-3 transition-all hover:bg-accent hover:border-primary/40">
         <span className="flex items-center gap-2 text-sm text-foreground/90">
           <Languages className="h-4 w-4 text-muted-foreground" />
           {t('account.language')}
@@ -35,7 +36,7 @@ function LanguageSelector({ compact = false }: LanguageSelectorProps) {
         <select
           value={selectedLanguage}
           onChange={handleLanguageChange}
-          className="h-9 w-[114px] rounded-[var(--radius-md)] border border-white/10 bg-background/50 backdrop-blur-sm px-3 text-sm text-foreground outline-none transition-all focus:ring-2 focus:ring-primary/40 focus:border-primary/40"
+          className="h-9 w-[114px] rounded-md border border-border bg-background/50 backdrop-blur-sm px-3 text-sm text-foreground outline-none transition-all focus:ring-2 focus:ring-ring/40"
         >
           {languages.map((lang) => (
             <option key={lang.value} value={lang.value}>
@@ -48,7 +49,7 @@ function LanguageSelector({ compact = false }: LanguageSelectorProps) {
   }
 
   return (
-    <div className="rounded-[var(--radius)] border border-white/10 bg-white/5 backdrop-blur-md p-4 shadow-sm transition-all hover:border-white/20">
+    <SettingsSection className="transition-all hover:border-primary/40">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="mb-1 flex items-center gap-2 text-foreground/90">
@@ -62,7 +63,7 @@ function LanguageSelector({ compact = false }: LanguageSelectorProps) {
         <select
           value={selectedLanguage}
           onChange={handleLanguageChange}
-          className="h-10 w-40 rounded-[var(--radius-md)] border border-white/10 bg-background/50 backdrop-blur-sm px-3 text-sm text-foreground outline-none transition-all focus:ring-2 focus:ring-primary/40 focus:border-primary/40"
+          className="h-10 w-40 rounded-md border border-border bg-background/50 backdrop-blur-sm px-3 text-sm text-foreground outline-none transition-all focus:ring-2 focus:ring-ring/40"
         >
           {languages.map((lang) => (
             <option key={lang.value} value={lang.value}>
@@ -71,7 +72,7 @@ function LanguageSelector({ compact = false }: LanguageSelectorProps) {
           ))}
         </select>
       </div>
-    </div>
+    </SettingsSection>
   );
 }
 

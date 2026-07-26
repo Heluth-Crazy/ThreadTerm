@@ -48,7 +48,7 @@ export function FileTree({ rootPath, selectedPath, onSelectFile }: FileTreeProps
 
   if (loading) {
     return (
-      <div className="flex items-center gap-2 px-3 py-4 text-[12px] text-muted-foreground">
+      <div className="flex items-center gap-2 px-3 py-4 text-xs text-muted-foreground">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
         {t('workspace.loadingDirectory', { defaultValue: 'Reading directory...' })}
       </div>
@@ -57,7 +57,7 @@ export function FileTree({ rootPath, selectedPath, onSelectFile }: FileTreeProps
 
   if (error) {
     return (
-      <div className="px-3 py-4 text-[12px] text-destructive">
+      <div className="px-3 py-4 text-xs text-destructive">
         {t('workspace.readDirectoryFailed', {
           error,
           defaultValue: 'Could not read directory: {{error}}',
@@ -68,7 +68,7 @@ export function FileTree({ rootPath, selectedPath, onSelectFile }: FileTreeProps
 
   if (!entries || entries.length === 0) {
     return (
-      <div className="px-3 py-4 text-[12px] italic text-muted-foreground/70">
+      <div className="px-3 py-4 text-xs italic text-muted-foreground/70">
         {t('workspace.emptyDirectory', { defaultValue: 'Empty directory' })}
       </div>
     );

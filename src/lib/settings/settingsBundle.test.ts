@@ -92,7 +92,7 @@ describe('settings bundle', () => {
       terminalSettings: {
         osNotificationsEnabled: true,
         notificationMode: 'both',
-        petSecret: 'pet-secret',
+        privateSetting: 'private-setting-secret',
         cards: [{ providerSessionId: 'provider-session-secret' }],
         pairedDevices: [{ id: 'device-secret' }],
       } as never,
@@ -112,7 +112,7 @@ describe('settings bundle', () => {
     expect(json).not.toContain('provider-key-secret');
     expect(json).not.toContain('provider-session-secret');
     expect(json).not.toContain('device-secret');
-    expect(json).not.toContain('pet-secret');
+    expect(json).not.toContain('private-setting-secret');
     expect(json).not.toContain('card-secret');
     expect(json).not.toContain('audit-secret');
     expect(bundle.sections.terminal?.osNotificationsEnabled).toBe(true);

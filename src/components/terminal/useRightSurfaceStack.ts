@@ -1,6 +1,11 @@
 import { useCallback, useMemo, useState } from 'react';
 
-export type RightSurface = 'stats' | 'archive' | 'sessionDock' | 'sessionRecovery';
+export type RightSurface =
+  | 'stats'
+  | 'archive'
+  | 'sessionDock'
+  | 'sessionRecovery'
+  | 'workbench';
 
 function pushRightSurface(stack: RightSurface[], surface: RightSurface): RightSurface[] {
   return [...stack.filter((item) => item !== surface), surface];

@@ -2,8 +2,13 @@ use portable_pty::CommandBuilder;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use once_cell::sync::Lazy;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 #[cfg(target_os = "macos")]
 use std::process::Command;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Pick the Windows shell by preference: pwsh (PowerShell 7+) > Windows
 /// PowerShell > cmd. Pure (no platform calls) so the ordering is unit-tested on
@@ -131,7 +136,9 @@ pub(super) fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str) {
 
 #[cfg(target_os = "windows")]
 fn which_exists(name: &str) -> bool {
-    std::process::Command::new("where")
+    let mut command = std::process::Command::new("where");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
         .arg(name)
         .output()
         .map(|o| o.status.success())
@@ -150,6 +157,8 @@ pub(super) fn normalize_windows_cwd(dir: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    use super::which_exists;
     use super::{normalize_windows_cwd, select_windows_shell};
 
     #[test]
@@ -170,5 +179,11 @@ mod tests {
             normalize_windows_cwd("C:\\already\\native"),
             "C:\\already\\native"
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_shell_probe_finds_cmd() {
+        assert!(which_exists("cmd.exe"));
     }
 }

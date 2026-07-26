@@ -85,20 +85,20 @@ const threadtermLight = mode(
   terminal('#fcfcfc', '#1f1f1f', '#2563eb', '#fcfcfc', '#e2e8f0', '#1f1f1f', [
     '#000000',
     '#cd3131',
-    '#0dbc79',
-    '#e5e510',
+    '#1a7f37', // 深色变体：浅底上 #0dbc79 仅 2.41，不可见
+    '#9a6700', // 深色变体：#e5e510 仅 1.32
     '#2472c8',
-    '#bc3fbc',
-    '#11a8cd',
-    '#e5e5e5',
+    '#ba3eba', // 微调至 4.5+
+    '#0a7ea4', // 深色变体：#11a8cd 仅 2.73
+    '#6d767f', // 深灰：#e5e5e5 在浅底仅 1.23
     '#666666',
     '#f14c4c',
-    '#23d18b',
-    '#f5f543',
+    '#1ca76f',
+    '#969608',
     '#3b8eea',
-    '#d670d6',
-    '#29b8db',
-    '#ffffff',
+    '#d46ad4',
+    '#209fbf',
+    '#929292', // 亮白改为中灰，浅底可读（≥3）
   ]),
 );
 
@@ -121,7 +121,7 @@ const threadtermDark = mode(
     destructive: '#7f1d1d',
     destructiveForeground: '#f8fafc',
     border: '#1e293b',
-    input: '#64748b',
+    input: '#334155', // 仅比 border 亮半档，与浅色模式 border==input 对称
     ring: '#3b82f6',
   },
   // Dark mode needs its OWN dark terminal palette. Reusing
@@ -129,7 +129,7 @@ const threadtermDark = mode(
   // terminal painted light, and made light/dark share one `tokens.terminal`
   // reference so the xterm theme `useMemo` never recomputed on toggle.
   terminal('#020817', '#f8fafc', '#3b82f6', '#020817', '#1e293b', '#f8fafc', [
-    '#000000',
+    '#334155', // 纯黑在 #020817 上不可见（1.05），提亮到可分辨
     '#cd3131',
     '#0dbc79',
     '#e5e510',
@@ -156,14 +156,14 @@ const catppuccinLatte = mode(
     cardForeground: '#4c4f69',
     popover: '#e6e9ef',
     popoverForeground: '#4c4f69',
-    primary: '#1e66f5',
+    primary: '#1762f5', // 加深：白字对比度 4.34→4.53
     primaryForeground: '#eff1f5',
     secondary: '#ccd0da',
     secondaryForeground: '#4c4f69',
     muted: '#ccd0da',
-    mutedForeground: '#6c6f85',
+    mutedForeground: '#696c82', // 加深至 ≥4.5
     accent: '#bcc0cc',
-    accentForeground: '#4c4f69',
+    accentForeground: '#4a4d66', // 加深至 ≥4.5
     destructive: '#d20f39',
     destructiveForeground: '#eff1f5',
     border: '#bcc0cc',
@@ -173,20 +173,20 @@ const catppuccinLatte = mode(
   terminal('#eff1f5', '#4c4f69', '#dc8a78', '#eff1f5', '#acb0be', '#4c4f69', [
     '#5c5f77',
     '#d20f39',
-    '#40a02b',
-    '#df8e1d',
+    '#327c21', // 浅底加深：#40a02b 仅 2.96
+    '#986114', // 浅底加深：#df8e1d 仅 2.31
     '#1e66f5',
-    '#ea76cb',
+    '#c81f9b', // 浅底加深：#ea76cb 仅 2.34
     '#179299',
-    '#acb0be',
+    '#666d83', // 浅底加深：#acb0be 仅 1.91
     '#6c6f85',
     '#de293e',
-    '#49af3d',
-    '#eea02d',
+    '#429e37',
+    '#c37b10',
     '#456eff',
-    '#fe85d8',
-    '#2d9fa8',
-    '#bcc0cc',
+    '#fd28ba',
+    '#2b98a1',
+    '#848ba1', // 亮白改灰：#bcc0cc 在浅底仅 1.61
   ]),
 );
 
@@ -240,14 +240,14 @@ const tokyoNightDay = mode(
     cardForeground: '#3760bf',
     popover: '#eef0f6',
     popoverForeground: '#3760bf',
-    primary: '#2e7de9',
+    primary: '#1f73e7', // 加深：白字对比度 4.02→4.50
     primaryForeground: '#ffffff',
     secondary: '#c4c8da',
     secondaryForeground: '#3760bf',
     muted: '#c4c8da',
-    mutedForeground: '#6172b0',
+    mutedForeground: '#5062a1', // 加深：3.57→4.51
     accent: '#b7c1e3',
-    accentForeground: '#3760bf',
+    accentForeground: '#2c4c98', // 加深：3.28→4.53
     destructive: '#f52a65',
     destructiveForeground: '#ffffff',
     border: '#a1a6c5',
@@ -255,7 +255,7 @@ const tokyoNightDay = mode(
     ring: '#2e7de9',
   },
   terminal('#e1e2e7', '#3760bf', '#3760bf', '#e1e2e7', '#99a7df', '#3760bf', [
-    '#e9e9ed',
+    '#343b58', // 深海军蓝：#e9e9ed 与背景几乎相同（1.07）
     '#f52a65',
     '#587539',
     '#8c6c3e',
@@ -263,7 +263,7 @@ const tokyoNightDay = mode(
     '#9854f1',
     '#007197',
     '#6172b0',
-    '#a1a6c5',
+    '#777fab', // 加深：#a1a6c5 仅 1.85
     '#f52a65',
     '#587539',
     '#8c6c3e',
@@ -287,7 +287,7 @@ const tokyoNight = mode(
     secondary: '#292e42',
     secondaryForeground: '#c0caf5',
     muted: '#292e42',
-    mutedForeground: '#737aa2',
+    mutedForeground: '#7b82a8', // 提亮：4.10→4.56
     accent: '#283457',
     accentForeground: '#c0caf5',
     destructive: '#f7768e',
@@ -324,12 +324,12 @@ const gruvboxLight = mode(
     cardForeground: '#3c3836',
     popover: '#f2e5bc',
     popoverForeground: '#3c3836',
-    primary: '#b57614',
+    primary: '#976311', // 加深：米白字对比度 3.33→4.50
     primaryForeground: '#fbf1c7',
     secondary: '#ebdbb2',
     secondaryForeground: '#3c3836',
     muted: '#ebdbb2',
-    mutedForeground: '#7c6f64',
+    mutedForeground: '#776b60', // 加深：4.29→4.56
     accent: '#d5c4a1',
     accentForeground: '#3c3836',
     destructive: '#cc241d',
@@ -339,13 +339,13 @@ const gruvboxLight = mode(
     ring: '#b57614',
   },
   terminal('#fbf1c7', '#3c3836', '#3c3836', '#fbf1c7', '#3c3836', '#fbf1c7', [
-    '#fbf1c7',
+    '#3c3836', // 黑色与背景拉开明度：原为 #fbf1c7 与背景完全相同
     '#cc241d',
-    '#98971a',
-    '#d79921',
+    '#727114', // 浅底加深：#98971a 仅 2.73
+    '#8f6616', // 浅底加深：#d79921 仅 2.19
     '#458588',
     '#b16286',
-    '#689d6a',
+    '#4e774f', // 浅底加深：#689d6a 仅 2.80
     '#7c6f64',
     '#928374',
     '#9d0006',
@@ -381,7 +381,7 @@ const gruvboxDark = mode(
     ring: '#fabd2f',
   },
   terminal('#282828', '#ebdbb2', '#ebdbb2', '#282828', '#665c54', '#ebdbb2', [
-    '#282828',
+    '#504945', // 黑色与背景拉开明度：原为 #282828 与背景完全相同
     '#cc241d',
     '#98971a',
     '#d79921',
@@ -408,12 +408,12 @@ const everforestLight = mode(
     cardForeground: '#5c6a72',
     popover: '#f4f0d9',
     popoverForeground: '#5c6a72',
-    primary: '#8da101',
+    primary: '#6c7b01', // 加深：米白字对比度 2.81→4.54
     primaryForeground: '#fffbef',
     secondary: '#e6e2cc',
     secondaryForeground: '#5c6a72',
     muted: '#e6e2cc',
-    mutedForeground: '#7a8478',
+    mutedForeground: '#646c63', // 加深：3.24→4.53
     accent: '#eaedc8',
     accentForeground: '#5c6a72',
     destructive: '#f85552',
@@ -422,23 +422,25 @@ const everforestLight = mode(
     input: '#c7c1aa',
     ring: '#8da101',
   },
+  // 浅色终端整套 ANSI 在米白底上原仅 1.7–3.2，全部按色相不变加深：
+  // 正常色 ≥4.5，bright 色 ≥3。
   terminal('#efebd4', '#5c6a72', '#f57d26', '#eaedc8', '#eaedc8', '#5c6a72', [
-    '#7a8478',
-    '#e67e80',
-    '#9ab373',
-    '#c1a266',
-    '#7fbbb3',
-    '#d699b6',
-    '#83c092',
-    '#b2af9f',
-    '#a6b0a0',
-    '#f85552',
-    '#8da101',
-    '#dfa000',
-    '#3a94c5',
-    '#df69ba',
-    '#35a77c',
-    '#fffbef',
+    '#646c63',
+    '#ca272a',
+    '#5c713d',
+    '#7f6634',
+    '#3d736c',
+    '#ad4576',
+    '#3c764b',
+    '#6d6a57', // 加深：#b2af9f 仅 1.84
+    '#7d8b74',
+    '#f7423f',
+    '#7c8e01',
+    '#b07e00',
+    '#388ebe',
+    '#da52b0',
+    '#309770',
+    '#8a8578', // 亮白改暖灰：#fffbef 在浅底仅 1.16
   ]),
 );
 
@@ -474,12 +476,12 @@ const everforestDark = mode(
     '#83c092',
     '#f2efdf',
     '#a6b0a0',
-    '#f85552',
-    '#8da101',
-    '#dfa000',
-    '#3a94c5',
-    '#df69ba',
-    '#35a77c',
+    '#f0b1b2', // bright 系列原为浅色包强调色，明度倒挂（比正常色更暗）；
+    '#c3d4a9', // 现统一按正常色色相提亮约 12 档明度，保证 bright ≥ 正常色
+    '#e8d5af',
+    '#a7d0cb',
+    '#e8c5d5',
+    '#acd5b6',
     '#fffbef',
   ]),
 );
@@ -498,7 +500,7 @@ const draculaDark = mode(
     secondaryForeground: '#f8f8f2',
     muted: '#44475a',
     mutedForeground: '#c7c7c1',
-    accent: '#6272a4',
+    accent: '#5f70a2', // 加深：白字对比度 4.41→4.55
     accentForeground: '#f8f8f2',
     destructive: '#ff5555',
     destructiveForeground: '#282a36',
@@ -582,7 +584,7 @@ const githubPrimerDark = mode(
     secondaryForeground: '#f0f6fc',
     muted: '#21262d',
     mutedForeground: '#8b949e',
-    accent: '#1f6feb',
+    accent: '#1669ea', // 加深：白字对比度 4.26→4.55
     accentForeground: '#f0f6fc',
     destructive: '#ff7b72',
     destructiveForeground: '#0d1117',
@@ -702,7 +704,7 @@ const ayuLight = mode(
     cardForeground: '#1f2430',
     popover: '#ffffff',
     popoverForeground: '#1f2430',
-    primary: '#cc7a00',
+    primary: '#ab6600', // 加深：白字对比度 3.31→4.53
     primaryForeground: '#ffffff',
     secondary: '#e6e9ed',
     secondaryForeground: '#1f2430',
@@ -794,7 +796,7 @@ const nordDark = mode(
     mutedForeground: '#d8dee9',
     accent: '#434c5e',
     accentForeground: '#eceff4',
-    destructive: '#bf616a',
+    destructive: '#c1656d', // 提亮：深色文字 #111827 对比度 4.34→4.52
     destructiveForeground: '#111827',
     border: '#3b4252',
     input: '#434c5e',
@@ -828,12 +830,12 @@ const rosePineDawn = mode(
     cardForeground: '#575279',
     popover: '#fffaf3',
     popoverForeground: '#575279',
-    primary: '#907aa9',
+    primary: '#81699e', // 加深：米白字对比度 3.65→4.55
     primaryForeground: '#fffaf3',
     secondary: '#f2e9de',
     secondaryForeground: '#575279',
     muted: '#f2e9de',
-    mutedForeground: '#797593',
+    mutedForeground: '#716d8b', // 加深：4.02→4.51
     accent: '#dfdad9',
     accentForeground: '#575279',
     destructive: '#b4637a',
@@ -851,7 +853,7 @@ const rosePineDawn = mode(
     '#907aa9',
     '#4f8792',
     '#797593',
-    '#9893a5',
+    '#908b9e', // 加深：#9893a5 仅 2.73
     '#9f4b66',
     '#1f5f78',
     '#8a5200',
@@ -917,7 +919,7 @@ const kanagawaLotus = mode(
     secondary: '#e1d5a5',
     secondaryForeground: '#545464',
     muted: '#e8dfb0',
-    mutedForeground: '#6f6f7a',
+    mutedForeground: '#696973', // 加深：4.14→4.52
     accent: '#d5cea3',
     accentForeground: '#545464',
     destructive: '#c84053',
@@ -935,7 +937,7 @@ const kanagawaLotus = mode(
     '#8f5e76',
     '#597b75',
     '#6f6f7a',
-    '#8a8980',
+    '#88877e', // 加深：#8a8980 仅 2.93
     '#a83345',
     '#526f35',
     '#725f25',
@@ -996,12 +998,12 @@ const solarizedContrastLight = mode(
     cardForeground: '#475b62',
     popover: '#fff8e8',
     popoverForeground: '#475b62',
-    primary: '#268bd2',
+    primary: '#227bbb', // 加深：白字对比度 3.68→4.55
     primaryForeground: '#ffffff',
     secondary: '#e4dcc4',
     secondaryForeground: '#475b62',
     muted: '#eee8d5',
-    mutedForeground: '#657b83',
+    mutedForeground: '#60747c', // 加深：4.13→4.54
     accent: '#dceef5',
     accentForeground: '#005b8d',
     destructive: '#dc322f',
@@ -1013,20 +1015,20 @@ const solarizedContrastLight = mode(
   terminal('#fdf6e3', '#475b62', '#268bd2', '#fdf6e3', '#e4dcc4', '#475b62', [
     '#073642',
     '#dc322f',
-    '#859900',
-    '#b58900',
+    '#697800', // 浅底加深：#859900 仅 2.97
+    '#8f6c00', // 浅底加深：#b58900 仅 2.98
     '#268bd2',
     '#d33682',
-    '#2aa198',
+    '#217d76', // 浅底加深：#2aa198 仅 2.93
     '#657b83',
     '#586e75',
     '#cb4b16',
     '#586e75',
     '#657b83',
-    '#839496',
+    '#819295', // 加深：#839496 仅 2.93
     '#6c71c4',
-    '#93a1a1',
-    '#eee8d5',
+    '#829292', // 加深：#93a1a1 仅 2.48
+    '#a48d43', // 亮白改深卡其：#eee8d5 在浅底仅 1.14
   ]),
 );
 
@@ -1128,7 +1130,7 @@ const botanicalLight = mode(
     secondaryForeground: '#1a2e1a',
     muted: '#f1f3e9',
     mutedForeground: '#5c6b4a',
-    accent: '#4a90e2', // 天光蓝
+    accent: '#2376d7', // 加深：白字对比度 3.29→4.52
     accentForeground: '#ffffff',
     destructive: '#a63d40',
     destructiveForeground: '#ffffff',
@@ -1140,19 +1142,19 @@ const botanicalLight = mode(
     '#1a2e1a',
     '#a63d40',
     '#2d4d2d',
-    '#8c7b3d',
-    '#4a90e2',
+    '#807138', // 加深：#8c7b3d 仅 3.95
+    '#2172d0', // 加深：#4a90e2 仅 3.11
     '#7b5c8c',
-    '#4a8c82',
-    '#d1d9c2',
+    '#417b73', // 加深：#4a8c82 仅 3.70
+    '#68784a', // 深橄榄：#d1d9c2 仅 1.38
     '#5c6b4a',
     '#c45c5e',
     '#4a7b4a',
-    '#b3a35c',
-    '#6baae2',
-    '#9c8bb3',
-    '#6ba8a1',
-    '#ffffff',
+    '#9f904a',
+    '#4695db',
+    '#9a88b1',
+    '#5b9b93',
+    '#909090', // 亮白改中灰：#ffffff 在纸白底仅 1.06
   ]),
 );
 
@@ -1180,9 +1182,12 @@ export const themePacks: ThemePack[] = [
       sourceName: 'ThreadTerm',
       sourceUrl: 'https://github.com/Heluth-Crazy/ThreadTerm',
     },
+    // Botanical only has a light/paper mode. Do NOT alias `dark` to the light
+    // palette: resolveTheme would then report mode 'dark', slapping the .dark
+    // class and `color-scheme: dark` onto light surfaces. With no dark entry,
+    // resolveTheme falls back to 'light' regardless of the requested mode.
     modes: {
       light: botanicalLight,
-      dark: botanicalLight, // For now, Botanical only has a light/paper mode
     },
   },
   {

@@ -1,7 +1,8 @@
 use std::{
+    io::{self, Write},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -9,8 +10,26 @@ use std::{
 use portable_pty::{Child, ChildKiller, ExitStatus};
 
 use super::events::{ANSI_STRIP, ERROR_PATTERNS, WAITING_PATTERNS};
-use super::session::{should_idle_after_quiet, SessionState, OUTPUT_IDLE_GRACE};
-use super::terminate_child_process;
+use super::session::{should_idle_after_quiet, PtyInputRequest, SessionState, OUTPUT_IDLE_GRACE};
+use super::{run_pty_input_writer, terminate_child_process};
+
+struct SharedWriter {
+    bytes: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Write for SharedWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.bytes
+            .lock()
+            .expect("shared writer lock")
+            .extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug)]
 struct TestChild {
@@ -45,6 +64,51 @@ impl Child for TestChild {
     fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
         None
     }
+}
+
+#[tokio::test]
+async fn pty_input_writer_preserves_one_thousand_writes_in_order() {
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let written_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let callback_count = written_count.clone();
+    let (sender, receiver) = tokio::sync::mpsc::channel(32);
+    let writer_bytes = bytes.clone();
+    let worker = std::thread::spawn(move || {
+        run_pty_input_writer(
+            Box::new(SharedWriter {
+                bytes: writer_bytes,
+            }),
+            receiver,
+            move || {
+                callback_count.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+    });
+
+    let mut completions = Vec::new();
+    let mut expected = Vec::new();
+    for index in 0..1000 {
+        let data = format!("{index:04}\n").into_bytes();
+        expected.extend_from_slice(&data);
+        let (completion, completed) = tokio::sync::oneshot::channel();
+        sender
+            .send(PtyInputRequest { data, completion })
+            .await
+            .expect("queue PTY input");
+        completions.push(completed);
+    }
+    drop(sender);
+
+    for completed in completions {
+        completed
+            .await
+            .expect("writer completion channel")
+            .expect("write succeeds");
+    }
+    worker.join().expect("input writer thread");
+
+    assert_eq!(*bytes.lock().expect("shared writer lock"), expected);
+    assert_eq!(written_count.load(Ordering::SeqCst), 1000);
 }
 
 #[test]

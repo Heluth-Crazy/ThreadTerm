@@ -153,6 +153,30 @@ export interface TerminalCard {
 
 export type NotificationKind = 'waiting' | 'completed' | 'failed' | 'attention';
 
+export type NotificationOrigin =
+  | 'pty'
+  | 'reply'
+  | 'codex_request'
+  | 'supervisor'
+  | 'auto_restart';
+
+export type NotificationFamily = 'interaction' | 'completion' | 'failure' | 'system';
+
+/**
+ * Optional semantic metadata used by the OS-notification boundary.
+ *
+ * This stays optional because notification entries are persisted and older
+ * snapshots must remain readable. In-app notification consumers can ignore it.
+ */
+export interface NotificationRouting {
+  origin: NotificationOrigin;
+  family: NotificationFamily;
+  /** Stable interaction/completion generation shared by related producers. */
+  episodeKey?: string;
+  /** Stable normalized signal identity inside one episode. */
+  fingerprint?: string;
+}
+
 export interface NotificationEntry {
   id: string;
   cardId: string;
@@ -162,6 +186,7 @@ export interface NotificationEntry {
   title: string;
   body: string;
   read: boolean;
+  routing?: NotificationRouting;
 }
 
 // ── Creation ─────────────────────────────────────────────────────────────────

@@ -98,7 +98,7 @@ mod tests {
             fs::write(&cmd, "@echo off\r\n").expect("cmd");
 
             assert_eq!(
-                resolve_windows_cli_program_from_roots("agent", &[root.clone()]),
+                resolve_windows_cli_program_from_roots("agent", std::slice::from_ref(&root)),
                 Some(exe)
             );
             let _ = fs::remove_dir_all(root);
@@ -110,8 +110,9 @@ mod tests {
             fs::create_dir_all(&root).expect("mkdir");
             let shim = root.join("agent.cmd");
             fs::write(&shim, "@echo off\r\necho shim-ok\r\n").expect("cmd");
-            let resolved = resolve_windows_cli_program_from_roots("agent", &[root.clone()])
-                .expect("resolve cmd shim");
+            let resolved =
+                resolve_windows_cli_program_from_roots("agent", std::slice::from_ref(&root))
+                    .expect("resolve cmd shim");
 
             let output = background_cli_command_for_program(resolved)
                 .output()

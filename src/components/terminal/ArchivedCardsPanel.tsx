@@ -25,7 +25,7 @@ export function ArchivedCardsPanel({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-1.5 border-b border-white/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+      <div className="flex h-15 shrink-0 items-center gap-1.5 border-b border-border px-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
         <Archive className="h-3 w-3" />
         <span className="min-w-0 flex-1 truncate">
           {t('archive.title', { project: projectName, count: cards.length })}
@@ -53,25 +53,25 @@ export function ArchivedCardsPanel({
             return (
               <li
                 key={card.id}
-                className="rounded-[var(--radius-md)] border border-white/10 bg-white/[0.03] px-2 py-2"
+                className="rounded-md border border-border bg-muted/50 px-2 py-2"
               >
                 <div className="flex min-w-0 items-start gap-2">
                   <div
-                    className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-muted ${typeMeta.accent}`}
+                    className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted ${typeMeta.accent}`}
                   >
                     <TypeIcon className="h-3.5 w-3.5" />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 items-center gap-1.5">
                       <span className="truncate text-xs font-medium">{card.projectName}</span>
-                      <span className="shrink-0 text-[10px] text-muted-foreground">
+                      <span className="shrink-0 text-[11px] text-muted-foreground">
                         {t(`types.${card.terminalType}`, typeMeta.label)}
                       </span>
                     </div>
-                    <div className="truncate text-[10px] text-muted-foreground" title={card.worktreePath ?? card.projectPath}>
+                    <div className="truncate text-[11px] text-muted-foreground" title={card.worktreePath ?? card.projectPath}>
                       {card.worktreePath ?? card.projectPath}
                     </div>
-                    <div className="mt-0.5 truncate text-[10px] text-muted-foreground/70">
+                    <div className="mt-0.5 truncate text-[11px] text-muted-foreground/70">
                       {t('archive.archivedAt', { time: formatArchivedAt(card.archivedAt) })}
                     </div>
                   </div>
@@ -79,7 +79,7 @@ export function ArchivedCardsPanel({
                 <button
                   type="button"
                   onClick={() => onRestore(card.id)}
-                  className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-[var(--radius-md)] border border-white/10 px-2 py-1 text-[11px] hover:bg-accent hover:text-accent-foreground"
+                  className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-border px-2 py-1 text-[11px] hover:bg-accent hover:text-accent-foreground"
                 >
                   <RotateCcw className="h-3 w-3" />
                   {t('archive.restore')}

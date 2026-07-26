@@ -17,7 +17,7 @@ use axum::{
     },
     http::{
         header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE},
-        HeaderMap, HeaderValue, Method, StatusCode, Uri,
+        HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri,
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -56,6 +56,8 @@ const MOBILE_VENDOR_XTERM_JS: &[u8] =
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_TRAILING_SUBMIT_KEYS: usize = 8;
 const CONNECTION_ABORT_GRACE: Duration = Duration::from_millis(250);
+const MOBILE_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+static QUERY_TOKEN_AUTH_USE_COUNT: AtomicU64 = AtomicU64::new(0);
 
 pub struct BridgeServerHandle {
     pub host: String,
@@ -273,7 +275,15 @@ pub async fn start(
         .route("/ws", get(ws_handler))
         .fallback(get(mobile_static_handler))
         .layer(mobile_bridge_cors_layer())
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<Body>| {
+                tracing::debug_span!(
+                    "mobile_bridge_http",
+                    method = %request.method(),
+                    path = %request.uri().path(),
+                )
+            }),
+        )
         // Added last so this is the outermost application layer: tracking is
         // established before route auth, JSON extraction, database work, or
         // any handler side effect begins.
@@ -345,7 +355,7 @@ fn mobile_asset_response(path: &str) -> Response {
     let normalized = path.trim_start_matches('/');
     let file = mobile_asset_bytes(normalized);
 
-    match file {
+    let mut response = match file {
         Some((contents, served_path)) => {
             let body = if served_path == "index.html" {
                 Body::from(cache_busted_mobile_index_html())
@@ -367,7 +377,28 @@ fn mobile_asset_response(path: &str) -> Response {
             .header(CONTENT_TYPE, "text/plain; charset=utf-8")
             .body(Body::from("mobile asset not found"))
             .unwrap_or_else(|_| Response::new(Body::empty())),
-    }
+    };
+    add_mobile_security_headers(response.headers_mut());
+    response
+}
+
+fn add_mobile_security_headers(headers: &mut HeaderMap) {
+    headers.insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static(MOBILE_CONTENT_SECURITY_POLICY),
+    );
+    headers.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
 }
 
 fn cache_busted_mobile_index_html() -> String {
@@ -642,7 +673,7 @@ async fn handle_socket(
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
                         if text.contains("\"kind\":\"input\"") {
-                            tracing::info!(
+                            tracing::debug!(
                                 device_id = device.as_ref().map(|device| device.id.as_str()).unwrap_or("unauthenticated"),
                                 raw_len = text.len(),
                                 "Mobile bridge raw input frame"
@@ -693,21 +724,37 @@ async fn handle_socket(
                             ).await;
                             break;
                         }
-                        if let Err((code, message)) = handle_client_message(&context, current_device, &text).await {
-                            tracing::warn!(code = %code, message = %message, "Mobile bridge client message rejected");
-                            let _ = send_json_authorized(
-                                &mut socket,
-                                &ServerMessage::Error {
-                                    code: code.clone(),
-                                    message,
-                                },
-                                device_lease.as_ref().expect("authenticated socket lease"),
-                            ).await;
-                            if matches!(
-                                code.as_str(),
-                                "protocol_version_mismatch" | "auth_revoked" | "bridge_stopped"
-                            ) {
-                                break;
+                        match handle_client_message(&context, current_device, &text).await {
+                            Ok(responses) => {
+                                for response in responses {
+                                    if send_json_authorized(
+                                        &mut socket,
+                                        &response,
+                                        device_lease.as_ref().expect("authenticated socket lease"),
+                                    )
+                                    .await
+                                    .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
+                            }
+                            Err((code, message)) => {
+                                tracing::warn!(code = %code, message = %message, "Mobile bridge client message rejected");
+                                let _ = send_json_authorized(
+                                    &mut socket,
+                                    &ServerMessage::Error {
+                                        code: code.clone(),
+                                        message,
+                                    },
+                                    device_lease.as_ref().expect("authenticated socket lease"),
+                                ).await;
+                                if matches!(
+                                    code.as_str(),
+                                    "protocol_version_mismatch" | "auth_revoked" | "bridge_stopped"
+                                ) {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -758,7 +805,7 @@ fn initial_messages_for_client(context: &ServerContext) -> Vec<ServerMessage> {
     let terminal_snapshots = snapshot
         .cards
         .iter()
-        .filter_map(|card| super::terminal_snapshot_message(&card.id))
+        .filter_map(|card| super::terminal_snapshot_message(&context.runtime, &card.id))
         .map(|snapshot| ServerMessage::TerminalSnapshot { snapshot })
         .collect::<Vec<_>>();
     let initial = ServerMessage::from(snapshot);
@@ -777,7 +824,7 @@ async fn handle_client_message(
     context: &ServerContext,
     device: &BridgeDevice,
     text: &str,
-) -> Result<(), (String, String)> {
+) -> Result<Vec<ServerMessage>, (String, String)> {
     let message: ClientMessage =
         parse_client_message(text).map_err(|e| (e.error_code().to_string(), e.to_string()))?;
 
@@ -795,19 +842,20 @@ async fn handle_client_message(
     };
 
     let result = match message {
-        ClientMessage::Auth { .. } => Ok(()),
-        ClientMessage::Subscribe { .. } => Ok(()),
+        ClientMessage::Auth { .. } => Ok(Vec::new()),
+        ClientMessage::Subscribe { .. } => Ok(Vec::new()),
+        ClientMessage::TerminalResync => Ok(initial_messages_for_client(context)),
         ClientMessage::Ping => {
             context
                 .runtime
                 .broadcast(ServerMessage::Pong { t: now_millis() });
-            Ok(())
+            Ok(Vec::new())
         }
         ClientMessage::Input { card_id, data } => {
             validate_pty_input(&data)?;
             let pty_id = context.runtime.pty_id_for_card(&card_id);
             let input_summary = summarize_input(&data);
-            tracing::info!(
+            tracing::debug!(
                 device_id = %device.id,
                 card_id = %card_id,
                 pty_id = %pty_id,
@@ -815,14 +863,10 @@ async fn handle_client_message(
                 summary = %input_summary,
                 "Mobile bridge input received"
             );
-            crate::db::insert_audit_log(&device.id, "input", Some(&card_id), &input_summary)
-                .map_err(|e| {
-                    (
-                        "command_failed".to_string(),
-                        format!("Failed to audit input: {e}"),
-                    )
-                })?;
-            paced_pty_input(context, device, &pty_id, &data).await
+            crate::db::enqueue_audit_log(&device.id, "input", Some(&card_id), &input_summary);
+            paced_pty_input(context, device, &pty_id, &data)
+                .await
+                .map(|_| Vec::new())
         }
         ClientMessage::Resize {
             card_id,
@@ -833,18 +877,13 @@ async fn handle_client_message(
             crate::pty::pty_resize(pty_id, rows, cols)
                 .await
                 .map_err(|message| ("command_failed".to_string(), message))
+                .map(|_| Vec::new())
         }
         ClientMessage::Close {
             card_id,
             request_id,
         } => {
-            crate::db::insert_audit_log(&device.id, "close", Some(&card_id), "close session")
-                .map_err(|e| {
-                    (
-                        "command_failed".to_string(),
-                        format!("Failed to audit close: {e}"),
-                    )
-                })?;
+            crate::db::enqueue_audit_log(&device.id, "close", Some(&card_id), "close session");
             let request_id =
                 request_id.unwrap_or_else(|| format!("close:{}:{}", card_id, now_millis()));
             context
@@ -854,21 +893,21 @@ async fn handle_client_message(
                     card_id,
                 })
                 .map_err(|message| ("command_failed".to_string(), message))
+                .map(|_| Vec::new())
         }
         ClientMessage::MarkRead { .. }
         | ClientMessage::Pin { .. }
-        | ClientMessage::SetIntent { .. } => Ok(()),
+        | ClientMessage::SetIntent { .. } => Ok(Vec::new()),
         ClientMessage::Activate {
             request_id,
             card_id,
         } => {
-            crate::db::insert_audit_log(&device.id, "activate", Some(&card_id), "activate session")
-                .map_err(|e| {
-                    (
-                        "command_failed".to_string(),
-                        format!("Failed to audit activate: {e}"),
-                    )
-                })?;
+            crate::db::enqueue_audit_log(
+                &device.id,
+                "activate",
+                Some(&card_id),
+                "activate session",
+            );
             context
                 .runtime
                 .emit_activate_request(MobileCardRequest {
@@ -876,6 +915,7 @@ async fn handle_client_message(
                     card_id,
                 })
                 .map_err(|message| ("command_failed".to_string(), message))
+                .map(|_| Vec::new())
         }
         ClientMessage::Spawn {
             request_id,
@@ -892,12 +932,7 @@ async fn handle_client_message(
                     .map(|value| !value.trim().is_empty())
                     .unwrap_or(false)
             );
-            crate::db::insert_audit_log(&device.id, "spawn", None, &summary).map_err(|e| {
-                (
-                    "command_failed".to_string(),
-                    format!("Failed to audit spawn: {e}"),
-                )
-            })?;
+            crate::db::enqueue_audit_log(&device.id, "spawn", None, &summary);
             context
                 .runtime
                 .emit_spawn_request(MobileSpawnCardRequest {
@@ -907,19 +942,20 @@ async fn handle_client_message(
                     command,
                 })
                 .map_err(|message| ("command_failed".to_string(), message))
+                .map(|_| Vec::new())
         }
         ClientMessage::RenameCard {
             request_id,
             card_id,
             project_name,
         } => {
-            crate::db::insert_audit_log(&device.id, "rename_card", Some(&card_id), &project_name)
-                .map_err(|e| {
-                (
-                    "command_failed".to_string(),
-                    format!("Failed to audit rename: {e}"),
-                )
-            })?;
+            let rename_summary = format!("rename metadata: name_bytes={}", project_name.len());
+            crate::db::enqueue_audit_log(
+                &device.id,
+                "rename_card",
+                Some(&card_id),
+                &rename_summary,
+            );
             context
                 .runtime
                 .emit_rename_card_request(MobileRenameCardRequest {
@@ -928,6 +964,7 @@ async fn handle_client_message(
                     project_name,
                 })
                 .map_err(|message| ("command_failed".to_string(), message))
+                .map(|_| Vec::new())
         }
     };
 
@@ -945,6 +982,7 @@ fn client_message_requires_full_authorization(message: &ClientMessage) -> bool {
         | ClientMessage::RenameCard { .. } => true,
         ClientMessage::Auth { .. }
         | ClientMessage::Subscribe { .. }
+        | ClientMessage::TerminalResync
         | ClientMessage::Pin { .. }
         | ClientMessage::SetIntent { .. }
         | ClientMessage::MarkRead { .. }
@@ -1157,7 +1195,9 @@ fn authenticate_request(
 ) -> Option<BridgeDevice> {
     let header_token = bearer_token(headers);
     if query_token.is_some() {
-        tracing::debug!(
+        let use_count = QUERY_TOKEN_AUTH_USE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::warn!(
+            deprecated_query_token_use_count = use_count,
             "Mobile bridge query-token auth path is deprecated; prefer Authorization bearer or websocket auth frame"
         );
     }
@@ -1288,6 +1328,22 @@ mod tests {
             index.headers().get(CACHE_CONTROL),
             Some(&HeaderValue::from_static("no-store"))
         );
+        assert_eq!(
+            index.headers().get("content-security-policy"),
+            Some(&HeaderValue::from_static(MOBILE_CONTENT_SECURITY_POLICY))
+        );
+        assert_eq!(
+            index.headers().get("referrer-policy"),
+            Some(&HeaderValue::from_static("no-referrer"))
+        );
+        assert_eq!(
+            index.headers().get("x-content-type-options"),
+            Some(&HeaderValue::from_static("nosniff"))
+        );
+        assert_eq!(
+            index.headers().get("x-frame-options"),
+            Some(&HeaderValue::from_static("DENY"))
+        );
         let index_body = axum::body::to_bytes(index.into_body(), usize::MAX)
             .await
             .expect("index body");
@@ -1357,6 +1413,51 @@ mod tests {
         assert!(matches!(
             messages.get(1),
             Some(ServerMessage::Snapshot { .. })
+        ));
+        let runtime_id = context.runtime.runtime_id().to_string();
+        assert!(matches!(
+            messages.get(1),
+            Some(ServerMessage::Snapshot {
+                runtime_id: message_runtime_id,
+                stream_seq: 0,
+                ..
+            }) if message_runtime_id == &runtime_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn terminal_resync_returns_current_runtime_snapshot() {
+        let runtime = Arc::new(BridgeRuntime::new());
+        let (_shutdown_tx, shutdown) = watch::channel(false);
+        let context = ServerContext {
+            runtime,
+            shutdown,
+            connections: ConnectionTracker::default(),
+        };
+        let device = BridgeDevice {
+            id: "device-1".to_string(),
+            name: "test".to_string(),
+            permission: super::super::protocol::DevicePermission::ReadOnly,
+            created_at: 0,
+            last_seen_at: None,
+        };
+
+        let responses = handle_client_message(
+            &context,
+            &device,
+            r#"{"protocol_version":1,"kind":"terminal_resync"}"#,
+        )
+        .await
+        .expect("terminal resync");
+
+        assert!(matches!(
+            responses.first(),
+            Some(ServerMessage::Theme { .. })
+        ));
+        assert!(matches!(
+            responses.get(1),
+            Some(ServerMessage::Snapshot { runtime_id, .. })
+                if runtime_id == context.runtime.runtime_id()
         ));
     }
 

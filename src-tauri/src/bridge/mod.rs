@@ -8,11 +8,14 @@ use std::{
     path::Path,
     process::Command,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use once_cell::sync::Lazy;
+use rand::{distributions::Alphanumeric, Rng};
 use regex::Regex;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use tauri::Emitter;
 use tokio::sync::broadcast;
 
@@ -22,8 +25,8 @@ use pairing::PairingStore;
 use protocol::{
     AppThemeTokens, BridgeDevice, BridgeSnapshot, BridgeStatus, BridgeTheme, CardMeta,
     DevicePermission, MobileCardRequest, MobileRenameCardRequest, MobileSpawnCardRequest,
-    PairQrResponse, ServerMessage, TerminalSnapshotMessage, TerminalStatus, TerminalThemeTokens,
-    ThemeMode,
+    MobileWorkbenchProjection, NotificationEntry, PairQrResponse, ServerMessage,
+    TerminalSnapshotMessage, TerminalStatus, TerminalThemeTokens, ThemeMode,
 };
 
 const DEFAULT_BRIDGE_HOST: &str = "127.0.0.1";
@@ -33,6 +36,9 @@ const PREVIEW_CHANNEL_CAPACITY: usize = 1024;
 const BRIDGE_ENABLED_SETTING: &str = "mobile_bridge.enabled";
 const BRIDGE_HOST_SETTING: &str = "mobile_bridge.host";
 const BRIDGE_PORT_SETTING: &str = "mobile_bridge.port";
+const LAN_IPV4_CACHE_TTL: Duration = Duration::from_secs(30);
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 static ANSI_STRIP: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[()][A-Za-z0-9])")
@@ -45,6 +51,85 @@ static CONTROL_STRIP: Lazy<Regex> = Lazy::new(|| {
 pub static BRIDGE_RUNTIME: Lazy<Arc<BridgeRuntime>> = Lazy::new(|| Arc::new(BridgeRuntime::new()));
 static BRIDGE_LIFECYCLE_GATE: Lazy<tokio::sync::Mutex<()>> =
     Lazy::new(|| tokio::sync::Mutex::new(()));
+static LAN_IPV4_RESOLVER: Lazy<LanIpv4Resolver> =
+    Lazy::new(|| LanIpv4Resolver::new(LAN_IPV4_CACHE_TTL));
+
+#[derive(Clone)]
+struct LanIpv4CacheEntry {
+    value: Option<String>,
+    collected_at: Instant,
+}
+
+struct LanIpv4Resolver {
+    ttl: Duration,
+    cache: Mutex<Option<LanIpv4CacheEntry>>,
+    refresh_gate: tokio::sync::Mutex<()>,
+}
+
+impl LanIpv4Resolver {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            cache: Mutex::new(None),
+            refresh_gate: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    fn fresh_cached_result(&self) -> Option<Option<String>> {
+        let cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache
+            .as_ref()
+            .filter(|entry| entry.collected_at.elapsed() < self.ttl)
+            .map(|entry| entry.value.clone())
+    }
+
+    fn cached_value(&self) -> Option<String> {
+        self.fresh_cached_result().flatten()
+    }
+
+    async fn resolve(&self, force: bool) -> Option<String> {
+        self.resolve_with_probe(force, lan_ipv4_for_url_uncached)
+            .await
+    }
+
+    async fn resolve_with_probe<F>(&self, force: bool, probe: F) -> Option<String>
+    where
+        F: FnOnce() -> Option<String> + Send + 'static,
+    {
+        if !force {
+            if let Some(cached) = self.fresh_cached_result() {
+                return cached;
+            }
+        }
+
+        let _refresh = self.refresh_gate.lock().await;
+        if !force {
+            if let Some(cached) = self.fresh_cached_result() {
+                return cached;
+            }
+        }
+
+        let value = match tokio::task::spawn_blocking(probe).await {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(%error, "LAN address probe worker failed");
+                None
+            }
+        };
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *cache = Some(LanIpv4CacheEntry {
+            value: value.clone(),
+            collected_at: Instant::now(),
+        });
+        value
+    }
+}
 
 pub struct BridgeRuntime {
     tx: broadcast::Sender<ServerMessage>,
@@ -52,12 +137,21 @@ pub struct BridgeRuntime {
     theme: Mutex<BridgeTheme>,
     server: Mutex<Option<server::BridgeServerHandle>>,
     app_handle: Mutex<Option<tauri::AppHandle>>,
-    card_mirror: Mutex<Vec<CardMeta>>,
-    card_mirror_initialized: Mutex<bool>,
+    state_mirror: Mutex<BridgeStateMirror>,
+    runtime_id: String,
+    terminal_stream_seq: Mutex<u64>,
     #[cfg(test)]
     preview_snapshot_serializations: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     snapshot_card_enrichments: std::sync::atomic::AtomicUsize,
+}
+
+#[derive(Default)]
+struct BridgeStateMirror {
+    cards: Vec<CardMeta>,
+    notifications: Vec<NotificationEntry>,
+    workbench: Option<MobileWorkbenchProjection>,
+    initialized: bool,
 }
 
 pub(crate) struct PreparedCardRemoval {
@@ -73,8 +167,13 @@ impl BridgeRuntime {
             theme: Mutex::new(BridgeTheme::default()),
             server: Mutex::new(None),
             app_handle: Mutex::new(None),
-            card_mirror: Mutex::new(Vec::new()),
-            card_mirror_initialized: Mutex::new(false),
+            state_mirror: Mutex::new(BridgeStateMirror::default()),
+            runtime_id: rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(20)
+                .map(char::from)
+                .collect(),
+            terminal_stream_seq: Mutex::new(0),
             #[cfg(test)]
             preview_snapshot_serializations: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
@@ -88,6 +187,32 @@ impl BridgeRuntime {
 
     pub fn has_subscribers(&self) -> bool {
         self.tx.receiver_count() > 0
+    }
+
+    fn runtime_id(&self) -> &str {
+        &self.runtime_id
+    }
+
+    fn current_terminal_stream_seq(&self) -> u64 {
+        match self.terminal_stream_seq.lock() {
+            Ok(stream_seq) => *stream_seq,
+            Err(poisoned) => *poisoned.into_inner(),
+        }
+    }
+
+    fn broadcast_terminal_frame(&self, card_id: String, data: String, seq: u64) {
+        let mut stream_seq = match self.terminal_stream_seq.lock() {
+            Ok(stream_seq) => stream_seq,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *stream_seq = stream_seq.saturating_add(1);
+        let _ = self.tx.send(ServerMessage::TerminalOutput {
+            card_id,
+            data,
+            seq,
+            runtime_id: self.runtime_id.clone(),
+            stream_seq: *stream_seq,
+        });
     }
 
     pub fn broadcast(&self, message: ServerMessage) {
@@ -126,32 +251,37 @@ impl BridgeRuntime {
     where
         F: FnMut(CardMeta) -> CardMeta,
     {
-        let initialized = self
-            .card_mirror_initialized
+        let (initialized, cards, notifications, workbench) = self
+            .state_mirror
             .lock()
-            .map(|value| *value)
-            .unwrap_or(false);
+            .map(|state| {
+                (
+                    state.initialized,
+                    state.cards.clone(),
+                    state.notifications.clone(),
+                    state.workbench.clone(),
+                )
+            })
+            .unwrap_or_else(|_| (false, Vec::new(), Vec::new(), None));
         if !initialized {
             return BridgeSnapshot {
                 cards: Vec::new(),
                 notifications: Vec::new(),
+                workbench: None,
                 warming_up: true,
+                runtime_id: self.runtime_id.clone(),
+                stream_seq: self.current_terminal_stream_seq(),
             };
         }
 
-        // F-01 lock discipline: CLONE under `card_mirror`, ENRICH outside
+        // F-01 lock discipline: CLONE under `state_mirror`, ENRICH outside
         // the lock. `enrich_card_with_live_state` calls
         // `pty::live_session_snapshot`, which reads PTY state. Acquiring the
-        // PTY state lock while holding `card_mirror` is the reverse order of
+        // PTY state lock while holding `state_mirror` is the reverse order of
         // `pty::session::set_session_state` -> `bridge::broadcast_state` ->
-        // `card_id_for_pty` (which locks `card_mirror`); together they can
+        // `card_id_for_pty` (which locks `state_mirror`); together they can
         // deadlock. The previous snapshot behavior (cards after enrichment)
         // is preserved bit-for-bit — only the lock scope changes.
-        let cards: Vec<CardMeta> = self
-            .card_mirror
-            .lock()
-            .map(|cards| cards.iter().cloned().collect())
-            .unwrap_or_default();
         let cards = cards
             .into_iter()
             .map(|card| {
@@ -164,18 +294,38 @@ impl BridgeRuntime {
 
         BridgeSnapshot {
             cards,
-            notifications: Vec::new(),
+            notifications,
+            workbench,
             warming_up: false,
+            runtime_id: self.runtime_id.clone(),
+            stream_seq: self.current_terminal_stream_seq(),
         }
     }
 
     pub fn sync_cards(&self, cards: Vec<CardMeta>) {
-        if let Ok(mut mirror) = self.card_mirror.lock() {
-            *mirror = cards;
+        if let Ok(mut mirror) = self.state_mirror.lock() {
+            mirror.cards = cards;
+            mirror.initialized = true;
         }
-        if let Ok(mut initialized) = self.card_mirror_initialized.lock() {
-            *initialized = true;
+        self.broadcast_state_snapshot_if_subscribed();
+    }
+
+    pub fn sync_state(
+        &self,
+        cards: Vec<CardMeta>,
+        notifications: Vec<NotificationEntry>,
+        workbench: Option<MobileWorkbenchProjection>,
+    ) {
+        if let Ok(mut mirror) = self.state_mirror.lock() {
+            mirror.cards = cards;
+            mirror.notifications = notifications;
+            mirror.workbench = workbench;
+            mirror.initialized = true;
         }
+        self.broadcast_state_snapshot_if_subscribed();
+    }
+
+    fn broadcast_state_snapshot_if_subscribed(&self) {
         // The mirror is durable bridge state and must always be updated, even
         // with no WebSocket clients. The enriched snapshot is broadcast-only
         // work; a later HTTP/WebSocket client builds a fresh snapshot on
@@ -197,11 +347,12 @@ impl BridgeRuntime {
     }
 
     pub fn pty_id_for_card(&self, card_id: &str) -> String {
-        self.card_mirror
+        self.state_mirror
             .lock()
             .ok()
-            .and_then(|cards| {
-                cards
+            .and_then(|state| {
+                state
+                    .cards
                     .iter()
                     .find(|card| card.id == card_id)
                     .and_then(|card| card.pty_id.clone())
@@ -210,11 +361,12 @@ impl BridgeRuntime {
     }
 
     pub fn card_id_for_pty(&self, pty_id: &str) -> String {
-        self.card_mirror
+        self.state_mirror
             .lock()
             .ok()
-            .and_then(|cards| {
-                cards
+            .and_then(|state| {
+                state
+                    .cards
                     .iter()
                     .find(|card| {
                         card.id == pty_id
@@ -234,8 +386,9 @@ impl BridgeRuntime {
     }
 
     fn cloned_mirrored_card_for_pty(&self, pty_id: &str) -> Option<CardMeta> {
-        self.card_mirror.lock().ok().and_then(|cards| {
-            cards
+        self.state_mirror.lock().ok().and_then(|state| {
+            state
+                .cards
                 .iter()
                 .find(|card| {
                     card.id == pty_id
@@ -253,7 +406,7 @@ impl BridgeRuntime {
     where
         F: FnOnce(CardMeta) -> CardMeta,
     {
-        // F-01 lock discipline: find+clone under `card_mirror`, enrich
+        // F-01 lock discipline: find+clone under `state_mirror`, enrich
         // outside. `enrich_card_with_live_state` reenters PTY state via
         // `pty::live_session_snapshot`, which would reverse
         // `set_session_state`'s lock order and risk deadlock.
@@ -412,6 +565,16 @@ pub async fn bridge_sync_cards(cards: Vec<CardMeta>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn bridge_sync_state(
+    cards: Vec<CardMeta>,
+    notifications: Vec<NotificationEntry>,
+    workbench: Option<MobileWorkbenchProjection>,
+) -> Result<(), String> {
+    BRIDGE_RUNTIME.sync_state(cards, notifications, workbench);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn bridge_resolve_mobile_spawn(
     request_id: String,
     ok: bool,
@@ -521,13 +684,15 @@ async fn start_bridge_runtime_locked(
             .map(|handle| handle.is_stopping())
     };
     if let Some(stopping) = existing_server_stopping {
-        let status = runtime.status();
+        let mut status = runtime.status();
         if stopping {
             return Err(
                 "Mobile bridge shutdown is incomplete; retry stop before starting it again."
                     .to_string(),
             );
         }
+        refresh_public_host_for_status(&status, false).await;
+        status = runtime.status();
         if persist_enabled {
             persist_bridge_running(&status);
         }
@@ -548,6 +713,7 @@ async fn start_bridge_runtime_locked(
         *guard = Some(handle);
     }
 
+    refresh_public_host_for_status(&runtime.status(), false).await;
     let status = runtime.status();
     tracing::info!(
         host = ?status.host,
@@ -610,8 +776,14 @@ fn persisted_bridge_enabled() -> bool {
 }
 
 #[tauri::command]
-pub async fn bridge_status() -> Result<BridgeStatus, String> {
+pub async fn bridge_status(refresh: Option<bool>) -> Result<BridgeStatus, String> {
+    refresh_public_host_for_status(&BRIDGE_RUNTIME.status(), refresh.unwrap_or(false)).await;
     Ok(BRIDGE_RUNTIME.status())
+}
+
+#[tauri::command]
+pub async fn bridge_has_subscribers() -> Result<bool, String> {
+    Ok(BRIDGE_RUNTIME.has_subscribers())
 }
 
 #[tauri::command]
@@ -624,8 +796,8 @@ pub async fn bridge_pair_qr(
     let pair_host = host
         .filter(|value| !value.trim().is_empty())
         .or(status.host)
-        .map(|value| public_host_for_url(&value))
         .unwrap_or_else(|| "127.0.0.1".to_string());
+    let pair_host = public_host_for_url_async(&pair_host, false).await;
 
     Ok(BRIDGE_RUNTIME.pairing.create_pair_qr(
         pair_host,
@@ -689,12 +861,7 @@ pub fn broadcast_terminal_output(card_id: &str, data: &str, seq: u64) {
         return;
     }
     let bridge_card_id = BRIDGE_RUNTIME.card_id_for_pty(card_id);
-
-    BRIDGE_RUNTIME.broadcast(ServerMessage::TerminalOutput {
-        card_id: bridge_card_id,
-        data: data.to_string(),
-        seq,
-    });
+    BRIDGE_RUNTIME.broadcast_terminal_frame(bridge_card_id, data.to_string(), seq);
 }
 
 pub fn broadcast_theme(app: AppThemeTokens, terminal: TerminalThemeTokens, mode: ThemeMode) {
@@ -773,6 +940,7 @@ fn card_meta_tombstone(pty_id: &str, state: SessionState, working_dir: &str) -> 
         project_path: working_dir.to_string(),
         project_name: project_name_from_path(working_dir),
         worktree_path: None,
+        branch_label: None,
         terminal_type: Some("shell".to_string()),
         command: None,
         created_at: None,
@@ -801,6 +969,7 @@ fn card_meta_from_live_session(snapshot: LivePtySessionSnapshot) -> CardMeta {
         project_path: snapshot.working_dir,
         project_name,
         worktree_path: None,
+        branch_label: None,
         terminal_type: Some("shell".to_string()),
         command: None,
         created_at: None,
@@ -818,14 +987,19 @@ fn card_meta_from_live_session(snapshot: LivePtySessionSnapshot) -> CardMeta {
     }
 }
 
-pub(super) fn terminal_snapshot_message(card_id: &str) -> Option<TerminalSnapshotMessage> {
-    let pty_id = BRIDGE_RUNTIME.pty_id_for_card(card_id);
+pub(super) fn terminal_snapshot_message(
+    runtime: &BridgeRuntime,
+    card_id: &str,
+) -> Option<TerminalSnapshotMessage> {
+    let pty_id = runtime.pty_id_for_card(card_id);
     let snapshot = pty::attach_snapshot_for_bridge(&pty_id)?;
-    let bridge_card_id = BRIDGE_RUNTIME.card_id_for_pty(&snapshot.pty_id);
+    let bridge_card_id = runtime.card_id_for_pty(&snapshot.pty_id);
     Some(TerminalSnapshotMessage {
         card_id: bridge_card_id,
         data: snapshot.data,
         seq: snapshot.seq,
+        runtime_id: runtime.runtime_id().to_string(),
+        stream_seq: runtime.current_terminal_stream_seq(),
         rows: snapshot.rows,
         cols: snapshot.cols,
         cursor_row: snapshot.cursor_row,
@@ -839,7 +1013,7 @@ fn broadcast_terminal_snapshots_for_cards(cards: &[CardMeta]) {
         if !card.pty_live {
             continue;
         }
-        if let Some(snapshot) = terminal_snapshot_message(&card.id) {
+        if let Some(snapshot) = terminal_snapshot_message(&BRIDGE_RUNTIME, &card.id) {
             BRIDGE_RUNTIME.broadcast(ServerMessage::TerminalSnapshot { snapshot });
         }
     }
@@ -1017,12 +1191,30 @@ fn is_mobile_preview_noise_line(line: &str) -> bool {
 
 fn public_host_for_url(host: &str) -> String {
     match host {
-        "0.0.0.0" | "::" => lan_ipv4_for_url().unwrap_or_else(|| "127.0.0.1".to_string()),
+        "0.0.0.0" | "::" => LAN_IPV4_RESOLVER
+            .cached_value()
+            .unwrap_or_else(|| "127.0.0.1".to_string()),
         value => value.to_string(),
     }
 }
 
-fn lan_ipv4_for_url() -> Option<String> {
+async fn public_host_for_url_async(host: &str, force: bool) -> String {
+    match host {
+        "0.0.0.0" | "::" => LAN_IPV4_RESOLVER
+            .resolve(force)
+            .await
+            .unwrap_or_else(|| "127.0.0.1".to_string()),
+        value => value.to_string(),
+    }
+}
+
+async fn refresh_public_host_for_status(status: &BridgeStatus, force: bool) {
+    if matches!(status.host.as_deref(), Some("0.0.0.0" | "::")) {
+        let _ = LAN_IPV4_RESOLVER.resolve(force).await;
+    }
+}
+
+fn lan_ipv4_for_url_uncached() -> Option<String> {
     physical_adapter_ipv4_for_url()
         .or_else(default_route_ipv4_for_url)
         .or_else(udp_route_ipv4_for_url)
@@ -1043,7 +1235,9 @@ Get-NetAdapter | ForEach-Object {
 }
 "#;
 
-    let output = Command::new("powershell.exe")
+    let mut command = Command::new("powershell.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
         .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
         .output()
         .ok()?;
@@ -1365,6 +1559,57 @@ mod tests {
         assert_eq!(public_host_for_url("192.168.1.2"), "192.168.1.2");
     }
 
+    #[tokio::test]
+    async fn lan_ipv4_resolver_caches_normal_queries_and_forces_manual_refresh() {
+        let resolver = LanIpv4Resolver::new(Duration::from_secs(30));
+        let probe_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        for _ in 0..10 {
+            let probe_count = probe_count.clone();
+            let value = resolver
+                .resolve_with_probe(false, move || {
+                    probe_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Some("192.168.1.10".to_string())
+                })
+                .await;
+            assert_eq!(value.as_deref(), Some("192.168.1.10"));
+        }
+        assert_eq!(probe_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let forced_count = probe_count.clone();
+        let refreshed = resolver
+            .resolve_with_probe(true, move || {
+                forced_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some("192.168.1.11".to_string())
+            })
+            .await;
+        assert_eq!(refreshed.as_deref(), Some("192.168.1.11"));
+        assert_eq!(probe_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_lan_ipv4_cache_misses_share_one_probe() {
+        let resolver = LanIpv4Resolver::new(Duration::from_secs(30));
+        let probe_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let first_count = probe_count.clone();
+        let second_count = probe_count.clone();
+
+        let (first, second) = tokio::join!(
+            resolver.resolve_with_probe(false, move || {
+                first_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(25));
+                Some("192.168.1.20".to_string())
+            }),
+            resolver.resolve_with_probe(false, move || {
+                second_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some("192.168.1.21".to_string())
+            }),
+        );
+
+        assert_eq!(first, second);
+        assert_eq!(probe_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn lan_ipv4_candidate_rejects_non_lan_addresses() {
         assert!(!lan_ipv4_candidate(Ipv4Addr::new(127, 0, 0, 1)));
@@ -1486,7 +1731,7 @@ mod tests {
                 .await
                 .expect_err("tracked work should make the first stop fail");
             assert!(first_error.contains("remained after forced cancellation"));
-            assert!(bridge_status().await.expect("bridge status").running);
+            assert!(bridge_status(None).await.expect("bridge status").running);
             assert!(bridge_start(Some("127.0.0.1".to_string()), Some(0))
                 .await
                 .expect_err("start must not replace an incompletely stopped generation")
@@ -2035,6 +2280,7 @@ mod tests {
             project_path: "/tmp/ThreadTerm".to_string(),
             project_name: "ThreadTerm".to_string(),
             worktree_path: None,
+            branch_label: None,
             terminal_type: Some("shell".to_string()),
             command: None,
             created_at: Some(1),
@@ -2117,8 +2363,8 @@ mod tests {
 
         let snapshot = runtime.snapshot_with_enricher(|card| {
             assert!(
-                runtime.card_mirror.try_lock().is_ok(),
-                "snapshot enricher must run after card_mirror is released"
+                runtime.state_mirror.try_lock().is_ok(),
+                "snapshot enricher must run after state_mirror is released"
             );
             card
         });
@@ -2127,13 +2373,78 @@ mod tests {
         let mirrored = runtime
             .mirrored_card_for_pty_with_enricher("lock-scope", |card| {
                 assert!(
-                    runtime.card_mirror.try_lock().is_ok(),
-                    "mirrored-card enricher must run after card_mirror is released"
+                    runtime.state_mirror.try_lock().is_ok(),
+                    "mirrored-card enricher must run after state_mirror is released"
                 );
                 card
             })
             .expect("mirrored card should exist");
         assert_eq!(mirrored.id, "lock-scope");
+    }
+
+    #[test]
+    fn sync_state_keeps_notifications_and_workbench_in_reconnect_snapshot() {
+        let runtime = BridgeRuntime::new();
+        let notification: NotificationEntry = serde_json::from_value(serde_json::json!({
+            "id": "notification-1",
+            "cardId": "state-card",
+            "kind": "waiting",
+            "message": "Input requested",
+            "createdAt": 42,
+            "title": "Waiting for input",
+            "body": "Input requested",
+            "read": false,
+            "routing": {
+                "origin": "pty",
+                "family": "interaction",
+                "episodeKey": "episode-1"
+            }
+        }))
+        .expect("notification fixture should deserialize");
+        let workbench: MobileWorkbenchProjection = serde_json::from_value(serde_json::json!({
+            "generatedAt": 100,
+            "summary": {
+                "attention": 1,
+                "normalRunning": 0,
+                "review": 0,
+                "failed": 0
+            },
+            "attentionItems": [],
+            "executionGroups": [],
+            "rules": {
+                "includeWaiting": true,
+                "includeFailed": true,
+                "includeCompletedReview": true,
+                "stalledEnabled": true,
+                "stalledThresholdMinutes": 15,
+                "stalledExcludedCount": 0
+            },
+            "capabilities": {
+                "openTerminal": true,
+                "respondToStructuredRequest": false,
+                "updateRules": false,
+                "updateNotificationReadState": false
+            }
+        }))
+        .expect("workbench fixture should deserialize");
+
+        runtime.sync_state(
+            vec![fix2_make_card("state-card", false)],
+            vec![notification],
+            Some(workbench),
+        );
+        let snapshot = runtime.snapshot();
+
+        assert_eq!(snapshot.cards[0].id, "state-card");
+        assert_eq!(snapshot.notifications[0].id, "notification-1");
+        assert_eq!(
+            snapshot
+                .workbench
+                .as_ref()
+                .map(|projection| projection.generated_at),
+            Some(100)
+        );
+        assert!(!snapshot.warming_up);
     }
 
     #[test]

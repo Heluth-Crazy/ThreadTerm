@@ -12,7 +12,7 @@
  *   • In web/browser mode where Tauri isn't available, no OS toast is shown
  *     but the store still receives the entry.
  */
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import {
   isPermissionGranted,
   requestPermission,
@@ -23,6 +23,7 @@ import { useTerminalStore } from '../../stores/terminalStore';
 import type { NotificationEntry } from '../../types/terminal';
 import { invoke, isTauriEnv } from '../../lib/tauri-bridge';
 import { logger } from '../../lib/logger';
+import { OsNotificationCoordinator } from '../../lib/osNotificationPolicy';
 import i18n from '../../i18n/config';
 import { openNotificationTarget } from './notificationTarget';
 import { describeCardSource, formatCardSourceLabel } from './notificationSource';
@@ -41,10 +42,6 @@ function hashCardIdToNotifId(cardId: string): number {
 }
 
 export function NotificationBridge(): null {
-  // Track which notification ids we've already sent so we don't replay them
-  // on React effect re-runs (StrictMode, fast refresh, persistence rehydrate).
-  const sentIdsRef = useRef<Set<string>>(new Set());
-
   // 1. Request permission once on mount.
   useEffect(() => {
     let cancelled = false;
@@ -95,19 +92,31 @@ export function NotificationBridge(): null {
 
   // 3. Whenever a new notification lands in the store, dispatch it to the OS.
   useEffect(() => {
+    const coordinator = new OsNotificationCoordinator({
+      getEnvironment: () => {
+        const state = useTerminalStore.getState();
+        return {
+          enabled: state.osNotificationsEnabled,
+          foreground:
+            document.visibilityState === 'visible' && document.hasFocus(),
+          focusedCardId: state.focusedCardId,
+        };
+      },
+      dispatch: dispatchOsNotification,
+    });
     const unsub = useTerminalStore.subscribe((state, prev) => {
       if (state.notifications === prev.notifications) return;
       // find entries present in `state.notifications` but not in `prev.notifications`
       const prevIds = new Set(prev.notifications.map((n) => n.id));
       for (const n of state.notifications) {
         if (prevIds.has(n.id)) continue;
-        if (sentIdsRef.current.has(n.id)) continue;
-        if (!state.osNotificationsEnabled) continue;
-        sentIdsRef.current.add(n.id);
-        void dispatchOsNotification(n);
+        coordinator.accept(n);
       }
     });
-    return unsub;
+    return () => {
+      unsub();
+      coordinator.dispose();
+    };
   }, []);
 
   // 4. Periodic purge of read notifications older than 2 hours so the bell
@@ -155,7 +164,6 @@ async function dispatchOsNotification(n: NotificationEntry): Promise<void> {
       body,
       // `extra` is forwarded to the onAction callback so we can round-trip cardId.
       // This is an unknown field on `Options` but tolerated by the plugin.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ...( { extra: { cardId: n.cardId } } as any ),
     });
   } catch (error) {

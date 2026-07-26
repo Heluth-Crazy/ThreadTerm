@@ -1,6 +1,12 @@
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  deriveAttentionItems,
+  deriveWorkbenchSummary,
+} from '../../lib/workbench/deriveAttentionItems';
+import { deriveExecutionGroups } from '../../lib/workbench/deriveExecutionGroups';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { DEFAULT_WORKBENCH_RULES } from '../../stores/workbenchStore';
 import {
   TerminalEventBridge,
   getTerminalEventBridgeDiagnostics,
@@ -18,6 +24,7 @@ const bridgeMocks = vi.hoisted(() => {
   return {
     listeners,
     headlessIds: new Set<string>(),
+    headlessPreviewById: new Map<string, string>(),
     pty: {
       getAllSessionStates: vi.fn(),
       attachSnapshot: vi.fn((_id: string): Promise<unknown> => Promise.resolve(null)),
@@ -43,26 +50,40 @@ const bridgeMocks = vi.hoisted(() => {
   };
 });
 
+const loggerMocks = vi.hoisted(() => ({
+  warn: vi.fn(),
+}));
+
 vi.mock('../../lib/tauri-bridge', () => ({
   isTauriEnv: () => true,
   pty: bridgeMocks.pty,
 }));
 
 vi.mock('./headlessPreview', () => ({
-  feedHeadless: vi.fn((_id: string, data: string, onRendered: (preview: string) => void) => {
+  feedHeadless: vi.fn((_id: string, data: string, onRendered: () => void) => {
     bridgeMocks.headlessIds.add(_id);
-    onRendered(data);
+    bridgeMocks.headlessPreviewById.set(_id, data);
+    onRendered();
   }),
+  readHeadlessPreview: vi.fn((id: string) => bridgeMocks.headlessPreviewById.get(id) ?? ''),
   disposeHeadless: vi.fn((id: string) => {
     bridgeMocks.headlessIds.delete(id);
+    bridgeMocks.headlessPreviewById.delete(id);
   }),
   disposeAllHeadless: vi.fn(() => {
     bridgeMocks.headlessIds.clear();
+    bridgeMocks.headlessPreviewById.clear();
   }),
   getHeadlessPreviewDiagnostics: vi.fn(() => ({
     activeCount: bridgeMocks.headlessIds.size,
     cardIds: Array.from(bridgeMocks.headlessIds),
   })),
+}));
+
+vi.mock('../../lib/logger', () => ({
+  logger: {
+    warn: loggerMocks.warn,
+  },
 }));
 
 function resetStore() {
@@ -102,9 +123,11 @@ describe('TerminalEventBridge status reconciliation', () => {
     bridgeMocks.listeners.state = undefined;
     bridgeMocks.listeners.exit = undefined;
     bridgeMocks.listeners.attention = undefined;
-    bridgeMocks.headlessIds.clear();
+  bridgeMocks.headlessIds.clear();
+  bridgeMocks.headlessPreviewById.clear();
     bridgeMocks.pty.getAllSessionStates.mockResolvedValue({});
     bridgeMocks.pty.attachSnapshot.mockResolvedValue(null);
+    loggerMocks.warn.mockReset();
   });
 
   afterEach(() => {
@@ -297,7 +320,93 @@ describe('TerminalEventBridge status reconciliation', () => {
     expect(state.notifications).toHaveLength(1);
     expect(state.notifications[0]?.kind).toBe('completed');
     expect(state.notifications[0]?.body).toContain('done from agent');
+    expect(state.notifications[0]?.routing).toMatchObject({
+      origin: 'reply',
+      family: 'completion',
+      episodeKey: `completion:${id}:1`,
+    });
     expect(state.getCardById(id)?.unread).toBe(true);
+
+    const attentionItems = deriveAttentionItems({
+      cards: state.cards,
+      notifications: state.notifications,
+      supervisorAlerts: [],
+      codexRequests: [],
+      rules: DEFAULT_WORKBENCH_RULES,
+      now: now.value,
+    });
+
+    expect(attentionItems).toEqual([
+      expect.objectContaining({
+        cardId: id,
+        kind: 'review',
+        sourceKind: 'notification',
+      }),
+    ]);
+    expect(deriveWorkbenchSummary(state.cards, attentionItems)).toMatchObject({
+      normalRunning: 0,
+      review: 1,
+    });
+    expect(deriveExecutionGroups(state.cards, attentionItems)).toEqual([
+      expect.objectContaining({
+        cardIds: [id],
+        status: 'review',
+      }),
+    ]);
+  });
+
+  it('bounds output queued during snapshot failure and recovers from the authoritative screen', async () => {
+    const id = createCard();
+    const snapshot = deferred<{
+      ptyId: string;
+      data: string;
+      seq: number;
+      rows: number;
+      cols: number;
+      cursorRow: number;
+      cursorCol: number;
+    } | null>();
+    bridgeMocks.pty.getAllSessionStates.mockResolvedValue({ [id]: 'Running' });
+    bridgeMocks.pty.attachSnapshot.mockReturnValue(snapshot.promise);
+
+    render(<TerminalEventBridge />);
+    await waitFor(() => expect(bridgeMocks.listeners.output).toBeDefined());
+
+    const oneMiB = 'x'.repeat(1024 * 1024);
+    act(() => {
+      for (let seq = 1; seq <= 6; seq += 1) {
+        bridgeMocks.listeners.output?.({ id, data: oneMiB, seq });
+      }
+    });
+
+    expect(getTerminalEventBridgeDiagnostics()).toMatchObject({
+      pendingBackgroundOutputCount: 4,
+      pendingBackgroundOutputBytes: 4 * 1024 * 1024,
+      backgroundOutputGapCount: 2,
+    });
+    expect(loggerMocks.warn).toHaveBeenCalled();
+
+    await act(async () => {
+      snapshot.resolve({
+        ptyId: id,
+        data: 'authoritative screen',
+        seq: 6,
+        rows: 24,
+        cols: 80,
+        cursorRow: 1,
+        cursorCol: 1,
+      });
+    });
+
+    await waitFor(() => {
+      expect(useTerminalStore.getState().getCardById(id)?.lastReplyPreview)
+        .toBe('authoritative screen');
+      expect(getTerminalEventBridgeDiagnostics()).toMatchObject({
+        pendingBackgroundOutputCount: 0,
+        pendingBackgroundOutputBytes: 0,
+        backgroundOutputGapCount: 2,
+      });
+    });
   });
 
   it('uses provider-specific copy when an AI CLI is missing', async () => {
@@ -322,6 +431,60 @@ describe('TerminalEventBridge status reconciliation', () => {
     expect(notification?.title).toContain('CLI');
     expect(notification?.body).toContain('PATH');
     expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(true);
+  });
+
+  it('dedupes a PTY prompt by generation and fingerprint, then rearms semantically', async () => {
+    const id = createCard();
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(bridgeMocks.listeners.attention).toBeDefined();
+    });
+
+    act(() => {
+      bridgeMocks.listeners.attention?.({
+        ptyId: id,
+        type: 'waiting',
+        message: 'Agent needs your input',
+        fingerprint: 'Continue? [y/n]',
+      });
+      bridgeMocks.listeners.attention?.({
+        ptyId: id,
+        type: 'waiting',
+        message: 'Agent needs your input',
+        fingerprint: 'Continue? [y/n]',
+      });
+    });
+    expect(useTerminalStore.getState().notifications).toHaveLength(1);
+
+    act(() => {
+      bridgeMocks.listeners.attention?.({
+        ptyId: id,
+        type: 'waiting',
+        message: 'Agent needs your input',
+        fingerprint: 'Approve command? [y/n]',
+      });
+    });
+    expect(useTerminalStore.getState().notifications).toHaveLength(2);
+
+    act(() => {
+      useTerminalStore.getState().recordUserSubmit(id, 'y');
+      bridgeMocks.listeners.attention?.({
+        ptyId: id,
+        type: 'waiting',
+        message: 'Agent needs your input',
+        fingerprint: 'Continue? [y/n]',
+      });
+    });
+
+    const state = useTerminalStore.getState();
+    expect(state.notifications).toHaveLength(3);
+    expect(state.notifications[0]?.routing).toEqual({
+      origin: 'pty',
+      family: 'interaction',
+      episodeKey: `interaction:${id}:1`,
+      fingerprint: 'waiting:continue? [y/n]',
+    });
   });
 
   it('pushes a notification when auto restart reaches its retry limit', async () => {
@@ -645,7 +808,7 @@ describe('TerminalEventBridge status reconciliation', () => {
 
   it('ignores a delayed headless callback after auto-restart replaces the PTY', async () => {
     const id = createCard();
-    let renderOldOutput: ((preview: string) => void) | undefined;
+    let renderOldOutput: (() => void) | undefined;
     vi.mocked(feedHeadless).mockImplementationOnce((cardId, _data, onRendered) => {
       bridgeMocks.headlessIds.add(cardId);
       renderOldOutput = onRendered;
@@ -667,7 +830,7 @@ describe('TerminalEventBridge status reconciliation', () => {
 
     act(() => {
       bridgeMocks.listeners.output?.({ id: replacementId!, data: 'new output', seq: 91 });
-      renderOldOutput?.('stale preview');
+      renderOldOutput?.();
     });
 
     await waitFor(() => {
@@ -700,6 +863,8 @@ describe('TerminalEventBridge status reconciliation', () => {
       lastProcessedOutputSeqCount: 0,
       autoRestartTimerCount: 0,
       pendingBackgroundOutputCount: 0,
+      pendingBackgroundOutputBytes: 0,
+      backgroundOutputGapCount: 0,
     });
   });
 });

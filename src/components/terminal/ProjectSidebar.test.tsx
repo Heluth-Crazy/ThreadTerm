@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BranchRow, WorktreeInfo } from '../../lib/tauri-bridge';
 import { useTerminalStore } from '../../stores/terminalStore';
@@ -104,6 +104,32 @@ describe('ProjectSidebar branch worktrees', () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it('keeps primary navigation limited to Workbench, All terminals, and New terminal', () => {
+    const onSelectPrimaryView = vi.fn();
+    const onCreateTerminal = vi.fn();
+
+    render(
+      <ProjectSidebar
+        primaryView="workbench"
+        onSelectPrimaryView={onSelectPrimaryView}
+        onCreateTerminal={onCreateTerminal}
+      />,
+    );
+
+    const primaryNavigation = screen.getByRole('group', {
+      name: 'Primary navigation',
+    });
+    expect(within(primaryNavigation).getAllByRole('button')).toHaveLength(3);
+
+    fireEvent.click(within(primaryNavigation).getByText('Workbench'));
+    fireEvent.click(within(primaryNavigation).getByText('All terminals'));
+    fireEvent.click(within(primaryNavigation).getByText('New terminal'));
+
+    expect(onSelectPrimaryView).toHaveBeenNthCalledWith(1, 'workbench');
+    expect(onSelectPrimaryView).toHaveBeenNthCalledWith(2, 'terminals');
+    expect(onCreateTerminal).toHaveBeenCalledTimes(1);
   });
 
   it('opens a shell terminal with the selected existing branch worktree path from the row action', () => {
@@ -238,6 +264,34 @@ describe('ProjectSidebar branch worktrees', () => {
 
     expect(branchHookMock.refresh).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('sidebar.branches')).toBeNull();
+  });
+
+  it('shows and clears the branch refresh spinner when loading changes', () => {
+    useTerminalStore.getState().createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+    branchHookMock.branches = [
+      baseBranch({
+        branch: 'main',
+        isCurrent: true,
+        worktreePath: '/repo/threadterm',
+        isMainWorktree: true,
+      }),
+    ];
+
+    const view = render(<ProjectSidebar />);
+    const refreshButton = screen.getByTitle('sidebar.refreshWorktrees');
+    expect(refreshButton.querySelector('svg')?.getAttribute('class')).not.toContain('animate-spin');
+
+    branchHookMock.loadingByPath['/repo/threadterm'] = true;
+    view.rerender(<ProjectSidebar />);
+    expect(refreshButton.querySelector('svg')?.getAttribute('class')).toContain('animate-spin');
+
+    branchHookMock.loadingByPath['/repo/threadterm'] = false;
+    view.rerender(<ProjectSidebar />);
+    expect(refreshButton.querySelector('svg')?.getAttribute('class')).not.toContain('animate-spin');
   });
 
   it('keeps branch action icons visible without hover and marks the current branch inline', () => {

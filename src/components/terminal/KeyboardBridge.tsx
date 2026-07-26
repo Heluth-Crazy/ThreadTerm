@@ -123,8 +123,10 @@ export function KeyboardBridge(): null {
       if (mod && (e.key === 'w' || e.key === 'W')) {
         e.preventDefault();
         e.stopPropagation();
-        const { focusedCardId, removeCard } = s.getState();
-        if (focusedCardId) removeCard(focusedCardId);
+        const { focusedCardId } = s.getState();
+        if (focusedCardId) {
+          void window.__terminalManager?.requestRemoveCard(focusedCardId);
+        }
         return;
       }
 

@@ -6,8 +6,7 @@
     "main",
     "settings",
     "selector",
-    "float",
-    "pet"
+    "float"
   ],
   "permissions": [
     "core:default",

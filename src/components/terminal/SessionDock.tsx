@@ -222,16 +222,16 @@ export function SessionDock({
         'flex flex-col bg-background/95 shadow-studio backdrop-blur-2xl transition-all duration-150 ease-out',
         variant === 'panel'
           ? 'relative h-full w-full'
-          : 'absolute bottom-0 right-0 top-0 z-[35] w-64 border-l border-white/10',
+          : 'absolute bottom-0 right-0 top-0 z-[35] w-64 border-l border-border',
         visible
           ? 'translate-x-0 opacity-100 pointer-events-auto'
           : 'translate-x-full opacity-0 pointer-events-none',
       ].join(' ')}
     >
-      <div className="flex shrink-0 items-start justify-between gap-2 border-b border-white/10 px-3 py-3">
+      <div className="flex shrink-0 items-start justify-between gap-2 border-b border-border px-3 py-3">
         <div className="min-w-0">
           <h2 className="truncate text-xs font-semibold text-foreground">{t('dock.title')}</h2>
-          <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
             {t('dock.shortcut')}
           </p>
         </div>
@@ -240,7 +240,7 @@ export function SessionDock({
           onClick={onClose}
           title={t('dock.close')}
           aria-label={t('dock.close')}
-          className="rounded-[var(--radius-sm)] p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          className="rounded-sm p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
         >
           <X className="h-3.5 w-3.5" />
         </button>
@@ -304,18 +304,18 @@ const SessionDockRow = memo(function SessionDockRow({
       onClick={() => onSelect(card.id)}
       onMouseEnter={() => onHighlight(index)}
       className={[
-        'w-full rounded-[var(--radius-md)] border px-2 py-2 text-left transition-colors',
+        'w-full rounded-md border px-2 py-2 text-left transition-colors',
         isCurrent
           ? 'border-primary/35 bg-primary/10'
           : isHighlighted
-            ? 'border-white/20 bg-accent/70'
-            : 'border-transparent hover:border-white/10 hover:bg-accent/70',
+            ? 'border-border bg-accent/70'
+            : 'border-transparent hover:border-border hover:bg-accent/70',
       ].join(' ')}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           {index < 9 && (
-            <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded bg-muted px-1 font-mono text-[9px] text-muted-foreground">
+            <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded bg-muted px-1 font-mono text-[11px] text-muted-foreground">
               {index + 1}
             </span>
           )}
@@ -324,26 +324,26 @@ const SessionDockRow = memo(function SessionDockRow({
             {card.projectName}
           </span>
           {chip && (
-            <span className="max-w-[45%] shrink-0 truncate rounded bg-muted px-1 py-0.5 text-[9px] font-medium text-muted-foreground">
+            <span className="max-w-[45%] shrink-0 truncate rounded bg-muted px-1 py-0.5 text-[11px] font-medium text-muted-foreground">
               {chip}
             </span>
           )}
         </div>
         {isCurrent && (
-          <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-0.5 text-[9px] font-medium text-primary">
+          <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-0.5 text-[11px] font-medium text-primary">
             {t('dock.current')}
           </span>
         )}
       </div>
 
       <div className="mt-1 flex items-center justify-between gap-2">
-        <span className="truncate text-[10px] text-muted-foreground">
+        <span className="truncate text-[11px] text-muted-foreground">
           {t(`types.${card.terminalType}`, typeMeta.label)}
         </span>
         <CardStatusBadge status={card.status} />
       </div>
 
-      <div className="mt-1 flex min-w-0 items-center justify-between gap-2 text-[10px] text-muted-foreground">
+      <div className="mt-1 flex min-w-0 items-center justify-between gap-2 text-[11px] text-muted-foreground">
         <span className="truncate">{pathBasename(card.projectPath)}</span>
         <span className="shrink-0">{formatRelative(card.lastActivity, t)}</span>
       </div>

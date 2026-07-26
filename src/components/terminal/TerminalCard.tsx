@@ -17,6 +17,7 @@ import { useTranslation } from 'react-i18next';
 import { FolderGit2 } from 'lucide-react';
 import type { TerminalCard as TerminalCardType } from '../../types/terminal';
 import { MAX_PINNED_CARDS, useTerminalStore } from '../../stores/terminalStore';
+import { AttentionDot } from './AttentionDot';
 import {
   getAiSessionExportFilename,
   renderAiSessionMarkdown,
@@ -221,18 +222,13 @@ export const TerminalCardComponent = memo(function TerminalCardComponent({
       onMouseEnter={() => setTimelineOpen(true)}
       onMouseLeave={() => setTimelineOpen(false)}
       className={[
-        'relative flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius)] border border-border/70 bg-card/95 shadow-sm transition-colors duration-150 hover:border-border',
+        'relative flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border/70 bg-card/95 shadow-sm transition-colors duration-150 hover:border-border',
         isFocused ? 'ring-2 ring-primary/40' : '',
         card.unread ? 'ring-1 ring-amber-400/30' : '',
         highlighted ? 'notification-locate-pulse' : '',
       ].join(' ')}
     >
-      {card.unread && (
-        <span
-          aria-hidden="true"
-          className="absolute right-3 top-3 h-2 w-2 rounded-full border border-amber-200 bg-amber-500 shadow-[0_0_0_3px_rgba(245,158,11,0.14)]"
-        />
-      )}
+      {card.unread && <AttentionDot className="absolute right-3 top-3" />}
 
       <CardHeader
         card={card}
@@ -247,7 +243,7 @@ export const TerminalCardComponent = memo(function TerminalCardComponent({
         onCancelEdit={() => setEditingName(false)}
       />
 
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-white/5 bg-white/5 px-3 py-1.5 text-[10px] text-muted-foreground backdrop-blur-sm">
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-border bg-card/80 px-3 py-1.5 text-[11px] text-muted-foreground backdrop-blur-sm">
         <FolderGit2 className="h-3 w-3" />
         <span className="truncate">{t('card.worktree', { path: worktreeLabel })}</span>
       </div>
@@ -290,7 +286,7 @@ export const TerminalCardComponent = memo(function TerminalCardComponent({
           initial={reduceMotion ? { opacity: 1, y: 0 } : { opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: reduceMotion ? 0 : 0.12 }}
-          className="pointer-events-none absolute inset-x-0 bottom-10 z-20 border-t border-white/10/40 bg-background/95 px-3 py-1.5 text-[10px] text-muted-foreground shadow-[0_-10px_24px_rgba(0,0,0,0.08)] backdrop-blur"
+          className="pointer-events-none absolute inset-x-0 bottom-10 z-20 border-t border-border bg-background/95 px-3 py-1.5 text-[11px] text-muted-foreground shadow-[0_-10px_24px_rgba(0,0,0,0.08)] backdrop-blur"
         >
           <div className="mb-0.5 flex items-center gap-1 font-medium">
             <span>{t('card.recent')}</span>
@@ -298,7 +294,7 @@ export const TerminalCardComponent = memo(function TerminalCardComponent({
           <ul className="space-y-0.5">
             {recentEvents.map((ev, i) => (
               <li key={i} className="flex items-baseline gap-2">
-                <span className="shrink-0 text-[9px] text-muted-foreground/70">
+                <span className="shrink-0 text-[11px] text-muted-foreground/70">
                   {formatRelative(ev.at, t)}
                 </span>
                 <span className="truncate">{ev.summary}</span>

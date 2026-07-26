@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "windows")]
 use std::sync::{Mutex, MutexGuard};
 
-use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::hotkey::{register_default_shortcuts, register_hotkey, unregister_all_hotkeys};
 #[cfg(target_os = "macos")]
@@ -406,7 +406,9 @@ pub fn overlay_save_float_bounds(bounds: FloatBounds) -> Result<(), String> {
         .unwrap_or_else(|e| e.into_inner())
         .float_bounds = Some(bounds.clone());
     let json = serde_json::to_string(&bounds).unwrap_or_default();
-    let _ = crate::db::set_setting("overlay.float_bounds", &json);
+    if let Err(error) = crate::db::set_setting("overlay.float_bounds", &json) {
+        tracing::warn!(%error, "failed to persist overlay float bounds");
+    }
     Ok(())
 }
 
@@ -509,22 +511,6 @@ pub fn overlay_update_shortcut(
         "A" => settings.hotkey_a = accelerator,
         "B" => settings.hotkey_b = accelerator,
         _ => {}
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn overlay_move_float(app: AppHandle, x: f64, y: f64) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window(FLOAT_LABEL) {
-        let _ = w.set_position(LogicalPosition::new(x, y));
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn overlay_resize_float(app: AppHandle, w: f64, h: f64) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window(FLOAT_LABEL) {
-        let _ = win.set_size(LogicalSize::new(w, h));
     }
     Ok(())
 }

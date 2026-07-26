@@ -115,6 +115,45 @@ describe('WorkspacePanel', () => {
     expect(screen.queryByText(/\+changed/)).toBeNull();
   });
 
+  it('does not re-query Git merely because the selected change row changed', async () => {
+    render(
+      <WorkspacePanel
+        rootCwd="/repo"
+        onOpenFile={vi.fn()}
+        onOpenDiff={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Changes'));
+    fireEvent.click(await screen.findByText('App.tsx'));
+
+    await waitFor(() => expect(mocks.gitStatus).toHaveBeenCalledTimes(1));
+  });
+
+  it('does query the new project when the workspace root changes', async () => {
+    const view = render(
+      <WorkspacePanel
+        rootCwd="/repo"
+        onOpenFile={vi.fn()}
+        onOpenDiff={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByText('Changes'));
+    await screen.findByText('App.tsx');
+    expect(mocks.gitStatus).toHaveBeenCalledWith('/repo');
+
+    view.rerender(
+      <WorkspacePanel
+        rootCwd="/repo-two"
+        onOpenFile={vi.fn()}
+        onOpenDiff={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(mocks.gitStatus).toHaveBeenCalledWith('/repo-two'));
+    expect(mocks.gitStatus).toHaveBeenCalledTimes(2);
+  });
+
   it('shows cached file entries immediately when a remount refresh is still pending', async () => {
     const first = render(
       <WorkspacePanel

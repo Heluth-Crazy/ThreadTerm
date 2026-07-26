@@ -15,9 +15,13 @@
   },
   "sidebar": {
     "projects": "项目",
+    "primaryNavigation": "主导航",
+    "workbench": "工作台",
+    "projectFilter": "项目筛选",
+    "allProjects": "所有项目",
     "expand": "展开侧栏",
     "collapse": "收起侧栏",
-    "allTerminals": "全部终端",
+    "allTerminals": "所有终端",
     "mobileAccess": "移动端",
     "openDir": "在 Finder/资源管理器中打开",
     "worktrees": "Worktree",
@@ -36,6 +40,125 @@
     "bareWorktree": "bare",
     "emptyLine1": "还没有项目。",
     "emptyLine2": "创建一个终端即可开始。"
+  },
+  "workbench": {
+    "title": "工作台",
+    "subtitle": "汇总当前终端中的确定性本地信号",
+    "searchLabel": "搜索工作台",
+    "searchPlaceholder": "搜索项目、分支或输出",
+    "summary": {
+      "attention": "需要处理",
+      "normalRunning": "正常运行",
+      "review": "完成待查看",
+      "failed": "异常未恢复"
+    },
+    "attention": {
+      "title": "需要处理",
+      "count": "{{count}} 项"
+    },
+    "filters": {
+      "label": "筛选注意项",
+      "all": "全部",
+      "approval": "权限",
+      "waiting": "等待",
+      "failed": "异常",
+      "review": "待查看",
+      "stalled": "无进展"
+    },
+    "groups": {
+      "title": "执行上下文",
+      "subtitle": "按项目和 worktree 聚合，不推测任务"
+    },
+    "group": {
+      "terminals": "{{count}} 个终端",
+      "attention": "{{count}} 项需处理"
+    },
+    "groupStatus": {
+      "failed": "异常",
+      "attention": "需处理",
+      "stalled": "无进展",
+      "running": "运行中",
+      "review": "待查看",
+      "idle": "空闲"
+    },
+    "kind": {
+      "approval": "等待批准",
+      "waiting_input": "等待输入",
+      "failed": "执行异常",
+      "review": "结果待查看",
+      "stalled": "长时间无进展"
+    },
+    "reason": {
+      "structured_approval": "结构化请求正在等待批准。",
+      "structured_input": "结构化请求需要你的输入。",
+      "supervisor_prompt": "终端监督器检测到交互式提示。",
+      "waiting_state": "终端当前正在等待输入。",
+      "failed_state": "终端执行失败，且没有待执行的自动重启。",
+      "completed_unread": "终端已完成，但结果尚未查看。",
+      "stalled_running": "Agent 终端在设定时间内没有新活动。"
+    },
+    "source": {
+      "structured_request": "结构化请求",
+      "supervisor_alert": "监督器提示",
+      "notification": "终端通知",
+      "terminal_state": "终端状态"
+    },
+    "action": {
+      "openRequest": "查看请求",
+      "openResult": "查看结果",
+      "openTerminal": "打开终端",
+      "details": "详情",
+      "viewAllTerminals": "查看所有终端"
+    },
+    "empty": {
+      "noTerminalsTitle": "还没有终端",
+      "noTerminalsBody": "创建终端后，工作台会开始汇总本地状态信号。",
+      "noScopeTerminalsTitle": "当前范围没有终端",
+      "noScopeTerminalsBody": "请选择其他项目或工作树，或在当前范围新建终端。",
+      "noSearchResults": "没有注意项匹配当前搜索。",
+      "noAttention": "当前范围内没有需要你处理的事项。",
+      "noActiveContexts": "当前范围内没有活动执行上下文。"
+    },
+    "notifications": {
+      "approvalTitle": "Codex 需要批准",
+      "inputTitle": "Codex 需要你的输入",
+      "openRequest": "打开 Codex 会话以查看此请求。"
+    },
+    "rules": {
+      "title": "注意力规则",
+      "localOnly": "这些本地规则只决定工作台显示什么，不会向终端发送输入或重启进程。",
+      "includeWaiting": "等待输入",
+      "includeWaitingHint": "纳入结构化请求和终端交互提示。",
+      "includeFailed": "异常未恢复",
+      "includeFailedHint": "自动重启待执行时暂不显示失败。",
+      "includeReview": "完成待查看",
+      "includeReviewHint": "纳入已完成但结果未读的终端。",
+      "stalled": "无进展检测",
+      "stalledHint": "默认关闭；启用后可排除 dev server、watcher 等长期运行终端。",
+      "threshold": "无进展阈值",
+      "minutes": "{{count}} 分钟",
+      "exclusions": "排除长期运行会话",
+      "retryNote": "自动重启上限仍由每张终端卡单独配置；工作台不会创建第二套重试策略。",
+      "reset": "重置规则"
+    },
+    "detail": {
+      "settings": "本地设置",
+      "title": "工作台详情",
+      "unavailable": "条目不可用",
+      "sourceGone": "来源状态已经变化，此条目不再处于活动状态。",
+      "readonly": "此处只读，请在终端内执行操作。",
+      "source": "来源",
+      "reason": "出现原因",
+      "context": "上下文",
+      "observed": "发现时间",
+      "activity": "终端活动",
+      "notifications": "通知",
+      "status": "状态",
+      "path": "路径",
+      "lastActivity": "最近活动",
+      "latestSignal": "最近真实信号",
+      "terminals": "终端"
+    }
   },
   "grid": {
     "emptyTitle": "还没有终端",
@@ -218,7 +341,10 @@
     "cliOnly": "CLI 会话",
     "cliOnlyDescription": "{{cli}} 当前作为 CLI 会话运行，暂未跟踪原生恢复绑定。",
     "customCommand": "自定义命令",
-    "customCommandDescription": "这张 AI 卡片运行自定义命令，而不是默认 provider 命令。"
+    "customCommandDescription": "这张 AI 卡片运行自定义命令，而不是默认 provider 命令。",
+    "resolvingHistory": "正在解析原始 Codex 历史会话…",
+    "historyUnavailable": "无法解析原始 Codex 历史会话。已保留原绑定，未启动新会话。",
+    "historyResolutionFailed": "ThreadTerm 无法验证原始 Codex 历史会话，未启动新会话。"
   },
   "aiThread": {
     "empty": "向 AI 发问 — 回答会显示在这里。",

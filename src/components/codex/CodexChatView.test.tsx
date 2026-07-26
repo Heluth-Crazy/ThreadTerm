@@ -1,16 +1,11 @@
-import { act, cleanup, render, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TerminalCard } from '../../types/terminal';
-import type {
-  CodexAppDisconnectedPayload,
-  CodexAppNotificationPayload,
-  CodexAppRequestPayload,
-} from '../../lib/tauri-bridge';
+import type { CodexAppNotificationPayload } from '../../lib/tauri-bridge';
+import { useCodexRequestStore } from '../../stores/codexRequestStore';
 import { CodexChatView } from './CodexChatView';
 
 type NotificationHandler = (payload: CodexAppNotificationPayload) => void;
-type RequestHandler = (payload: CodexAppRequestPayload) => void;
-type DisconnectHandler = (payload: CodexAppDisconnectedPayload) => void;
 
 const bridgeMocks = vi.hoisted(() => ({
   openCard: vi.fn(),
@@ -21,20 +16,15 @@ const bridgeMocks = vi.hoisted(() => ({
   setGoal: vi.fn(),
   listSkills: vi.fn(),
   onNotification: vi.fn<(callback: NotificationHandler) => Promise<() => void>>(),
-  onRequest: vi.fn<(callback: RequestHandler) => Promise<() => void>>(),
-  onDisconnected: vi.fn<(callback: DisconnectHandler) => Promise<() => void>>(),
   notificationHandlers: [] as NotificationHandler[],
-  requestHandlers: [] as RequestHandler[],
-  disconnectHandlers: [] as DisconnectHandler[],
   notificationUnlisteners: [] as Array<ReturnType<typeof vi.fn>>,
-  requestUnlisteners: [] as Array<ReturnType<typeof vi.fn>>,
-  disconnectUnlisteners: [] as Array<ReturnType<typeof vi.fn>>,
 }));
 
 const storeMocks = vi.hoisted(() => ({
   bindCodexAppThread: vi.fn(),
   recordUserSubmit: vi.fn(),
   updateCardReplyPreview: vi.fn(),
+  removeNotification: vi.fn(),
 }));
 
 const loggerMocks = vi.hoisted(() => ({
@@ -52,8 +42,6 @@ vi.mock('../../lib/tauri-bridge', () => ({
     setGoal: bridgeMocks.setGoal,
     listSkills: bridgeMocks.listSkills,
     onNotification: bridgeMocks.onNotification,
-    onRequest: bridgeMocks.onRequest,
-    onDisconnected: bridgeMocks.onDisconnected,
   },
 }));
 
@@ -104,39 +92,17 @@ function installImmediateListeners() {
     bridgeMocks.notificationUnlisteners.push(unlisten);
     return Promise.resolve(unlisten);
   });
-  bridgeMocks.onRequest.mockImplementation((callback) => {
-    bridgeMocks.requestHandlers.push(callback);
-    const unlisten = vi.fn();
-    bridgeMocks.requestUnlisteners.push(unlisten);
-    return Promise.resolve(unlisten);
-  });
-  bridgeMocks.onDisconnected.mockImplementation((callback) => {
-    bridgeMocks.disconnectHandlers.push(callback);
-    const unlisten = vi.fn();
-    bridgeMocks.disconnectUnlisteners.push(unlisten);
-    return Promise.resolve(unlisten);
-  });
 }
 
 function installDeferredListeners() {
   const notification = deferred<() => void>();
-  const request = deferred<() => void>();
-  const disconnect = deferred<() => void>();
 
   bridgeMocks.onNotification.mockImplementation((callback) => {
     bridgeMocks.notificationHandlers.push(callback);
     return notification.promise;
   });
-  bridgeMocks.onRequest.mockImplementation((callback) => {
-    bridgeMocks.requestHandlers.push(callback);
-    return request.promise;
-  });
-  bridgeMocks.onDisconnected.mockImplementation((callback) => {
-    bridgeMocks.disconnectHandlers.push(callback);
-    return disconnect.promise;
-  });
 
-  return { disconnect, notification, request };
+  return { notification };
 }
 
 async function waitForReady(container: HTMLElement, expectedViews = 1) {
@@ -153,22 +119,11 @@ function emitNotification(payload: CodexAppNotificationPayload) {
   for (const handler of bridgeMocks.notificationHandlers) handler(payload);
 }
 
-function emitRequest(payload: CodexAppRequestPayload) {
-  for (const handler of bridgeMocks.requestHandlers) handler(payload);
-}
-
-function emitDisconnected(payload: CodexAppDisconnectedPayload) {
-  for (const handler of bridgeMocks.disconnectHandlers) handler(payload);
-}
-
 beforeEach(() => {
   vi.resetAllMocks();
   bridgeMocks.notificationHandlers.length = 0;
-  bridgeMocks.requestHandlers.length = 0;
-  bridgeMocks.disconnectHandlers.length = 0;
   bridgeMocks.notificationUnlisteners.length = 0;
-  bridgeMocks.requestUnlisteners.length = 0;
-  bridgeMocks.disconnectUnlisteners.length = 0;
+  useCodexRequestStore.getState().reset();
 
   bridgeMocks.openCard.mockImplementation((input: { cardId: string }) =>
     Promise.resolve({
@@ -195,70 +150,69 @@ afterEach(() => {
 });
 
 describe('CodexChatView listener lifecycle', () => {
-  it('unlistens each resolved listener exactly once during normal cleanup', async () => {
+  it('opens a card once when its newly bound thread is persisted', async () => {
+    const card = makeCard();
+    const view = render(<CodexChatView card={card} />);
+    await waitForReady(view.container);
+
+    await act(async () => {
+      view.rerender(
+        <CodexChatView
+          card={{
+            ...card,
+            codexAppThreadId: 'thread-card-a',
+            codexAppSessionId: 'session-card-a',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(bridgeMocks.openCard).toHaveBeenCalledTimes(1);
+  });
+
+  it('unlistens its card-scoped notification listener exactly once during normal cleanup', async () => {
     const registrations = installDeferredListeners();
     const unlistenNotification = vi.fn();
-    const unlistenRequest = vi.fn();
-    const unlistenDisconnected = vi.fn();
     const view = render(<CodexChatView card={makeCard()} />);
 
     await act(async () => {
       registrations.notification.resolve(unlistenNotification);
-      registrations.request.resolve(unlistenRequest);
-      registrations.disconnect.resolve(unlistenDisconnected);
       await Promise.resolve();
     });
 
     expect(unlistenNotification).not.toHaveBeenCalled();
-    expect(unlistenRequest).not.toHaveBeenCalled();
-    expect(unlistenDisconnected).not.toHaveBeenCalled();
 
     view.unmount();
     expect(unlistenNotification).toHaveBeenCalledTimes(1);
-    expect(unlistenRequest).toHaveBeenCalledTimes(1);
-    expect(unlistenDisconnected).toHaveBeenCalledTimes(1);
   });
 
-  it('immediately unlistens all three listener types when registration resolves after cleanup', async () => {
+  it('immediately unlistens when notification registration resolves after cleanup', async () => {
     const registrations = installDeferredListeners();
     const unlistenNotification = vi.fn();
-    const unlistenRequest = vi.fn();
-    const unlistenDisconnected = vi.fn();
     const view = render(<CodexChatView card={makeCard()} />);
 
     await waitFor(() => {
       expect(bridgeMocks.onNotification).toHaveBeenCalledTimes(1);
-      expect(bridgeMocks.onRequest).toHaveBeenCalledTimes(1);
-      expect(bridgeMocks.onDisconnected).toHaveBeenCalledTimes(1);
     });
     view.unmount();
 
     await act(async () => {
       registrations.notification.resolve(unlistenNotification);
-      registrations.request.resolve(unlistenRequest);
-      registrations.disconnect.resolve(unlistenDisconnected);
       await Promise.resolve();
     });
 
     expect(unlistenNotification).toHaveBeenCalledTimes(1);
-    expect(unlistenRequest).toHaveBeenCalledTimes(1);
-    expect(unlistenDisconnected).toHaveBeenCalledTimes(1);
   });
 
   it('handles listener registration rejection without an unhandled promise', async () => {
     bridgeMocks.onNotification.mockRejectedValue(new Error('notification listen failed'));
-    bridgeMocks.onRequest.mockRejectedValue(new Error('request listen failed'));
-    bridgeMocks.onDisconnected.mockRejectedValue(new Error('disconnect listen failed'));
 
     render(<CodexChatView card={makeCard()} />);
 
-    await waitFor(() => expect(loggerMocks.warn).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(loggerMocks.warn).toHaveBeenCalledTimes(1));
     expect(loggerMocks.warn.mock.calls.map(([message]) => message)).toEqual(
-      expect.arrayContaining([
-        '[CodexChatView] failed to listen for notification',
-        '[CodexChatView] failed to listen for request',
-        '[CodexChatView] failed to listen for disconnect',
-      ]),
+      ['[CodexChatView] failed to listen for notification'],
     );
   });
 });
@@ -276,7 +230,8 @@ describe('CodexChatView hidden event ingestion', () => {
         raw: null,
       });
     });
-    expect(within(view.container).getByText('hidden delta', { selector: 'pre' })).toBeInTheDocument();
+    expect(within(view.container).queryByText('hidden delta', { selector: 'pre' }))
+      .not.toBeInTheDocument();
 
     act(() => {
       emitNotification({
@@ -287,23 +242,31 @@ describe('CodexChatView hidden event ingestion', () => {
         },
         raw: null,
       });
-      emitRequest({
-        requestId: 'approval-hidden',
-        cardId: 'card-a',
-        method: 'item/commandExecution/requestApproval',
-        params: { command: 'echo hidden approval', cwd: '/repo/card-a' },
-        raw: null,
-      });
+      useCodexRequestStore.getState().ingestRequest(
+        {
+          requestId: 'approval-hidden',
+          cardId: 'card-a',
+          method: 'item/commandExecution/requestApproval',
+          params: { command: 'echo hidden approval', cwd: '/repo/card-a' },
+          raw: null,
+        },
+        'card-a',
+      );
     });
 
-    expect(within(view.container).getByText('hidden complete', { selector: 'pre' })).toBeInTheDocument();
+    expect(within(view.container).queryByText('hidden complete', { selector: 'pre' }))
+      .not.toBeInTheDocument();
     expect(within(view.container).getByText('echo hidden approval')).toBeInTheDocument();
     expect(storeMocks.updateCardReplyPreview).toHaveBeenCalledWith('card-a', 'hidden complete');
 
     act(() => {
-      emitDisconnected({ message: 'hidden app-server disconnected' });
+      useCodexRequestStore.getState().recordDisconnected('hidden app-server disconnected');
     });
     expect(within(view.container).getByText('hidden app-server disconnected')).toBeInTheDocument();
+
+    view.rerender(<CodexChatView card={makeCard()} active />);
+    expect(await within(view.container).findByText('hidden complete', { selector: 'pre' }))
+      .toBeInTheDocument();
   });
 
   it('isolates identical item ids between two card views', async () => {
@@ -334,6 +297,16 @@ describe('CodexChatView hidden event ingestion', () => {
       });
     });
 
+    view.rerender(
+      <>
+        <section data-testid="card-a-view">
+          <CodexChatView card={makeCard('card-a')} active />
+        </section>
+        <section data-testid="card-b-view">
+          <CodexChatView card={makeCard('card-b')} active />
+        </section>
+      </>,
+    );
     const cardAView = within(view.getByTestId('card-a-view'));
     const cardBView = within(view.getByTestId('card-b-view'));
     expect(cardAView.getByText('only card A', { selector: 'pre' })).toBeInTheDocument();
@@ -359,8 +332,49 @@ describe('CodexChatView hidden event ingestion', () => {
       }
     });
 
-    const streamedBody = view.container.querySelector('pre');
+    view.rerender(<CodexChatView card={makeCard()} active />);
+    const streamedBody = await waitFor(() => {
+      const body = view.container.querySelector('pre');
+      expect(body).not.toBeNull();
+      return body;
+    });
     expect(streamedBody).not.toBeNull();
     expect(streamedBody?.textContent).toBe(expected);
+  });
+
+  it('keeps the existing response payload and clears the request notification after success', async () => {
+    act(() => {
+      useCodexRequestStore.getState().ingestRequest(
+        {
+          requestId: 'approval-response',
+          cardId: 'card-a',
+          method: 'item/commandExecution/requestApproval',
+          params: { command: 'echo approved', cwd: '/repo/card-a' },
+          raw: null,
+        },
+        'card-a',
+      );
+      useCodexRequestStore
+        .getState()
+        .attachNotification('approval-response', 'notification-response');
+    });
+
+    const view = render(<CodexChatView card={makeCard()} active={false} />);
+    await waitForReady(view.container);
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /^(允许|Accept)$/,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(bridgeMocks.respondRequest).toHaveBeenCalledWith(
+        'approval-response',
+        { decision: 'accept' },
+      );
+      expect(useCodexRequestStore.getState().requests).toEqual([]);
+    });
+    expect(storeMocks.removeNotification).toHaveBeenCalledWith('notification-response');
   });
 });

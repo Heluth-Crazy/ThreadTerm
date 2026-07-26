@@ -8,6 +8,7 @@ import {
 
 interface AutoRestartStatusProps {
   card: TerminalCard;
+  /** No visual effect — both call sites render the same pill. Kept so callers type-check. */
   compact?: boolean;
 }
 
@@ -16,7 +17,7 @@ function formatDelay(ms: number): string {
   return `${seconds}s`;
 }
 
-export function AutoRestartStatus({ card, compact = false }: AutoRestartStatusProps) {
+export function AutoRestartStatus({ card }: AutoRestartStatusProps) {
   const { t } = useTranslation('terminal');
   const config = normalizeAutoRestartConfig(card.autoRestart);
   if (!config.enabled && config.history.length === 0 && !config.limitReachedAt) return null;
@@ -54,9 +55,8 @@ export function AutoRestartStatus({ card, compact = false }: AutoRestartStatusPr
     <span
       title={title || t('autoRestart.enabled')}
       className={[
-        'inline-flex min-w-0 items-center gap-1 rounded-full border border-white/10/60 bg-background/70 text-muted-foreground',
-        compact ? 'px-1.5 py-0.5 text-[10px]' : 'px-1.5 py-0.5 text-[10px]',
-        pending ? 'text-amber-600' : config.limitReachedAt ? 'text-red-500' : '',
+        'inline-flex min-w-0 items-center gap-1 rounded-full border border-border bg-background/70 px-1.5 py-0.5 text-[11px] text-muted-foreground',
+        pending ? 'text-warning' : config.limitReachedAt ? 'text-destructive' : '',
       ].join(' ')}
     >
       <RefreshCw className="h-3 w-3 shrink-0" />

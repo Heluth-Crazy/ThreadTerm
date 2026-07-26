@@ -114,4 +114,87 @@ describe('createOutputAcknowledger', () => {
     acknowledger.dispose();
     vi.useRealTimers();
   });
+
+  it('keeps one retry chain and catches up to the newest ACK after repeated failures', async () => {
+    vi.useFakeTimers();
+    const send = vi
+      .fn<(value: OutputAckRequest) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('IPC dropped 1'))
+      .mockRejectedValueOnce(new Error('IPC dropped 2'))
+      .mockRejectedValueOnce(new Error('IPC dropped 3'))
+      .mockResolvedValue(undefined);
+    const acknowledger = createOutputAcknowledger(send, 50);
+
+    acknowledger.ack(request(10));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    acknowledger.ack(request(20));
+    acknowledger.ack(request(40));
+
+    await vi.advanceTimersByTimeAsync(49);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenLastCalledWith(request(40));
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(send).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(send).toHaveBeenCalledTimes(4);
+    expect(send.mock.calls.map(([value]) => value.throughSeq)).toEqual([
+      10,
+      40,
+      40,
+      40,
+    ]);
+    await vi.waitFor(() =>
+      expect(acknowledger.getDiagnostics().pendingCount).toBe(0),
+    );
+
+    acknowledger.dispose();
+    vi.useRealTimers();
+  });
+
+  it('retries one PTY without delaying ACKs for another PTY', async () => {
+    vi.useFakeTimers();
+    let failedPtyAttempts = 0;
+    const send = vi.fn(async (value: OutputAckRequest) => {
+      if (value.id === 'pty-1' && failedPtyAttempts < 2) {
+        failedPtyAttempts += 1;
+        throw new Error('PTY 1 IPC dropped');
+      }
+    });
+    const acknowledger = createOutputAcknowledger(send, 50);
+    const secondPtyRequest = (throughSeq: number): OutputAckRequest => ({
+      ...request(throughSeq),
+      id: 'pty-2',
+    });
+
+    acknowledger.ack(request(10));
+    acknowledger.ack(secondPtyRequest(5));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+
+    acknowledger.ack(secondPtyRequest(8));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(3));
+    expect(send).toHaveBeenLastCalledWith(secondPtyRequest(8));
+
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.waitFor(() =>
+      expect(acknowledger.getDiagnostics().pendingCount).toBe(0),
+    );
+    expect(
+      send.mock.calls
+        .filter(([value]) => value.id === 'pty-1')
+        .map(([value]) => value.throughSeq),
+    ).toEqual([10, 10, 10]);
+    expect(
+      send.mock.calls
+        .filter(([value]) => value.id === 'pty-2')
+        .map(([value]) => value.throughSeq),
+    ).toEqual([5, 8]);
+
+    acknowledger.dispose();
+    vi.useRealTimers();
+  });
 });

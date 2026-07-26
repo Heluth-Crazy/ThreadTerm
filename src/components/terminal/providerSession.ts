@@ -21,11 +21,11 @@ export interface AiCliSessionBadge {
 }
 
 export const AI_CLI_SESSION_BADGE_CLASS: Record<AiCliSessionBadgeTone, string> = {
-  neutral: 'border-slate-500/30 bg-slate-500/10 text-slate-500',
-  info: 'border-sky-500/30 bg-sky-500/10 text-sky-600',
-  success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600',
-  warning: 'border-amber-500/30 bg-amber-500/10 text-amber-600',
-  danger: 'border-red-500/30 bg-red-500/10 text-red-500',
+  neutral: 'border-border bg-muted text-muted-foreground',
+  info: 'border-info/30 bg-info/10 text-info',
+  success: 'border-success/30 bg-success/10 text-success',
+  warning: 'border-warning/30 bg-warning/10 text-warning',
+  danger: 'border-destructive/30 bg-destructive/10 text-destructive',
 };
 
 const AI_CLI_LABELS: Partial<Record<TerminalType, string>> = {

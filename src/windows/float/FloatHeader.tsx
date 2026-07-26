@@ -67,7 +67,7 @@ export function FloatHeader({
             {typeMeta && (
               <span
                 data-tauri-drag-region
-                className="shrink-0 text-[10px] text-muted-foreground"
+                className="shrink-0 text-[11px] text-muted-foreground"
               >
                 · {card ? tTerminal(`types.${card.terminalType}`, typeMeta.label) : typeMeta.label}
               </span>
@@ -76,7 +76,7 @@ export function FloatHeader({
           {card && (
             <div
               data-tauri-drag-region
-              className="truncate text-[10px] text-muted-foreground"
+              className="truncate text-[11px] text-muted-foreground"
             >
               {card.worktreePath || card.projectPath}
             </div>
@@ -85,7 +85,7 @@ export function FloatHeader({
         {card && statusInfo && StatusIcon && (
           <span
             data-tauri-drag-region
-            className={`ml-1 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${statusInfo.chip}`}
+            className={`ml-1 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-medium ${statusInfo.chip}`}
           >
             <StatusIcon
               className={`h-2.5 w-2.5 ${statusInfo.animate ? 'animate-spin' : ''}`}
@@ -101,9 +101,9 @@ export function FloatHeader({
           type="button"
           title={alwaysOnTop ? tOverlay('float.disableAlwaysOnTop') : tOverlay('float.enableAlwaysOnTop')}
           onClick={onToggleAlwaysOnTop}
-          className={`rounded p-1 ${
+          className={`rounded p-1 focus-visible:ring-1 focus-visible:ring-ring/40 ${
             alwaysOnTop
-              ? 'text-primary'
+              ? 'text-primary hover:bg-accent'
               : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
           }`}
         >
@@ -113,7 +113,7 @@ export function FloatHeader({
           type="button"
           title={tOverlay('float.recycleToMain')}
           onClick={onRecycleToMain}
-          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring/40"
         >
           <ChevronsLeftRight className="h-3.5 w-3.5" />
         </button>
@@ -121,7 +121,7 @@ export function FloatHeader({
           type="button"
           title={tOverlay('float.minimize')}
           onClick={onHide}
-          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring/40"
         >
           <Minus className="h-3.5 w-3.5" />
         </button>
@@ -129,7 +129,7 @@ export function FloatHeader({
           type="button"
           title={tOverlay('float.close')}
           onClick={onHide}
-          className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:ring-1 focus-visible:ring-ring/40"
         >
           <X className="h-3.5 w-3.5" />
         </button>

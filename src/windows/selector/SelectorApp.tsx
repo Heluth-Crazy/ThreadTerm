@@ -83,7 +83,7 @@ export function SelectorSurface({
     <ExpandFromCornerShell visible={visible} onBackdropClick={onClose} origin={origin}>
       {/* Top-left hint badge */}
       <div className="pointer-events-none absolute left-6 top-6 select-none text-white/70">
-        <div className="text-[10px] uppercase tracking-widest opacity-60">
+        <div className="text-[11px] uppercase tracking-widest opacity-60">
           {t('selector.title')}
         </div>
         <div className="mt-0.5 font-mono text-xs">

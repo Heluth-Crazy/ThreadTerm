@@ -50,7 +50,7 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());
 
-    builder
+    let run_result = builder
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -106,6 +106,7 @@ pub fn run() {
             notification::window_focus_main,
             provider_sessions::provider_find_recent_session,
             provider_sessions::provider_list_recent_sessions,
+            provider_sessions::provider_resolve_resume_session,
             agent_sessions::provider_list_agent_sessions,
             stats::stats_compute,
             stats::stats_cancel,
@@ -114,10 +115,12 @@ pub fn run() {
             bridge::bridge_start,
             bridge::bridge_stop,
             bridge::bridge_status,
+            bridge::bridge_has_subscribers,
             bridge::bridge_pair_qr,
             bridge::bridge_devices,
             bridge::bridge_revoke_device,
             bridge::bridge_sync_cards,
+            bridge::bridge_sync_state,
             bridge::bridge_resolve_mobile_spawn,
             bridge::bridge_resolve_mobile_activate,
             bridge::bridge_resolve_mobile_close,
@@ -141,9 +144,18 @@ pub fn run() {
             overlay::overlay_set_lightweight_mode,
             overlay::overlay_get_settings,
             overlay::overlay_update_shortcut,
-            overlay::overlay_move_float,
-            overlay::overlay_resize_float,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!());
+    let audit = db::shutdown_audit_writer(std::time::Duration::from_secs(2));
+    if audit.failed > 0 || audit.dropped > 0 || audit.pending > 0 || audit.shutdown_timeouts > 0 {
+        tracing::warn!(
+            written = audit.written,
+            failed = audit.failed,
+            dropped = audit.dropped,
+            pending = audit.pending,
+            shutdown_timeouts = audit.shutdown_timeouts,
+            "Audit writer exited with incomplete metadata"
+        );
+    }
+    run_result.expect("error while running tauri application");
 }

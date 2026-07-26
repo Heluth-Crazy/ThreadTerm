@@ -77,7 +77,7 @@ describe('StatsPanel', () => {
 
     const header = screen.getByRole('heading', { name: 'Token usage' }).parentElement?.parentElement;
 
-    expect(header).toHaveClass('h-[61.5px]', 'shrink-0');
+    expect(header).toHaveClass('h-15', 'shrink-0');
   });
 
   it('shows real, input/output, and cache token totals', () => {

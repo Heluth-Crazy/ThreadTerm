@@ -60,18 +60,8 @@ AI coding tools and long-running project commands are easiest to lose when every
 | Global selector | Press `Cmd/Ctrl + Shift + Space` to show pinned sessions over the current app. |
 | Floating terminal | Pick a pinned card and continue typing in an always-on-top terminal window. |
 | Notifications | Track PTY state changes, keep an in-app notification centre, and dispatch desktop OS notifications for attention-worthy events. |
-| Workflows | Run Warp-compatible YAML workflows from the command palette, apply a project preset from `.threadterm/workflows/`, or import a shared HTTPS workflow URL into a project. |
 | Theme packs | Switch between built-in terminal-inspired themes or import/export custom theme JSON. |
 | Desktop targets | macOS and Windows are first-class targets; Linux may work depending on desktop-environment shortcut support. |
-
-## Workflows
-
-ThreadTerm reads Warp-compatible workflow YAML files from `~/.threadterm/workflows/`
-and from each project's `.threadterm/workflows/` directory. Right-click a project
-in the sidebar to apply its preset, open the preset folder, or import a single
-workflow YAML from an HTTPS URL after previewing the target file and workflows it
-contains. Commit `.threadterm/workflows/` when the team should share those
-presets; add it to `.gitignore` when they should stay local.
 
 ## Pinned Sessions and Selector Modes
 
