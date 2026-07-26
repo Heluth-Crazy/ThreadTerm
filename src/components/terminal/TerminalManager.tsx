@@ -44,14 +44,8 @@ import {
   git,
   isTauriEnv,
   mobileBridge,
-  mobileBridgeHasSubscribers,
 } from '../../lib/tauri-bridge';
 import { openSettingsWindow, type SettingsTab } from '../../lib/settingsWindow';
-import { cardToMobileMeta } from '../../mobile/bridge/cardMeta';
-import {
-  buildMobileWorkbenchProjection,
-  notificationsToMobile,
-} from '../../mobile/bridge/workbenchProjection';
 import { cardMatchesWorktree } from '../../lib/worktreePaths';
 import { clearProjectBranchCache } from './useProjectBranches';
 import { clearProjectWorktreeCache } from './useProjectWorktrees';
@@ -75,11 +69,9 @@ import {
   WorkspaceContentTabStrip,
 } from './WorkspaceContentTabStrip';
 import { useWorkspaceContent } from './useWorkspaceContent';
+import { useMobileWorkbenchSync } from './useMobileWorkbenchSync';
 
 type ViewMode = 'grid' | 'focus';
-const MOBILE_SYNC_DEBOUNCE_MS = 100;
-const MOBILE_SYNC_MAX_WAIT_MS = 1000;
-const MOBILE_SUBSCRIBER_POLL_MS = 1000;
 const TERMINAL_TYPES: TerminalType[] = [
   'shell',
   'claude',
@@ -238,15 +230,6 @@ export function TerminalManager() {
   // refs change.
   const mountedIdsRef = useRef<string[]>([]);
   const [, bumpRender] = useState(0);
-  const [mobileBridgeSyncEnabled, setMobileBridgeSyncEnabled] = useState(false);
-  const [mobileBridgeSyncActive, setMobileBridgeSyncActive] = useState(false);
-  const lastMobileSyncPayloadRef = useRef('');
-  const pendingMobileSyncRef = useRef<{
-    fingerprint: string;
-    args: Parameters<typeof mobileBridge.syncState>;
-  } | null>(null);
-  const mobileSyncTrailingTimerRef = useRef<number | null>(null);
-  const mobileSyncMaxWaitTimerRef = useRef<number | null>(null);
 
   const mountCardInBackground = useCallback((cardId: string) => {
     const current = mountedIdsRef.current;
@@ -407,6 +390,10 @@ export function TerminalManager() {
   });
   const workspaceTabsVisible =
     viewMode === 'focus' && !!focusedCard && workspaceContentTabs.length > 0;
+  const mobileBridgeSyncEnabled = useMobileWorkbenchSync({
+    cards,
+    mobileWorkbenchModel,
+  });
 
   // Mark the focused card as most-recently-used (mounting it if needed and
   // evicting the LRU view when over cap). The focused card itself is the
@@ -415,149 +402,6 @@ export function TerminalManager() {
     if (!focusedCardId) return;
     mountCardInBackground(focusedCardId);
   }, [focusedCardId, mountCardInBackground]);
-
-  useEffect(() => {
-    if (!isTauriEnv()) return;
-    let cancelled = false;
-
-    void import('@tauri-apps/api/window')
-      .then(({ getCurrentWindow }) => {
-        if (cancelled) return;
-        setMobileBridgeSyncEnabled(getCurrentWindow().label === 'main');
-      })
-      .catch(() => {
-        if (!cancelled) setMobileBridgeSyncEnabled(true);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const mobileBridgeCards = useMemo(() => cards.map(cardToMobileMeta), [cards]);
-  const mobileBridgeNotifications = useMemo(
-    () => notificationsToMobile(mobileWorkbenchModel.notifications),
-    [mobileWorkbenchModel.notifications],
-  );
-  const mobileWorkbenchProjection = useMemo(
-    () =>
-      buildMobileWorkbenchProjection({
-        generatedAt: mobileWorkbenchModel.now,
-        summary: mobileWorkbenchModel.summary,
-        attentionItems: mobileWorkbenchModel.attentionItems,
-        groups: mobileWorkbenchModel.groups,
-        rules: mobileWorkbenchModel.rules,
-      }),
-    [
-      mobileWorkbenchModel.attentionItems,
-      mobileWorkbenchModel.groups,
-      mobileWorkbenchModel.now,
-      mobileWorkbenchModel.rules,
-      mobileWorkbenchModel.summary,
-    ],
-  );
-
-  const clearMobileSyncTimers = useCallback(() => {
-    if (mobileSyncTrailingTimerRef.current !== null) {
-      window.clearTimeout(mobileSyncTrailingTimerRef.current);
-      mobileSyncTrailingTimerRef.current = null;
-    }
-    if (mobileSyncMaxWaitTimerRef.current !== null) {
-      window.clearTimeout(mobileSyncMaxWaitTimerRef.current);
-      mobileSyncMaxWaitTimerRef.current = null;
-    }
-  }, []);
-
-  const flushMobileSync = useCallback(() => {
-    clearMobileSyncTimers();
-    const pending = pendingMobileSyncRef.current;
-    pendingMobileSyncRef.current = null;
-    if (!pending || pending.fingerprint === lastMobileSyncPayloadRef.current) return;
-
-    lastMobileSyncPayloadRef.current = pending.fingerprint;
-    void mobileBridge.syncState(...pending.args).catch((error) => {
-      console.warn('[MobileBridge] failed to sync state', error);
-    });
-  }, [clearMobileSyncTimers]);
-
-  useEffect(() => {
-    if (!mobileBridgeSyncEnabled) {
-      setMobileBridgeSyncActive(false);
-      return;
-    }
-    let cancelled = false;
-
-    const refreshSubscriberState = async () => {
-      try {
-        const active = await mobileBridgeHasSubscribers();
-        if (!cancelled) setMobileBridgeSyncActive(active);
-      } catch {
-        if (!cancelled) setMobileBridgeSyncActive(false);
-      }
-    };
-
-    void refreshSubscriberState();
-    const interval = window.setInterval(
-      () => void refreshSubscriberState(),
-      MOBILE_SUBSCRIBER_POLL_MS,
-    );
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [mobileBridgeSyncEnabled]);
-
-  useEffect(() => {
-    if (!mobileBridgeSyncActive) {
-      pendingMobileSyncRef.current = null;
-      clearMobileSyncTimers();
-      lastMobileSyncPayloadRef.current = '';
-      return;
-    }
-    const fingerprint = JSON.stringify({
-      cards: mobileBridgeCards,
-      notifications: mobileBridgeNotifications,
-      workbench: mobileWorkbenchProjection,
-    });
-    if (fingerprint === lastMobileSyncPayloadRef.current) return;
-
-    pendingMobileSyncRef.current = {
-      fingerprint,
-      args: [
-        mobileBridgeCards,
-        mobileBridgeNotifications,
-        mobileWorkbenchProjection,
-      ],
-    };
-    if (mobileSyncTrailingTimerRef.current !== null) {
-      window.clearTimeout(mobileSyncTrailingTimerRef.current);
-    }
-    mobileSyncTrailingTimerRef.current = window.setTimeout(
-      flushMobileSync,
-      MOBILE_SYNC_DEBOUNCE_MS,
-    );
-    if (mobileSyncMaxWaitTimerRef.current === null) {
-      mobileSyncMaxWaitTimerRef.current = window.setTimeout(
-        flushMobileSync,
-        MOBILE_SYNC_MAX_WAIT_MS,
-      );
-    }
-  }, [
-    clearMobileSyncTimers,
-    flushMobileSync,
-    mobileBridgeCards,
-    mobileBridgeNotifications,
-    mobileBridgeSyncActive,
-    mobileWorkbenchProjection,
-  ]);
-
-  useEffect(
-    () => () => {
-      pendingMobileSyncRef.current = null;
-      clearMobileSyncTimers();
-    },
-    [clearMobileSyncTimers],
-  );
 
   useEffect(() => {
     if (!mobileBridgeSyncEnabled) return;
