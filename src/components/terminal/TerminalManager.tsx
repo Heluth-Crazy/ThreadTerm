@@ -38,17 +38,15 @@ import { StatsPanel } from '../stats/StatsPanel';
 import { useStatsAutoRefresh, useStatsSubscription } from '../../stores/statsStore';
 import { CommandPalette } from '../palette/CommandPalette';
 import { buildCommandRegistry, type CommandGroup } from '../palette/commandRegistry';
-import type { TerminalCard, TerminalCreateOptions, TerminalType } from '../../types/terminal';
+import type { TerminalCreateOptions, TerminalType } from '../../types/terminal';
 import { useSupervisor } from '../../lib/supervisor/useSupervisor';
 import {
   git,
   isTauriEnv,
   mobileBridge,
   mobileBridgeHasSubscribers,
-  type GitStatusEntry,
 } from '../../lib/tauri-bridge';
 import { openSettingsWindow, type SettingsTab } from '../../lib/settingsWindow';
-import { confirmDialog } from '../../lib/nativeDialog';
 import { cardToMobileMeta } from '../../mobile/bridge/cardMeta';
 import {
   buildMobileWorkbenchProjection,
@@ -58,17 +56,14 @@ import { cardMatchesWorktree } from '../../lib/worktreePaths';
 import { clearProjectBranchCache } from './useProjectBranches';
 import { clearProjectWorktreeCache } from './useProjectWorktrees';
 import { useRightSurfaceStack, type RightSurface } from './useRightSurfaceStack';
-import { WorkspacePanel, type WorkspacePanelState } from '../files/WorkspacePanel';
+import { WorkspacePanel } from '../files/WorkspacePanel';
 import {
   WorkspaceDiffView,
   WorkspaceFileEditorView,
 } from '../files/WorkspaceContentViews';
 import {
   pathBasename,
-  workspaceDiffTabId,
-  workspaceFileTabId,
 } from '../files/workspaceContentTabs';
-import type { DirEntry } from '../files/fileMeta';
 import { WorkbenchView } from '../workbench/WorkbenchView';
 import { WorkbenchDetailPanel } from '../workbench/WorkbenchDetailPanel';
 import { useWorkbenchModel } from '../workbench/useWorkbenchModel';
@@ -77,47 +72,14 @@ import type {
   WorkbenchPanelState,
 } from '../../lib/workbench/types';
 import {
-  TERMINAL_CONTENT_TAB_ID,
   WorkspaceContentTabStrip,
-  type WorkspaceContentTab,
 } from './WorkspaceContentTabStrip';
+import { useWorkspaceContent } from './useWorkspaceContent';
 
 type ViewMode = 'grid' | 'focus';
-interface WorkspaceContentState {
-  tabs: WorkspaceContentTab[];
-  activeTabId: string;
-  dirtyTabIds: Record<string, boolean>;
-  panelState: WorkspacePanelState;
-}
 const MOBILE_SYNC_DEBOUNCE_MS = 100;
 const MOBILE_SYNC_MAX_WAIT_MS = 1000;
 const MOBILE_SUBSCRIBER_POLL_MS = 1000;
-const DEFAULT_WORKSPACE_PANEL_STATE: WorkspacePanelState = {
-  tab: 'explorer',
-  selectedFilePath: null,
-  selectedChangePath: null,
-};
-const EMPTY_WORKSPACE_CONTENT_STATE: WorkspaceContentState = {
-  tabs: [],
-  activeTabId: TERMINAL_CONTENT_TAB_ID,
-  dirtyTabIds: {},
-  panelState: DEFAULT_WORKSPACE_PANEL_STATE,
-};
-
-function workspaceContentStateWithDefaults(
-  state: WorkspaceContentState | undefined,
-): WorkspaceContentState {
-  return state ?? EMPTY_WORKSPACE_CONTENT_STATE;
-}
-
-function workspaceContentStateWithPanelDefaults(
-  state: WorkspaceContentState,
-): WorkspaceContentState {
-  return {
-    ...state,
-    panelState: state.panelState ?? DEFAULT_WORKSPACE_PANEL_STATE,
-  };
-}
 const TERMINAL_TYPES: TerminalType[] = [
   'shell',
   'claude',
@@ -243,11 +205,6 @@ export function TerminalManager() {
     selectedProjectPath,
     selectedWorktreePath,
   });
-  const [workspaceContentByCardId, setWorkspaceContentByCardId] = useState<
-    Record<string, WorkspaceContentState>
-  >({});
-  const workspaceContentByCardIdRef = useRef(workspaceContentByCardId);
-  workspaceContentByCardIdRef.current = workspaceContentByCardId;
   useStatsSubscription();
   useStatsAutoRefresh();
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -422,257 +379,34 @@ export function TerminalManager() {
   const statsOpen = activeRightSurface === 'stats';
   const archiveOpen = activeRightSurface === 'archive';
   const sessionRecoveryOpen = activeRightSurface === 'sessionRecovery';
-  const currentWorkspaceContent = workspaceContentStateWithPanelDefaults(
-    workspaceContentStateWithDefaults(
-      focusedCardId ? workspaceContentByCardId[focusedCardId] : undefined,
-    ),
-  );
-  const workspaceContentTabs = currentWorkspaceContent.tabs;
-  const activeContentTabId = currentWorkspaceContent.activeTabId;
-  const dirtyWorkspaceTabIds = currentWorkspaceContent.dirtyTabIds;
-  const workspacePanelState = currentWorkspaceContent.panelState;
-
-  const activeWorkspaceTab = workspaceContentTabs.find((tab) => tab.id === activeContentTabId) ?? null;
-  const workspaceTabsVisible = viewMode === 'focus' && !!focusedCard && workspaceContentTabs.length > 0;
-  const terminalContentActive = activeContentTabId === TERMINAL_CONTENT_TAB_ID;
-  const activeWorkspaceFilePath = activeWorkspaceTab?.kind === 'file' ? activeWorkspaceTab.path : null;
-  const activeWorkspaceDiffPath =
-    activeWorkspaceTab?.kind === 'diff' ? activeWorkspaceTab.change.path : null;
-
-  const mountedWorkspaceContentViews = useMemo(() => {
-    const views: Array<{ cardId: string; tab: WorkspaceContentTab }> = [];
-    for (const card of cards) {
-      const state = workspaceContentStateWithPanelDefaults(
-        workspaceContentStateWithDefaults(workspaceContentByCardId[card.id]),
-      );
-      for (const tab of state.tabs) {
-        if (card.id === focusedCardId || state.dirtyTabIds[tab.id]) {
-          views.push({ cardId: card.id, tab });
-        }
-      }
-    }
-    return views;
-  }, [cards, focusedCardId, workspaceContentByCardId]);
-
-  const updateWorkspaceContentForCard = useCallback(
-    (cardId: string, updater: (state: WorkspaceContentState) => WorkspaceContentState) => {
-      setWorkspaceContentByCardId((current) => {
-        const previous = workspaceContentStateWithPanelDefaults(
-          workspaceContentStateWithDefaults(current[cardId]),
-        );
-        const next = updater(previous);
-        if (next === previous) return current;
-        return { ...current, [cardId]: next };
-      });
-    },
-    [],
-  );
-
-  const updateFocusedWorkspaceContent = useCallback(
-    (updater: (state: WorkspaceContentState) => WorkspaceContentState) => {
-      if (!focusedCardId) return;
-      updateWorkspaceContentForCard(focusedCardId, updater);
-    },
-    [focusedCardId, updateWorkspaceContentForCard],
-  );
-
-  const setActiveContentTabId = useCallback(
-    (tabId: string) => {
-      updateFocusedWorkspaceContent((state) =>
-        state.activeTabId === tabId ? state : { ...state, activeTabId: tabId },
-      );
-    },
-    [updateFocusedWorkspaceContent],
-  );
-
-  useEffect(() => {
-    if (
-      activeContentTabId !== TERMINAL_CONTENT_TAB_ID &&
-      !workspaceContentTabs.some((tab) => tab.id === activeContentTabId)
-    ) {
-      setActiveContentTabId(TERMINAL_CONTENT_TAB_ID);
-    }
-  }, [activeContentTabId, setActiveContentTabId, workspaceContentTabs]);
-
-  const openWorkspaceFileForCard = useCallback(
-    (cardId: string, rootPath: string, entry: DirEntry) => {
-      const id = workspaceFileTabId(rootPath, entry.path);
-      updateWorkspaceContentForCard(cardId, (state) => {
-        const tabs = state.tabs.some((tab) => tab.id === id)
-          ? state.tabs
-          : [
-              ...state.tabs,
-              {
-                id,
-                kind: 'file' as const,
-                rootPath,
-                path: entry.path,
-                title: pathBasename(entry.path),
-              },
-            ];
-        return { ...state, tabs, activeTabId: id };
-      });
-    },
-    [updateWorkspaceContentForCard],
-  );
-
-  const openWorkspaceFile = useCallback(
-    (rootPath: string, entry: DirEntry) => {
-      if (!focusedCardId) return;
-      openWorkspaceFileForCard(focusedCardId, rootPath, entry);
-    },
-    [focusedCardId, openWorkspaceFileForCard],
-  );
-
-  const openWorkspaceDiff = useCallback(
-    (entry: GitStatusEntry) => {
-      const id = workspaceDiffTabId(entry.repositoryRoot, entry.path);
-      updateFocusedWorkspaceContent((state) => {
-        const existing = state.tabs.find((tab) => tab.id === id);
-        const nextTab: WorkspaceContentTab = {
-          id,
-          kind: 'diff',
-          change: entry,
-          title: pathBasename(entry.path),
-        };
-        const tabs = existing
-          ? state.tabs.map((tab) => (tab.id === id ? nextTab : tab))
-          : [...state.tabs, nextTab];
-        return { ...state, tabs, activeTabId: id };
-      });
-    },
-    [updateFocusedWorkspaceContent],
-  );
-
-  const markWorkspaceTabDirty = useCallback(
-    (cardId: string, tabId: string, dirty: boolean) => {
-      updateWorkspaceContentForCard(cardId, (state) => {
-        if (dirty) {
-          if (state.dirtyTabIds[tabId]) return state;
-          return { ...state, dirtyTabIds: { ...state.dirtyTabIds, [tabId]: true } };
-        }
-        if (!state.dirtyTabIds[tabId]) return state;
-        const { [tabId]: _removed, ...rest } = state.dirtyTabIds;
-        return { ...state, dirtyTabIds: rest };
-      });
-    },
-    [updateWorkspaceContentForCard],
-  );
-
-  const closeWorkspaceTabs = useCallback(
-    async (tabIds: string[], nextActiveTabId?: string) => {
-      if (!focusedCardId || tabIds.length === 0) return;
-      const targetIds = new Set(tabIds);
-      const hasDirtyTarget = tabIds.some((tabId) => dirtyWorkspaceTabIds[tabId]);
-      if (hasDirtyTarget) {
-        const shouldClose = await confirmDialog(
-          t('workspace.discardChangesConfirm', {
-            defaultValue: 'Discard unsaved file changes?',
-          }),
-          t('workspace.unsavedTitle', { defaultValue: 'Unsaved changes' }),
-        );
-        if (!shouldClose) return;
-      }
-
-      setWorkspaceContentByCardId((current) => {
-        const state = workspaceContentStateWithPanelDefaults(
-          workspaceContentStateWithDefaults(current[focusedCardId]),
-        );
-        const tabs = state.tabs.filter((tab) => !targetIds.has(tab.id));
-        const dirtyTabIds = Object.fromEntries(
-          Object.entries(state.dirtyTabIds).filter(([tabId]) => !targetIds.has(tabId)),
-        );
-        const activeTabId =
-          nextActiveTabId ??
-          (targetIds.has(state.activeTabId) ? TERMINAL_CONTENT_TAB_ID : state.activeTabId);
-        return {
-          ...current,
-          [focusedCardId]: {
-            ...state,
-            tabs,
-            dirtyTabIds,
-            activeTabId,
-          },
-        };
-      });
-    },
-    [dirtyWorkspaceTabIds, focusedCardId, t],
-  );
-
-  const closeWorkspaceTab = useCallback(
-    (tabId: string) => closeWorkspaceTabs([tabId]),
-    [closeWorkspaceTabs],
-  );
-
-  const closeAllWorkspaceTabs = useCallback(
-    () => closeWorkspaceTabs(workspaceContentTabs.map((tab) => tab.id)),
-    [closeWorkspaceTabs, workspaceContentTabs],
-  );
-
-  const closeOtherWorkspaceTabs = useCallback(
-    (tabId: string) =>
-      closeWorkspaceTabs(
-        workspaceContentTabs.filter((tab) => tab.id !== tabId).map((tab) => tab.id),
-        tabId,
-      ),
-    [closeWorkspaceTabs, workspaceContentTabs],
-  );
-
-  const requestCardExit = useCallback(
-    async (cardId: string, action: 'remove' | 'archive'): Promise<boolean> => {
-      const cardExists = useTerminalStore
-        .getState()
-        .cards
-        .some((card) => card.id === cardId);
-      if (!cardExists) return false;
-
-      const workspaceState = workspaceContentByCardIdRef.current[cardId];
-      const hasDirtyDraft = Object.values(workspaceState?.dirtyTabIds ?? {}).some(Boolean);
-      if (hasDirtyDraft) {
-        const shouldDiscard = await confirmDialog(
-          t('workspace.discardChangesConfirm', {
-            defaultValue: 'Discard unsaved file changes?',
-          }),
-          t('workspace.unsavedTitle', { defaultValue: 'Unsaved changes' }),
-        );
-        if (!shouldDiscard) return false;
-      }
-
-      const store = useTerminalStore.getState();
-      if (!store.cards.some((card) => card.id === cardId)) return false;
-
-      setWorkspaceContentByCardId((current) => {
-        if (!(cardId in current)) return current;
-        const { [cardId]: _discarded, ...next } = current;
-        workspaceContentByCardIdRef.current = next;
-        return next;
-      });
-
-      if (action === 'archive') {
-        store.archiveCard(cardId);
-      } else {
-        store.removeCard(cardId);
-      }
-      return true;
-    },
-    [t],
-  );
-
-  const requestRemoveCard = useCallback(
-    (cardId: string) => requestCardExit(cardId, 'remove'),
-    [requestCardExit],
-  );
-  const requestArchiveCard = useCallback(
-    (cardId: string) => requestCardExit(cardId, 'archive'),
-    [requestCardExit],
-  );
-
-  const handleWorkspacePanelStateChange = useCallback(
-    (panelState: WorkspacePanelState) => {
-      updateFocusedWorkspaceContent((state) => ({ ...state, panelState }));
-    },
-    [updateFocusedWorkspaceContent],
-  );
+  const {
+    workspaceContentTabs,
+    activeContentTabId,
+    dirtyWorkspaceTabIds,
+    workspacePanelState,
+    terminalContentActive,
+    activeWorkspaceFilePath,
+    activeWorkspaceDiffPath,
+    mountedWorkspaceContentViews,
+    setActiveContentTabId,
+    openWorkspaceFileForCard,
+    openWorkspaceFile,
+    openWorkspaceDiff,
+    markWorkspaceTabDirty,
+    closeWorkspaceTab,
+    closeAllWorkspaceTabs,
+    closeOtherWorkspaceTabs,
+    requestRemoveCard,
+    requestArchiveCard,
+    handleWorkspacePanelStateChange,
+    activateTerminalForCard,
+  } = useWorkspaceContent({
+    cards,
+    focusedCardId,
+    t,
+  });
+  const workspaceTabsVisible =
+    viewMode === 'focus' && !!focusedCard && workspaceContentTabs.length > 0;
 
   // Mark the focused card as most-recently-used (mounting it if needed and
   // evicting the LRU view when over cap). The focused card itself is the
@@ -1102,21 +836,9 @@ export function TerminalManager() {
   const handleSelectSessionDockCard = useCallback(
     (cardId: string) => {
       focusMountedCard(cardId);
-      setWorkspaceContentByCardId((current) => {
-        const state = workspaceContentStateWithPanelDefaults(
-          workspaceContentStateWithDefaults(current[cardId]),
-        );
-        if (state.activeTabId === TERMINAL_CONTENT_TAB_ID) return current;
-        return {
-          ...current,
-          [cardId]: {
-            ...state,
-            activeTabId: TERMINAL_CONTENT_TAB_ID,
-          },
-        };
-      });
+      activateTerminalForCard(cardId);
     },
-    [focusMountedCard],
+    [activateTerminalForCard, focusMountedCard],
   );
 
   const handleRestoreArchivedCard = useCallback(
