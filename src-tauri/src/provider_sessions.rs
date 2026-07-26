@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -12,6 +12,7 @@ const JSONL_SCAN_CACHE_TTL: Duration = Duration::from_millis(2_500);
 const SESSION_FILE_GRACE_MS: u64 = 120_000;
 const DEFAULT_PROVIDER_SESSION_LIST_LIMIT: usize = 200;
 const MAX_CODEX_SESSION_ANCESTRY_DEPTH: usize = 32;
+const CLAUDE_META_PREFIX_MAX_BYTES: u64 = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -401,7 +402,11 @@ fn find_codex_session_record(
 fn parse_claude_session_meta(path: &Path) -> Option<(String, String)> {
     let session_id_from_name = path.file_stem()?.to_str()?.to_string();
     let file = File::open(path).ok()?;
-    for line in BufReader::new(file).lines().take(40) {
+    for line in BufReader::new(file)
+        .take(CLAUDE_META_PREFIX_MAX_BYTES)
+        .lines()
+        .take(40)
+    {
         let line = line.ok()?;
         let value: serde_json::Value = serde_json::from_str(&line).ok()?;
         let cwd = value.get("cwd").and_then(|v| v.as_str());
@@ -414,6 +419,13 @@ fn parse_claude_session_meta(path: &Path) -> Option<(String, String)> {
         }
     }
     None
+}
+
+#[cfg(test)]
+pub(crate) fn clear_jsonl_scan_cache_for_tests() {
+    if let Ok(mut cache) = JSONL_SCAN_CACHE.lock() {
+        cache.clear();
+    }
 }
 
 pub fn jsonl_files_recent_first(root: &Path, since_ms: Option<u64>) -> Vec<SessionFileCandidate> {
@@ -543,7 +555,7 @@ mod tests {
     }
 
     fn clear_scan_cache() {
-        JSONL_SCAN_CACHE.lock().expect("scan cache").clear();
+        clear_jsonl_scan_cache_for_tests();
     }
 
     fn session(
@@ -677,17 +689,52 @@ mod tests {
         let root = temp_root("claude-bounded-read");
         let file = root.join("claude-session-2.jsonl");
         fs::create_dir_all(&root).expect("create root");
-        let mut bytes = br#"{"sessionId":"claude-2","cwd":"/repo/bounded","message":"hello"}
-"#
-        .to_vec();
-        bytes.extend(std::iter::repeat_n(b'x', 2 * 1024 * 1024));
-        bytes.extend([0xff, 0xfe, 0xfd]);
-        fs::write(&file, bytes).expect("write fixture");
+        let mut fixture = File::create(&file).expect("create 50 MiB fixture");
+        use std::io::Write as _;
+        fixture
+            .write_all(
+                br#"{"sessionId":"claude-2","cwd":"/repo/bounded","message":"hello"}
+"#,
+            )
+            .expect("write fixture header");
+        fixture
+            .set_len(50 * 1024 * 1024)
+            .expect("extend sparse fixture");
+        drop(fixture);
 
         assert_eq!(
             parse_claude_session_meta(&file),
             Some(("claude-2".to_string(), "/repo/bounded".to_string()))
         );
+        assert_eq!(
+            fs::metadata(&file).expect("fixture metadata").len(),
+            50 * 1024 * 1024
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn parse_claude_session_meta_does_not_scan_past_prefix_budget() {
+        let _guard = TEST_LOCK.lock().expect("provider session test lock");
+        let root = temp_root("claude-prefix-budget");
+        let file = root.join("claude-session-3.jsonl");
+        fs::create_dir_all(&root).expect("create root");
+        let mut fixture = File::create(&file).expect("create prefix fixture");
+        use std::io::Write as _;
+        fixture
+            .write_all(&vec![b'x'; CLAUDE_META_PREFIX_MAX_BYTES as usize])
+            .expect("write oversized first line");
+        fixture
+            .write_all(
+                br#"
+{"sessionId":"too-late","cwd":"/repo/should-not-be-read"}
+"#,
+            )
+            .expect("write metadata beyond prefix");
+        drop(fixture);
+
+        assert_eq!(parse_claude_session_meta(&file), None);
 
         let _ = fs::remove_dir_all(&root);
     }

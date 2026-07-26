@@ -524,4 +524,44 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         CLAUDE_PARSE_CACHE.lock().expect("cache").clear();
     }
+
+    #[test]
+    fn ten_thousand_file_catalog_pages_without_parsing_entire_directory() {
+        let _cache_test_guard = CACHE_TEST_LOCK.lock().expect("cache test lock");
+        CLAUDE_PARSE_CACHE.lock().expect("cache").clear();
+        crate::provider_sessions::clear_jsonl_scan_cache_for_tests();
+        let root = temp_root("ten-thousand-files");
+        fs::create_dir_all(&root).expect("create catalog root");
+        for index in 0..10_000 {
+            fs::write(
+                root.join(format!("session-{index:05}.jsonl")),
+                format!("{{\"cwd\":\"/repo/large\",\"sessionId\":\"session-{index:05}\"}}\n"),
+            )
+            .expect("write catalog fixture");
+        }
+
+        let first = list_claude_session_page_from_root(&root, None, 25, None);
+        assert_eq!(first.items.len(), 25);
+        assert_eq!(first.next_cursor.as_deref(), Some("25"));
+        assert_eq!(CLAUDE_PARSE_CACHE.lock().expect("cache").len(), 25);
+
+        let first_ids = first
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let second =
+            list_claude_session_page_from_root(&root, first.next_cursor.as_deref(), 25, None);
+        assert_eq!(second.items.len(), 25);
+        assert_eq!(second.next_cursor.as_deref(), Some("50"));
+        assert!(second
+            .items
+            .iter()
+            .all(|item| !first_ids.contains(item.id.as_str())));
+        assert_eq!(CLAUDE_PARSE_CACHE.lock().expect("cache").len(), 50);
+
+        let _ = fs::remove_dir_all(&root);
+        CLAUDE_PARSE_CACHE.lock().expect("cache").clear();
+        crate::provider_sessions::clear_jsonl_scan_cache_for_tests();
+    }
 }

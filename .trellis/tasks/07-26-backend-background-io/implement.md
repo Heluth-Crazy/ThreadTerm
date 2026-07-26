@@ -12,7 +12,7 @@
 - [x] Claude 改为有界前缀读取。
 - [x] Gemini 扫描移入 blocking worker；Claude 保持既有 blocking worker。
 - [x] 保留既有稳定分页与目录缓存。
-- [ ] 50 MiB 文件、10k 文件 fixture 测试。
+- [x] 50 MiB 文件、10k 文件 fixture 测试。
 
 ## Bridge Projection
 

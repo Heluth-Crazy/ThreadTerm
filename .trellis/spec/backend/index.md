@@ -21,6 +21,7 @@ and the bridge server.
 | [Windows Build Resources](./windows-build-resources.md) | MSVC app/libtest manifest, icon/version resource, and fresh-target validation contract | Active |
 | [Windows Background Processes](./windows-background-processes.md) | Hidden stdio services versus user-visible ConPTY process contracts | Active |
 | [Provider Session Resume](./provider-session-resume.md) | Interactive-root eligibility and pre-PTY validation for provider session bindings | Active |
+| [Provider Session Catalog Performance](./provider-session-catalog-performance.md) | Bounded metadata reads and large-history pagination contracts | Active |
 | [Stats OpenCode Usage Ingestion](./stats-opencode.md) | OpenCode SQLite token usage ingestion and `opencode` provider contracts | Active |
 | [Stats Token Usage](./stats-token-usage.md) | Token usage aggregation payloads, parser-version rebuilds, and frontend stats contracts | Active |
 
