@@ -26,11 +26,9 @@ import { useTheme } from '../../theme/ThemeContext';
 
 type ActionState = 'idle' | 'busy' | 'failed';
 type PairQrRequestResult = 'success' | 'failed' | 'stale';
-type BindHost = '127.0.0.1' | '0.0.0.0';
 
-const LOOPBACK_BIND_HOST: BindHost = '127.0.0.1';
-const LAN_BIND_HOST: BindHost = '0.0.0.0';
-const DEFAULT_BIND_HOST: BindHost = LOOPBACK_BIND_HOST;
+const LOOPBACK_BIND_HOST = '127.0.0.1';
+const DEFAULT_BIND_HOST = LOOPBACK_BIND_HOST;
 
 const stoppedStatus: BridgeStatus = {
   running: false,
@@ -81,25 +79,9 @@ function pairUrlWithPermission(
   }
 }
 
-function normalizePublishHostOverride(value: string): string | undefined {
+function normalizeSecureTunnelUrl(value: string): string | undefined {
   const trimmed = value.trim();
-  if (!trimmed) return undefined;
-
-  try {
-    const parsed = new URL(trimmed.includes('://') ? trimmed : `http://${trimmed}`);
-    return parsed.hostname || undefined;
-  } catch {
-    const host = trimmed
-      .replace(/^https?:\/\//i, '')
-      .split('/')[0]
-      ?.replace(/:\d+$/, '')
-      .trim();
-    return host || undefined;
-  }
-}
-
-function isLoopbackHost(host: string | null | undefined): boolean {
-  return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+  return trimmed || undefined;
 }
 
 export function MobileAccessSettings() {
@@ -110,16 +92,14 @@ export function MobileAccessSettings() {
   const [pairPermission, setPairPermission] =
     useState<BridgeDevicePermission>('read_only');
   const [devices, setDevices] = useState<BridgeDevice[]>([]);
-  const [bindHost, setBindHost] = useState<BindHost>(DEFAULT_BIND_HOST);
   const [publishHostOverride, setPublishHostOverride] = useState('');
-  const [lanConfirmVisible, setLanConfirmVisible] = useState(false);
   const [actionState, setActionState] = useState<ActionState>('idle');
   const [error, setError] = useState<string | null>(null);
   const pairPermissionRef = useRef<BridgeDevicePermission>('read_only');
   const pairQrIntentRef = useRef(0);
   const pairQrQueueRef = useRef<Promise<void>>(Promise.resolve());
 
-  const normalizedPublishHostOverride = normalizePublishHostOverride(publishHostOverride);
+  const normalizedPublishHostOverride = normalizeSecureTunnelUrl(publishHostOverride);
 
   const beginPairQrIntent = () => {
     const intent = pairQrIntentRef.current + 1;
@@ -162,7 +142,6 @@ export function MobileAccessSettings() {
   const createPairQrForStatus = async (
     intent: number,
     nextStatus: BridgeStatus,
-    fallbackHost?: string,
   ) => {
     if (!nextStatus.running) {
       return 'stale' as const;
@@ -170,7 +149,7 @@ export function MobileAccessSettings() {
 
     return requestPairQr(
       intent,
-      normalizedPublishHostOverride ?? nextStatus.host ?? fallbackHost,
+      normalizedPublishHostOverride,
       pairPermissionRef.current,
     );
   };
@@ -197,12 +176,6 @@ export function MobileAccessSettings() {
       const nextStatus = await mobileBridge.status(refreshNetworkAddress);
       if (intent === pairQrIntentRef.current) {
         setStatus(nextStatus);
-        if (
-          nextStatus.host === LOOPBACK_BIND_HOST ||
-          nextStatus.host === LAN_BIND_HOST
-        ) {
-          setBindHost(nextStatus.host);
-        }
       }
       await createPairQrForStatus(intent, nextStatus);
       await loadDevices(intent);
@@ -217,18 +190,16 @@ export function MobileAccessSettings() {
     void refresh(false);
   }, []);
 
-  const runStartBridge = async (host: BindHost) => {
+  const runStartBridge = async () => {
     const intent = beginPairQrIntent();
-    setLanConfirmVisible(false);
     setActionState('busy');
     setError(null);
     try {
-      const nextStatus = await mobileBridge.start(host);
+      const nextStatus = await mobileBridge.start(LOOPBACK_BIND_HOST);
       if (intent === pairQrIntentRef.current) {
         setStatus(nextStatus);
-        setBindHost(host);
       }
-      await createPairQrForStatus(intent, nextStatus, host);
+      await createPairQrForStatus(intent, nextStatus);
       await loadDevices(intent);
       if (intent === pairQrIntentRef.current) {
         setActionState('idle');
@@ -242,12 +213,7 @@ export function MobileAccessSettings() {
   };
 
   const startBridge = async () => {
-    if (bindHost === LAN_BIND_HOST) {
-      setLanConfirmVisible(true);
-      return;
-    }
-
-    await runStartBridge(bindHost);
+    await runStartBridge();
   };
 
   const stopBridge = async () => {
@@ -258,7 +224,6 @@ export function MobileAccessSettings() {
       const nextStatus = await mobileBridge.stop();
       if (intent === pairQrIntentRef.current) {
         setStatus(nextStatus);
-        setLanConfirmVisible(false);
         setActionState('idle');
       }
     } catch (err) {
@@ -316,13 +281,8 @@ export function MobileAccessSettings() {
   };
 
   const pairUrl = pairUrlWithPermission(pairQr, pairPermission, activeThemeTokens, i18n.language);
-  const showLoopbackPublishWarning =
-    status.running &&
-    status.host === LAN_BIND_HOST &&
-    !normalizedPublishHostOverride &&
-    isLoopbackHost(pairQr?.host);
-  const lanExposureActive =
-    status.running && status.host === LAN_BIND_HOST;
+  const secureTunnelActive = pairQr?.url.startsWith('https://') ?? false;
+  const showSecureTunnelRequired = status.running && !secureTunnelActive;
 
   const copyPairUrl = async () => {
     if (!pairUrl || !navigator.clipboard) return;
@@ -392,11 +352,6 @@ export function MobileAccessSettings() {
                   <ExternalLink className="h-3 w-3" />
                 </a>
               </p>
-              {lanExposureActive && (
-                <p className="leading-5 text-warning">
-                  {t('mobileAccess.lanPlaintextWarning')}
-                </p>
-              )}
             </div>
           )}
           {error && (
@@ -407,35 +362,11 @@ export function MobileAccessSettings() {
         </div>
 
         <div className="flex shrink-0 flex-col gap-2 md:items-end">
-          <div
-            role="radiogroup"
-            aria-label={t('mobileAccess.bind.label')}
-            className="grid gap-1 rounded-md border border-border bg-background/70 p-1 text-xs"
-          >
-            {[
-              { value: LOOPBACK_BIND_HOST, label: t('mobileAccess.bind.loopback') },
-              { value: LAN_BIND_HOST, label: t('mobileAccess.bind.lan') },
-            ].map((option) => (
-              <label
-                key={option.value}
-                className="inline-flex items-center gap-2 rounded-md px-2 py-1 text-muted-foreground has-[:checked]:bg-accent has-[:checked]:text-foreground"
-              >
-                <input
-                  type="radio"
-                  name="mobile-bridge-bind-host"
-                  value={option.value}
-                  checked={bindHost === option.value}
-                  disabled={status.running || isBusy}
-                  onChange={() => {
-                    setBindHost(option.value as BindHost);
-                    setLanConfirmVisible(false);
-                  }}
-                  aria-label={option.label}
-                  className="h-3 w-3"
-                />
-                {option.label}
-              </label>
-            ))}
+          <div className="rounded-md border border-border bg-background/70 px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">
+              {t('mobileAccess.bind.loopback')}
+            </span>
+            <span className="ml-2 font-mono">{LOOPBACK_BIND_HOST}</span>
           </div>
           <label className="grid gap-1 text-xs text-muted-foreground">
             <span className="font-medium text-foreground">
@@ -470,31 +401,6 @@ export function MobileAccessSettings() {
         </div>
       </div>
 
-      {lanConfirmVisible && !status.running && (
-        <div className="mt-4 rounded-lg border border-warning/30 bg-warning/10 p-3">
-          <p className="text-xs leading-5 text-foreground">
-            {t('mobileAccess.lanConfirm')}
-          </p>
-          <p className="mt-1 text-xs leading-5 text-warning">
-            {t('mobileAccess.lanPlaintextWarning')}
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => runStartBridge(LAN_BIND_HOST)} disabled={isBusy}>
-              <Power />
-              {t('mobileAccess.confirmLanStart')}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setLanConfirmVisible(false)}
-              disabled={isBusy}
-            >
-              {t('mobileAccess.cancelLanStart')}
-            </Button>
-          </div>
-        </div>
-      )}
-
       <div className="mt-4 rounded-lg border border-border bg-background/70 p-3">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
@@ -505,9 +411,9 @@ export function MobileAccessSettings() {
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
               {t('mobileAccess.pairingDescription')}
             </p>
-            {showLoopbackPublishWarning && (
+            {showSecureTunnelRequired && (
               <p className="mt-2 text-xs leading-5 text-warning">
-                {t('mobileAccess.publishHost.loopbackWarning')}
+                {t('mobileAccess.publishHost.secureRequired')}
               </p>
             )}
 
@@ -550,7 +456,7 @@ export function MobileAccessSettings() {
                   {t('mobileAccess.permissionMode.hint')}
                 </p>
 
-                {pairQr && pairUrl ? (
+                {pairQr && pairUrl && secureTunnelActive ? (
                   <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-start">
                     <div className="shrink-0 rounded-md border border-border bg-white p-2 shadow-sm">
                       <QRCodeSVG
@@ -617,7 +523,7 @@ export function MobileAccessSettings() {
                 <QrCode />
                 {t('mobileAccess.newPairCode')}
               </Button>
-              <Button size="sm" variant="outline" onClick={copyPairUrl} disabled={!pairUrl}>
+              <Button size="sm" variant="outline" onClick={copyPairUrl} disabled={!secureTunnelActive}>
                 <Copy />
                 {t('mobileAccess.copyUrl')}
               </Button>

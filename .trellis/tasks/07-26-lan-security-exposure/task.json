@@ -1,9 +1,9 @@
 {
   "id": "lan-security-exposure",
   "name": "lan-security-exposure",
-  "title": "局域网访问安全与显式开放",
-  "description": "为手机连接提供加密和电脑身份确认，默认本机可用，局域网访问由用户明确开启",
-  "status": "planning",
+  "title": "移动端安全接入",
+  "description": "桌面服务始终只对本机开放，手机通过成熟 HTTPS 安全隧道配对并确认电脑身份",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

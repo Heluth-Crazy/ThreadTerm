@@ -10,7 +10,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BRIDGE_PROTOCOL_VERSION, type ServerMessage } from '@shared/mobile/bridge/protocol';
 import { App, groupCardsByProject } from './App';
-import { TOKEN_KEY } from './bridge/pairing';
+import { SERVER_ID_KEY, TOKEN_KEY } from './bridge/pairing';
 import { I18nProvider } from './i18n';
 
 const bridgeMocks = vi.hoisted(() => ({
@@ -34,6 +34,7 @@ vi.mock('./bridge/useBridgeConnection', () => ({
 const snapshot: ServerMessage = {
   protocol_version: BRIDGE_PROTOCOL_VERSION,
   kind: 'snapshot',
+  serverId: 'computer-a',
   cards: [],
   notifications: [],
   warmingUp: false,
@@ -62,7 +63,9 @@ const snapshot: ServerMessage = {
 describe('mobile App navigation', () => {
   beforeEach(() => {
     window.localStorage.clear();
-    window.localStorage.setItem(TOKEN_KEY, 'device-token');
+    window.sessionStorage.clear();
+    window.sessionStorage.setItem(TOKEN_KEY, 'device-token');
+    window.sessionStorage.setItem(SERVER_ID_KEY, 'computer-a');
     bridgeMocks.fetchSnapshot.mockResolvedValue(snapshot);
     bridgeMocks.send.mockReset();
     bridgeMocks.onMessage = null;
@@ -71,6 +74,7 @@ describe('mobile App navigation', () => {
   afterEach(() => {
     cleanup();
     window.localStorage.clear();
+    window.sessionStorage.clear();
   });
 
   it('opens on Workbench and keeps three root tabs with full-screen push routes', async () => {
@@ -207,5 +211,23 @@ describe('mobile App navigation', () => {
 
     expect(bridgeMocks.send).toHaveBeenCalledTimes(1);
     expect(bridgeMocks.send).toHaveBeenCalledWith({ kind: 'terminal_resync' });
+  });
+
+  it('forgets the credential when the responding computer identity changes', async () => {
+    bridgeMocks.fetchSnapshot.mockResolvedValue({
+      ...snapshot,
+      serverId: 'computer-b',
+    });
+
+    render(
+      <I18nProvider search="?lang=zh-CN">
+        <App />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => {
+      expect(window.sessionStorage.getItem(TOKEN_KEY)).toBeNull();
+      expect(window.sessionStorage.getItem(SERVER_ID_KEY)).toBeNull();
+    });
   });
 });

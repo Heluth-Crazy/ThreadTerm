@@ -176,6 +176,7 @@ pub struct BridgeSnapshot {
     pub workbench: Option<MobileWorkbenchProjection>,
     #[serde(default)]
     pub warming_up: bool,
+    pub server_id: String,
     pub runtime_id: String,
     pub stream_seq: u64,
 }
@@ -286,6 +287,7 @@ pub struct PairQrResponse {
     pub port: u16,
     pub otp: String,
     pub url: String,
+    pub server_id: String,
     pub expires_in_seconds: u64,
 }
 
@@ -302,6 +304,7 @@ pub struct PairRequest {
 pub struct PairResponse {
     pub device: BridgeDevice,
     pub device_token: String,
+    pub server_id: String,
     pub expires_in_seconds: u64,
 }
 

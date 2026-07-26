@@ -13,28 +13,24 @@ use axum::{
     body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Query, Request, State,
+        Request, State,
     },
     http::{
-        header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE},
-        HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri,
+        header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HOST, ORIGIN},
+        HeaderMap, HeaderName, HeaderValue, StatusCode, Uri,
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
-use serde::Deserialize;
 use tokio::{
     net::TcpListener,
     sync::{broadcast, watch, Notify},
     task::JoinHandle,
     time::{Instant, MissedTickBehavior},
 };
-use tower_http::{
-    cors::{Any, CorsLayer},
-    trace::TraceLayer,
-};
+use tower_http::trace::TraceLayer;
 
 use super::{
     pairing::AuthorizationLease,
@@ -57,7 +53,6 @@ const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_TRAILING_SUBMIT_KEYS: usize = 8;
 const CONNECTION_ABORT_GRACE: Duration = Duration::from_millis(250);
 const MOBILE_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
-static QUERY_TOKEN_AUTH_USE_COUNT: AtomicU64 = AtomicU64::new(0);
 
 pub struct BridgeServerHandle {
     pub host: String,
@@ -242,11 +237,6 @@ impl Drop for TrackedConnection {
     }
 }
 
-#[derive(Deserialize)]
-struct AuthQuery {
-    token: Option<String>,
-}
-
 pub async fn start(
     runtime: Arc<BridgeRuntime>,
     host: String,
@@ -274,7 +264,6 @@ pub async fn start(
         .route("/pair", get(pair_page_handler).post(pair_handler))
         .route("/ws", get(ws_handler))
         .fallback(get(mobile_static_handler))
-        .layer(mobile_bridge_cors_layer())
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<Body>| {
                 tracing::debug_span!(
@@ -335,13 +324,6 @@ async fn track_http_request(
         }
         response = next.run(request) => response,
     }
-}
-
-fn mobile_bridge_cors_layer() -> CorsLayer {
-    CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST])
-        .allow_headers([AUTHORIZATION, CONTENT_TYPE])
 }
 
 async fn health_handler() -> Json<serde_json::Value> {
@@ -460,11 +442,12 @@ async fn mobile_static_handler(uri: Uri) -> Response {
 
 async fn snapshot_handler(
     State(context): State<ServerContext>,
-    Query(query): Query<AuthQuery>,
     headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
-    let device = authenticate_request(&context, query.token.as_deref(), &headers)
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if !browser_origin_matches_host(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let device = authenticate_request(&context, &headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let lease = context
         .runtime
         .pairing
@@ -481,8 +464,15 @@ async fn snapshot_handler(
 
 async fn pair_handler(
     State(context): State<ServerContext>,
+    headers: HeaderMap,
     Json(request): Json<PairRequest>,
 ) -> Result<Json<super::protocol::PairResponse>, (StatusCode, String)> {
+    if !browser_origin_matches_host(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Pairing request origin does not match this computer.".to_string(),
+        ));
+    }
     context
         .runtime
         .pairing
@@ -493,11 +483,13 @@ async fn pair_handler(
 
 async fn ws_handler(
     State(context): State<ServerContext>,
-    Query(query): Query<AuthQuery>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let device = authenticate_request(&context, query.token.as_deref(), &headers);
+    if !browser_origin_matches_host(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let device = authenticate_request(&context, &headers);
     // Register before handing the callback to Axum. This closes the race in
     // which `bridge_stop` could observe zero active sockets while an accepted
     // upgrade callback had not started polling yet.
@@ -1188,20 +1180,42 @@ fn split_submit_tail(data: &str) -> (&str, &str) {
     (&data[..split], &data[split..])
 }
 
-fn authenticate_request(
-    context: &ServerContext,
-    query_token: Option<&str>,
-    headers: &HeaderMap,
-) -> Option<BridgeDevice> {
-    let header_token = bearer_token(headers);
-    if query_token.is_some() {
-        let use_count = QUERY_TOKEN_AUTH_USE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        tracing::warn!(
-            deprecated_query_token_use_count = use_count,
-            "Mobile bridge query-token auth path is deprecated; prefer Authorization bearer or websocket auth frame"
-        );
+fn authenticate_request(context: &ServerContext, headers: &HeaderMap) -> Option<BridgeDevice> {
+    authenticate(context, bearer_token(headers))
+}
+
+fn browser_origin_matches_host(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(ORIGIN) else {
+        return true;
+    };
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    let Ok(origin_uri) = origin.parse::<Uri>() else {
+        return false;
+    };
+    let Some(origin_authority) = origin_uri.authority() else {
+        return false;
+    };
+    let Some(host_header) = headers.get(HOST).and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    let Ok(host_authority) = host_header.parse::<axum::http::uri::Authority>() else {
+        return false;
+    };
+    if !origin_authority
+        .host()
+        .eq_ignore_ascii_case(host_authority.host())
+    {
+        return false;
     }
-    authenticate(context, header_token.or(query_token))
+    let default_port = match origin_uri.scheme_str() {
+        Some("https") => 443,
+        Some("http") => 80,
+        _ => return false,
+    };
+    origin_authority.port_u16().unwrap_or(default_port)
+        == host_authority.port_u16().unwrap_or(default_port)
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {

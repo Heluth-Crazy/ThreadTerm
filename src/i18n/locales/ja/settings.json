@@ -112,7 +112,7 @@
   },
   "mobileAccess": {
     "title": "モバイルアクセス",
-    "description": "同じ LAN 上のスマートフォンからデスクトップセッションを確認・操作できるローカル HTTP/WebSocket ブリッジを起動します。",
+    "description": "サービスはこの端末だけで待ち受けます。スマートフォンは Tailscale Serve や Cloudflare Tunnel などの HTTPS 安全トンネル経由で接続します。",
     "desktopOnly": "モバイルアクセスは Tauri デスクトップアプリ内でのみ起動できます。",
     "running": "実行中",
     "stopped": "停止中",
@@ -122,31 +122,26 @@
     "error": "操作に失敗しました: {{message}}",
     "bind": {
       "label": "ブリッジの待ち受けアドレス",
-      "loopback": "この端末のみ",
-      "lan": "LAN / すべてのインターフェイス"
+      "loopback": "この端末のみ（安全トンネルの接続先）"
     },
-    "lanConfirm": "モバイルアクセスを 0.0.0.0 にバインドすると、ThreadTerm ブリッジの通信が現在のネットワークに公開されます。続行しますか？",
-    "lanPlaintextWarning": "LAN モードは現在、暗号化されていない HTTP/WebSocket を使用します。同じネットワーク上で通信を監視できる第三者に、端末出力や完全操作の認証情報を読み取られる可能性があります。信頼できるネットワークまたは暗号化トンネルでのみ使用してください。",
-    "confirmLanStart": "LAN 起動を確認",
-    "cancelLanStart": "キャンセル",
     "listeningAddress": "待ち受け:",
     "docs": {
       "tailscale": "Tailscale ドキュメント",
       "cloudflare": "Cloudflare Tunnel ドキュメント"
     },
     "pairingTitle": "ペアリング入口",
-    "pairingDescription": "5 分で期限切れになる一回限りのペアリング QR コードを生成します。スマートフォンでスキャンするか、予備として URL をコピーしてください。",
+    "pairingDescription": "HTTPS 安全アドレスから、現在のコンピューター ID に結び付いた 5 分間有効の一回限り QR コードを生成します。",
     "pairingStoppedTitle": "QR コードは未生成です",
     "pairingStoppedDescription": "モバイルアクセスを起動すると、5 分間有効なペアリング QR コードがここに表示されます。",
     "pairingStart": "起動して QR コードを生成",
     "pairingGenerating": "ペアリング QR コードを生成しています…",
     "pairingUnavailable": "QR コードはまだ利用できません。新しいペアリングコードを生成して再試行してください。",
     "publishHost": {
-      "label": "公開ホストの上書き",
-      "placeholder": "任意: スマートフォン QR 用ホスト",
-      "hint": "空のままにすると検出した LAN アドレスを使います。Tailscale、トンネル、手動 LAN ホスト名に使います。",
-      "current": "QR ホスト:",
-      "loopbackWarning": "生成された QR コードは loopback を指しています。スマートフォンに共有する前に公開ホストを入力してください。"
+      "label": "HTTPS 安全トンネル URL",
+      "placeholder": "https://computer.example.ts.net",
+      "hint": "Tailscale Serve、Cloudflare Tunnel、または信頼できるトンネルの完全な HTTPS URL を入力してください。空欄はローカルテスト専用です。",
+      "current": "QR 接続先:",
+      "secureRequired": "スマートフォン用 QR はまだ利用できません。HTTPS 安全トンネル URL を入力して、ペアリングコードを再生成してください。"
     },
     "qrTitle": "ThreadTerm モバイルペアリング QR コード",
     "newPairCode": "ペアリングコードを生成",

@@ -196,6 +196,7 @@ export type ServerCommand =
       notifications: NotificationEntry[];
       workbench?: MobileWorkbenchProjection | null;
       warmingUp?: boolean;
+      serverId?: string;
       runtimeId?: string;
       streamSeq?: number;
     }

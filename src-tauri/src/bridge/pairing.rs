@@ -37,6 +37,7 @@ struct PairingInner {
 struct PendingPair {
     host: String,
     port: u16,
+    server_id: String,
     expires_at: u64,
     max_permission: DevicePermission,
 }
@@ -79,10 +80,28 @@ impl PairingStore {
         Self::new(false)
     }
 
+    #[cfg(test)]
     pub fn create_pair_qr(
         &self,
         host: String,
         port: u16,
+        max_permission: DevicePermission,
+    ) -> PairQrResponse {
+        self.create_pair_qr_for_target(
+            format!("http://{host}:{port}"),
+            host,
+            port,
+            "test-computer-identity".to_string(),
+            max_permission,
+        )
+    }
+
+    pub fn create_pair_qr_for_target(
+        &self,
+        base_url: String,
+        host: String,
+        port: u16,
+        server_id: String,
         max_permission: DevicePermission,
     ) -> PairQrResponse {
         let mut inner = self.inner.lock().expect("pairing store poisoned");
@@ -99,6 +118,7 @@ impl PairingStore {
             PendingPair {
                 host: host.clone(),
                 port,
+                server_id: server_id.clone(),
                 expires_at,
                 max_permission,
             },
@@ -108,7 +128,8 @@ impl PairingStore {
             host: host.clone(),
             port,
             otp: otp.clone(),
-            url: format!("http://{host}:{port}/pair?otp={otp}"),
+            url: format!("{base_url}/pair?server_id={server_id}&otp={otp}"),
+            server_id,
             expires_in_seconds: OTP_TTL.as_secs(),
         }
     }
@@ -136,8 +157,10 @@ impl PairingStore {
 
             let pending = inner
                 .pending
-                .remove(&request.otp)
+                .get(&request.otp)
+                .cloned()
                 .ok_or_else(|| "Invalid or expired pairing code".to_string())?;
+            inner.pending.remove(&request.otp);
 
             let device = BridgeDevice {
                 id: format!("dev_{}", random_token(16)),
@@ -184,6 +207,7 @@ impl PairingStore {
         Ok(PairResponse {
             device,
             device_token: token,
+            server_id: pending.server_id,
             expires_in_seconds: DEVICE_TOKEN_TTL_SECONDS,
         })
     }
@@ -713,7 +737,8 @@ mod tests {
                 store.create_pair_qr("127.0.0.1".to_string(), 5174, DevicePermission::ReadOnly);
             assert_eq!(qr.otp.len(), PAIRING_SECRET_LENGTH);
             assert!(qr.otp.bytes().all(|byte| byte.is_ascii_alphanumeric()));
-            assert!(qr.url.ends_with(&format!("?otp={}", qr.otp)));
+            assert_eq!(qr.server_id, "test-computer-identity");
+            assert!(qr.url.ends_with(&format!("&otp={}", qr.otp)));
             assert!(secrets.insert(qr.otp), "pairing secret collision");
         }
     }

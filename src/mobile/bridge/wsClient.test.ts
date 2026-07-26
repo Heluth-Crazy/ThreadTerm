@@ -36,12 +36,21 @@ class FakeWebSocket {
 }
 
 describe('mobile bridge ws client', () => {
-  it('builds websocket URLs from LAN HTTP URLs without putting tokens in the query string', () => {
-    expect(buildBridgeWsUrl('http://192.168.1.42:5174')).toBe(
-      'ws://192.168.1.42:5174/ws',
+  it('uses secure websockets for phone access without putting tokens in the query string', () => {
+    expect(buildBridgeWsUrl('https://threadterm.example.ts.net')).toBe(
+      'wss://threadterm.example.ts.net/ws',
     );
-    expect(buildBridgeWsUrl('threadterm.local:5174')).toBe(
-      'ws://threadterm.local:5174/ws',
+    expect(buildBridgeWsUrl('http://127.0.0.1:5174')).toBe(
+      'ws://127.0.0.1:5174/ws',
+    );
+  });
+
+  it('rejects remote plaintext and incomplete bridge addresses', () => {
+    expect(() => buildBridgeWsUrl('http://192.168.1.42:5174')).toThrow(
+      /requires HTTPS/i,
+    );
+    expect(() => buildBridgeWsUrl('threadterm.local:5174')).toThrow(
+      /absolute HTTP or HTTPS URL/i,
     );
   });
 

@@ -2,6 +2,7 @@ import type { BridgeDevicePermission } from '@shared/lib/tauri-bridge';
 
 export const TOKEN_KEY = 'threadterm.bridgeToken';
 export const PERMISSION_KEY = 'threadterm.bridgePermission';
+export const SERVER_ID_KEY = 'threadterm.bridgeServerId';
 export const DEVICE_NAME_KEY = 'threadterm.mobile.deviceName';
 const LEGACY_TOKEN_KEY = 'threadterm.mobile.deviceToken';
 const LEGACY_PERMISSION_KEY = 'threadterm.mobile.permission';
@@ -10,11 +11,13 @@ export interface PairingConfig {
   otp: string;
   permission: BridgeDevicePermission;
   storedToken: string | null;
+  serverId: string;
   deviceName: string;
 }
 
 export interface PairResponse {
   deviceToken: string;
+  serverId: string;
   expiresInSeconds: number;
   device: {
     id: string;
@@ -25,12 +28,28 @@ export interface PairResponse {
   };
 }
 
-export function readPairingConfig(location: Location, storage: Storage = window.localStorage): PairingConfig {
+export function readPairingConfig(
+  location: Location,
+  sessionStorage: Storage = window.sessionStorage,
+  durableStorage: Storage = window.localStorage,
+): PairingConfig {
   const params = new URLSearchParams(location.search);
   const queryPermission = params.get('permission') === 'full' ? 'full' : 'read_only';
-  const storedPermission = storage.getItem(PERMISSION_KEY) ?? storage.getItem(LEGACY_PERMISSION_KEY);
+  const storedPermission = sessionStorage.getItem(PERMISSION_KEY);
   const hasPairingCode = params.has('otp');
-  const storedToken = storage.getItem(TOKEN_KEY) ?? storage.getItem(LEGACY_TOKEN_KEY);
+  const storedToken = sessionStorage.getItem(TOKEN_KEY);
+  const serverId = hasPairingCode
+    ? params.get('server_id') ?? ''
+    : sessionStorage.getItem(SERVER_ID_KEY) ?? '';
+
+  // Device credentials used to survive browser restarts in localStorage.
+  // That legacy behavior is intentionally retired: keep only the non-secret
+  // device label and require a fresh QR after the browser session ends.
+  durableStorage.removeItem(TOKEN_KEY);
+  durableStorage.removeItem(PERMISSION_KEY);
+  durableStorage.removeItem(SERVER_ID_KEY);
+  durableStorage.removeItem(LEGACY_TOKEN_KEY);
+  durableStorage.removeItem(LEGACY_PERMISSION_KEY);
 
   return {
     otp: params.get('otp') ?? '',
@@ -39,8 +58,9 @@ export function readPairingConfig(location: Location, storage: Storage = window.
       : storedPermission === 'full'
         ? 'full'
         : 'read_only',
-    storedToken: hasPairingCode ? null : storedToken,
-    deviceName: storage.getItem(DEVICE_NAME_KEY) || defaultDeviceName(),
+    storedToken: hasPairingCode || !serverId ? null : storedToken,
+    serverId,
+    deviceName: durableStorage.getItem(DEVICE_NAME_KEY) || defaultDeviceName(),
   };
 }
 
@@ -48,8 +68,12 @@ export async function pairDevice(
   otp: string,
   deviceName: string,
   permission: BridgeDevicePermission,
+  serverId: string,
   fetcher: typeof fetch = fetch,
 ): Promise<PairResponse> {
+  if (!serverId) {
+    throw new Error('Pairing link is missing the computer identity.');
+  }
   const response = await fetcher('/pair', {
     method: 'POST',
     headers: {
@@ -59,6 +83,7 @@ export async function pairDevice(
       otp,
       deviceName,
       permission,
+      serverId,
     }),
   });
 
@@ -66,25 +91,49 @@ export async function pairDevice(
     throw new Error(await response.text());
   }
 
-  return (await response.json()) as PairResponse;
+  const result = (await response.json()) as PairResponse;
+  if (!result.serverId || result.serverId !== serverId) {
+    throw new Error('The connected computer does not match this pairing code.');
+  }
+  return result;
 }
 
 export function storePairing(
   result: PairResponse,
   deviceName: string,
-  storage: Storage = window.localStorage,
+  sessionStorage: Storage = window.sessionStorage,
+  durableStorage: Storage = window.localStorage,
 ) {
-  storage.setItem(TOKEN_KEY, result.deviceToken);
-  storage.setItem(PERMISSION_KEY, result.device.permission);
-  storage.setItem(DEVICE_NAME_KEY, deviceName);
-  storage.removeItem(LEGACY_TOKEN_KEY);
-  storage.removeItem(LEGACY_PERMISSION_KEY);
+  sessionStorage.setItem(TOKEN_KEY, result.deviceToken);
+  sessionStorage.setItem(PERMISSION_KEY, result.device.permission);
+  sessionStorage.setItem(SERVER_ID_KEY, result.serverId);
+  durableStorage.setItem(DEVICE_NAME_KEY, deviceName);
+  durableStorage.removeItem(TOKEN_KEY);
+  durableStorage.removeItem(PERMISSION_KEY);
+  durableStorage.removeItem(SERVER_ID_KEY);
+  durableStorage.removeItem(LEGACY_TOKEN_KEY);
+  durableStorage.removeItem(LEGACY_PERMISSION_KEY);
+}
+
+export function clearPairingStorage(
+  sessionStorage: Storage = window.sessionStorage,
+  durableStorage: Storage = window.localStorage,
+) {
+  sessionStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(PERMISSION_KEY);
+  sessionStorage.removeItem(SERVER_ID_KEY);
+  durableStorage.removeItem(TOKEN_KEY);
+  durableStorage.removeItem(PERMISSION_KEY);
+  durableStorage.removeItem(SERVER_ID_KEY);
+  durableStorage.removeItem(LEGACY_TOKEN_KEY);
+  durableStorage.removeItem(LEGACY_PERMISSION_KEY);
 }
 
 export function scrubPairingCodeFromUrl(history: History = window.history, location: Location = window.location) {
   const url = new URL(location.href);
   if (!url.searchParams.has('otp')) return;
   url.searchParams.delete('otp');
+  url.searchParams.delete('server_id');
   history.replaceState({}, '', url.toString());
 }
 

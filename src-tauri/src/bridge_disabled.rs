@@ -49,7 +49,7 @@ pub async fn bridge_has_subscribers() -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn bridge_pair_qr(
-    _host: Option<String>,
+    _public_url: Option<String>,
     _permission: Option<DevicePermission>,
 ) -> Result<PairQrResponse, String> {
     Err(DISABLED_MESSAGE.to_string())

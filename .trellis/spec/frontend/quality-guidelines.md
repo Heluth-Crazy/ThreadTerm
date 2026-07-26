@@ -415,7 +415,7 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 
 </spec-entry>
 
-<spec-entry category="quality" keywords="mobile-bridge,react-bundle,pairing,websocket,xterm,theme" date="2026-07-11" source="src-tauri/src/bridge/pairing.rs:59">
+<spec-entry category="quality" keywords="mobile-bridge,react-bundle,pairing,websocket,xterm,theme" date="2026-07-27" source="src-tauri/src/bridge/mod.rs:576">
 
 ### Scenario: Mobile Bridge React Client
 
@@ -425,27 +425,26 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 
 #### 2. Signatures
 - Mobile build: `npm run build:mobile` emits `mobile-app/dist/index.html`, `assets/index.css`, `assets/index.js`, `assets/vendor-react.js`, and `assets/vendor-xterm.js`.
-- Static mobile shell: `GET /`, `GET /pair?otp=<code>&permission=<read_only|full>`, and extensionless SPA paths serve `index.html`.
+- Static mobile shell: `GET /`, `GET /pair?server_id=<computer>&otp=<code>&permission=<read_only|full>`, and extensionless SPA paths serve `index.html`.
 - Static assets: `GET /assets/index.css`, `GET /assets/index.js`, `GET /assets/vendor-react.js`, and `GET /assets/vendor-xterm.js` serve fixed bundle files.
-- Pairing request: `POST /pair` with `{ otp, deviceName, permission }`.
+- Pairing request: `POST /pair` with `{ otp, deviceName, permission, serverId }`.
 - Desktop pairing command:
-  `bridge_pair_qr(host: Option<String>, permission: Option<DevicePermission>) -> PairQrResponse`.
+  `bridge_pair_qr(public_url: Option<String>, permission: Option<DevicePermission>) -> PairQrResponse`.
 - Pairing authorization state: `PairingStore` owns the pending OTP permission
   ceiling, high-entropy one-time secret, authorization leases, and
   auth-revision notifications used by live WebSockets.
-- Live updates: `GET /ws?token=<deviceToken>` remains supported for compatibility, but the preferred WebSocket path is `GET /ws` followed by first-frame `{ protocol_version: 1, kind: "auth", token }`.
-- Snapshot fallback/API: `GET /snapshot` must authenticate with `Authorization: Bearer <deviceToken>`. `GET /snapshot?token=<deviceToken>` remains a compatibility path only.
-- Bridge CORS must stay explicit: allow browser mobile bridge flows with only the required HTTP methods and headers instead of using a fully permissive layer.
-- Pair QR host selection must keep bind host and publish host separate. Binding to `0.0.0.0` may listen on all interfaces, but QR generation must accept an explicit publish-host override for LAN DNS, Tailscale, or tunnel names.
+- Live updates: `GET /ws` authenticates with the first frame `{ protocol_version: 1, kind: "auth", token }`; query-string tokens are rejected.
+- Snapshot fallback/API: `GET /snapshot` authenticates only with `Authorization: Bearer <deviceToken>`; query-string tokens are rejected.
+- Browser pairing, snapshot, and WebSocket requests must be same-origin. The bridge does not emit cross-origin allow headers; mismatched `Origin` and `Host` are rejected.
+- The bridge always binds `127.0.0.1`. QR generation may accept a complete HTTPS origin supplied by a mature secure tunnel, but must reject remote HTTP origins, paths, and query strings.
 - Desktop UI code must use the official Tauri `isTauri()` detector first, with
   legacy `window.__TAURI_INTERNALS__` / `window.__TAURI__` checks only as
   fallback. Do not gate mobile bridge controls solely on an internal WebView
   global; WebView2 builds can otherwise look like browser mode and skip QR
   generation.
-- Windows LAN QR host discovery may call PowerShell, but stdout must be parsed
-  as UTF-8 or UTF-16LE. Windows PowerShell versions and host encodings differ;
-  treating non-UTF-8 output as "no adapter" can incorrectly fall back to
-  loopback and make the mobile QR unusable.
+- Startup migration must replace any persisted non-loopback bind host with
+  `127.0.0.1`. Do not reintroduce adapter discovery or wildcard binding as a
+  fallback when no secure tunnel origin is supplied.
 - Snapshot cards: `CardMeta` must include `id`, `status`, `projectPath`, `projectName`, `lastReplyPreview`, `summaryLine`, `hiddenLineCount`, and `recentOutputBytes`.
 - Preview events: `kind: "preview"` must include `card_id`, `last_reply_preview`, `summary_line`, and `hidden_line_count`.
 - Theme events: `kind: "theme"` must include `app`, `terminal`, and `mode`.
@@ -497,6 +496,9 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 - Pairing secrets carried by the QR URL must provide at least 128 bits of
   entropy and remain URL-safe. A six-digit online code is not acceptable for a
   LAN endpoint that can grant terminal control.
+- The desktop owns a stable opaque `serverId`. Pair QR and pair response include
+  it, every snapshot repeats it, and mobile clears its credential if the
+  responding identity differs from the paired identity.
 - Every authenticated WebSocket must subscribe to bridge-stop and auth-revision
   state. Revocation, expiry, or `bridge_stop` closes idle sockets; each inbound
   control message is revalidated before dispatch. `bridge_stop` waits for the
@@ -548,13 +550,19 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
   A failed stop keeps its managed handle in runtime, reports conservative
   running/stopping status, rejects a new start generation, and can be retried
   after the tracked work exits.
-- Mobile pairing storage keys are `threadterm.bridgeToken` and `threadterm.bridgePermission`. Temporary or experimental key names may be read only for migration and must be cleared after storing the canonical keys.
+- Mobile session credential keys are `threadterm.bridgeToken`,
+  `threadterm.bridgePermission`, and `threadterm.bridgeServerId`. They live only
+  in `sessionStorage`; startup must delete legacy durable credential copies
+  from `localStorage`. A non-secret device display name may remain durable.
 - A QR URL with `permission=read_only` must not inherit an existing stored `full` permission. Stored permission is used only for already-paired reconnects when no OTP is present.
-- After successful pairing, store the device token and connect to `/ws`.
+- After successful HTTPS pairing, store the token and server identity for the
+  current browser session and connect to `/ws`.
 - Do not put device tokens into mobile WebSocket URLs by default. Browser WebSocket clients must authenticate with a first-frame `auth` message, then send `subscribe`.
-- Do not silently share a phone QR that resolves to loopback when the bridge is bound for LAN access. Surface the loopback condition and let the user provide a publish host.
+- Never display or copy a phone QR whose public URL is not HTTPS. Keep the local
+  bridge running, explain that a secure tunnel URL is required, and let the
+  user provide the full HTTPS origin.
 - Snapshot refetches after lag/backpressure should use the bearer header, not a query token.
-- Query-token authentication is compatibility-only. Do not remove it without a migration window, but new mobile code should not add fresh query-token callsites.
+- Query-token authentication is removed. Do not reintroduce it as a compatibility fallback.
 - The WebSocket initial sequence must send `theme` first, then `snapshot`, then per-card `terminal_snapshot` messages. The client must merge these without dropping the latest terminal snapshot for the selected card.
 - Render the initial `snapshot.cards` from the WebSocket snapshot message, then merge `preview`, `state`, `exit`, terminal output, terminal snapshots, and card lifecycle messages into the page state.
 - Session cards must be real tap targets that open a detail view; do not render a static list with no click behavior.
@@ -607,6 +615,9 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 #### 4. Validation & Error Matrix
 - Missing OTP with a stored token -> reconnect to `/ws`.
 - Missing OTP without a stored token -> show missing-code guidance.
+- Stored token without the paired `serverId` -> clear it and require a new QR.
+- Snapshot identity differs from the paired `serverId` -> clear the current
+  session credential and show re-pair guidance.
 - Pairing failure -> show retry button and error detail.
 - Read-only QR with old full-control storage -> pair/read as `read_only`, not `full`.
 - Read-only OTP with a tampered `permission: full` POST -> pair as
@@ -628,17 +639,18 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 - Pairing secret generation -> at least 128 bits, URL-safe, and collision-free
   across a representative generation test.
 - WebSocket protocol mismatch -> show an error detail and do not render the raw payload.
-- WebSocket missing query token -> allow upgrade, require first-frame `auth`, then send initial `theme` and `snapshot`.
+- WebSocket upgrade without bearer auth -> require first-frame `auth`, then send initial `theme` and `snapshot`.
 - WebSocket invalid/missing first-frame auth -> send a versioned `error` and close.
-- Snapshot request with bearer token -> return the same versioned snapshot as the query-token compatibility path.
-- Snapshot request with missing or invalid token -> return `401`; legacy query-token and bearer-token paths must both be covered while compatibility remains.
-- CORS preflight for snapshot/mobile bridge endpoints -> expose only the expected methods and headers.
-- Publish-host override entered in settings -> QR generation uses the override without changing the bridge bind address.
-- Windows PowerShell adapter output is UTF-16LE -> decode and still choose the
-  best physical LAN IPv4 address.
+- Snapshot request with bearer token -> return the versioned snapshot.
+- Snapshot request with missing/invalid bearer token or a query token -> return `401`.
+- Cross-origin preflight -> no CORS grant; actual mismatched-origin protected request -> `403`.
+- HTTPS tunnel origin entered in settings -> QR generation uses that origin while the bridge remains on `127.0.0.1`.
+- Remote `http://` origin, or an HTTPS value containing a path/query -> reject without creating a phone QR.
 - Tauri official `isTauri()` returns true while legacy globals are absent ->
   desktop-only mobile bridge controls remain enabled.
-- WebSocket close/error -> keep the page visible, show retry/reconnect, and do not clear the stored token automatically.
+- Ordinary WebSocket close/error -> keep the page visible, show retry/reconnect,
+  and retain the current session token. Identity mismatch, revoke, and expiry
+  still clear or terminally retire that credential.
 - Deliberate cleanup/reconnect -> close the stale client without scheduling a duplicate reconnect loop.
 - Healthy foreground/online/pageshow event -> send `ping` on the existing
   socket; create zero new sockets and issue zero snapshot fallback requests.
@@ -676,7 +688,10 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 - Bad: `JSON.stringify(await snapshot.json(), null, 2)` displayed directly in the mobile page.
 - Bad: one long terminal line forces the page wider than the phone viewport.
 - Bad: a card title/summary displays the AI CLI composer placeholder (for example `› Summarize recent commits`) instead of the last assistant response.
-- Bad: a read-only QR opens a full-control input bar because an old `full` permission was already in local storage.
+- Bad: a read-only QR opens a full-control input bar because an old `full`
+  permission was already in durable browser storage.
+- Bad: a phone QR points to `http://192.168.x.x`, or a device token appears in
+  the URL, browser history, referrer, or durable `localStorage`.
 - Bad: a touch Enter button preserves focus but sends nothing because the click was suppressed.
 - Bad: every `pageshow` destroys a healthy socket and fetches another full
   snapshot, or an explicitly revoked token retries forever.
@@ -688,7 +703,10 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
 #### 6. Tests Required
 - Rust bridge tests must assert static mobile assets are served, SPA fallback returns the built index with `text/html`, and unknown file assets return `404`.
 - Rust protocol/server tests must assert `theme` serializes correctly and initial WebSocket messages send `theme` before `snapshot`.
-- Mobile unit tests must cover pairing storage keys, read-only QR precedence over stored full permission, legacy key migration, theme application, message validation, ANSI classification, and touch input de-duplication.
+- Mobile unit tests must cover session-only credentials, deletion of legacy
+  durable credentials, server identity mismatch, read-only QR precedence over
+  stored full permission, theme application, message validation, ANSI
+  classification, and touch input de-duplication.
 - Mobile input tests must cover IME/composition Enter behavior in addition to
   touch de-duplication, Enter, Esc, Ctrl-C, and read-only disabled state.
 - Mobile e2e tests must run on Android Chrome and WebKit-backed iOS Safari
@@ -699,17 +717,18 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
   recovery, and reconnect behavior.
 - Typecheck and production builds must include both roots: `src/**` and `mobile-app/src/**`.
 - Tauri packaging/build checks must run after `npm run build:mobile` so Rust `include_bytes!` paths point at current bundle files.
-- Desktop settings tests must assert `mobileBridge.pairQr(host, permission)` is
-  called for the initial code and every permission change, the displayed URL
-  mirrors that permission, and a failed refresh hides the stale code.
+- Desktop settings tests must assert `mobileBridge.pairQr(secureUrl, permission)`
+  is called for the initial code and every permission change, the displayed
+  HTTPS URL mirrors that permission, and a failed refresh hides the stale code.
 - Bridge preview tests must cover mobile summary noise such as Trellis hook lines, MCP startup noise, duplicate line cleanup, and AI CLI composer/input prompt lines.
-- Rust bridge tests must cover first-frame WebSocket auth without query token, bearer token parsing, and the legacy query-token path until it is intentionally removed.
-- Rust bridge tests must cover CORS preflight, missing token, invalid token, bearer snapshot auth, and legacy query-token snapshot auth.
-- Settings tests must cover publish-host override and the loopback warning path for LAN QR generation.
+- Rust bridge tests must cover first-frame WebSocket auth, bearer parsing, and
+  rejection of query-token auth.
+- Rust bridge tests must cover denied cross-origin preflight/request, missing
+  token, invalid token, bearer snapshot auth, and query-token rejection.
+- Settings tests must cover HTTPS tunnel origin, hidden loopback QR, and the
+  fixed loopback bind address.
 - Desktop bridge wrapper tests must cover official `isTauri()` detection and
   fallback globals.
-- Rust bridge tests must cover UTF-16LE PowerShell adapter output on the
-  Windows LAN host parser.
 - Rust pairing tests must cover read-only tamper resistance, full grant,
   attenuation, high-entropy/single-use secrets, and invalidation of older codes.
 - Real Axum/WebSocket integration tests must prove revoke, expiry, and stop
@@ -719,7 +738,9 @@ html[data-native-text-selection="chrome"] body :where(pre, input) {
   passive expiry prevents paced-input tail writes, stop reports an
   uninterruptible drain, force-cancel is retained for late registrations, and
   HTTP tracking starts before JSON/auth extractors.
-- Mobile WS client tests must assert the token is sent in an `auth` frame before `subscribe`, and `buildBridgeWsUrl()` does not include a token query string.
+- Mobile WS client tests must assert the token is sent in an `auth` frame before
+  `subscribe`, `buildBridgeWsUrl()` uses `wss:` for HTTPS, and remote plaintext
+  or incomplete origins are rejected.
 - Mobile connection-hook fake-timer tests must cover healthy lifecycle probes,
   continuing pong responses, the 15-second silence timeout, terminal
   revoke/expiry behavior, and recovery after a replacement pairing token.

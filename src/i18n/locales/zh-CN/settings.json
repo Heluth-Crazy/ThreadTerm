@@ -112,7 +112,7 @@
   },
   "mobileAccess": {
     "title": "移动端访问",
-    "description": "启动本地 HTTP/WebSocket 桥接服务，让手机在同一局域网内查看和控制桌面端会话。",
+    "description": "服务始终只监听本机；手机必须通过 Tailscale Serve、Cloudflare Tunnel 等成熟 HTTPS 安全通道访问。",
     "desktopOnly": "移动端访问只能在 Tauri 桌面应用中启动。",
     "running": "运行中",
     "stopped": "未启动",
@@ -122,31 +122,26 @@
     "error": "操作失败：{{message}}",
     "bind": {
       "label": "桥接监听地址",
-      "loopback": "仅本机",
-      "lan": "局域网 / 所有接口"
+      "loopback": "仅本机（安全通道入口）"
     },
-    "lanConfirm": "将移动端访问绑定到 0.0.0.0 会把 ThreadTerm 桥接流量暴露给当前网络。是否继续？",
-    "lanPlaintextWarning": "局域网模式目前使用未加密的 HTTP/WebSocket。同一网络中能监听流量的人可能看到终端内容或完整控制凭证。请仅在可信网络或加密隧道中使用。",
-    "confirmLanStart": "确认启动局域网访问",
-    "cancelLanStart": "取消",
     "listeningAddress": "监听地址：",
     "docs": {
       "tailscale": "Tailscale 文档",
       "cloudflare": "Cloudflare Tunnel 文档"
     },
     "pairingTitle": "配对入口",
-    "pairingDescription": "生成 5 分钟有效的一次性配对二维码。用手机扫码，或复制链接作为备用。",
+    "pairingDescription": "通过 HTTPS 安全地址生成 5 分钟有效、并绑定当前电脑身份的一次性配对二维码。",
     "pairingStoppedTitle": "二维码尚未生成",
     "pairingStoppedDescription": "启动移动端访问后，5 分钟有效的配对二维码会显示在这里。",
     "pairingStart": "启动并生成二维码",
     "pairingGenerating": "正在生成配对二维码…",
     "pairingUnavailable": "二维码暂不可用，请点击“生成配对码”重试。",
     "publishHost": {
-      "label": "发布主机覆盖",
-      "placeholder": "可选：手机二维码使用的主机",
-      "hint": "留空时使用自动检测到的局域网地址。Tailscale、隧道或手动局域网主机名可在这里填写。",
-      "current": "二维码主机：",
-      "loopbackWarning": "当前二维码指向本机 loopback。分享给手机前请填写发布主机。"
+      "label": "HTTPS 安全通道地址",
+      "placeholder": "https://computer.example.ts.net",
+      "hint": "填写 Tailscale Serve、Cloudflare Tunnel 或其他受信任通道提供的完整 HTTPS 地址；留空只能在本机测试。",
+      "current": "二维码入口：",
+      "secureRequired": "手机二维码尚未开放。请先填写 HTTPS 安全通道地址，再重新生成配对码。"
     },
     "qrTitle": "ThreadTerm 移动端配对二维码",
     "newPairCode": "生成配对码",

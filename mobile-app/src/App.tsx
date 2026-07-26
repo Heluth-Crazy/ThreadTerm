@@ -55,8 +55,7 @@ import {
   reduceBridgeState,
 } from './bridge/messages';
 import {
-  PERMISSION_KEY,
-  TOKEN_KEY,
+  clearPairingStorage,
   pairDevice,
   readPairingConfig,
   scrubPairingCodeFromUrl,
@@ -131,6 +130,7 @@ export function App() {
   const [state, dispatch] = useReducer(reduceBridgeState, initialBridgeState);
   const [token, setToken] = useState<string | null>(pairing.storedToken);
   const [permission, setPermission] = useState(pairing.permission);
+  const [serverId, setServerId] = useState(pairing.serverId);
   const [deviceName, setDeviceName] = useState(pairing.deviceName);
   const [pairingError, setPairingError] = useState<string | null>(null);
   const [pairingBusy, setPairingBusy] = useState(false);
@@ -163,6 +163,20 @@ export function App() {
   }, []);
 
   const applyMessage = useCallback((message: ServerMessage) => {
+    if (
+      message.kind === 'snapshot' &&
+      serverId &&
+      message.serverId !== serverId
+    ) {
+      clearPairingStorage();
+      setToken(null);
+      setPairingError('The connected computer does not match this pairing code.');
+      dispatch({
+        type: 'ws-error',
+        message: 'The connected computer does not match this pairing code.',
+      });
+      return;
+    }
     let shouldArmRecovery = false;
     if (message.kind === 'theme') {
       themeControllerRef.current?.applyServerTheme(message);
@@ -201,7 +215,7 @@ export function App() {
       setTab('terminal');
       setRouteStack([{ name: 'terminal', cardId: message.card_id }]);
     }
-  }, []);
+  }, [serverId]);
 
   const loadSnapshot = useCallback(async () => {
     if (!token) return;
@@ -236,17 +250,23 @@ export function App() {
     setPairingBusy(true);
     setPairingError(null);
     try {
-      const result = await pairDevice(pairing.otp, deviceName, pairing.permission);
+      const result = await pairDevice(
+        pairing.otp,
+        deviceName,
+        pairing.permission,
+        pairing.serverId,
+      );
       storePairing(result, deviceName);
       setToken(result.deviceToken);
       setPermission(result.device.permission);
+      setServerId(result.serverId);
       scrubPairingCodeFromUrl();
     } catch (error) {
       setPairingError(error instanceof Error ? error.message : String(error));
     } finally {
       setPairingBusy(false);
     }
-  }, [deviceName, pairing.otp, pairing.permission]);
+  }, [deviceName, pairing.otp, pairing.permission, pairing.serverId]);
 
   useEffect(() => {
     dispatch({ type: 'ws-status', status: bridge.state });
@@ -1648,8 +1668,7 @@ function EmptyState({ label }: { label: string }) {
 }
 
 export function clearStoredPairing() {
-  window.localStorage.removeItem(TOKEN_KEY);
-  window.localStorage.removeItem(PERMISSION_KEY);
+  clearPairingStorage();
 }
 
 function filterCards(cards: CardMeta[], query: string): CardMeta[] {

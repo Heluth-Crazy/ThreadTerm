@@ -422,6 +422,7 @@ export interface PairQrResponse {
   port: number;
   otp: string;
   url: string;
+  serverId: string;
   expiresInSeconds: number;
 }
 
@@ -504,11 +505,11 @@ export const mobileBridge = {
     invoke<BridgeStatus>('bridge_status', { refresh: refreshNetworkAddress }),
 
   pairQr: (
-    host?: string,
+    publicUrl?: string,
     permission: BridgeDevicePermission = 'read_only',
   ): Promise<PairQrResponse> =>
     invoke<PairQrResponse>('bridge_pair_qr', {
-      host: host ?? null,
+      publicUrl: publicUrl ?? null,
       permission,
     }),
 

@@ -4,18 +4,14 @@ mod pairing;
 mod server;
 
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     path::Path,
-    process::Command,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use rand::{distributions::Alphanumeric, Rng};
 use regex::Regex;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 use tauri::Emitter;
 use tokio::sync::broadcast;
 
@@ -36,9 +32,7 @@ const PREVIEW_CHANNEL_CAPACITY: usize = 1024;
 const BRIDGE_ENABLED_SETTING: &str = "mobile_bridge.enabled";
 const BRIDGE_HOST_SETTING: &str = "mobile_bridge.host";
 const BRIDGE_PORT_SETTING: &str = "mobile_bridge.port";
-const LAN_IPV4_CACHE_TTL: Duration = Duration::from_secs(30);
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const BRIDGE_SERVER_ID_SETTING: &str = "mobile_bridge.server_id";
 
 static ANSI_STRIP: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[()][A-Za-z0-9])")
@@ -51,85 +45,6 @@ static CONTROL_STRIP: Lazy<Regex> = Lazy::new(|| {
 pub static BRIDGE_RUNTIME: Lazy<Arc<BridgeRuntime>> = Lazy::new(|| Arc::new(BridgeRuntime::new()));
 static BRIDGE_LIFECYCLE_GATE: Lazy<tokio::sync::Mutex<()>> =
     Lazy::new(|| tokio::sync::Mutex::new(()));
-static LAN_IPV4_RESOLVER: Lazy<LanIpv4Resolver> =
-    Lazy::new(|| LanIpv4Resolver::new(LAN_IPV4_CACHE_TTL));
-
-#[derive(Clone)]
-struct LanIpv4CacheEntry {
-    value: Option<String>,
-    collected_at: Instant,
-}
-
-struct LanIpv4Resolver {
-    ttl: Duration,
-    cache: Mutex<Option<LanIpv4CacheEntry>>,
-    refresh_gate: tokio::sync::Mutex<()>,
-}
-
-impl LanIpv4Resolver {
-    fn new(ttl: Duration) -> Self {
-        Self {
-            ttl,
-            cache: Mutex::new(None),
-            refresh_gate: tokio::sync::Mutex::new(()),
-        }
-    }
-
-    fn fresh_cached_result(&self) -> Option<Option<String>> {
-        let cache = self
-            .cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        cache
-            .as_ref()
-            .filter(|entry| entry.collected_at.elapsed() < self.ttl)
-            .map(|entry| entry.value.clone())
-    }
-
-    fn cached_value(&self) -> Option<String> {
-        self.fresh_cached_result().flatten()
-    }
-
-    async fn resolve(&self, force: bool) -> Option<String> {
-        self.resolve_with_probe(force, lan_ipv4_for_url_uncached)
-            .await
-    }
-
-    async fn resolve_with_probe<F>(&self, force: bool, probe: F) -> Option<String>
-    where
-        F: FnOnce() -> Option<String> + Send + 'static,
-    {
-        if !force {
-            if let Some(cached) = self.fresh_cached_result() {
-                return cached;
-            }
-        }
-
-        let _refresh = self.refresh_gate.lock().await;
-        if !force {
-            if let Some(cached) = self.fresh_cached_result() {
-                return cached;
-            }
-        }
-
-        let value = match tokio::task::spawn_blocking(probe).await {
-            Ok(value) => value,
-            Err(error) => {
-                tracing::warn!(%error, "LAN address probe worker failed");
-                None
-            }
-        };
-        let mut cache = self
-            .cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *cache = Some(LanIpv4CacheEntry {
-            value: value.clone(),
-            collected_at: Instant::now(),
-        });
-        value
-    }
-}
 
 pub struct BridgeRuntime {
     tx: broadcast::Sender<ServerMessage>,
@@ -138,6 +53,7 @@ pub struct BridgeRuntime {
     server: Mutex<Option<server::BridgeServerHandle>>,
     app_handle: Mutex<Option<tauri::AppHandle>>,
     state_mirror: Mutex<BridgeStateMirror>,
+    server_id: OnceCell<String>,
     runtime_id: String,
     terminal_stream_seq: Mutex<u64>,
     #[cfg(test)]
@@ -168,6 +84,7 @@ impl BridgeRuntime {
             server: Mutex::new(None),
             app_handle: Mutex::new(None),
             state_mirror: Mutex::new(BridgeStateMirror::default()),
+            server_id: OnceCell::new(),
             runtime_id: rand::thread_rng()
                 .sample_iter(&Alphanumeric)
                 .take(20)
@@ -191,6 +108,10 @@ impl BridgeRuntime {
 
     fn runtime_id(&self) -> &str {
         &self.runtime_id
+    }
+
+    fn server_id(&self) -> &str {
+        self.server_id.get_or_init(load_or_create_bridge_server_id)
     }
 
     fn current_terminal_stream_seq(&self) -> u64 {
@@ -269,6 +190,7 @@ impl BridgeRuntime {
                 notifications: Vec::new(),
                 workbench: None,
                 warming_up: true,
+                server_id: self.server_id().to_string(),
                 runtime_id: self.runtime_id.clone(),
                 stream_seq: self.current_terminal_stream_seq(),
             };
@@ -297,6 +219,7 @@ impl BridgeRuntime {
             notifications,
             workbench,
             warming_up: false,
+            server_id: self.server_id().to_string(),
             runtime_id: self.runtime_id.clone(),
             stream_seq: self.current_terminal_stream_seq(),
         }
@@ -498,7 +421,7 @@ impl BridgeRuntime {
         }) {
             Some((host, port)) => BridgeStatus {
                 running: true,
-                url: Some(format!("http://{}:{port}", public_host_for_url(&host))),
+                url: Some(format!("http://{host}:{port}")),
                 host: Some(host),
                 port: Some(port),
             },
@@ -517,11 +440,21 @@ pub fn restore_bridge_on_startup() {
         return;
     }
 
-    let host = crate::db::get_setting(BRIDGE_HOST_SETTING)
+    let persisted_host = crate::db::get_setting(BRIDGE_HOST_SETTING)
         .ok()
         .flatten()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_BRIDGE_HOST.to_string());
+    if persisted_host != DEFAULT_BRIDGE_HOST {
+        tracing::warn!(
+            previous_host = %persisted_host,
+            "Migrating mobile bridge away from direct LAN exposure"
+        );
+        if let Err(error) = crate::db::set_setting(BRIDGE_HOST_SETTING, DEFAULT_BRIDGE_HOST) {
+            tracing::warn!(error = %error, "Failed to persist loopback-only bridge migration");
+        }
+    }
+    let host = DEFAULT_BRIDGE_HOST.to_string();
     let port = crate::db::get_setting(BRIDGE_PORT_SETTING)
         .ok()
         .flatten()
@@ -684,24 +617,29 @@ async fn start_bridge_runtime_locked(
             .map(|handle| handle.is_stopping())
     };
     if let Some(stopping) = existing_server_stopping {
-        let mut status = runtime.status();
+        let status = runtime.status();
         if stopping {
             return Err(
                 "Mobile bridge shutdown is incomplete; retry stop before starting it again."
                     .to_string(),
             );
         }
-        refresh_public_host_for_status(&status, false).await;
-        status = runtime.status();
         if persist_enabled {
             persist_bridge_running(&status);
         }
         return Ok(status);
     }
 
-    let bind_host = host
+    let requested_host = host
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_BRIDGE_HOST.to_string());
+    if requested_host != DEFAULT_BRIDGE_HOST {
+        return Err(
+            "Direct LAN binding is disabled. Keep ThreadTerm on this computer and publish it through an HTTPS secure tunnel."
+                .to_string(),
+        );
+    }
+    let bind_host = DEFAULT_BRIDGE_HOST.to_string();
     let bind_port = port.unwrap_or(DEFAULT_BRIDGE_PORT);
     let handle = server::start(runtime.clone(), bind_host, bind_port).await?;
 
@@ -713,7 +651,6 @@ async fn start_bridge_runtime_locked(
         *guard = Some(handle);
     }
 
-    refresh_public_host_for_status(&runtime.status(), false).await;
     let status = runtime.status();
     tracing::info!(
         host = ?status.host,
@@ -775,9 +712,35 @@ fn persisted_bridge_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn load_or_create_bridge_server_id() -> String {
+    if let Ok(Some(existing)) = crate::db::get_setting(BRIDGE_SERVER_ID_SETTING) {
+        let existing = existing.trim();
+        if (24..=128).contains(&existing.len())
+            && existing
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        {
+            return existing.to_string();
+        }
+        tracing::warn!("Ignoring invalid persisted mobile bridge computer identity");
+    }
+
+    let server_id: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect();
+    if let Err(error) = crate::db::set_setting(BRIDGE_SERVER_ID_SETTING, &server_id) {
+        tracing::warn!(
+            error = %error,
+            "Failed to persist mobile bridge computer identity; devices will need to pair again after restart"
+        );
+    }
+    server_id
+}
+
 #[tauri::command]
-pub async fn bridge_status(refresh: Option<bool>) -> Result<BridgeStatus, String> {
-    refresh_public_host_for_status(&BRIDGE_RUNTIME.status(), refresh.unwrap_or(false)).await;
+pub async fn bridge_status(_refresh: Option<bool>) -> Result<BridgeStatus, String> {
     Ok(BRIDGE_RUNTIME.status())
 }
 
@@ -788,22 +751,83 @@ pub async fn bridge_has_subscribers() -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn bridge_pair_qr(
-    host: Option<String>,
+    public_url: Option<String>,
     permission: Option<DevicePermission>,
 ) -> Result<PairQrResponse, String> {
     let status = BRIDGE_RUNTIME.status();
-    let port = status.port.unwrap_or(DEFAULT_BRIDGE_PORT);
-    let pair_host = host
-        .filter(|value| !value.trim().is_empty())
-        .or(status.host)
-        .unwrap_or_else(|| "127.0.0.1".to_string());
-    let pair_host = public_host_for_url_async(&pair_host, false).await;
+    if !status.running {
+        return Err("Start mobile access before creating a pairing code.".to_string());
+    }
+    let local_port = status.port.unwrap_or(DEFAULT_BRIDGE_PORT);
+    let target = normalize_pair_public_target(public_url.as_deref(), local_port)?;
+    let server_id = BRIDGE_RUNTIME.server_id().to_string();
 
-    Ok(BRIDGE_RUNTIME.pairing.create_pair_qr(
-        pair_host,
-        port,
+    Ok(BRIDGE_RUNTIME.pairing.create_pair_qr_for_target(
+        target.base_url,
+        target.host,
+        target.port,
+        server_id,
         permission.unwrap_or(DevicePermission::ReadOnly),
     ))
+}
+
+struct PairPublicTarget {
+    base_url: String,
+    host: String,
+    port: u16,
+}
+
+fn normalize_pair_public_target(
+    public_url: Option<&str>,
+    local_port: u16,
+) -> Result<PairPublicTarget, String> {
+    let Some(value) = public_url.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(PairPublicTarget {
+            base_url: format!("http://{DEFAULT_BRIDGE_HOST}:{local_port}"),
+            host: DEFAULT_BRIDGE_HOST.to_string(),
+            port: local_port,
+        });
+    };
+    if matches!(value, "127.0.0.1" | "localhost") {
+        return Ok(PairPublicTarget {
+            base_url: format!("http://{DEFAULT_BRIDGE_HOST}:{local_port}"),
+            host: DEFAULT_BRIDGE_HOST.to_string(),
+            port: local_port,
+        });
+    }
+
+    let uri = value
+        .parse::<axum::http::Uri>()
+        .map_err(|_| "Secure tunnel address must be a valid HTTPS origin.".to_string())?;
+    let scheme = uri
+        .scheme_str()
+        .ok_or_else(|| "Secure tunnel address must start with https://.".to_string())?;
+    let authority = uri
+        .authority()
+        .ok_or_else(|| "Secure tunnel address must include a host.".to_string())?;
+    let host = authority.host();
+    let loopback = matches!(host, "127.0.0.1" | "localhost" | "::1");
+    if scheme != "https" && !(scheme == "http" && loopback) {
+        return Err(
+            "Phone pairing requires an HTTPS secure tunnel. Plain HTTP is allowed only on this computer."
+                .to_string(),
+        );
+    }
+    if uri.path() != "/" || uri.query().is_some() {
+        return Err(
+            "Secure tunnel address must contain only its origin, without a path or query."
+                .to_string(),
+        );
+    }
+
+    let port = authority
+        .port_u16()
+        .unwrap_or(if scheme == "https" { 443 } else { local_port });
+    Ok(PairPublicTarget {
+        base_url: format!("{scheme}://{authority}"),
+        host: host.to_string(),
+        port,
+    })
 }
 
 #[tauri::command]
@@ -1189,221 +1213,6 @@ fn is_mobile_preview_noise_line(line: &str) -> bool {
         || normalized.starts_with('›')
 }
 
-fn public_host_for_url(host: &str) -> String {
-    match host {
-        "0.0.0.0" | "::" => LAN_IPV4_RESOLVER
-            .cached_value()
-            .unwrap_or_else(|| "127.0.0.1".to_string()),
-        value => value.to_string(),
-    }
-}
-
-async fn public_host_for_url_async(host: &str, force: bool) -> String {
-    match host {
-        "0.0.0.0" | "::" => LAN_IPV4_RESOLVER
-            .resolve(force)
-            .await
-            .unwrap_or_else(|| "127.0.0.1".to_string()),
-        value => value.to_string(),
-    }
-}
-
-async fn refresh_public_host_for_status(status: &BridgeStatus, force: bool) {
-    if matches!(status.host.as_deref(), Some("0.0.0.0" | "::")) {
-        let _ = LAN_IPV4_RESOLVER.resolve(force).await;
-    }
-}
-
-fn lan_ipv4_for_url_uncached() -> Option<String> {
-    physical_adapter_ipv4_for_url()
-        .or_else(default_route_ipv4_for_url)
-        .or_else(udp_route_ipv4_for_url)
-}
-
-#[cfg(target_os = "windows")]
-fn physical_adapter_ipv4_for_url() -> Option<String> {
-    const SCRIPT: &str = r#"
-$ErrorActionPreference = 'SilentlyContinue'
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-Get-NetAdapter | ForEach-Object {
-  $adapter = $_
-  $metric = (Get-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 | Select-Object -First 1 -ExpandProperty InterfaceMetric)
-  Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 | ForEach-Object {
-    "{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}" -f $_.IPAddress,$adapter.Status,$adapter.HardwareInterface,$adapter.Virtual,$metric,$adapter.Name,$adapter.InterfaceDescription
-  }
-}
-"#;
-
-    let mut command = Command::new("powershell.exe");
-    command.creation_flags(CREATE_NO_WINDOW);
-    let output = command
-        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = decode_windows_command_stdout(&output.stdout);
-    windows_physical_adapter_ipv4_from_tsv(&stdout)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn physical_adapter_ipv4_for_url() -> Option<String> {
-    None
-}
-
-#[cfg(any(test, target_os = "windows"))]
-fn windows_physical_adapter_ipv4_from_tsv(output: &str) -> Option<String> {
-    let mut candidates = Vec::new();
-    for (index, line) in output.lines().enumerate() {
-        let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() < 7 {
-            continue;
-        }
-
-        let status = fields[1].trim();
-        let hardware_interface = fields[2];
-        let virtual_adapter = fields[3];
-        let metric = fields[4].trim().parse::<u32>().unwrap_or(u32::MAX);
-        let alias = fields[5];
-        let description = fields[6];
-
-        if !status.eq_ignore_ascii_case("up")
-            || !windows_bool(hardware_interface)
-            || windows_bool(virtual_adapter)
-            || looks_like_windows_virtual_adapter(alias, description)
-        {
-            continue;
-        }
-
-        let Ok(ip) = fields[0].trim().parse::<Ipv4Addr>() else {
-            continue;
-        };
-        if !lan_ipv4_candidate(ip) {
-            continue;
-        }
-
-        candidates.push((metric, index, ip));
-    }
-
-    candidates.sort_by_key(|(metric, index, _)| (*metric, *index));
-    candidates
-        .into_iter()
-        .next()
-        .map(|(_, _, ip)| ip.to_string())
-}
-
-#[cfg(any(test, target_os = "windows"))]
-fn decode_windows_command_stdout(bytes: &[u8]) -> String {
-    if looks_like_utf16le(bytes) {
-        let words = bytes
-            .chunks_exact(2)
-            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-            .collect::<Vec<_>>();
-        if let Ok(decoded) = String::from_utf16(&words) {
-            return decoded.trim_start_matches('\u{feff}').to_string();
-        }
-    }
-
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
-#[cfg(any(test, target_os = "windows"))]
-fn looks_like_utf16le(bytes: &[u8]) -> bool {
-    if bytes.starts_with(&[0xff, 0xfe]) {
-        return true;
-    }
-    if bytes.len() < 4 {
-        return false;
-    }
-
-    let nul_count = bytes.iter().filter(|byte| **byte == 0).count();
-    nul_count * 4 >= bytes.len()
-}
-
-#[cfg(any(test, target_os = "windows"))]
-fn windows_bool(value: &str) -> bool {
-    matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1")
-}
-
-#[cfg(any(test, target_os = "windows"))]
-fn looks_like_windows_virtual_adapter(alias: &str, description: &str) -> bool {
-    const VIRTUAL_ADAPTER_KEYWORDS: &[&str] = &[
-        "vpn",
-        "tun",
-        "tap",
-        "wintun",
-        "wireguard",
-        "tailscale",
-        "zerotier",
-        "virtual",
-        "vmware",
-        "virtualbox",
-        "hyper-v",
-        "loopback",
-        "docker",
-        "wsl",
-    ];
-
-    let combined = format!("{alias} {description}").to_ascii_lowercase();
-    VIRTUAL_ADAPTER_KEYWORDS
-        .iter()
-        .any(|keyword| combined.contains(keyword))
-}
-
-#[cfg(target_os = "macos")]
-fn default_route_ipv4_for_url() -> Option<String> {
-    let output = Command::new("route")
-        .args(["-n", "get", "default"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    let interface = stdout.lines().find_map(|line| {
-        let line = line.trim();
-        line.strip_prefix("interface:").map(str::trim)
-    })?;
-    interface_ipv4_for_url(interface)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn default_route_ipv4_for_url() -> Option<String> {
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn interface_ipv4_for_url(interface: &str) -> Option<String> {
-    let output = Command::new("ifconfig").arg(interface).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    stdout.lines().find_map(|line| {
-        let trimmed = line.trim();
-        let ip = trimmed.strip_prefix("inet ")?.split_whitespace().next()?;
-        lan_ipv4_candidate(ip.parse().ok()?).then(|| ip.to_string())
-    })
-}
-
-fn udp_route_ipv4_for_url() -> Option<String> {
-    let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))).ok()?;
-    socket
-        .connect(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 80)))
-        .ok()?;
-    let local_addr = socket.local_addr().ok()?;
-    match local_addr.ip() {
-        IpAddr::V4(ip) if lan_ipv4_candidate(ip) => Some(ip.to_string()),
-        _ => None,
-    }
-}
-
-fn lan_ipv4_candidate(ip: Ipv4Addr) -> bool {
-    !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local() && !ip.is_broadcast()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1550,120 +1359,30 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_bind_host_uses_lan_ip_for_display_url() {
-        let display_host = public_host_for_url("0.0.0.0");
+    fn pairing_target_requires_https_away_from_loopback() {
+        let secure = normalize_pair_public_target(Some("https://threadterm.example.ts.net"), 5174)
+            .expect("HTTPS tunnel origin should be accepted");
+        assert_eq!(secure.base_url, "https://threadterm.example.ts.net");
+        assert_eq!(secure.host, "threadterm.example.ts.net");
+        assert_eq!(secure.port, 443);
 
-        assert_ne!(display_host, "0.0.0.0");
-        assert_ne!(display_host, "172.18.0.1");
-        assert!(display_host.parse::<Ipv4Addr>().is_ok());
-        assert_eq!(public_host_for_url("192.168.1.2"), "192.168.1.2");
-    }
+        let local = normalize_pair_public_target(None, 5174)
+            .expect("local-only access should remain available");
+        assert_eq!(local.base_url, "http://127.0.0.1:5174");
 
-    #[tokio::test]
-    async fn lan_ipv4_resolver_caches_normal_queries_and_forces_manual_refresh() {
-        let resolver = LanIpv4Resolver::new(Duration::from_secs(30));
-        let probe_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
-        for _ in 0..10 {
-            let probe_count = probe_count.clone();
-            let value = resolver
-                .resolve_with_probe(false, move || {
-                    probe_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    Some("192.168.1.10".to_string())
-                })
-                .await;
-            assert_eq!(value.as_deref(), Some("192.168.1.10"));
-        }
-        assert_eq!(probe_count.load(std::sync::atomic::Ordering::SeqCst), 1);
-
-        let forced_count = probe_count.clone();
-        let refreshed = resolver
-            .resolve_with_probe(true, move || {
-                forced_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Some("192.168.1.11".to_string())
-            })
-            .await;
-        assert_eq!(refreshed.as_deref(), Some("192.168.1.11"));
-        assert_eq!(probe_count.load(std::sync::atomic::Ordering::SeqCst), 2);
-    }
-
-    #[tokio::test]
-    async fn concurrent_lan_ipv4_cache_misses_share_one_probe() {
-        let resolver = LanIpv4Resolver::new(Duration::from_secs(30));
-        let probe_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let first_count = probe_count.clone();
-        let second_count = probe_count.clone();
-
-        let (first, second) = tokio::join!(
-            resolver.resolve_with_probe(false, move || {
-                first_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                std::thread::sleep(Duration::from_millis(25));
-                Some("192.168.1.20".to_string())
-            }),
-            resolver.resolve_with_probe(false, move || {
-                second_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Some("192.168.1.21".to_string())
-            }),
+        assert!(
+            normalize_pair_public_target(Some("http://192.168.1.42:5174"), 5174)
+                .err()
+                .expect("remote plaintext must be rejected")
+                .contains("requires an HTTPS secure tunnel")
         );
-
-        assert_eq!(first, second);
-        assert_eq!(probe_count.load(std::sync::atomic::Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn lan_ipv4_candidate_rejects_non_lan_addresses() {
-        assert!(!lan_ipv4_candidate(Ipv4Addr::new(127, 0, 0, 1)));
-        assert!(!lan_ipv4_candidate(Ipv4Addr::new(0, 0, 0, 0)));
-        assert!(!lan_ipv4_candidate(Ipv4Addr::new(169, 254, 1, 2)));
-        assert!(!lan_ipv4_candidate(Ipv4Addr::new(255, 255, 255, 255)));
-        assert!(lan_ipv4_candidate(Ipv4Addr::new(192, 168, 1, 67)));
-    }
-
-    #[test]
-    fn windows_physical_adapter_parser_skips_virtual_and_tunnel_adapters() {
-        let output = [
-            "100.88.1.10\tUp\tFalse\tTrue\t1\tTailscale\tTailscale Tunnel",
-            "172.28.144.1\tUp\tTrue\tTrue\t5\tvEthernet (WSL)\tHyper-V Virtual Ethernet Adapter",
-            "10.8.0.2\tUp\tTrue\tFalse\t10\tWireGuard Tunnel\tWireGuard Tunnel",
-            "192.168.1.67\tUp\tTrue\tFalse\t25\tWi-Fi\tIntel(R) Wi-Fi 6 AX201",
-        ]
-        .join("\n");
-
-        assert_eq!(
-            windows_physical_adapter_ipv4_from_tsv(&output).as_deref(),
-            Some("192.168.1.67")
-        );
-    }
-
-    #[test]
-    fn windows_physical_adapter_parser_prefers_lower_interface_metric() {
-        let output = [
-            "192.168.1.67\tUp\tTrue\tFalse\t50\tWi-Fi\tIntel(R) Wi-Fi 6 AX201",
-            "10.0.0.12\tUp\tTrue\tFalse\t10\tEthernet\tRealtek PCIe GbE Family Controller",
-        ]
-        .join("\n");
-
-        assert_eq!(
-            windows_physical_adapter_ipv4_from_tsv(&output).as_deref(),
-            Some("10.0.0.12")
-        );
-    }
-
-    #[test]
-    fn windows_physical_adapter_parser_handles_utf16le_powershell_output() {
-        let output = [
-            "100.88.1.10\tUp\tFalse\tTrue\t1\tTailscale\tTailscale Tunnel",
-            "192.168.1.67\tUp\tTrue\tFalse\t25\tWi-Fi\tIntel(R) Wi-Fi 6 AX201",
-        ]
-        .join("\r\n");
-        let mut bytes = vec![0xff, 0xfe];
-        bytes.extend(output.encode_utf16().flat_map(u16::to_le_bytes));
-        let decoded = decode_windows_command_stdout(&bytes);
-
-        assert_eq!(
-            windows_physical_adapter_ipv4_from_tsv(&decoded).as_deref(),
-            Some("192.168.1.67")
-        );
+        assert!(normalize_pair_public_target(
+            Some("https://threadterm.example.ts.net/mobile?token=leak"),
+            5174,
+        )
+        .err()
+        .expect("tunnel origin must not contain a path or query")
+        .contains("without a path or query"));
     }
 
     #[test]
@@ -1746,7 +1465,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_auth_paths_and_cors_preflight_are_compatible_and_restricted() {
+    fn snapshot_requires_bearer_and_cross_origin_preflight_is_denied() {
         let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
         runtime.block_on(async {
@@ -1782,26 +1501,8 @@ mod tests {
                 ),
             )
             .await;
-            assert!(
-                preflight.starts_with("HTTP/1.1 200 ") || preflight.starts_with("HTTP/1.1 204 "),
-                "expected successful preflight, got: {}",
-                preflight.lines().next().unwrap_or(&preflight)
-            );
-            assert_eq!(
-                response_header(&preflight, "access-control-allow-origin").as_deref(),
-                Some("*")
-            );
-            let methods = response_header(&preflight, "access-control-allow-methods")
-                .expect("CORS allow-methods header")
-                .to_ascii_uppercase();
-            assert!(methods.contains("GET"));
-            assert!(methods.contains("POST"));
-            assert!(!methods.contains("DELETE"));
-            let headers = response_header(&preflight, "access-control-allow-headers")
-                .expect("CORS allow-headers header")
-                .to_ascii_lowercase();
-            assert!(headers.contains("authorization"));
-            assert!(headers.contains("content-type"));
+            assert_http_status(&preflight, 405);
+            assert!(response_header(&preflight, "access-control-allow-origin").is_none());
 
             let missing = raw_http_request(
                 port,
@@ -1839,6 +1540,34 @@ mod tests {
             assert_http_status(&bearer, 200);
             assert!(bearer.contains(r#""kind":"snapshot""#));
 
+            let wrong_origin = raw_http_request(
+                port,
+                format!(
+                    "GET /snapshot HTTP/1.1\r\n\
+                     Host: 127.0.0.1:{port}\r\n\
+                     Origin: https://attacker.example\r\n\
+                     Authorization: Bearer {token}\r\n\
+                     Connection: close\r\n\r\n"
+                ),
+            )
+            .await;
+            assert_http_status(&wrong_origin, 403);
+            assert!(!wrong_origin.contains(r#""kind":"snapshot""#));
+
+            let same_origin = raw_http_request(
+                port,
+                format!(
+                    "GET /snapshot HTTP/1.1\r\n\
+                     Host: 127.0.0.1:{port}\r\n\
+                     Origin: http://127.0.0.1:{port}\r\n\
+                     Authorization: Bearer {token}\r\n\
+                     Connection: close\r\n\r\n"
+                ),
+            )
+            .await;
+            assert_http_status(&same_origin, 200);
+            assert!(same_origin.contains(r#""kind":"snapshot""#));
+
             let query = raw_http_request(
                 port,
                 format!(
@@ -1848,8 +1577,8 @@ mod tests {
                 ),
             )
             .await;
-            assert_http_status(&query, 200);
-            assert!(query.contains(r#""kind":"snapshot""#));
+            assert_http_status(&query, 401);
+            assert!(!query.contains(r#""kind":"snapshot""#));
 
             bridge_stop().await.expect("bridge_stop should succeed");
         });
@@ -1893,11 +1622,15 @@ mod tests {
                 .expect("pairing should succeed");
             let token = pair_response.device_token;
 
-            // 2. Open the websocket with the device token.
-            let url = format!("ws://127.0.0.1:{port}/ws?token={token}");
+            // 2. Open the websocket and authenticate in the first frame.
+            let url = format!("ws://127.0.0.1:{port}/ws");
+            let auth_frame = format!(r#"{{"protocol_version":1,"kind":"auth","token":"{token}"}}"#);
             let (mut ws, _) = tokio_tungstenite::connect_async(&url)
                 .await
                 .expect("websocket should connect");
+            ws.send(Message::Text(auth_frame.clone()))
+                .await
+                .expect("auth frame should send");
 
             // Initial messages are theme first, then the current card snapshot.
             let theme = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
@@ -1963,6 +1696,9 @@ mod tests {
             let (mut ws2, _) = tokio_tungstenite::connect_async(&url)
                 .await
                 .expect("reconnect should succeed");
+            ws2.send(Message::Text(auth_frame.clone()))
+                .await
+                .expect("auth frame should send on reconnect");
             // Drain initial theme + snapshot.
             let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws2.next())
                 .await
@@ -1990,6 +1726,9 @@ mod tests {
             let (mut ws3, _) = tokio_tungstenite::connect_async(&url)
                 .await
                 .expect("reconnect again should succeed");
+            ws3.send(Message::Text(auth_frame))
+                .await
+                .expect("auth frame should send on final reconnect");
             let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws3.next())
                 .await
                 .expect("theme should arrive again");
@@ -2092,7 +1831,7 @@ mod tests {
 
     #[test]
     fn revoking_device_closes_idle_websocket() {
-        use futures_util::StreamExt;
+        use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
 
         let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2115,10 +1854,16 @@ mod tests {
                 })
                 .expect("pairing should succeed");
 
-            let url = format!("ws://127.0.0.1:{port}/ws?token={}", paired.device_token);
+            let url = format!("ws://127.0.0.1:{port}/ws");
             let (mut ws, _) = tokio_tungstenite::connect_async(&url)
                 .await
                 .expect("websocket should connect");
+            ws.send(Message::Text(format!(
+                r#"{{"protocol_version":1,"kind":"auth","token":"{}"}}"#,
+                paired.device_token
+            )))
+            .await
+            .expect("auth frame should send");
             for label in ["theme", "snapshot"] {
                 tokio::time::timeout(Duration::from_secs(2), ws.next())
                     .await
@@ -2156,7 +1901,7 @@ mod tests {
 
     #[test]
     fn expired_device_closes_idle_websocket() {
-        use futures_util::StreamExt;
+        use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
 
         let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2179,10 +1924,16 @@ mod tests {
                 })
                 .expect("pairing should succeed");
 
-            let url = format!("ws://127.0.0.1:{port}/ws?token={}", paired.device_token);
+            let url = format!("ws://127.0.0.1:{port}/ws");
             let (mut ws, _) = tokio_tungstenite::connect_async(&url)
                 .await
                 .expect("websocket should connect");
+            ws.send(Message::Text(format!(
+                r#"{{"protocol_version":1,"kind":"auth","token":"{}"}}"#,
+                paired.device_token
+            )))
+            .await
+            .expect("auth frame should send");
             for _ in 0..2 {
                 tokio::time::timeout(Duration::from_secs(2), ws.next())
                     .await
@@ -2211,7 +1962,7 @@ mod tests {
 
     #[test]
     fn bridge_stop_closes_active_websocket_before_returning() {
-        use futures_util::StreamExt;
+        use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
 
         let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2234,10 +1985,16 @@ mod tests {
                 })
                 .expect("pairing should succeed");
 
-            let url = format!("ws://127.0.0.1:{port}/ws?token={}", paired.device_token);
+            let url = format!("ws://127.0.0.1:{port}/ws");
             let (mut ws, _) = tokio_tungstenite::connect_async(&url)
                 .await
                 .expect("websocket should connect");
+            ws.send(Message::Text(format!(
+                r#"{{"protocol_version":1,"kind":"auth","token":"{}"}}"#,
+                paired.device_token
+            )))
+            .await
+            .expect("auth frame should send");
             for _ in 0..2 {
                 tokio::time::timeout(Duration::from_secs(2), ws.next())
                     .await

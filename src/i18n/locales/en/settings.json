@@ -112,7 +112,7 @@
   },
   "mobileAccess": {
     "title": "Mobile access",
-    "description": "Starts the local HTTP/WebSocket bridge so phones on the same LAN can inspect and control desktop sessions.",
+    "description": "The service listens only on this computer. Phones must connect through a mature HTTPS tunnel such as Tailscale Serve or Cloudflare Tunnel.",
     "desktopOnly": "Mobile access can only be started inside the Tauri desktop app.",
     "running": "Running",
     "stopped": "Stopped",
@@ -122,31 +122,26 @@
     "error": "Action failed: {{message}}",
     "bind": {
       "label": "Bridge bind address",
-      "loopback": "This device only",
-      "lan": "LAN / all interfaces"
+      "loopback": "This device only (secure tunnel origin)"
     },
-    "lanConfirm": "Binding mobile access to 0.0.0.0 exposes ThreadTerm bridge traffic to your network. Continue?",
-    "lanPlaintextWarning": "LAN mode currently uses unencrypted HTTP/WebSocket. Anyone who can observe this network may read terminal output or a full-control credential. Use it only on a trusted network or through an encrypted tunnel.",
-    "confirmLanStart": "Confirm LAN start",
-    "cancelLanStart": "Cancel",
     "listeningAddress": "Listening:",
     "docs": {
       "tailscale": "Tailscale docs",
       "cloudflare": "Cloudflare Tunnel docs"
     },
     "pairingTitle": "Pairing entry",
-    "pairingDescription": "Generate a one-time pairing QR code that expires in 5 minutes. Scan it from your phone or copy the URL as a fallback.",
+    "pairingDescription": "Generate a five-minute, one-time pairing QR code over an HTTPS address and bind it to this computer identity.",
     "pairingStoppedTitle": "QR code not generated",
     "pairingStoppedDescription": "Start mobile access and the 5-minute pairing QR code will appear here.",
     "pairingStart": "Start and generate QR code",
     "pairingGenerating": "Generating pairing QR code…",
     "pairingUnavailable": "The QR code is not available yet. Generate a new pairing code to retry.",
     "publishHost": {
-      "label": "Publish host override",
-      "placeholder": "Optional host for phone QR",
-      "hint": "Leave empty to use the detected LAN address. Use this for Tailscale, tunnel, or manual LAN hostnames.",
-      "current": "QR host:",
-      "loopbackWarning": "The generated QR code points to loopback. Enter a publish host before sharing it with a phone."
+      "label": "HTTPS secure tunnel URL",
+      "placeholder": "https://computer.example.ts.net",
+      "hint": "Enter the complete HTTPS URL from Tailscale Serve, Cloudflare Tunnel, or another trusted tunnel. Leaving it empty supports local testing only.",
+      "current": "QR endpoint:",
+      "secureRequired": "Phone pairing is not available yet. Enter an HTTPS secure tunnel URL and generate a new pairing code."
     },
     "qrTitle": "ThreadTerm mobile pairing QR code",
     "newPairCode": "New pairing code",

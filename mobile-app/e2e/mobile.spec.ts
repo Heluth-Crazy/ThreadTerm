@@ -32,6 +32,7 @@ async function openTerminal(page: Page, cardName = 'ThreadTerm'): Promise<Locato
 const snapshot = {
   protocol_version: 1,
   kind: 'snapshot',
+  serverId: 'e2e-computer',
   runtimeId: 'runtime-e2e',
   streamSeq: 0,
   warmingUp: false,
@@ -259,9 +260,10 @@ test.beforeEach(async ({ page }) => {
   });
 
   await page.addInitScript(({ snapshotMessage, themeMessage }) => {
-    window.localStorage.setItem('threadterm.bridgeToken', 'device-token');
-    if (!window.localStorage.getItem('threadterm.bridgePermission')) {
-      window.localStorage.setItem('threadterm.bridgePermission', 'full');
+    window.sessionStorage.setItem('threadterm.bridgeToken', 'device-token');
+    window.sessionStorage.setItem('threadterm.bridgeServerId', 'e2e-computer');
+    if (!window.sessionStorage.getItem('threadterm.bridgePermission')) {
+      window.sessionStorage.setItem('threadterm.bridgePermission', 'full');
     }
 
     class MockWebSocket {
@@ -870,7 +872,7 @@ test('desktop language, touch input, and read-only capability remain correct', a
     .toHaveLength(1);
 
   await page.evaluate(() => {
-    window.localStorage.setItem('threadterm.bridgePermission', 'read_only');
+    window.sessionStorage.setItem('threadterm.bridgePermission', 'read_only');
     window.location.reload();
   });
   await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible();

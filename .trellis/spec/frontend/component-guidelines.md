@@ -371,7 +371,7 @@ Correct:
 
 </spec-entry>
 
-<spec-entry category="contract" keywords="mobile-access,pairing,qr-code,empty-state,lan-confirmation" date="2026-07-14" source="src/components/settings/MobileAccessSettings.tsx:104">
+<spec-entry category="contract" keywords="mobile-access,pairing,qr-code,empty-state,secure-tunnel" date="2026-07-27" source="src/components/settings/MobileAccessSettings.tsx:104">
 
 ### Scenario: Mobile Pairing Keeps Its Security Gate Visible
 
@@ -384,52 +384,52 @@ Correct:
 #### 2. Signatures
 - `MobileAccessSettings(): JSX.Element`
 - `BridgeStatus.running: boolean`
-- Existing actions: `startBridge()`, `runStartBridge(host)`, and
-  `createPairQr()`.
+- Existing actions: `startBridge()`, `runStartBridge()`, and `createPairQr()`.
 
 #### 3. Contracts
 - The pairing surface is always rendered. A stopped bridge must show a QR-sized
   placeholder, explain why no code exists, and provide a direct start action.
-- The placeholder start action must reuse `startBridge()`. It must not call the
-  backend directly or bypass the existing inline confirmation before binding
-  to `0.0.0.0`.
+- The placeholder start action must reuse `startBridge()` and bind only
+  `127.0.0.1`. No desktop control may expose the bridge on `0.0.0.0`.
 - Entering the Mobile Access page must never start or expose the bridge merely
   to make a QR code appear.
 - A running bridge with an in-flight pairing request shows a generating state.
   A running bridge without a usable `PairQrResponse` shows a retry state rather
   than an unexplained blank area.
-- Render the real QR, OTP, and URL only when both `pairQr` and the derived
-  `pairUrl` are present. Permission changes and retries continue through the
-  existing serialized pairing-request funnel.
+- Render the real QR, OTP, and URL only when `pairQr.url` is HTTPS and the
+  derived `pairUrl` is present. A local-only response shows secure-tunnel
+  guidance and disables copy. Permission changes and retries continue through
+  the existing serialized pairing-request funnel.
 
 #### 4. Validation & Error Matrix
 - Bridge stopped -> placeholder and start CTA visible; no QR element and no
   `pairQr` IPC call.
-- Stopped with LAN binding selected -> either start control opens the inline
-  LAN confirmation; `bridge_start` is not called before confirmation.
+- Any start action -> `bridge_start` receives `127.0.0.1`.
 - Bridge running and pair request pending -> generating state visible.
 - Bridge running and pair request fails -> error plus retry state visible; old
   QR is absent.
-- Bridge running with a valid pair response -> QR, OTP, URL, permission controls,
-  refresh, and copy actions visible.
+- Bridge running with a local-only pair response -> secure-tunnel guidance,
+  no QR, and copy disabled.
+- Bridge running with a valid HTTPS pair response -> QR, OTP, URL, permission
+  controls, refresh, and copy actions visible.
 
 #### 5. Good/Base/Bad Cases
 - Good: a first-time user immediately sees where the QR will appear and how to
-  generate it, while network exposure still requires explicit confirmation.
-- Base: reopening an already-running bridge creates and displays a fresh
-  five-minute code through the existing refresh flow.
+  generate it, while the bridge itself remains private to the computer.
+- Base: reopening an already-running bridge without a tunnel address keeps the
+  QR hidden and explains how to provide an HTTPS origin.
 - Bad: hide the entire pairing section while stopped, leaving users to infer
   that Start is required.
-- Bad: auto-bind to all interfaces when the panel mounts just to avoid the
+- Bad: auto-bind to all interfaces or display a remote HTTP QR just to avoid the
   stopped-state placeholder.
 
 #### 6. Tests Required
 - Component test: stopped state renders explanation and CTA, contains no QR,
-  and preserves LAN confirmation before `mobileBridge.start`.
+  and starts only on loopback.
 - Component test: pairing failure keeps the running status and renders an
   explicit unavailable/retry state without a stale QR.
-- Existing tests must keep covering automatic pair-code creation for an
-  already-running bridge and permission-bound request serialization.
+- Existing tests must cover hidden local-only QR, HTTPS tunnel QR, server-bound
+  permission changes, and stale request serialization.
 - Update all four settings locales and run key-set parity, Vitest, typecheck,
   lint, desktop/mobile builds, and `git diff --check`.
 

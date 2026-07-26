@@ -102,7 +102,18 @@ function normalizeBaseUrl(baseUrl: string): string {
   if (!trimmed) {
     throw new Error('Bridge baseUrl is required');
   }
-  return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  if (!/^https?:\/\//i.test(trimmed)) {
+    throw new Error('Bridge baseUrl must be an absolute HTTP or HTTPS URL');
+  }
+
+  const url = new URL(trimmed);
+  const isLoopback = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback)) {
+    throw new Error(
+      'Remote mobile access requires HTTPS; plain HTTP is allowed only on this device',
+    );
+  }
+  return url.toString();
 }
 
 function parseServerMessage(data: unknown): ServerMessage {

@@ -93,4 +93,15 @@ describe('mobileBridge state sync', () => {
       workbench,
     });
   });
+
+  it('passes the complete secure tunnel URL when creating a phone pairing code', async () => {
+    const { mobileBridge } = await import('./tauri-bridge');
+
+    await mobileBridge.pairQr('https://threadterm.example.ts.net', 'full');
+
+    expect(coreMocks.invoke).toHaveBeenCalledWith('bridge_pair_qr', {
+      publicUrl: 'https://threadterm.example.ts.net',
+      permission: 'full',
+    });
+  });
 });
