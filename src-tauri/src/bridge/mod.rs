@@ -1169,6 +1169,10 @@ mod tests {
         fs::create_dir_all(&fixture_dir).expect("create real bridge fixture directory");
         let descriptor_path = fixture_dir.join("descriptor.json");
         let stop_path = fixture_dir.join("stop");
+        let disconnect_path = fixture_dir.join("disconnect");
+        let disconnected_path = fixture_dir.join("disconnected");
+        let resume_path = fixture_dir.join("resume");
+        let resumed_path = fixture_dir.join("resumed");
 
         let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
@@ -1193,6 +1197,11 @@ mod tests {
                 "serverId": BRIDGE_RUNTIME.server_id(),
                 "port": port,
                 "cardName": "ThreadTerm",
+                "disconnectPath": disconnect_path,
+                "disconnectedPath": disconnected_path,
+                "resumePath": resume_path,
+                "resumedPath": resumed_path,
+                "recoveredPreview": "Recovered state from the real bridge",
             });
             let pending_descriptor_path = fixture_dir.join("descriptor.json.tmp");
             fs::write(
@@ -1204,7 +1213,32 @@ mod tests {
                 .expect("publish real bridge descriptor");
 
             let deadline = Instant::now() + Duration::from_secs(180);
+            let mut disconnected = false;
+            let mut resumed = false;
             while !stop_path.exists() && Instant::now() < deadline {
+                if !disconnected && disconnect_path.exists() {
+                    bridge_stop()
+                        .await
+                        .expect("disconnect real browser bridge fixture");
+                    fs::write(&disconnected_path, "disconnected")
+                        .expect("acknowledge real bridge disconnect");
+                    disconnected = true;
+                }
+                if disconnected && !resumed && resume_path.exists() {
+                    let mut recovered_card = fix2_make_card("real-browser-card", false);
+                    recovered_card.last_reply_preview =
+                        "Recovered state from the real bridge".to_string();
+                    recovered_card.summary_line =
+                        Some("Recovered state from the real bridge".to_string());
+                    BRIDGE_RUNTIME.sync_cards(vec![recovered_card]);
+
+                    let resumed_status = bridge_start(Some("127.0.0.1".to_string()), Some(port))
+                        .await
+                        .expect("resume real browser bridge fixture");
+                    assert_eq!(resumed_status.port, Some(port));
+                    fs::write(&resumed_path, "resumed").expect("acknowledge real bridge resume");
+                    resumed = true;
+                }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
 

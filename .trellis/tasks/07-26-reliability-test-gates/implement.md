@@ -7,7 +7,8 @@
 - [x] Android Chrome / iOS Safari 页面重连、缺口和重启流程（受控连接）。
 - [x] Android Chrome 手机页面直连真实 Rust bridge，完成一次性配对、身份校验、
   工作台同步和终端卡片展示，全程不使用 MockWebSocket。
-- [ ] 真实 bridge 连接主动中断后的页面重连与全量状态补回。
+- [x] 真实 bridge 连接主动中断后，页面进入重连状态；停机期间更新电脑端摘要，
+  恢复后自动重连、保留原凭证并补回完整状态，连续 10 次通过。
 - [ ] iPhone/WebKit 直连真实 bridge 与物理手机局域网验收。
 
 ## Multi-Terminal Tests
@@ -37,7 +38,7 @@
 ## Real Browser Boundary
 
 - 真实浏览器门禁会启动产品同一套 Rust bridge，并通过真实 HTTP / WebSocket
-  完成配对和首屏同步。
+  完成配对、首屏同步、主动断开、自动重连和离线状态补回。
 - 每一轮都重新启动 bridge 并生成新的配对码，符合“一码一次使用”的产品规则。
 - 当前门禁运行在本机回环地址，预置测试卡片；它不等同于物理手机、真实 Wi-Fi
   或完整 Tauri 桌面应用验收。
