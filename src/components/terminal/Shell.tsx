@@ -8,19 +8,31 @@ import { useTranslation } from 'react-i18next';
 import { logger } from '../../lib/logger';
 import { isTauriEnv, pty } from '../../lib/tauri-bridge';
 import { useTheme } from '../../theme/ThemeContext';
-import { claimTerminalActive, registerTerminal, unregisterTerminal } from './xtermRegistry';
+import { registerTerminal, unregisterTerminal } from './xtermRegistry';
 import { createOutputSequencer } from './outputSequencer';
 import { createOutputAcknowledger } from './outputAcknowledger';
-import {
-  TERMINAL_GEOMETRY_INVALIDATED_EVENT,
-  TERMINAL_SURFACE_SHOWN_EVENT,
-} from './terminalSurfaceEvents';
 import {
   computeReconnectDelay,
   countNewlines,
   formatExitBanner,
   shouldFollowOutput,
 } from './shellBehavior';
+import {
+  useTerminalSurfaceController,
+  useTerminalSurfaceLifecycle,
+} from './useTerminalSurfaceLifecycle';
+import type {
+  DetachCurrentPtyOptions,
+  OutputSequencer,
+  RendererOutputConsumer,
+  ShellExitInfo,
+  ShellProject,
+  ShellProps,
+  TerminalSize,
+  Unlisten,
+} from './shellRuntimeTypes';
+
+export type { ShellProps } from './shellRuntimeTypes';
 
 const xtermStyles = `
   .xterm .xterm-screen {
@@ -62,57 +74,6 @@ const CLEANUP_SEQUENCE_RE = /\x1b\[[0-9;]*[JKLMPX]/;
 // restores. End state is identical — xterm's parser is stateful across writes.
 const SNAPSHOT_RESTORE_CHUNK_CHARS = 65536;
 const RENDERER_CONSUMER_HEARTBEAT_MS = 5000;
-const RENDERER_CONSUMER_TTL_MS = 30000;
-
-type OutputSequencer = ReturnType<typeof createOutputSequencer>;
-type OutputAcknowledger = ReturnType<typeof createOutputAcknowledger>;
-type Unlisten = () => void;
-
-interface ShellProject {
-  name: string;
-  path: string;
-  fullPath?: string;
-}
-
-export interface ShellProps {
-  selectedProject?: ShellProject | null;
-  initialCommand?: string;
-  minimal?: boolean;
-  autoConnect?: boolean;
-  paneId?: string;
-  onDisconnect?: () => void;
-  active?: boolean;
-  rendererScope?: string;
-  preservePtyOnUnmount?: boolean;
-  suppressInitialCommandWhenPtyExists?: boolean;
-  autoReconnectOnExit?: boolean;
-  onInitialCommandSent?: () => void;
-  onUserSubmit?: () => void;
-}
-
-interface TerminalSize {
-  rows: number;
-  cols: number;
-}
-
-interface ShellExitInfo {
-  code: number | null;
-}
-
-interface RendererOutputConsumer {
-  ptyId: string;
-  consumerId: string;
-  acknowledger: OutputAcknowledger;
-  heartbeatTimer: number | null;
-  needsSnapshotRecovery: boolean;
-  recoveryPromise: Promise<boolean> | null;
-  disposed: boolean;
-}
-
-interface DetachCurrentPtyOptions {
-  clearTerminal?: boolean;
-  kill?: boolean;
-}
 
 function createRendererConsumerId(scope = 'main'): string {
   const uuid = globalThis.crypto?.randomUUID?.();
@@ -207,19 +168,10 @@ function Shell({
   const unlistenExitRef = useRef<Unlisten | null>(null);
   const retryCountRef = useRef(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const surfaceRecoveryTimersRef = useRef<number[]>([]);
-  const surfaceRecoveryFrameRef = useRef<number | null>(null);
-  const surfaceRecoveryGenerationRef = useRef(0);
-  const terminalRefreshFrameRef = useRef<number | null>(null);
   const manuallyDisconnected = useRef(false);
   const lastPtySizeRef = useRef<TerminalSize | null>(null);
   const outputSequencerRef = useRef<OutputSequencer | null>(null);
   const outputConsumerRef = useRef<RendererOutputConsumer | null>(null);
-  const documentHiddenAtRef = useRef<number | null>(
-    typeof document !== 'undefined' && document.visibilityState !== 'visible'
-      ? Date.now()
-      : null,
-  );
   const connectGenerationRef = useRef(0);
   const desiredPaneIdRef = useRef<string | undefined>(paneId);
 
@@ -298,160 +250,6 @@ function Shell({
     setIsConnected(value);
   }, []);
 
-  const resizePtyIfNeeded = useCallback((rows: number, cols: number) => {
-    const id = ptyIdRef.current;
-    if (!id || !rows || !cols) return;
-
-    const last = lastPtySizeRef.current;
-    if (last && last.rows === rows && last.cols === cols) return;
-
-    lastPtySizeRef.current = { rows, cols };
-    pty.resize(id, rows, cols).catch(() => {});
-  }, []);
-
-  const scrollTerminalToBottom = useCallback((shouldFocus = false, shouldRefresh = true) => {
-    const term = terminal.current;
-    if (!term) return;
-
-    try {
-      term.scrollToBottom();
-    } catch {
-      return;
-    }
-
-    scrolledUpRef.current = false;
-    pendingNewLinesRef.current = 0;
-    setScrolledUp(false);
-    setNewOutputLines(0);
-
-    if (shouldRefresh) {
-      try {
-        term.refresh(0, Math.max(0, term.rows - 1));
-      } catch {
-        // Best-effort repaint after programmatic scroll recovery.
-      }
-    }
-
-    if (shouldFocus) {
-      try {
-        term.focus();
-      } catch {
-        // Focus can fail while the webview is backgrounded.
-      }
-    }
-  }, []);
-
-  const clearSurfaceRecoveryWork = useCallback(() => {
-    if (surfaceRecoveryFrameRef.current !== null) {
-      cancelAnimationFrame(surfaceRecoveryFrameRef.current);
-      surfaceRecoveryFrameRef.current = null;
-    }
-    for (const timer of surfaceRecoveryTimersRef.current) clearTimeout(timer);
-    surfaceRecoveryTimersRef.current = [];
-  }, []);
-
-  const cancelSurfaceRecovery = useCallback(() => {
-    surfaceRecoveryGenerationRef.current += 1;
-    clearSurfaceRecoveryWork();
-  }, [clearSurfaceRecoveryWork]);
-
-  const scheduleTerminalRefresh = useCallback(() => {
-    if (!activeRef.current || terminalRefreshFrameRef.current !== null) return;
-    terminalRefreshFrameRef.current = requestAnimationFrame(() => {
-      terminalRefreshFrameRef.current = null;
-      if (!activeRef.current) return;
-      const term = terminal.current;
-      if (!term) return;
-      try {
-        term.refresh(0, Math.max(0, term.rows - 1));
-      } catch {
-        // Renderer recovery is best-effort.
-      }
-    });
-  }, []);
-
-  const recoverTerminalSurface = useCallback((shouldFocus = false, shouldScrollToBottom = false) => {
-    if (!activeRef.current) return;
-
-    clearSurfaceRecoveryWork();
-    const generation = surfaceRecoveryGenerationRef.current + 1;
-    surfaceRecoveryGenerationRef.current = generation;
-    let geometrySettled = false;
-
-    const run = () => {
-      if (
-        surfaceRecoveryGenerationRef.current !== generation ||
-        !activeRef.current
-      ) {
-        return;
-      }
-      const term = terminal.current;
-      const fit = fitAddon.current;
-      const host = terminalRef.current;
-      if (!term || !fit || !host) return;
-
-      if (!geometrySettled) {
-        const rect = host.getBoundingClientRect();
-        if (rect.width < 20 || rect.height < 20) return;
-
-        try {
-          fit.fit();
-        } catch {
-          // xterm fit can throw while a hidden webview is becoming visible.
-          return;
-        }
-
-        resizePtyIfNeeded(term.rows, term.cols);
-        geometrySettled = true;
-
-        if (shouldScrollToBottom && !term.hasSelection()) {
-          // This helper also synchronizes the React scroll indicator and
-          // repaints after the programmatic scroll.
-          scrollTerminalToBottom(false, true);
-        } else {
-          try {
-            term.refresh(0, Math.max(0, term.rows - 1));
-          } catch {
-            // Best-effort renderer recovery.
-          }
-        }
-
-        // Geometry/scroll work is complete after the first valid fit. Keep
-        // the bounded late callbacks only when focus may need a later retry.
-        if (!shouldFocus) {
-          for (const timer of surfaceRecoveryTimersRef.current) clearTimeout(timer);
-          surfaceRecoveryTimersRef.current = [];
-        }
-      }
-
-      if (shouldFocus) {
-        try {
-          term.focus();
-        } catch {
-          // Focus can fail before the webview becomes key; later passes retry.
-        }
-      }
-    };
-
-    surfaceRecoveryFrameRef.current = requestAnimationFrame(() => {
-      surfaceRecoveryFrameRef.current = null;
-      run();
-    });
-    // Windows WebView2 reports a 0-sized host on the first frames after the
-    // webview becomes visible, so the early passes hit the `rect.width < 20`
-    // guard and `fit()` is skipped — the terminal stays at its default
-    // cols/rows and never fills the pane (issue #4). `run()` is idempotent
-    // (resizePtyIfNeeded dedupes), so the extra late passes are cheap and
-    // simply succeed once the surface finally has a real size.
-    for (const delay of [60, 180, 400, 800]) {
-      const timer = window.setTimeout(() => {
-        surfaceRecoveryTimersRef.current = surfaceRecoveryTimersRef.current.filter((id) => id !== timer);
-        run();
-      }, delay);
-      surfaceRecoveryTimersRef.current.push(timer);
-    }
-  }, [clearSurfaceRecoveryWork, resizePtyIfNeeded, scrollTerminalToBottom]);
-
   const restoreOutputConsumerFromSnapshot = useCallback((
     consumer: RendererOutputConsumer | null | undefined,
   ): Promise<boolean> => {
@@ -527,15 +325,27 @@ function Shell({
     return recoveryPromise;
   }, []);
 
-  useEffect(() => {
-    if (!active) {
-      cancelSurfaceRecovery();
-      if (terminalRefreshFrameRef.current !== null) {
-        cancelAnimationFrame(terminalRefreshFrameRef.current);
-        terminalRefreshFrameRef.current = null;
-      }
-    }
-  }, [active, cancelSurfaceRecovery]);
+  const {
+    resizePtyIfNeeded,
+    scrollTerminalToBottom,
+    cancelSurfaceRecovery,
+    scheduleTerminalRefresh,
+    recoverTerminalSurface,
+    scrollToBottomNow,
+    focusTerminal,
+  } = useTerminalSurfaceController({
+    active,
+    activeRef,
+    terminalHostRef: terminalRef,
+    terminalRef: terminal,
+    fitAddonRef: fitAddon,
+    ptyIdRef,
+    lastPtySizeRef,
+    scrolledUpRef,
+    pendingNewLinesRef,
+    setScrolledUp,
+    setNewOutputLines,
+  });
 
   const cleanupListeners = useCallback(() => {
     unlistenOutputRef.current?.();
@@ -613,19 +423,6 @@ function Shell({
       newOutputFlushTimerRef.current = null;
       setNewOutputLines(pendingNewLinesRef.current);
     }, 200);
-  }, []);
-
-  const scrollToBottomNow = useCallback(() => {
-    scrollTerminalToBottom(true);
-  }, [scrollTerminalToBottom]);
-
-  const focusTerminal = useCallback(() => {
-    try {
-      terminal.current?.focus();
-    } catch {
-      // Full surface recovery still runs from visibility/geometry lifecycle
-      // events when a background WebView becomes usable again.
-    }
   }, []);
 
   const connectPty: () => void = useCallback(() => {
@@ -1238,10 +1035,6 @@ function Shell({
       pendingNewLinesRef.current = 0;
       scrolledUpRef.current = false;
       cancelSurfaceRecovery();
-      if (terminalRefreshFrameRef.current !== null) {
-        cancelAnimationFrame(terminalRefreshFrameRef.current);
-        terminalRefreshFrameRef.current = null;
-      }
 
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -1284,86 +1077,17 @@ function Shell({
     restoreOutputConsumerFromSnapshot,
   ]);
 
-  useEffect(() => {
-    if (!active || !isInitialized) return;
-    recoverTerminalSurface(true, true);
-  }, [active, isInitialized, recoverTerminalSurface]);
-
-  useEffect(() => {
-    if (!active || !isConnected || !ptyIdRef.current || !terminal.current) return;
-    const consumer = outputConsumerRef.current;
-    if (
-      consumer &&
-      !consumer.disposed &&
-      document.visibilityState === 'visible'
-    ) {
-      // The backend removes float-scoped consumers before destroying an idle
-      // WebView. If native close fails, this mounted Shell becomes active
-      // again; restore its lease immediately instead of waiting for the next
-      // five-second heartbeat. Registration is idempotent and does not ACK.
-      if (consumer.needsSnapshotRecovery) {
-        void restoreOutputConsumerFromSnapshot(consumer);
-      } else {
-        void pty
-          .registerOutputConsumer(consumer.ptyId, consumer.consumerId)
-          .catch(() => {});
-      }
-    }
-    claimTerminalActive(ptyIdRef.current, terminal.current);
-  }, [active, isConnected, restoreOutputConsumerFromSnapshot]);
-
-  useEffect(() => {
-    const handleSurfaceShown = (event: Event) => {
-      const shouldFocus = !(event instanceof CustomEvent && event.detail?.focus === false);
-      recoverTerminalSurface(shouldFocus);
-    };
-    const handleGeometryInvalidated = (event: Event) => {
-      const targetPtyId = event instanceof CustomEvent ? event.detail?.ptyId : undefined;
-      if (!targetPtyId || targetPtyId === ptyIdRef.current) {
-        // Another WebView may have resized this shared ConPTY while our local
-        // xterm dimensions stayed unchanged. Clear only the local dedupe cache
-        // so the next surface recovery reasserts this renderer's geometry once.
-        lastPtySizeRef.current = null;
-      }
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState !== 'visible') {
-        documentHiddenAtRef.current ??= Date.now();
-        return;
-      }
-
-      const hiddenAt = documentHiddenAtRef.current;
-      documentHiddenAtRef.current = null;
-      const consumer = outputConsumerRef.current;
-      const requiresSnapshot =
-        hiddenAt !== null && Date.now() - hiddenAt >= RENDERER_CONSUMER_TTL_MS;
-
-      if (consumer && !consumer.disposed) {
-        if (requiresSnapshot) {
-          consumer.needsSnapshotRecovery = true;
-          void restoreOutputConsumerFromSnapshot(consumer).then((restored) => {
-            if (restored) recoverTerminalSurface(true, true);
-          });
-        } else {
-          void pty
-            .registerOutputConsumer(consumer.ptyId, consumer.consumerId)
-            .catch(() => {});
-        }
-      }
-      recoverTerminalSurface(true);
-    };
-
-    window.addEventListener('focus', handleSurfaceShown);
-    window.addEventListener(TERMINAL_SURFACE_SHOWN_EVENT, handleSurfaceShown);
-    window.addEventListener(TERMINAL_GEOMETRY_INVALIDATED_EVENT, handleGeometryInvalidated);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      window.removeEventListener('focus', handleSurfaceShown);
-      window.removeEventListener(TERMINAL_SURFACE_SHOWN_EVENT, handleSurfaceShown);
-      window.removeEventListener(TERMINAL_GEOMETRY_INVALIDATED_EVENT, handleGeometryInvalidated);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [recoverTerminalSurface, restoreOutputConsumerFromSnapshot]);
+  useTerminalSurfaceLifecycle({
+    active,
+    isInitialized,
+    isConnected,
+    terminalRef: terminal,
+    ptyIdRef,
+    lastPtySizeRef,
+    outputConsumerRef,
+    recoverTerminalSurface,
+    restoreOutputConsumerFromSnapshot,
+  });
 
   // A fresh ptyId (auto-restart feature, or a different card reusing this
   // Shell) clears the exit gate so the autoConnect effect below may run.

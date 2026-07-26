@@ -8,7 +8,7 @@
 
 - Trigger: any xterm.js core/addon upgrade or change to desktop `Shell` writes,
   mobile `MainTerminal` writes, scroll-follow behavior, or renderer ACK timing.
-- Applies to `package.json`, `src/components/terminal/Shell.jsx`,
+- Applies to `package.json`, `src/components/terminal/Shell.tsx`,
   `mobile-app/src/MainTerminal.tsx`, and their unit/E2E tests.
 
 ### 2. Signatures

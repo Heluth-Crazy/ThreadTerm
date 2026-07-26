@@ -10,8 +10,8 @@
 
 - Trigger: changes to terminal fit/resize behavior, main/float visibility,
   overlay events, display scaling, or a Shell's local PTY-size cache.
-- Applies to `Shell.jsx`, `FloatApp.tsx`, `OverlayBridge.tsx`, and
-  `terminalSurfaceEvents.ts`.
+- Applies to `Shell.tsx`, `useTerminalSurfaceLifecycle.ts`, `FloatApp.tsx`,
+  `OverlayBridge.tsx`, and `terminalSurfaceEvents.ts`.
 
 ### 2. Signatures
 
@@ -35,6 +35,11 @@
 - Geometry recovery must reuse the existing resize dedupe after cache
   invalidation. It must not change output writes, renderer registration, ACK,
   snapshot, or LRU ownership.
+- `useTerminalSurfaceController` owns local fit/resize dedupe, bounded delayed
+  surface recovery, focus, scroll-to-bottom, and coalesced terminal refresh.
+- `useTerminalSurfaceLifecycle` owns activation, visibility, geometry
+  invalidation, and renderer-lease restoration effects. Keep its effects in
+  the same order relative to xterm creation and pane auto-connect effects.
 
 ### 4. Validation & Error Matrix
 
