@@ -5,6 +5,8 @@ import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard } from '../../types/terminal';
 import { pendingWorktreePath } from '../../lib/worktreePaths';
 
+const cardRenderCounts = vi.hoisted(() => new Map<string, number>());
+
 vi.mock('framer-motion', () => ({
   motion: {
     button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
@@ -40,23 +42,26 @@ vi.mock('./TerminalCard', () => ({
     dragHandle?: React.ReactNode;
     onClose?: () => void;
     onArchive?: () => void;
-  }) => (
-    <div data-testid="terminal-card">
-      {dragHandle}
-      <span data-testid="terminal-card-name">{card.projectName}</span>
-      <span data-testid="terminal-card-worktree">{card.worktreePath ?? card.projectPath}</span>
-      {onClose && (
-        <button type="button" onClick={onClose}>
-          close {card.projectName}
-        </button>
-      )}
-      {onArchive && (
-        <button type="button" onClick={onArchive}>
-          archive {card.projectName}
-        </button>
-      )}
-    </div>
-  ),
+  }) => {
+    cardRenderCounts.set(card.id, (cardRenderCounts.get(card.id) ?? 0) + 1);
+    return (
+      <div data-testid="terminal-card">
+        {dragHandle}
+        <span data-testid="terminal-card-name">{card.projectName}</span>
+        <span data-testid="terminal-card-worktree">{card.worktreePath ?? card.projectPath}</span>
+        {onClose && (
+          <button type="button" onClick={onClose}>
+            close {card.projectName}
+          </button>
+        )}
+        {onArchive && (
+          <button type="button" onClick={onArchive}>
+            archive {card.projectName}
+          </button>
+        )}
+      </div>
+    );
+  },
 }));
 
 function resetStore() {
@@ -80,7 +85,10 @@ function resetStore() {
   });
 }
 
-beforeEach(resetStore);
+beforeEach(() => {
+  cardRenderCounts.clear();
+  resetStore();
+});
 
 afterEach(() => {
   cleanup();
@@ -134,6 +142,55 @@ describe('CardGrid project ordering', () => {
       expect(screen.getAllByTestId('terminal-card-name').map((node) => node.textContent))
         .toEqual(['Older', 'Newer']);
     });
+  });
+
+  it('keeps two running cards stable across 600 alternating output flushes', () => {
+    const store = useTerminalStore.getState();
+    const olderId = store.createCard({
+      projectName: 'Older',
+      projectPath: '/repo/older',
+      terminalType: 'shell',
+    });
+    const newerId = store.createCard({
+      projectName: 'Newer',
+      projectPath: '/repo/newer',
+      terminalType: 'shell',
+    });
+    useTerminalStore.setState((state) => ({
+      cards: state.cards.map((card) =>
+        card.id === olderId
+          ? { ...card, status: 'running', lastActivity: 100 }
+          : card.id === newerId
+            ? { ...card, status: 'running', lastActivity: 200 }
+            : card,
+      ),
+    }));
+
+    render(<CardGrid onRemoveCard={vi.fn()} onArchiveCard={vi.fn()} />);
+    const stableOrder = ['Newer', 'Older'];
+
+    for (let flush = 0; flush < 600; flush += 1) {
+      const activeId = flush % 2 === 0 ? olderId : newerId;
+      act(() => {
+        useTerminalStore.setState((state) => ({
+          cards: state.cards.map((card) =>
+            card.id === activeId
+              ? {
+                  ...card,
+                  lastActivity: 300 + flush,
+                  lastOutput: `output-${flush}`,
+                }
+              : card,
+          ),
+        }));
+      });
+
+      expect(screen.getAllByTestId('terminal-card-name').map((node) => node.textContent))
+        .toEqual(stableOrder);
+    }
+
+    expect(cardRenderCounts.get(olderId)).toBe(301);
+    expect(cardRenderCounts.get(newerId)).toBe(301);
   });
 
   it('does not show drag handles in the all-terminals view', () => {

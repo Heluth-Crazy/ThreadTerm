@@ -22,7 +22,7 @@
 ## Validation
 
 - [x] React 单测和渲染次数断言。
-- [ ] 多卡 10Hz 输出 60 秒。
+- [x] 多卡 10Hz 输出 60 秒（以 600 次交替输出刷新做确定性自动验证）。
 - [x] 1000 条 Codex 流式增量在隐藏/恢复后完整测试。
 - [x] typecheck、lint、full Vitest、build。
 - [x] detect-changes；工作台、终端卡片与会话显示属于预期影响范围。
