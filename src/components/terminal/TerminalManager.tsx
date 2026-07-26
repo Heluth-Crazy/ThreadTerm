@@ -37,7 +37,6 @@ import { SessionDock } from './SessionDock';
 import { StatsPanel } from '../stats/StatsPanel';
 import { useStatsAutoRefresh, useStatsSubscription } from '../../stores/statsStore';
 import { CommandPalette } from '../palette/CommandPalette';
-import { buildCommandRegistry, type CommandGroup } from '../palette/commandRegistry';
 import type { TerminalCreateOptions, TerminalType } from '../../types/terminal';
 import { useSupervisor } from '../../lib/supervisor/useSupervisor';
 import {
@@ -45,7 +44,6 @@ import {
   isTauriEnv,
   mobileBridge,
 } from '../../lib/tauri-bridge';
-import { openSettingsWindow, type SettingsTab } from '../../lib/settingsWindow';
 import { cardMatchesWorktree } from '../../lib/worktreePaths';
 import { clearProjectBranchCache } from './useProjectBranches';
 import { clearProjectWorktreeCache } from './useProjectWorktrees';
@@ -70,8 +68,12 @@ import {
 } from './WorkspaceContentTabStrip';
 import { useWorkspaceContent } from './useWorkspaceContent';
 import { useMobileWorkbenchSync } from './useMobileWorkbenchSync';
+import {
+  useTerminalNavigation,
+  type TerminalViewMode,
+} from './useTerminalNavigation';
+import { useTerminalCommandPalette } from './useTerminalCommandPalette';
 
-type ViewMode = 'grid' | 'focus';
 const TERMINAL_TYPES: TerminalType[] = [
   'shell',
   'claude',
@@ -91,27 +93,11 @@ function normalizeTerminalType(value: string): TerminalType {
   return TERMINAL_TYPES.includes(value as TerminalType) ? (value as TerminalType) : 'custom';
 }
 
-declare global {
-  interface Window {
-    __terminalManager?: {
-      openCreate: () => void;
-      closeCreate: () => void;
-      setViewMode: (mode: ViewMode) => void;
-      openSettings: (tab?: SettingsTab) => void;
-      openPalette: () => void;
-      closePalette: () => void;
-      requestRemoveCard: (cardId: string) => Promise<boolean>;
-      requestArchiveCard: (cardId: string) => Promise<boolean>;
-    };
-  }
-}
-
 export function TerminalManager() {
   const { t } = useTranslation('terminal');
   const cards = useTerminalStore((s) => s.cards);
   const archivedCards = useTerminalStore((s) => s.archivedCards);
   const focusedCardId = useTerminalStore((s) => s.focusedCardId);
-  const focusCard = useTerminalStore((s) => s.focusCard);
   const createCard = useTerminalStore((s) => s.createCard);
   const restoreArchivedCard = useTerminalStore((s) => s.restoreArchivedCard);
   const selectProject = useTerminalStore((s) => s.selectProject);
@@ -121,12 +107,6 @@ export function TerminalManager() {
   const selectedProjectPath = useTerminalStore((s) => s.selectedProjectPath);
   const selectedWorktreePath = useTerminalStore((s) => s.selectedWorktreePath);
   const selectedWorktreeLabel = useTerminalStore((s) => s.selectedWorktreeLabel);
-  const pendingFocusCardId = useTerminalStore((s) => s.pendingFocusCardId);
-  const setPendingFocusCardId = useTerminalStore((s) => s.setPendingFocusCardId);
-  const pendingLocateCardId = useTerminalStore((s) => s.pendingLocateCardId);
-  const setPendingLocateCardId = useTerminalStore((s) => s.setPendingLocateCardId);
-  const highlightCard = useTerminalStore((s) => s.highlightCard);
-  const updateCardAiIntent = useTerminalStore((s) => s.updateCardAiIntent);
   const pushNotification = useTerminalStore((s) => s.pushNotification);
   const dockPinned = useTerminalStore((s) => s.dockPinned);
   const toggleDockPin = useTerminalStore((s) => s.toggleDockPin);
@@ -167,10 +147,8 @@ export function TerminalManager() {
     [cards, selectedProjectPath, selectedWorktreePath],
   );
 
-  const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  const [viewMode, setViewMode] = useState<TerminalViewMode>('grid');
   const [primaryView, setPrimaryView] = useState<PrimaryView>('workbench');
-  const returnPrimaryViewRef = useRef<PrimaryView>('workbench');
-  const previousFocusedCardIdRef = useRef<string | null>(null);
   const [workbenchPanel, setWorkbenchPanel] = useState<WorkbenchPanelState | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
@@ -199,8 +177,6 @@ export function TerminalManager() {
   });
   useStatsSubscription();
   useStatsAutoRefresh();
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  const [paletteInitialGroup, setPaletteInitialGroup] = useState<CommandGroup | null>(null);
 
   // Shortcut hint: dismissible, persisted across sessions. Once the user
   // closes it, never show again unless they wipe localStorage.
@@ -403,6 +379,46 @@ export function TerminalManager() {
     mountCardInBackground(focusedCardId);
   }, [focusedCardId, mountCardInBackground]);
 
+  const {
+    focusMountedCard,
+    handleBackToGrid,
+    handleCloseWorkbenchPanel,
+    handleOpenMobileAccess,
+    handleOpenTerminal,
+    handleOpenWorkbenchPanel,
+    handleSelectPrimaryView,
+    handleSelectSessionDockCard,
+  } = useTerminalNavigation({
+    cards,
+    focusedCard,
+    focusedCardId,
+    primaryView,
+    terminalsVisible,
+    activateTerminalForCard,
+    closeRightSurface,
+    mountCardInBackground,
+    openRightSurface,
+    setMobileViewActive,
+    setPrimaryView,
+    setSidebarOpen,
+    setViewMode,
+    setWorkbenchPanel,
+  });
+  const {
+    closePalette,
+    handleOpenSettings,
+    paletteEntries,
+    paletteInitialGroup,
+    paletteOpen,
+  } = useTerminalCommandPalette({
+    cards,
+    focusedCardId,
+    requestArchiveCard,
+    requestRemoveCard,
+    setCreateOpen,
+    setViewMode,
+  });
+
   useEffect(() => {
     if (!mobileBridgeSyncEnabled) return;
     let cancelled = false;
@@ -546,130 +562,6 @@ export function TerminalManager() {
     }
   }, [cards]);
 
-  // Automatically enter focus mode when a card is focused, back to grid when cleared.
-  useEffect(() => {
-    if (focusedCardId && focusedCard) {
-      if (!previousFocusedCardIdRef.current) {
-        returnPrimaryViewRef.current = primaryView;
-      }
-      setViewMode('focus');
-    } else {
-      setViewMode('grid');
-    }
-    previousFocusedCardIdRef.current = focusedCardId;
-  }, [focusedCardId, focusedCard, primaryView]);
-
-  const focusMountedCard = useCallback(
-    (cardId: string) => {
-      mountCardInBackground(cardId);
-      focusCard(cardId);
-      setViewMode('focus');
-    },
-    [focusCard, mountCardInBackground],
-  );
-
-  useEffect(() => {
-    if (!pendingFocusCardId) return;
-    if (!cards.some((card) => card.id === pendingFocusCardId)) {
-      setPendingFocusCardId(null);
-      return;
-    }
-    returnPrimaryViewRef.current = primaryView;
-    setWorkbenchPanel(null);
-    closeRightSurface('workbench');
-    setMobileViewActive(false);
-    focusMountedCard(pendingFocusCardId);
-    setPendingFocusCardId(null);
-  }, [
-    cards,
-    closeRightSurface,
-    focusMountedCard,
-    pendingFocusCardId,
-    primaryView,
-    setPendingFocusCardId,
-  ]);
-
-  // Notification locate channel — the smart-hybrid grid path. The card is
-  // already visible at store level (openNotificationTarget fixed filters),
-  // so a pulse is enough: the highlighted card scrolls itself into view.
-  useEffect(() => {
-    if (!pendingLocateCardId) return;
-    if (cards.some((card) => card.id === pendingLocateCardId)) {
-      if (terminalsVisible) {
-        highlightCard(pendingLocateCardId);
-      } else {
-        returnPrimaryViewRef.current = primaryView;
-        setWorkbenchPanel(null);
-        closeRightSurface('workbench');
-        setMobileViewActive(false);
-        focusMountedCard(pendingLocateCardId);
-      }
-    }
-    setPendingLocateCardId(null);
-  }, [
-    cards,
-    closeRightSurface,
-    focusMountedCard,
-    highlightCard,
-    pendingLocateCardId,
-    primaryView,
-    setPendingLocateCardId,
-    terminalsVisible,
-  ]);
-
-  const handleOpenTerminal = useCallback(
-    (cardId: string) => {
-      returnPrimaryViewRef.current = primaryView;
-      setWorkbenchPanel(null);
-      closeRightSurface('workbench');
-      setMobileViewActive(false);
-      focusMountedCard(cardId);
-    },
-    [closeRightSurface, focusMountedCard, primaryView],
-  );
-
-  const handleBackToGrid = useCallback(() => {
-    focusCard(null);
-    setPrimaryView(returnPrimaryViewRef.current);
-    setMobileViewActive(false);
-    setViewMode('grid');
-  }, [focusCard]);
-
-  const handleSelectPrimaryView = useCallback(
-    (view: PrimaryView) => {
-      returnPrimaryViewRef.current = view;
-      setPrimaryView(view);
-      setMobileViewActive(false);
-      setWorkbenchPanel(null);
-      closeRightSurface('workbench');
-      setSidebarOpen(false);
-      if (focusedCardId) focusCard(null);
-      setViewMode('grid');
-    },
-    [closeRightSurface, focusCard, focusedCardId],
-  );
-
-  const handleOpenMobileAccess = useCallback(() => {
-    setMobileViewActive(true);
-    setWorkbenchPanel(null);
-    closeRightSurface('workbench');
-    if (focusedCardId) focusCard(null);
-    setViewMode('grid');
-  }, [closeRightSurface, focusCard, focusedCardId]);
-
-  const handleOpenWorkbenchPanel = useCallback(
-    (panel: WorkbenchPanelState) => {
-      setWorkbenchPanel(panel);
-      openRightSurface('workbench');
-    },
-    [openRightSurface],
-  );
-
-  const handleCloseWorkbenchPanel = useCallback(() => {
-    setWorkbenchPanel(null);
-    closeRightSurface('workbench');
-  }, [closeRightSurface]);
-
   const sessionDockVisible = sessionDockPanelVisible;
 
   const handleCloseSessionDock = useCallback(() => {
@@ -677,59 +569,11 @@ export function TerminalManager() {
     closeRightSurface('sessionDock');
   }, [closeRightSurface, dockPinned, toggleDockPin]);
 
-  const handleSelectSessionDockCard = useCallback(
-    (cardId: string) => {
-      focusMountedCard(cardId);
-      activateTerminalForCard(cardId);
-    },
-    [activateTerminalForCard, focusMountedCard],
-  );
-
   const handleRestoreArchivedCard = useCallback(
     (cardId: string) => {
       restoreArchivedCard(cardId);
     },
     [restoreArchivedCard],
-  );
-
-  const handleOpenSettings = useCallback((tab: SettingsTab = 'shortcuts') => {
-    void openSettingsWindow(tab).catch((error) => {
-      console.warn('[settings] failed to open settings window', error);
-    });
-  }, []);
-
-  // Stage 5.2 — palette entries derived from current store snapshot.
-  const paletteProjects = useMemo(
-    () => Array.from(new Set(cards.map((c) => c.projectPath))),
-    [cards],
-  );
-  const paletteEntries = useMemo(
-    () => {
-      if (!paletteOpen) return [];
-      return buildCommandRegistry({
-        cards,
-        projects: paletteProjects,
-        focusedCardId,
-        actions: {
-          focusCard,
-          selectProject,
-          toggleNotificationCentre,
-          updateCardAiIntent,
-          openSettings: handleOpenSettings,
-        },
-      });
-    },
-    [
-      paletteOpen,
-      cards,
-      paletteProjects,
-      focusedCardId,
-      focusCard,
-      handleOpenSettings,
-      selectProject,
-      updateCardAiIntent,
-      toggleNotificationCentre,
-    ],
   );
 
   const handleCreate = useCallback(
@@ -800,29 +644,6 @@ export function TerminalManager() {
     },
     [cards, createCard, focusMountedCard, pushNotification, selectWorktree, selectedProjectName, t],
   );
-
-  // Expose imperative API.
-  useEffect(() => {
-    window.__terminalManager = {
-      openCreate: () => setCreateOpen(true),
-      closeCreate: () => setCreateOpen(false),
-      setViewMode: (mode) => setViewMode(mode),
-      openSettings: handleOpenSettings,
-      openPalette: () => {
-        setPaletteInitialGroup(null);
-        setPaletteOpen(true);
-      },
-      closePalette: () => {
-        setPaletteInitialGroup(null);
-        setPaletteOpen(false);
-      },
-      requestRemoveCard,
-      requestArchiveCard,
-    };
-    return () => {
-      delete window.__terminalManager;
-    };
-  }, [handleOpenSettings, requestArchiveCard, requestRemoveCard]);
 
   const recentProjects = useMemo(
     () => cards.map((c) => ({ path: c.projectPath, name: c.projectName })),
@@ -1259,10 +1080,7 @@ export function TerminalManager() {
         open={paletteOpen}
         entries={paletteEntries}
         initialGroup={paletteInitialGroup}
-        onClose={() => {
-          setPaletteInitialGroup(null);
-          setPaletteOpen(false);
-        }}
+        onClose={closePalette}
       />
 
       {/* Create dialog */}
