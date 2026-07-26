@@ -435,6 +435,8 @@ pub enum ServerMessage {
         workbench: Option<MobileWorkbenchProjection>,
         #[serde(rename = "warmingUp")]
         warming_up: bool,
+        #[serde(rename = "serverId")]
+        server_id: String,
         #[serde(rename = "runtimeId")]
         runtime_id: String,
         #[serde(rename = "streamSeq")]
@@ -591,6 +593,7 @@ impl From<BridgeSnapshot> for ServerMessage {
             notifications: value.notifications,
             workbench: value.workbench,
             warming_up: value.warming_up,
+            server_id: value.server_id,
             runtime_id: value.runtime_id,
             stream_seq: value.stream_seq,
         }
@@ -667,6 +670,27 @@ mod tests {
         assert_eq!(json["kind"], "state");
         assert_eq!(json["card_id"], "card-1");
         assert_eq!(json["status"], "waiting_for_input");
+    }
+
+    #[test]
+    fn snapshot_preserves_the_server_identity_for_mobile_clients() {
+        let message: ServerMessage = BridgeSnapshot {
+            cards: Vec::new(),
+            notifications: Vec::new(),
+            workbench: None,
+            warming_up: false,
+            server_id: "server-a".to_string(),
+            runtime_id: "runtime-a".to_string(),
+            stream_seq: 7,
+        }
+        .into();
+
+        let json = serde_json::to_value(versioned_server_message(message))
+            .expect("serialize bridge snapshot");
+        assert_eq!(json["kind"], "snapshot");
+        assert_eq!(json["serverId"], "server-a");
+        assert_eq!(json["runtimeId"], "runtime-a");
+        assert_eq!(json["streamSeq"], 7);
     }
 
     #[test]
