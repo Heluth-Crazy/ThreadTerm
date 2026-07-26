@@ -92,14 +92,16 @@ jobs:
       - name: Build mobile application
         run: npm run build:mobile
 
-      - name: Install Chromium for real bridge checks
-        run: npx playwright install chromium
+      - name: Install mobile browsers for real bridge checks
+        run: npx playwright install chromium webkit
 
       - name: Repeat real mobile browser bridge checks ten times
         shell: pwsh
         run: |
           1..10 | ForEach-Object {
             npx playwright test -c e2e/mobile-real/playwright.config.ts
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            npx playwright test -c e2e/mobile-real/playwright.webkit.config.ts
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
