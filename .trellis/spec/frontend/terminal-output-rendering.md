@@ -42,10 +42,11 @@
   viewport rows into scrollback movement.
 - Desktop output sequencing and ACK flow control remain unchanged. Do not ACK a
   non-empty payload until xterm's `write` completion callback runs.
-- `useXtermLifecycle` owns xterm construction and input/scroll listeners, but
-  it does not own PTY output sequencing, snapshots, renderer leases, or ACKs.
-  Those remain outside the xterm-instance lifecycle until moved as one tested
-  connection unit.
+- `useXtermLifecycle` owns xterm construction and input/scroll listeners.
+  `usePtyOutputLifecycle` owns renderer-consumer disposal, listener cleanup,
+  and snapshot recovery. PTY connection setup, live sequencing, and ACK wiring
+  must preserve the same ordering while they are moved into the remaining
+  connection lifecycle.
 - Scroll-follow decisions and tests use xterm's public `baseY`/`viewportY`
   model. Do not infer scroll position from `.xterm-viewport.scrollTop`; xterm 6
   uses a custom scrollbar whose internal DOM metrics are not the buffer model.

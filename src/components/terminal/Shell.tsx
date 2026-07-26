@@ -19,6 +19,13 @@ import {
   useTerminalSurfaceController,
   useTerminalSurfaceLifecycle,
 } from './useTerminalSurfaceLifecycle';
+import {
+  createRendererConsumerId,
+  disposeRendererConsumer,
+  onceUnlisten,
+  RENDERER_CONSUMER_HEARTBEAT_MS,
+  usePtyOutputLifecycle,
+} from './usePtyOutputLifecycle';
 import { useXtermLifecycle } from './useXtermLifecycle';
 import type {
   DetachCurrentPtyOptions,
@@ -71,36 +78,6 @@ const CLEANUP_SEQUENCE_RE = /\x1b\[[0-9;]*[JKLMPX]/;
 // blocking write, so input/scroll stay responsive while a history-heavy session
 // restores. End state is identical — xterm's parser is stateful across writes.
 const SNAPSHOT_RESTORE_CHUNK_CHARS = 65536;
-const RENDERER_CONSUMER_HEARTBEAT_MS = 5000;
-
-function createRendererConsumerId(scope = 'main'): string {
-  const uuid = globalThis.crypto?.randomUUID?.();
-  const instanceId = uuid || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `renderer:${scope}:${instanceId}`;
-}
-
-function onceUnlisten(unlisten: Unlisten | null | undefined): Unlisten {
-  let disposed = false;
-  return () => {
-    if (disposed) return;
-    disposed = true;
-    unlisten?.();
-  };
-}
-
-function disposeRendererConsumer(
-  consumer: RendererOutputConsumer | null | undefined,
-): void {
-  if (!consumer || consumer.disposed) return;
-  consumer.disposed = true;
-  if (consumer.heartbeatTimer !== null) {
-    window.clearInterval(consumer.heartbeatTimer);
-  }
-  consumer.acknowledger.dispose();
-  // Best-effort immediate cleanup. The backend also expires renderer leases
-  // that stop heartbeating, so a crashed WebView cannot pin flow forever.
-  pty.unregisterOutputConsumer(consumer.ptyId, consumer.consumerId).catch(() => {});
-}
 
 function fallbackCopyToClipboard(text: string): boolean {
   if (!text || typeof document === 'undefined') return false;
@@ -235,80 +212,22 @@ function Shell({
     setIsConnected(value);
   }, []);
 
-  const restoreOutputConsumerFromSnapshot = useCallback((
-    consumer: RendererOutputConsumer | null | undefined,
-  ): Promise<boolean> => {
-    if (!consumer || consumer.disposed) return Promise.resolve(false);
-    if (consumer.recoveryPromise) return consumer.recoveryPromise;
-
-    const sequencer = outputSequencerRef.current;
-    const term = terminal.current;
-    if (!sequencer || !term || outputConsumerRef.current !== consumer) {
-      return Promise.resolve(false);
-    }
-
-    consumer.needsSnapshotRecovery = true;
-    // Buffer live output until the attach snapshot establishes a fresh,
-    // process-ordered watermark. This prevents a long-hidden WebView from
-    // painting stale output over the recovered screen.
-    sequencer.reset();
-
-    const isCurrentRecovery = () =>
-      !consumer.disposed &&
-      outputConsumerRef.current === consumer &&
-      outputSequencerRef.current === sequencer &&
-      terminal.current === term &&
-      ptyIdRef.current === consumer.ptyId;
-
-    let registered = false;
-    let recoveryPromise: Promise<boolean> | null = null;
-    recoveryPromise = (async () => {
-      try {
-        await pty.registerOutputConsumer(consumer.ptyId, consumer.consumerId);
-        registered = true;
-        if (!isCurrentRecovery()) return false;
-
-        const snapshot = await pty.attachSnapshot(consumer.ptyId);
-        if (!isCurrentRecovery()) return false;
-        if (!snapshot) {
-          throw new Error('PTY session is unavailable during renderer recovery');
-        }
-
-        term.clear();
-        term.write('\x1b[2J\x1b[H');
-        if (snapshot.rows && snapshot.cols) {
-          term.resize(snapshot.cols, snapshot.rows);
-          lastPtySizeRef.current = { rows: snapshot.rows, cols: snapshot.cols };
-        }
-        sequencer.applySnapshot({
-          seq: snapshot.seq,
-          data: `${snapshot.history || ''}${snapshot.data || ''}`,
-        });
-        consumer.needsSnapshotRecovery = false;
-        scrolledUpRef.current = false;
-        pendingNewLinesRef.current = 0;
-        setScrolledUp(false);
-        setNewOutputLines(0);
-        return true;
-      } catch (error) {
-        if (isCurrentRecovery()) {
-          logger.warn('[Shell] Renderer snapshot recovery failed:', error);
-        }
-        return false;
-      } finally {
-        if (registered && consumer.needsSnapshotRecovery) {
-          await pty
-            .unregisterOutputConsumer(consumer.ptyId, consumer.consumerId)
-            .catch(() => {});
-        }
-        if (consumer.recoveryPromise === recoveryPromise) {
-          consumer.recoveryPromise = null;
-        }
-      }
-    })();
-    consumer.recoveryPromise = recoveryPromise;
-    return recoveryPromise;
-  }, []);
+  const {
+    restoreOutputConsumerFromSnapshot,
+    cleanupListeners,
+  } = usePtyOutputLifecycle({
+    terminalRef: terminal,
+    ptyIdRef,
+    unlistenOutputRef,
+    unlistenExitRef,
+    outputSequencerRef,
+    outputConsumerRef,
+    lastPtySizeRef,
+    scrolledUpRef,
+    pendingNewLinesRef,
+    setScrolledUp,
+    setNewOutputLines,
+  });
 
   const {
     resizePtyIfNeeded,
@@ -331,18 +250,6 @@ function Shell({
     setScrolledUp,
     setNewOutputLines,
   });
-
-  const cleanupListeners = useCallback(() => {
-    unlistenOutputRef.current?.();
-    unlistenExitRef.current?.();
-    unlistenOutputRef.current = null;
-    unlistenExitRef.current = null;
-    outputSequencerRef.current?.reset();
-    outputSequencerRef.current = null;
-    const outputConsumer = outputConsumerRef.current;
-    outputConsumerRef.current = null;
-    disposeRendererConsumer(outputConsumer);
-  }, []);
 
   const detachCurrentPty = useCallback(({
     clearTerminal = true,
@@ -742,6 +649,7 @@ function Shell({
     paneId,
     recoverTerminalSurface,
     rendererScope,
+    restoreOutputConsumerFromSnapshot,
     scheduleNewOutputFlush,
     scheduleReconnect,
     scheduleTerminalRefresh,
