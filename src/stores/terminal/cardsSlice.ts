@@ -37,11 +37,25 @@ import {
   uid,
   uuid,
 } from './helpers';
-import { stripAnsiTail } from '../../lib/ansiText';
+import { createAnsiTailSanitizer } from '../../lib/ansiText';
 import type { CardsSlice, TerminalSliceCreator } from './types';
 import { MAX_CARD_NAME_LENGTH } from './types';
 
-export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => ({
+export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => {
+  const outputSanitizers = new Map<
+    string,
+    ReturnType<typeof createAnsiTailSanitizer>
+  >();
+  const sanitizeOutput = (id: string, chunk: string) => {
+    let sanitizer = outputSanitizers.get(id);
+    if (!sanitizer) {
+      sanitizer = createAnsiTailSanitizer();
+      outputSanitizers.set(id, sanitizer);
+    }
+    return sanitizer.push(chunk, MAX_LAST_OUTPUT_LENGTH);
+  };
+
+  return {
   cards: [],
   archivedCards: [],
   projectCardOrder: {},
@@ -224,6 +238,7 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
   },
 
   removeCard: (id) => {
+    outputSanitizers.delete(id);
     const target = get().cards.find((c) => c.id === id);
     if (target && isTauriEnv()) {
       void pty.kill(target.ptyId || target.id);
@@ -285,6 +300,7 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
   },
 
   archiveCard: (id) => {
+    outputSanitizers.delete(id);
     const target = get().cards.find((c) => c.id === id);
     if (target && isTauriEnv()) {
       void pty.kill(target.ptyId || target.id);
@@ -364,7 +380,7 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
     set((state) => {
       const idx = state.cards.findIndex((c) => c.id === id);
       if (idx === -1) return state;
-      const cleaned = stripAnsiTail(chunk, MAX_LAST_OUTPUT_LENGTH);
+      const cleaned = sanitizeOutput(id, chunk);
       const cards = [...state.cards];
       const existing = cards[idx];
       cards[idx] = {
@@ -383,7 +399,7 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
       const existing = state.cards[idx];
       let updated = existing;
       if (chunk !== null) {
-        const cleaned = stripAnsiTail(chunk, MAX_LAST_OUTPUT_LENGTH);
+        const cleaned = sanitizeOutput(id, chunk);
         updated = {
           ...updated,
           lastOutput: tailJoin(existing.lastOutput, cleaned, MAX_LAST_OUTPUT_LENGTH),
@@ -400,7 +416,10 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
       return { cards };
     }),
 
-  updateCardStatus: (id, status) =>
+  updateCardStatus: (id, status) => {
+    if (status === 'idle' || status === 'completed' || status === 'failed') {
+      outputSanitizers.get(id)?.reset();
+    }
     set((state) => {
       const idx = state.cards.findIndex((c) => c.id === id);
       if (idx === -1) return state;
@@ -419,7 +438,8 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
         },
       );
       return { cards };
-    }),
+    });
+  },
 
   updateCardReplyPreview: (id, preview) =>
     set((state) => {
@@ -584,4 +604,5 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
     archivedCardsForProject(get().archivedCards, path, worktreePath),
 
   getCardById: (id) => get().cards.find((c) => c.id === id),
-});
+  };
+};

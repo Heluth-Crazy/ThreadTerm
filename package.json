@@ -28,6 +28,7 @@
     "check": "npm run lint && npm run typecheck && npm run test && npm run build:mobile && npm run clippy",
     "bench:size": "node tools/bench-size.mjs",
     "bench:startup": "node tools/bench-startup.mjs",
+    "bench:terminal-output": "vitest bench benchmarks/terminal-output.bench.ts --run",
     "test:e2e:mobile": "playwright test -c playwright.config.ts",
     "test:e2e:desktop": "playwright test -c e2e/desktop/playwright.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",

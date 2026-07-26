@@ -320,6 +320,22 @@ describe('terminalStore — card lifecycle', () => {
     expect(out.length).toBeLessThanOrEqual(2000);
   });
 
+  it('updateCardOutput keeps ANSI controls split across flushes out of the summary', () => {
+    const id = useTerminalStore.getState().createCard({
+      projectName: 'foo',
+      projectPath: '/tmp/foo',
+      terminalType: 'shell',
+    });
+
+    useTerminalStore.getState().updateCardOutput(id, 'before\x1b[');
+    useTerminalStore.getState().updateCardOutput(id, '31mred\x1b]0;private');
+    useTerminalStore.getState().updateCardOutput(id, '-title\x07after\x1b');
+    useTerminalStore.getState().updateCardOutput(id, '[0mplain');
+
+    expect(useTerminalStore.getState().getCardById(id)?.lastOutput)
+      .toBe('beforeredafterplain');
+  });
+
   it('updateCardOutput strips OSC titles, 2-byte ESC and control chars', () => {
     const id = useTerminalStore.getState().createCard({
       projectName: 'foo',

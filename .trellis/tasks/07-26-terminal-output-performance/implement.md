@@ -3,7 +3,7 @@
 ## Baseline
 
 - [x] impact cards slice、headless preview、output buffer、event bridge。
-- [ ] 建立 10/100 MiB、ANSI 跨块和 TUI 重绘基准。
+- [x] 建立 10/100 MiB、ANSI 跨块和 TUI 重绘基准。
 
 ## Summary and Preview
 
