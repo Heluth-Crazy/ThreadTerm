@@ -1,9 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Terminal, type ITheme } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import { WebLinksAddon } from '@xterm/addon-web-links';
-import { WebglAddon } from '@xterm/addon-webgl';
-import '@xterm/xterm/css/xterm.css';
+import type { ITheme, Terminal } from '@xterm/xterm';
+import type { FitAddon } from '@xterm/addon-fit';
 import { useTranslation } from 'react-i18next';
 import { logger } from '../../lib/logger';
 import { isTauriEnv, pty } from '../../lib/tauri-bridge';
@@ -17,10 +14,12 @@ import {
   formatExitBanner,
   shouldFollowOutput,
 } from './shellBehavior';
+import { CODEX_DEVICE_AUTH_URL, isCodexLoginCommand } from './shellAuth';
 import {
   useTerminalSurfaceController,
   useTerminalSurfaceLifecycle,
 } from './useTerminalSurfaceLifecycle';
+import { useXtermLifecycle } from './useXtermLifecycle';
 import type {
   DetachCurrentPtyOptions,
   OutputSequencer,
@@ -66,7 +65,6 @@ if (typeof document !== 'undefined' && !document.getElementById('threadterm-xter
   document.head.appendChild(styleSheet);
 }
 
-const CODEX_DEVICE_AUTH_URL = 'https://auth.openai.com/codex/device';
 const CLEANUP_SEQUENCE_RE = /\x1b\[[0-9;]*[JKLMPX]/;
 // W0.3: above this size, a session-restore snapshot is written to xterm in
 // byte-budgeted slices (chained on term.write's drain callback) instead of one
@@ -104,10 +102,6 @@ function disposeRendererConsumer(
   pty.unregisterOutputConsumer(consumer.ptyId, consumer.consumerId).catch(() => {});
 }
 
-function isCodexLoginCommand(command: unknown): command is string {
-  return typeof command === 'string' && /\bcodex\s+login\b/i.test(command);
-}
-
 function fallbackCopyToClipboard(text: string): boolean {
   if (!text || typeof document === 'undefined') return false;
 
@@ -131,15 +125,6 @@ function fallbackCopyToClipboard(text: string): boolean {
   }
 
   return copied;
-}
-
-async function waitForFonts(): Promise<void> {
-  if (!document.fonts?.ready) return;
-  try {
-    await document.fonts.ready;
-  } catch {
-    // Font readiness failure should not block terminal startup.
-  }
 }
 
 function Shell({
@@ -853,220 +838,31 @@ function Shell({
     return copied;
   }, []);
 
-  useEffect(() => {
-    if (!terminalRef.current || !selectedProject || isRestarting || terminal.current) {
-      return;
-    }
-
-    terminal.current = new Terminal({
-      cursorBlink: true,
-      fontSize: 14,
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-      allowProposedApi: true,
-      allowTransparency: false,
-      convertEol: true,
-      scrollback: 3000,
-      // Preserve ED2 semantics without turning a full-screen TUI repaint into
-      // scrollback movement. Agent control sequences remain byte-identical.
-      scrollOnEraseInDisplay: false,
-      tabStopWidth: 4,
-      macOptionIsMeta: true,
-      macOptionClickForcesSelection: true,
-      theme: terminalThemeRef.current,
-    });
-
-    fitAddon.current = new FitAddon();
-    terminal.current.loadAddon(fitAddon.current);
-    if (!minimal) {
-      terminal.current.loadAddon(new WebLinksAddon());
-    }
-
-    terminal.current.open(terminalRef.current);
-
-    // Windows WebView2's xterm DOM renderer is extremely slow with a large
-    // scrollback, which makes opening a history-heavy session janky and the
-    // viewport sluggish to scroll (issues #4 / #7). Activate the GPU
-    // renderer; degrade gracefully to the DOM renderer when WebGL is
-    // unavailable or its context is lost so the terminal never goes blank.
-    try {
-      const webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => {
-        try {
-          webglAddon.dispose();
-        } catch {
-          // Already disposed — xterm falls back to the DOM renderer.
-        }
-      });
-      terminal.current.loadAddon(webglAddon);
-    } catch {
-      // WebGL unsupported in this webview — keep xterm's DOM renderer.
-    }
-
-    terminal.current.attachCustomKeyEventHandler((event) => {
-      const activeAuthUrl = isCodexLoginCommand(initialCommandRef.current)
-        ? CODEX_DEVICE_AUTH_URL
-        : '';
-
-      if (
-        event.type === 'keydown' &&
-        minimal &&
-        activeAuthUrl &&
-        !event.ctrlKey &&
-        !event.metaKey &&
-        !event.altKey &&
-        event.key?.toLowerCase() === 'c'
-      ) {
-        copyAuthUrlToClipboard(activeAuthUrl).catch(() => {});
-      }
-
-      if (
-        event.type === 'keydown' &&
-        (event.ctrlKey || event.metaKey) &&
-        event.key?.toLowerCase() === 'c' &&
-        terminal.current?.hasSelection()
-      ) {
-        event.preventDefault();
-        event.stopPropagation();
-        document.execCommand('copy');
-        return false;
-      }
-
-      if (
-        event.type === 'keydown' &&
-        (event.ctrlKey || event.metaKey) &&
-        event.key?.toLowerCase() === 'v'
-      ) {
-        event.preventDefault();
-        event.stopPropagation();
-
-        navigator.clipboard.readText().then((text) => {
-          if (ptyIdRef.current) {
-            pty.input(ptyIdRef.current, text).catch(() => {});
-            if (/[\r\n]/.test(text)) {
-              onUserSubmitRef.current?.();
-            }
-          }
-        }).catch(() => {});
-        return false;
-      }
-
-      return true;
-    });
-
-    terminal.current.onData((data) => {
-      if (ptyIdRef.current) {
-        pty.input(ptyIdRef.current, data).catch(() => {});
-        if (/[\r\n]/.test(data)) {
-          onUserSubmitRef.current?.();
-        }
-      }
-    });
-
-    // Track whether the viewport sits at the bottom; returning to the bottom
-    // (manually or via the indicator button) clears the new-output counter.
-    const scrollDisposable = terminal.current.onScroll(() => {
-      if (!activeRef.current) return;
-      const term = terminal.current;
-      if (!term) return;
-      const buf = term.buffer.active;
-      const atBottom =
-        buf.type === 'alternate' ||
-        buf.viewportY >= buf.baseY;
-      scrolledUpRef.current = !atBottom;
-      setScrolledUp(!atBottom);
-      if (atBottom) {
-        pendingNewLinesRef.current = 0;
-        setNewOutputLines(0);
-      }
-    });
-
-    waitForFonts().finally(() => {
-      requestAnimationFrame(() => {
-        recoverTerminalSurface(activeRef.current, true);
-      });
-    });
-
-    setIsInitialized(true);
-
-    let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-    const resizeObserver = new ResizeObserver(() => {
-      if (!fitAddon.current || !terminal.current) return;
-      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
-      resizeDebounceTimer = setTimeout(() => {
-        resizeDebounceTimer = null;
-        if (!fitAddon.current || !terminal.current) return;
-        // Hidden terminals (visibility:hidden — a workspace diff/file tab or
-        // another card is in front) skip fit entirely. Fitting while hidden
-        // resizes the PTY, and on Windows every ConPTY resize replays the
-        // whole screen — so a panel squeeze while hidden plus the un-squeeze
-        // on return produced two replays the user saw as history re-scrolling.
-        // recoverTerminalSurface() re-fits once when the card becomes active,
-        // and if the width is back to what it was, the cols don't change and
-        // no PTY resize (hence no replay) happens at all.
-        const host = terminalRef.current;
-        if (host && getComputedStyle(host).visibility === 'hidden') return;
-        try {
-          fitAddon.current.fit();
-        } catch {
-          return;
-        }
-        resizePtyIfNeeded(terminal.current.rows, terminal.current.cols);
-        if (activeRef.current && !scrolledUpRef.current && !terminal.current.hasSelection()) {
-          scrollTerminalToBottom();
-        }
-      }, 150);
-    });
-
-    resizeObserver.observe(terminalRef.current);
-
-    return () => {
-      connectGenerationRef.current += 1;
-      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
-      resizeObserver.disconnect();
-      try {
-        scrollDisposable.dispose();
-      } catch {
-        // Already disposed with the terminal.
-      }
-      if (newOutputFlushTimerRef.current) {
-        clearTimeout(newOutputFlushTimerRef.current);
-        newOutputFlushTimerRef.current = null;
-      }
-      pendingNewLinesRef.current = 0;
-      scrolledUpRef.current = false;
-      cancelSurfaceRecovery();
-
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
-      retryCountRef.current = 0;
-      cleanupListeners();
-
-      if (ptyIdRef.current) {
-        if (terminal.current) {
-          unregisterTerminal(ptyIdRef.current, terminal.current);
-        } else {
-          unregisterTerminal(ptyIdRef.current);
-        }
-        if (!preservePtyOnUnmountRef.current) {
-          pty.kill(ptyIdRef.current).catch(() => {});
-        }
-      }
-      ptyIdRef.current = null;
-      lastPtySizeRef.current = null;
-
-      if (terminal.current) {
-        terminal.current.dispose();
-        terminal.current = null;
-      }
-      fitAddon.current = null;
-    };
-  }, [
-    selectedProject?.path,
-    selectedProject?.fullPath,
+  useXtermLifecycle({
+    selectedProjectRef,
+    projectPath: selectedProject?.path,
+    projectFullPath: selectedProject?.fullPath,
     isRestarting,
     minimal,
+    terminalHostRef: terminalRef,
+    terminalRef: terminal,
+    terminalThemeRef,
+    fitAddonRef: fitAddon,
+    ptyIdRef,
+    initialCommandRef,
+    onUserSubmitRef,
+    activeRef,
+    preservePtyOnUnmountRef,
+    connectGenerationRef,
+    reconnectTimeoutRef,
+    retryCountRef,
+    newOutputFlushTimerRef,
+    pendingNewLinesRef,
+    scrolledUpRef,
+    lastPtySizeRef,
+    setScrolledUp,
+    setNewOutputLines,
+    setIsInitialized,
     copyAuthUrlToClipboard,
     cleanupListeners,
     cancelSurfaceRecovery,
@@ -1075,7 +871,7 @@ function Shell({
     scheduleTerminalRefresh,
     scrollTerminalToBottom,
     restoreOutputConsumerFromSnapshot,
-  ]);
+  });
 
   useTerminalSurfaceLifecycle({
     active,

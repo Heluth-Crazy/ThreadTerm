@@ -25,7 +25,8 @@
 - [ ] Shell 类型化并按生命周期拆 hooks。
   - [x] Shell 从 JSX 迁为严格类型的 TSX，保持对外 props 与运行顺序不变。
   - [x] 尺寸、聚焦、可见性恢复与重绘迁入终端表面 hooks。
-  - [ ] 终端创建、输入、会话恢复与输出连接生命周期迁入专用 hooks。
+  - [x] xterm 创建、插件、输入、滚动监听与卸载迁入实例 hook。
+  - [ ] 会话恢复与输出连接生命周期迁入专用 hook。
 - [ ] TerminalManager 模型/注册/协调拆分。
 
 ## Validation

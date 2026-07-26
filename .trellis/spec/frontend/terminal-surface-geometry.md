@@ -40,6 +40,10 @@
 - `useTerminalSurfaceLifecycle` owns activation, visibility, geometry
   invalidation, and renderer-lease restoration effects. Keep its effects in
   the same order relative to xterm creation and pane auto-connect effects.
+- `useXtermLifecycle` owns the xterm instance, addons, keyboard/input handlers,
+  scroll listener, `ResizeObserver`, and terminal teardown. Its single effect
+  stays between connection callbacks and surface-activation effects so cleanup
+  and auto-connect ordering remain unchanged.
 
 ### 4. Validation & Error Matrix
 
