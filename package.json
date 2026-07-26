@@ -30,6 +30,7 @@
     "bench:startup": "node tools/bench-startup.mjs",
     "bench:terminal-output": "vitest bench benchmarks/terminal-output.bench.ts --run",
     "test:e2e:mobile": "playwright test -c playwright.config.ts",
+    "test:e2e:mobile-real": "npm run build:mobile && playwright test -c e2e/mobile-real/playwright.config.ts",
     "test:e2e:desktop": "playwright test -c e2e/desktop/playwright.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "release": "release-it",

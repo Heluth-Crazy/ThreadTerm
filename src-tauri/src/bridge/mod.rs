@@ -1154,6 +1154,67 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Playwright launches this real bridge fixture explicitly"]
+    fn browser_e2e_fixture_server() {
+        use std::{
+            env, fs,
+            path::PathBuf,
+            time::{Duration, Instant},
+        };
+
+        let fixture_dir = PathBuf::from(
+            env::var("THREADTERM_REAL_BRIDGE_FIXTURE_DIR")
+                .expect("THREADTERM_REAL_BRIDGE_FIXTURE_DIR must be set"),
+        );
+        fs::create_dir_all(&fixture_dir).expect("create real bridge fixture directory");
+        let descriptor_path = fixture_dir.join("descriptor.json");
+        let stop_path = fixture_dir.join("stop");
+
+        let _guard = BRIDGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        runtime.block_on(async {
+            let _ = bridge_stop().await;
+            let status = bridge_start(Some("127.0.0.1".to_string()), Some(0))
+                .await
+                .expect("start real browser bridge fixture");
+            let port = status.port.expect("real browser bridge fixture port");
+
+            let mut card = fix2_make_card("real-browser-card", false);
+            card.last_reply_preview = "Real bridge browser fixture".to_string();
+            card.summary_line = Some("Real bridge browser fixture".to_string());
+            BRIDGE_RUNTIME.sync_cards(vec![card]);
+
+            let pair_qr =
+                bridge_pair_qr(Some("127.0.0.1".to_string()), Some(DevicePermission::Full))
+                    .await
+                    .expect("create browser pairing code");
+            let descriptor = serde_json::json!({
+                "pairUrl": pair_qr.url,
+                "serverId": BRIDGE_RUNTIME.server_id(),
+                "port": port,
+                "cardName": "ThreadTerm",
+            });
+            let pending_descriptor_path = fixture_dir.join("descriptor.json.tmp");
+            fs::write(
+                &pending_descriptor_path,
+                serde_json::to_vec(&descriptor).expect("serialize real bridge descriptor"),
+            )
+            .expect("write real bridge descriptor");
+            fs::rename(&pending_descriptor_path, &descriptor_path)
+                .expect("publish real bridge descriptor");
+
+            let deadline = Instant::now() + Duration::from_secs(180);
+            while !stop_path.exists() && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+
+            bridge_stop()
+                .await
+                .expect("stop real browser bridge fixture");
+        });
+    }
+
+    #[test]
     fn preview_snapshot_source_is_lazy_without_subscribers() {
         let runtime = BridgeRuntime::new();
 

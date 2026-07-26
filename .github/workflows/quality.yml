@@ -61,6 +61,9 @@ jobs:
       - name: Run mobile browser flows
         run: npm run test:e2e:mobile
 
+      - name: Run mobile browsers against the real Rust bridge
+        run: npm run test:e2e:mobile-real
+
       - name: Run desktop browser flows
         run: npm run test:e2e:desktop
 
@@ -85,6 +88,20 @@ jobs:
 
       - name: Install JavaScript dependencies
         run: npm ci
+
+      - name: Build mobile application
+        run: npm run build:mobile
+
+      - name: Install Chromium for real bridge checks
+        run: npx playwright install chromium
+
+      - name: Repeat real mobile browser bridge checks ten times
+        shell: pwsh
+        run: |
+          1..10 | ForEach-Object {
+            npx playwright test -c e2e/mobile-real/playwright.config.ts
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       - name: Repeat connection and output recovery checks ten times
         shell: pwsh

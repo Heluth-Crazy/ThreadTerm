@@ -17,8 +17,8 @@
 
 ## Acceptance Criteria
 
-- [ ] PR 自动运行 typecheck、Vitest、Cargo test。
-- [ ] 真实 bridge 测试不使用 MockWebSocket。
-- [ ] 多卡并行测试能覆盖 ACK、水位、删除和重连交错。
-- [ ] 同一门禁连续运行 10 次无随机失败。
+- [x] PR 自动运行 typecheck、Vitest、Cargo test。
+- [x] 真实 bridge 测试不使用 MockWebSocket。
+- [x] 多卡并行测试能覆盖 ACK、水位、删除和重连交错。
+- [x] 同一门禁连续运行 10 次无随机失败。
 - [ ] 真机/长时压力测试有明确手工或定时运行记录。

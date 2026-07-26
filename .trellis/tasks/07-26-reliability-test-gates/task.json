@@ -3,7 +3,7 @@
   "name": "reliability-test-gates",
   "title": "真实断连与多任务质量门禁",
   "description": "补真实断连重连、多终端并行、最小化与跨窗口场景测试，完善自动质量门禁",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
