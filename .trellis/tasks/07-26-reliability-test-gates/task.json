@@ -21,6 +21,6 @@
   "children": [],
   "parent": "07-26-audit-remediation-program",
   "relatedFiles": [],
-  "notes": "",
+  "notes": "Automated gates, real Rust bridge browser tests, WebKit/Chromium recovery, and Windows native process tests are complete. Physical-phone/real-tunnel and minimized Release visual acceptance remain intentionally open.",
   "meta": {}
 }

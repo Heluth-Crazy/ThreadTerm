@@ -21,6 +21,6 @@
   "children": [],
   "parent": "07-26-audit-remediation-program",
   "relatedFiles": [],
-  "notes": "",
+  "notes": "Implementation and automated verification are complete. The task remains open only for the 10-minute minimized-window acceptance, which was not run while another live ThreadTerm development instance owned the single-instance lock.",
   "meta": {}
 }

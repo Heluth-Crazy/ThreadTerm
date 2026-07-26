@@ -3,7 +3,7 @@
   "name": "audit-remediation-program",
   "title": "项目审查整改总计划",
   "description": "除文件浏览范围外，完整规划并分批实施已确认的可靠性、安全、性能、界面和工程质量整改",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -32,6 +32,6 @@
   ],
   "parent": null,
   "relatedFiles": [],
-  "notes": "",
+  "notes": "7/10 child tasks are complete. The remaining LAN security, terminal runtime, and reliability-gate tasks are implementation-complete but stay open for physical-phone, real-tunnel, minimized long-run, and Release visual acceptance.",
   "meta": {}
 }
