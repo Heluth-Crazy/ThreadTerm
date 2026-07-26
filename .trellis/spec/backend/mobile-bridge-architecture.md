@@ -12,6 +12,8 @@
 - `bridge/server.rs` owns HTTP/WebSocket transport, authentication at the
   transport boundary, connection tracking, and request dispatch.
 - `bridge/preview.rs` owns pure terminal-text-to-card-preview projection.
+- `bridge/projection.rs` owns pure PTY-snapshot/tombstone-to-`CardMeta`
+  construction and project-name derivation.
 - `bridge/mod.rs` is the compatibility facade and currently coordinates the
   managed server runtime and the desktop/mobile state mirror.
 
@@ -29,10 +31,11 @@
 ## Dependency Direction
 
 ```text
-protocol <- preview
+preview <- projection -> protocol
 protocol <- pairing <- server
 protocol <- runtime facade -> server
 runtime facade -> preview
+runtime facade -> projection
 ```
 
 Pure projection modules must not depend on the runtime facade. The facade may
