@@ -1,5 +1,5 @@
 /**
- * Shell.jsx behavioural tests (audit Stage 1).
+ * Shell.tsx behavioural tests (audit Stage 1).
  *
  * Covers the three P0/P1 fixes:
  *   • P1-2 — PTY exit appends a banner (no screen wipe) and blocks the silent

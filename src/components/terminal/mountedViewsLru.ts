@@ -11,7 +11,7 @@
  * `MAX_MOUNTED_TERMINAL_VIEWS` views mounted in LRU order; evicted cards
  * unmount their xterm (freeing the WebGL context) while the PTY stays alive
  * in Rust (`preservePtyOnUnmount`), and re-focusing restores the screen and
- * scrollback through the existing `attachSnapshot` path in Shell.jsx.
+ * scrollback through the existing `attachSnapshot` path in Shell.tsx.
  */
 
 /**

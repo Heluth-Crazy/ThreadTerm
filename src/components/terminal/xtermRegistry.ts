@@ -2,7 +2,7 @@
  * xtermRegistry — small lookup of the live xterm.js Terminals currently
  * attached to each PTY id.
  *
- * Shell.jsx owns the visible xterm, while other terminal lifecycle code only
+ * Shell.tsx owns the visible xterm, while other terminal lifecycle code only
  * knows the PTY id. This registry is the narrow lookup used for focus,
  * activation, and cleanup decisions without leaking Shell internals.
  */

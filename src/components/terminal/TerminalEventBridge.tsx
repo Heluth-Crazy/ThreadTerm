@@ -720,7 +720,7 @@ export function TerminalEventBridge(): null {
       //    code > 0 (non-null)          → failed
       //    code === null | undefined    → idle
       //        (happens when we killed the PTY on purpose, e.g. user removed
-      //         the card or the app went through a Shell.jsx remount; treating
+      //         the card or the app went through a Shell.tsx remount; treating
       //         these as "failed" was the root cause of every card showing
       //         red after a navigation)
       const unsubExit = await pty.onExit(({ id, code }) => {

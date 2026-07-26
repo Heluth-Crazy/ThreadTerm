@@ -1,7 +1,7 @@
 /**
  * TerminalView — full-screen view for a single terminal card.
  *
- * Uses the existing Shell.jsx component in `isPlainShell` + `autoConnect`
+ * Uses the existing Shell.tsx component in `isPlainShell` + `autoConnect`
  * mode, passing the card's PTY id so the main window and floating overlay
  * attach to the same Rust PTY session.
  *

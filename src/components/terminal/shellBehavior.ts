@@ -1,5 +1,5 @@
 /**
- * shellBehavior — pure helpers extracted from Shell.jsx so the scroll-follow
+ * shellBehavior — pure helpers extracted from Shell.tsx so the scroll-follow
  * decision, exit banner formatting, and reconnect backoff are unit-testable
  * without mounting xterm.
  */

@@ -23,6 +23,8 @@
   - [x] 服务生命周期迁入 runtime。
   - [x] Tauri 命令薄入口迁入 commands。
 - [ ] Shell 类型化并按生命周期拆 hooks。
+  - [x] Shell 从 JSX 迁为严格类型的 TSX，保持对外 props 与运行顺序不变。
+  - [ ] 终端创建、输入、尺寸、恢复与输出生命周期迁入专用 hooks。
 - [ ] TerminalManager 模型/注册/协调拆分。
 
 ## Validation

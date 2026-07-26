@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Terminal } from '@xterm/xterm';
+import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
@@ -64,13 +64,63 @@ const SNAPSHOT_RESTORE_CHUNK_CHARS = 65536;
 const RENDERER_CONSUMER_HEARTBEAT_MS = 5000;
 const RENDERER_CONSUMER_TTL_MS = 30000;
 
-function createRendererConsumerId(scope = 'main') {
+type OutputSequencer = ReturnType<typeof createOutputSequencer>;
+type OutputAcknowledger = ReturnType<typeof createOutputAcknowledger>;
+type Unlisten = () => void;
+
+interface ShellProject {
+  name: string;
+  path: string;
+  fullPath?: string;
+}
+
+export interface ShellProps {
+  selectedProject?: ShellProject | null;
+  initialCommand?: string;
+  minimal?: boolean;
+  autoConnect?: boolean;
+  paneId?: string;
+  onDisconnect?: () => void;
+  active?: boolean;
+  rendererScope?: string;
+  preservePtyOnUnmount?: boolean;
+  suppressInitialCommandWhenPtyExists?: boolean;
+  autoReconnectOnExit?: boolean;
+  onInitialCommandSent?: () => void;
+  onUserSubmit?: () => void;
+}
+
+interface TerminalSize {
+  rows: number;
+  cols: number;
+}
+
+interface ShellExitInfo {
+  code: number | null;
+}
+
+interface RendererOutputConsumer {
+  ptyId: string;
+  consumerId: string;
+  acknowledger: OutputAcknowledger;
+  heartbeatTimer: number | null;
+  needsSnapshotRecovery: boolean;
+  recoveryPromise: Promise<boolean> | null;
+  disposed: boolean;
+}
+
+interface DetachCurrentPtyOptions {
+  clearTerminal?: boolean;
+  kill?: boolean;
+}
+
+function createRendererConsumerId(scope = 'main'): string {
   const uuid = globalThis.crypto?.randomUUID?.();
   const instanceId = uuid || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return `renderer:${scope}:${instanceId}`;
 }
 
-function onceUnlisten(unlisten) {
+function onceUnlisten(unlisten: Unlisten | null | undefined): Unlisten {
   let disposed = false;
   return () => {
     if (disposed) return;
@@ -79,21 +129,25 @@ function onceUnlisten(unlisten) {
   };
 }
 
-function disposeRendererConsumer(consumer) {
+function disposeRendererConsumer(
+  consumer: RendererOutputConsumer | null | undefined,
+): void {
   if (!consumer || consumer.disposed) return;
   consumer.disposed = true;
-  window.clearInterval(consumer.heartbeatTimer);
+  if (consumer.heartbeatTimer !== null) {
+    window.clearInterval(consumer.heartbeatTimer);
+  }
   consumer.acknowledger.dispose();
   // Best-effort immediate cleanup. The backend also expires renderer leases
   // that stop heartbeating, so a crashed WebView cannot pin flow forever.
   pty.unregisterOutputConsumer(consumer.ptyId, consumer.consumerId).catch(() => {});
 }
 
-function isCodexLoginCommand(command) {
+function isCodexLoginCommand(command: unknown): command is string {
   return typeof command === 'string' && /\bcodex\s+login\b/i.test(command);
 }
 
-function fallbackCopyToClipboard(text) {
+function fallbackCopyToClipboard(text: string): boolean {
   if (!text || typeof document === 'undefined') return false;
 
   const textarea = document.createElement('textarea');
@@ -118,7 +172,7 @@ function fallbackCopyToClipboard(text) {
   return copied;
 }
 
-async function waitForFonts() {
+async function waitForFonts(): Promise<void> {
   if (!document.fonts?.ready) return;
   try {
     await document.fonts.ready;
@@ -141,59 +195,61 @@ function Shell({
   autoReconnectOnExit = true,
   onInitialCommandSent,
   onUserSubmit,
-}) {
+}: ShellProps) {
   const { t } = useTranslation('terminal');
   const { terminalTheme, activeThemeTokens } = useTheme();
-  const terminalRef = useRef(null);
-  const terminal = useRef(null);
-  const terminalThemeRef = useRef(terminalTheme);
-  const fitAddon = useRef(null);
-  const ptyIdRef = useRef(null);
-  const unlistenOutputRef = useRef(null);
-  const unlistenExitRef = useRef(null);
+  const terminalRef = useRef<HTMLDivElement | null>(null);
+  const terminal = useRef<Terminal | null>(null);
+  const terminalThemeRef = useRef<ITheme>(terminalTheme);
+  const fitAddon = useRef<FitAddon | null>(null);
+  const ptyIdRef = useRef<string | null>(null);
+  const unlistenOutputRef = useRef<Unlisten | null>(null);
+  const unlistenExitRef = useRef<Unlisten | null>(null);
   const retryCountRef = useRef(0);
-  const reconnectTimeoutRef = useRef(null);
-  const surfaceRecoveryTimersRef = useRef([]);
-  const surfaceRecoveryFrameRef = useRef(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const surfaceRecoveryTimersRef = useRef<number[]>([]);
+  const surfaceRecoveryFrameRef = useRef<number | null>(null);
   const surfaceRecoveryGenerationRef = useRef(0);
-  const terminalRefreshFrameRef = useRef(null);
+  const terminalRefreshFrameRef = useRef<number | null>(null);
   const manuallyDisconnected = useRef(false);
-  const lastPtySizeRef = useRef(null);
-  const outputSequencerRef = useRef(null);
-  const outputConsumerRef = useRef(null);
-  const documentHiddenAtRef = useRef(
+  const lastPtySizeRef = useRef<TerminalSize | null>(null);
+  const outputSequencerRef = useRef<OutputSequencer | null>(null);
+  const outputConsumerRef = useRef<RendererOutputConsumer | null>(null);
+  const documentHiddenAtRef = useRef<number | null>(
     typeof document !== 'undefined' && document.visibilityState !== 'visible'
       ? Date.now()
       : null,
   );
   const connectGenerationRef = useRef(0);
-  const desiredPaneIdRef = useRef(paneId);
+  const desiredPaneIdRef = useRef<string | undefined>(paneId);
 
   const [isConnected, setIsConnected] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isAuthPanelDismissed, setIsAuthPanelDismissed] = useState(false);
-  const [authUrlCopyStatus, setAuthUrlCopyStatus] = useState('idle');
+  const [authUrlCopyStatus, setAuthUrlCopyStatus] = useState<
+    'idle' | 'copied' | 'failed'
+  >('idle');
   // Audit P1-2: PTY exited while autoReconnectOnExit is off — wait for an
   // explicit user restart instead of silently respawning + clearing.
-  const [exitInfo, setExitInfo] = useState(null);
+  const [exitInfo, setExitInfo] = useState<ShellExitInfo | null>(null);
   const exitedRef = useRef(false);
   // Audit P1-4: surface the reconnect loop in minimal mode instead of a
   // silent black screen. retryAttempt mirrors retryCountRef for rendering.
   const [retryAttempt, setRetryAttempt] = useState(0);
-  const [connectError, setConnectError] = useState(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
   // Audit P0-1: "N new lines below" indicator while the user reads history.
   const [scrolledUp, setScrolledUp] = useState(false);
   const [newOutputLines, setNewOutputLines] = useState(0);
   const scrolledUpRef = useRef(false);
   const pendingNewLinesRef = useRef(0);
-  const newOutputFlushTimerRef = useRef(null);
+  const newOutputFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const selectedProjectRef = useRef(selectedProject);
-  const initialCommandRef = useRef(initialCommand);
-  const onInitialCommandSentRef = useRef(onInitialCommandSent);
-  const onUserSubmitRef = useRef(onUserSubmit);
+  const selectedProjectRef = useRef<ShellProject | null | undefined>(selectedProject);
+  const initialCommandRef = useRef<string | undefined>(initialCommand);
+  const onInitialCommandSentRef = useRef<(() => void) | undefined>(onInitialCommandSent);
+  const onUserSubmitRef = useRef<(() => void) | undefined>(onUserSubmit);
   const activeRef = useRef(active);
   const preservePtyOnUnmountRef = useRef(preservePtyOnUnmount);
   const autoReconnectOnExitRef = useRef(autoReconnectOnExit);
@@ -232,17 +288,17 @@ function Shell({
     }
   }, [terminalTheme]);
 
-  const setConnecting = useCallback((value) => {
+  const setConnecting = useCallback((value: boolean) => {
     isConnectingRef.current = value;
     setIsConnecting(value);
   }, []);
 
-  const setConnected = useCallback((value) => {
+  const setConnected = useCallback((value: boolean) => {
     isConnectedRef.current = value;
     setIsConnected(value);
   }, []);
 
-  const resizePtyIfNeeded = useCallback((rows, cols) => {
+  const resizePtyIfNeeded = useCallback((rows: number, cols: number) => {
     const id = ptyIdRef.current;
     if (!id || !rows || !cols) return;
 
@@ -396,7 +452,9 @@ function Shell({
     }
   }, [clearSurfaceRecoveryWork, resizePtyIfNeeded, scrollTerminalToBottom]);
 
-  const restoreOutputConsumerFromSnapshot = useCallback((consumer) => {
+  const restoreOutputConsumerFromSnapshot = useCallback((
+    consumer: RendererOutputConsumer | null | undefined,
+  ): Promise<boolean> => {
     if (!consumer || consumer.disposed) return Promise.resolve(false);
     if (consumer.recoveryPromise) return consumer.recoveryPromise;
 
@@ -420,7 +478,8 @@ function Shell({
       ptyIdRef.current === consumer.ptyId;
 
     let registered = false;
-    const recoveryPromise = (async () => {
+    let recoveryPromise: Promise<boolean> | null = null;
+    recoveryPromise = (async () => {
       try {
         await pty.registerOutputConsumer(consumer.ptyId, consumer.consumerId);
         registered = true;
@@ -493,7 +552,7 @@ function Shell({
   const detachCurrentPty = useCallback(({
     clearTerminal = true,
     kill = false,
-  } = {}) => {
+  }: DetachCurrentPtyOptions = {}) => {
     connectGenerationRef.current += 1;
 
     if (reconnectTimeoutRef.current) {
@@ -536,7 +595,7 @@ function Shell({
     setIsAuthPanelDismissed(false);
   }, [cleanupListeners, setConnected, setConnecting]);
 
-  const scheduleReconnect = useCallback((connectPty) => {
+  const scheduleReconnect = useCallback((connectPty: () => void) => {
     if (manuallyDisconnected.current) return;
     const delay = computeReconnectDelay(retryCountRef.current);
     retryCountRef.current += 1;
@@ -569,7 +628,7 @@ function Shell({
     }
   }, []);
 
-  const connectPty = useCallback(() => {
+  const connectPty: () => void = useCallback(() => {
     if (isConnectingRef.current || isConnectedRef.current) return;
     const project = selectedProjectRef.current;
     if (!project || !terminal.current) return;
@@ -584,10 +643,10 @@ function Shell({
     connectGenerationRef.current = setupGeneration;
 
     const setup = async () => {
-      let localUnlistenOutput = null;
-      let localUnlistenExit = null;
-      let localSequencer = null;
-      let localOutputConsumer = null;
+      let localUnlistenOutput: Unlisten | null = null;
+      let localUnlistenExit: Unlisten | null = null;
+      let localSequencer: OutputSequencer | null = null;
+      let localOutputConsumer: RendererOutputConsumer | null = null;
       const cleanupLocalSetup = () => {
         localUnlistenOutput?.();
         localUnlistenExit?.();
@@ -968,7 +1027,7 @@ function Shell({
     connectPty();
   }, [connectPty]);
 
-  const openAuthUrlInBrowser = useCallback((url) => {
+  const openAuthUrlInBrowser = useCallback((url: string): boolean => {
     if (!url) return false;
     const popup = window.open(url, '_blank', 'noopener,noreferrer');
     if (!popup) return false;
@@ -980,7 +1039,7 @@ function Shell({
     return true;
   }, []);
 
-  const copyAuthUrlToClipboard = useCallback(async (url) => {
+  const copyAuthUrlToClipboard = useCallback(async (url: string): Promise<boolean> => {
     if (!url) return false;
 
     let copied = false;
@@ -1067,7 +1126,7 @@ function Shell({
         event.type === 'keydown' &&
         (event.ctrlKey || event.metaKey) &&
         event.key?.toLowerCase() === 'c' &&
-        terminal.current.hasSelection()
+        terminal.current?.hasSelection()
       ) {
         event.preventDefault();
         event.stopPropagation();
@@ -1132,7 +1191,7 @@ function Shell({
 
     setIsInitialized(true);
 
-    let resizeDebounceTimer = null;
+    let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
     const resizeObserver = new ResizeObserver(() => {
       if (!fitAddon.current || !terminal.current) return;
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
@@ -1254,11 +1313,11 @@ function Shell({
   }, [active, isConnected, restoreOutputConsumerFromSnapshot]);
 
   useEffect(() => {
-    const handleSurfaceShown = (event) => {
+    const handleSurfaceShown = (event: Event) => {
       const shouldFocus = !(event instanceof CustomEvent && event.detail?.focus === false);
       recoverTerminalSurface(shouldFocus);
     };
-    const handleGeometryInvalidated = (event) => {
+    const handleGeometryInvalidated = (event: Event) => {
       const targetPtyId = event instanceof CustomEvent ? event.detail?.ptyId : undefined;
       if (!targetPtyId || targetPtyId === ptyIdRef.current) {
         // Another WebView may have resized this shared ConPTY while our local
