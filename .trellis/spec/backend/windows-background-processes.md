@@ -5,31 +5,48 @@
 
 ---
 
-## Scenario: Background Stdio Services Must Not Create Console Windows
+## Scenario: Background Stdio Services Stay Hidden and Cannot Outlive ThreadTerm
 
 ### 1. Scope / Trigger
 
-- Trigger: adding or changing a Windows child process that communicates only
-  through piped stdin/stdout, including the Codex app-server transport.
+- Trigger: adding or changing a long-running Windows child process that
+  communicates only through piped stdin/stdout, including the Codex app-server
+  transport.
 - Applies to `src-tauri/src/codex_app.rs` and future service-style subprocesses.
 - Does not apply to terminal cards. Interactive shells and CLI cards must keep
   using the PTY subsystem so ConPTY, resize, signal, and process-tree semantics
   remain intact.
+- Does not apply to applications deliberately opened for the user, such as
+  Explorer or an external editor.
 
 ### 2. Signatures
 
-- `CodexAppManager::ensure_process() -> Result<Arc<CodexAppProcess>, String>`
-- Windows process flag: `CREATE_NO_WINDOW = 0x0800_0000`.
+- `CodexAppManager::ensure_process(&self, app: &AppHandle) -> Result<bool, String>`
+- `spawn_managed_codex_child(Command) -> std::io::Result<ManagedCodexChild>`
+- `WindowsJob::new() -> std::io::Result<WindowsJob>`
+- `WindowsJob::assign(&self, child: &tokio::process::Child) -> std::io::Result<()>`
+- `WindowsJob::terminate(&self) -> std::io::Result<()>`
+- Windows flags: `CREATE_NO_WINDOW | CREATE_SUSPENDED`.
 - Transport remains `stdin(Stdio::piped())`, `stdout(Stdio::piped())`, and
-  `stderr(Stdio::null())` with `kill_on_drop(true)`.
+  `stderr(Stdio::piped())`.
 
 ### 3. Contracts
 
-- On Windows, a service-style process must call
-  `std::os::windows::process::CommandExt::creation_flags(CREATE_NO_WINDOW)`
-  before `spawn()`.
-- The flag is platform-gated with `#[cfg(windows)]`; macOS and Linux command
-  construction remains unchanged.
+- Create a dedicated Job Object for each managed service tree and set
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
+- Spawn the top-level process suspended, assign it to the Job Object, and only
+  then resume its threads. This closes the race in which a wrapper can create a
+  descendant before ThreadTerm starts tracking it.
+- `ManagedCodexChild::drop` must actively terminate the Job Object during normal
+  disconnect/teardown. Kill-on-close is the crash fallback when Rust destructors
+  cannot run.
+- If Job creation, assignment, or thread resume fails, terminate the suspended
+  child/tree and return an error. Never resume an untracked process.
+- Keep each Job scoped to one service tree. Do not assign the ThreadTerm process
+  itself to a global Job because user-launched Explorer/editor processes must
+  remain independent.
+- The Windows-only code is gated with `#[cfg(windows)]`; non-Windows builds keep
+  immediate-child `kill_on_drop(true)` behavior.
 - Hiding a background service must not redirect, merge, or remove its JSON-RPC
   stdio transport.
 - Never apply this rule inside `pty_spawn`: PTY cards intentionally own a real
@@ -37,28 +54,48 @@
 
 ### 4. Validation & Error Matrix
 
+- Job creation fails -> do not spawn; return the existing app-server start
+  failure shape.
+- Executable is missing -> return the existing spawn error; no Job member
+  remains.
+- Job assignment or thread resume fails -> terminate the still-suspended
+  process, close the Job, and return an error.
 - Windows service executable is a console-subsystem binary -> no visible
-  console window; piped JSON-RPC still initializes.
-- Executable is missing -> existing spawn error is returned unchanged.
-- Child exits or closes stdout -> existing app-server disconnect handling runs.
+  console window; piped JSON-RPC still initializes after assignment.
+- Child exits or closes stdout -> existing app-server disconnect handling runs
+  and dropping the managed child terminates any remaining descendants.
+- ThreadTerm is terminated without running destructors -> Windows closes the
+  final Job handle and terminates the wrapper plus all inherited descendants.
 - Interactive terminal card is created -> ConPTY still launches and resizes;
   do not use `CREATE_NO_WINDOW` as a substitute for the PTY host.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: opening a Codex Chat starts `codex.exe app-server` without an extra
-  console window and requests continue over stdio.
+  console window, requests continue over stdio, and a `cmd.exe`/npm wrapper
+  cannot survive ThreadTerm.
 - Base: non-Windows builds compile without importing Windows-only APIs.
-- Bad: globally hiding every `codex.exe`, including CLI terminal cards, because
-  that would bypass or damage the user-visible PTY feature.
+- Bad: rely on `tokio::process::Child::kill_on_drop(true)` alone; it only owns
+  the immediate wrapper and does not establish a process-tree boundary.
+- Bad: assign ThreadTerm itself to one application-wide Job, because unrelated
+  user-launched applications could become part of the cleanup boundary.
 
 ### 6. Tests Required
 
+- `managed_windows_process_allows_normal_exit` asserts ordinary completion.
+- `dropping_managed_windows_process_ends_descendant_tree` starts a real
+  `cmd.exe -> ping.exe` tree and asserts both process IDs disappear on Drop.
+- `managed_windows_process_tree_ends_after_owner_crash` runs the Job owner in a
+  separate test process, aborts it without Drop, and asserts kill-on-close
+  removes both process levels.
+- `managed_windows_process_reports_spawn_failure` asserts a missing executable
+  leaves no managed process.
 - Rust unit tests keep verifying the Codex app-server command uses stdio.
-- `cargo test`, `cargo clippy -- -D warnings`, and a Windows release build must
-  pass.
+- `cargo test --all-features`, `cargo clippy --all-targets --all-features --
+  -D warnings`, Rustfmt, and a Windows release build must pass.
 - Windows smoke: open Codex Chat, verify no extra console window appears, send
-  one request, and verify closing an unrelated console cannot disconnect Chat.
+  one request, exit ThreadTerm, and verify no app-server/wrapper descendant
+  remains.
 - Process evidence should distinguish service `codex.exe app-server` from CLI
   `codex.exe ... --no-alt-screen` terminal-card descendants.
 
@@ -68,8 +105,11 @@ Wrong:
 
 ```rust
 let mut command = tokio::process::Command::new(executable);
-command.stdin(Stdio::piped()).stdout(Stdio::piped());
-let child = command.spawn()?;
+command
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .kill_on_drop(true);
+let child = command.spawn()?; // only the immediate wrapper is owned
 ```
 
 Correct:
@@ -78,9 +118,15 @@ Correct:
 let mut command = tokio::process::Command::new(executable);
 command.stdin(Stdio::piped()).stdout(Stdio::piped());
 #[cfg(windows)]
-command.creation_flags(CREATE_NO_WINDOW);
+command.creation_flags((CREATE_NO_WINDOW | CREATE_SUSPENDED).0);
 let child = command.spawn()?;
+job.assign(&child)?;
+resume_windows_process_threads(child.id().unwrap())?;
 ```
+
+The concrete implementation also terminates the Job during Drop and sets
+kill-on-close before spawning, so normal teardown and owner crashes are both
+covered.
 
 ---
 

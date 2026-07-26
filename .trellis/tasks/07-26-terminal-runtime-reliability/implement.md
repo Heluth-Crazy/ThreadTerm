@@ -16,19 +16,19 @@
 
 ## Process Tree
 
-- [ ] impact 所有受管后台进程创建与退出路径。
-- [ ] Windows Job Object 管理 app-server 与包装进程树。
-- [ ] 正常退出、崩溃退出和 spawn 失败测试。
+- [x] impact 所有受管后台进程创建与退出路径。
+- [x] Windows Job Object 管理 app-server 与包装进程树。
+- [x] 正常退出、崩溃退出和 spawn 失败测试。
 
 ## Validation
 
 - [x] 输入顺序/延迟/日志失败测试。
 - [ ] 最小化 10 分钟压力测试。
-- [ ] 退出后进程清单验证。
+- [x] 退出后进程清单验证。
 - [x] 全量 TypeScript、Vitest、Cargo test、Clippy、构建和页面流程。
 - [x] detect-changes；终端输入、后台观察者和恢复流程属于预期影响范围。
 
 ## Decision Gate
 
-- [ ] Windows Job Object 会改变子进程随 ThreadTerm 退出时的结束语义，
-  等用户确认后单独实施和真机核对，不混入本批。
+- [x] 用户已确认 Windows Job Object 的退出语义；实现仅覆盖 ThreadTerm
+  管理的 Codex app-server 进程树，不接管终端卡片和用户打开的外部应用。

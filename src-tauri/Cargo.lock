@@ -5775,6 +5775,7 @@ dependencies = [
  "tracing-subscriber",
  "webview2-com",
  "window-vibrancy",
+ "windows",
  "windows-core 0.61.2",
 ]
 

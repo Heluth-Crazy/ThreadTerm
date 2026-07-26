@@ -14,16 +14,155 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{oneshot, Mutex};
+#[cfg(windows)]
+use windows::Win32::{
+    Foundation::{CloseHandle, HANDLE},
+    System::{
+        Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+        },
+        JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        },
+        Threading::{
+            OpenThread, ResumeThread, CREATE_NO_WINDOW, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+        },
+    },
+};
 
 const NOTIFICATION_EVENT: &str = "codex-app://notification";
 const REQUEST_EVENT: &str = "codex-app://request";
 const DISCONNECTED_EVENT: &str = "codex-app://disconnected";
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 type PendingRequest = oneshot::Sender<Result<Value, String>>;
 type PendingMap = Arc<Mutex<HashMap<u64, PendingRequest>>>;
+
+struct ManagedCodexChild {
+    child: Child,
+    #[cfg(windows)]
+    job: WindowsJob,
+}
+
+impl ManagedCodexChild {
+    fn stdin(&mut self) -> &mut Option<ChildStdin> {
+        &mut self.child.stdin
+    }
+
+    fn stdout(&mut self) -> &mut Option<ChildStdout> {
+        &mut self.child.stdout
+    }
+
+    fn stderr(&mut self) -> &mut Option<ChildStderr> {
+        &mut self.child.stderr
+    }
+
+    #[cfg(test)]
+    fn id(&self) -> Option<u32> {
+        self.child.id()
+    }
+
+    #[cfg(test)]
+    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.child.wait().await
+    }
+}
+
+impl Drop for ManagedCodexChild {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        let _ = self.job.terminate();
+        let _ = self.child.start_kill();
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct WindowsOwnedHandle(HANDLE);
+
+// Windows kernel handles are process-wide. This wrapper owns exactly one
+// handle and only closes it during Drop, so moving it between runtime threads
+// does not change its validity or ownership.
+#[cfg(windows)]
+unsafe impl Send for WindowsOwnedHandle {}
+#[cfg(windows)]
+unsafe impl Sync for WindowsOwnedHandle {}
+
+#[cfg(windows)]
+impl Drop for WindowsOwnedHandle {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct WindowsJob {
+    handle: WindowsOwnedHandle,
+}
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn new() -> std::io::Result<Self> {
+        let job = Self {
+            handle: WindowsOwnedHandle(
+                unsafe { CreateJobObjectW(None, None) }.map_err(std::io::Error::other)?,
+            ),
+        };
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        unsafe {
+            SetInformationJobObject(
+                job.handle.0,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as _,
+                std::mem::size_of_val(&info) as u32,
+            )
+        }
+        .map_err(std::io::Error::other)?;
+        Ok(job)
+    }
+
+    fn assign(&self, child: &Child) -> std::io::Result<()> {
+        let process_handle = child
+            .raw_handle()
+            .ok_or_else(|| std::io::Error::other("managed child has no process handle"))?;
+        unsafe { AssignProcessToJobObject(self.handle.0, HANDLE(process_handle as _)) }
+            .map_err(std::io::Error::other)
+    }
+
+    fn terminate(&self) -> std::io::Result<()> {
+        unsafe { TerminateJobObject(self.handle.0, 1) }.map_err(std::io::Error::other)
+    }
+}
+
+#[cfg(windows)]
+fn resume_windows_process_threads(process_id: u32) -> std::io::Result<()> {
+    let snapshot = WindowsOwnedHandle(
+        unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }.map_err(std::io::Error::other)?,
+    );
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
+
+    let mut next = unsafe { Thread32First(snapshot.0, &mut entry) };
+    while next.is_ok() {
+        if entry.th32OwnerProcessID == process_id {
+            let thread = WindowsOwnedHandle(
+                unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) }
+                    .map_err(std::io::Error::other)?,
+            );
+            if unsafe { ResumeThread(thread.0) } == u32::MAX {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        next = unsafe { Thread32Next(snapshot.0, &mut entry) };
+    }
+    Ok(())
+}
 
 static CODEX_APP_MANAGER: Lazy<CodexAppManager> = Lazy::new(CodexAppManager::default);
 static CLIENT_MESSAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -35,7 +174,7 @@ struct CodexAppManager {
 
 #[derive(Default)]
 struct CodexAppState {
-    child: Option<Child>,
+    child: Option<ManagedCodexChild>,
     stdin: Option<Arc<Mutex<ChildStdin>>>,
     pending: PendingMap,
     next_id: u64,
@@ -406,28 +545,20 @@ impl CodexAppManager {
             .args(&launch.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .stderr(Stdio::piped());
 
-        // The app-server is a background stdio transport, not an interactive
-        // console. Without CREATE_NO_WINDOW, Windows may surface a separate
-        // codex.exe/cmd.exe console that users can close, severing Chat Mode.
-        #[cfg(windows)]
-        command.creation_flags(CREATE_NO_WINDOW);
-
-        let mut child = command
-            .spawn()
+        let mut child = spawn_managed_codex_child(command)
             .map_err(|err| format!("Failed to start `{}`: {err}", launch.display()))?;
 
         let stdin = child
-            .stdin
+            .stdin()
             .take()
             .ok_or_else(|| "Codex app-server stdin is unavailable".to_string())?;
         let stdout = child
-            .stdout
+            .stdout()
             .take()
             .ok_or_else(|| "Codex app-server stdout is unavailable".to_string())?;
-        let stderr = child.stderr.take();
+        let stderr = child.stderr().take();
         let pending = state.pending.clone();
         let app_for_stdout = app.clone();
         tokio::spawn(async move {
@@ -560,6 +691,38 @@ impl CodexAppManager {
             let _ = tx.send(Err(message.clone()));
         }
         let _ = app.emit(DISCONNECTED_EVENT, CodexAppDisconnectedPayload { message });
+    }
+}
+
+fn spawn_managed_codex_child(mut command: Command) -> std::io::Result<ManagedCodexChild> {
+    command.kill_on_drop(true);
+
+    #[cfg(windows)]
+    {
+        // Start suspended so the app-server cannot create an untracked
+        // descendant between CreateProcess and AssignProcessToJobObject.
+        let job = WindowsJob::new()?;
+        command.creation_flags((CREATE_NO_WINDOW | CREATE_SUSPENDED).0);
+        let mut child = command.spawn()?;
+        let prepare_result = job.assign(&child).and_then(|_| {
+            let process_id = child
+                .id()
+                .ok_or_else(|| std::io::Error::other("managed child has no process id"))?;
+            resume_windows_process_threads(process_id)
+        });
+        if let Err(error) = prepare_result {
+            let _ = job.terminate();
+            let _ = child.start_kill();
+            return Err(error);
+        }
+        Ok(ManagedCodexChild { child, job })
+    }
+
+    #[cfg(not(windows))]
+    {
+        Ok(ManagedCodexChild {
+            child: command.spawn()?,
+        })
     }
 }
 
@@ -856,6 +1019,64 @@ fn next_client_message_suffix() -> String {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    fn windows_process_is_running(pid: u32) -> bool {
+        use std::os::windows::process::CommandExt;
+
+        let output = std::process::Command::new("tasklist.exe")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .creation_flags(CREATE_NO_WINDOW.0)
+            .output()
+            .expect("query Windows process list");
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+    }
+
+    #[cfg(windows)]
+    async fn wait_for_windows_process_exit(pid: u32) -> bool {
+        for _ in 0..20 {
+            if !windows_process_is_running(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[cfg(windows)]
+    fn windows_child_process_id(parent_pid: u32, executable: &str) -> Option<u32> {
+        use windows::Win32::{
+            Foundation::CloseHandle,
+            System::Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+                TH32CS_SNAPPROCESS,
+            },
+        };
+
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.ok()?;
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut found = None;
+        let mut next = unsafe { Process32FirstW(snapshot, &mut entry) };
+        while next.is_ok() {
+            let name_len = entry
+                .szExeFile
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..name_len]);
+            if entry.th32ParentProcessID == parent_pid && name.eq_ignore_ascii_case(executable) {
+                found = Some(entry.th32ProcessID);
+                break;
+            }
+            next = unsafe { Process32NextW(snapshot, &mut entry) };
+        }
+        unsafe { CloseHandle(snapshot) }.ok();
+        found
+    }
+
     #[test]
     fn response_message_requires_result_or_error() {
         assert!(is_response_message(&json!({"id": 1, "result": {}})));
@@ -982,5 +1203,136 @@ mod tests {
         let launch = codex_app_server_launch();
         assert!(launch.display().contains("app-server"));
         assert!(launch.display().contains("--stdio"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn managed_windows_process_allows_normal_exit() {
+        let mut command = Command::new("cmd.exe");
+        command
+            .args(["/d", "/s", "/c", "exit 0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let mut child = spawn_managed_codex_child(command).expect("spawn managed command");
+        let status = child.wait().await.expect("wait for managed command");
+        assert!(status.success());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_windows_process_reports_spawn_failure() {
+        let command = Command::new(format!(
+            "threadterm-missing-managed-process-{}.exe",
+            std::process::id()
+        ));
+        assert!(spawn_managed_codex_child(command).is_err());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn dropping_managed_windows_process_ends_descendant_tree() {
+        let mut command = Command::new("cmd.exe");
+        command
+            .args(["/d", "/s", "/c", "ping.exe -t 127.0.0.1 >NUL"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let child = spawn_managed_codex_child(command).expect("spawn managed process tree");
+        let parent_pid = child.id().expect("managed parent pid");
+        let descendant_pid = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(pid) = windows_child_process_id(parent_pid, "ping.exe") {
+                    break pid;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("descendant pid timeout");
+
+        assert!(windows_process_is_running(parent_pid));
+        assert!(windows_process_is_running(descendant_pid));
+
+        drop(child);
+
+        assert!(wait_for_windows_process_exit(parent_pid).await);
+        assert!(wait_for_windows_process_exit(descendant_pid).await);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn managed_windows_process_tree_ends_after_owner_crash() {
+        use std::os::windows::process::CommandExt;
+
+        let marker = std::env::temp_dir().join(format!(
+            "threadterm-managed-crash-{}.txt",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let status =
+            std::process::Command::new(std::env::current_exe().expect("current test executable"))
+                .args([
+                    "--exact",
+                    "codex_app::tests::managed_windows_process_crash_helper",
+                    "--nocapture",
+                ])
+                .env("THREADTERM_MANAGED_CRASH_MARKER", &marker)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW.0)
+                .status()
+                .expect("run managed process crash helper");
+        assert!(!status.success());
+
+        let marker_text = std::fs::read_to_string(&marker).expect("read managed crash marker");
+        let (parent_pid, descendant_pid) = marker_text
+            .trim()
+            .split_once(':')
+            .expect("managed crash marker format");
+        let parent_pid = parent_pid.parse::<u32>().expect("parse managed parent pid");
+        let descendant_pid = descendant_pid
+            .parse::<u32>()
+            .expect("parse managed descendant pid");
+        let _ = std::fs::remove_file(&marker);
+
+        assert!(wait_for_windows_process_exit(parent_pid).await);
+        assert!(wait_for_windows_process_exit(descendant_pid).await);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_windows_process_crash_helper() {
+        let Some(marker) = std::env::var_os("THREADTERM_MANAGED_CRASH_MARKER") else {
+            return;
+        };
+
+        let mut command = Command::new("cmd.exe");
+        command
+            .args(["/d", "/s", "/c", "ping.exe -t 127.0.0.1 >NUL"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = spawn_managed_codex_child(command).expect("spawn crash helper process tree");
+        let parent_pid = child.id().expect("crash helper parent pid");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let descendant_pid = loop {
+            if let Some(pid) = windows_child_process_id(parent_pid, "ping.exe") {
+                break pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "crash helper descendant pid timeout"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        std::fs::write(marker, format!("{parent_pid}:{descendant_pid}"))
+            .expect("write managed crash marker");
+
+        std::mem::forget(child);
+        std::process::abort();
     }
 }

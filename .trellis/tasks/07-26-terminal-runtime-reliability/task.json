@@ -3,7 +3,7 @@
   "name": "terminal-runtime-reliability",
   "title": "终端输入与后台运行可靠性",
   "description": "保证手机输入不被日志拖慢、最小化不阻塞任务、应用退出不残留受管进程，并处理阻塞输入写入",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

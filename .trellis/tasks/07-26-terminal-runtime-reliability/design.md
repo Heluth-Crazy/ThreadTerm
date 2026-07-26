@@ -28,5 +28,10 @@ TTL，不允许永久成为隐藏水位。
 
 ## Windows Process Lifetime
 
-受管后台进程加入应用级 Job Object（kill-on-close）。正常退出先走现有优雅
-关闭，再由 Job Object 兜底清理进程树。交互式 PTY 继续使用既有终止流程。
+每个长期运行的受管后台服务使用独立 Job Object（kill-on-close），不把
+ThreadTerm 本身或它为用户打开的外部应用放入全局 Job。进程先以 suspended
+状态创建，加入 Job 后才恢复运行，封住“刚启动就生成后代”的逃逸窗口。
+
+正常断连和管理对象释放时主动终止整个 Job；ThreadTerm 崩溃、无法运行 Drop
+时，由 Windows 在关闭最后一个 Job 句柄时兜底终止整个进程树。交互式 PTY
+继续使用既有终止流程。
