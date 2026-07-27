@@ -388,6 +388,37 @@
     "permissionApproval": "권한 승인",
     "request": "Codex 요청"
   },
+  "claudeChat": {
+    "title": "Claude Chat",
+    "chat": "채팅",
+    "terminal": "터미널",
+    "chatMode": "Claude 채팅 모드",
+    "terminalMode": "터미널 모드",
+    "checking": "Claude Chat 사용 가능 여부를 확인하는 중…",
+    "unavailable": "Claude Chat을 현재 사용할 수 없습니다.",
+    "connecting": "Claude에 연결하는 중…",
+    "empty": "이 프로젝트에서 Claude 대화를 시작하세요.",
+    "placeholder": "Claude에게 메시지 보내기…",
+    "enterHint": "Enter로 전송 · Shift+Enter로 줄바꿈",
+    "responding": "Claude가 응답하는 중…",
+    "send": "보내기",
+    "stop": "중지",
+    "allow": "허용",
+    "deny": "거부",
+    "deniedMessage": "ThreadTerm에서 거부했습니다.",
+    "approvalTitle": "Claude가 권한을 요청합니다",
+    "thinking": "생각 과정",
+    "status": {
+      "checking": "확인 중",
+      "starting": "시작 중",
+      "ready": "준비됨",
+      "running": "실행 중",
+      "idle": "준비됨",
+      "error": "오류",
+      "closed": "종료됨",
+      "disconnected": "연결 끊김"
+    }
+  },
   "aiExport": {
     "exportMarkdown": "AI Markdown 내보내기",
     "dialogTitle": "AI 세션 Markdown 내보내기",

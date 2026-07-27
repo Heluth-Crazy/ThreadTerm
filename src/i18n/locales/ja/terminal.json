@@ -388,6 +388,37 @@
     "permissionApproval": "権限承認",
     "request": "Codex リクエスト"
   },
+  "claudeChat": {
+    "title": "Claude Chat",
+    "chat": "チャット",
+    "terminal": "ターミナル",
+    "chatMode": "Claude チャットモード",
+    "terminalMode": "ターミナルモード",
+    "checking": "Claude Chat の利用可否を確認中…",
+    "unavailable": "Claude Chat は現在利用できません。",
+    "connecting": "Claude に接続中…",
+    "empty": "このプロジェクトで Claude との会話を始めます。",
+    "placeholder": "Claude にメッセージを送信…",
+    "enterHint": "Enter で送信 · Shift+Enter で改行",
+    "responding": "Claude が応答中…",
+    "send": "送信",
+    "stop": "停止",
+    "allow": "許可",
+    "deny": "拒否",
+    "deniedMessage": "ThreadTerm で拒否しました。",
+    "approvalTitle": "Claude が権限を求めています",
+    "thinking": "思考過程",
+    "status": {
+      "checking": "確認中",
+      "starting": "起動中",
+      "ready": "準備完了",
+      "running": "実行中",
+      "idle": "準備完了",
+      "error": "エラー",
+      "closed": "終了",
+      "disconnected": "切断"
+    }
+  },
   "aiExport": {
     "exportMarkdown": "AI Markdown をエクスポート",
     "dialogTitle": "AI セッション Markdown をエクスポート",

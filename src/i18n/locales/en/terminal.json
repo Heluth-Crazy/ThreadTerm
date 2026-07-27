@@ -388,6 +388,37 @@
     "permissionApproval": "Permission approval",
     "request": "Codex request"
   },
+  "claudeChat": {
+    "title": "Claude Chat",
+    "chat": "Chat",
+    "terminal": "Terminal",
+    "chatMode": "Claude Chat mode",
+    "terminalMode": "Terminal mode",
+    "checking": "Checking Claude Chat availability…",
+    "unavailable": "Claude Chat is unavailable.",
+    "connecting": "Connecting to Claude…",
+    "empty": "Start a Claude conversation in this project.",
+    "placeholder": "Message Claude…",
+    "enterHint": "Enter to send · Shift+Enter for a new line",
+    "responding": "Claude is responding…",
+    "send": "Send",
+    "stop": "Stop",
+    "allow": "Allow",
+    "deny": "Deny",
+    "deniedMessage": "Denied in ThreadTerm.",
+    "approvalTitle": "Claude needs permission",
+    "thinking": "Thinking",
+    "status": {
+      "checking": "Checking",
+      "starting": "Starting",
+      "ready": "Ready",
+      "running": "Running",
+      "idle": "Ready",
+      "error": "Error",
+      "closed": "Closed",
+      "disconnected": "Disconnected"
+    }
+  },
   "aiExport": {
     "exportMarkdown": "Export AI Markdown",
     "dialogTitle": "Export AI session Markdown",

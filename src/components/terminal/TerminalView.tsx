@@ -38,6 +38,8 @@ import { AutoRestartStatus } from './AutoRestartStatus';
 import { normalizeAutoRestartConfig } from '../../lib/autoRestart';
 import { useSupervisorStore } from '../../lib/supervisor/supervisorStore';
 import { CodexChatView } from '../codex/CodexChatView';
+import { ClaudeChatView } from '../claude/ClaudeChatView';
+import { claudeChat } from '../../lib/claudeChat/api';
 
 interface TerminalViewProps {
   card: TerminalCard;
@@ -46,6 +48,11 @@ interface TerminalViewProps {
   onRemoveCard: (cardId: string) => Promise<boolean>;
   onArchiveCard: (cardId: string) => Promise<boolean>;
 }
+
+type ClaudeChatAvailability =
+  | { status: 'checking'; reason: null }
+  | { status: 'available'; reason: null }
+  | { status: 'unavailable'; reason: string };
 
 function defaultCodexViewMode(
   terminalType: TerminalCard['terminalType'],
@@ -76,9 +83,14 @@ export const TerminalView = memo(function TerminalView({
     card.providerSessionState,
     card.providerSessionId,
   );
-  const [codexViewMode, setCodexViewMode] = useState<'chat' | 'terminal'>(
+  const [chatViewMode, setChatViewMode] = useState<'chat' | 'terminal'>(
     preferredCodexViewMode,
   );
+  const [claudeChatAvailability, setClaudeChatAvailability] =
+    useState<ClaudeChatAvailability>({
+      status: 'checking',
+      reason: null,
+    });
 
   // Note: no PTY guard is needed even when the float window also hosts
   // this card. Both windows share the same pty id and the
@@ -92,7 +104,22 @@ export const TerminalView = memo(function TerminalView({
   const autoRestart = normalizeAutoRestartConfig(card.autoRestart);
   const paneId = card.ptyId || card.id;
   const isCodexCard = card.terminalType === 'codex';
-  const showCodexChat = isCodexCard && codexViewMode === 'chat';
+  const isClaudeCard = card.terminalType === 'claude';
+  const supportsChat = isCodexCard || isClaudeCard;
+  const showChat = supportsChat && chatViewMode === 'chat';
+  const claudeChatDisabled =
+    isClaudeCard && claudeChatAvailability.status !== 'available';
+  const chatButtonTitle = isClaudeCard
+    ? claudeChatAvailability.status === 'unavailable'
+      ? claudeChatAvailability.reason
+      : claudeChatAvailability.status === 'checking'
+        ? t('claudeChat.checking', {
+            defaultValue: 'Checking Claude Chat availability…',
+          })
+        : t('claudeChat.chatMode', {
+            defaultValue: 'Claude Chat mode',
+          })
+    : t('codexChat.chatMode', { defaultValue: 'Chat mode' });
   const aiSessionBadge = useMemo(
     () => getAiCliSessionBadge(card),
     [
@@ -123,8 +150,46 @@ export const TerminalView = memo(function TerminalView({
   );
 
   useEffect(() => {
-    setCodexViewMode(preferredCodexViewMode);
+    setChatViewMode(preferredCodexViewMode);
   }, [card.id, preferredCodexViewMode]);
+
+  useEffect(() => {
+    if (!isClaudeCard) return;
+    let cancelled = false;
+    setClaudeChatAvailability((current) =>
+      current.status === 'checking'
+        ? current
+        : { status: 'checking', reason: null },
+    );
+    void claudeChat
+      .probe()
+      .then((result) => {
+        if (cancelled) return;
+        if (result.ok) {
+          setClaudeChatAvailability({ status: 'available', reason: null });
+          return;
+        }
+        setClaudeChatAvailability({
+          status: 'unavailable',
+          reason:
+            result.detail ??
+            'Claude Chat is unavailable.',
+        });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setClaudeChatAvailability({
+          status: 'unavailable',
+          reason:
+            error instanceof Error
+              ? error.message
+              : String(error),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [card.id, isClaudeCard]);
 
   const recordSubmit = useCallback(() => {
     recordUserSubmit(card.id, t('view.sentInput'));
@@ -231,38 +296,53 @@ export const TerminalView = memo(function TerminalView({
             }
           />
           <AutoRestartStatus card={card} compact />
-          {isCodexCard && (
+          {supportsChat && (
             <div className="flex shrink-0 rounded-md border border-border bg-muted/30 p-0.5">
               <button
                 type="button"
-                onClick={() => setCodexViewMode('chat')}
-                title={t('codexChat.chatMode', { defaultValue: 'Chat mode' })}
+                onClick={() => {
+                  if (!claudeChatDisabled) setChatViewMode('chat');
+                }}
+                disabled={claudeChatDisabled}
+                title={chatButtonTitle}
                 className={[
                   'inline-flex h-7 items-center gap-1 rounded-sm px-2 text-[11px]',
-                  codexViewMode === 'chat'
+                  chatViewMode === 'chat'
                     ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
                 ].join(' ')}
               >
                 <MessageSquare className="h-3 w-3" />
                 <span className="hidden sm:inline">
-                  {t('codexChat.chat', { defaultValue: 'Chat' })}
+                  {isClaudeCard
+                    ? t('claudeChat.chat', { defaultValue: 'Chat' })
+                    : t('codexChat.chat', { defaultValue: 'Chat' })}
                 </span>
               </button>
               <button
                 type="button"
-                onClick={() => setCodexViewMode('terminal')}
-                title={t('codexChat.terminalMode', { defaultValue: 'Terminal mode' })}
+                onClick={() => setChatViewMode('terminal')}
+                title={
+                  isClaudeCard
+                    ? t('claudeChat.terminalMode', {
+                        defaultValue: 'Terminal mode',
+                      })
+                    : t('codexChat.terminalMode', {
+                        defaultValue: 'Terminal mode',
+                      })
+                }
                 className={[
                   'inline-flex h-7 items-center gap-1 rounded-sm px-2 text-[11px]',
-                  codexViewMode === 'terminal'
+                  chatViewMode === 'terminal'
                     ? 'bg-primary text-primary-foreground'
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                 ].join(' ')}
               >
                 <TerminalSquare className="h-3 w-3" />
                 <span className="hidden sm:inline">
-                  {t('codexChat.terminal', { defaultValue: 'Terminal' })}
+                  {isClaudeCard
+                    ? t('claudeChat.terminal', { defaultValue: 'Terminal' })
+                    : t('codexChat.terminal', { defaultValue: 'Terminal' })}
                 </span>
               </button>
             </div>
@@ -310,11 +390,15 @@ export const TerminalView = memo(function TerminalView({
         </div>
       </div>
 
-      {/* Main area: Codex Chat or xterm. */}
+      {/* Main area: provider Chat or xterm. */}
       <div className="flex min-h-0 flex-1">
-        {showCodexChat ? (
+        {showChat ? (
           <div className="min-h-0 flex-1">
-            <CodexChatView card={card} active={active} />
+            {isCodexCard ? (
+              <CodexChatView card={card} active={active} />
+            ) : (
+              <ClaudeChatView card={card} active={active} />
+            )}
           </div>
         ) : (
           <div

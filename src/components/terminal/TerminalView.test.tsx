@@ -8,6 +8,10 @@ const shellMock = vi.hoisted(() => ({
   props: [] as Array<{ paneId?: string; initialCommand?: string }>,
 }));
 
+const claudeChatMock = vi.hoisted(() => ({
+  probe: vi.fn(),
+}));
+
 vi.mock('react-i18next', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-i18next')>();
   return {
@@ -58,6 +62,16 @@ vi.mock('../codex/CodexChatView', () => ({
   CodexChatView: () => <div data-testid="mock-codex-chat" />,
 }));
 
+vi.mock('../claude/ClaudeChatView', () => ({
+  ClaudeChatView: () => <div data-testid="mock-claude-chat" />,
+}));
+
+vi.mock('../../lib/claudeChat/api', () => ({
+  claudeChat: {
+    probe: claudeChatMock.probe,
+  },
+}));
+
 vi.mock('./AutoRestartControls', () => ({
   AutoRestartControls: () => <div data-testid="mock-auto-restart-controls" />,
 }));
@@ -94,6 +108,9 @@ function makeCard(overrides: Partial<TerminalCard> = {}): TerminalCard {
 beforeEach(() => {
   shellMock.events.length = 0;
   shellMock.props.length = 0;
+  claudeChatMock.probe
+    .mockReset()
+    .mockImplementation(() => new Promise(() => {}));
 });
 
 afterEach(() => {
@@ -210,6 +227,28 @@ describe('TerminalView Shell lifecycle', () => {
     );
 
     expect(screen.getByTestId('mock-codex-chat')).toBeInTheDocument();
+    expect(screen.queryByTestId('mock-shell')).not.toBeInTheDocument();
+  });
+
+  it('shows the Claude Chat entry and opens it after the environment probe succeeds', async () => {
+    claudeChatMock.probe.mockReset().mockResolvedValue({ ok: true });
+    render(
+      <TerminalView
+        card={makeCard()}
+        onBack={vi.fn()}
+        onRemoveCard={async () => true}
+        onArchiveCard={async () => true}
+      />,
+    );
+
+    const chatButton = screen.getByTitle('Checking Claude Chat availability…');
+    expect(chatButton).toBeDisabled();
+    await waitFor(() =>
+      expect(screen.getByTitle('Claude Chat mode')).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByTitle('Claude Chat mode'));
+
+    expect(screen.getByTestId('mock-claude-chat')).toBeInTheDocument();
     expect(screen.queryByTestId('mock-shell')).not.toBeInTheDocument();
   });
 

@@ -388,6 +388,37 @@
     "permissionApproval": "权限审批",
     "request": "Codex 请求"
   },
+  "claudeChat": {
+    "title": "Claude Chat",
+    "chat": "聊天",
+    "terminal": "终端",
+    "chatMode": "Claude 聊天模式",
+    "terminalMode": "终端模式",
+    "checking": "正在检查 Claude Chat 是否可用…",
+    "unavailable": "Claude Chat 当前不可用。",
+    "connecting": "正在连接 Claude…",
+    "empty": "在当前项目中开始 Claude 对话。",
+    "placeholder": "发送消息给 Claude…",
+    "enterHint": "Enter 发送 · Shift+Enter 换行",
+    "responding": "Claude 正在回复…",
+    "send": "发送",
+    "stop": "停止",
+    "allow": "允许",
+    "deny": "拒绝",
+    "deniedMessage": "已在 ThreadTerm 中拒绝。",
+    "approvalTitle": "Claude 需要你的授权",
+    "thinking": "思考过程",
+    "status": {
+      "checking": "检查中",
+      "starting": "启动中",
+      "ready": "就绪",
+      "running": "运行中",
+      "idle": "就绪",
+      "error": "错误",
+      "closed": "已关闭",
+      "disconnected": "已断开"
+    }
+  },
   "aiExport": {
     "exportMarkdown": "导出 AI Markdown",
     "dialogTitle": "导出 AI 会话 Markdown",
