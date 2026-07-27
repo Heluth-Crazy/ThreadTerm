@@ -62,6 +62,11 @@
 - Scroll-follow decisions and tests use xterm's public `baseY`/`viewportY`
   model. Do not infer scroll position from `.xterm-viewport.scrollTop`; xterm 6
   uses a custom scrollbar whose internal DOM metrics are not the buffer model.
+- After a live write completes, do not call `scrollToBottom()` when
+  `viewportY >= baseY`. In xterm 6, a zero-distance `scrollToBottom()` still
+  refreshes the full viewport, so unconditional calls make rapid resume/history
+  replay repaint twice. Explicit user scroll recovery and surface activation may
+  still request their intentional refresh.
 
 ### 4. Validation & Error Matrix
 
@@ -83,6 +88,10 @@
   protocol boundaries; no ANSI-filter state may sit in the renderer/ACK path.
 - User scrolls up under xterm 6 -> `baseY - viewportY > 0`; new output must not
   return the terminal to the bottom until the explicit action is used.
+- Live output finishes while `viewportY >= baseY` -> synchronize the React
+  follow indicator and ACK normally, but skip the zero-distance xterm scroll.
+- Explicit scroll-to-bottom or surface recovery -> preserve the existing
+  programmatic scroll/focus/refresh behavior.
 
 ### 5. Good/Base/Bad Cases
 
@@ -101,12 +110,15 @@
   recreates the visible input-area shake.
 - Bad: read or manipulate xterm's private viewport/scrollbar DOM to determine
   follow mode.
+- Bad: call `scrollToBottom()` after every live write merely because follow mode
+  is enabled; xterm repaints the whole viewport even when it moves zero rows.
 
 ### 6. Tests Required
 
 - `src/components/terminal/Shell.test.tsx`: synchronized ED2/ED3 bytes remain
   present across sequenced writes, `scrollOnEraseInDisplay` is false, and ACK
-  still waits for xterm's write callback.
+  still waits for xterm's write callback. Live output at the bottom must ACK
+  without another programmatic scroll, while explicit recovery still scrolls.
 - `src/components/terminal/terminalOutputPipeline.test.ts`: the Codex status
   bullet plus `/usage` wrap fixture remains byte-identical, split DEC 2026
   markers are tracked, no mid-frame refresh occurs, and ordinary `CR` progress
@@ -136,9 +148,22 @@ const terminal = new Terminal({
   scrollback: 3000,
   scrollOnEraseInDisplay: false,
 });
-const atBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
-if (data) terminal.write(data, onWritten);
-else onWritten();
+const followOutput =
+  terminal.buffer.active.type === 'alternate'
+  || terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
+if (data) {
+  terminal.write(data, () => {
+    if (
+      followOutput
+      && terminal.buffer.active.viewportY < terminal.buffer.active.baseY
+    ) {
+      terminal.scrollToBottom();
+    }
+    onWritten();
+  });
+} else {
+  onWritten();
+}
 ```
 
 ## Bug Analysis: Stale Agent Prompt Rows During Synchronized Repaint
@@ -173,6 +198,50 @@ else onWritten();
 - **Systematic expansion**: the fix belongs in the shared desktop output
   pipeline, so Codex, Claude, Gemini, OpenCode, and custom TUIs receive the same
   behavior without matching any provider-specific text.
+
+## Bug Analysis: Resume Replay Repainted an Already-Following Viewport
+
+### 1. Root Cause Category
+
+- **Category**: E — implicit assumption.
+- **Specific cause**: the desktop live-output path assumed that
+  `scrollToBottom()` was a cheap no-op when `viewportY >= baseY`. In xterm 6 it
+  still refreshes the full viewport, so rapid resume/history replay performed a
+  second paint after every successful write.
+
+### 2. Why Earlier Protection Was Incomplete
+
+1. The synchronized-frame fix gated direct `terminal.refresh()` calls, but did
+   not include the full refresh performed internally by a zero-distance
+   `scrollToBottom()`.
+2. Existing tests protected explicit recovery and user scroll behavior, but did
+   not assert that live output already at the bottom avoids a programmatic
+   scroll.
+
+### 3. Prevention Mechanisms
+
+| Priority | Mechanism | Specific Action | Status |
+| --- | --- | --- | --- |
+| P0 | Architecture | Centralize the public-buffer guard in `useTerminalSurfaceController`. | DONE |
+| P0 | Test coverage | Assert that live output at the bottom writes and ACKs without `scrollToBottom()`. | DONE |
+| P1 | Documentation | Record zero-distance xterm scroll as a full-paint operation. | DONE |
+
+### 4. Systematic Expansion
+
+- **Similar issues**: all desktop Agent terminals share this controller, so the
+  guard covers Codex, Claude, Gemini, OpenCode, and ordinary shell cards.
+- **Design improvement**: output-follow checks stay on the public
+  `baseY`/`viewportY` model; explicit surface recovery remains a separate,
+  intentional repaint path.
+- **Process improvement**: terminal performance reviews must count indirect
+  display effects, not only direct `refresh()` calls.
+
+### 5. Knowledge Capture
+
+- [x] Updated the desktop scroll-follow contract and cases in this spec.
+- [x] Added a Shell-level regression test for write, ACK, and scroll behavior.
+- [x] Confirmed there is no second direct `scrollToBottom()` call site in the
+      current mobile terminal implementation.
 
 ## Secondary Card Summaries and Headless Preview
 

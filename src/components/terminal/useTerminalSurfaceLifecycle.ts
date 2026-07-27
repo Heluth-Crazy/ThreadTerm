@@ -78,10 +78,16 @@ export function useTerminalSurfaceController({
     const term = terminalRef.current;
     if (!term) return;
 
-    try {
-      term.scrollToBottom();
-    } catch {
-      return;
+    // xterm repaints the full viewport even when scrollToBottom moves zero
+    // rows. Live writes already keep a following viewport at the bottom.
+    const shouldMoveViewport =
+      shouldRefresh || term.buffer.active.viewportY < term.buffer.active.baseY;
+    if (shouldMoveViewport) {
+      try {
+        term.scrollToBottom();
+      } catch {
+        return;
+      }
     }
 
     scrolledUpRef.current = false;

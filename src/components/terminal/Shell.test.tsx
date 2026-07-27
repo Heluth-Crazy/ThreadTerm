@@ -670,6 +670,36 @@ describe('Shell — scroll-to-bottom indicator (P0-1)', () => {
     );
   });
 
+  it('does not repeat a programmatic scroll while live output already follows the bottom', async () => {
+    renderMinimalShell('pane-live-bottom');
+    await waitForConnected();
+    await waitFor(() => expect(ptyMock.attachSnapshot).toHaveBeenCalledWith('pane-live-bottom'));
+
+    const term = xtermMock.instances[0];
+    term.buffer.active.baseY = 100;
+    term.buffer.active.viewportY = 100;
+    term.write.mockClear();
+    term.scrollToBottom.mockClear();
+    ptyMock.ack.mockClear();
+
+    act(() => {
+      for (const handler of ptyMock.outputHandlers) {
+        handler({ id: 'pane-live-bottom', data: 'resumed output\n', seq: 1 });
+      }
+    });
+
+    expect(term.write).toHaveBeenCalledWith('resumed output\n', expect.any(Function));
+    expect(term.scrollToBottom).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(ptyMock.ack).toHaveBeenCalledWith(
+        'pane-live-bottom',
+        1,
+        'renderer',
+        expect.any(String),
+      );
+    });
+  });
+
   it('scrolls to the bottom when the terminal becomes active', async () => {
     const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
       x: 0,
