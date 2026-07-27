@@ -42,6 +42,14 @@
   viewport rows into scrollback movement.
 - Desktop output sequencing and ACK flow control remain unchanged. Do not ACK a
   non-empty payload until xterm's `write` completion callback runs.
+- Do not call an explicit full-surface `terminal.refresh()` while a DEC 2026
+  frame is still open. A post-write refresh bypasses the producer's atomic
+  visual transaction and can expose alternating intermediate layouts even when
+  every ANSI byte was preserved. Coalesce refresh demand and release it once
+  after `CSI ? 2026 l` has been written.
+- A renderer may inspect DEC 2026 markers only to gate display effects. That
+  tracker must never withhold or rewrite PTY bytes, must tolerate begin/end
+  markers split across chunks, and must reset with the output sequencer epoch.
 - `useXtermLifecycle` owns xterm construction and input/scroll listeners.
   `usePtyOutputLifecycle` owns renderer-consumer disposal, listener cleanup,
   and snapshot recovery. `createTerminalOutputPipeline` owns byte-preserving
@@ -64,6 +72,10 @@
   purge must not be silently downgraded.
 - Begin/end/erase sequence split across chunks -> every chunk reaches xterm
   byte-identically and xterm completes the sequence with its stateful parser.
+- Repeated status-line redraws inside one DEC 2026 frame (for example the
+  leading `•` appearing/disappearing while `/usage` wraps) -> no explicit
+  renderer refresh occurs before the end marker; exactly one coalesced refresh
+  may run after the frame closes.
 - Lookalike sequence such as `CSI 20 J` -> preserve unchanged.
 - Empty desktop payload -> skip `term.write('')`, finish the sequencer callback,
   and ACK the original sequence.
@@ -84,6 +96,9 @@
   new frame; prefixes disappear, wrapped text remains, and the input box jumps.
 - Bad: concatenate or rewrite chunks to make escape sequences "complete";
   xterm already owns parser state and transport rewriting changes ACK timing.
+- Bad: preserve the bytes but call `terminal.refresh()` after each frame-local
+  `CR`, `ED2`, or `ED3`. This exposes the producer's in-progress layout and
+  recreates the visible input-area shake.
 - Bad: read or manipulate xterm's private viewport/scrollbar DOM to determine
   follow mode.
 
@@ -92,6 +107,10 @@
 - `src/components/terminal/Shell.test.tsx`: synchronized ED2/ED3 bytes remain
   present across sequenced writes, `scrollOnEraseInDisplay` is false, and ACK
   still waits for xterm's write callback.
+- `src/components/terminal/terminalOutputPipeline.test.ts`: the Codex status
+  bullet plus `/usage` wrap fixture remains byte-identical, split DEC 2026
+  markers are tracked, no mid-frame refresh occurs, and ordinary `CR` progress
+  output outside a frame keeps its existing refresh behavior.
 - `mobile-app/src/MainTerminal.test.tsx`: mirrored output preserves each
   split-chunk payload byte-for-byte and uses the same xterm erase option.
 - `e2e/desktop/desktop.spec.ts`: wheel-scroll changes public buffer coordinates,
@@ -135,6 +154,25 @@ else onWritten();
 - **Systematic expansion**: the rule applies to every desktop agent, float
   renderer, terminal card, and mobile mirror because they share `Shell` or the
   same mirrored PTY stream. Never special-case Codex/Claude message text.
+
+## Bug Analysis: Atomic Frame Exposed by an Extra Renderer Refresh
+
+- **Root cause category**: B (cross-layer contract) plus D (regression fixture
+  gap). The byte-preservation repair was correct, but the output pipeline still
+  treated `CR`/erase bytes as a reason to force a full refresh after every
+  chunk. During DEC 2026 that refresh revealed intermediate status-line
+  layouts, so the leading bullet and wrapped composer appeared to alternate.
+- **Why this regressed**: the earlier stream filter was removed to restore
+  correct ANSI semantics, but its visual-stability test was replaced only with
+  a byte-preservation assertion. The separate post-write refresh path was not
+  covered by the same synchronized-frame fixture.
+- **Prevention**: keep producer bytes and ACK timing unchanged; gate only the
+  optional renderer refresh, carry partial DEC 2026 markers across chunks,
+  flush at most once after the end marker, and reset the gate with the
+  sequencer.
+- **Systematic expansion**: the fix belongs in the shared desktop output
+  pipeline, so Codex, Claude, Gemini, OpenCode, and custom TUIs receive the same
+  behavior without matching any provider-specific text.
 
 ## Secondary Card Summaries and Headless Preview
 

@@ -225,3 +225,30 @@ Once the cooldown expires, the same prompt becomes a duplicate side effect.
 Concrete OS notification routing, visibility, and regression-test contracts
 live in
 [`../frontend/quality-guidelines.md`](../frontend/quality-guidelines.md).
+
+---
+
+## Gotcha: Preserved Transport Bytes Can Still Produce a Broken Frame
+
+**Problem**: A terminal producer can wrap several ANSI writes in one atomic
+visual transaction (DEC 2026). Passing every PTY byte through unchanged is
+necessary, but it is not sufficient if a later UI layer forces a renderer
+refresh before the transaction closes. The wire contract remains correct while
+the user briefly sees intermediate layouts.
+
+**Prevention checklist**:
+- [ ] Map both the data path and every display side effect. Include explicit
+      refresh, fit, scroll, focus, and recovery calls—not only byte transforms.
+- [ ] Keep the transport opaque. If display scheduling must observe protocol
+      markers, the observer may gate side effects but must not rewrite, delay,
+      merge, or re-chunk producer bytes.
+- [ ] Carry marker detection across transport chunks and reset that display
+      state at the same generation/epoch boundary as the transport sequencer.
+- [ ] Use a composed fixture that contains the real visible symptom (for
+      example an optional status bullet plus a width-sensitive wrapped line),
+      and assert bytes, ACK timing, and refresh count together.
+- [ ] Re-test ordinary output outside the atomic transaction so coalescing a
+      TUI redraw does not disable shell progress rendering.
+
+Concrete xterm write, synchronized-frame, and refresh rules live in
+[`../frontend/terminal-output-rendering.md`](../frontend/terminal-output-rendering.md).

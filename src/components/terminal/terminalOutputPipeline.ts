@@ -11,6 +11,7 @@ import type {
   OutputSequencer,
   RendererOutputConsumer,
 } from './shellRuntimeTypes';
+import { createSynchronizedFrameRefreshGate } from './synchronizedFrameRefreshGate';
 
 const CLEANUP_SEQUENCE_RE = /\x1b\[[0-9;]*[JKLMPX]/;
 // W0.3: above this size, a session-restore snapshot is written to xterm in
@@ -50,7 +51,8 @@ export function createTerminalOutputPipeline({
   scheduleNewOutputFlush,
   scheduleTerminalRefresh,
 }: CreateTerminalOutputPipelineOptions): OutputSequencer {
-  return createOutputSequencer((data, seq, onWritten, meta) => {
+  const synchronizedRefreshGate = createSynchronizedFrameRefreshGate();
+  const sequencer = createOutputSequencer((data, seq, onWritten, meta) => {
     const term = terminalRef.current;
     const isCurrentConsumer = () =>
       !isStaleSetup() &&
@@ -96,6 +98,8 @@ export function createTerminalOutputPipeline({
       shouldFollowOutput(term.buffer.active)
     );
     const needsRefresh = CLEANUP_SEQUENCE_RE.test(data) || data.includes('\r');
+    const shouldScheduleRefresh =
+      synchronizedRefreshGate.shouldRefreshAfterWrite(data, needsRefresh);
     const finalize = () => {
       if (!isCurrentConsumer()) {
         onWritten();
@@ -115,7 +119,7 @@ export function createTerminalOutputPipeline({
           pendingNewLinesRef.current += countNewlines(data);
           scheduleNewOutputFlush();
         }
-        if (needsRefresh) {
+        if (shouldScheduleRefresh) {
           scheduleTerminalRefresh();
         }
       }
@@ -153,4 +157,12 @@ export function createTerminalOutputPipeline({
       term.write(data, finalize);
     }
   });
+
+  return {
+    ...sequencer,
+    reset() {
+      synchronizedRefreshGate.reset();
+      sequencer.reset();
+    },
+  };
 }
