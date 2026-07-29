@@ -5,8 +5,9 @@
 
 ## Module Ownership
 
-- `bridge/protocol.rs` owns serialized client/server message shapes and protocol
-  versioning.
+- `bridge/protocol.rs` owns protocol versioning, compatibility re-exports, and
+  wire-contract tests. Serialized shapes live under `bridge/protocol/`:
+  `terminal.rs`, `workbench.rs`, `theme.rs`, `access.rs`, and `messages.rs`.
 - `bridge/pairing.rs` owns pairing codes, device tokens, permissions, expiry,
   revocation, and audit persistence.
 - `bridge/server.rs` owns HTTP/WebSocket transport, authentication at the
@@ -67,3 +68,78 @@ contract.
 - Run the extracted module tests, all bridge integration tests, full Cargo
   tests, Clippy with warnings denied, and GitNexus change detection before each
   independently reversible commit.
+
+## Scenario: Protocol Submodule Compatibility Facade
+
+### 1. Scope / Trigger
+
+- Trigger: adding, moving, or changing any serialized mobile bridge DTO,
+  `ClientMessage`, `ServerMessage`, protocol parse error, or default theme
+  token.
+
+### 2. Signatures
+
+- Stable public path: `crate::bridge::protocol::<ExistingItem>`.
+- Version entry: `pub const PROTOCOL_VERSION: u16`.
+- Parse entry:
+  `parse_client_message(&str) -> Result<ClientMessage, ProtocolParseError>`.
+- Serialize entry:
+  `versioned_server_message(ServerMessage) -> VersionedServerMessage`.
+
+### 3. Contracts
+
+- `protocol.rs` is a facade. Existing public items must be re-exported from it
+  even when the item currently has no in-crate consumer.
+- Module ownership is fixed by payload purpose:
+  `terminal` (card/terminal state), `workbench` (notifications and Workbench
+  projection), `theme` (theme payload/default), `access` (pairing/device/action
+  requests), and `messages` (wire envelopes, enums, version validation).
+- Moving an item must preserve its type name, enum variants, field order/type,
+  every Serde attribute, conversion implementation, and serialized default.
+- A structural split never increments `PROTOCOL_VERSION`.
+
+### 4. Validation & Error Matrix
+
+- Missing or wrong `protocol_version` -> `ProtocolVersionMismatch` with
+  `protocol_version_mismatch`.
+- Invalid JSON -> `InvalidJson` with `invalid_message`.
+- JSON with an invalid message shape -> `InvalidMessage` with
+  `invalid_message`.
+- Missing compatibility re-export -> compile failure in bridge consumers; do
+  not migrate consumers to a private child-module path.
+
+### 5. Good/Base/Bad Cases
+
+- Good: move `BridgeTheme` to `theme.rs`, keep
+  `pub use theme::BridgeTheme`, and retain identical serialized JSON.
+- Base: a new DTO is defined in its owning child module and exported through
+  `protocol.rs`.
+- Bad: import `protocol::theme::BridgeTheme` from `server.rs`, make a child
+  module public, or remove an unused public re-export to silence a warning.
+- Bad: combine a file move with field renames, payload compaction, or a
+  protocol-version bump.
+
+### 6. Tests Required
+
+- Protocol tests assert stable `kind`, camel/snake-case field names, version,
+  defaults, terminal snapshot identity, mobile action results, and parse error
+  codes.
+- Run all bridge tests and full `cargo test`.
+- Run Rustfmt and Clippy with warnings denied.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```rust
+pub mod theme;
+// Callers migrate to protocol::theme::BridgeTheme.
+```
+
+Correct:
+
+```rust
+mod theme;
+pub use theme::BridgeTheme;
+// Callers keep using protocol::BridgeTheme.
+```

@@ -15,6 +15,7 @@ import { AiIntentSelect } from './AiIntentSelect';
 import { CardActions, type CardActionDensity } from './CardActions';
 import { AutoRestartStatus } from './AutoRestartStatus';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { useWorkbenchStore } from '../../stores/workbenchStore';
 
 /** 最近通知标记的 kind 图标/色调 —— 与通知中心保持同一视觉语言。 */
 const recentKindIconMap: Record<NotificationKind, typeof AlertTriangle> = {
@@ -134,6 +135,11 @@ export const CardFooter = memo(function CardFooter({
   const recentNotification = useTerminalStore((s) =>
     s.notifications.find((n) => n.cardId === card.id),
   );
+  const followedInWorkbench = useWorkbenchStore((state) =>
+    state.followedCardIds.includes(card.id),
+  );
+  const followCards = useWorkbenchStore((state) => state.followCards);
+  const unfollowCard = useWorkbenchStore((state) => state.unfollowCard);
   const showInlineAiIntent = Boolean(aiSessionBadge && density === 'wide');
   const overflowAiIntent =
     aiSessionBadge && density !== 'wide' ? (
@@ -168,6 +174,11 @@ export const CardFooter = memo(function CardFooter({
           aiSessionExportStatus={aiSessionExportStatus}
           density={density}
           overflowContent={overflowAiIntent}
+          followedInWorkbench={followedInWorkbench}
+          onToggleWorkbenchFollow={() => {
+            if (followedInWorkbench) unfollowCard(card.id);
+            else followCards([card.id]);
+          }}
         />
       </div>
 

@@ -63,46 +63,37 @@ export function WorkbenchSummary({
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-2 pt-4 xl:grid-cols-4">
-      {cards.map((card) => {
-        const Icon = card.icon;
-        const selected = activeFilter === card.filter;
-        const label = t(`workbench.summary.${card.key}`, {
-          defaultValue: summaryLabel(card.key),
-        });
-        return (
-          <button
-            key={card.key}
-            type="button"
-            aria-label={`${label}: ${card.value}`}
-            aria-pressed={selected}
-            onClick={() => onSelectFilter(card.filter)}
-            className={[
-              'group flex min-h-[72px] items-center gap-3 rounded-lg border bg-card/80 px-3 text-left transition-colors',
-              selected
-                ? 'border-primary/35 bg-primary/[0.07]'
-                : 'border-border hover:border-border hover:bg-card',
-            ].join(' ')}
-          >
-            <span
+    <div className="flex flex-wrap items-center gap-1.5 pt-3">
+      {cards
+        .filter((card) => card.key === 'attention' || card.value > 0)
+        .map((card) => {
+          const Icon = card.icon;
+          const selected = activeFilter === card.filter;
+          const label = t(`workbench.summary.${card.key}`, {
+            defaultValue: summaryLabel(card.key),
+          });
+          return (
+            <button
+              key={card.key}
+              type="button"
+              aria-label={`${label}: ${card.value}`}
+              aria-pressed={selected}
+              onClick={() => onSelectFilter(card.filter)}
               className={[
-                'grid h-9 w-9 shrink-0 place-items-center rounded-md',
-                card.tone,
+                'inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors',
+                selected
+                  ? 'border-primary/35 bg-primary/[0.07] text-foreground'
+                  : 'border-border bg-card/80 text-muted-foreground hover:bg-card hover:text-foreground',
               ].join(' ')}
             >
-              <Icon className="h-4 w-4" />
-            </span>
-            <span className="min-w-0">
-              <span className="block text-[22px] font-semibold leading-none tabular-nums">
+              <Icon className={['h-3 w-3', card.tone.split(' ')[0]].join(' ')} />
+              <span className="font-semibold tabular-nums text-foreground">
                 {card.value}
               </span>
-              <span className="mt-1 block truncate text-[11px] text-muted-foreground">
-                {label}
-              </span>
-            </span>
-          </button>
-        );
-      })}
+              <span>{label}</span>
+            </button>
+          );
+        })}
     </div>
   );
 }

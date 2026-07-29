@@ -22,6 +22,7 @@ export interface ShellProps {
   rendererScope?: string;
   preservePtyOnUnmount?: boolean;
   suppressInitialCommandWhenPtyExists?: boolean;
+  resumeLoading?: boolean;
   autoReconnectOnExit?: boolean;
   onInitialCommandSent?: () => void;
   onUserSubmit?: () => void;

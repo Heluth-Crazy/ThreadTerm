@@ -4,6 +4,7 @@ mod bridge;
 #[cfg(not(feature = "mobile-bridge"))]
 #[path = "bridge_disabled.rs"]
 mod bridge;
+mod claude_chat;
 mod codex_app;
 mod db;
 mod files;
@@ -14,6 +15,7 @@ mod overlay;
 mod platform_material;
 mod provider_sessions;
 pub mod pty;
+mod service_child;
 mod stats;
 mod supervisor;
 
@@ -126,6 +128,15 @@ pub fn run() {
             bridge::bridge_resolve_mobile_close,
             bridge::bridge_resolve_mobile_rename_card,
             bridge::bridge_broadcast_theme,
+            claude_chat::claude_chat_probe,
+            claude_chat::claude_chat_start,
+            claude_chat::claude_chat_send,
+            claude_chat::claude_chat_interrupt,
+            claude_chat::claude_chat_set_model,
+            claude_chat::claude_chat_set_permission_mode,
+            claude_chat::claude_chat_decision,
+            claude_chat::claude_chat_stop,
+            claude_chat::claude_chat_history,
             codex_app::codex_app_status,
             codex_app::codex_app_open_card,
             codex_app::codex_app_send_message,

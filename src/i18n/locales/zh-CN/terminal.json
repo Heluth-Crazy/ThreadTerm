@@ -38,6 +38,7 @@
     "detachedWorktree": "detached",
     "lockedWorktree": "locked",
     "bareWorktree": "bare",
+    "attentionCount": "{{count}} 项需要处理",
     "emptyLine1": "还没有项目。",
     "emptyLine2": "创建一个终端即可开始。"
   },
@@ -56,14 +57,59 @@
       "title": "需要处理",
       "count": "{{count}} 项"
     },
+    "followed": {
+      "title": "关注终端",
+      "recall": "召回终端",
+      "collapse": "收起",
+      "expand": "展开全部",
+      "openTerminal": "打开 {{name}} 终端",
+      "remove": "移出工作台",
+      "removeNamed": "将 {{name}} 移出工作台",
+      "noSearchResults": "没有关注终端匹配当前搜索。",
+      "empty": "把高频使用的终端留在这里，查看后也不会消失。"
+    },
+    "projects": {
+      "title": "项目总览",
+      "subtitle": "按稳定顺序查看所有活动项目",
+      "followed": "关注",
+      "running": "运行",
+      "attention": "处理",
+      "review": "复核",
+      "failed": "异常"
+    },
+    "recall": {
+      "title": "召回终端",
+      "subtitle": "选择要长期留在工作台的活动终端。",
+      "close": "关闭",
+      "searchLabel": "搜索活动终端",
+      "searchPlaceholder": "搜索项目、分支、类型或输出",
+      "scope": "范围",
+      "currentScope": "当前工作台范围",
+      "allScope": "全部项目",
+      "project": "项目",
+      "allProjects": "全部项目",
+      "worktree": "分支 / 工作树",
+      "allWorktrees": "全部分支 / 工作树",
+      "alreadyFollowed": "已关注",
+      "emptyTitle": "没有匹配的活动终端",
+      "emptyBody": "请更换搜索词或范围。",
+      "selectedCount": "已选择 {{count}} 个",
+      "cancel": "取消",
+      "confirm": "加入工作台"
+    },
     "filters": {
       "label": "筛选注意项",
-      "all": "全部",
+      "all": "全部待处理",
       "approval": "权限",
       "waiting": "等待",
       "failed": "异常",
       "review": "待查看",
       "stalled": "无进展"
+    },
+    "stalled": {
+      "title": "无进展观察",
+      "count": "{{count}} 个终端",
+      "hint": "仍在运行，但超过规则阈值没有新输出"
     },
     "groups": {
       "title": "执行上下文",
@@ -108,7 +154,12 @@
       "openResult": "查看结果",
       "openTerminal": "打开终端",
       "details": "详情",
-      "viewAllTerminals": "查看所有终端"
+      "viewAllTerminals": "查看所有终端",
+      "addToWorkbench": "加入工作台",
+      "removeFromWorkbench": "移出工作台",
+      "follow": "关注",
+      "followed": "已关注",
+      "allProjects": "全部项目"
     },
     "empty": {
       "noTerminalsTitle": "还没有终端",
@@ -314,6 +365,8 @@
     "unpin": "从浮层选择器取消固定",
     "pin": "固定到浮层选择器",
     "pinFull": "固定列表已满（最多 {{max}} 个）",
+    "addToWorkbench": "加入工作台",
+    "removeFromWorkbench": "移出工作台",
     "archive": "归档卡片",
     "close": "关闭终端",
     "recent": "最近",
@@ -515,6 +568,7 @@
     "stop": "停止",
     "clear": "清屏",
     "loading": "正在加载终端...",
+    "restoringHistory": "正在恢复历史会话",
     "start": "启动",
     "startShell": "启动 shell",
     "runCommand": "运行 {{command}}",

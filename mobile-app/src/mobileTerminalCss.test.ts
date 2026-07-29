@@ -2,7 +2,30 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const styles = readFileSync(resolve(__dirname, 'styles.css'), 'utf8');
+const expectedStylesheetImports = [
+  './styles/01-foundation.css',
+  './styles/02-terminal.css',
+  './styles/03-scanner-navigation.css',
+  './styles/04-workbench.css',
+  './styles/05-terminal-list.css',
+  './styles/06-settings.css',
+  './styles/07-detail-routes.css',
+  './styles/08-responsive.css',
+] as const;
+const stylesheetEntry = readFileSync(
+  resolve(__dirname, 'styles.css'),
+  'utf8',
+);
+const stylesheetImportPattern = /^@import\s+['"]([^'"]+)['"];\s*$/gm;
+const stylesheetImports = Array.from(
+  stylesheetEntry.matchAll(stylesheetImportPattern),
+  (match) => match[1],
+);
+const styles = stylesheetImports
+  .map((stylesheetPath) =>
+    readFileSync(resolve(__dirname, stylesheetPath), 'utf8'),
+  )
+  .join('');
 
 function ruleBody(selector: string): string {
   const match = styles.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`));
@@ -10,6 +33,11 @@ function ruleBody(selector: string): string {
 }
 
 describe('mobile terminal CSS', () => {
+  it('keeps the stylesheet cascade in its fixed import order', () => {
+    expect(stylesheetImports).toEqual(expectedStylesheetImports);
+    expect(stylesheetEntry.replace(stylesheetImportPattern, '').trim()).toBe('');
+  });
+
   it('keeps xterm DOM renderer rows out of WebKit compositing hacks', () => {
     const viewport = ruleBody('.terminal-xterm-host .xterm-viewport');
     const screen = ruleBody('.terminal-xterm-host .xterm-screen');

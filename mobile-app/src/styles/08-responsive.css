@@ -1,0 +1,62 @@
+@media (max-width: 370px) {
+  .mobile-page-header,
+  .mobile-page-content,
+  .mobile-detail-content {
+    padding-right: max(12px, env(safe-area-inset-right));
+    padding-left: max(12px, env(safe-area-inset-left));
+  }
+
+  .filter-chip-row {
+    margin-right: -12px;
+    margin-left: -12px;
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .appearance-choice-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .appearance-choice-grid button {
+    min-height: 82px;
+  }
+
+  .scope-select.compact {
+    width: 40%;
+  }
+}
+
+@media (orientation: landscape) {
+  .mobile-page-header {
+    padding-top: max(6px, env(safe-area-inset-top));
+    padding-bottom: 7px;
+  }
+
+  .mobile-header-title h1 {
+    font-size: 20px;
+  }
+
+  .mobile-page-content {
+    padding-top: 10px;
+    padding-bottom: calc(66px + env(safe-area-inset-bottom));
+  }
+
+  .summary-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .summary-card {
+    min-height: 70px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

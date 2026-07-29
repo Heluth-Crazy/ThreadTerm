@@ -53,6 +53,11 @@ interface ProjectSidebarProps {
   primaryView?: PrimaryView;
   onSelectPrimaryView?: (view: PrimaryView) => void;
   attentionCount?: number;
+  getProjectAttentionCount?: (projectPath: string) => number;
+  getWorktreeAttentionCount?: (
+    projectPath: string,
+    worktreePath: string,
+  ) => number;
   compact?: boolean;
   isMobile?: boolean;
   /** Invoked when the user navigates to a project row — used to exit auxiliary views. */
@@ -68,6 +73,12 @@ interface SidebarRowAuxAction {
   onClick: (e: MouseEvent) => void;
 }
 
+const zeroProjectAttentionCount = (_projectPath: string): number => 0;
+const zeroWorktreeAttentionCount = (
+  _projectPath: string,
+  _worktreePath: string,
+): number => 0;
+
 export function ProjectSidebar({
   className = '',
   onCloseMobile,
@@ -75,6 +86,8 @@ export function ProjectSidebar({
   primaryView = 'workbench',
   onSelectPrimaryView = () => {},
   attentionCount = 0,
+  getProjectAttentionCount = zeroProjectAttentionCount,
+  getWorktreeAttentionCount = zeroWorktreeAttentionCount,
   compact = false,
   isMobile = false,
   onExitMobileView,
@@ -275,6 +288,8 @@ export function ProjectSidebar({
             onSelectWorktree={handleSelectWorktree}
             onCreateWorktreeAndOpen={handleCreateWorktreeAndOpen}
             selectedWorktreePath={selectedWorktreePath}
+            attentionCount={getProjectAttentionCount(g.path)}
+            getWorktreeAttentionCount={getWorktreeAttentionCount}
           />
         ))}
 
@@ -365,6 +380,11 @@ interface ProjectBranchSectionProps {
   onSelect: () => void;
   onOpenDir: (event: MouseEvent) => void;
   selectedWorktreePath: string | null;
+  attentionCount: number;
+  getWorktreeAttentionCount: (
+    projectPath: string,
+    worktreePath: string,
+  ) => number;
   onOpenTerminal: (
     projectPath: string,
     projectName: string,
@@ -390,6 +410,8 @@ function ProjectBranchSection({
   onOpenTerminal,
   onSelectWorktree,
   onCreateWorktreeAndOpen,
+  attentionCount,
+  getWorktreeAttentionCount,
 }: ProjectBranchSectionProps) {
   const { t } = useTranslation('terminal');
   const { branches, loading, error, refresh } = useProjectBranches(group.path);
@@ -440,6 +462,7 @@ function ProjectBranchSection({
         label={group.name}
         subLabel={group.path}
         count={group.cards.length}
+        attentionCount={attentionCount}
         unread={group.unreadCount}
         onClick={onSelect}
         auxActions={auxActions}
@@ -462,6 +485,7 @@ function ProjectBranchSection({
           onOpenTerminal={onOpenTerminal}
           onSelectWorktree={onSelectWorktree}
           onCreateWorktreeAndOpen={onCreateWorktreeAndOpen}
+          getWorktreeAttentionCount={getWorktreeAttentionCount}
         />
       )}
     </div>
@@ -486,6 +510,10 @@ interface ProjectBranchTreeProps {
   error: string | null;
   refresh: () => Promise<void>;
   selectedWorktreePath: string | null;
+  getWorktreeAttentionCount: (
+    projectPath: string,
+    worktreePath: string,
+  ) => number;
   onOpenTerminal: (
     projectPath: string,
     projectName: string,
@@ -520,6 +548,7 @@ function ProjectBranchTree({
   onOpenTerminal,
   onSelectWorktree,
   onCreateWorktreeAndOpen,
+  getWorktreeAttentionCount,
 }: ProjectBranchTreeProps) {
   const { t } = useTranslation('terminal');
   const [showAll, setShowAll] = useState(false);
@@ -545,6 +574,9 @@ function ProjectBranchTree({
               : selectedWorktreePath === targetWorktreePath
             : false;
           const isCreating = creatingBranch === branch.branch;
+          const branchAttentionCount = worktreePath
+            ? getWorktreeAttentionCount(projectPath, worktreePath)
+            : 0;
           const detail = worktreePath
             ? basename(worktreePath)
             : branch.upstream || shortHead(branch.head);
@@ -614,6 +646,18 @@ function ProjectBranchTree({
                   </span>
                 )}
               </span>
+              {branchAttentionCount > 0 && (
+                <span
+                  data-testid="sidebar-worktree-attention-count"
+                  title={t('sidebar.attentionCount', {
+                    count: branchAttentionCount,
+                    defaultValue: '{{count}} items need attention',
+                  })}
+                  className="shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-warning"
+                >
+                  {branchAttentionCount > 99 ? '99+' : branchAttentionCount}
+                </span>
+              )}
               {branch.isCurrent && (
                 <span
                   aria-label={t('sidebar.currentBranch', { defaultValue: 'Current branch' })}
@@ -696,6 +740,7 @@ interface SidebarRowProps {
   label: string;
   subLabel?: string;
   count: number;
+  attentionCount?: number;
   unread: number;
   onClick: () => void;
   onContextMenu?: (e: MouseEvent) => void;
@@ -713,6 +758,7 @@ const SidebarRow = memo(function SidebarRow({
   label,
   subLabel,
   count,
+  attentionCount = 0,
   unread,
   onClick,
   onContextMenu,
@@ -722,12 +768,19 @@ const SidebarRow = memo(function SidebarRow({
   toggleTitle,
   onToggle,
 }: SidebarRowProps) {
+  const { t } = useTranslation('terminal');
   return (
     <button
       type="button"
       onClick={onClick}
       onContextMenu={onContextMenu}
-      title={collapsed ? `${label} (${count})` : subLabel || label}
+      title={
+        collapsed
+          ? `${label} (${count})${
+              attentionCount > 0 ? ` · ${attentionCount}` : ''
+            }`
+          : subLabel || label
+      }
       className={[
         'group relative flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors',
         collapsed ? 'justify-center' : '',
@@ -781,7 +834,7 @@ const SidebarRow = memo(function SidebarRow({
       )}
       <span className="relative shrink-0">
         {icon}
-        {unread > 0 && (
+        {(unread > 0 || attentionCount > 0) && (
           <AttentionDot size="sm" className="absolute -right-1 -top-1" />
         )}
       </span>
@@ -798,6 +851,21 @@ const SidebarRow = memo(function SidebarRow({
           >
             {label}
           </span>
+          {attentionCount > 0 && (
+            <span
+              data-testid="sidebar-project-attention-count"
+              title={t('sidebar.attentionCount', {
+                count: attentionCount,
+                defaultValue: '{{count}} items need attention',
+              })}
+              className={[
+                'shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-warning transition-opacity',
+                auxActions.length > 0 ? 'group-hover:opacity-0' : '',
+              ].join(' ')}
+            >
+              {attentionCount > 99 ? '99+' : attentionCount}
+            </span>
+          )}
           {/* Count badge stays last in the flex flow, so its right edge aligns
               across every row regardless of how many aux actions a row has. */}
           <span
@@ -849,6 +917,7 @@ function areSidebarRowPropsEqual(prev: SidebarRowProps, next: SidebarRowProps): 
     prev.label === next.label &&
     prev.subLabel === next.subLabel &&
     prev.count === next.count &&
+    prev.attentionCount === next.attentionCount &&
     prev.unread === next.unread &&
     prev.hasChildren === next.hasChildren &&
     prev.expanded === next.expanded &&

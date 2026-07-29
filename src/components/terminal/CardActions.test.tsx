@@ -212,4 +212,31 @@ describe('CardActions', () => {
     fireEvent.click(screen.getByTitle('view.more'));
     expect(screen.getByTitle('ai-intent-control')).toBeInTheDocument();
   });
+
+  it('adds an independent Workbench action to the wide card menu', () => {
+    const onToggleWorkbenchFollow = vi.fn();
+    renderActions({
+      followedInWorkbench: false,
+      onToggleWorkbenchFollow,
+    });
+
+    fireEvent.click(screen.getByTitle('view.more'));
+    fireEvent.click(screen.getByTitle('card.addToWorkbench'));
+
+    expect(onToggleWorkbenchFollow).toHaveBeenCalledTimes(1);
+    expect(screen.getByTitle('card.pin')).toBeInTheDocument();
+  });
+
+  it('shows remove wording for an already followed terminal', () => {
+    const onToggleWorkbenchFollow = vi.fn();
+    renderActions({
+      followedInWorkbench: true,
+      onToggleWorkbenchFollow,
+    });
+
+    fireEvent.click(screen.getByTitle('view.more'));
+    fireEvent.click(screen.getByTitle('card.removeFromWorkbench'));
+
+    expect(onToggleWorkbenchFollow).toHaveBeenCalledTimes(1);
+  });
 });

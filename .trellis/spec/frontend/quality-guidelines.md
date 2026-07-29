@@ -1316,6 +1316,178 @@ Correct:
 
 </spec-entry>
 
+<spec-entry category="quality" keywords="workbench,followed-terminals,recall,project-overview,mobile,projection" date="2026-07-27" source="src/lib/workbench/deriveFollowedTerminals.ts:1">
+
+### Scenario: Manually Followed Workbench Terminals
+
+#### 1. Scope / Trigger
+- Trigger: Any change to Workbench terminal retention, the recall dialog,
+  project overview metrics, card menus, archive/delete behavior, or the mobile
+  Workbench projection.
+- Applies to `workbenchStore`, `deriveFollowedTerminals`, `useWorkbenchModel`,
+  `WorkbenchView`, terminal card actions, project navigation badges,
+  `workbenchProjection`, the bridge protocol, and mobile Workbench screens.
+- A followed terminal is a user-curated Workbench shortcut. It is independent
+  from attention state, recent activity, current navigation, and overlay pinning.
+
+#### 2. Signatures
+
+```typescript
+interface WorkbenchState {
+  followedCardIds: string[];
+  followCards(cardIds: readonly string[]): void;
+  unfollowCard(cardId: string): void;
+  reconcileFollowedCards(activeCardIds: readonly string[]): void;
+}
+
+interface WorkbenchProjection {
+  // Existing projection fields remain unchanged.
+  followedCardIds?: string[];
+  projectOverviews?: MobileProjectWorkbenchOverview[];
+}
+```
+
+The Rust bridge mirrors both projection fields as default-empty vectors and
+omits them when empty. They are additive fields and do not require a bridge
+protocol version bump.
+
+#### 3. Contracts
+- Following and unfollowing are explicit user actions. Opening, focusing,
+  reading, searching, receiving output from, or changing the status of a
+  terminal must not remove it from the Workbench.
+- The follow order is stable and manual: the newest selected batch is placed
+  first in candidate-list order, untouched existing entries retain their
+  relative order, and duplicate ids are ignored.
+- Archiving or deleting a terminal removes its stale followed id during card
+  reconciliation. Restoring an archived terminal must not silently follow it
+  again; the user can add it back explicitly.
+- Workbench follow state and overlay pin state are separate. Changing one must
+  not mutate, imply, or visually impersonate the other.
+- Recall confirmation changes follow state only. It must not open, focus,
+  create, resume, or write to any terminal.
+- Desktop may manage followed terminals from the recall dialog, attention
+  cards, and terminal card menus. Mobile is a read-only projection: it may
+  display and open a followed terminal but must not expose follow management.
+- Project and worktree filters use normalized exact scope keys. A project
+  overview is derived from live card/attention/follow data and never invents
+  progress or task semantics.
+- Recall-dialog path matching must use `samePath` or
+  `normalizeComparablePath`, including option deduplication and controlled
+  select values. Never compare Windows project/worktree paths with raw string
+  equality because slash style, drive-letter case, and trailing separators can
+  differ for the same directory.
+- Recall context options must merge the same Git branch/worktree overview used
+  by the project sidebar with active-card `branchLabel` and `worktreePath`
+  metadata. A legacy card that only records a branch label must join the
+  matching Git worktree instead of being collapsed into the project root.
+- Multiple active branch labels sharing one physical project path remain
+  distinct recall filters. Context identity therefore cannot be the raw
+  worktree path alone; path-backed and branch-backed options need stable,
+  explicit ids.
+- Cached/asynchronous branch results stay keyed to the project that produced
+  them. Switching the recall project must immediately hide the previous
+  project's branches until the next project's cache or request is available.
+- Mobile consumers must treat missing optional projection fields as empty.
+  Existing bridge commands and existing projection fields remain compatible.
+- If a project name and its main-worktree label are identical, the scope
+  selector must distinguish them with semantic labels such as
+  `Project · Main worktree`, not repeat `Test · Test`.
+
+#### 4. Validation & Error Matrix
+- Persisted Workbench version 1 has rules but no followed ids -> preserve all
+  rules and initialize an empty followed list.
+- Follow input contains empty, repeated, or already-followed ids -> normalize
+  and place each valid id at most once in the newest selected batch.
+- Followed id no longer exists among active cards -> remove only that stale id;
+  keep all other order and rule state.
+- Terminal is opened, focused, emits output, waits, completes, or is reviewed
+  -> keep it followed.
+- Terminal is archived/deleted -> remove it from followed ids after active-card
+  reconciliation; restoring it later does not restore the old follow relation.
+- Mobile receives an older projection without the new fields -> render an
+  empty followed section/project overview without throwing or reconnecting.
+- Recall dialog rerenders while terminals emit high-frequency output -> retain
+  search text, filters, and current multi-selection.
+- Current scope uses `D:\Repo\` while a live card uses `d:/repo` -> show the
+  canonical project/worktree options and filter the matching cards normally.
+- Git reports `feature/recall` at a secondary worktree while older active cards
+  contain `branchLabel: "feature/recall"` but no `worktreePath` -> show one
+  `feature/recall` option and selecting it returns all matching active cards.
+- Two active branch labels share the project-root path -> keep two context
+  options and filter by branch label rather than merging them by path.
+- User switches project A -> project B while B's branch request is pending ->
+  never expose A's branch rows under project B.
+- Already-followed terminal appears in recall results -> show it as unavailable
+  for selection and never create a duplicate.
+
+#### 5. Good/Base/Bad Cases
+- Good: a user follows three frequently used terminals, opens each repeatedly,
+  and all three remain in the Workbench in the same order.
+- Good: a followed terminal is archived, disappears from the Workbench, and
+  remains unfollowed when later restored.
+- Good: mobile opens a followed terminal from the read-only list while all
+  follow management remains on desktop.
+- Base: no terminal has been followed; attention and execution-context sections
+  continue to work and the followed section shows its own empty state.
+- Bad: removing a followed terminal when `onOpenTerminal` runs or when an
+  attention notification is acknowledged.
+- Bad: reusing overlay `pinned` state as Workbench retention.
+- Bad: making mobile invent a local follow list that can diverge from desktop.
+
+#### 6. Tests Required
+- Store tests: version-1 migration, stable append order, deduplication,
+  independent pin state, explicit unfollow, and stale-id reconciliation.
+- Pure projection tests: project/worktree scoping, followed-card derivation,
+  project overview totals, and scoped attention counts.
+- Desktop component tests: recall search/filter/multi-select, confirmation
+  without navigation, Windows-equivalent project/worktree path forms,
+  Git-worktree-to-legacy-branch joining, same-path branch separation,
+  open-without-removal, card-menu action, attention-card action, all-project
+  return, and high-frequency rerender stability.
+- Branch-hook tests: cache reuse, forced refresh, non-Tauri degradation, and
+  project-switch isolation while the next request is pending.
+- Mobile tests: optional-field compatibility, read-only followed list, open
+  behavior, project-scope switching, no management controls, and duplicate-name
+  disambiguation.
+- Cross-layer contract tests must assert matching TypeScript/Rust optional
+  fields and legacy Rust deserialization with both fields absent.
+- Required gates: targeted Vitest, `npm run lint`, `npm run typecheck`,
+  desktop/mobile production builds, Rust tests/clippy, circular-dependency
+  check, and `git diff --check`.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```typescript
+const openFollowedTerminal = (cardId: string) => {
+  unfollowCard(cardId);
+  onOpenTerminal(cardId);
+};
+```
+
+Correct:
+
+```typescript
+const openFollowedTerminal = (cardId: string) => {
+  onOpenTerminal(cardId);
+};
+```
+
+Wrong:
+
+```typescript
+const followedCardIds = cards.filter((card) => card.pinned).map((card) => card.id);
+```
+
+Correct:
+
+```typescript
+const followedCardIds = useWorkbenchStore((state) => state.followedCardIds);
+```
+
+</spec-entry>
+
 <spec-entry category="quality" keywords="notifications,tauri,pty,supervisor,codex,dedup,focus" date="2026-07-26" source="src/lib/osNotificationPolicy.ts:1">
 
 ### Scenario: Semantic OS Notification Boundary

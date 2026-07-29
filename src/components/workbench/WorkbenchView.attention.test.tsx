@@ -1,165 +1,15 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
-import type {
-  AttentionItem,
-  ExecutionContextGroup,
-  WorkbenchSummary,
-} from '../../lib/workbench/types';
-import type { TerminalCard } from '../../types/terminal';
-import { WorkbenchView } from './WorkbenchView';
+import { fireEvent, screen } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
+import {
+  approvalItem,
+  executionGroup,
+  makeCard,
+  renderWorkbench,
+  runningGroup,
+  stalledItem,
+} from './WorkbenchView.testHarness';
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (
-      key: string,
-      options?: Record<string, string | number | undefined> & { defaultValue?: string },
-    ) => {
-      let value = options?.defaultValue ?? key;
-      for (const [name, replacement] of Object.entries(options ?? {})) {
-        value = value.split(`{{${name}}}`).join(String(replacement));
-      }
-      return value;
-    },
-    i18n: { language: 'en' },
-  }),
-}));
-
-const NOW = 1_000_000;
-
-function makeCard(overrides: Partial<TerminalCard> = {}): TerminalCard {
-  return {
-    id: 'card-1',
-    ptyId: 'card-1',
-    projectPath: '/repo',
-    projectName: 'Repo',
-    terminalType: 'codex',
-    status: 'waiting',
-    createdAt: NOW - 10_000,
-    lastActivity: NOW - 5_000,
-    lastOutput: '',
-    lastReplyPreview: '',
-    messageCount: 1,
-    events: [],
-    unread: true,
-    ...overrides,
-  };
-}
-
-const approvalItem: AttentionItem = {
-  id: 'structured_request:req-1',
-  cardId: 'card-1',
-  kind: 'approval',
-  severity: 'critical',
-  sourceKind: 'structured_request',
-  sourceId: 'req-1',
-  occurredAt: NOW - 3_000,
-  projectPath: '/repo',
-  projectName: 'Repo',
-  terminalType: 'codex',
-  title: 'Approval needed',
-  detail: 'Run a repository command',
-  reasonCode: 'structured_approval',
-  capability: {
-    openRequest: true,
-    openTerminal: true,
-    openNotification: true,
-    openEvidence: false,
-  },
-};
-
-const failedItem: AttentionItem = {
-  id: 'terminal_state:card-2',
-  cardId: 'card-2',
-  kind: 'failed',
-  severity: 'critical',
-  sourceKind: 'terminal_state',
-  sourceId: 'card-2',
-  occurredAt: NOW - 2_000,
-  projectPath: '/other',
-  projectName: 'Other',
-  terminalType: 'claude',
-  title: 'Build failed',
-  detail: 'Command exited with code 1',
-  reasonCode: 'failed_state',
-  capability: {
-    openRequest: false,
-    openTerminal: true,
-    openNotification: false,
-    openEvidence: false,
-  },
-};
-
-const executionGroup: ExecutionContextGroup = {
-  id: '/repo\u001f/repo',
-  projectPath: '/repo',
-  projectName: 'Repo',
-  worktreePath: '/repo',
-  cardIds: ['card-1', 'card-2'],
-  terminalCount: 2,
-  terminalTypes: ['codex', 'claude'],
-  attentionCount: 2,
-  status: 'attention',
-  terminalStatuses: ['waiting', 'failed'],
-  lastActivity: NOW - 2_000,
-  preview: 'latest real output',
-};
-
-const runningGroup: ExecutionContextGroup = {
-  id: '/running\u001f/running',
-  projectPath: '/running',
-  projectName: 'Running',
-  worktreePath: '/running',
-  cardIds: ['card-3'],
-  terminalCount: 1,
-  terminalTypes: ['codex'],
-  attentionCount: 0,
-  status: 'running',
-  terminalStatuses: ['running'],
-  lastActivity: NOW - 1_000,
-  preview: 'steady output',
-};
-
-const summary: WorkbenchSummary = {
-  attention: 2,
-  normalRunning: 0,
-  review: 0,
-  failed: 1,
-};
-
-function renderWorkbench(overrides: Partial<Parameters<typeof WorkbenchView>[0]> = {}) {
-  const callbacks = {
-    onOpenTerminal: vi.fn(),
-    onOpenAttention: vi.fn(),
-    onOpenGroup: vi.fn(),
-    onOpenRules: vi.fn(),
-    onNavigateTerminals: vi.fn(),
-    onCreateTerminal: vi.fn(),
-  };
-  const props: Parameters<typeof WorkbenchView>[0] = {
-    cards: [
-      makeCard(),
-      makeCard({
-        id: 'card-2',
-        ptyId: 'card-2',
-        projectPath: '/other',
-        projectName: 'Other',
-        terminalType: 'claude',
-        status: 'failed',
-      }),
-    ],
-    attentionItems: [approvalItem, failedItem],
-    groups: [executionGroup],
-    summary,
-    now: NOW,
-    scopeLabel: null,
-    ...callbacks,
-    ...overrides,
-  };
-  render(<WorkbenchView {...props} />);
-  return { props, callbacks };
-}
-
-describe('WorkbenchView', () => {
+describe('WorkbenchView attention and overview', () => {
   it('renders real attention signals with navigation-only actions', () => {
     const { callbacks } = renderWorkbench();
 
@@ -274,5 +124,47 @@ describe('WorkbenchView', () => {
     expect(screen.getByText('No terminals in this scope')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'New terminal' }));
     expect(callbacks.onCreateTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps stalled items out of the attention list in a collapsed watch section', () => {
+    renderWorkbench({ stalledItems: [stalledItem] });
+
+    // The actionable list stays pure; the watch section shows only the count.
+    expect(screen.queryByText('Quiet dev server')).toBeNull();
+    const toggle = screen.getByRole('button', {
+      name: /No-progress watch/,
+    });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Quiet dev server')).toBeInTheDocument();
+
+    // Stalled kind is not part of the attention filter chips anymore.
+    expect(screen.queryByRole('button', { name: 'No progress' })).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'All pending' }),
+    ).toBeInTheDocument();
+  });
+
+  it('opens a project scope from the global project overview', () => {
+    const { callbacks } = renderWorkbench({
+      projectOverviews: [
+        {
+          projectPath: '/alpha',
+          projectName: 'Project Alpha',
+          followedCount: 1,
+          runningCount: 2,
+          attentionCount: 3,
+          reviewCount: 1,
+          failedCount: 0,
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Project Alpha/ }));
+
+    expect(callbacks.onSelectProject).toHaveBeenCalledWith('/alpha');
+    expect(callbacks.onOpenTerminal).not.toHaveBeenCalled();
   });
 });

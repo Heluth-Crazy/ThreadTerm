@@ -11,8 +11,12 @@
 
 - Trigger: adding or changing a long-running Windows child process that
   communicates only through piped stdin/stdout, including the Codex app-server
-  transport.
-- Applies to `src-tauri/src/codex_app.rs` and future service-style subprocesses.
+  transport and the Claude chat sidecar.
+- Applies to `src-tauri/src/service_child.rs` (the shared implementation),
+  `src-tauri/src/codex_app.rs`, `src-tauri/src/claude_chat/manager.rs`, and future
+  service-style subprocesses.
+- New service-style processes must reuse `service_child.rs` rather than
+  re-implementing job/suspend/resume plumbing.
 - Does not apply to terminal cards. Interactive shells and CLI cards must keep
   using the PTY subsystem so ConPTY, resize, signal, and process-tree semantics
   remain intact.
@@ -22,7 +26,9 @@
 ### 2. Signatures
 
 - `CodexAppManager::ensure_process(&self, app: &AppHandle) -> Result<bool, String>`
-- `spawn_managed_codex_child(Command) -> std::io::Result<ManagedCodexChild>`
+- `ClaudeChatManager::ensure_process(&self, app: &AppHandle) -> Result<(), String>`
+- `service_child::spawn_managed_service_child(Command) -> std::io::Result<ManagedServiceChild>`
+  (Codex imports it under its historical `spawn_managed_codex_child` alias.)
 - `WindowsJob::new() -> std::io::Result<WindowsJob>`
 - `WindowsJob::assign(&self, child: &tokio::process::Child) -> std::io::Result<()>`
 - `WindowsJob::terminate(&self) -> std::io::Result<()>`
@@ -37,9 +43,12 @@
 - Spawn the top-level process suspended, assign it to the Job Object, and only
   then resume its threads. This closes the race in which a wrapper can create a
   descendant before ThreadTerm starts tracking it.
-- `ManagedCodexChild::drop` must actively terminate the Job Object during normal
-  disconnect/teardown. Kill-on-close is the crash fallback when Rust destructors
-  cannot run.
+- `ManagedServiceChild::drop` must actively terminate the Job Object during
+  normal disconnect/teardown. Kill-on-close is the crash fallback when Rust
+  destructors cannot run.
+- A sidecar that owns its own grandchildren (the Claude sidecar spawns `claude`
+  through the Agent SDK) relies entirely on this Job boundary: `kill_on_drop`
+  reaches only the immediate `node` process.
 - If Job creation, assignment, or thread resume fails, terminate the suspended
   child/tree and return an error. Never resume an untracked process.
 - Keep each Job scoped to one service tree. Do not assign the ThreadTerm process

@@ -73,6 +73,10 @@ import {
   type TerminalViewMode,
 } from './useTerminalNavigation';
 import { useTerminalCommandPalette } from './useTerminalCommandPalette';
+import {
+  getWorkbenchProjectAttentionCount,
+  getWorkbenchWorktreeAttentionCount,
+} from '../../lib/workbench/deriveFollowedTerminals';
 
 const TERMINAL_TYPES: TerminalType[] = [
   'shell',
@@ -170,7 +174,13 @@ export function TerminalManager() {
   }, []);
   const [createOpen, setCreateOpen] = useState(false);
   const [mobileViewActive, setMobileViewActive] = useState(false);
-  const { mobileWorkbenchModel, workbenchModel } = useWorkbenchModel({
+  const {
+    allProjectsWorkbenchModel,
+    followCards,
+    followedCardIds,
+    unfollowCard,
+    workbenchModel,
+  } = useWorkbenchModel({
     cards,
     selectedProjectPath,
     selectedWorktreePath,
@@ -368,7 +378,7 @@ export function TerminalManager() {
     viewMode === 'focus' && !!focusedCard && workspaceContentTabs.length > 0;
   const mobileBridgeSyncEnabled = useMobileWorkbenchSync({
     cards,
-    mobileWorkbenchModel,
+    mobileWorkbenchModel: allProjectsWorkbenchModel,
   });
 
   // Mark the focused card as most-recently-used (mounting it if needed and
@@ -652,6 +662,23 @@ export function TerminalManager() {
   const workbenchScopeLabel = selectedProjectName
     ? [selectedProjectName, selectedWorktreeLabel].filter(Boolean).join(' · ')
     : null;
+  const getProjectAttentionCount = useCallback(
+    (projectPath: string) =>
+      getWorkbenchProjectAttentionCount(
+        allProjectsWorkbenchModel.scopeAttentionCounts,
+        projectPath,
+      ),
+    [allProjectsWorkbenchModel.scopeAttentionCounts],
+  );
+  const getWorktreeAttentionCount = useCallback(
+    (projectPath: string, worktreePath: string) =>
+      getWorkbenchWorktreeAttentionCount(
+        allProjectsWorkbenchModel.scopeAttentionCounts,
+        projectPath,
+        worktreePath,
+      ),
+    [allProjectsWorkbenchModel.scopeAttentionCounts],
+  );
 
   return (
     <div className="relative flex h-full w-full bg-mesh overflow-hidden">
@@ -668,7 +695,9 @@ export function TerminalManager() {
           onCreateTerminal={() => setCreateOpen(true)}
           primaryView={primaryView}
           onSelectPrimaryView={handleSelectPrimaryView}
-          attentionCount={workbenchModel.summary.attention}
+          attentionCount={allProjectsWorkbenchModel.summary.attention}
+          getProjectAttentionCount={getProjectAttentionCount}
+          getWorktreeAttentionCount={getWorktreeAttentionCount}
           compact={isSidebarCompact}
           isMobile={isMobile}
           onExitMobileView={() => setMobileViewActive(false)}
@@ -856,11 +885,18 @@ export function TerminalManager() {
         >
           <WorkbenchView
             cards={workbenchModel.filteredCards}
+            allCards={cards}
             attentionItems={workbenchModel.attentionItems}
+            stalledItems={workbenchModel.stalledItems}
+            followedCards={workbenchModel.followedCards}
+            followedCardIds={followedCardIds}
             groups={workbenchModel.groups}
+            projectOverviews={allProjectsWorkbenchModel.projectOverviews}
             summary={workbenchModel.summary}
             now={workbenchModel.now}
             scopeLabel={workbenchScopeLabel}
+            selectedProjectPath={selectedProjectPath}
+            selectedWorktreePath={selectedWorktreePath}
             onOpenTerminal={handleOpenTerminal}
             onOpenAttention={(item) =>
               handleOpenWorkbenchPanel({
@@ -874,6 +910,10 @@ export function TerminalManager() {
             onOpenRules={() => handleOpenWorkbenchPanel({ kind: 'rules' })}
             onNavigateTerminals={() => handleSelectPrimaryView('terminals')}
             onCreateTerminal={() => setCreateOpen(true)}
+            onFollowCards={followCards}
+            onUnfollowCard={unfollowCard}
+            onSelectProject={(projectPath) => selectProject(projectPath)}
+            onShowAllProjects={() => selectProject(null)}
           />
         </motion.div>
 

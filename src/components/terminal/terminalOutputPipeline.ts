@@ -12,6 +12,7 @@ import type {
   RendererOutputConsumer,
 } from './shellRuntimeTypes';
 import { createSynchronizedFrameRefreshGate } from './synchronizedFrameRefreshGate';
+import type { ResumeLoadingProgressObserver } from './resumeLoadingProgressTypes';
 
 const CLEANUP_SEQUENCE_RE = /\x1b\[[0-9;]*[JKLMPX]/;
 // W0.3: above this size, a session-restore snapshot is written to xterm in
@@ -34,6 +35,7 @@ interface CreateTerminalOutputPipelineOptions {
   scrollTerminalToBottom: (shouldFocus?: boolean, shouldRefresh?: boolean) => void;
   scheduleNewOutputFlush: () => void;
   scheduleTerminalRefresh: () => void;
+  resumeLoadingObserverRef?: MutableRefObject<ResumeLoadingProgressObserver | null>;
 }
 
 export function createTerminalOutputPipeline({
@@ -50,6 +52,7 @@ export function createTerminalOutputPipeline({
   scrollTerminalToBottom,
   scheduleNewOutputFlush,
   scheduleTerminalRefresh,
+  resumeLoadingObserverRef,
 }: CreateTerminalOutputPipelineOptions): OutputSequencer {
   const synchronizedRefreshGate = createSynchronizedFrameRefreshGate();
   const sequencer = createOutputSequencer((data, seq, onWritten, meta) => {
@@ -100,6 +103,10 @@ export function createTerminalOutputPipeline({
     const needsRefresh = CLEANUP_SEQUENCE_RE.test(data) || data.includes('\r');
     const shouldScheduleRefresh =
       synchronizedRefreshGate.shouldRefreshAfterWrite(data, needsRefresh);
+    const observesResumeWrite = Boolean(data);
+    if (observesResumeWrite) {
+      resumeLoadingObserverRef?.current?.outputWriteStarted(data.length);
+    }
     const finalize = () => {
       if (!isCurrentConsumer()) {
         onWritten();
@@ -122,6 +129,11 @@ export function createTerminalOutputPipeline({
         if (shouldScheduleRefresh) {
           scheduleTerminalRefresh();
         }
+      }
+      if (observesResumeWrite) {
+        resumeLoadingObserverRef?.current?.outputWriteCompleted(
+          synchronizedRefreshGate.isOpen(),
+        );
       }
       ackWritten();
     };

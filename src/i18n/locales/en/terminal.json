@@ -38,6 +38,7 @@
     "detachedWorktree": "detached",
     "lockedWorktree": "locked",
     "bareWorktree": "bare",
+    "attentionCount": "{{count}} items need attention",
     "emptyLine1": "No projects yet.",
     "emptyLine2": "Create a terminal to start."
   },
@@ -56,14 +57,59 @@
       "title": "Needs attention",
       "count": "{{count}} items"
     },
+    "followed": {
+      "title": "Followed terminals",
+      "recall": "Recall terminals",
+      "collapse": "Collapse",
+      "expand": "Show all",
+      "openTerminal": "Open {{name}} terminal",
+      "remove": "Remove from Workbench",
+      "removeNamed": "Remove {{name}} from Workbench",
+      "noSearchResults": "No followed terminals match this search.",
+      "empty": "Keep frequently used terminals here, even after you view them."
+    },
+    "projects": {
+      "title": "Project overview",
+      "subtitle": "A stable overview across all active projects",
+      "followed": "Followed",
+      "running": "Running",
+      "attention": "Attention",
+      "review": "Review",
+      "failed": "Failed"
+    },
+    "recall": {
+      "title": "Recall terminals",
+      "subtitle": "Choose active terminals to keep in your Workbench.",
+      "close": "Close",
+      "searchLabel": "Search active terminals",
+      "searchPlaceholder": "Search project, branch, type, or output",
+      "scope": "Scope",
+      "currentScope": "Current Workbench scope",
+      "allScope": "All projects",
+      "project": "Project",
+      "allProjects": "All projects",
+      "worktree": "Branch / worktree",
+      "allWorktrees": "All branches / worktrees",
+      "alreadyFollowed": "Already followed",
+      "emptyTitle": "No matching active terminals",
+      "emptyBody": "Try another search or scope.",
+      "selectedCount": "{{count}} selected",
+      "cancel": "Cancel",
+      "confirm": "Add to Workbench"
+    },
     "filters": {
       "label": "Filter attention items",
-      "all": "All",
+      "all": "All pending",
       "approval": "Approval",
       "waiting": "Waiting",
       "failed": "Failed",
       "review": "Review",
       "stalled": "No progress"
+    },
+    "stalled": {
+      "title": "No-progress watch",
+      "count": "{{count}} terminals",
+      "hint": "Running, but quiet beyond the rule threshold"
     },
     "groups": {
       "title": "Execution contexts",
@@ -108,7 +154,12 @@
       "openResult": "View result",
       "openTerminal": "Open terminal",
       "details": "Details",
-      "viewAllTerminals": "View all terminals"
+      "viewAllTerminals": "View all terminals",
+      "addToWorkbench": "Add to Workbench",
+      "removeFromWorkbench": "Remove from Workbench",
+      "follow": "Follow",
+      "followed": "Followed",
+      "allProjects": "All projects"
     },
     "empty": {
       "noTerminalsTitle": "No terminals yet",
@@ -314,6 +365,8 @@
     "unpin": "Unpin from overlay selector",
     "pin": "Pin to overlay selector",
     "pinFull": "Pin list is full (max {{max}})",
+    "addToWorkbench": "Add to Workbench",
+    "removeFromWorkbench": "Remove from Workbench",
     "archive": "Archive card",
     "close": "Close terminal",
     "recent": "Recent",
@@ -515,6 +568,7 @@
     "stop": "Stop",
     "clear": "Clear",
     "loading": "Loading terminal...",
+    "restoringHistory": "Restoring history",
     "start": "Start",
     "startShell": "Start shell",
     "runCommand": "Run {{command}}",

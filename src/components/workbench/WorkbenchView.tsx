@@ -1,5 +1,9 @@
-import { Plus, Search, SlidersHorizontal, TerminalSquare } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import {
+  ArrowLeft,
+  Search,
+  SlidersHorizontal,
+} from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   attentionFilterMatches,
@@ -7,57 +11,95 @@ import {
 import type {
   AttentionItem,
   ExecutionContextGroup,
-  WorkbenchAttentionFilter,
+  ProjectWorkbenchOverview,
   WorkbenchSummary as WorkbenchSummaryData,
   WorkbenchViewFilter,
 } from '../../lib/workbench/types';
 import type { TerminalCard } from '../../types/terminal';
-import { AttentionItemCard } from './AttentionItemCard';
-import { ExecutionGroupCard } from './ExecutionGroupCard';
+import { FollowedTerminalSection } from './FollowedTerminalSection';
+import { ProjectOverviewGrid } from './ProjectOverviewGrid';
+import { RecallTerminalDialog } from './RecallTerminalDialog';
+import { WorkbenchAttentionSection } from './WorkbenchAttentionSection';
+import { WorkbenchEmptyTerminalState } from './WorkbenchEmptyTerminalState';
+import { WorkbenchExecutionGroupsSection } from './WorkbenchExecutionGroupsSection';
+import { WorkbenchStalledSection } from './WorkbenchStalledSection';
 import { WorkbenchSummary } from './WorkbenchSummary';
+import {
+  attentionSearchText,
+  executionGroupSearchText,
+  followedTerminalSearchText,
+} from './workbenchPresentation';
 
 interface WorkbenchViewProps {
   cards: readonly TerminalCard[];
+  allCards: readonly TerminalCard[];
   attentionItems: readonly AttentionItem[];
+  stalledItems: readonly AttentionItem[];
+  followedCards: readonly TerminalCard[];
+  followedCardIds: readonly string[];
   groups: readonly ExecutionContextGroup[];
+  projectOverviews: readonly ProjectWorkbenchOverview[];
   summary: WorkbenchSummaryData;
   now: number;
   scopeLabel: string | null;
+  selectedProjectPath: string | null;
+  selectedWorktreePath: string | null;
   onOpenTerminal: (cardId: string) => void;
   onOpenAttention: (item: AttentionItem) => void;
   onOpenGroup: (group: ExecutionContextGroup) => void;
   onOpenRules: () => void;
   onNavigateTerminals: () => void;
   onCreateTerminal: () => void;
+  onFollowCards: (cardIds: readonly string[]) => void;
+  onUnfollowCard: (cardId: string) => void;
+  onSelectProject: (projectPath: string) => void;
+  onShowAllProjects: () => void;
 }
-
-const FILTERS: WorkbenchAttentionFilter[] = [
-  'all',
-  'approval',
-  'waiting',
-  'failed',
-  'review',
-  'stalled',
-];
 
 export function WorkbenchView({
   cards,
+  allCards,
   attentionItems,
+  stalledItems,
+  followedCards,
+  followedCardIds,
   groups,
+  projectOverviews,
   summary,
   now,
   scopeLabel,
+  selectedProjectPath,
+  selectedWorktreePath,
   onOpenTerminal,
   onOpenAttention,
   onOpenGroup,
   onOpenRules,
   onNavigateTerminals,
   onCreateTerminal,
+  onFollowCards,
+  onUnfollowCard,
+  onSelectProject,
+  onShowAllProjects,
 }: WorkbenchViewProps) {
   const { t } = useTranslation('terminal');
   const [filter, setFilter] = useState<WorkbenchViewFilter>('all');
   const [query, setQuery] = useState('');
+  const [recallOpen, setRecallOpen] = useState(false);
+  const [stalledExpanded, setStalledExpanded] = useState(false);
+  const openRecall = useCallback(() => setRecallOpen(true), []);
+  const closeRecall = useCallback(() => setRecallOpen(false), []);
+  const setCardFollowed = useCallback(
+    (cardId: string, followed: boolean) => {
+      if (followed) onFollowCards([cardId]);
+      else onUnfollowCard(cardId);
+    },
+    [onFollowCards, onUnfollowCard],
+  );
   const normalizedQuery = query.trim().toLocaleLowerCase();
+  const followedIdSet = useMemo(
+    () => new Set(followedCardIds),
+    [followedCardIds],
+  );
   const normalRunningCardIds = useMemo(() => {
     const cardsWithAttention = new Set(attentionItems.map((item) => item.cardId));
     return new Set(
@@ -89,26 +131,65 @@ export function WorkbenchView({
       ),
     [filter, groups, normalRunningCardIds, normalizedQuery],
   );
+  const visibleFollowedCards = useMemo(
+    () =>
+      followedCards.filter(
+        (card) =>
+          !normalizedQuery || followedTerminalSearchText(card).includes(normalizedQuery),
+      ),
+    [followedCards, normalizedQuery],
+  );
+  const visibleProjectOverviews = useMemo(
+    () =>
+      projectOverviews.filter(
+        (project) =>
+          !normalizedQuery ||
+          `${project.projectName} ${project.projectPath}`
+            .toLocaleLowerCase()
+            .includes(normalizedQuery),
+      ),
+    [normalizedQuery, projectOverviews],
+  );
+  const visibleStalledItems = useMemo(
+    () =>
+      stalledItems.filter(
+        (item) =>
+          !normalizedQuery || attentionSearchText(item).includes(normalizedQuery),
+      ),
+    [normalizedQuery, stalledItems],
+  );
 
   return (
     <div
       data-testid="workbench-view"
       className="h-full w-full overflow-y-auto bg-background/20"
     >
-      <div className="mx-auto w-full max-w-[1180px] px-4 pb-8 pt-4 md:px-6 md:pt-5">
+      <div className="mx-auto w-full max-w-[1180px] px-4 pb-8 pt-4 md:px-6 md:pt-5 xl:max-w-[1680px]">
         <header className="flex flex-wrap items-center gap-2">
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-2">
-              <h1 className="text-[15px] font-semibold">
+              <h1 className="text-[17px] font-semibold">
                 {t('workbench.title', { defaultValue: 'Workbench' })}
               </h1>
               {scopeLabel && (
-                <span
-                  title={scopeLabel}
-                  className="max-w-48 truncate rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary"
-                >
-                  {scopeLabel}
-                </span>
+                <>
+                  <span
+                    title={scopeLabel}
+                    className="max-w-48 truncate rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary"
+                  >
+                    {scopeLabel}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onShowAllProjects}
+                    className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-primary"
+                  >
+                    <ArrowLeft className="h-3 w-3" />
+                    {t('workbench.action.allProjects', {
+                      defaultValue: 'All projects',
+                    })}
+                  </button>
+                </>
               )}
             </div>
             <p className="mt-0.5 text-[11px] text-muted-foreground">
@@ -151,194 +232,89 @@ export function WorkbenchView({
         />
 
         {cards.length === 0 ? (
-          <div className="mt-5 flex min-h-56 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-card/35 px-6 text-center">
-            <TerminalSquare className="h-7 w-7 text-muted-foreground/60" />
-            <div className="mt-3 text-sm font-medium">
-              {scopeLabel
-                ? t('workbench.empty.noScopeTerminalsTitle', {
-                    defaultValue: 'No terminals in this scope',
-                  })
-                : t('workbench.empty.noTerminalsTitle', {
-                    defaultValue: 'No terminals yet',
-                  })}
-            </div>
-            <div className="mt-1 max-w-sm text-[11px] text-muted-foreground">
-              {scopeLabel
-                ? t('workbench.empty.noScopeTerminalsBody', {
-                    defaultValue:
-                      'Choose another project or worktree, or create a terminal in this scope.',
-                  })
-                : t('workbench.empty.noTerminalsBody', {
-                    defaultValue:
-                      'Create a terminal to start collecting local status signals.',
-                  })}
-            </div>
-            <button
-              type="button"
-              onClick={onCreateTerminal}
-              className="mt-4 inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-[11px] font-semibold text-primary-foreground"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {t('app.newTerminal', { defaultValue: 'New terminal' })}
-            </button>
-          </div>
+          <>
+            <FollowedTerminalSection
+              cards={visibleFollowedCards}
+              totalCount={followedCards.length}
+              now={now}
+              queryActive={Boolean(normalizedQuery)}
+              onOpenTerminal={onOpenTerminal}
+              onUnfollowCard={onUnfollowCard}
+              onOpenRecall={openRecall}
+            />
+            <WorkbenchEmptyTerminalState
+              scopeLabel={scopeLabel}
+              onCreateTerminal={onCreateTerminal}
+            />
+          </>
         ) : (
           <>
-            <section aria-labelledby="workbench-attention-heading">
-              <div className="mb-2 mt-5 flex min-w-0 flex-wrap items-center gap-2">
-                <h2 id="workbench-attention-heading" className="text-[13px] font-semibold">
-                  {t('workbench.attention.title', { defaultValue: 'Needs attention' })}
-                </h2>
-                <span className="text-[11px] tabular-nums text-muted-foreground">
-                  {t('workbench.attention.count', {
-                    count: visibleItems.length,
-                    defaultValue: '{{count}} items',
-                  })}
-                </span>
-                <div
-                  role="group"
-                  aria-label={t('workbench.filters.label', {
-                    defaultValue: 'Filter attention items',
-                  })}
-                  className="flex max-w-full items-center gap-1 overflow-x-auto sm:ml-auto"
-                >
-                  {FILTERS.map((value) => (
-                    <button
-                      key={value}
-                      type="button"
-                      aria-pressed={filter === value}
-                      onClick={() => setFilter(value)}
-                      className={[
-                        'h-6 shrink-0 rounded-md border px-2 text-[11px] transition-colors',
-                        filter === value
-                          ? 'border-border bg-foreground/[0.08] text-foreground'
-                          : 'border-transparent text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground',
-                      ].join(' ')}
-                    >
-                      {t(`workbench.filters.${value}`, {
-                        defaultValue: filterLabel(value),
-                      })}
-                    </button>
-                  ))}
-                </div>
+            <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
+              <div className="min-w-0">
+                <WorkbenchAttentionSection
+                  items={visibleItems}
+                  filter={filter}
+                  followedCardIds={followedIdSet}
+                  now={now}
+                  queryActive={Boolean(normalizedQuery)}
+                  onSelectFilter={setFilter}
+                  onOpenTerminal={onOpenTerminal}
+                  onOpenAttention={onOpenAttention}
+                  onSetCardFollowed={setCardFollowed}
+                />
+                <WorkbenchStalledSection
+                  items={visibleStalledItems}
+                  expanded={stalledExpanded}
+                  followedCardIds={followedIdSet}
+                  now={now}
+                  onToggleExpanded={() =>
+                    setStalledExpanded((value) => !value)
+                  }
+                  onOpenTerminal={onOpenTerminal}
+                  onOpenAttention={onOpenAttention}
+                  onSetCardFollowed={setCardFollowed}
+                />
               </div>
 
-              {visibleItems.length > 0 ? (
-                <div className="space-y-2 lg:max-h-[238px] lg:overflow-y-auto lg:pr-1">
-                  {visibleItems.map((item) => (
-                    <AttentionItemCard
-                      key={item.id}
-                      item={item}
-                      now={now}
-                      onOpenItem={() => onOpenTerminal(item.cardId)}
-                      onOpenDetail={onOpenAttention}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-lg border border-dashed border-border bg-card/30 px-4 py-5 text-center text-[11px] text-muted-foreground">
-                  {normalizedQuery
-                    ? t('workbench.empty.noSearchResults', {
-                        defaultValue: 'No attention items match this search.',
-                      })
-                    : t('workbench.empty.noAttention', {
-                        defaultValue: 'Nothing needs your attention in this scope.',
-                      })}
-                </div>
-              )}
-            </section>
+              <aside className="flex min-w-0 flex-col gap-5">
+                <FollowedTerminalSection
+                  className=""
+                  cards={visibleFollowedCards}
+                  totalCount={followedCards.length}
+                  now={now}
+                  queryActive={Boolean(normalizedQuery)}
+                  onOpenTerminal={onOpenTerminal}
+                  onUnfollowCard={onUnfollowCard}
+                  onOpenRecall={openRecall}
+                />
+                {!selectedProjectPath && (
+                  <ProjectOverviewGrid
+                    className=""
+                    projects={visibleProjectOverviews}
+                    onSelectProject={onSelectProject}
+                  />
+                )}
+              </aside>
+            </div>
 
-            <section aria-labelledby="workbench-groups-heading">
-              <div className="mb-2 mt-5 flex items-center gap-2">
-                <div className="min-w-0">
-                  <h2 id="workbench-groups-heading" className="text-[13px] font-semibold">
-                    {t('workbench.groups.title', { defaultValue: 'Execution contexts' })}
-                  </h2>
-                  <p className="truncate text-[11px] text-muted-foreground">
-                    {t('workbench.groups.subtitle', {
-                      defaultValue: 'Grouped by project and worktree, not inferred tasks',
-                    })}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={onNavigateTerminals}
-                  className="ml-auto shrink-0 text-[11px] font-medium text-muted-foreground hover:text-primary"
-                >
-                  {t('workbench.action.viewAllTerminals', {
-                    defaultValue: 'View all terminals',
-                  })}
-                  {' →'}
-                </button>
-              </div>
-              {visibleGroups.length > 0 ? (
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                  {visibleGroups.map((group) => (
-                    <ExecutionGroupCard
-                      key={group.id}
-                      group={group}
-                      now={now}
-                      onOpenDetail={onOpenGroup}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-lg border border-dashed border-border bg-card/30 px-4 py-5 text-center text-[11px] text-muted-foreground">
-                  {t('workbench.empty.noActiveContexts', {
-                    defaultValue: 'No active execution contexts in this scope.',
-                  })}
-                </div>
-              )}
-            </section>
+            <WorkbenchExecutionGroupsSection
+              groups={visibleGroups}
+              now={now}
+              onOpenGroup={onOpenGroup}
+              onNavigateTerminals={onNavigateTerminals}
+            />
           </>
         )}
       </div>
+      <RecallTerminalDialog
+        open={recallOpen}
+        cards={allCards}
+        followedCardIds={followedCardIds}
+        selectedProjectPath={selectedProjectPath}
+        selectedWorktreePath={selectedWorktreePath}
+        onClose={closeRecall}
+        onConfirm={onFollowCards}
+      />
     </div>
   );
-}
-
-function attentionSearchText(item: AttentionItem): string {
-  return [
-    item.title,
-    item.detail,
-    item.projectName,
-    item.projectPath,
-    item.branchLabel,
-    item.worktreePath,
-    item.terminalType,
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLocaleLowerCase();
-}
-
-function executionGroupSearchText(group: ExecutionContextGroup): string {
-  return [
-    group.projectName,
-    group.projectPath,
-    group.branchLabel,
-    group.worktreePath,
-    group.preview,
-    ...group.terminalTypes,
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLocaleLowerCase();
-}
-
-function filterLabel(filter: WorkbenchAttentionFilter): string {
-  switch (filter) {
-    case 'all':
-      return 'All';
-    case 'approval':
-      return 'Approval';
-    case 'waiting':
-      return 'Waiting';
-    case 'failed':
-      return 'Failed';
-    case 'review':
-      return 'Review';
-    case 'stalled':
-      return 'No progress';
-  }
 }

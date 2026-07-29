@@ -38,6 +38,7 @@
     "detachedWorktree": "detached",
     "lockedWorktree": "locked",
     "bareWorktree": "bare",
+    "attentionCount": "{{count}}개 처리 필요",
     "emptyLine1": "아직 프로젝트가 없습니다.",
     "emptyLine2": "터미널을 만들어 시작하세요."
   },
@@ -56,14 +57,59 @@
       "title": "처리 필요",
       "count": "{{count}}개"
     },
+    "followed": {
+      "title": "팔로우한 터미널",
+      "recall": "터미널 불러오기",
+      "collapse": "접기",
+      "expand": "모두 보기",
+      "openTerminal": "{{name}} 터미널 열기",
+      "remove": "워크벤치에서 제거",
+      "removeNamed": "{{name}}을(를) 워크벤치에서 제거",
+      "noSearchResults": "검색과 일치하는 팔로우한 터미널이 없습니다.",
+      "empty": "자주 쓰는 터미널을 확인한 뒤에도 여기에 유지하세요."
+    },
+    "projects": {
+      "title": "프로젝트 개요",
+      "subtitle": "모든 활성 프로젝트를 안정된 순서로 표시",
+      "followed": "팔로우",
+      "running": "실행",
+      "attention": "처리",
+      "review": "검토",
+      "failed": "오류"
+    },
+    "recall": {
+      "title": "터미널 불러오기",
+      "subtitle": "워크벤치에 유지할 활성 터미널을 선택하세요.",
+      "close": "닫기",
+      "searchLabel": "활성 터미널 검색",
+      "searchPlaceholder": "프로젝트, 브랜치, 유형 또는 출력 검색",
+      "scope": "범위",
+      "currentScope": "현재 워크벤치 범위",
+      "allScope": "모든 프로젝트",
+      "project": "프로젝트",
+      "allProjects": "모든 프로젝트",
+      "worktree": "브랜치 / 워크트리",
+      "allWorktrees": "모든 브랜치 / 워크트리",
+      "alreadyFollowed": "팔로우 중",
+      "emptyTitle": "일치하는 활성 터미널이 없습니다",
+      "emptyBody": "다른 검색어나 범위를 사용해 보세요.",
+      "selectedCount": "{{count}}개 선택",
+      "cancel": "취소",
+      "confirm": "워크벤치에 추가"
+    },
     "filters": {
       "label": "주의 항목 필터",
-      "all": "전체",
+      "all": "전체 대기 중",
       "approval": "승인",
       "waiting": "대기",
       "failed": "오류",
       "review": "검토",
       "stalled": "진행 없음"
+    },
+    "stalled": {
+      "title": "진행 없음 관찰",
+      "count": "터미널 {{count}}개",
+      "hint": "실행 중이지만 규칙 임계값을 초과하여 출력 없음"
     },
     "groups": {
       "title": "실행 컨텍스트",
@@ -108,7 +154,12 @@
       "openResult": "결과 보기",
       "openTerminal": "터미널 열기",
       "details": "세부 정보",
-      "viewAllTerminals": "모든 터미널 보기"
+      "viewAllTerminals": "모든 터미널 보기",
+      "addToWorkbench": "워크벤치에 추가",
+      "removeFromWorkbench": "워크벤치에서 제거",
+      "follow": "팔로우",
+      "followed": "팔로우 중",
+      "allProjects": "모든 프로젝트"
     },
     "empty": {
       "noTerminalsTitle": "아직 터미널이 없습니다",
@@ -314,6 +365,8 @@
     "unpin": "오버레이 선택기에서 고정 해제",
     "pin": "오버레이 선택기에 고정",
     "pinFull": "고정 목록이 가득 찼습니다 (최대 {{max}}개)",
+    "addToWorkbench": "워크벤치에 추가",
+    "removeFromWorkbench": "워크벤치에서 제거",
     "archive": "카드 보관",
     "close": "터미널 닫기",
     "recent": "최근",
@@ -515,6 +568,7 @@
     "stop": "중지",
     "clear": "지우기",
     "loading": "터미널 로딩 중...",
+    "restoringHistory": "기록 세션 복원 중",
     "start": "시작",
     "startShell": "shell 시작",
     "runCommand": "{{command}} 실행",

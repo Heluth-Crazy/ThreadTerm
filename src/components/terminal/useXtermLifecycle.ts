@@ -40,6 +40,7 @@ interface UseXtermLifecycleOptions {
   ptyIdRef: MutableRefObject<string | null>;
   initialCommandRef: MutableRefObject<string | undefined>;
   onUserSubmitRef: MutableRefObject<(() => void) | undefined>;
+  inputBlockedRef: MutableRefObject<boolean>;
   activeRef: MutableRefObject<boolean>;
   preservePtyOnUnmountRef: MutableRefObject<boolean>;
   connectGenerationRef: MutableRefObject<number>;
@@ -80,6 +81,7 @@ export function useXtermLifecycle({
   ptyIdRef,
   initialCommandRef,
   onUserSubmitRef,
+  inputBlockedRef,
   activeRef,
   preservePtyOnUnmountRef,
   connectGenerationRef,
@@ -154,6 +156,14 @@ export function useXtermLifecycle({
     }
 
     terminalRef.current.attachCustomKeyEventHandler((event) => {
+      if (inputBlockedRef.current) {
+        if (event.type === 'keydown') {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return false;
+      }
+
       const activeAuthUrl = isCodexLoginCommand(initialCommandRef.current)
         ? CODEX_DEVICE_AUTH_URL
         : '';
@@ -193,7 +203,7 @@ export function useXtermLifecycle({
         navigator.clipboard
           .readText()
           .then((text) => {
-            if (ptyIdRef.current) {
+            if (!inputBlockedRef.current && ptyIdRef.current) {
               pty.input(ptyIdRef.current, text).catch(() => {});
               if (/[\r\n]/.test(text)) {
                 onUserSubmitRef.current?.();
@@ -208,6 +218,7 @@ export function useXtermLifecycle({
     });
 
     terminalRef.current.onData((data) => {
+      if (inputBlockedRef.current) return;
       if (ptyIdRef.current) {
         pty.input(ptyIdRef.current, data).catch(() => {});
         if (/[\r\n]/.test(data)) {
@@ -320,6 +331,7 @@ export function useXtermLifecycle({
     copyAuthUrlToClipboard,
     fitAddonRef,
     initialCommandRef,
+    inputBlockedRef,
     isRestarting,
     lastPtySizeRef,
     minimal,

@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Archive,
+  Bookmark,
+  BookmarkCheck,
   Copy,
   Download,
   ExternalLink,
@@ -35,6 +37,8 @@ export interface CardActionsProps {
   aiSessionExportStatus?: 'saved' | 'error' | null;
   density?: CardActionDensity;
   overflowContent?: ReactNode;
+  followedInWorkbench?: boolean;
+  onToggleWorkbenchFollow?: () => void;
 }
 
 const stopPropagation = (fn?: () => void) => (e: MouseEvent) => {
@@ -205,6 +209,8 @@ export const CardActions = memo(function CardActions({
   aiSessionExportStatus = null,
   density = 'wide',
   overflowContent = null,
+  followedInWorkbench = false,
+  onToggleWorkbenchFollow,
 }: CardActionsProps) {
   const { t } = useTranslation('terminal');
 
@@ -236,7 +242,10 @@ export const CardActions = memo(function CardActions({
           onMaxRetriesChange: onChangeAutoRestartMaxRetries,
         }
       : null;
-  const hasOverflowMenu = density !== 'wide';
+  const hasOverflowMenu = density !== 'wide' || Boolean(onToggleWorkbenchFollow);
+  const workbenchFollowLabel = followedInWorkbench
+    ? t('card.removeFromWorkbench', { defaultValue: 'Remove from Workbench' })
+    : t('card.addToWorkbench', { defaultValue: 'Add to Workbench' });
 
   const pinIcon = pinned ? Pin : PinOff;
   const exportIcon = aiSessionExporting ? Loader2 : Download;
@@ -313,26 +322,35 @@ export const CardActions = memo(function CardActions({
       )}
       {hasOverflowMenu && (
         <CardActionOverflowMenu label={overflowLabel}>
-          {density === 'narrow' && (
+          {onToggleWorkbenchFollow && (
+            <OverflowActionItem
+              icon={followedInWorkbench ? BookmarkCheck : Bookmark}
+              label={workbenchFollowLabel}
+              onClick={onToggleWorkbenchFollow}
+            />
+          )}
+          {density !== 'wide' && density === 'narrow' && (
             <OverflowActionItem icon={ExternalLink} label={t('card.revealProject')} onClick={onOpenDir} />
           )}
-          {onRename && (
+          {density !== 'wide' && onRename && (
             <OverflowActionItem
               icon={Pencil}
               label={t('card.rename', { defaultValue: 'Rename' })}
               onClick={onRename}
             />
           )}
-          <OverflowActionItem
-            icon={pinIcon}
-            label={pinTitle}
-            disabled={pinFull && !pinned}
-            onClick={onTogglePin}
-          />
-          {onArchive && (
+          {density !== 'wide' && (
+            <OverflowActionItem
+              icon={pinIcon}
+              label={pinTitle}
+              disabled={pinFull && !pinned}
+              onClick={onTogglePin}
+            />
+          )}
+          {density !== 'wide' && onArchive && (
             <OverflowActionItem icon={Archive} label={t('card.archive')} onClick={onArchive} />
           )}
-          {onExportAiSession && (
+          {density !== 'wide' && onExportAiSession && (
             <OverflowActionItem
               icon={exportIcon}
               label={exportActionLabel}
@@ -341,7 +359,7 @@ export const CardActions = memo(function CardActions({
               onClick={onExportAiSession}
             />
           )}
-          {autoRestartControls && (
+          {density !== 'wide' && autoRestartControls && (
             <div className="flex items-center justify-between gap-2 rounded px-2 py-1.5 text-[11px] text-foreground">
               <span className="min-w-0 flex-1 truncate">{t('autoRestart.enable')}</span>
               <AutoRestartControls
@@ -352,7 +370,7 @@ export const CardActions = memo(function CardActions({
               />
             </div>
           )}
-          {overflowContent && (
+          {density !== 'wide' && overflowContent && (
             <div className="flex items-center justify-between gap-2 rounded px-2 py-1.5 text-[11px] text-foreground">
               <span className="min-w-0 flex-1 truncate">{t('aiIntent.label')}</span>
               <div className="shrink-0">{overflowContent}</div>

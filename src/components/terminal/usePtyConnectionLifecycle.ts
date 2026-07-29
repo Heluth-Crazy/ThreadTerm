@@ -20,6 +20,7 @@ import {
   RENDERER_CONSUMER_HEARTBEAT_MS,
 } from './usePtyOutputLifecycle';
 import { registerTerminal, unregisterTerminal } from './xtermRegistry';
+import type { ResumeLoadingProgressObserver } from './resumeLoadingProgressTypes';
 import type {
   DetachCurrentPtyOptions,
   OutputSequencer,
@@ -55,6 +56,7 @@ interface UsePtyConnectionControllerOptions {
   preservePtyOnUnmountRef: MutableRefObject<boolean>;
   autoReconnectOnExitRef: MutableRefObject<boolean>;
   suppressInitialCommandWhenPtyExistsRef: MutableRefObject<boolean>;
+  resumeLoadingObserverRef?: MutableRefObject<ResumeLoadingProgressObserver | null>;
   isConnectingRef: MutableRefObject<boolean>;
   isConnectedRef: MutableRefObject<boolean>;
   exitedRef: MutableRefObject<boolean>;
@@ -117,6 +119,7 @@ export function usePtyConnectionController({
   preservePtyOnUnmountRef,
   autoReconnectOnExitRef,
   suppressInitialCommandWhenPtyExistsRef,
+  resumeLoadingObserverRef,
   isConnectingRef,
   isConnectedRef,
   exitedRef,
@@ -304,6 +307,12 @@ export function usePtyConnectionController({
           sessionAlreadyExists = false;
         }
         if (isStaleSetup() || !terminalRef.current) return;
+        if (
+          sessionAlreadyExists &&
+          suppressInitialCommandWhenPtyExistsRef.current
+        ) {
+          resumeLoadingObserverRef?.current?.skip();
+        }
 
         cleanupListeners();
 
@@ -362,6 +371,7 @@ export function usePtyConnectionController({
           scrollTerminalToBottom,
           scheduleNewOutputFlush,
           scheduleTerminalRefresh,
+          resumeLoadingObserverRef,
         });
         localSequencer = sequencer;
         outputSequencerRef.current = sequencer;
@@ -385,6 +395,7 @@ export function usePtyConnectionController({
 
         const unlistenExit = onceUnlisten(await pty.onExit(({ id: sid, code }) => {
           if (sid !== connectedPtyId || ptyIdRef.current !== connectedPtyId) return;
+          resumeLoadingObserverRef?.current?.abort();
           setConnected(false);
           setConnecting(false);
           // Audit P1-2: never wipe the viewport on exit — the final output
@@ -453,6 +464,17 @@ export function usePtyConnectionController({
           throw error;
         }
 
+        const command = initialCommandRef.current?.trim();
+        const shouldSendInitialCommand =
+          command &&
+          !(suppressInitialCommandWhenPtyExistsRef.current && sessionAlreadyExists);
+
+        if (shouldSendInitialCommand) {
+          resumeLoadingObserverRef?.current?.connectionReady();
+        } else {
+          resumeLoadingObserverRef?.current?.skip();
+        }
+
         setConnected(true);
         setConnecting(false);
         retryCountRef.current = 0;
@@ -460,12 +482,8 @@ export function usePtyConnectionController({
         setConnectError(null);
         recoverTerminalSurface(true, true);
 
-        const command = initialCommandRef.current?.trim();
-        const shouldSendInitialCommand =
-          command &&
-          !(suppressInitialCommandWhenPtyExistsRef.current && sessionAlreadyExists);
-
         if (shouldSendInitialCommand) {
+          resumeLoadingObserverRef?.current?.commandDispatching();
           await pty.input(connectedPtyId, `${command}\r`);
           if (isStaleSetup()) {
             cleanupLocalSetup();
@@ -476,6 +494,7 @@ export function usePtyConnectionController({
       } catch (error) {
         cleanupLocalSetup();
         if (connectGenerationRef.current !== setupGeneration) return;
+        resumeLoadingObserverRef?.current?.abort();
         logger.error('[Shell] PTY connection failed:', error);
         setConnectError(error instanceof Error ? error.message : String(error));
         setConnected(false);
@@ -507,6 +526,7 @@ export function usePtyConnectionController({
     rendererScope,
     restoreOutputConsumerFromSnapshot,
     retryCountRef,
+    resumeLoadingObserverRef,
     scheduleNewOutputFlush,
     scheduleReconnect,
     scheduleTerminalRefresh,

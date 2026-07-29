@@ -107,6 +107,18 @@ const projection: MobileWorkbenchProjection = {
       preview: 'Running',
     },
   ],
+  followedCardIds: ['card-main'],
+  projectOverviews: [
+    {
+      projectPath: 'D:\\repo',
+      projectName: 'Repo',
+      followedCount: 1,
+      runningCount: 1,
+      attentionCount: 1,
+      reviewCount: 0,
+      failedCount: 0,
+    },
+  ],
   rules: {
     includeWaiting: true,
     includeFailed: true,
@@ -140,6 +152,7 @@ describe('mobile Workbench screens', () => {
   afterEach(() => cleanup());
 
   it('renders the authoritative projection and keeps same-project worktrees separate', () => {
+    const onOpenTerminal = vi.fn();
     render(
       <WorkbenchScreen
         cards={cards}
@@ -149,6 +162,7 @@ describe('mobile Workbench screens', () => {
         onOpenNewTerminal={vi.fn()}
         onOpenNotifications={vi.fn()}
         onOpenRules={vi.fn()}
+        onOpenTerminal={onOpenTerminal}
         projection={projection}
         warmingUp={false}
         wsStatus="open"
@@ -160,6 +174,12 @@ describe('mobile Workbench screens', () => {
     expect(screen.getByText('确认工作区写入')).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'Repo · main' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'Repo · mobile' })).toBeInTheDocument();
+    expect(screen.getByText('关注终端')).toBeInTheDocument();
+    expect(document.querySelector('.mobile-project-overview-card')).not.toBeNull();
+    fireEvent.click(document.querySelector('.mobile-followed-terminal-card')!);
+    expect(onOpenTerminal).toHaveBeenCalledWith('card-main');
+    expect(screen.queryByRole('button', { name: '加入工作台' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '移出工作台' })).not.toBeInTheDocument();
     expect(document.querySelector('.terminal-xterm-host')).toBeNull();
 
     fireEvent.change(screen.getByLabelText('项目与 Worktree 范围'), {
@@ -168,6 +188,66 @@ describe('mobile Workbench screens', () => {
 
     expect(screen.queryByText('确认工作区写入')).not.toBeInTheDocument();
     expect(screen.getAllByText('正常运行').length).toBeGreaterThan(0);
+  });
+
+  it('treats missing followed and project fields as an empty legacy projection', () => {
+    const legacyProjection: MobileWorkbenchProjection = {
+      ...projection,
+      followedCardIds: undefined,
+      projectOverviews: undefined,
+    };
+    render(
+      <WorkbenchScreen
+        cards={cards}
+        notifications={notifications}
+        onOpenAttention={vi.fn()}
+        onOpenGroup={vi.fn()}
+        onOpenNewTerminal={vi.fn()}
+        onOpenNotifications={vi.fn()}
+        onOpenRules={vi.fn()}
+        onOpenTerminal={vi.fn()}
+        projection={legacyProjection}
+        warmingUp={false}
+        wsStatus="open"
+      />,
+      { wrapper: ChineseWrapper },
+    );
+
+    expect(screen.getByText('还没有关注终端')).toBeInTheDocument();
+    expect(document.querySelector('.mobile-project-overview-card')).toBeNull();
+  });
+
+  it('labels a same-name main worktree without repeating the project name', () => {
+    const sameNameProjection: MobileWorkbenchProjection = {
+      ...projection,
+      executionGroups: [
+        {
+          ...projection.executionGroups[0],
+          branchLabel: null,
+          projectName: 'repo',
+          worktreePath: 'D:\\repo',
+        },
+      ],
+    };
+    render(
+      <WorkbenchScreen
+        cards={cards}
+        notifications={notifications}
+        onOpenAttention={vi.fn()}
+        onOpenGroup={vi.fn()}
+        onOpenNewTerminal={vi.fn()}
+        onOpenNotifications={vi.fn()}
+        onOpenRules={vi.fn()}
+        onOpenTerminal={vi.fn()}
+        projection={sameNameProjection}
+        warmingUp={false}
+        wsStatus="open"
+      />,
+      { wrapper: ChineseWrapper },
+    );
+
+    expect(screen.getByRole('option', { name: 'repo · 主工作树' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'repo · repo' })).not.toBeInTheDocument();
   });
 
   it('keeps structured approval handling on desktop and only navigates to terminal', () => {

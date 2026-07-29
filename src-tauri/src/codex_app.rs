@@ -12,25 +12,10 @@ use std::sync::{
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{oneshot, Mutex};
-#[cfg(windows)]
-use windows::Win32::{
-    Foundation::{CloseHandle, HANDLE},
-    System::{
-        Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
-        },
-        JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-            SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        },
-        Threading::{
-            OpenThread, ResumeThread, CREATE_NO_WINDOW, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
-        },
-    },
-};
+#[cfg(all(windows, test))]
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 const NOTIFICATION_EVENT: &str = "codex-app://notification";
 const REQUEST_EVENT: &str = "codex-app://request";
@@ -40,129 +25,10 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
 type PendingRequest = oneshot::Sender<Result<Value, String>>;
 type PendingMap = Arc<Mutex<HashMap<u64, PendingRequest>>>;
 
-struct ManagedCodexChild {
-    child: Child,
-    #[cfg(windows)]
-    job: WindowsJob,
-}
-
-impl ManagedCodexChild {
-    fn stdin(&mut self) -> &mut Option<ChildStdin> {
-        &mut self.child.stdin
-    }
-
-    fn stdout(&mut self) -> &mut Option<ChildStdout> {
-        &mut self.child.stdout
-    }
-
-    fn stderr(&mut self) -> &mut Option<ChildStderr> {
-        &mut self.child.stderr
-    }
-
-    #[cfg(test)]
-    fn id(&self) -> Option<u32> {
-        self.child.id()
-    }
-
-    #[cfg(test)]
-    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        self.child.wait().await
-    }
-}
-
-impl Drop for ManagedCodexChild {
-    fn drop(&mut self) {
-        #[cfg(windows)]
-        let _ = self.job.terminate();
-        let _ = self.child.start_kill();
-    }
-}
-
-#[cfg(windows)]
-#[derive(Debug)]
-struct WindowsOwnedHandle(HANDLE);
-
-// Windows kernel handles are process-wide. This wrapper owns exactly one
-// handle and only closes it during Drop, so moving it between runtime threads
-// does not change its validity or ownership.
-#[cfg(windows)]
-unsafe impl Send for WindowsOwnedHandle {}
-#[cfg(windows)]
-unsafe impl Sync for WindowsOwnedHandle {}
-
-#[cfg(windows)]
-impl Drop for WindowsOwnedHandle {
-    fn drop(&mut self) {
-        let _ = unsafe { CloseHandle(self.0) };
-    }
-}
-
-#[cfg(windows)]
-#[derive(Debug)]
-struct WindowsJob {
-    handle: WindowsOwnedHandle,
-}
-
-#[cfg(windows)]
-impl WindowsJob {
-    fn new() -> std::io::Result<Self> {
-        let job = Self {
-            handle: WindowsOwnedHandle(
-                unsafe { CreateJobObjectW(None, None) }.map_err(std::io::Error::other)?,
-            ),
-        };
-        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        unsafe {
-            SetInformationJobObject(
-                job.handle.0,
-                JobObjectExtendedLimitInformation,
-                &info as *const _ as _,
-                std::mem::size_of_val(&info) as u32,
-            )
-        }
-        .map_err(std::io::Error::other)?;
-        Ok(job)
-    }
-
-    fn assign(&self, child: &Child) -> std::io::Result<()> {
-        let process_handle = child
-            .raw_handle()
-            .ok_or_else(|| std::io::Error::other("managed child has no process handle"))?;
-        unsafe { AssignProcessToJobObject(self.handle.0, HANDLE(process_handle as _)) }
-            .map_err(std::io::Error::other)
-    }
-
-    fn terminate(&self) -> std::io::Result<()> {
-        unsafe { TerminateJobObject(self.handle.0, 1) }.map_err(std::io::Error::other)
-    }
-}
-
-#[cfg(windows)]
-fn resume_windows_process_threads(process_id: u32) -> std::io::Result<()> {
-    let snapshot = WindowsOwnedHandle(
-        unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }.map_err(std::io::Error::other)?,
-    );
-    let mut entry = THREADENTRY32 {
-        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
-        ..Default::default()
-    };
-
-    let mut next = unsafe { Thread32First(snapshot.0, &mut entry) };
-    while next.is_ok() {
-        if entry.th32OwnerProcessID == process_id {
-            let thread = WindowsOwnedHandle(
-                unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) }
-                    .map_err(std::io::Error::other)?,
-            );
-            if unsafe { ResumeThread(thread.0) } == u32::MAX {
-                return Err(std::io::Error::last_os_error());
-            }
-        }
-        next = unsafe { Thread32Next(snapshot.0, &mut entry) };
-    }
-    Ok(())
-}
+use crate::service_child::{
+    spawn_managed_service_child as spawn_managed_codex_child,
+    ManagedServiceChild as ManagedCodexChild,
+};
 
 static CODEX_APP_MANAGER: Lazy<CodexAppManager> = Lazy::new(CodexAppManager::default);
 static CLIENT_MESSAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -691,38 +557,6 @@ impl CodexAppManager {
             let _ = tx.send(Err(message.clone()));
         }
         let _ = app.emit(DISCONNECTED_EVENT, CodexAppDisconnectedPayload { message });
-    }
-}
-
-fn spawn_managed_codex_child(mut command: Command) -> std::io::Result<ManagedCodexChild> {
-    command.kill_on_drop(true);
-
-    #[cfg(windows)]
-    {
-        // Start suspended so the app-server cannot create an untracked
-        // descendant between CreateProcess and AssignProcessToJobObject.
-        let job = WindowsJob::new()?;
-        command.creation_flags((CREATE_NO_WINDOW | CREATE_SUSPENDED).0);
-        let mut child = command.spawn()?;
-        let prepare_result = job.assign(&child).and_then(|_| {
-            let process_id = child
-                .id()
-                .ok_or_else(|| std::io::Error::other("managed child has no process id"))?;
-            resume_windows_process_threads(process_id)
-        });
-        if let Err(error) = prepare_result {
-            let _ = job.terminate();
-            let _ = child.start_kill();
-            return Err(error);
-        }
-        Ok(ManagedCodexChild { child, job })
-    }
-
-    #[cfg(not(windows))]
-    {
-        Ok(ManagedCodexChild {
-            child: command.spawn()?,
-        })
     }
 }
 

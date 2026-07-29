@@ -124,6 +124,7 @@ export function FloatSession({ card, active = true }: FloatSessionProps) {
           rendererScope="float"
           preservePtyOnUnmount={true}
           suppressInitialCommandWhenPtyExists={true}
+          resumeLoading={launch.action === 'resume'}
           onInitialCommandSent={handleInitialCommandSent}
           onUserSubmit={recordSubmit}
           onDisconnect={undefined}

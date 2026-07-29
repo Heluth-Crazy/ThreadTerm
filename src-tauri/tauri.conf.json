@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev:desktop",
-    "beforeBuildCommand": "npm run build && npm run build:mobile"
+    "beforeBuildCommand": "npm run build && npm run build:mobile && npm run build:sidecar"
   },
   "app": {
     "macOSPrivateApi": true,
@@ -41,6 +41,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../sidecar/claude-host/dist/claude-host.mjs": "sidecar/claude-host.mjs"
+    }
   }
 }

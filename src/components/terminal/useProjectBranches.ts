@@ -5,6 +5,13 @@ interface CachedBranches {
   branches: BranchRow[];
 }
 
+interface ProjectBranchesSnapshot {
+  projectPath: string;
+  branches: BranchRow[];
+  loading: boolean;
+  error: string | null;
+}
+
 interface ProjectBranchesState {
   branches: BranchRow[];
   loading: boolean;
@@ -25,43 +32,74 @@ export function clearProjectBranchCache(): void {
 export function useProjectBranches(projectPath: string | null | undefined): ProjectBranchesState {
   const cacheKey = projectPath ?? '';
   const cached = cacheKey ? branchCache.get(cacheKey) : undefined;
-  const [branches, setBranches] = useState<BranchRow[]>(cached?.branches ?? []);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<ProjectBranchesSnapshot>(() => ({
+    projectPath: cacheKey,
+    branches: cached?.branches ?? [],
+    loading: Boolean(projectPath && isTauriEnv() && !cached),
+    error: null,
+  }));
+  const branches =
+    snapshot.projectPath === cacheKey
+      ? snapshot.branches
+      : cached?.branches ?? [];
+  const loading =
+    snapshot.projectPath === cacheKey
+      ? snapshot.loading
+      : Boolean(projectPath && isTauriEnv() && !cached);
+  const error =
+    snapshot.projectPath === cacheKey ? snapshot.error : null;
 
   const load = useCallback(
     async (force = false) => {
       if (!projectPath || !isTauriEnv()) {
-        setBranches([]);
-        setLoading(false);
-        setError(null);
+        setSnapshot({
+          projectPath: cacheKey,
+          branches: [],
+          loading: false,
+          error: null,
+        });
         return;
       }
 
       if (!force) {
         const nextCached = branchCache.get(projectPath);
         if (nextCached) {
-          setBranches(nextCached.branches);
-          setLoading(false);
-          setError(null);
+          setSnapshot({
+            projectPath,
+            branches: nextCached.branches,
+            loading: false,
+            error: null,
+          });
           return;
         }
       }
 
-      setLoading(true);
-      setError(null);
+      setSnapshot((current) => ({
+        projectPath,
+        branches:
+          current.projectPath === projectPath ? current.branches : [],
+        loading: true,
+        error: null,
+      }));
       try {
         const next = await git.branches.overview(projectPath);
         branchCache.set(projectPath, { branches: next });
-        setBranches(next);
+        setSnapshot({
+          projectPath,
+          branches: next,
+          loading: false,
+          error: null,
+        });
       } catch (err) {
-        setError(errorMessage(err));
-        setBranches([]);
-      } finally {
-        setLoading(false);
+        setSnapshot({
+          projectPath,
+          branches: [],
+          loading: false,
+          error: errorMessage(err),
+        });
       }
     },
-    [projectPath],
+    [cacheKey, projectPath],
   );
 
   useEffect(() => {

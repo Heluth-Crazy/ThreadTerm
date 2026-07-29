@@ -14,6 +14,8 @@ import {
 } from './usePtyConnectionLifecycle';
 import { usePtyOutputLifecycle } from './usePtyOutputLifecycle';
 import { useXtermLifecycle } from './useXtermLifecycle';
+import { ResumeLoadingOverlay } from './ResumeLoadingOverlay';
+import { useResumeLoadingProgress } from './useResumeLoadingProgress';
 import type {
   OutputSequencer,
   RendererOutputConsumer,
@@ -83,6 +85,40 @@ function fallbackCopyToClipboard(text: string): boolean {
   return copied;
 }
 
+interface ShellTerminalSurfaceProps {
+  hostRef: React.Ref<HTMLDivElement>;
+  resumeLoadingLabel: string;
+  resumeLoadingMonitoring: boolean;
+  resumeLoadingPercent: number;
+  resumeLoadingVisible: boolean;
+}
+
+function ShellTerminalSurface({
+  hostRef,
+  resumeLoadingLabel,
+  resumeLoadingMonitoring,
+  resumeLoadingPercent,
+  resumeLoadingVisible,
+}: ShellTerminalSurfaceProps) {
+  return (
+    <>
+      <div
+        ref={hostRef}
+        data-terminal-context-menu
+        className="threadterm-xterm-host focus:outline-none"
+        style={{ outline: 'none' }}
+      />
+      {resumeLoadingMonitoring && (
+        <ResumeLoadingOverlay
+          label={resumeLoadingLabel}
+          progress={resumeLoadingPercent}
+          visible={resumeLoadingVisible}
+        />
+      )}
+    </>
+  );
+}
+
 function Shell({
   selectedProject,
   initialCommand,
@@ -94,6 +130,7 @@ function Shell({
   rendererScope = 'main',
   preservePtyOnUnmount = false,
   suppressInitialCommandWhenPtyExists = false,
+  resumeLoading = false,
   autoReconnectOnExit = true,
   onInitialCommandSent,
   onUserSubmit,
@@ -221,6 +258,27 @@ function Shell({
   });
 
   const {
+    visible: resumeLoadingVisible,
+    monitoring: resumeLoadingMonitoring,
+    progress: resumeLoadingPercent,
+    inputBlockedRef,
+    observerRef: resumeLoadingObserverRef,
+  } = useResumeLoadingProgress({
+    enabled: resumeLoading,
+    sessionKey: `${paneId ?? ''}\u0000${initialCommand ?? ''}`,
+    isGeometryReady: () => Boolean(lastPtySizeRef.current),
+    prepareTerminalForReveal: () => {
+      // Geometry was already established before the resume command. A final
+      // fit/scroll/PTY resize can trigger another TUI repaint after the curtain
+      // drops, so the reveal path only asks xterm to paint its settled frame.
+      scheduleTerminalRefresh();
+    },
+    onRevealed: () => {
+      if (activeRef.current) focusTerminal();
+    },
+  });
+
+  const {
     detachCurrentPty,
     connectToShell,
     restartShell,
@@ -251,6 +309,9 @@ function Shell({
     preservePtyOnUnmountRef,
     autoReconnectOnExitRef,
     suppressInitialCommandWhenPtyExistsRef,
+    resumeLoadingObserverRef: resumeLoading
+      ? resumeLoadingObserverRef
+      : undefined,
     isConnectingRef,
     isConnectedRef,
     exitedRef,
@@ -317,6 +378,7 @@ function Shell({
     ptyIdRef,
     initialCommandRef,
     onUserSubmitRef,
+    inputBlockedRef,
     activeRef,
     preservePtyOnUnmountRef,
     connectGenerationRef,
@@ -398,11 +460,12 @@ function Shell({
         style={terminalShellStyle}
         onMouseDown={focusTerminal}
       >
-        <div
-          ref={terminalRef}
-          data-terminal-context-menu
-          className="threadterm-xterm-host focus:outline-none"
-          style={{ outline: 'none' }}
+        <ShellTerminalSurface
+          hostRef={terminalRef}
+          resumeLoadingLabel={t('shell.restoringHistory')}
+          resumeLoadingMonitoring={resumeLoadingMonitoring}
+          resumeLoadingPercent={resumeLoadingPercent}
+          resumeLoadingVisible={resumeLoadingVisible}
         />
         {scrolledUp && (
           <button
@@ -569,11 +632,12 @@ function Shell({
       </div>
 
       <div className="relative flex-1 overflow-hidden p-2">
-        <div
-          ref={terminalRef}
-          data-terminal-context-menu
-          className="threadterm-xterm-host focus:outline-none"
-          style={{ outline: 'none' }}
+        <ShellTerminalSurface
+          hostRef={terminalRef}
+          resumeLoadingLabel={t('shell.restoringHistory')}
+          resumeLoadingMonitoring={resumeLoadingMonitoring}
+          resumeLoadingPercent={resumeLoadingPercent}
+          resumeLoadingVisible={resumeLoadingVisible}
         />
 
         {!isInitialized && (

@@ -11,6 +11,7 @@ dist/
 dist-ssr/
 build/
 out/
+target/
 
 # Environment variables
 .env
@@ -107,6 +108,7 @@ temp/
 .netlify
 
 # AI specific
+.omo/
 .claude/
 .claude_settings.json
 .agents/

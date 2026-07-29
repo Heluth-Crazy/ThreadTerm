@@ -1,0 +1,183 @@
+/* Settings root and details */
+
+.settings-hero {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: 48px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 11px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  padding: 12px;
+  text-align: left;
+}
+
+.settings-hero.static {
+  grid-template-columns: 48px minmax(0, 1fr);
+}
+
+.device-avatar {
+  display: inline-flex;
+  width: 48px;
+  height: 48px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  background: var(--workbench-primary-soft);
+  color: hsl(var(--primary));
+}
+
+.settings-hero > span:nth-child(2) {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.settings-hero strong,
+.settings-hero h2,
+.settings-hero small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-hero strong,
+.settings-hero h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.settings-hero small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.mobile-settings-group,
+.settings-quick-theme {
+  margin-top: 20px;
+}
+
+.mobile-settings-group > h2,
+.settings-quick-theme > h2 {
+  margin-bottom: 7px;
+  padding-left: 2px;
+}
+
+.mobile-settings-list,
+.settings-action-list,
+.language-choice-list {
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+}
+
+.mobile-settings-row,
+.settings-action-list > button,
+.language-choice-list > button {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 58px;
+  grid-template-columns: 34px minmax(0, 1fr) auto 18px;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-bottom: 1px solid hsl(var(--border));
+  background: transparent;
+  color: hsl(var(--foreground));
+  padding: 9px 11px;
+  text-align: left;
+}
+
+.mobile-settings-row:last-child,
+.settings-action-list > button:last-child,
+.language-choice-list > button:last-child {
+  border-bottom: 0;
+}
+
+.mobile-settings-row.static {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.settings-row-icon {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: hsl(var(--muted));
+  color: hsl(var(--primary));
+}
+
+.mobile-settings-row > span:nth-child(2),
+.settings-action-list button > span,
+.language-choice-list button > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mobile-settings-row strong,
+.mobile-settings-row small,
+.settings-action-list strong,
+.settings-action-list small,
+.language-choice-list strong,
+.language-choice-list small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-settings-row strong,
+.settings-action-list strong,
+.language-choice-list strong {
+  font-size: 14px;
+}
+
+.mobile-settings-row small,
+.settings-action-list small,
+.language-choice-list small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.mobile-settings-row em {
+  max-width: 90px;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-quick-theme .segmented button {
+  min-height: 38px;
+}
+
+.settings-runtime-note {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  margin-top: 18px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.settings-runtime-note span {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

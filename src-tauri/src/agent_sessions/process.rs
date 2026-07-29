@@ -4,7 +4,7 @@ use tokio::process::Command;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-pub(super) fn background_cli_command(name: &str) -> Command {
+pub(crate) fn background_cli_command(name: &str) -> Command {
     #[cfg(windows)]
     let program = resolve_windows_cli_program(name).unwrap_or_else(|| PathBuf::from(name));
     #[cfg(not(windows))]
@@ -20,7 +20,7 @@ fn background_cli_command_for_program(program: PathBuf) -> Command {
     command
 }
 
-pub(super) fn is_safe_session_id(value: &str) -> bool {
+pub(crate) fn is_safe_session_id(value: &str) -> bool {
     let value = value.trim();
     !value.is_empty()
         && value.len() <= 256
@@ -30,7 +30,7 @@ pub(super) fn is_safe_session_id(value: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn resolve_windows_cli_program(name: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_windows_cli_program(name: &str) -> Option<PathBuf> {
     let mut roots = Vec::new();
     if let Some(appdata) = std::env::var_os("APPDATA") {
         roots.push(PathBuf::from(appdata).join("npm"));

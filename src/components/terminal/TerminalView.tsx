@@ -415,6 +415,7 @@ export const TerminalView = memo(function TerminalView({
                 active={active}
                 preservePtyOnUnmount={true}
                 suppressInitialCommandWhenPtyExists={true}
+                resumeLoading={launch.action === 'resume'}
                 autoReconnectOnExit={false}
                 onInitialCommandSent={handleInitialCommandSent}
                 onUserSubmit={recordSubmit}

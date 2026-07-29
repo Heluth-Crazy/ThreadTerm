@@ -353,6 +353,19 @@ function installInPage(seed: FakeSeed): void {
       }
       case 'native_platform_material_state':
         return { enabled: false, platform: 'macos' };
+
+      // ── Claude chat sidecar ─────────────────────────────────────────────
+      // Chat stays gated off in e2e until the desktop-ui task ships real
+      // fixtures; the remaining claude_chat_* commands are unreachable while
+      // the probe reports unavailable.
+      case 'claude_chat_probe':
+        return {
+          ok: false,
+          missing: 'node',
+          detail: 'fake-tauri: claude chat sidecar is not simulated',
+          nodeVersion: null,
+          claudeVersion: null,
+        };
       default:
         return null;
     }

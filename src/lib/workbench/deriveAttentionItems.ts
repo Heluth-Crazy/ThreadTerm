@@ -222,7 +222,11 @@ export function deriveWorkbenchSummary(
 ): WorkbenchSummary {
   const cardsWithAttention = new Set(attentionItems.map((item) => item.cardId));
   return {
-    attention: attentionItems.length,
+    // "Needs attention" counts only actionable kinds (approval / waiting /
+    // failed / review). Stalled is a watch signal, not an action item, and
+    // lives in its own section — but a stalled card still isn't "running
+    // normally", so normalRunning keeps using the full item set.
+    attention: attentionItems.filter((item) => item.kind !== 'stalled').length,
     normalRunning: cards.filter(
       (card) => card.status === 'running' && !cardsWithAttention.has(card.id),
     ).length,

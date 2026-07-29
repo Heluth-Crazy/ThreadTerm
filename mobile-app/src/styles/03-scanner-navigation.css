@@ -1,0 +1,263 @@
+.scanner-screen {
+  background: #000;
+  color: #fff;
+}
+
+.scanner-nav {
+  display: grid;
+  min-height: calc(50px + env(safe-area-inset-top));
+  flex: 0 0 auto;
+  grid-template-columns: 74px minmax(0, 1fr) 34px;
+  align-items: end;
+  gap: 8px;
+  padding-inline: max(14px, env(safe-area-inset-left)) max(14px, env(safe-area-inset-right));
+  padding-bottom: 8px;
+}
+
+.scanner-nav strong {
+  text-align: center;
+  font-size: 16px;
+}
+
+.scanner-cancel {
+  color: #fff;
+  justify-content: flex-start;
+}
+
+.scanner-body {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 45%, rgb(255 255 255 / 0.10), transparent 34%),
+    linear-gradient(135deg, #111827, #000 52%, #0f172a);
+}
+
+.scanner-grid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.22;
+  background-image:
+    linear-gradient(rgb(255 255 255 / 0.12) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.12) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.scanner-frame {
+  position: relative;
+  display: flex;
+  width: 252px;
+  height: 252px;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid rgb(255 255 255 / 0.32);
+  border-radius: 24px;
+  color: var(--ios-blue);
+}
+
+.scanner-frame::before,
+.scanner-frame::after {
+  position: absolute;
+  inset: 14px;
+  border: 3px solid var(--ios-blue);
+  border-radius: 18px;
+  content: "";
+}
+
+.scanner-frame span {
+  position: absolute;
+  top: 34px;
+  right: 28px;
+  left: 28px;
+  height: 2px;
+  background: var(--ios-blue);
+  box-shadow: 0 0 18px var(--ios-blue);
+  animation: scan-line 2.6s linear infinite;
+}
+
+.scanner-caption {
+  position: absolute;
+  right: 24px;
+  bottom: calc(46px + env(safe-area-inset-bottom));
+  left: 24px;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-direction: column;
+  gap: 4px;
+  color: rgb(255 255 255 / 0.82);
+  text-align: center;
+}
+
+.scanner-caption strong,
+.scanner-caption span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.pair-screen {
+  display: flex;
+  min-height: 100%;
+  min-height: 100dvh;
+  align-items: center;
+  justify-content: center;
+  background: hsl(var(--background));
+  padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+}
+
+.pair-panel {
+  width: min(100%, 380px);
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  padding: 22px;
+}
+
+.pair-icon {
+  display: inline-flex;
+  width: 54px;
+  height: 54px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+.eyebrow {
+  margin: 18px 0 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pair-panel h1 {
+  margin: 0 0 18px;
+  font-size: 25px;
+  letter-spacing: 0;
+}
+
+.pair-panel label {
+  display: grid;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.pair-panel input {
+  min-width: 0;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  outline: none;
+  background: hsl(var(--input));
+  color: hsl(var(--foreground));
+  padding: 11px 10px;
+}
+
+.pair-panel button {
+  width: 100%;
+  margin-top: 12px;
+  border: 0;
+  border-radius: var(--radius);
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  padding: 11px;
+  font-weight: 700;
+}
+
+.pair-panel button:disabled {
+  opacity: 0.45;
+}
+
+.pair-permission {
+  margin: 12px 0 0;
+  border: 0;
+  border-radius: var(--radius);
+}
+
+.pair-error {
+  margin-bottom: 0;
+  color: var(--ios-red);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.tab-bar {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  display: grid;
+  min-height: calc(54px + env(safe-area-inset-bottom));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  border-top: 1px solid var(--ios-separator);
+  padding: 5px max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
+}
+
+.tab-bar button {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 2px;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  padding: 2px 2px 4px;
+}
+
+.tab-bar span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.tab-bar .tab-active {
+  color: var(--ios-blue);
+}
+
+@keyframes scan-line {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(184px);
+  }
+}
+
+@media (orientation: landscape) {
+  .ios-header,
+  .terminal-nav,
+  .scanner-nav {
+    min-height: calc(44px + env(safe-area-inset-top));
+  }
+
+  .screen-content {
+    padding-bottom: calc(68px + env(safe-area-inset-bottom));
+  }
+
+  .terminal-preview-frame {
+    height: 174px;
+    min-height: 150px;
+  }
+
+  /* Landscape height is scarce: hide the control-key strip (~40px) so the
+     terminal canvas keeps the room. The strip stays available in portrait. */
+  .input-key-strip {
+    display: none;
+  }
+}

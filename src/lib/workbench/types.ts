@@ -76,6 +76,21 @@ export interface WorkbenchSummary {
   failed: number;
 }
 
+export interface ProjectWorkbenchOverview {
+  projectPath: string;
+  projectName: string;
+  followedCount: number;
+  runningCount: number;
+  attentionCount: number;
+  reviewCount: number;
+  failedCount: number;
+}
+
+export interface WorkbenchScopeAttentionCounts {
+  byProjectPath: Record<string, number>;
+  byWorktreeKey: Record<string, number>;
+}
+
 export type ExecutionContextStatus =
   | 'failed'
   | 'attention'

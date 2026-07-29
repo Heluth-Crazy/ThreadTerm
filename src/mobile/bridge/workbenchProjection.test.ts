@@ -66,6 +66,18 @@ describe('mobile workbench projection', () => {
       summary: { attention: 1, normalRunning: 2, review: 0, failed: 0 },
       attentionItems: [attention],
       groups: [group],
+      followedCardIds: ['card-1'],
+      projectOverviews: [
+        {
+          projectPath: attention.projectPath,
+          projectName: attention.projectName,
+          followedCount: 1,
+          runningCount: 1,
+          attentionCount: 1,
+          reviewCount: 0,
+          failedCount: 0,
+        },
+      ],
       rules,
     });
 
@@ -87,6 +99,18 @@ describe('mobile workbench projection', () => {
       cardIds: ['card-1'],
       status: 'attention',
     });
+    expect(projection.followedCardIds).toEqual(['card-1']);
+    expect(projection.projectOverviews).toEqual([
+      {
+        projectPath: attention.projectPath,
+        projectName: attention.projectName,
+        followedCount: 1,
+        runningCount: 1,
+        attentionCount: 1,
+        reviewCount: 0,
+        failedCount: 0,
+      },
+    ]);
     expect(projection.capabilities).toEqual({
       openTerminal: true,
       respondToStructuredRequest: false,

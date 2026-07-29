@@ -1,4 +1,6 @@
 import {
+  Bookmark,
+  BookmarkCheck,
   CircleCheckBig,
   CircleX,
   Clock3,
@@ -18,8 +20,10 @@ import {
 interface AttentionItemCardProps {
   item: AttentionItem;
   now: number;
+  followed: boolean;
   onOpenItem: (item: AttentionItem) => void;
   onOpenDetail: (item: AttentionItem) => void;
+  onToggleFollow: (item: AttentionItem) => void;
 }
 const KIND_STYLE: Record<
   AttentionKind,
@@ -55,8 +59,10 @@ const KIND_STYLE: Record<
 export const AttentionItemCard = memo(function AttentionItemCard({
   item,
   now,
+  followed,
   onOpenItem,
   onOpenDetail,
+  onToggleFollow,
 }: AttentionItemCardProps) {
   const { t, i18n } = useTranslation('terminal');
   const style = KIND_STYLE[item.kind];
@@ -99,22 +105,26 @@ export const AttentionItemCard = memo(function AttentionItemCard({
         )}
         <div className="mt-2 flex flex-wrap items-center gap-1.5 sm:hidden">
           <ItemActions
+            followed={followed}
             primaryAction={primaryAction}
             onOpen={() => onOpenItem(item)}
             onDetail={() => onOpenDetail(item)}
+            onToggleFollow={() => onToggleFollow(item)}
           />
         </div>
       </div>
 
-      <div className="hidden min-w-[152px] flex-col items-end gap-1.5 sm:flex">
-        <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground/75">
+      <div className="hidden items-center gap-2 sm:flex">
+        <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground/75">
           <Clock3 className="h-3 w-3" />
           {relativeTime(item.occurredAt, now, i18n.language)}
         </span>
         <ItemActions
+          followed={followed}
           primaryAction={primaryAction}
           onOpen={() => onOpenItem(item)}
           onDetail={() => onOpenDetail(item)}
+          onToggleFollow={() => onToggleFollow(item)}
         />
       </div>
     </article>
@@ -122,15 +132,26 @@ export const AttentionItemCard = memo(function AttentionItemCard({
 });
 
 function ItemActions({
+  followed,
   primaryAction,
   onOpen,
   onDetail,
+  onToggleFollow,
 }: {
+  followed: boolean;
   primaryAction: string;
   onOpen: () => void;
   onDetail: () => void;
+  onToggleFollow: () => void;
 }) {
   const { t } = useTranslation('terminal');
+  const followLabel = followed
+    ? t('workbench.action.removeFromWorkbench', {
+        defaultValue: 'Remove from Workbench',
+      })
+    : t('workbench.action.addToWorkbench', {
+        defaultValue: 'Add to Workbench',
+      });
   return (
     <>
       <button
@@ -146,6 +167,29 @@ function ItemActions({
         className="h-[27px] rounded-md border border-border bg-foreground/[0.03] px-2.5 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
       >
         {t('workbench.action.details', { defaultValue: 'Details' })}
+      </button>
+      <button
+        type="button"
+        onClick={onToggleFollow}
+        title={followLabel}
+        aria-label={followLabel}
+        className={[
+          'inline-flex h-[27px] items-center gap-1 rounded-md border px-2 text-[11px] font-medium',
+          followed
+            ? 'border-primary/30 bg-primary/10 text-primary hover:bg-primary/15'
+            : 'border-border bg-foreground/[0.03] text-muted-foreground hover:bg-accent hover:text-foreground',
+        ].join(' ')}
+      >
+        {followed ? (
+          <BookmarkCheck className="h-3 w-3" />
+        ) : (
+          <Bookmark className="h-3 w-3" />
+        )}
+        <span className="hidden lg:inline">
+          {followed
+            ? t('workbench.action.followed', { defaultValue: 'Followed' })
+            : t('workbench.action.follow', { defaultValue: 'Follow' })}
+        </span>
       </button>
     </>
   );

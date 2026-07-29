@@ -425,6 +425,7 @@ export function App() {
           onOpenNewTerminal={() => pushRoute({ name: 'new-terminal' })}
           onOpenNotifications={() => pushRoute({ name: 'notifications' })}
           onOpenRules={() => pushRoute({ name: 'rules' })}
+          onOpenTerminal={openCard}
           projection={state.workbench}
           warmingUp={state.warmingUp}
           wsStatus={bridge.state}

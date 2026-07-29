@@ -13,9 +13,25 @@ export const DEFAULT_WORKBENCH_RULES: WorkbenchRules = {
 
 interface WorkbenchStore {
   rules: WorkbenchRules;
+  followedCardIds: string[];
+  followCards: (cardIds: readonly string[]) => void;
+  unfollowCard: (cardId: string) => void;
+  reconcileFollowedCards: (validCardIds: readonly string[]) => void;
   updateRules: (patch: Partial<WorkbenchRules>) => void;
   toggleStalledExclusion: (cardId: string) => void;
   resetRules: () => void;
+}
+
+export function normalizeFollowedCardIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value.filter(
+        (cardId): cardId is string =>
+          typeof cardId === 'string' && cardId.trim().length > 0,
+      ),
+    ),
+  );
 }
 
 export function normalizeWorkbenchRules(value: unknown): WorkbenchRules {
@@ -59,6 +75,32 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
   persist(
     (set) => ({
       rules: { ...DEFAULT_WORKBENCH_RULES },
+      followedCardIds: [],
+      followCards: (cardIds) =>
+        set((state) => {
+          const incoming = normalizeFollowedCardIds(cardIds);
+          if (incoming.length === 0) return state;
+          const incomingIds = new Set(incoming);
+          return {
+            followedCardIds: [
+              ...incoming,
+              ...state.followedCardIds.filter((cardId) => !incomingIds.has(cardId)),
+            ],
+          };
+        }),
+      unfollowCard: (cardId) =>
+        set((state) => ({
+          followedCardIds: state.followedCardIds.filter((id) => id !== cardId),
+        })),
+      reconcileFollowedCards: (validCardIds) =>
+        set((state) => {
+          const validIds = new Set(validCardIds);
+          const followedCardIds = state.followedCardIds.filter((cardId) =>
+            validIds.has(cardId),
+          );
+          if (followedCardIds.length === state.followedCardIds.length) return state;
+          return { followedCardIds };
+        }),
       updateRules: (patch) =>
         set((state) => ({
           rules: normalizeWorkbenchRules({ ...state.rules, ...patch }),
@@ -76,17 +118,26 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
     }),
     {
       name: 'threadterm-workbench-store',
-      version: 1,
+      version: 2,
       storage: createJSONStorage(() => localStorage),
-      partialize: (state) => ({ rules: state.rules }),
+      migrate: (persistedState) => persistedState,
+      partialize: (state) => ({
+        rules: state.rules,
+        followedCardIds: state.followedCardIds,
+      }),
       merge: (persisted, current) => {
         const persistedRules =
           persisted && typeof persisted === 'object' && 'rules' in persisted
             ? (persisted as { rules?: unknown }).rules
             : undefined;
+        const persistedFollowedCardIds =
+          persisted && typeof persisted === 'object' && 'followedCardIds' in persisted
+            ? (persisted as { followedCardIds?: unknown }).followedCardIds
+            : undefined;
         return {
           ...current,
           rules: normalizeWorkbenchRules(persistedRules),
+          followedCardIds: normalizeFollowedCardIds(persistedFollowedCardIds),
         };
       },
     },

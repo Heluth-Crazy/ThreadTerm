@@ -3,7 +3,7 @@ mod codex;
 mod gemini;
 mod opencode;
 mod preview;
-mod process;
+pub(crate) mod process;
 pub mod types;
 
 use tauri::AppHandle;

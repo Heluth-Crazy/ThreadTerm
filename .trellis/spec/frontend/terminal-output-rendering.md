@@ -166,6 +166,272 @@ if (data) {
 }
 ```
 
+## Scenario: Agent Resume History Progress Overlay
+
+### 1. Scope / Trigger
+
+- Trigger: any visual loading treatment around a terminal-backed Agent history
+  restore, or any change to `TerminalLaunchCommand.action === "resume"`.
+- Applies to the main `TerminalView`, float `FloatSession`, `Shell`, the PTY
+  connection controller, and the desktop terminal output pipeline.
+- The overlay is a desktop presentation concern. It does not change Agent CLI
+  commands, PTY protocol payloads, mobile bridge messages, or session binding.
+
+### 2. Signatures
+
+```typescript
+interface ShellProps {
+  resumeLoading?: boolean;
+}
+
+interface ResumeLoadingSnapshot {
+  active: boolean;
+  visible: boolean;
+  monitoring: boolean;
+  progress: number;
+}
+
+interface ResumeLoadingProgressObserver {
+  connectionReady(): void;
+  commandDispatching(): void;
+  outputWriteStarted(outputChars: number): void;
+  outputWriteCompleted(synchronizedFrameOpen: boolean): void;
+  skip(): void;
+  abort(): void;
+}
+```
+
+- Provider entry points pass
+  `resumeLoading={launch.action === "resume"}`. They must not match provider
+  names or parse CLI output text.
+- `createTerminalOutputPipeline` may notify the observer, but its input/output
+  and ACK signatures remain unchanged.
+
+### 3. Contracts
+
+- Keep xterm mounted and geometrically valid under an opaque overlay. Do not
+  use `display: none`, unmount xterm, pause writes, or replace the terminal with
+  a separate fake output surface.
+- The numeric progress state machine is determinate and monotonic for the whole
+  resume guard:
+  `0..23 -> 25..48 -> 50..73 -> 75..98 -> 100`.
+  Only terminal readiness may enter 100; timers may approach only the current
+  cap. The UI must always show an integer percentage. Progress never rolls
+  backwards, never switches to indeterminate motion, and reaches 100 exactly
+  once.
+- Connection readiness and command dispatch are observation milestones.
+  An attach snapshot that starts before command dispatch remains setup data;
+  every live or snapshot write that starts after dispatch participates in the
+  resume guard.
+- Startup banners and empty Agent chrome are not restored history. The final
+  range remains locked until at least 3072 post-dispatch output characters have
+  completed inside a closed synchronized frame. This evidence threshold is
+  below the measured first restored Claude frame and above the measured Codex
+  bootstrap and OpenCode empty chrome.
+- Completion requires replay evidence, a valid terminal size, a drained xterm
+  write, a closed DEC 2026 frame, and at least 2 seconds without new output.
+  After the final refresh and two paint frames, keep an additional 320 ms
+  pre-commit guard below 100. Any live or snapshot write during either quiet
+  window or this final guard cancels pending completion and requires a fresh
+  quiet window, without reducing the percentage.
+- Publishing 100% is the atomic, non-cancelable completion commit. Keep it
+  visible for at least one painted frame, reveal once, stop monitoring, and
+  never re-cover the terminal or replace the percentage with a moving fallback.
+- Keep the timer/state machine in `resumeLoadingProgressController.ts`, the
+  React lifecycle adapter in `useResumeLoadingProgress.ts`, and the shared
+  observer/snapshot contracts in `resumeLoadingProgressTypes.ts`. Both Shell
+  layouts render the same terminal-host/overlay component so their behavior
+  cannot drift.
+- Geometry was established before dispatching the resume command. The final
+  reveal may request a coalesced xterm refresh, but must not run another fit,
+  scroll-to-bottom, or PTY resize; those side effects can trigger a second TUI
+  repaint after the curtain drops.
+- Renderer ACK remains after xterm's write completion callback. Progress
+  notifications must not mutate `data`, sequence numbers, chunk boundaries,
+  scroll-follow decisions, or ACK timing.
+- While progress is active, xterm key, paste, and `onData` input are rejected.
+  Reveal restores the existing focus path; it must not create a second input or
+  geometry controller.
+- If `getSessionState` finds an existing PTY and the initial command is
+  suppressed, call `skip()` before the delayed overlay becomes visible.
+- Connection failure, process exit, and generation change call
+  `abort()`/dispose and reveal the original terminal error state. Do not add an
+  automatic fail-open timer that can expose unfinished history replay.
+
+### 4. Validation & Error Matrix
+
+- New PTY + resume action -> show delayed progress, send the existing resume
+  command once, reveal after drained stable output.
+- Existing PTY + resume action -> attach only; no overlay and no repeated
+  resume command.
+- New/start/discover/custom action -> no resume overlay.
+- Snapshot write before command dispatch -> keep writing/ACKing, but do not
+  count it as restored Agent history.
+- Snapshot write after command dispatch -> count its characters and completion
+  exactly like live output; a renderer-recovery snapshot cannot bypass the
+  curtain.
+- DEC 2026 frame remains open -> replay evidence is not accepted and progress
+  stays below 75.
+- Measured Codex bootstrap (about 519 characters) pauses for 2.5 seconds before
+  history -> keep the percentage below 75 and the overlay visible.
+- Measured OpenCode empty chrome (about 2395 characters) pauses for 2.8 seconds
+  before history -> keep the percentage below 75 and the overlay visible.
+- Substantive output reaches 3072 characters in a closed frame -> enter the
+  75..98 range and start completion checks only after the write drains.
+- Output arrives during the final 320 ms pre-commit guard -> keep progress below
+  100, cancel completion, and require the new write plus another full quiet
+  window.
+- Output is observed after 100 was published -> do not cancel or restart the
+  reveal. There must be no cancelable hold after the 100% commit, because that
+  can strand an active overlay at 100.
+- Geometry remains zero-sized -> keep retrying readiness until geometry is
+  valid, exit occurs, or the component is disposed.
+- PTY exits or connection throws -> hide the overlay immediately and preserve
+  the existing exit/retry UI.
+- Component/pane generation changes -> old timers and animation frames cannot
+  reveal, focus, or cancel the new session.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Claude, Codex, Gemini, and OpenCode all use the same `resume` action,
+  share one progress controller, and keep their exact provider commands.
+- Good: small startup output can pause beyond the ordinary idle window without
+  advancing into the final range or revealing xterm.
+- Base: an ordinary shell or a newly started Agent behaves exactly as before.
+- Bad: stop forwarding PTY output until the overlay reaches 100. This defeats
+  renderer flow control and can deadlock or lose the restored screen.
+- Bad: replace determinate progress with an indeterminate moving stripe after a
+  late write. Percentage is a product requirement, not an optional decoration.
+- Bad: infer completion by matching prompts or provider-specific text. Agent
+  versions, locales, and TUI layouts change independently.
+- Bad: move the same 2-second silence timer into Rust and call the resulting
+  event semantic completion, or wait for a `seq` value without an authoritative
+  provider-supplied final watermark. Both preserve the original false-positive
+  completion.
+- Bad: show the overlay whenever a card has a provider session id. Returning to
+  an already-running PTY is an attach, not a new history restore.
+
+### 6. Tests Required
+
+- `resumeLoadingProgress.test.ts`: fixed caps, synchronized-frame guard,
+  existing-PTY skip, initial snapshot exclusion, post-dispatch output
+  inclusion, measured Codex/OpenCode startup gaps, substantive replay
+  threshold, geometry readiness, monotonic cancellation before 100, and the
+  atomic 100%-then-reveal race.
+- `ResumeLoadingOverlay.test.tsx`: progressbar semantics and stable integer
+  percentage rendering.
+- `terminalOutputPipeline.test.ts`: observer calls occur after byte-identical
+  writes, report character counts and frame-open state, and retain renderer
+  ACKs.
+- `Shell.test.tsx`: history writes and ACKs continue under the overlay, input
+  is blocked only while active, small bootstrap output plus a pause beyond the
+  idle window cannot reveal, substantive restored output reveals once, final
+  reveal performs no scroll/resize, existing PTYs skip, and exits reveal the
+  original exit strip.
+- `TerminalView.test.tsx` and `FloatSession.test.tsx`: shared signal reaches
+  the main and float shells; bound Claude/Codex/Gemini/OpenCode sessions are
+  covered without provider-specific progress branches.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```typescript
+if (resumeLoading) {
+  pendingHistory.push(data); // ACK/write is delayed until the UI says 100%.
+  return;
+}
+```
+
+Correct:
+
+```typescript
+terminal.write(data, () => {
+  resumeLoadingObserverRef.current?.outputWriteCompleted(frameGate.isOpen());
+  outputAcknowledger.ack(request);
+  onWritten();
+});
+
+{monitoring && (
+  <ResumeLoadingOverlay
+    progress={progress}
+    visible={visible}
+  />
+)}
+
+// Startup text cannot enter the final range by itself.
+if (
+  postDispatchChars >= MINIMUM_REPLAY_CHARS
+  && !frameGate.isOpen()
+) {
+  replayEvidenceObserved = true;
+}
+```
+
+## Bug Analysis: Resume Curtain Revealed Between Output Bursts
+
+### 1. Root Cause Category
+
+- **Category**: B (cross-layer contract), D (test coverage gap), and E
+  (implicit assumption).
+- **Specific cause**: the UI treated the first post-command terminal output as
+  restored history. Agent CLIs actually paint a small startup banner or empty
+  chrome, pause longer than the ordinary idle window, and only then replay the
+  conversation. The 2-second timer therefore started before history existed.
+
+### 2. Why the Earlier Fixes Failed
+
+1. The first implementation used 700 ms and repeated fit/scroll/resize at
+   reveal. It confused the startup-to-history pause with completion and then
+   triggered another TUI repaint.
+2. The first repair increased quiet time to the backend's 2-second idle grace
+   and kept completion cancelable through the 100% hold. It still started that
+   timer after the first startup bytes, so a longer startup gap reproduced the
+   same error. It also allowed a late write to cancel reveal after 100 had
+   already been published, leaving the overlay permanently active at 100.
+3. The repair excluded `meta.snapshot=true` writes, so renderer recovery could
+   continue after the pending reveal was committed.
+4. The regression paused for only 900 ms—longer than the obsolete 700 ms
+   debounce but shorter than the new 2-second threshold—so it did not model the
+   real Codex 2.5-second or OpenCode 2.8-second pre-history gaps.
+5. A provisional-reveal design tried to re-cover after late data. It either
+   left the UI stuck at 100, rolled the number backwards, or replaced the
+   required percentage with indeterminate motion. All three violated the
+   product contract instead of fixing the premature completion.
+
+### 3. Prevention Mechanisms
+
+| Priority | Mechanism | Specific Action | Status |
+| --- | --- | --- | --- |
+| P0 | Evidence gate | Require 3072 post-dispatch output characters and a closed synchronized frame before entering the final progress range. | DONE |
+| P0 | Real reproduction | Lock the measured Codex 519-byte/2.5-second and OpenCode 2395-byte/2.8-second startup gaps into tests. | DONE |
+| P0 | Contract | Include every post-dispatch write; exclude only setup snapshots that started before dispatch. | DONE |
+| P0 | Side-effect isolation | Final reveal refreshes xterm only; no fit/scroll/PTY resize. | DONE |
+| P0 | Presentation | Keep an integer percentage for the entire load; remove rollback, indeterminate motion, and post-reveal re-cover. | DONE |
+| P0 | Completion | Keep the final cancelable guard below 100; publish 100 as an atomic commit, paint it once, reveal once, and dispose monitoring. | DONE |
+| P0 | Failure behavior | Exit/error reveals the original state; no timer-based fail-open that exposes unfinished history. | DONE |
+| P1 | Windows validation | Resume a long real Agent history and watch the final reveal. | TODO |
+
+### 4. Systematic Expansion
+
+- **Similar issues**: any loading UI wrapped around a streaming producer can
+  confuse a quiet interval, `Idle` projection, or current sequence watermark
+  with semantic completion.
+- **Design improvement**: when no producer-owned completion event exists, do
+  not start an idle timer from arbitrary bootstrap bytes. First establish
+  evidence that the substantive payload has begun, then use transport settling
+  only to decide when that payload is ready to reveal.
+- **Process improvement**: every debounce replacement test must cross the new
+  threshold with a real measured pause, include alternate payload kinds such as
+  snapshots, and assert ordering at the actual renderer sink.
+
+### 5. Knowledge Capture
+
+- [x] Updated this rendering contract.
+- [x] Added controller, output-pipeline, and Shell integration regressions.
+- [x] Recorded that startup output and empty TUI chrome are not replay evidence.
+- [ ] Close only after Windows real-Agent validation.
+
 ## Bug Analysis: Stale Agent Prompt Rows During Synchronized Repaint
 
 - **Root cause category**: B (cross-layer contract) plus D (test coverage gap).

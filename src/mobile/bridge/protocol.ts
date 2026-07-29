@@ -111,6 +111,16 @@ export interface MobileExecutionGroup {
   preview?: string | null;
 }
 
+export interface MobileProjectWorkbenchOverview {
+  projectPath: string;
+  projectName: string;
+  followedCount: number;
+  runningCount: number;
+  attentionCount: number;
+  reviewCount: number;
+  failedCount: number;
+}
+
 export interface MobileWorkbenchProjection {
   generatedAt: number;
   summary: {
@@ -121,6 +131,8 @@ export interface MobileWorkbenchProjection {
   };
   attentionItems: MobileAttentionItem[];
   executionGroups: MobileExecutionGroup[];
+  followedCardIds?: string[];
+  projectOverviews?: MobileProjectWorkbenchOverview[];
   rules: {
     includeWaiting: boolean;
     includeFailed: boolean;

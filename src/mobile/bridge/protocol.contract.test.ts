@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -7,10 +7,23 @@ import {
   SERVER_MESSAGE_KINDS,
 } from './protocol';
 
-const rustProtocolPath = resolve(process.cwd(), 'src-tauri/src/bridge/protocol.rs');
+const rustProtocolPath = resolve(
+  process.cwd(),
+  'src-tauri/src/bridge/protocol.rs',
+);
+const rustProtocolDirectory = resolve(
+  process.cwd(),
+  'src-tauri/src/bridge/protocol',
+);
 
 function rustProtocolSource(): string {
-  return readFileSync(rustProtocolPath, 'utf8');
+  const childModules = readdirSync(rustProtocolDirectory)
+    .filter((fileName) => fileName.endsWith('.rs'))
+    .sort()
+    .map((fileName) =>
+      readFileSync(resolve(rustProtocolDirectory, fileName), 'utf8'),
+    );
+  return [readFileSync(rustProtocolPath, 'utf8'), ...childModules].join('\n');
 }
 
 function extractRustProtocolVersion(source: string): number {
@@ -50,5 +63,17 @@ describe('mobile bridge protocol contract', () => {
     expect(extractRustEnumKinds(rustProtocolSource(), 'ServerMessage')).toEqual([
       ...SERVER_MESSAGE_KINDS,
     ]);
+  });
+
+  it('keeps optional read-only Workbench fields backward compatible in Rust', () => {
+    const source = rustProtocolSource();
+    expect(source).toContain('pub followed_card_ids: Vec<String>');
+    expect(source).toContain('pub project_overviews: Vec<MobileProjectWorkbenchOverview>');
+    expect(source).toMatch(
+      /serde\(default, skip_serializing_if = "Vec::is_empty"\)\]\s+pub followed_card_ids/,
+    );
+    expect(source).toMatch(
+      /serde\(default, skip_serializing_if = "Vec::is_empty"\)\]\s+pub project_overviews/,
+    );
   });
 });

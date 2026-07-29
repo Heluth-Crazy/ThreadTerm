@@ -5,12 +5,14 @@ import type {
 import type {
   AttentionItem,
   ExecutionContextGroup,
+  ProjectWorkbenchOverview,
   WorkbenchRules,
   WorkbenchSummary,
 } from '../../lib/workbench/types';
 import type {
   MobileAttentionItem,
   MobileExecutionGroup,
+  MobileProjectWorkbenchOverview,
   MobileWorkbenchProjection,
   NotificationEntry,
 } from './protocol';
@@ -26,6 +28,8 @@ export interface MobileWorkbenchProjectionInput {
   summary: WorkbenchSummary;
   attentionItems: readonly AttentionItem[];
   groups: readonly ExecutionContextGroup[];
+  followedCardIds: readonly string[];
+  projectOverviews: readonly ProjectWorkbenchOverview[];
   rules: WorkbenchRules;
 }
 
@@ -34,6 +38,8 @@ export function buildMobileWorkbenchProjection({
   summary,
   attentionItems,
   groups,
+  followedCardIds,
+  projectOverviews,
   rules,
 }: MobileWorkbenchProjectionInput): MobileWorkbenchProjection {
   return {
@@ -50,6 +56,8 @@ export function buildMobileWorkbenchProjection({
     executionGroups: groups
       .slice(0, MAX_EXECUTION_GROUPS)
       .map(toMobileExecutionGroup),
+    followedCardIds: [...followedCardIds],
+    projectOverviews: projectOverviews.map(toMobileProjectOverview),
     rules: {
       includeWaiting: rules.includeWaiting,
       includeFailed: rules.includeFailed,
@@ -124,6 +132,20 @@ function toMobileExecutionGroup(group: ExecutionContextGroup): MobileExecutionGr
     terminalStatuses: [...group.terminalStatuses],
     lastActivity: group.lastActivity,
     preview: truncate(group.preview, MAX_PREVIEW_LENGTH),
+  };
+}
+
+function toMobileProjectOverview(
+  project: ProjectWorkbenchOverview,
+): MobileProjectWorkbenchOverview {
+  return {
+    projectPath: project.projectPath,
+    projectName: project.projectName,
+    followedCount: project.followedCount,
+    runningCount: project.runningCount,
+    attentionCount: project.attentionCount,
+    reviewCount: project.reviewCount,
+    failedCount: project.failedCount,
   };
 }
 

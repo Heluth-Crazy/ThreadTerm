@@ -38,6 +38,7 @@
     "detachedWorktree": "detached",
     "lockedWorktree": "locked",
     "bareWorktree": "bare",
+    "attentionCount": "{{count}} 件の対応が必要",
     "emptyLine1": "まだプロジェクトがありません。",
     "emptyLine2": "ターミナルを作成して開始します。"
   },
@@ -56,14 +57,59 @@
       "title": "対応が必要",
       "count": "{{count}} 件"
     },
+    "followed": {
+      "title": "フォロー中のターミナル",
+      "recall": "ターミナルを呼び戻す",
+      "collapse": "折りたたむ",
+      "expand": "すべて表示",
+      "openTerminal": "{{name}} のターミナルを開く",
+      "remove": "ワークベンチから外す",
+      "removeNamed": "{{name}} をワークベンチから外す",
+      "noSearchResults": "検索に一致するフォロー中のターミナルはありません。",
+      "empty": "よく使うターミナルを、表示後もここに残せます。"
+    },
+    "projects": {
+      "title": "プロジェクト概要",
+      "subtitle": "すべてのアクティブなプロジェクトを安定した順序で表示",
+      "followed": "フォロー",
+      "running": "実行中",
+      "attention": "対応",
+      "review": "確認",
+      "failed": "異常"
+    },
+    "recall": {
+      "title": "ターミナルを呼び戻す",
+      "subtitle": "ワークベンチに残すアクティブなターミナルを選択します。",
+      "close": "閉じる",
+      "searchLabel": "アクティブなターミナルを検索",
+      "searchPlaceholder": "プロジェクト、ブランチ、種類、出力を検索",
+      "scope": "範囲",
+      "currentScope": "現在のワークベンチ範囲",
+      "allScope": "すべてのプロジェクト",
+      "project": "プロジェクト",
+      "allProjects": "すべてのプロジェクト",
+      "worktree": "ブランチ / ワークツリー",
+      "allWorktrees": "すべてのブランチ / ワークツリー",
+      "alreadyFollowed": "フォロー済み",
+      "emptyTitle": "一致するアクティブなターミナルはありません",
+      "emptyBody": "検索語または範囲を変更してください。",
+      "selectedCount": "{{count}} 件選択",
+      "cancel": "キャンセル",
+      "confirm": "ワークベンチに追加"
+    },
     "filters": {
       "label": "注意項目を絞り込み",
-      "all": "すべて",
+      "all": "すべての未処理",
       "approval": "承認",
       "waiting": "待機",
       "failed": "異常",
       "review": "確認待ち",
       "stalled": "進展なし"
+    },
+    "stalled": {
+      "title": "進展なしウォッチ",
+      "count": "{{count}} 台の端末",
+      "hint": "実行中だが、ルールのしきい値を超えて出力なし"
     },
     "groups": {
       "title": "実行コンテキスト",
@@ -108,7 +154,12 @@
       "openResult": "結果を表示",
       "openTerminal": "ターミナルを開く",
       "details": "詳細",
-      "viewAllTerminals": "すべてのターミナルを表示"
+      "viewAllTerminals": "すべてのターミナルを表示",
+      "addToWorkbench": "ワークベンチに追加",
+      "removeFromWorkbench": "ワークベンチから外す",
+      "follow": "フォロー",
+      "followed": "フォロー中",
+      "allProjects": "すべてのプロジェクト"
     },
     "empty": {
       "noTerminalsTitle": "ターミナルがありません",
@@ -314,6 +365,8 @@
     "unpin": "オーバーレイ選択からピン解除",
     "pin": "オーバーレイ選択にピン留め",
     "pinFull": "ピン留めリストは上限です（最大 {{max}}）",
+    "addToWorkbench": "ワークベンチに追加",
+    "removeFromWorkbench": "ワークベンチから外す",
     "archive": "カードをアーカイブ",
     "close": "ターミナルを閉じる",
     "recent": "最近",
@@ -515,6 +568,7 @@
     "stop": "停止",
     "clear": "クリア",
     "loading": "ターミナルを読み込み中...",
+    "restoringHistory": "履歴セッションを復元中",
     "start": "開始",
     "startShell": "shell を開始",
     "runCommand": "{{command}} を実行",

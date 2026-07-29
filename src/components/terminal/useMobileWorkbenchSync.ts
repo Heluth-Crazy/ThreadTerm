@@ -18,9 +18,11 @@ const MOBILE_SUBSCRIBER_POLL_MS = 1000;
 
 interface MobileWorkbenchModel {
   attentionItems: MobileWorkbenchProjectionInput['attentionItems'];
+  followedCardIds: MobileWorkbenchProjectionInput['followedCardIds'];
   groups: MobileWorkbenchProjectionInput['groups'];
   notifications: Parameters<typeof notificationsToMobile>[0];
   now: MobileWorkbenchProjectionInput['generatedAt'];
+  projectOverviews: MobileWorkbenchProjectionInput['projectOverviews'];
   rules: MobileWorkbenchProjectionInput['rules'];
   summary: MobileWorkbenchProjectionInput['summary'];
 }
@@ -74,12 +76,16 @@ export function useMobileWorkbenchSync({
         summary: mobileWorkbenchModel.summary,
         attentionItems: mobileWorkbenchModel.attentionItems,
         groups: mobileWorkbenchModel.groups,
+        followedCardIds: mobileWorkbenchModel.followedCardIds,
+        projectOverviews: mobileWorkbenchModel.projectOverviews,
         rules: mobileWorkbenchModel.rules,
       }),
     [
       mobileWorkbenchModel.attentionItems,
       mobileWorkbenchModel.groups,
+      mobileWorkbenchModel.followedCardIds,
       mobileWorkbenchModel.now,
+      mobileWorkbenchModel.projectOverviews,
       mobileWorkbenchModel.rules,
       mobileWorkbenchModel.summary,
     ],

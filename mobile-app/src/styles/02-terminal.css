@@ -1,0 +1,314 @@
+.terminal-detail-screen {
+  background: var(--terminal-chrome-bg);
+  color: var(--terminal-foreground);
+}
+
+.terminal-nav {
+  display: grid;
+  min-height: calc(50px + env(safe-area-inset-top));
+  flex: 0 0 auto;
+  grid-template-columns: minmax(78px, auto) minmax(0, 1fr) minmax(96px, auto);
+  align-items: end;
+  gap: 8px;
+  border-bottom: 1px solid var(--terminal-chrome-separator);
+  padding-inline: max(12px, env(safe-area-inset-left)) max(10px, env(safe-area-inset-right));
+  padding-bottom: 6px;
+}
+
+.terminal-nav-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.terminal-nav-actions .nav-icon-button {
+  width: 44px;
+  height: 44px;
+}
+
+.terminal-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-direction: column;
+  gap: 1px;
+  text-align: center;
+}
+
+.terminal-title strong {
+  max-width: 100%;
+  font-size: 16px;
+}
+
+.terminal-title span {
+  max-width: 100%;
+  color: color-mix(in srgb, var(--terminal-foreground) 58%, transparent);
+  font-size: 11px;
+}
+
+/* The DOM renderer avoids iOS canvas/WebGL blank surfaces while the terminal
+   canvas and ANSI colors follow desktop terminal tokens. */
+.terminal-scroll {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  background: var(--terminal-background);
+  padding: 0;
+  padding-right: env(safe-area-inset-right);
+  padding-left: env(safe-area-inset-left);
+}
+
+.terminal-scroll-preview {
+  height: 100%;
+  padding: 0;
+}
+
+.terminal-xterm-host {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--terminal-background);
+}
+
+.terminal-xterm-host .xterm {
+  width: 100%;
+  height: 100%;
+  padding: 4px;
+}
+
+.terminal-xterm-host .xterm-viewport {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  background: var(--terminal-background) !important;
+}
+
+.terminal-xterm-host .xterm-screen {
+  pointer-events: none;
+}
+
+.terminal-xterm-host .xterm-rows {
+  pointer-events: none;
+}
+
+.terminal-history-notice {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  right: calc(8px + env(safe-area-inset-right));
+  left: calc(8px + env(safe-area-inset-left));
+  width: fit-content;
+  max-width: calc(100% - 16px);
+  margin: 0 auto;
+  padding: 5px 9px;
+  border: 1px solid color-mix(in srgb, var(--terminal-foreground) 22%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--terminal-background) 88%, transparent);
+  color: color-mix(in srgb, var(--terminal-foreground) 82%, transparent);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: center;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+
+.terminal-detail-output {
+  flex: 1 1 auto;
+}
+
+/* Empty-state overlay. The xterm host is always mounted underneath; this
+   overlay only covers it while no card is active. It must never intercept
+   pointer events (the Active Session preview frame is pointer-events:none and
+   relies on the host rendering live xterm content). */
+.terminal-empty-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--terminal-background);
+  color: var(--terminal-foreground);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.terminal-empty-overlay-preview {
+  font-size: 11px;
+}
+
+.resume-strip {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--terminal-chrome-separator);
+  background: var(--terminal-chrome-surface);
+  padding: 8px max(10px, env(safe-area-inset-right)) 8px max(10px, env(safe-area-inset-left));
+  color: color-mix(in srgb, var(--terminal-foreground) 72%, transparent);
+  font-size: 12px;
+}
+
+.resume-strip button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--radius);
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.input-bar-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  border-top: 1px solid var(--terminal-chrome-separator);
+  background: var(--terminal-chrome-surface-deep);
+  padding: 8px max(10px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  gap: 8px;
+}
+
+/* Horizontally scrollable control-key strip (arrows / Tab / Ctrl-D). */
+.input-key-strip {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+
+.input-key-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.input-key {
+  flex: 0 0 auto;
+  display: inline-flex;
+  min-width: 44px;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 10px;
+  border: 1px solid var(--terminal-chrome-separator);
+  border-radius: var(--radius);
+  background: var(--terminal-chrome-control);
+  color: var(--terminal-foreground);
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.input-key:disabled {
+  opacity: 0.45;
+}
+
+.input-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px 44px 44px;
+  gap: 7px;
+  align-items: center;
+}
+
+.input-action-esc {
+  background: color-mix(in srgb, var(--terminal-foreground) 10%, transparent);
+  color: var(--terminal-foreground);
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.input-bar textarea {
+  min-width: 0;
+  height: 44px;
+  resize: none;
+  border: 1px solid var(--terminal-chrome-separator);
+  border-radius: var(--radius);
+  outline: none;
+  background: var(--terminal-chrome-control);
+  color: var(--terminal-foreground);
+  padding: 6px 10px;
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  /* 16px prevents iOS Safari/WebKit from auto-zooming on focus. Do not drop below 16px. */
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.input-action {
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+.input-action:disabled,
+.input-bar textarea:disabled {
+  opacity: 0.45;
+}
+
+.input-action.danger {
+  background: rgb(255 69 58 / 0.16);
+  color: var(--ios-red);
+}
+
+.readonly-strip {
+  border-top: 1px solid hsl(var(--border));
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+  padding: 7px 10px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.connection-banner {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px max(12px, env(safe-area-inset-right)) 6px max(12px, env(safe-area-inset-left));
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.connection-banner-reconnecting {
+  background: rgb(255 159 10 / 0.18);
+  color: var(--ios-orange);
+}
+
+.connection-banner-offline {
+  background: rgb(255 69 58 / 0.18);
+  color: var(--ios-red);
+}
+
+.connection-banner-spin {
+  animation: connection-banner-spin 0.9s linear infinite;
+}
+
+@keyframes connection-banner-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.detail-readonly {
+  border-color: var(--terminal-chrome-separator);
+  background: var(--terminal-chrome-surface);
+  color: color-mix(in srgb, var(--terminal-foreground) 72%, transparent);
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+}

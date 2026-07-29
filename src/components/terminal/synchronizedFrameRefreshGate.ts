@@ -50,6 +50,10 @@ export function createSynchronizedFrameRefreshGate() {
   };
 
   return {
+    isOpen(): boolean {
+      return frameOpen;
+    },
+
     shouldRefreshAfterWrite(data: string, wantsRefresh: boolean): boolean {
       const frame = observe(data);
       if (

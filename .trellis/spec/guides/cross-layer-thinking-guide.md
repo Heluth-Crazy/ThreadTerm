@@ -252,3 +252,47 @@ the user briefly sees intermediate layouts.
 
 Concrete xterm write, synchronized-frame, and refresh rules live in
 [`../frontend/terminal-output-rendering.md`](../frontend/terminal-output-rendering.md).
+
+---
+
+## Gotcha: A Quiet Streaming Producer Is Not Necessarily Complete
+
+**Problem**: A multi-stage producer can emit startup output, pause while it
+loads state, and then emit the real payload. A UI that treats the first debounce
+window as semantic completion reveals an unfinished stream. Display-side
+recovery work can then trigger another producer redraw after the loading
+curtain disappears.
+
+**Prevention checklist**:
+- [ ] Distinguish transport quiet from semantic completion; if no explicit
+      producer-owned completion signal exists, do not start an idle completion
+      window until there is independent evidence that the substantive payload
+      has begun.
+- [ ] Trace every producer payload kind through the sink. Live increments,
+      attach snapshots, renderer-recovery snapshots, and empty/reset writes
+      must not take different completion paths accidentally.
+- [ ] Separate bootstrap/chrome output from the substantive payload using
+      stable transport or renderer evidence backed by real producer probes.
+      Do not match provider names, localized prompts, or transient status text.
+- [ ] If determinate percentage is a product contract, keep it determinate and
+      monotonic. Do not substitute indeterminate motion, roll 100% backwards,
+      or repeatedly hide and re-open the completed surface.
+- [ ] Make 100% the single commit boundary: cancel pending completion before
+      100 when new sink writes arrive, then reveal once and dispose the guard.
+- [ ] Do not add a timer-based fail-open that exposes the exact unfinished
+      stream the curtain is meant to hide. Error, process exit, and component
+      disposal remain explicit abort paths.
+- [ ] Test a pause that crosses the current debounce/idle threshold, not merely
+      the threshold that a previous implementation used. Fixtures should use
+      timings and payload sizes measured from the real producer.
+- [ ] A monotonic `seq` is only transport ordering unless the producer also
+      supplies an authoritative final `seq`; do not call a current snapshot
+      watermark “complete.”
+- [ ] Audit the final display path for fit, resize, scroll, focus, and refresh
+      side effects. A presentation-only curtain must not trigger a new producer
+      redraw when it opens.
+- [ ] Preserve transport bytes, write ordering, and ACK timing while fixing the
+      visual lifecycle.
+
+Concrete Agent resume progress and xterm reveal rules live in
+[`../frontend/terminal-output-rendering.md`](../frontend/terminal-output-rendering.md).
