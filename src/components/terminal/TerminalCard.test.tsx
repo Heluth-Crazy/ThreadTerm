@@ -63,7 +63,10 @@ function makeCard(overrides: Partial<TerminalCard> = {}): TerminalCard {
 beforeEach(() => {
   saveAiSessionMarkdownFileMock.mockReset();
   saveAiSessionMarkdownFileMock.mockResolvedValue({ kind: 'saved', path: '/tmp/threadterm-ai.md' });
-  useTerminalStore.setState({ pinnedCardIds: [] });
+  useTerminalStore.setState({
+    pinnedCardIds: [],
+    pendingTerminalConfigurations: {},
+  });
 });
 
 afterEach(() => {
@@ -114,5 +117,22 @@ describe('TerminalCardComponent AI session export', () => {
     );
 
     expect(screen.queryByLabelText('Export AI Markdown')).toBeNull();
+  });
+
+  it('shows a pending indicator without changing the displayed terminal type', () => {
+    const card = makeCard({ terminalType: 'shell' });
+    useTerminalStore.setState({
+      pendingTerminalConfigurations: {
+        [card.id]: {
+          terminalType: 'codex',
+          launchMode: 'default',
+        },
+      },
+    });
+
+    render(<TerminalCardComponent card={card} isFocused={false} />);
+
+    expect(screen.getByText('edit.pending')).toBeInTheDocument();
+    expect(screen.getByText(/Shell/)).toBeInTheDocument();
   });
 });

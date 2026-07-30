@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { createContext, memo, useContext, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -13,6 +13,7 @@ import {
   Pencil,
   Pin,
   PinOff,
+  Settings2,
   type LucideIcon,
 } from 'lucide-react';
 import { MAX_PINNED_CARDS } from '../../stores/terminalStore';
@@ -27,6 +28,7 @@ export interface CardActionsProps {
   onOpenDir?: () => void;
   onTogglePin: () => void;
   onRename?: () => void;
+  onEdit?: () => void;
   onArchive?: () => void;
   autoRestartEnabled?: boolean;
   autoRestartMaxRetries?: number;
@@ -61,6 +63,10 @@ interface CardActionOverflowMenuProps {
   label: string;
   children: ReactNode;
 }
+
+// Lets one-shot menu items close the menu after their action fires (menu items
+// stop propagation, so the container's own click handler never sees the click).
+const OverflowMenuCloseContext = createContext<(() => void) | null>(null);
 
 function CardActionOverflowMenu({ label, children }: CardActionOverflowMenuProps) {
   const [open, setOpen] = useState(false);
@@ -147,7 +153,7 @@ function CardActionOverflowMenu({ label, children }: CardActionOverflowMenuProps
             transform: menuRect.placement === 'top' ? 'translateY(-100%)' : undefined,
           }}
         >
-          {children}
+          <OverflowMenuCloseContext.Provider value={() => setOpen(false)}>{children}</OverflowMenuCloseContext.Provider>
         </div>,
         document.body,
       )}
@@ -171,6 +177,7 @@ function OverflowActionItem({
   onClick,
 }: OverflowActionItemProps) {
   const iconClassName = `h-3.5 w-3.5 shrink-0 ${Icon === Loader2 ? 'animate-spin' : ''}`;
+  const closeMenu = useContext(OverflowMenuCloseContext);
 
   return (
     <button
@@ -178,7 +185,11 @@ function OverflowActionItem({
       role="menuitem"
       title={label}
       disabled={disabled}
-      onClick={stopPropagation(onClick)}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick?.();
+        closeMenu?.();
+      }}
       className="inline-flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] text-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
     >
       <Icon className={iconClassName} aria-hidden />
@@ -199,6 +210,7 @@ export const CardActions = memo(function CardActions({
   onOpenDir,
   onTogglePin,
   onRename,
+  onEdit,
   onArchive,
   autoRestartEnabled = false,
   autoRestartMaxRetries = 3,
@@ -242,7 +254,8 @@ export const CardActions = memo(function CardActions({
           onMaxRetriesChange: onChangeAutoRestartMaxRetries,
         }
       : null;
-  const hasOverflowMenu = density !== 'wide' || Boolean(onToggleWorkbenchFollow);
+  const hasOverflowMenu =
+    density !== 'wide' || Boolean(onToggleWorkbenchFollow) || Boolean(onEdit);
   const workbenchFollowLabel = followedInWorkbench
     ? t('card.removeFromWorkbench', { defaultValue: 'Remove from Workbench' })
     : t('card.addToWorkbench', { defaultValue: 'Add to Workbench' });
@@ -322,6 +335,13 @@ export const CardActions = memo(function CardActions({
       )}
       {hasOverflowMenu && (
         <CardActionOverflowMenu label={overflowLabel}>
+          {onEdit && (
+            <OverflowActionItem
+              icon={Settings2}
+              label={t('edit.action')}
+              onClick={onEdit}
+            />
+          )}
           {onToggleWorkbenchFollow && (
             <OverflowActionItem
               icon={followedInWorkbench ? BookmarkCheck : Bookmark}

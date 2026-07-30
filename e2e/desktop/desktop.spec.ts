@@ -723,3 +723,294 @@ test('session recovery stays lazy and resumes selected Codex history only when o
   });
   expect(errors).toEqual([]);
 });
+
+// ── Journey 6: edit an existing card without recreating it ──────────────────
+
+async function openFocusedTerminalEditor(page: Page) {
+  const moreButton = page.locator('button[title="More"]:visible').last();
+  await moreButton.hover();
+  await page.getByRole('button', { name: 'Edit terminal', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit terminal' });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
+test('terminal edit save-only stays pending, then apply restarts exactly once', async ({
+  page,
+}) => {
+  const card = makeSeedCards(1)[0];
+  await installFakeTauri(page, [card]);
+  const errors = trackPageErrors(page);
+
+  await page.goto('/');
+  await openCard(page, card.projectName);
+  await waitForCount(page, 'create', card.ptyId, 1);
+
+  let dialog = await openFocusedTerminalEditor(page);
+  await dialog.getByRole('button', { name: 'Codex', exact: true }).click();
+  await dialog
+    .getByRole('button', { name: 'Custom command', exact: true })
+    .click();
+  await dialog
+    .getByPlaceholder('Enter the exact command to run')
+    .fill('codex --no-alt-screen');
+  await dialog.getByRole('button', { name: 'Save only', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText('Pending', { exact: true }).last()).toBeVisible();
+
+  expect(
+    await page.evaluate((ptyId) => {
+      const fake = (window as unknown as {
+        __fakePty: { counts: { kill: Record<string, number> } };
+      }).__fakePty;
+      return fake.counts.kill[ptyId] ?? 0;
+    }, card.ptyId),
+  ).toBe(0);
+  expect(
+    await page.evaluate((cardId) => {
+      const persisted = JSON.parse(
+        localStorage.getItem('threadterm-terminal-store') ?? '{}',
+      ) as {
+        state?: {
+          cards?: Array<{ id: string; terminalType: string; ptyId: string }>;
+          pendingTerminalConfigurations?: Record<string, unknown>;
+        };
+      };
+      const active = persisted.state?.cards?.find(
+        (candidate) => candidate.id === cardId,
+      );
+      return {
+        terminalType: active?.terminalType,
+        ptyId: active?.ptyId,
+        pending: Boolean(
+          persisted.state?.pendingTerminalConfigurations?.[cardId],
+        ),
+      };
+    }, card.id),
+  ).toEqual({
+    terminalType: 'shell',
+    ptyId: card.ptyId,
+    pending: true,
+  });
+
+  dialog = await openFocusedTerminalEditor(page);
+  await expect(dialog.locator('textarea')).toHaveValue(
+    'codex --no-alt-screen',
+  );
+  await dialog
+    .getByRole('button', { name: 'Save and restart', exact: true })
+    .click();
+  await expect(dialog).toBeHidden();
+
+  await expect
+    .poll(() =>
+      page.evaluate((cardId) => {
+        const persisted = JSON.parse(
+          localStorage.getItem('threadterm-terminal-store') ?? '{}',
+        ) as {
+          state?: {
+            cards?: Array<{ id: string; terminalType: string; ptyId: string }>;
+          };
+        };
+        return persisted.state?.cards?.find(
+          (candidate) => candidate.id === cardId,
+        )?.ptyId;
+      }, card.id),
+    )
+    .not.toBe(card.ptyId);
+  const nextPtyId = await page.evaluate((cardId) => {
+    const persisted = JSON.parse(
+      localStorage.getItem('threadterm-terminal-store') ?? '{}',
+    ) as {
+      state?: {
+        cards?: Array<{ id: string; ptyId: string }>;
+      };
+    };
+    return persisted.state?.cards?.find(
+      (candidate) => candidate.id === cardId,
+    )?.ptyId;
+  }, card.id);
+  expect(typeof nextPtyId).toBe('string');
+  await waitForCount(page, 'create', nextPtyId as string, 1);
+
+  expect(
+    await page.evaluate((ptyId) => {
+      const fake = (window as unknown as {
+        __fakePty: { counts: { kill: Record<string, number> } };
+      }).__fakePty;
+      return fake.counts.kill[ptyId] ?? 0;
+    }, card.ptyId),
+  ).toBe(1);
+  await expect
+    .poll(() =>
+      page.evaluate((ptyId) => {
+        const fake = (window as unknown as {
+          __fakePty: { inputs: Record<string, string[]> };
+        }).__fakePty;
+        return fake.inputs[ptyId] ?? [];
+      }, nextPtyId as string),
+    )
+    .toContain('codex --no-alt-screen\r');
+  expect(errors).toEqual([]);
+});
+
+test('terminal edit resumes the canonical Codex history before replacing the PTY', async ({
+  page,
+}) => {
+  const card = makeSeedCards(1)[0];
+  const childSessionId = '019f-edit-child';
+  const rootSessionId = '019f-edit-root';
+  const agentSessions: SeedAgentSession[] = [
+    {
+      provider: 'codex',
+      id: childSessionId,
+      resumeTargetId: rootSessionId,
+      projectPath: card.projectPath,
+      nativeTitle: 'Canonical edit history',
+      titleKind: 'explicit',
+      updatedAt: 1_700_000_200_000,
+      resumable: true,
+    },
+  ];
+  await installFakeTauri(page, [card], agentSessions);
+  const errors = trackPageErrors(page);
+
+  await page.goto('/');
+  await openCard(page, card.projectName);
+  await waitForCount(page, 'create', card.ptyId, 1);
+
+  const dialog = await openFocusedTerminalEditor(page);
+  await dialog.getByRole('button', { name: 'Codex', exact: true }).click();
+  await dialog
+    .getByRole('button', { name: 'Resume history', exact: true })
+    .click();
+  await dialog
+    .getByRole('button', { name: /Canonical edit history/ })
+    .click();
+  await dialog
+    .getByRole('button', { name: 'Save and restart', exact: true })
+    .click();
+  await expect(dialog).toBeHidden();
+
+  await expect
+    .poll(() =>
+      page.evaluate((cardId) => {
+        const persisted = JSON.parse(
+          localStorage.getItem('threadterm-terminal-store') ?? '{}',
+        ) as {
+          state?: {
+            cards?: Array<{
+              id: string;
+              ptyId: string;
+              terminalType: string;
+              providerSessionId?: string;
+              providerSessionState?: string;
+            }>;
+          };
+        };
+        return persisted.state?.cards?.find(
+          (candidate) => candidate.id === cardId,
+        );
+      }, card.id),
+    )
+    .toMatchObject({
+      terminalType: 'codex',
+      providerSessionId: rootSessionId,
+      providerSessionState: 'bound',
+    });
+  const nextPtyId = await page.evaluate((cardId) => {
+    const persisted = JSON.parse(
+      localStorage.getItem('threadterm-terminal-store') ?? '{}',
+    ) as {
+      state?: {
+        cards?: Array<{ id: string; ptyId: string }>;
+      };
+    };
+    return persisted.state?.cards?.find(
+      (candidate) => candidate.id === cardId,
+    )?.ptyId;
+  }, card.id);
+  expect(typeof nextPtyId).toBe('string');
+  expect(nextPtyId).not.toBe(card.ptyId);
+  await waitForCount(page, 'create', nextPtyId as string, 1);
+  await expect
+    .poll(() =>
+      page.evaluate((ptyId) => {
+        const fake = (window as unknown as {
+          __fakePty: { inputs: Record<string, string[]> };
+        }).__fakePty;
+        return fake.inputs[ptyId] ?? [];
+      }, nextPtyId as string),
+    )
+    .toContain(`codex resume ${rootSessionId} --no-alt-screen\r`);
+
+  expect(
+    await page.evaluate(
+      ({ oldPtyId }) => {
+        const win = window as unknown as {
+          __fakePty: { counts: { kill: Record<string, number> } };
+          __fakeAgentSessions: {
+            resumeResolveCalls: Array<{
+              provider: string;
+              sessionId: string;
+            }>;
+          };
+        };
+        return {
+          oldPtyKills: win.__fakePty.counts.kill[oldPtyId] ?? 0,
+          resumeResolveCalls: win.__fakeAgentSessions.resumeResolveCalls,
+        };
+      },
+      { oldPtyId: card.ptyId },
+    ),
+  ).toEqual({
+    oldPtyKills: 1,
+    resumeResolveCalls: [
+      { provider: 'codex', sessionId: childSessionId },
+      { provider: 'codex', sessionId: rootSessionId },
+    ],
+  });
+  expect(errors).toEqual([]);
+});
+
+test('invalid historical session leaves the running terminal untouched', async ({
+  page,
+}) => {
+  const card = makeSeedCards(1)[0];
+  await installFakeTauri(page, [card], []);
+  const errors = trackPageErrors(page);
+
+  await page.goto('/');
+  await openCard(page, card.projectName);
+  await waitForCount(page, 'create', card.ptyId, 1);
+  const dialog = await openFocusedTerminalEditor(page);
+  await dialog.getByRole('button', { name: 'Codex', exact: true }).click();
+  await dialog
+    .getByRole('button', { name: 'Resume history', exact: true })
+    .click();
+  await dialog
+    .getByRole('button', { name: 'Or enter a session ID', exact: true })
+    .click();
+  await dialog
+    .getByPlaceholder('Provider session ID')
+    .fill('missing-session');
+  await dialog
+    .getByRole('button', { name: 'Save and restart', exact: true })
+    .click();
+
+  await expect(
+    dialog.getByText(
+      'The provider could not find this historical session. The current terminal was not changed.',
+      { exact: true },
+    ),
+  ).toBeVisible();
+  expect(
+    await page.evaluate((ptyId) => {
+      const fake = (window as unknown as {
+        __fakePty: { counts: { kill: Record<string, number> } };
+      }).__fakePty;
+      return fake.counts.kill[ptyId] ?? 0;
+    }, card.ptyId),
+  ).toBe(0);
+  expect(errors).toEqual([]);
+});

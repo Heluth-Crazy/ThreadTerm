@@ -36,12 +36,17 @@ import {
   prepareAutoRestartForPersistence,
 } from './terminal/helpers';
 import type { TerminalStore } from './terminal/types';
+import {
+  parsePersistedTerminalLaunchConfiguration,
+  type TerminalLaunchConfiguration,
+} from '../lib/terminalConfiguration';
 
 type PersistedTerminalState = Partial<
   Pick<
     TerminalStore,
     | 'cards'
     | 'archivedCards'
+    | 'pendingTerminalConfigurations'
     | 'focusedCardId'
     | 'lastActiveCardId'
     | 'recentlyViewedCardIds'
@@ -58,12 +63,35 @@ type PersistedTerminalState = Partial<
   >
 >;
 
+function compactPendingTerminalConfigurations(
+  value: unknown,
+  validCardIds: ReadonlySet<string>,
+): Record<string, TerminalLaunchConfiguration> {
+  if (!value || typeof value !== 'object') return {};
+  const pending: Record<string, TerminalLaunchConfiguration> = {};
+  for (const [cardId, rawConfiguration] of Object.entries(value)) {
+    if (!validCardIds.has(cardId)) continue;
+    const configuration = parsePersistedTerminalLaunchConfiguration(
+      rawConfiguration,
+    );
+    if (configuration) pending[cardId] = configuration;
+  }
+  return pending;
+}
+
 export {
   MAX_PINNED_CARDS,
   MAX_RECENTLY_VIEWED_CARDS,
   MAX_CARD_NAME_LENGTH,
 } from './terminal/types';
 export type { ArchivedTerminalCard } from './terminal/types';
+
+const terminalPersistStorage =
+  createThrottledPersistStorage<PersistedTerminalState>(500, 2000);
+
+export function flushTerminalStorePersistence(): void {
+  terminalPersistStorage.flush();
+}
 
 export const useTerminalStore = create<TerminalStore>()(
   persist(
@@ -78,7 +106,7 @@ export const useTerminalStore = create<TerminalStore>()(
       name: 'threadterm-terminal-store',
       // Delay stringify and localStorage I/O together. maxWait keeps other
       // WebViews and restart previews bounded during continuous output.
-      storage: createThrottledPersistStorage<PersistedTerminalState>(500, 2000),
+      storage: terminalPersistStorage,
       partialize: (state) => ({
         cards: state.cards.map((card) => ({
           ...card,
@@ -91,6 +119,13 @@ export const useTerminalStore = create<TerminalStore>()(
           unread: false,
           autoRestart: prepareAutoRestartForPersistence(card),
         })),
+        pendingTerminalConfigurations: compactPendingTerminalConfigurations(
+          state.pendingTerminalConfigurations,
+          new Set([
+            ...state.cards.map((card) => card.id),
+            ...state.archivedCards.map((card) => card.id),
+          ]),
+        ),
         focusedCardId: null,
         lastActiveCardId: state.lastActiveCardId,
         recentlyViewedCardIds: compactRecentCardIds(state.recentlyViewedCardIds, state.cards),
@@ -106,7 +141,7 @@ export const useTerminalStore = create<TerminalStore>()(
         // AI Supervisor v0.1 (PRD D3) — master switch persisted; default OFF.
         supervisorEnabled: state.supervisorEnabled,
       }),
-      version: 18,
+      version: 19,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         const nextState = { ...state } as Partial<TerminalStore> & Record<string, unknown>;
@@ -133,6 +168,10 @@ export const useTerminalStore = create<TerminalStore>()(
             (isProviderSessionType(card.terminalType) ? 'unbound' : undefined),
           autoRestart: prepareAutoRestartForPersistence(card),
         }));
+        const validCardIds = new Set([
+          ...(cards ?? []).map((card) => card.id),
+          ...archivedCards.map((card) => card.id),
+        ]);
         return {
           ...nextState,
           focusedCardId: null,
@@ -159,6 +198,12 @@ export const useTerminalStore = create<TerminalStore>()(
           //       else fall back to the legacy petConfig (notificationMode
           //       'system'/'both' → on).
           osNotificationsEnabled: readOsNotificationsEnabled(state),
+          // v19 — pending terminal edits are persisted separately from cards
+          // so save-only never changes active or mobile-visible configuration.
+          pendingTerminalConfigurations: compactPendingTerminalConfigurations(
+            state.pendingTerminalConfigurations,
+            validCardIds,
+          ),
           cards,
         };
       },

@@ -18,6 +18,7 @@ import type {
   TerminalStatus,
 } from '../../types/terminal';
 import type { AutoRestartDecision } from '../../lib/autoRestart';
+import type { TerminalLaunchConfiguration } from '../../lib/terminalConfiguration';
 
 /** Maximum number of user-pinned cards eligible for the global selector overlay. */
 export const MAX_PINNED_CARDS = 6;
@@ -32,10 +33,18 @@ export interface ArchivedTerminalCard extends TerminalCard {
   archivedAt: number;
 }
 
+export interface TerminalConfigurationCommitInput {
+  expectedPtyId: string;
+  configuration: TerminalLaunchConfiguration;
+  now?: number;
+  nextPtyId?: string;
+}
+
 // ── cards slice ────────────────────────────────────────────────────────────
 export interface CardsSlice {
   cards: TerminalCard[];
   archivedCards: ArchivedTerminalCard[];
+  pendingTerminalConfigurations: Record<string, TerminalLaunchConfiguration>;
 
   /**
    * User-defined card order scoped by exact `projectPath`.
@@ -52,6 +61,15 @@ export interface CardsSlice {
   removeCard: (id: string) => void;
   archiveCard: (id: string) => void;
   restoreArchivedCard: (id: string) => void;
+  savePendingTerminalConfiguration: (
+    id: string,
+    configuration: TerminalLaunchConfiguration,
+  ) => boolean;
+  discardPendingTerminalConfiguration: (id: string) => void;
+  commitTerminalConfiguration: (
+    id: string,
+    input: TerminalConfigurationCommitInput,
+  ) => string | null;
   updateCardOutput: (id: string, chunk: string) => void;
   updateCardOutputAndPreview: (
     id: string,

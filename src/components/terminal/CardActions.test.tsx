@@ -157,11 +157,15 @@ describe('CardActions', () => {
 
     fireEvent.click(screen.getByTitle('view.more'));
     fireEvent.click(screen.getByTitle('card.pin'));
-    fireEvent.click(screen.getByTitle('card.archive'));
-    fireEvent.click(screen.getByTitle('aiExport.exportMarkdown'));
-
     expect(onTogglePin).toHaveBeenCalledTimes(1);
+
+    // The menu closes after each one-shot action; reopen for the next item.
+    fireEvent.click(screen.getByTitle('view.more'));
+    fireEvent.click(screen.getByTitle('card.archive'));
     expect(onArchive).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTitle('view.more'));
+    fireEvent.click(screen.getByTitle('aiExport.exportMarkdown'));
     expect(onExportAiSession).toHaveBeenCalledTimes(1);
     expect(surfaceClick).not.toHaveBeenCalled();
   });
@@ -225,6 +229,16 @@ describe('CardActions', () => {
 
     expect(onToggleWorkbenchFollow).toHaveBeenCalledTimes(1);
     expect(screen.getByTitle('card.pin')).toBeInTheDocument();
+  });
+
+  it('keeps terminal editing available from the wide overflow menu', () => {
+    const onEdit = vi.fn();
+    renderActions({ onEdit });
+
+    fireEvent.click(screen.getByTitle('view.more'));
+    fireEvent.click(screen.getByTitle('edit.action'));
+
+    expect(onEdit).toHaveBeenCalledTimes(1);
   });
 
   it('shows remove wording for an already followed terminal', () => {

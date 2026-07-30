@@ -11,6 +11,7 @@ function resetStore() {
   useTerminalStore.setState({
     cards: [],
     archivedCards: [],
+    pendingTerminalConfigurations: {},
     focusedCardId: null,
     lastActiveCardId: null,
     recentlyViewedCardIds: [],
@@ -458,12 +459,242 @@ describe('terminalStore — card lifecycle', () => {
   });
 });
 
+describe('terminalStore — terminal configuration editing', () => {
+  it('saves a pending configuration without changing the active card', () => {
+    const store = useTerminalStore.getState();
+    const id = store.createCard({
+      projectName: 'repo',
+      projectPath: '/repo',
+      terminalType: 'shell',
+    });
+    const before = useTerminalStore.getState().getCardById(id);
+
+    const saved = store.savePendingTerminalConfiguration(id, {
+      terminalType: 'codex',
+      launchMode: 'custom',
+      command: 'codex --no-alt-screen',
+    });
+
+    expect(saved).toBe(true);
+    expect(useTerminalStore.getState().getCardById(id)).toBe(before);
+    expect(
+      useTerminalStore.getState().pendingTerminalConfigurations[id],
+    ).toEqual({
+      terminalType: 'codex',
+      launchMode: 'custom',
+      command: 'codex --no-alt-screen',
+    });
+  });
+
+  it('atomically applies a configuration while preserving card history and preferences', () => {
+    const store = useTerminalStore.getState();
+    const id = store.createCard({
+      projectName: 'repo',
+      projectPath: '/repo',
+      terminalType: 'shell',
+    });
+    store.recordUserSubmit(id, 'keep this history');
+    store.updateCardOutputAndPreview(id, 'old output', 'old preview');
+    store.pinCard(id);
+    store.focusCard(id);
+    store.setCardAutoRestartEnabled(id, true);
+    store.scheduleCardAutoRestart(id, { exitCode: 7, now: 100 });
+    store.pushNotification({
+      cardId: id,
+      kind: 'waiting',
+      title: 'Needs input',
+      body: 'Continue?',
+    });
+    store.savePendingTerminalConfiguration(id, {
+      terminalType: 'codex',
+      launchMode: 'custom',
+      command: 'codex --no-alt-screen',
+    });
+    const before = useTerminalStore.getState().getCardById(id);
+
+    const nextPtyId = store.commitTerminalConfiguration(id, {
+      expectedPtyId: before?.ptyId ?? '',
+      configuration: {
+        terminalType: 'codex',
+        launchMode: 'custom',
+        command: 'codex --no-alt-screen',
+      },
+      nextPtyId: 'configured-pty',
+      now: 500,
+    });
+
+    const state = useTerminalStore.getState();
+    const card = state.getCardById(id);
+    expect(nextPtyId).toBe('configured-pty');
+    expect(card).toMatchObject({
+      id,
+      ptyId: 'configured-pty',
+      terminalType: 'codex',
+      command: 'codex --no-alt-screen',
+      providerSessionState: 'unbound',
+      status: 'idle',
+      lastOutput: '',
+      lastReplyPreview: '',
+      unread: false,
+      messageCount: 1,
+      createdAt: before?.createdAt,
+    });
+    expect(card?.events).toHaveLength((before?.events.length ?? 0) + 1);
+    expect(card?.autoRestart).toMatchObject({
+      enabled: true,
+      retryCount: 0,
+    });
+    expect(card?.autoRestart?.history[0]?.status).toBe('cancelled');
+    expect(state.notifications[0]?.read).toBe(true);
+    expect(state.pinnedCardIds).toContain(id);
+    expect(state.focusedCardId).toBe(id);
+    expect(state.pendingTerminalConfigurations[id]).toBeUndefined();
+  });
+
+  it('does not overwrite a card when the expected PTY is stale', () => {
+    const store = useTerminalStore.getState();
+    const id = store.createCard({
+      projectName: 'repo',
+      projectPath: '/repo',
+      terminalType: 'shell',
+    });
+    const before = useTerminalStore.getState().getCardById(id);
+
+    expect(
+      store.commitTerminalConfiguration(id, {
+        expectedPtyId: 'stale-pty',
+        configuration: {
+          terminalType: 'claude',
+          launchMode: 'default',
+        },
+      }),
+    ).toBeNull();
+    expect(useTerminalStore.getState().getCardById(id)).toBe(before);
+  });
+
+  it('adopts known worktree metadata when following a resumed session directory', () => {
+    const store = useTerminalStore.getState();
+    const targetId = store.createCard({
+      projectName: 'source',
+      projectPath: '/source',
+      terminalType: 'shell',
+    });
+    store.createCard({
+      projectName: 'destination',
+      projectPath: '/destination',
+      worktreePath: '/destination/feature',
+      branchLabel: 'feature',
+      terminalType: 'shell',
+    });
+    const target = useTerminalStore.getState().getCardById(targetId);
+
+    store.commitTerminalConfiguration(targetId, {
+      expectedPtyId: target?.ptyId ?? '',
+      configuration: {
+        terminalType: 'claude',
+        launchMode: 'resume',
+        providerSessionId: 'claude-session-1',
+        workspaceMode: 'session',
+        sessionProjectPath: '/destination/feature',
+      },
+      nextPtyId: 'claude-resume-pty',
+      now: 700,
+    });
+
+    const state = useTerminalStore.getState();
+    expect(state.getCardById(targetId)).toMatchObject({
+      projectPath: '/destination',
+      projectName: 'destination',
+      worktreePath: '/destination/feature',
+      branchLabel: 'feature',
+      providerSessionId: 'claude-session-1',
+      providerSessionState: 'bound',
+      providerSessionBoundAt: 700,
+    });
+    expect(state.selectedProjectPath).toBe('/destination');
+    expect(state.selectedWorktreePath).toBe('/destination/feature');
+    expect(state.selectedWorktreeLabel).toBe('feature');
+  });
+
+  it('preserves Codex Chat binding only while the card remains Codex', () => {
+    const store = useTerminalStore.getState();
+    const id = store.createCard({
+      projectName: 'repo',
+      projectPath: '/repo',
+      terminalType: 'codex',
+    });
+    store.bindCodexAppThread(id, {
+      threadId: 'chat-thread',
+      sessionId: 'chat-session',
+      threadPath: '/repo/thread.jsonl',
+      boundAt: 123,
+    });
+    const originalPtyId = useTerminalStore.getState().getCardById(id)?.ptyId ?? '';
+
+    store.commitTerminalConfiguration(id, {
+      expectedPtyId: originalPtyId,
+      configuration: {
+        terminalType: 'codex',
+        launchMode: 'resume',
+        providerSessionId: 'cli-session',
+        workspaceMode: 'current',
+      },
+      nextPtyId: 'codex-pty',
+    });
+    expect(useTerminalStore.getState().getCardById(id)).toMatchObject({
+      codexAppThreadId: 'chat-thread',
+      codexAppSessionId: 'chat-session',
+    });
+
+    store.commitTerminalConfiguration(id, {
+      expectedPtyId: 'codex-pty',
+      configuration: {
+        terminalType: 'shell',
+        launchMode: 'default',
+      },
+      nextPtyId: 'shell-pty',
+    });
+    const switched = useTerminalStore.getState().getCardById(id);
+    expect(switched?.codexAppThreadId).toBeUndefined();
+    expect(switched?.codexAppSessionId).toBeUndefined();
+    expect(switched?.codexAppThreadPath).toBeUndefined();
+    expect(switched?.codexAppBoundAt).toBeUndefined();
+  });
+
+  it('retains pending edits across archive/restore and removes them with the card', () => {
+    const store = useTerminalStore.getState();
+    const id = store.createCard({
+      projectName: 'repo',
+      projectPath: '/repo',
+      terminalType: 'shell',
+    });
+    store.savePendingTerminalConfiguration(id, {
+      terminalType: 'gemini',
+      launchMode: 'default',
+    });
+
+    store.archiveCard(id);
+    expect(
+      useTerminalStore.getState().pendingTerminalConfigurations[id],
+    ).toBeDefined();
+    useTerminalStore.getState().restoreArchivedCard(id);
+    expect(
+      useTerminalStore.getState().pendingTerminalConfigurations[id],
+    ).toBeDefined();
+    useTerminalStore.getState().removeCard(id);
+    expect(
+      useTerminalStore.getState().pendingTerminalConfigurations[id],
+    ).toBeUndefined();
+  });
+});
+
 describe('terminalStore — persistence shape contract', () => {
   // slice 拆分前的安全网：锁定 partialize 输出的持久化形状。
   // 纯移动重构不得改变顶层键集合、卡片对象键集合或 persist 版本号。
   const PERSISTED_TOP_LEVEL_KEYS = [
     'cards',
     'archivedCards',
+    'pendingTerminalConfigurations',
     'focusedCardId',
     'lastActiveCardId',
     'recentlyViewedCardIds',
@@ -518,7 +749,7 @@ describe('terminalStore — persistence shape contract', () => {
 
     const persisted = readPersistedState();
     expect(Object.keys(persisted.state ?? {}).sort()).toEqual(PERSISTED_TOP_LEVEL_KEYS);
-    expect(persisted.version).toBe(18);
+    expect(persisted.version).toBe(19);
   });
 
   it('persists each card with a stable key set', () => {
@@ -583,6 +814,65 @@ describe('terminalStore — persistence shape contract', () => {
     }
   });
 
+  it('round-trips a pending terminal configuration without changing card fields', async () => {
+    localStorage.removeItem('threadterm-terminal-store');
+    const store = useTerminalStore.getState();
+    const id = store.createCard({
+      projectName: 'repo',
+      projectPath: '/workspace/repo',
+      terminalType: 'shell',
+    });
+    const activeBefore = useTerminalStore.getState().getCardById(id);
+    store.savePendingTerminalConfiguration(id, {
+      terminalType: 'codex',
+      launchMode: 'resume',
+      providerSessionId: 'codex-session-1',
+      workspaceMode: 'current',
+    });
+    readPersistedState();
+
+    resetStore();
+    await useTerminalStore.persist.rehydrate();
+
+    expect(useTerminalStore.getState().getCardById(id)).toMatchObject({
+      terminalType: activeBefore?.terminalType,
+      ptyId: activeBefore?.ptyId,
+    });
+    expect(
+      useTerminalStore.getState().getCardById(id)?.command,
+    ).toBe(activeBefore?.command);
+    expect(
+      useTerminalStore.getState().pendingTerminalConfigurations[id],
+    ).toEqual({
+      terminalType: 'codex',
+      launchMode: 'resume',
+      providerSessionId: 'codex-session-1',
+      workspaceMode: 'current',
+    });
+  });
+
+  it('migrates a v18 snapshot with no pending edits to an empty pending map', async () => {
+    localStorage.removeItem('threadterm-terminal-store');
+    localStorage.setItem(
+      'threadterm-terminal-store',
+      JSON.stringify({
+        version: 18,
+        state: {
+          cards: [],
+          archivedCards: [],
+          notifications: [],
+        },
+      }),
+    );
+
+    resetStore();
+    await useTerminalStore.persist.rehydrate();
+
+    expect(useTerminalStore.getState().pendingTerminalConfigurations).toEqual(
+      {},
+    );
+  });
+
   it('restores a large current-version workspace without losing card output', async () => {
     localStorage.removeItem('threadterm-terminal-store');
     const cardIds: string[] = [];
@@ -610,7 +900,7 @@ describe('terminalStore — persistence shape contract', () => {
     expect(restoredCards.map((card) => card.id)).toEqual(cardIds);
     expect(restoredCards[0]?.lastOutput).toContain('card-0:');
     expect(restoredCards.at(-1)?.lastOutput).toContain('card-179:');
-    expect(persisted.version).toBe(18);
+    expect(persisted.version).toBe(19);
   });
 });
 

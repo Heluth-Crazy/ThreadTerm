@@ -102,6 +102,7 @@ function buildSeed(cards: SeedCard[], agentSessions: SeedAgentSession[]): FakeSe
   return {
     persistedState: {
       cards,
+      pendingTerminalConfigurations: {},
       blocks: {},
       bookmarks: [],
       focusedCardId: null,
@@ -130,7 +131,7 @@ function installInPage(seed: FakeSeed): void {
   localStorage.setItem('threadterm-shortcut-hint-dismissed', '1');
   localStorage.setItem(
     'threadterm-terminal-store',
-    JSON.stringify({ state: seed.persistedState, version: 18 }),
+    JSON.stringify({ state: seed.persistedState, version: 19 }),
   );
 
   type EventCallback = (event: { event: string; id: number; payload: unknown }) => void;
@@ -149,7 +150,8 @@ function installInPage(seed: FakeSeed): void {
     create: Record<string, number>;
     attachSnapshot: Record<string, number>;
     ack: Record<string, number>;
-  } = { create: {}, attachSnapshot: {}, ack: {} };
+    kill: Record<string, number>;
+  } = { create: {}, attachSnapshot: {}, ack: {}, kill: {} };
   const ackedThrough: Record<string, number> = {};
   const inputs: Record<string, string[]> = {};
   const agentSessionState = {
@@ -215,6 +217,10 @@ function installInPage(seed: FakeSeed): void {
       case 'plugin:event|emit':
       case 'plugin:event|emit_to':
         return null;
+      case 'plugin:dialog|confirm':
+        return true;
+      case 'plugin:dialog|message':
+        return 'Ok';
 
       // ── fake PTY ────────────────────────────────────────────────────────
       case 'pty_create': {
@@ -274,7 +280,9 @@ function installInPage(seed: FakeSeed): void {
       case 'pty_unregister_output_consumer':
         return null;
       case 'pty_kill': {
-        const session = sessions.get(a.id as string);
+        const id = a.id as string;
+        counts.kill[id] = (counts.kill[id] ?? 0) + 1;
+        const session = sessions.get(id);
         if (session) session.alive = false;
         return null;
       }

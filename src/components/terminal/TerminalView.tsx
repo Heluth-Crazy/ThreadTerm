@@ -15,6 +15,7 @@ import {
   ArrowLeft,
   MessageSquare,
   MoreVertical,
+  Settings2,
   TerminalSquare,
   Trash2,
   X,
@@ -47,6 +48,8 @@ interface TerminalViewProps {
   onBack: () => void;
   onRemoveCard: (cardId: string) => Promise<boolean>;
   onArchiveCard: (cardId: string) => Promise<boolean>;
+  onEdit?: (cardId: string) => void;
+  revealTerminalToken?: number;
 }
 
 type ClaudeChatAvailability =
@@ -71,6 +74,8 @@ export const TerminalView = memo(function TerminalView({
   onBack,
   onRemoveCard,
   onArchiveCard,
+  onEdit,
+  revealTerminalToken = 0,
 }: TerminalViewProps) {
   const { t } = useTranslation('terminal');
   const recordUserSubmit = useTerminalStore((s) => s.recordUserSubmit);
@@ -78,19 +83,24 @@ export const TerminalView = memo(function TerminalView({
   const setCardAutoRestartEnabled = useTerminalStore((s) => s.setCardAutoRestartEnabled);
   const setCardAutoRestartMaxRetries = useTerminalStore((s) => s.setCardAutoRestartMaxRetries);
 
-  const preferredCodexViewMode = defaultCodexViewMode(
-    card.terminalType,
-    card.providerSessionState,
-    card.providerSessionId,
-  );
+  const preferredCodexViewMode = card.command?.trim()
+    ? 'terminal'
+    : defaultCodexViewMode(
+        card.terminalType,
+        card.providerSessionState,
+        card.providerSessionId,
+      );
   const [chatViewMode, setChatViewMode] = useState<'chat' | 'terminal'>(
-    preferredCodexViewMode,
+    revealTerminalToken > 0 ? 'terminal' : preferredCodexViewMode,
   );
   const [claudeChatAvailability, setClaudeChatAvailability] =
     useState<ClaudeChatAvailability>({
       status: 'checking',
       reason: null,
     });
+  const hasPendingConfiguration = useTerminalStore(
+    (state) => Boolean(state.pendingTerminalConfigurations[card.id]),
+  );
 
   // Note: no PTY guard is needed even when the float window also hosts
   // this card. Both windows share the same pty id and the
@@ -152,6 +162,10 @@ export const TerminalView = memo(function TerminalView({
   useEffect(() => {
     setChatViewMode(preferredCodexViewMode);
   }, [card.id, preferredCodexViewMode]);
+
+  useEffect(() => {
+    if (revealTerminalToken > 0) setChatViewMode('terminal');
+  }, [revealTerminalToken]);
 
   useEffect(() => {
     if (!isClaudeCard) return;
@@ -253,6 +267,14 @@ export const TerminalView = memo(function TerminalView({
               <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground opacity-70">
                 · {t(`types.${card.terminalType}`, typeMeta.label)}
               </span>
+              {hasPendingConfiguration && (
+                <span
+                  title={t('edit.pendingHint')}
+                  className="shrink-0 rounded-full border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+                >
+                  {t('edit.pending')}
+                </span>
+              )}
             </div>
             <div className="truncate text-[11px] text-muted-foreground opacity-60" title={card.projectPath}>
               {card.worktreePath ? t('view.worktree', { path: card.worktreePath }) : card.projectPath}
@@ -363,6 +385,15 @@ export const TerminalView = memo(function TerminalView({
               <MoreVertical className="h-4 w-4" />
             </button>
             <div className="absolute right-0 top-full z-10 mt-1 hidden w-44 rounded-md border border-border bg-popover p-1 text-sm shadow-lg group-hover:block">
+              {onEdit && (
+                <button
+                  type="button"
+                  onClick={() => onEdit(card.id)}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
+                >
+                  <Settings2 className="h-3.5 w-3.5" /> {t('edit.action')}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleArchive}

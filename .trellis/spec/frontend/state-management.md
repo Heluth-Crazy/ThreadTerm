@@ -146,6 +146,160 @@ by removing a representation. Never make the real xterm wait on a throttle.
 
 </spec-entry>
 
+<spec-entry category="contract" keywords="terminal-edit,pending-configuration,provider-session,pty-rotation,resume,workspace" date="2026-07-30" source="src/lib/terminalConfiguration.ts:1">
+
+### Scenario: Existing Terminal Configuration Changes Are Validate-Then-Swap
+
+#### 1. Scope / Trigger
+- Trigger: Any change to editing a terminal card's type, startup command,
+  Provider history binding, working directory, pending configuration, or PTY
+  replacement.
+- Applies to `terminalConfiguration.ts`, `terminalStore`,
+  `EditTerminalDialog`, `useTerminalConfigurationEditor`,
+  `TerminalView`, workspace-tab reset handling, and desktop fake-Tauri/E2E.
+
+#### 2. Signatures
+
+```typescript
+type TerminalLaunchConfiguration =
+  | { terminalType: TerminalType; launchMode: 'default' }
+  | { terminalType: TerminalType; launchMode: 'custom'; command: string }
+  | {
+      terminalType: AgentSessionProvider;
+      launchMode: 'resume';
+      providerSessionId: string;
+      workspaceMode: 'current' | 'session';
+      sessionProjectPath?: string;
+    };
+
+terminalStore.pendingTerminalConfigurations:
+  Record<string, TerminalLaunchConfiguration>;
+
+terminalStore.commitTerminalConfiguration(
+  cardId,
+  { expectedPtyId, configuration },
+): string | null;
+```
+
+Provider discovery and validation reuse the existing commands:
+
+```typescript
+providerSessions.listAgentSessions(request): Promise<AgentSessionPage>;
+providerSessions.resolveResume(
+  provider: 'claude' | 'codex',
+  sessionId: string,
+): Promise<ProviderSessionInfo | null>;
+```
+
+#### 3. Contracts
+- Pending configuration is a separate persisted map keyed by card id. Do not
+  add pending fields to `TerminalCard`; active cards, mobile projections,
+  selector cards, and float terminals continue to describe only the applied
+  configuration.
+- The three launch modes are mutually exclusive after normalization. Default
+  retains no command/session, custom retains only a trimmed command, and
+  resume is restricted to Claude/Codex/OpenCode/Gemini with a backend-safe
+  Provider session id.
+- Save-only canonicalizes and checks duplicates, writes the pending map, and
+  flushes persistence. It must not stop a PTY/Chat runtime or mutate active
+  type, command, screen, status, or PTY identity.
+- Apply validates before teardown. Claude/Codex ids resolve to their exact
+  resumable session (Codex children to the interactive root) before the old
+  PTY is touched. Missing/error resolution never falls back to a new session.
+- A Provider/session pair may be bound by at most one active or archived card.
+  Conflict UI navigates to the active original or restores the archived
+  original; it does not create a second binding.
+- A history path outside the card's project/effective worktree requires an
+  explicit `current` versus `session` directory choice. `sessionProjectPath`
+  affects equality only when `workspaceMode === 'session'`; under `current`
+  it is informational catalog metadata and must not cause a no-op restart.
+- Apply captures `expectedPtyId`, stops the old runtime, then commits only if
+  the card still owns that PTY. Commit rotates the PTY id, clears live
+  output/preview/attention and retry streak, acknowledges notifications, and
+  preserves card identity, events, message count, Workbench follow, pinning,
+  and auto-restart preference.
+- Claude Terminal and Chat are reset together when entering/leaving Claude.
+  Codex App/Chat binding remains only when both old and new terminal types are
+  Codex; changing away clears provider-specific App fields.
+- A mounted `Shell` handles the new `paneId` through its established detach /
+  register / snapshot lifecycle. Do not add `key={paneId}` to force an xterm
+  remount.
+- The editor initialization effect depends only on configuration identity
+  fields, not the whole `card` object. Output flushes replace card objects at
+  high frequency and must not reset the user's in-progress form.
+- Session catalog/query state is window-local and non-persisted. Paginated
+  results merge by `provider + id`, and stale query/provider responses are
+  discarded before they can replace current rows.
+
+#### 4. Validation & Error Matrix
+- Empty custom command -> validation error; no pending write or runtime stop.
+- Resume on a non-Agent terminal type or unsafe/empty id -> validation error.
+- Claude/Codex resolver returns null/errors -> keep active and pending state;
+  do not prompt restart or kill the old PTY.
+- Duplicate active/archived binding -> block save/apply and expose the original.
+- Cross-project history without a directory choice -> request the choice and
+  leave state untouched.
+- Restart or dirty-draft confirmation declined -> keep the current runtime and
+  configuration.
+- PTY state/kill or Claude Chat stop returns a real error -> report it; never
+  silently continue as a new session. A missing already-exited runtime is safe
+  to replace.
+- Card missing or PTY identity changed before compare-and-set -> commit returns
+  `null`; do not overwrite the replacement card.
+- Persisted pending entry is malformed or references no active/archived card ->
+  drop it during migration/partialization.
+
+#### 5. Good/Base/Bad Cases
+- Good: save Shell -> custom Codex, keep using the Shell, then apply later;
+  exactly one old PTY kill and one new PTY launch occur.
+- Good: select a Codex child history, resolve its root, rotate the PTY, and send
+  `codex resume <root> --no-alt-screen`.
+- Good: a running terminal emits continuously while its editor is open; typed
+  command, search, scope, and selection remain unchanged.
+- Base: editing a configuration back to the active equivalent discards a
+  redundant pending entry without restarting.
+- Bad: writing the draft directly into `TerminalCard`, killing before Provider
+  validation, treating two seconds of silence as session existence, or
+  silently launching a fresh Agent session after resume validation fails.
+
+#### 6. Tests Required
+- Pure tests: normalization, safe ids, active configuration derivation,
+  equality, persisted parsing, and active/archived duplicate detection.
+- Store tests: save-only immutability, expected-PTY compare-and-set, PTY
+  rotation/reset/preservation, workspace metadata, Codex field cleanup,
+  archive/restore/remove behavior, v19 migration, and persistence round-trip.
+- Component/hook tests: pending indicator/edit/discard, project/all catalog
+  filtering and pagination, cross-project choice, dirty draft confirmation,
+  high-frequency card refresh form stability, resolver failure, and exactly
+  one runtime replacement.
+- Desktop E2E: save-only survives storage, apply launches once, canonical
+  Codex resume is sent, and missing history leaves the old terminal alive.
+- Required gates: locale parity, targeted ESLint, `npm run check`, full desktop
+  E2E, Rust tests/Clippy, `git diff --check`, and GitNexus change detection.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```typescript
+updateCard(cardId, draft);
+await pty.kill(card.ptyId);
+await pty.create(card.ptyId, draft.projectPath);
+```
+
+Correct:
+
+```typescript
+const configuration = await validateAndResolve(draft);
+await pty.kill(expectedPtyId);
+const nextPtyId = commitTerminalConfiguration(cardId, {
+  expectedPtyId,
+  configuration,
+});
+```
+
+</spec-entry>
+
 <spec-entry category="arch" keywords="pty,flow-control,ack,sequence,multi-webview,snapshot" date="2026-07-11" source="src-tauri/src/pty/session.rs:68">
 
 ### Scenario: PTY Output Credits Are Owned by Explicit Consumers

@@ -62,6 +62,7 @@ interface CardGridProps {
   onCreateTerminal?: (options?: TerminalCreateOptions) => void;
   onCreateWorktreeTerminal?: (request: PendingWorktreeCreateRequest) => void;
   onOpenTerminal?: (cardId: string) => void;
+  onEditTerminal?: (cardId: string) => void;
   onRemoveCard: (cardId: string) => void | Promise<boolean>;
   onArchiveCard: (cardId: string) => void | Promise<boolean>;
 }
@@ -70,6 +71,7 @@ export function CardGrid({
   onCreateTerminal,
   onCreateWorktreeTerminal,
   onOpenTerminal,
+  onEditTerminal,
   onRemoveCard,
   onArchiveCard,
 }: CardGridProps) {
@@ -379,6 +381,9 @@ export function CardGrid({
           }
           isFocused={focusedCardId === card.id}
           onClick={() => onOpenTerminal?.(card.id)}
+          onEdit={
+            onEditTerminal ? () => onEditTerminal(card.id) : undefined
+          }
           onClose={() => void onRemoveCard(card.id)}
           onArchive={() => void onArchiveCard(card.id)}
         />
@@ -501,6 +506,7 @@ interface CardTileProps {
   onClick: () => void;
   onClose: () => void;
   onArchive: () => void;
+  onEdit?: () => void;
   sortingEnabled: boolean;
   showDisabledHandle: boolean;
 }
@@ -513,6 +519,7 @@ const CardTile = memo(function CardTile({
   onClick,
   onClose,
   onArchive,
+  onEdit,
   sortingEnabled,
   showDisabledHandle,
 }: CardTileProps) {
@@ -525,6 +532,7 @@ const CardTile = memo(function CardTile({
           onClick={onClick}
           onClose={onClose}
           onArchive={onArchive}
+          onEdit={onEdit}
           dragHandle={
             showDisabledHandle ? (
               <span
@@ -549,6 +557,7 @@ const CardTile = memo(function CardTile({
       onClick={onClick}
       onClose={onClose}
       onArchive={onArchive}
+      onEdit={onEdit}
     />
   );
 }, areCardTilePropsEqual);
@@ -560,6 +569,7 @@ interface SortableCardTileProps {
   onClick: () => void;
   onClose: () => void;
   onArchive: () => void;
+  onEdit?: () => void;
 }
 
 const SortableCardTile = memo(function SortableCardTile({
@@ -569,6 +579,7 @@ const SortableCardTile = memo(function SortableCardTile({
   onClick,
   onClose,
   onArchive,
+  onEdit,
 }: SortableCardTileProps) {
   const {
     attributes,
@@ -594,6 +605,7 @@ const SortableCardTile = memo(function SortableCardTile({
         onClick={onClick}
         onClose={onClose}
         onArchive={onArchive}
+        onEdit={onEdit}
         dragHandle={
           <button
             ref={setActivatorNodeRef}

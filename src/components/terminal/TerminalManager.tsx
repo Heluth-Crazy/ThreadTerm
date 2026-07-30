@@ -29,6 +29,7 @@ import { CardGrid } from './CardGrid';
 import { MAX_MOUNTED_TERMINAL_VIEWS, touchMountedId } from './mountedViewsLru';
 import { TerminalView } from './TerminalView';
 import { CreateTerminalDialog } from './CreateTerminalDialog';
+import { EditTerminalDialog } from './EditTerminalDialog';
 import { ProjectSidebar } from './ProjectSidebar';
 import { MobileAccessSettings } from '../settings/MobileAccessSettings';
 import { ArchivedCardsPanel } from './ArchivedCardsPanel';
@@ -67,6 +68,7 @@ import {
   WorkspaceContentTabStrip,
 } from './WorkspaceContentTabStrip';
 import { useWorkspaceContent } from './useWorkspaceContent';
+import { useTerminalConfigurationEditor } from './useTerminalConfigurationEditor';
 import { useMobileWorkbenchSync } from './useMobileWorkbenchSync';
 import {
   useTerminalNavigation,
@@ -367,6 +369,7 @@ export function TerminalManager() {
     closeOtherWorkspaceTabs,
     requestRemoveCard,
     requestArchiveCard,
+    requestCardWorkspaceReset,
     handleWorkspacePanelStateChange,
     activateTerminalForCard,
   } = useWorkspaceContent({
@@ -413,6 +416,21 @@ export function TerminalManager() {
     setSidebarOpen,
     setViewMode,
     setWorkbenchPanel,
+  });
+  const {
+    editingCard,
+    pendingConfiguration: pendingEditingConfiguration,
+    terminalRevealTokens,
+    openEditor: openTerminalEditor,
+    closeEditor: closeTerminalEditor,
+    submit: submitTerminalConfiguration,
+    discardPending: discardPendingTerminalConfiguration,
+    locateConflict: locateTerminalConfigurationConflict,
+  } = useTerminalConfigurationEditor({
+    t,
+    requestCardWorkspaceReset,
+    activateTerminalForCard,
+    openTerminal: handleOpenTerminal,
   });
   const {
     closePalette,
@@ -934,6 +952,7 @@ export function TerminalManager() {
             onCreateTerminal={handleGridCreateTerminal}
             onCreateWorktreeTerminal={handleCreateWorktreeTerminal}
             onOpenTerminal={handleOpenTerminal}
+            onEditTerminal={openTerminalEditor}
             onRemoveCard={requestRemoveCard}
             onArchiveCard={requestArchiveCard}
           />
@@ -975,6 +994,8 @@ export function TerminalManager() {
                   onBack={handleBackToGrid}
                   onRemoveCard={requestRemoveCard}
                   onArchiveCard={requestArchiveCard}
+                  onEdit={openTerminalEditor}
+                  revealTerminalToken={terminalRevealTokens[c.id] ?? 0}
                 />
               </div>
             );
@@ -1129,6 +1150,15 @@ export function TerminalManager() {
         onClose={() => setCreateOpen(false)}
         onCreate={handleCreate}
         recentProjects={recentProjects}
+      />
+      <EditTerminalDialog
+        open={Boolean(editingCard)}
+        card={editingCard}
+        pendingConfiguration={pendingEditingConfiguration}
+        onClose={closeTerminalEditor}
+        onSubmit={submitTerminalConfiguration}
+        onDiscardPending={discardPendingTerminalConfiguration}
+        onLocateConflict={locateTerminalConfigurationConflict}
       />
 
       </div>

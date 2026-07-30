@@ -103,6 +103,51 @@ describe('TerminalView Agent modes', () => {
     expect(screen.queryByTestId('mock-shell')).not.toBeInTheDocument();
   });
 
+  it('opens a custom Codex command in terminal mode', () => {
+    render(
+      <TerminalView
+        card={makeCard({
+          id: 'custom-codex',
+          ptyId: 'custom-codex',
+          terminalType: 'codex',
+          command: 'codex --no-alt-screen',
+          providerSessionId: undefined,
+          providerSessionState: 'unbound',
+        })}
+        onBack={vi.fn()}
+        onRemoveCard={async () => true}
+        onArchiveCard={async () => true}
+      />,
+    );
+
+    expect(screen.getByTestId('mock-shell')).toHaveAttribute(
+      'data-initial-command',
+      'codex --no-alt-screen',
+    );
+    expect(screen.queryByTestId('mock-codex-chat')).not.toBeInTheDocument();
+  });
+
+  it('reveals an unbound Codex terminal immediately after configuration apply', () => {
+    render(
+      <TerminalView
+        card={makeCard({
+          id: 'revealed-codex',
+          ptyId: 'revealed-codex',
+          terminalType: 'codex',
+          providerSessionId: undefined,
+          providerSessionState: 'unbound',
+        })}
+        revealTerminalToken={1}
+        onBack={vi.fn()}
+        onRemoveCard={async () => true}
+        onArchiveCard={async () => true}
+      />,
+    );
+
+    expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
+    expect(screen.queryByTestId('mock-codex-chat')).not.toBeInTheDocument();
+  });
+
   it('shows the Claude Chat entry and opens it after the environment probe succeeds', async () => {
     claudeChatMock.probe.mockReset().mockResolvedValue({ ok: true });
     render(

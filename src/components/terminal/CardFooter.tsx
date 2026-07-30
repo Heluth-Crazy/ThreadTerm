@@ -61,6 +61,7 @@ export interface CardFooterProps {
   aiSessionExporting?: boolean;
   aiSessionExportStatus?: 'saved' | 'error' | null;
   onRename?: () => void;
+  onEdit?: () => void;
   onClose?: () => void;
 }
 
@@ -125,6 +126,7 @@ export const CardFooter = memo(function CardFooter({
   aiSessionExporting,
   aiSessionExportStatus,
   onRename,
+  onEdit,
   onClose,
 }: CardFooterProps) {
   const { t } = useTranslation('terminal');
@@ -161,6 +163,7 @@ export const CardFooter = memo(function CardFooter({
           pinned={pinned}
           pinFull={pinFull}
           onRename={onRename}
+          onEdit={onEdit}
           onCopyCwd={onCopyCwd}
           onOpenDir={onOpenDir}
           onTogglePin={onTogglePin}

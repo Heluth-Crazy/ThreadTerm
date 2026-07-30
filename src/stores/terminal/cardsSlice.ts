@@ -38,8 +38,30 @@ import {
   uuid,
 } from './helpers';
 import { createAnsiTailSanitizer } from '../../lib/ansiText';
+import {
+  isAgentTerminalType,
+  type TerminalLaunchConfiguration,
+} from '../../lib/terminalConfiguration';
+import {
+  cancelPendingAutoRestart,
+  normalizeAutoRestartConfig,
+} from '../../lib/autoRestart';
 import type { CardsSlice, TerminalSliceCreator } from './types';
 import { MAX_CARD_NAME_LENGTH } from './types';
+
+function compactPendingTerminalConfigurations(
+  pending: Record<string, TerminalLaunchConfiguration>,
+  cards: readonly TerminalCard[],
+  archivedCards: readonly TerminalCard[],
+): Record<string, TerminalLaunchConfiguration> {
+  const knownIds = new Set([
+    ...cards.map((card) => card.id),
+    ...archivedCards.map((card) => card.id),
+  ]);
+  return Object.fromEntries(
+    Object.entries(pending).filter(([cardId]) => knownIds.has(cardId)),
+  );
+}
 
 export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => {
   const outputSanitizers = new Map<
@@ -58,6 +80,7 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
   return {
   cards: [],
   archivedCards: [],
+  pendingTerminalConfigurations: {},
   projectCardOrder: {},
 
   createCard: (options) => {
@@ -295,6 +318,11 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
         projectCardOrder,
         pinnedCardIds,
         recentlyViewedCardIds,
+        pendingTerminalConfigurations: compactPendingTerminalConfigurations(
+          state.pendingTerminalConfigurations,
+          cards,
+          state.archivedCards,
+        ),
       };
     });
   },
@@ -331,6 +359,11 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
         (recentId) => recentId !== id,
       );
       const projectCardOrder = compactProjectCardOrder(state.projectCardOrder, cards);
+      const pendingTerminalConfigurations = compactPendingTerminalConfigurations(
+        state.pendingTerminalConfigurations,
+        cards,
+        archivedCards,
+      );
 
       return {
         cards,
@@ -343,6 +376,7 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
         pinnedCardIds,
         recentlyViewedCardIds,
         projectCardOrder,
+        pendingTerminalConfigurations,
       };
     });
   },
@@ -375,6 +409,191 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
         ),
       };
     }),
+
+  savePendingTerminalConfiguration: (id, configuration) => {
+    const exists = get().cards.some((card) => card.id === id);
+    if (!exists) return false;
+    set((state) => ({
+      pendingTerminalConfigurations: {
+        ...state.pendingTerminalConfigurations,
+        [id]: configuration,
+      },
+    }));
+    return true;
+  },
+
+  discardPendingTerminalConfiguration: (id) =>
+    set((state) => {
+      if (!(id in state.pendingTerminalConfigurations)) return state;
+      const pendingTerminalConfigurations = {
+        ...state.pendingTerminalConfigurations,
+      };
+      delete pendingTerminalConfigurations[id];
+      return { pendingTerminalConfigurations };
+    }),
+
+  commitTerminalConfiguration: (id, input) => {
+    const now = input.now ?? Date.now();
+    const nextPtyId = input.nextPtyId ?? `${id}-configured-${now.toString(36)}-${uid()}`;
+    let committedPtyId: string | null = null;
+
+    set((state) => {
+      const idx = state.cards.findIndex((card) => card.id === id);
+      if (idx === -1) return state;
+      const existing = state.cards[idx];
+      if ((existing.ptyId || existing.id) !== input.expectedPtyId) return state;
+
+      const configuration = input.configuration;
+      let projectPath = existing.projectPath;
+      let projectName = existing.projectName;
+      let worktreePath = existing.worktreePath;
+      let branchLabel = existing.branchLabel;
+
+      if (
+        configuration.launchMode === 'resume'
+        && configuration.workspaceMode === 'session'
+        && configuration.sessionProjectPath
+      ) {
+        const sessionProjectPath = configuration.sessionProjectPath;
+        const knownWorkspaceCard = [
+          ...state.cards,
+          ...(state.archivedCards ?? []),
+        ].find((card) =>
+          samePath(effectiveWorktreePath(card), sessionProjectPath),
+        );
+        if (knownWorkspaceCard) {
+          projectPath = knownWorkspaceCard.projectPath;
+          projectName = knownWorkspaceCard.projectName;
+          worktreePath = knownWorkspaceCard.worktreePath;
+          branchLabel = knownWorkspaceCard.branchLabel;
+        } else {
+          projectPath = sessionProjectPath;
+          projectName = pathBasename(sessionProjectPath);
+          worktreePath = undefined;
+          branchLabel = undefined;
+        }
+      }
+
+      const workspaceChanged =
+        !samePath(existing.projectPath, projectPath)
+        || !samePath(effectiveWorktreePath(existing), worktreePath ?? projectPath);
+      const isAgent = isAgentTerminalType(configuration.terminalType);
+      const isBoundResume = configuration.launchMode === 'resume';
+      const providerSessionId = isBoundResume
+        ? configuration.providerSessionId
+        : configuration.launchMode === 'default'
+          && configuration.terminalType === 'claude'
+          ? uuid()
+          : undefined;
+      const providerSessionState = isAgent
+        ? isBoundResume
+          ? 'bound' as const
+          : 'unbound' as const
+        : undefined;
+      const preserveCodexAppBinding =
+        existing.terminalType === 'codex'
+        && configuration.terminalType === 'codex';
+      const autoRestart = existing.autoRestart
+        ? {
+            ...cancelPendingAutoRestart(
+              normalizeAutoRestartConfig(existing.autoRestart),
+              now,
+            ),
+            retryCount: 0,
+            limitReachedAt: undefined,
+            lastExitCode: undefined,
+          }
+        : undefined;
+
+      const configuredCard = appendEvent(
+        {
+          ...existing,
+          ptyId: nextPtyId,
+          projectPath,
+          projectName,
+          worktreePath,
+          branchLabel,
+          terminalType: configuration.terminalType,
+          command:
+            configuration.launchMode === 'custom'
+              ? configuration.command
+              : undefined,
+          providerSessionId,
+          providerSessionState,
+          providerSessionBoundAt: isBoundResume ? now : undefined,
+          providerSessionLastResumeAt: undefined,
+          codexAppThreadId: preserveCodexAppBinding
+            ? existing.codexAppThreadId
+            : undefined,
+          codexAppSessionId: preserveCodexAppBinding
+            ? existing.codexAppSessionId
+            : undefined,
+          codexAppThreadPath: preserveCodexAppBinding
+            ? existing.codexAppThreadPath
+            : undefined,
+          codexAppBoundAt: preserveCodexAppBinding
+            ? existing.codexAppBoundAt
+            : undefined,
+          status: 'idle',
+          lastOutput: '',
+          lastReplyPreview: '',
+          unread: false,
+          autoRestart,
+        },
+        {
+          at: now,
+          kind: 'status',
+          summary: i18n.t('terminal:events.configurationApplied', {
+            type: i18n.t(
+              `terminal:types.${configuration.terminalType}`,
+              configuration.terminalType,
+            ),
+          }),
+        },
+      );
+      const cards = [...state.cards];
+      cards[idx] = configuredCard;
+      let projectCardOrder = compactProjectCardOrder(
+        state.projectCardOrder,
+        cards,
+      );
+      if (workspaceChanged) {
+        projectCardOrder = prependProjectCardOrder(
+          projectCardOrder,
+          projectPath,
+          id,
+        );
+      }
+
+      const pendingTerminalConfigurations = {
+        ...state.pendingTerminalConfigurations,
+      };
+      delete pendingTerminalConfigurations[id];
+      committedPtyId = nextPtyId;
+
+      return {
+        cards,
+        notifications: state.notifications.map((notification) =>
+          notification.cardId === id && !notification.read
+            ? { ...notification, read: true }
+            : notification,
+        ),
+        projectCardOrder,
+        pendingTerminalConfigurations,
+        ...(workspaceChanged
+          ? {
+              selectedProjectPath: projectPath,
+              selectedWorktreePath: worktreePath
+                ? effectiveWorktreePath(configuredCard)
+                : null,
+              selectedWorktreeLabel: worktreePath ? (branchLabel ?? null) : null,
+            }
+          : {}),
+      };
+    });
+    if (committedPtyId) outputSanitizers.delete(id);
+    return committedPtyId;
+  },
 
   updateCardOutput: (id, chunk) =>
     set((state) => {

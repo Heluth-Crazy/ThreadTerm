@@ -44,6 +44,7 @@ export interface TerminalCardProps {
   onDoubleClick?: () => void;
   onClose?: () => void;
   onArchive?: () => void;
+  onEdit?: () => void;
   onCopyCwd?: () => void;
   onOpenDir?: () => void;
   dragHandle?: ReactNode;
@@ -77,6 +78,7 @@ export const TerminalCardComponent = memo(function TerminalCardComponent({
   onDoubleClick,
   onClose,
   onArchive,
+  onEdit,
   onCopyCwd,
   onOpenDir,
   dragHandle,
@@ -91,6 +93,9 @@ export const TerminalCardComponent = memo(function TerminalCardComponent({
     null,
   );
   const [editingName, setEditingName] = useState(false);
+  const hasPendingConfiguration = useTerminalStore(
+    (state) => Boolean(state.pendingTerminalConfigurations[card.id]),
+  );
 
   // Pin state for the global overlay selector (max MAX_PINNED_CARDS).
   const pinned = useTerminalStore((s) => s.pinnedCardIds.includes(card.id));
@@ -246,6 +251,14 @@ export const TerminalCardComponent = memo(function TerminalCardComponent({
       <div className="flex shrink-0 items-center gap-1.5 border-b border-border bg-card/80 px-3 py-1.5 text-[11px] text-muted-foreground backdrop-blur-sm">
         <FolderGit2 className="h-3 w-3" />
         <span className="truncate">{t('card.worktree', { path: worktreeLabel })}</span>
+        {hasPendingConfiguration && (
+          <span
+            title={t('edit.pendingHint')}
+            className="ml-auto shrink-0 rounded-full border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+          >
+            {t('edit.pending')}
+          </span>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden px-3 py-2">
@@ -261,6 +274,7 @@ export const TerminalCardComponent = memo(function TerminalCardComponent({
         aiSessionBadge={aiSessionBadge}
         attentionHint={attentionHint}
         onRename={() => setEditingName(true)}
+        onEdit={onEdit}
         pinned={pinned}
         pinFull={pinFull}
         onCopyCwd={onCopyCwd}

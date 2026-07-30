@@ -311,6 +311,47 @@ export function useWorkspaceContent({
     [t],
   );
 
+  const requestCardWorkspaceReset = useCallback(
+    async (cardId: string): Promise<boolean> => {
+      const cardExists = useTerminalStore
+        .getState()
+        .cards
+        .some((card) => card.id === cardId);
+      if (!cardExists) return false;
+
+      const workspaceState = workspaceContentByCardIdRef.current[cardId];
+      const hasDirtyDraft = Object.values(
+        workspaceState?.dirtyTabIds ?? {},
+      ).some(Boolean);
+      if (hasDirtyDraft) {
+        const shouldDiscard = await confirmDialog(
+          t('workspace.discardChangesConfirm', {
+            defaultValue: 'Discard unsaved file changes?',
+          }),
+          t('workspace.unsavedTitle', { defaultValue: 'Unsaved changes' }),
+        );
+        if (!shouldDiscard) return false;
+      }
+      if (
+        !useTerminalStore
+          .getState()
+          .cards
+          .some((card) => card.id === cardId)
+      ) {
+        return false;
+      }
+
+      setWorkspaceContentByCardId((current) => {
+        if (!(cardId in current)) return current;
+        const { [cardId]: _discarded, ...next } = current;
+        workspaceContentByCardIdRef.current = next;
+        return next;
+      });
+      return true;
+    },
+    [t],
+  );
+
   const requestRemoveCard = useCallback(
     (cardId: string) => requestCardExit(cardId, 'remove'),
     [requestCardExit],
@@ -363,6 +404,7 @@ export function useWorkspaceContent({
     closeOtherWorkspaceTabs,
     requestRemoveCard,
     requestArchiveCard,
+    requestCardWorkspaceReset,
     handleWorkspacePanelStateChange,
     activateTerminalForCard,
   };

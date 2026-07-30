@@ -37,11 +37,13 @@ vi.mock('./TerminalCard', () => ({
     dragHandle,
     onClose,
     onArchive,
+    onEdit,
   }: {
     card: TerminalCard;
     dragHandle?: React.ReactNode;
     onClose?: () => void;
     onArchive?: () => void;
+    onEdit?: () => void;
   }) => {
     cardRenderCounts.set(card.id, (cardRenderCounts.get(card.id) ?? 0) + 1);
     return (
@@ -57,6 +59,11 @@ vi.mock('./TerminalCard', () => ({
         {onArchive && (
           <button type="button" onClick={onArchive}>
             archive {card.projectName}
+          </button>
+        )}
+        {onEdit && (
+          <button type="button" onClick={onEdit}>
+            edit {card.projectName}
           </button>
         )}
       </div>
@@ -333,6 +340,40 @@ describe('CardGrid project ordering', () => {
 
     expect(onRemoveCard).toHaveBeenCalledWith(cardId);
     expect(useTerminalStore.getState().cards).toHaveLength(1);
+  });
+
+  it('routes terminal editing through the supplied card callback', () => {
+    const cardId = useTerminalStore.getState().createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+    const onEditTerminal = vi.fn();
+
+    render(
+      <CardGrid
+        onEditTerminal={onEditTerminal}
+        onRemoveCard={vi.fn()}
+        onArchiveCard={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'edit ThreadTerm' }));
+
+    expect(onEditTerminal).toHaveBeenCalledWith(cardId);
+  });
+
+  it('does not expose a no-op edit action when no callback is supplied', () => {
+    useTerminalStore.getState().createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+
+    render(<CardGrid onRemoveCard={vi.fn()} onArchiveCard={vi.fn()} />);
+
+    expect(
+      screen.queryByRole('button', { name: 'edit ThreadTerm' }),
+    ).not.toBeInTheDocument();
   });
 });
 
