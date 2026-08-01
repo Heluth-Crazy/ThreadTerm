@@ -75,7 +75,8 @@
       "running": "실행",
       "attention": "처리",
       "review": "검토",
-      "failed": "오류"
+      "failed": "오류",
+      "reorder": "{{project}} 드래그하여 순서 변경"
     },
     "recall": {
       "title": "터미널 불러오기",
@@ -554,9 +555,9 @@
     "type": "터미널 유형",
     "launchMode": "터미널 시작 방식",
     "mode": {
-      "default": "새로 시작",
-      "resume": "기록 이어가기",
-      "custom": "지정 명령"
+      "default": "새 세션",
+      "resume": "세션 재개",
+      "custom": "명령 실행"
     },
     "defaultTitle": "표준 시작 방식 사용",
     "defaultDescription": "ThreadTerm 표준 명령으로 새 {{type}} 세션을 시작합니다.",

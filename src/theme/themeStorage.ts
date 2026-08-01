@@ -1,5 +1,11 @@
 import { DEFAULT_THEME_PACK_ID } from './themePacks';
 import type { StoredThemePreference, ThemeMode } from './themeTypes';
+import {
+  getPreloadedManagedStateItem,
+  MANAGED_STATE_KEYS,
+  preloadManagedState,
+  writeManagedPreference,
+} from '../lib/managedState';
 
 export const THEME_MODE_STORAGE_KEY = 'themeMode';
 export const THEME_PACK_STORAGE_KEY = 'themePackId';
@@ -8,6 +14,14 @@ export const LEGACY_THEME_STORAGE_KEY = 'theme';
 export const DEFAULT_THEME_MODE: ThemeMode = 'system';
 
 const THEME_MODES = new Set<ThemeMode>(['system', 'light', 'dark']);
+
+export async function preloadThemePreference(): Promise<void> {
+  await preloadManagedState([
+    MANAGED_STATE_KEYS.themeMode,
+    MANAGED_STATE_KEYS.themePack,
+    MANAGED_STATE_KEYS.legacyTheme,
+  ]);
+}
 
 export function isThemeMode(value: unknown): value is ThemeMode {
   return typeof value === 'string' && THEME_MODES.has(value as ThemeMode);
@@ -25,9 +39,9 @@ export function getStoredThemePreference(): StoredThemePreference {
   let themePackId = DEFAULT_THEME_PACK_ID;
 
   try {
-    const storedMode = window.localStorage.getItem(THEME_MODE_STORAGE_KEY);
-    const legacyTheme = window.localStorage.getItem(LEGACY_THEME_STORAGE_KEY);
-    const storedPackId = window.localStorage.getItem(THEME_PACK_STORAGE_KEY);
+    const storedMode = getPreloadedManagedStateItem(MANAGED_STATE_KEYS.themeMode);
+    const legacyTheme = getPreloadedManagedStateItem(MANAGED_STATE_KEYS.legacyTheme);
+    const storedPackId = getPreloadedManagedStateItem(MANAGED_STATE_KEYS.themePack);
 
     if (isThemeMode(storedMode)) {
       themeMode = storedMode;
@@ -50,12 +64,18 @@ export function saveThemePreference(preference: StoredThemePreference) {
   if (typeof window === 'undefined') return;
 
   try {
-    window.localStorage.setItem(THEME_MODE_STORAGE_KEY, preference.themeMode);
-    window.localStorage.setItem(THEME_PACK_STORAGE_KEY, preference.themePackId);
+    writeManagedPreference(MANAGED_STATE_KEYS.themeMode, preference.themeMode, {
+      keepLegacyPaintCache: true,
+    });
+    writeManagedPreference(MANAGED_STATE_KEYS.themePack, preference.themePackId);
     if (preference.themeMode === 'light' || preference.themeMode === 'dark') {
-      window.localStorage.setItem(LEGACY_THEME_STORAGE_KEY, preference.themeMode);
+      writeManagedPreference(MANAGED_STATE_KEYS.legacyTheme, preference.themeMode, {
+        keepLegacyPaintCache: true,
+      });
     } else {
-      window.localStorage.removeItem(LEGACY_THEME_STORAGE_KEY);
+      writeManagedPreference(MANAGED_STATE_KEYS.legacyTheme, null, {
+        keepLegacyPaintCache: true,
+      });
     }
   } catch {
     // localStorage may be unavailable in restricted webviews.

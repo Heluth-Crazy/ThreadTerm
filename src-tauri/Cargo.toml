@@ -35,6 +35,7 @@ r2d2_sqlite = "0.24"
 portable-pty = "0.8"
 wezterm-term = { package = "tattoy-wezterm-term", version = "0.1.0-fork.5" }
 dirs = "5"
+fs2 = "0.4"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

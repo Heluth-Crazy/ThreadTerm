@@ -728,11 +728,37 @@ test('session recovery stays lazy and resumes selected Codex history only when o
 
 async function openFocusedTerminalEditor(page: Page) {
   const moreButton = page.locator('button[title="More"]:visible').last();
-  await moreButton.hover();
-  await page.getByRole('button', { name: 'Edit terminal', exact: true }).click();
+  await moreButton.click();
+  await page.getByRole('menuitem', { name: 'Edit terminal', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Edit terminal' });
   await expect(dialog).toBeVisible();
   return dialog;
+}
+
+interface PersistedTerminalCard {
+  id: string;
+  ptyId: string;
+  terminalType: string;
+  providerSessionId?: string;
+  providerSessionState?: string;
+}
+
+interface PersistedTerminalState {
+  state?: {
+    cards?: PersistedTerminalCard[];
+    pendingTerminalConfigurations?: Record<string, unknown>;
+  };
+}
+
+function readPersistedTerminalState(page: Page): Promise<PersistedTerminalState> {
+  return page.evaluate(() => {
+    const managedState = (window as unknown as {
+      __fakeManagedState: { getItem: (key: string) => string | null };
+    }).__fakeManagedState;
+    return JSON.parse(
+      managedState.getItem('threadterm-terminal-store') ?? '{}',
+    ) as PersistedTerminalState;
+  });
 }
 
 test('terminal edit save-only stays pending, then apply restarts exactly once', async ({
@@ -749,7 +775,7 @@ test('terminal edit save-only stays pending, then apply restarts exactly once', 
   let dialog = await openFocusedTerminalEditor(page);
   await dialog.getByRole('button', { name: 'Codex', exact: true }).click();
   await dialog
-    .getByRole('button', { name: 'Custom command', exact: true })
+    .getByRole('button', { name: 'Run command', exact: true })
     .click();
   await dialog
     .getByPlaceholder('Enter the exact command to run')
@@ -766,28 +792,17 @@ test('terminal edit save-only stays pending, then apply restarts exactly once', 
       return fake.counts.kill[ptyId] ?? 0;
     }, card.ptyId),
   ).toBe(0);
-  expect(
-    await page.evaluate((cardId) => {
-      const persisted = JSON.parse(
-        localStorage.getItem('threadterm-terminal-store') ?? '{}',
-      ) as {
-        state?: {
-          cards?: Array<{ id: string; terminalType: string; ptyId: string }>;
-          pendingTerminalConfigurations?: Record<string, unknown>;
-        };
-      };
-      const active = persisted.state?.cards?.find(
-        (candidate) => candidate.id === cardId,
-      );
-      return {
-        terminalType: active?.terminalType,
-        ptyId: active?.ptyId,
-        pending: Boolean(
-          persisted.state?.pendingTerminalConfigurations?.[cardId],
-        ),
-      };
-    }, card.id),
-  ).toEqual({
+  const savedOnlyState = await readPersistedTerminalState(page);
+  const savedOnlyCard = savedOnlyState.state?.cards?.find(
+    (candidate) => candidate.id === card.id,
+  );
+  expect({
+    terminalType: savedOnlyCard?.terminalType,
+    ptyId: savedOnlyCard?.ptyId,
+    pending: Boolean(
+      savedOnlyState.state?.pendingTerminalConfigurations?.[card.id],
+    ),
+  }).toEqual({
     terminalType: 'shell',
     ptyId: card.ptyId,
     pending: true,
@@ -803,33 +818,17 @@ test('terminal edit save-only stays pending, then apply restarts exactly once', 
   await expect(dialog).toBeHidden();
 
   await expect
-    .poll(() =>
-      page.evaluate((cardId) => {
-        const persisted = JSON.parse(
-          localStorage.getItem('threadterm-terminal-store') ?? '{}',
-        ) as {
-          state?: {
-            cards?: Array<{ id: string; terminalType: string; ptyId: string }>;
-          };
-        };
-        return persisted.state?.cards?.find(
-          (candidate) => candidate.id === cardId,
-        )?.ptyId;
-      }, card.id),
-    )
+    .poll(async () => {
+      const persisted = await readPersistedTerminalState(page);
+      return persisted.state?.cards?.find(
+        (candidate) => candidate.id === card.id,
+      )?.ptyId;
+    })
     .not.toBe(card.ptyId);
-  const nextPtyId = await page.evaluate((cardId) => {
-    const persisted = JSON.parse(
-      localStorage.getItem('threadterm-terminal-store') ?? '{}',
-    ) as {
-      state?: {
-        cards?: Array<{ id: string; ptyId: string }>;
-      };
-    };
-    return persisted.state?.cards?.find(
-      (candidate) => candidate.id === cardId,
-    )?.ptyId;
-  }, card.id);
+  const restartedState = await readPersistedTerminalState(page);
+  const nextPtyId = restartedState.state?.cards?.find(
+    (candidate) => candidate.id === card.id,
+  )?.ptyId;
   expect(typeof nextPtyId).toBe('string');
   await waitForCount(page, 'create', nextPtyId as string, 1);
 
@@ -882,7 +881,7 @@ test('terminal edit resumes the canonical Codex history before replacing the PTY
   const dialog = await openFocusedTerminalEditor(page);
   await dialog.getByRole('button', { name: 'Codex', exact: true }).click();
   await dialog
-    .getByRole('button', { name: 'Resume history', exact: true })
+    .getByRole('button', { name: 'Resume session', exact: true })
     .click();
   await dialog
     .getByRole('button', { name: /Canonical edit history/ })
@@ -893,43 +892,21 @@ test('terminal edit resumes the canonical Codex history before replacing the PTY
   await expect(dialog).toBeHidden();
 
   await expect
-    .poll(() =>
-      page.evaluate((cardId) => {
-        const persisted = JSON.parse(
-          localStorage.getItem('threadterm-terminal-store') ?? '{}',
-        ) as {
-          state?: {
-            cards?: Array<{
-              id: string;
-              ptyId: string;
-              terminalType: string;
-              providerSessionId?: string;
-              providerSessionState?: string;
-            }>;
-          };
-        };
-        return persisted.state?.cards?.find(
-          (candidate) => candidate.id === cardId,
-        );
-      }, card.id),
-    )
+    .poll(async () => {
+      const persisted = await readPersistedTerminalState(page);
+      return persisted.state?.cards?.find(
+        (candidate) => candidate.id === card.id,
+      );
+    })
     .toMatchObject({
       terminalType: 'codex',
       providerSessionId: rootSessionId,
       providerSessionState: 'bound',
     });
-  const nextPtyId = await page.evaluate((cardId) => {
-    const persisted = JSON.parse(
-      localStorage.getItem('threadterm-terminal-store') ?? '{}',
-    ) as {
-      state?: {
-        cards?: Array<{ id: string; ptyId: string }>;
-      };
-    };
-    return persisted.state?.cards?.find(
-      (candidate) => candidate.id === cardId,
-    )?.ptyId;
-  }, card.id);
+  const resumedState = await readPersistedTerminalState(page);
+  const nextPtyId = resumedState.state?.cards?.find(
+    (candidate) => candidate.id === card.id,
+  )?.ptyId;
   expect(typeof nextPtyId).toBe('string');
   expect(nextPtyId).not.toBe(card.ptyId);
   await waitForCount(page, 'create', nextPtyId as string, 1);
@@ -986,7 +963,7 @@ test('invalid historical session leaves the running terminal untouched', async (
   const dialog = await openFocusedTerminalEditor(page);
   await dialog.getByRole('button', { name: 'Codex', exact: true }).click();
   await dialog
-    .getByRole('button', { name: 'Resume history', exact: true })
+    .getByRole('button', { name: 'Resume session', exact: true })
     .click();
   await dialog
     .getByRole('button', { name: 'Or enter a session ID', exact: true })

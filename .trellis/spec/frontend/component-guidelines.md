@@ -371,6 +371,71 @@ Correct:
 
 </spec-entry>
 
+<spec-entry category="pattern" keywords="terminal-view,more-menu,click-stable,outside-click,escape" date="2026-07-31" source="src/components/terminal/TerminalView.tsx:405">
+
+### Scenario: Full Terminal Action Menu Stays Clickable
+
+#### 1. Scope / Trigger
+- Trigger: Any change to the full-screen terminal header's More menu or another
+  desktop action menu whose trigger and menu are separated by visual spacing.
+- Applies to `TerminalView` and its interaction tests.
+
+#### 2. Signatures
+- The trigger exposes `aria-haspopup="menu"` and
+  `aria-expanded={actionsMenuOpen}`.
+- The popup uses `role="menu"`; its actions use `role="menuitem"`.
+
+#### 3. Contracts
+- Opening is controlled by an explicit click state. Pointer movement from the
+  trigger to the popup must not close or unmount the menu.
+- Close after an action is selected, an outside pointer-down occurs, Escape is
+  pressed, the active view changes, or the card identity changes.
+- Keep edit, archive, and close callbacks unchanged; menu state is presentation
+  state and must not alter their success/failure behavior.
+- Use the semantic `z-popover` layer for the popup. It must remain above the
+  terminal resume curtain (`z-50`) while that curtain continues to cover xterm.
+- Do not use `group-hover:block` as the only open condition. An absolute popup
+  with margin creates a hit-test gap even when it appears visually adjacent.
+
+#### 4. Validation & Error Matrix
+- Trigger click -> menu appears and `aria-expanded` is `true`.
+- Pointer leaves the trigger -> menu remains available.
+- Action click -> original callback runs once and menu closes.
+- Outside pointer-down or Escape -> menu closes without invoking an action.
+- Card/view switch -> stale menu does not remain open when returning.
+- Resume curtain visible -> the header menu remains fully visible and usable.
+
+#### 5. Good/Base/Bad Cases
+- Good: the user clicks More, crosses the visual gap, and selects an action.
+- Base: a second trigger click closes the menu.
+- Bad: the popup depends only on ancestor hover, so crossing a margin hides it.
+
+#### 6. Tests Required
+- `TerminalView.lifecycle.test.tsx` must assert closed-by-default behavior,
+  click opening, pointer-leave stability, action selection, outside click, and
+  Escape closing, plus the semantic popover stacking layer.
+- Run `npm run check` after changing this interaction.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```tsx
+<div className="group relative">
+  <button>More</button>
+  <div className="mt-1 hidden group-hover:block">...</div>
+</div>
+```
+
+Correct:
+```tsx
+<button aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+  More
+</button>
+{open && <div role="menu">...</div>}
+```
+
+</spec-entry>
+
 <spec-entry category="contract" keywords="mobile-access,pairing,qr-code,empty-state,secure-tunnel" date="2026-07-27" source="src/components/settings/MobileAccessSettings.tsx:104">
 
 ### Scenario: Mobile Pairing Keeps Its Security Gate Visible
@@ -448,6 +513,51 @@ Correct:
   {status.running ? <PairingCodeState /> : <StoppedPairingPlaceholder />}
 </PairingSection>
 ```
+
+</spec-entry>
+
+---
+
+<spec-entry category="pattern" keywords="workbench,project-sidebar,project-overview,drag-sort,project-order,persistence" date="2026-07-31" source="src/lib/workbench/projectOrder.ts:1">
+
+### Scenario: Workbench Project Order Is Shared Across Desktop Surfaces
+
+#### 1. Scope / Trigger
+- Trigger: Any change to project ordering in `ProjectSidebar`,
+  `ProjectOverviewGrid`, `workbenchStore`, or `projectOrder.ts`.
+
+#### 2. Signatures
+- `workbenchStore.projectOrder: string[]`
+- `reconcileProjectOrder(validProjectPaths): void`
+- `moveProject(activeProjectPath, overProjectPath, visibleProjectPaths): void`
+- `orderProjectItems(items, projectOrder, getPath, getName): T[]`
+
+#### 3. Contracts
+- The far-left project navigation and the Workbench project overview consume
+  one persisted path order. A move in either surface updates both immediately.
+- Project paths are byte-stable identities. Never case-fold or normalize
+  Windows/macOS separators before storing or comparing them.
+- Existing user-ordered paths stay first. New projects append in deterministic
+  name/path order; stale paths are removed only when reconciling against the
+  sidebar's complete active-project set.
+- A filtered Workbench list must never reconcile the store. Its move operation
+  reorders only visible slots, preserving hidden projects in place.
+- Drag starts only from the dedicated handle. Handle clicks must not select a
+  project, toggle its branch tree, or invoke project row auxiliary actions.
+- Expanded branch content travels with its project section. Collapsed/compact
+  icon-rail mode does not expose sorting controls.
+- The sidebar reserves a fixed trailing drag column for the non-sortable
+  "All projects" row so disclosure, icon, count, and action alignment remains
+  consistent with sortable project rows.
+
+#### 4. Validation & Tests
+- Pure helper tests cover normalization, deterministic append, stale cleanup,
+  input immutability, and filtered moves with hidden paths.
+- Store tests cover persistence/migration, reconciliation, and movement.
+- Component integration renders both surfaces against the same store, verifies
+  the same path order after a move, and verifies handle clicks do not navigate.
+- Run terminal locale parity, affected Workbench/ProjectSidebar tests,
+  type-check, lint, and the full project quality gate.
 
 </spec-entry>
 

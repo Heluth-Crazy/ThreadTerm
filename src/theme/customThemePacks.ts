@@ -7,11 +7,21 @@ import type {
   ThemeModeTokens,
   ThemePack,
 } from './themeTypes';
+import {
+  getPreloadedManagedStateItem,
+  MANAGED_STATE_KEYS,
+  preloadManagedState,
+  writeManagedPreference,
+} from '../lib/managedState';
 
 export const CUSTOM_THEME_PACKS_STORAGE_KEY = 'threadterm-custom-theme-packs';
 
 const CUSTOM_THEME_ID_PREFIX = 'custom:';
 const MAX_CUSTOM_THEMES = 50;
+
+export async function preloadCustomThemePacks(): Promise<void> {
+  await preloadManagedState([MANAGED_STATE_KEYS.customThemes]);
+}
 
 const APP_TOKEN_KEYS: Array<keyof AppThemeTokens> = [
   'background',
@@ -98,7 +108,7 @@ export function getStoredCustomThemePacks(): ThemePack[] {
   if (typeof window === 'undefined') return [];
 
   try {
-    const raw = window.localStorage.getItem(CUSTOM_THEME_PACKS_STORAGE_KEY);
+    const raw = getPreloadedManagedStateItem(MANAGED_STATE_KEYS.customThemes);
     if (!raw) return [];
 
     const parsed = JSON.parse(raw);
@@ -128,7 +138,10 @@ export function saveCustomThemePacks(packs: ThemePack[]) {
     .map(toPortableThemePack);
 
   try {
-    window.localStorage.setItem(CUSTOM_THEME_PACKS_STORAGE_KEY, JSON.stringify(portablePacks));
+    writeManagedPreference(
+      MANAGED_STATE_KEYS.customThemes,
+      JSON.stringify(portablePacks),
+    );
   } catch {
     // localStorage may be unavailable in restricted webviews.
   }

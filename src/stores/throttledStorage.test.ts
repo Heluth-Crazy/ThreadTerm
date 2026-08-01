@@ -158,4 +158,65 @@ describe('createThrottledPersistStorage', () => {
     vi.advanceTimersByTime(500);
     expect(warnSpy).toHaveBeenCalledTimes(2);
   });
+
+  it('keeps asynchronous managed-state writes ordered and flushable', async () => {
+    const writes: Array<{
+      value: string;
+      resolve: () => void;
+    }> = [];
+    const managedStorage = {
+      getItem: () => null,
+      setItem: (_name: string, value: string) => new Promise<void>((resolve) => {
+        writes.push({ value, resolve });
+      }),
+      removeItem: () => Promise.resolve(),
+    };
+    const storage = createThrottledPersistStorage<TestState>(
+      10,
+      20,
+      () => managedStorage,
+    );
+    storages.push(storage);
+
+    storage.setItem('threadterm-terminal-store', storedValue('first'));
+    vi.advanceTimersByTime(10);
+    storage.setItem('threadterm-terminal-store', storedValue('second'));
+    vi.advanceTimersByTime(10);
+
+    expect(writes).toHaveLength(1);
+    const finished = storage.flushAsync();
+    writes[0].resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(writes).toHaveLength(2);
+    writes[1].resolve();
+    await finished;
+
+    expect(writes.map(({ value }) => JSON.parse(value))).toEqual([
+      storedValue('first'),
+      storedValue('second'),
+    ]);
+    expect(storage.getDiagnostics()).toMatchObject({
+      pending: false,
+      serializationCount: 2,
+      writeCount: 2,
+    });
+  });
+
+  it('parses an asynchronous managed-state read', async () => {
+    const managedStorage = {
+      getItem: () => Promise.resolve(JSON.stringify(storedValue('managed'))),
+      setItem: () => Promise.resolve(),
+      removeItem: () => Promise.resolve(),
+    };
+    const storage = createThrottledPersistStorage<TestState>(
+      10,
+      20,
+      () => managedStorage,
+    );
+    storages.push(storage);
+
+    await expect(storage.getItem('threadterm-terminal-store')).resolves.toEqual(
+      storedValue('managed'),
+    );
+  });
 });

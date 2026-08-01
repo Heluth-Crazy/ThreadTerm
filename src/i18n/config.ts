@@ -3,6 +3,11 @@ import type { Resource, ResourceLanguage } from 'i18next';
 import LanguageDetector from 'i18next-browser-languagedetector';
 import { initReactI18next } from 'react-i18next';
 import { logger } from '../lib/logger';
+import {
+  getPreloadedManagedStateItem,
+  MANAGED_STATE_KEYS,
+  writeManagedPreference,
+} from '../lib/managedState';
 import { languages } from './languages';
 
 import zhCommon from './locales/zh-CN/common.json';
@@ -65,7 +70,7 @@ const getSavedLanguage = (): SupportedLanguage => {
   }
 
   try {
-    const saved = window.localStorage.getItem('userLanguage');
+    const saved = getPreloadedManagedStateItem(MANAGED_STATE_KEYS.language);
     if (isSupportedLanguage(saved)) {
       return saved;
     }
@@ -134,9 +139,8 @@ i18n
       bindI18nStore: false,
     },
     detection: {
-      order: ['localStorage', 'navigator'],
-      lookupLocalStorage: 'userLanguage',
-      caches: ['localStorage'],
+      order: ['navigator'],
+      caches: [],
     },
   });
 
@@ -151,7 +155,7 @@ i18n.changeLanguage = async (lng, callback) => {
 
 i18n.on('languageChanged', (lng) => {
   try {
-    localStorage.setItem('userLanguage', lng);
+    writeManagedPreference(MANAGED_STATE_KEYS.language, lng);
   } catch (error) {
     logger.error('Failed to save language preference:', error);
   }

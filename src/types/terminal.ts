@@ -236,7 +236,7 @@ export const MAX_NOTIFICATIONS = 100;
 
 /**
  * Max archived cards retained (FIFO, newest first). Archived cards persist to
- * localStorage; without a cap the archive grows for the lifetime of the
+ * ThreadTerm managed state; without a cap the archive grows for the lifetime of the
  * install and every persist write slows down with it. Restoring is the common path, long-tail archaeology is not,
  * so the oldest snapshots are dropped once the list is full.
  */

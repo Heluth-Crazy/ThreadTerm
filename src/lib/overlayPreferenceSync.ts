@@ -2,10 +2,10 @@
  * overlayPreferenceSync — keep the selector/float overlay webviews in sync with
  * overlay-preference changes made in the (separate, native) settings window.
  *
- * Background: settings is its own Tauri `WebviewWindow`, and per-window
- * localStorage is not guaranteed to be shared across Tauri webviews, so the
- * `storage` DOM event path the overlay windows relied on does not fire
- * reliably. We instead reuse the existing `settings://changed` broadcast
+ * Background: settings is its own Tauri `WebviewWindow`. Managed-state events
+ * keep durable data aligned, while this direct snapshot broadcast avoids a
+ * disk round-trip for visible preference changes. We reuse the existing
+ * `settings://changed` broadcast
  * (`emitSettingsChanged`, which `emit`s to every window) and apply the
  * overlay-preference snapshot directly into `overlayStore`.
  *

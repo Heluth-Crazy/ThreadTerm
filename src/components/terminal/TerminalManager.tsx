@@ -79,6 +79,11 @@ import {
   getWorkbenchProjectAttentionCount,
   getWorkbenchWorktreeAttentionCount,
 } from '../../lib/workbench/deriveFollowedTerminals';
+import {
+  getPreloadedManagedStateItem,
+  MANAGED_STATE_KEYS,
+  writeManagedPreference,
+} from '../../lib/managedState';
 
 const TERMINAL_TYPES: TerminalType[] = [
   'shell',
@@ -190,23 +195,13 @@ export function TerminalManager() {
   useStatsSubscription();
   useStatsAutoRefresh();
 
-  // Shortcut hint: dismissible, persisted across sessions. Once the user
-  // closes it, never show again unless they wipe localStorage.
-  const HINT_DISMISS_KEY = 'threadterm-shortcut-hint-dismissed';
-  const [hintDismissed, setHintDismissed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(HINT_DISMISS_KEY) === '1';
-    } catch {
-      return false;
-    }
-  });
+  // Shortcut hint: dismissible, persisted across sessions.
+  const [hintDismissed, setHintDismissed] = useState<boolean>(
+    () => getPreloadedManagedStateItem(MANAGED_STATE_KEYS.shortcutHintDismissed) === '1',
+  );
   const dismissHint = useCallback(() => {
     setHintDismissed(true);
-    try {
-      localStorage.setItem(HINT_DISMISS_KEY, '1');
-    } catch {
-      // localStorage unavailable — dismissal is session-only.
-    }
+    writeManagedPreference(MANAGED_STATE_KEYS.shortcutHintDismissed, '1');
   }, []);
 
   // Card ids whose TerminalView is kept mounted, in LRU order (oldest first).

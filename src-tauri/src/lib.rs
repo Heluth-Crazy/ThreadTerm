@@ -6,16 +6,23 @@ mod bridge;
 mod bridge;
 mod claude_chat;
 mod codex_app;
+mod data_cache;
+pub mod data_directory;
+mod data_migration;
 mod db;
+mod desktop_windows;
 mod files;
 mod git;
 mod local_directory;
+mod managed_state;
 mod notification;
 mod overlay;
 mod platform_material;
 mod provider_sessions;
 pub mod pty;
 mod service_child;
+mod settings_window;
+mod startup_data_directory;
 mod stats;
 mod supervisor;
 
@@ -26,7 +33,69 @@ pub fn run() {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
+    let data_root = match data_directory::resolve_startup_data_root() {
+        Ok(data_root) if startup_data_directory::is_first_start(&data_root) => {
+            let pointer_path = data_root.bootstrap_pointer_path.clone();
+            let recommended_root =
+                startup_data_directory::recommended_root().unwrap_or_else(|error| {
+                    tracing::error!(%error, "ThreadTerm recommended data location unavailable");
+                    data_directory::legacy_database_dir()
+                });
+            startup_data_directory::run(
+                startup_data_directory::StartupDataDirectoryMode::FirstStart {
+                    pointer_path,
+                    recommended_root,
+                },
+            )
+            .unwrap_or_else(|error| {
+                tracing::error!(%error, "ThreadTerm first-start data assistant failed");
+                panic!("ThreadTerm first-start data assistant failed: {error}");
+            });
+            return;
+        }
+        Ok(data_root) => data_root,
+        Err(error) => {
+            tracing::error!(%error, "ThreadTerm data location could not be resolved");
+            let pointer_path = startup_data_directory::startup_pointer_path().ok();
+            startup_data_directory::run(
+                startup_data_directory::StartupDataDirectoryMode::Recovery {
+                    pointer_path,
+                    error,
+                },
+            )
+            .unwrap_or_else(|assistant_error| {
+                tracing::error!(%assistant_error, "ThreadTerm data recovery assistant failed");
+                panic!("ThreadTerm data recovery assistant failed: {assistant_error}");
+            });
+            return;
+        }
+    };
+    let database_file = data_root.database_file.clone();
+    if let Err(error) = data_cache::process_scheduled_cleanup(&data_root) {
+        tracing::warn!(%error, "Scheduled rebuildable cache cleanup was deferred");
+    }
+    let window_state_filename = desktop_windows::prepare_window_state_file(
+        &data_root.window_state_file,
+    )
+    .unwrap_or_else(|error| {
+        tracing::error!(%error, "ThreadTerm window-state location could not be prepared");
+        panic!("ThreadTerm cannot prepare the selected window-state location: {error}");
+    });
+    let managed_state_dir = data_root
+        .state_dir
+        .clone()
+        .expect("resolved ThreadTerm data root must provide a managed-state directory");
+    tracing::info!(
+        mode = ?data_root.mode,
+        database = %database_file.display(),
+        "ThreadTerm data location resolved"
+    );
+
     let builder = tauri::Builder::default()
+        .manage(data_root)
+        .manage(data_cache::DataCacheRuntime::default())
+        .manage(data_migration::DataMigrationRuntime::default())
+        .manage(managed_state::ManagedStateStore::new(managed_state_dir))
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -36,6 +105,7 @@ pub fn run() {
         }))
         .plugin(
             tauri_plugin_window_state::Builder::new()
+                .with_filename(window_state_filename)
                 .with_state_flags(
                     tauri_plugin_window_state::StateFlags::SIZE
                         | tauri_plugin_window_state::StateFlags::POSITION
@@ -62,11 +132,12 @@ pub fn run() {
                 })
                 .build(),
         )
-        .setup(|app| {
-            db::init_database().map_err(|e| {
+        .setup(move |app| {
+            db::init_database(&database_file).map_err(|e| {
                 tracing::error!(error = %e, "Database initialisation failed");
                 e.to_string()
             })?;
+            desktop_windows::create_main_window(app)?;
 
             overlay::load_settings();
             overlay::register_default_shortcuts(app.handle());
@@ -145,6 +216,23 @@ pub fn run() {
             codex_app::codex_app_compact,
             codex_app::codex_app_set_goal,
             codex_app::codex_app_list_skills,
+            data_cache::data_cache_cleanup_status,
+            data_cache::data_cache_cleanup_schedule,
+            data_cache::data_cache_cleanup_cancel,
+            data_directory::data_directory_status,
+            data_migration::data_migration_preflight,
+            data_migration::data_migration_schedule,
+            data_migration::data_migration_status,
+            data_migration::data_migration_cancel,
+            data_migration::data_migration_confirm,
+            data_migration::data_migration_cleanup_source,
+            data_migration::data_migration_request_rollback,
+            data_migration::data_migration_restart,
+            managed_state::managed_state_get,
+            managed_state::managed_state_set,
+            managed_state::managed_state_remove,
+            managed_state::managed_state_import_legacy,
+            settings_window::settings_open,
             overlay::overlay_show_selector,
             overlay::overlay_hide_selector,
             overlay::overlay_show_float,

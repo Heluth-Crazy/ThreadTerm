@@ -2,6 +2,7 @@ import { cleanup } from '@testing-library/react';
 import { afterEach, beforeEach, vi } from 'vitest';
 import type { BranchRow, WorktreeInfo } from '../../lib/tauri-bridge';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { useWorkbenchStore } from '../../stores/workbenchStore';
 import { ProjectSidebar } from './ProjectSidebar';
 import { parsePendingWorktreePath } from '../../lib/worktreePaths';
 
@@ -100,6 +101,7 @@ export function resetStore() {
     notificationCentreOpen: false,
     pendingFocusCardId: null,
   });
+  useWorkbenchStore.setState({ projectOrder: [] });
 }
 
 export function baseBranch(overrides: Partial<BranchRow>): BranchRow {

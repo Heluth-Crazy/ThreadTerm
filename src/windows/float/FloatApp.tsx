@@ -26,6 +26,11 @@ import {
   invalidateTerminalGeometry,
   notifyTerminalSurfaceShown as dispatchTerminalSurfaceShown,
 } from '../../components/terminal/terminalSurfaceEvents';
+import {
+  invalidateManagedStateItems,
+  listenManagedStateChanges,
+  MANAGED_STATE_KEYS,
+} from '../../lib/managedState';
 
 export function FloatApp() {
   useFloatBoundsSync();
@@ -52,18 +57,24 @@ export function FloatApp() {
     window.setTimeout(fire, 220);
   }, []);
 
-  // Rehydrate stores when the main window mutates localStorage (different
-  // webviews otherwise keep stale snapshots).
+  // Rehydrate stores when another WebView commits managed state.
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'threadterm-terminal-store') {
-        useTerminalStore.persist.rehydrate();
-      } else if (e.key === 'threadterm-overlay') {
-        useOverlayStore.persist.rehydrate();
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listenManagedStateChanges((key) => {
+      if (key === MANAGED_STATE_KEYS.terminal) {
+        void useTerminalStore.persist.rehydrate();
+      } else if (key === MANAGED_STATE_KEYS.overlay) {
+        void useOverlayStore.persist.rehydrate();
       }
+    }).then((nextUnlisten) => {
+      if (disposed) nextUnlisten();
+      else unlisten = nextUnlisten;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
     };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
   }, []);
 
   // Tauri event wiring.
@@ -84,9 +95,13 @@ export function FloatApp() {
           // This webview hosts only the active float Shell, so invalidate its
           // local resize cache without depending on card id vs persisted pty id.
           invalidateTerminalGeometry();
-          // Pull fresh state in case the main window's store is newer.
-          useTerminalStore.persist.rehydrate();
-          useOverlayStore.persist.rehydrate();
+          // Pull fresh state even if an update raced lazy listener setup.
+          invalidateManagedStateItems([
+            MANAGED_STATE_KEYS.terminal,
+            MANAGED_STATE_KEYS.overlay,
+          ]);
+          void useTerminalStore.persist.rehydrate();
+          void useOverlayStore.persist.rehydrate();
           notifyTerminalSurfaceShown();
         }),
       );

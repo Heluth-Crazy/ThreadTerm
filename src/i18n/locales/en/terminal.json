@@ -75,7 +75,8 @@
       "running": "Running",
       "attention": "Attention",
       "review": "Review",
-      "failed": "Failed"
+      "failed": "Failed",
+      "reorder": "Drag to reorder {{project}}"
     },
     "recall": {
       "title": "Recall terminals",
@@ -554,9 +555,9 @@
     "type": "Terminal type",
     "launchMode": "How to enter the terminal",
     "mode": {
-      "default": "Start new",
-      "resume": "Resume history",
-      "custom": "Custom command"
+      "default": "New session",
+      "resume": "Resume session",
+      "custom": "Run command"
     },
     "defaultTitle": "Use the standard startup",
     "defaultDescription": "Start a new {{type}} session using ThreadTerm's standard command.",

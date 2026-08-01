@@ -42,6 +42,10 @@ import {
   buildInteractionEpisodeKey,
   normalizeNotificationFingerprint,
 } from '../../lib/osNotificationPolicy';
+import {
+  listenManagedStateChanges,
+  MANAGED_STATE_KEYS,
+} from '../../lib/managedState';
 
 // Map Rust SessionState → UI TerminalStatus.
 function mapSessionState(state: SessionState): TerminalStatus {
@@ -639,16 +643,20 @@ export function TerminalEventBridge(): null {
       }
     };
 
-    const onStorage = (event: StorageEvent) => {
-      if (event.key !== 'threadterm-terminal-store') return;
-      void syncLiveSessionStates();
-    };
-
     void syncLiveSessionStates();
     const syncTimer = window.setInterval(syncWhenVisible, SESSION_STATE_SYNC_MS);
     window.addEventListener('focus', syncWhenVisible);
     document.addEventListener('visibilitychange', onVisibilityChange);
-    window.addEventListener('storage', onStorage);
+    void listenManagedStateChanges((key) => {
+      if (key === MANAGED_STATE_KEYS.terminal) {
+        void syncLiveSessionStates();
+      }
+    }).then((unlisten) => {
+      if (cancelled) unlisten();
+      else unlisteners.push(unlisten);
+    }).catch((error) => {
+      console.error('[TerminalEventBridge] failed to attach managed-state listener:', error);
+    });
 
     (async () => {
       // ── pty-output ─────────────────────────────────────────────────────
@@ -857,7 +865,6 @@ export function TerminalEventBridge(): null {
       window.clearInterval(syncTimer);
       window.removeEventListener('focus', syncWhenVisible);
       document.removeEventListener('visibilitychange', onVisibilityChange);
-      window.removeEventListener('storage', onStorage);
       unsubscribeStoreLifecycle();
       for (const un of unlisteners) {
         try {

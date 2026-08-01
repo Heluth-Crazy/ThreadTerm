@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc::{sync_channel, Receiver, SyncSender, TryRecvError, TrySendError},
@@ -141,44 +141,67 @@ impl AuditLogWriter {
 static AUDIT_WRITER: Lazy<AuditLogWriter> =
     Lazy::new(|| AuditLogWriter::new(AUDIT_QUEUE_CAPACITY, Box::new(write_audit_batch)));
 
-static DB_POOL: Lazy<Pool<SqliteConnectionManager>> = Lazy::new(|| {
-    let dir = db_dir();
-    std::fs::create_dir_all(&dir).expect("Failed to create db dir");
+struct DatabaseRuntime {
+    pool: Pool<SqliteConnectionManager>,
+    path: PathBuf,
+}
+
+static DATABASE: OnceCell<DatabaseRuntime> = OnceCell::new();
+
+fn build_database_runtime(path: &Path) -> Result<DatabaseRuntime> {
+    let dir = path
+        .parent()
+        .context("ThreadTerm database path has no parent directory")?;
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("Failed to create database directory {}", dir.display()))?;
 
     {
-        let conn = rusqlite::Connection::open(db_path()).expect("Failed to open DB for WAL init");
+        let conn = rusqlite::Connection::open(path)
+            .with_context(|| format!("Failed to open database {}", path.display()))?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")
-            .expect("Failed to enable WAL mode");
+            .context("Failed to enable WAL mode")?;
     }
 
-    let manager = SqliteConnectionManager::file(db_path()).with_init(|conn| {
+    let manager = SqliteConnectionManager::file(path).with_init(|conn| {
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
         Ok(())
     });
-    Pool::builder()
+    let pool = Pool::builder()
         .max_size(4)
         .build(manager)
-        .expect("Failed to build DB pool")
-});
-
-fn db_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".threadterm")
-}
-
-fn db_path() -> PathBuf {
-    db_dir().join("threadterm.db")
+        .context("Failed to build DB pool")?;
+    Ok(DatabaseRuntime {
+        pool,
+        path: path.to_path_buf(),
+    })
 }
 
 pub fn get_db() -> Result<r2d2::PooledConnection<SqliteConnectionManager>, String> {
-    DB_POOL
+    DATABASE
+        .get()
+        .ok_or_else(|| "ThreadTerm database has not been initialized.".to_string())?
+        .pool
         .get()
         .map_err(|e| format!("DB connection unavailable: {e}"))
 }
 
-pub fn init_database() -> Result<()> {
-    let conn = get_db().map_err(|e| anyhow::anyhow!("{e}"))?;
+pub fn init_database(path: &Path) -> Result<()> {
+    if let Some(active) = DATABASE.get() {
+        if active.path == path {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "ThreadTerm database is already initialized at {}; refusing to switch live to {}",
+            active.path.display(),
+            path.display()
+        );
+    }
+
+    let runtime = build_database_runtime(path)?;
+    let conn = runtime
+        .pool
+        .get()
+        .context("Database connection unavailable during initialization")?;
 
     conn.execute_batch(
         "
@@ -257,7 +280,11 @@ pub fn init_database() -> Result<()> {
     )
     .context("Failed to create database tables")?;
 
-    tracing::info!(path = %db_path().display(), "Database initialized");
+    drop(conn);
+    DATABASE
+        .set(runtime)
+        .map_err(|_| anyhow::anyhow!("ThreadTerm database was initialized concurrently"))?;
+    tracing::info!(path = %path.display(), "Database initialized");
     Ok(())
 }
 
@@ -377,6 +404,7 @@ pub fn set_setting(key: &str, value: &str) -> Result<()> {
 mod tests {
     use super::*;
     use std::sync::{mpsc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn audit_entry(index: usize) -> AuditLogEntry {
         AuditLogEntry {
@@ -385,6 +413,32 @@ mod tests {
             card_id: Some("card-1".to_string()),
             summary: format!("sequence-{index}"),
         }
+    }
+
+    #[test]
+    fn database_runtime_uses_the_explicit_database_path_and_wal() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "threadterm-explicit-db-{}-{nonce}",
+            std::process::id()
+        ));
+        let database = directory.join("nested").join("threadterm.db");
+
+        let runtime = build_database_runtime(&database).expect("build database runtime");
+        assert_eq!(runtime.path, database);
+        assert!(runtime.path.exists());
+        let connection = runtime.pool.get().expect("pooled connection");
+        let journal_mode: String = connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("journal mode");
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+        drop(connection);
+        drop(runtime);
+
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

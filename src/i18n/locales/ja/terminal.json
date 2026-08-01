@@ -75,7 +75,8 @@
       "running": "実行中",
       "attention": "対応",
       "review": "確認",
-      "failed": "異常"
+      "failed": "異常",
+      "reorder": "ドラッグして「{{project}}」を並べ替え"
     },
     "recall": {
       "title": "ターミナルを呼び戻す",
@@ -554,9 +555,9 @@
     "type": "ターミナルの種類",
     "launchMode": "ターミナルへの入り方",
     "mode": {
-      "default": "新規開始",
-      "resume": "履歴を再開",
-      "custom": "指定コマンド"
+      "default": "新規セッション",
+      "resume": "セッションを復元",
+      "custom": "コマンド実行"
     },
     "defaultTitle": "標準の起動方法を使用",
     "defaultDescription": "ThreadTerm の標準コマンドで新しい {{type}} セッションを開始します。",

@@ -9,7 +9,7 @@
  * smooth expand/collapse transition courtesy of Framer Motion.
  *
  */
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
   ArrowLeft,
@@ -93,6 +93,8 @@ export const TerminalView = memo(function TerminalView({
   const [chatViewMode, setChatViewMode] = useState<'chat' | 'terminal'>(
     revealTerminalToken > 0 ? 'terminal' : preferredCodexViewMode,
   );
+  const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
+  const actionsMenuRef = useRef<HTMLDivElement | null>(null);
   const [claudeChatAvailability, setClaudeChatAvailability] =
     useState<ClaudeChatAvailability>({
       status: 'checking',
@@ -166,6 +168,30 @@ export const TerminalView = memo(function TerminalView({
   useEffect(() => {
     if (revealTerminalToken > 0) setChatViewMode('terminal');
   }, [revealTerminalToken]);
+
+  useEffect(() => {
+    if (!actionsMenuOpen) return;
+
+    const closeOnOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && actionsMenuRef.current?.contains(target)) return;
+      setActionsMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setActionsMenuOpen(false);
+    };
+
+    document.addEventListener('pointerdown', closeOnOutsidePointerDown, true);
+    document.addEventListener('keydown', closeOnEscape, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointerDown, true);
+      document.removeEventListener('keydown', closeOnEscape, true);
+    };
+  }, [actionsMenuOpen]);
+
+  useEffect(() => {
+    setActionsMenuOpen(false);
+  }, [active, card.id]);
 
   useEffect(() => {
     if (!isClaudeCard) return;
@@ -376,39 +402,60 @@ export const TerminalView = memo(function TerminalView({
             <span className="hidden xs:inline">{t(`status.${card.status}`, statusInfo.label)}</span>
           </span>
 
-          <div className="group relative">
+          <div ref={actionsMenuRef} className="relative">
             <button
               type="button"
+              aria-haspopup="menu"
+              aria-expanded={actionsMenuOpen}
+              aria-label={t('view.more')}
+              onClick={() => setActionsMenuOpen((current) => !current)}
               className="rounded-md p-1.5 hover:bg-accent hover:text-accent-foreground"
               title={t('view.more')}
             >
               <MoreVertical className="h-4 w-4" />
             </button>
-            <div className="absolute right-0 top-full z-10 mt-1 hidden w-44 rounded-md border border-border bg-popover p-1 text-sm shadow-lg group-hover:block">
-              {onEdit && (
+            {actionsMenuOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 top-full z-popover mt-1 w-44 rounded-md border border-border bg-popover p-1 text-sm shadow-lg"
+              >
+                {onEdit && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setActionsMenuOpen(false);
+                      onEdit(card.id);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
+                  >
+                    <Settings2 className="h-3.5 w-3.5" /> {t('edit.action')}
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => onEdit(card.id)}
+                  role="menuitem"
+                  onClick={() => {
+                    setActionsMenuOpen(false);
+                    void handleArchive();
+                  }}
                   className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
                 >
-                  <Settings2 className="h-3.5 w-3.5" /> {t('edit.action')}
+                  <Archive className="h-3.5 w-3.5" /> {t('view.archiveTerminal')}
                 </button>
-              )}
-              <button
-                type="button"
-                onClick={handleArchive}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground"
-              >
-                <Archive className="h-3.5 w-3.5" /> {t('view.archiveTerminal')}
-              </button>
-              <button
-                type="button"
-                onClick={handleClose}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-destructive hover:bg-destructive/10"
-              >
-                <Trash2 className="h-3.5 w-3.5" /> {t('view.closeTerminal')}
-              </button>
-            </div>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setActionsMenuOpen(false);
+                    void handleClose();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 className="h-3.5 w-3.5" /> {t('view.closeTerminal')}
+                </button>
+              </div>
+            )}
           </div>
           <button
             type="button"

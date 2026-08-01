@@ -1,14 +1,30 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const bridge = vi.hoisted(() => ({
+  tauri: false,
+  invoke: vi.fn(),
+}));
+
+vi.mock('./tauri-bridge', () => ({
+  isTauriEnv: () => bridge.tauri,
+  invoke: bridge.invoke,
+}));
 import {
   SETTINGS_OPEN_EVENT,
   SETTINGS_WINDOW_LABEL,
   buildSettingsWindowUrl,
   normalizeSettingsOpenPayload,
   normalizeSettingsTab,
+  openSettingsWindow,
   openSettingsWindowWithAdapters,
   type SettingsWindowAdapters,
   type SettingsWindowHandle,
 } from './settingsWindow';
+
+beforeEach(() => {
+  bridge.tauri = false;
+  bridge.invoke.mockReset();
+});
 
 function createWindowHandle() {
   const handlers = new Map<string, (event: { payload: unknown }) => void>();
@@ -96,5 +112,21 @@ describe('settingsWindow helpers', () => {
     handlers.get('tauri://error')?.({ payload: 'permission denied' });
 
     await expect(opened).resolves.toBe(false);
+  });
+
+  it('asks Rust to create the Tauri settings window in the managed WebView directory', async () => {
+    bridge.tauri = true;
+    bridge.invoke.mockResolvedValue(undefined);
+
+    await expect(openSettingsWindow('data')).resolves.toBe(true);
+    expect(bridge.invoke).toHaveBeenCalledWith('settings_open', { tab: 'data' });
+  });
+
+  it('reports a native settings-window creation failure', async () => {
+    bridge.tauri = true;
+    bridge.invoke.mockRejectedValue(new Error('webview directory unavailable'));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(openSettingsWindow('appearance')).resolves.toBe(false);
   });
 });

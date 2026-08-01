@@ -194,6 +194,7 @@ pub(super) fn ensure_selector(app: &AppHandle) -> Result<(), String> {
                 .resizable(false)
                 .visible(false)
                 .inner_size(logical_w, logical_h);
+        let builder = crate::data_directory::apply_webview_data_directory(app, builder);
 
         builder
             .build()
@@ -297,6 +298,7 @@ pub(super) fn ensure_float(app: &AppHandle) -> Result<(), String> {
                 .inner_size(b.w.max(480.0), b.h.max(320.0))
                 .position(b.x, b.y);
         }
+        let builder = crate::data_directory::apply_webview_data_directory(app, builder);
 
         builder
             .build()

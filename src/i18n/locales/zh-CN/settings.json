@@ -92,6 +92,114 @@
     },
     "safetyHint": "桥接 token、配对设备、审计日志、AI provider key、卡片和终端输出永远不会导出。"
   },
+  "dataDirectory": {
+    "title": "ThreadTerm 数据位置",
+    "description": "选择 ThreadTerm 自身数据库、界面状态和窗口状态的保存位置。项目与各类 Agent 数据永远不会被移动。",
+    "desktopOnly": "数据位置管理仅在桌面应用中可用。",
+    "refresh": "刷新",
+    "loading": "正在读取数据位置…",
+    "open": "打开目录",
+    "chooseTitle": "选择一个空的 ThreadTerm 数据目录",
+    "choose": "浏览",
+    "systemManaged": "由系统管理",
+    "noDirectPath": "没有可由用户选择的路径",
+    "total": "ThreadTerm 数据合计：{{size}}",
+    "boundary": "Agent 会话、凭据、项目、仓库和 worktree 均保持原位置。",
+    "application": {
+      "label": "应用安装位置"
+    },
+    "current": {
+      "label": "ThreadTerm 数据位置",
+      "legacy": "旧版分散位置（尚未统一）"
+    },
+    "pointer": {
+      "label": "启动位置指针",
+      "description": "这个极小文件保留在系统配置目录中，让 ThreadTerm 能在启动前找到你选择的数据目录。"
+    },
+    "categories": {
+      "database": "数据库",
+      "desktop_state": "桌面与界面状态",
+      "window_state": "窗口大小与位置"
+    },
+    "platform": {
+      "macos": "macOS 的 WebKit 引擎缓存仍由系统管理；ThreadTerm 的业务数据会完整迁移到你选择的目录。"
+    },
+    "migration": {
+      "title": "迁移状态",
+      "source": "原位置",
+      "target": "新位置",
+      "phases": {
+        "idle": "当前没有迁移任务。",
+        "preflight": "正在检查所选目录。",
+        "scheduled": "已准备好，将在 ThreadTerm 关闭后迁移。",
+        "copying_to_staging": "正在复制到安全的临时区域。",
+        "verifying": "正在核对复制后的数据。",
+        "pointer_switched": "新目录已启用，正在等待启动确认。",
+        "first_launch_confirmed": "新目录已成功启动，旧数据副本仍然保留。",
+        "old_data_cleanup": "保留的旧数据已经清理。",
+        "rollback_to_source": "重启后将恢复使用原目录。"
+      }
+    },
+    "preflight": {
+      "action": "检查目录",
+      "ready": "这个目录可以安全迁移。",
+      "sourceSize": "需要复制：{{size}}",
+      "requiredSpace": "所需空间：{{size}}",
+      "availableSpace": "可用空间：{{size}}"
+    },
+    "move": {
+      "title": "迁移 ThreadTerm 数据",
+      "description": "请选择新建或空目录。只有 ThreadTerm 完全关闭后，才会真正开始复制。"
+    },
+    "retain": {
+      "label": "迁移后保留旧数据副本",
+      "description": "建议保留。你可以确认新目录正常后，再从本页手动删除旧副本。"
+    },
+    "schedule": {
+      "later": "关闭 ThreadTerm 后迁移",
+      "now": "立即重启并迁移",
+      "success": "迁移任务已登记。当前终端会继续运行，直到你关闭 ThreadTerm。"
+    },
+    "restart": {
+      "title": "重启 ThreadTerm",
+      "confirm": "ThreadTerm 将关闭并重新打开，当前 {{count}} 个终端会被结束。是否继续？",
+      "starting": "正在重启 ThreadTerm 并迁移数据…",
+      "now": "立即重启"
+    },
+    "cancel": {
+      "action": "取消待迁移任务",
+      "success": "待迁移任务已取消。"
+    },
+    "rollback": {
+      "action": "恢复原目录",
+      "title": "恢复原数据目录",
+      "confirm": "下次重启后改回保留的原数据目录吗？当前目录不会被删除。",
+      "success": "ThreadTerm 重启后将恢复使用原目录。"
+    },
+    "cleanup": {
+      "action": "删除保留的旧数据",
+      "title": "删除旧 ThreadTerm 数据",
+      "confirm": "永久删除 {{path}} 中保留的旧 ThreadTerm 数据吗？此操作无法撤销。",
+      "success": "保留的旧 ThreadTerm 数据已删除。"
+    },
+    "cache": {
+      "title": "可重建的桌面缓存",
+      "description": "浏览器引擎缓存可安全重建，当前占用 {{size}}。这里不包含卡片、设置、数据库记录或登录数据。",
+      "systemManaged": "macOS 在可选的 ThreadTerm 数据目录之外管理 WebKit 引擎缓存。",
+      "pending": "已登记，将在 ThreadTerm 下次启动前清理。",
+      "action": "重启后清理",
+      "cancel": "取消缓存清理",
+      "scheduled": "ThreadTerm 完全关闭后，将清理可重建缓存。",
+      "cancelled": "待执行的缓存清理已取消。"
+    },
+    "legacyPrompt": {
+      "title": "为 ThreadTerm 数据选择一个统一位置",
+      "description": "当前安装仍在使用旧版分散目录。你可以方便时再统一迁移；此刻不会移动终端、项目或 Agent 数据。",
+      "manage": "查看数据位置",
+      "later": "稍后处理",
+      "dismiss": "关闭提醒"
+    }
+  },
   "notifications": {
     "title": "系统通知",
     "description": "ThreadTerm 会在会话需要输入、发生错误或回复完成时发送系统通知。",

@@ -75,7 +75,8 @@
       "running": "运行",
       "attention": "处理",
       "review": "复核",
-      "failed": "异常"
+      "failed": "异常",
+      "reorder": "拖动调整“{{project}}”的顺序"
     },
     "recall": {
       "title": "召回终端",
@@ -554,9 +555,9 @@
     "type": "终端类型",
     "launchMode": "进入终端的方式",
     "mode": {
-      "default": "正常新开",
-      "resume": "接着历史会话",
-      "custom": "执行指定命令"
+      "default": "新开",
+      "resume": "恢复会话",
+      "custom": "运行命令"
     },
     "defaultTitle": "使用标准启动方式",
     "defaultDescription": "使用 ThreadTerm 的标准命令新建一个 {{type}} 会话。",

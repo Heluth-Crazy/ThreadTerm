@@ -24,6 +24,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { invoke, isTauriEnv } from '../lib/tauri-bridge';
 import { emitSettingsChanged, type OverlayPreferenceSnapshot } from '../lib/settingsSync';
+import { managedStateStorage } from '../lib/managedState';
 
 export type SelectorMode = 'tile' | 'carousel';
 export type SelectorSurface = 'inline' | 'window';
@@ -313,7 +314,7 @@ export const useOverlayStore = create<OverlayStoreInternal>()(
     }),
     {
       name: 'threadterm-overlay',
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() => managedStateStorage),
       version: 1,
       partialize: (state) => ({
         selectorMode: state.selectorMode,

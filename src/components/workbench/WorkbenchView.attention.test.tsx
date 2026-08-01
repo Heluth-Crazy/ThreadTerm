@@ -162,7 +162,7 @@ describe('WorkbenchView attention and overview', () => {
       ],
     });
 
-    fireEvent.click(screen.getByRole('button', { name: /Project Alpha/ }));
+    fireEvent.click(screen.getByTitle('/alpha'));
 
     expect(callbacks.onSelectProject).toHaveBeenCalledWith('/alpha');
     expect(callbacks.onOpenTerminal).not.toHaveBeenCalled();

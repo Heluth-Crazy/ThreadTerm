@@ -1,5 +1,7 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { ProjectOverviewGrid } from '../workbench/ProjectOverviewGrid';
+import { useWorkbenchStore } from '../../stores/workbenchStore';
 import {
   baseBranch,
   getBranchHookMock,
@@ -146,6 +148,91 @@ describe('ProjectSidebar navigation and branch rows', () => {
     expect(disclosureColumns.every((column) => column.className.includes('w-4'))).toBe(true);
     expect(screen.getAllByTestId('sidebar-disclosure-placeholder')).toHaveLength(2);
     expect(screen.getAllByTestId('sidebar-disclosure-toggle')).toHaveLength(1);
+  });
+
+  it('keeps the sidebar and Workbench project overview in one shared order', () => {
+    useTerminalStore.getState().createCard({
+      projectName: 'Alpha',
+      projectPath: '/repo/alpha',
+      terminalType: 'shell',
+    });
+    useTerminalStore.getState().createCard({
+      projectName: 'Beta',
+      projectPath: '/repo/beta',
+      terminalType: 'shell',
+    });
+    useWorkbenchStore.setState({
+      projectOrder: ['/repo/alpha', '/repo/beta'],
+    });
+    const onSelectProject = vi.fn();
+
+    render(
+      <>
+        <ProjectSidebar />
+        <ProjectOverviewGrid
+          projects={[
+            {
+              projectName: 'Alpha',
+              projectPath: '/repo/alpha',
+              followedCount: 0,
+              runningCount: 1,
+              attentionCount: 0,
+              reviewCount: 0,
+              failedCount: 0,
+            },
+            {
+              projectName: 'Beta',
+              projectPath: '/repo/beta',
+              followedCount: 0,
+              runningCount: 1,
+              attentionCount: 0,
+              reviewCount: 0,
+              failedCount: 0,
+            },
+          ]}
+          onSelectProject={onSelectProject}
+        />
+      </>,
+    );
+
+    const projectPaths = (testId: string) =>
+      screen
+        .getAllByTestId(testId)
+        .map((row) => row.getAttribute('data-project-path'));
+
+    expect(projectPaths('sidebar-project-section')).toEqual([
+      '/repo/alpha',
+      '/repo/beta',
+    ]);
+    expect(projectPaths('workbench-project-row')).toEqual([
+      '/repo/alpha',
+      '/repo/beta',
+    ]);
+    expect(screen.getAllByTestId('sidebar-project-drag-handle')).toHaveLength(2);
+    expect(screen.getAllByTestId('workbench-project-drag-handle')).toHaveLength(2);
+
+    fireEvent.click(screen.getAllByTestId('sidebar-project-drag-handle')[0]);
+    fireEvent.click(screen.getAllByTestId('workbench-project-drag-handle')[0]);
+    expect(useTerminalStore.getState().selectedProjectPath).toBeNull();
+    expect(onSelectProject).not.toHaveBeenCalled();
+
+    act(() => {
+      useWorkbenchStore
+        .getState()
+        .moveProject('/repo/beta', '/repo/alpha', [
+          '/repo/alpha',
+          '/repo/beta',
+        ]);
+    });
+
+    expect(projectPaths('sidebar-project-section')).toEqual([
+      '/repo/beta',
+      '/repo/alpha',
+    ]);
+    expect(projectPaths('workbench-project-row')).toEqual([
+      '/repo/beta',
+      '/repo/alpha',
+    ]);
   });
 
 });

@@ -1,4 +1,4 @@
-import { isTauriEnv } from './tauri-bridge';
+import { invoke, isTauriEnv } from './tauri-bridge';
 
 export const SETTINGS_WINDOW_LABEL = 'settings';
 export const SETTINGS_OPEN_EVENT = 'settings://open';
@@ -134,26 +134,16 @@ function openBrowserSettingsWindow(tab: unknown): boolean {
   return Boolean(opened);
 }
 
-async function getTauriSettingsWindowAdapters(): Promise<SettingsWindowAdapters> {
-  const [{ WebviewWindow }, { emitTo }] = await Promise.all([
-    import('@tauri-apps/api/webviewWindow'),
-    import('@tauri-apps/api/event'),
-  ]);
-
-  return {
-    getExistingWindow: () =>
-      WebviewWindow.getByLabel(SETTINGS_WINDOW_LABEL) as Promise<SettingsWindowHandle | null>,
-    createWindow: (options) =>
-      new WebviewWindow(SETTINGS_WINDOW_LABEL, options) as SettingsWindowHandle,
-    emitTo: (target, event, payload) => emitTo(target, event, payload),
-  };
-}
-
 export async function openSettingsWindow(tab: unknown = 'shortcuts'): Promise<boolean> {
   if (!isTauriEnv()) {
     return openBrowserSettingsWindow(tab);
   }
 
-  const adapters = await getTauriSettingsWindowAdapters();
-  return openSettingsWindowWithAdapters(tab, adapters);
+  try {
+    await invoke<void>('settings_open', { tab: normalizeSettingsTab(tab) });
+    return true;
+  } catch (error) {
+    console.warn('[settings] failed to open settings window', error);
+    return false;
+  }
 }

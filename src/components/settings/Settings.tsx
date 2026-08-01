@@ -25,6 +25,7 @@ import { NotificationSettings } from './NotificationSettings';
 import { NotificationPreferenceSettings } from './NotificationPreferenceSettings';
 import OverlayHotkeysSettings from './OverlayHotkeysSettings';
 import { SettingsDataIO } from './SettingsDataIO';
+import { DataDirectorySettings } from './DataDirectorySettings';
 import { SupervisorSettings } from './SupervisorSettings';
 import { SettingsSection } from './SettingsSection';
 import type { ThemeMode, ThemePack } from '../../theme/themeTypes';
@@ -494,6 +495,7 @@ function Settings({
 
             {activeTab === 'data' && (
               <div className="space-y-6">
+                <DataDirectorySettings />
                 <SettingsDataIO />
               </div>
             )}

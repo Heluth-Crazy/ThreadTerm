@@ -4,6 +4,10 @@ import { useTheme } from '../../theme/ThemeContext';
 import { listenSettingsChanged } from '../../lib/settingsSync';
 import { useOverlayStore } from '../../stores/overlayStore';
 import { useTerminalStore } from '../../stores/terminalStore';
+import {
+  getPreloadedManagedStateItem,
+  MANAGED_STATE_KEYS,
+} from '../../lib/managedState';
 
 type PersistableTerminalStore = typeof useTerminalStore & {
   persist?: {
@@ -12,11 +16,7 @@ type PersistableTerminalStore = typeof useTerminalStore & {
 };
 
 function getSavedLanguage(): string | null {
-  try {
-    return localStorage.getItem('userLanguage');
-  } catch {
-    return null;
-  }
+  return getPreloadedManagedStateItem(MANAGED_STATE_KEYS.language);
 }
 
 export function SettingsSyncBridge(): null {

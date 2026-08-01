@@ -1,4 +1,8 @@
-import type { PersistStorage, StorageValue } from 'zustand/middleware';
+import type {
+  PersistStorage,
+  StateStorage,
+  StorageValue,
+} from 'zustand/middleware';
 
 export interface ThrottledPersistDiagnostics {
   pending: boolean;
@@ -10,6 +14,7 @@ export interface ThrottledPersistDiagnostics {
 
 export interface ThrottledPersistStorage<S> extends PersistStorage<S> {
   flush: () => void;
+  flushAsync: () => Promise<void>;
   dispose: () => void;
   getDiagnostics: () => ThrottledPersistDiagnostics;
 }
@@ -20,14 +25,14 @@ export interface ThrottledPersistStorage<S> extends PersistStorage<S> {
  * `createJSONStorage(StateStorage)` stringifies before `StateStorage.setItem`,
  * so delaying only the string write still serializes the complete store on
  * every hot-path mutation. This storage retains the latest immutable
- * `StorageValue` and performs both stringify and localStorage I/O at flush.
+ * `StorageValue` and performs both stringify and storage I/O at flush.
  * A max-wait timer bounds selector/float/restart-preview staleness under a
  * stream that never becomes idle.
  */
 export function createThrottledPersistStorage<S>(
   delayMs = 500,
   maxWaitMs = 2000,
-  getStorage: () => Storage = () => localStorage,
+  getStorage: () => StateStorage<void | Promise<void>> = () => localStorage,
 ): ThrottledPersistStorage<S> {
   const boundedMaxWaitMs = Math.max(delayMs, maxWaitMs);
   const storage = getStorage();
@@ -37,6 +42,9 @@ export function createThrottledPersistStorage<S>(
   let warnedPersistFailure = false;
   let serializationCount = 0;
   let writeCount = 0;
+  let activeWrite: Promise<void> | null = null;
+  const writeQueue: Array<() => void | Promise<void>> = [];
+  const idleWaiters: Array<() => void> = [];
 
   const clearTimers = (): void => {
     if (trailingTimer !== null) {
@@ -49,6 +57,55 @@ export function createThrottledPersistStorage<S>(
     }
   };
 
+  const reportWriteFailure = (error: unknown): void => {
+    if (warnedPersistFailure) return;
+    warnedPersistFailure = true;
+    console.warn(
+      '[throttledStorage] persist failed; further state changes may not survive a restart:',
+      error,
+    );
+  };
+
+  const notifyIdle = (): void => {
+    if (activeWrite !== null || writeQueue.length > 0) return;
+    for (const resolve of idleWaiters.splice(0)) resolve();
+  };
+
+  const drainWrites = (): void => {
+    if (activeWrite !== null) return;
+    const operation = writeQueue.shift();
+    if (!operation) {
+      notifyIdle();
+      return;
+    }
+    try {
+      const result = operation();
+      if (result instanceof Promise) {
+        activeWrite = result
+          .then(() => {
+            writeCount += 1;
+            warnedPersistFailure = false;
+          })
+          .catch(reportWriteFailure)
+          .finally(() => {
+            activeWrite = null;
+            drainWrites();
+          });
+        return;
+      }
+      writeCount += 1;
+      warnedPersistFailure = false;
+    } catch (error) {
+      reportWriteFailure(error);
+    }
+    drainWrites();
+  };
+
+  const enqueueWrite = (operation: () => void | Promise<void>): void => {
+    writeQueue.push(operation);
+    drainWrites();
+  };
+
   const flush = (): void => {
     clearTimers();
     const next = pending;
@@ -58,17 +115,9 @@ export function createThrottledPersistStorage<S>(
     try {
       serializationCount += 1;
       const serialized = JSON.stringify(next.value);
-      storage.setItem(next.name, serialized);
-      writeCount += 1;
-      warnedPersistFailure = false;
+      enqueueWrite(() => storage.setItem(next.name, serialized));
     } catch (error) {
-      if (!warnedPersistFailure) {
-        warnedPersistFailure = true;
-        console.warn(
-          '[throttledStorage] persist failed — localStorage may be full or disabled; further state changes will not survive a restart:',
-          error,
-        );
-      }
+      reportWriteFailure(error);
     }
   };
 
@@ -85,16 +134,19 @@ export function createThrottledPersistStorage<S>(
   return {
     getItem: (name) => {
       const raw = storage.getItem(name);
-      if (raw === null) return null;
-      try {
-        return JSON.parse(raw) as StorageValue<S>;
-      } catch (error) {
-        console.warn(
-          '[throttledStorage] persisted state is invalid and will be ignored; the original value was left untouched:',
-          error,
-        );
-        return null;
-      }
+      const parse = (value: string | null): StorageValue<S> | null => {
+        if (value === null) return null;
+        try {
+          return JSON.parse(value) as StorageValue<S>;
+        } catch (error) {
+          console.warn(
+            '[throttledStorage] persisted state is invalid and will be ignored; the original value was left untouched:',
+            error,
+          );
+          return null;
+        }
+      };
+      return raw instanceof Promise ? raw.then(parse) : parse(raw);
     },
     setItem: (name, value) => {
       // Zustand creates a new partialized state object for each mutation; keep
@@ -109,9 +161,18 @@ export function createThrottledPersistStorage<S>(
     removeItem: (name) => {
       pending = null;
       clearTimers();
-      storage.removeItem(name);
+      enqueueWrite(() => storage.removeItem(name));
     },
     flush,
+    flushAsync: () => {
+      flush();
+      if (activeWrite === null && writeQueue.length === 0) {
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        idleWaiters.push(resolve);
+      });
+    },
     dispose: () => {
       flush();
       if (typeof window !== 'undefined' && typeof document !== 'undefined') {

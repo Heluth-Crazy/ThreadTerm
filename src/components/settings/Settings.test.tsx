@@ -51,6 +51,10 @@ vi.mock('./SettingsDataIO', () => ({
   SettingsDataIO: () => <div>settings data io</div>,
 }));
 
+vi.mock('./DataDirectorySettings', () => ({
+  DataDirectorySettings: () => <div>data directory settings</div>,
+}));
+
 vi.mock('../../lib/nativeDialog', () => ({
   confirmDialog: vi.fn(),
 }));
@@ -61,5 +65,15 @@ describe('Settings', () => {
 
     expect(screen.getByText('keyboard shortcuts settings')).toBeInTheDocument();
     expect(screen.queryByText('mobileAccess.title')).toBeNull();
+  });
+
+  it('shows data location management before settings import and export', () => {
+    render(<Settings isOpen embedded initialTab="data" />);
+
+    const location = screen.getByText('data directory settings');
+    const importExport = screen.getByText('settings data io');
+    expect(
+      location.compareDocumentPosition(importExport) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });

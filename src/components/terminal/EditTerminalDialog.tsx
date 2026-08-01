@@ -481,8 +481,8 @@ export function EditTerminalDialog({
           aria-modal="true"
           aria-labelledby="edit-terminal-title"
           className={[
-            'pointer-events-auto flex max-h-[92vh] w-full flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl',
-            launchMode === 'resume' ? 'max-w-4xl' : 'max-w-xl',
+            'pointer-events-auto flex h-[min(720px,calc(100vh-40px))] w-full flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl',
+            'max-w-2xl',
           ].join(' ')}
         >
           <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3 sm:px-5">
@@ -514,15 +514,7 @@ export function EditTerminalDialog({
             className="min-h-0 flex-1 overflow-y-auto"
             onSubmit={(event) => void submit(event, 'apply')}
           >
-            <div
-              className={[
-                'grid gap-5 p-4 sm:p-5',
-                launchMode === 'resume'
-                  ? 'lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.15fr)]'
-                  : '',
-              ].join(' ')}
-            >
-              <section className="space-y-4">
+            <div className="space-y-4 p-4 sm:p-5">
                 <div>
                   <label className="text-xs font-medium">{t('edit.type')}</label>
                   {[
@@ -646,11 +638,9 @@ export function EditTerminalDialog({
                     </p>
                   </div>
                 )}
-              </section>
 
               {launchMode === 'resume' && (
                 <section className="min-w-0 space-y-3">
-                  <>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <div className="text-xs font-medium">{t('edit.historyTitle')}</div>
@@ -688,7 +678,7 @@ export function EditTerminalDialog({
                       {catalogLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                     </label>
 
-                    <div className="h-72 overflow-y-auto rounded-lg border border-border bg-muted/15 p-1.5">
+                    <div className="h-56 overflow-y-auto rounded-lg border border-border bg-muted/15 p-1.5">
                       {catalogError ? (
                         <div className="flex h-full items-center justify-center px-4 text-center text-[11px] text-destructive">
                           {catalogError}
@@ -855,7 +845,6 @@ export function EditTerminalDialog({
                         </div>
                       </div>
                     )}
-                  </>
                 </section>
               )}
             </div>

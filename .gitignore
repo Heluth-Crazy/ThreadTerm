@@ -134,6 +134,7 @@ CLAUDE.md
 .trellis/spec/backend/*
 !.trellis/spec/backend/windows-build-resources.md
 !.trellis/spec/backend/windows-background-processes.md
+!.trellis/spec/backend/data-directory.md
 !.trellis/spec/frontend/
 .trellis/spec/frontend/*
 !.trellis/spec/frontend/terminal-surface-geometry.md

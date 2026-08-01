@@ -91,12 +91,49 @@ describe('TerminalView Shell lifecycle', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'view.closeTerminal' }));
+    fireEvent.click(screen.getByRole('button', { name: 'view.more' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'view.closeTerminal' }));
     await waitFor(() => expect(onRemoveCard).toHaveBeenCalledWith('claude-a'));
     expect(onBack).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'view.archiveTerminal' }));
+    fireEvent.click(screen.getByRole('button', { name: 'view.more' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'view.archiveTerminal' }));
     await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
     expect(onArchiveCard).toHaveBeenCalledWith('claude-a');
+  });
+
+  it('keeps the More menu available while the pointer moves to its actions', () => {
+    const onEdit = vi.fn();
+    render(
+      <TerminalView
+        card={makeCard()}
+        onBack={vi.fn()}
+        onRemoveCard={async () => true}
+        onArchiveCard={async () => true}
+        onEdit={onEdit}
+      />,
+    );
+
+    const moreButton = screen.getByRole('button', { name: 'view.more' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+
+    fireEvent.click(moreButton);
+    fireEvent.mouseLeave(moreButton);
+
+    expect(moreButton).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('menu')).toHaveClass('z-popover');
+    expect(screen.getByRole('menuitem', { name: 'edit.action' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'edit.action' }));
+    expect(onEdit).toHaveBeenCalledWith('claude-a');
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+
+    fireEvent.click(moreButton);
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+
+    fireEvent.click(moreButton);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
 });

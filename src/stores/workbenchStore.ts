@@ -1,6 +1,13 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { WorkbenchRules } from '../lib/workbench/types';
+import { managedStateStorage } from '../lib/managedState';
+import {
+  moveProjectPath,
+  normalizeProjectOrder,
+  projectOrdersEqual,
+  reconcileProjectPathOrder,
+} from '../lib/workbench/projectOrder';
 
 export const DEFAULT_WORKBENCH_RULES: WorkbenchRules = {
   includeWaiting: true,
@@ -14,9 +21,16 @@ export const DEFAULT_WORKBENCH_RULES: WorkbenchRules = {
 interface WorkbenchStore {
   rules: WorkbenchRules;
   followedCardIds: string[];
+  projectOrder: string[];
   followCards: (cardIds: readonly string[]) => void;
   unfollowCard: (cardId: string) => void;
   reconcileFollowedCards: (validCardIds: readonly string[]) => void;
+  reconcileProjectOrder: (validProjectPaths: readonly string[]) => void;
+  moveProject: (
+    activeProjectPath: string,
+    overProjectPath: string,
+    visibleProjectPaths: readonly string[],
+  ) => void;
   updateRules: (patch: Partial<WorkbenchRules>) => void;
   toggleStalledExclusion: (cardId: string) => void;
   resetRules: () => void;
@@ -76,6 +90,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
     (set) => ({
       rules: { ...DEFAULT_WORKBENCH_RULES },
       followedCardIds: [],
+      projectOrder: [],
       followCards: (cardIds) =>
         set((state) => {
           const incoming = normalizeFollowedCardIds(cardIds);
@@ -101,6 +116,30 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           if (followedCardIds.length === state.followedCardIds.length) return state;
           return { followedCardIds };
         }),
+      reconcileProjectOrder: (validProjectPaths) =>
+        set((state) => {
+          const projectOrder = reconcileProjectPathOrder(
+            state.projectOrder,
+            validProjectPaths,
+          );
+          if (projectOrdersEqual(projectOrder, state.projectOrder)) return state;
+          return { projectOrder };
+        }),
+      moveProject: (
+        activeProjectPath,
+        overProjectPath,
+        visibleProjectPaths,
+      ) =>
+        set((state) => {
+          const projectOrder = moveProjectPath(
+            state.projectOrder,
+            activeProjectPath,
+            overProjectPath,
+            visibleProjectPaths,
+          );
+          if (projectOrdersEqual(projectOrder, state.projectOrder)) return state;
+          return { projectOrder };
+        }),
       updateRules: (patch) =>
         set((state) => ({
           rules: normalizeWorkbenchRules({ ...state.rules, ...patch }),
@@ -118,12 +157,13 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
     }),
     {
       name: 'threadterm-workbench-store',
-      version: 2,
-      storage: createJSONStorage(() => localStorage),
+      version: 3,
+      storage: createJSONStorage(() => managedStateStorage),
       migrate: (persistedState) => persistedState,
       partialize: (state) => ({
         rules: state.rules,
         followedCardIds: state.followedCardIds,
+        projectOrder: state.projectOrder,
       }),
       merge: (persisted, current) => {
         const persistedRules =
@@ -134,10 +174,15 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           persisted && typeof persisted === 'object' && 'followedCardIds' in persisted
             ? (persisted as { followedCardIds?: unknown }).followedCardIds
             : undefined;
+        const persistedProjectOrder =
+          persisted && typeof persisted === 'object' && 'projectOrder' in persisted
+            ? (persisted as { projectOrder?: unknown }).projectOrder
+            : undefined;
         return {
           ...current,
           rules: normalizeWorkbenchRules(persistedRules),
           followedCardIds: normalizeFollowedCardIds(persistedFollowedCardIds),
+          projectOrder: normalizeProjectOrder(persistedProjectOrder),
         };
       },
     },

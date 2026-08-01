@@ -17,12 +17,13 @@
  * until the PTY reconnects and overwrites them. Their high-frequency writes
  * are debounced at the storage layer — see `./throttledStorage` (FIX-3) — so
  * per-chunk store mutations don't each trigger a synchronous full
- * `JSON.stringify(cards)` + `localStorage` write.
+ * `JSON.stringify(cards)` + managed-state write.
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { createThrottledPersistStorage } from './throttledStorage';
 import { readOsNotificationsEnabled } from '../lib/notificationPrefs';
+import { managedStateStorage } from '../lib/managedState';
 import { createCardsSlice } from './terminal/cardsSlice';
 import { createAutoRestartSlice } from './terminal/autoRestartSlice';
 import { createNotificationsSlice } from './terminal/notificationsSlice';
@@ -87,10 +88,18 @@ export {
 export type { ArchivedTerminalCard } from './terminal/types';
 
 const terminalPersistStorage =
-  createThrottledPersistStorage<PersistedTerminalState>(500, 2000);
+  createThrottledPersistStorage<PersistedTerminalState>(
+    500,
+    2000,
+    () => managedStateStorage,
+  );
 
 export function flushTerminalStorePersistence(): void {
   terminalPersistStorage.flush();
+}
+
+export function flushTerminalStorePersistenceAsync(): Promise<void> {
+  return terminalPersistStorage.flushAsync();
 }
 
 export const useTerminalStore = create<TerminalStore>()(
@@ -104,7 +113,7 @@ export const useTerminalStore = create<TerminalStore>()(
     }),
     {
       name: 'threadterm-terminal-store',
-      // Delay stringify and localStorage I/O together. maxWait keeps other
+      // Delay stringify and managed-state I/O together. maxWait keeps other
       // WebViews and restart previews bounded during continuous output.
       storage: terminalPersistStorage,
       partialize: (state) => ({

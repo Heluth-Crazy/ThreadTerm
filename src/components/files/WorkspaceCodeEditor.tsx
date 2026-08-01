@@ -20,6 +20,11 @@ import { MergeView, type Chunk } from '@codemirror/merge';
 import { cn } from '../../lib/utils';
 import { isTauriEnv } from '../../lib/tauri-bridge';
 import {
+  getPreloadedManagedStateItem,
+  MANAGED_STATE_KEYS,
+  writeManagedPreference,
+} from '../../lib/managedState';
+import {
   codeEditorSyntaxHighlighting,
   loadLanguageExtensions,
   shouldSyntaxHighlight,
@@ -104,12 +109,18 @@ function defaultPreviewContext(): PreviewContext {
 
 function defaultPreviewServiceUrlStorage(): PreviewServiceUrlStorage | null {
   if (typeof window === 'undefined') return null;
-
-  try {
-    return window.localStorage;
-  } catch {
-    return null;
-  }
+  return {
+    getItem: (name) => (
+      name === HTML_PREVIEW_SERVICE_URLS_STORAGE_KEY
+        ? getPreloadedManagedStateItem(MANAGED_STATE_KEYS.previewUrls)
+        : null
+    ),
+    setItem: (name, value) => {
+      if (name === HTML_PREVIEW_SERVICE_URLS_STORAGE_KEY) {
+        writeManagedPreference(MANAGED_STATE_KEYS.previewUrls, value);
+      }
+    },
+  };
 }
 
 // markdown 预览走 iframe srcdoc，样式只作用于 iframe 文档，与宿主页面天然隔离

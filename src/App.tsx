@@ -8,6 +8,7 @@ import { KeyboardBridge } from './components/terminal/KeyboardBridge';
 import { OverlayBridge } from './components/overlays/OverlayBridge';
 import { NotificationCenter } from './components/terminal/NotificationCenter';
 import { SettingsSyncBridge } from './components/settings/SettingsSyncBridge';
+import { LegacyDataDirectoryNotice } from './components/settings/LegacyDataDirectoryNotice';
 import { CodexRequestBridge } from './components/codex/CodexRequestBridge';
 
 /**
@@ -33,6 +34,7 @@ export default function App() {
           <TerminalManager />
           <OverlayBridge />
           <NotificationCenter />
+          <LegacyDataDirectoryNotice />
         </div>
       </ThemeProvider>
     </I18nextProvider>

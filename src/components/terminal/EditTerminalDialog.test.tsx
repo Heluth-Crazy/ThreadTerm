@@ -83,7 +83,7 @@ describe('EditTerminalDialog', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Codex' }));
-    fireEvent.click(screen.getByRole('button', { name: '接着历史会话' }));
+    fireEvent.click(screen.getByRole('button', { name: '恢复会话' }));
     fireEvent.click(
       await screen.findByRole('button', { name: /Historical task/ }),
     );
@@ -138,7 +138,7 @@ describe('EditTerminalDialog', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Claude' }));
-    fireEvent.click(screen.getByRole('button', { name: '接着历史会话' }));
+    fireEvent.click(screen.getByRole('button', { name: '恢复会话' }));
     fireEvent.click(screen.getByRole('button', { name: '全部本机' }));
     fireEvent.click(
       await screen.findByRole('button', { name: /Other project task/ }),
@@ -212,7 +212,7 @@ describe('EditTerminalDialog', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '执行指定命令' }));
+    fireEvent.click(screen.getByRole('button', { name: '运行命令' }));
     fireEvent.change(screen.getByPlaceholderText('输入要准确执行的命令'), {
       target: { value: 'codex --dangerously-bypass-approvals-and-sandbox' },
     });
@@ -283,7 +283,7 @@ describe('EditTerminalDialog', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Codex' }));
-    fireEvent.click(screen.getByRole('button', { name: '接着历史会话' }));
+    fireEvent.click(screen.getByRole('button', { name: '恢复会话' }));
 
     expect(
       await screen.findByRole('button', { name: /First page task/ }),

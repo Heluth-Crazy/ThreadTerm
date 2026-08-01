@@ -2,8 +2,8 @@
  * SelectorApp — the root component for the selector webview window.
  *
  * Responsibilities:
- *   • Subscribe to localStorage ("storage" DOM event) to keep zustand state
- *     in sync when the main window mutates the pinned list or cards.
+ *   • Subscribe to managed-state events to keep Zustand state in sync when
+ *     the main window mutates the pinned list or cards.
  *   • Listen to Tauri events pushed by the Rust overlay:
  *       - `overlay://selector-shown`     → reset selection to 0 & enter anim
  *       - `overlay://hotkey-b`           → recycle to main
@@ -25,6 +25,11 @@ import { TileMode } from './TileMode';
 import { CarouselMode } from './CarouselMode';
 import { SelectorKeyboardBridge } from './SelectorKeyboardBridge';
 import { ExpandFromCornerShell } from './ExpandFromCornerShell';
+import {
+  invalidateManagedStateItems,
+  listenManagedStateChanges,
+  MANAGED_STATE_KEYS,
+} from '../../lib/managedState';
 
 /**
  * `SelectorSurface` is the inner view layer shared between the webview and
@@ -159,20 +164,25 @@ export function SelectorApp() {
     else if (total > 0 && selectedIndex >= total) setSelectedIndex(total - 1, total);
   }, [total, selectedIndex, setSelectedIndex]);
 
-  // Cross-webview sync: when the main window mutates localStorage, zustand's
-  // persist layer in this webview won't automatically pick it up. The
-  // `storage` event fires on *other* windows/webviews when localStorage
-  // changes, so we rehydrate both stores when we see relevant keys.
+  // Cross-webview sync comes from the Rust-managed state service. Browser
+  // previews keep the equivalent DOM storage-event behavior in the adapter.
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'threadterm-terminal-store') {
-        useTerminalStore.persist.rehydrate();
-      } else if (e.key === 'threadterm-overlay') {
-        useOverlayStore.persist.rehydrate();
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listenManagedStateChanges((key) => {
+      if (key === MANAGED_STATE_KEYS.terminal) {
+        void useTerminalStore.persist.rehydrate();
+      } else if (key === MANAGED_STATE_KEYS.overlay) {
+        void useOverlayStore.persist.rehydrate();
       }
+    }).then((nextUnlisten) => {
+      if (disposed) nextUnlisten();
+      else unlisten = nextUnlisten;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
     };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
   }, []);
 
   // Tauri events from Rust.
@@ -185,9 +195,13 @@ export function SelectorApp() {
         await listen('overlay://selector-shown', () => {
           setVisible(true);
           setSelectedIndex(0, total);
-          // Pull fresh data from localStorage in case it just changed.
-          useTerminalStore.persist.rehydrate();
-          useOverlayStore.persist.rehydrate();
+          // Pull fresh managed state even if an event raced lazy window setup.
+          invalidateManagedStateItems([
+            MANAGED_STATE_KEYS.terminal,
+            MANAGED_STATE_KEYS.overlay,
+          ]);
+          void useTerminalStore.persist.rehydrate();
+          void useOverlayStore.persist.rehydrate();
         }),
       );
       unlisten.push(

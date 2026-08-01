@@ -10,7 +10,7 @@ import { useTerminalStore } from './terminalStore';
 beforeEach(() => {
   localStorage.clear();
   useWorkbenchStore.getState().resetRules();
-  useWorkbenchStore.setState({ followedCardIds: [] });
+  useWorkbenchStore.setState({ followedCardIds: [], projectOrder: [] });
 });
 describe('workbenchStore', () => {
   it('defaults stalled detection off and preserves the three safe projections', () => {
@@ -49,7 +49,11 @@ describe('workbenchStore', () => {
       stalledThresholdMinutes: 45,
     });
     const persisted = JSON.parse(localStorage.getItem('threadterm-workbench-store') ?? '{}');
-    expect(Object.keys(persisted.state)).toEqual(['rules', 'followedCardIds']);
+    expect(Object.keys(persisted.state)).toEqual([
+      'rules',
+      'followedCardIds',
+      'projectOrder',
+    ]);
   });
 
   it('normalizes, prepends and deduplicates followed terminal ids', () => {
@@ -67,7 +71,7 @@ describe('workbenchStore', () => {
     ]);
   });
 
-  it('keeps version-one attention rules while adding an empty follow list', async () => {
+  it('keeps version-one attention rules while adding empty follow and project orders', async () => {
     localStorage.setItem(
       'threadterm-workbench-store',
       JSON.stringify({
@@ -89,6 +93,61 @@ describe('workbenchStore', () => {
       stalledThresholdMinutes: 45,
     });
     expect(useWorkbenchStore.getState().followedCardIds).toEqual([]);
+    expect(useWorkbenchStore.getState().projectOrder).toEqual([]);
+  });
+
+  it('reconciles project paths without disturbing the retained manual order', () => {
+    useWorkbenchStore.setState({
+      projectOrder: ['/repo/b', '/repo/stale', '/repo/a'],
+    });
+
+    useWorkbenchStore
+      .getState()
+      .reconcileProjectOrder(['/repo/a', '/repo/b', '/repo/c']);
+
+    expect(useWorkbenchStore.getState().projectOrder).toEqual([
+      '/repo/b',
+      '/repo/a',
+      '/repo/c',
+    ]);
+  });
+
+  it('moves visible projects while preserving search-hidden project positions', () => {
+    useWorkbenchStore.setState({
+      projectOrder: ['/repo/a', '/repo/hidden', '/repo/c', '/repo/d'],
+    });
+
+    useWorkbenchStore
+      .getState()
+      .moveProject('/repo/d', '/repo/a', ['/repo/a', '/repo/c', '/repo/d']);
+
+    expect(useWorkbenchStore.getState().projectOrder).toEqual([
+      '/repo/d',
+      '/repo/hidden',
+      '/repo/a',
+      '/repo/c',
+    ]);
+  });
+
+  it('normalizes persisted project order values on rehydrate', async () => {
+    localStorage.setItem(
+      'threadterm-workbench-store',
+      JSON.stringify({
+        version: 3,
+        state: {
+          rules: DEFAULT_WORKBENCH_RULES,
+          followedCardIds: [],
+          projectOrder: ['/repo/b', '', '/repo/b', 42, '/repo/a'],
+        },
+      }),
+    );
+
+    await useWorkbenchStore.persist.rehydrate();
+
+    expect(useWorkbenchStore.getState().projectOrder).toEqual([
+      '/repo/b',
+      '/repo/a',
+    ]);
   });
 
   it('unfollows explicitly and removes only ids missing from the active card set', () => {

@@ -15,6 +15,7 @@
       {
         "title": "ThreadTerm",
         "label": "main",
+        "create": false,
         "width": 1280,
         "height": 800,
         "minWidth": 800,

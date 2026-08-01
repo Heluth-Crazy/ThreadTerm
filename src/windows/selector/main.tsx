@@ -18,6 +18,7 @@ import { applySavedTheme } from '../../theme/applyTheme';
 import { installNativeDesktopBehavior, installOverlayKeepWarmLoop } from '../../lib/nativeDesktop';
 import { installOverlayPreferenceSync } from '../../lib/overlayPreferenceSync';
 import { SelectorApp } from './SelectorApp';
+import { ManagedStateBootstrap } from '../../components/ManagedStateBootstrap';
 
 const rootEl = document.getElementById('root');
 if (!rootEl) {
@@ -31,8 +32,10 @@ installOverlayPreferenceSync();
 
 ReactDOM.createRoot(rootEl).render(
   <React.StrictMode>
-    <ThemeProvider>
-      <SelectorApp />
-    </ThemeProvider>
+    <ManagedStateBootstrap>
+      <ThemeProvider>
+        <SelectorApp />
+      </ThemeProvider>
+    </ManagedStateBootstrap>
   </React.StrictMode>,
 );

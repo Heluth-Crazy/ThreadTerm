@@ -8,17 +8,36 @@
  *   • Collapse toggle reduces the sidebar to an icon rail (w-12)
  *   • Open-dir button on hover uses a local-directory Tauri command
  *
- * No drag-and-drop, rename, or delete — keep surface small.
+ * Project rows share one persisted drag order with the Workbench overview.
+ * Rename and delete remain outside this intentionally small surface.
  */
 import {
   isValidElement,
   memo,
+  useEffect,
   useMemo,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
 } from 'react';
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import {
   ChevronDown,
   ChevronLeft,
@@ -26,6 +45,7 @@ import {
   Folder,
   FolderOpen,
   GitBranch,
+  GripVertical,
   LayoutDashboard,
   Layers,
   Loader2,
@@ -44,6 +64,8 @@ import { clearProjectBranchCache, useProjectBranches } from './useProjectBranche
 import { pendingWorktreePath, samePath } from '../../lib/worktreePaths';
 import { AttentionDot } from './AttentionDot';
 import type { PrimaryView } from '../../lib/workbench/types';
+import { orderProjectItems } from '../../lib/workbench/projectOrder';
+import { useWorkbenchStore } from '../../stores/workbenchStore';
 
 interface ProjectSidebarProps {
   className?: string;
@@ -93,7 +115,27 @@ export function ProjectSidebar({
   onExitMobileView,
 }: ProjectSidebarProps) {
   const { t } = useTranslation('terminal');
-  const groups = useProjectGroups();
+  const projectGroups = useProjectGroups();
+  const projectOrder = useWorkbenchStore((state) => state.projectOrder);
+  const reconcileProjectOrder = useWorkbenchStore(
+    (state) => state.reconcileProjectOrder,
+  );
+  const moveProject = useWorkbenchStore((state) => state.moveProject);
+  const groups = useMemo(
+    () =>
+      orderProjectItems(
+        projectGroups,
+        projectOrder,
+        (group) => group.path,
+        (group) => group.name,
+      ),
+    [projectGroups, projectOrder],
+  );
+  const projectPathKey = JSON.stringify(groups.map((group) => group.path));
+  const projectPaths = useMemo(
+    () => JSON.parse(projectPathKey) as string[],
+    [projectPathKey],
+  );
   const cards = useTerminalStore((s) => s.cards);
   const totalCards = cards.length;
   const totalUnread = useMemo(
@@ -110,6 +152,23 @@ export function ProjectSidebar({
 
   const [collapsed, setCollapsed] = useState(false);
   const rail = isMobile ? false : collapsed || compact;
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  useEffect(() => {
+    reconcileProjectOrder(projectPaths);
+  }, [projectPaths, reconcileProjectOrder]);
+
+  const handleProjectDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return;
+    moveProject(String(active.id), String(over.id), projectPaths);
+  };
 
   const handleOpenDir = (path: string, e: MouseEvent) => {
     e.stopPropagation();
@@ -269,6 +328,7 @@ export function ProjectSidebar({
           label={t('sidebar.allProjects', { defaultValue: 'All projects' })}
           count={totalCards}
           unread={totalUnread}
+          dragHandleReserved={!rail && groups.length > 0}
           onClick={() => { selectProject(null); onExitMobileView?.(); }}
         />
 
@@ -276,22 +336,33 @@ export function ProjectSidebar({
           <div className="my-1.5 border-t border-border" />
         )}
 
-        {groups.map((g) => (
-          <ProjectBranchSection
-            key={g.path}
-            group={g}
-            collapsed={rail}
-            selected={selectedPath === g.path}
-            onSelect={() => { selectProject(g.path); onExitMobileView?.(); }}
-            onOpenDir={(event) => handleOpenDir(g.path, event)}
-            onOpenTerminal={handleOpenWorktreeTerminal}
-            onSelectWorktree={handleSelectWorktree}
-            onCreateWorktreeAndOpen={handleCreateWorktreeAndOpen}
-            selectedWorktreePath={selectedWorktreePath}
-            attentionCount={getProjectAttentionCount(g.path)}
-            getWorktreeAttentionCount={getWorktreeAttentionCount}
-          />
-        ))}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleProjectDragEnd}
+        >
+          <SortableContext
+            items={projectPaths}
+            strategy={verticalListSortingStrategy}
+          >
+            {groups.map((g) => (
+              <ProjectBranchSection
+                key={g.path}
+                group={g}
+                collapsed={rail}
+                selected={selectedPath === g.path}
+                onSelect={() => { selectProject(g.path); onExitMobileView?.(); }}
+                onOpenDir={(event) => handleOpenDir(g.path, event)}
+                onOpenTerminal={handleOpenWorktreeTerminal}
+                onSelectWorktree={handleSelectWorktree}
+                onCreateWorktreeAndOpen={handleCreateWorktreeAndOpen}
+                selectedWorktreePath={selectedWorktreePath}
+                attentionCount={getProjectAttentionCount(g.path)}
+                getWorktreeAttentionCount={getWorktreeAttentionCount}
+              />
+            ))}
+          </SortableContext>
+        </DndContext>
 
         {groups.length === 0 && !rail && (
           <div className="px-3 py-6 text-center text-[11px] text-muted-foreground">
@@ -414,9 +485,24 @@ function ProjectBranchSection({
   getWorktreeAttentionCount,
 }: ProjectBranchSectionProps) {
   const { t } = useTranslation('terminal');
+  const {
+    attributes,
+    isDragging,
+    listeners,
+    setActivatorNodeRef,
+    setNodeRef,
+    transform,
+    transition,
+  } = useSortable({ id: group.path, disabled: collapsed });
   const { branches, loading, error, refresh } = useProjectBranches(group.path);
   const [expanded, setExpanded] = useState(false);
   const hasBranches = branches.length > 0;
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 20 : undefined,
+    opacity: isDragging ? 0.86 : undefined,
+  };
   const auxActions: SidebarRowAuxAction[] = [
     ...(isTauriEnv()
       ? [
@@ -448,7 +534,13 @@ function ProjectBranchSection({
   ];
 
   return (
-    <div>
+    <div
+      ref={setNodeRef}
+      style={style}
+      data-testid="sidebar-project-section"
+      data-project-path={group.path}
+      className="relative"
+    >
       <SidebarRow
         collapsed={collapsed}
         selected={selected}
@@ -464,6 +556,29 @@ function ProjectBranchSection({
         count={group.cards.length}
         attentionCount={attentionCount}
         unread={group.unreadCount}
+        dragHandleReserved={!collapsed}
+        dragHandle={
+          !collapsed ? (
+            <span
+              ref={setActivatorNodeRef}
+              data-testid="sidebar-project-drag-handle"
+              aria-label={t('workbench.projects.reorder', {
+                project: group.name,
+                defaultValue: 'Drag to reorder {{project}}',
+              })}
+              title={t('workbench.projects.reorder', {
+                project: group.name,
+                defaultValue: 'Drag to reorder {{project}}',
+              })}
+              onClick={(event) => event.stopPropagation()}
+              className="flex h-5 w-5 shrink-0 touch-none cursor-grab items-center justify-center rounded text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground active:cursor-grabbing active:bg-accent"
+              {...attributes}
+              {...listeners}
+            >
+              <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
+            </span>
+          ) : undefined
+        }
         onClick={onSelect}
         auxActions={auxActions}
         hasChildren={hasBranches}
@@ -742,6 +857,8 @@ interface SidebarRowProps {
   count: number;
   attentionCount?: number;
   unread: number;
+  dragHandle?: ReactNode;
+  dragHandleReserved?: boolean;
   onClick: () => void;
   onContextMenu?: (e: MouseEvent) => void;
   auxActions?: SidebarRowAuxAction[];
@@ -760,6 +877,8 @@ const SidebarRow = memo(function SidebarRow({
   count,
   attentionCount = 0,
   unread,
+  dragHandle,
+  dragHandleReserved = false,
   onClick,
   onContextMenu,
   auxActions = [],
@@ -866,8 +985,8 @@ const SidebarRow = memo(function SidebarRow({
               {attentionCount > 99 ? '99+' : attentionCount}
             </span>
           )}
-          {/* Count badge stays last in the flex flow, so its right edge aligns
-              across every row regardless of how many aux actions a row has. */}
+          {/* A fixed drag column follows the count, so count edges still align
+              across sortable rows and the non-sortable "All projects" row. */}
           <span
             className={[
               'shrink-0 rounded-full px-1.5 py-0.5 text-[11px] font-bold tabular-nums transition-opacity',
@@ -882,7 +1001,12 @@ const SidebarRow = memo(function SidebarRow({
               badge left by a per-row-variable amount and misalign it. On hover
               the badge fades out and these fade in, so they never overlap. */}
           {auxActions.length > 0 && (
-            <span className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+            <span
+              className={[
+                'absolute top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100',
+                dragHandleReserved ? 'right-8' : 'right-2',
+              ].join(' ')}
+            >
               {auxActions.map((action) => (
                 <span
                   key={action.key}
@@ -904,6 +1028,10 @@ const SidebarRow = memo(function SidebarRow({
               ))}
             </span>
           )}
+          {dragHandleReserved &&
+            (dragHandle ?? (
+              <span aria-hidden="true" className="h-5 w-5 shrink-0" />
+            ))}
         </>
       )}
     </button>
@@ -919,6 +1047,8 @@ function areSidebarRowPropsEqual(prev: SidebarRowProps, next: SidebarRowProps): 
     prev.count === next.count &&
     prev.attentionCount === next.attentionCount &&
     prev.unread === next.unread &&
+    prev.dragHandleReserved === next.dragHandleReserved &&
+    prev.dragHandle === next.dragHandle &&
     prev.hasChildren === next.hasChildren &&
     prev.expanded === next.expanded &&
     prev.toggleTitle === next.toggleTitle &&

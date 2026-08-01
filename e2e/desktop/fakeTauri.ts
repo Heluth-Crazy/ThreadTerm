@@ -9,7 +9,8 @@
  *   - `transformCallback(cb)` → numeric callback id registry
  *   - `invoke('plugin:event|listen', { event, handler })` → per-event handler set
  *   - pty_* commands → in-page fake PTY sessions
- *   - everything unknown → resolve(null) (all app callsites tolerate null)
+ *   - managed_state_* commands → in-page managed storage with legacy import
+ *   - everything unknown → resolve(null) (remaining app callsites tolerate null)
  *
  * Control handle for tests: `window.__fakePty`
  *   - `emitOutput(id, data)` / `emitExit(id, code)`
@@ -160,6 +161,7 @@ function installInPage(seed: FakeSeed): void {
     resumeResolveCalls: [] as Array<{ provider: string; sessionId: string }>,
     codexAppOpenCardCalls: 0,
   };
+  const managedState = new Map<string, string | null>();
 
   const emitEvent = (event: string, payload: unknown): void => {
     const ids = eventListeners.get(event);
@@ -189,6 +191,9 @@ function installInPage(seed: FakeSeed): void {
     },
   };
   win.__fakeAgentSessions = agentSessionState;
+  win.__fakeManagedState = {
+    getItem: (key: string): string | null => managedState.get(key) ?? null,
+  };
 
   const args = (raw: unknown): Record<string, unknown> =>
     (raw ?? {}) as Record<string, unknown>;
@@ -221,6 +226,40 @@ function installInPage(seed: FakeSeed): void {
         return true;
       case 'plugin:dialog|message':
         return 'Ok';
+
+      // ── managed application state ───────────────────────────────────────
+      case 'managed_state_get': {
+        const key = String(a.key ?? '');
+        return {
+          initialized: managedState.has(key),
+          value: managedState.get(key) ?? null,
+          recoveredBackup: false,
+        };
+      }
+      case 'managed_state_import_legacy': {
+        const key = String(a.key ?? '');
+        if (managedState.has(key)) return { imported: false };
+        managedState.set(key, typeof a.value === 'string' ? a.value : null);
+        return { imported: true };
+      }
+      case 'managed_state_set': {
+        const key = String(a.key ?? '');
+        managedState.set(key, typeof a.value === 'string' ? a.value : null);
+        emitEvent('managed-state://changed', {
+          key,
+          sourceId: String(a.sourceId ?? ''),
+        });
+        return null;
+      }
+      case 'managed_state_remove': {
+        const key = String(a.key ?? '');
+        managedState.set(key, null);
+        emitEvent('managed-state://changed', {
+          key,
+          sourceId: String(a.sourceId ?? ''),
+        });
+        return null;
+      }
 
       // ── fake PTY ────────────────────────────────────────────────────────
       case 'pty_create': {

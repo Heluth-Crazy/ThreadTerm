@@ -23,6 +23,7 @@ and the bridge server.
 | [Provider Session Resume](./provider-session-resume.md) | Interactive-root eligibility and pre-PTY validation for provider session bindings | Active |
 | [Provider Session Catalog Performance](./provider-session-catalog-performance.md) | Bounded metadata reads and large-history pagination contracts | Active |
 | [Mobile Bridge Architecture](./mobile-bridge-architecture.md) | Stable protocol facade and module ownership for bridge refactors | Active |
+| [User-Controlled Data Directory](./data-directory.md) | Startup root resolution, managed state, migration, recovery, and platform contracts | Active |
 | [Stats OpenCode Usage Ingestion](./stats-opencode.md) | OpenCode SQLite token usage ingestion and `opencode` provider contracts | Active |
 | [Stats Token Usage](./stats-token-usage.md) | Token usage aggregation payloads, parser-version rebuilds, and frontend stats contracts | Active |
 

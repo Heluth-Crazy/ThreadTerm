@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { applyResolvedTheme, resolveTheme } from './applyTheme';
 import { themePacks, getThemePack } from './themePacks';
@@ -21,6 +21,11 @@ import {
 import { toXtermTheme } from './xtermTheme';
 import { isTauriEnv, mobileBridge } from '../lib/tauri-bridge';
 import { emitSettingsChanged } from '../lib/settingsSync';
+import {
+  listenManagedStateChanges,
+  MANAGED_STATE_KEYS,
+  preloadManagedState,
+} from '../lib/managedState';
 import type {
   StoredThemePreference,
   ThemeMode,
@@ -68,6 +73,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   const [preference, setPreference] = useState(() => getStoredThemePreference());
   const [customThemePacks, setCustomThemePacks] = useState(() => getStoredCustomThemePacks());
   const [systemTick, setSystemTick] = useState(0);
+  const skipNextPersistRef = useRef(false);
 
   const availableThemePacks = useMemo(
     () => [...themePacks, ...customThemePacks],
@@ -81,6 +87,14 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     applyResolvedTheme(resolvedTheme);
+    // Remote-originated updates (managed-state events, settings sync) and
+    // commits that already persisted must not save again — otherwise every
+    // remote event is re-persisted locally, emits another event, and two
+    // windows keep bouncing the same preference back and forth (theme strobe).
+    if (skipNextPersistRef.current) {
+      skipNextPersistRef.current = false;
+      return;
+    }
     saveThemePreference(preference);
   }, [preference, resolvedTheme]);
 
@@ -109,6 +123,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
       availableThemePacks,
     );
     applyResolvedTheme(bootstrapTheme);
+    skipNextPersistRef.current = true;
     setPreference((current) => {
       if (current.themeMode === storedPreference.themeMode && current.themePackId === storedPreference.themePackId) {
         return current;
@@ -134,23 +149,34 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   useEffect(() => {
-    const handleStorage = (event: StorageEvent) => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listenManagedStateChanges((key) => {
       if (
-        event.key !== THEME_MODE_STORAGE_KEY &&
-        event.key !== THEME_PACK_STORAGE_KEY &&
-        event.key !== LEGACY_THEME_STORAGE_KEY &&
-        event.key !== CUSTOM_THEME_PACKS_STORAGE_KEY
+        key !== THEME_MODE_STORAGE_KEY
+        && key !== THEME_PACK_STORAGE_KEY
+        && key !== LEGACY_THEME_STORAGE_KEY
+        && key !== CUSTOM_THEME_PACKS_STORAGE_KEY
       ) {
         return;
       }
-      if (event.key === CUSTOM_THEME_PACKS_STORAGE_KEY) {
-        setCustomThemePacks(getStoredCustomThemePacks());
-      }
-      setPreference(getStoredThemePreference());
-    };
+      void preloadManagedState([key]).then(() => {
+        if (disposed) return;
+        if (key === MANAGED_STATE_KEYS.customThemes) {
+          setCustomThemePacks(getStoredCustomThemePacks());
+        }
+        skipNextPersistRef.current = true;
+        setPreference(getStoredThemePreference());
+      });
+    }).then((nextUnlisten) => {
+      if (disposed) nextUnlisten();
+      else unlisten = nextUnlisten;
+    });
 
-    window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   const emitThemeSettingsChanged = useCallback((
@@ -172,6 +198,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
     nextCustomThemePacks?: ThemePack[],
   ) => {
     saveThemePreference(nextPreference);
+    skipNextPersistRef.current = true;
     setPreference(nextPreference);
     emitThemeSettingsChanged(nextPreference, nextCustomThemePacks);
   }, [emitThemeSettingsChanged]);
@@ -183,6 +210,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
       setCustomThemePacks(getStoredCustomThemePacks());
     }
 
+    skipNextPersistRef.current = true;
     setPreference(snapshot.preference ?? getStoredThemePreference());
   }, []);
 

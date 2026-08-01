@@ -92,6 +92,114 @@
     },
     "safetyHint": "Bridge tokens, paired devices, audit logs, provider keys, cards, and terminal output are never exported."
   },
+  "dataDirectory": {
+    "title": "ThreadTerm data location",
+    "description": "Choose where ThreadTerm keeps its own database, interface state, and window state. Projects and Agent data are never moved.",
+    "desktopOnly": "Data location management is available in the desktop app.",
+    "refresh": "Refresh",
+    "loading": "Reading data locations…",
+    "open": "Open folder",
+    "chooseTitle": "Choose an empty ThreadTerm data folder",
+    "choose": "Browse",
+    "systemManaged": "System managed",
+    "noDirectPath": "No user-selectable path",
+    "total": "Total managed data: {{size}}",
+    "boundary": "Agent sessions, credentials, projects, repositories, and worktrees stay where they are.",
+    "application": {
+      "label": "Application location"
+    },
+    "current": {
+      "label": "ThreadTerm data location",
+      "legacy": "Legacy locations (not yet consolidated)"
+    },
+    "pointer": {
+      "label": "Startup location pointer",
+      "description": "This tiny file stays in the system configuration folder so ThreadTerm can find your selected data folder before it starts."
+    },
+    "categories": {
+      "database": "Database",
+      "desktop_state": "Desktop and interface state",
+      "window_state": "Window size and position"
+    },
+    "platform": {
+      "macos": "macOS keeps WebKit engine caches in a system-managed location. ThreadTerm business data still moves to your selected folder."
+    },
+    "migration": {
+      "title": "Migration status",
+      "source": "From",
+      "target": "To",
+      "phases": {
+        "idle": "No migration is active.",
+        "preflight": "Checking the selected folder.",
+        "scheduled": "Ready to move after ThreadTerm closes.",
+        "copying_to_staging": "Copying data into a safe temporary area.",
+        "verifying": "Verifying the copied data.",
+        "pointer_switched": "The new folder is active and awaiting confirmation.",
+        "first_launch_confirmed": "The new folder started successfully. The old copy is still retained.",
+        "old_data_cleanup": "The retained old data has been removed.",
+        "rollback_to_source": "The previous folder will be restored after restart."
+      }
+    },
+    "preflight": {
+      "action": "Check folder",
+      "ready": "This folder is ready for migration.",
+      "sourceSize": "Data to copy: {{size}}",
+      "requiredSpace": "Space required: {{size}}",
+      "availableSpace": "Space available: {{size}}"
+    },
+    "move": {
+      "title": "Move ThreadTerm data",
+      "description": "Choose a new or empty folder. The actual copy starts only after ThreadTerm has closed."
+    },
+    "retain": {
+      "label": "Keep the old data copy after migration",
+      "description": "Recommended. You can verify the new folder, then delete the old copy manually from this page."
+    },
+    "schedule": {
+      "later": "Move after I close ThreadTerm",
+      "now": "Restart and move now",
+      "success": "Migration is scheduled. Your current terminals will keep running until you close ThreadTerm."
+    },
+    "restart": {
+      "title": "Restart ThreadTerm",
+      "confirm": "ThreadTerm will close and reopen. {{count}} open terminal(s) will be ended. Continue?",
+      "starting": "Restarting ThreadTerm to move the data…",
+      "now": "Restart now"
+    },
+    "cancel": {
+      "action": "Cancel pending migration",
+      "success": "The pending migration was cancelled."
+    },
+    "rollback": {
+      "action": "Restore previous folder",
+      "title": "Restore previous data folder",
+      "confirm": "Use the retained previous data folder after the next restart? The current folder will not be deleted.",
+      "success": "The previous folder will be restored when ThreadTerm restarts."
+    },
+    "cleanup": {
+      "action": "Delete retained old data",
+      "title": "Delete old ThreadTerm data",
+      "confirm": "Permanently delete the retained old ThreadTerm data at {{path}}? This cannot be undone.",
+      "success": "The retained old ThreadTerm data was deleted."
+    },
+    "cache": {
+      "title": "Rebuildable desktop cache",
+      "description": "Browser-engine cache can be rebuilt and currently uses {{size}}. Cards, settings, database records, and login data are not included.",
+      "systemManaged": "macOS manages WebKit engine cache outside the selectable ThreadTerm data folder.",
+      "pending": "Cleanup is scheduled for the next time ThreadTerm starts.",
+      "action": "Clear after restart",
+      "cancel": "Cancel cache cleanup",
+      "scheduled": "Rebuildable cache will be cleared after ThreadTerm fully closes.",
+      "cancelled": "The pending cache cleanup was cancelled."
+    },
+    "legacyPrompt": {
+      "title": "Choose one place for ThreadTerm data",
+      "description": "This installation still uses older, separate folders. You can consolidate ThreadTerm data when convenient; terminals and Agent data will not be moved now.",
+      "manage": "Review data location",
+      "later": "Later",
+      "dismiss": "Dismiss reminder"
+    }
+  },
   "notifications": {
     "title": "System notifications",
     "description": "ThreadTerm sends OS notifications when a session needs input, hits an error, or finishes a reply.",

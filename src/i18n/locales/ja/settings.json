@@ -92,6 +92,114 @@
     },
     "safetyHint": "ブリッジ token、ペアリング済みデバイス、監査ログ、AI provider key、カード、端末出力はエクスポートされません。"
   },
+  "dataDirectory": {
+    "title": "ThreadTerm データの保存場所",
+    "description": "ThreadTerm 自身のデータベース、画面状態、ウィンドウ状態の保存場所を選択します。プロジェクトと Agent データは移動しません。",
+    "desktopOnly": "データ保存場所の管理はデスクトップアプリで利用できます。",
+    "refresh": "更新",
+    "loading": "データの保存場所を読み込み中…",
+    "open": "フォルダーを開く",
+    "chooseTitle": "空の ThreadTerm データフォルダーを選択",
+    "choose": "参照",
+    "systemManaged": "システム管理",
+    "noDirectPath": "ユーザーが選択できるパスはありません",
+    "total": "管理対象データ合計：{{size}}",
+    "boundary": "Agent セッション、認証情報、プロジェクト、リポジトリ、worktree は元の場所に残ります。",
+    "application": {
+      "label": "アプリケーションの場所"
+    },
+    "current": {
+      "label": "ThreadTerm データの場所",
+      "legacy": "旧形式の分散した場所（未統合）"
+    },
+    "pointer": {
+      "label": "起動時の場所ポインター",
+      "description": "ThreadTerm が起動前に選択済みデータフォルダーを見つけられるよう、この小さなファイルだけはシステム設定フォルダーに残ります。"
+    },
+    "categories": {
+      "database": "データベース",
+      "desktop_state": "デスクトップと画面状態",
+      "window_state": "ウィンドウのサイズと位置"
+    },
+    "platform": {
+      "macos": "macOS の WebKit エンジンキャッシュはシステム管理の場所に残ります。ThreadTerm の業務データは選択したフォルダーへ移動します。"
+    },
+    "migration": {
+      "title": "移行状況",
+      "source": "移行元",
+      "target": "移行先",
+      "phases": {
+        "idle": "進行中の移行はありません。",
+        "preflight": "選択したフォルダーを確認しています。",
+        "scheduled": "ThreadTerm 終了後に移行する準備ができました。",
+        "copying_to_staging": "安全な一時領域へデータをコピーしています。",
+        "verifying": "コピーしたデータを検証しています。",
+        "pointer_switched": "新しいフォルダーが有効になり、起動確認を待っています。",
+        "first_launch_confirmed": "新しいフォルダーから正常に起動しました。古いコピーは保持されています。",
+        "old_data_cleanup": "保持されていた古いデータを削除しました。",
+        "rollback_to_source": "再起動後に以前のフォルダーへ戻します。"
+      }
+    },
+    "preflight": {
+      "action": "フォルダーを確認",
+      "ready": "このフォルダーへ安全に移行できます。",
+      "sourceSize": "コピーするデータ：{{size}}",
+      "requiredSpace": "必要な空き容量：{{size}}",
+      "availableSpace": "利用可能：{{size}}"
+    },
+    "move": {
+      "title": "ThreadTerm データを移動",
+      "description": "新規または空のフォルダーを選択してください。実際のコピーは ThreadTerm の終了後に開始します。"
+    },
+    "retain": {
+      "label": "移行後も古いデータコピーを保持",
+      "description": "推奨。新しいフォルダーを確認してから、この画面で古いコピーを削除できます。"
+    },
+    "schedule": {
+      "later": "ThreadTerm 終了後に移動",
+      "now": "今すぐ再起動して移動",
+      "success": "移行を予約しました。ThreadTerm を閉じるまで現在のターミナルは動作を続けます。"
+    },
+    "restart": {
+      "title": "ThreadTerm を再起動",
+      "confirm": "ThreadTerm を閉じて再起動します。開いている {{count}} 個のターミナルは終了します。続行しますか？",
+      "starting": "データ移行のため ThreadTerm を再起動しています…",
+      "now": "今すぐ再起動"
+    },
+    "cancel": {
+      "action": "保留中の移行をキャンセル",
+      "success": "保留中の移行をキャンセルしました。"
+    },
+    "rollback": {
+      "action": "以前のフォルダーへ戻す",
+      "title": "以前のデータフォルダーを復元",
+      "confirm": "次回再起動後に保持されている以前のデータフォルダーを使用しますか？現在のフォルダーは削除されません。",
+      "success": "ThreadTerm の再起動後に以前のフォルダーへ戻ります。"
+    },
+    "cleanup": {
+      "action": "保持中の古いデータを削除",
+      "title": "古い ThreadTerm データを削除",
+      "confirm": "{{path}} に保持されている古い ThreadTerm データを完全に削除しますか？元に戻せません。",
+      "success": "保持されていた古い ThreadTerm データを削除しました。"
+    },
+    "cache": {
+      "title": "再構築可能なデスクトップキャッシュ",
+      "description": "ブラウザーエンジンのキャッシュは再構築でき、現在 {{size}} を使用しています。カード、設定、データベース、ログイン情報は含みません。",
+      "systemManaged": "macOS は選択可能な ThreadTerm データフォルダーの外で WebKit キャッシュを管理します。",
+      "pending": "次回の ThreadTerm 起動前に消去する予定です。",
+      "action": "再起動後に消去",
+      "cancel": "キャッシュ消去をキャンセル",
+      "scheduled": "ThreadTerm の完全終了後に再構築可能なキャッシュを消去します。",
+      "cancelled": "保留中のキャッシュ消去をキャンセルしました。"
+    },
+    "legacyPrompt": {
+      "title": "ThreadTerm データを一つの場所へ",
+      "description": "このインストールは旧形式の分散フォルダーを使用しています。都合のよい時に統合できます。現在のターミナル、プロジェクト、Agent データは移動しません。",
+      "manage": "データの場所を確認",
+      "later": "後で",
+      "dismiss": "通知を閉じる"
+    }
+  },
   "notifications": {
     "title": "システム通知",
     "description": "ThreadTerm は入力待ち、エラー、返信完了時に OS 通知を送信します。",

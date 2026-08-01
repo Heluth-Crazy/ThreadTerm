@@ -5,6 +5,8 @@ import '../../i18n/config';
 import { ThemeProvider } from '../../theme/ThemeContext';
 import Settings from '../../components/settings/Settings';
 import { applySavedTheme } from '../../theme/applyTheme';
+import { preloadCustomThemePacks } from '../../theme/customThemePacks';
+import { preloadThemePreference } from '../../theme/themeStorage';
 import { installNativeDesktopBehavior } from '../../lib/nativeDesktop';
 import {
   SETTINGS_OPEN_EVENT,
@@ -13,6 +15,7 @@ import {
   type SettingsTab,
 } from '../../lib/settingsWindow';
 import { isTauriEnv } from '../../lib/tauri-bridge';
+import { ManagedStateBootstrap } from '../../components/ManagedStateBootstrap';
 
 const rootEl = document.getElementById('root');
 if (!rootEl) {
@@ -62,13 +65,21 @@ function SettingsWindowApp() {
   );
 }
 
-applySavedTheme();
-installNativeDesktopBehavior();
+// Warm the managed-state theme cache before painting anything: applying the
+// saved theme from a cold cache resolves to defaults and the bootstrap
+// loading card would flash the default theme instead of the user's.
+void (async () => {
+  await Promise.all([preloadThemePreference(), preloadCustomThemePacks()]);
+  applySavedTheme();
+  installNativeDesktopBehavior();
 
-ReactDOM.createRoot(rootEl).render(
-  <React.StrictMode>
-    <ThemeProvider>
-      <SettingsWindowApp />
-    </ThemeProvider>
-  </React.StrictMode>,
-);
+  ReactDOM.createRoot(rootEl).render(
+    <React.StrictMode>
+      <ManagedStateBootstrap>
+        <ThemeProvider>
+          <SettingsWindowApp />
+        </ThemeProvider>
+      </ManagedStateBootstrap>
+    </React.StrictMode>,
+  );
+})();
