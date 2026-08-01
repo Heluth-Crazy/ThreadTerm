@@ -93,3 +93,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Editable terminal session configuration
+
+**Date**: 2026-07-30
+**Task**: Editable terminal session configuration
+**Branch**: `exp/windows-native-terminal-host`
+
+### Summary
+
+Added safe terminal type, startup command, and Agent history-session editing with validate-before-replace behavior and full desktop regression coverage.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4e33a48` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
