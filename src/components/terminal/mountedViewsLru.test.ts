@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_MOUNTED_TERMINAL_VIEWS, touchMountedId } from './mountedViewsLru';
+import {
+  DEFAULT_WARM_SURFACE_LIMIT,
+  isTerminalSurfacePoolEnabled,
+  MAX_MOUNTED_TERMINAL_VIEWS,
+  touchMountedId,
+  touchMountedSurfaces,
+} from './mountedViewsLru';
 
 describe('touchMountedId', () => {
   it('adds a new id to the tail of an empty array', () => {
@@ -39,16 +45,12 @@ describe('touchMountedId', () => {
   });
 
   it('never evicts the just-touched id', () => {
-    // cap=1 with a protected other entry: 'b' is the touched id, 'a' is
-    // protected — neither may be evicted even though we are over cap.
     const result = touchMountedId(['a'], 'b', 1, 'a');
     expect(result.next).toEqual(['a', 'b']);
     expect(result.evicted).toEqual([]);
   });
 
   it('allows temporarily exceeding cap when all entries are protected', () => {
-    // Touched id and protected id are both unevictable, so the result stays
-    // over cap rather than evicting a protected view.
     const result = touchMountedId(['a', 'b'], 'b', 1, 'a');
     expect(result.next).toEqual(['a', 'b']);
     expect(result.evicted).toEqual([]);
@@ -88,5 +90,56 @@ describe('touchMountedId', () => {
       'card-18',
       'card-19',
     ]);
+  });
+});
+
+describe('touchMountedSurfaces (visible + warm pool)', () => {
+  it('defaults warm limit to one hidden surface', () => {
+    expect(DEFAULT_WARM_SURFACE_LIMIT).toBe(1);
+  });
+
+  it('keeps all visible surfaces and only one warm when the pool is enabled', () => {
+    const result = touchMountedSurfaces(['a', 'b', 'c', 'd'], 'e', {
+      visibleIds: ['e'],
+      poolEnabled: true,
+      warmLimit: 1,
+    });
+    // e is visible+touched; one warm remains from the previous LRU tail.
+    expect(result.next).toContain('e');
+    expect(result.next).toHaveLength(2);
+    expect(result.evicted).toEqual(expect.arrayContaining(['a', 'b', 'c']));
+    expect(result.evicted).toHaveLength(3);
+  });
+
+  it('never cold-evicts a float-visible card even when it is not focused', () => {
+    const result = touchMountedSurfaces(['focus', 'float', 'old1', 'old2'], 'focus', {
+      visibleIds: ['focus', 'float'],
+      poolEnabled: true,
+      warmLimit: 1,
+    });
+    expect(result.next).toEqual(expect.arrayContaining(['focus', 'float']));
+    expect(result.next).toContain('focus');
+    expect(result.next).toContain('float');
+    // visible(2) + warm(1) = 3
+    expect(result.next.length).toBeLessThanOrEqual(3);
+    expect(result.next).not.toContain('old1');
+  });
+
+  it('falls back to the legacy 6-view cap when the pool flag is off', () => {
+    let state: string[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      state = touchMountedSurfaces(state, `card-${i}`, {
+        visibleIds: [`card-${i}`],
+        poolEnabled: false,
+      }).next;
+    }
+    expect(state).toHaveLength(MAX_MOUNTED_TERMINAL_VIEWS);
+  });
+
+  it('parses rollback flags from env/storage', () => {
+    expect(isTerminalSurfacePoolEnabled(undefined, undefined)).toBe(true);
+    expect(isTerminalSurfacePoolEnabled('0', undefined)).toBe(false);
+    expect(isTerminalSurfacePoolEnabled(undefined, 'false')).toBe(false);
+    expect(isTerminalSurfacePoolEnabled('1', '0')).toBe(true);
   });
 });

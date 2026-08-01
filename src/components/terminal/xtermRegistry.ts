@@ -81,3 +81,22 @@ export function claimTerminalActive(ptyId: string, term: Terminal): void {
 export function getTerminal(ptyId: string): Terminal | undefined {
   return activeRegistration(ptyId)?.term;
 }
+
+/** Read-only registry snapshot for memory lifecycle sampling. */
+export function getXtermRegistryDiagnostics(): {
+  registrationCount: number;
+  distinctPtyIds: number;
+  ptyIds: string[];
+} {
+  let registrationCount = 0;
+  const ptyIds: string[] = [];
+  for (const [ptyId, list] of terminals) {
+    registrationCount += list.length;
+    ptyIds.push(ptyId);
+  }
+  return {
+    registrationCount,
+    distinctPtyIds: ptyIds.length,
+    ptyIds,
+  };
+}

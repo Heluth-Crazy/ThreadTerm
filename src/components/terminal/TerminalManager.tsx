@@ -26,7 +26,13 @@ import {
 import { useTranslation } from 'react-i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { CardGrid } from './CardGrid';
-import { MAX_MOUNTED_TERMINAL_VIEWS, touchMountedId } from './mountedViewsLru';
+import {
+  DEFAULT_WARM_SURFACE_LIMIT,
+  MAX_MOUNTED_TERMINAL_VIEWS,
+  readTerminalSurfacePoolEnabled,
+  touchMountedSurfaces,
+} from './mountedViewsLru';
+import { useOverlayStore } from '../../stores/overlayStore';
 import { TerminalView } from './TerminalView';
 import { CreateTerminalDialog } from './CreateTerminalDialog';
 import { EditTerminalDialog } from './EditTerminalDialog';
@@ -84,6 +90,7 @@ import {
   MANAGED_STATE_KEYS,
   writeManagedPreference,
 } from '../../lib/managedState';
+import { publishMountedTerminalSurfaces } from '../../lib/lifecycle/mountedTerminalSurfaces';
 
 const TERMINAL_TYPES: TerminalType[] = [
   'shell',
@@ -205,28 +212,44 @@ export function TerminalManager() {
   }, []);
 
   // Card ids whose TerminalView is kept mounted, in LRU order (oldest first).
-  // Each mounted view holds a WebGL context, so the list is capped at
-  // MAX_MOUNTED_TERMINAL_VIEWS (audit P1-1): evicted views unmount their
-  // xterm while the PTY survives in Rust (`preservePtyOnUnmount`), and
-  // re-focusing replays history via Shell's attachSnapshot path. Using an
-  // array ref (plus forceRender counter) avoids re-mounting when cards array
-  // refs change.
+  // Surface pool (Batch 2): keep every actually-visible surface (main focus +
+  // float) plus one hidden warm view. Legacy fixed cap of
+  // MAX_MOUNTED_TERMINAL_VIEWS remains available via feature-flag rollback.
+  // Evicted views unmount their xterm while the PTY survives in Rust
+  // (`preservePtyOnUnmount`); re-focusing replays history via attachSnapshot.
   const mountedIdsRef = useRef<string[]>([]);
   const [, bumpRender] = useState(0);
 
   const mountCardInBackground = useCallback((cardId: string) => {
     const current = mountedIdsRef.current;
     const wasMounted = current.includes(cardId);
-    // Read the focused card from the store (not from render scope) so this
-    // callback stays referentially stable — it is a dependency of the mobile
-    // bridge subscription effect and must not resubscribe on focus changes.
-    const { next, evicted } = touchMountedId(
-      current,
-      cardId,
-      MAX_MOUNTED_TERMINAL_VIEWS,
-      useTerminalStore.getState().focusedCardId,
-    );
+    // Read focus/float from stores (not render scope) so this callback stays
+    // referentially stable for the mobile bridge subscription effect.
+    const focusedId = useTerminalStore.getState().focusedCardId;
+    const floatCardId = useOverlayStore.getState().floatCardId;
+    const floatOpen = useOverlayStore.getState().floatOpen;
+    const poolEnabled = readTerminalSurfacePoolEnabled();
+    const visibleIds = [
+      focusedId,
+      floatOpen ? floatCardId : null,
+    ].filter((id): id is string => Boolean(id));
+    const { next, evicted } = touchMountedSurfaces(current, cardId, {
+      visibleIds,
+      poolEnabled,
+      warmLimit: DEFAULT_WARM_SURFACE_LIMIT,
+      legacyCap: MAX_MOUNTED_TERMINAL_VIEWS,
+    });
     mountedIdsRef.current = next;
+    // Read-only sampling mirror for tools/webview-memory-lifecycle.
+    publishMountedTerminalSurfaces({
+      mountedCardIds: next,
+      focusedCardId: focusedId,
+      floatCardId: floatOpen ? floatCardId : null,
+      maxMountedTerminalViews: poolEnabled
+        ? visibleIds.length + DEFAULT_WARM_SURFACE_LIMIT
+        : MAX_MOUNTED_TERMINAL_VIEWS,
+      terminalSurfacePoolEnabled: poolEnabled,
+    });
     // Re-render only when membership changed; pure LRU reordering does not
     // affect which TerminalViews render.
     if (!wasMounted || evicted.length > 0) bumpRender((n) => n + 1);
@@ -581,9 +604,29 @@ export function TerminalManager() {
     const next = mountedIdsRef.current.filter((id) => ids.has(id));
     if (next.length !== mountedIdsRef.current.length) {
       mountedIdsRef.current = next;
+      const poolEnabled = readTerminalSurfacePoolEnabled();
+      publishMountedTerminalSurfaces({
+        mountedCardIds: next,
+        focusedCardId: useTerminalStore.getState().focusedCardId,
+        floatCardId: useOverlayStore.getState().floatOpen
+          ? useOverlayStore.getState().floatCardId
+          : null,
+        maxMountedTerminalViews: poolEnabled
+          ? next.length
+          : MAX_MOUNTED_TERMINAL_VIEWS,
+        terminalSurfacePoolEnabled: poolEnabled,
+      });
       bumpRender((n) => n + 1);
     }
   }, [cards]);
+
+  // When float opens/closes or changes card, re-protect visible surfaces.
+  const floatCardId = useOverlayStore((s) => s.floatCardId);
+  const floatOpen = useOverlayStore((s) => s.floatOpen);
+  useEffect(() => {
+    if (!floatOpen || !floatCardId) return;
+    mountCardInBackground(floatCardId);
+  }, [floatCardId, floatOpen, mountCardInBackground]);
 
   const sessionDockVisible = sessionDockPanelVisible;
 

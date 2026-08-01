@@ -24,8 +24,15 @@ use super::window::{
 #[cfg(target_os = "windows")]
 const FLOAT_IDLE_DESTROY_AFTER: Duration = Duration::from_secs(60);
 
+/// Selector follows the same idle-destroy budget as float so closed overlays
+/// do not retain a permanent WebView after the user stops using them.
+#[cfg(target_os = "windows")]
+const SELECTOR_IDLE_DESTROY_AFTER: Duration = Duration::from_secs(60);
+
 #[cfg(target_os = "windows")]
 static FLOAT_HIDE_GENERATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "windows")]
+static SELECTOR_HIDE_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "windows")]
 static FLOAT_VISIBILITY_TRANSITION: Mutex<()> = Mutex::new(());
 
@@ -53,6 +60,7 @@ pub(super) fn show_selector_impl(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
+    invalidate_selector_idle_destroy();
     ensure_selector(app)?;
     set_overlay_activation_policy(app);
     // Hide float while selector is open (mutual exclusion). Restored on close.
@@ -97,6 +105,7 @@ pub(super) fn show_selector_impl(app: &AppHandle) -> Result<(), String> {
         //      activating the main app or switching back to the desktop Space
         let _ = w.set_always_on_top(true);
         let _ = w.unminimize();
+        set_overlay_memory_usage_normal(&w);
 
         #[cfg(target_os = "macos")]
         {
@@ -134,6 +143,15 @@ pub(super) fn show_selector_impl(app: &AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn overlay_hide_selector(app: AppHandle) -> Result<(), String> {
+    hide_selector_window_for_idle(&app);
+    restore_regular_activation_policy_if_no_overlay_visible(&app);
+    let _ = app.emit("overlay://selector-hidden", ());
+    Ok(())
+}
+
+/// Hide selector, lower WebView2 memory target on Windows, and schedule idle
+/// destroy. Shared by hide IPC and other paths that dismiss the selector.
+fn hide_selector_window_for_idle(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     {
         use tauri_nspanel::ManagerExt;
@@ -145,10 +163,9 @@ pub fn overlay_hide_selector(app: AppHandle) -> Result<(), String> {
 
     if let Some(w) = app.get_webview_window(SELECTOR_LABEL) {
         let _ = w.hide();
+        set_overlay_memory_usage_low(&w);
+        schedule_selector_idle_destroy(app);
     }
-    restore_regular_activation_policy_if_no_overlay_visible(&app);
-    let _ = app.emit("overlay://selector-hidden", ());
-    Ok(())
 }
 
 /// Async for the same Windows sync-command deadlock reason as
@@ -256,10 +273,7 @@ fn hide_float_window_for_idle(app: &AppHandle) -> bool {
 
 #[cfg(target_os = "windows")]
 fn set_float_memory_usage_low(window: &tauri::WebviewWindow) {
-    set_float_memory_usage_level(
-        window,
-        webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
-    );
+    set_overlay_memory_usage_low(window);
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -267,17 +281,36 @@ fn set_float_memory_usage_low(_window: &tauri::WebviewWindow) {}
 
 #[cfg(target_os = "windows")]
 fn set_float_memory_usage_normal(window: &tauri::WebviewWindow) {
-    set_float_memory_usage_level(
-        window,
-        webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
-    );
+    set_overlay_memory_usage_normal(window);
 }
 
 #[cfg(not(target_os = "windows"))]
 fn set_float_memory_usage_normal(_window: &tauri::WebviewWindow) {}
 
 #[cfg(target_os = "windows")]
-fn set_float_memory_usage_level(
+fn set_overlay_memory_usage_low(window: &tauri::WebviewWindow) {
+    set_overlay_memory_usage_level(
+        window,
+        webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+    );
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_overlay_memory_usage_low(_window: &tauri::WebviewWindow) {}
+
+#[cfg(target_os = "windows")]
+fn set_overlay_memory_usage_normal(window: &tauri::WebviewWindow) {
+    set_overlay_memory_usage_level(
+        window,
+        webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+    );
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_overlay_memory_usage_normal(_window: &tauri::WebviewWindow) {}
+
+#[cfg(target_os = "windows")]
+fn set_overlay_memory_usage_level(
     window: &tauri::WebviewWindow,
     level: webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL,
 ) {
@@ -348,6 +381,41 @@ fn invalidate_float_idle_destroy() {
 fn invalidate_float_idle_destroy() {}
 
 #[cfg(target_os = "windows")]
+fn schedule_selector_idle_destroy(app: &AppHandle) {
+    let generation = next_float_hide_generation(&SELECTOR_HIDE_GENERATION);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(SELECTOR_IDLE_DESTROY_AFTER).await;
+        if !float_hide_generation_is_current(&SELECTOR_HIDE_GENERATION, generation) {
+            return;
+        }
+        let window = app.get_webview_window(SELECTOR_LABEL);
+        if window
+            .as_ref()
+            .is_some_and(|window| window.is_visible().unwrap_or(true))
+        {
+            return;
+        }
+        let Some(window) = window else { return };
+        match window.close() {
+            Ok(()) => tracing::info!("Closed idle selector window to release WebView2 memory"),
+            Err(error) => tracing::debug!(error = %error, "Failed to close idle selector window"),
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn schedule_selector_idle_destroy(_app: &AppHandle) {}
+
+#[cfg(target_os = "windows")]
+fn invalidate_selector_idle_destroy() {
+    next_float_hide_generation(&SELECTOR_HIDE_GENERATION);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn invalidate_selector_idle_destroy() {}
+
+#[cfg(target_os = "windows")]
 fn next_float_hide_generation(counter: &AtomicU64) -> u64 {
     counter.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
 }
@@ -381,9 +449,7 @@ pub fn overlay_show_main(app: AppHandle) -> Result<(), String> {
             panel.hide();
         }
     }
-    if let Some(s) = app.get_webview_window(SELECTOR_LABEL) {
-        let _ = s.hide();
-    }
+    hide_selector_window_for_idle(&app);
     hide_float_window_for_idle(&app);
     // `overlay_show_main` also runs from the global B hotkey and selector
     // window, so the float renderer cannot rely on its local recycle handler

@@ -21,6 +21,7 @@ import {
   TERMINAL_CONTENT_TAB_ID,
   type WorkspaceContentTab,
 } from './WorkspaceContentTabStrip';
+import { selectMountedWorkspaceEditors } from '../files/workspaceEditorLifecycle';
 
 interface WorkspaceContentState {
   tabs: WorkspaceContentTab[];
@@ -93,18 +94,44 @@ export function useWorkspaceContent({
     activeWorkspaceTab?.kind === 'diff' ? activeWorkspaceTab.change.path : null;
 
   const mountedWorkspaceContentViews = useMemo(() => {
-    const views: Array<{ cardId: string; tab: WorkspaceContentTab }> = [];
+    const candidates: Array<{
+      cardId: string;
+      tab: WorkspaceContentTab;
+      dirty: boolean;
+      current: boolean;
+      focusedCard: boolean;
+    }> = [];
     for (const card of cards) {
       const state = workspaceContentStateWithPanelDefaults(
         workspaceContentStateWithDefaults(workspaceContentByCardId[card.id]),
       );
+      const focusedCard = card.id === focusedCardId;
       for (const tab of state.tabs) {
-        if (card.id === focusedCardId || state.dirtyTabIds[tab.id]) {
-          views.push({ cardId: card.id, tab });
-        }
+        candidates.push({
+          cardId: card.id,
+          tab,
+          dirty: Boolean(state.dirtyTabIds[tab.id]),
+          current: state.activeTabId === tab.id,
+          focusedCard,
+        });
       }
     }
-    return views;
+
+    const { mounted } = selectMountedWorkspaceEditors(
+      candidates.map((candidate) => ({
+        cardId: candidate.cardId,
+        tabId: candidate.tab.id,
+        kind: candidate.tab.kind,
+        dirty: candidate.dirty,
+        current: candidate.current,
+        focusedCard: candidate.focusedCard,
+      })),
+    );
+
+    const mountedKeys = new Set(mounted.map((item) => `${item.cardId}::${item.tabId}`));
+    return candidates
+      .filter((candidate) => mountedKeys.has(`${candidate.cardId}::${candidate.tab.id}`))
+      .map(({ cardId, tab }) => ({ cardId, tab }));
   }, [cards, focusedCardId, workspaceContentByCardId]);
 
   const updateWorkspaceContentForCard = useCallback(

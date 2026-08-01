@@ -1156,4 +1156,46 @@ mod tests {
         assert_eq!(result.cursor_col, 1);
         assert!(result.history.is_none());
     }
+
+    #[test]
+    fn attach_snapshot_preserves_large_history_unicode_and_seq_watermark() {
+        // Batch 1 rehydration gate: a cold renderer must receive the full
+        // scrollback budget payload shape (history + screen + cursor + seq)
+        // without inventing a different pty id.
+        let history = (1..=SESSION_SCROLLBACK_LINES)
+            .map(|i| format!("history-line-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let payload = crate::pty::emulator::TerminalSnapshotPayload {
+            data: "全屏画面 ✨\r\n".to_string(),
+            rows: 40,
+            cols: 120,
+            cursor_row: 12,
+            cursor_col: 8,
+            history: Some(format!("{history}\n")),
+        };
+
+        let result = build_attach_snapshot("pty-stable", 9001, Some(payload), "ignored", None);
+
+        assert_eq!(result.pty_id, "pty-stable");
+        assert_eq!(result.seq, 9001);
+        assert_eq!(result.rows, 40);
+        assert_eq!(result.cols, 120);
+        assert_eq!(result.cursor_row, 12);
+        assert_eq!(result.cursor_col, 8);
+        assert!(result.data.contains("全屏画面"));
+        assert!(result.data.contains("✨"));
+        let history = result.history.expect("history present");
+        assert_eq!(
+            history.matches("history-line-").count(),
+            SESSION_SCROLLBACK_LINES
+        );
+        assert!(history.contains("history-line-1"));
+        assert!(history.contains(&format!("history-line-{SESSION_SCROLLBACK_LINES}")));
+    }
+
+    #[test]
+    fn session_scrollback_budget_is_three_thousand_lines() {
+        assert_eq!(SESSION_SCROLLBACK_LINES, 3000);
+    }
 }

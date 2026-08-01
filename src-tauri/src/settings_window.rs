@@ -24,6 +24,17 @@ fn focus_settings_window(window: &tauri::WebviewWindow) {
     let _ = window.set_focus();
 }
 
+/// Settings is a one-shot tool window: closing it must destroy the WebView so
+/// it does not linger like a permanently hidden renderer.
+fn destroy_settings_window_on_close(window: &tauri::WebviewWindow) {
+    let label = window.label().to_string();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Destroyed = event {
+            tracing::info!(window = %label, "settings window destroyed");
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn settings_open(app: tauri::AppHandle, tab: String) -> Result<(), String> {
     let tab = normalize_settings_tab(&tab);
@@ -53,10 +64,13 @@ pub async fn settings_open(app: tauri::AppHandle, tab: String) -> Result<(), Str
     .visible(true)
     .focused(true)
     .skip_taskbar(false);
+    // Do not persist settings window geometry across sessions — it is created
+    // on demand and destroyed on close (Batch 3 memory lifecycle).
     let builder = crate::data_directory::apply_webview_data_directory(&app, builder);
     let window = builder
         .build()
         .map_err(|error| format!("Could not create the settings window: {error}"))?;
+    destroy_settings_window_on_close(&window);
     focus_settings_window(&window);
     Ok(())
 }

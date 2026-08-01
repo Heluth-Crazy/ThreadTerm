@@ -107,6 +107,10 @@ export function usePtyOutputLifecycle({
     let registered = false;
     let recoveryPromise: Promise<boolean> | null = null;
     recoveryPromise = (async () => {
+      const startedAt =
+        typeof performance !== 'undefined' && typeof performance.now === 'function'
+          ? performance.now()
+          : Date.now();
       try {
         await pty.registerOutputConsumer(consumer.ptyId, consumer.consumerId);
         registered = true;
@@ -133,6 +137,21 @@ export function usePtyOutputLifecycle({
         pendingNewLinesRef.current = 0;
         setScrolledUp(false);
         setNewOutputLines(0);
+        const elapsedMs =
+          (typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? performance.now()
+            : Date.now()) - startedAt;
+        // Release budgets (Batch 2): P95 ≤300ms, hard max 1s. Over-budget is
+        // diagnostic-only — never show a resume progress curtain on ordinary
+        // surface restore.
+        if (elapsedMs > 300) {
+          logger.warn('[Shell] Renderer snapshot recovery over budget', {
+            ptyId: consumer.ptyId,
+            elapsedMs: Math.round(elapsedMs),
+            hardMaxMs: 1000,
+            p95BudgetMs: 300,
+          });
+        }
         return true;
       } catch (error) {
         if (isCurrentRecovery()) {

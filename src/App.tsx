@@ -3,6 +3,7 @@ import { ThemeProvider } from './theme/ThemeContext';
 import i18n from './i18n/config';
 import { TerminalManager } from './components/terminal/TerminalManager';
 import { TerminalEventBridge } from './components/terminal/TerminalEventBridge';
+import { LifecycleDiagnosticsHost } from './components/terminal/LifecycleDiagnosticsHost';
 import { NotificationBridge } from './components/terminal/NotificationBridge';
 import { KeyboardBridge } from './components/terminal/KeyboardBridge';
 import { OverlayBridge } from './components/overlays/OverlayBridge';
@@ -26,6 +27,7 @@ export default function App() {
     <I18nextProvider i18n={i18n}>
       <ThemeProvider>
         <TerminalEventBridge />
+        <LifecycleDiagnosticsHost />
         <CodexRequestBridge />
         <NotificationBridge />
         <KeyboardBridge />

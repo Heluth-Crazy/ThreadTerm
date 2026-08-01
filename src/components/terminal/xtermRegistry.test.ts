@@ -3,6 +3,7 @@ import type { Terminal } from '@xterm/xterm';
 import {
   claimTerminalActive,
   getTerminal,
+  getXtermRegistryDiagnostics,
   registerTerminal,
   unregisterTerminal,
 } from './xtermRegistry';
@@ -83,5 +84,18 @@ describe('xtermRegistry', () => {
     unregisterTerminal('pty-1');
 
     expect(getTerminal('pty-1')).toBeUndefined();
+  });
+
+  it('reports registration diagnostics for memory sampling', () => {
+    const main = mockTerminal({ baseY: 0, cursorY: 0, lines: {} });
+    const float = mockTerminal({ baseY: 1, cursorY: 1, lines: {} });
+    registerTerminal('pty-1', main);
+    registerTerminal('pty-2', float);
+    expect(getXtermRegistryDiagnostics()).toEqual({
+      registrationCount: 2,
+      distinctPtyIds: 2,
+      ptyIds: expect.arrayContaining(['pty-1', 'pty-2']),
+    });
+    unregisterTerminal('pty-2');
   });
 });
