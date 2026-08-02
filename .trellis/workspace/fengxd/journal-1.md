@@ -126,3 +126,36 @@ Added safe terminal type, startup command, and Agent history-session editing wit
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Superset Windows 内存与性能对比研究
+
+**Date**: 2026-08-02
+**Task**: Superset Windows 内存与性能对比研究
+**Branch**: `exp/windows-native-terminal-host`
+
+### Summary
+
+核验 Superset 正式发布与未合并 Windows 方案，整理多终端和大型仓库性能证据，并完成与 ThreadTerm 的中文对比及公平测试建议。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f72ff25` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
