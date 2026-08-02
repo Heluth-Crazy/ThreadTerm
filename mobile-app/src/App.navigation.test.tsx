@@ -86,7 +86,7 @@ describe('mobile App navigation', () => {
 
     expect(await screen.findByRole('heading', { name: '工作台' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '工作台' })).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByRole('button', { name: '终端' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '工作区' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '设置' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '通知' }));
@@ -96,11 +96,11 @@ describe('mobile App navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: '返回' }));
     expect(screen.getByRole('button', { name: '工作台' })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: '终端' }));
+    fireEvent.click(screen.getByRole('button', { name: '工作区' }));
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: '终端' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: '工作区' })).toBeInTheDocument();
     });
-    expect(screen.getByRole('button', { name: '终端' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('button', { name: '工作区' })).toHaveAttribute('aria-current', 'page');
   });
 
   it('keeps worktrees in the same project as separate terminal groups', () => {
@@ -165,7 +165,7 @@ describe('mobile App navigation', () => {
     );
 
     expect(await screen.findByRole('heading', { name: '工作台' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '终端' }));
+    fireEvent.click(screen.getByRole('button', { name: '工作区' }));
 
     const scope = await screen.findByRole('combobox', { name: '筛选项目' });
     expect(within(scope).getByRole('option', { name: 'Test' })).toBeInTheDocument();

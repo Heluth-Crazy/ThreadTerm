@@ -5,6 +5,9 @@
   "scripts": {
     "dev": "vite --host",
     "build": "vite build",
-    "test": "vitest run"
+    "test": "vitest run --config ../vitest.config.ts mobile-app/src",
+    "ios:dev": "echo ios:dev requires macOS/Xcode — see src-tauri/README.md",
+    "ios:build": "echo ios:build requires macOS/Xcode/signing — see src-tauri/README.md",
+    "ios:init": "echo Run on macOS: npx tauri ios init --config src-tauri/tauri.conf.json"
   }
 }

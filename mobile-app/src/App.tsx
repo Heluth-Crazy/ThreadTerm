@@ -83,8 +83,16 @@ import {
   RulesScreen,
   WorkbenchScreen,
 } from './workbench/MobileWorkbenchScreens';
+import {
+  WorkspaceShell,
+  syntheticTabsFromCards,
+  type DirtyCloseChoice,
+  type TerminalCloseChoice,
+} from './workspace';
+import type { WorkspaceTab } from '@shared/lib/workspace/types';
+import { LEGACY_CAPABILITIES, type BridgeCapability } from './bridge/types';
 
-type TabId = 'workbench' | 'terminal' | 'settings';
+type TabId = 'workbench' | 'workspaces' | 'settings';
 type SettingsSection =
   | 'connection'
   | 'permissions'
@@ -99,6 +107,7 @@ type MobileRoute =
   | { name: 'notifications' }
   | { name: 'rules' }
   | { name: 'terminal'; cardId: string }
+  | { name: 'workspace'; workspaceKey: string }
   | { name: 'new-terminal' }
   | { name: 'scanner' }
   | { name: 'settings-detail'; section: SettingsSection };
@@ -143,6 +152,13 @@ export function App() {
   const [recoveryNonce, setRecoveryNonce] = useState(0);
   const [tab, setTab] = useState<TabId>('workbench');
   const [routeStack, setRouteStack] = useState<MobileRoute[]>([]);
+  /** Per-device active tab id within a workspace shell (independent of desktop). */
+  const [deviceActiveTabByWorkspace, setDeviceActiveTabByWorkspace] = useState<
+    Record<string, string>
+  >({});
+  /** Legacy web advertises terminal-only; native secure sets full workspace caps. */
+  const bridgeCapabilities: readonly BridgeCapability[] = LEGACY_CAPABILITIES;
+  const secureWorkspaceReady = bridgeCapabilities.includes('workspace_tabs');
   const [themePreference, setThemePreference] = useState<MobileThemePreference>(
     themeControllerRef.current.getPreference(),
   );
@@ -212,7 +228,7 @@ export function App() {
     dispatch({ type: 'server-message', message });
     if (message.kind === 'spawn_result' && message.ok && message.card_id) {
       dispatch({ type: 'select-card', cardId: message.card_id });
-      setTab('terminal');
+      setTab('workspaces');
       setRouteStack([{ name: 'terminal', cardId: message.card_id }]);
     }
   }, [serverId]);
@@ -376,10 +392,51 @@ export function App() {
         project_path: trimmedProjectPath,
         ...(trimmedCommand ? { command: trimmedCommand } : {}),
       });
-      setTab('terminal');
+      setTab('workspaces');
       clearRoutes();
     },
     [canControl, clearRoutes, createRequestId, sendCommand],
+  );
+
+  const openWorkspace = useCallback(
+    (group: ProjectCardGroup) => {
+      setRouteStack((stack) => [...stack, { name: 'workspace', workspaceKey: group.key }]);
+      setDeviceActiveTabByWorkspace((prev) => ({
+        ...prev,
+        [group.key]: prev[group.key] ?? 'home',
+      }));
+    },
+    [],
+  );
+
+  const handleTerminalCloseChoice = useCallback(
+    (choice: TerminalCloseChoice, tabId: string, cardId: string | null) => {
+      if (choice === 'cancel') return;
+      if (choice === 'closeAndEnd' && cardId && canControl) {
+        sendCommand({ kind: 'close', request_id: createRequestId('close'), card_id: cardId });
+      }
+      // closeTabOnly: for legacy mode drop local synthetic tab selection only.
+      if (choice === 'closeTabOnly' || choice === 'closeAndEnd') {
+        setDeviceActiveTabByWorkspace((prev) => {
+          const next = { ...prev };
+          for (const [workspaceKey, activeId] of Object.entries(next)) {
+            if (activeId === tabId) next[workspaceKey] = 'home';
+          }
+          return next;
+        });
+      }
+    },
+    [canControl, createRequestId, sendCommand],
+  );
+
+  const handleDirtyCloseChoice = useCallback(
+    (choice: DirtyCloseChoice, _tabId: string) => {
+      // Secure v2 save/discard is wired when NativeSecureBridgeClient is active.
+      // Legacy web has no draft capability — keep tab open on cancel/readonly.
+      if (choice === 'cancel') return;
+      if (!secureWorkspaceReady) return;
+    },
+    [secureWorkspaceReady],
   );
 
   const sendInput = (data: string) => {
@@ -432,8 +489,8 @@ export function App() {
         />
       </div>
 
-      <div className={`mobile-root-layer ${tab === 'terminal' ? 'active' : ''}`} aria-hidden={tab !== 'terminal'}>
-        <TerminalScreen
+      <div className={`mobile-root-layer ${tab === 'workspaces' ? 'active' : ''}`} aria-hidden={tab !== 'workspaces'}>
+        <WorkspacesScreen
           activeCardId={state.activeCardId}
           cards={state.cards}
           canControl={canControl}
@@ -441,6 +498,7 @@ export function App() {
           onDeleteCard={requestClose}
           onNewSession={() => pushRoute({ name: 'new-terminal' })}
           onOpenCard={openCard}
+          onOpenWorkspace={openWorkspace}
           onRenameCard={requestRenameCard}
           warmingUp={state.warmingUp}
           wsStatus={bridge.state}
@@ -491,6 +549,33 @@ export function App() {
               permission={permission}
               terminalTheme={terminalTheme}
               wsStatus={bridge.state}
+            />
+          )}
+          {activeRoute.name === 'workspace' && (
+            <WorkspaceRoute
+              cards={state.cards}
+              canControl={canControl}
+              canSend={canSend}
+              deviceActiveTabId={deviceActiveTabByWorkspace[activeRoute.workspaceKey] ?? 'home'}
+              permission={permission}
+              recoveryNonce={recoveryNonce}
+              secureReady={secureWorkspaceReady}
+              terminalTheme={terminalTheme}
+              workspaceKey={activeRoute.workspaceKey}
+              wsStatus={bridge.state}
+              onActivateCard={requestActivate}
+              onBack={popRoute}
+              onDirtyCloseChoice={handleDirtyCloseChoice}
+              onNewTerminal={() => pushRoute({ name: 'new-terminal' })}
+              onOpenTerminalCard={openCard}
+              onSelectTab={(tabId) => {
+                setDeviceActiveTabByWorkspace((prev) => ({
+                  ...prev,
+                  [activeRoute.workspaceKey]: tabId,
+                }));
+              }}
+              onSendInput={sendInput}
+              onTerminalCloseChoice={handleTerminalCloseChoice}
             />
           )}
           {activeRoute.name === 'attention' && (
@@ -608,7 +693,7 @@ function PairingScreen({
   );
 }
 
-function TerminalScreen({
+function WorkspacesScreen({
   activeCardId,
   cards,
   canControl,
@@ -616,6 +701,7 @@ function TerminalScreen({
   onDeleteCard,
   onNewSession,
   onOpenCard,
+  onOpenWorkspace,
   onRenameCard,
   warmingUp,
   wsStatus,
@@ -627,6 +713,7 @@ function TerminalScreen({
   onDeleteCard: (cardId: string) => void;
   onNewSession: () => void;
   onOpenCard: (cardId: string) => void;
+  onOpenWorkspace: (group: ProjectCardGroup) => void;
   onRenameCard?: (cardId: string, projectName: string) => void;
   warmingUp: boolean;
   wsStatus: BridgeConnectionState;
@@ -650,11 +737,11 @@ function TerminalScreen({
       <header className="mobile-page-header safe-top">
         <div className="mobile-header-row">
           <div className="mobile-header-title">
-            <h1>{zh ? '终端' : 'Terminals'}</h1>
+            <h1>{t('workspaces.title')}</h1>
             <span>
               {segment === 'archived'
                 ? (zh ? '已归档会话' : 'Archived sessions')
-                : `${visibleCards.length} ${zh ? '个可见会话' : 'visible sessions'}`}
+                : `${allGroups.length} ${zh ? '个工作树' : 'worktrees'} · ${visibleCards.length} ${zh ? '个会话' : 'sessions'}`}
             </span>
           </div>
           <button
@@ -718,8 +805,8 @@ function TerminalScreen({
           </div>
         ) : groups.length === 0 ? (
           <div className="workbench-empty-state">
-            <span><SquareTerminal size={22} /></span>
-            <strong>{searchQuery ? (zh ? '没有匹配的终端' : 'No matching terminals') : (zh ? '还没有终端' : 'No terminals yet')}</strong>
+            <span><Boxes size={22} /></span>
+            <strong>{searchQuery ? (zh ? '没有匹配的工作区' : 'No matching workspaces') : (zh ? '还没有工作区' : 'No workspaces yet')}</strong>
             <p>{searchQuery ? (zh ? '尝试更换关键词或项目范围。' : 'Try another keyword or scope.') : t('instances.empty')}</p>
             {!searchQuery && canControl && <button type="button" onClick={onNewSession}>{t('instances.newSession')}</button>}
           </div>
@@ -727,7 +814,15 @@ function TerminalScreen({
           groups.map((group) => (
             <section className="section-block" key={group.key}>
               <div className="section-heading project-heading">
-                <h2>{projectGroupDisplayLabel(group)}</h2>
+                <button
+                  type="button"
+                  className="workspace-group-open"
+                  onClick={() => onOpenWorkspace(group)}
+                  data-testid={`open-workspace-${group.key}`}
+                >
+                  <h2>{projectGroupDisplayLabel(group)}</h2>
+                  <small>{t('workspaces.open')}</small>
+                </button>
                 <span>{group.cards.length}</span>
               </div>
               <div className="ios-list-card">
@@ -1639,13 +1734,13 @@ function TabBar({
         {unreadCount > 0 && <i className="tab-attention-dot" />}
       </button>
       <button
-        className={activeTab === 'terminal' ? 'tab-active' : ''}
+        className={activeTab === 'workspaces' ? 'tab-active' : ''}
         type="button"
-        aria-current={activeTab === 'terminal' ? 'page' : undefined}
-        onClick={() => onChange('terminal')}
+        aria-current={activeTab === 'workspaces' ? 'page' : undefined}
+        onClick={() => onChange('workspaces')}
       >
-        <SquareTerminal size={22} />
-        <span>{t('tab.terminal')}</span>
+        <Boxes size={22} />
+        <span>{t('tab.workspaces')}</span>
       </button>
       <button
         className={activeTab === 'settings' ? 'tab-active' : ''}
@@ -1657,6 +1752,106 @@ function TabBar({
         <span>{t('tab.settings')}</span>
       </button>
     </footer>
+  );
+}
+
+function WorkspaceRoute({
+  cards,
+  canControl,
+  canSend,
+  deviceActiveTabId,
+  permission,
+  recoveryNonce,
+  secureReady,
+  terminalTheme,
+  workspaceKey,
+  wsStatus,
+  onActivateCard,
+  onBack,
+  onDirtyCloseChoice,
+  onNewTerminal,
+  onOpenTerminalCard,
+  onSelectTab,
+  onSendInput,
+  onTerminalCloseChoice,
+}: {
+  cards: CardMeta[];
+  canControl: boolean;
+  canSend: boolean;
+  deviceActiveTabId: string;
+  permission: string;
+  recoveryNonce: number;
+  secureReady: boolean;
+  terminalTheme: ITheme;
+  workspaceKey: string;
+  wsStatus: BridgeConnectionState;
+  onActivateCard: (cardId: string) => void;
+  onBack: () => void;
+  onDirtyCloseChoice: (choice: DirtyCloseChoice, tabId: string) => void;
+  onNewTerminal: () => void;
+  onOpenTerminalCard: (cardId: string) => void;
+  onSelectTab: (tabId: string) => void;
+  onSendInput: (data: string) => void;
+  onTerminalCloseChoice: (
+    choice: TerminalCloseChoice,
+    tabId: string,
+    cardId: string | null,
+  ) => void;
+}) {
+  const groups = useMemo(() => groupCardsByProject(cards), [cards]);
+  const group = useMemo(
+    () => groups.find((item) => item.key === workspaceKey) ?? null,
+    [groups, workspaceKey],
+  );
+  const tabs: WorkspaceTab[] = useMemo(() => {
+    if (!group) return [];
+    return syntheticTabsFromCards({
+      workspaceKey,
+      projectName: group.projectName,
+      worktreePath: group.worktreePath,
+      cards: group.cards,
+    });
+  }, [group, workspaceKey]);
+
+  if (!group) {
+    return (
+      <DetailScaffold title="Workspace" onBack={onBack}>
+        <p className="empty-copy">Workspace is no longer available.</p>
+      </DetailScaffold>
+    );
+  }
+
+  return (
+    <WorkspaceShell
+      workspaceId={workspaceKey}
+      projectName={group.projectName}
+      projectPath={group.projectPath}
+      worktreePath={group.worktreePath}
+      branchLabel={group.branchLabel}
+      tabs={tabs}
+      deviceActiveTabId={deviceActiveTabId}
+      cards={group.cards}
+      permission={permission === 'full' ? 'full' : 'read_only'}
+      secureReady={secureReady}
+      wsStatus={wsStatus}
+      terminalTheme={terminalTheme}
+      recoveryNonce={recoveryNonce}
+      canSend={canSend}
+      onBack={onBack}
+      onSelectTab={onSelectTab}
+      onCloseTab={(tabId) => {
+        const tabItem = tabs.find((item) => item.id === tabId);
+        if (tabItem?.kind === 'terminal') {
+          onTerminalCloseChoice('closeTabOnly', tabId, tabItem.cardId ?? null);
+        }
+      }}
+      onOpenTerminalCard={onOpenTerminalCard}
+      onNewTerminal={canControl ? onNewTerminal : undefined}
+      onTerminalCloseChoice={onTerminalCloseChoice}
+      onDirtyCloseChoice={onDirtyCloseChoice}
+      onSendInput={onSendInput}
+      onActivateCard={onActivateCard}
+    />
   );
 }
 

@@ -1,0 +1,43 @@
+# ThreadTerm iOS secure client shell — minimal Tauri 2 crate.
+#
+# This crate intentionally does NOT depend on the desktop ThreadTerm backend
+# (PTY, files, Git, Agent, bridge server). It only hosts the shared mobile
+# React UI and registers secure-bridge / platform plugins.
+#
+# Full `cargo tauri ios` init, signing, and device builds require macOS + Xcode.
+# On Windows this crate is documentation + compile-shape only.
+
+[package]
+name = "threadterm-ios"
+version = "0.1.0"
+description = "ThreadTerm lightweight iOS workspace client (UI + secure transport only)"
+authors = ["ThreadTerm Contributors"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "threadterm_ios_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", default-features = false, features = ["wry"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+# Enable only when building on macOS with iOS tooling.
+ios-secure-plugin = []
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

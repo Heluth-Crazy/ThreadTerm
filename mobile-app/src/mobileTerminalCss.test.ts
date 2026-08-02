@@ -11,6 +11,7 @@ const expectedStylesheetImports = [
   './styles/06-settings.css',
   './styles/07-detail-routes.css',
   './styles/08-responsive.css',
+  './styles/09-workspace.css',
 ] as const;
 const stylesheetEntry = readFileSync(
   resolve(__dirname, 'styles.css'),
