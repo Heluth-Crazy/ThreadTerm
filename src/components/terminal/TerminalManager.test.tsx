@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { clearWorkspaceLoadCaches } from '../files/workspaceLoadCache';
+import { localWorkspaceAuthority } from '../../lib/workspace/localAuthority';
 import { TerminalManager } from './TerminalManager';
 
 const settingsWindowMocks = vi.hoisted(() => ({
@@ -70,6 +71,12 @@ vi.mock('../../theme/ThemeContext', () => ({
 vi.mock('../../lib/tauri-bridge', () => ({
   invoke: (...args: unknown[]) => bridgeMocks.invoke(...args),
   isTauriEnv: () => bridgeMocks.isTauriEnv(),
+  pty: {
+    kill: vi.fn().mockResolvedValue(undefined),
+    create: vi.fn().mockResolvedValue(undefined),
+    input: vi.fn().mockResolvedValue(undefined),
+    resize: vi.fn().mockResolvedValue(undefined),
+  },
   providerSessions: {
     listRecent: (...args: unknown[]) => bridgeMocks.listRecent(...args),
   },
@@ -203,6 +210,7 @@ describe('TerminalManager shortcut hint layout', () => {
   beforeEach(() => {
     resetStore();
     clearWorkspaceLoadCaches();
+    localWorkspaceAuthority.reset();
     vi.clearAllMocks();
     try {
       localStorage.removeItem('threadterm-shortcut-hint-dismissed');
@@ -568,8 +576,10 @@ describe('TerminalManager shortcut hint layout', () => {
     fireEvent.click(await screen.findByText('README.md'));
 
     expect(await screen.findByDisplayValue('old')).toBeInTheDocument();
+    // Terminal view stays mounted (hidden) while a file tab is active.
     expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '终端' })).toBeInTheDocument();
+    expect(screen.getByTestId('workspace-tab-home')).toBeInTheDocument();
+    expect(screen.getByTestId('workspace-tab-terminal')).toBeInTheDocument();
   });
 
   it('opens selected workspace changes as main-content diff tabs', async () => {
@@ -679,13 +689,16 @@ describe('TerminalManager shortcut hint layout', () => {
     expect(await screen.findByTestId('session-dock')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId(`session-dock-row-${repoId}`));
 
-    expect(await screen.findByRole('button', { name: '终端' })).toHaveClass('bg-primary/15');
-    expect(
-      document.querySelector('[data-terminal-context-menu="true"][title="/tmp/repo/README.md"]'),
-    ).not.toBeNull();
+    // Switching back restores the worktree's shared file tab metadata.
+    await waitFor(() => {
+      expect(
+        document.querySelector('[data-terminal-context-menu="true"][title="README.md"]'),
+      ).not.toBeNull();
+    });
+    expect(screen.getByTestId('workspace-tab-home')).toBeInTheDocument();
   });
 
-  it('retains dirty editor drafts and local component state across card switches', async () => {
+  it('retains dirty editor drafts across terminal switches in the same worktree', async () => {
     const store = useTerminalStore.getState();
     const firstId = store.createCard({
       projectName: 'first',
@@ -701,61 +714,25 @@ describe('TerminalManager shortcut hint layout', () => {
 
     render(<TerminalManager />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'README.md' }));
+    fireEvent.click(await screen.findByText('README.md'));
     const firstEditor = await screen.findByLabelText('code editor');
-    const firstLocalState = screen.getByLabelText('editor local state');
-
     fireEvent.change(firstEditor, { target: { value: 'dirty draft from first card' } });
-    fireEvent.change(firstLocalState, { target: { value: 'first editor selection state' } });
 
     await waitFor(() => {
-      expect(
-        document.querySelector(
-          '[data-terminal-context-menu][title="/tmp/repo/README.md"] .bg-warning',
-        ),
-      ).not.toBeNull();
+      expect(screen.getByLabelText('code editor')).toHaveValue('dirty draft from first card');
     });
 
+    // Shared worktree: file tab is still listed after another terminal is focused.
     act(() => {
       useTerminalStore.getState().focusCard(secondId);
     });
-
-    await waitFor(() => {
-      expect(screen.getByLabelText('code editor').closest('[aria-hidden]')).toHaveAttribute(
-        'aria-hidden',
-        'true',
-      );
-    });
-
-    fireEvent.click(await screen.findByRole('button', { name: 'README.md' }));
-
-    await waitFor(() => {
-      expect(screen.getAllByLabelText('code editor')).toHaveLength(2);
-    });
-    const secondEditor = screen
-      .getAllByLabelText('code editor')
-      .find((editor) => editor.closest('[aria-hidden]')?.getAttribute('aria-hidden') === 'false');
-    expect(secondEditor).toHaveValue('old');
-
-    act(() => {
-      useTerminalStore.getState().focusCard(firstId);
-    });
-
-    await waitFor(() => {
-      expect(screen.getAllByLabelText('code editor')).toHaveLength(1);
-    });
+    expect(
+      await screen.findAllByRole('button', { name: 'README.md' }),
+    ).not.toHaveLength(0);
     expect(screen.getByLabelText('code editor')).toHaveValue('dirty draft from first card');
-    expect(screen.getByLabelText('editor local state')).toHaveValue(
-      'first editor selection state',
-    );
-    expect(screen.getByLabelText('code editor').closest('[aria-hidden]')).toHaveAttribute(
-      'aria-hidden',
-      'false',
-    );
-    expect(bridgeMocks.readFile).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps a dirty Workspace draft and card when removal is cancelled', async () => {
+  it('keeps dirty worktree drafts when ending a terminal', async () => {
     const store = useTerminalStore.getState();
     const cardId = store.createCard({
       projectName: 'repo',
@@ -769,20 +746,20 @@ describe('TerminalManager shortcut hint layout', () => {
     fireEvent.change(await screen.findByLabelText('code editor'), {
       target: { value: 'unsaved draft' },
     });
-    nativeDialogMocks.confirmDialog.mockResolvedValueOnce(false);
 
-    let removed = true;
+    let removed = false;
     await act(async () => {
       removed = await window.__terminalManager!.requestRemoveCard(cardId);
     });
 
-    expect(removed).toBe(false);
-    expect(nativeDialogMocks.confirmDialog).toHaveBeenCalledTimes(1);
-    expect(useTerminalStore.getState().cards.some((card) => card.id === cardId)).toBe(true);
-    expect(screen.getByLabelText('code editor')).toHaveValue('unsaved draft');
+    // Ending a terminal does not require discarding durable worktree drafts.
+    expect(removed).toBe(true);
+    expect(nativeDialogMocks.confirmDialog).not.toHaveBeenCalled();
+    expect(useTerminalStore.getState().cards.some((card) => card.id === cardId)).toBe(false);
+    expect(screen.getAllByRole('button', { name: 'README.md' }).length).toBeGreaterThan(0);
   });
 
-  it('discards a dirty Workspace draft only after archive confirmation', async () => {
+  it('archives a terminal without deleting shared file tabs', async () => {
     const store = useTerminalStore.getState();
     const cardId = store.createCard({
       projectName: 'repo',
@@ -794,9 +771,8 @@ describe('TerminalManager shortcut hint layout', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'README.md' }));
     fireEvent.change(await screen.findByLabelText('code editor'), {
-      target: { value: 'discard me' },
+      target: { value: 'keep me' },
     });
-    nativeDialogMocks.confirmDialog.mockResolvedValueOnce(true);
 
     let archived = false;
     await act(async () => {
@@ -804,10 +780,11 @@ describe('TerminalManager shortcut hint layout', () => {
     });
 
     expect(archived).toBe(true);
-    expect(nativeDialogMocks.confirmDialog).toHaveBeenCalledTimes(1);
+    expect(nativeDialogMocks.confirmDialog).not.toHaveBeenCalled();
     expect(useTerminalStore.getState().cards).toHaveLength(0);
     expect(useTerminalStore.getState().archivedCards.map((card) => card.id)).toEqual([cardId]);
-    expect(screen.queryByLabelText('code editor')).toBeNull();
+    // Shared file tab remains in the worktree workspace.
+    expect(screen.getAllByRole('button', { name: 'README.md' }).length).toBeGreaterThan(0);
   });
 
   it('removes a clean card without prompting', async () => {
@@ -828,7 +805,7 @@ describe('TerminalManager shortcut hint layout', () => {
     expect(useTerminalStore.getState().cards).toHaveLength(0);
   });
 
-  it('reports a cancelled mobile close without dropping a dirty draft', async () => {
+  it('mobile close ends the terminal and keeps the shared file draft', async () => {
     bridgeMocks.isTauriEnv.mockReturnValue(true);
     const store = useTerminalStore.getState();
     const cardId = store.createCard({
@@ -844,7 +821,6 @@ describe('TerminalManager shortcut hint layout', () => {
     fireEvent.change(await screen.findByLabelText('code editor'), {
       target: { value: 'mobile-safe draft' },
     });
-    nativeDialogMocks.confirmDialog.mockResolvedValueOnce(false);
     const onRemove = bridgeMocks.onRemoveCard.mock.calls[0]?.[0] as
       | ((payload: { requestId: string; cardId: string }) => Promise<void>)
       | undefined;
@@ -856,13 +832,11 @@ describe('TerminalManager shortcut hint layout', () => {
 
     expect(bridgeMocks.resolveClose).toHaveBeenCalledWith({
       requestId: 'close-1',
-      ok: false,
+      ok: true,
       cardId,
-      errorCode: 'user_cancelled',
-      message: 'Close cancelled.',
     });
-    expect(useTerminalStore.getState().cards.some((card) => card.id === cardId)).toBe(true);
-    expect(screen.getByLabelText('code editor')).toHaveValue('mobile-safe draft');
+    expect(useTerminalStore.getState().cards.some((card) => card.id === cardId)).toBe(false);
+    expect(screen.getAllByRole('button', { name: 'README.md' }).length).toBeGreaterThan(0);
   });
 
   it('supports workspace tab context close actions without closing the terminal tab', async () => {
@@ -891,7 +865,7 @@ describe('TerminalManager shortcut hint layout', () => {
       return tab!;
     };
 
-    fireEvent.contextMenu(getWorkspaceTab('/tmp/repo/README.md'));
+    fireEvent.contextMenu(getWorkspaceTab('README.md'));
     expect(screen.getByTestId('workspace-tab-context-menu')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('menuitem', { name: '关闭除当前' }));
 
@@ -900,12 +874,17 @@ describe('TerminalManager shortcut hint layout', () => {
     expect(
       document.querySelector('[data-terminal-context-menu="true"][title="src/App.tsx"]'),
     ).toBeNull();
-    expect(screen.getByRole('button', { name: '终端' })).toBeInTheDocument();
+    // Close-others also closes other terminal tabs (home stays fixed).
+    expect(screen.queryByTestId('workspace-tab-terminal')).toBeNull();
 
-    fireEvent.contextMenu(getWorkspaceTab('/tmp/repo/README.md'));
+    fireEvent.contextMenu(getWorkspaceTab('README.md'));
     fireEvent.click(screen.getByRole('menuitem', { name: '关闭所有' }));
 
+    // All closable tabs go away; home remains and the shell can stay mounted.
+    await waitFor(() => {
+      expect(screen.queryByTestId('workspace-tab-file')).toBeNull();
+    });
     expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '终端' })).toBeNull();
+    expect(screen.getByTestId('workspace-tab-home')).toBeInTheDocument();
   });
 });

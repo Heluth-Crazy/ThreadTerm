@@ -72,9 +72,9 @@ export function useTerminalNavigation({
         returnPrimaryViewRef.current = primaryView;
       }
       setViewMode('focus');
-    } else {
-      setViewMode('grid');
     }
+    // Do not force grid when focus clears — workspace shell may stay open
+    // without a terminal (home tab / file tabs for the worktree).
     previousFocusedCardIdRef.current = focusedCardId;
   }, [focusedCardId, focusedCard, primaryView, setViewMode]);
 

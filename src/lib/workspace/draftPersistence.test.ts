@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { clearDraftPersistenceState, persistDesktopFileDraft } from './draftPersistence';
 
 const mocks = vi.hoisted(() => ({
-  isTauriEnv: vi.fn(() => true),
   ensure: vi.fn(),
   openTab: vi.fn(),
   ensureDraft: vi.fn(),
@@ -10,12 +9,8 @@ const mocks = vi.hoisted(() => ({
   applyDraftPatch: vi.fn(),
 }));
 
-vi.mock('../tauri-bridge', () => ({
-  isTauriEnv: () => mocks.isTauriEnv(),
-}));
-
-vi.mock('./api', () => ({
-  workspaceAuthority: {
+vi.mock('./client', () => ({
+  workspaceClient: {
     ensure: mocks.ensure,
     openTab: mocks.openTab,
     ensureDraft: mocks.ensureDraft,
@@ -31,11 +26,10 @@ describe('persistDesktopFileDraft', () => {
     vi.useRealTimers();
   });
 
-  it('no-ops outside Tauri or when clean', async () => {
-    mocks.isTauriEnv.mockReturnValue(false);
+  it('no-ops when clean or missing root', async () => {
     await expect(
       persistDesktopFileDraft({
-        rootPath: 'C:/proj',
+        rootPath: '',
         path: 'C:/proj/a.ts',
         title: 'a.ts',
         contents: 'x',
@@ -43,7 +37,6 @@ describe('persistDesktopFileDraft', () => {
       }),
     ).resolves.toBe('idle');
 
-    mocks.isTauriEnv.mockReturnValue(true);
     await expect(
       persistDesktopFileDraft({
         rootPath: 'C:/proj',

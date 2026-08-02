@@ -163,6 +163,55 @@ function installInPage(seed: FakeSeed): void {
   };
   const managedState = new Map<string, string | null>();
 
+  // In-page workspace authority store (mirrors desktop service contract).
+  type FakeWorkspaceTab = {
+    id: string;
+    workspaceId: string;
+    kind: string;
+    title: string;
+    cardId: string | null;
+    relativePath: string | null;
+    sharedOrder: number;
+    createdAtUnixMs: number;
+    updatedAtUnixMs: number;
+  };
+  type FakeWorkspaceDraft = {
+    workspaceId: string;
+    tabId: string;
+    revision: number;
+    dirty: boolean;
+    conflict: string;
+    baseModifiedUnixMs: number | null;
+    baseHash: string | null;
+    sizeBytes: number;
+    updatedAtUnixMs: number;
+    contents: string;
+  };
+  type FakeWorkspace = {
+    record: {
+      id: string;
+      canonicalRoot: string;
+      displayPath: string;
+      availability: string;
+      createdAtUnixMs: number;
+      updatedAtUnixMs: number;
+    };
+    tabs: Map<string, FakeWorkspaceTab>;
+    drafts: Map<string, FakeWorkspaceDraft>;
+    viewStates: Map<
+      string,
+      {
+        workspaceId: string;
+        surfaceId: string;
+        activeTabId: string;
+        lastSeenAtUnixMs: number;
+      }
+    >;
+  };
+  const workspaces = new Map<string, FakeWorkspace>();
+  const workspaceByRoot = new Map<string, string>();
+  let workspaceSeq = 1;
+
   const emitEvent = (event: string, payload: unknown): void => {
     const ids = eventListeners.get(event);
     if (!ids) return;
@@ -413,6 +462,224 @@ function installInPage(seed: FakeSeed): void {
           nodeVersion: null,
           claudeVersion: null,
         };
+
+      // ── workspace authority (child 2) ───────────────────────────────────
+      case 'workspace_ensure': {
+        const rootPath = String(a.rootPath ?? '').replace(/[\\/]+$/, '');
+        const existing = workspaceByRoot.get(rootPath);
+        if (existing) return workspaces.get(existing)?.record ?? null;
+        const id = `fake-ws-${workspaceSeq++}`;
+        const now = Date.now();
+        const record = {
+          id,
+          canonicalRoot: rootPath,
+          displayPath: rootPath,
+          availability: 'available',
+          createdAtUnixMs: now,
+          updatedAtUnixMs: now,
+        };
+        workspaces.set(id, {
+          record,
+          tabs: new Map(),
+          drafts: new Map(),
+          viewStates: new Map(),
+        });
+        workspaceByRoot.set(rootPath, id);
+        return record;
+      }
+      case 'workspace_get': {
+        return workspaces.get(String(a.workspaceId))?.record ?? null;
+      }
+      case 'workspace_list':
+        return [...workspaces.values()].map((ws) => ws.record);
+      case 'workspace_get_snapshot': {
+        const ws = workspaces.get(String(a.workspaceId));
+        if (!ws) throw new Error('workspace_not_found: missing');
+        return {
+          workspace: ws.record,
+          tabs: [...ws.tabs.values()].sort(
+            (left, right) => left.sharedOrder - right.sharedOrder,
+          ),
+          draftMetas: [...ws.drafts.values()].map(({ contents: _c, ...meta }) => meta),
+          viewStates: [...ws.viewStates.values()],
+          activeLeases: [],
+        };
+      }
+      case 'workspace_open_tab': {
+        const workspaceId = String(a.workspaceId);
+        const ws = workspaces.get(workspaceId);
+        if (!ws) throw new Error('workspace_not_found: missing');
+        const request = (a.request ?? {}) as Record<string, unknown>;
+        const kind = String(request.kind ?? 'file');
+        if (kind === 'home') {
+          return {
+            id: 'home',
+            workspaceId,
+            kind: 'home',
+            title: 'Home',
+            cardId: null,
+            relativePath: null,
+            sharedOrder: 0,
+            createdAtUnixMs: Date.now(),
+            updatedAtUnixMs: Date.now(),
+          };
+        }
+        let tabId = '';
+        if (kind === 'terminal') tabId = `terminal:${String(request.cardId)}`;
+        else if (kind === 'file') tabId = `file:${String(request.relativePath)}`;
+        else tabId = `diff:${String(request.relativePath)}`;
+        const existingTab = ws.tabs.get(tabId);
+        if (existingTab) return existingTab;
+        let maxOrder = 0;
+        for (const tab of ws.tabs.values()) maxOrder = Math.max(maxOrder, tab.sharedOrder);
+        const tab = {
+          id: tabId,
+          workspaceId,
+          kind,
+          title: String(request.title ?? tabId),
+          cardId: request.cardId ? String(request.cardId) : null,
+          relativePath: request.relativePath ? String(request.relativePath) : null,
+          sharedOrder: maxOrder + 1,
+          createdAtUnixMs: Date.now(),
+          updatedAtUnixMs: Date.now(),
+        };
+        ws.tabs.set(tabId, tab);
+        emitEvent('workspace://changed', {
+          type: 'tabsChanged',
+          workspaceId,
+          tabIds: [tabId],
+        });
+        return tab;
+      }
+      case 'workspace_reorder_tabs': {
+        const workspaceId = String(a.workspaceId);
+        const ws = workspaces.get(workspaceId);
+        if (!ws) throw new Error('workspace_not_found: missing');
+        const ordered = (a.orderedTabIds as string[]) ?? [];
+        let order = 1;
+        for (const tabId of ordered) {
+          if (tabId === 'home') continue;
+          const tab = ws.tabs.get(tabId);
+          if (tab) {
+            tab.sharedOrder = order;
+            order += 1;
+          }
+        }
+        return [...ws.tabs.values()].sort((left, right) => left.sharedOrder - right.sharedOrder);
+      }
+      case 'workspace_set_active_tab': {
+        const workspaceId = String(a.workspaceId);
+        const ws = workspaces.get(workspaceId);
+        if (!ws) throw new Error('workspace_not_found: missing');
+        const surfaceId = String(a.surfaceId ?? 'desktop:main');
+        const state = {
+          workspaceId,
+          surfaceId,
+          activeTabId: String(a.activeTabId),
+          lastSeenAtUnixMs: Date.now(),
+        };
+        ws.viewStates.set(surfaceId, state);
+        return state;
+      }
+      case 'workspace_prepare_close': {
+        const ws = workspaces.get(String(a.workspaceId));
+        if (!ws) throw new Error('workspace_not_found: missing');
+        const tabIds = (a.tabIds as string[]) ?? [];
+        const cleanTabIds: string[] = [];
+        const dirtyTabIds: string[] = [];
+        const conflictTabIds: string[] = [];
+        for (const tabId of tabIds) {
+          if (tabId === 'home') continue;
+          const draft = ws.drafts.get(tabId);
+          if (draft?.conflict && draft.conflict !== 'none') conflictTabIds.push(tabId);
+          else if (draft?.dirty) dirtyTabIds.push(tabId);
+          else cleanTabIds.push(tabId);
+        }
+        return { cleanTabIds, dirtyTabIds, conflictTabIds };
+      }
+      case 'workspace_commit_close': {
+        const workspaceId = String(a.workspaceId);
+        const ws = workspaces.get(workspaceId);
+        if (!ws) throw new Error('workspace_not_found: missing');
+        const decisions = (a.decisions as Array<{ tabId: string; kind: string }>) ?? [];
+        const closed: string[] = [];
+        for (const decision of decisions) {
+          if (decision.kind === 'keepOpen') continue;
+          ws.tabs.delete(decision.tabId);
+          ws.drafts.delete(decision.tabId);
+          closed.push(decision.tabId);
+        }
+        return closed;
+      }
+      case 'workspace_get_draft': {
+        const ws = workspaces.get(String(a.workspaceId));
+        return ws?.drafts.get(String(a.tabId)) ?? null;
+      }
+      case 'workspace_ensure_draft': {
+        const workspaceId = String(a.workspaceId);
+        const tabId = String(a.tabId);
+        const ws = workspaces.get(workspaceId);
+        if (!ws) throw new Error('workspace_not_found: missing');
+        const existing = ws.drafts.get(tabId);
+        if (existing) return existing;
+        const draft = {
+          workspaceId,
+          tabId,
+          revision: 0,
+          dirty: false,
+          conflict: 'none',
+          baseModifiedUnixMs: null,
+          baseHash: null,
+          sizeBytes: 0,
+          updatedAtUnixMs: Date.now(),
+          contents: '',
+        };
+        ws.drafts.set(tabId, draft);
+        return draft;
+      }
+      case 'workspace_apply_draft_patch': {
+        const patch = (a.patch ?? {}) as Record<string, unknown>;
+        const workspaceId = String(patch.workspaceId);
+        const tabId = String(patch.tabId);
+        const ws = workspaces.get(workspaceId);
+        if (!ws) throw new Error('workspace_not_found: missing');
+        const prev = ws.drafts.get(tabId) ?? {
+          workspaceId,
+          tabId,
+          revision: 0,
+          dirty: false,
+          conflict: 'none',
+          baseModifiedUnixMs: null,
+          baseHash: null,
+          sizeBytes: 0,
+          updatedAtUnixMs: Date.now(),
+          contents: '',
+        };
+        const contents = typeof patch.fullText === 'string' ? patch.fullText : prev.contents;
+        const next = {
+          ...prev,
+          contents,
+          revision: prev.revision + 1,
+          dirty: true,
+          sizeBytes: contents.length,
+          updatedAtUnixMs: Date.now(),
+        };
+        ws.drafts.set(tabId, next);
+        return { revision: next.revision, dirty: true, sizeBytes: next.sizeBytes };
+      }
+      case 'workspace_diagnostics':
+        return {
+          registeredWorkspaces: workspaces.size,
+          availableWorkspaces: workspaces.size,
+          tabCount: [...workspaces.values()].reduce((sum, ws) => sum + ws.tabs.size, 0),
+          dirtyDraftCount: 0,
+          conflictDraftCount: 0,
+          loadedDraftBytes: 0,
+          activeLeases: 0,
+          pendingPersistenceOps: 0,
+          persistenceFailures: 0,
+        };
+
       default:
         return null;
     }

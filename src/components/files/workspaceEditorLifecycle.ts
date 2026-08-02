@@ -3,8 +3,8 @@
  *
  * Hard protections (never unload):
  * - dirty tabs
- * - current (active) tab on the focused card
- * - diff tabs that are active on the focused card
+ * - current (active) tab on the selected workspace
+ * - diff tabs that are active on the selected workspace
  *
  * Clean inactive file tabs may stay mounted only while inside a small LRU
  * budget so rapid tab switches stay warm without unbounded CodeMirror growth.
@@ -13,17 +13,31 @@
 export const MAX_WARM_CLEAN_WORKSPACE_EDITORS = 2;
 
 export interface WorkspaceEditorMountCandidate {
-  cardId: string;
+  /** Workspace id (worktree-scoped). cardId kept as optional legacy alias. */
+  workspaceId: string;
   tabId: string;
   kind: 'file' | 'diff' | string;
   dirty: boolean;
   current: boolean;
-  focusedCard: boolean;
+  /** True when this workspace is the selected/active workspace shell. */
+  selectedWorkspace: boolean;
+  /** @deprecated use selectedWorkspace */
+  focusedCard?: boolean;
+  /** @deprecated use workspaceId */
+  cardId?: string;
 }
 
 export interface WorkspaceEditorMountDecision {
   mount: boolean;
   reason: 'dirty' | 'current' | 'diff-active' | 'warm-clean' | 'cold-clean';
+}
+
+function isSelected(candidate: WorkspaceEditorMountCandidate): boolean {
+  return candidate.selectedWorkspace || Boolean(candidate.focusedCard);
+}
+
+function scopeKey(candidate: WorkspaceEditorMountCandidate): string {
+  return `${candidate.workspaceId || candidate.cardId || ''}::${candidate.tabId}`;
 }
 
 /**
@@ -47,7 +61,7 @@ export function selectMountedWorkspaceEditors(
       decisions.push({ mount: true, reason: 'dirty' });
       continue;
     }
-    if (candidate.current && candidate.focusedCard) {
+    if (candidate.current && isSelected(candidate)) {
       protectedOnes.push(candidate);
       decisions.push({
         mount: true,
@@ -55,25 +69,20 @@ export function selectMountedWorkspaceEditors(
       });
       continue;
     }
-    // Warm budget only applies to clean inactive tabs on the focused card.
-    // Other cards keep tab metadata but unload clean editors to preserve
-    // per-session isolation.
-    if (candidate.focusedCard) {
+    // Warm budget only applies to clean inactive tabs on the selected workspace.
+    if (isSelected(candidate)) {
       cleanInactive.push(candidate);
       continue;
     }
     decisions.push({ mount: false, reason: 'cold-clean' });
   }
 
-  // Keep the most recently listed clean tabs (callers should pass LRU order).
-  // Note: Array#slice(-0) returns the full array, so treat 0 as "no warm set".
   const warmBudget = Math.max(0, warmCleanLimit);
-  const warmClean =
-    warmBudget === 0 ? [] : cleanInactive.slice(-warmBudget);
-  const warmIds = new Set(warmClean.map((c) => `${c.cardId}::${c.tabId}`));
+  const warmClean = warmBudget === 0 ? [] : cleanInactive.slice(-warmBudget);
+  const warmIds = new Set(warmClean.map((c) => scopeKey(c)));
 
   for (const candidate of cleanInactive) {
-    const key = `${candidate.cardId}::${candidate.tabId}`;
+    const key = scopeKey(candidate);
     if (warmIds.has(key)) {
       decisions.push({ mount: true, reason: 'warm-clean' });
     } else {
@@ -90,6 +99,6 @@ export function selectMountedWorkspaceEditors(
 /** Hard protection predicate used by tests and UI guards. */
 export function isWorkspaceEditorProtected(candidate: WorkspaceEditorMountCandidate): boolean {
   if (candidate.dirty) return true;
-  if (candidate.current && candidate.focusedCard) return true;
+  if (candidate.current && isSelected(candidate)) return true;
   return false;
 }

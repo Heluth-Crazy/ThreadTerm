@@ -24,12 +24,19 @@ import type {
 } from './types';
 import { DESKTOP_MAIN_SURFACE, WORKSPACE_EVENT_CHANNEL } from './types';
 
-const listen = (
-  typeof isTauriEnv === 'function' && isTauriEnv()
-    ? tauriListen
-    : async <T>(_event: string, _handler: (e: { payload: T }) => void): Promise<() => void> =>
-        () => {}
-);
+async function listenWorkspaceEvent<T>(
+  event: string,
+  handler: (e: { payload: T }) => void,
+): Promise<() => void> {
+  if (typeof isTauriEnv === 'function' && isTauriEnv()) {
+    try {
+      return await tauriListen<T>(event, handler);
+    } catch {
+      return () => {};
+    }
+  }
+  return () => {};
+}
 
 export const workspaceAuthority = {
   ensure: (rootPath: string): Promise<WorkspaceRecord> =>
@@ -190,5 +197,7 @@ export const workspaceAuthority = {
     invoke<WorkspaceDiagnostics>('workspace_diagnostics'),
 
   onEvent: (cb: (event: WorkspaceEvent) => void): Promise<() => void> =>
-    listen<WorkspaceEvent>(WORKSPACE_EVENT_CHANNEL, (e) => cb(e.payload)),
+    listenWorkspaceEvent<WorkspaceEvent>(WORKSPACE_EVENT_CHANNEL, (e) =>
+      cb(e.payload),
+    ),
 };

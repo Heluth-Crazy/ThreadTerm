@@ -16,6 +16,7 @@ import {
   deriveTerminalSurfacePhases,
   getMountedTerminalSurfaces,
 } from '../../lib/lifecycle/mountedTerminalSurfaces';
+import { getWorkspaceEditorDiagnostics } from '../../lib/lifecycle/workspaceEditorDiagnostics';
 import { getTerminalEventBridgeDiagnostics } from './TerminalEventBridge';
 import { getXtermRegistryDiagnostics } from './xtermRegistry';
 import { getHeadlessPreviewDiagnostics } from './headlessPreview';
@@ -113,12 +114,15 @@ export function LifecycleDiagnosticsHost(): null {
           pendingAckCount: bridge.pendingAckCount,
         };
       },
-      workspace: () => ({
-        tabCount: 0,
-        dirtyTabCount: 0,
-        activeTabCount: 0,
-        liveEditorInstanceCount: null,
-      }),
+      workspace: () => {
+        const sample = getWorkspaceEditorDiagnostics();
+        return {
+          tabCount: sample.tabCount,
+          dirtyTabCount: sample.dirtyTabCount,
+          activeTabCount: sample.activeTabCount,
+          liveEditorInstanceCount: sample.liveEditorInstanceCount,
+        };
+      },
     });
 
     return () => {

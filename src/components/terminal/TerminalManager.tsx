@@ -71,10 +71,16 @@ import type {
   WorkbenchPanelState,
 } from '../../lib/workbench/types';
 import {
-  WorkspaceContentTabStrip,
-} from './WorkspaceContentTabStrip';
-import { useWorkspaceContent } from './useWorkspaceContent';
+  DirtyTabCloseDialog,
+  TerminalTabCloseDialog,
+  useWorkspaceSession,
+  WorkspaceHome,
+  WorkspaceTabStrip,
+} from '../workspace';
+import { joinRootRelative } from '../../lib/workspace/paths';
 import { useTerminalConfigurationEditor } from './useTerminalConfigurationEditor';
+import type { GitStatusEntry } from '../../lib/tauri-bridge';
+import { publishWorkspaceEditorDiagnostics } from '../../lib/lifecycle/workspaceEditorDiagnostics';
 import { useMobileWorkbenchSync } from './useMobileWorkbenchSync';
 import {
   useTerminalNavigation,
@@ -261,8 +267,6 @@ export function TerminalManager() {
   );
   const primaryPageVisible =
     (viewMode === 'grid' || !focusedCard) && !mobileViewActive;
-  const workbenchVisible = primaryPageVisible && primaryView === 'workbench';
-  const terminalsVisible = primaryPageVisible && primaryView === 'terminals';
 
   // Live working directory of the focused card. Without command-block shell
   // integration, this stays anchored to the card's worktree/project path.
@@ -344,7 +348,72 @@ export function TerminalManager() {
     [toggleRightSurface],
   );
 
-  const workspaceRailVisible = viewMode === 'focus' && !!focusedCwd;
+  const workspaceSession = useWorkspaceSession({
+    cards,
+    focusedCardId,
+    selectedProjectPath,
+    selectedWorktreePath,
+    t,
+  });
+  const {
+    selectedWorkspaceId,
+    workspace,
+    workspaceRootPath,
+    workspaceUnavailable,
+    loading: workspaceLoading,
+    error: workspaceError,
+    tabs: workspaceTabs,
+    activeTabId: activeContentTabId,
+    dirtyByTabId: dirtyWorkspaceTabIds,
+    workspacePanelState,
+    homeActive,
+    terminalTabActive,
+    activeTerminalCardId,
+    activeWorkspaceFilePath,
+    activeWorkspaceDiffPath,
+    mountedWorkspaceContentViews,
+    workspaceCards,
+    terminalCloseRequest,
+    dirtyCloseRequest,
+    setActiveTabId: setActiveContentTabId,
+    openWorkspaceFile,
+    openWorkspaceDiff,
+    reorderTabs,
+    closeWorkspaceTab,
+    closeAllWorkspaceTabs,
+    closeOtherWorkspaceTabs,
+    resolveTerminalClose,
+    resolveDirtyClose,
+    markWorkspaceTabDirty,
+    handleWorkspacePanelStateChange,
+    activateTerminalForCard,
+    requestRemoveCard,
+    requestArchiveCard,
+    requestCardWorkspaceReset,
+    selectWorkspaceByRoot,
+    setWorkspaceShellOpen,
+    diagnostics: workspaceDiagnostics,
+  } = workspaceSession;
+  // Shell shows when focusing a terminal, or when the worktree was entered
+  // without a terminal (home). Leaving via primary-view/back clears shellOpen.
+  const workspaceShellVisible =
+    Boolean(selectedWorkspaceId) &&
+    !mobileViewActive &&
+    (viewMode === 'focus' || workspaceSession.workspaceShellOpen);
+  const workspaceTabsVisible = workspaceShellVisible;
+  // When the unified workspace shell is open, it owns the main content area.
+  const workbenchVisible =
+    primaryPageVisible && primaryView === 'workbench' && !workspaceShellVisible;
+  const terminalsVisible =
+    primaryPageVisible && primaryView === 'terminals' && !workspaceShellVisible;
+  // Shortcut hint / terminal chrome: active terminal tab, or the terminals grid.
+  const terminalContentActive =
+    terminalTabActive ||
+    (terminalsVisible && primaryView === 'terminals');
+  const workspaceRailCwd = focusedCwd || workspaceRootPath;
+  const workspaceRailVisible =
+    (viewMode === 'focus' && !!focusedCwd) ||
+    (workspaceShellVisible && !!workspaceRootPath);
   const workspacePanelVisible = workspaceRailVisible && !activeRightSurface;
   const statsPanelVisible = activeRightSurface === 'stats';
   const archivePanelVisible =
@@ -368,35 +437,6 @@ export function TerminalManager() {
   const statsOpen = activeRightSurface === 'stats';
   const archiveOpen = activeRightSurface === 'archive';
   const sessionRecoveryOpen = activeRightSurface === 'sessionRecovery';
-  const {
-    workspaceContentTabs,
-    activeContentTabId,
-    dirtyWorkspaceTabIds,
-    workspacePanelState,
-    terminalContentActive,
-    activeWorkspaceFilePath,
-    activeWorkspaceDiffPath,
-    mountedWorkspaceContentViews,
-    setActiveContentTabId,
-    openWorkspaceFileForCard,
-    openWorkspaceFile,
-    openWorkspaceDiff,
-    markWorkspaceTabDirty,
-    closeWorkspaceTab,
-    closeAllWorkspaceTabs,
-    closeOtherWorkspaceTabs,
-    requestRemoveCard,
-    requestArchiveCard,
-    requestCardWorkspaceReset,
-    handleWorkspacePanelStateChange,
-    activateTerminalForCard,
-  } = useWorkspaceContent({
-    cards,
-    focusedCardId,
-    t,
-  });
-  const workspaceTabsVisible =
-    viewMode === 'focus' && !!focusedCard && workspaceContentTabs.length > 0;
   const mobileBridgeSyncEnabled = useMobileWorkbenchSync({
     cards,
     mobileWorkbenchModel: allProjectsWorkbenchModel,
@@ -410,14 +450,25 @@ export function TerminalManager() {
     mountCardInBackground(focusedCardId);
   }, [focusedCardId, mountCardInBackground]);
 
+  useEffect(() => {
+    publishWorkspaceEditorDiagnostics({
+      tabCount: workspaceDiagnostics.tabCount,
+      dirtyTabCount: workspaceDiagnostics.dirtyTabCount,
+      activeTabCount: workspaceDiagnostics.activeTabCount,
+      liveEditorInstanceCount: workspaceDiagnostics.liveEditorInstanceCount,
+      selectedWorkspaceId: workspaceDiagnostics.selectedWorkspaceId,
+      conflictTabCount: workspaceDiagnostics.conflictTabCount,
+    });
+  }, [workspaceDiagnostics]);
+
   const {
     focusMountedCard,
-    handleBackToGrid,
+    handleBackToGrid: handleBackToGridBase,
     handleCloseWorkbenchPanel,
     handleOpenMobileAccess,
     handleOpenTerminal,
     handleOpenWorkbenchPanel,
-    handleSelectPrimaryView,
+    handleSelectPrimaryView: handleSelectPrimaryViewBase,
     handleSelectSessionDockCard,
   } = useTerminalNavigation({
     cards,
@@ -435,6 +486,17 @@ export function TerminalManager() {
     setViewMode,
     setWorkbenchPanel,
   });
+  const handleBackToGrid = useCallback(() => {
+    setWorkspaceShellOpen(false);
+    handleBackToGridBase();
+  }, [handleBackToGridBase, setWorkspaceShellOpen]);
+  const handleSelectPrimaryView = useCallback(
+    (view: typeof primaryView) => {
+      setWorkspaceShellOpen(false);
+      handleSelectPrimaryViewBase(view);
+    },
+    [handleSelectPrimaryViewBase, setWorkspaceShellOpen],
+  );
   const {
     editingCard,
     pendingConfiguration: pendingEditingConfiguration,
@@ -908,19 +970,28 @@ export function TerminalManager() {
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {workspaceTabsVisible && (
-          <WorkspaceContentTabStrip
-            tabs={workspaceContentTabs}
+          <WorkspaceTabStrip
+            tabs={workspaceTabs}
             activeTabId={activeContentTabId}
             dirtyTabIds={dirtyWorkspaceTabIds}
-            terminalLabel={t('codexChat.terminal', { defaultValue: 'Terminal' })}
+            homeLabel={t('workspace.homeTab', { defaultValue: 'Home' })}
             closeLabel={t('common.close', { defaultValue: 'Close' })}
-            closeCurrentLabel={t('workspace.closeCurrentTab', { defaultValue: '关闭当前' })}
-            closeAllLabel={t('workspace.closeAllTabs', { defaultValue: '关闭所有' })}
-            closeOthersLabel={t('workspace.closeOtherTabs', { defaultValue: '关闭除当前' })}
-            onActivate={setActiveContentTabId}
+            closeCurrentLabel={t('workspace.closeCurrentTab', { defaultValue: 'Close current' })}
+            closeAllLabel={t('workspace.closeAllTabs', { defaultValue: 'Close all' })}
+            closeOthersLabel={t('workspace.closeOtherTabs', { defaultValue: 'Close others' })}
+            onActivate={(tabId) => {
+              void setActiveContentTabId(tabId);
+              if (tabId.startsWith('terminal:')) {
+                const cardId = tabId.slice('terminal:'.length);
+                if (cardId) {
+                  focusMountedCard(cardId);
+                }
+              }
+            }}
             onClose={(tabId) => void closeWorkspaceTab(tabId)}
             onCloseAll={() => void closeAllWorkspaceTabs()}
             onCloseOthers={(tabId) => void closeOtherWorkspaceTabs(tabId)}
+            onReorder={(ids) => void reorderTabs(ids)}
           />
         )}
 
@@ -1008,12 +1079,34 @@ export function TerminalManager() {
           </div>
         )}
 
+        {/* Workspace home — no terminal required */}
+        {workspaceShellVisible && homeActive && (
+          <div className="absolute inset-0 z-[1] bg-background">
+            <WorkspaceHome
+              workspace={workspace}
+              workspaceCards={workspaceCards}
+              tabs={workspaceTabs}
+              dirtyByTabId={dirtyWorkspaceTabIds}
+              unavailable={workspaceUnavailable}
+              error={workspaceError}
+              onOpenTerminal={handleOpenTerminal}
+              onCreateTerminal={() => setCreateOpen(true)}
+              onActivateTab={(tabId) => void setActiveContentTabId(tabId)}
+              onRetry={() => {
+                if (workspaceRootPath) void selectWorkspaceByRoot(workspaceRootPath);
+              }}
+            />
+          </div>
+        )}
+
         {/* Persistent terminal views */}
         {cards
           .filter((c) => mountedIdsRef.current.includes(c.id))
           .map((c) => {
             const isCurrent =
-              viewMode === 'focus' && focusedCardId === c.id && terminalContentActive;
+              workspaceShellVisible &&
+              terminalTabActive &&
+              activeTerminalCardId === c.id;
             return (
               <div
                 key={c.id}
@@ -1039,14 +1132,18 @@ export function TerminalManager() {
             );
           })}
 
-        {mountedWorkspaceContentViews.map(({ cardId, tab }) => {
+        {mountedWorkspaceContentViews.map(({ workspaceId, rootPath, tab }) => {
           const isCurrent =
-            viewMode === 'focus' &&
-            focusedCardId === cardId &&
+            workspaceShellVisible &&
+            selectedWorkspaceId === workspaceId &&
             activeContentTabId === tab.id;
+          const absolutePath =
+            tab.relativePath != null
+              ? joinRootRelative(rootPath, tab.relativePath)
+              : rootPath;
           return (
             <div
-              key={`${cardId}\u001f${tab.id}`}
+              key={`${workspaceId}\u001f${tab.id}`}
               aria-hidden={!isCurrent}
               style={{ visibility: isCurrent ? 'visible' : 'hidden' }}
               className={[
@@ -1058,21 +1155,34 @@ export function TerminalManager() {
             >
               {tab.kind === 'file' ? (
                 <WorkspaceFileEditorView
-                  rootPath={tab.rootPath}
-                  path={tab.path}
+                  rootPath={rootPath}
+                  path={absolutePath}
                   active={isCurrent}
-                  onDirtyChange={(dirty) => markWorkspaceTabDirty(cardId, tab.id, dirty)}
-                />
-              ) : (
-                <WorkspaceDiffView
-                  change={tab.change}
-                  active={isCurrent}
-                  onOpenFile={(rootPath, entry) =>
-                    openWorkspaceFileForCard(cardId, rootPath, entry)
+                  onDirtyChange={(dirty) =>
+                    markWorkspaceTabDirty(workspaceId, tab.id, dirty)
                   }
-                  onDirtyChange={(dirty) => markWorkspaceTabDirty(cardId, tab.id, dirty)}
                 />
-              )}
+              ) : tab.kind === 'diff' && tab.relativePath ? (
+                <WorkspaceDiffView
+                  change={
+                    {
+                      path: tab.relativePath,
+                      absolutePath,
+                      repositoryRoot: rootPath,
+                      staged: null,
+                      unstaged: 'M',
+                      isUntracked: false,
+                    } satisfies GitStatusEntry
+                  }
+                  active={isCurrent}
+                  onOpenFile={(fileRoot, entry) => {
+                    void openWorkspaceFile(fileRoot, entry);
+                  }}
+                  onDirtyChange={(dirty) =>
+                    markWorkspaceTabDirty(workspaceId, tab.id, dirty)
+                  }
+                />
+              ) : null}
             </div>
           );
         })}
@@ -1092,15 +1202,19 @@ export function TerminalManager() {
               : 'w-80 shrink-0',
           ].join(' ')}
         >
-          {workspacePanelVisible && focusedCwd && (
+          {workspacePanelVisible && workspaceRailCwd && (
             <WorkspacePanel
-              rootCwd={focusedCwd}
+              rootCwd={workspaceRailCwd}
               state={workspacePanelState}
               activeFilePath={activeWorkspaceFilePath}
               activeDiffPath={activeWorkspaceDiffPath}
               onStateChange={handleWorkspacePanelStateChange}
-              onOpenFile={openWorkspaceFile}
-              onOpenDiff={openWorkspaceDiff}
+              onOpenFile={(rootPath, entry) => {
+                void openWorkspaceFile(rootPath, entry);
+              }}
+              onOpenDiff={(entry) => {
+                void openWorkspaceDiff(entry);
+              }}
             />
           )}
           {statsPanelVisible && <StatsPanel onClose={() => closeRightSurface('stats')} />}
@@ -1197,6 +1311,28 @@ export function TerminalManager() {
         onSubmit={submitTerminalConfiguration}
         onDiscardPending={discardPendingTerminalConfiguration}
         onLocateConflict={locateTerminalConfigurationConflict}
+      />
+
+      <TerminalTabCloseDialog
+        open={Boolean(terminalCloseRequest)}
+        title={terminalCloseRequest?.title ?? ''}
+        onChoose={(choice) => {
+          void resolveTerminalClose(choice);
+        }}
+      />
+      <DirtyTabCloseDialog
+        open={Boolean(dirtyCloseRequest)}
+        titles={
+          dirtyCloseRequest
+            ? dirtyCloseRequest.tabIds.map(
+                (id) => dirtyCloseRequest.titles[id] ?? id,
+              )
+            : []
+        }
+        conflict={Boolean(dirtyCloseRequest?.conflictTabIds.length)}
+        onChoose={(choice) => {
+          void resolveDirtyClose(choice);
+        }}
       />
 
       </div>

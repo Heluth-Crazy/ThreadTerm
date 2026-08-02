@@ -1,0 +1,756 @@
+/**
+ * Worktree-scoped workspace session: shared tabs/order/drafts via workspace
+ * service (or local authority), independent active tab for desktop:main.
+ */
+
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import type { TFunction } from 'i18next';
+import { useTerminalStore } from '../../stores/terminalStore';
+import type { TerminalCard } from '../../types/terminal';
+import type { GitStatusEntry } from '../../lib/tauri-bridge';
+import { effectiveWorktreePath } from '../../lib/worktreePaths';
+import { workspaceClient } from '../../lib/workspace/client';
+import {
+  DESKTOP_MAIN_SURFACE,
+  HOME_TAB_ID,
+  type CloseTabDecision,
+  type WorkspaceEvent,
+  type WorkspaceRecord,
+  type WorkspaceTab,
+} from '../../lib/workspace/types';
+import {
+  joinRootRelative,
+  pathBasename,
+  relativeFromRoot,
+} from '../../lib/workspace/paths';
+import type { DirEntry } from '../files/fileMeta';
+import type { WorkspacePanelState } from '../files/WorkspacePanel';
+import { selectMountedWorkspaceEditors } from '../files/workspaceEditorLifecycle';
+
+const DEFAULT_WORKSPACE_PANEL_STATE: WorkspacePanelState = {
+  tab: 'explorer',
+  selectedFilePath: null,
+  selectedChangePath: null,
+};
+
+export type TerminalCloseChoice = 'closeTabOnly' | 'closeAndEnd' | 'cancel';
+export type DirtyCloseChoice = 'saveAndClose' | 'discardAndClose' | 'cancel';
+
+export interface TerminalCloseRequest {
+  workspaceId: string;
+  tabId: string;
+  cardId: string;
+  title: string;
+}
+
+export interface DirtyCloseRequest {
+  workspaceId: string;
+  tabIds: string[];
+  titles: Record<string, string>;
+  /** Remaining clean tab ids already approved by prepare_close. */
+  cleanTabIds: string[];
+  conflictTabIds: string[];
+}
+
+export interface MountedWorkspaceContentView {
+  workspaceId: string;
+  rootPath: string;
+  tab: WorkspaceTab;
+}
+
+interface UseWorkspaceSessionOptions {
+  cards: TerminalCard[];
+  focusedCardId: string | null;
+  selectedProjectPath: string | null;
+  selectedWorktreePath: string | null;
+  t: TFunction<'terminal'>;
+}
+
+function activeTabFromSnapshot(
+  viewStates: { surfaceId: string; activeTabId: string }[],
+  tabIds: Set<string>,
+): string {
+  const desktop = viewStates.find((v) => v.surfaceId === DESKTOP_MAIN_SURFACE);
+  if (desktop && (desktop.activeTabId === HOME_TAB_ID || tabIds.has(desktop.activeTabId))) {
+    return desktop.activeTabId;
+  }
+  return HOME_TAB_ID;
+}
+
+export function useWorkspaceSession({
+  cards,
+  focusedCardId,
+  selectedProjectPath,
+  selectedWorktreePath,
+  t,
+}: UseWorkspaceSessionOptions) {
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
+  const [workspace, setWorkspace] = useState<WorkspaceRecord | null>(null);
+  const [tabs, setTabs] = useState<WorkspaceTab[]>([]);
+  const [activeTabId, setActiveTabIdState] = useState<string>(HOME_TAB_ID);
+  const [dirtyByTabId, setDirtyByTabId] = useState<Record<string, boolean>>({});
+  const [conflictByTabId, setConflictByTabId] = useState<Record<string, boolean>>({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [workspacePanelState, setWorkspacePanelState] = useState<WorkspacePanelState>(
+    DEFAULT_WORKSPACE_PANEL_STATE,
+  );
+  const [workspaceShellOpen, setWorkspaceShellOpen] = useState(false);
+
+  const [terminalCloseRequest, setTerminalCloseRequest] =
+    useState<TerminalCloseRequest | null>(null);
+  const [dirtyCloseRequest, setDirtyCloseRequest] = useState<DirtyCloseRequest | null>(null);
+  const selectedWorkspaceIdRef = useRef(selectedWorkspaceId);
+  selectedWorkspaceIdRef.current = selectedWorkspaceId;
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const dirtyByTabIdRef = useRef(dirtyByTabId);
+  dirtyByTabIdRef.current = dirtyByTabId;
+
+  const workspaceRootPath = workspace?.canonicalRoot ?? null;
+  const workspaceUnavailable = workspace?.availability === 'unavailable';
+
+  const applySnapshot = useCallback(
+    (snapshot: Awaited<ReturnType<typeof workspaceClient.getSnapshot>>) => {
+      setWorkspace(snapshot.workspace);
+      setSelectedWorkspaceId(snapshot.workspace.id);
+      setTabs(snapshot.tabs);
+      const tabIds = new Set(snapshot.tabs.map((tab) => tab.id));
+      setActiveTabIdState(activeTabFromSnapshot(snapshot.viewStates, tabIds));
+      const dirty: Record<string, boolean> = {};
+      const conflict: Record<string, boolean> = {};
+      for (const meta of snapshot.draftMetas) {
+        if (meta.dirty) dirty[meta.tabId] = true;
+        if (meta.conflict !== 'none') conflict[meta.tabId] = true;
+      }
+      setDirtyByTabId(dirty);
+      setConflictByTabId(conflict);
+      setError(null);
+    },
+    [],
+  );
+
+  const refreshSnapshot = useCallback(
+    async (workspaceId: string) => {
+      const snapshot = await workspaceClient.getSnapshot(workspaceId);
+      if (selectedWorkspaceIdRef.current && selectedWorkspaceIdRef.current !== workspaceId) {
+        return snapshot;
+      }
+      applySnapshot(snapshot);
+      return snapshot;
+    },
+    [applySnapshot],
+  );
+
+  const selectWorkspaceByRoot = useCallback(
+    async (rootPath: string, options?: { openShell?: boolean }) => {
+      const trimmed = rootPath.trim();
+      if (!trimmed) return null;
+      setLoading(true);
+      setError(null);
+      try {
+        const record = await workspaceClient.ensure(trimmed);
+        const snapshot = await workspaceClient.getSnapshot(record.id);
+        applySnapshot(snapshot);
+        if (options?.openShell !== false) {
+          setWorkspaceShellOpen(true);
+        }
+        return record;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        return null;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applySnapshot],
+  );
+
+  // Enter workspace when project/worktree selection changes.
+  // Selecting a concrete worktree opens the shell (home when no terminal).
+  // Project-only selection loads metadata without forcing the shell over workbench.
+  useEffect(() => {
+    const worktree = selectedWorktreePath?.trim() || null;
+    const project = selectedProjectPath?.trim() || null;
+    if (worktree) {
+      void selectWorkspaceByRoot(worktree, { openShell: true });
+      return;
+    }
+    if (project) {
+      void selectWorkspaceByRoot(project, { openShell: false });
+    }
+  }, [selectedProjectPath, selectedWorktreePath, selectWorkspaceByRoot]);
+
+  // Subscribe to shared tab/draft events for the selected workspace.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void workspaceClient.onEvent((event: WorkspaceEvent) => {
+      const workspaceId = selectedWorkspaceIdRef.current;
+      if (!workspaceId || cancelled) return;
+      if (!('workspaceId' in event) || event.workspaceId !== workspaceId) return;
+      if (event.type === 'tabsChanged' || event.type === 'workspaceChanged') {
+        void refreshSnapshot(workspaceId);
+        return;
+      }
+      if (event.type === 'draftRevision') {
+        setDirtyByTabId((current) => {
+          if (event.dirty) {
+            if (current[event.tabId]) return current;
+            return { ...current, [event.tabId]: true };
+          }
+          if (!current[event.tabId]) return current;
+          const { [event.tabId]: _removed, ...rest } = current;
+          return rest;
+        });
+        setConflictByTabId((current) => {
+          if (event.conflict !== 'none') {
+            if (current[event.tabId]) return current;
+            return { ...current, [event.tabId]: true };
+          }
+          if (!current[event.tabId]) return current;
+          const { [event.tabId]: _removed, ...rest } = current;
+          return rest;
+        });
+      }
+      if (event.type === 'conflict') {
+        setConflictByTabId((current) => {
+          if (event.conflict !== 'none') {
+            if (current[event.tabId]) return current;
+            return { ...current, [event.tabId]: true };
+          }
+          if (!current[event.tabId]) return current;
+          const { [event.tabId]: _removed, ...rest } = current;
+          return rest;
+        });
+      }
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [refreshSnapshot]);
+
+  const setActiveTabId = useCallback(
+    async (tabId: string) => {
+      const workspaceId = selectedWorkspaceIdRef.current;
+      setActiveTabIdState(tabId);
+      if (!workspaceId) return;
+      try {
+        await workspaceClient.setActiveTab(workspaceId, tabId, DESKTOP_MAIN_SURFACE);
+      } catch {
+        /* keep local active tab even if persistence fails */
+      }
+    },
+    [],
+  );
+
+  const openTerminalTab = useCallback(
+    async (card: TerminalCard) => {
+      const root = effectiveWorktreePath(card);
+      const record = await selectWorkspaceByRoot(root, { openShell: true });
+      if (!record) return;
+      const tab = await workspaceClient.openTab(record.id, {
+        kind: 'terminal',
+        title: card.projectName || pathBasename(root),
+        cardId: card.id,
+      });
+      await workspaceClient.setActiveTab(record.id, tab.id, DESKTOP_MAIN_SURFACE);
+      setActiveTabIdState(tab.id);
+      await refreshSnapshot(record.id);
+      setWorkspaceShellOpen(true);
+    },
+    [refreshSnapshot, selectWorkspaceByRoot],
+  );
+
+  const openWorkspaceFile = useCallback(
+    async (rootPath: string, entry: DirEntry) => {
+      const record = await selectWorkspaceByRoot(rootPath, { openShell: true });
+      if (!record) return;
+      const relativePath = relativeFromRoot(rootPath, entry.path);
+      const tab = await workspaceClient.openTab(record.id, {
+        kind: 'file',
+        title: entry.name || pathBasename(entry.path),
+        relativePath,
+      });
+      await workspaceClient.setActiveTab(record.id, tab.id, DESKTOP_MAIN_SURFACE);
+      setActiveTabIdState(tab.id);
+      setWorkspacePanelState((state) => ({
+        ...state,
+        selectedFilePath: entry.path,
+      }));
+      await refreshSnapshot(record.id);
+    },
+    [refreshSnapshot, selectWorkspaceByRoot],
+  );
+
+  const openWorkspaceDiff = useCallback(
+    async (entry: GitStatusEntry) => {
+      const root = entry.repositoryRoot;
+      const record = await selectWorkspaceByRoot(root, { openShell: true });
+      if (!record) return;
+      const relativePath = relativeFromRoot(root, entry.path);
+      const tab = await workspaceClient.openTab(record.id, {
+        kind: 'diff',
+        title: pathBasename(entry.path),
+        relativePath,
+      });
+      await workspaceClient.setActiveTab(record.id, tab.id, DESKTOP_MAIN_SURFACE);
+      setActiveTabIdState(tab.id);
+      setWorkspacePanelState((state) => ({
+        ...state,
+        selectedChangePath: entry.path,
+      }));
+      await refreshSnapshot(record.id);
+    },
+    [refreshSnapshot, selectWorkspaceByRoot],
+  );
+
+  const reorderTabs = useCallback(
+    async (orderedTabIds: string[]) => {
+      const workspaceId = selectedWorkspaceIdRef.current;
+      if (!workspaceId) return;
+      const withoutHome = orderedTabIds.filter((id) => id !== HOME_TAB_ID);
+      const next = await workspaceClient.reorderTabs(workspaceId, withoutHome);
+      setTabs(next);
+    },
+    [],
+  );
+
+  const commitCloseDecisions = useCallback(
+    async (workspaceId: string, decisions: CloseTabDecision[]) => {
+      const closed = await workspaceClient.commitClose(workspaceId, decisions);
+      await refreshSnapshot(workspaceId);
+      if (closed.includes(activeTabId)) {
+        const remaining = tabsRef.current.filter((tab) => !closed.includes(tab.id));
+        const nextActive =
+          remaining.find((tab) => tab.id === activeTabId)?.id ??
+          remaining[remaining.length - 1]?.id ??
+          HOME_TAB_ID;
+        await setActiveTabId(nextActive);
+      }
+      return closed;
+    },
+    [activeTabId, refreshSnapshot, setActiveTabId],
+  );
+
+  const removeTerminalTabForCard = useCallback(async (cardId: string) => {
+    const workspaceId = selectedWorkspaceIdRef.current;
+    if (workspaceId) {
+      const tabId = `terminal:${cardId}`;
+      const has = tabsRef.current.some((tab) => tab.id === tabId);
+      if (has) {
+        await workspaceClient.commitClose(workspaceId, [
+          { tabId, kind: 'closeClean' },
+        ]);
+        await refreshSnapshot(workspaceId);
+      }
+    }
+  }, [refreshSnapshot]);
+
+  const resolveTerminalClose = useCallback(
+    async (choice: TerminalCloseChoice): Promise<'closed' | 'ended' | 'cancelled'> => {
+      const request = terminalCloseRequest;
+      setTerminalCloseRequest(null);
+      if (!request) return 'cancelled';
+      if (choice === 'cancel') return 'cancelled';
+      if (choice === 'closeTabOnly') {
+        await commitCloseDecisions(request.workspaceId, [
+          { tabId: request.tabId, kind: 'closeClean' },
+        ]);
+        return 'closed';
+      }
+      const store = useTerminalStore.getState();
+      if (store.cards.some((card) => card.id === request.cardId)) {
+        await removeTerminalTabForCard(request.cardId);
+        store.removeCard(request.cardId);
+      }
+      return 'ended';
+    },
+    [commitCloseDecisions, removeTerminalTabForCard, terminalCloseRequest],
+  );
+
+  const resolveDirtyClose = useCallback(
+    async (choice: DirtyCloseChoice) => {
+      const request = dirtyCloseRequest;
+      if (!request) return;
+      if (choice === 'cancel' || request.conflictTabIds.length > 0) {
+        setDirtyCloseRequest(null);
+        pendingContentCloseRef.current = null;
+        return;
+      }
+      const decisions: CloseTabDecision[] = [
+        ...request.cleanTabIds.map((tabId) => ({
+          tabId,
+          kind: 'closeClean' as const,
+        })),
+        ...request.tabIds.map((tabId) => ({
+          tabId,
+          kind:
+            choice === 'saveAndClose'
+              ? ('saveAndClose' as const)
+              : ('discardAndClose' as const),
+        })),
+      ];
+      try {
+        await commitCloseDecisions(request.workspaceId, decisions);
+        setDirtyCloseRequest(null);
+        pendingContentCloseRef.current = null;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.startsWith('file_conflict')) {
+          setDirtyCloseRequest({
+            ...request,
+            conflictTabIds: request.tabIds,
+          });
+          return;
+        }
+        setError(message);
+        setDirtyCloseRequest(null);
+      }
+    },
+    [commitCloseDecisions, dirtyCloseRequest],
+  );
+
+  const pendingContentCloseRef = useRef<string[] | null>(null);
+
+  const closeTabsViaCoordinator = useCallback(
+    async (tabIds: string[]): Promise<boolean> => {
+      const workspaceId = selectedWorkspaceIdRef.current;
+      if (!workspaceId || tabIds.length === 0) return true;
+      const targets = tabIds.filter((id) => id !== HOME_TAB_ID);
+      if (targets.length === 0) return true;
+
+      const currentTabs = tabsRef.current;
+      // Single terminal close → dialog (default path from tab X button).
+      if (targets.length === 1) {
+        const only = currentTabs.find((tab) => tab.id === targets[0]);
+        if (only?.kind === 'terminal' && only.cardId) {
+          setTerminalCloseRequest({
+            workspaceId,
+            tabId: only.id,
+            cardId: only.cardId,
+            title: only.title,
+          });
+          return false;
+        }
+      }
+
+      const terminalTargets = targets.filter((id) =>
+        currentTabs.some((tab) => tab.id === id && tab.kind === 'terminal'),
+      );
+      const contentTargets = targets.filter((id) => !terminalTargets.includes(id));
+
+      // Bulk: close terminal tabs as close-tab-only (no end) without per-tab dialogs.
+      for (const tabId of terminalTargets) {
+        await commitCloseDecisions(workspaceId, [{ tabId, kind: 'closeClean' }]);
+      }
+
+      if (contentTargets.length === 0) return true;
+
+      const prepared = await workspaceClient.prepareClose(workspaceId, contentTargets);
+      if (prepared.conflictTabIds.length > 0) {
+        setDirtyCloseRequest({
+          workspaceId,
+          tabIds: prepared.dirtyTabIds,
+          titles: Object.fromEntries(
+            contentTargets.map((id) => {
+              const tab = currentTabs.find((item) => item.id === id);
+              return [id, tab?.title ?? id];
+            }),
+          ),
+          cleanTabIds: prepared.cleanTabIds,
+          conflictTabIds: prepared.conflictTabIds,
+        });
+        return false;
+      }
+
+      if (prepared.dirtyTabIds.length === 0) {
+        await commitCloseDecisions(
+          workspaceId,
+          prepared.cleanTabIds.map((tabId) => ({ tabId, kind: 'closeClean' as const })),
+        );
+        return true;
+      }
+
+      pendingContentCloseRef.current = contentTargets;
+      setDirtyCloseRequest({
+        workspaceId,
+        tabIds: prepared.dirtyTabIds,
+        titles: Object.fromEntries(
+          prepared.dirtyTabIds.map((id) => {
+            const tab = currentTabs.find((item) => item.id === id);
+            return [id, tab?.title ?? id];
+          }),
+        ),
+        cleanTabIds: prepared.cleanTabIds,
+        conflictTabIds: [],
+      });
+      return false;
+    },
+    [commitCloseDecisions],
+  );
+
+  const closeWorkspaceTab = useCallback(
+    (tabId: string) => closeTabsViaCoordinator([tabId]),
+    [closeTabsViaCoordinator],
+  );
+
+  const closeAllWorkspaceTabs = useCallback(
+    () => closeTabsViaCoordinator(tabsRef.current.map((tab) => tab.id)),
+    [closeTabsViaCoordinator],
+  );
+
+  const closeOtherWorkspaceTabs = useCallback(
+    (tabId: string) =>
+      closeTabsViaCoordinator(
+        tabsRef.current.filter((tab) => tab.id !== tabId).map((tab) => tab.id),
+      ),
+    [closeTabsViaCoordinator],
+  );
+
+  const requestCardExit = useCallback(
+    async (cardId: string, action: 'remove' | 'archive'): Promise<boolean> => {
+      const store = useTerminalStore.getState();
+      if (!store.cards.some((card) => card.id === cardId)) return false;
+
+      // Only remove the terminal tab — keep file/diff drafts for the worktree.
+      await removeTerminalTabForCard(cardId);
+
+      if (!useTerminalStore.getState().cards.some((card) => card.id === cardId)) {
+        return false;
+      }
+      if (action === 'archive') {
+        store.archiveCard(cardId);
+      } else {
+        store.removeCard(cardId);
+      }
+      return true;
+    },
+    [removeTerminalTabForCard],
+  );
+
+  const requestRemoveCard = useCallback(
+    (cardId: string) => requestCardExit(cardId, 'remove'),
+    [requestCardExit],
+  );
+
+  const requestArchiveCard = useCallback(
+    (cardId: string) => requestCardExit(cardId, 'archive'),
+    [requestCardExit],
+  );
+
+  /**
+   * Directory/config change: drop only this terminal tab; do not migrate or
+   * delete file/diff drafts belonging to the previous worktree.
+   */
+  const requestCardWorkspaceReset = useCallback(
+    async (cardId: string): Promise<boolean> => {
+      const store = useTerminalStore.getState();
+      if (!store.cards.some((card) => card.id === cardId)) return false;
+      await removeTerminalTabForCard(cardId);
+      return true;
+    },
+    [removeTerminalTabForCard],
+  );
+
+  const markWorkspaceTabDirty = useCallback(
+    (workspaceId: string, tabId: string, dirty: boolean) => {
+      const alreadyDirty = Boolean(dirtyByTabIdRef.current[tabId]);
+      if (dirty === alreadyDirty) return;
+      setDirtyByTabId((current) => {
+        if (dirty) {
+          if (current[tabId]) return current;
+          return { ...current, [tabId]: true };
+        }
+        if (!current[tabId]) return current;
+        const { [tabId]: _removed, ...rest } = current;
+        return rest;
+      });
+      workspaceClient.markDirtyLocal(workspaceId, tabId, dirty);
+    },
+    [],
+  );
+
+  const handleWorkspacePanelStateChange = useCallback((panelState: WorkspacePanelState) => {
+    setWorkspacePanelState(panelState);
+  }, []);
+
+  const activateTerminalForCard = useCallback(
+    (cardId: string) => {
+      const card = useTerminalStore.getState().cards.find((item) => item.id === cardId);
+      if (!card) {
+        void setActiveTabId(HOME_TAB_ID);
+        return;
+      }
+      void openTerminalTab(card);
+    },
+    [openTerminalTab, setActiveTabId],
+  );
+
+  // When focusing a card, open/focus its terminal tab in the shared workspace.
+  const lastFocusedTerminalRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusedCardId) {
+      lastFocusedTerminalRef.current = null;
+      return;
+    }
+    if (lastFocusedTerminalRef.current === focusedCardId) return;
+    lastFocusedTerminalRef.current = focusedCardId;
+    const card = cards.find((item) => item.id === focusedCardId);
+    if (!card) return;
+    void openTerminalTab(card);
+  }, [focusedCardId, cards, openTerminalTab]);
+
+  const activeTab =
+    activeTabId === HOME_TAB_ID
+      ? null
+      : tabs.find((tab) => tab.id === activeTabId) ?? null;
+
+  const homeActive = activeTabId === HOME_TAB_ID;
+  const terminalTabActive = activeTab?.kind === 'terminal';
+  const activeTerminalCardId =
+    activeTab?.kind === 'terminal' ? activeTab.cardId ?? null : null;
+
+  const activeWorkspaceFilePath = useMemo(() => {
+    if (activeTab?.kind !== 'file' || !activeTab.relativePath || !workspaceRootPath) {
+      return null;
+    }
+    return joinRootRelative(workspaceRootPath, activeTab.relativePath);
+  }, [activeTab, workspaceRootPath]);
+
+  const activeWorkspaceDiffPath = useMemo(() => {
+    if (activeTab?.kind !== 'diff' || !activeTab.relativePath) return null;
+    return activeTab.relativePath;
+  }, [activeTab]);
+
+  const mountedWorkspaceContentViews = useMemo((): MountedWorkspaceContentView[] => {
+    if (!selectedWorkspaceId || !workspaceRootPath) return [];
+    const candidates = tabs
+      .filter((tab) => tab.kind === 'file' || tab.kind === 'diff')
+      .map((tab) => ({
+        workspaceId: selectedWorkspaceId,
+        tabId: tab.id,
+        kind: tab.kind,
+        dirty: Boolean(dirtyByTabId[tab.id]),
+        current: activeTabId === tab.id,
+        selectedWorkspace: true,
+        tab,
+      }));
+
+    const { mounted } = selectMountedWorkspaceEditors(
+      candidates.map((candidate) => ({
+        workspaceId: candidate.workspaceId,
+        tabId: candidate.tabId,
+        kind: candidate.kind,
+        dirty: candidate.dirty,
+        current: candidate.current,
+        selectedWorkspace: candidate.selectedWorkspace,
+      })),
+    );
+    const mountedKeys = new Set(mounted.map((item) => `${item.workspaceId}::${item.tabId}`));
+    return candidates
+      .filter((candidate) =>
+        mountedKeys.has(`${candidate.workspaceId}::${candidate.tabId}`),
+      )
+      .map(({ workspaceId, tab }) => ({
+        workspaceId,
+        rootPath: workspaceRootPath,
+        tab,
+      }));
+  }, [
+    activeTabId,
+    dirtyByTabId,
+    selectedWorkspaceId,
+    tabs,
+    workspaceRootPath,
+  ]);
+
+  const orderedStripTabs = useMemo(() => {
+    return [...tabs].sort((a, b) => a.sharedOrder - b.sharedOrder);
+  }, [tabs]);
+
+  const workspaceCards = useMemo(() => {
+    if (!workspaceRootPath) return [];
+    return cards.filter(
+      (card) =>
+        effectiveWorktreePath(card).replace(/\\/g, '/').toLowerCase() ===
+        workspaceRootPath.replace(/\\/g, '/').toLowerCase(),
+    );
+  }, [cards, workspaceRootPath]);
+
+  const diagnostics = useMemo(
+    () => ({
+      selectedWorkspaceId,
+      tabCount: tabs.length + (selectedWorkspaceId ? 1 : 0), // include home when selected
+      dirtyTabCount: Object.values(dirtyByTabId).filter(Boolean).length,
+      conflictTabCount: Object.values(conflictByTabId).filter(Boolean).length,
+      activeTabCount: selectedWorkspaceId ? 1 : 0,
+      liveEditorInstanceCount: mountedWorkspaceContentViews.length,
+    }),
+    [
+      conflictByTabId,
+      dirtyByTabId,
+      mountedWorkspaceContentViews.length,
+      selectedWorkspaceId,
+      tabs.length,
+    ],
+  );
+
+  return {
+    selectedWorkspaceId,
+    workspace,
+    workspaceRootPath,
+    workspaceUnavailable,
+    loading,
+    error,
+    tabs: orderedStripTabs,
+    activeTabId,
+    dirtyByTabId,
+    conflictByTabId,
+    workspacePanelState,
+    workspaceShellOpen,
+    setWorkspaceShellOpen,
+    homeActive,
+    terminalTabActive,
+    activeTerminalCardId,
+    activeWorkspaceFilePath,
+    activeWorkspaceDiffPath,
+    mountedWorkspaceContentViews,
+    workspaceCards,
+    diagnostics,
+    terminalCloseRequest,
+    dirtyCloseRequest,
+    selectWorkspaceByRoot,
+    setActiveTabId,
+    openTerminalTab,
+    openWorkspaceFile,
+    openWorkspaceDiff,
+    reorderTabs,
+    closeWorkspaceTab,
+    closeAllWorkspaceTabs,
+    closeOtherWorkspaceTabs,
+    resolveTerminalClose,
+    resolveDirtyClose,
+    markWorkspaceTabDirty,
+    handleWorkspacePanelStateChange,
+    activateTerminalForCard,
+    requestRemoveCard,
+    requestArchiveCard,
+    requestCardWorkspaceReset,
+    refreshSnapshot,
+    t,
+  };
+}
+
+export type WorkspaceSession = ReturnType<typeof useWorkspaceSession>;

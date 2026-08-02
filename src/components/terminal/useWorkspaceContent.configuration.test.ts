@@ -1,17 +1,9 @@
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import type { TFunction } from 'i18next';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { useTerminalStore } from '../../stores/terminalStore';
-import { useWorkspaceContent } from './useWorkspaceContent';
-
-const dialogMocks = vi.hoisted(() => ({
-  confirmDialog: vi.fn(),
-}));
-
-vi.mock('../../lib/nativeDialog', () => ({
-  confirmDialog: (...args: unknown[]) =>
-    dialogMocks.confirmDialog(...args),
-}));
+import { localWorkspaceAuthority } from '../../lib/workspace/localAuthority';
+import { useWorkspaceSession } from '../workspace/useWorkspaceSession';
 
 const t = ((
   key: string,
@@ -23,16 +15,19 @@ function resetStore() {
     cards: [],
     archivedCards: [],
     pendingTerminalConfigurations: {},
+    focusedCardId: null,
+    selectedProjectPath: null,
+    selectedWorktreePath: null,
   });
 }
 
-describe('useWorkspaceContent terminal configuration reset', () => {
+describe('useWorkspaceSession terminal configuration reset', () => {
   beforeEach(() => {
     resetStore();
-    dialogMocks.confirmDialog.mockReset();
+    localWorkspaceAuthority.reset();
   });
 
-  it('keeps dirty workspace tabs when the user cancels a directory change', async () => {
+  it('keeps file drafts when the terminal directory is reset', async () => {
     const id = useTerminalStore.getState().createCard({
       projectName: 'repo',
       projectPath: '/repo',
@@ -40,59 +35,26 @@ describe('useWorkspaceContent terminal configuration reset', () => {
     });
     const cards = useTerminalStore.getState().cards;
     const { result } = renderHook(() =>
-      useWorkspaceContent({
+      useWorkspaceSession({
         cards,
         focusedCardId: id,
+        selectedProjectPath: '/repo',
+        selectedWorktreePath: null,
         t,
       }),
     );
-    act(() => {
-      result.current.openWorkspaceFileForCard(id, '/repo', {
-        name: 'app.ts',
-        path: '/repo/app.ts',
-        isDir: false,
-        isHidden: false,
-      });
-    });
-    const tabId = result.current.workspaceContentTabs[0]?.id ?? '';
-    act(() => result.current.markWorkspaceTabDirty(id, tabId, true));
-    dialogMocks.confirmDialog.mockResolvedValue(false);
 
-    let allowed = true;
+    await waitFor(() => expect(result.current.selectedWorkspaceId).toBeTruthy());
     await act(async () => {
-      allowed = await result.current.requestCardWorkspaceReset(id);
-    });
-
-    expect(allowed).toBe(false);
-    expect(result.current.workspaceContentTabs).toHaveLength(1);
-    expect(dialogMocks.confirmDialog).toHaveBeenCalledTimes(1);
-  });
-
-  it('clears the card workspace only after dirty changes are confirmed', async () => {
-    const id = useTerminalStore.getState().createCard({
-      projectName: 'repo',
-      projectPath: '/repo',
-      terminalType: 'shell',
-    });
-    const cards = useTerminalStore.getState().cards;
-    const { result } = renderHook(() =>
-      useWorkspaceContent({
-        cards,
-        focusedCardId: id,
-        t,
-      }),
-    );
-    act(() => {
-      result.current.openWorkspaceFileForCard(id, '/repo', {
+      await result.current.openWorkspaceFile('/repo', {
         name: 'app.ts',
         path: '/repo/app.ts',
         isDir: false,
         isHidden: false,
       });
     });
-    const tabId = result.current.workspaceContentTabs[0]?.id ?? '';
-    act(() => result.current.markWorkspaceTabDirty(id, tabId, true));
-    dialogMocks.confirmDialog.mockResolvedValue(true);
+    const tabId = result.current.tabs.find((tab) => tab.kind === 'file')?.id ?? '';
+    act(() => result.current.markWorkspaceTabDirty(result.current.selectedWorkspaceId!, tabId, true));
 
     let allowed = false;
     await act(async () => {
@@ -100,6 +62,46 @@ describe('useWorkspaceContent terminal configuration reset', () => {
     });
 
     expect(allowed).toBe(true);
-    expect(result.current.workspaceContentTabs).toHaveLength(0);
+    // File draft/tab remains for the worktree; only the terminal tab is dropped.
+    expect(result.current.tabs.some((tab) => tab.id === tabId)).toBe(true);
+    expect(result.current.tabs.some((tab) => tab.kind === 'terminal')).toBe(false);
+  });
+
+  it('allows directory change without discarding shared dirty drafts', async () => {
+    const id = useTerminalStore.getState().createCard({
+      projectName: 'repo',
+      projectPath: '/repo',
+      terminalType: 'shell',
+    });
+    const cards = useTerminalStore.getState().cards;
+    const { result } = renderHook(() =>
+      useWorkspaceSession({
+        cards,
+        focusedCardId: id,
+        selectedProjectPath: '/repo',
+        selectedWorktreePath: null,
+        t,
+      }),
+    );
+
+    await waitFor(() => expect(result.current.selectedWorkspaceId).toBeTruthy());
+    await act(async () => {
+      await result.current.openWorkspaceFile('/repo', {
+        name: 'app.ts',
+        path: '/repo/app.ts',
+        isDir: false,
+        isHidden: false,
+      });
+    });
+    const tabId = result.current.tabs.find((tab) => tab.kind === 'file')?.id ?? '';
+    act(() => result.current.markWorkspaceTabDirty(result.current.selectedWorkspaceId!, tabId, true));
+
+    let allowed = false;
+    await act(async () => {
+      allowed = await result.current.requestCardWorkspaceReset(id);
+    });
+
+    expect(allowed).toBe(true);
+    expect(result.current.dirtyByTabId[tabId]).toBe(true);
   });
 });

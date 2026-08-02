@@ -1,11 +1,10 @@
 /**
- * Minimal desktop adapter: persist dirty drafts produced by the current
- * card-scoped file editor into the authoritative workspace service.
- * Does not change navigation ownership (still card-scoped until child 2).
+ * Desktop adapter: persist dirty drafts from the file editor into the
+ * authoritative workspace service (worktree-scoped tabs).
  */
 
-import { isTauriEnv } from '../tauri-bridge';
-import { workspaceAuthority } from './api';
+import { workspaceClient } from './client';
+import { relativeFromRoot } from './paths';
 import { DESKTOP_MAIN_SURFACE } from './types';
 
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -13,21 +12,6 @@ const revisionByTab = new Map<string, number>();
 
 function key(workspaceId: string, tabId: string): string {
   return `${workspaceId}::${tabId}`;
-}
-
-function relativeFromRoot(rootPath: string, absoluteOrRelative: string): string {
-  const root = rootPath.replace(/[\\/]+$/, '');
-  const path = absoluteOrRelative;
-  const normalizedRoot = root.replace(/\\/g, '/');
-  const normalizedPath = path.replace(/\\/g, '/');
-  if (normalizedPath.toLowerCase().startsWith(normalizedRoot.toLowerCase() + '/')) {
-    return normalizedPath.slice(normalizedRoot.length + 1);
-  }
-  if (normalizedPath.toLowerCase().startsWith(normalizedRoot.toLowerCase() + '\\')) {
-    return normalizedPath.slice(normalizedRoot.length + 1);
-  }
-  // Already relative or unrelated — pass through.
-  return path.replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
 export interface PersistDraftInput {
@@ -46,18 +30,18 @@ export interface PersistDraftInput {
 export async function persistDesktopFileDraft(
   input: PersistDraftInput,
 ): Promise<'idle' | 'pending' | 'synced' | 'error'> {
-  if (!isTauriEnv() || !input.rootPath) return 'idle';
+  if (!input.rootPath) return 'idle';
   if (!input.dirty) return 'idle';
 
   try {
-    const workspace = await workspaceAuthority.ensure(input.rootPath);
+    const workspace = await workspaceClient.ensure(input.rootPath);
     const relativePath = relativeFromRoot(input.rootPath, input.path);
-    const tab = await workspaceAuthority.openTab(workspace.id, {
+    const tab = await workspaceClient.openTab(workspace.id, {
       kind: 'file',
       title: input.title,
       relativePath,
     });
-    await workspaceAuthority.ensureDraft(workspace.id, tab.id);
+    await workspaceClient.ensureDraft(workspace.id, tab.id);
     const mapKey = key(workspace.id, tab.id);
 
     return await new Promise((resolve) => {
@@ -68,14 +52,12 @@ export async function persistDesktopFileDraft(
         setTimeout(() => {
           void (async () => {
             try {
-              const baseRevision = revisionByTab.get(mapKey) ?? 0;
-              // Load authoritative revision if we have not tracked it yet.
-              let revision = baseRevision;
+              let revision = revisionByTab.get(mapKey) ?? 0;
               if (!revisionByTab.has(mapKey)) {
-                const draft = await workspaceAuthority.getDraft(workspace.id, tab.id);
+                const draft = await workspaceClient.getDraft(workspace.id, tab.id);
                 revision = draft?.revision ?? 0;
               }
-              const result = await workspaceAuthority.applyDraftPatch(
+              const result = await workspaceClient.applyDraftPatch(
                 {
                   workspaceId: workspace.id,
                   tabId: tab.id,

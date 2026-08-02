@@ -11,6 +11,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -77,7 +78,10 @@ export function WorkspaceFileEditorView({
     onDirtyChange?.(isDirty);
   }, [isDirty, onDirtyChange]);
 
+  const loadGenerationRef = useRef(0);
+
   const loadFile = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
     setLoading(true);
     setSaving(false);
     setError(null);
@@ -85,22 +89,24 @@ export function WorkspaceFileEditorView({
     setDraftSync('idle');
     try {
       const file = await workspaceFiles.read(rootPath, path);
+      if (generation !== loadGenerationRef.current) return;
       setOpenFile(file);
       // Prefer a durable dirty draft from the workspace service when present.
       try {
-        const { workspaceAuthority } = await import('../../lib/workspace/api');
-        const workspace = await workspaceAuthority.ensure(rootPath);
+        const { workspaceClient } = await import('../../lib/workspace/client');
+        const workspace = await workspaceClient.ensure(rootPath);
         const relative = path.replace(/\\/g, '/');
         const rootNorm = rootPath.replace(/\\/g, '/').replace(/\/$/, '');
         const rel = relative.toLowerCase().startsWith(rootNorm.toLowerCase() + '/')
           ? relative.slice(rootNorm.length + 1)
           : relative.replace(/^\.\//, '');
-        const tab = await workspaceAuthority.openTab(workspace.id, {
+        const tab = await workspaceClient.openTab(workspace.id, {
           kind: 'file',
           title: basename(path),
           relativePath: rel,
         });
-        const durable = await workspaceAuthority.getDraft(workspace.id, tab.id);
+        const durable = await workspaceClient.getDraft(workspace.id, tab.id);
+        if (generation !== loadGenerationRef.current) return;
         if (durable?.dirty) {
           setDraft(durable.contents);
           setDraftSync('synced');
@@ -108,14 +114,18 @@ export function WorkspaceFileEditorView({
           setDraft(file.contents);
         }
       } catch {
+        if (generation !== loadGenerationRef.current) return;
         setDraft(file.contents);
       }
     } catch (loadError) {
+      if (generation !== loadGenerationRef.current) return;
       setOpenFile(null);
       setDraft('');
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
-      setLoading(false);
+      if (generation === loadGenerationRef.current) {
+        setLoading(false);
+      }
     }
   }, [path, rootPath]);
 
@@ -128,17 +138,20 @@ export function WorkspaceFileEditorView({
       return;
     }
     let cancelled = false;
-    void persistDesktopFileDraft({
-      rootPath,
-      path: openFile.path,
-      title: basename(openFile.path),
-      contents: pendingContents,
-      dirty: true,
-    }).then((state) => {
-      if (!cancelled) setDraftSync(state);
-    });
+    const timer = window.setTimeout(() => {
+      void persistDesktopFileDraft({
+        rootPath,
+        path: openFile.path,
+        title: basename(openFile.path),
+        contents: pendingContents,
+        dirty: true,
+      }).then((state) => {
+        if (!cancelled) setDraftSync(state);
+      });
+    }, 50);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [isDirty, openFile, pendingContents, rootPath]);
 
