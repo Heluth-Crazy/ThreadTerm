@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../lib/tauri-bridge', () => ({
+  isTauriEnv: () => false,
   workspaceFiles: {
     read: (...args: unknown[]) => mocks.readFile(...args),
     write: (...args: unknown[]) => mocks.writeFile(...args),
@@ -19,6 +20,10 @@ vi.mock('../../lib/tauri-bridge', () => ({
       textDiff: (...args: unknown[]) => mocks.gitTextDiff(...args),
     },
   },
+}));
+
+vi.mock('../../lib/workspace/draftPersistence', () => ({
+  persistDesktopFileDraft: vi.fn(async () => 'idle' as const),
 }));
 
 vi.mock('./WorkspaceCodeEditor', () => ({

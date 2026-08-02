@@ -23,6 +23,7 @@ import {
   type GitTextDiffSection,
   type WorkspaceFile,
 } from '../../lib/tauri-bridge';
+import { persistDesktopFileDraft } from '../../lib/workspace/draftPersistence';
 import { confirmDialog } from '../../lib/nativeDialog';
 import { cn } from '../../lib/utils';
 import { IconButton } from '../ui/icon-button';
@@ -67,6 +68,7 @@ export function WorkspaceFileEditorView({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [draftSync, setDraftSync] = useState<'idle' | 'pending' | 'synced' | 'error'>('idle');
 
   const pendingContents = openFile ? normalizeDraftForSave(draft, openFile.contents) : draft;
   const isDirty = !!openFile && pendingContents !== openFile.contents;
@@ -80,10 +82,34 @@ export function WorkspaceFileEditorView({
     setSaving(false);
     setError(null);
     setStatus(null);
+    setDraftSync('idle');
     try {
       const file = await workspaceFiles.read(rootPath, path);
       setOpenFile(file);
-      setDraft(file.contents);
+      // Prefer a durable dirty draft from the workspace service when present.
+      try {
+        const { workspaceAuthority } = await import('../../lib/workspace/api');
+        const workspace = await workspaceAuthority.ensure(rootPath);
+        const relative = path.replace(/\\/g, '/');
+        const rootNorm = rootPath.replace(/\\/g, '/').replace(/\/$/, '');
+        const rel = relative.toLowerCase().startsWith(rootNorm.toLowerCase() + '/')
+          ? relative.slice(rootNorm.length + 1)
+          : relative.replace(/^\.\//, '');
+        const tab = await workspaceAuthority.openTab(workspace.id, {
+          kind: 'file',
+          title: basename(path),
+          relativePath: rel,
+        });
+        const durable = await workspaceAuthority.getDraft(workspace.id, tab.id);
+        if (durable?.dirty) {
+          setDraft(durable.contents);
+          setDraftSync('synced');
+        } else {
+          setDraft(file.contents);
+        }
+      } catch {
+        setDraft(file.contents);
+      }
     } catch (loadError) {
       setOpenFile(null);
       setDraft('');
@@ -96,6 +122,25 @@ export function WorkspaceFileEditorView({
   useEffect(() => {
     void loadFile();
   }, [loadFile]);
+
+  useEffect(() => {
+    if (!isDirty || !openFile) {
+      return;
+    }
+    let cancelled = false;
+    void persistDesktopFileDraft({
+      rootPath,
+      path: openFile.path,
+      title: basename(openFile.path),
+      contents: pendingContents,
+      dirty: true,
+    }).then((state) => {
+      if (!cancelled) setDraftSync(state);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isDirty, openFile, pendingContents, rootPath]);
 
   const saveFile = useCallback(async () => {
     if (!openFile || !isDirty) return;
@@ -111,6 +156,7 @@ export function WorkspaceFileEditorView({
       );
       setOpenFile(saved);
       setDraft(saved.contents);
+      setDraftSync('idle');
       setStatus(t('workspace.saved', { defaultValue: 'Saved.' }));
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : String(saveError));
@@ -147,6 +193,21 @@ export function WorkspaceFileEditorView({
         {isDirty && (
           <span className="rounded bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning">
             {t('workspace.unsaved', { defaultValue: 'Unsaved' })}
+          </span>
+        )}
+        {isDirty && draftSync === 'synced' && (
+          <span className="rounded bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success">
+            {t('workspace.draftSynced', { defaultValue: 'Draft synced' })}
+          </span>
+        )}
+        {isDirty && draftSync === 'pending' && (
+          <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+            {t('workspace.draftPending', { defaultValue: 'Syncing draft…' })}
+          </span>
+        )}
+        {isDirty && draftSync === 'error' && (
+          <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[11px] font-medium text-destructive">
+            {t('workspace.draftUnsynced', { defaultValue: 'Draft unsynced' })}
           </span>
         )}
         <IconButton

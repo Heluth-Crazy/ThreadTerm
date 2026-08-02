@@ -280,6 +280,9 @@ pub fn init_database(path: &Path) -> Result<()> {
     )
     .context("Failed to create database tables")?;
 
+    crate::workspace::ensure_workspace_schema(&conn)
+        .context("Failed to create workspace tables")?;
+
     drop(conn);
     DATABASE
         .set(runtime)

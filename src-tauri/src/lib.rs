@@ -25,6 +25,7 @@ mod settings_window;
 mod startup_data_directory;
 mod stats;
 mod supervisor;
+mod workspace;
 
 use tauri::Manager;
 
@@ -163,6 +164,31 @@ pub fn run() {
             files::read_directory,
             files::workspace_read_file,
             files::workspace_write_file,
+            workspace::workspace_ensure,
+            workspace::workspace_get,
+            workspace::workspace_list,
+            workspace::workspace_get_snapshot,
+            workspace::workspace_open_tab,
+            workspace::workspace_reorder_tabs,
+            workspace::workspace_set_active_tab,
+            workspace::workspace_list_directory,
+            workspace::workspace_read_workspace_file,
+            workspace::workspace_get_draft,
+            workspace::workspace_ensure_draft,
+            workspace::workspace_apply_draft_patch,
+            workspace::workspace_save_draft,
+            workspace::workspace_discard_draft,
+            workspace::workspace_use_disk_version,
+            workspace::workspace_save_as,
+            workspace::workspace_prepare_close,
+            workspace::workspace_commit_close,
+            workspace::workspace_acquire_lease,
+            workspace::workspace_renew_lease,
+            workspace::workspace_release_lease,
+            workspace::workspace_takeover_lease,
+            workspace::workspace_diagnostics,
+            workspace::workspace_refresh_availability,
+            workspace::workspace_disconnect_surface,
             local_directory::open_local_directory,
             pty::pty_create,
             pty::pty_input,

@@ -206,9 +206,14 @@ fn read_directory_sync(path: &str) -> Result<Vec<DirEntry>, String> {
     // Tolerate trailing whitespace / newlines that can ride along when the cwd
     // is derived from a shell OSC sequence (base64-decoded PWD).
     let path = path.trim();
-    let dir = Path::new(path);
+    read_directory_for_path(Path::new(path))
+}
+
+/// List immediate children of an already-resolved directory path.
+/// Used by the workspace service after WorkspaceId-scoped path validation.
+pub fn read_directory_for_path(dir: &Path) -> Result<Vec<DirEntry>, String> {
     if !dir.is_dir() {
-        return Err(format!("Not a directory: {path}"));
+        return Err(format!("Not a directory: {}", dir.display()));
     }
     let read = std::fs::read_dir(dir).map_err(|e| format!("Failed to read directory: {e}"))?;
 
