@@ -9,7 +9,10 @@ use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
-use super::protocol::{BridgeDevice, DevicePermission, PairQrResponse, PairRequest, PairResponse};
+use super::protocol::{
+    BridgeDevice, ClientClass, DevicePermission, PairQrResponse, PairRequest, PairResponse,
+    PROTOCOL_VERSION_V2, SecurePairQrResponse, SecurePairRequest, SecurePairResponse,
+};
 
 const OTP_TTL: Duration = Duration::from_secs(5 * 60);
 const DEVICE_TOKEN_TTL_SECONDS: u64 = 24 * 60 * 60;
@@ -40,6 +43,13 @@ struct PendingPair {
     server_id: String,
     expires_at: u64,
     max_permission: DevicePermission,
+    /// Secure pairing binds OTP to computer identity + fingerprint.
+    client_class: ClientClass,
+    #[allow(dead_code)]
+    fingerprint: Option<String>,
+    computer_id: Option<String>,
+    #[allow(dead_code)]
+    endpoint: Option<String>,
 }
 
 #[derive(Clone)]
@@ -109,7 +119,10 @@ impl PairingStore {
         // A newly issued code supersedes every older permission choice. This
         // prevents a previously displayed full-control QR from remaining
         // usable after the desktop switches back to read-only mode.
-        inner.pending.clear();
+        // Secure OTPs remain usable so a desktop can show both QR types.
+        inner
+            .pending
+            .retain(|_, pending| pending.client_class == ClientClass::SecureWorkspace);
 
         let otp = random_token(PAIRING_SECRET_LENGTH);
         let expires_at = now + OTP_TTL.as_secs();
@@ -121,6 +134,10 @@ impl PairingStore {
                 server_id: server_id.clone(),
                 expires_at,
                 max_permission,
+                client_class: ClientClass::LegacyTerminal,
+                fingerprint: None,
+                computer_id: None,
+                endpoint: None,
             },
         );
 
@@ -134,17 +151,124 @@ impl PairingStore {
         }
     }
 
+    /// Issue a one-time secure pairing record bound to computerId + fingerprint.
+    pub fn create_secure_pair_qr(
+        &self,
+        host: String,
+        port: u16,
+        computer_id: String,
+        fingerprint: String,
+        max_permission: DevicePermission,
+    ) -> SecurePairQrResponse {
+        let mut inner = self.inner.lock().expect("pairing store poisoned");
+        let now = now_seconds();
+        // Supersede previous secure OTPs only; leave legacy terminal OTPs alone.
+        inner
+            .pending
+            .retain(|_, pending| pending.client_class == ClientClass::LegacyTerminal);
+
+        let otp = random_token(PAIRING_SECRET_LENGTH);
+        let expires_at = now + OTP_TTL.as_secs();
+        let endpoint = format!("wss://{host}:{port}");
+        inner.pending.insert(
+            otp.clone(),
+            PendingPair {
+                host: host.clone(),
+                port,
+                server_id: computer_id.clone(),
+                expires_at,
+                max_permission: max_permission.clone(),
+                client_class: ClientClass::SecureWorkspace,
+                fingerprint: Some(fingerprint.clone()),
+                computer_id: Some(computer_id.clone()),
+                endpoint: Some(endpoint.clone()),
+            },
+        );
+
+        let qr_payload = serde_json::json!({
+            "protocol": PROTOCOL_VERSION_V2,
+            "host": host,
+            "port": port,
+            "otp": otp,
+            "computerId": computer_id,
+            "fingerprint": fingerprint,
+            "endpoint": endpoint,
+            "maxPermission": match max_permission {
+                DevicePermission::Full => "full",
+                DevicePermission::ReadOnly => "read_only",
+            },
+        })
+        .to_string();
+
+        SecurePairQrResponse {
+            protocol: PROTOCOL_VERSION_V2,
+            host,
+            port,
+            otp,
+            computer_id,
+            fingerprint,
+            endpoint,
+            expires_in_seconds: OTP_TTL.as_secs(),
+            max_permission,
+            qr_payload,
+        }
+    }
+
     pub fn pair(&self, request: PairRequest) -> Result<PairResponse, String> {
-        self.pair_with_persist(request, |hash, device| {
-            if self.persistent {
-                persist_paired_device(hash, device)
-            } else {
-                Ok(())
-            }
+        self.pair_with_persist(
+            PairingAttempt {
+                otp: request.otp,
+                device_name: request.device_name,
+                permission: request.permission,
+                expected_class: ClientClass::LegacyTerminal,
+                computer_id: None,
+            },
+            |hash, device| {
+                if self.persistent {
+                    persist_paired_device(hash, device)
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .map(|(device, token, server_id)| PairResponse {
+            device,
+            device_token: token,
+            server_id,
+            expires_in_seconds: DEVICE_TOKEN_TTL_SECONDS,
         })
     }
 
-    fn pair_with_persist<F>(&self, request: PairRequest, persist: F) -> Result<PairResponse, String>
+    pub fn pair_secure(&self, request: SecurePairRequest) -> Result<SecurePairResponse, String> {
+        self.pair_with_persist(
+            PairingAttempt {
+                otp: request.otp,
+                device_name: request.device_name,
+                permission: request.permission,
+                expected_class: ClientClass::SecureWorkspace,
+                computer_id: Some(request.computer_id.clone()),
+            },
+            |hash, device| {
+                if self.persistent {
+                    persist_paired_device(hash, device)
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .map(|(device, token, computer_id)| SecurePairResponse {
+            device,
+            device_token: token,
+            computer_id,
+            expires_in_seconds: DEVICE_TOKEN_TTL_SECONDS,
+        })
+    }
+
+    fn pair_with_persist<F>(
+        &self,
+        request: PairingAttempt,
+        persist: F,
+    ) -> Result<(BridgeDevice, String, String), String>
     where
         F: FnOnce(&str, &BridgeDevice) -> Result<(), String>,
     {
@@ -160,6 +284,25 @@ impl PairingStore {
                 .get(&request.otp)
                 .cloned()
                 .ok_or_else(|| "Invalid or expired pairing code".to_string())?;
+            if pending.client_class != request.expected_class {
+                return Err(match request.expected_class {
+                    ClientClass::SecureWorkspace => {
+                        "This pairing code is not valid for the secure bridge.".to_string()
+                    }
+                    ClientClass::LegacyTerminal => {
+                        "This pairing code is not valid for the legacy mobile bridge.".to_string()
+                    }
+                });
+            }
+            if let Some(expected_computer_id) = request.computer_id.as_deref() {
+                let bound = pending
+                    .computer_id
+                    .as_deref()
+                    .unwrap_or(pending.server_id.as_str());
+                if bound != expected_computer_id {
+                    return Err("Pairing computerId does not match this desktop.".to_string());
+                }
+            }
             inner.pending.remove(&request.otp);
 
             let device = BridgeDevice {
@@ -175,6 +318,7 @@ impl PairingStore {
                 } else {
                     DevicePermission::ReadOnly
                 },
+                client_class: pending.client_class,
                 created_at: now,
                 last_seen_at: Some(now),
             };
@@ -201,15 +345,37 @@ impl PairingStore {
             host = %pending.host,
             port = pending.port,
             device_id = %device.id,
+            client_class = %device.client_class.as_str(),
             "Mobile bridge device paired"
         );
 
-        Ok(PairResponse {
-            device,
-            device_token: token,
-            server_id: pending.server_id,
-            expires_in_seconds: DEVICE_TOKEN_TTL_SECONDS,
-        })
+        Ok((device, token, pending.server_id))
+    }
+
+    /// Revoke every secure-workspace token (used after certificate rotation).
+    pub fn revoke_all_secure_devices(&self) -> Result<usize, String> {
+        let secure_ids: Vec<String> = {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|error| format!("Pairing state unavailable: {error}"))?;
+            inner
+                .devices
+                .values()
+                .filter(|stored| stored.device.client_class == ClientClass::SecureWorkspace)
+                .map(|stored| stored.device.id.clone())
+                .collect()
+        };
+        let mut count = 0usize;
+        for id in secure_ids {
+            if self.revoke_device(&id)? {
+                count += 1;
+            }
+        }
+        if self.persistent {
+            count = count.max(delete_secure_paired_devices()?);
+        }
+        Ok(count)
     }
 
     pub fn validate_token(&self, token: &str) -> Option<BridgeDevice> {
@@ -522,6 +688,14 @@ impl Default for PairingStore {
     }
 }
 
+struct PairingAttempt {
+    otp: String,
+    device_name: String,
+    permission: Option<DevicePermission>,
+    expected_class: ClientClass,
+    computer_id: Option<String>,
+}
+
 fn clean_device_name(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -567,12 +741,13 @@ fn persist_paired_device_with_conn(
     device: &BridgeDevice,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO paired_devices (id, name, token_hash, permission, created_at, last_seen_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO paired_devices (id, name, token_hash, permission, client_class, created_at, last_seen_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(token_hash) DO UPDATE SET
             id = excluded.id,
             name = excluded.name,
             permission = excluded.permission,
+            client_class = excluded.client_class,
             created_at = excluded.created_at,
             last_seen_at = excluded.last_seen_at",
         params![
@@ -580,6 +755,7 @@ fn persist_paired_device_with_conn(
             device.name,
             hash,
             permission_to_db(&device.permission),
+            device.client_class.as_str(),
             seconds_to_db(device.created_at),
             device.last_seen_at.map(seconds_to_db),
         ],
@@ -593,7 +769,7 @@ fn load_paired_device_by_hash(hash: &str, now: u64) -> Result<Option<StoredDevic
         .map_err(|e| format!("Failed to prune expired mobile bridge devices: {e}"))?;
 
     conn.query_row(
-        "SELECT id, name, token_hash, permission, created_at, last_seen_at
+        "SELECT id, name, token_hash, permission, created_at, last_seen_at, client_class
          FROM paired_devices
          WHERE token_hash = ?1",
         [hash],
@@ -610,7 +786,7 @@ fn list_paired_devices(now: u64) -> Result<Vec<(String, StoredDevice)>, String> 
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, token_hash, permission, created_at, last_seen_at
+            "SELECT id, name, token_hash, permission, created_at, last_seen_at, client_class
              FROM paired_devices",
         )
         .map_err(|e| format!("Failed to prepare paired device list: {e}"))?;
@@ -623,6 +799,17 @@ fn list_paired_devices(now: u64) -> Result<Vec<(String, StoredDevice)>, String> 
         devices.push(row.map_err(|e| format!("Failed to read paired device: {e}"))?);
     }
     Ok(devices)
+}
+
+fn delete_secure_paired_devices() -> Result<usize, String> {
+    let conn = crate::db::get_db()?;
+    let affected = conn
+        .execute(
+            "DELETE FROM paired_devices WHERE client_class = 'secure_workspace'",
+            [],
+        )
+        .map_err(|e| format!("Failed to delete secure paired devices: {e}"))?;
+    Ok(affected)
 }
 
 fn update_paired_device_last_seen(hash: &str, last_seen_at: u64) -> Result<(), String> {
@@ -658,10 +845,15 @@ fn row_to_stored_device(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, St
     let created_at = db_to_seconds(row.get::<_, i64>(4)?);
     let last_seen_at = row.get::<_, Option<i64>>(5)?.map(db_to_seconds);
     let hash = row.get::<_, String>(2)?;
+    let client_class = row
+        .get::<_, Option<String>>(6)?
+        .map(|value| ClientClass::parse(&value))
+        .unwrap_or(ClientClass::LegacyTerminal);
     let device = BridgeDevice {
         id: row.get(0)?,
         name: row.get(1)?,
         permission: permission_from_db(&row.get::<_, String>(3)?),
+        client_class,
         created_at,
         last_seen_at,
     };
@@ -718,6 +910,7 @@ mod tests {
                 name        TEXT NOT NULL,
                 token_hash  TEXT NOT NULL UNIQUE,
                 permission  TEXT NOT NULL DEFAULT 'read_only',
+                client_class TEXT NOT NULL DEFAULT 'legacy_terminal',
                 created_at  INTEGER NOT NULL,
                 last_seen_at INTEGER
             );
@@ -1030,10 +1223,12 @@ mod tests {
         let pair_store = Arc::clone(&store);
         let pair_thread = thread::spawn(move || {
             pair_store.pair_with_persist(
-                PairRequest {
+                PairingAttempt {
                     otp: qr.otp,
                     device_name: "atomic-pair".to_string(),
                     permission: Some(DevicePermission::Full),
+                    expected_class: ClientClass::LegacyTerminal,
+                    computer_id: None,
                 },
                 move |_, device| {
                     persist_started_tx
@@ -1065,7 +1260,7 @@ mod tests {
             .is_err());
         allow_persist_tx.send(()).expect("finish persistence");
 
-        let paired = pair_thread
+        let (_device, token, _server_id) = pair_thread
             .join()
             .expect("pairing thread")
             .expect("pairing should succeed");
@@ -1074,7 +1269,7 @@ mod tests {
             .expect("revoke should finish")
             .expect("revoke should succeed"));
         revoke_thread.join().expect("revoke thread");
-        assert!(store.validate_token(&paired.device_token).is_none());
+        assert!(store.validate_token(&token).is_none());
     }
 
     #[test]
@@ -1086,6 +1281,7 @@ mod tests {
             id: "dev_test".to_string(),
             name: "iPhone".to_string(),
             permission: DevicePermission::Full,
+            client_class: ClientClass::LegacyTerminal,
             created_at: now,
             last_seen_at: Some(now),
         };
@@ -1093,7 +1289,7 @@ mod tests {
         persist_paired_device_with_conn(&conn, &hash, &device).expect("persist device");
         let (stored_hash, stored) = conn
             .prepare(
-                "SELECT id, name, token_hash, permission, created_at, last_seen_at
+                "SELECT id, name, token_hash, permission, created_at, last_seen_at, client_class
                  FROM paired_devices
                  WHERE token_hash = ?1",
             )
@@ -1104,5 +1300,116 @@ mod tests {
         assert_eq!(stored_hash, hash);
         assert_eq!(stored.device, device);
         assert_eq!(stored.expires_at, device_expires_at(now));
+    }
+
+    #[test]
+    fn existing_rows_without_client_class_default_to_legacy_terminal() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open");
+        conn.execute_batch(
+            "
+            CREATE TABLE paired_devices (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                token_hash  TEXT NOT NULL UNIQUE,
+                permission  TEXT NOT NULL DEFAULT 'read_only',
+                created_at  INTEGER NOT NULL,
+                last_seen_at INTEGER
+            );
+            ",
+        )
+        .expect("legacy schema");
+        // Simulate post-migration: add column with default.
+        conn.execute_batch(
+            "ALTER TABLE paired_devices ADD COLUMN client_class TEXT NOT NULL DEFAULT 'legacy_terminal';",
+        )
+        .expect("migrate");
+        let now = now_seconds();
+        conn.execute(
+            "INSERT INTO paired_devices (id, name, token_hash, permission, created_at, last_seen_at)
+             VALUES ('dev_old', 'Old Phone', 'hash', 'full', ?1, ?1)",
+            params![seconds_to_db(now)],
+        )
+        .expect("insert legacy row");
+
+        let (_, stored) = conn
+            .query_row(
+                "SELECT id, name, token_hash, permission, created_at, last_seen_at, client_class
+                 FROM paired_devices WHERE id = 'dev_old'",
+                [],
+                row_to_stored_device,
+            )
+            .expect("load");
+        assert_eq!(stored.device.client_class, ClientClass::LegacyTerminal);
+    }
+
+    #[test]
+    fn secure_pairing_stores_secure_workspace_class() {
+        let store = test_store();
+        let qr = store.create_secure_pair_qr(
+            "127.0.0.1".to_string(),
+            5175,
+            "computer-abc".to_string(),
+            "ab".repeat(32),
+            DevicePermission::Full,
+        );
+        assert_eq!(qr.protocol, 2);
+        assert!(qr.qr_payload.contains("computerId"));
+
+        let response = store
+            .pair_secure(SecurePairRequest {
+                otp: qr.otp,
+                device_name: "iPhone".to_string(),
+                permission: Some(DevicePermission::Full),
+                computer_id: "computer-abc".to_string(),
+            })
+            .expect("pair secure");
+        assert_eq!(
+            response.device.client_class,
+            ClientClass::SecureWorkspace
+        );
+        assert_eq!(response.computer_id, "computer-abc");
+        let device = store
+            .validate_token(&response.device_token)
+            .expect("validate");
+        assert_eq!(device.client_class, ClientClass::SecureWorkspace);
+    }
+
+    #[test]
+    fn secure_pairing_rejects_wrong_computer_id() {
+        let store = test_store();
+        let qr = store.create_secure_pair_qr(
+            "127.0.0.1".to_string(),
+            5175,
+            "computer-abc".to_string(),
+            "ab".repeat(32),
+            DevicePermission::ReadOnly,
+        );
+        assert!(store
+            .pair_secure(SecurePairRequest {
+                otp: qr.otp,
+                device_name: "iPhone".to_string(),
+                permission: None,
+                computer_id: "wrong".to_string(),
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn legacy_pair_cannot_consume_secure_otp() {
+        let store = test_store();
+        let qr = store.create_secure_pair_qr(
+            "127.0.0.1".to_string(),
+            5175,
+            "computer-abc".to_string(),
+            "ab".repeat(32),
+            DevicePermission::Full,
+        );
+        assert!(store
+            .pair(PairRequest {
+                otp: qr.otp,
+                device_name: "Browser".to_string(),
+                permission: Some(DevicePermission::Full),
+            })
+            .is_err());
     }
 }

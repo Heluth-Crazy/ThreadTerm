@@ -2,11 +2,12 @@ mod access;
 mod messages;
 mod terminal;
 mod theme;
+mod v2;
 mod workbench;
 
 pub use access::{
-    BridgeDevice, BridgeStatus, DevicePermission, MobileCardRequest, MobileRenameCardRequest,
-    MobileSpawnCardRequest, PairQrResponse, PairRequest, PairResponse,
+    BridgeDevice, BridgeStatus, ClientClass, DevicePermission, MobileCardRequest,
+    MobileRenameCardRequest, MobileSpawnCardRequest, PairQrResponse, PairRequest, PairResponse,
 };
 #[allow(unused_imports)]
 pub use messages::{
@@ -15,6 +16,13 @@ pub use messages::{
 };
 pub use terminal::{CardMeta, TerminalSnapshotMessage, TerminalStatus};
 pub use theme::{AppThemeTokens, BridgeTheme, TerminalThemeTokens, ThemeMode};
+#[allow(unused_imports)]
+pub use v2::{
+    draft_patch_from_message, is_v1_forbidden_workspace_kind, parse_v2_client_message,
+    versioned_v2_server_message, SecurePairQrResponse, SecurePairRequest, SecurePairResponse,
+    V2ClientMessage, V2ProtocolParseError, V2ServerMessage, VersionedV2ServerMessage,
+    WorkspaceMetaSnapshot, MAX_V2_PAYLOAD_BYTES, PROTOCOL_VERSION_V2, V1_FORBIDDEN_WORKSPACE_KINDS,
+};
 #[allow(unused_imports)]
 pub use workbench::{
     BridgeSnapshot, MobileAttentionCapability, MobileAttentionItem, MobileExecutionGroup,

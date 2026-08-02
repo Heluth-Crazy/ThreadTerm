@@ -33,6 +33,7 @@ use tokio::{
 use tower_http::trace::TraceLayer;
 
 use super::{
+    authz::{authorize, AuthzDevice, BridgeOperation, BridgeTransport},
     pairing::AuthorizationLease,
     protocol::{
         parse_client_message, versioned_server_message, BridgeDevice, ClientMessage,
@@ -817,6 +818,52 @@ async fn handle_client_message(
     device: &BridgeDevice,
     text: &str,
 ) -> Result<Vec<ServerMessage>, (String, String)> {
+    // Reject workspace/file/draft kinds on the plaintext v1 transport before
+    // the normal v1 parser turns them into a generic invalid_message.
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Some(kind) = value.get("kind").and_then(|value| value.as_str()) {
+            if super::protocol::is_v1_forbidden_workspace_kind(kind) {
+                return match authorize(
+                    BridgeTransport::LegacyPlaintext,
+                    AuthzDevice {
+                        client_class: device.client_class,
+                        permission: &device.permission,
+                        active: true,
+                    },
+                    BridgeOperation::WorkspaceRead,
+                ) {
+                    Err(error) => Err((error.code().to_string(), error.message().to_string())),
+                    Ok(()) => Err((
+                        "secure_transport_required".to_string(),
+                        "Workspace and file operations require the secure mobile bridge (TLS v2)."
+                            .to_string(),
+                    )),
+                };
+            }
+        }
+        // Protocol 2 with a workspace kind is a secure-transport violation.
+        // Other wrong versions still use the normal protocol_version_mismatch path.
+        if value
+            .get("protocol_version")
+            .and_then(|value| value.as_u64())
+            == Some(2)
+        {
+            if let Some(kind) = value.get("kind").and_then(|value| value.as_str()) {
+                if super::protocol::is_v1_forbidden_workspace_kind(kind)
+                    || matches!(
+                        kind,
+                        "pair" | "get_workspace_snapshot" | "subscribe_workspace"
+                    )
+                {
+                    return Err((
+                        "secure_transport_required".to_string(),
+                        "Protocol v2 requires the secure mobile bridge (TLS v2).".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+
     let message: ClientMessage =
         parse_client_message(text).map_err(|e| (e.error_code().to_string(), e.to_string()))?;
 
@@ -1452,6 +1499,7 @@ mod tests {
             id: "device-1".to_string(),
             name: "test".to_string(),
             permission: super::super::protocol::DevicePermission::ReadOnly,
+            client_class: super::super::protocol::ClientClass::LegacyTerminal,
             created_at: 0,
             last_seen_at: None,
         };
@@ -1528,6 +1576,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plaintext_v1_rejects_workspace_ops_with_secure_transport_required() {
+        let runtime = Arc::new(BridgeRuntime::new());
+        let (_shutdown_tx, shutdown) = watch::channel(false);
+        let context = ServerContext {
+            runtime,
+            shutdown,
+            connections: ConnectionTracker::default(),
+        };
+        let device = BridgeDevice {
+            id: "device-1".to_string(),
+            name: "test".to_string(),
+            permission: super::super::protocol::DevicePermission::Full,
+            client_class: super::super::protocol::ClientClass::LegacyTerminal,
+            created_at: 0,
+            last_seen_at: None,
+        };
+
+        let err = handle_client_message(
+            &context,
+            &device,
+            r#"{"protocol_version":1,"kind":"read_file","request_id":"r1","workspace_id":"w","relative_path":"a.rs"}"#,
+        )
+        .await
+        .expect_err("workspace on v1");
+        assert_eq!(err.0, "secure_transport_required");
+
+        let err = handle_client_message(
+            &context,
+            &device,
+            r#"{"protocol_version":2,"kind":"read_file","request_id":"r","workspace_id":"w","relative_path":"a.rs"}"#,
+        )
+        .await
+        .expect_err("v2 workspace on plaintext");
+        assert_eq!(err.0, "secure_transport_required");
+    }
+
+    #[tokio::test]
     async fn paced_operation_cancels_for_shutdown_or_revoked_device() {
         let runtime = Arc::new(BridgeRuntime::new());
         let (shutdown_tx, shutdown) = watch::channel(false);
@@ -1540,6 +1625,7 @@ mod tests {
             id: "missing-device".to_string(),
             name: "test".to_string(),
             permission: super::super::protocol::DevicePermission::Full,
+            client_class: super::super::protocol::ClientClass::LegacyTerminal,
             created_at: 0,
             last_seen_at: None,
         };

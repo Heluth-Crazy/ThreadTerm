@@ -1,13 +1,18 @@
 pub mod protocol;
 
+mod authz;
 mod commands;
+mod identity;
 mod network;
 mod pairing;
 mod preview;
 mod projection;
 mod runtime;
+mod secure_server;
 mod server;
+mod workspace_adapter;
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use once_cell::sync::{Lazy, OnceCell};
@@ -17,6 +22,7 @@ use tokio::sync::broadcast;
 
 use crate::pty::{self, SessionState};
 
+use identity::{fingerprint_short, SecureIdentityStore, SecureIdentityStatus};
 use pairing::PairingStore;
 use preview::preview_from_output;
 #[cfg(test)]
@@ -36,11 +42,28 @@ const PREVIEW_CHANNEL_CAPACITY: usize = 1024;
 
 pub static BRIDGE_RUNTIME: Lazy<Arc<BridgeRuntime>> = Lazy::new(|| Arc::new(BridgeRuntime::new()));
 
+static SECURE_IDENTITY_DIR: OnceCell<PathBuf> = OnceCell::new();
+
+/// Configure the managed-state directory used for the secure bridge identity.
+/// Must be called once during app startup before enabling the secure listener.
+pub fn configure_secure_identity_dir(state_dir: PathBuf) {
+    let _ = SECURE_IDENTITY_DIR.set(state_dir);
+}
+
+pub(crate) fn secure_identity_store() -> SecureIdentityStore {
+    let dir = SECURE_IDENTITY_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::temp_dir().join("threadterm-bridge-identity"));
+    SecureIdentityStore::new(dir)
+}
+
 pub struct BridgeRuntime {
     tx: broadcast::Sender<ServerMessage>,
     pub pairing: PairingStore,
     theme: Mutex<BridgeTheme>,
     server: Mutex<Option<server::BridgeServerHandle>>,
+    secure_server: Mutex<Option<secure_server::SecureServerHandle>>,
     app_handle: Mutex<Option<tauri::AppHandle>>,
     state_mirror: Mutex<BridgeStateMirror>,
     server_id: OnceCell<String>,
@@ -64,6 +87,7 @@ impl BridgeRuntime {
             pairing: PairingStore::default(),
             theme: Mutex::new(BridgeTheme::default()),
             server: Mutex::new(None),
+            secure_server: Mutex::new(None),
             app_handle: Mutex::new(None),
             state_mirror: Mutex::new(BridgeStateMirror::default()),
             server_id: OnceCell::new(),
@@ -88,11 +112,11 @@ impl BridgeRuntime {
         self.tx.receiver_count() > 0
     }
 
-    fn runtime_id(&self) -> &str {
+    pub(crate) fn runtime_id(&self) -> &str {
         &self.runtime_id
     }
 
-    fn server_id(&self) -> &str {
+    pub(crate) fn server_id(&self) -> &str {
         self.server_id.get_or_init(load_or_create_bridge_server_id)
     }
 
@@ -204,22 +228,93 @@ impl BridgeRuntime {
     }
 
     fn status(&self) -> BridgeStatus {
-        match self.server.lock().ok().and_then(|guard| {
+        let legacy = self.server.lock().ok().and_then(|guard| {
             guard
                 .as_ref()
                 .map(|handle| (handle.host.clone(), handle.port))
-        }) {
-            Some((host, port)) => BridgeStatus {
+        });
+        let secure = self.secure_server.lock().ok().and_then(|guard| {
+            guard.as_ref().map(|handle| {
+                (
+                    handle.host.clone(),
+                    handle.port,
+                    handle.fingerprint_sha256.clone(),
+                    handle.computer_id.clone(),
+                )
+            })
+        });
+        let identity_status = secure_identity_store().status();
+        let (identity_status_wire, fingerprint_short_opt, computer_id_opt) = match &identity_status {
+            SecureIdentityStatus::Ready {
+                computer_id,
+                fingerprint_sha256,
+                recovered_backup: _,
+                ..
+            } => (
+                Some(identity_status.as_wire().to_string()),
+                Some(fingerprint_short(fingerprint_sha256)),
+                Some(computer_id.clone()),
+            ),
+            SecureIdentityStatus::IdentityError { .. } => {
+                (Some("identity_error".to_string()), None, None)
+            }
+            SecureIdentityStatus::Missing => (Some("missing".to_string()), None, None),
+        };
+
+        match (legacy, secure) {
+            (Some((host, port)), Some((secure_host, secure_port, _fp, computer_id))) => {
+                BridgeStatus {
+                    running: true,
+                    url: Some(format!("http://{host}:{port}")),
+                    host: Some(host),
+                    port: Some(port),
+                    secure_running: Some(true),
+                    secure_host: Some(secure_host.clone()),
+                    secure_port: Some(secure_port),
+                    secure_endpoint: Some(format!("wss://{secure_host}:{secure_port}")),
+                    identity_status: identity_status_wire,
+                    fingerprint_short: fingerprint_short_opt,
+                    computer_id: Some(computer_id),
+                }
+            }
+            (Some((host, port)), None) => BridgeStatus {
                 running: true,
                 url: Some(format!("http://{host}:{port}")),
                 host: Some(host),
                 port: Some(port),
+                secure_running: Some(false),
+                secure_host: None,
+                secure_port: None,
+                secure_endpoint: None,
+                identity_status: identity_status_wire,
+                fingerprint_short: fingerprint_short_opt,
+                computer_id: computer_id_opt,
             },
-            None => BridgeStatus {
+            (None, Some((secure_host, secure_port, _fp, computer_id))) => BridgeStatus {
                 running: false,
                 host: None,
                 port: None,
                 url: None,
+                secure_running: Some(true),
+                secure_host: Some(secure_host.clone()),
+                secure_port: Some(secure_port),
+                secure_endpoint: Some(format!("wss://{secure_host}:{secure_port}")),
+                identity_status: identity_status_wire,
+                fingerprint_short: fingerprint_short_opt,
+                computer_id: Some(computer_id),
+            },
+            (None, None) => BridgeStatus {
+                running: false,
+                host: None,
+                port: None,
+                url: None,
+                secure_running: Some(false),
+                secure_host: None,
+                secure_port: None,
+                secure_endpoint: None,
+                identity_status: identity_status_wire,
+                fingerprint_short: fingerprint_short_opt,
+                computer_id: computer_id_opt,
             },
         }
     }
@@ -317,6 +412,28 @@ pub async fn bridge_pair_qr(
     permission: Option<DevicePermission>,
 ) -> Result<PairQrResponse, String> {
     commands::pair_qr(public_url, permission).await
+}
+
+#[tauri::command]
+pub async fn bridge_secure_pair_qr(
+    permission: Option<DevicePermission>,
+) -> Result<protocol::SecurePairQrResponse, String> {
+    commands::secure_pair_qr(permission).await
+}
+
+#[tauri::command]
+pub async fn bridge_start_secure(port: Option<u16>) -> Result<BridgeStatus, String> {
+    commands::start_secure(port).await
+}
+
+#[tauri::command]
+pub async fn bridge_stop_secure() -> Result<BridgeStatus, String> {
+    commands::stop_secure().await
+}
+
+#[tauri::command]
+pub async fn bridge_rotate_secure_identity() -> Result<BridgeStatus, String> {
+    commands::rotate_identity().await
 }
 
 #[tauri::command]

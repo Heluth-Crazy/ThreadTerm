@@ -86,6 +86,8 @@ pub fn run() {
         .state_dir
         .clone()
         .expect("resolved ThreadTerm data root must provide a managed-state directory");
+    #[cfg(feature = "mobile-bridge")]
+    bridge::configure_secure_identity_dir(managed_state_dir.clone());
     tracing::info!(
         mode = ?data_root.mode,
         database = %database_file.display(),
@@ -216,6 +218,10 @@ pub fn run() {
             bridge::bridge_status,
             bridge::bridge_has_subscribers,
             bridge::bridge_pair_qr,
+            bridge::bridge_secure_pair_qr,
+            bridge::bridge_start_secure,
+            bridge::bridge_stop_secure,
+            bridge::bridge_rotate_secure_identity,
             bridge::bridge_devices,
             bridge::bridge_revoke_device,
             bridge::bridge_sync_cards,

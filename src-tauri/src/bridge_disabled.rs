@@ -17,6 +17,13 @@ fn stopped_status() -> BridgeStatus {
         host: None,
         port: None,
         url: None,
+        secure_running: Some(false),
+        secure_host: None,
+        secure_port: None,
+        secure_endpoint: None,
+        identity_status: None,
+        fingerprint_short: None,
+        computer_id: None,
     }
 }
 
@@ -52,6 +59,28 @@ pub async fn bridge_pair_qr(
     _public_url: Option<String>,
     _permission: Option<DevicePermission>,
 ) -> Result<PairQrResponse, String> {
+    Err(DISABLED_MESSAGE.to_string())
+}
+
+#[tauri::command]
+pub async fn bridge_secure_pair_qr(
+    _permission: Option<DevicePermission>,
+) -> Result<protocol::SecurePairQrResponse, String> {
+    Err(DISABLED_MESSAGE.to_string())
+}
+
+#[tauri::command]
+pub async fn bridge_start_secure(_port: Option<u16>) -> Result<BridgeStatus, String> {
+    Err(DISABLED_MESSAGE.to_string())
+}
+
+#[tauri::command]
+pub async fn bridge_stop_secure() -> Result<BridgeStatus, String> {
+    Ok(stopped_status())
+}
+
+#[tauri::command]
+pub async fn bridge_rotate_secure_identity() -> Result<BridgeStatus, String> {
     Err(DISABLED_MESSAGE.to_string())
 }
 

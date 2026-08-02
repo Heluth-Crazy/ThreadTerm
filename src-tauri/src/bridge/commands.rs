@@ -5,11 +5,14 @@ use super::{
     network::{normalize_pair_public_target, DEFAULT_BRIDGE_PORT},
     protocol::{
         AppThemeTokens, BridgeDevice, BridgeStatus, CardMeta, DevicePermission,
-        MobileWorkbenchProjection, NotificationEntry, PairQrResponse, ServerMessage,
-        TerminalThemeTokens, ThemeMode,
+        MobileWorkbenchProjection, NotificationEntry, PairQrResponse, SecurePairQrResponse,
+        ServerMessage, TerminalThemeTokens, ThemeMode,
     },
-    runtime::{start_bridge_runtime, stop_bridge_runtime},
-    BRIDGE_RUNTIME,
+    runtime::{
+        rotate_secure_identity, start_bridge_runtime, start_secure_bridge_runtime,
+        stop_bridge_runtime, stop_secure_bridge_runtime,
+    },
+    secure_identity_store, BRIDGE_RUNTIME,
 };
 
 pub(super) async fn start(host: Option<String>, port: Option<u16>) -> Result<BridgeStatus, String> {
@@ -129,6 +132,48 @@ pub(super) async fn pair_qr(
         server_id,
         permission.unwrap_or(DevicePermission::ReadOnly),
     ))
+}
+
+pub(super) async fn secure_pair_qr(
+    permission: Option<DevicePermission>,
+) -> Result<SecurePairQrResponse, String> {
+    let status = BRIDGE_RUNTIME.status();
+    if !status.secure_running.unwrap_or(false) {
+        // Auto-start the secure listener when the desktop requests a secure QR.
+        start_secure_bridge_runtime(None, !cfg!(test)).await?;
+    }
+    let status = BRIDGE_RUNTIME.status();
+    let host = status
+        .secure_host
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let port = status
+        .secure_port
+        .ok_or_else(|| "Secure mobile bridge is not listening.".to_string())?;
+    let store = secure_identity_store();
+    let identity = store
+        .load()
+        .map(|(identity, _)| identity)
+        .map_err(|error| error.to_string())?;
+
+    Ok(BRIDGE_RUNTIME.pairing.create_secure_pair_qr(
+        host,
+        port,
+        identity.computer_id,
+        identity.fingerprint_sha256,
+        permission.unwrap_or(DevicePermission::ReadOnly),
+    ))
+}
+
+pub(super) async fn start_secure(port: Option<u16>) -> Result<BridgeStatus, String> {
+    start_secure_bridge_runtime(port, !cfg!(test)).await
+}
+
+pub(super) async fn stop_secure() -> Result<BridgeStatus, String> {
+    stop_secure_bridge_runtime(Duration::from_secs(2)).await
+}
+
+pub(super) async fn rotate_identity() -> Result<BridgeStatus, String> {
+    rotate_secure_identity().await
 }
 
 pub(super) async fn devices() -> Result<Vec<BridgeDevice>, String> {

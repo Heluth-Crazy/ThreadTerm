@@ -7,10 +7,13 @@ mod leases;
 mod paths;
 mod schema;
 mod service;
-mod types;
+pub mod types;
 
 pub use commands::*;
+#[allow(unused_imports)]
+pub use error::{WorkspaceError, WorkspaceErrorCode};
 pub use schema::ensure_workspace_schema;
+pub use service::WorkspaceService;
 
 #[cfg(test)]
 mod contract_tests {

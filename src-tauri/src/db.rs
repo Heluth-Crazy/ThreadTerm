@@ -215,6 +215,7 @@ pub fn init_database(path: &Path) -> Result<()> {
             name        TEXT NOT NULL,
             token_hash  TEXT NOT NULL UNIQUE,
             permission  TEXT NOT NULL DEFAULT 'read_only',
+            client_class TEXT NOT NULL DEFAULT 'legacy_terminal',
             created_at  INTEGER NOT NULL,
             last_seen_at INTEGER
         );
@@ -283,6 +284,9 @@ pub fn init_database(path: &Path) -> Result<()> {
     crate::workspace::ensure_workspace_schema(&conn)
         .context("Failed to create workspace tables")?;
 
+    migrate_paired_devices_client_class(&conn)
+        .context("Failed to migrate paired_devices client_class")?;
+
     drop(conn);
     DATABASE
         .set(runtime)
@@ -309,6 +313,30 @@ pub fn shutdown_audit_writer(timeout: Duration) -> AuditWriterDiagnostics {
     Lazy::get(&AUDIT_WRITER)
         .map(|writer| writer.shutdown(timeout))
         .unwrap_or_default()
+}
+
+/// Ensure `paired_devices.client_class` exists and existing rows are legacy_terminal.
+fn migrate_paired_devices_client_class(conn: &rusqlite::Connection) -> Result<()> {
+    let has_column: bool = conn
+        .prepare("PRAGMA table_info(paired_devices)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .any(|name| name == "client_class");
+    if !has_column {
+        conn.execute_batch(
+            "ALTER TABLE paired_devices ADD COLUMN client_class TEXT NOT NULL DEFAULT 'legacy_terminal';",
+        )?;
+    }
+    // Rows created before the secure bridge always remain legacy terminal clients.
+    conn.execute(
+        "UPDATE paired_devices
+         SET client_class = 'legacy_terminal'
+         WHERE client_class IS NULL
+            OR TRIM(client_class) = ''
+            OR client_class NOT IN ('legacy_terminal', 'secure_workspace')",
+        [],
+    )?;
+    Ok(())
 }
 
 fn write_audit_batch(entries: &[AuditLogEntry]) -> Result<()> {

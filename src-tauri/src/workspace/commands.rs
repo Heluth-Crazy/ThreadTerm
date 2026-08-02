@@ -10,6 +10,11 @@ use tauri::Emitter;
 static WORKSPACE_SERVICE: Lazy<Arc<WorkspaceService>> =
     Lazy::new(|| Arc::new(WorkspaceService::default()));
 
+/// Shared workspace authority used by desktop IPC and the secure bridge adapter.
+pub fn shared_workspace_service() -> Arc<WorkspaceService> {
+    WORKSPACE_SERVICE.clone()
+}
+
 fn emit_pending(app: &tauri::AppHandle) {
     let events = WORKSPACE_SERVICE.take_events();
     for event in events {

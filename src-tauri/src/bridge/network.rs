@@ -1,5 +1,6 @@
 pub(super) const DEFAULT_BRIDGE_HOST: &str = "127.0.0.1";
 pub(super) const DEFAULT_BRIDGE_PORT: u16 = 5174;
+pub(super) const DEFAULT_SECURE_BRIDGE_PORT: u16 = 5175;
 
 pub(super) struct PairPublicTarget {
     pub(super) base_url: String,
