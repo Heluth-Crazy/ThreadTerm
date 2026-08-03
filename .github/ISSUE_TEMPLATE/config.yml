@@ -1,8 +1,0 @@
-blank_issues_enabled: false
-contact_links:
-  - name: First-run guide
-    url: https://github.com/Heluth-Crazy/ThreadTerm/blob/main/docs/first-run.md
-    about: Check the first-run workflow before filing setup questions.
-  - name: Roadmap
-    url: https://github.com/Heluth-Crazy/ThreadTerm/blob/main/ROADMAP.md
-    about: See the current product direction and near-term priorities.

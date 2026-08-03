@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "改动在 Rust 端 attach_snapshot 序列化层，但失败现象呈现在前端 Shell.jsx 浮窗 xterm；修复需要确认序列化输出的 ANSI 字节流被前端 outputSequencer.applySnapshot 正确消费。属于跨层（Rust→TS via Tauri invoke）的 bug，先校对数据流契约。"}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "本次防御兜底要复用 attach_snapshot 中已存在的 raw output_buffer 回退路径（session.rs:248-268），不能新写一份；提示实施者优先识别可复用代码。"}
-{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "通用质量基线（无 ts-ignore / 无 console.log / 测试要求等），实施时遵守。"}
