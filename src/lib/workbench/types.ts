@@ -1,6 +1,6 @@
 import type { TerminalStatus, TerminalType } from '../../types/terminal';
 
-export type PrimaryView = 'workbench' | 'terminals';
+export type PrimaryView = 'workbench' | 'terminals' | 'workspace';
 
 export type AttentionKind =
   | 'approval'

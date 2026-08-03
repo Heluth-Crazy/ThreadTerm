@@ -40,6 +40,16 @@ describe('providerSession launch command builder', () => {
     expect(result).toEqual({ command: 'claude --resume manual' });
   });
 
+  it('preserves every custom command byte around its arguments', () => {
+    const result = buildTerminalLaunchCommand(
+      card({
+        terminalType: 'custom',
+        command: '  tool --name="two words" --flag  ',
+      }),
+    );
+    expect(result).toEqual({ command: '  tool --name="two words" --flag  ' });
+  });
+
   it('starts a new Claude session with a generated session id', () => {
     const result = buildTerminalLaunchCommand(
       card({
@@ -100,13 +110,25 @@ describe('providerSession launch command builder', () => {
     expect(buildTerminalLaunchCommand(card({ terminalType: 'python' }), 'python3')).toEqual({
       command: 'python3',
     });
-    expect(buildTerminalLaunchCommand(card({ terminalType: 'opencode' }), 'opencode')).toEqual({
-      command: 'opencode',
-    });
     expect(buildTerminalLaunchCommand(card({ terminalType: 'shell' }), '')).toEqual({});
   });
 
-  it('resumes bound OpenCode and Gemini sessions', () => {
+  it('starts OpenCode/Gemini/Kimi with discovery and resumes bound sessions', () => {
+    expect(buildTerminalLaunchCommand(card({ terminalType: 'opencode' }), 'opencode')).toEqual({
+      command: 'opencode',
+      provider: 'opencode',
+      action: 'discover',
+    });
+    expect(buildTerminalLaunchCommand(card({ terminalType: 'gemini' }), 'gemini')).toEqual({
+      command: 'gemini',
+      provider: 'gemini',
+      action: 'discover',
+    });
+    expect(buildTerminalLaunchCommand(card({ terminalType: 'kimi' }), 'kimi')).toEqual({
+      command: 'kimi',
+      provider: 'kimi',
+      action: 'discover',
+    });
     expect(
       buildTerminalLaunchCommand(
         card({
@@ -137,6 +159,69 @@ describe('providerSession launch command builder', () => {
       providerSessionId: 'gem-1',
       action: 'resume',
     });
+    expect(
+      buildTerminalLaunchCommand(
+        card({
+          terminalType: 'kimi',
+          providerSessionId: 'kimi-1',
+          providerSessionState: 'bound',
+        }),
+        'kimi',
+      ),
+    ).toEqual({
+      command: 'kimi --session kimi-1',
+      provider: 'kimi',
+      providerSessionId: 'kimi-1',
+      action: 'resume',
+    });
+  });
+
+  it('starts Grok with a caller-supplied session id and resumes bound sessions', () => {
+    expect(
+      buildTerminalLaunchCommand(
+        card({
+          terminalType: 'grok',
+          providerSessionId: '11111111-1111-4111-8111-111111111111',
+          providerSessionState: 'unbound',
+        }),
+        'grok',
+      ),
+    ).toEqual({
+      command: 'grok --session-id 11111111-1111-4111-8111-111111111111',
+      provider: 'grok',
+      providerSessionId: '11111111-1111-4111-8111-111111111111',
+      action: 'start',
+    });
+    expect(
+      buildTerminalLaunchCommand(
+        card({
+          terminalType: 'grok',
+          providerSessionId: '11111111-1111-4111-8111-111111111111',
+          providerSessionState: 'bound',
+        }),
+        'grok',
+      ),
+    ).toEqual({
+      command: 'grok --resume 11111111-1111-4111-8111-111111111111',
+      provider: 'grok',
+      providerSessionId: '11111111-1111-4111-8111-111111111111',
+      action: 'resume',
+    });
+  });
+
+  it('preserves custom commands byte-for-byte for Kimi/Grok cards', () => {
+    expect(
+      buildTerminalLaunchCommand(
+        card({ terminalType: 'kimi', command: 'kimi --model moonshot' }),
+        'kimi',
+      ),
+    ).toEqual({ command: 'kimi --model moonshot' });
+    expect(
+      buildTerminalLaunchCommand(
+        card({ terminalType: 'grok', command: 'grok --resume keep-me' }),
+        'grok',
+      ),
+    ).toEqual({ command: 'grok --resume keep-me' });
   });
 });
 
@@ -170,27 +255,37 @@ describe('providerSession AI CLI state badge', () => {
     expect(result?.values?.id).toBe('...8588f');
   });
 
-  it('describes Gemini as CLI-only until a session is bound', () => {
-    const result = getAiCliSessionBadge(card({ terminalType: 'gemini' }));
-    expect(result?.labelKey).toBe('aiSession.cliOnly');
-    expect(result?.values?.cli).toBe('Gemini');
-  });
-
-  it('describes bound OpenCode as resume-ready', () => {
-    const result = getAiCliSessionBadge(
-      card({
-        terminalType: 'opencode',
-        providerSessionId: 'oc-bound-1',
-        providerSessionState: 'bound',
-      }),
+  it('describes unbound Gemini/OpenCode/Kimi as discovery sessions', () => {
+    expect(getAiCliSessionBadge(card({ terminalType: 'gemini' }))?.labelKey).toBe(
+      'aiSession.discovery',
     );
-    expect(result?.labelKey).toBe('aiSession.resumeReady');
+    expect(getAiCliSessionBadge(card({ terminalType: 'opencode' }))?.labelKey).toBe(
+      'aiSession.discovery',
+    );
+    expect(getAiCliSessionBadge(card({ terminalType: 'kimi' }))?.labelKey).toBe(
+      'aiSession.discovery',
+    );
   });
 
-  it('describes OpenCode as CLI-only until a session is bound', () => {
-    const result = getAiCliSessionBadge(card({ terminalType: 'opencode' }));
-    expect(result?.labelKey).toBe('aiSession.cliOnly');
-    expect(result?.values?.cli).toBe('OpenCode');
+  it('describes bound OpenCode and Kimi as resume-ready', () => {
+    expect(
+      getAiCliSessionBadge(
+        card({
+          terminalType: 'opencode',
+          providerSessionId: 'oc-bound-1',
+          providerSessionState: 'bound',
+        }),
+      )?.labelKey,
+    ).toBe('aiSession.resumeReady');
+    expect(
+      getAiCliSessionBadge(
+        card({
+          terminalType: 'kimi',
+          providerSessionId: 'kimi-bound-1',
+          providerSessionState: 'bound',
+        }),
+      )?.labelKey,
+    ).toBe('aiSession.resumeReady');
   });
 
   it('detects missing AI CLI output', () => {

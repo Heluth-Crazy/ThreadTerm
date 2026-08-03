@@ -749,7 +749,7 @@ describe('terminalStore — persistence shape contract', () => {
 
     const persisted = readPersistedState();
     expect(Object.keys(persisted.state ?? {}).sort()).toEqual(PERSISTED_TOP_LEVEL_KEYS);
-    expect(persisted.version).toBe(19);
+    expect(persisted.version).toBe(20);
   });
 
   it('persists each card with a stable key set', () => {
@@ -900,7 +900,7 @@ describe('terminalStore — persistence shape contract', () => {
     expect(restoredCards.map((card) => card.id)).toEqual(cardIds);
     expect(restoredCards[0]?.lastOutput).toContain('card-0:');
     expect(restoredCards.at(-1)?.lastOutput).toContain('card-179:');
-    expect(persisted.version).toBe(19);
+    expect(persisted.version).toBe(20);
   });
 });
 

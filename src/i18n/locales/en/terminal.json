@@ -260,7 +260,9 @@
       "all": "All",
       "claude": "Claude",
       "codex": "Codex",
-      "opencode": "OpenCode"
+      "opencode": "OpenCode",
+      "gemini": "Gemini",
+      "grok": "Grok Build"
     },
     "tokens": "tokens",
     "realTokens": "real tokens",
@@ -278,6 +280,9 @@
     "empty": "No usage in this window."
   },
   "workspace": {
+    "viewSwitchLabel": "Project view",
+    "workbenchView": "Workbench",
+    "workspaceView": "Workspace",
     "toggle": "Files / Changes",
     "files": "Files",
     "changes": "Changes",
@@ -297,6 +302,10 @@
     "closeCurrentTab": "Close current",
     "closeAllTabs": "Close all",
     "closeOtherTabs": "Close others",
+    "activityJustNow": "Just now",
+    "activityMinutes": "{{count}}m ago",
+    "activityHours": "{{count}}h ago",
+    "activityDays": "{{count}}d ago",
     "changedFiles": "{{count}} changed files",
     "refresh": "Refresh",
     "loadingChanges": "Loading changes...",
@@ -725,6 +734,8 @@
     "codex": "Codex",
     "opencode": "OpenCode",
     "gemini": "Gemini",
+    "kimi": "Kimi Code",
+    "grok": "Grok Build",
     "npm": "npm",
     "yarn": "Yarn",
     "pnpm": "pnpm",

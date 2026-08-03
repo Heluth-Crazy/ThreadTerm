@@ -77,7 +77,12 @@ impl LeaseTable {
     pub fn snapshot_all(&self, now_ms: u64) -> Vec<EditorLeaseSnapshot> {
         self.entries
             .iter()
-            .filter(|(_, entry)| entry.expires_at_unix_ms.map(|exp| exp > now_ms).unwrap_or(true))
+            .filter(|(_, entry)| {
+                entry
+                    .expires_at_unix_ms
+                    .map(|exp| exp > now_ms)
+                    .unwrap_or(true)
+            })
             .map(|(key, entry)| {
                 let mut parts = key.splitn(2, '\0');
                 let workspace_id = parts.next().unwrap_or_default().to_string();
@@ -98,7 +103,12 @@ impl LeaseTable {
     pub fn active_count(&self, now_ms: u64) -> u64 {
         self.entries
             .values()
-            .filter(|entry| entry.expires_at_unix_ms.map(|exp| exp > now_ms).unwrap_or(true))
+            .filter(|entry| {
+                entry
+                    .expires_at_unix_ms
+                    .map(|exp| exp > now_ms)
+                    .unwrap_or(true)
+            })
             .count() as u64
     }
 

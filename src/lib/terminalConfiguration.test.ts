@@ -34,7 +34,7 @@ describe('terminalConfiguration', () => {
       value: {
         terminalType: 'shell',
         launchMode: 'custom',
-        command: 'npm run dev',
+        command: '  npm run dev  ',
       },
     });
 
@@ -121,6 +121,18 @@ describe('terminalConfiguration', () => {
       launchMode: 'resume',
       providerSessionId: 'oc-1',
       workspaceMode: 'current',
+    });
+    expect(
+      terminalLaunchConfigurationFromCard({
+        terminalType: 'shell',
+        command: '  npm run dev -- --flag="two words"  ',
+        providerSessionId: undefined,
+        providerSessionState: undefined,
+      }),
+    ).toEqual({
+      terminalType: 'shell',
+      launchMode: 'custom',
+      command: '  npm run dev -- --flag="two words"  ',
     });
   });
 

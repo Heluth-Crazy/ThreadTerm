@@ -226,13 +226,47 @@ impl DeltaTokens {
     }
 }
 
-/// State carried while scanning a single Codex jsonl file.
-struct CodexFileState {
-    session_id: Option<String>,
-    cwd: String,
-    model: String,
-    prev_total: Option<CumulativeTokens>,
-    event_index: u32,
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TokenCountersSignature {
+    input: Option<u64>,
+    cached_input: Option<u64>,
+    output: Option<u64>,
+    reasoning_output: Option<u64>,
+    total: Option<u64>,
+}
+
+/// Raw token-count shape used to align a fork/subagent rollout with the
+/// parent history it replayed before starting its own work.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CodexTokenUsageSignature {
+    total: Option<TokenCountersSignature>,
+    last: Option<TokenCountersSignature>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CodexTokenEvent {
+    pub signature: CodexTokenUsageSignature,
+    pub call: Option<CallRecord>,
+    pub event_index: Option<u32>,
+    pub timestamp_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CodexParentResolution {
+    None,
+    Parent(String),
+    Deferred(String),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ParsedCodexRollout {
+    pub root_thread_id: Option<String>,
+    pub root_meta_seen: bool,
+    pub root_timestamp_ms: Option<u64>,
+    pub max_timestamp_ms: Option<u64>,
+    pub parent: CodexParentResolution,
+    pub cwd: String,
+    pub token_events: Vec<CodexTokenEvent>,
 }
 
 /// Parse a Codex session jsonl → (session id, project cwd, per-call deltas).
@@ -240,18 +274,38 @@ struct CodexFileState {
 /// Each non-zero delta becomes one `CallRecord`. `message_id` is `None` (Codex
 /// has no per-message id); dedup is by the `session_id:event_index` composite
 /// key at insert time, not here.
+#[cfg(test)]
 pub fn parse_codex_file(path: &Path) -> Option<(String, String, Vec<CallRecord>)> {
+    let parsed = parse_codex_rollout(path)?;
+    let calls = parsed
+        .token_events
+        .into_iter()
+        .filter_map(|event| event.call)
+        .collect::<Vec<_>>();
+    if calls.is_empty() {
+        return None;
+    }
+    Some((parsed.root_thread_id.unwrap_or_default(), parsed.cwd, calls))
+}
+
+/// Parse one Codex rollout while retaining the raw token signatures and
+/// explicit parent metadata needed by the sync layer to remove replayed
+/// parent history safely.
+pub(crate) fn parse_codex_rollout(path: &Path) -> Option<ParsedCodexRollout> {
     let file = fs::File::open(path).ok()?;
     let reader = BufReader::new(file);
 
-    let mut state = CodexFileState {
-        session_id: None,
-        cwd: String::new(),
-        model: "unknown".to_string(),
-        prev_total: None,
-        event_index: 0,
-    };
-    let mut calls = Vec::new();
+    let filename_thread_id = codex_thread_id_from_filename(path);
+    let mut root_thread_id = filename_thread_id.clone();
+    let mut root_meta_seen = false;
+    let mut root_timestamp_ms = None;
+    let mut max_timestamp_ms = None;
+    let mut parent = CodexParentResolution::None;
+    let mut cwd = String::new();
+    let mut model = "unknown".to_string();
+    let mut prev_total = None;
+    let mut event_index = 0u32;
+    let mut token_events = Vec::new();
 
     for line in reader.lines() {
         let Ok(line) = line else { continue };
@@ -274,21 +328,48 @@ pub fn parse_codex_file(path: &Path) -> Option<(String, String, Vec<CallRecord>)
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        let line_timestamp_ms = v
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(parse_iso8601_ms);
+        if let Some(timestamp) = line_timestamp_ms {
+            max_timestamp_ms =
+                Some(max_timestamp_ms.map_or(timestamp, |current: u64| current.max(timestamp)));
+        }
         let typ = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let payload = v.get("payload");
         match typ {
-            "session_meta" => {
+            "session_meta" if !root_meta_seen => {
+                root_meta_seen = true;
+                root_timestamp_ms = line_timestamp_ms;
                 if let Some(p) = payload {
                     if let Some(c) = p.get("cwd").and_then(|c| c.as_str()) {
-                        state.cwd = c.to_string();
+                        cwd = c.to_string();
                     }
-                    if let Some(id) = p
+                    let meta_id = p
                         .get("id")
+                        .or_else(|| p.get("thread_id"))
+                        .or_else(|| p.get("threadId"))
                         .or_else(|| p.get("session_id"))
                         .or_else(|| p.get("sessionId"))
                         .and_then(|i| i.as_str())
+                        .map(str::to_string);
+                    if root_thread_id.is_none() {
+                        root_thread_id = meta_id.clone();
+                    } else if let (Some(filename_id), Some(meta_id)) =
+                        (filename_thread_id.as_deref(), meta_id.as_deref())
                     {
-                        state.session_id = Some(id.to_string());
+                        let normalized_meta_id =
+                            canonical_thread_id(meta_id).unwrap_or_else(|| meta_id.to_string());
+                        if filename_id != normalized_meta_id {
+                            parent = CodexParentResolution::Deferred(format!(
+                                "rollout filename thread id {filename_id} conflicts with session_meta id {meta_id}"
+                            ));
+                        }
+                    }
+
+                    if !matches!(parent, CodexParentResolution::Deferred(_)) {
+                        parent = explicit_parent_from_meta(p);
                     }
                 }
             }
@@ -300,7 +381,7 @@ pub fn parse_codex_file(path: &Path) -> Option<(String, String, Vec<CallRecord>)
                     })
                     .and_then(|m| m.as_str())
                 {
-                    state.model = normalize_model(m);
+                    model = normalize_model(m);
                 }
             }
             "event_msg" => {
@@ -320,8 +401,12 @@ pub fn parse_codex_file(path: &Path) -> Option<(String, String, Vec<CallRecord>)
                     .or_else(|| p.get("model"))
                     .and_then(|m| m.as_str())
                 {
-                    state.model = normalize_model(m);
+                    model = normalize_model(m);
                 }
+
+                let Some(signature) = parse_token_signature(info) else {
+                    continue;
+                };
 
                 // Prefer cumulative `total_token_usage`; fall back to
                 // `last_token_usage` which is already an incremental value.
@@ -335,8 +420,8 @@ pub fn parse_codex_file(path: &Path) -> Option<(String, String, Vec<CallRecord>)
                 let Some(cur) = cumulative else { continue };
 
                 let delta = if is_total {
-                    let d = compute_delta(&state.prev_total, &cur);
-                    state.prev_total = Some(cur);
+                    let d = compute_delta(&prev_total, &cur);
+                    prev_total = Some(cur);
                     d
                 } else {
                     DeltaTokens {
@@ -352,40 +437,139 @@ pub fn parse_codex_file(path: &Path) -> Option<(String, String, Vec<CallRecord>)
                     ..delta
                 };
 
-                if delta.is_zero() {
-                    continue; // task-boundary zero-delta events
-                }
-
-                state.event_index += 1;
-                let timestamp_ms = v
-                    .get("timestamp")
-                    .and_then(|t| t.as_str())
-                    .and_then(parse_iso8601_ms);
-
-                // `input_tokens` already includes cached; split so cached bills
-                // at the cache_read rate and isn't double-counted.
-                calls.push(CallRecord {
-                    model: state.model.clone(),
-                    message_id: None,
-                    usage: UsageSummary {
-                        input: delta.input.saturating_sub(delta.cached_input),
-                        output: delta.output,
-                        cache_creation: 0,
-                        cache_read: delta.cached_input,
-                    },
+                let timestamp_ms = line_timestamp_ms;
+                let (call, nonzero_index) = if delta.is_zero() {
+                    (None, None)
+                } else {
+                    event_index = event_index.saturating_add(1);
+                    // `input_tokens` already includes cached; split so cached
+                    // bills at the cache_read rate and isn't double-counted.
+                    (
+                        Some(CallRecord {
+                            model: model.clone(),
+                            message_id: None,
+                            usage: UsageSummary {
+                                input: delta.input.saturating_sub(delta.cached_input),
+                                output: delta.output,
+                                cache_creation: 0,
+                                cache_read: delta.cached_input,
+                            },
+                            timestamp_ms,
+                            stop_reason: None,
+                            session_id: None,
+                        }),
+                        Some(event_index),
+                    )
+                };
+                token_events.push(CodexTokenEvent {
+                    signature,
+                    call,
+                    event_index: nonzero_index,
                     timestamp_ms,
-                    stop_reason: None,
-                    session_id: state.session_id.clone(),
                 });
             }
             _ => {}
         }
     }
 
-    if calls.is_empty() {
+    for event in &mut token_events {
+        if let Some(call) = &mut event.call {
+            call.session_id = root_thread_id.clone();
+        }
+    }
+
+    Some(ParsedCodexRollout {
+        root_thread_id,
+        root_meta_seen,
+        root_timestamp_ms,
+        max_timestamp_ms,
+        parent,
+        cwd,
+        token_events,
+    })
+}
+
+pub(crate) fn codex_thread_id_from_filename(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let candidate = stem.get(stem.len().checked_sub(36)?..)?;
+    canonical_thread_id(candidate)
+}
+
+fn canonical_thread_id(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 || [8, 13, 18, 23].iter().any(|&index| bytes[index] != b'-') {
         return None;
     }
-    Some((state.session_id.unwrap_or_default(), state.cwd, calls))
+    if bytes
+        .iter()
+        .enumerate()
+        .any(|(index, byte)| !matches!(index, 8 | 13 | 18 | 23) && !byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some(value.to_ascii_lowercase())
+}
+
+fn non_empty_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn explicit_parent_from_meta(payload: &Value) -> CodexParentResolution {
+    let forked_from = non_empty_string(payload.get("forked_from_id"));
+    let spawned_from = payload
+        .get("source")
+        .and_then(|source| source.get("subagent"))
+        .and_then(|subagent| subagent.get("thread_spawn"))
+        .and_then(|spawn| non_empty_string(spawn.get("parent_thread_id")));
+    let legacy_parent = non_empty_string(
+        payload
+            .get("parent_thread_id")
+            .or_else(|| payload.get("parentThreadId")),
+    );
+
+    let mut candidates = [forked_from, spawned_from, legacy_parent]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.dedup();
+    match candidates.as_slice() {
+        [] => CodexParentResolution::None,
+        [parent] => match canonical_thread_id(parent) {
+            Some(parent) => CodexParentResolution::Parent(parent),
+            None => CodexParentResolution::Deferred(format!(
+                "parent thread id is not a valid UUID: {parent}"
+            )),
+        },
+        parents => CodexParentResolution::Deferred(format!(
+            "conflicting parent thread ids: {}",
+            parents.join(", ")
+        )),
+    }
+}
+
+fn parse_signature_counters(value: Option<&Value>) -> Option<TokenCountersSignature> {
+    let value = value?.as_object()?;
+    Some(TokenCountersSignature {
+        input: value.get("input_tokens").and_then(Value::as_u64),
+        cached_input: value
+            .get("cached_input_tokens")
+            .or_else(|| value.get("cache_read_input_tokens"))
+            .and_then(Value::as_u64),
+        output: value.get("output_tokens").and_then(Value::as_u64),
+        reasoning_output: value.get("reasoning_output_tokens").and_then(Value::as_u64),
+        total: value.get("total_tokens").and_then(Value::as_u64),
+    })
+}
+
+fn parse_token_signature(info: &Value) -> Option<CodexTokenUsageSignature> {
+    let total = parse_signature_counters(info.get("total_token_usage"));
+    let last = parse_signature_counters(info.get("last_token_usage"));
+    (total.is_some() || last.is_some()).then_some(CodexTokenUsageSignature { total, last })
 }
 
 /// Extract cumulative token fields, tolerating `cached_input_tokens` vs
@@ -663,6 +847,34 @@ mod tests {
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].model, "gpt-5.4");
         assert_eq!(calls[1].model, "o3");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn codex_rollout_uses_only_the_first_root_session_meta() {
+        let jsonl = r#"{"type":"session_meta","timestamp":"2021-01-01T00:00:00Z","payload":{"id":"root-session","cwd":"/root"}}
+{"type":"session_meta","timestamp":"2021-01-01T00:00:01Z","payload":{"id":"copied-session","cwd":"/copied","forked_from_id":"not-a-uuid"}}
+{"type":"event_msg","timestamp":"2021-01-01T00:00:02Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":1}}}}"#;
+        let path = write_temp_jsonl("codex_first_meta.jsonl", jsonl);
+        let parsed = parse_codex_rollout(&path).expect("rollout");
+        assert_eq!(parsed.root_thread_id.as_deref(), Some("root-session"));
+        assert_eq!(parsed.cwd, "/root");
+        assert_eq!(parsed.parent, CodexParentResolution::None);
+        assert_eq!(parsed.root_timestamp_ms, Some(1_609_459_200_000));
+        assert_eq!(parsed.max_timestamp_ms, Some(1_609_459_202_000));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn codex_rollout_defers_conflicting_explicit_parents() {
+        let jsonl = r#"{"type":"session_meta","timestamp":"2021-01-01T00:00:00Z","payload":{"id":"child","forked_from_id":"11111111-1111-1111-1111-111111111111","source":{"subagent":{"thread_spawn":{"parent_thread_id":"22222222-2222-2222-2222-222222222222"}}}}}
+{"type":"event_msg","timestamp":"2021-01-01T00:00:01Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":1}}}}"#;
+        let path = write_temp_jsonl("codex_parent_conflict.jsonl", jsonl);
+        let parsed = parse_codex_rollout(&path).expect("rollout");
+        assert!(matches!(
+            parsed.parent,
+            CodexParentResolution::Deferred(reason) if reason.contains("conflicting parent")
+        ));
         let _ = std::fs::remove_file(&path);
     }
 }

@@ -39,6 +39,20 @@ describe('ProjectSidebar navigation and branch rows', () => {
     expect(onCreateTerminal).toHaveBeenCalledTimes(1);
   });
 
+  it('does not mark Workbench or All terminals active while Workspace is visible', () => {
+    render(<ProjectSidebar primaryView="workspace" />);
+
+    const primaryNavigation = screen.getByRole('group', {
+      name: 'Primary navigation',
+    });
+    expect(within(primaryNavigation).getByText('Workbench').closest('button')).not.toHaveAttribute(
+      'aria-current',
+    );
+    expect(
+      within(primaryNavigation).getByText('All terminals').closest('button'),
+    ).not.toHaveAttribute('aria-current');
+  });
+
   it('opens a shell terminal with the selected existing branch worktree path from the row action', () => {
     useTerminalStore.getState().createCard({
       projectName: 'ThreadTerm',
@@ -103,6 +117,49 @@ describe('ProjectSidebar navigation and branch rows', () => {
     expect(useTerminalStore.getState().selectedProjectPath).toBe('/repo/threadterm');
     expect(useTerminalStore.getState().selectedWorktreePath).toBe('/repo/threadterm-feature');
     expect(useTerminalStore.getState().selectedWorktreeLabel).toBe('feature/worktree-ui');
+  });
+
+  it('funnels project and worktree row navigation through the coordinator callbacks', () => {
+    useTerminalStore.getState().createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+    branchHookMock.branches = [
+      baseBranch({
+        branch: 'feature/worktree-ui',
+        head: '2222222222222222222222222222222222222222',
+        worktreePath: '/repo/threadterm-feature',
+        lastCommitUnix: 2,
+      }),
+    ];
+    const onSelectProject = vi.fn();
+    const onSelectWorktree = vi.fn();
+
+    render(
+      <ProjectSidebar
+        onSelectProject={onSelectProject}
+        onSelectWorktree={onSelectWorktree}
+      />,
+    );
+
+    fireEvent.click(
+      within(screen.getByTestId('sidebar-project-section')).getByText('ThreadTerm'),
+    );
+    expect(onSelectProject).toHaveBeenCalledWith('/repo/threadterm');
+    expect(useTerminalStore.getState().selectedProjectPath).toBeNull();
+
+    fireEvent.click(screen.getByTitle('sidebar.expand'));
+    fireEvent.click(screen.getByTitle('feature/worktree-ui — /repo/threadterm-feature'));
+    expect(onSelectWorktree).toHaveBeenCalledWith(
+      '/repo/threadterm',
+      '/repo/threadterm-feature',
+      'feature/worktree-ui',
+    );
+    expect(useTerminalStore.getState().selectedWorktreePath).toBeNull();
+
+    fireEvent.click(screen.getByText('All projects'));
+    expect(onSelectProject).toHaveBeenLastCalledWith(null);
   });
 
   it('does not render a branch tree toggle for non-git projects', () => {

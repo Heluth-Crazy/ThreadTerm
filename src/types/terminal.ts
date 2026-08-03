@@ -28,6 +28,8 @@ export type TerminalType =
   | 'codex'
   | 'opencode'
   | 'gemini'
+  | 'kimi'
+  | 'grok'
   | 'npm'
   | 'yarn'
   | 'pnpm'
@@ -203,7 +205,7 @@ export interface TerminalCreateOptions {
 
 export interface ProviderSessionImportInfo {
   id: string;
-  provider: 'claude' | 'codex' | 'opencode' | 'gemini';
+  provider: 'claude' | 'codex' | 'opencode' | 'gemini' | 'kimi' | 'grok';
   projectPath: string;
   updatedAt?: number | null;
   /** Optional display name derived from catalog title; never stores full transcripts. */

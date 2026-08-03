@@ -209,6 +209,7 @@ pub fn run() {
             provider_sessions::provider_list_recent_sessions,
             provider_sessions::provider_resolve_resume_session,
             agent_sessions::provider_list_agent_sessions,
+            agent_sessions::provider_resolve_agent_session_metadata,
             stats::stats_compute,
             stats::stats_cancel,
             stats::stats_rebuild,

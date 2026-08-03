@@ -38,7 +38,7 @@ export interface SeedCard {
 }
 
 export interface SeedAgentSession {
-  provider: 'claude' | 'codex' | 'opencode' | 'gemini';
+  provider: 'claude' | 'codex' | 'opencode' | 'gemini' | 'kimi' | 'grok';
   id: string;
   /** Optional canonical resume id used to model child → root resolution. */
   resumeTargetId?: string;
@@ -132,7 +132,7 @@ function installInPage(seed: FakeSeed): void {
   localStorage.setItem('threadterm-shortcut-hint-dismissed', '1');
   localStorage.setItem(
     'threadterm-terminal-store',
-    JSON.stringify({ state: seed.persistedState, version: 19 }),
+    JSON.stringify({ state: seed.persistedState, version: 20 }),
   );
 
   type EventCallback = (event: { event: string; id: number; payload: unknown }) => void;
@@ -446,6 +446,43 @@ function installInPage(seed: FakeSeed): void {
           scannedAt: Date.now(),
           warning: null,
         };
+      }
+      case 'provider_resolve_agent_session_metadata': {
+        const request = (a.request ?? {}) as { keys?: Array<Record<string, unknown>> };
+        const keys = Array.isArray(request.keys) ? request.keys : [];
+        return keys.map((key) => {
+          const provider = String(key.provider ?? '');
+          const sessionId = String(key.sessionId ?? '');
+          const session = seed.agentSessions.find(
+            (candidate) =>
+              candidate.provider === provider && candidate.id === sessionId,
+          );
+          if (!session) {
+            return {
+              key: { provider, sessionId, projectPath: key.projectPath ?? null },
+              state: 'missing',
+              summary: null,
+              warning: null,
+            };
+          }
+          return {
+            key: { provider, sessionId, projectPath: key.projectPath ?? null },
+            state: 'found',
+            summary: {
+              provider: session.provider,
+              id: session.id,
+              projectPath: session.projectPath,
+              nativeTitle: session.nativeTitle ?? null,
+              titleKind: session.titleKind,
+              firstUserMessagePreview: session.firstUserMessagePreview ?? null,
+              createdAt: session.createdAt ?? null,
+              updatedAt: session.updatedAt ?? null,
+              messageCount: session.messageCount ?? null,
+              resumable: session.resumable,
+            },
+            warning: null,
+          };
+        });
       }
       case 'native_platform_material_state':
         return { enabled: false, platform: 'macos' };

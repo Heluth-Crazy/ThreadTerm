@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { __resetMetadataCacheForTests } from '../../stores/agentSessionMetadataCache';
 import { clearWorkspaceLoadCaches } from '../files/workspaceLoadCache';
 import { localWorkspaceAuthority } from '../../lib/workspace/localAuthority';
 import { TerminalManager } from './TerminalManager';
@@ -22,6 +23,7 @@ const bridgeMocks = vi.hoisted(() => ({
   gitTextDiff: vi.fn(),
   addWorktree: vi.fn(),
   listRecent: vi.fn(),
+  resolveMetadata: vi.fn(),
   bridgeStatus: vi.fn(),
   bridgeHasSubscribers: vi.fn(),
   syncCards: vi.fn(),
@@ -79,6 +81,7 @@ vi.mock('../../lib/tauri-bridge', () => ({
   },
   providerSessions: {
     listRecent: (...args: unknown[]) => bridgeMocks.listRecent(...args),
+    resolveMetadata: (...args: unknown[]) => bridgeMocks.resolveMetadata(...args),
   },
   mobileBridge: {
     status: (...args: unknown[]) => bridgeMocks.bridgeStatus(...args),
@@ -166,9 +169,17 @@ vi.mock('./ProjectSidebar', () => ({
   ProjectSidebar: ({
     primaryView,
     onSelectPrimaryView,
+    onSelectProject,
+    onSelectWorktree,
   }: {
-    primaryView?: 'workbench' | 'terminals';
-    onSelectPrimaryView?: (view: 'workbench' | 'terminals') => void;
+    primaryView?: 'workbench' | 'terminals' | 'workspace';
+    onSelectPrimaryView?: (view: 'workbench' | 'terminals' | 'workspace') => void;
+    onSelectProject?: (projectPath: string | null) => void;
+    onSelectWorktree?: (
+      projectPath: string,
+      worktreePath: string,
+      label?: string | null,
+    ) => void;
   }) => (
     <aside data-testid="mock-project-sidebar">
       <span data-testid="mock-primary-view">{primaryView}</span>
@@ -177,6 +188,18 @@ vi.mock('./ProjectSidebar', () => ({
       </button>
       <button type="button" onClick={() => onSelectPrimaryView?.('terminals')}>
         open all terminals
+      </button>
+      <button type="button" onClick={() => onSelectProject?.('/tmp/repo')}>
+        select repo project
+      </button>
+      <button type="button" onClick={() => onSelectProject?.(null)}>
+        select all projects
+      </button>
+      <button
+        type="button"
+        onClick={() => onSelectWorktree?.('/tmp/repo', '/tmp/repo-feature', 'feature')}
+      >
+        select repo worktree
       </button>
     </aside>
   ),
@@ -187,6 +210,7 @@ vi.mock('../Settings', () => ({
 }));
 
 function resetStore() {
+  __resetMetadataCacheForTests();
   useTerminalStore.setState({
     cards: [],
     archivedCards: [],
@@ -278,6 +302,7 @@ describe('TerminalManager shortcut hint layout', () => {
     bridgeMocks.resolveActivate.mockResolvedValue(undefined);
     bridgeMocks.resolveClose.mockResolvedValue(undefined);
     bridgeMocks.resolveRenameCard.mockResolvedValue(undefined);
+    bridgeMocks.resolveMetadata.mockResolvedValue([]);
     nativeDialogMocks.confirmDialog.mockResolvedValue(false);
   });
 
@@ -439,6 +464,7 @@ describe('TerminalManager shortcut hint layout', () => {
       useTerminalStore.getState().focusCard(id);
     });
     expect(await screen.findByTestId('mock-shell')).toBeInTheDocument();
+    expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workspace');
 
     fireEvent.click(screen.getByTitle('返回网格（⌘/Ctrl+Shift+M）'));
 
@@ -466,6 +492,7 @@ describe('TerminalManager shortcut hint layout', () => {
       useTerminalStore.getState().focusCard(id);
     });
     expect(await screen.findByTestId('mock-shell')).toBeInTheDocument();
+    expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workspace');
 
     fireEvent.click(screen.getByTitle('返回网格（⌘/Ctrl+Shift+M）'));
 
@@ -477,6 +504,83 @@ describe('TerminalManager shortcut hint layout', () => {
       );
     });
     expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
+  });
+
+  it('switches a project between Workbench and Workspace in one click and keeps its tabs', async () => {
+    useTerminalStore.getState().createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'shell',
+    });
+    render(<TerminalManager />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'select repo project' }));
+    expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workbench');
+    expect(screen.getByTestId('desktop-context-view-switch')).toBeInTheDocument();
+    expect(screen.getByTestId('desktop-context-view-workbench')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    fireEvent.click(screen.getByTestId('desktop-context-view-workspace'));
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workspace');
+      expect(screen.getByTestId('workspace-home')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('desktop-context-view-workspace')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    fireEvent.click(await screen.findByText('README.md'));
+    expect(await screen.findByDisplayValue('old')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('desktop-context-view-workbench'));
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workbench');
+      expect(screen.getByTestId('workbench-view').closest('[aria-hidden]')).toHaveAttribute(
+        'aria-hidden',
+        'false',
+      );
+    });
+    expect(useTerminalStore.getState().selectedProjectPath).toBe('/tmp/repo');
+
+    fireEvent.click(screen.getByTestId('desktop-context-view-workspace'));
+    expect(await screen.findByDisplayValue('old')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'select repo project' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workbench');
+    });
+  });
+
+  it('opens a selected worktree Workspace and keeps that scope when returning to Workbench', async () => {
+    useTerminalStore.getState().createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      worktreePath: '/tmp/repo-feature',
+      branchLabel: 'feature',
+      terminalType: 'shell',
+    });
+    render(<TerminalManager />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'select repo worktree' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workspace');
+      expect(screen.getByTestId('workspace-home')).toBeInTheDocument();
+    });
+    expect(useTerminalStore.getState().selectedWorktreePath).toBe('/tmp/repo-feature');
+
+    fireEvent.click(screen.getByTestId('desktop-context-view-workbench'));
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workbench');
+    });
+    expect(useTerminalStore.getState().selectedProjectPath).toBe('/tmp/repo');
+    expect(useTerminalStore.getState().selectedWorktreePath).toBe('/tmp/repo-feature');
+
+    fireEvent.click(screen.getByRole('button', { name: 'select all projects' }));
+    expect(screen.queryByTestId('desktop-context-view-switch')).toBeNull();
+    expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workbench');
   });
 
   it('keeps the shortcut hint above the focused terminal footer', async () => {
@@ -580,6 +684,82 @@ describe('TerminalManager shortcut hint layout', () => {
     expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
     expect(screen.getByTestId('workspace-tab-home')).toBeInTheDocument();
     expect(screen.getByTestId('workspace-tab-terminal')).toBeInTheDocument();
+  });
+
+  it('uses all six bound native identities in both production workspace home and top tabs', async () => {
+    bridgeMocks.isTauriEnv.mockReturnValue(true);
+    const store = useTerminalStore.getState();
+    const providers = [
+      { id: 'claude', icon: '.lucide-bot' },
+      { id: 'codex', icon: '.lucide-code-xml' },
+      { id: 'opencode', icon: '.lucide-square-terminal' },
+      { id: 'gemini', icon: '.lucide-sparkles' },
+      { id: 'kimi', icon: '.lucide-moon' },
+      { id: 'grok', icon: '.lucide-zap' },
+    ] as const;
+    const cardIds = providers.map(({ id }) => {
+      const cardId = store.createCard({
+        projectName: `ThreadTerm ${id}`,
+        projectPath: '/tmp/repo',
+        terminalType: id,
+        command: `${id} --secret-command`,
+      });
+      store.markProviderSessionBound(cardId, `${id}-session-1234567890`);
+      return cardId;
+    });
+    store.focusCard(cardIds[0]);
+    bridgeMocks.resolveMetadata.mockImplementation(async ({ keys }) =>
+      keys.map((key: { provider: string; sessionId: string; projectPath: string }) => ({
+        key,
+        state: 'found',
+        summary: {
+          provider: key.provider,
+          id: key.sessionId,
+          projectPath: key.projectPath,
+          nativeTitle: `Native ${key.provider} title`,
+          titleKind: 'explicit',
+          resumable: true,
+        },
+        warning: null,
+      })),
+    );
+
+    render(<TerminalManager />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('workspace-tab-terminal')).toHaveTextContent(
+        'Native claude title',
+      );
+    });
+    fireEvent.click(screen.getByTestId('workspace-tab-home'));
+    for (const [{ id, icon }, cardId] of providers.map((provider, index) => [
+      provider,
+      cardIds[index],
+    ] as const)) {
+      const homeRow = await screen.findByTestId(`workspace-home-terminal-${cardId}`);
+      expect(homeRow).toHaveTextContent(`Native ${id} title`);
+      expect(homeRow).toHaveTextContent(`ThreadTerm ${id}`);
+      expect(homeRow.querySelector(icon)).not.toBeNull();
+
+      fireEvent.click(homeRow);
+      let terminalTab: HTMLElement | undefined;
+      await waitFor(() => {
+        terminalTab = screen
+          .getAllByTestId('workspace-tab-terminal')
+          .find((tab) => tab.textContent?.includes(`Native ${id} title`));
+        expect(terminalTab).toBeDefined();
+      });
+      expect(terminalTab?.querySelector(icon)).not.toBeNull();
+      expect(terminalTab?.title).toContain(`Native ${id} title`);
+      expect(terminalTab?.title).toContain(`ThreadTerm ${id}`);
+      expect(terminalTab?.title).toContain('…67890');
+      expect(terminalTab?.title).not.toContain(`${id}-session-1234567890`);
+      expect(terminalTab?.title).not.toContain('secret-command');
+      expect(homeRow.title).toBe(terminalTab?.title);
+      fireEvent.click(screen.getByTestId('workspace-tab-home'));
+    }
+    expect(bridgeMocks.resolveMetadata).toHaveBeenCalledTimes(1);
+    expect(bridgeMocks.resolveMetadata.mock.calls[0]?.[0].keys).toHaveLength(6);
   });
 
   it('opens selected workspace changes as main-content diff tabs', async () => {

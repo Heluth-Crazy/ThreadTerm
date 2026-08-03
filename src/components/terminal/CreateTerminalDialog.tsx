@@ -70,7 +70,7 @@ export function CreateTerminalDialog({
       projectName: name.trim(),
       projectPath: path.trim(),
       terminalType: type,
-      command: command.trim() || undefined,
+      command: command.trim() ? command : undefined,
     });
     // Reset
     setName('');

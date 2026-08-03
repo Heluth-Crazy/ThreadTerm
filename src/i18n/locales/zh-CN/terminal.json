@@ -260,7 +260,9 @@
       "all": "全部",
       "claude": "Claude",
       "codex": "Codex",
-      "opencode": "OpenCode"
+      "opencode": "OpenCode",
+      "gemini": "Gemini",
+      "grok": "Grok Build"
     },
     "tokens": "tokens",
     "realTokens": "real tokens",
@@ -278,6 +280,9 @@
     "empty": "此时间窗口内无用量。"
   },
   "workspace": {
+    "viewSwitchLabel": "项目视图",
+    "workbenchView": "工作台",
+    "workspaceView": "工作区",
     "toggle": "文件 / 改动",
     "files": "文件",
     "changes": "改动",
@@ -297,6 +302,10 @@
     "closeCurrentTab": "关闭当前",
     "closeAllTabs": "关闭所有",
     "closeOtherTabs": "关闭除当前",
+    "activityJustNow": "刚刚",
+    "activityMinutes": "{{count}} 分钟前",
+    "activityHours": "{{count}} 小时前",
+    "activityDays": "{{count}} 天前",
     "changedFiles": "{{count}} 个文件有改动",
     "refresh": "刷新",
     "loadingChanges": "正在加载改动...",
@@ -725,6 +734,8 @@
     "codex": "Codex",
     "opencode": "OpenCode",
     "gemini": "Gemini",
+    "kimi": "Kimi Code",
+    "grok": "Grok Build",
     "npm": "npm",
     "yarn": "Yarn",
     "pnpm": "pnpm",

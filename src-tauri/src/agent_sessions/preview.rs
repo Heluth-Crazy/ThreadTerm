@@ -29,6 +29,10 @@ pub fn is_generic_session_title(title: &str) -> bool {
             | "codex"
             | "opencode"
             | "gemini"
+            | "kimi"
+            | "kimi code"
+            | "grok"
+            | "grok build"
     )
 }
 

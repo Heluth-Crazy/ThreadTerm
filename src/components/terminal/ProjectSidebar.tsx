@@ -74,6 +74,12 @@ interface ProjectSidebarProps {
   onCreateTerminal?: () => void;
   primaryView?: PrimaryView;
   onSelectPrimaryView?: (view: PrimaryView) => void;
+  onSelectProject?: (projectPath: string | null) => void;
+  onSelectWorktree?: (
+    projectPath: string,
+    worktreePath: string,
+    label?: string | null,
+  ) => void;
   attentionCount?: number;
   getProjectAttentionCount?: (projectPath: string) => number;
   getWorktreeAttentionCount?: (
@@ -107,6 +113,8 @@ export function ProjectSidebar({
   onCreateTerminal,
   primaryView = 'workbench',
   onSelectPrimaryView = () => {},
+  onSelectProject,
+  onSelectWorktree,
   attentionCount = 0,
   getProjectAttentionCount = zeroProjectAttentionCount,
   getWorktreeAttentionCount = zeroWorktreeAttentionCount,
@@ -146,6 +154,8 @@ export function ProjectSidebar({
   const selectedWorktreePath = useTerminalStore((s) => s.selectedWorktreePath);
   const selectProject = useTerminalStore((s) => s.selectProject);
   const selectWorktree = useTerminalStore((s) => s.selectWorktree);
+  const selectProjectIntent = onSelectProject ?? selectProject;
+  const selectWorktreeIntent = onSelectWorktree ?? selectWorktree;
   const createCard = useTerminalStore((s) => s.createCard);
   const focusCard = useTerminalStore((s) => s.focusCard);
   const pushNotification = useTerminalStore((s) => s.pushNotification);
@@ -191,7 +201,7 @@ export function ProjectSidebar({
       branchLabel,
       terminalType: 'shell',
     });
-    selectWorktree(projectPath, worktreePath, branchLabel);
+    selectWorktreeIntent(projectPath, worktreePath, branchLabel);
     focusCard(id);
   };
 
@@ -200,7 +210,7 @@ export function ProjectSidebar({
     worktreePath: string,
     label?: string | null,
   ) => {
-    selectWorktree(projectPath, worktreePath, label);
+    selectWorktreeIntent(projectPath, worktreePath, label);
   };
 
   const handleCreateWorktreeAndOpen = async (
@@ -329,7 +339,7 @@ export function ProjectSidebar({
           count={totalCards}
           unread={totalUnread}
           dragHandleReserved={!rail && groups.length > 0}
-          onClick={() => { selectProject(null); onExitMobileView?.(); }}
+          onClick={() => { selectProjectIntent(null); onExitMobileView?.(); }}
         />
 
         {groups.length > 0 && !rail && (
@@ -351,7 +361,7 @@ export function ProjectSidebar({
                 group={g}
                 collapsed={rail}
                 selected={selectedPath === g.path}
-                onSelect={() => { selectProject(g.path); onExitMobileView?.(); }}
+                onSelect={() => { selectProjectIntent(g.path); onExitMobileView?.(); }}
                 onOpenDir={(event) => handleOpenDir(g.path, event)}
                 onOpenTerminal={handleOpenWorktreeTerminal}
                 onSelectWorktree={handleSelectWorktree}

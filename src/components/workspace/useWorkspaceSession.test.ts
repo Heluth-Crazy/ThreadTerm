@@ -1,8 +1,9 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { TFunction } from 'i18next';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { localWorkspaceAuthority } from '../../lib/workspace/localAuthority';
+import { workspaceClient } from '../../lib/workspace/client';
 import { HOME_TAB_ID } from '../../lib/workspace/types';
 import { useWorkspaceSession } from './useWorkspaceSession';
 
@@ -75,13 +76,17 @@ describe('useWorkspaceSession worktree isolation', () => {
 
   it('isolates tabs between different worktrees', async () => {
     const a = useTerminalStore.getState().createCard({
-      projectName: 'repo-a',
-      projectPath: '/repo-a',
+      projectName: 'repo',
+      projectPath: '/repo',
+      worktreePath: '/repo-worktree-a',
+      branchLabel: 'feature/a',
       terminalType: 'shell',
     });
     useTerminalStore.getState().createCard({
-      projectName: 'repo-b',
-      projectPath: '/repo-b',
+      projectName: 'repo',
+      projectPath: '/repo',
+      worktreePath: '/repo-worktree-b',
+      branchLabel: 'feature/b',
       terminalType: 'shell',
     });
     const cards = useTerminalStore.getState().cards;
@@ -89,26 +94,26 @@ describe('useWorkspaceSession worktree isolation', () => {
     const { result, rerender } = renderHook(
       ({
         focusedCardId,
-        project,
+        worktree,
       }: {
         focusedCardId: string | null;
-        project: string;
+        worktree: string;
       }) =>
         useWorkspaceSession({
           cards,
           focusedCardId,
-          selectedProjectPath: project,
-          selectedWorktreePath: null,
+          selectedProjectPath: '/repo',
+          selectedWorktreePath: worktree,
           t,
         }),
-      { initialProps: { focusedCardId: a, project: '/repo-a' } },
+      { initialProps: { focusedCardId: a, worktree: '/repo-worktree-a' } },
     );
 
     await waitFor(() => expect(result.current.selectedWorkspaceId).toBeTruthy());
     await act(async () => {
-      await result.current.openWorkspaceFile('/repo-a', {
+      await result.current.openWorkspaceFile('/repo-worktree-a', {
         name: 'a.ts',
-        path: '/repo-a/a.ts',
+        path: '/repo-worktree-a/a.ts',
         isDir: false,
         isHidden: false,
       });
@@ -116,16 +121,19 @@ describe('useWorkspaceSession worktree isolation', () => {
     const wsA = result.current.selectedWorkspaceId;
     expect(result.current.tabs.some((tab) => tab.relativePath === 'a.ts')).toBe(true);
 
-    const cardB = cards.find((card) => card.projectPath === '/repo-b')!;
-    rerender({ focusedCardId: cardB.id, project: '/repo-b' });
-    await waitFor(() =>
-      expect(result.current.selectedWorkspaceId).not.toBe(wsA),
-    );
+    const cardB = cards.find((card) => card.worktreePath === '/repo-worktree-b')!;
+    rerender({ focusedCardId: cardB.id, worktree: '/repo-worktree-b' });
+    await waitFor(() => expect(result.current.workspaceRootPath).toBe('/repo-worktree-b'));
+    expect(result.current.selectedWorkspaceId).not.toBe(wsA);
     expect(
       result.current.tabs.every(
         (tab) => tab.kind !== 'file' || tab.relativePath !== 'a.ts',
       ),
     ).toBe(true);
+
+    rerender({ focusedCardId: a, worktree: '/repo-worktree-a' });
+    await waitFor(() => expect(result.current.selectedWorkspaceId).toBe(wsA));
+    expect(result.current.tabs.some((tab) => tab.relativePath === 'a.ts')).toBe(true);
   });
 
   it('enters home without a terminal when worktree is selected', async () => {
@@ -142,7 +150,55 @@ describe('useWorkspaceSession worktree isolation', () => {
     await waitFor(() => expect(result.current.selectedWorkspaceId).toBeTruthy());
     expect(result.current.homeActive).toBe(true);
     expect(result.current.activeTabId).toBe(HOME_TAB_ID);
-    expect(result.current.workspaceShellOpen).toBe(true);
+    expect(result.current.workspaceRootPath).toBe('/empty-repo');
+  });
+
+  it('keeps the latest workspace when an earlier scope load finishes late', async () => {
+    const slowRecord = await localWorkspaceAuthority.ensure('/slow-repo');
+    const fastRecord = await localWorkspaceAuthority.ensure('/fast-repo');
+    let releaseSlow: (() => void) | null = null;
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const ensureSpy = vi
+      .spyOn(workspaceClient, 'ensure')
+      .mockImplementation(async (rootPath) => {
+        if (rootPath === '/slow-repo') {
+          await slowGate;
+          return slowRecord;
+        }
+        return fastRecord;
+      });
+
+    try {
+      const { result, rerender } = renderHook(
+        ({ projectPath }: { projectPath: string }) =>
+          useWorkspaceSession({
+            cards: [],
+            focusedCardId: null,
+            selectedProjectPath: projectPath,
+            selectedWorktreePath: null,
+            t,
+          }),
+        { initialProps: { projectPath: '/slow-repo' } },
+      );
+
+      rerender({ projectPath: '/fast-repo' });
+      await waitFor(() => {
+        expect(result.current.workspaceRootPath).toBe('/fast-repo');
+      });
+
+      await act(async () => {
+        releaseSlow?.();
+        await slowGate;
+      });
+
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.workspaceRootPath).toBe('/fast-repo');
+      expect(result.current.selectedWorkspaceId).toBe(fastRecord.id);
+    } finally {
+      ensureSpy.mockRestore();
+    }
   });
 
   it('closes terminal tab only without ending the card', async () => {

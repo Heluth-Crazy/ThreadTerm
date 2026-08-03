@@ -110,4 +110,16 @@ describe('StatsPanel', () => {
       expect.any(Number),
     );
   });
+
+  it.each([
+    ['Gemini', 'gemini'],
+    ['Grok Build', 'grok'],
+  ] as const)('lets the user scope usage to %s', (label, scope) => {
+    render(<StatsPanel onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: label }));
+
+    expect(useStatsStore.getState().scope).toBe(scope);
+    expect(bridgeMocks.compute).toHaveBeenCalledWith(scope, '30d', expect.any(Number));
+  });
 });

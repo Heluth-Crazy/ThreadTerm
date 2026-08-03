@@ -51,7 +51,7 @@ import {
   isTauriEnv,
   mobileBridge,
 } from '../../lib/tauri-bridge';
-import { cardMatchesWorktree } from '../../lib/worktreePaths';
+import { cardMatchesWorktree, samePath } from '../../lib/worktreePaths';
 import { clearProjectBranchCache } from './useProjectBranches';
 import { clearProjectWorktreeCache } from './useProjectWorktrees';
 import { useRightSurfaceStack, type RightSurface } from './useRightSurfaceStack';
@@ -82,6 +82,7 @@ import { useTerminalConfigurationEditor } from './useTerminalConfigurationEditor
 import type { GitStatusEntry } from '../../lib/tauri-bridge';
 import { publishWorkspaceEditorDiagnostics } from '../../lib/lifecycle/workspaceEditorDiagnostics';
 import { useMobileWorkbenchSync } from './useMobileWorkbenchSync';
+import { useWorkspaceAgentMetadata } from '../workspace/useWorkspaceAgentMetadata';
 import {
   useTerminalNavigation,
   type TerminalViewMode,
@@ -104,6 +105,8 @@ const TERMINAL_TYPES: TerminalType[] = [
   'codex',
   'opencode',
   'gemini',
+  'kimi',
+  'grok',
   'npm',
   'yarn',
   'pnpm',
@@ -391,29 +394,33 @@ export function TerminalManager() {
     requestArchiveCard,
     requestCardWorkspaceReset,
     selectWorkspaceByRoot,
-    setWorkspaceShellOpen,
     diagnostics: workspaceDiagnostics,
   } = workspaceSession;
-  // Shell shows when focusing a terminal, or when the worktree was entered
-  // without a terminal (home). Leaving via primary-view/back clears shellOpen.
+  useWorkspaceAgentMetadata(workspaceCards);
+  // The desktop primary view is the sole authority for which main surface is
+  // visible. Workspace loading/session state never covers another page by
+  // itself.
   const workspaceShellVisible =
-    Boolean(selectedWorkspaceId) &&
-    !mobileViewActive &&
-    (viewMode === 'focus' || workspaceSession.workspaceShellOpen);
-  const workspaceTabsVisible = workspaceShellVisible;
-  // When the unified workspace shell is open, it owns the main content area.
+    primaryView === 'workspace' && !mobileViewActive;
+  const requestedWorkspaceRoot = selectedWorktreePath || selectedProjectPath;
+  const workspaceReady = Boolean(
+    selectedWorkspaceId &&
+    requestedWorkspaceRoot &&
+    samePath(workspaceRootPath, requestedWorkspaceRoot),
+  );
+  const workspaceTabsVisible = workspaceShellVisible && workspaceReady;
   const workbenchVisible =
-    primaryPageVisible && primaryView === 'workbench' && !workspaceShellVisible;
+    primaryPageVisible && primaryView === 'workbench';
   const terminalsVisible =
-    primaryPageVisible && primaryView === 'terminals' && !workspaceShellVisible;
+    primaryPageVisible && primaryView === 'terminals';
   // Shortcut hint / terminal chrome: active terminal tab, or the terminals grid.
   const terminalContentActive =
-    terminalTabActive ||
+    (workspaceShellVisible && workspaceReady && terminalTabActive) ||
     (terminalsVisible && primaryView === 'terminals');
   const workspaceRailCwd = focusedCwd || workspaceRootPath;
   const workspaceRailVisible =
     (viewMode === 'focus' && !!focusedCwd) ||
-    (workspaceShellVisible && !!workspaceRootPath);
+    (workspaceShellVisible && workspaceReady && !!workspaceRootPath);
   const workspacePanelVisible = workspaceRailVisible && !activeRightSurface;
   const statsPanelVisible = activeRightSurface === 'stats';
   const archivePanelVisible =
@@ -463,7 +470,7 @@ export function TerminalManager() {
 
   const {
     focusMountedCard,
-    handleBackToGrid: handleBackToGridBase,
+    handleBackToGrid,
     handleCloseWorkbenchPanel,
     handleOpenMobileAccess,
     handleOpenTerminal,
@@ -486,16 +493,33 @@ export function TerminalManager() {
     setViewMode,
     setWorkbenchPanel,
   });
-  const handleBackToGrid = useCallback(() => {
-    setWorkspaceShellOpen(false);
-    handleBackToGridBase();
-  }, [handleBackToGridBase, setWorkspaceShellOpen]);
   const handleSelectPrimaryView = useCallback(
     (view: typeof primaryView) => {
-      setWorkspaceShellOpen(false);
       handleSelectPrimaryViewBase(view);
+      if (view === 'workspace' && workspaceReady && activeTerminalCardId) {
+        focusMountedCard(activeTerminalCardId);
+      }
     },
-    [handleSelectPrimaryViewBase, setWorkspaceShellOpen],
+    [
+      activeTerminalCardId,
+      focusMountedCard,
+      handleSelectPrimaryViewBase,
+      workspaceReady,
+    ],
+  );
+  const handleSelectProjectScope = useCallback(
+    (projectPath: string | null) => {
+      selectProject(projectPath);
+      handleSelectPrimaryViewBase('workbench');
+    },
+    [handleSelectPrimaryViewBase, selectProject],
+  );
+  const handleSelectWorktreeScope = useCallback(
+    (projectPath: string, worktreePath: string, label?: string | null) => {
+      selectWorktree(projectPath, worktreePath, label);
+      handleSelectPrimaryViewBase('workspace');
+    },
+    [handleSelectPrimaryViewBase, selectWorktree],
   );
   const {
     editingCard,
@@ -570,7 +594,7 @@ export function TerminalManager() {
           projectPath,
           projectName: pathBasename(projectPath),
           terminalType: normalizeTerminalType(payload.terminalType),
-          command: payload.command?.trim() || undefined,
+          command: payload.command?.trim() ? payload.command : undefined,
         });
         mountCardInBackground(cardId);
         resolveSpawn({ requestId: payload.requestId, ok: true, cardId });
@@ -813,6 +837,8 @@ export function TerminalManager() {
           onCreateTerminal={() => setCreateOpen(true)}
           primaryView={primaryView}
           onSelectPrimaryView={handleSelectPrimaryView}
+          onSelectProject={handleSelectProjectScope}
+          onSelectWorktree={handleSelectWorktreeScope}
           attentionCount={allProjectsWorkbenchModel.summary.attention}
           getProjectAttentionCount={getProjectAttentionCount}
           getWorktreeAttentionCount={getWorktreeAttentionCount}
@@ -865,6 +891,45 @@ export function TerminalManager() {
                 {selectedWorktreeLabel}
               </span>
             </>
+          )}
+          {selectedProjectPath && !isMobile && (
+            <div
+              role="group"
+              aria-label={t('workspace.viewSwitchLabel', {
+                defaultValue: 'Project view',
+              })}
+              data-testid="desktop-context-view-switch"
+              className="ml-1 inline-flex shrink-0 items-center rounded-md border border-border bg-background/70 p-0.5"
+            >
+              <button
+                type="button"
+                aria-pressed={primaryView === 'workbench'}
+                data-testid="desktop-context-view-workbench"
+                onClick={() => handleSelectPrimaryView('workbench')}
+                className={[
+                  'rounded px-2 py-0.5 text-[11px] font-medium transition-colors',
+                  primaryView === 'workbench'
+                    ? 'bg-primary/15 text-primary'
+                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                ].join(' ')}
+              >
+                {t('workspace.workbenchView', { defaultValue: 'Workbench' })}
+              </button>
+              <button
+                type="button"
+                aria-pressed={primaryView === 'workspace'}
+                data-testid="desktop-context-view-workspace"
+                onClick={() => handleSelectPrimaryView('workspace')}
+                className={[
+                  'rounded px-2 py-0.5 text-[11px] font-medium transition-colors',
+                  primaryView === 'workspace'
+                    ? 'bg-primary/15 text-primary'
+                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                ].join(' ')}
+              >
+                {t('workspace.workspaceView', { defaultValue: 'Workspace' })}
+              </button>
+            </div>
           )}
           <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground sm:inline hidden">
             {t('app.count', { visible: visibleCards.length, total: cards.length, count: cards.length })}
@@ -974,6 +1039,7 @@ export function TerminalManager() {
             tabs={workspaceTabs}
             activeTabId={activeContentTabId}
             dirtyTabIds={dirtyWorkspaceTabIds}
+            workspaceCards={workspaceCards}
             homeLabel={t('workspace.homeTab', { defaultValue: 'Home' })}
             closeLabel={t('common.close', { defaultValue: 'Close' })}
             closeCurrentLabel={t('workspace.closeCurrentTab', { defaultValue: 'Close current' })}
@@ -1039,8 +1105,8 @@ export function TerminalManager() {
             onCreateTerminal={() => setCreateOpen(true)}
             onFollowCards={followCards}
             onUnfollowCard={unfollowCard}
-            onSelectProject={(projectPath) => selectProject(projectPath)}
-            onShowAllProjects={() => selectProject(null)}
+            onSelectProject={handleSelectProjectScope}
+            onShowAllProjects={() => handleSelectProjectScope(null)}
           />
         </motion.div>
 
@@ -1079,8 +1145,40 @@ export function TerminalManager() {
           </div>
         )}
 
+        {workspaceShellVisible && !workspaceReady && (
+          <div
+            className="absolute inset-0 z-[1] bg-background"
+            data-testid="workspace-scope-loading"
+          >
+            {workspaceError && !workspaceLoading ? (
+              <WorkspaceHome
+                workspace={null}
+                workspaceCards={[]}
+                tabs={[]}
+                dirtyByTabId={{}}
+                error={workspaceError}
+                onOpenTerminal={handleOpenTerminal}
+                onCreateTerminal={() => setCreateOpen(true)}
+                onActivateTab={() => undefined}
+                onRetry={() => {
+                  if (requestedWorkspaceRoot) {
+                    void selectWorkspaceByRoot(requestedWorkspaceRoot);
+                  }
+                }}
+              />
+            ) : (
+              <div
+                role="status"
+                className="flex h-full items-center justify-center text-sm text-muted-foreground"
+              >
+                {t('workspace.loading', { defaultValue: 'Loading workspace…' })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Workspace home — no terminal required */}
-        {workspaceShellVisible && homeActive && (
+        {workspaceShellVisible && workspaceReady && homeActive && (
           <div className="absolute inset-0 z-[1] bg-background">
             <WorkspaceHome
               workspace={workspace}
@@ -1093,7 +1191,9 @@ export function TerminalManager() {
               onCreateTerminal={() => setCreateOpen(true)}
               onActivateTab={(tabId) => void setActiveContentTabId(tabId)}
               onRetry={() => {
-                if (workspaceRootPath) void selectWorkspaceByRoot(workspaceRootPath);
+                if (requestedWorkspaceRoot) {
+                  void selectWorkspaceByRoot(requestedWorkspaceRoot);
+                }
               }}
             />
           </div>
@@ -1105,6 +1205,7 @@ export function TerminalManager() {
           .map((c) => {
             const isCurrent =
               workspaceShellVisible &&
+              workspaceReady &&
               terminalTabActive &&
               activeTerminalCardId === c.id;
             return (
@@ -1135,6 +1236,7 @@ export function TerminalManager() {
         {mountedWorkspaceContentViews.map(({ workspaceId, rootPath, tab }) => {
           const isCurrent =
             workspaceShellVisible &&
+            workspaceReady &&
             selectedWorkspaceId === workspaceId &&
             activeContentTabId === tab.id;
           const absolutePath =

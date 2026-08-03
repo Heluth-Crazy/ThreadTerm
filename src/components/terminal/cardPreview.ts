@@ -40,7 +40,7 @@ const STATUS_PATTERNS: RegExp[] = [
   /\b(esc|ctrl\+c|ctrl-c|shift\+tab|tab|enter)\b.*\b(cancel|quit|send|navigate|switch|close)\b/i,
   /\b(press|type)\b.+\b(to|for)\b.+\b(continue|cancel|quit|submit|send)\b/i,
   /\b(model|tokens?|context|cost|cwd|working directory|auto-?accept)\s*[:=]/i,
-  /\b(claude code|codex|gemini)\b\s*$/i,
+  /\b(claude code|codex|gemini|kimi|grok)\b\s*$/i,
   /\.openclaw\/completions\//i,
   /\bcommand not found:\s+compdef\b/i,
   /\S*(?:\.zsh|\.zshrc|\.zprofile|\.bashrc|\.bash_profile|\.profile):\d+:\s+command not found:\s+compdef\b/i,
@@ -57,14 +57,14 @@ const STATUS_PATTERNS: RegExp[] = [
   // Stat / cost rows: "◆ 12.4k tokens", "0 errors", "2 changes", "1.2s", etc.
   /^[\s·•●○◦▪▫■□◆◇✦✧✶✷✸✹✺✻✼✽✾✿⏵⏷]*\s*\d+(?:[.,]\d+)?\s*[kKmM]?\s*(tokens?|requests?|turns?|messages?|errors?|warnings?|changes?|edits?|diffs?|hunks?|files?|lines?|chars?|words?|seconds?|minutes?|hours?|ms|ctx|context)\b/i,
   // Model / branding status lines: "codex  gpt-5.5  main", "claude  sonnet-4.5".
-  /^\s*(claude|codex|gemini)\s+(?:code\s+)?(?:gpt-|claude-|gemini-|sonnet|opus|haiku|o\d)/i,
+  /^\s*(claude|codex|gemini|kimi|grok)\s+(?:code\s+)?(?:gpt-|claude-|gemini-|sonnet|opus|haiku|o\d)/i,
   // Empty input cursor placeholders that survive edge stripping (e.g. "> _" → "_").
   /^_+$/,
   // AI CLI session banner / status lines (resume echo, version banner,
   // model-plan, model|project status bar) - noise for a "latest reply" preview,
   // so the most recent assistant reply surfaces instead of the startup chrome.
-  /^[%$>#]?\s*(?:claude|codex|gemini)\s+(?:--?resume|resume)\b/i,
-  /^(?:claude code|codex(?:\s+cli)?|gemini(?:\s+cli)?)\s+v?\d+\.\d/i,
+  /^[%$>#]?\s*(?:claude|codex|gemini|kimi|grok)\s+(?:--?resume|resume|--session|--session-id)\b/i,
+  /^(?:claude code|codex(?:\s+cli)?|gemini(?:\s+cli)?|kimi(?:\s+code)?|grok(?:\s+build)?)\s+v?\d+\.\d/i,
   /^(?:opus|sonnet|haiku|gpt|o\d|gemini|claude)[\w.-]*\s+v?[\d.]+\s*(?:[|·]|with\s+\w+\s+effort\b)/i,
 ];
 
@@ -111,7 +111,7 @@ function resolvePreviewKind(
   if (status === 'failed') return 'error';
   if (status === 'running') return 'thinking';
   if (source === 'none') return 'empty';
-  if (source === 'reply' || terminalType === 'claude' || terminalType === 'codex' || terminalType === 'gemini') {
+  if (source === 'reply' || isAiCliTerminalType(terminalType)) {
     return 'reply';
   }
   return 'shell';
@@ -186,7 +186,9 @@ function isAiCliTerminalType(terminalType: TerminalCard['terminalType']): boolea
   return terminalType === 'claude'
     || terminalType === 'codex'
     || terminalType === 'opencode'
-    || terminalType === 'gemini';
+    || terminalType === 'gemini'
+    || terminalType === 'kimi'
+    || terminalType === 'grok';
 }
 
 function stripTrailingAiComposerRegion(sourceLines: string[]): string[] {

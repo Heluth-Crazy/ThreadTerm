@@ -175,6 +175,39 @@ describe('mobile App navigation', () => {
     expect(within(scope).queryByRole('option', { name: 'Test · Test' })).not.toBeInTheDocument();
   });
 
+  it('sends a custom command byte-for-byte while only validating surrounding whitespace', async () => {
+    window.sessionStorage.setItem('threadterm.bridgePermission', 'full');
+    render(
+      <I18nProvider search="?lang=zh-CN">
+        <App />
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: '工作台' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '工作区' }));
+    fireEvent.click(within(await screen.findByRole('banner')).getByRole('button', {
+      name: '新建会话',
+    }));
+    fireEvent.change(screen.getByRole('textbox', { name: '项目路径' }), {
+      target: { value: '  D:\\Repo\\App  ' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: '终端类型' }), {
+      target: { value: 'custom' },
+    });
+    const rawCommand = '  tool.exe  --flag="a b"   --last  ';
+    fireEvent.change(screen.getByRole('textbox', { name: '命令' }), {
+      target: { value: rawCommand },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '创建' }));
+
+    expect(bridgeMocks.send).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'spawn',
+      terminal_type: 'custom',
+      project_path: 'D:\\Repo\\App',
+      command: rawCommand,
+    }));
+  });
+
   it('asks the desktop for a full terminal refresh once when mobile output has a gap', async () => {
     render(
       <I18nProvider search="?lang=zh-CN">

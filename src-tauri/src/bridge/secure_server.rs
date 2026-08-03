@@ -581,18 +581,21 @@ async fn handle_unauthenticated(
                         computer_id: None,
                         expires_in_seconds: None,
                         error_code: Some("computer_id_mismatch".to_string()),
-                        message: Some("Pairing computerId does not match this desktop.".to_string()),
+                        message: Some(
+                            "Pairing computerId does not match this desktop.".to_string(),
+                        ),
                     }],
                 ));
             }
-            match context.runtime.pairing.pair_secure(
-                super::protocol::SecurePairRequest {
+            match context
+                .runtime
+                .pairing
+                .pair_secure(super::protocol::SecurePairRequest {
                     otp,
                     device_name,
                     permission,
                     computer_id: computer_id.clone(),
-                },
-            ) {
+                }) {
                 Ok(response) => Ok((
                     None,
                     vec![V2ServerMessage::PairResult {
@@ -763,15 +766,15 @@ fn operation_for_v2(message: &V2ClientMessage) -> BridgeOperation {
         V2ClientMessage::Input { .. } | V2ClientMessage::Resize { .. } => {
             BridgeOperation::TerminalMutate
         }
-        V2ClientMessage::Auth { .. } | V2ClientMessage::Pair { .. } | V2ClientMessage::Ping { .. } => {
-            BridgeOperation::TerminalView
-        }
+        V2ClientMessage::Auth { .. }
+        | V2ClientMessage::Pair { .. }
+        | V2ClientMessage::Ping { .. } => BridgeOperation::TerminalView,
     }
 }
 
 async fn send_v2(socket: &mut WebSocket, message: V2ServerMessage) -> Result<(), axum::Error> {
-    let payload = serde_json::to_string(&versioned_v2_server_message(message))
-        .map_err(axum::Error::new)?;
+    let payload =
+        serde_json::to_string(&versioned_v2_server_message(message)).map_err(axum::Error::new)?;
     socket.send(Message::Text(payload)).await
 }
 
@@ -788,8 +791,8 @@ mod tests {
     use crate::bridge::identity::SecureIdentityStore;
     use crate::bridge::protocol::{DevicePermission, PROTOCOL_VERSION_V2};
     use futures_util::{SinkExt, StreamExt};
-    use rustls::ClientConfig;
     use rustls::pki_types::{CertificateDer, ServerName};
+    use rustls::ClientConfig;
     use std::sync::Arc as StdArc;
     use tokio_rustls::TlsConnector;
     use tokio_tungstenite::{client_async, tungstenite::Message as TsMessage};
@@ -808,11 +811,14 @@ mod tests {
             _ocsp_response: &[u8],
             _now: rustls::pki_types::UnixTime,
         ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-            let presented = crate::bridge::identity::certificate_fingerprint_sha256(end_entity.as_ref());
+            let presented =
+                crate::bridge::identity::certificate_fingerprint_sha256(end_entity.as_ref());
             if crate::bridge::identity::fingerprints_match(&self.expected, &presented) {
                 Ok(rustls::client::danger::ServerCertVerified::assertion())
             } else {
-                Err(rustls::Error::General("certificate fingerprint mismatch".into()))
+                Err(rustls::Error::General(
+                    "certificate fingerprint mismatch".into(),
+                ))
             }
         }
 
@@ -979,11 +985,10 @@ mod tests {
     #[tokio::test]
     async fn legacy_token_denied_on_secure_listener() {
         let (runtime, mut handle, identity) = start_test_server().await;
-        let legacy_qr = runtime.pairing.create_pair_qr(
-            "127.0.0.1".to_string(),
-            5174,
-            DevicePermission::Full,
-        );
+        let legacy_qr =
+            runtime
+                .pairing
+                .create_pair_qr("127.0.0.1".to_string(), 5174, DevicePermission::Full);
         let legacy = runtime
             .pairing
             .pair(super::super::protocol::PairRequest {

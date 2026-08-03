@@ -11,7 +11,7 @@ use tokio::sync::watch;
 
 use super::protocol::{
     BridgeDevice, ClientClass, DevicePermission, PairQrResponse, PairRequest, PairResponse,
-    PROTOCOL_VERSION_V2, SecurePairQrResponse, SecurePairRequest, SecurePairResponse,
+    SecurePairQrResponse, SecurePairRequest, SecurePairResponse, PROTOCOL_VERSION_V2,
 };
 
 const OTP_TTL: Duration = Duration::from_secs(5 * 60);
@@ -1363,10 +1363,7 @@ mod tests {
                 computer_id: "computer-abc".to_string(),
             })
             .expect("pair secure");
-        assert_eq!(
-            response.device.client_class,
-            ClientClass::SecureWorkspace
-        );
+        assert_eq!(response.device.client_class, ClientClass::SecureWorkspace);
         assert_eq!(response.computer_id, "computer-abc");
         let device = store
             .validate_token(&response.device_token)

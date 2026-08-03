@@ -85,9 +85,7 @@ fn handle_blocking(
             workspace_id,
         } => {
             audit(device_id, "workspace_snapshot", &workspace_id, None, 0);
-            let snapshot = service
-                .get_snapshot(&workspace_id)
-                .map_err(workspace_err)?;
+            let snapshot = service.get_snapshot(&workspace_id).map_err(workspace_err)?;
             Ok(vec![meta_snapshot_message(
                 Some(request_id),
                 snapshot,
@@ -97,14 +95,9 @@ fn handle_blocking(
         }
         V2ClientMessage::SubscribeWorkspace { workspace_id } => {
             audit(device_id, "workspace_subscribe", &workspace_id, None, 0);
-            let snapshot = service
-                .get_snapshot(&workspace_id)
-                .map_err(workspace_err)?;
+            let snapshot = service.get_snapshot(&workspace_id).map_err(workspace_err)?;
             Ok(vec![meta_snapshot_message(
-                None,
-                snapshot,
-                permission,
-                runtime_id,
+                None, snapshot, permission, runtime_id,
             )])
         }
         V2ClientMessage::UnsubscribeWorkspace { workspace_id } => {
@@ -287,20 +280,12 @@ fn handle_blocking(
                 Some(&tab_id),
                 size_hint,
             );
-            let patch = draft_patch_from_message(
-                workspace_id,
-                tab_id,
-                base_revision,
-                changes,
-                full_text,
-            );
+            let patch =
+                draft_patch_from_message(workspace_id, tab_id, base_revision, changes, full_text);
             let result = service
                 .apply_draft_patch(&surface, patch, true)
                 .map_err(workspace_err)?;
-            Ok(vec![V2ServerMessage::DraftPatched {
-                request_id,
-                result,
-            }])
+            Ok(vec![V2ServerMessage::DraftPatched { request_id, result }])
         }
         V2ClientMessage::SaveDraft {
             request_id,
@@ -470,13 +455,7 @@ fn workspace_err(error: crate::workspace::WorkspaceError) -> (String, String) {
 }
 
 /// Metadata-only audit: never log token, OTP, file, draft, or terminal bodies.
-fn audit(
-    device_id: &str,
-    action: &str,
-    workspace_id: &str,
-    tab_or_path: Option<&str>,
-    bytes: u64,
-) {
+fn audit(device_id: &str, action: &str, workspace_id: &str, tab_or_path: Option<&str>, bytes: u64) {
     let summary = match tab_or_path {
         Some(value) => format!(
             "workspace_id_bytes={}, ref_bytes={}, bytes={}",

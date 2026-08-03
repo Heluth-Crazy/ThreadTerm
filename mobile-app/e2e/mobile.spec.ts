@@ -17,9 +17,10 @@ async function expectXtermText(scope: Locator, needle: string): Promise<void> {
 }
 
 async function openTerminal(page: Page, cardName = 'ThreadTerm'): Promise<Locator> {
-  const terminalTab = page.getByRole('button', { name: 'Terminal', exact: true });
-  if (await terminalTab.isVisible().catch(() => false)) {
-    await terminalTab.click();
+  const workspacesTab = page.getByRole('button', { name: 'Workspaces', exact: true });
+  if (await workspacesTab.isVisible().catch(() => false)) {
+    await workspacesTab.click();
+    await expect(page.getByRole('heading', { name: 'Workspaces' })).toBeVisible();
   }
   const row = page.locator('.instance-row', { hasText: cardName });
   await expect(row).toHaveCount(1);
@@ -430,8 +431,8 @@ test('Workbench is default and terminal detail renders themed xterm with input r
     ),
   });
 
-  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Terminals' })).toBeVisible();
+  await page.getByRole('button', { name: 'Workspaces', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Workspaces' })).toBeVisible();
   const rows = page.locator('.instance-row');
   await expect(rows).toHaveCount(2);
   await expect(rows.filter({ hasText: 'ThreadTerm' })).toHaveCount(1);
@@ -788,7 +789,7 @@ test('desktop process restart repaints the terminal even when sequence numbers r
 
 test('incremental card add/remove and natural exit update the terminal list', async ({ page }) => {
   await page.goto('/pair');
-  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+  await page.getByRole('button', { name: 'Workspaces', exact: true }).click();
   const rows = page.locator('.instance-row');
   await expect(rows).toHaveCount(2);
 
@@ -851,8 +852,8 @@ test('incremental card add/remove and natural exit update the terminal list', as
 test('desktop language, touch input, and read-only capability remain correct', async ({ page }) => {
   await page.goto('/pair?lang=zh-CN');
   await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible();
-  await page.getByRole('button', { name: '终端', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '终端' })).toBeVisible();
+  await page.getByRole('button', { name: '工作区', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '工作区' })).toBeVisible();
   await page.locator('.instance-row', { hasText: 'ThreadTerm' }).locator('.instance-row-main').click();
 
   await page.getByLabel('移动终端输入').fill('touch once');
@@ -876,7 +877,7 @@ test('desktop language, touch input, and read-only capability remain correct', a
     window.location.reload();
   });
   await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible();
-  await page.getByRole('button', { name: '终端', exact: true }).click();
+  await page.getByRole('button', { name: '工作区', exact: true }).click();
   await page.locator('.instance-row', { hasText: 'ThreadTerm' }).locator('.instance-row-main').click();
   await expect(page.getByText('只读设备')).toBeVisible();
   await expect(page.getByLabel('移动终端输入')).toHaveCount(0);
@@ -888,5 +889,5 @@ test('desktop language, touch input, and read-only capability remain correct', a
   await page.getByRole('button', { name: 'English English', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Language' })).toBeVisible();
   await page.getByRole('button', { name: 'Back', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Workspaces', exact: true })).toBeVisible();
 });

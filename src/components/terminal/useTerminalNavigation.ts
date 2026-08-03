@@ -14,6 +14,14 @@ import type {
 import type { RightSurface } from './useRightSurfaceStack';
 
 export type TerminalViewMode = 'grid' | 'focus';
+export type ReturnPrimaryView = Exclude<PrimaryView, 'workspace'>;
+
+export function resolveReturnPrimaryView(
+  currentView: PrimaryView,
+  previousView: ReturnPrimaryView,
+): ReturnPrimaryView {
+  return currentView === 'workspace' ? previousView : currentView;
+}
 
 interface UseTerminalNavigationInput {
   cards: readonly TerminalCard[];
@@ -54,29 +62,73 @@ export function useTerminalNavigation({
   const pendingLocateCardId = useTerminalStore((state) => state.pendingLocateCardId);
   const setPendingLocateCardId = useTerminalStore((state) => state.setPendingLocateCardId);
   const highlightCard = useTerminalStore((state) => state.highlightCard);
-  const returnPrimaryViewRef = useRef<PrimaryView>('workbench');
+  const returnPrimaryViewRef = useRef<ReturnPrimaryView>('workbench');
   const previousFocusedCardIdRef = useRef<string | null>(null);
+
+  const selectCardScope = useCallback(
+    (card: TerminalCard) => {
+      const store = useTerminalStore.getState();
+      if (card.worktreePath) {
+        store.selectWorktree(
+          card.projectPath,
+          card.worktreePath,
+          card.branchLabel,
+        );
+      } else {
+        store.selectProject(card.projectPath);
+      }
+    },
+    [],
+  );
 
   const focusMountedCard = useCallback(
     (cardId: string) => {
+      const card = cards.find((item) => item.id === cardId);
+      if (card) selectCardScope(card);
       mountCardInBackground(cardId);
       focusCard(cardId);
+      setPrimaryView('workspace');
       setViewMode('focus');
     },
-    [focusCard, mountCardInBackground, setViewMode],
+    [
+      cards,
+      focusCard,
+      mountCardInBackground,
+      selectCardScope,
+      setPrimaryView,
+      setViewMode,
+    ],
   );
 
   useEffect(() => {
     if (focusedCardId && focusedCard) {
       if (!previousFocusedCardIdRef.current) {
-        returnPrimaryViewRef.current = primaryView;
+        returnPrimaryViewRef.current = resolveReturnPrimaryView(
+          primaryView,
+          returnPrimaryViewRef.current,
+        );
       }
+      selectCardScope(focusedCard);
+      // Project/worktree selection exits focus mode by contract. Restore an
+      // externally requested focus after aligning its scope.
+      if (useTerminalStore.getState().focusedCardId !== focusedCard.id) {
+        focusCard(focusedCard.id);
+      }
+      setPrimaryView('workspace');
       setViewMode('focus');
     }
-    // Do not force grid when focus clears — workspace shell may stay open
+    // Do not force grid when focus clears — the workspace may stay open
     // without a terminal (home tab / file tabs for the worktree).
     previousFocusedCardIdRef.current = focusedCardId;
-  }, [focusedCardId, focusedCard, primaryView, setViewMode]);
+  }, [
+    focusedCardId,
+    focusedCard,
+    focusCard,
+    primaryView,
+    selectCardScope,
+    setPrimaryView,
+    setViewMode,
+  ]);
 
   useEffect(() => {
     if (!pendingFocusCardId) return;
@@ -84,7 +136,10 @@ export function useTerminalNavigation({
       setPendingFocusCardId(null);
       return;
     }
-    returnPrimaryViewRef.current = primaryView;
+    returnPrimaryViewRef.current = resolveReturnPrimaryView(
+      primaryView,
+      returnPrimaryViewRef.current,
+    );
     setWorkbenchPanel(null);
     closeRightSurface('workbench');
     setMobileViewActive(false);
@@ -107,7 +162,10 @@ export function useTerminalNavigation({
       if (terminalsVisible) {
         highlightCard(pendingLocateCardId);
       } else {
-        returnPrimaryViewRef.current = primaryView;
+        returnPrimaryViewRef.current = resolveReturnPrimaryView(
+          primaryView,
+          returnPrimaryViewRef.current,
+        );
         setWorkbenchPanel(null);
         closeRightSurface('workbench');
         setMobileViewActive(false);
@@ -130,7 +188,10 @@ export function useTerminalNavigation({
 
   const handleOpenTerminal = useCallback(
     (cardId: string) => {
-      returnPrimaryViewRef.current = primaryView;
+      returnPrimaryViewRef.current = resolveReturnPrimaryView(
+        primaryView,
+        returnPrimaryViewRef.current,
+      );
       setWorkbenchPanel(null);
       closeRightSurface('workbench');
       setMobileViewActive(false);
@@ -154,19 +215,21 @@ export function useTerminalNavigation({
 
   const handleSelectPrimaryView = useCallback(
     (view: PrimaryView) => {
-      returnPrimaryViewRef.current = view;
+      returnPrimaryViewRef.current = resolveReturnPrimaryView(
+        view,
+        returnPrimaryViewRef.current,
+      );
       setPrimaryView(view);
       setMobileViewActive(false);
       setWorkbenchPanel(null);
       closeRightSurface('workbench');
       setSidebarOpen(false);
-      if (focusedCardId) focusCard(null);
+      focusCard(null);
       setViewMode('grid');
     },
     [
       closeRightSurface,
       focusCard,
-      focusedCardId,
       setMobileViewActive,
       setPrimaryView,
       setSidebarOpen,

@@ -19,6 +19,7 @@
 //! - **DedupKey cross-check**: a second guard that catches the same billable
 //!   event recorded with different request_ids (e.g. proxy + session log).
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -28,8 +29,11 @@ use rusqlite::{params, OpenFlags};
 
 use crate::db::get_db;
 use crate::provider_sessions::jsonl_files_recent_first;
+use crate::stats::gemini;
+use crate::stats::grok;
 use crate::stats::opencode::{self, OpenCodeUsage};
 use crate::stats::parse;
+use crate::stats::parse::{CodexParentResolution, CodexTokenUsageSignature};
 use crate::stats::pricing;
 use crate::stats::types::CallRecord;
 
@@ -66,8 +70,9 @@ const PROGRESS_EVERY: usize = 16;
 /// fields and legacy session parsing fixes; 6 = parser rebuild scans all source
 /// logs instead of inheriting the caller's time window; 7 = refresh stored costs
 /// after adding Claude Fable/Mythos 5 pricing; 8 = attribute OpenCode usage to
-/// the session project directory.
-const STATS_PARSER_VERSION: i64 = 8;
+/// the session project directory; 9 = strip replayed Codex parent history and
+/// add Gemini/Grok Build session-log ingestion.
+const STATS_PARSER_VERSION: i64 = 9;
 
 /// Wipe `usage_records` + `session_log_sync` when the stored parser version
 /// doesn't match the current one, then stamp the new version. Returns true when
@@ -130,36 +135,55 @@ pub fn sync_all<F: FnMut(usize, usize)>(lo_ms: Option<u64>, mut on_progress: F) 
         .unwrap_or(false);
     let scan_lo_ms = scan_lower_bound_after_rebuild(rebuilt, lo_ms);
 
-    // Collect candidates from both providers up front so `total` is known
-    // before the scan loop starts — the UI progress bar needs a denominator.
-    let mut files: Vec<(PathBuf, &'static str)> = Vec::new();
+    // Collect candidates up front so `total` is known before the scan loop.
+    // Codex always builds a complete rollout index: a recent child may fork
+    // from an older parent, and filtering the parent by the selected UI range
+    // would make replay stripping impossible. Per-file mtime gates still avoid
+    // reparsing unchanged rollout contents.
+    let mut claude_files = Vec::new();
     if let Some(root) = super::claude_root() {
         for f in jsonl_files_recent_first(&root, scan_lo_ms) {
-            files.push((f.path, "claude"));
+            claude_files.push(f.path);
         }
     }
+    let mut codex_files = Vec::new();
     if let Some(root) = super::codex_root() {
-        for f in jsonl_files_recent_first(&root, scan_lo_ms) {
-            files.push((f.path, "codex"));
+        for f in jsonl_files_recent_first(&root, None) {
+            codex_files.push(f.path);
+        }
+        if let Some(config_root) = root.parent() {
+            let archived_root = config_root.join("archived_sessions");
+            for f in jsonl_files_recent_first(&archived_root, None) {
+                codex_files.push(f.path);
+            }
         }
     }
-    let total = files.len();
+    codex_files.sort();
+    let total = claude_files.len().saturating_add(codex_files.len());
     let mut result = SyncResult::default();
+    let mut scanned = 0usize;
 
-    for (i, (path, provider)) in files.iter().enumerate() {
-        if i % PROGRESS_EVERY == 0 {
-            on_progress(i + 1, total);
+    for path in &claude_files {
+        scanned = scanned.saturating_add(1);
+        if scanned == 1 || scanned % PROGRESS_EVERY == 0 {
+            on_progress(scanned, total);
         }
-        let r = match *provider {
-            "claude" => sync_claude_file(path),
-            "codex" => sync_codex_file(path),
-            _ => continue,
-        };
-        result.merge(&r);
+        result.merge(&sync_claude_file(path));
+    }
+
+    let mut codex_replay = CodexReplayResolver::new(&codex_files);
+    for path in &codex_files {
+        scanned = scanned.saturating_add(1);
+        if scanned == 1 || scanned % PROGRESS_EVERY == 0 {
+            on_progress(scanned, total);
+        }
+        result.merge(&sync_codex_file(path, &mut codex_replay));
     }
     on_progress(total, total);
 
     result.merge(&sync_opencode());
+    result.merge(&gemini::sync_gemini());
+    result.merge(&grok::sync_grok());
 
     if result.imported > 0 {
         tracing::info!(
@@ -177,7 +201,7 @@ pub fn sync_all<F: FnMut(usize, usize)>(lo_ms: Option<u64>, mut on_progress: F) 
 /// File mtime as nanoseconds since epoch. Stored in `session_log_sync` so a
 /// nanosecond-precision change is detected even on filesystems with sub-second
 /// mtime resolution.
-fn mtime_nanos(path: &Path) -> i64 {
+pub(crate) fn mtime_nanos(path: &Path) -> i64 {
     fs::metadata(path)
         .ok()
         .and_then(|m| m.modified().ok())
@@ -187,7 +211,7 @@ fn mtime_nanos(path: &Path) -> i64 {
 }
 
 /// Read (last_modified, last_line_offset) for a file; (0, 0) when unseen.
-fn get_sync_state(conn: &rusqlite::Connection, file_path: &str) -> (i64, i64) {
+pub(crate) fn get_sync_state(conn: &rusqlite::Connection, file_path: &str) -> (i64, i64) {
     conn.query_row(
         "SELECT last_modified, last_line_offset FROM session_log_sync WHERE file_path = ?1",
         params![file_path],
@@ -197,7 +221,7 @@ fn get_sync_state(conn: &rusqlite::Connection, file_path: &str) -> (i64, i64) {
 }
 
 /// Persist sync progress for a file.
-fn update_sync_state(
+pub(crate) fn update_sync_state(
     conn: &rusqlite::Connection,
     file_path: &str,
     last_modified: i64,
@@ -273,6 +297,87 @@ fn insert_record(
     .unwrap_or(false)
 }
 
+pub(crate) struct SessionUsageUpsert<'a> {
+    pub request_id: &'a str,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub usage: &'a crate::stats::types::UsageSummary,
+    pub cost: pricing::CostBreakdown,
+    pub session_id: &'a str,
+    pub project_path: &'a str,
+    pub created_at: i64,
+    pub data_source: &'a str,
+}
+
+/// Upsert a provider session-log row whose token values may still change while
+/// the native session is active (Gemini JSON and Grok updates are rewritten or
+/// appended in place). The stable request id keeps rescans idempotent while the
+/// `DO UPDATE` branch refreshes partial rows instead of freezing stale values.
+pub(crate) fn upsert_session_record(
+    conn: &rusqlite::Connection,
+    row: SessionUsageUpsert<'_>,
+) -> bool {
+    conn.execute(
+        "INSERT INTO usage_records
+            (request_id, provider, model,
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+             input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd,
+             total_cost_usd, session_id, project_path, created_at, data_source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+         ON CONFLICT(request_id) DO UPDATE SET
+             provider = excluded.provider,
+             model = excluded.model,
+             input_tokens = excluded.input_tokens,
+             output_tokens = excluded.output_tokens,
+             cache_read_tokens = excluded.cache_read_tokens,
+             cache_creation_tokens = excluded.cache_creation_tokens,
+             input_cost_usd = excluded.input_cost_usd,
+             output_cost_usd = excluded.output_cost_usd,
+             cache_read_cost_usd = excluded.cache_read_cost_usd,
+             cache_creation_cost_usd = excluded.cache_creation_cost_usd,
+             total_cost_usd = excluded.total_cost_usd,
+             session_id = excluded.session_id,
+             project_path = excluded.project_path,
+             created_at = excluded.created_at,
+             data_source = excluded.data_source
+         WHERE provider != excluded.provider
+            OR model != excluded.model
+            OR input_tokens != excluded.input_tokens
+            OR output_tokens != excluded.output_tokens
+            OR cache_read_tokens != excluded.cache_read_tokens
+            OR cache_creation_tokens != excluded.cache_creation_tokens
+            OR input_cost_usd != excluded.input_cost_usd
+            OR output_cost_usd != excluded.output_cost_usd
+            OR cache_read_cost_usd != excluded.cache_read_cost_usd
+            OR cache_creation_cost_usd != excluded.cache_creation_cost_usd
+            OR total_cost_usd != excluded.total_cost_usd
+            OR COALESCE(session_id, '') != excluded.session_id
+            OR COALESCE(project_path, '') != excluded.project_path
+            OR created_at != excluded.created_at
+            OR data_source != excluded.data_source",
+        params![
+            row.request_id,
+            row.provider,
+            row.model,
+            row.usage.input,
+            row.usage.output,
+            row.usage.cache_read,
+            row.usage.cache_creation,
+            row.cost.input,
+            row.cost.output,
+            row.cost.cache_read,
+            row.cost.cache_write,
+            row.cost.total,
+            row.session_id,
+            row.project_path,
+            row.created_at,
+            row.data_source,
+        ],
+    )
+    .map(|changed| changed > 0)
+    .unwrap_or(false)
+}
+
 fn insert_opencode_record(
     conn: &rusqlite::Connection,
     request_id: &str,
@@ -332,7 +437,7 @@ fn opencode_modified(path: &Path) -> i64 {
     mtime_nanos(path).max(mtime_nanos(&wal_path))
 }
 
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -486,8 +591,139 @@ fn sync_claude_file(path: &Path) -> SyncResult {
     result
 }
 
-/// Sync one Codex session jsonl.
-fn sync_codex_file(path: &Path) -> SyncResult {
+#[derive(Clone, Debug)]
+struct CodexParentTimeline {
+    signatures: Vec<(u64, CodexTokenUsageSignature)>,
+    max_timestamp_ms: Option<u64>,
+    has_missing_timestamp: bool,
+}
+
+impl CodexParentTimeline {
+    fn signatures_before(
+        &self,
+        parent_path: &Path,
+        cutoff_ms: u64,
+    ) -> Result<Vec<CodexTokenUsageSignature>, String> {
+        if self.has_missing_timestamp {
+            return Err(format!(
+                "parent rollout {} contains token_count without a timestamp",
+                parent_path.display()
+            ));
+        }
+        if self
+            .max_timestamp_ms
+            .map_or(true, |timestamp| timestamp < cutoff_ms)
+        {
+            return Err(format!(
+                "parent rollout {} has not reached the child fork timestamp",
+                parent_path.display()
+            ));
+        }
+        Ok(self
+            .signatures
+            .iter()
+            .filter(|(timestamp, _)| *timestamp <= cutoff_ms)
+            .map(|(_, signature)| signature.clone())
+            .collect())
+    }
+}
+
+struct CodexReplayResolver {
+    rollout_index: HashMap<String, Vec<PathBuf>>,
+    timelines: HashMap<PathBuf, Result<CodexParentTimeline, String>>,
+}
+
+impl CodexReplayResolver {
+    fn new(files: &[PathBuf]) -> Self {
+        let mut rollout_index: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        for path in files {
+            if let Some(thread_id) = parse::codex_thread_id_from_filename(path) {
+                rollout_index
+                    .entry(thread_id)
+                    .or_default()
+                    .push(path.clone());
+            }
+        }
+        Self {
+            rollout_index,
+            timelines: HashMap::new(),
+        }
+    }
+
+    fn timeline(&mut self, path: &Path) -> Result<CodexParentTimeline, String> {
+        if let Some(cached) = self.timelines.get(path) {
+            return cached.clone();
+        }
+        let parsed = parse::parse_codex_rollout(path)
+            .ok_or_else(|| format!("could not parse parent rollout {}", path.display()));
+        let timeline = parsed.map(|parsed| {
+            let mut signatures = Vec::new();
+            let max_timestamp_ms = parsed.max_timestamp_ms;
+            let mut has_missing_timestamp = false;
+            for event in parsed.token_events {
+                match event.timestamp_ms {
+                    Some(timestamp) => {
+                        signatures.push((timestamp, event.signature));
+                    }
+                    None => has_missing_timestamp = true,
+                }
+            }
+            CodexParentTimeline {
+                signatures,
+                max_timestamp_ms,
+                has_missing_timestamp,
+            }
+        });
+        self.timelines.insert(path.to_path_buf(), timeline.clone());
+        timeline
+    }
+
+    fn parent_signatures(
+        &mut self,
+        parent_id: &str,
+        cutoff_ms: u64,
+    ) -> Result<Vec<CodexTokenUsageSignature>, String> {
+        let Some(paths) = self.rollout_index.get(parent_id).cloned() else {
+            return Err(format!("parent rollout {parent_id} was not found"));
+        };
+        let mut snapshots = Vec::with_capacity(paths.len());
+        for path in paths {
+            let timeline = self.timeline(&path)?;
+            snapshots.push(timeline.signatures_before(&path, cutoff_ms)?);
+        }
+        let Some(first) = snapshots.first().cloned() else {
+            return Err(format!("parent rollout {parent_id} was not found"));
+        };
+        if snapshots.iter().skip(1).any(|snapshot| snapshot != &first) {
+            return Err(format!(
+                "parent rollout {parent_id} resolves to multiple inconsistent files"
+            ));
+        }
+        Ok(first)
+    }
+}
+
+fn matching_replay_prefix(
+    child: &[parse::CodexTokenEvent],
+    parent: &[CodexTokenUsageSignature],
+) -> usize {
+    let mut parent_offset = 0usize;
+    let mut matched = 0usize;
+    for event in child {
+        let Some(relative_match) = parent[parent_offset..]
+            .iter()
+            .position(|signature| signature == &event.signature)
+        else {
+            break;
+        };
+        parent_offset = parent_offset.saturating_add(relative_match + 1);
+        matched = matched.saturating_add(1);
+    }
+    matched
+}
+
+/// Sync one Codex rollout after stripping any replayed parent token prefix.
+fn sync_codex_file(path: &Path, replay: &mut CodexReplayResolver) -> SyncResult {
     let mut result = SyncResult {
         files_scanned: 1,
         ..SyncResult::default()
@@ -505,23 +741,84 @@ fn sync_codex_file(path: &Path) -> SyncResult {
         return result;
     }
 
-    let Some((sid, cwd, calls)) = parse::parse_codex_file(path) else {
-        // No billable events; still record sync state so we don't re-read it.
+    let Some(parsed) = parse::parse_codex_rollout(path) else {
+        result
+            .errors
+            .push(format!("Could not parse Codex rollout {}", path.display()));
+        return result;
+    };
+    if parsed.token_events.iter().all(|event| event.call.is_none()) {
         update_sync_state(&conn, &file_path, modified, line_count(path));
         return result;
+    }
+    let Some(sid) = parsed.root_thread_id.clone() else {
+        result.errors.push(format!(
+            "Deferred Codex rollout {}: missing root thread id",
+            path.display()
+        ));
+        return result;
+    };
+    if !parsed.root_meta_seen {
+        result.errors.push(format!(
+            "Deferred Codex rollout {}: billable events appeared before session_meta",
+            path.display()
+        ));
+        return result;
+    }
+
+    let replay_prefix = match &parsed.parent {
+        CodexParentResolution::None => 0,
+        CodexParentResolution::Deferred(reason) => {
+            result.errors.push(format!(
+                "Deferred Codex rollout {}: {reason}",
+                path.display()
+            ));
+            return result;
+        }
+        CodexParentResolution::Parent(parent_id) => {
+            if parent_id == &sid {
+                result.errors.push(format!(
+                    "Deferred Codex rollout {}: parent equals root thread id",
+                    path.display()
+                ));
+                return result;
+            }
+            let Some(cutoff_ms) = parsed.root_timestamp_ms else {
+                result.errors.push(format!(
+                    "Deferred Codex rollout {}: child session_meta has no valid timestamp",
+                    path.display()
+                ));
+                return result;
+            };
+            let parent_signatures = match replay.parent_signatures(parent_id, cutoff_ms) {
+                Ok(signatures) => signatures,
+                Err(reason) => {
+                    result.errors.push(format!(
+                        "Deferred Codex rollout {}: {reason}",
+                        path.display()
+                    ));
+                    return result;
+                }
+            };
+            matching_replay_prefix(&parsed.token_events, &parent_signatures)
+        }
     };
     let file_mtime_secs = (modified / 1_000_000_000).max(0);
 
-    // Codex calls are indexed by their non-zero-delta order; the parser
-    // produces a stable sequence so `i+1` is a stable event id across syncs.
-    for (i, call) in calls.iter().enumerate() {
-        let request_id = format!("codex_session:{sid}:{}", i + 1);
+    for (token_offset, event) in parsed.token_events.iter().enumerate() {
+        if token_offset < replay_prefix {
+            continue;
+        }
+        let (Some(call), Some(event_index)) = (&event.call, event.event_index) else {
+            continue;
+        };
+        let request_id = format!("codex_session:{sid}:{event_index}");
         let created_at = call
             .timestamp_ms
             .map(|ms| (ms / 1000) as i64)
             .unwrap_or(file_mtime_secs);
 
-        if insert_record(&conn, &request_id, "codex", call, &cwd, created_at) {
+        if insert_record(&conn, &request_id, "codex", call, &parsed.cwd, created_at) {
             result.imported += 1;
         } else {
             result.skipped += 1;
@@ -749,6 +1046,216 @@ mod tests {
     }
 
     #[test]
+    fn upsert_session_record_refreshes_active_turn_values() {
+        let conn = mem_conn();
+        let first_usage = UsageSummary {
+            input: 10,
+            output: 2,
+            cache_read: 3,
+            cache_creation: 0,
+        };
+        let second_usage = UsageSummary {
+            output: 9,
+            ..first_usage
+        };
+        let first_cost = pricing::cost_breakdown("gemini-2.5-pro", &first_usage);
+        let second_cost = pricing::cost_breakdown("gemini-2.5-pro", &second_usage);
+
+        assert!(upsert_session_record(
+            &conn,
+            SessionUsageUpsert {
+                request_id: "gemini_session:s1:m1",
+                provider: "gemini",
+                model: "gemini-2.5-pro",
+                usage: &first_usage,
+                cost: first_cost,
+                session_id: "s1",
+                project_path: "/repo",
+                created_at: 100,
+                data_source: "gemini_session",
+            },
+        ));
+        assert!(!upsert_session_record(
+            &conn,
+            SessionUsageUpsert {
+                request_id: "gemini_session:s1:m1",
+                provider: "gemini",
+                model: "gemini-2.5-pro",
+                usage: &first_usage,
+                cost: first_cost,
+                session_id: "s1",
+                project_path: "/repo",
+                created_at: 100,
+                data_source: "gemini_session",
+            },
+        ));
+        assert!(upsert_session_record(
+            &conn,
+            SessionUsageUpsert {
+                request_id: "gemini_session:s1:m1",
+                provider: "gemini",
+                model: "gemini-2.5-pro",
+                usage: &second_usage,
+                cost: second_cost,
+                session_id: "s1",
+                project_path: "/repo",
+                created_at: 100,
+                data_source: "gemini_session",
+            },
+        ));
+
+        let output: i64 = conn
+            .query_row(
+                "SELECT output_tokens FROM usage_records WHERE request_id = 'gemini_session:s1:m1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(output, 9);
+    }
+
+    fn write_codex_rollout(label: &str, thread_id: &str, content: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "threadterm-stats-sync-{label}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!("rollout-{thread_id}.jsonl"));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn codex_replay_alignment_strips_parent_prefix_and_keeps_live_usage() {
+        const PARENT: &str = "11111111-1111-1111-1111-111111111111";
+        const CHILD: &str = "22222222-2222-2222-2222-222222222222";
+        let parent = write_codex_rollout(
+            "replay-parent",
+            PARENT,
+            &format!(
+                r#"{{"type":"session_meta","timestamp":"2021-01-01T00:00:00Z","payload":{{"id":"{PARENT}"}}}}
+{{"type":"event_msg","timestamp":"2021-01-01T00:00:01Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10}}}}}}}}
+{{"type":"turn_context","timestamp":"2021-01-01T00:00:10Z","payload":{{"model":"gpt-5-codex"}}}}"#
+            ),
+        );
+        let child = write_codex_rollout(
+            "replay-child",
+            CHILD,
+            &format!(
+                r#"{{"type":"session_meta","timestamp":"2021-01-01T00:00:05Z","payload":{{"id":"{CHILD}","source":{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{PARENT}"}}}}}}}}}}
+{{"type":"event_msg","timestamp":"2021-01-01T00:00:06Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10}}}}}}}}
+{{"type":"event_msg","timestamp":"2021-01-01T00:00:07Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":160,"cached_input_tokens":70,"output_tokens":20}}}}}}}}"#
+            ),
+        );
+        let parsed_child = parse::parse_codex_rollout(&child).expect("child rollout");
+        let mut resolver = CodexReplayResolver::new(&[parent.clone(), child.clone()]);
+        let signatures = resolver
+            .parent_signatures(PARENT, parsed_child.root_timestamp_ms.unwrap())
+            .expect("parent timeline reached child fork");
+
+        assert_eq!(signatures.len(), 1);
+        assert_eq!(
+            matching_replay_prefix(&parsed_child.token_events, &signatures),
+            1
+        );
+        let live = parsed_child.token_events[1]
+            .call
+            .as_ref()
+            .expect("live delta");
+        assert_eq!(live.usage.input, 40);
+        assert_eq!(live.usage.cache_read, 20);
+        assert_eq!(live.usage.output, 10);
+        let _ = std::fs::remove_file(parent);
+        let _ = std::fs::remove_file(child);
+    }
+
+    #[test]
+    fn codex_parent_future_signature_cannot_extend_replay_prefix() {
+        const PARENT: &str = "33333333-3333-3333-3333-333333333333";
+        const CHILD: &str = "44444444-4444-4444-4444-444444444444";
+        let parent = write_codex_rollout(
+            "future-parent",
+            PARENT,
+            &format!(
+                r#"{{"type":"session_meta","timestamp":"2021-01-01T00:00:00Z","payload":{{"id":"{PARENT}"}}}}
+{{"type":"event_msg","timestamp":"2021-01-01T00:00:01Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10}}}}}}}}
+{{"type":"event_msg","timestamp":"2021-01-01T00:00:06Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":200,"cached_input_tokens":100,"output_tokens":20}}}}}}}}"#
+            ),
+        );
+        let child = write_codex_rollout(
+            "future-child",
+            CHILD,
+            &format!(
+                r#"{{"type":"session_meta","timestamp":"2021-01-01T00:00:05Z","payload":{{"id":"{CHILD}","forked_from_id":"{PARENT}"}}}}
+{{"type":"event_msg","timestamp":"2021-01-01T00:00:07Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":200,"cached_input_tokens":100,"output_tokens":20}}}}}}}}"#
+            ),
+        );
+        let parsed_child = parse::parse_codex_rollout(&child).expect("child rollout");
+        let mut resolver = CodexReplayResolver::new(&[parent.clone(), child.clone()]);
+        let signatures = resolver
+            .parent_signatures(PARENT, parsed_child.root_timestamp_ms.unwrap())
+            .expect("parent file advanced beyond fork");
+
+        assert_eq!(signatures.len(), 1);
+        assert_eq!(
+            matching_replay_prefix(&parsed_child.token_events, &signatures),
+            0
+        );
+        let _ = std::fs::remove_file(parent);
+        let _ = std::fs::remove_file(child);
+    }
+
+    #[test]
+    fn codex_replay_alignment_allows_filtered_parent_subsequence() {
+        const PARENT: &str = "66666666-6666-6666-6666-666666666666";
+        const CHILD: &str = "77777777-7777-7777-7777-777777777777";
+        let parent = write_codex_rollout(
+            "subsequence-parent",
+            PARENT,
+            &format!(
+                r#"{{"type":"session_meta","timestamp":"2021-01-01T00:00:00Z","payload":{{"id":"{PARENT}"}}}}
+{{"type":"event_msg","timestamp":"2021-01-01T00:00:01Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10}}}}}}}}
+{{"type":"event_msg","timestamp":"2021-01-01T00:00:02Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":200,"cached_input_tokens":100,"output_tokens":20}}}}}}}}
+{{"type":"event_msg","timestamp":"2021-01-01T00:00:03Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":300,"cached_input_tokens":150,"output_tokens":30}}}}}}}}
+{{"type":"turn_context","timestamp":"2021-01-01T00:00:10Z","payload":{{"model":"gpt-5-codex"}}}}"#
+            ),
+        );
+        let child = write_codex_rollout(
+            "subsequence-child",
+            CHILD,
+            &format!(
+                r#"{{"type":"session_meta","timestamp":"2021-01-01T00:00:05Z","payload":{{"id":"{CHILD}","forked_from_id":"{PARENT}"}}}}
+{{"type":"event_msg","timestamp":"2021-01-01T00:00:06Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10}}}}}}}}
+{{"type":"event_msg","timestamp":"2021-01-01T00:00:07Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":300,"cached_input_tokens":150,"output_tokens":30}}}}}}}}
+{{"type":"event_msg","timestamp":"2021-01-01T00:00:08Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":450,"cached_input_tokens":220,"output_tokens":45}}}}}}}}"#
+            ),
+        );
+        let parsed_child = parse::parse_codex_rollout(&child).expect("child rollout");
+        let mut resolver = CodexReplayResolver::new(&[parent.clone(), child.clone()]);
+        let signatures = resolver
+            .parent_signatures(PARENT, parsed_child.root_timestamp_ms.unwrap())
+            .expect("parent timeline");
+
+        assert_eq!(signatures.len(), 3);
+        assert_eq!(
+            matching_replay_prefix(&parsed_child.token_events, &signatures),
+            2
+        );
+        assert!(parsed_child.token_events[2].call.is_some());
+        let _ = std::fs::remove_file(parent);
+        let _ = std::fs::remove_file(child);
+    }
+
+    #[test]
+    fn codex_missing_parent_resolution_is_retryable() {
+        let mut resolver = CodexReplayResolver::new(&[]);
+        let error = resolver
+            .parent_signatures("55555555-5555-5555-5555-555555555555", 1)
+            .unwrap_err();
+        assert!(error.contains("was not found"));
+    }
+
+    #[test]
     fn sync_state_round_trips() {
         let conn = mem_conn();
         assert_eq!(get_sync_state(&conn, "/x.jsonl"), (0, 0));
@@ -783,6 +1290,14 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 0, "stale usage rows cleared");
         assert_eq!(cursors, 0, "sync cursors cleared so files re-parse");
+        let parser_version: String = conn
+            .query_row(
+                "SELECT value FROM stats_meta WHERE key = 'parser_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(parser_version, "9");
 
         // Second call: version now matches → no-op (no needless wipe each sync).
         assert!(

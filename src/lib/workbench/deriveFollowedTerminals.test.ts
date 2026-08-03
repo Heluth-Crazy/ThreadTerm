@@ -154,7 +154,8 @@ describe('followed terminal derivation', () => {
         workbenchWorktreeScopeKey('/repo/b', 'c:/repo/b-feature')
       ],
     ).toBe(1);
-    expect(getWorkbenchProjectAttentionCount(counts, '/REPO/B')).toBe(2);
+    expect(getWorkbenchProjectAttentionCount(counts, '/repo/b')).toBe(2);
+    expect(getWorkbenchProjectAttentionCount(counts, '/REPO/B')).toBe(0);
     expect(
       getWorkbenchWorktreeAttentionCount(
         counts,

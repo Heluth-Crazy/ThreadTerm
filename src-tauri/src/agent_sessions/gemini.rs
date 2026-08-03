@@ -1,13 +1,43 @@
 use super::preview::{is_meaningful_user_text, sanitize_preview};
 use super::types::{
-    empty_page, read_timestamp_ms, AgentSessionAvailability, AgentSessionPage,
-    AgentSessionProvider, AgentSessionSummary, TitleKind,
+    empty_page, read_timestamp_ms, AgentSessionAvailability, AgentSessionMetadataLookup,
+    AgentSessionPage, AgentSessionProvider, AgentSessionSummary, TitleKind,
+    MAX_METADATA_FILE_BYTES,
 };
 use serde_json::Value;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const GEMINI_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const GEMINI_PROBE_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+
+pub(crate) fn resolve_gemini_sessions(
+    lookups: &[AgentSessionMetadataLookup],
+) -> Vec<Option<AgentSessionSummary>> {
+    let items = gemini_tmp_root()
+        .filter(|root| root.is_dir())
+        .map(|root| list_gemini_sessions_from_root(&root))
+        .unwrap_or_default();
+    lookups
+        .iter()
+        .map(|lookup| {
+            let mut matches = items.iter().filter(|item| {
+                item.id == lookup.session_id
+                    && lookup.project_path.as_deref().map_or(true, |requested| {
+                        crate::workspace::same_project_path(&item.project_path, requested)
+                    })
+            });
+            let found = matches.next().cloned();
+            if matches.next().is_some() {
+                None
+            } else {
+                found
+            }
+        })
+        .collect()
+}
 
 pub async fn list_gemini_session_page(
     cursor: Option<&str>,
@@ -114,23 +144,36 @@ fn list_gemini_session_page_from_root(
     }
 }
 
-async fn ensure_gemini_cli_available() -> Result<bool, std::io::Error> {
-    let mut command = super::process::background_cli_command("gemini");
-    command
-        .args(["--version"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    match command.status().await {
-        Ok(status) => Ok(status.success()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(err),
+async fn ensure_gemini_cli_available() -> Result<bool, super::process::BackgroundCommandError> {
+    match super::process::run_background_cli(
+        "gemini",
+        &["--version"],
+        super::process::BackgroundCommandLimits {
+            timeout: GEMINI_PROBE_TIMEOUT,
+            stdout_bytes: GEMINI_PROBE_OUTPUT_MAX_BYTES,
+            stderr_bytes: GEMINI_PROBE_OUTPUT_MAX_BYTES,
+        },
+    )
+    .await
+    {
+        Ok(output) => Ok(output.status.success()),
+        Err(super::process::BackgroundCommandError::MissingCli) => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
 fn gemini_tmp_root() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".gemini").join("tmp"))
+}
+
+pub fn list_gemini_sessions_for_discovery() -> Vec<AgentSessionSummary> {
+    let Some(root) = gemini_tmp_root() else {
+        return Vec::new();
+    };
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    list_gemini_sessions_from_root(&root)
 }
 
 pub(crate) fn list_gemini_sessions_from_root(root: &Path) -> Vec<AgentSessionSummary> {
@@ -166,13 +209,13 @@ pub(crate) fn list_gemini_sessions_from_root(root: &Path) -> Vec<AgentSessionSum
     items
 }
 
-fn read_project_cwd(project_dir: &Path) -> Option<String> {
+pub(crate) fn read_project_cwd(project_dir: &Path) -> Option<String> {
     for name in [".project_root", "cwd.txt"] {
         let path = project_dir.join(name);
         if !path.is_file() {
             continue;
         }
-        let text = fs::read_to_string(path).ok()?;
+        let text = read_bounded_text(&path)?;
         let trimmed = text.trim();
         if !trimmed.is_empty() {
             return Some(trimmed.to_string());
@@ -184,7 +227,7 @@ fn read_project_cwd(project_dir: &Path) -> Option<String> {
         if !path.is_file() {
             continue;
         }
-        let value: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+        let value: Value = serde_json::from_str(&read_bounded_text(&path)?).ok()?;
         if let Some(cwd) = value
             .get("cwd")
             .or_else(|| value.get("path"))
@@ -203,8 +246,7 @@ pub(crate) fn parse_gemini_chat_file(
     path: &Path,
     project_cwd: &str,
 ) -> Option<AgentSessionSummary> {
-    let content = fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&content).ok()?;
+    let value: Value = serde_json::from_slice(&read_bounded_bytes(path)?).ok()?;
     if value
         .get("kind")
         .and_then(Value::as_str)
@@ -271,12 +313,20 @@ pub(crate) fn parse_gemini_chat_file(
     let created_at = read_timestamp_ms(value.get("createdAt"))
         .or_else(|| read_timestamp_ms(value.get("startTime")));
 
+    let native_title = value
+        .get("title")
+        .or_else(|| value.get("displayName"))
+        .and_then(Value::as_str)
+        .and_then(sanitize_preview);
+
     Some(AgentSessionSummary {
         provider: AgentSessionProvider::Gemini,
         id,
         project_path: project_cwd.to_string(),
-        native_title: None,
-        title_kind: if first_user_preview.is_some() {
+        native_title: native_title.clone(),
+        title_kind: if native_title.is_some() {
+            TitleKind::Generated
+        } else if first_user_preview.is_some() {
             TitleKind::FirstPrompt
         } else {
             TitleKind::Unknown
@@ -294,6 +344,24 @@ pub(crate) fn parse_gemini_chat_file(
         parent_session_id: None,
         resumable: true,
     })
+}
+
+fn read_bounded_text(path: &Path) -> Option<String> {
+    String::from_utf8(read_bounded_bytes(path)?).ok()
+}
+
+fn read_bounded_bytes(path: &Path) -> Option<Vec<u8>> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() > MAX_METADATA_FILE_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    File::open(path)
+        .ok()?
+        .take(MAX_METADATA_FILE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= MAX_METADATA_FILE_BYTES).then_some(bytes)
 }
 
 fn content_text(value: &Value) -> Option<String> {

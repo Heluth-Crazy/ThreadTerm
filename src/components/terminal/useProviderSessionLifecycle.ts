@@ -1,11 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isTauriEnv, providerSessions } from '../../lib/tauri-bridge';
 import { useTerminalStore } from '../../stores/terminalStore';
+import type { AgentSessionProvider } from '../../types/agentSession';
 import type { TerminalCard } from '../../types/terminal';
 import type { TerminalLaunchCommand } from './providerSession';
 
 const DISCOVERY_ATTEMPTS = 12;
 const DISCOVERY_INTERVAL_MS = 1500;
+
+function collectBoundProviderSessionIds(provider: AgentSessionProvider): string[] {
+  const { cards, archivedCards } = useTerminalStore.getState();
+  const ids = new Set<string>();
+  for (const card of [...cards, ...archivedCards]) {
+    if (
+      card.terminalType === provider
+      && card.providerSessionState === 'bound'
+      && card.providerSessionId
+    ) {
+      ids.add(card.providerSessionId);
+    }
+  }
+  return Array.from(ids);
+}
 
 export function useProviderSessionLifecycle(
   card: TerminalCard | null,
@@ -38,13 +54,20 @@ export function useProviderSessionLifecycle(
 
     let cancelled = false;
     let attempts = 0;
+    let timer: number | null = null;
     const projectPath = card.worktreePath || card.projectPath;
 
-    const find = async () => {
+    const find = async (): Promise<void> => {
+      if (cancelled || attempts >= DISCOVERY_ATTEMPTS) return;
       attempts += 1;
       try {
-        if (provider !== 'claude' && provider !== 'codex') return;
-        const info = await providerSessions.findRecent(provider, projectPath, sinceMs);
+        const excluded = collectBoundProviderSessionIds(provider);
+        const info = await providerSessions.findRecent(
+          provider,
+          projectPath,
+          sinceMs,
+          excluded,
+        );
         if (!cancelled && info?.id) {
           markProviderSessionBound(card.id, info.id);
           cancelled = true;
@@ -52,20 +75,18 @@ export function useProviderSessionLifecycle(
       } catch {
         // Session binding is best-effort; the terminal itself should keep working.
       }
+      if (!cancelled && attempts < DISCOVERY_ATTEMPTS) {
+        timer = window.setTimeout(() => {
+          void find();
+        }, DISCOVERY_INTERVAL_MS);
+      }
     };
 
     void find();
-    const timer = window.setInterval(() => {
-      if (cancelled || attempts >= DISCOVERY_ATTEMPTS) {
-        window.clearInterval(timer);
-        return;
-      }
-      void find();
-    }, DISCOVERY_INTERVAL_MS);
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, [
     active,

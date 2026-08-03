@@ -24,6 +24,7 @@ import { persist } from 'zustand/middleware';
 import { createThrottledPersistStorage } from './throttledStorage';
 import { readOsNotificationsEnabled } from '../lib/notificationPrefs';
 import { managedStateStorage } from '../lib/managedState';
+import { migrateLegacyKimiGrokCard } from '../lib/kimiGrokMigration';
 import { createCardsSlice } from './terminal/cardsSlice';
 import { createAutoRestartSlice } from './terminal/autoRestartSlice';
 import { createNotificationsSlice } from './terminal/notificationsSlice';
@@ -150,7 +151,7 @@ export const useTerminalStore = create<TerminalStore>()(
         // AI Supervisor v0.1 (PRD D3) — master switch persisted; default OFF.
         supervisorEnabled: state.supervisorEnabled,
       }),
-      version: 19,
+      version: 20,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         const nextState = { ...state } as Partial<TerminalStore> & Record<string, unknown>;
@@ -160,23 +161,30 @@ export const useTerminalStore = create<TerminalStore>()(
         delete nextState.selectedBlockId;
         delete nextState.aiExplainDefaultProvider;
         delete nextState.bottomBarHidden;
-        const cards = state.cards?.map((card) => ({
-          ...card,
-          status: isTransientStatus(card.status) ? 'idle' : card.status,
-          providerSessionState:
-            card.providerSessionState ??
-            (isProviderSessionType(card.terminalType) ? 'unbound' : undefined),
-          autoRestart: prepareAutoRestartForPersistence(card),
-        }));
-        const archivedCards = (state.archivedCards ?? []).map((card) => ({
-          ...card,
-          status: isTransientStatus(card.status) ? 'idle' : card.status,
-          unread: false,
-          providerSessionState:
-            card.providerSessionState ??
-            (isProviderSessionType(card.terminalType) ? 'unbound' : undefined),
-          autoRestart: prepareAutoRestartForPersistence(card),
-        }));
+        const cards = state.cards?.map((card) => {
+          const base = {
+            ...card,
+            status: isTransientStatus(card.status) ? 'idle' as const : card.status,
+            providerSessionState:
+              card.providerSessionState ??
+              (isProviderSessionType(card.terminalType) ? 'unbound' as const : undefined),
+            autoRestart: prepareAutoRestartForPersistence(card),
+          };
+          // v20 — promote exact legacy custom kimi/grok executables only.
+          return migrateLegacyKimiGrokCard(base);
+        });
+        const archivedCards = (state.archivedCards ?? []).map((card) => {
+          const base = {
+            ...card,
+            status: isTransientStatus(card.status) ? 'idle' as const : card.status,
+            unread: false,
+            providerSessionState:
+              card.providerSessionState ??
+              (isProviderSessionType(card.terminalType) ? 'unbound' as const : undefined),
+            autoRestart: prepareAutoRestartForPersistence(card),
+          };
+          return migrateLegacyKimiGrokCard(base);
+        });
         const validCardIds = new Set([
           ...(cards ?? []).map((card) => card.id),
           ...archivedCards.map((card) => card.id),

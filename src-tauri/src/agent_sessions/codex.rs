@@ -1,12 +1,232 @@
 use super::preview::{is_generic_session_title, sanitize_preview};
 use super::types::{
-    empty_page, read_timestamp_ms, AgentSessionAvailability, AgentSessionPage,
-    AgentSessionProvider, AgentSessionSummary, TitleKind,
+    empty_page, read_timestamp_ms, AgentSessionAvailability, AgentSessionMetadataLookup,
+    AgentSessionPage, AgentSessionProvider, AgentSessionSummary, TitleKind,
 };
+use rusqlite::{params_from_iter, Connection, OpenFlags};
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
 const INTERACTIVE_SOURCE_KINDS: &[&str] = &["cli", "vscode", "appServer"];
+const CODEX_STATE_DATABASE_CANDIDATE_CAP: usize = 32;
+const CODEX_TITLE_QUERY_CHARS: usize = 512;
+const CODEX_PROMPT_QUERY_CHARS: usize = 1024;
+
+pub(crate) fn resolve_codex_sessions(
+    lookups: &[AgentSessionMetadataLookup],
+) -> Result<Vec<Option<AgentSessionSummary>>, String> {
+    let Some(home) = codex_home_dir() else {
+        return Ok(vec![None; lookups.len()]);
+    };
+    resolve_codex_sessions_from_home(&home, lookups)
+}
+
+fn resolve_codex_sessions_from_home(
+    home: &Path,
+    lookups: &[AgentSessionMetadataLookup],
+) -> Result<Vec<Option<AgentSessionSummary>>, String> {
+    let Some(database) = find_codex_state_database(home)? else {
+        return Ok(vec![None; lookups.len()]);
+    };
+    let connection = Connection::open_with_flags(
+        database,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| "Codex state metadata is unavailable".to_string())?;
+    let columns = codex_thread_columns(&connection)?;
+    if !columns.contains("id") || !columns.contains("cwd") {
+        return Err("Codex state metadata schema is unsupported".into());
+    }
+
+    let ids = lookups
+        .iter()
+        .map(|lookup| lookup.session_id.as_str())
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let text_column = |name: &str, max_chars: usize| {
+        if columns.contains(name) {
+            format!("substr({name}, 1, {max_chars})")
+        } else {
+            "NULL".to_string()
+        }
+    };
+    let scalar_column = |name: &str| {
+        if columns.contains(name) {
+            name.to_string()
+        } else {
+            "NULL".to_string()
+        }
+    };
+    let sql = format!(
+        "SELECT id, {}, {}, {}, {}, {}, {}, {}, {}, {} FROM threads WHERE id IN ({placeholders})",
+        text_column("cwd", 4096),
+        text_column("name", CODEX_TITLE_QUERY_CHARS),
+        text_column("title", CODEX_TITLE_QUERY_CHARS),
+        text_column("first_user_message", CODEX_PROMPT_QUERY_CHARS),
+        text_column("preview", CODEX_PROMPT_QUERY_CHARS),
+        text_column("git_branch", CODEX_TITLE_QUERY_CHARS),
+        text_column("source", 256),
+        scalar_column("created_at"),
+        scalar_column("updated_at"),
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|_| "Codex state metadata query could not be prepared".to_string())?;
+    let rows = statement
+        .query_map(params_from_iter(ids), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<i64>>(9)?,
+            ))
+        })
+        .map_err(|_| "Codex state metadata query failed".to_string())?;
+
+    let mut by_id = HashMap::new();
+    for row in rows {
+        let (id, cwd, name, title, first_message, preview, branch, source, created, updated) =
+            row.map_err(|_| "Codex state metadata row was invalid".to_string())?;
+        if cwd.trim().is_empty() || !is_interactive_state_source(source.as_deref()) {
+            continue;
+        }
+        let explicit_title = name
+            .as_deref()
+            .and_then(sanitize_preview)
+            .filter(|value| !is_generic_session_title(value));
+        let generated_title = title
+            .as_deref()
+            .and_then(sanitize_preview)
+            .filter(|value| !is_generic_session_title(value));
+        let first_user_message_preview = first_message
+            .as_deref()
+            .and_then(sanitize_preview)
+            .or_else(|| preview.as_deref().and_then(sanitize_preview));
+        let (native_title, title_kind) = if explicit_title.is_some() {
+            (explicit_title, TitleKind::Explicit)
+        } else if generated_title.is_some() {
+            (generated_title, TitleKind::Generated)
+        } else if first_user_message_preview.is_some() {
+            (None, TitleKind::FirstPrompt)
+        } else {
+            (None, TitleKind::Unknown)
+        };
+        by_id.insert(
+            id.clone(),
+            AgentSessionSummary {
+                provider: AgentSessionProvider::Codex,
+                id,
+                project_path: cwd,
+                native_title,
+                title_kind,
+                first_user_message_preview,
+                created_at: sqlite_timestamp_ms(created),
+                updated_at: sqlite_timestamp_ms(updated),
+                message_count: None,
+                git_branch: branch.and_then(|value| sanitize_preview(&value)),
+                source_kind: source,
+                parent_session_id: None,
+                resumable: true,
+            },
+        );
+    }
+
+    Ok(lookups
+        .iter()
+        .map(|lookup| {
+            by_id.get(&lookup.session_id).and_then(|summary| {
+                lookup.project_path.as_deref().map_or_else(
+                    || Some(summary.clone()),
+                    |requested| {
+                        crate::workspace::same_project_path(&summary.project_path, requested)
+                            .then(|| summary.clone())
+                    },
+                )
+            })
+        })
+        .collect())
+}
+
+fn codex_home_dir() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+}
+
+fn find_codex_state_database(home: &Path) -> Result<Option<PathBuf>, String> {
+    let Ok(entries) = fs::read_dir(home) else {
+        return Ok(None);
+    };
+    let mut candidates = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let Some(version) = name
+            .strip_prefix("state_")
+            .and_then(|value| value.strip_suffix(".sqlite"))
+            .and_then(|value| value.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if path.is_file() {
+            candidates.push((version, path));
+            if candidates.len() > CODEX_STATE_DATABASE_CANDIDATE_CAP {
+                return Err("Codex state metadata has too many database candidates".into());
+            }
+        }
+    }
+    candidates.sort_by_key(|(version, _)| std::cmp::Reverse(*version));
+    Ok(candidates.into_iter().next().map(|(_, path)| path))
+}
+
+fn codex_thread_columns(connection: &Connection) -> Result<HashSet<String>, String> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(threads)")
+        .map_err(|_| "Codex state metadata schema could not be read".to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|_| "Codex state metadata schema query failed".to_string())?;
+    let mut columns = HashSet::new();
+    for name in rows.take(128) {
+        columns.insert(name.map_err(|_| "Codex state metadata schema was invalid".to_string())?);
+    }
+    Ok(columns)
+}
+
+fn is_interactive_state_source(source: Option<&str>) -> bool {
+    let Some(source) = source.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    let lower = source.to_ascii_lowercase();
+    !lower.contains("subagent") && !lower.contains("ephemeral") && !lower.contains("internal")
+}
+
+fn sqlite_timestamp_ms(value: Option<i64>) -> Option<u64> {
+    let value = u64::try_from(value?).ok()?;
+    Some(if value < 1_000_000_000_000 {
+        value.saturating_mul(1000)
+    } else {
+        value
+    })
+}
 
 pub async fn list_codex_session_page(
     app: &AppHandle,
@@ -215,6 +435,122 @@ fn matches_query(summary: &AgentSessionSummary, query: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_home(label: &str) -> PathBuf {
+        let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "threadterm-codex-state-{label}-{}-{id}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn exact_state_database_lookup_returns_bounded_authoritative_titles() {
+        let home = temp_home("exact");
+        fs::create_dir_all(&home).expect("mkdir");
+        let database = home.join("state_5.sqlite");
+        let connection = Connection::open(&database).expect("open fixture database");
+        connection
+            .execute_batch(
+                "CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    cwd TEXT NOT NULL,
+                    name TEXT,
+                    title TEXT,
+                    first_user_message TEXT,
+                    preview TEXT,
+                    git_branch TEXT,
+                    source TEXT,
+                    created_at INTEGER,
+                    updated_at INTEGER
+                );",
+            )
+            .expect("schema");
+        connection
+            .execute(
+                "INSERT INTO threads VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    "thread-explicit",
+                    r"\\?\D:\Repo\App",
+                    "Native rename",
+                    "Generated title",
+                    "first prompt",
+                    "main",
+                    "cli",
+                    1_700_000_000i64,
+                    1_700_000_001_000i64,
+                ],
+            )
+            .expect("insert explicit");
+        connection
+            .execute(
+                "INSERT INTO threads VALUES (?1, ?2, NULL, ?3, ?4, NULL, NULL, ?5, NULL, NULL)",
+                rusqlite::params![
+                    "thread-prompt",
+                    "/Users/demo/App",
+                    "New session",
+                    "x".repeat(10_000),
+                    "vscode",
+                ],
+            )
+            .expect("insert prompt");
+        connection
+            .execute(
+                "INSERT INTO threads VALUES ('child', '/Users/demo/App', 'Child', NULL, NULL, NULL, NULL, 'subagent', NULL, NULL)",
+                [],
+            )
+            .expect("insert child");
+        drop(connection);
+
+        let lookups = vec![
+            AgentSessionMetadataLookup {
+                session_id: "thread-explicit".into(),
+                project_path: Some("d:/repo/app".into()),
+            },
+            AgentSessionMetadataLookup {
+                session_id: "thread-prompt".into(),
+                project_path: Some("/Users/demo/App".into()),
+            },
+            AgentSessionMetadataLookup {
+                session_id: "child".into(),
+                project_path: Some("/Users/demo/App".into()),
+            },
+            AgentSessionMetadataLookup {
+                session_id: "thread-explicit".into(),
+                project_path: Some("D:/repo/app/child".into()),
+            },
+        ];
+        let resolved = resolve_codex_sessions_from_home(&home, &lookups).expect("resolve");
+
+        assert_eq!(
+            resolved[0]
+                .as_ref()
+                .and_then(|item| item.native_title.as_deref()),
+            Some("Native rename")
+        );
+        assert_eq!(
+            resolved[0].as_ref().map(|item| item.title_kind),
+            Some(TitleKind::Explicit)
+        );
+        assert_eq!(
+            resolved[1]
+                .as_ref()
+                .and_then(|item| item.first_user_message_preview.as_ref())
+                .map(|preview| preview.chars().count()),
+            Some(super::super::types::MAX_PREVIEW_CHARS)
+        );
+        assert_eq!(
+            resolved[1].as_ref().map(|item| item.title_kind),
+            Some(TitleKind::FirstPrompt)
+        );
+        assert!(resolved[2].is_none());
+        assert!(resolved[3].is_none());
+
+        let _ = fs::remove_dir_all(home);
+    }
 
     #[test]
     fn maps_interactive_threads_and_excludes_internal() {

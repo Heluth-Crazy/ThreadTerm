@@ -22,7 +22,7 @@ use tokio::sync::broadcast;
 
 use crate::pty::{self, SessionState};
 
-use identity::{fingerprint_short, SecureIdentityStore, SecureIdentityStatus};
+use identity::{fingerprint_short, SecureIdentityStatus, SecureIdentityStore};
 use pairing::PairingStore;
 use preview::preview_from_output;
 #[cfg(test)]
@@ -244,7 +244,8 @@ impl BridgeRuntime {
             })
         });
         let identity_status = secure_identity_store().status();
-        let (identity_status_wire, fingerprint_short_opt, computer_id_opt) = match &identity_status {
+        let (identity_status_wire, fingerprint_short_opt, computer_id_opt) = match &identity_status
+        {
             SecureIdentityStatus::Ready {
                 computer_id,
                 fingerprint_sha256,

@@ -72,8 +72,8 @@ export function normalizeTerminalLaunchConfiguration(
   draft: TerminalLaunchConfigurationDraft,
 ): TerminalConfigurationValidationResult {
   if (draft.launchMode === 'custom') {
-    const command = draft.command?.trim() ?? '';
-    return command
+    const command = draft.command ?? '';
+    return command.trim()
       ? {
           ok: true,
           value: {
@@ -130,8 +130,8 @@ export function terminalLaunchConfigurationFromCard(
     'terminalType' | 'command' | 'providerSessionId' | 'providerSessionState'
   >,
 ): TerminalLaunchConfiguration {
-  const command = card.command?.trim();
-  if (command) {
+  const command = card.command;
+  if (command?.trim()) {
     return {
       terminalType: card.terminalType,
       launchMode: 'custom',
@@ -232,6 +232,8 @@ export function parsePersistedTerminalLaunchConfiguration(
     'codex',
     'opencode',
     'gemini',
+    'kimi',
+    'grok',
     'npm',
     'yarn',
     'pnpm',

@@ -198,6 +198,17 @@ describe('buildCardPreview', () => {
     expect(preview.summaryLine).toBe('Implementation tests are passing.');
   });
 
+  it.each(['opencode', 'kimi', 'grok'] as const)(
+    'classifies %s output fallback as an Agent reply',
+    (terminalType) => {
+      const preview = buildCardPreview(
+        card({ terminalType, lastOutput: 'Completed the requested change.' }),
+      );
+      expect(preview.source).toBe('output');
+      expect(preview.kind).toBe('reply');
+    },
+  );
+
   it('does not treat normal shell prompts or commands as AI composer input', () => {
     const preview = buildCardPreview(
       card({

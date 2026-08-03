@@ -55,7 +55,14 @@ export function tailJoin(buffer: string, chunk: string, limit: number): string {
 }
 
 export function isProviderSessionType(type: TerminalCard['terminalType']): boolean {
-  return type === 'claude' || type === 'codex';
+  return (
+    type === 'claude'
+    || type === 'codex'
+    || type === 'opencode'
+    || type === 'gemini'
+    || type === 'kimi'
+    || type === 'grok'
+  );
 }
 
 /** Providers that can materialize bound resume cards from the session catalog. */
@@ -63,7 +70,12 @@ export function isCatalogProviderSessionType(
   type: TerminalCard['terminalType'] | ProviderSessionImportInfo['provider'],
 ): type is ProviderSessionImportInfo['provider'] {
   return (
-    type === 'claude' || type === 'codex' || type === 'opencode' || type === 'gemini'
+    type === 'claude'
+    || type === 'codex'
+    || type === 'opencode'
+    || type === 'gemini'
+    || type === 'kimi'
+    || type === 'grok'
   );
 }
 

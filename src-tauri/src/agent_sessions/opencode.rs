@@ -1,12 +1,59 @@
 use super::preview::{is_generic_session_title, sanitize_preview};
 use super::types::{
-    empty_page, read_timestamp_ms, AgentSessionAvailability, AgentSessionPage,
-    AgentSessionProvider, AgentSessionSummary, TitleKind,
+    empty_page, read_timestamp_ms, AgentSessionAvailability, AgentSessionMetadataLookup,
+    AgentSessionPage, AgentSessionProvider, AgentSessionSummary, TitleKind,
 };
 use serde_json::Value;
-use std::process::Stdio;
+use std::future::Future;
+use std::time::Duration;
 
 const OPENCODE_LIST_HARD_CAP: usize = 200;
+const OPENCODE_LIST_TIMEOUT: Duration = Duration::from_secs(10);
+const OPENCODE_LIST_STDOUT_MAX_BYTES: usize = 4 * 1024 * 1024;
+const OPENCODE_STDERR_MAX_BYTES: usize = 256 * 1024;
+const OPENCODE_EXPORT_STDOUT_MAX_BYTES: usize = 1024 * 1024;
+
+pub(crate) async fn resolve_opencode_sessions(
+    lookups: &[AgentSessionMetadataLookup],
+) -> Result<Vec<Option<AgentSessionSummary>>, OpenCodeListError> {
+    resolve_opencode_sessions_with(lookups, run_opencode_session_list).await
+}
+
+async fn resolve_opencode_sessions_with<F, Fut>(
+    lookups: &[AgentSessionMetadataLookup],
+    loader: F,
+) -> Result<Vec<Option<AgentSessionSummary>>, OpenCodeListError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Vec<Value>, OpenCodeListError>>,
+{
+    let items = loader().await.map(normalize_opencode_list)?;
+    Ok(lookups
+        .iter()
+        .map(|lookup| {
+            let mut matches = items.iter().filter(|item| {
+                item.id == lookup.session_id
+                    && lookup.project_path.as_deref().map_or(true, |requested| {
+                        crate::workspace::same_project_path(&item.project_path, requested)
+                    })
+            });
+            let found = matches.next().cloned();
+            if matches.next().is_some() {
+                None
+            } else {
+                found
+            }
+        })
+        .collect())
+}
+
+/// Discovery helper for recent-session binding (no lazy export).
+pub async fn list_opencode_sessions_for_discovery() -> Vec<AgentSessionSummary> {
+    run_opencode_session_list()
+        .await
+        .map(normalize_opencode_list)
+        .unwrap_or_default()
+}
 
 pub async fn list_opencode_session_page(
     cursor: Option<&str>,
@@ -84,21 +131,33 @@ pub async fn list_opencode_session_page(
             AgentSessionAvailability::Error,
             Some("OpenCode returned malformed session list JSON".into()),
         ),
+        Err(OpenCodeListError::TimedOut) => empty_page(
+            AgentSessionProvider::Opencode,
+            AgentSessionAvailability::Error,
+            Some("OpenCode session list timed out".into()),
+        ),
+        Err(OpenCodeListError::OutputTooLarge) => empty_page(
+            AgentSessionProvider::Opencode,
+            AgentSessionAvailability::Error,
+            Some("OpenCode session list exceeded its output limit".into()),
+        ),
     }
 }
 
 #[derive(Debug)]
-enum OpenCodeListError {
+pub(crate) enum OpenCodeListError {
     MissingCli,
     CommandFailed(String),
     MalformedJson,
+    TimedOut,
+    OutputTooLarge,
 }
 
 async fn run_opencode_session_list() -> Result<Vec<Value>, OpenCodeListError> {
-    let mut command = super::process::background_cli_command("opencode");
     let hard_cap = OPENCODE_LIST_HARD_CAP.to_string();
-    command
-        .args([
+    let output = super::process::run_background_cli(
+        "opencode",
+        &[
             "session",
             "list",
             "--format",
@@ -106,24 +165,15 @@ async fn run_opencode_session_list() -> Result<Vec<Value>, OpenCodeListError> {
             "--max-count",
             &hard_cap,
             "--pure",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-
-    let output = match command.output().await {
-        Ok(output) => output,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(OpenCodeListError::MissingCli);
-        }
-        Err(err) => {
-            return Err(OpenCodeListError::CommandFailed(format!(
-                "Failed to start OpenCode: {}",
-                err.kind()
-            )));
-        }
-    };
+        ],
+        super::process::BackgroundCommandLimits {
+            timeout: OPENCODE_LIST_TIMEOUT,
+            stdout_bytes: OPENCODE_LIST_STDOUT_MAX_BYTES,
+            stderr_bytes: OPENCODE_STDERR_MAX_BYTES,
+        },
+    )
+    .await
+    .map_err(map_process_error)?;
 
     if !output.status.success() {
         return Err(OpenCodeListError::CommandFailed(
@@ -132,6 +182,20 @@ async fn run_opencode_session_list() -> Result<Vec<Value>, OpenCodeListError> {
     }
 
     parse_opencode_list_json(&output.stdout).map_err(|_| OpenCodeListError::MalformedJson)
+}
+
+fn map_process_error(error: super::process::BackgroundCommandError) -> OpenCodeListError {
+    match error {
+        super::process::BackgroundCommandError::MissingCli => OpenCodeListError::MissingCli,
+        super::process::BackgroundCommandError::TimedOut => OpenCodeListError::TimedOut,
+        super::process::BackgroundCommandError::OutputTooLarge(_) => {
+            OpenCodeListError::OutputTooLarge
+        }
+        super::process::BackgroundCommandError::Io(_)
+        | super::process::BackgroundCommandError::ReaderFailed => {
+            OpenCodeListError::CommandFailed("OpenCode process failed".into())
+        }
+    }
 }
 
 pub(crate) fn parse_opencode_list_json(bytes: &[u8]) -> Result<Vec<Value>, ()> {
@@ -209,7 +273,16 @@ pub(crate) fn normalize_opencode_row(raw: &Value) -> Option<AgentSessionSummary>
         .or_else(|| read_timestamp_ms(raw.get("createdAt")))
         .or_else(|| read_timestamp_ms(raw.get("time_created")));
 
-    let title_kind = TitleKind::Unknown;
+    let title_kind = if native_title
+        .as_deref()
+        .is_some_and(|title| !is_generic_session_title(title))
+    {
+        TitleKind::Generated
+    } else if preview.is_some() {
+        TitleKind::FirstPrompt
+    } else {
+        TitleKind::Unknown
+    };
     let first_user_message_preview = preview;
 
     Some(AgentSessionSummary {
@@ -261,14 +334,17 @@ pub async fn export_opencode_preview(session_id: &str) -> Option<String> {
         return None;
     }
 
-    let mut command = super::process::background_cli_command("opencode");
-    command
-        .args(["export", session_id, "--pure"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let output = command.output().await.ok()?;
+    let output = super::process::run_background_cli(
+        "opencode",
+        &["export", session_id, "--pure"],
+        super::process::BackgroundCommandLimits {
+            timeout: OPENCODE_LIST_TIMEOUT,
+            stdout_bytes: OPENCODE_EXPORT_STDOUT_MAX_BYTES,
+            stderr_bytes: OPENCODE_STDERR_MAX_BYTES,
+        },
+    )
+    .await
+    .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -343,8 +419,59 @@ mod tests {
         let items = normalize_opencode_list(raw.as_array().unwrap().clone());
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "parent-1");
-        assert_eq!(items[0].title_kind, TitleKind::Unknown);
+        assert_eq!(items[0].title_kind, TitleKind::Generated);
         assert_eq!(items[0].native_title.as_deref(), Some("Build UI"));
+    }
+
+    #[tokio::test]
+    async fn batch_exact_lookup_loads_the_cli_catalog_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let lookups = vec![
+            AgentSessionMetadataLookup {
+                session_id: "one".into(),
+                project_path: Some(r"D:\Repo\App".into()),
+            },
+            AgentSessionMetadataLookup {
+                session_id: "two".into(),
+                project_path: Some("D:/repo/app".into()),
+            },
+        ];
+        let resolved = resolve_opencode_sessions_with(&lookups, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                Ok(vec![
+                    serde_json::json!({
+                        "id": "one",
+                        "directory": "d:/repo/app",
+                        "title": "One"
+                    }),
+                    serde_json::json!({
+                        "id": "two",
+                        "directory": r"D:\REPO\APP",
+                        "title": "Two"
+                    }),
+                ])
+            }
+        })
+        .await
+        .expect("resolve");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(
+            resolved[0]
+                .as_ref()
+                .and_then(|item| item.native_title.as_deref()),
+            Some("One")
+        );
+        assert_eq!(
+            resolved[1]
+                .as_ref()
+                .and_then(|item| item.native_title.as_deref()),
+            Some("Two")
+        );
     }
 
     #[test]

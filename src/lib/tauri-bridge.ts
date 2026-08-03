@@ -236,23 +236,29 @@ export const workspaceFiles = {
 
 export interface ProviderSessionInfo {
   id: string;
-  provider: 'claude' | 'codex';
+  provider: string;
   projectPath: string;
   updatedAt?: number | null;
 }
 
 export type {
   AgentSessionAvailability,
+  AgentSessionMetadataKey,
+  AgentSessionMetadataResult,
   AgentSessionPage,
   AgentSessionProvider,
   AgentSessionSummary,
   ListAgentSessionsRequest,
+  ResolveAgentSessionMetadataRequest,
   TitleKind,
 } from '../types/agentSession';
 
 import type {
   AgentSessionPage,
+  AgentSessionProvider,
+  AgentSessionMetadataResult,
   ListAgentSessionsRequest,
+  ResolveAgentSessionMetadataRequest,
 } from '../types/agentSession';
 
 export const providerSessions = {
@@ -262,14 +268,16 @@ export const providerSessions = {
     }),
 
   findRecent: (
-    provider: 'claude' | 'codex',
+    provider: AgentSessionProvider,
     projectPath: string,
     sinceMs?: number,
+    excludedSessionIds?: string[],
   ): Promise<ProviderSessionInfo | null> =>
     invoke<ProviderSessionInfo | null>('provider_find_recent_session', {
       provider,
       projectPath,
       sinceMs: sinceMs ?? null,
+      excludedSessionIds: excludedSessionIds ?? null,
     }),
 
   resolveResume: (
@@ -284,6 +292,14 @@ export const providerSessions = {
   /** On-demand paginated catalog. Does not create cards. */
   listAgentSessions: (request: ListAgentSessionsRequest): Promise<AgentSessionPage> =>
     invoke<AgentSessionPage>('provider_list_agent_sessions', { request }),
+
+  /** Exact metadata for visible bound cards. Separate from recovery catalog state. */
+  resolveMetadata: (
+    request: ResolveAgentSessionMetadataRequest,
+  ): Promise<AgentSessionMetadataResult[]> =>
+    invoke<AgentSessionMetadataResult[]>('provider_resolve_agent_session_metadata', {
+      request,
+    }),
 };
 
 export interface CodexAppStatus {

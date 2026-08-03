@@ -1,6 +1,12 @@
 import type { TerminalCard, TerminalType } from '../../types/terminal';
 
-export type ProviderSessionProvider = 'claude' | 'codex' | 'opencode' | 'gemini';
+export type ProviderSessionProvider =
+  | 'claude'
+  | 'codex'
+  | 'opencode'
+  | 'gemini'
+  | 'kimi'
+  | 'grok';
 export type ProviderSessionLaunchAction = 'start' | 'resume' | 'discover';
 export type AiCliSessionBadgeTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
 
@@ -33,6 +39,8 @@ const AI_CLI_LABELS: Partial<Record<TerminalType, string>> = {
   codex: 'Codex',
   opencode: 'OpenCode',
   gemini: 'Gemini',
+  kimi: 'Kimi Code',
+  grok: 'Grok Build',
 };
 
 export function shellQuote(value: string): string {
@@ -41,7 +49,14 @@ export function shellQuote(value: string): string {
 }
 
 export function isAiCliTerminalType(type: TerminalType): boolean {
-  return type === 'claude' || type === 'codex' || type === 'opencode' || type === 'gemini';
+  return (
+    type === 'claude'
+    || type === 'codex'
+    || type === 'opencode'
+    || type === 'gemini'
+    || type === 'kimi'
+    || type === 'grok'
+  );
 }
 
 export function getAiCliName(type: TerminalType): string {
@@ -108,17 +123,6 @@ export function getAiCliSessionBadge(card: TerminalCard): AiCliSessionBadge | nu
     };
   }
 
-  if (card.terminalType === 'gemini' || card.terminalType === 'opencode') {
-    return {
-      labelKey: 'aiSession.cliOnly',
-      descriptionKey: 'aiSession.cliOnlyDescription',
-      fallbackLabel: 'CLI session',
-      fallbackDescription: `${cli} runs as a CLI session; native resume binding is not tracked yet.`,
-      tone: 'neutral',
-      values: { cli },
-    };
-  }
-
   if (card.providerSessionId) {
     return {
       labelKey: 'aiSession.newSession',
@@ -144,8 +148,8 @@ export function buildTerminalLaunchCommand(
   card: TerminalCard,
   defaultCommand?: string,
 ): TerminalLaunchCommand {
-  const customCommand = card.command?.trim();
-  if (customCommand) return { command: customCommand };
+  const customCommand = card.command;
+  if (customCommand?.trim()) return { command: customCommand };
 
   if (card.terminalType === 'claude') {
     if (card.providerSessionId && card.providerSessionState === 'bound') {
@@ -199,8 +203,11 @@ export function buildTerminalLaunchCommand(
         action: 'resume',
       };
     }
-    const command = defaultCommand?.trim() || 'opencode';
-    return { command };
+    return {
+      command: defaultCommand?.trim() || 'opencode',
+      provider: 'opencode',
+      action: 'discover',
+    };
   }
 
   if (card.terminalType === 'gemini') {
@@ -212,8 +219,51 @@ export function buildTerminalLaunchCommand(
         action: 'resume',
       };
     }
-    const command = defaultCommand?.trim() || 'gemini';
-    return { command };
+    return {
+      command: defaultCommand?.trim() || 'gemini',
+      provider: 'gemini',
+      action: 'discover',
+    };
+  }
+
+  if (card.terminalType === 'kimi') {
+    if (card.providerSessionId && card.providerSessionState === 'bound') {
+      return {
+        command: `kimi --session ${shellQuote(card.providerSessionId)}`,
+        provider: 'kimi',
+        providerSessionId: card.providerSessionId,
+        action: 'resume',
+      };
+    }
+    return {
+      command: defaultCommand?.trim() || 'kimi',
+      provider: 'kimi',
+      action: 'discover',
+    };
+  }
+
+  if (card.terminalType === 'grok') {
+    if (card.providerSessionId && card.providerSessionState === 'bound') {
+      return {
+        command: `grok --resume ${shellQuote(card.providerSessionId)}`,
+        provider: 'grok',
+        providerSessionId: card.providerSessionId,
+        action: 'resume',
+      };
+    }
+    if (card.providerSessionId) {
+      return {
+        command: `grok --session-id ${shellQuote(card.providerSessionId)}`,
+        provider: 'grok',
+        providerSessionId: card.providerSessionId,
+        action: 'start',
+      };
+    }
+    return {
+      command: defaultCommand?.trim() || 'grok',
+      provider: 'grok',
+      action: 'discover',
+    };
   }
 
   const command = defaultCommand?.trim();

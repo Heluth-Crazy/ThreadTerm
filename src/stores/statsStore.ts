@@ -17,7 +17,7 @@ let requestCounter = 0;
 
 /**
  * Background stats polling scans every JSONL session file under
- * ~/.claude/projects and ~/.codex/sessions, so the silent interval is
+ * supported local AI CLI session logs, so the silent interval is
  * deliberately coarse: 60s keeps per-card token badges reasonably fresh,
  * and while the stats panel is closed nobody is watching the numbers, so
  * polling relaxes further to 120s. Opening the panel triggers an immediate
@@ -56,7 +56,13 @@ function isStatsBackedAiCard(
   card: Pick<TerminalCard, 'providerSessionId' | 'terminalType'>,
 ): boolean {
   return (
-    (card.terminalType === 'claude' || card.terminalType === 'codex') &&
+    (
+      card.terminalType === 'claude' ||
+      card.terminalType === 'codex' ||
+      card.terminalType === 'opencode' ||
+      card.terminalType === 'gemini' ||
+      card.terminalType === 'grok'
+    ) &&
     Boolean(card.providerSessionId)
   );
 }
@@ -176,7 +182,7 @@ export function useStatsSubscription(): void {
 
 /**
  * Keeps per-card token badges warm without requiring the stats panel to open.
- * Polling is limited to visible windows with bound Claude/Codex sessions.
+ * Polling is limited to visible windows with bound, stats-backed AI sessions.
  */
 export function useStatsAutoRefresh(): void {
   const hasAiCards = useTerminalStore((state) => state.cards.some(isStatsBackedAiCard));

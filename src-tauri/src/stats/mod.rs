@@ -1,4 +1,4 @@
-//! Token statistics — scan Claude/Codex session jsonl, aggregate usage + cost,
+//! Token statistics — scan supported AI CLI session logs, aggregate usage + cost,
 //! stream results to the frontend over `stats://` events from a background
 //! thread with generation-based cancellation.
 //!
@@ -10,6 +10,8 @@
 //! 3. The snapshot is emitted as a `stats://done` event.
 
 mod aggregate;
+mod gemini;
+mod grok;
 mod opencode;
 pub(crate) mod parse;
 mod pricing;

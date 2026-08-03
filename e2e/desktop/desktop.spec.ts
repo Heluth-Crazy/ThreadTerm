@@ -43,6 +43,12 @@ async function showAllTerminals(page: Page): Promise<void> {
 
 /** Open a seeded card from the terminal-card grid by project name. */
 async function openCard(page: Page, projectName: string): Promise<void> {
+  // All terminals intentionally preserves the current project/worktree scope.
+  // This helper opens arbitrary seeded projects, so reset the scope explicitly.
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: /^All projects\b/ })
+    .click();
   await showAllTerminals(page);
   // Click the visible card title instead of matching Tailwind class strings:
   // xterm/card class names may include slash variants such as `bg-card/95`.
@@ -354,6 +360,70 @@ test('workbench detail contains an unbroken terminal signal at narrow width', as
   expect(geometry?.signalScrollWidth).toBeLessThanOrEqual(
     (geometry?.signalClientWidth ?? 0) + 1,
   );
+  expect(errors).toEqual([]);
+});
+
+test('project Workbench and Workspace switch in one click without restarting the terminal', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 800, height: 720 });
+  const [card] = makeSeedCards(1);
+  await installFakeTauri(page, [card]);
+  const errors = trackPageErrors(page);
+
+  await page.goto('/');
+  const projectRow = page
+    .getByRole('navigation')
+    .getByRole('button', { name: new RegExp(`^${card.projectName}\\b`) });
+  await projectRow.click();
+
+  const viewSwitch = page.getByTestId('desktop-context-view-switch');
+  const workbenchButton = page.getByTestId('desktop-context-view-workbench');
+  const workspaceButton = page.getByTestId('desktop-context-view-workspace');
+  await expect(viewSwitch).toBeVisible();
+  const switchBox = await viewSwitch.boundingBox();
+  expect(switchBox).not.toBeNull();
+  expect((switchBox?.x ?? 0) + (switchBox?.width ?? 0)).toBeLessThanOrEqual(800);
+  await expect(workbenchButton).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('workbench-view')).toBeVisible();
+
+  await workspaceButton.click();
+  const workspaceHome = page.getByTestId('workspace-home');
+  await expect(workspaceHome).toBeVisible();
+  await expect(workspaceButton).toHaveAttribute('aria-pressed', 'true');
+
+  await workspaceHome
+    .getByRole('button', { name: new RegExp(card.projectName) })
+    .click();
+  await waitForCount(page, 'create', card.ptyId, 1);
+  await expect(page.getByTestId('workspace-tab-terminal')).toBeVisible();
+
+  await workbenchButton.click();
+  await expect(page.getByTestId('workbench-view')).toBeVisible();
+  await expect(workbenchButton).toHaveAttribute('aria-pressed', 'true');
+
+  await workspaceButton.click();
+  await expect(page.getByTestId('workspace-tab-terminal')).toBeVisible();
+  expect(
+    await page.evaluate((ptyId) => {
+      const fake = (window as unknown as {
+        __fakePty: {
+          counts: {
+            create: Record<string, number>;
+            kill: Record<string, number>;
+          };
+        };
+      }).__fakePty;
+      return {
+        created: fake.counts.create[ptyId] ?? 0,
+        killed: fake.counts.kill[ptyId] ?? 0,
+      };
+    }, card.ptyId),
+  ).toEqual({ created: 1, killed: 0 });
+
+  await projectRow.click();
+  await expect(page.getByTestId('workbench-view')).toBeVisible();
+  await expect(workbenchButton).toHaveAttribute('aria-pressed', 'true');
   expect(errors).toEqual([]);
 });
 

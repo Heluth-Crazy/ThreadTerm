@@ -14,7 +14,7 @@ import type { TFunction } from 'i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard } from '../../types/terminal';
 import type { GitStatusEntry } from '../../lib/tauri-bridge';
-import { effectiveWorktreePath } from '../../lib/worktreePaths';
+import { effectiveWorktreePath, samePath } from '../../lib/worktreePaths';
 import { workspaceClient } from '../../lib/workspace/client';
 import {
   DESKTOP_MAIN_SURFACE,
@@ -101,8 +101,6 @@ export function useWorkspaceSession({
   const [workspacePanelState, setWorkspacePanelState] = useState<WorkspacePanelState>(
     DEFAULT_WORKSPACE_PANEL_STATE,
   );
-  const [workspaceShellOpen, setWorkspaceShellOpen] = useState(false);
-
   const [terminalCloseRequest, setTerminalCloseRequest] =
     useState<TerminalCloseRequest | null>(null);
   const [dirtyCloseRequest, setDirtyCloseRequest] = useState<DirtyCloseRequest | null>(null);
@@ -148,43 +146,46 @@ export function useWorkspaceSession({
     [applySnapshot],
   );
 
+  const selectionGenerationRef = useRef(0);
   const selectWorkspaceByRoot = useCallback(
-    async (rootPath: string, options?: { openShell?: boolean }) => {
+    async (rootPath: string) => {
       const trimmed = rootPath.trim();
       if (!trimmed) return null;
+      const generation = selectionGenerationRef.current + 1;
+      selectionGenerationRef.current = generation;
       setLoading(true);
       setError(null);
       try {
         const record = await workspaceClient.ensure(trimmed);
         const snapshot = await workspaceClient.getSnapshot(record.id);
+        if (selectionGenerationRef.current !== generation) return record;
         applySnapshot(snapshot);
-        if (options?.openShell !== false) {
-          setWorkspaceShellOpen(true);
-        }
         return record;
       } catch (err) {
+        if (selectionGenerationRef.current !== generation) return null;
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
         return null;
       } finally {
-        setLoading(false);
+        if (selectionGenerationRef.current === generation) {
+          setLoading(false);
+        }
       }
     },
     [applySnapshot],
   );
 
-  // Enter workspace when project/worktree selection changes.
-  // Selecting a concrete worktree opens the shell (home when no terminal).
-  // Project-only selection loads metadata without forcing the shell over workbench.
+  // Keep workspace metadata ready when the project/worktree scope changes.
+  // Page visibility belongs to desktop navigation, not this data hook.
   useEffect(() => {
     const worktree = selectedWorktreePath?.trim() || null;
     const project = selectedProjectPath?.trim() || null;
     if (worktree) {
-      void selectWorkspaceByRoot(worktree, { openShell: true });
+      void selectWorkspaceByRoot(worktree);
       return;
     }
     if (project) {
-      void selectWorkspaceByRoot(project, { openShell: false });
+      void selectWorkspaceByRoot(project);
     }
   }, [selectedProjectPath, selectedWorktreePath, selectWorkspaceByRoot]);
 
@@ -258,7 +259,7 @@ export function useWorkspaceSession({
   const openTerminalTab = useCallback(
     async (card: TerminalCard) => {
       const root = effectiveWorktreePath(card);
-      const record = await selectWorkspaceByRoot(root, { openShell: true });
+      const record = await selectWorkspaceByRoot(root);
       if (!record) return;
       const tab = await workspaceClient.openTab(record.id, {
         kind: 'terminal',
@@ -268,14 +269,13 @@ export function useWorkspaceSession({
       await workspaceClient.setActiveTab(record.id, tab.id, DESKTOP_MAIN_SURFACE);
       setActiveTabIdState(tab.id);
       await refreshSnapshot(record.id);
-      setWorkspaceShellOpen(true);
     },
     [refreshSnapshot, selectWorkspaceByRoot],
   );
 
   const openWorkspaceFile = useCallback(
     async (rootPath: string, entry: DirEntry) => {
-      const record = await selectWorkspaceByRoot(rootPath, { openShell: true });
+      const record = await selectWorkspaceByRoot(rootPath);
       if (!record) return;
       const relativePath = relativeFromRoot(rootPath, entry.path);
       const tab = await workspaceClient.openTab(record.id, {
@@ -297,7 +297,7 @@ export function useWorkspaceSession({
   const openWorkspaceDiff = useCallback(
     async (entry: GitStatusEntry) => {
       const root = entry.repositoryRoot;
-      const record = await selectWorkspaceByRoot(root, { openShell: true });
+      const record = await selectWorkspaceByRoot(root);
       if (!record) return;
       const relativePath = relativeFromRoot(root, entry.path);
       const tab = await workspaceClient.openTab(record.id, {
@@ -522,10 +522,16 @@ export function useWorkspaceSession({
   const requestCardExit = useCallback(
     async (cardId: string, action: 'remove' | 'archive'): Promise<boolean> => {
       const store = useTerminalStore.getState();
-      if (!store.cards.some((card) => card.id === cardId)) return false;
+      const card = store.cards.find((item) => item.id === cardId);
+      if (!card) return false;
 
       // Only remove the terminal tab — keep file/diff drafts for the worktree.
       await removeTerminalTabForCard(cardId);
+
+      const preserveWorkspaceScope =
+        Boolean(workspaceRootPath) &&
+        samePath(effectiveWorktreePath(card), workspaceRootPath) &&
+        tabsRef.current.some((tab) => tab.kind === 'file' || tab.kind === 'diff');
 
       if (!useTerminalStore.getState().cards.some((card) => card.id === cardId)) {
         return false;
@@ -535,9 +541,21 @@ export function useWorkspaceSession({
       } else {
         store.removeCard(cardId);
       }
+      if (preserveWorkspaceScope) {
+        const nextStore = useTerminalStore.getState();
+        if (card.worktreePath) {
+          nextStore.selectWorktree(
+            card.projectPath,
+            card.worktreePath,
+            card.branchLabel,
+          );
+        } else {
+          nextStore.selectProject(card.projectPath);
+        }
+      }
       return true;
     },
-    [removeTerminalTabForCard],
+    [removeTerminalTabForCard, workspaceRootPath],
   );
 
   const requestRemoveCard = useCallback(
@@ -682,10 +700,8 @@ export function useWorkspaceSession({
 
   const workspaceCards = useMemo(() => {
     if (!workspaceRootPath) return [];
-    return cards.filter(
-      (card) =>
-        effectiveWorktreePath(card).replace(/\\/g, '/').toLowerCase() ===
-        workspaceRootPath.replace(/\\/g, '/').toLowerCase(),
+    return cards.filter((card) =>
+      samePath(effectiveWorktreePath(card), workspaceRootPath),
     );
   }, [cards, workspaceRootPath]);
 
@@ -719,8 +735,6 @@ export function useWorkspaceSession({
     dirtyByTabId,
     conflictByTabId,
     workspacePanelState,
-    workspaceShellOpen,
-    setWorkspaceShellOpen,
     homeActive,
     terminalTabActive,
     activeTerminalCardId,

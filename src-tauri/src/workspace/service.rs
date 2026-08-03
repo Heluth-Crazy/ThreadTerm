@@ -8,11 +8,11 @@ use super::paths::{
     resolve_existing_relative_file, resolve_relative_directory, resolve_relative_file_for_write,
     validate_relative_path,
 };
+#[cfg(test)]
+use super::schema::ensure_workspace_schema;
 use super::types::*;
 use crate::files::{self, DirEntry};
 use rusqlite::{params, Connection, OptionalExtension};
-#[cfg(test)]
-use super::schema::ensure_workspace_schema;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -250,7 +250,10 @@ impl WorkspaceService {
         self.with_conn(list_workspaces)
     }
 
-    pub fn refresh_availability(&self, workspace_id: &str) -> Result<WorkspaceRecord, WorkspaceError> {
+    pub fn refresh_availability(
+        &self,
+        workspace_id: &str,
+    ) -> Result<WorkspaceRecord, WorkspaceError> {
         let mut record = self.get_workspace(workspace_id)?;
         let path = PathBuf::from(&record.canonical_root);
         let available = path.is_dir() && path.canonicalize().is_ok();
@@ -406,9 +409,8 @@ impl WorkspaceService {
     ) -> Result<WorkspaceViewState, WorkspaceError> {
         let _ = self.get_workspace(workspace_id)?;
         if active_tab_id != HOME_TAB_ID {
-            let exists = self.with_conn(|conn| {
-                Ok(load_tab(conn, workspace_id, active_tab_id)?.is_some())
-            })?;
+            let exists =
+                self.with_conn(|conn| Ok(load_tab(conn, workspace_id, active_tab_id)?.is_some()))?;
             if !exists {
                 return Err(WorkspaceError::new(
                     WorkspaceErrorCode::TabNotFound,
@@ -467,9 +469,8 @@ impl WorkspaceService {
         let record = self.require_available(workspace_id)?;
         let root = Self::root_path(&record);
         let dir = resolve_relative_directory(&root, relative)?;
-        files::read_directory_for_path(&dir).map_err(|e| {
-            WorkspaceError::new(WorkspaceErrorCode::PathInvalid, e)
-        })
+        files::read_directory_for_path(&dir)
+            .map_err(|e| WorkspaceError::new(WorkspaceErrorCode::PathInvalid, e))
     }
 
     pub fn read_file(
@@ -562,10 +563,7 @@ impl WorkspaceService {
         let mut draft = self
             .get_draft(&patch.workspace_id, &patch.tab_id)?
             .ok_or_else(|| {
-                WorkspaceError::new(
-                    WorkspaceErrorCode::TabNotFound,
-                    "Draft not found for tab.",
-                )
+                WorkspaceError::new(WorkspaceErrorCode::TabNotFound, "Draft not found for tab.")
             })?;
 
         if draft.meta.revision != patch.base_revision {
@@ -665,8 +663,10 @@ impl WorkspaceService {
             None
         };
 
-        let base_mismatch = match (draft.meta.base_modified_unix_ms, draft.meta.base_hash.as_ref())
-        {
+        let base_mismatch = match (
+            draft.meta.base_modified_unix_ms,
+            draft.meta.base_hash.as_ref(),
+        ) {
             (Some(base_ms), Some(base_hash)) => {
                 current_modified != Some(base_ms) || current_hash.as_deref() != Some(base_hash)
             }
@@ -891,18 +891,12 @@ impl WorkspaceService {
                     {
                         return Err(WorkspaceError::new(
                             WorkspaceErrorCode::StaleRevision,
-                            format!(
-                                "Tab {} revision changed during close.",
-                                decision.tab_id
-                            ),
+                            format!("Tab {} revision changed during close.", decision.tab_id),
                         ));
                     }
                 }
             }
-            if matches!(
-                decision.kind,
-                CloseTabDecisionKind::CloseClean
-            ) {
+            if matches!(decision.kind, CloseTabDecisionKind::CloseClean) {
                 if let Some(draft) = self.get_draft(workspace_id, &decision.tab_id)? {
                     if draft.meta.dirty || draft.meta.conflict != DraftConflictState::None {
                         return Err(WorkspaceError::new(
@@ -926,11 +920,7 @@ impl WorkspaceService {
                     closed.push(decision.tab_id.clone());
                 }
                 CloseTabDecisionKind::DiscardAndClose => {
-                    self.discard_draft(
-                        workspace_id,
-                        &decision.tab_id,
-                        decision.expected_revision,
-                    )?;
+                    self.discard_draft(workspace_id, &decision.tab_id, decision.expected_revision)?;
                     self.delete_tab(workspace_id, &decision.tab_id)?;
                     closed.push(decision.tab_id.clone());
                 }
@@ -1133,7 +1123,9 @@ impl WorkspaceService {
         let (registered, available, tab_count, dirty, conflict, draft_bytes) =
             self.with_conn(|conn| {
                 let registered: u64 = conn
-                    .query_row("SELECT COUNT(*) FROM workspaces", [], |r| r.get::<_, i64>(0))
+                    .query_row("SELECT COUNT(*) FROM workspaces", [], |r| {
+                        r.get::<_, i64>(0)
+                    })
                     .map_err(persist_err)? as u64;
                 let available: u64 = conn
                     .query_row(
@@ -1169,15 +1161,16 @@ impl WorkspaceService {
                     )
                     .map_err(persist_err)? as u64;
                 Ok((
-                    registered, available, tab_count, dirty, conflict, draft_bytes,
+                    registered,
+                    available,
+                    tab_count,
+                    dirty,
+                    conflict,
+                    draft_bytes,
                 ))
             })?;
         let now = self.now_ms();
-        let active_leases = self
-            .leases
-            .lock()
-            .map(|t| t.active_count(now))
-            .unwrap_or(0);
+        let active_leases = self.leases.lock().map(|t| t.active_count(now)).unwrap_or(0);
         Ok(WorkspaceDiagnostics {
             registered_workspaces: registered,
             available_workspaces: available,
@@ -1476,9 +1469,7 @@ fn map_draft(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceDraft> {
             revision: row.get::<_, i64>(5)? as u64,
             dirty: row.get::<_, i64>(6)? != 0,
             conflict: DraftConflictState::parse(&conflict),
-            base_modified_unix_ms: row
-                .get::<_, Option<i64>>(3)?
-                .map(|v| v as u64),
+            base_modified_unix_ms: row.get::<_, Option<i64>>(3)?.map(|v| v as u64),
             base_hash: row.get(4)?,
             size_bytes: row.get::<_, String>(2)?.len() as u64,
             updated_at_unix_ms: row.get::<_, i64>(8)? as u64,
@@ -1533,11 +1524,7 @@ fn list_draft_metas(
     Ok(rows)
 }
 
-fn delete_draft(
-    conn: &Connection,
-    workspace_id: &str,
-    tab_id: &str,
-) -> Result<(), WorkspaceError> {
+fn delete_draft(conn: &Connection, workspace_id: &str, tab_id: &str) -> Result<(), WorkspaceError> {
     conn.execute(
         "DELETE FROM workspace_drafts WHERE workspace_id = ?1 AND tab_id = ?2",
         params![workspace_id, tab_id],
@@ -1631,9 +1618,7 @@ mod tests {
     #[test]
     fn same_path_returns_same_workspace_id() {
         let (service, root, first) = service_with_root("same");
-        let second = service
-            .ensure_workspace(root.to_str().unwrap())
-            .unwrap();
+        let second = service.ensure_workspace(root.to_str().unwrap()).unwrap();
         assert_eq!(first.id, second.id);
         let other = temp_root("other");
         let third = service.ensure_workspace(other.to_str().unwrap()).unwrap();
@@ -1646,9 +1631,7 @@ mod tests {
     fn path_traversal_rejected() {
         let (service, root, ws) = service_with_root("trav");
         std::fs::write(root.join("a.txt"), "a").unwrap();
-        let err = service
-            .read_file(&ws.id, "../a.txt")
-            .unwrap_err();
+        let err = service.read_file(&ws.id, "../a.txt").unwrap_err();
         assert_eq!(err.code, WorkspaceErrorCode::PathOutsideWorkspace);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1799,14 +1782,18 @@ mod tests {
         // External modification.
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(root.join("a.txt"), "external").unwrap();
-        let err = service
-            .save_draft(&ws.id, &tab.id, 1, false)
-            .unwrap_err();
+        let err = service.save_draft(&ws.id, &tab.id, 1, false).unwrap_err();
         assert_eq!(err.code, WorkspaceErrorCode::FileConflict);
-        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "external");
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "external"
+        );
         // Force overwrite succeeds.
         service.save_draft(&ws.id, &tab.id, 1, true).unwrap();
-        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "local");
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "local"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1993,9 +1980,7 @@ mod tests {
             )
             .unwrap();
         service.ensure_draft_from_disk(&ws.id, &tab.id).unwrap();
-        service
-            .acquire_lease(&ws.id, &tab.id, "mobile:1")
-            .unwrap();
+        service.acquire_lease(&ws.id, &tab.id, "mobile:1").unwrap();
         service.test_disconnect_surface("mobile:1", false);
         // Still held during grace.
         assert!(service

@@ -446,7 +446,7 @@ export function EditTerminalDialog({
     if (terminalType !== activeConfiguration.terminalType) return true;
     if (launchMode !== activeConfiguration.launchMode) return true;
     if (launchMode === 'custom' && activeConfiguration.launchMode === 'custom') {
-      return command.trim() !== activeConfiguration.command.trim();
+      return command !== activeConfiguration.command;
     }
     if (launchMode === 'resume' && activeConfiguration.launchMode === 'resume') {
       return providerSessionId.trim() !== activeConfiguration.providerSessionId;

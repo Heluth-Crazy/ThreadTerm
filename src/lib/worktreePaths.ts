@@ -15,7 +15,29 @@ export interface WorktreePathCard {
 }
 
 export function normalizeComparablePath(path: string): string {
-  return path.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLocaleLowerCase();
+  const raw = path.trim();
+  let normalized = raw
+    .replace(/\\/g, '/')
+    .replace(/^\/\/\?\/unc\//i, '//')
+    .replace(/^\/\/\?\//i, '');
+
+  const windowsPath = (
+    /^[A-Za-z]:(?:\/|$)/.test(normalized)
+    || normalized.startsWith('//')
+    || raw.includes('\\')
+  );
+  if (windowsPath) {
+    const unc = normalized.startsWith('//');
+    normalized = normalized.replace(/\/{2,}/g, '/');
+    if (unc) normalized = `/${normalized}`;
+  }
+
+  const driveRootLength = /^[A-Za-z]:\/$/.test(normalized) ? 3 : 1;
+  while (normalized.endsWith('/') && normalized.length > driveRootLength) {
+    normalized = normalized.slice(0, -1);
+  }
+
+  return windowsPath ? normalized.toLowerCase() : normalized;
 }
 
 export function samePath(a: string | null | undefined, b: string | null | undefined): boolean {

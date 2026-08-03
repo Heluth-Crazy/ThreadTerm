@@ -13,6 +13,30 @@ const ptyMock = getPtyMock();
 const xtermMock = getXtermMock();
 
 describe('Shell — Agent history resume progress', () => {
+  it('dispatches a custom command without trimming or reordering it', async () => {
+    render(
+      <Shell
+        selectedProject={PROJECT}
+        initialCommand={'  tool --name="two words" --flag  '}
+        minimal={true}
+        autoConnect={true}
+        paneId="pane-exact-command"
+        active={true}
+        preservePtyOnUnmount={true}
+        suppressInitialCommandWhenPtyExists={false}
+        resumeLoading={false}
+        autoReconnectOnExit={false}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(ptyMock.input).toHaveBeenCalledWith(
+        'pane-exact-command',
+        '  tool --name="two words" --flag  \r',
+      ),
+    );
+  });
+
   it('keeps writing and acknowledging hidden history before revealing the final screen', async () => {
     const rectSpy = vi
       .spyOn(HTMLElement.prototype, 'getBoundingClientRect')

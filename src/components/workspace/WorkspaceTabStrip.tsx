@@ -1,10 +1,11 @@
 import {
   useEffect,
+  useMemo,
   useState,
-  type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
 import {
   FileText,
   GitCompare,
@@ -12,14 +13,26 @@ import {
   TerminalSquare,
   X,
 } from 'lucide-react';
+import type { TerminalCard } from '../../types/terminal';
+import {
+  agentSessionMetadataCacheKey,
+  isAgentSessionProvider,
+} from '../../types/agentSession';
 import type { WorkspaceTab } from '../../lib/workspace/types';
 import { HOME_TAB_ID } from '../../lib/workspace/types';
+import {
+  buildWorkspaceTerminalPresentation,
+  type WorkspaceTerminalPresentation,
+} from '../../lib/workspaceTerminalPresentation';
+import { effectiveWorktreePath } from '../../lib/worktreePaths';
+import { useAgentSessionMetadataCache } from '../../stores/agentSessionMetadataCache';
 import { AttentionDot } from '../terminal/AttentionDot';
 
 interface WorkspaceTabStripProps {
   tabs: WorkspaceTab[];
   activeTabId: string;
   dirtyTabIds: Record<string, boolean>;
+  workspaceCards?: TerminalCard[];
   homeLabel: string;
   closeLabel: string;
   closeCurrentLabel: string;
@@ -32,10 +45,35 @@ interface WorkspaceTabStripProps {
   onReorder?: (orderedTabIds: string[]) => void;
 }
 
+function TerminalTabLabel({
+  tab,
+  presentation,
+}: {
+  tab: WorkspaceTab;
+  presentation: WorkspaceTerminalPresentation | null;
+}) {
+  if (!presentation) {
+    return (
+      <>
+        <TerminalSquare className="h-3.5 w-3.5 shrink-0" />
+        <span className="truncate">{tab.title}</span>
+      </>
+    );
+  }
+  const Icon = presentation.Icon;
+  return (
+    <>
+      <Icon className="h-3.5 w-3.5 shrink-0" />
+      <span className="truncate">{presentation.primaryTitle}</span>
+    </>
+  );
+}
+
 export function WorkspaceTabStrip({
   tabs,
   activeTabId,
   dirtyTabIds,
+  workspaceCards = [],
   homeLabel,
   closeLabel,
   closeCurrentLabel,
@@ -47,6 +85,13 @@ export function WorkspaceTabStrip({
   onCloseOthers,
   onReorder,
 }: WorkspaceTabStripProps) {
+  const { t } = useTranslation('terminal');
+  const metadataEntries = useAgentSessionMetadataCache((state) => state.entries);
+  const cardsById = useMemo(() => {
+    const map = new Map<string, TerminalCard>();
+    for (const card of workspaceCards) map.set(card.id, card);
+    return map;
+  }, [workspaceCards]);
   const [menu, setMenu] = useState<{ tabId: string; left: number; top: number } | null>(
     null,
   );
@@ -123,10 +168,35 @@ export function WorkspaceTabStrip({
         <Home className="h-3.5 w-3.5 shrink-0" />
         <span className="truncate">{homeLabel}</span>
       </button>
-      {tabs.map((tab) => (
+      {tabs.map((tab) => {
+        const card =
+          tab.kind === 'terminal' && tab.cardId
+            ? cardsById.get(tab.cardId)
+            : undefined;
+        const metadataEntry = card?.providerSessionId
+          && isAgentSessionProvider(card.terminalType)
+          ? metadataEntries.get(agentSessionMetadataCacheKey(
+              card.terminalType,
+              card.providerSessionId,
+              effectiveWorktreePath(card),
+            ))
+          : undefined;
+        const presentation = card
+          ? buildWorkspaceTerminalPresentation(card, {
+              t,
+              metadata: metadataEntry?.status === 'found'
+                ? metadataEntry.summary
+                : null,
+            })
+          : null;
+        const tooltip =
+          tab.kind === 'terminal' && presentation
+            ? presentation.tooltip
+            : (tab.relativePath ?? tab.title);
+        return (
         <div
           key={tab.id}
-          title={tab.relativePath ?? tab.title}
+          title={tooltip}
           draggable={Boolean(onReorder)}
           onDragStart={() => setDragTabId(tab.id)}
           onDragOver={(event) => event.preventDefault()}
@@ -148,13 +218,18 @@ export function WorkspaceTabStrip({
             className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1"
           >
             {tab.kind === 'terminal' ? (
-              <TerminalSquare className="h-3.5 w-3.5 shrink-0" />
+              <TerminalTabLabel tab={tab} presentation={presentation} />
             ) : tab.kind === 'file' ? (
-              <FileText className="h-3.5 w-3.5 shrink-0" />
+              <>
+                <FileText className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{tab.title}</span>
+              </>
             ) : (
-              <GitCompare className="h-3.5 w-3.5 shrink-0" />
+              <>
+                <GitCompare className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{tab.title}</span>
+              </>
             )}
-            <span className="truncate">{tab.title}</span>
             {dirtyTabIds[tab.id] && <AttentionDot size="sm" />}
           </button>
           <button
@@ -167,7 +242,8 @@ export function WorkspaceTabStrip({
             <X className="h-3 w-3" />
           </button>
         </div>
-      ))}
+        );
+      })}
       {menu &&
         createPortal(
           <div
@@ -215,6 +291,3 @@ function WorkspaceTabMenuItem({
     </button>
   );
 }
-
-// Keep type import used for drag typing in some TS configs.
-export type { ReactDragEvent };

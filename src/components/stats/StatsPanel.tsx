@@ -1,6 +1,6 @@
 /**
  * StatsPanel — right sidebar showing token usage + cost aggregated across all
- * Claude/Codex/OpenCode sessions on the machine. Mounted by TerminalManager behind a
+ * supported AI CLI sessions on the machine. Mounted by TerminalManager behind a
  * `statsOpen` toggle, same pattern as ArchivedCardsPanel.
  */
 import { useEffect } from 'react';
@@ -11,12 +11,14 @@ import { formatCost, formatTokens } from '../../lib/statsFormat';
 import type { StatBucket, StatsRange, StatsScope } from '../../types/stats';
 
 const RANGES: StatsRange[] = ['today', '7d', '30d', 'all'];
-const SCOPES: StatsScope[] = ['all', 'claude', 'codex', 'opencode'];
+const SCOPES: StatsScope[] = ['all', 'claude', 'codex', 'opencode', 'gemini', 'grok'];
 const SCOPE_LABEL_FALLBACKS: Record<StatsScope, string> = {
   all: 'All',
   claude: 'Claude',
   codex: 'Codex',
   opencode: 'OpenCode',
+  gemini: 'Gemini',
+  grok: 'Grok Build',
 };
 
 function basename(p: string): string {

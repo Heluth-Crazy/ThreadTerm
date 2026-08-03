@@ -464,12 +464,12 @@ export function usePtyConnectionController({
           throw error;
         }
 
-        const command = initialCommandRef.current?.trim();
+        const command = initialCommandRef.current;
         const shouldSendInitialCommand =
-          command &&
+          Boolean(command?.trim()) &&
           !(suppressInitialCommandWhenPtyExistsRef.current && sessionAlreadyExists);
 
-        if (shouldSendInitialCommand) {
+        if (shouldSendInitialCommand && command !== undefined) {
           resumeLoadingObserverRef?.current?.connectionReady();
         } else {
           resumeLoadingObserverRef?.current?.skip();

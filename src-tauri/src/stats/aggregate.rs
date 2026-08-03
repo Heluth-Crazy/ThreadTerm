@@ -150,7 +150,7 @@ impl Aggregator {
 
 /// Aggregate `usage_records` rows within `[lo_ms, hi_ms]` (epoch ms) into an
 /// `AgentStats` snapshot. `lo_ms = None` means no lower bound ("all time").
-/// `scope` is `"all"`, `"claude"`, `"codex"`, or `"opencode"` — filters by provider.
+/// `scope` is `"all"` or one of the persisted provider ids — filters by provider.
 ///
 /// Rows are read in a single pass and bucketed in memory — the table is
 /// indexed on `created_at` so the range scan is cheap.
@@ -173,7 +173,7 @@ pub fn aggregate_from_db(
     // are bound positionally; provider filter is optional so "all" doesn't
     // need a placeholder.
     let (sql, use_scope_filter) = match scope {
-        "claude" | "codex" | "opencode" => (
+        "claude" | "codex" | "opencode" | "gemini" | "grok" => (
             "SELECT provider, model,
                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                     total_cost_usd, session_id, project_path
@@ -512,6 +512,19 @@ mod tests {
             [],
         )
         .unwrap();
+        conn.execute_batch(
+            "INSERT INTO usage_records
+                (request_id, provider, model, input_tokens, output_tokens,
+                 cache_read_tokens, cache_creation_tokens, total_cost_usd,
+                 session_id, project_path, created_at)
+             VALUES ('r4','gemini','gemini-2.5-pro',800,80,20,0,0.8,'s4','/g',1000);
+             INSERT INTO usage_records
+                (request_id, provider, model, input_tokens, output_tokens,
+                 cache_read_tokens, cache_creation_tokens, total_cost_usd,
+                 session_id, project_path, created_at)
+             VALUES ('r5','grok','grok-4.5-build',900,90,30,0,0.9,'s5','/x',1000);",
+        )
+        .unwrap();
 
         let claude_only = aggregate_from_db(&conn, "claude", None, None).unwrap();
         assert_eq!(claude_only.total_calls, 1);
@@ -525,8 +538,18 @@ mod tests {
         assert_eq!(opencode_only.total_calls, 1);
         assert_eq!(opencode_only.usage.input, 700);
 
+        let gemini_only = aggregate_from_db(&conn, "gemini", None, None).unwrap();
+        assert_eq!(gemini_only.total_calls, 1);
+        assert_eq!(gemini_only.usage.input, 800);
+        assert_eq!(gemini_only.usage.cache_read, 20);
+
+        let grok_only = aggregate_from_db(&conn, "grok", None, None).unwrap();
+        assert_eq!(grok_only.total_calls, 1);
+        assert_eq!(grok_only.usage.input, 900);
+        assert_eq!(grok_only.usage.cache_read, 30);
+
         let all = aggregate_from_db(&conn, "all", None, None).unwrap();
-        assert_eq!(all.total_calls, 3);
+        assert_eq!(all.total_calls, 5);
     }
 
     #[test]

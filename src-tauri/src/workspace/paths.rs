@@ -31,6 +31,67 @@ pub fn comparison_key(canonical_root: &Path) -> String {
     }
 }
 
+/// Normalize a provider-reported project path for identity comparison without
+/// touching the filesystem. Windows-shaped paths are compared case-insensitively
+/// with slash and verbatim-prefix normalization; Unix paths remain case-sensitive.
+pub(crate) fn normalize_project_identity_path(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let mut normalized = raw.replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+    if lower.starts_with("//?/unc/") {
+        normalized = format!("//{}", &normalized[8..]);
+    } else if lower.starts_with("//?/") {
+        normalized = normalized[4..].to_string();
+    }
+
+    let windows_path = normalized.starts_with("//")
+        || normalized
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| *byte == b':')
+        || raw.contains('\\');
+    if windows_path {
+        let unc = normalized.starts_with("//");
+        let collapsed = normalized
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("/");
+        normalized = if unc {
+            format!("//{collapsed}")
+        } else {
+            collapsed
+        };
+    }
+
+    while normalized.ends_with('/')
+        && normalized.len() > 1
+        && !(normalized.len() == 3 && normalized.as_bytes().get(1) == Some(&b':'))
+    {
+        normalized.pop();
+    }
+
+    Some(if windows_path {
+        normalized.to_ascii_lowercase()
+    } else {
+        normalized
+    })
+}
+
+pub(crate) fn same_project_path(left: &str, right: &str) -> bool {
+    match (
+        normalize_project_identity_path(left),
+        normalize_project_identity_path(right),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
 /// Canonicalize an absolute existing directory root for registration.
 pub fn canonicalize_workspace_root(root_path: &str) -> Result<PathBuf, WorkspaceError> {
     let root_path = root_path.trim();
@@ -335,5 +396,37 @@ mod tests {
         {
             assert_eq!(display_path(Path::new("/Users/demo")), "/Users/demo");
         }
+    }
+
+    #[test]
+    fn project_identity_normalizes_windows_forms_exactly() {
+        assert!(same_project_path(
+            r"\\?\D:\Repo\ThreadTerm\",
+            "d:/repo/threadterm"
+        ));
+        assert!(same_project_path(
+            r"\\?\UNC\Server\Share\ThreadTerm",
+            r"\\server\share\threadterm"
+        ));
+        assert!(!same_project_path(
+            r"C:\Repo\ThreadTerm",
+            r"D:\Repo\ThreadTerm"
+        ));
+        assert!(!same_project_path(
+            r"C:\One\ThreadTerm",
+            r"C:\Two\ThreadTerm"
+        ));
+        assert!(!same_project_path(
+            r"C:\Repo\ThreadTerm",
+            r"C:\Repo\ThreadTerm\child"
+        ));
+    }
+
+    #[test]
+    fn project_identity_keeps_macos_paths_case_sensitive() {
+        assert!(same_project_path("/Users/demo/App", "/Users/demo/App/"));
+        assert!(!same_project_path("/Users/demo/App", "/Users/demo/app"));
+        assert!(!same_project_path("/Users/one/App", "/Users/two/App"));
+        assert!(!same_project_path("/Users/demo", "/Users/demo/App"));
     }
 }

@@ -12,6 +12,7 @@ pub mod types;
 pub use commands::*;
 #[allow(unused_imports)]
 pub use error::{WorkspaceError, WorkspaceErrorCode};
+pub(crate) use paths::{normalize_project_identity_path, same_project_path};
 pub use schema::ensure_workspace_schema;
 pub use service::WorkspaceService;
 

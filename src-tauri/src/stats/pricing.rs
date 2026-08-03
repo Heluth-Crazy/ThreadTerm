@@ -150,6 +150,13 @@ pub fn lookup(model: &str) -> Option<ModelCosts> {
         return Some(mtok(1.25, 10.0, 1.25, 0.3125));
     }
 
+    // ── xAI Grok Build ──
+    // Verified against Grok CLI costUsdTicks samples in CC Switch. Grok Build
+    // does not report cache creation; cached reads are $0.30/MTok.
+    if c.starts_with("grok-4.5-build") || compact.starts_with("grok45build") {
+        return Some(mtok(2.0, 6.0, 0.0, 0.30));
+    }
+
     // ── DeepSeek ──
     if c.contains("deepseek-reasoner") || c.starts_with("deepseek-r") {
         return Some(mtok(0.55, 2.19, 0.55, 0.14));
@@ -269,6 +276,7 @@ mod tests {
         assert!(lookup("deepseek-reasoner").is_some());
         assert!(lookup("gemini-2.5-pro").is_some());
         assert!(lookup("gemini-2.5-flash").is_some());
+        assert_eq!(lookup("grok-4.5-build"), Some(mtok(2.0, 6.0, 0.0, 0.30)));
         assert!(lookup("o3").is_some());
         assert!(lookup("o4-mini").is_some());
         assert!(lookup("gpt-4.1").is_some());

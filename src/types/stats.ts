@@ -31,7 +31,7 @@ export interface AgentStats {
   bySession: StatBucket[];
 }
 
-export type StatsScope = 'all' | 'claude' | 'codex' | 'opencode';
+export type StatsScope = 'all' | 'claude' | 'codex' | 'opencode' | 'gemini' | 'grok';
 export type StatsRange = 'today' | '7d' | '30d' | 'all';
 
 export interface StatsProgressEvent {

@@ -4,13 +4,16 @@ import {
   GitCompare,
   Plus,
   RefreshCw,
-  TerminalSquare,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TerminalCard } from '../../types/terminal';
 import type { WorkspaceRecord, WorkspaceTab } from '../../lib/workspace/types';
 import { pathBasename } from '../../lib/workspace/paths';
+import { buildWorkspaceTerminalPresentation } from '../../lib/workspaceTerminalPresentation';
 import { AttentionDot } from '../terminal/AttentionDot';
+import { CardStatusBadge } from '../terminal/CardStatusBadge';
+import { getTerminalTypeMeta } from '../terminal/terminalTypeMeta';
+import { useBoundSessionMetadata } from './useWorkspaceAgentMetadata';
 
 interface WorkspaceHomeProps {
   workspace: WorkspaceRecord | null;
@@ -23,6 +26,55 @@ interface WorkspaceHomeProps {
   onCreateTerminal: () => void;
   onActivateTab: (tabId: string) => void;
   onRetry?: () => void;
+}
+
+function WorkspaceTerminalRow({
+  card,
+  onOpen,
+}: {
+  card: TerminalCard;
+  onOpen: (cardId: string) => void;
+}) {
+  const { t } = useTranslation('terminal');
+  const metadata = useBoundSessionMetadata(card);
+  const presentation = buildWorkspaceTerminalPresentation(card, { t, metadata });
+  const Icon = presentation.Icon;
+  const typeAccent = getTerminalTypeMeta(card.terminalType).accent;
+  const contextLine = [presentation.secondaryTitle, ...presentation.contextLabels]
+    .filter(Boolean)
+    .join(' · ');
+
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => onOpen(card.id)}
+        title={presentation.tooltip}
+        className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-accent/50"
+        data-testid={`workspace-home-terminal-${card.id}`}
+      >
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted/60">
+          <Icon className={`h-4 w-4 ${typeAccent}`} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm text-foreground">
+            {presentation.primaryTitle}
+          </span>
+          {contextLine && (
+            <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+              {contextLine}
+            </span>
+          )}
+        </span>
+        <span className="flex shrink-0 flex-col items-end gap-1">
+          <CardStatusBadge status={card.status} />
+          <span className="text-[11px] text-muted-foreground">
+            {presentation.activityLabel}
+          </span>
+        </span>
+      </button>
+    </li>
+  );
 }
 
 export function WorkspaceHome({
@@ -106,19 +158,13 @@ export function WorkspaceHome({
             })}
           </p>
         ) : (
-          <ul className="space-y-1">
+          <ul className="divide-y divide-border/60">
             {workspaceCards.map((card) => (
-              <li key={card.id}>
-                <button
-                  type="button"
-                  onClick={() => onOpenTerminal(card.id)}
-                  className="flex w-full items-center gap-2 rounded-md border border-border/60 bg-card/40 px-3 py-2 text-left text-sm hover:bg-accent/50"
-                >
-                  <TerminalSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1 truncate">{card.projectName}</span>
-                  <span className="text-[11px] text-muted-foreground">{card.status}</span>
-                </button>
-              </li>
+              <WorkspaceTerminalRow
+                key={card.id}
+                card={card}
+                onOpen={onOpenTerminal}
+              />
             ))}
           </ul>
         )}

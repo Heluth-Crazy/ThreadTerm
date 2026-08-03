@@ -1,15 +1,15 @@
 use super::preview::{is_meaningful_user_text, sanitize_preview};
 use super::types::{
-    empty_page, AgentSessionAvailability, AgentSessionPage, AgentSessionProvider,
-    AgentSessionSummary, TitleKind,
+    empty_page, AgentSessionAvailability, AgentSessionMetadataLookup, AgentSessionPage,
+    AgentSessionProvider, AgentSessionSummary, TitleKind, MAX_METADATA_FILE_BYTES,
 };
 use once_cell::sync::Lazy;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::fs;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -17,6 +17,7 @@ use std::time::Duration;
 const CLAUDE_PARSE_CACHE_CAP: usize = 256;
 const CLAUDE_PARSE_CACHE_TTL: Duration = Duration::from_secs(60);
 const CLAUDE_FILES_SCANNED_PER_PAGE: usize = 500;
+const CLAUDE_EXACT_PROJECT_DIR_CAP: usize = 512;
 
 #[derive(Debug, Clone)]
 struct ParsedClaudeSession {
@@ -54,6 +55,114 @@ pub fn list_claude_session_page(
     }
 
     list_claude_session_page_from_root(&root, cursor, limit, query)
+}
+
+pub(crate) fn resolve_claude_sessions(
+    lookups: &[AgentSessionMetadataLookup],
+) -> Vec<Option<AgentSessionSummary>> {
+    let Some(root) = claude_projects_root().filter(|root| root.is_dir()) else {
+        return vec![None; lookups.len()];
+    };
+    resolve_claude_sessions_from_root(&root, lookups)
+}
+
+fn resolve_claude_sessions_from_root(
+    root: &Path,
+    lookups: &[AgentSessionMetadataLookup],
+) -> Vec<Option<AgentSessionSummary>> {
+    let project_dirs = collect_claude_project_dirs(root);
+    lookups
+        .iter()
+        .map(|lookup| {
+            let file_name = format!("{}.jsonl", lookup.session_id);
+            let mut candidates = Vec::new();
+            if let Some(project_path) = lookup.project_path.as_deref() {
+                candidates.push(
+                    root.join(claude_project_directory_name(project_path))
+                        .join(&file_name),
+                );
+            }
+            for directory in &project_dirs {
+                let candidate = directory.join(&file_name);
+                if !candidates.contains(&candidate) {
+                    candidates.push(candidate);
+                }
+            }
+
+            let mut seen_paths = HashSet::new();
+            let mut matches = candidates.into_iter().filter_map(|path| {
+                if !path.is_file() {
+                    return None;
+                }
+                let resolved_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+                if !seen_paths.insert(resolved_path) {
+                    return None;
+                }
+                let modified_ms = path
+                    .metadata()
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .and_then(|time| {
+                        time.duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+                    });
+                let parsed = parse_claude_file_cached(&path, modified_ms)?;
+                if parsed.summary.id != lookup.session_id {
+                    return None;
+                }
+                if lookup.project_path.as_deref().is_some_and(|requested| {
+                    !paths_loosely_match(&parsed.summary.project_path, requested)
+                }) {
+                    return None;
+                }
+                Some(parsed.summary)
+            });
+            let found = matches.next();
+            if matches.next().is_some() {
+                None
+            } else {
+                found
+            }
+        })
+        .collect()
+}
+
+fn collect_claude_project_dirs(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .take(CLAUDE_EXACT_PROJECT_DIR_CAP)
+        .filter_map(|entry| entry.file_type().ok()?.is_dir().then(|| entry.path()))
+        .collect()
+}
+
+fn claude_project_directory_name(project_path: &str) -> String {
+    let mut raw = project_path.trim().replace('\\', "/");
+    let lower = raw.to_ascii_lowercase();
+    if lower.starts_with("//?/unc/") {
+        raw = format!("//{}", &raw[8..]);
+    } else if lower.starts_with("//?/") {
+        raw = raw[4..].to_string();
+    }
+    while raw.ends_with('/') && raw.len() > 1 && !(raw.len() == 3 && raw.as_bytes()[1] == b':') {
+        raw.pop();
+    }
+    raw.chars()
+        .map(|character| {
+            if matches!(character, '/' | '\\' | ':') {
+                '-'
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+fn paths_loosely_match(candidate: &str, requested: &str) -> bool {
+    crate::workspace::same_project_path(candidate, requested)
 }
 
 fn list_claude_session_page_from_root(
@@ -159,8 +268,7 @@ fn parse_claude_file_cached(path: &Path, mtime_ms: Option<u64>) -> Option<Parsed
 }
 
 fn parse_claude_transcript(path: &Path, mtime_ms: Option<u64>) -> Option<ParsedClaudeSession> {
-    let file = File::open(path).ok()?;
-    let reader = BufReader::new(file);
+    let lines = read_claude_metadata_lines(path)?;
     let session_id_from_name = path.file_stem()?.to_str()?.to_string();
 
     let mut id = session_id_from_name.clone();
@@ -171,10 +279,7 @@ fn parse_claude_transcript(path: &Path, mtime_ms: Option<u64>) -> Option<ParsedC
     let mut created_at: Option<u64> = None;
     let mut message_count: u32 = 0;
 
-    for line in reader.lines().take(4_000) {
-        let Ok(line) = line else {
-            continue;
-        };
+    for line in lines {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -256,6 +361,40 @@ fn parse_claude_transcript(path: &Path, mtime_ms: Option<u64>) -> Option<ParsedC
         },
         mtime_ms,
     })
+}
+
+fn read_claude_metadata_lines(path: &Path) -> Option<Vec<String>> {
+    let mut file = File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    let head_budget = MAX_METADATA_FILE_BYTES / 2;
+    let tail_budget = MAX_METADATA_FILE_BYTES.saturating_sub(head_budget);
+    let mut head = Vec::new();
+    file.by_ref()
+        .take(head_budget)
+        .read_to_end(&mut head)
+        .ok()?;
+
+    let mut segments = vec![head];
+    if length > head_budget {
+        file.seek(SeekFrom::Start(length.saturating_sub(tail_budget)))
+            .ok()?;
+        let mut tail = Vec::new();
+        file.take(tail_budget).read_to_end(&mut tail).ok()?;
+        segments.push(tail);
+    }
+
+    Some(
+        segments
+            .into_iter()
+            .flat_map(|segment| {
+                String::from_utf8_lossy(&segment)
+                    .lines()
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .take(4_000)
+            .collect(),
+    )
 }
 
 fn extract_custom_title(value: &Value) -> Option<String> {
@@ -473,6 +612,111 @@ mod tests {
         write_jsonl(&empty, "{}\nnot-json\n");
         assert!(parse_claude_transcript(&empty, None).is_none());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exact_lookup_finds_old_bound_session_without_recent_file_scan() {
+        let _cache_test_guard = CACHE_TEST_LOCK.lock().expect("cache test lock");
+        CLAUDE_PARSE_CACHE.lock().expect("cache").clear();
+        let root = temp_root("old-exact");
+        for index in 0..600 {
+            fs::create_dir_all(root.join(format!("unrelated-{index}"))).expect("mkdir unrelated");
+        }
+        let session_id = "old-bound-session";
+        let project_path = "/Users/demo/App";
+        let session_path = root
+            .join(claude_project_directory_name(project_path))
+            .join(format!("{session_id}.jsonl"));
+        write_jsonl(
+            &session_path,
+            &format!(
+                "{{\"cwd\":\"{project_path}\",\"sessionId\":\"{session_id}\"}}\n\
+                 {{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"Old prompt\"}}}}\n"
+            ),
+        );
+        let lookup = AgentSessionMetadataLookup {
+            session_id: session_id.into(),
+            project_path: Some(project_path.into()),
+        };
+
+        let resolved = resolve_claude_sessions_from_root(&root, &[lookup]);
+        assert_eq!(
+            resolved[0]
+                .as_ref()
+                .and_then(|item| item.first_user_message_preview.as_deref()),
+            Some("Old prompt")
+        );
+
+        let _ = fs::remove_dir_all(root);
+        CLAUDE_PARSE_CACHE.lock().expect("cache").clear();
+    }
+
+    #[test]
+    fn direct_project_directory_normalizes_windows_verbatim_prefixes() {
+        assert_eq!(
+            claude_project_directory_name(r"\\?\d:\repo\app\"),
+            "d--repo-app"
+        );
+        assert_eq!(
+            claude_project_directory_name(r"\\?\unc\Server\Share\App"),
+            "--Server-Share-App"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn exact_lookup_deduplicates_windows_case_variant_paths() {
+        let _cache_test_guard = CACHE_TEST_LOCK.lock().expect("cache test lock");
+        CLAUDE_PARSE_CACHE.lock().expect("cache").clear();
+        let root = temp_root("windows-case");
+        let session_id = "windows-case-session";
+        let path = root.join("D--Repo-App").join(format!("{session_id}.jsonl"));
+        write_jsonl(
+            &path,
+            &format!("{{\"cwd\":\"D:/Repo/App\",\"sessionId\":\"{session_id}\"}}\n"),
+        );
+        let lookup = AgentSessionMetadataLookup {
+            session_id: session_id.into(),
+            project_path: Some(r"d:\repo\app".into()),
+        };
+
+        assert!(resolve_claude_sessions_from_root(&root, &[lookup])[0].is_some());
+
+        let _ = fs::remove_dir_all(root);
+        CLAUDE_PARSE_CACHE.lock().expect("cache").clear();
+    }
+
+    #[test]
+    fn bounded_head_and_tail_read_keeps_late_native_title() {
+        let root = temp_root("head-tail");
+        let path = root.join("session-tail.jsonl");
+        fs::create_dir_all(&root).expect("mkdir");
+        let mut file = File::create(&path).expect("file");
+        use std::io::Write as _;
+        file.write_all(
+            br#"{"cwd":"/repo/app","sessionId":"session-tail"}
+{"type":"user","message":{"role":"user","content":"First prompt"}}
+"#,
+        )
+        .expect("head");
+        file.write_all(&vec![b' '; MAX_METADATA_FILE_BYTES as usize])
+            .expect("middle");
+        file.write_all(
+            br#"
+{"type":"custom-title","title":"Late rename"}
+"#,
+        )
+        .expect("tail");
+        drop(file);
+
+        let parsed = parse_claude_transcript(&path, None).expect("parse bounded segments");
+        assert_eq!(parsed.summary.native_title.as_deref(), Some("Late rename"));
+        assert_eq!(
+            parsed.summary.first_user_message_preview.as_deref(),
+            Some("First prompt")
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

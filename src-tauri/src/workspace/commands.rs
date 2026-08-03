@@ -60,12 +60,11 @@ pub async fn workspace_open_tab(
     workspace_id: String,
     request: OpenTabRequest,
 ) -> Result<WorkspaceTab, String> {
-    let result = tokio::task::spawn_blocking(move || {
-        WORKSPACE_SERVICE.open_tab(&workspace_id, request)
-    })
-    .await
-    .map_err(|e| format!("persistence_failed: {e}"))?
-    .map_err(String::from)?;
+    let result =
+        tokio::task::spawn_blocking(move || WORKSPACE_SERVICE.open_tab(&workspace_id, request))
+            .await
+            .map_err(|e| format!("persistence_failed: {e}"))?
+            .map_err(String::from)?;
     emit_pending(&app);
     Ok(result)
 }
@@ -118,12 +117,10 @@ pub async fn workspace_read_workspace_file(
     workspace_id: String,
     relative_path: String,
 ) -> Result<WorkspaceFileContent, String> {
-    tokio::task::spawn_blocking(move || {
-        WORKSPACE_SERVICE.read_file(&workspace_id, &relative_path)
-    })
-    .await
-    .map_err(|e| format!("persistence_failed: {e}"))?
-    .map_err(Into::into)
+    tokio::task::spawn_blocking(move || WORKSPACE_SERVICE.read_file(&workspace_id, &relative_path))
+        .await
+        .map_err(|e| format!("persistence_failed: {e}"))?
+        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -209,12 +206,11 @@ pub async fn workspace_refresh_availability(
     app: tauri::AppHandle,
     workspace_id: String,
 ) -> Result<WorkspaceRecord, String> {
-    let result = tokio::task::spawn_blocking(move || {
-        WORKSPACE_SERVICE.refresh_availability(&workspace_id)
-    })
-    .await
-    .map_err(|e| format!("persistence_failed: {e}"))?
-    .map_err(String::from)?;
+    let result =
+        tokio::task::spawn_blocking(move || WORKSPACE_SERVICE.refresh_availability(&workspace_id))
+            .await
+            .map_err(|e| format!("persistence_failed: {e}"))?
+            .map_err(String::from)?;
     emit_pending(&app);
     Ok(result)
 }
@@ -258,7 +254,12 @@ pub async fn workspace_save_as(
     expected_revision: u64,
 ) -> Result<WorkspaceSaveResult, String> {
     tokio::task::spawn_blocking(move || {
-        WORKSPACE_SERVICE.save_as(&workspace_id, &tab_id, &new_relative_path, expected_revision)
+        WORKSPACE_SERVICE.save_as(
+            &workspace_id,
+            &tab_id,
+            &new_relative_path,
+            expected_revision,
+        )
     })
     .await
     .map_err(|e| format!("persistence_failed: {e}"))?
@@ -270,12 +271,10 @@ pub async fn workspace_prepare_close(
     workspace_id: String,
     tab_ids: Vec<String>,
 ) -> Result<ClosePrepareResult, String> {
-    tokio::task::spawn_blocking(move || {
-        WORKSPACE_SERVICE.prepare_close(&workspace_id, &tab_ids)
-    })
-    .await
-    .map_err(|e| format!("persistence_failed: {e}"))?
-    .map_err(Into::into)
+    tokio::task::spawn_blocking(move || WORKSPACE_SERVICE.prepare_close(&workspace_id, &tab_ids))
+        .await
+        .map_err(|e| format!("persistence_failed: {e}"))?
+        .map_err(Into::into)
 }
 
 #[tauri::command]

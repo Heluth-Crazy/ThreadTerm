@@ -42,6 +42,8 @@ function initialProviders(): Record<AgentSessionProvider, ProviderCatalogState> 
     codex: emptyProviderState(),
     opencode: emptyProviderState(),
     gemini: emptyProviderState(),
+    kimi: emptyProviderState(),
+    grok: emptyProviderState(),
   };
 }
 
@@ -102,12 +104,7 @@ export const useAgentSessionCatalogStore = create<AgentSessionCatalogStore>((set
   setQuery: (query) => {
     set({
       query,
-      providers: {
-        claude: emptyProviderState(),
-        codex: emptyProviderState(),
-        opencode: emptyProviderState(),
-        gemini: emptyProviderState(),
-      },
+      providers: initialProviders(),
       requestSeq: get().requestSeq + 1,
     });
     void get().ensureLoaded(get().activeProvider);

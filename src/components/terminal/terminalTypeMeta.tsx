@@ -8,10 +8,12 @@ import {
   Code2,
   Container,
   FileCode,
+  Moon,
   Package,
   SquareTerminal,
   Sparkles,
   Terminal as TerminalIcon,
+  Zap,
   type LucideIcon,
 } from 'lucide-react';
 import type { TerminalType } from '../../types/terminal';
@@ -55,6 +57,18 @@ export const terminalTypeMeta: Record<TerminalType, TerminalTypeMeta> = {
     Icon: Sparkles,
     accent: 'text-sky-500',
     defaultCommand: 'gemini',
+  },
+  kimi: {
+    label: 'Kimi Code',
+    Icon: Moon,
+    accent: 'text-fuchsia-500',
+    defaultCommand: 'kimi',
+  },
+  grok: {
+    label: 'Grok Build',
+    Icon: Zap,
+    accent: 'text-orange-500',
+    defaultCommand: 'grok',
   },
   npm: {
     label: 'npm',

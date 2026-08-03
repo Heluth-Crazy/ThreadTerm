@@ -384,13 +384,13 @@ export function App() {
       if (!canControl) return;
       const trimmedProjectPath = projectPath.trim();
       if (!trimmedProjectPath) return;
-      const trimmedCommand = command?.trim();
+      const hasCommand = Boolean(command?.trim());
       sendCommand({
         kind: 'spawn',
         request_id: createRequestId('spawn'),
         terminal_type: terminalType,
         project_path: trimmedProjectPath,
-        ...(trimmedCommand ? { command: trimmedCommand } : {}),
+        ...(hasCommand ? { command } : {}),
       });
       setTab('workspaces');
       clearRoutes();
@@ -1554,7 +1554,7 @@ function NewSessionForm({
       <label>
         <span>{t('instances.terminalType')}</span>
         <select value={terminalType} onChange={(event) => setTerminalType(event.target.value)}>
-          {['shell', 'claude', 'codex', 'gemini', 'npm', 'yarn', 'pnpm', 'docker', 'python', 'node', 'custom'].map(
+          {['shell', 'claude', 'codex', 'opencode', 'gemini', 'kimi', 'grok', 'npm', 'yarn', 'pnpm', 'docker', 'python', 'node', 'custom'].map(
             (type) => (
               <option key={type} value={type}>
                 {type}

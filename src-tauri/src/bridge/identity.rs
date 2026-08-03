@@ -116,9 +116,8 @@ impl SecureIdentityStore {
                 Ok(identity)
             }
             Err(IdentityLoadError::Missing) => {
-                let identity = generate_identity().map_err(|reason| IdentityLoadError::Corrupt {
-                    reason,
-                })?;
+                let identity =
+                    generate_identity().map_err(|reason| IdentityLoadError::Corrupt { reason })?;
                 self.write_identity(&identity)
                     .map_err(|reason| IdentityLoadError::Corrupt { reason })?;
                 Ok(identity)
@@ -270,7 +269,8 @@ pub fn fingerprints_match(expected: &str, presented: &str) -> bool {
 }
 
 fn generate_identity() -> Result<SecureBridgeIdentity, String> {
-    let key_pair = KeyPair::generate().map_err(|error| format!("Failed to generate key: {error}"))?;
+    let key_pair =
+        KeyPair::generate().map_err(|error| format!("Failed to generate key: {error}"))?;
     let computer_id: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
         .take(COMPUTER_ID_LEN)

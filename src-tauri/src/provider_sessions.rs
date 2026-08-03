@@ -70,14 +70,123 @@ pub async fn provider_find_recent_session(
     provider: String,
     project_path: String,
     since_ms: Option<u64>,
+    excluded_session_ids: Option<Vec<String>>,
 ) -> Result<Option<ProviderSessionInfo>, String> {
-    tokio::task::spawn_blocking(move || match provider.as_str() {
-        "codex" => Ok(find_recent_codex_session(&project_path, since_ms)),
-        "claude" => Ok(find_recent_claude_session(&project_path, since_ms)),
-        other => Err(format!("Unsupported provider: {other}")),
+    let excluded = excluded_session_ids.unwrap_or_default();
+    if provider == "opencode" {
+        let summaries =
+            crate::agent_sessions::opencode::list_opencode_sessions_for_discovery().await;
+        return Ok(find_unique_recent_from_summaries(
+            summaries,
+            "opencode",
+            &project_path,
+            since_ms,
+            &excluded,
+        ));
+    }
+    tokio::task::spawn_blocking(move || {
+        find_recent_provider_session(&provider, &project_path, since_ms, &excluded)
     })
     .await
     .map_err(|e| format!("Provider session discovery task failed: {e}"))?
+}
+
+fn find_recent_provider_session(
+    provider: &str,
+    project_path: &str,
+    since_ms: Option<u64>,
+    excluded_session_ids: &[String],
+) -> Result<Option<ProviderSessionInfo>, String> {
+    match provider {
+        "codex" => Ok(find_unique_recent_session(
+            list_codex_sessions(since_ms),
+            project_path,
+            excluded_session_ids,
+        )),
+        "claude" => Ok(find_unique_recent_session(
+            list_claude_sessions(since_ms),
+            project_path,
+            excluded_session_ids,
+        )),
+        "gemini" => Ok(find_unique_recent_from_summaries(
+            crate::agent_sessions::gemini::list_gemini_sessions_for_discovery(),
+            "gemini",
+            project_path,
+            since_ms,
+            excluded_session_ids,
+        )),
+        "kimi" => Ok(crate::agent_sessions::kimi::find_recent_kimi_session(
+            project_path,
+            since_ms,
+            excluded_session_ids,
+        )
+        .map(|summary| ProviderSessionInfo {
+            id: summary.id,
+            provider: "kimi".into(),
+            project_path: summary.project_path,
+            updated_at: summary.updated_at,
+        })),
+        "grok" => Ok(crate::agent_sessions::grok::find_recent_grok_session(
+            project_path,
+            since_ms,
+            excluded_session_ids,
+        )
+        .map(|summary| ProviderSessionInfo {
+            id: summary.id,
+            provider: "grok".into(),
+            project_path: summary.project_path,
+            updated_at: summary.updated_at,
+        })),
+        other => Err(format!("Unsupported provider: {other}")),
+    }
+}
+
+fn find_unique_recent_session(
+    sessions: Vec<ProviderSessionInfo>,
+    project_path: &str,
+    excluded_session_ids: &[String],
+) -> Option<ProviderSessionInfo> {
+    let excluded: HashSet<&str> = excluded_session_ids.iter().map(String::as_str).collect();
+    let mut matches = sessions
+        .into_iter()
+        .filter(|session| !excluded.contains(session.id.as_str()))
+        .filter(|session| path_matches(&session.project_path, project_path))
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        // Zero or ambiguous: leave unbound rather than guessing.
+        return None;
+    }
+    matches.pop()
+}
+
+fn find_unique_recent_from_summaries(
+    summaries: Vec<crate::agent_sessions::types::AgentSessionSummary>,
+    provider: &str,
+    project_path: &str,
+    since_ms: Option<u64>,
+    excluded_session_ids: &[String],
+) -> Option<ProviderSessionInfo> {
+    let excluded: HashSet<&str> = excluded_session_ids.iter().map(String::as_str).collect();
+    let mut matches = summaries
+        .into_iter()
+        .filter(|item| !excluded.contains(item.id.as_str()))
+        .filter(|item| path_matches(&item.project_path, project_path))
+        .filter(|item| {
+            since_ms.map_or(true, |since| {
+                item.updated_at.unwrap_or(0) >= since.saturating_sub(5_000)
+            })
+        })
+        .map(|item| ProviderSessionInfo {
+            id: item.id,
+            provider: provider.to_string(),
+            project_path: item.project_path,
+            updated_at: item.updated_at,
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return None;
+    }
+    matches.pop()
 }
 
 #[tauri::command]
@@ -111,20 +220,6 @@ pub async fn provider_resolve_resume_session(
     })
     .await
     .map_err(|e| format!("Provider session validation task failed: {e}"))?
-}
-
-fn find_recent_codex_session(
-    project_path: &str,
-    since_ms: Option<u64>,
-) -> Option<ProviderSessionInfo> {
-    find_recent_session_for_project(list_codex_sessions(since_ms), project_path)
-}
-
-fn find_recent_claude_session(
-    project_path: &str,
-    since_ms: Option<u64>,
-) -> Option<ProviderSessionInfo> {
-    find_recent_session_for_project(list_claude_sessions(since_ms), project_path)
 }
 
 fn list_recent_provider_sessions(limit: usize) -> Vec<ProviderSessionInfo> {
@@ -173,27 +268,11 @@ fn provider_sessions_from_root(
     sessions
 }
 
-fn find_recent_session_for_project(
-    sessions: Vec<ProviderSessionInfo>,
-    project_path: &str,
-) -> Option<ProviderSessionInfo> {
-    let mut best: Option<ProviderSessionInfo> = None;
-    for candidate in sessions {
-        if !path_matches(&candidate.project_path, project_path) {
-            continue;
-        }
-        if is_newer(&candidate, best.as_ref()) {
-            best = Some(candidate);
-        }
-    }
-    best
-}
-
 fn dedupe_and_sort_provider_sessions(
     sessions: Vec<ProviderSessionInfo>,
     limit: usize,
 ) -> Vec<ProviderSessionInfo> {
-    let mut by_key: HashMap<(String, String), ProviderSessionInfo> = HashMap::new();
+    let mut by_key: HashMap<(String, String, String), ProviderSessionInfo> = HashMap::new();
     for session in sessions {
         if session.id.trim().is_empty()
             || session.provider.trim().is_empty()
@@ -202,7 +281,14 @@ fn dedupe_and_sort_provider_sessions(
             continue;
         }
 
-        let key = (session.provider.clone(), session.id.clone());
+        let project_identity =
+            crate::workspace::normalize_project_identity_path(&session.project_path)
+                .unwrap_or_else(|| session.project_path.trim().to_string());
+        let key = (
+            session.provider.clone(),
+            session.id.clone(),
+            project_identity,
+        );
         let should_replace = by_key
             .get(&key)
             .map(|current| is_newer(&session, Some(current)))
@@ -519,18 +605,7 @@ fn is_newer(candidate: &ProviderSessionInfo, current: Option<&ProviderSessionInf
 }
 
 fn path_matches(candidate: &str, requested: &str) -> bool {
-    if candidate == requested {
-        return true;
-    }
-
-    let candidate_path = Path::new(candidate);
-    let requested_path = Path::new(requested);
-    if candidate_path.starts_with(requested_path) || requested_path.starts_with(candidate_path) {
-        return true;
-    }
-
-    candidate_path.file_name().and_then(|v| v.to_str())
-        == requested_path.file_name().and_then(|v| v.to_str())
+    crate::workspace::same_project_path(candidate, requested)
 }
 
 #[cfg(test)]
@@ -764,21 +839,23 @@ mod tests {
     }
 
     #[test]
-    fn dedupe_and_sort_provider_sessions_keeps_newest_per_provider_session_id() {
+    fn dedupe_and_sort_provider_sessions_uses_full_project_identity() {
         let sessions = vec![
-            session("same", "codex", "/repo/old", 10),
+            session("same", "codex", r"C:\Repo\App", 10),
             session("claude-1", "claude", "/repo/claude", 30),
-            session("same", "codex", "/repo/new", 40),
+            session("same", "codex", "D:/Repo/App", 35),
+            session("same", "codex", "c:/repo/app", 40),
             session("", "codex", "/repo/ignored", 50),
         ];
 
         let result = dedupe_and_sort_provider_sessions(sessions, 10);
 
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 3);
         assert_eq!(result[0].id, "same");
         assert_eq!(result[0].provider, "codex");
-        assert_eq!(result[0].project_path, "/repo/new");
-        assert_eq!(result[1].id, "claude-1");
+        assert_eq!(result[0].project_path, "c:/repo/app");
+        assert_eq!(result[1].project_path, "D:/Repo/App");
+        assert_eq!(result[2].id, "claude-1");
     }
 
     #[test]
@@ -792,6 +869,27 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "new");
+    }
+
+    #[test]
+    fn recent_binding_requires_exact_cross_platform_project_identity() {
+        assert!(path_matches(
+            r"\\?\D:\Repo\ThreadTerm",
+            "d:/repo/threadterm"
+        ));
+        assert!(!path_matches(r"C:\Repo\ThreadTerm", r"D:\Repo\ThreadTerm"));
+        assert!(!path_matches(r"C:\One\ThreadTerm", r"C:\Two\ThreadTerm"));
+        assert!(!path_matches(
+            r"C:\Repo\ThreadTerm",
+            r"C:\Repo\ThreadTerm\worktree"
+        ));
+        assert!(!path_matches("/Users/demo/App", "/Users/demo/app"));
+
+        let sessions = vec![
+            session("wrong-parent", "kimi", "/Users/other/App", 10),
+            session("child", "kimi", "/Users/demo/App/worktree", 20),
+        ];
+        assert!(find_unique_recent_session(sessions, "/Users/demo/App", &[]).is_none());
     }
 
     #[test]
@@ -833,11 +931,15 @@ mod tests {
 
     #[tokio::test]
     async fn provider_find_recent_session_reports_unsupported_provider_from_blocking_task() {
-        let error =
-            provider_find_recent_session("gemini".to_string(), "/tmp/repo".to_string(), None)
-                .await
-                .expect_err("unsupported provider");
+        let error = provider_find_recent_session(
+            "unknown-provider".to_string(),
+            "/tmp/repo".to_string(),
+            None,
+            None,
+        )
+        .await
+        .expect_err("unsupported provider");
 
-        assert_eq!(error, "Unsupported provider: gemini");
+        assert_eq!(error, "Unsupported provider: unknown-provider");
     }
 }

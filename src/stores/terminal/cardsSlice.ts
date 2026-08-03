@@ -95,7 +95,10 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
       branchLabel: options.branchLabel,
       terminalType: options.terminalType,
       command: options.command,
-      providerSessionId: options.terminalType === 'claude' ? uuid() : undefined,
+      providerSessionId:
+        options.terminalType === 'claude' || options.terminalType === 'grok'
+          ? uuid()
+          : undefined,
       providerSessionState: isProviderSessionType(options.terminalType) ? 'unbound' : undefined,
       status: 'idle',
       createdAt: now,
@@ -482,7 +485,7 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
       const providerSessionId = isBoundResume
         ? configuration.providerSessionId
         : configuration.launchMode === 'default'
-          && configuration.terminalType === 'claude'
+          && (configuration.terminalType === 'claude' || configuration.terminalType === 'grok')
           ? uuid()
           : undefined;
       const providerSessionState = isAgent

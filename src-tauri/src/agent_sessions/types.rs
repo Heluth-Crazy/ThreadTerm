@@ -12,6 +12,8 @@ pub enum AgentSessionProvider {
     Codex,
     Opencode,
     Gemini,
+    Kimi,
+    Grok,
 }
 
 impl AgentSessionProvider {
@@ -21,9 +23,55 @@ impl AgentSessionProvider {
             "codex" => Ok(Self::Codex),
             "opencode" => Ok(Self::Opencode),
             "gemini" => Ok(Self::Gemini),
+            "kimi" => Ok(Self::Kimi),
+            "grok" => Ok(Self::Grok),
             other => Err(format!("Unsupported agent session provider: {other}")),
         }
     }
+}
+
+pub const MAX_AGENT_SESSION_METADATA_KEYS: usize = 100;
+pub const MAX_METADATA_FILE_BYTES: u64 = 256 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentSessionMetadataState {
+    Found,
+    Missing,
+    Unavailable,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionMetadataKey {
+    pub provider: String,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionMetadataResult {
+    pub key: AgentSessionMetadataKey,
+    pub state: AgentSessionMetadataState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<AgentSessionSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveAgentSessionMetadataRequest {
+    pub keys: Vec<AgentSessionMetadataKey>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AgentSessionMetadataLookup {
+    pub(crate) session_id: String,
+    pub(crate) project_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -50,9 +50,14 @@ impl ManagedServiceChild {
         self.child.id()
     }
 
-    #[cfg(test)]
     pub(crate) async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
         self.child.wait().await
+    }
+
+    pub(crate) fn terminate(&mut self) {
+        #[cfg(windows)]
+        let _ = self.job.terminate();
+        let _ = self.child.start_kill();
     }
 }
 

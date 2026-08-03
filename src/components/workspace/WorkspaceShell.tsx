@@ -4,6 +4,7 @@ import type { TerminalCard } from '../../types/terminal';
 import type { WorkspaceRecord, WorkspaceTab } from '../../lib/workspace/types';
 import { WorkspaceHome } from './WorkspaceHome';
 import { WorkspaceTabStrip } from './WorkspaceTabStrip';
+import { useWorkspaceAgentMetadata } from './useWorkspaceAgentMetadata';
 
 interface WorkspaceShellProps {
   workspace: WorkspaceRecord | null;
@@ -47,6 +48,7 @@ export function WorkspaceShell({
   children,
 }: WorkspaceShellProps) {
   const { t } = useTranslation('terminal');
+  useWorkspaceAgentMetadata(workspaceCards);
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="workspace-shell">
@@ -54,6 +56,7 @@ export function WorkspaceShell({
         tabs={tabs}
         activeTabId={activeTabId}
         dirtyTabIds={dirtyByTabId}
+        workspaceCards={workspaceCards}
         homeLabel={t('workspace.homeTab', { defaultValue: 'Home' })}
         closeLabel={t('common.close', { defaultValue: 'Close' })}
         closeCurrentLabel={t('workspace.closeCurrentTab', { defaultValue: 'Close current' })}

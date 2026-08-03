@@ -260,7 +260,9 @@
       "all": "すべて",
       "claude": "Claude",
       "codex": "Codex",
-      "opencode": "OpenCode"
+      "opencode": "OpenCode",
+      "gemini": "Gemini",
+      "grok": "Grok Build"
     },
     "tokens": "トークン",
     "realTokens": "実トークン",
@@ -278,6 +280,9 @@
     "empty": "この期間の使用量はありません。"
   },
   "workspace": {
+    "viewSwitchLabel": "プロジェクト表示",
+    "workbenchView": "ワークベンチ",
+    "workspaceView": "ワークスペース",
     "toggle": "ファイル / 変更",
     "files": "ファイル",
     "changes": "変更",
@@ -297,6 +302,10 @@
     "closeCurrentTab": "現在を閉じる",
     "closeAllTabs": "すべて閉じる",
     "closeOtherTabs": "他を閉じる",
+    "activityJustNow": "たった今",
+    "activityMinutes": "{{count}}分前",
+    "activityHours": "{{count}}時間前",
+    "activityDays": "{{count}}日前",
     "changedFiles": "{{count}} 件の変更ファイル",
     "refresh": "更新",
     "loadingChanges": "変更を読み込み中...",
@@ -725,6 +734,8 @@
     "codex": "Codex",
     "opencode": "OpenCode",
     "gemini": "Gemini",
+    "kimi": "Kimi Code",
+    "grok": "Grok Build",
     "npm": "npm",
     "yarn": "Yarn",
     "pnpm": "pnpm",

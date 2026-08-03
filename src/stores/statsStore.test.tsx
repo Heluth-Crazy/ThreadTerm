@@ -230,12 +230,26 @@ describe('useStatsAutoRefresh', () => {
     expect(bridgeMocks.compute).toHaveBeenCalledTimes(2);
   });
 
-  it('does not poll without a bound Claude/Codex card', () => {
+  it.each(['opencode', 'gemini', 'grok'] as const)(
+    'polls for a bound %s card',
+    (terminalType) => {
+      mockVisibility('visible');
+      useTerminalStore.setState({
+        cards: [makeCard({ terminalType, providerSessionId: `${terminalType}-session-1` })],
+      });
+
+      renderHook(() => useStatsAutoRefresh());
+
+      expect(bridgeMocks.compute).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('does not poll without a bound stats-backed card', () => {
     mockVisibility('visible');
     useTerminalStore.setState({
       cards: [
         makeCard({ terminalType: 'claude', providerSessionId: undefined }),
-        makeCard({ id: 'opencode', terminalType: 'opencode', providerSessionId: 'open-1' }),
+        makeCard({ id: 'kimi', terminalType: 'kimi', providerSessionId: 'kimi-1' }),
       ],
     });
 

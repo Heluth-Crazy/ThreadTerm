@@ -28,4 +28,20 @@ describe('terminal locale key parity', () => {
       expect(flattenKeys(tree).sort(), locale).toEqual(expected);
     }
   });
+
+  it('localizes workspace relative activity outside English', () => {
+    const englishValues = Object.values(en.workspace).filter((value) =>
+      typeof value === 'string' && /Just now|ago/.test(value),
+    );
+    for (const [locale, messages] of Object.entries({ 'zh-CN': zhCN, ja, ko })) {
+      const activity = [
+        messages.workspace.activityJustNow,
+        messages.workspace.activityMinutes,
+        messages.workspace.activityHours,
+        messages.workspace.activityDays,
+      ];
+      expect(activity, locale).not.toEqual(expect.arrayContaining(englishValues));
+      expect(activity.every((value) => !/Just now|ago/.test(value)), locale).toBe(true);
+    }
+  });
 });

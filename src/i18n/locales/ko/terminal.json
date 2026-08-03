@@ -260,7 +260,9 @@
       "all": "전체",
       "claude": "Claude",
       "codex": "Codex",
-      "opencode": "OpenCode"
+      "opencode": "OpenCode",
+      "gemini": "Gemini",
+      "grok": "Grok Build"
     },
     "tokens": "토큰",
     "realTokens": "실제 토큰",
@@ -278,6 +280,9 @@
     "empty": "이 기간에 사용량이 없습니다."
   },
   "workspace": {
+    "viewSwitchLabel": "프로젝트 보기",
+    "workbenchView": "워크벤치",
+    "workspaceView": "워크스페이스",
     "toggle": "파일 / 변경",
     "files": "파일",
     "changes": "변경",
@@ -297,6 +302,10 @@
     "closeCurrentTab": "현재 닫기",
     "closeAllTabs": "모두 닫기",
     "closeOtherTabs": "다른 항목 닫기",
+    "activityJustNow": "방금",
+    "activityMinutes": "{{count}}분 전",
+    "activityHours": "{{count}}시간 전",
+    "activityDays": "{{count}}일 전",
     "changedFiles": "변경된 파일 {{count}}개",
     "refresh": "새로고침",
     "loadingChanges": "변경 사항 로딩 중...",
@@ -725,6 +734,8 @@
     "codex": "Codex",
     "opencode": "OpenCode",
     "gemini": "Gemini",
+    "kimi": "Kimi Code",
+    "grok": "Grok Build",
     "npm": "npm",
     "yarn": "Yarn",
     "pnpm": "pnpm",
