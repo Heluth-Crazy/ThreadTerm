@@ -75,6 +75,7 @@ describe('mobile App navigation', () => {
     cleanup();
     window.localStorage.clear();
     window.sessionStorage.clear();
+    delete (window as { confirm?: (message?: string) => boolean }).confirm;
   });
 
   it('opens on Workbench and keeps three root tabs with full-screen push routes', async () => {
@@ -261,6 +262,101 @@ describe('mobile App navigation', () => {
     await waitFor(() => {
       expect(window.sessionStorage.getItem(TOKEN_KEY)).toBeNull();
       expect(window.sessionStorage.getItem(SERVER_ID_KEY)).toBeNull();
+    });
+  });
+
+  it('keeps a directly deleted terminal after timeout and offers another wait before force', async () => {
+    window.sessionStorage.setItem('threadterm.bridgePermission', 'full');
+    bridgeMocks.fetchSnapshot.mockResolvedValue({
+      ...snapshot,
+      cards: [
+        {
+          id: 'card-1',
+          status: 'running',
+          projectPath: 'D:\\repo',
+          projectName: 'Repo',
+          worktreePath: 'D:\\repo',
+          terminalType: 'codex',
+          lastReplyPreview: '',
+          summaryLine: null,
+          hiddenLineCount: 0,
+          recentOutputBytes: 0,
+        },
+      ],
+    });
+    const confirm = vi.fn(() => true);
+    Object.defineProperty(window, 'confirm', {
+      configurable: true,
+      value: confirm,
+    });
+
+    render(
+      <I18nProvider search="?lang=zh-CN">
+        <App />
+      </I18nProvider>,
+    );
+    expect(await screen.findByRole('heading', { name: '工作台' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '工作区' }));
+    fireEvent.click(await screen.findByRole('button', { name: '删除会话' }));
+
+    const firstClose = bridgeMocks.send.mock.calls
+      .map(([command]) => command as { kind: string; request_id?: string; mode?: string })
+      .find((command) => command.kind === 'close');
+    expect(firstClose).toMatchObject({ kind: 'close', mode: 'graceful' });
+    expect(screen.getByText(/等待 Agent 与 shell 正常退出/)).toBeInTheDocument();
+
+    act(() => {
+      bridgeMocks.onMessage?.({
+        protocol_version: BRIDGE_PROTOCOL_VERSION,
+        kind: 'close_result',
+        request_id: firstClose?.request_id ?? '',
+        ok: false,
+        card_id: 'card-1',
+        outcome: 'timed_out',
+        attempt_id: 'attempt-1',
+        stage: 'agent_exit',
+      });
+    });
+
+    expect(await screen.findByText(/5 秒内未退出/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '保留终端' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '强制结束' })).toBeInTheDocument();
+    expect(
+      bridgeMocks.send.mock.calls.some(
+        ([command]) => (command as { mode?: string }).mode === 'force',
+      ),
+    ).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: '再等 5 秒' }));
+    const closeCommands = bridgeMocks.send.mock.calls
+      .map(([command]) => command as {
+        kind: string;
+        request_id?: string;
+        mode?: string;
+        attempt_id?: string;
+      })
+      .filter((command) => command.kind === 'close');
+    expect(closeCommands[1]).toMatchObject({
+      mode: 'continue',
+      attempt_id: 'attempt-1',
+    });
+
+    act(() => {
+      bridgeMocks.onMessage?.({
+        protocol_version: BRIDGE_PROTOCOL_VERSION,
+        kind: 'close_result',
+        request_id: closeCommands[1]?.request_id ?? '',
+        ok: true,
+        card_id: 'card-1',
+        outcome: 'ended',
+        attempt_id: 'attempt-1',
+        stage: 'shell_exit',
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('terminal-close-sheet')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: '删除会话' })).not.toBeInTheDocument();
     });
   });
 });

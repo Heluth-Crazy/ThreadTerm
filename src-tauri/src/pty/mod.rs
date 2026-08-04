@@ -15,10 +15,12 @@ mod events;
 mod registry;
 mod session;
 mod shell;
+mod shutdown;
 mod utf8;
 
 pub use registry::list_live_sessions;
 pub use session::{LivePtySessionSnapshot, PtyAttachSnapshot, SessionState};
+pub use shutdown::{GracefulShutdownProfile, GracefulShutdownResult};
 
 /// Snapshot a single live PTY session by id (used by the bridge to build a
 /// `CardMeta` for incremental card-added broadcasts). Returns `None` when no
@@ -71,6 +73,20 @@ pub(crate) fn resume_float_output_consumers() {
 }
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn pty_graceful_shutdown(
+    id: String,
+    attempt_id: String,
+    profile: GracefulShutdownProfile,
+) -> Result<GracefulShutdownResult, String> {
+    shutdown::graceful_shutdown(id, attempt_id, profile).await
+}
+
+#[tauri::command]
+pub async fn pty_cancel_graceful_shutdown(id: String, attempt_id: String) -> Result<bool, String> {
+    shutdown::cancel_graceful_shutdown(id, attempt_id).await
+}
 
 /// Create a new PTY session and begin streaming output.
 #[tauri::command]
@@ -222,6 +238,8 @@ pub async fn pty_create(
 pub async fn pty_input(id: String, data: String) -> Result<(), String> {
     let session = registry::get(&id).ok_or_else(|| format!("PTY session '{}' not found", id))?;
 
+    let _shutdown_input_permit = shutdown::prepare_for_user_input(&id).await?;
+
     // User input clears the waiting state; the session becomes Running only
     // once the PTY emits output again.
     clear_waiting_for_input(&session, &id);
@@ -328,6 +346,7 @@ fn terminate_session_process(session: &PtySession) {
 
 #[tauri::command]
 pub async fn pty_kill(id: String) -> Result<(), String> {
+    shutdown::forget(&id);
     if let Some(session) = registry::remove(&id) {
         mark_killed(&session);
         // CardRemoved only needs identity/session metadata. Avoid serializing

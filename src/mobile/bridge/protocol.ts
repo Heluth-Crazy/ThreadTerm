@@ -175,7 +175,13 @@ export type ClientCommand =
       command?: string;
     }
   | { kind: 'activate'; request_id: string; card_id: string }
-  | { kind: 'close'; request_id?: string; card_id: string }
+  | {
+      kind: 'close';
+      request_id?: string;
+      card_id: string;
+      mode?: 'graceful' | 'continue' | 'keep' | 'force';
+      attempt_id?: string;
+    }
   | { kind: 'pin'; card_id: string; pinned: boolean }
   | { kind: 'set_intent'; card_id: string; intent: string | null }
   | { kind: 'mark_read'; card_id: string }
@@ -251,6 +257,9 @@ export type ServerCommand =
       card_id?: string | null;
       error_code?: string | null;
       message?: string | null;
+      outcome?: 'ended' | 'timed_out' | 'in_progress' | 'cancelled' | 'failed' | null;
+      attempt_id?: string | null;
+      stage?: 'interrupt' | 'agent_exit' | 'shell_exit' | null;
     }
   | { kind: 'pong'; t: number }
   | { kind: 'error'; code: string; message: string };

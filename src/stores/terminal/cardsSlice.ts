@@ -14,7 +14,6 @@ import type {
 } from '../../types/terminal';
 import { MAX_ARCHIVED_CARDS, MAX_LAST_OUTPUT_LENGTH } from '../../types/terminal';
 import i18n from '../../i18n/config';
-import { isTauriEnv, pty } from '../../lib/tauri-bridge';
 import {
   effectiveWorktreePath,
   isPendingWorktreePath,
@@ -267,12 +266,6 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
   removeCard: (id) => {
     outputSanitizers.delete(id);
     const target = get().cards.find((c) => c.id === id);
-    if (target?.terminalType === 'claude') {
-      void releaseClaudeChatCard(id, 'remove');
-    }
-    if (target && isTauriEnv()) {
-      void pty.kill(target.ptyId || target.id);
-    }
 
     set((state) => {
       const cards = state.cards.filter((c) => c.id !== id);
@@ -336,13 +329,6 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
 
   archiveCard: (id) => {
     outputSanitizers.delete(id);
-    const target = get().cards.find((c) => c.id === id);
-    if (target?.terminalType === 'claude') {
-      void releaseClaudeChatCard(id, 'archive');
-    }
-    if (target && isTauriEnv()) {
-      void pty.kill(target.ptyId || target.id);
-    }
 
     set((state) => {
       const targetIndex = state.cards.findIndex((c) => c.id === id);

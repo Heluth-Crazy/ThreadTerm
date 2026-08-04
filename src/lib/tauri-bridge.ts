@@ -66,6 +66,28 @@ export interface AttentionRequiredEvent {
   fingerprint?: string;
 }
 
+export type GracefulShutdownProfile =
+  | 'claude'
+  | 'codex'
+  | 'opencode'
+  | 'gemini'
+  | 'kimi'
+  | 'grok'
+  | 'generic';
+
+export type GracefulShutdownStage = 'interrupt' | 'agentExit' | 'shellExit';
+export type GracefulShutdownOutcome =
+  | 'graceful'
+  | 'alreadyExited'
+  | 'timedOut'
+  | 'inProgress';
+
+export interface GracefulShutdownResult {
+  attemptId: string;
+  outcome: GracefulShutdownOutcome;
+  stage: GracefulShutdownStage;
+}
+
 export const pty = {
   create: (id: string, workingDir: string, rows: number, cols: number): Promise<string> =>
     invoke<string>('pty_create', { id, workingDir, rows, cols }),
@@ -78,6 +100,16 @@ export const pty = {
 
   kill: (id: string): Promise<void> =>
     invoke<void>('pty_kill', { id }),
+
+  gracefulShutdown: (
+    id: string,
+    attemptId: string,
+    profile: GracefulShutdownProfile,
+  ): Promise<GracefulShutdownResult> =>
+    invoke<GracefulShutdownResult>('pty_graceful_shutdown', { id, attemptId, profile }),
+
+  cancelGracefulShutdown: (id: string, attemptId: string): Promise<boolean> =>
+    invoke<boolean>('pty_cancel_graceful_shutdown', { id, attemptId }),
 
   getSessionState: (ptyId: string): Promise<SessionState> =>
     invoke<SessionState>('pty_get_session_state', { ptyId }),
@@ -464,6 +496,11 @@ export interface MobileCardRequest {
   cardId: string;
 }
 
+export interface MobileCloseRequest extends MobileCardRequest {
+  mode?: 'graceful' | 'continue' | 'keep' | 'force' | null;
+  attemptId?: string | null;
+}
+
 export interface MobileRenameCardRequest {
   requestId: string;
   cardId: string;
@@ -476,6 +513,9 @@ export interface MobileCommandResult {
   cardId?: string | null;
   errorCode?: string | null;
   message?: string | null;
+  outcome?: 'ended' | 'timed_out' | 'in_progress' | 'cancelled' | 'failed' | null;
+  attemptId?: string | null;
+  stage?: 'interrupt' | 'agent_exit' | 'shell_exit' | null;
 }
 
 // ── Supervisor (AI Supervisor v0.1) ─────────────────────────────────────────
@@ -552,7 +592,7 @@ export const mobileBridge = {
     invoke<void>('bridge_resolve_mobile_activate', { ...result }),
 
   resolveClose: (result: MobileCommandResult): Promise<void> =>
-    invoke<void>('bridge_resolve_mobile_close', { ...result }),
+    invoke<void>('bridge_resolve_mobile_close', { result }),
 
   resolveRenameCard: (result: MobileCommandResult): Promise<void> =>
     invoke<void>('bridge_resolve_mobile_rename_card', { ...result }),
@@ -563,8 +603,8 @@ export const mobileBridge = {
   onActivateCard: (cb: (payload: MobileCardRequest) => void): Promise<() => void> =>
     listen<MobileCardRequest>('mobile://activate-card', (e) => cb(e.payload)),
 
-  onRemoveCard: (cb: (payload: MobileCardRequest) => void): Promise<() => void> =>
-    listen<MobileCardRequest>('mobile://remove-card', (e) => cb(e.payload)),
+  onRemoveCard: (cb: (payload: MobileCloseRequest) => void): Promise<() => void> =>
+    listen<MobileCloseRequest>('mobile://remove-card', (e) => cb(e.payload)),
 
   onRenameCard: (cb: (payload: MobileRenameCardRequest) => void): Promise<() => void> =>
     listen<MobileRenameCardRequest>('mobile://rename-card', (e) => cb(e.payload)),

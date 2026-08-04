@@ -430,7 +430,7 @@ describe('terminalStore — card lifecycle', () => {
   });
 
   it.each(['remove', 'archive'] as const)(
-    '%s releases rebuildable Claude Chat state with the card',
+    '%s leaves provider cleanup to the lifecycle coordinator',
     (action) => {
       const store = useTerminalStore.getState();
       const id = store.createCard({
@@ -445,7 +445,8 @@ describe('terminalStore — card lifecycle', () => {
       if (action === 'remove') store.removeCard(id);
       else store.archiveCard(id);
 
-      expect(useClaudeChatStore.getState().sessions[id]).toBeUndefined();
+      expect(useClaudeChatStore.getState().sessions[id]).toBeDefined();
+      useClaudeChatStore.getState().resetCard(id);
     },
   );
 

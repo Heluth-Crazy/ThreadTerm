@@ -23,6 +23,8 @@ import {
   type FileEditorModel,
   type DiffViewerModel,
   type TerminalCloseChoice,
+  type TerminalClosePhase,
+  type TerminalCloseResult,
 } from './types';
 import type { WorkspaceDraftMeta } from '@shared/lib/workspace/types';
 
@@ -51,7 +53,12 @@ export interface WorkspaceShellProps {
   onOpenTerminalCard: (cardId: string) => void;
   onNewTerminal?: () => void;
   onOpenFileBrowser?: () => void;
-  onTerminalCloseChoice: (choice: TerminalCloseChoice, tabId: string, cardId: string | null) => void;
+  onTerminalCloseChoice: (
+    choice: TerminalCloseChoice,
+    tabId: string,
+    cardId: string | null,
+    attemptId?: string,
+  ) => Promise<TerminalCloseResult> | TerminalCloseResult;
   onDirtyCloseChoice: (choice: DirtyCloseChoice, tabId: string) => void;
   onFileChange?: (contents: string, baseRevision: number) => void;
   onFileSave?: () => void;
@@ -114,6 +121,10 @@ export function WorkspaceShell({
     tabId: string;
     title: string;
     cardId: string | null;
+    phase: TerminalClosePhase;
+    attemptId?: string;
+    stage?: TerminalCloseResult['stage'];
+    message?: string;
   } | null>(null);
   const [dirtyClose, setDirtyClose] = useState<{ tabId: string; titles: string[]; conflict: boolean } | null>(
     null,
@@ -138,6 +149,7 @@ export function WorkspaceShell({
           tabId,
           title: tab.title,
           cardId: tab.cardId ?? null,
+          phase: 'confirm',
         });
         return;
       }
@@ -272,12 +284,72 @@ export function WorkspaceShell({
       <TerminalCloseSheet
         open={Boolean(terminalClose)}
         title={terminalClose?.title ?? ''}
+        phase={terminalClose?.phase}
+        stage={terminalClose?.stage}
+        message={terminalClose?.message}
         canEndTerminal={canMutate}
         onChoose={(choice) => {
-          if (terminalClose) {
-            onTerminalCloseChoice(choice, terminalClose.tabId, terminalClose.cardId);
+          const request = terminalClose;
+          if (!request) return;
+          if (choice === 'cancel') {
+            setTerminalClose(null);
+            return;
           }
-          setTerminalClose(null);
+          if (choice === 'closeTabOnly') {
+            void Promise.resolve(
+              onTerminalCloseChoice(choice, request.tabId, request.cardId),
+            ).finally(() => setTerminalClose(null));
+            return;
+          }
+
+          setTerminalClose({
+            ...request,
+            phase: choice === 'forceEnd' ? 'forcing' : 'gracefulEnding',
+            message: undefined,
+          });
+          void Promise.resolve(
+            onTerminalCloseChoice(
+              choice,
+              request.tabId,
+              request.cardId,
+              request.attemptId,
+            ),
+          )
+            .then((result) => {
+              if (
+                result.outcome === 'ended' ||
+                result.outcome === 'closed' ||
+                result.outcome === 'cancelled'
+              ) {
+                setTerminalClose(null);
+                return;
+              }
+              setTerminalClose((current) =>
+                current
+                  ? {
+                      ...current,
+                      attemptId: result.attemptId ?? current.attemptId,
+                      stage: result.stage,
+                      message: result.message,
+                      phase:
+                        result.outcome === 'timedOut' || result.outcome === 'inProgress'
+                          ? 'timedOut'
+                          : 'error',
+                    }
+                  : current,
+              );
+            })
+            .catch((error) => {
+              setTerminalClose((current) =>
+                current
+                  ? {
+                      ...current,
+                      phase: 'error',
+                      message: error instanceof Error ? error.message : String(error),
+                    }
+                  : current,
+              );
+            });
         }}
       />
 

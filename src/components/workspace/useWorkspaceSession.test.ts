@@ -1,7 +1,9 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { TFunction } from 'i18next';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { useClaudeChatStore } from '../../stores/claudeChatStore';
+import { pty } from '../../lib/tauri-bridge';
 import { localWorkspaceAuthority } from '../../lib/workspace/localAuthority';
 import { workspaceClient } from '../../lib/workspace/client';
 import { HOME_TAB_ID } from '../../lib/workspace/types';
@@ -23,10 +25,22 @@ function resetStore() {
   });
 }
 
+function enableTauriEnvironment() {
+  Object.defineProperty(window, '__TAURI_INTERNALS__', {
+    configurable: true,
+    value: {},
+  });
+}
+
 describe('useWorkspaceSession worktree isolation', () => {
   beforeEach(() => {
     resetStore();
     localWorkspaceAuthority.reset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   it('shares file tabs across terminals in the same worktree', async () => {
@@ -236,7 +250,14 @@ describe('useWorkspaceSession worktree isolation', () => {
     expect(useTerminalStore.getState().cards.some((card) => card.id === id)).toBe(true);
   });
 
-  it('ends terminal when close-and-end is chosen', async () => {
+  it('gracefully ends the runtime before removing the card', async () => {
+    enableTauriEnvironment();
+    const gracefulShutdown = vi.spyOn(pty, 'gracefulShutdown').mockResolvedValue({
+      attemptId: 'attempt-1',
+      outcome: 'graceful',
+      stage: 'shellExit',
+    });
+    const forceKill = vi.spyOn(pty, 'kill').mockResolvedValue();
     const id = useTerminalStore.getState().createCard({
       projectName: 'repo',
       projectPath: '/repo',
@@ -267,7 +288,131 @@ describe('useWorkspaceSession worktree isolation', () => {
       await result.current.resolveTerminalClose('closeAndEnd');
     });
 
+    expect(gracefulShutdown).toHaveBeenCalledWith(
+      id,
+      expect.stringMatching(/^shutdown:/),
+      'generic',
+    );
+    expect(forceKill).not.toHaveBeenCalled();
     expect(useTerminalStore.getState().cards.some((card) => card.id === id)).toBe(false);
+  });
+
+  it('keeps the card after timeout and continues the same graceful attempt without force', async () => {
+    enableTauriEnvironment();
+    const gracefulShutdown = vi
+      .spyOn(pty, 'gracefulShutdown')
+      .mockResolvedValueOnce({
+        attemptId: 'attempt-1',
+        outcome: 'timedOut',
+        stage: 'agentExit',
+      })
+      .mockResolvedValueOnce({
+        attemptId: 'attempt-1',
+        outcome: 'graceful',
+        stage: 'shellExit',
+      });
+    const forceKill = vi.spyOn(pty, 'kill').mockResolvedValue();
+    const id = useTerminalStore.getState().createCard({
+      projectName: 'repo',
+      projectPath: '/repo',
+      terminalType: 'codex',
+    });
+    const cards = useTerminalStore.getState().cards;
+    const { result } = renderHook(() =>
+      useWorkspaceSession({
+        cards,
+        focusedCardId: id,
+        selectedProjectPath: '/repo',
+        selectedWorktreePath: null,
+        t,
+      }),
+    );
+
+    let removed = true;
+    await act(async () => {
+      removed = await result.current.requestRemoveCard(id);
+    });
+
+    expect(removed).toBe(false);
+    expect(result.current.terminalCloseRequest).toMatchObject({
+      cardId: id,
+      attemptId: 'attempt-1',
+      phase: 'timedOut',
+      stage: 'agentExit',
+    });
+    expect(useTerminalStore.getState().cards.some((card) => card.id === id)).toBe(true);
+    expect(forceKill).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await result.current.resolveTerminalClose('continueWaiting');
+    });
+
+    expect(gracefulShutdown).toHaveBeenNthCalledWith(2, id, 'attempt-1', 'codex');
+    expect(forceKill).not.toHaveBeenCalled();
+    expect(useTerminalStore.getState().cards.some((card) => card.id === id)).toBe(false);
+  });
+
+  it('force ends only after an explicit timeout decision', async () => {
+    enableTauriEnvironment();
+    vi.spyOn(pty, 'gracefulShutdown').mockResolvedValue({
+      attemptId: 'attempt-force',
+      outcome: 'timedOut',
+      stage: 'agentExit',
+    });
+    const forceKill = vi.spyOn(pty, 'kill').mockResolvedValue();
+    const id = useTerminalStore.getState().createCard({
+      projectName: 'repo',
+      projectPath: '/repo',
+      terminalType: 'shell',
+    });
+    const cards = useTerminalStore.getState().cards;
+    const { result } = renderHook(() =>
+      useWorkspaceSession({
+        cards,
+        focusedCardId: id,
+        selectedProjectPath: '/repo',
+        selectedWorktreePath: null,
+        t,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.requestRemoveCard(id);
+    });
+    expect(forceKill).not.toHaveBeenCalled();
+    expect(useTerminalStore.getState().cards.some((card) => card.id === id)).toBe(true);
+
+    await act(async () => {
+      await result.current.resolveTerminalClose('forceEnd');
+    });
+
+    expect(forceKill).toHaveBeenCalledWith(id);
+    expect(useTerminalStore.getState().cards.some((card) => card.id === id)).toBe(false);
+  });
+
+  it('releases rebuildable Claude Chat state only after runtime completion', async () => {
+    const id = useTerminalStore.getState().createCard({
+      projectName: 'repo',
+      projectPath: '/repo',
+      terminalType: 'claude',
+    });
+    useClaudeChatStore.getState().prepareCard(id, 'session-a');
+    const cards = useTerminalStore.getState().cards;
+    const { result } = renderHook(() =>
+      useWorkspaceSession({
+        cards,
+        focusedCardId: id,
+        selectedProjectPath: '/repo',
+        selectedWorktreePath: null,
+        t,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.requestRemoveCard(id);
+    });
+
+    expect(useClaudeChatStore.getState().sessions[id]).toBeUndefined();
   });
 
   it('keeps file drafts when archiving a terminal', async () => {

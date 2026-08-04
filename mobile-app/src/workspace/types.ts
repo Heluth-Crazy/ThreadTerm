@@ -8,7 +8,25 @@ import type {
 import type { CardMeta } from '@shared/mobile/bridge/protocol';
 import type { BridgeDevicePermission } from '@shared/lib/tauri-bridge';
 
-export type TerminalCloseChoice = 'closeTabOnly' | 'closeAndEnd' | 'cancel';
+export type TerminalCloseChoice =
+  | 'closeTabOnly'
+  | 'closeAndEnd'
+  | 'continueWaiting'
+  | 'keepTerminal'
+  | 'forceEnd'
+  | 'cancel';
+export type TerminalClosePhase =
+  | 'confirm'
+  | 'gracefulEnding'
+  | 'timedOut'
+  | 'error'
+  | 'forcing';
+export interface TerminalCloseResult {
+  outcome: 'closed' | 'ended' | 'timedOut' | 'inProgress' | 'cancelled' | 'failed';
+  attemptId?: string;
+  stage?: 'interrupt' | 'agentExit' | 'shellExit';
+  message?: string;
+}
 export type DirtyCloseChoice = 'saveAndClose' | 'discardAndClose' | 'cancel';
 export type DiffViewMode = 'original' | 'current' | 'diff';
 export type SyncLabel = 'synced' | 'pending' | 'unsynced' | 'conflict' | 'offline';

@@ -108,6 +108,39 @@ pub struct MobileCardRequest {
     pub card_id: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MobileCloseMode {
+    Graceful,
+    Continue,
+    Keep,
+    Force,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileCloseRequest {
+    pub request_id: String,
+    pub card_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<MobileCloseMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileCloseResolution {
+    pub request_id: String,
+    pub ok: bool,
+    pub card_id: Option<String>,
+    pub error_code: Option<String>,
+    pub message: Option<String>,
+    pub outcome: Option<String>,
+    pub attempt_id: Option<String>,
+    pub stage: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MobileRenameCardRequest {

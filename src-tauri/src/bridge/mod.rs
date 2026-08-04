@@ -30,9 +30,9 @@ use projection::card_meta_tombstone;
 use projection::{card_meta_from_live_session, terminal_snapshot_message, BridgeStateMirror};
 use protocol::{
     AppThemeTokens, BridgeDevice, BridgeStatus, BridgeTheme, CardMeta, DevicePermission,
-    MobileCardRequest, MobileRenameCardRequest, MobileSpawnCardRequest, MobileWorkbenchProjection,
-    NotificationEntry, PairQrResponse, ServerMessage, TerminalStatus, TerminalThemeTokens,
-    ThemeMode,
+    MobileCardRequest, MobileCloseRequest, MobileCloseResolution, MobileRenameCardRequest,
+    MobileSpawnCardRequest, MobileWorkbenchProjection, NotificationEntry, PairQrResponse,
+    ServerMessage, TerminalStatus, TerminalThemeTokens, ThemeMode,
 };
 use runtime::load_or_create_bridge_server_id;
 #[cfg(test)]
@@ -204,7 +204,7 @@ impl BridgeRuntime {
         self.emit_desktop_event("mobile://activate-card", request)
     }
 
-    pub fn emit_remove_request(&self, request: MobileCardRequest) -> Result<(), String> {
+    pub fn emit_remove_request(&self, request: MobileCloseRequest) -> Result<(), String> {
         self.emit_desktop_event("mobile://remove-card", request)
     }
 
@@ -371,14 +371,8 @@ pub async fn bridge_resolve_mobile_activate(
 }
 
 #[tauri::command]
-pub async fn bridge_resolve_mobile_close(
-    request_id: String,
-    ok: bool,
-    card_id: Option<String>,
-    error_code: Option<String>,
-    message: Option<String>,
-) -> Result<(), String> {
-    commands::resolve_close(request_id, ok, card_id, error_code, message).await
+pub async fn bridge_resolve_mobile_close(result: MobileCloseResolution) -> Result<(), String> {
+    commands::resolve_close(result).await
 }
 
 #[tauri::command]

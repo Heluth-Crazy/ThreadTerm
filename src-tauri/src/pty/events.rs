@@ -501,6 +501,7 @@ pub(super) fn stream_pty_output(
 
     // Remove session from map.
     registry::remove(&id);
+    super::shutdown::forget(&id);
     tracing::info!(id = %id, "PTY session ended");
 }
 

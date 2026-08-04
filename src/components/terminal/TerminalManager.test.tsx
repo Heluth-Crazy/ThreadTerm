@@ -36,6 +36,9 @@ const bridgeMocks = vi.hoisted(() => ({
   resolveActivate: vi.fn(),
   resolveClose: vi.fn(),
   resolveRenameCard: vi.fn(),
+  ptyGracefulShutdown: vi.fn(),
+  ptyCancelGracefulShutdown: vi.fn(),
+  ptyKill: vi.fn(),
   invokeSupervisorEnable: vi.fn(),
   subscribeSupervisorAlert: vi.fn(),
   tokenStatsCompute: vi.fn(),
@@ -74,7 +77,10 @@ vi.mock('../../lib/tauri-bridge', () => ({
   invoke: (...args: unknown[]) => bridgeMocks.invoke(...args),
   isTauriEnv: () => bridgeMocks.isTauriEnv(),
   pty: {
-    kill: vi.fn().mockResolvedValue(undefined),
+    kill: (...args: unknown[]) => bridgeMocks.ptyKill(...args),
+    gracefulShutdown: (...args: unknown[]) => bridgeMocks.ptyGracefulShutdown(...args),
+    cancelGracefulShutdown: (...args: unknown[]) =>
+      bridgeMocks.ptyCancelGracefulShutdown(...args),
     create: vi.fn().mockResolvedValue(undefined),
     input: vi.fn().mockResolvedValue(undefined),
     resize: vi.fn().mockResolvedValue(undefined),
@@ -302,6 +308,16 @@ describe('TerminalManager shortcut hint layout', () => {
     bridgeMocks.resolveActivate.mockResolvedValue(undefined);
     bridgeMocks.resolveClose.mockResolvedValue(undefined);
     bridgeMocks.resolveRenameCard.mockResolvedValue(undefined);
+    bridgeMocks.ptyGracefulShutdown.mockImplementation(
+      (_id: string, attemptId: string) =>
+        Promise.resolve({
+          attemptId,
+          outcome: 'graceful',
+          stage: 'shellExit',
+        }),
+    );
+    bridgeMocks.ptyCancelGracefulShutdown.mockResolvedValue(true);
+    bridgeMocks.ptyKill.mockResolvedValue(undefined);
     bridgeMocks.resolveMetadata.mockResolvedValue([]);
     nativeDialogMocks.confirmDialog.mockResolvedValue(false);
   });
@@ -1010,11 +1026,21 @@ describe('TerminalManager shortcut hint layout', () => {
       await onRemove?.({ requestId: 'close-1', cardId });
     });
 
-    expect(bridgeMocks.resolveClose).toHaveBeenCalledWith({
-      requestId: 'close-1',
-      ok: true,
+    expect(bridgeMocks.ptyGracefulShutdown).toHaveBeenCalledWith(
       cardId,
-    });
+      expect.stringMatching(/^shutdown:/),
+      'generic',
+    );
+    expect(bridgeMocks.ptyKill).not.toHaveBeenCalled();
+    expect(bridgeMocks.resolveClose).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: 'close-1',
+        ok: true,
+        cardId,
+        outcome: 'ended',
+        stage: 'shell_exit',
+      }),
+    );
     expect(useTerminalStore.getState().cards.some((card) => card.id === cardId)).toBe(false);
     expect(screen.getAllByRole('button', { name: 'README.md' }).length).toBeGreaterThan(0);
   });

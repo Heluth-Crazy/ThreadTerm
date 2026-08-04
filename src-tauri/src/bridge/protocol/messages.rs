@@ -3,6 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use super::{
+    access::MobileCloseMode,
     terminal::{CardMeta, TerminalSnapshotMessage, TerminalStatus},
     theme::{AppThemeTokens, TerminalThemeTokens, ThemeMode},
     workbench::{BridgeSnapshot, MobileWorkbenchProjection, NotificationEntry},
@@ -47,6 +48,10 @@ pub enum ClientMessage {
     Close {
         request_id: Option<String>,
         card_id: String,
+        #[serde(default)]
+        mode: Option<MobileCloseMode>,
+        #[serde(default)]
+        attempt_id: Option<String>,
     },
     Pin {
         card_id: String,
@@ -154,6 +159,12 @@ pub enum ServerMessage {
         card_id: Option<String>,
         error_code: Option<String>,
         message: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        outcome: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        attempt_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stage: Option<String>,
     },
     RenameResult {
         request_id: String,

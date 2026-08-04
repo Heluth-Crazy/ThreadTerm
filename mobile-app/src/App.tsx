@@ -84,10 +84,13 @@ import {
   WorkbenchScreen,
 } from './workbench/MobileWorkbenchScreens';
 import {
+  TerminalCloseSheet,
   WorkspaceShell,
   syntheticTabsFromCards,
   type DirtyCloseChoice,
   type TerminalCloseChoice,
+  type TerminalClosePhase,
+  type TerminalCloseResult,
 } from './workspace';
 import type { WorkspaceTab } from '@shared/lib/workspace/types';
 import { LEGACY_CAPABILITIES, type BridgeCapability } from './bridge/types';
@@ -125,6 +128,47 @@ type ProjectCardGroup = {
   cards: CardMeta[];
 };
 
+type CloseResultMessage = Extract<
+  ServerMessage,
+  { kind: 'spawn_result' | 'activate_result' | 'close_result' | 'rename_result' }
+>;
+type PendingMobileCloseRequest = {
+  resolve: (result: TerminalCloseResult) => void;
+  timeout: ReturnType<typeof setTimeout>;
+};
+
+const MOBILE_CLOSE_RESPONSE_TIMEOUT_MS = 15_000;
+
+function terminalCloseResultFromMessage(message: CloseResultMessage): TerminalCloseResult {
+  const stage =
+    message.stage === 'agent_exit'
+      ? 'agentExit'
+      : message.stage === 'shell_exit'
+        ? 'shellExit'
+        : message.stage === 'interrupt'
+          ? 'interrupt'
+          : undefined;
+  const outcome =
+    message.outcome === 'timed_out'
+      ? 'timedOut'
+      : message.outcome === 'in_progress'
+        ? 'inProgress'
+        : message.outcome === 'cancelled'
+          ? 'cancelled'
+          : message.outcome === 'failed'
+            ? 'failed'
+            : message.outcome === 'ended' || message.ok
+              ? 'ended'
+              : 'failed';
+
+  return {
+    outcome,
+    ...(message.attempt_id ? { attemptId: message.attempt_id } : {}),
+    ...(stage ? { stage } : {}),
+    ...(message.message ? { message: message.message } : {}),
+  };
+}
+
 export function App() {
   const { language } = useI18n();
   const pairing = useMemo(() => readPairingConfig(window.location), []);
@@ -156,6 +200,14 @@ export function App() {
   const [deviceActiveTabByWorkspace, setDeviceActiveTabByWorkspace] = useState<
     Record<string, string>
   >({});
+  const [directTerminalClose, setDirectTerminalClose] = useState<{
+    cardId: string;
+    title: string;
+    phase: TerminalClosePhase;
+    attemptId?: string;
+    stage?: TerminalCloseResult['stage'];
+    message?: string;
+  } | null>(null);
   /** Legacy web advertises terminal-only; native secure sets full workspace caps. */
   const bridgeCapabilities: readonly BridgeCapability[] = LEGACY_CAPABILITIES;
   const secureWorkspaceReady = bridgeCapabilities.includes('workspace_tabs');
@@ -166,6 +218,7 @@ export function App() {
     themeControllerRef.current.getTerminalTheme(),
   );
   const bridgeSendRef = useRef<((command: ClientCommand) => void) | null>(null);
+  const pendingCloseRequestsRef = useRef(new Map<string, PendingMobileCloseRequest>());
   const activeRoute = routeStack[routeStack.length - 1] ?? null;
 
   const pushRoute = useCallback((route: MobileRoute) => {
@@ -206,8 +259,22 @@ export function App() {
       shouldArmRecovery = feedState.runtimeChanged;
     } else if (message.kind === 'card_removed') {
       disposeTerminalFeed(message.card.id);
-    } else if (message.kind === 'close_result' && message.ok && message.card_id) {
+    } else if (
+      message.kind === 'close_result' &&
+      message.ok &&
+      (message.outcome == null || message.outcome === 'ended') &&
+      message.card_id
+    ) {
       disposeTerminalFeed(message.card_id);
+    }
+
+    if (message.kind === 'close_result') {
+      const pending = pendingCloseRequestsRef.current.get(message.request_id);
+      if (pending) {
+        clearTimeout(pending.timeout);
+        pendingCloseRequestsRef.current.delete(message.request_id);
+        pending.resolve(terminalCloseResultFromMessage(message));
+      }
     }
 
     if (message.kind === 'terminal_output' || message.kind === 'terminal_snapshot') {
@@ -326,19 +393,76 @@ export function App() {
     void loadSnapshot();
   };
 
-  const sendCommand = useCallback((command: ClientCommand) => {
+  const sendCommand = useCallback((command: ClientCommand): boolean => {
     try {
       bridge.send(command);
+      return true;
     } catch (error) {
       dispatch({
         type: 'ws-error',
         message: error instanceof Error ? error.message : String(error),
       });
+      return false;
     }
   }, [bridge]);
 
   const createRequestId = useCallback(
     (kind: string) => `${kind}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+    [],
+  );
+
+  const sendCloseCommand = useCallback(
+    (
+      cardId: string,
+      mode: 'graceful' | 'continue' | 'keep' | 'force',
+      attemptId?: string,
+    ): Promise<TerminalCloseResult> =>
+      new Promise((resolve) => {
+        const requestId = createRequestId('close');
+        const timeout = setTimeout(() => {
+          pendingCloseRequestsRef.current.delete(requestId);
+          resolve({
+            outcome: 'failed',
+            ...(attemptId ? { attemptId } : {}),
+            message:
+              language === 'zh'
+                ? '桌面端未及时返回关闭结果，请保留终端后重试。'
+                : 'The desktop did not return a close result in time. Keep the terminal and retry.',
+          });
+        }, MOBILE_CLOSE_RESPONSE_TIMEOUT_MS);
+
+        pendingCloseRequestsRef.current.set(requestId, { resolve, timeout });
+        const sent = sendCommand({
+          kind: 'close',
+          request_id: requestId,
+          card_id: cardId,
+          mode,
+          ...(attemptId ? { attempt_id: attemptId } : {}),
+        });
+        if (!sent) {
+          clearTimeout(timeout);
+          pendingCloseRequestsRef.current.delete(requestId);
+          resolve({
+            outcome: 'failed',
+            ...(attemptId ? { attemptId } : {}),
+            message:
+              language === 'zh'
+                ? '关闭请求发送失败，请检查连接后重试。'
+                : 'The close request could not be sent. Check the connection and retry.',
+          });
+        }
+      }),
+    [createRequestId, language, sendCommand],
+  );
+
+  useEffect(
+    () => () => {
+      for (const pending of pendingCloseRequestsRef.current.values()) {
+        clearTimeout(pending.timeout);
+        pending.resolve({ outcome: 'cancelled' });
+      }
+      pendingCloseRequestsRef.current.clear();
+    },
     [],
   );
 
@@ -353,15 +477,94 @@ export function App() {
   const requestClose = useCallback(
     (cardId: string) => {
       if (!canControl) return;
+      const card = state.cards.find((candidate) => candidate.id === cardId);
+      if (!card) return;
       const confirmed = window.confirm(
         language === 'zh'
           ? '关闭并删除这个终端？此操作会结束对应会话。'
           : 'Close and delete this terminal? The session will be terminated.',
       );
       if (!confirmed) return;
-      sendCommand({ kind: 'close', request_id: createRequestId('close'), card_id: cardId });
+      setDirectTerminalClose({
+        cardId,
+        title: card.terminalType || card.projectName || card.id.slice(0, 8),
+        phase: 'gracefulEnding',
+      });
+      void sendCloseCommand(cardId, 'graceful').then(async (result) => {
+        if (result.outcome === 'ended' || result.outcome === 'cancelled') {
+          setDirectTerminalClose(null);
+          return;
+        }
+        setDirectTerminalClose((current) =>
+          current?.cardId === cardId
+            ? {
+                ...current,
+                attemptId: result.attemptId ?? current.attemptId,
+                stage: result.stage,
+                message: result.message,
+                phase:
+                  result.outcome === 'timedOut' || result.outcome === 'inProgress'
+                    ? 'timedOut'
+                    : 'error',
+              }
+            : current,
+        );
+      });
     },
-    [canControl, createRequestId, language, sendCommand],
+    [canControl, language, sendCloseCommand, state.cards],
+  );
+
+  const handleDirectTerminalCloseChoice = useCallback(
+    async (choice: TerminalCloseChoice) => {
+      const request = directTerminalClose;
+      if (!request) return;
+      if (choice === 'cancel' || choice === 'closeTabOnly') {
+        setDirectTerminalClose(null);
+        return;
+      }
+      if (choice === 'keepTerminal' && !canControl) {
+        setDirectTerminalClose(null);
+        return;
+      }
+
+      const mode =
+        choice === 'continueWaiting'
+          ? 'continue'
+          : choice === 'keepTerminal'
+            ? 'keep'
+            : choice === 'forceEnd'
+              ? 'force'
+              : 'graceful';
+      setDirectTerminalClose({
+        ...request,
+        phase: mode === 'force' ? 'forcing' : 'gracefulEnding',
+        message: undefined,
+      });
+      const result = await sendCloseCommand(request.cardId, mode, request.attemptId);
+      if (
+        result.outcome === 'ended' ||
+        result.outcome === 'cancelled' ||
+        choice === 'keepTerminal'
+      ) {
+        setDirectTerminalClose(null);
+        return;
+      }
+      setDirectTerminalClose((current) =>
+        current?.cardId === request.cardId
+          ? {
+              ...current,
+              attemptId: result.attemptId ?? current.attemptId,
+              stage: result.stage,
+              message: result.message,
+              phase:
+                result.outcome === 'timedOut' || result.outcome === 'inProgress'
+                  ? 'timedOut'
+                  : 'error',
+            }
+          : current,
+      );
+    },
+    [canControl, directTerminalClose, sendCloseCommand],
   );
 
   const requestRenameCard = useCallback(
@@ -410,13 +613,52 @@ export function App() {
   );
 
   const handleTerminalCloseChoice = useCallback(
-    (choice: TerminalCloseChoice, tabId: string, cardId: string | null) => {
-      if (choice === 'cancel') return;
-      if (choice === 'closeAndEnd' && cardId && canControl) {
-        sendCommand({ kind: 'close', request_id: createRequestId('close'), card_id: cardId });
+    async (
+      choice: TerminalCloseChoice,
+      tabId: string,
+      cardId: string | null,
+      attemptId?: string,
+    ): Promise<TerminalCloseResult> => {
+      if (choice === 'cancel') return { outcome: 'cancelled' };
+
+      if (choice === 'closeTabOnly') {
+        setDeviceActiveTabByWorkspace((prev) => {
+          const next = { ...prev };
+          for (const [workspaceKey, activeId] of Object.entries(next)) {
+            if (activeId === tabId) next[workspaceKey] = 'home';
+          }
+          return next;
+        });
+        return { outcome: 'closed' };
       }
-      // closeTabOnly: for legacy mode drop local synthetic tab selection only.
-      if (choice === 'closeTabOnly' || choice === 'closeAndEnd') {
+
+      if (choice === 'keepTerminal') {
+        if (!cardId || !canControl) return { outcome: 'cancelled', ...(attemptId ? { attemptId } : {}) };
+        const result = await sendCloseCommand(cardId, 'keep', attemptId);
+        return result.outcome === 'ended'
+          ? result
+          : { outcome: 'cancelled', ...(result.attemptId ? { attemptId: result.attemptId } : {}) };
+      }
+
+      if (!cardId || !canControl) {
+        return {
+          outcome: 'failed',
+          ...(attemptId ? { attemptId } : {}),
+          message:
+            language === 'zh'
+              ? '当前连接没有结束终端的权限。'
+              : 'The current connection cannot end this terminal.',
+        };
+      }
+
+      const mode =
+        choice === 'continueWaiting'
+          ? 'continue'
+          : choice === 'forceEnd'
+              ? 'force'
+              : 'graceful';
+      const result = await sendCloseCommand(cardId, mode, attemptId);
+      if (result.outcome === 'ended') {
         setDeviceActiveTabByWorkspace((prev) => {
           const next = { ...prev };
           for (const [workspaceKey, activeId] of Object.entries(next)) {
@@ -425,8 +667,9 @@ export function App() {
           return next;
         });
       }
+      return result;
     },
-    [canControl, createRequestId, sendCommand],
+    [canControl, language, sendCloseCommand],
   );
 
   const handleDirtyCloseChoice = useCallback(
@@ -641,6 +884,18 @@ export function App() {
           )}
         </div>
       )}
+
+      <TerminalCloseSheet
+        open={Boolean(directTerminalClose)}
+        title={directTerminalClose?.title ?? ''}
+        phase={directTerminalClose?.phase}
+        stage={directTerminalClose?.stage}
+        message={directTerminalClose?.message}
+        canEndTerminal={canControl}
+        onChoose={(choice) => {
+          void handleDirectTerminalCloseChoice(choice);
+        }}
+      />
     </div>
   );
 }
@@ -1796,7 +2051,8 @@ function WorkspaceRoute({
     choice: TerminalCloseChoice,
     tabId: string,
     cardId: string | null,
-  ) => void;
+    attemptId?: string,
+  ) => Promise<TerminalCloseResult>;
 }) {
   const groups = useMemo(() => groupCardsByProject(cards), [cards]);
   const group = useMemo(
@@ -1842,7 +2098,7 @@ function WorkspaceRoute({
       onCloseTab={(tabId) => {
         const tabItem = tabs.find((item) => item.id === tabId);
         if (tabItem?.kind === 'terminal') {
-          onTerminalCloseChoice('closeTabOnly', tabId, tabItem.cardId ?? null);
+          void onTerminalCloseChoice('closeTabOnly', tabId, tabItem.cardId ?? null);
         }
       }}
       onOpenTerminalCard={onOpenTerminalCard}

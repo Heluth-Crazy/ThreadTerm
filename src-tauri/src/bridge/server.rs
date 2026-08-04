@@ -37,8 +37,8 @@ use super::{
     pairing::AuthorizationLease,
     protocol::{
         parse_client_message, versioned_server_message, BridgeDevice, ClientMessage,
-        MobileCardRequest, MobileRenameCardRequest, MobileSpawnCardRequest, PairRequest,
-        ServerMessage,
+        MobileCardRequest, MobileCloseRequest, MobileRenameCardRequest, MobileSpawnCardRequest,
+        PairRequest, ServerMessage,
     },
     BridgeRuntime,
 };
@@ -921,15 +921,19 @@ async fn handle_client_message(
         ClientMessage::Close {
             card_id,
             request_id,
+            mode,
+            attempt_id,
         } => {
             crate::db::enqueue_audit_log(&device.id, "close", Some(&card_id), "close session");
             let request_id =
                 request_id.unwrap_or_else(|| format!("close:{}:{}", card_id, now_millis()));
             context
                 .runtime
-                .emit_remove_request(MobileCardRequest {
+                .emit_remove_request(MobileCloseRequest {
                     request_id,
                     card_id,
+                    mode,
+                    attempt_id,
                 })
                 .map_err(|message| ("command_failed".to_string(), message))
                 .map(|_| Vec::new())

@@ -390,6 +390,7 @@ export function TerminalManager() {
     markWorkspaceTabDirty,
     handleWorkspacePanelStateChange,
     activateTerminalForCard,
+    requestCardExit,
     requestRemoveCard,
     requestArchiveCard,
     requestCardWorkspaceReset,
@@ -626,26 +627,49 @@ export function TerminalManager() {
         if (!exists) {
           resolveClose({
             requestId: payload.requestId,
-            ok: false,
+            ok: true,
             cardId: payload.cardId,
-            errorCode: 'card_not_found',
-            message: 'Card not found.',
+            outcome: 'ended',
           });
           return;
         }
 
-        const removed = await requestRemoveCard(payload.cardId);
-        if (!removed) {
-          resolveClose({
-            requestId: payload.requestId,
-            ok: false,
-            cardId: payload.cardId,
-            errorCode: 'user_cancelled',
-            message: 'Close cancelled.',
-          });
-          return;
-        }
-        resolveClose({ requestId: payload.requestId, ok: true, cardId: payload.cardId });
+        const result = await requestCardExit(payload.cardId, 'remove', {
+          attemptId: payload.attemptId ?? undefined,
+          mode: payload.mode ?? 'graceful',
+          showDialog: false,
+        });
+        const stage =
+          result.stage === 'agentExit'
+            ? 'agent_exit'
+            : result.stage === 'shellExit'
+              ? 'shell_exit'
+              : result.stage;
+        const outcome =
+          result.outcome === 'timedOut'
+            ? 'timed_out'
+            : result.outcome === 'inProgress'
+              ? 'in_progress'
+              : result.outcome;
+        resolveClose({
+          requestId: payload.requestId,
+          ok: result.outcome === 'ended',
+          cardId: payload.cardId,
+          outcome,
+          attemptId: result.attemptId,
+          stage,
+          errorCode:
+            result.outcome === 'timedOut'
+              ? 'graceful_timeout'
+              : result.outcome === 'inProgress'
+                ? 'shutdown_in_progress'
+                : result.outcome === 'cancelled'
+                  ? 'user_cancelled'
+                  : result.outcome === 'failed'
+                    ? 'command_failed'
+                    : undefined,
+          message: result.message,
+        });
       }),
       mobileBridge.onRenameCard((payload) => {
         const exists = useTerminalStore
@@ -682,7 +706,7 @@ export function TerminalManager() {
       cancelled = true;
       unsubscribers.forEach((unsubscribe) => unsubscribe());
     };
-  }, [mobileBridgeSyncEnabled, mountCardInBackground, requestRemoveCard]);
+  }, [mobileBridgeSyncEnabled, mountCardInBackground, requestCardExit]);
 
   // Drop mount entries for cards that no longer exist (user removed them).
   useEffect(() => {
@@ -1418,6 +1442,9 @@ export function TerminalManager() {
       <TerminalTabCloseDialog
         open={Boolean(terminalCloseRequest)}
         title={terminalCloseRequest?.title ?? ''}
+        phase={terminalCloseRequest?.phase ?? 'confirm'}
+        stage={terminalCloseRequest?.stage}
+        message={terminalCloseRequest?.message}
         onChoose={(choice) => {
           void resolveTerminalClose(choice);
         }}

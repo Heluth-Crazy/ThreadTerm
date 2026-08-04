@@ -3,7 +3,7 @@ pub mod protocol;
 
 use crate::pty::SessionState;
 use protocol::{
-    AppThemeTokens, BridgeDevice, BridgeStatus, CardMeta, DevicePermission,
+    AppThemeTokens, BridgeDevice, BridgeStatus, CardMeta, DevicePermission, MobileCloseResolution,
     MobileWorkbenchProjection, NotificationEntry, PairQrResponse, TerminalThemeTokens, ThemeMode,
 };
 
@@ -131,13 +131,7 @@ pub async fn bridge_resolve_mobile_activate(
 }
 
 #[tauri::command]
-pub async fn bridge_resolve_mobile_close(
-    _request_id: String,
-    _ok: bool,
-    _card_id: Option<String>,
-    _error_code: Option<String>,
-    _message: Option<String>,
-) -> Result<(), String> {
+pub async fn bridge_resolve_mobile_close(_result: MobileCloseResolution) -> Result<(), String> {
     Ok(())
 }
 

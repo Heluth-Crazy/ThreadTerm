@@ -5,8 +5,8 @@ use super::{
     network::{normalize_pair_public_target, DEFAULT_BRIDGE_PORT},
     protocol::{
         AppThemeTokens, BridgeDevice, BridgeStatus, CardMeta, DevicePermission,
-        MobileWorkbenchProjection, NotificationEntry, PairQrResponse, SecurePairQrResponse,
-        ServerMessage, TerminalThemeTokens, ThemeMode,
+        MobileCloseResolution, MobileWorkbenchProjection, NotificationEntry, PairQrResponse,
+        SecurePairQrResponse, ServerMessage, TerminalThemeTokens, ThemeMode,
     },
     runtime::{
         rotate_secure_identity, start_bridge_runtime, start_secure_bridge_runtime,
@@ -67,19 +67,16 @@ pub(super) async fn resolve_activate(
     Ok(())
 }
 
-pub(super) async fn resolve_close(
-    request_id: String,
-    ok: bool,
-    card_id: Option<String>,
-    error_code: Option<String>,
-    message: Option<String>,
-) -> Result<(), String> {
+pub(super) async fn resolve_close(result: MobileCloseResolution) -> Result<(), String> {
     BRIDGE_RUNTIME.broadcast(ServerMessage::CloseResult {
-        request_id,
-        ok,
-        card_id,
-        error_code,
-        message,
+        request_id: result.request_id,
+        ok: result.ok,
+        card_id: result.card_id,
+        error_code: result.error_code,
+        message: result.message,
+        outcome: result.outcome,
+        attempt_id: result.attempt_id,
+        stage: result.stage,
     });
     Ok(())
 }

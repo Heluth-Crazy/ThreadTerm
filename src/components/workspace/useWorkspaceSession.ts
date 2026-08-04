@@ -13,7 +13,17 @@ import {
 import type { TFunction } from 'i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard } from '../../types/terminal';
-import type { GitStatusEntry } from '../../lib/tauri-bridge';
+import {
+  isTauriEnv,
+  pty,
+  type GitStatusEntry,
+  type GracefulShutdownStage,
+} from '../../lib/tauri-bridge';
+import {
+  createGracefulShutdownAttemptId,
+  requestGracefulTerminalShutdown,
+} from '../../lib/terminalShutdown';
+import { releaseClaudeChatCard } from '../../lib/claudeChat/lifecycle';
 import { effectiveWorktreePath, samePath } from '../../lib/worktreePaths';
 import { workspaceClient } from '../../lib/workspace/client';
 import {
@@ -39,14 +49,48 @@ const DEFAULT_WORKSPACE_PANEL_STATE: WorkspacePanelState = {
   selectedChangePath: null,
 };
 
-export type TerminalCloseChoice = 'closeTabOnly' | 'closeAndEnd' | 'cancel';
+export type TerminalCloseChoice =
+  | 'closeTabOnly'
+  | 'closeAndEnd'
+  | 'continueWaiting'
+  | 'keepTerminal'
+  | 'forceEnd'
+  | 'cancel';
 export type DirtyCloseChoice = 'saveAndClose' | 'discardAndClose' | 'cancel';
 
+export type TerminalClosePhase =
+  | 'confirm'
+  | 'gracefulEnding'
+  | 'timedOut'
+  | 'error'
+  | 'forcing';
+
+export type CardExitMode = 'graceful' | 'continue' | 'keep' | 'force';
+export type CardExitOutcome = 'ended' | 'timedOut' | 'inProgress' | 'cancelled' | 'failed';
+
+export interface CardExitResult {
+  outcome: CardExitOutcome;
+  attemptId: string;
+  stage?: GracefulShutdownStage;
+  message?: string;
+}
+
+export interface CardExitOptions {
+  attemptId?: string;
+  mode?: CardExitMode;
+  showDialog?: boolean;
+}
+
 export interface TerminalCloseRequest {
-  workspaceId: string;
-  tabId: string;
+  workspaceId?: string;
+  tabId?: string;
   cardId: string;
   title: string;
+  action: 'remove' | 'archive';
+  attemptId: string;
+  phase: TerminalClosePhase;
+  stage?: GracefulShutdownStage;
+  message?: string;
 }
 
 export interface DirtyCloseRequest {
@@ -110,6 +154,8 @@ export function useWorkspaceSession({
   tabsRef.current = tabs;
   const dirtyByTabIdRef = useRef(dirtyByTabId);
   dirtyByTabIdRef.current = dirtyByTabId;
+  const terminalCloseRequestRef = useRef(terminalCloseRequest);
+  terminalCloseRequestRef.current = terminalCloseRequest;
 
   const workspaceRootPath = workspace?.canonicalRoot ?? null;
   const workspaceUnavailable = workspace?.availability === 'unavailable';
@@ -358,28 +404,6 @@ export function useWorkspaceSession({
     }
   }, [refreshSnapshot]);
 
-  const resolveTerminalClose = useCallback(
-    async (choice: TerminalCloseChoice): Promise<'closed' | 'ended' | 'cancelled'> => {
-      const request = terminalCloseRequest;
-      setTerminalCloseRequest(null);
-      if (!request) return 'cancelled';
-      if (choice === 'cancel') return 'cancelled';
-      if (choice === 'closeTabOnly') {
-        await commitCloseDecisions(request.workspaceId, [
-          { tabId: request.tabId, kind: 'closeClean' },
-        ]);
-        return 'closed';
-      }
-      const store = useTerminalStore.getState();
-      if (store.cards.some((card) => card.id === request.cardId)) {
-        await removeTerminalTabForCard(request.cardId);
-        store.removeCard(request.cardId);
-      }
-      return 'ended';
-    },
-    [commitCloseDecisions, removeTerminalTabForCard, terminalCloseRequest],
-  );
-
   const resolveDirtyClose = useCallback(
     async (choice: DirtyCloseChoice) => {
       const request = dirtyCloseRequest;
@@ -441,6 +465,9 @@ export function useWorkspaceSession({
             tabId: only.id,
             cardId: only.cardId,
             title: only.title,
+            action: 'remove',
+            attemptId: createGracefulShutdownAttemptId(only.cardId),
+            phase: 'confirm',
           });
           return false;
         }
@@ -519,54 +546,231 @@ export function useWorkspaceSession({
     [closeTabsViaCoordinator],
   );
 
-  const requestCardExit = useCallback(
-    async (cardId: string, action: 'remove' | 'archive'): Promise<boolean> => {
-      const store = useTerminalStore.getState();
-      const card = store.cards.find((item) => item.id === cardId);
-      if (!card) return false;
+  const finalizeCardExit = useCallback(
+    async (
+      card: TerminalCard,
+      action: 'remove' | 'archive',
+      attemptId: string,
+    ): Promise<CardExitResult> => {
+      // The PTY has already ended (or force was explicitly confirmed). Release
+      // provider side resources before committing the irreversible card state.
+      if (card.terminalType === 'claude') {
+        await releaseClaudeChatCard(card.id, action);
+      }
 
-      // Only remove the terminal tab — keep file/diff drafts for the worktree.
-      await removeTerminalTabForCard(cardId);
+      // Close only the terminal tab. File/diff drafts remain worktree-owned.
+      await removeTerminalTabForCard(card.id);
 
       const preserveWorkspaceScope =
         Boolean(workspaceRootPath) &&
         samePath(effectiveWorktreePath(card), workspaceRootPath) &&
         tabsRef.current.some((tab) => tab.kind === 'file' || tab.kind === 'diff');
-
-      if (!useTerminalStore.getState().cards.some((card) => card.id === cardId)) {
-        return false;
-      }
-      if (action === 'archive') {
-        store.archiveCard(cardId);
-      } else {
-        store.removeCard(cardId);
+      const store = useTerminalStore.getState();
+      if (store.cards.some((candidate) => candidate.id === card.id)) {
+        if (action === 'archive') store.archiveCard(card.id);
+        else store.removeCard(card.id);
       }
       if (preserveWorkspaceScope) {
         const nextStore = useTerminalStore.getState();
         if (card.worktreePath) {
-          nextStore.selectWorktree(
-            card.projectPath,
-            card.worktreePath,
-            card.branchLabel,
-          );
+          nextStore.selectWorktree(card.projectPath, card.worktreePath, card.branchLabel);
         } else {
           nextStore.selectProject(card.projectPath);
         }
       }
-      return true;
+      return { outcome: 'ended', attemptId, stage: 'shellExit' };
     },
     [removeTerminalTabForCard, workspaceRootPath],
   );
 
+  const requestCardExit = useCallback(
+    async (
+      cardId: string,
+      action: 'remove' | 'archive',
+      options: CardExitOptions = {},
+    ): Promise<CardExitResult> => {
+      const mode = options.mode ?? 'graceful';
+      const existingRequest = terminalCloseRequestRef.current;
+      const requestedAttemptId =
+        options.attemptId ??
+        (existingRequest?.cardId === cardId ? existingRequest.attemptId : undefined) ??
+        createGracefulShutdownAttemptId(cardId);
+      const card = useTerminalStore
+        .getState()
+        .cards
+        .find((candidate) => candidate.id === cardId);
+      if (!card) {
+        return {
+          outcome: 'ended',
+          attemptId: requestedAttemptId,
+          stage: 'shellExit',
+        };
+      }
+
+      const showDialog = options.showDialog ?? true;
+      const publishPhase = (
+        phase: TerminalClosePhase,
+        update: Partial<TerminalCloseRequest> = {},
+      ) => {
+        if (!showDialog) return;
+        const base =
+          terminalCloseRequestRef.current?.cardId === cardId
+            ? terminalCloseRequestRef.current
+            : null;
+        setTerminalCloseRequest({
+          workspaceId: base?.workspaceId,
+          tabId: base?.tabId,
+          cardId,
+          title: base?.title ?? card.projectName,
+          action,
+          attemptId: update.attemptId ?? base?.attemptId ?? requestedAttemptId,
+          phase,
+          stage: update.stage ?? base?.stage,
+          message: update.message,
+        });
+      };
+
+      if (mode === 'keep') {
+        if (isTauriEnv()) {
+          try {
+            await pty.cancelGracefulShutdown(card.ptyId || card.id, requestedAttemptId);
+          } catch {
+            // A natural EOF can win the race with Keep. The card remains
+            // authoritative until the normal exit/finalize path observes it.
+          }
+        }
+        if (showDialog && terminalCloseRequestRef.current?.cardId === cardId) {
+          setTerminalCloseRequest(null);
+        }
+        return { outcome: 'cancelled', attemptId: requestedAttemptId };
+      }
+
+      if (mode === 'force') {
+        publishPhase('forcing');
+        if (isTauriEnv()) {
+          try {
+            await pty.kill(card.ptyId || card.id);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!message.toLowerCase().includes('not found')) {
+              publishPhase('error', { message });
+              return {
+                outcome: 'failed',
+                attemptId: requestedAttemptId,
+                message,
+              };
+            }
+          }
+        }
+        const result = await finalizeCardExit(card, action, requestedAttemptId);
+        if (showDialog) setTerminalCloseRequest(null);
+        return result;
+      }
+
+      publishPhase('gracefulEnding');
+      try {
+        const shutdown = await requestGracefulTerminalShutdown(card, requestedAttemptId);
+        if (shutdown.outcome === 'graceful' || shutdown.outcome === 'alreadyExited') {
+          const result = await finalizeCardExit(card, action, shutdown.attemptId);
+          if (showDialog) setTerminalCloseRequest(null);
+          return result;
+        }
+
+        const outcome = shutdown.outcome === 'timedOut' ? 'timedOut' : 'inProgress';
+        publishPhase('timedOut', {
+          attemptId: shutdown.attemptId,
+          stage: shutdown.stage,
+        });
+        return {
+          outcome,
+          attemptId: shutdown.attemptId,
+          stage: shutdown.stage,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        publishPhase('error', { message });
+        return {
+          outcome: 'failed',
+          attemptId: requestedAttemptId,
+          message,
+        };
+      }
+    },
+    [finalizeCardExit],
+  );
+
   const requestRemoveCard = useCallback(
-    (cardId: string) => requestCardExit(cardId, 'remove'),
+    async (cardId: string) =>
+      (await requestCardExit(cardId, 'remove', { showDialog: true })).outcome ===
+      'ended',
     [requestCardExit],
   );
 
   const requestArchiveCard = useCallback(
-    (cardId: string) => requestCardExit(cardId, 'archive'),
+    async (cardId: string) =>
+      (await requestCardExit(cardId, 'archive', { showDialog: true })).outcome ===
+      'ended',
     [requestCardExit],
   );
+
+  const resolveTerminalClose = useCallback(
+    async (
+      choice: TerminalCloseChoice,
+    ): Promise<'closed' | 'ended' | 'pending' | 'cancelled'> => {
+      const request = terminalCloseRequestRef.current;
+      if (!request) return 'cancelled';
+
+      if (choice === 'cancel') {
+        if (request.phase === 'confirm') setTerminalCloseRequest(null);
+        return 'cancelled';
+      }
+      if (choice === 'closeTabOnly') {
+        if (!request.workspaceId || !request.tabId || request.phase !== 'confirm') {
+          return 'cancelled';
+        }
+        await commitCloseDecisions(request.workspaceId, [
+          { tabId: request.tabId, kind: 'closeClean' },
+        ]);
+        setTerminalCloseRequest(null);
+        return 'closed';
+      }
+
+      const mode: CardExitMode =
+        choice === 'continueWaiting'
+          ? 'continue'
+          : choice === 'keepTerminal'
+            ? 'keep'
+            : choice === 'forceEnd'
+              ? 'force'
+              : 'graceful';
+      const result = await requestCardExit(request.cardId, request.action, {
+        attemptId: request.attemptId,
+        mode,
+        showDialog: true,
+      });
+      if (result.outcome === 'ended') return 'ended';
+      if (result.outcome === 'cancelled') return 'cancelled';
+      return 'pending';
+    },
+    [commitCloseDecisions, requestCardExit],
+  );
+
+  const naturalFinalizeIdsRef = useRef(new Set<string>());
+  useEffect(() => {
+    const request = terminalCloseRequest;
+    if (!request || (request.phase !== 'timedOut' && request.phase !== 'error')) return;
+    const card = cards.find((candidate) => candidate.id === request.cardId);
+    if (!card || (card.status !== 'completed' && card.status !== 'failed')) return;
+    if (naturalFinalizeIdsRef.current.has(card.id)) return;
+    naturalFinalizeIdsRef.current.add(card.id);
+    void finalizeCardExit(card, request.action, request.attemptId)
+      .then(() => {
+        if (terminalCloseRequestRef.current?.cardId === card.id) {
+          setTerminalCloseRequest(null);
+        }
+      })
+      .finally(() => naturalFinalizeIdsRef.current.delete(card.id));
+  }, [cards, finalizeCardExit, terminalCloseRequest]);
 
   /**
    * Directory/config change: drop only this terminal tab; do not migrate or
@@ -759,6 +963,7 @@ export function useWorkspaceSession({
     markWorkspaceTabDirty,
     handleWorkspacePanelStateChange,
     activateTerminalForCard,
+    requestCardExit,
     requestRemoveCard,
     requestArchiveCard,
     requestCardWorkspaceReset,

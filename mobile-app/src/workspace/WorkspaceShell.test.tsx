@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
 import { WorkspaceShell } from './WorkspaceShell';
@@ -163,6 +163,84 @@ describe('close sheets permission UI', () => {
     );
     fireEvent.click(screen.getByTestId('terminal-close-and-end'));
     expect(onChoose).toHaveBeenCalledWith('closeAndEnd');
+  });
+
+  it('offers keep, wait, and explicit force after a graceful timeout', () => {
+    const onChoose = vi.fn();
+    render(
+      <I18nProvider search="?lang=en">
+        <TerminalCloseSheet
+          open
+          title="shell"
+          phase="timedOut"
+          stage="agentExit"
+          canEndTerminal
+          onChoose={onChoose}
+        />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep terminal' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Wait 5 more seconds' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Force end' }));
+    expect(onChoose.mock.calls).toEqual([
+      ['keepTerminal'],
+      ['continueWaiting'],
+      ['forceEnd'],
+    ]);
+  });
+
+  it('keeps the safe keep-terminal action when control is lost during shutdown', () => {
+    render(
+      <I18nProvider search="?lang=en">
+        <TerminalCloseSheet
+          open
+          title="shell"
+          phase="timedOut"
+          canEndTerminal={false}
+          onChoose={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Keep terminal' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Wait 5 more seconds' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Force end' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the close sheet open until the desktop returns an authoritative result', async () => {
+    const tabs = syntheticTabsFromCards({
+      workspaceKey: 'ws-1',
+      projectName: 'Repo',
+      worktreePath: 'D:\\repo',
+      cards,
+    });
+    const terminalTab = tabs.find((tab) => tab.kind === 'terminal')!;
+    const onTerminalCloseChoice = vi.fn().mockResolvedValue({
+      outcome: 'timedOut',
+      attemptId: 'attempt-1',
+      stage: 'agentExit',
+    });
+    renderShell({
+      tabs,
+      deviceActiveTabId: terminalTab.id,
+      onTerminalCloseChoice,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: `Close ${terminalTab.title}` }));
+    fireEvent.click(screen.getByTestId('terminal-close-and-end'));
+
+    expect(screen.getByText(/waiting for the Agent and shell/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText(/did not exit within 5 seconds/i)).toBeInTheDocument();
+    });
+    expect(onTerminalCloseChoice).toHaveBeenCalledWith(
+      'closeAndEnd',
+      terminalTab.id,
+      'card-1',
+      undefined,
+    );
+    expect(screen.getByTestId('terminal-close-sheet')).toBeInTheDocument();
   });
 
   it('blocks dirty save/discard for read-only', () => {

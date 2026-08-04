@@ -115,15 +115,42 @@ describe('mobile bridge message reducer', () => {
       ok: true,
       card_id: 'card-1',
     });
-    const closed = applyServerMessage(activated, {
+    const timedOut = applyServerMessage(activated, {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'close_result',
+      request_id: 'req-timeout',
+      ok: false,
+      card_id: 'card-1',
+      outcome: 'timed_out',
+      attempt_id: 'attempt-1',
+      stage: 'agent_exit',
+      message: 'Still running',
+    });
+    const inProgress = applyServerMessage(timedOut, {
+      protocol_version: BRIDGE_PROTOCOL_VERSION,
+      kind: 'close_result',
+      request_id: 'req-progress',
+      ok: true,
+      card_id: 'card-1',
+      outcome: 'in_progress',
+      attempt_id: 'attempt-1',
+      stage: 'agent_exit',
+    });
+    const closed = applyServerMessage(inProgress, {
       protocol_version: BRIDGE_PROTOCOL_VERSION,
       kind: 'close_result',
       request_id: 'req-2',
       ok: true,
       card_id: 'card-1',
+      outcome: 'ended',
+      attempt_id: 'attempt-1',
+      stage: 'shell_exit',
     });
 
     expect(activated.activeCardId).toBe('card-1');
+    expect(timedOut.cards).toHaveLength(1);
+    expect(timedOut.lastError).toBeNull();
+    expect(inProgress.cards).toHaveLength(1);
     expect(closed.cards).toEqual([]);
     expect(closed.activeCardId).toBeNull();
   });

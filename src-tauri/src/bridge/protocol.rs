@@ -5,9 +5,11 @@ mod theme;
 mod v2;
 mod workbench;
 
+#[allow(unused_imports)]
 pub use access::{
-    BridgeDevice, BridgeStatus, ClientClass, DevicePermission, MobileCardRequest,
-    MobileRenameCardRequest, MobileSpawnCardRequest, PairQrResponse, PairRequest, PairResponse,
+    BridgeDevice, BridgeStatus, ClientClass, DevicePermission, MobileCardRequest, MobileCloseMode,
+    MobileCloseRequest, MobileCloseResolution, MobileRenameCardRequest, MobileSpawnCardRequest,
+    PairQrResponse, PairRequest, PairResponse,
 };
 #[allow(unused_imports)]
 pub use messages::{
@@ -294,6 +296,38 @@ mod tests {
             }
             _ => panic!("expected activate message"),
         }
+
+        let legacy_close = parse_client_message(
+            r#"{"protocol_version":1,"kind":"close","request_id":"req-3","card_id":"card-1"}"#,
+        )
+        .expect("parse legacy close");
+        assert!(matches!(
+            legacy_close,
+            ClientMessage::Close {
+                mode: None,
+                attempt_id: None,
+                ..
+            }
+        ));
+
+        let graceful_close = parse_client_message(
+            r#"{"protocol_version":1,"kind":"close","request_id":"req-4","card_id":"card-1","mode":"continue","attempt_id":"attempt-1"}"#,
+        )
+        .expect("parse graceful close continuation");
+        match graceful_close {
+            ClientMessage::Close {
+                request_id,
+                card_id,
+                mode,
+                attempt_id,
+            } => {
+                assert_eq!(request_id.as_deref(), Some("req-4"));
+                assert_eq!(card_id, "card-1");
+                assert_eq!(mode, Some(MobileCloseMode::Continue));
+                assert_eq!(attempt_id.as_deref(), Some("attempt-1"));
+            }
+            _ => panic!("expected close message"),
+        }
     }
 
     #[test]
@@ -312,6 +346,24 @@ mod tests {
         assert_eq!(json["request_id"], "req-1");
         assert_eq!(json["card_id"], "card-1");
         assert_eq!(json["ok"], true);
+
+        let close_json =
+            serde_json::to_value(versioned_server_message(ServerMessage::CloseResult {
+                request_id: "req-2".to_string(),
+                ok: false,
+                card_id: Some("card-1".to_string()),
+                error_code: Some("graceful_timeout".to_string()),
+                message: None,
+                outcome: Some("timed_out".to_string()),
+                attempt_id: Some("attempt-1".to_string()),
+                stage: Some("agent_exit".to_string()),
+            }))
+            .expect("serialize graceful close result");
+        assert_eq!(close_json["protocol_version"], PROTOCOL_VERSION);
+        assert_eq!(close_json["kind"], "close_result");
+        assert_eq!(close_json["outcome"], "timed_out");
+        assert_eq!(close_json["attempt_id"], "attempt-1");
+        assert_eq!(close_json["stage"], "agent_exit");
     }
 
     #[test]

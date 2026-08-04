@@ -125,7 +125,14 @@ export function applyServerMessage(
         lastError: message.ok ? state.lastError : message.message ?? message.error_code ?? state.lastError,
       };
     case 'close_result': {
-      if (!message.ok || !message.card_id) {
+      const expectedPendingOutcome =
+        message.outcome === 'timed_out' ||
+        message.outcome === 'in_progress' ||
+        message.outcome === 'cancelled';
+      const runtimeEnded =
+        message.ok && (message.outcome == null || message.outcome === 'ended');
+      if (!runtimeEnded || !message.card_id) {
+        if (expectedPendingOutcome) return state;
         return {
           ...state,
           lastError: message.message ?? message.error_code ?? state.lastError,
