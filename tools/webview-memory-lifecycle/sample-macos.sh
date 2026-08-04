@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Sample ThreadTerm + WebKit helper process memory on macOS.
-# Read-only: does not launch the app or create windows.
+# Read-only ThreadTerm process-tree RSS sampler for macOS Release acceptance.
 set -euo pipefail
 
 LABEL="${1:-sample}"
@@ -9,6 +8,9 @@ shift || true
 SETTLE_CSV=""
 OUT_DIR="docs/artifacts/webview-memory-lifecycle"
 APP_NAME="ThreadTerm"
+APP_DIAGNOSTICS=""
+BUILD_KIND="Release"
+SCENARIO=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -24,6 +26,18 @@ while [[ $# -gt 0 ]]; do
       APP_NAME="${2:-}"
       shift 2
       ;;
+    --app-diagnostics)
+      APP_DIAGNOSTICS="${2:-}"
+      shift 2
+      ;;
+    --build-kind)
+      BUILD_KIND="${2:-}"
+      shift 2
+      ;;
+    --scenario)
+      SCENARIO="${2:-}"
+      shift 2
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 2
@@ -31,182 +45,258 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-mkdir -p "$OUT_DIR"
-STAMP="$(date -u +%Y%m%d-%H%M%S)"
-SAFE_LABEL="$(printf '%s' "$LABEL" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-//;s/-$//')"
-if [[ -z "$SAFE_LABEL" ]]; then
-  SAFE_LABEL="sample"
+case "$BUILD_KIND" in
+  Release|Debug|Unknown) ;;
+  *)
+    echo "--build-kind must be Release, Debug, or Unknown" >&2
+    exit 2
+    ;;
+esac
+
+COMMIT=""
+if command -v git >/dev/null 2>&1; then
+  COMMIT="$(git rev-parse HEAD 2>/dev/null || true)"
 fi
 
-json_escape() {
-  python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()[:-1] if False else sys.argv[1]))' "$1"
-}
-
-collect_sample() {
-  local sample_label="$1"
-  local settle="${2:-null}"
-
-  python3 - "$APP_NAME" "$sample_label" "$settle" <<'PY'
-import json, subprocess, sys, time
+python3 - "$LABEL" "$SETTLE_CSV" "$OUT_DIR" "$APP_NAME" "$APP_DIAGNOSTICS" "$BUILD_KIND" "$SCENARIO" "$COMMIT" <<'PY'
+import json
+import os
+import re
+import subprocess
+import sys
+import time
 from datetime import datetime, timezone
 
-app_name, sample_label, settle = sys.argv[1], sys.argv[2], sys.argv[3]
-settle_val = None if settle in ("", "null", "None") else int(settle)
+label, settle_csv, out_dir, app_name, diagnostics_path, build_kind, scenario, commit = sys.argv[1:]
+safe_label = re.sub(r"[^A-Za-z0-9._-]+", "-", label).strip("-") or "sample"
+os.makedirs(out_dir, exist_ok=True)
 
-def run(cmd):
-    return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+app_diagnostics = None
+if diagnostics_path:
+    with open(diagnostics_path, "r", encoding="utf-8") as handle:
+        app_diagnostics = json.load(handle)
+    if app_diagnostics.get("kind") != "threadterm-lifecycle-diagnostics":
+        raise SystemExit(f"Unexpected app diagnostics kind in {diagnostics_path}")
 
-# Collect processes: ThreadTerm and WebKit helpers whose parent chain includes it.
-try:
-    ps = run(["ps", "-axo", "pid=,ppid=,rss=,comm="])
-except subprocess.CalledProcessError:
-    ps = ""
 
-rows = []
-for line in ps.splitlines():
-    line = line.strip()
-    if not line:
-        continue
-    parts = line.split(None, 3)
-    if len(parts) < 4:
-        continue
-    pid, ppid, rss, comm = int(parts[0]), int(parts[1]), int(parts[2]), parts[3]
-    rows.append({"pid": pid, "ppid": ppid, "rssKb": rss, "comm": comm})
+def utc_now():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-by_pid = {r["pid"]: r for r in rows}
-app_pids = {r["pid"] for r in rows if app_name.lower() in r["comm"].lower() or r["comm"].endswith("threadterm")}
 
-def rooted_in_app(pid, depth=0):
-    if pid in app_pids:
-        return True
-    if depth > 8:
-        return False
-    row = by_pid.get(pid)
-    if not row:
-        return False
-    if row["ppid"] in app_pids:
-        return True
-    return rooted_in_app(row["ppid"], depth + 1)
+def run(command):
+    return subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL)
 
-def role_for(comm: str) -> str:
-    c = comm.lower()
-    if "webcontent" in c:
-        return "WEBCONTENT"
-    if "gpu" in c:
-        return "GPU"
-    if "network" in c:
-        return "NETWORK"
-    if "webkit" in c:
-        return "WEBKIT"
-    if "threadterm" in c or app_name.lower() in c:
-        return "APP"
-    return "OTHER"
 
-selected = []
-for r in rows:
-    if r["pid"] in app_pids or rooted_in_app(r["pid"]):
-        if r["pid"] in app_pids or any(k in r["comm"].lower() for k in ("webkit", "webcontent", "gpu", "network")):
-            selected.append({
-                "pid": r["pid"],
-                "ppid": r["ppid"],
-                "role": role_for(r["comm"]),
-                "comm": r["comm"],
-                "rssKb": r["rssKb"],
-                "rssMb": round(r["rssKb"] / 1024.0, 1),
-            })
+def classify(name, command):
+    name_lower = name.lower()
+    text = command.lower()
+    if "webcontent" in text:
+        return "WEBVIEW_WEBCONTENT"
+    if "webkit" in text and "gpu" in text:
+        return "WEBVIEW_GPU"
+    if "webkit" in text and "network" in text:
+        return "WEBVIEW_NETWORK"
+    if "webkit" in text:
+        return "WEBVIEW_OTHER"
+    if "claude-host" in text or "threadterm_claude_sidecar" in text:
+        return "CLAUDE_HOST"
+    if name_lower == "claude" or re.search(r"(?:^|[/\s])claude(?:\s|$)", text):
+        return "CLAUDE_CLI"
+    if (name_lower == "codex" or re.search(r"(?:^|[/\s])codex(?:\s|$)", text)) and "app-server" in text:
+        return "CODEX_APP_SERVER"
+    if name_lower == "codex" or re.search(r"(?:^|[/\s])codex(?:\s|$)", text):
+        return "CODEX_CLI"
+    return "PTY_CHILD"
 
-app_rss = sum(x["rssKb"] for x in selected if x["role"] == "APP")
-helper_rss = sum(x["rssKb"] for x in selected if x["role"] != "APP")
-by_role = {}
-for role in ("APP", "WEBCONTENT", "GPU", "NETWORK", "WEBKIT", "OTHER"):
-    members = [x for x in selected if x["role"] == role]
-    total = sum(x["rssKb"] for x in members)
-    by_role[role] = {
-        "count": len(members),
-        "rssKb": total,
-        "rssMb": round(total / 1024.0, 1),
+
+def collect(sample_label, settle_seconds):
+    try:
+        output = run(["ps", "-axo", "pid=,ppid=,rss=,comm=,args="])
+    except subprocess.CalledProcessError:
+        output = ""
+
+    rows = []
+    for line in output.splitlines():
+        parts = line.strip().split(None, 4)
+        if len(parts) < 4:
+            continue
+        pid, ppid, rss = map(int, parts[:3])
+        command_name = parts[3]
+        args = parts[4] if len(parts) > 4 else command_name
+        rows.append({
+            "pid": pid,
+            "ppid": ppid,
+            "rssKb": rss,
+            "name": os.path.basename(command_name),
+            "command": args,
+        })
+
+    by_pid = {row["pid"]: row for row in rows}
+    app_name_lower = app_name.lower()
+    app_ids = {
+        row["pid"]
+        for row in rows
+        if app_name_lower in row["name"].lower() or row["name"].lower() == "threadterm"
     }
 
-sample = {
-    "schemaVersion": 1,
-    "kind": "threadterm-webview-memory-sample",
-    "platform": "macos",
-    "label": sample_label,
-    "settleSeconds": settle_val,
-    "capturedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    "filter": {
-        "appName": app_name,
-        "metric": "rss-kb-from-ps",
-        "note": "RSS is not identical to Windows private working set; compare like-for-like on the same Mac only.",
-    },
-    "processes": selected,
-    "totals": {
-        "appRssKb": app_rss,
-        "appRssMb": round(app_rss / 1024.0, 1),
-        "helperRssKb": helper_rss,
-        "helperRssMb": round(helper_rss / 1024.0, 1),
-        "appGroupRssKb": app_rss + helper_rss,
-        "appGroupRssMb": round((app_rss + helper_rss) / 1024.0, 1),
-        "processCount": len(selected),
-        "webContentCount": by_role["WEBCONTENT"]["count"],
-        "gpuCount": by_role["GPU"]["count"],
-    },
-    "byRole": by_role,
-    "notes": [
-        "Read-only sample via ps; does not create windows.",
-        "Paste window.__threadtermLifecycleDiagnostics() separately as appDiagnostics.",
-    ],
-}
-print(json.dumps(sample, ensure_ascii=True))
-PY
-}
+    def rooted_in_app(process_id):
+        seen = set()
+        current = process_id
+        for _ in range(32):
+            if current in app_ids:
+                return True
+            if current in seen or current not in by_pid:
+                return False
+            seen.add(current)
+            parent = by_pid[current]["ppid"]
+            if parent <= 0 or parent == current:
+                return False
+            current = parent
+        return False
 
-SAMPLES_JSON="[]"
-if [[ -z "$SETTLE_CSV" ]]; then
-  SAMPLES_JSON="[$(collect_sample "$SAFE_LABEL" null)]"
-else
-  IFS=',' read -r -a settles <<< "$SETTLE_CSV"
-  first=1
-  SAMPLES_JSON="["
-  for wait in "${settles[@]}"; do
-    wait_trim="$(echo "$wait" | tr -d '[:space:]')"
-    if [[ -n "$wait_trim" && "$wait_trim" -gt 0 ]]; then
-      echo "Settling ${wait_trim}s before sample '$SAFE_LABEL'..."
-      sleep "$wait_trim"
-    fi
-    sample_json="$(collect_sample "${SAFE_LABEL}-t${wait_trim}s" "$wait_trim")"
-    if [[ $first -eq 1 ]]; then
-      SAMPLES_JSON+="$sample_json"
-      first=0
-    else
-      SAMPLES_JSON+=",$sample_json"
-    fi
-  done
-  SAMPLES_JSON+="]"
-fi
+    selected = []
+    for row in rows:
+        if row["pid"] in app_ids:
+            role = "THREADTERM_MAIN"
+        elif rooted_in_app(row["pid"]):
+            role = classify(row["name"], row["command"])
+        else:
+            continue
+        # Do not persist command lines; they may contain user paths or prompts.
+        selected.append({
+            "pid": row["pid"],
+            "ppid": row["ppid"],
+            "name": row["name"],
+            "role": role,
+            "rssKb": row["rssKb"],
+            "rssMb": round(row["rssKb"] / 1024.0, 1),
+            "metricSource": "ps-rss-kb",
+        })
 
-OUT_PATH="$OUT_DIR/${SAFE_LABEL}-${STAMP}.json"
-python3 - "$OUT_PATH" "$SAFE_LABEL" "$SAMPLES_JSON" <<'PY'
-import json, sys
-from datetime import datetime, timezone
-out_path, label, samples_raw = sys.argv[1], sys.argv[2], sys.argv[3]
-samples = json.loads(samples_raw)
-doc = {
-    "schemaVersion": 1,
-    "kind": "threadterm-webview-memory-sample-set",
-    "label": label,
-    "capturedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    "machine": {"platform": "macos"},
+    roles = (
+        "THREADTERM_MAIN",
+        "WEBVIEW_WEBCONTENT", "WEBVIEW_GPU", "WEBVIEW_NETWORK", "WEBVIEW_OTHER",
+        "CLAUDE_HOST", "CLAUDE_CLI", "CODEX_APP_SERVER", "CODEX_CLI", "PTY_CHILD",
+    )
+    by_role = {}
+    for role in roles:
+        members = [item for item in selected if item["role"] == role]
+        rss_kb = sum(item["rssKb"] for item in members)
+        by_role[role] = {
+            "count": len(members),
+            "rssKb": rss_kb,
+            "rssMb": round(rss_kb / 1024.0, 1),
+        }
+
+    app_rss = by_role["THREADTERM_MAIN"]["rssKb"]
+    webview_roles = ("WEBVIEW_WEBCONTENT", "WEBVIEW_GPU", "WEBVIEW_NETWORK", "WEBVIEW_OTHER")
+    webview_rss = sum(by_role[role]["rssKb"] for role in webview_roles)
+    child_rss = sum(
+        by_role[role]["rssKb"]
+        for role in ("CLAUDE_HOST", "CLAUDE_CLI", "CODEX_APP_SERVER", "CODEX_CLI", "PTY_CHILD")
+    )
+    app_group_rss = app_rss + webview_rss
+    owned_group_rss = app_group_rss + child_rss
+
+    return {
+        "schemaVersion": 2,
+        "kind": "threadterm-memory-sample",
+        "platform": "macos",
+        "label": sample_label,
+        "scenario": scenario,
+        "settleSeconds": settle_seconds,
+        "capturedAt": utc_now(),
+        "filter": {
+            "appName": app_name,
+            "appChildSelection": "threadterm-process-tree",
+            "metric": "rss-kb-from-ps",
+            "note": "RSS differs from Windows private working set; compare like-for-like on the same Mac only.",
+        },
+        "processes": selected,
+        "totals": {
+            "mainRssKb": app_rss,
+            "mainRssMb": round(app_rss / 1024.0, 1),
+            "webviewRssKb": webview_rss,
+            "webviewRssMb": round(webview_rss / 1024.0, 1),
+            "appGroupRssKb": app_group_rss,
+            "appGroupRssMb": round(app_group_rss / 1024.0, 1),
+            "childRssKb": child_rss,
+            "childRssMb": round(child_rss / 1024.0, 1),
+            "ownedProcessGroupRssKb": owned_group_rss,
+            "ownedProcessGroupRssMb": round(owned_group_rss / 1024.0, 1),
+            "processCount": len(selected),
+            "webContentCount": by_role["WEBVIEW_WEBCONTENT"]["count"],
+            "rendererCount": by_role["WEBVIEW_WEBCONTENT"]["count"],
+            "claudeHostCount": by_role["CLAUDE_HOST"]["count"],
+            "claudeCliCount": by_role["CLAUDE_CLI"]["count"],
+            "codexAppServerCount": by_role["CODEX_APP_SERVER"]["count"],
+            "codexCliCount": by_role["CODEX_CLI"]["count"],
+            "ptyChildCount": by_role["PTY_CHILD"]["count"],
+        },
+        "byRole": by_role,
+        "appDiagnostics": app_diagnostics,
+        "notes": [
+            "Read-only sample via ps; does not create windows.",
+            "Raw command lines are used only for classification and are not persisted.",
+        ],
+    }
+
+
+if settle_csv:
+    try:
+        settle_targets = sorted({int(value.strip()) for value in settle_csv.split(",") if value.strip()})
+    except ValueError as error:
+        raise SystemExit(f"Invalid --settle value: {error}")
+    if any(value < 0 for value in settle_targets):
+        raise SystemExit("--settle cannot contain negative values")
+else:
+    settle_targets = [None]
+
+samples = []
+elapsed = 0
+for target in settle_targets:
+    if target is not None:
+        delay = target - elapsed
+        if delay > 0:
+            print(f"Settling to T+{target}s before sample '{safe_label}'...")
+            time.sleep(delay)
+        sample_label = f"{safe_label}-t{target}s"
+        elapsed = target
+    else:
+        sample_label = safe_label
+    sample = collect(sample_label, target)
+    samples.append(sample)
+    totals = sample["totals"]
+    print(
+        f"[{sample_label}] main={totals['mainRssMb']} MB webview={totals['webviewRssMb']} MB "
+        f"children={totals['childRssMb']} MB owned={totals['ownedProcessGroupRssMb']} MB "
+        f"claude={totals['claudeHostCount']}/{totals['claudeCliCount']} "
+        f"codex={totals['codexAppServerCount']}/{totals['codexCliCount']} pty={totals['ptyChildCount']}"
+    )
+
+app_values = [sample["totals"]["appGroupRssKb"] for sample in samples]
+owned_values = [sample["totals"]["ownedProcessGroupRssKb"] for sample in samples]
+document = {
+    "schemaVersion": 2,
+    "kind": "threadterm-memory-sample-set",
+    "label": safe_label,
+    "scenario": scenario,
+    "capturedAt": utc_now(),
+    "build": {"kind": build_kind, "commit": commit or None},
+    "machine": {"platform": "macos", "logicalProcessorCount": os.cpu_count()},
+    "observed": {
+        "sampleCount": len(samples),
+        "peakAppGroupRssKb": max(app_values),
+        "peakOwnedProcessGroupRssKb": max(owned_values),
+        "finalAppGroupRssKb": app_values[-1],
+        "finalOwnedProcessGroupRssKb": owned_values[-1],
+    },
     "samples": samples,
 }
-with open(out_path, "w", encoding="utf-8") as fh:
-    json.dump(doc, fh, indent=2)
-    fh.write("\n")
-for sample in samples:
-    t = sample["totals"]
-    print(
-        f"[{sample['label']}] app={t['appRssMb']} MB  helpers={t['helperRssMb']} MB  "
-        f"group={t['appGroupRssMb']} MB  processes={t['processCount']} webcontent={t['webContentCount']}"
-    )
+stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+out_path = os.path.join(out_dir, f"{safe_label}-{stamp}.json")
+with open(out_path, "w", encoding="utf-8") as handle:
+    json.dump(document, handle, indent=2)
+    handle.write("\n")
 print(f"Wrote {out_path}")
 PY

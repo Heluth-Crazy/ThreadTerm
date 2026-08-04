@@ -25,19 +25,19 @@
 
 ### S0 Cold start
 
-| Settle | App private MB | WebView private MB | Renderers | Surfaces mounted | Notes |
-| --- | ---: | ---: | ---: | ---: | --- |
-| 5s | | | | | |
-| 30s | | | | | |
-| 120s | | | | | |
-
-### S1 Hot 37 cards
-
-| Settle | App | WebView | PTY | Mounted xterm | Chat items | Editors |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Settle | App private MB | WebView private MB | Owned group MB | Renderers | Surfaces mounted | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
 | 5s | | | | | | |
 | 30s | | | | | | |
 | 120s | | | | | | |
+
+### S1 Hot 37 cards
+
+| Settle | App | WebView | Owned group | Claude host/CLI | Codex server/CLI | PTY | Mounted xterm | Chat items | Editors |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 5s | | | | | | | | | | |
+| 30s | | | | | | | | | | |
+| 120s | | | | | | | | | | |
 
 ### S2 Six terminal focus
 
@@ -65,6 +65,8 @@
 
 Growth check: round20_120s ≤ 1.10 × round1_120s? `YES / NO / NOT RUN`
 
+Calculated slope from `analysis.md` (MB/round):
+
 ### S5 Overlay windows
 
 | Window | Open MB | Closed +5s | +30s | +120s / +70s float | State |
@@ -82,6 +84,7 @@ Growth check: round20_120s ≤ 1.10 × round1_120s? `YES / NO / NOT RUN`
 | Claude mounted rows | |
 | Codex mounted rows | |
 | Hidden chat notifications OK? | |
+| Claude cleanup pending / failed / retry | |
 
 ## Terminal restore latency (Batch 2+)
 
@@ -123,4 +126,5 @@ Artifact paths:
 
 - process samples:
 - app diagnostics:
+- generated analysis:
 - notes:

@@ -22,15 +22,15 @@ Do **not** use `tauri dev` or Debug for acceptance numbers.
 ```sh
 chmod +x tools/webview-memory-lifecycle/sample-macos.sh
 ./tools/webview-memory-lifecycle/sample-macos.sh cold-start-t0
-./tools/webview-memory-lifecycle/sample-macos.sh hot-state --settle 5,30,120
+./tools/webview-memory-lifecycle/sample-macos.sh hot-state \
+  --scenario S1 --settle 0,5,30,120 --app-diagnostics hot-state-app.json
 ```
 
 The script records:
 
-- `ThreadTerm` app process RSS / footprint when available
-- child `com.apple.WebKit.WebContent`, `GPU`, and related helper processes that
-  share the app's process group / parent PID
-- process counts by role
+- `ThreadTerm` app RSS and descendant WebKit roles
+- Claude host/CLI, Codex app-server/CLI, and PTY descendants
+- process counts and RSS by role, without persisting raw command lines
 
 ## App diagnostics
 
@@ -40,7 +40,8 @@ In the main window Web Inspector:
 copy(JSON.stringify(window.__threadtermLifecycleDiagnostics?.(), null, 2))
 ```
 
-Save alongside the shell sample JSON.
+Save as JSON and pass it with `--app-diagnostics`; the sampler validates and
+embeds it in the matching samples.
 
 ## NSPanel / overlay notes
 
@@ -60,6 +61,13 @@ task complete (Batch 6):
 - 20-round slope check
 - Terminal restore correctness after cold surfaces (Batch 1/2 contract)
 - selector / float / settings behavior parity with Windows product semantics
+
+Generate the same calculated report after the pass:
+
+```sh
+npm run memory:analyze -- docs/artifacts/webview-memory-lifecycle/macos-release \
+  --out docs/artifacts/webview-memory-lifecycle/macos-release/analysis.md
+```
 
 ## Report fields
 

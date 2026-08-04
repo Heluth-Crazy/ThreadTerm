@@ -11,8 +11,8 @@ home directories, tokens, or message text into reports.
 1. Build Release for the platform under test.
 2. Launch ThreadTerm Release (not `cargo run` / not Vite-only).
 3. Confirm the app is ready (main window interactive).
-4. For each sample, run the platform sampler and capture
-   `window.__threadtermLifecycleDiagnostics()`.
+4. For each sample, save `window.__threadtermLifecycleDiagnostics()` and pass it
+   to the platform sampler (`-AppDiagnosticsPath` / `--app-diagnostics`).
 5. After disruptive operations, wait the listed settle window before sampling.
 
 ## S0 — Cold start
@@ -90,8 +90,9 @@ round-1 120 s stable; no linear climb across rounds.
 
 From process sampler:
 
-- `appGroupPrivateMb` / `webviewPrivateMb` / per-role private MB
-- process counts (renderer/GPU/utility/browser)
+- `appGroupPrivateMb` / `webviewPrivateMb` / `ownedProcessGroupPrivateMb`
+- process counts and memory for renderer/GPU/utility/browser, Claude host/CLI,
+  Codex app-server/CLI, and PTY children
 - main process private MB
 
 From `window.__threadtermLifecycleDiagnostics()`:
@@ -103,6 +104,7 @@ From `window.__threadtermLifecycleDiagnostics()`:
 - selector / float / settings lifecycle state (if known)
 - CodeMirror / editor instance estimates
 - Claude/Codex mounted item counts and pending requests
+- Claude cleanup pending/failed/succeeded/retry counters
 
 ## Pass / fail for Batch 0
 
@@ -110,7 +112,7 @@ Batch 0 only establishes the pipeline and pre-optimization baselines.
 It **must not** change product behavior. Completion means:
 
 - scripts and templates land in-repo
-- at least one full Windows Release S0–S4 sample set is saved under
+- at least one full Windows Release S0–S4 sample set and generated analysis are saved under
   `docs/artifacts/webview-memory-lifecycle/` (or a documented blocker if the
   operator cannot run Release on this machine)
 - macOS steps are written so a macOS operator can produce the same fields
