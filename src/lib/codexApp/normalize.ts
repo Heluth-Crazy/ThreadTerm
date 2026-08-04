@@ -73,7 +73,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         kind: 'user',
         title: 'User',
         body: normalizeUserContent(raw.content),
-        raw,
+        raw: null,
       };
     case 'agentMessage':
       return {
@@ -82,7 +82,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         title: 'Codex',
         body: asString(raw.text) ?? '',
         status: asString(raw.phase),
-        raw,
+        raw: null,
       };
     case 'reasoning':
       return {
@@ -90,7 +90,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         kind: 'reasoning',
         title: 'Reasoning',
         body: normalizeStringList(raw.summary) || normalizeStringList(raw.content),
-        raw,
+        raw: null,
       };
     case 'plan':
       return {
@@ -98,7 +98,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         kind: 'plan',
         title: 'Plan',
         body: asString(raw.text) ?? '',
-        raw,
+        raw: null,
       };
     case 'commandExecution':
       return {
@@ -107,7 +107,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         title: asString(raw.command) ?? 'Command',
         body: asString(raw.aggregatedOutput) ?? '',
         status: asString(raw.status),
-        raw,
+        raw: null,
       };
     case 'fileChange':
       return {
@@ -116,7 +116,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         title: 'File changes',
         body: summarizeFileChanges(raw.changes),
         status: asString(raw.status),
-        raw,
+        raw: null,
       };
     case 'mcpToolCall':
       return {
@@ -125,7 +125,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         title: [asString(raw.server), asString(raw.tool)].filter(Boolean).join(' / ') || 'MCP tool',
         body: summarizeToolBody(raw.result, raw.error, raw.arguments),
         status: asString(raw.status),
-        raw,
+        raw: null,
       };
     case 'dynamicToolCall':
       return {
@@ -134,7 +134,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         title: [asString(raw.namespace), asString(raw.tool)].filter(Boolean).join(' / ') || 'Tool call',
         body: summarizeToolBody(raw.contentItems, null, raw.arguments),
         status: asString(raw.status),
-        raw,
+        raw: null,
       };
     case 'collabAgentToolCall':
       return {
@@ -143,7 +143,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         title: `Agent ${asString(raw.tool) ?? 'tool'}`,
         body: asString(raw.prompt) ?? summarizeJson(raw.agentsStates),
         status: asString(raw.status),
-        raw,
+        raw: null,
       };
     case 'webSearch':
       return {
@@ -151,7 +151,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         kind: 'search',
         title: 'Web search',
         body: asString(raw.query) ?? '',
-        raw,
+        raw: null,
       };
     case 'imageView':
       return {
@@ -159,7 +159,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         kind: 'system',
         title: 'Image',
         body: asString(raw.path) ?? '',
-        raw,
+        raw: null,
       };
     case 'imageGeneration':
       return {
@@ -168,7 +168,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         title: 'Image generation',
         body: asString(raw.revisedPrompt) ?? asString(raw.result) ?? '',
         status: asString(raw.status),
-        raw,
+        raw: null,
       };
     case 'contextCompaction':
       return {
@@ -176,7 +176,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         kind: 'system',
         title: 'Context compacted',
         body: '',
-        raw,
+        raw: null,
       };
     case 'enteredReviewMode':
     case 'exitedReviewMode':
@@ -185,7 +185,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         kind: 'system',
         title: type === 'enteredReviewMode' ? 'Entered review mode' : 'Exited review mode',
         body: asString(raw.review) ?? '',
-        raw,
+        raw: null,
       };
     default:
       return {
@@ -193,7 +193,7 @@ export function normalizeCodexItem(raw: unknown): CodexDisplayItem {
         kind: 'unknown',
         title: type,
         body: summarizeJson(raw),
-        raw,
+        raw: null,
       };
   }
 }
@@ -302,6 +302,6 @@ function unknownItem(raw: unknown): CodexDisplayItem {
     kind: 'unknown',
     title: 'Unknown',
     body: summarizeJson(raw),
-    raw,
+    raw: null,
   };
 }

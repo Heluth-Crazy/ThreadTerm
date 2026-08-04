@@ -278,6 +278,7 @@ pub fn run() {
             overlay::overlay_update_shortcut,
         ])
         .run(tauri::generate_context!());
+    tauri::async_runtime::block_on(claude_chat::shutdown());
     let audit = db::shutdown_audit_writer(std::time::Duration::from_secs(2));
     if audit.failed > 0 || audit.dropped > 0 || audit.pending > 0 || audit.shutdown_timeouts > 0 {
         tracing::warn!(

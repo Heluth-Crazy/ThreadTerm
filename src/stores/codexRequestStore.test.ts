@@ -28,6 +28,7 @@ describe('codexRequestStore', () => {
       threadId: 'thread-a',
       createdAt: 42,
       notificationId: null,
+      raw: null,
     });
     expect(duplicate).toBeNull();
 

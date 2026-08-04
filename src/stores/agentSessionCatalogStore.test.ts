@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useAgentSessionCatalogStore } from './agentSessionCatalogStore';
+import {
+  AGENT_SESSION_CATALOG_MAX_ROWS_PER_PROVIDER,
+  getAgentSessionCatalogDiagnostics,
+  useAgentSessionCatalogStore,
+} from './agentSessionCatalogStore';
 
 const listAgentSessions = vi.fn();
 
@@ -121,5 +125,34 @@ describe('useAgentSessionCatalogStore', () => {
     expect(useAgentSessionCatalogStore.getState().getSelectedSummaries()).toEqual([
       expect.objectContaining({ id: 'selected-session' }),
     ]);
+  });
+
+  it('keeps provider rows bounded and exposes catalog diagnostics', async () => {
+    listAgentSessions.mockResolvedValue({
+      provider: 'claude',
+      availability: 'available',
+      items: Array.from({ length: AGENT_SESSION_CATALOG_MAX_ROWS_PER_PROVIDER + 25 }, (_, index) => ({
+        provider: 'claude',
+        id: `session-${index}`,
+        projectPath: `/repo/${index}`,
+        titleKind: 'firstPrompt',
+        firstUserMessagePreview: `preview-${index}`,
+        resumable: true,
+      })),
+      nextCursor: 'next',
+      scannedAt: 1,
+    });
+
+    await useAgentSessionCatalogStore.getState().ensureLoaded('claude');
+
+    expect(useAgentSessionCatalogStore.getState().providers.claude.items).toHaveLength(
+      AGENT_SESSION_CATALOG_MAX_ROWS_PER_PROVIDER,
+    );
+    expect(getAgentSessionCatalogDiagnostics()).toMatchObject({
+      rowCount: AGENT_SESSION_CATALOG_MAX_ROWS_PER_PROVIDER,
+      maxRowCount: AGENT_SESSION_CATALOG_MAX_ROWS_PER_PROVIDER * 6,
+      selectedSummaryCount: 0,
+    });
+    expect(getAgentSessionCatalogDiagnostics().estimatedBytes).toBeGreaterThan(0);
   });
 });

@@ -43,6 +43,23 @@ export interface WorkspaceEditorDiagnostics {
   activeTabCount: number;
   /** Live CodeMirror / merge editors when reporters are wired. */
   liveEditorInstanceCount: number | null;
+  maxWarmCleanEditorViews: number;
+  directoryCacheEntryCount: number;
+  directoryCacheEstimatedBytes: number;
+  directoryCacheMaxEntries: number;
+  directoryCacheMaxEstimatedBytes: number;
+  directoryCacheEvictionCount: number;
+  changesCacheEntryCount: number;
+  changesCacheEstimatedBytes: number;
+  changesCacheMaxEntries: number;
+  changesCacheMaxEstimatedBytes: number;
+  changesCacheEvictionCount: number;
+  agentCatalogRowCount: number;
+  agentCatalogMaxRowCount: number;
+  agentCatalogEstimatedBytes: number;
+  agentCatalogSelectedSummaryCount: number;
+  agentMetadataCacheEntryCount: number;
+  agentMetadataCacheMaxEntries: number;
 }
 
 export interface ChatDiagnostics {
@@ -51,8 +68,17 @@ export interface ChatDiagnostics {
   claudePendingRequestCount: number;
   codexCardCount: number;
   codexPendingRequestCount: number;
-  /** Mounted React rows when virtualization is active; null until Batch 5. */
+  /** Mounted React rows; null only when no live diagnostics publisher is mounted. */
   mountedMessageRowCount: number | null;
+  claudeMountedMessageRowCount: number;
+  codexMountedMessageRowCount: number;
+  authoritativeMessageCount: number;
+  conversationViewCount: number;
+  mountedRowsPerViewLimit: number;
+  claudeCleanupPendingCount: number;
+  claudeCleanupFailedCount: number;
+  claudeCleanupSucceededCount: number;
+  claudeCleanupRetryCount: number;
 }
 
 export interface BridgeRuntimeDiagnostics {
@@ -122,6 +148,23 @@ const DEFAULT_WORKSPACE: WorkspaceEditorDiagnostics = {
   dirtyTabCount: 0,
   activeTabCount: 0,
   liveEditorInstanceCount: null,
+  maxWarmCleanEditorViews: 2,
+  directoryCacheEntryCount: 0,
+  directoryCacheEstimatedBytes: 0,
+  directoryCacheMaxEntries: 128,
+  directoryCacheMaxEstimatedBytes: 4 * 1024 * 1024,
+  directoryCacheEvictionCount: 0,
+  changesCacheEntryCount: 0,
+  changesCacheEstimatedBytes: 0,
+  changesCacheMaxEntries: 16,
+  changesCacheMaxEstimatedBytes: 2 * 1024 * 1024,
+  changesCacheEvictionCount: 0,
+  agentCatalogRowCount: 0,
+  agentCatalogMaxRowCount: 2_400,
+  agentCatalogEstimatedBytes: 0,
+  agentCatalogSelectedSummaryCount: 0,
+  agentMetadataCacheEntryCount: 0,
+  agentMetadataCacheMaxEntries: 512,
 };
 
 const DEFAULT_CHAT: ChatDiagnostics = {
@@ -131,6 +174,15 @@ const DEFAULT_CHAT: ChatDiagnostics = {
   codexCardCount: 0,
   codexPendingRequestCount: 0,
   mountedMessageRowCount: null,
+  claudeMountedMessageRowCount: 0,
+  codexMountedMessageRowCount: 0,
+  authoritativeMessageCount: 0,
+  conversationViewCount: 0,
+  mountedRowsPerViewLimit: 160,
+  claudeCleanupPendingCount: 0,
+  claudeCleanupFailedCount: 0,
+  claudeCleanupSucceededCount: 0,
+  claudeCleanupRetryCount: 0,
 };
 
 const DEFAULT_BRIDGE: BridgeRuntimeDiagnostics = {

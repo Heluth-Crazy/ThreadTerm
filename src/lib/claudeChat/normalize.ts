@@ -49,7 +49,7 @@ export function createClaudeUserItem(
     kind: 'user',
     title: 'You',
     body: text,
-    raw: { type: 'user', text },
+    raw: null,
   };
 }
 
@@ -107,7 +107,7 @@ function applyAssistantMessage(
         title: 'Claude',
         body: text,
         status: null,
-        raw: rawBlock,
+        raw: null,
       });
       return;
     }
@@ -123,7 +123,7 @@ function applyAssistantMessage(
         title: 'Thinking',
         body: thinking,
         status: null,
-        raw: rawBlock,
+        raw: null,
       });
       return;
     }
@@ -137,7 +137,7 @@ function applyAssistantMessage(
         title: asString(rawBlock.name) ?? 'Tool',
         body: stringifyClaudeValue(rawBlock.input),
         status: 'running',
-        raw: rawBlock,
+        raw: null,
       });
     }
   });
@@ -165,7 +165,7 @@ function applyStreamEvent(
     title: 'Claude',
     body: '',
     status: 'streaming',
-    raw: sdkMessage,
+    raw: null,
   });
 }
 
@@ -193,7 +193,7 @@ function applyToolResults(
         .filter(Boolean)
         .join('\n\n'),
       status: rawBlock.is_error === true ? 'error' : 'ok',
-      raw: rawBlock,
+      raw: null,
     });
   });
   return next;
@@ -222,7 +222,7 @@ function resultItem(
     title: subtype,
     body: summary,
     status: message.is_error === true || subtype === 'error' ? 'error' : 'ok',
-    raw: message,
+    raw: null,
   };
 }
 
@@ -236,7 +236,7 @@ function systemItem(message: Record<string, unknown>): ClaudeDisplayItem {
     title: subtype === 'init' ? 'Session ready' : subtype,
     body: [sessionId, model].filter(Boolean).join(' · '),
     status: null,
-    raw: message,
+    raw: null,
   };
 }
 

@@ -20,6 +20,8 @@ const claudeMock = vi.hoisted(() => ({
   send: vi.fn(),
   interrupt: vi.fn(),
   decide: vi.fn(),
+  stop: vi.fn(),
+  history: vi.fn(),
 }));
 
 const terminalStoreMock = vi.hoisted(() => ({
@@ -49,6 +51,8 @@ vi.mock('../../lib/claudeChat/api', () => ({
     send: claudeMock.send,
     interrupt: claudeMock.interrupt,
     decide: claudeMock.decide,
+    stop: claudeMock.stop,
+    history: claudeMock.history,
     onEvent: vi.fn(async (listener: (payload: unknown) => void) => {
       claudeMock.eventListener = listener;
       return vi.fn();
@@ -94,6 +98,8 @@ beforeEach(() => {
   claudeMock.send.mockReset().mockResolvedValue(undefined);
   claudeMock.interrupt.mockReset().mockResolvedValue(undefined);
   claudeMock.decide.mockReset().mockResolvedValue(undefined);
+  claudeMock.stop.mockReset().mockResolvedValue(undefined);
+  claudeMock.history.mockReset().mockResolvedValue({ totalMessages: 0, messages: [] });
   terminalStoreMock.recordUserSubmit.mockReset();
   terminalStoreMock.markProviderSessionBound.mockReset();
   terminalStoreMock.updateCardReplyPreview.mockReset();
@@ -150,6 +156,64 @@ describe('ClaudeChatView', () => {
       'claude-card',
       'The issue is here.',
     );
+  });
+
+  it('hydrates persisted history before resuming a bound card', async () => {
+    claudeMock.history.mockResolvedValue({
+      totalMessages: 1_250,
+      messages: [
+        {
+          type: 'assistant',
+          message: {
+            id: 'historical-message',
+            content: [{ type: 'text', text: 'Persisted answer' }],
+          },
+        },
+      ],
+    });
+    const card = {
+      ...makeCard(),
+      providerSessionId: 'session-history',
+      providerSessionState: 'bound' as const,
+    };
+
+    render(<ClaudeChatView card={card} />);
+
+    await waitFor(() =>
+      expect(claudeMock.history).toHaveBeenCalledWith('session-history', 'D:/project/threadterm', 2_000),
+    );
+    expect(await screen.findByText('Persisted answer')).toBeInTheDocument();
+    expect(claudeMock.start).toHaveBeenCalledWith({
+      cardId: 'claude-card',
+      cwd: 'D:/project/threadterm',
+      sessionId: 'session-history',
+    });
+  });
+
+  it('mounts at most 160 history rows while keeping older pages reachable', async () => {
+    const messages = Array.from({ length: 1_001 }, (_, index) => ({
+      type: 'assistant',
+      message: {
+        id: `message-${index}`,
+        content: [{ type: 'text', text: `reply-${index}` }],
+      },
+    }));
+    const store = useClaudeChatStore.getState();
+    store.hydrateHistory('claude-card', messages, messages.length);
+    store.markStarted('claude-card');
+
+    const view = render(<ClaudeChatView card={makeCard()} />);
+
+    expect(await screen.findByText('reply-1000')).toBeInTheDocument();
+    expect(screen.queryByText('reply-0')).not.toBeInTheDocument();
+    expect(view.container.querySelectorAll('[class*="whitespace-pre-wrap"]').length).toBeLessThanOrEqual(160);
+
+    fireEvent.click(screen.getByTestId('conversation-window-older'));
+
+    expect(await screen.findByText('reply-840')).toBeInTheDocument();
+    expect(screen.queryByText('reply-1000')).not.toBeInTheDocument();
+    expect(screen.getByTestId('conversation-window-newer')).toBeInTheDocument();
+    expect(screen.getByTestId('conversation-window-latest')).toBeInTheDocument();
   });
 
   it('binds the ready session and resolves queued tool approval', async () => {

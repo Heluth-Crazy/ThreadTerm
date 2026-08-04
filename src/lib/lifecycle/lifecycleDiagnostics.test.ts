@@ -21,6 +21,16 @@ describe('lifecycleDiagnostics', () => {
     expect(snapshot.terminalSurfaces.featureFlags.terminalSurfacePoolEnabled).toBe(true);
     expect(snapshot.xterm.registrationCount).toBe(0);
     expect(snapshot.overlays.selector).toBe('unknown');
+    expect(snapshot.workspace.maxWarmCleanEditorViews).toBe(2);
+    expect(snapshot.workspace.directoryCacheMaxEntries).toBe(128);
+    expect(snapshot.workspace.directoryCacheMaxEstimatedBytes).toBe(4 * 1024 * 1024);
+    expect(snapshot.workspace.changesCacheMaxEntries).toBe(16);
+    expect(snapshot.workspace.agentCatalogMaxRowCount).toBe(2_400);
+    expect(snapshot.workspace.agentMetadataCacheMaxEntries).toBe(512);
+    expect(snapshot.chat.claudeCleanupPendingCount).toBe(0);
+    expect(snapshot.chat.claudeCleanupFailedCount).toBe(0);
+    expect(snapshot.chat.mountedRowsPerViewLimit).toBe(160);
+    expect(snapshot.chat.mountedMessageRowCount).toBeNull();
   });
 
   it('merges publisher fragments without inventing windows', () => {

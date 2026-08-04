@@ -40,7 +40,9 @@ export const useCodexRequestStore = create<CodexRequestStore>((set, get) => ({
       threadId: codexRequestThreadId(payload.params),
       method: payload.method,
       params: payload.params,
-      raw: payload.raw,
+      // The full app-server envelope duplicates params and can contain large
+      // tool payloads. requestId/method/params are the authoritative live data.
+      raw: null,
       createdAt,
       notificationId: null,
     };

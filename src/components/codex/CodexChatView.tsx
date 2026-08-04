@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   Brain,
@@ -31,6 +31,12 @@ import {
 } from '../../lib/tauri-bridge';
 import type { PendingCodexRequest } from '../../lib/codexApp/pendingRequest';
 import { IconButton } from '../ui/icon-button';
+import { ConversationWindowControls } from '../chat/ConversationWindowControls';
+import {
+  deriveConversationWindow,
+  MAX_MOUNTED_CONVERSATION_ROWS,
+  publishMountedConversationRows,
+} from '../../lib/lifecycle/conversationWindow';
 import {
   appendDelta,
   asString,
@@ -92,6 +98,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
   const [threadId, setThreadId] = useState<string | null>(card.codexAppThreadId ?? null);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [items, setRenderedItems] = useState<CodexDisplayItem[]>([]);
+  const [conversationWindowEnd, setConversationWindowEnd] = useState<number | null>(null);
   const [input, setInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -104,6 +111,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
   const [menuIndex, setMenuIndex] = useState(0);
   const endRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const diagnosticsViewId = useId();
   const threadIdRef = useRef<string | null>(threadId);
   const activeRef = useRef(active);
   const itemsRef = useRef<CodexDisplayItem[]>([]);
@@ -135,6 +143,10 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
     () => pendingRequests.filter((request) => request.cardId === card.id),
     [card.id, pendingRequests],
   );
+  const conversationWindow = useMemo(
+    () => deriveConversationWindow(items, conversationWindowEnd),
+    [conversationWindowEnd, items],
+  );
   const updateItems = useCallback((
     update:
       | CodexDisplayItem[]
@@ -158,6 +170,7 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
     activeRef.current = active;
     if (active) {
       setRenderedItems(itemsRef.current);
+      setConversationWindowEnd(null);
     }
   }, [active]);
 
@@ -166,8 +179,28 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
   }, [card.id]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: 'end' });
-  }, [items.length, requests.length]);
+    if (conversationWindowEnd === null) {
+      endRef.current?.scrollIntoView({ block: 'end' });
+    }
+  }, [conversationWindowEnd, items.length, requests.length]);
+
+  useEffect(() => {
+    setConversationWindowEnd(null);
+  }, [card.id]);
+
+  useEffect(
+    () =>
+      publishMountedConversationRows(`codex:${diagnosticsViewId}`, {
+        provider: 'codex',
+        mountedCount: conversationWindow.items.length,
+        totalCount: conversationWindow.totalCount,
+      }),
+    [
+      conversationWindow.items.length,
+      conversationWindow.totalCount,
+      diagnosticsViewId,
+    ],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -709,7 +742,25 @@ export function CodexChatView({ card, active = true }: CodexChatViewProps) {
             </div>
           ) : (
             <div className="mx-auto flex max-w-3xl flex-col gap-6">
-              {items.map((item) => (
+              <ConversationWindowControls
+                startIndex={conversationWindow.startIndex}
+                endIndex={conversationWindow.endIndex}
+                totalCount={conversationWindow.totalCount}
+                hasOlder={conversationWindow.hasOlder}
+                hasNewer={conversationWindow.hasNewer}
+                onOlder={() => setConversationWindowEnd(conversationWindow.startIndex)}
+                onNewer={() => {
+                  const nextEnd = Math.min(
+                    conversationWindow.totalCount,
+                    conversationWindow.endIndex + MAX_MOUNTED_CONVERSATION_ROWS,
+                  );
+                  setConversationWindowEnd(
+                    nextEnd >= conversationWindow.totalCount ? null : nextEnd,
+                  );
+                }}
+                onLatest={() => setConversationWindowEnd(null)}
+              />
+              {conversationWindow.items.map((item) => (
                 <CodexItemRow key={item.id} item={item} />
               ))}
               {error && (

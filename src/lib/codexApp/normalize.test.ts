@@ -42,6 +42,7 @@ describe('codex app normalizer', () => {
       ['user', 'hello'],
       ['assistant', 'hi'],
     ]);
+    expect(items.every((item) => item.raw === null)).toBe(true);
   });
 
   it('normalizes command status and output', () => {

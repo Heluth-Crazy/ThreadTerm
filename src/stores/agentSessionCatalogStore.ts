@@ -21,7 +21,7 @@ export interface ProviderCatalogState {
   generation: number;
 }
 
-const MAX_ROWS_PER_PROVIDER = 400;
+export const AGENT_SESSION_CATALOG_MAX_ROWS_PER_PROVIDER = 400;
 
 function emptyProviderState(): ProviderCatalogState {
   return {
@@ -169,7 +169,7 @@ export const useAgentSessionCatalogStore = create<AgentSessionCatalogStore>((set
             ...latest,
             loadState: 'ready',
             availability: page.availability,
-            items: page.items.slice(0, MAX_ROWS_PER_PROVIDER),
+            items: page.items.slice(0, AGENT_SESSION_CATALOG_MAX_ROWS_PER_PROVIDER),
             nextCursor: page.nextCursor ?? null,
             warning: page.warning ?? null,
             errorMessage: null,
@@ -212,7 +212,7 @@ export const useAgentSessionCatalogStore = create<AgentSessionCatalogStore>((set
       const page = await fetchPage(provider, state.nextCursor, get().query);
       const latest = get().providers[provider];
       if (latest.generation !== generation) return;
-      const merged = [...latest.items, ...page.items].slice(0, MAX_ROWS_PER_PROVIDER);
+      const merged = [...latest.items, ...page.items].slice(0, AGENT_SESSION_CATALOG_MAX_ROWS_PER_PROVIDER);
       set({
         providers: {
           ...get().providers,
@@ -260,3 +260,36 @@ export const useAgentSessionCatalogStore = create<AgentSessionCatalogStore>((set
     return Array.from(get().selectedSummaries.values());
   },
 }));
+
+export interface AgentSessionCatalogDiagnostics {
+  rowCount: number;
+  maxRowCount: number;
+  selectedSummaryCount: number;
+  estimatedBytes: number;
+}
+
+function estimateSummaryBytes(summary: AgentSessionSummary): number {
+  return [
+    summary.provider,
+    summary.id,
+    summary.projectPath,
+    summary.nativeTitle,
+    summary.firstUserMessagePreview,
+    summary.gitBranch,
+    summary.sourceKind,
+    summary.parentSessionId,
+  ].reduce((bytes, value) => bytes + (value?.length ?? 0) * 2, 64);
+}
+
+/** Read-only catalog counters for Release memory diagnostics. */
+export function getAgentSessionCatalogDiagnostics(): AgentSessionCatalogDiagnostics {
+  const state = useAgentSessionCatalogStore.getState();
+  const providerStates = Object.values(state.providers);
+  const items = providerStates.flatMap((provider) => provider.items);
+  return {
+    rowCount: items.length,
+    maxRowCount: providerStates.length * AGENT_SESSION_CATALOG_MAX_ROWS_PER_PROVIDER,
+    selectedSummaryCount: state.selectedSummaries.size,
+    estimatedBytes: items.reduce((bytes, summary) => bytes + estimateSummaryBytes(summary), 0),
+  };
+}

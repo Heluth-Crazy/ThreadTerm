@@ -211,16 +211,14 @@ pub async fn claude_chat_decision(
 
 #[tauri::command]
 pub async fn claude_chat_stop(app: AppHandle, card_id: String) -> Result<(), String> {
-    // Stop is idempotent teardown: whether the sidecar is dead or the session
-    // is already gone, local cleanup below is the part that must happen.
-    if let Err(err) = CLAUDE_CHAT_MANAGER
+    // Local ownership is released even when the protocol request fails. The
+    // caller still receives the failure so lifecycle retries and diagnostics
+    // reflect the real native cleanup result instead of reporting success.
+    let stop_result = CLAUDE_CHAT_MANAGER
         .send_request(&app, "session.stop", json!({ "cardId": card_id }), false)
-        .await
-    {
-        tracing::debug!(target: "claude_chat", card_id, error = %err, "session.stop skipped");
-    }
+        .await;
     CLAUDE_CHAT_MANAGER.unregister_card_session(&card_id).await;
-    Ok(())
+    stop_result.map(|_| ())
 }
 
 #[tauri::command]

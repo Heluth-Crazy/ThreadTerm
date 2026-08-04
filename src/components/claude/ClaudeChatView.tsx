@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -21,14 +22,22 @@ import {
 import {
   assistantPreviewFromMessage,
 } from '../../lib/claudeChat/normalize';
+import { waitForClaudeChatCleanup } from '../../lib/claudeChat/lifecycle';
 import {
   EMPTY_CLAUDE_CHAT_STATE,
+  MAX_CLAUDE_HISTORY_MESSAGES,
   useClaudeChatStore,
   type PendingClaudeRequest,
 } from '../../stores/claudeChatStore';
 import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard } from '../../types/terminal';
 import { ClaudeApprovalCard, ClaudeItemRow } from './ClaudeChatRows';
+import { ConversationWindowControls } from '../chat/ConversationWindowControls';
+import {
+  deriveConversationWindow,
+  MAX_MOUNTED_CONVERSATION_ROWS,
+  publishMountedConversationRows,
+} from '../../lib/lifecycle/conversationWindow';
 
 interface ClaudeChatViewProps {
   card: TerminalCard;
@@ -57,6 +66,8 @@ export function ClaudeChatView({
   );
   const endRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const diagnosticsViewId = useId();
+  const [conversationWindowEnd, setConversationWindowEnd] = useState<number | null>(null);
   const cardId = card.id;
   const cwd = card.worktreePath ?? card.projectPath;
   const resumeSessionId =
@@ -68,6 +79,10 @@ export function ClaudeChatView({
     cwd,
     resumeSessionId,
   });
+  const conversationWindow = useMemo(
+    () => deriveConversationWindow(session.items, conversationWindowEnd),
+    [conversationWindowEnd, session.items],
+  );
   if (
     startSnapshotRef.current.cardId !== cardId ||
     startSnapshotRef.current.cwd !== cwd
@@ -80,9 +95,32 @@ export function ClaudeChatView({
   }
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || conversationWindowEnd !== null) return;
     endRef.current?.scrollIntoView?.({ block: 'end' });
-  }, [active, session.items.length, session.pendingRequests.length]);
+  }, [
+    active,
+    conversationWindowEnd,
+    session.items.length,
+    session.pendingRequests.length,
+  ]);
+
+  useEffect(() => {
+    if (active) setConversationWindowEnd(null);
+  }, [active, cardId]);
+
+  useEffect(
+    () =>
+      publishMountedConversationRows(`claude:${diagnosticsViewId}`, {
+        provider: 'claude',
+        mountedCount: conversationWindow.items.length,
+        totalCount: conversationWindow.totalCount,
+      }),
+    [
+      conversationWindow.items.length,
+      conversationWindow.totalCount,
+      diagnosticsViewId,
+    ],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -116,6 +154,37 @@ export function ClaudeChatView({
     };
 
     const setup = async () => {
+      // Archive/delete cleanup is asynchronous. A card restored immediately
+      // must not start a replacement session before the previous stop settles,
+      // otherwise the late stop could close the restored conversation.
+      await waitForClaudeChatCleanup(snapshot.cardId);
+      if (disposed) return;
+      const store = useClaudeChatStore.getState();
+      store.prepareCard(snapshot.cardId, snapshot.resumeSessionId);
+      const prepared = useClaudeChatStore.getState().sessions[snapshot.cardId];
+      if (
+        snapshot.resumeSessionId &&
+        prepared.items.length === 0 &&
+        prepared.historyTotalMessages === null
+      ) {
+        try {
+          const history = await claudeChat.history(
+            snapshot.resumeSessionId,
+            snapshot.cwd,
+            MAX_CLAUDE_HISTORY_MESSAGES,
+          );
+          if (disposed) return;
+          useClaudeChatStore.getState().hydrateHistory(
+            snapshot.cardId,
+            history.messages,
+            history.totalMessages,
+          );
+        } catch (error) {
+          // Persisted history remains authoritative on disk. A transient read
+          // failure must not prevent resuming the live session.
+          logger.warn('[ClaudeChatView] failed to hydrate persisted history', error);
+        }
+      }
       const listeners = await Promise.all([
         claudeChat.onEvent(handleEvent).catch((error) => {
           logger.warn('[ClaudeChatView] failed to listen for events', error);
@@ -143,15 +212,14 @@ export function ClaudeChatView({
       }
       unlisteners.push(...listeners);
 
-      const store = useClaudeChatStore.getState();
-      store.prepareCard(snapshot.cardId, snapshot.resumeSessionId);
-      if (store.sessions[snapshot.cardId]?.started) return;
+      const latestStore = useClaudeChatStore.getState();
+      if (latestStore.sessions[snapshot.cardId]?.started) return;
 
       try {
         const probe = await claudeChat.probe();
         if (disposed) return;
         if (!probe.ok) {
-          store.setError(
+          latestStore.setError(
             snapshot.cardId,
             probe.detail ?? 'Claude Chat is unavailable.',
           );
@@ -164,7 +232,7 @@ export function ClaudeChatView({
           sessionId: snapshot.resumeSessionId,
         });
         if (disposed) return;
-        store.markStarted(snapshot.cardId, result.sessionId);
+        latestStore.markStarted(snapshot.cardId, result.sessionId);
         if (result.sessionId) {
           markProviderSessionBound(snapshot.cardId, result.sessionId);
         }
@@ -175,10 +243,10 @@ export function ClaudeChatView({
         // sidecar session remains healthy. Reattaching to that card should not
         // turn an already-running conversation into an error screen.
         if (/session already exists for card/i.test(message)) {
-          store.markStarted(snapshot.cardId, snapshot.resumeSessionId);
+          latestStore.markStarted(snapshot.cardId, snapshot.resumeSessionId);
           return;
         }
-        store.setError(snapshot.cardId, message);
+        latestStore.setError(snapshot.cardId, message);
       }
     };
 
@@ -338,7 +406,25 @@ export function ClaudeChatView({
           </div>
         ) : (
           <div className="mx-auto flex max-w-3xl flex-col gap-5">
-            {session.items.map((item) => (
+            <ConversationWindowControls
+              startIndex={conversationWindow.startIndex}
+              endIndex={conversationWindow.endIndex}
+              totalCount={conversationWindow.totalCount}
+              hasOlder={conversationWindow.hasOlder}
+              hasNewer={conversationWindow.hasNewer}
+              onOlder={() => setConversationWindowEnd(conversationWindow.startIndex)}
+              onNewer={() => {
+                const nextEnd = Math.min(
+                  conversationWindow.totalCount,
+                  conversationWindow.endIndex + MAX_MOUNTED_CONVERSATION_ROWS,
+                );
+                setConversationWindowEnd(
+                  nextEnd >= conversationWindow.totalCount ? null : nextEnd,
+                );
+              }}
+              onLatest={() => setConversationWindowEnd(null)}
+            />
+            {conversationWindow.items.map((item) => (
               <ClaudeItemRow key={item.id} item={item} />
             ))}
             {session.lastError && (

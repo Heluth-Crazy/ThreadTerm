@@ -48,6 +48,7 @@ import {
 } from '../../lib/autoRestart';
 import type { CardsSlice, TerminalSliceCreator } from './types';
 import { MAX_CARD_NAME_LENGTH } from './types';
+import { releaseClaudeChatCard } from '../../lib/claudeChat/lifecycle';
 
 function compactPendingTerminalConfigurations(
   pending: Record<string, TerminalLaunchConfiguration>,
@@ -266,6 +267,9 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
   removeCard: (id) => {
     outputSanitizers.delete(id);
     const target = get().cards.find((c) => c.id === id);
+    if (target?.terminalType === 'claude') {
+      void releaseClaudeChatCard(id, 'remove');
+    }
     if (target && isTauriEnv()) {
       void pty.kill(target.ptyId || target.id);
     }
@@ -333,6 +337,9 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
   archiveCard: (id) => {
     outputSanitizers.delete(id);
     const target = get().cards.find((c) => c.id === id);
+    if (target?.terminalType === 'claude') {
+      void releaseClaudeChatCard(id, 'archive');
+    }
     if (target && isTauriEnv()) {
       void pty.kill(target.ptyId || target.id);
     }
@@ -439,12 +446,14 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
     const now = input.now ?? Date.now();
     const nextPtyId = input.nextPtyId ?? `${id}-configured-${now.toString(36)}-${uid()}`;
     let committedPtyId: string | null = null;
+    let releasePreviousClaudeSession = false;
 
     set((state) => {
       const idx = state.cards.findIndex((card) => card.id === id);
       if (idx === -1) return state;
       const existing = state.cards[idx];
       if ((existing.ptyId || existing.id) !== input.expectedPtyId) return state;
+      releasePreviousClaudeSession = existing.terminalType === 'claude';
 
       const configuration = input.configuration;
       let projectPath = existing.projectPath;
@@ -594,7 +603,12 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
           : {}),
       };
     });
-    if (committedPtyId) outputSanitizers.delete(id);
+    if (committedPtyId) {
+      outputSanitizers.delete(id);
+      if (releasePreviousClaudeSession) {
+        void releaseClaudeChatCard(id, 'type-change');
+      }
+    }
     return committedPtyId;
   },
 

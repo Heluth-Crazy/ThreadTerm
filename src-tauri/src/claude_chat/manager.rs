@@ -48,6 +48,35 @@ struct ClaudeChatDisconnectedPayload {
 }
 
 impl ClaudeChatManager {
+    /// Stop the shared host and release every card/session owner during app
+    /// shutdown. This is idempotent and intentionally does not try to send a
+    /// protocol request: the event loop is already closing, so terminating the
+    /// managed process tree is the authoritative final boundary.
+    pub(super) async fn shutdown(&self) {
+        let (mut child, pending, card_sessions) = {
+            let mut state = self.state.lock().await;
+            state.stdin = None;
+            state.last_error = None;
+            (
+                state.child.take(),
+                state.pending.clone(),
+                std::mem::take(&mut state.card_sessions),
+            )
+        };
+
+        for (card_id, session_id) in card_sessions {
+            owner::release(&session_id, &SessionOwner::Chat { card_id });
+        }
+        let pending = std::mem::take(&mut *pending.lock().await);
+        for (_, sender) in pending {
+            let _ = sender.send(Err("Claude sidecar stopped during app shutdown".to_string()));
+        }
+        if let Some(child) = child.as_mut() {
+            child.terminate();
+            let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+        }
+    }
+
     async fn ensure_process(&self, app: &AppHandle) -> Result<(), String> {
         let mut state = self.state.lock().await;
         if state.stdin.is_some() {
@@ -302,5 +331,12 @@ mod tests {
         assert_eq!(spawn_backoff(4), Duration::from_secs(16));
         assert_eq!(spawn_backoff(5), MAX_SPAWN_BACKOFF);
         assert_eq!(spawn_backoff(50), MAX_SPAWN_BACKOFF);
+    }
+
+    #[tokio::test]
+    async fn empty_shutdown_is_idempotent() {
+        let manager = ClaudeChatManager::default();
+        manager.shutdown().await;
+        manager.shutdown().await;
     }
 }

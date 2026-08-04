@@ -22,6 +22,10 @@ pub use commands::{
 #[allow(unused_imports)]
 pub use commands::{ClaudeChatImage, ClaudeChatStartResult};
 
+pub(crate) async fn shutdown() {
+    manager::CLAUDE_CHAT_MANAGER.shutdown().await;
+}
+
 // `tauri::generate_handler!` resolves both the function and a sibling
 // `__cmd__<name>` macro at the path passed by `lib.rs`.
 pub use commands::{

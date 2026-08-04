@@ -52,6 +52,7 @@ describe('Claude SDK message normalization', () => {
         status: 'running',
       }),
     ]);
+    expect(items.every((item) => item.raw === null)).toBe(true);
   });
 
   it('settles a tool card from a tool_result and records the final result', () => {

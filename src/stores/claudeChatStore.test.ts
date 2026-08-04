@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { useClaudeChatStore } from './claudeChatStore';
+import { MAX_CLAUDE_HISTORY_MESSAGES, useClaudeChatStore } from './claudeChatStore';
 
 describe('claudeChatStore', () => {
   beforeEach(() => {
@@ -85,6 +85,30 @@ describe('claudeChatStore', () => {
       started: false,
       phase: 'disconnected',
       lastError: 'sidecar stopped',
+    });
+  });
+
+  it('hydrates 1000+ persisted messages into compact display records', () => {
+    const messages = Array.from({ length: 1_001 }, (_, index) => ({
+      type: 'assistant',
+      message: {
+        id: `message-${index}`,
+        content: [{ type: 'text', text: `reply-${index}` }],
+      },
+    }));
+
+    useClaudeChatStore
+      .getState()
+      .hydrateHistory('card-a', messages, MAX_CLAUDE_HISTORY_MESSAGES + 25);
+
+    const session = useClaudeChatStore.getState().sessions['card-a'];
+    expect(session.items).toHaveLength(1_001);
+    expect(session.items[0]).toMatchObject({ body: 'reply-0', raw: null });
+    expect(session.items.at(-1)).toMatchObject({ body: 'reply-1000', raw: null });
+    expect(session).toMatchObject({
+      historyTotalMessages: MAX_CLAUDE_HISTORY_MESSAGES + 25,
+      historyLoadedMessages: 1_001,
+      historyTruncated: true,
     });
   });
 });

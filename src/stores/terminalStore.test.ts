@@ -6,8 +6,10 @@ import {
   useTerminalStore,
 } from './terminalStore';
 import { HIGHLIGHT_TTL_MS } from './terminal/notificationsSlice';
+import { useClaudeChatStore } from './claudeChatStore';
 
 function resetStore() {
+  useClaudeChatStore.setState({ sessions: {} });
   useTerminalStore.setState({
     cards: [],
     archivedCards: [],
@@ -427,6 +429,26 @@ describe('terminalStore — card lifecycle', () => {
     expect(useTerminalStore.getState().notifications).toHaveLength(0);
   });
 
+  it.each(['remove', 'archive'] as const)(
+    '%s releases rebuildable Claude Chat state with the card',
+    (action) => {
+      const store = useTerminalStore.getState();
+      const id = store.createCard({
+        projectName: 'foo',
+        projectPath: '/tmp/foo',
+        terminalType: 'claude',
+      });
+      useClaudeChatStore.getState().prepareCard(id, 'session-a');
+      useClaudeChatStore.getState().appendUserMessage(id, 'retained on disk');
+      expect(useClaudeChatStore.getState().sessions[id]).toBeDefined();
+
+      if (action === 'remove') store.removeCard(id);
+      else store.archiveCard(id);
+
+      expect(useClaudeChatStore.getState().sessions[id]).toBeUndefined();
+    },
+  );
+
   it('persists pending auto restart attempts as cancelled metadata only', () => {
     localStorage.removeItem('threadterm-terminal-store');
     const s = useTerminalStore.getState();
@@ -570,6 +592,30 @@ describe('terminalStore — terminal configuration editing', () => {
       }),
     ).toBeNull();
     expect(useTerminalStore.getState().getCardById(id)).toBe(before);
+  });
+
+  it('releases the previous Claude Chat state after applying a new configuration', () => {
+    const store = useTerminalStore.getState();
+    const id = store.createCard({
+      projectName: 'repo',
+      projectPath: '/repo',
+      terminalType: 'claude',
+    });
+    useClaudeChatStore.getState().prepareCard(id, 'old-session');
+    useClaudeChatStore.getState().appendUserMessage(id, 'rebuildable state');
+    const currentPtyId = useTerminalStore.getState().getCardById(id)?.ptyId ?? '';
+
+    const nextPtyId = store.commitTerminalConfiguration(id, {
+      expectedPtyId: currentPtyId,
+      configuration: {
+        terminalType: 'shell',
+        launchMode: 'default',
+      },
+      nextPtyId: 'shell-pty',
+    });
+
+    expect(nextPtyId).toBe('shell-pty');
+    expect(useClaudeChatStore.getState().sessions[id]).toBeUndefined();
   });
 
   it('adopts known worktree metadata when following a resumed session directory', () => {

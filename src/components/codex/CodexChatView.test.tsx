@@ -342,6 +342,45 @@ describe('CodexChatView hidden event ingestion', () => {
     expect(streamedBody?.textContent).toBe(expected);
   });
 
+  it('mounts at most 160 history rows while keeping older pages reachable', async () => {
+    bridgeMocks.openCard.mockResolvedValue({
+      cardId: 'card-a',
+      threadId: 'thread-card-a',
+      sessionId: 'session-card-a',
+      threadPath: null,
+      status: 'resumed',
+      thread: {
+        turns: [
+          {
+            items: Array.from({ length: 1_001 }, (_, index) => ({
+              type: 'agentMessage',
+              id: `item-${index}`,
+              text: `reply-${index}`,
+            })),
+          },
+        ],
+      },
+    });
+
+    const view = render(<CodexChatView card={makeCard()} />);
+    await waitForReady(view.container);
+
+    expect(
+      await within(view.container).findByText('reply-1000', {
+        selector: 'pre',
+      }),
+    ).toBeInTheDocument();
+    expect(within(view.container).queryByText('reply-0')).not.toBeInTheDocument();
+    expect(view.container.querySelectorAll('pre')).toHaveLength(160);
+
+    fireEvent.click(within(view.container).getByTestId('conversation-window-older'));
+
+    expect(await within(view.container).findByText('reply-840', { selector: 'pre' })).toBeInTheDocument();
+    expect(within(view.container).queryByText('reply-1000')).not.toBeInTheDocument();
+    expect(within(view.container).getByTestId('conversation-window-newer')).toBeInTheDocument();
+    expect(within(view.container).getByTestId('conversation-window-latest')).toBeInTheDocument();
+  });
+
   it('keeps the existing response payload and clears the request notification after success', async () => {
     act(() => {
       useCodexRequestStore.getState().ingestRequest(

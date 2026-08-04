@@ -21,7 +21,12 @@ export interface ClaudeCardChatState {
   items: ClaudeDisplayItem[];
   pendingRequests: PendingClaudeRequest[];
   lastError: string | null;
+  historyTotalMessages: number | null;
+  historyLoadedMessages: number;
+  historyTruncated: boolean;
 }
+
+export const MAX_CLAUDE_HISTORY_MESSAGES = 2_000;
 
 interface ClaudeChatStore {
   sessions: Record<string, ClaudeCardChatState>;
@@ -29,6 +34,11 @@ interface ClaudeChatStore {
   markStarted: (cardId: string, sessionId?: string | null) => void;
   applyStatus: (payload: ClaudeChatStatusEvent) => void;
   applyMessage: (cardId: string, message: unknown) => void;
+  hydrateHistory: (
+    cardId: string,
+    messages: readonly unknown[],
+    totalMessages: number,
+  ) => void;
   appendUserMessage: (cardId: string, text: string) => void;
   upsertRequest: (payload: ClaudeChatRequestEvent) => void;
   removeRequest: (cardId: string, requestId: string) => void;
@@ -45,6 +55,9 @@ export const EMPTY_CLAUDE_CHAT_STATE: ClaudeCardChatState = Object.freeze({
   items: Object.freeze([]) as unknown as ClaudeDisplayItem[],
   pendingRequests: Object.freeze([]) as unknown as PendingClaudeRequest[],
   lastError: null,
+  historyTotalMessages: null,
+  historyLoadedMessages: 0,
+  historyTruncated: false,
 });
 
 let localMessageSequence = 0;
@@ -116,6 +129,20 @@ export const useClaudeChatStore = create<ClaudeChatStore>((set) => ({
         if (items === existing.items) return existing;
         return { ...existing, items };
       }),
+    ),
+
+  hydrateHistory: (cardId, messages, totalMessages) =>
+    set((state) =>
+      updateCard(state, cardId, (existing) => ({
+        ...existing,
+        items: messages.reduce<ClaudeDisplayItem[]>(
+          (items, message) => applyClaudeSdkMessage(items, message),
+          [],
+        ),
+        historyTotalMessages: Math.max(totalMessages, messages.length),
+        historyLoadedMessages: messages.length,
+        historyTruncated: totalMessages > messages.length,
+      })),
     ),
 
   appendUserMessage: (cardId, text) =>
@@ -212,6 +239,9 @@ function createCardState(sessionId: string | null): ClaudeCardChatState {
     items: [],
     pendingRequests: [],
     lastError: null,
+    historyTotalMessages: null,
+    historyLoadedMessages: 0,
+    historyTruncated: false,
   };
 }
 

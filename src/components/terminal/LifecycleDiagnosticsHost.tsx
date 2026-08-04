@@ -17,6 +17,12 @@ import {
   getMountedTerminalSurfaces,
 } from '../../lib/lifecycle/mountedTerminalSurfaces';
 import { getWorkspaceEditorDiagnostics } from '../../lib/lifecycle/workspaceEditorDiagnostics';
+import { getClaudeChatLifecycleDiagnostics } from '../../lib/claudeChat/lifecycle';
+import { getMountedConversationRowDiagnostics } from '../../lib/lifecycle/conversationWindow';
+import { getWorkspaceLoadCacheDiagnostics } from '../files/workspaceLoadCache';
+import { MAX_WARM_CLEAN_WORKSPACE_EDITORS } from '../files/workspaceEditorLifecycle';
+import { getAgentSessionCatalogDiagnostics } from '../../stores/agentSessionCatalogStore';
+import { METADATA_CACHE_MAX_ENTRIES, useAgentSessionMetadataCache } from '../../stores/agentSessionMetadataCache';
 import { getTerminalEventBridgeDiagnostics } from './TerminalEventBridge';
 import { getXtermRegistryDiagnostics } from './xtermRegistry';
 import { getHeadlessPreviewDiagnostics } from './headlessPreview';
@@ -95,13 +101,24 @@ export function LifecycleDiagnosticsHost(): null {
         }
         const codexRequests = useCodexRequestStore.getState().requests;
         const codexCardCount = new Set(codexRequests.map((request) => request.cardId)).size;
+        const cleanup = getClaudeChatLifecycleDiagnostics();
+        const rows = getMountedConversationRowDiagnostics();
         return {
           claudeCardCount: claudeCardIds.length,
           claudeItemCount,
           claudePendingRequestCount,
           codexCardCount,
           codexPendingRequestCount: codexRequests.length,
-          mountedMessageRowCount: null,
+          mountedMessageRowCount: rows.mountedMessageRowCount,
+          claudeMountedMessageRowCount: rows.claudeMountedMessageRowCount,
+          codexMountedMessageRowCount: rows.codexMountedMessageRowCount,
+          authoritativeMessageCount: rows.authoritativeMessageCount,
+          conversationViewCount: rows.viewCount,
+          mountedRowsPerViewLimit: rows.perViewLimit,
+          claudeCleanupPendingCount: cleanup.pendingCount,
+          claudeCleanupFailedCount: cleanup.failedCount,
+          claudeCleanupSucceededCount: cleanup.succeededCount,
+          claudeCleanupRetryCount: cleanup.retryCount,
         };
       },
       bridge: () => {
@@ -116,11 +133,31 @@ export function LifecycleDiagnosticsHost(): null {
       },
       workspace: () => {
         const sample = getWorkspaceEditorDiagnostics();
+        const caches = getWorkspaceLoadCacheDiagnostics();
+        const catalog = getAgentSessionCatalogDiagnostics();
         return {
           tabCount: sample.tabCount,
           dirtyTabCount: sample.dirtyTabCount,
           activeTabCount: sample.activeTabCount,
           liveEditorInstanceCount: sample.liveEditorInstanceCount,
+          maxWarmCleanEditorViews: MAX_WARM_CLEAN_WORKSPACE_EDITORS,
+          directoryCacheEntryCount: caches.directory.entryCount,
+          directoryCacheEstimatedBytes: caches.directory.estimatedBytes,
+          directoryCacheMaxEntries: caches.directory.maxEntries,
+          directoryCacheMaxEstimatedBytes: caches.directory.maxEstimatedBytes,
+          directoryCacheEvictionCount: caches.directory.evictionCount,
+          changesCacheEntryCount: caches.changes.entryCount,
+          changesCacheEstimatedBytes: caches.changes.estimatedBytes,
+          changesCacheMaxEntries: caches.changes.maxEntries,
+          changesCacheMaxEstimatedBytes: caches.changes.maxEstimatedBytes,
+          changesCacheEvictionCount: caches.changes.evictionCount,
+          agentCatalogRowCount: catalog.rowCount,
+          agentCatalogMaxRowCount: catalog.maxRowCount,
+          agentCatalogEstimatedBytes: catalog.estimatedBytes,
+          agentCatalogSelectedSummaryCount: catalog.selectedSummaryCount,
+          agentMetadataCacheEntryCount:
+            useAgentSessionMetadataCache.getState().entries.size,
+          agentMetadataCacheMaxEntries: METADATA_CACHE_MAX_ENTRIES,
         };
       },
     });
