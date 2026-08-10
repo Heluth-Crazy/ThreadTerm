@@ -48,6 +48,7 @@ function makeStats(): AgentStats {
 function resetStatsStore() {
   useStatsStore.setState({
     snapshot: makeStats(),
+    dashboardFilters: { status: 'all', source: 'all' },
     bySession: {},
     loading: false,
     error: null,
@@ -109,6 +110,13 @@ describe('StatsPanel', () => {
       '30d',
       expect.any(Number),
     );
+  });
+
+  it('follows the selected project directory for dashboard filtering', () => {
+    render(<StatsPanel onClose={vi.fn()} projectPath="D:/repo/app" />);
+
+    expect(screen.getByRole('textbox', { name: 'Project directory' })).toHaveValue('D:/repo/app');
+    expect(useStatsStore.getState().dashboardFilters.projectPath).toBe('D:/repo/app');
   });
 
   it.each([

@@ -249,7 +249,21 @@ pub fn init_database(path: &Path) -> Result<()> {
             session_id              TEXT,
             project_path            TEXT,
             created_at              INTEGER NOT NULL,
-            data_source             TEXT NOT NULL DEFAULT 'session_log'
+            data_source             TEXT NOT NULL DEFAULT 'session_log',
+            app_type                TEXT NOT NULL DEFAULT 'cli',
+            request_model           TEXT NOT NULL DEFAULT '',
+            pricing_model           TEXT NOT NULL DEFAULT '',
+            input_semantics         TEXT NOT NULL DEFAULT 'uncached',
+            status_code             INTEGER,
+            error                   TEXT,
+            latency_ms              INTEGER,
+            first_token_ms          INTEGER,
+            duration_ms             INTEGER,
+            streaming               INTEGER NOT NULL DEFAULT 0,
+            provider_type           TEXT NOT NULL DEFAULT '',
+            dedup_fingerprint       TEXT,
+            pricing_status          TEXT NOT NULL DEFAULT 'estimated',
+            pricing_version         TEXT NOT NULL DEFAULT 'builtin-v1'
         );
 
         CREATE INDEX IF NOT EXISTS idx_usage_records_created_at
@@ -258,6 +272,35 @@ pub fn init_database(path: &Path) -> Result<()> {
             ON usage_records(session_id);
         CREATE INDEX IF NOT EXISTS idx_usage_records_provider_created
             ON usage_records(provider, created_at);
+        CREATE INDEX IF NOT EXISTS idx_usage_records_project_created
+            ON usage_records(project_path, created_at);
+        -- Optional materialisation target for large installations. The
+        -- dashboard currently recomputes from source rows so a pricing edit is
+        -- immediately visible; this table is kept ready for a later rollup
+        -- worker without changing the public contract.
+        CREATE TABLE IF NOT EXISTS usage_daily_rollups (
+            period_start            INTEGER NOT NULL,
+            provider                TEXT NOT NULL,
+            model                   TEXT NOT NULL,
+            request_count          INTEGER NOT NULL DEFAULT 0,
+            success_count           INTEGER NOT NULL DEFAULT 0,
+            input_tokens            INTEGER NOT NULL DEFAULT 0,
+            output_tokens           INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens       INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens   INTEGER NOT NULL DEFAULT 0,
+            total_cost_usd          REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (period_start, provider, model)
+        );
+
+        CREATE TABLE IF NOT EXISTS stats_pricing (
+            model                   TEXT PRIMARY KEY,
+            input_per_mtok          REAL NOT NULL,
+            output_per_mtok         REAL NOT NULL,
+            cache_write_per_mtok    REAL NOT NULL DEFAULT 0,
+            cache_read_per_mtok     REAL NOT NULL DEFAULT 0,
+            enabled                 INTEGER NOT NULL DEFAULT 1,
+            updated_at              INTEGER NOT NULL
+        );
 
         -- Incremental sync progress per session-log file. last_modified is the
         -- file mtime in nanoseconds; last_line_offset is the number of lines
@@ -286,6 +329,8 @@ pub fn init_database(path: &Path) -> Result<()> {
 
     migrate_paired_devices_client_class(&conn)
         .context("Failed to migrate paired_devices client_class")?;
+    migrate_usage_records_stats_columns(&conn)
+        .context("Failed to migrate usage_records statistics columns")?;
 
     drop(conn);
     DATABASE
@@ -335,6 +380,49 @@ fn migrate_paired_devices_client_class(conn: &rusqlite::Connection) -> Result<()
             OR TRIM(client_class) = ''
             OR client_class NOT IN ('legacy_terminal', 'secure_workspace')",
         [],
+    )?;
+    Ok(())
+}
+
+/// Additive migration for databases created before proxy-aware statistics.
+/// SQLite cannot add a column through `CREATE TABLE IF NOT EXISTS`, so every
+/// new field is checked explicitly and old installations are upgraded in place.
+fn migrate_usage_records_stats_columns(conn: &rusqlite::Connection) -> Result<()> {
+    const COLUMNS: &[(&str, &str)] = &[
+        ("app_type", "TEXT NOT NULL DEFAULT 'cli'"),
+        ("request_model", "TEXT NOT NULL DEFAULT ''"),
+        ("pricing_model", "TEXT NOT NULL DEFAULT ''"),
+        ("input_semantics", "TEXT NOT NULL DEFAULT 'uncached'"),
+        ("status_code", "INTEGER"),
+        ("error", "TEXT"),
+        ("latency_ms", "INTEGER"),
+        ("first_token_ms", "INTEGER"),
+        ("duration_ms", "INTEGER"),
+        ("streaming", "INTEGER NOT NULL DEFAULT 0"),
+        ("provider_type", "TEXT NOT NULL DEFAULT ''"),
+        ("dedup_fingerprint", "TEXT"),
+        ("pricing_status", "TEXT NOT NULL DEFAULT 'estimated'"),
+        ("pricing_version", "TEXT NOT NULL DEFAULT 'builtin-v1'"),
+    ];
+
+    let existing = conn
+        .prepare("PRAGMA table_info(usage_records)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .collect::<std::collections::HashSet<_>>();
+
+    for (name, definition) in COLUMNS {
+        if !existing.contains(*name) {
+            conn.execute_batch(&format!(
+                "ALTER TABLE usage_records ADD COLUMN {name} {definition};"
+            ))?;
+        }
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_usage_records_source_created
+             ON usage_records(data_source, created_at);
+         CREATE INDEX IF NOT EXISTS idx_usage_records_status_created
+             ON usage_records(status_code, created_at);",
     )?;
     Ok(())
 }
@@ -444,6 +532,45 @@ mod tests {
             card_id: Some("card-1".to_string()),
             summary: format!("sequence-{index}"),
         }
+    }
+
+    #[test]
+    fn usage_records_stats_columns_migrate_additively() {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "CREATE TABLE usage_records (
+                request_id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cost_usd REAL NOT NULL DEFAULT 0,
+                session_id TEXT,
+                project_path TEXT,
+                created_at INTEGER NOT NULL,
+                data_source TEXT NOT NULL DEFAULT 'session_log'
+            );",
+        )
+        .expect("legacy usage_records schema");
+
+        migrate_usage_records_stats_columns(&conn).expect("stats migration");
+        let has_status: bool = conn
+            .prepare("PRAGMA table_info(usage_records)")
+            .expect("table info")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("columns")
+            .filter_map(Result::ok)
+            .any(|name| name == "status_code");
+        assert!(has_status);
+        conn.execute(
+            "INSERT INTO usage_records
+             (request_id, provider, model, created_at, status_code)
+             VALUES ('r1', 'claude', 'claude-opus-4-8', 1, 200)",
+            [],
+        )
+        .expect("insert migrated row");
     }
 
     #[test]

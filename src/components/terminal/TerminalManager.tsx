@@ -1343,7 +1343,12 @@ export function TerminalManager() {
               }}
             />
           )}
-          {statsPanelVisible && <StatsPanel onClose={() => closeRightSurface('stats')} />}
+          {statsPanelVisible && (
+            <StatsPanel
+              onClose={() => closeRightSurface('stats')}
+              projectPath={selectedWorktreePath || selectedProjectPath}
+            />
+          )}
           {sessionRecoveryPanelVisible && (
             <SessionRecoveryPanel onClose={() => closeRightSurface('sessionRecovery')} />
           )}

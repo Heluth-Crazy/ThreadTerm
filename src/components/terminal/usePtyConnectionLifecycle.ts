@@ -33,6 +33,7 @@ import type {
 
 interface UsePtyConnectionControllerOptions {
   paneId?: string;
+  terminalType?: string;
   rendererScope: string;
   isInitialized: boolean;
   t: TFunction<'terminal'>;
@@ -96,6 +97,7 @@ interface PtyConnectionController {
 
 export function usePtyConnectionController({
   paneId,
+  terminalType,
   rendererScope,
   isInitialized,
   t,
@@ -318,7 +320,10 @@ export function usePtyConnectionController({
 
         const rows = terminalRef.current?.rows || 24;
         const cols = terminalRef.current?.cols || 120;
-        const connectedPtyId = await pty.create(ptySessionId, projectPath, rows, cols);
+        const connectedPtyId =
+          terminalType === undefined
+            ? await pty.create(ptySessionId, projectPath, rows, cols)
+            : await pty.create(ptySessionId, projectPath, rows, cols, terminalType);
         if (isStaleSetup() || !terminalRef.current) return;
         const consumerId = createRendererConsumerId(rendererScope);
         await pty.registerOutputConsumer(connectedPtyId, consumerId);
@@ -533,6 +538,7 @@ export function usePtyConnectionController({
     scrollTerminalToBottom,
     scrolledUpRef,
     selectedProjectRef,
+    terminalType,
     setConnectError,
     setConnected,
     setConnecting,

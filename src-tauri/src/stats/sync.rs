@@ -71,8 +71,9 @@ const PROGRESS_EVERY: usize = 16;
 /// logs instead of inheriting the caller's time window; 7 = refresh stored costs
 /// after adding Claude Fable/Mythos 5 pricing; 8 = attribute OpenCode usage to
 /// the session project directory; 9 = strip replayed Codex parent history and
-/// add Gemini/Grok Build session-log ingestion.
-const STATS_PARSER_VERSION: i64 = 9;
+/// add Gemini/Grok Build session-log ingestion; 10 = prefer Codex exact
+/// last-token usage and refresh cc-switch-aligned fallback pricing.
+const STATS_PARSER_VERSION: i64 = 10;
 
 /// Wipe `usage_records` + `session_log_sync` when the stored parser version
 /// doesn't match the current one, then stamp the new version. Returns true when
@@ -93,7 +94,11 @@ fn rebuild_if_parser_changed(conn: &rusqlite::Connection) -> bool {
     if stored == STATS_PARSER_VERSION {
         return false;
     }
-    let _ = conn.execute_batch("DELETE FROM usage_records; DELETE FROM session_log_sync;");
+    let _ = conn.execute_batch(
+        "DELETE FROM usage_records;
+         DELETE FROM usage_daily_rollups;
+         DELETE FROM session_log_sync;",
+    );
     let _ = conn.execute(
         "INSERT OR REPLACE INTO stats_meta (key, value) VALUES ('parser_version', ?1)",
         params![STATS_PARSER_VERSION.to_string()],
@@ -118,6 +123,7 @@ pub fn rebuild_now() -> Result<(), String> {
     let conn = get_db()?;
     conn.execute_batch(
         "DELETE FROM usage_records;
+         DELETE FROM usage_daily_rollups;
          DELETE FROM session_log_sync;
          DELETE FROM stats_meta WHERE key = 'parser_version';",
     )
@@ -853,6 +859,16 @@ mod tests {
              CREATE TABLE session_log_sync (
                 file_path TEXT PRIMARY KEY, last_modified INTEGER NOT NULL,
                 last_line_offset INTEGER NOT NULL, last_synced_at INTEGER NOT NULL);
+             CREATE TABLE usage_daily_rollups (
+                period_start INTEGER NOT NULL, provider TEXT NOT NULL,
+                model TEXT NOT NULL, request_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cost_usd REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY (period_start, provider, model));
              CREATE TABLE stats_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )
         .unwrap();
@@ -896,8 +912,8 @@ mod tests {
             .unwrap();
         assert_eq!(input, 1_000_000);
         assert!(
-            (cost - 15.0).abs() < 1e-6,
-            "1M input opus = $15, got {cost}"
+            (cost - 5.0).abs() < 1e-6,
+            "1M input Claude Opus 4.8 = $5, got {cost}"
         );
     }
 
@@ -1010,8 +1026,8 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert!((total_cost - 15.0).abs() < 1e-6);
-        assert!((input_cost - 15.0).abs() < 1e-6);
+        assert!((total_cost - 5.0).abs() < 1e-6);
+        assert!((input_cost - 5.0).abs() < 1e-6);
     }
 
     #[test]
@@ -1297,7 +1313,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(parser_version, "9");
+        assert_eq!(parser_version, "10");
 
         // Second call: version now matches → no-op (no needless wipe each sync).
         assert!(

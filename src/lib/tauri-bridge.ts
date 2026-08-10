@@ -8,8 +8,12 @@ import type {
 } from '../mobile/bridge/protocol';
 import type {
   StatsDoneEvent,
+  StatsDashboard,
+  StatsDashboardFilters,
   StatsErrorEvent,
+  StatsPricingEntry,
   StatsProgressEvent,
+  StatsProxyStatus,
   StatsRange,
   StatsScope,
 } from '../types/stats';
@@ -89,8 +93,14 @@ export interface GracefulShutdownResult {
 }
 
 export const pty = {
-  create: (id: string, workingDir: string, rows: number, cols: number): Promise<string> =>
-    invoke<string>('pty_create', { id, workingDir, rows, cols }),
+  create: (
+    id: string,
+    workingDir: string,
+    rows: number,
+    cols: number,
+    provider?: string,
+  ): Promise<string> =>
+    invoke<string>('pty_create', { id, workingDir, rows, cols, provider }),
 
   input: (id: string, data: string): Promise<void> =>
     invoke<void>('pty_input', { id, data }),
@@ -444,6 +454,49 @@ export const tokenStats = {
 
   /** Clear ingested rows + sync cursors; next compute re-ingests from scratch. */
   rebuild: (): Promise<void> => invoke<void>('stats_rebuild'),
+
+  dashboard: (
+    scope: StatsScope,
+    range: StatsRange,
+    limit = 100,
+    cursor?: string,
+    filters?: StatsDashboardFilters,
+  ): Promise<StatsDashboard> =>
+    invoke<StatsDashboard>('stats_dashboard', {
+      scope,
+      range,
+      limit,
+      cursor: cursor ?? null,
+      filters: filters ?? null,
+    }),
+
+  pricingList: (): Promise<StatsPricingEntry[]> =>
+    invoke<StatsPricingEntry[]>('stats_pricing_list'),
+
+  pricingUpsert: (entry: StatsPricingEntry): Promise<void> =>
+    invoke<void>('stats_pricing_upsert', { entry }),
+
+  pricingDelete: (model: string): Promise<void> =>
+    invoke<void>('stats_pricing_delete', { model }),
+
+  proxyStart: (config?: {
+    anthropicUpstream?: string;
+    openaiUpstream?: string;
+    geminiUpstream?: string;
+    xaiUpstream?: string;
+  }): Promise<StatsProxyStatus> =>
+    invoke<StatsProxyStatus>('stats_proxy_start', { config }),
+
+  proxyStop: (): Promise<void> => invoke<void>('stats_proxy_stop'),
+
+  proxyStatus: (): Promise<StatsProxyStatus> =>
+    invoke<StatsProxyStatus>('stats_proxy_status'),
+
+  proxyPrepare: (provider: string, projectPath?: string): Promise<Record<string, string>> =>
+    invoke<Record<string, string>>('stats_proxy_prepare', {
+      provider,
+      projectPath: projectPath ?? null,
+    }),
 
   onProgress: (cb: (payload: StatsProgressEvent) => void): Promise<() => void> =>
     listen<StatsProgressEvent>('stats://progress', (e) => cb(e.payload)),

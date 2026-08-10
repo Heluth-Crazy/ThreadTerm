@@ -486,6 +486,7 @@ export const TerminalView = memo(function TerminalView({
             {launch ? (
               <Shell
                 selectedProject={selectedProject}
+                terminalType={card.terminalType}
                 initialCommand={initialCommand}
                 minimal={true}
                 autoConnect={true}

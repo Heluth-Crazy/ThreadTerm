@@ -215,6 +215,18 @@ pub fn run() {
             stats::stats_compute,
             stats::stats_cancel,
             stats::stats_rebuild,
+            stats::stats_dashboard,
+            stats::stats_pricing_list,
+            stats::stats_pricing_upsert,
+            stats::stats_pricing_delete,
+            #[cfg(feature = "stats-proxy")]
+            stats::proxy::stats_proxy_start,
+            #[cfg(feature = "stats-proxy")]
+            stats::proxy::stats_proxy_stop,
+            #[cfg(feature = "stats-proxy")]
+            stats::proxy::stats_proxy_status,
+            #[cfg(feature = "stats-proxy")]
+            stats::proxy::stats_proxy_prepare,
             platform_material::native_platform_material_state,
             bridge::bridge_start,
             bridge::bridge_stop,

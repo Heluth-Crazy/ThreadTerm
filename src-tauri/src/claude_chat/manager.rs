@@ -104,6 +104,10 @@ impl ClaudeChatManager {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(feature = "stats-proxy")]
+        for (key, value) in crate::stats::proxy::prepare_env("claude", None).await? {
+            command.env(key, value);
+        }
 
         let mut child = match spawn_managed_service_child(command) {
             Ok(child) => child,

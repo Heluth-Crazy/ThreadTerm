@@ -4,7 +4,7 @@
 //! `AgentStats` + `StatBucket` are the camelCase shapes serialized to the
 //! frontend.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Token usage broken down by category. Additive across calls.
 #[derive(Clone, Copy, Debug, Default, Serialize)]
@@ -92,4 +92,111 @@ pub struct AgentStats {
     pub by_model: Vec<StatBucket>,
     pub by_project: Vec<StatBucket>,
     pub by_session: Vec<StatBucket>,
+}
+
+/// Source-aware summary used by the cc-switch-compatible dashboard.  The
+/// legacy `AgentStats` payload above intentionally remains unchanged because
+/// card badges and older mobile clients depend on its exact shape.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsOverview {
+    pub request_count: u64,
+    pub success_count: u64,
+    pub failure_count: u64,
+    pub total_tokens: u64,
+    pub real_total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_hit_rate: f64,
+    pub success_rate: f64,
+    pub total_cost_usd: f64,
+    pub unpriced_request_count: u64,
+    pub session_count: u64,
+    pub proxy_request_count: u64,
+    pub session_log_request_count: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsTrendPoint {
+    pub period_start: i64,
+    pub request_count: u64,
+    pub success_count: u64,
+    pub total_tokens: u64,
+    pub real_total_tokens: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsBreakdown {
+    pub key: String,
+    pub label: String,
+    pub provider: String,
+    pub usage: UsageSummary,
+    pub total_tokens: u64,
+    pub real_total_tokens: u64,
+    pub cost_usd: f64,
+    pub calls: u64,
+    pub success_calls: u64,
+    pub failure_calls: u64,
+    pub unpriced_calls: u64,
+    pub cache_hit_rate: f64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsRequestLog {
+    pub request_id: String,
+    pub provider: String,
+    pub app_type: String,
+    pub model: String,
+    pub request_model: String,
+    pub pricing_model: String,
+    pub usage: UsageSummary,
+    pub total_tokens: u64,
+    pub real_total_tokens: u64,
+    pub cost_usd: f64,
+    pub pricing_status: String,
+    pub status_code: Option<i64>,
+    pub success: bool,
+    pub error: Option<String>,
+    pub latency_ms: Option<u64>,
+    pub first_token_ms: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub streaming: bool,
+    pub session_id: Option<String>,
+    pub project_path: Option<String>,
+    pub data_source: String,
+    pub created_at: i64,
+}
+
+/// Optional dashboard filters. The legacy `stats_compute` contract remains
+/// provider/range-only; these filters apply to the source-aware dashboard
+/// after provider aliases and token semantics have been normalized.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsDashboardFilters {
+    pub app_type: Option<String>,
+    pub model: Option<String>,
+    pub status: Option<String>,
+    pub source: Option<String>,
+    /// Exact project/worktree directory from the left-side project selector.
+    /// Empty or `all` means no project restriction; `__unassigned__` selects
+    /// historical rows that do not carry a project path.
+    pub project_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsDashboard {
+    pub overview: StatsOverview,
+    pub trends: Vec<StatsTrendPoint>,
+    pub by_provider: Vec<StatsBreakdown>,
+    pub by_model: Vec<StatsBreakdown>,
+    pub request_logs: Vec<StatsRequestLog>,
+    pub next_cursor: Option<String>,
+    pub pricing_version: String,
 }

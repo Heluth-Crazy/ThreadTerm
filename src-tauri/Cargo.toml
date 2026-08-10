@@ -14,7 +14,7 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = ["mobile-bridge"]
+default = ["mobile-bridge", "stats-proxy"]
 mobile-bridge = [
     "dep:axum",
     "dep:axum-server",
@@ -24,6 +24,12 @@ mobile-bridge = [
     "dep:rustls-pemfile",
     "dep:sha2",
     "dep:tower-http",
+]
+stats-proxy = [
+    "dep:axum",
+    "dep:futures-util",
+    "dep:rand",
+    "dep:reqwest",
 ]
 
 [build-dependencies]
@@ -44,6 +50,7 @@ r2d2_sqlite = "0.24"
 portable-pty = "0.8"
 wezterm-term = { package = "tattoy-wezterm-term", version = "0.1.0-fork.5" }
 dirs = "5"
+chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 fs2 = "0.4"
 anyhow = "1"
 tracing = "0.1"
@@ -54,8 +61,10 @@ regex = "1"
 sysinfo = { version = "=0.30.13", default-features = false }
 axum = { version = "0.7", features = ["ws"], optional = true }
 axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
+futures-util = { version = "0.3", optional = true }
 rand = { version = "0.8", optional = true }
 rcgen = { version = "0.13", optional = true }
+reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "stream"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"], optional = true }
 rustls-pemfile = { version = "2", optional = true }
 sha2 = { version = "0.10", optional = true }

@@ -95,6 +95,7 @@ pub async fn pty_create(
     working_dir: String,
     rows: u16,
     cols: u16,
+    provider: Option<String>,
     window: Window,
 ) -> Result<String, String> {
     if registry::contains(&id) {
@@ -110,6 +111,15 @@ pub async fn pty_create(
     // Serialize ConPTY/PTY open+spawn across concurrent terminal creations
     // (Windows blank/stall mitigation; harmless on other platforms). The lock
     // is held only around open+spawn, then released before the rest of setup.
+    #[cfg(feature = "stats-proxy")]
+    let proxy_env = if let Some(provider) = provider.as_deref() {
+        crate::stats::proxy::prepare_env(provider, Some(&working_dir)).await?
+    } else {
+        Vec::new()
+    };
+    #[cfg(not(feature = "stats-proxy"))]
+    let proxy_env: Vec<(String, String)> = Vec::new();
+
     let (pair, child) = {
         let _spawn_guard = PTY_SPAWN_LOCK
             .lock()
@@ -135,6 +145,9 @@ pub async fn pty_create(
         #[cfg(not(target_os = "windows"))]
         cmd.cwd(&working_dir);
         shell::configure_shell_command(&mut cmd, &shell_path);
+        for (key, value) in &proxy_env {
+            cmd.env(key, value);
+        }
 
         let child = pair
             .slave

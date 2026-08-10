@@ -9,14 +9,12 @@
 //! undercount where the first-seen snapshot row won.
 //!
 //! ## Codex
-//! Each `token_count` event carries **cumulative** `total_token_usage`. Summing
-//! every event would double-count; taking only the last (the old behaviour)
-//! collapses the whole session to one record and destroys per-call time/model
-//! attribution. Instead we compute the **delta** between consecutive cumulative
-//! readings — each non-zero delta is one independent API call. When
-//! `total_token_usage` is absent we fall back to `last_token_usage` (already an
-//! incremental value). `input_tokens` includes cached input, so the cached
-//! portion is split off to bill at the cache_read rate and avoid double billing.
+//! Codex emits a cumulative `total_token_usage` snapshot and, on newer
+//! versions, an exact per-turn `last_token_usage` value. We prefer the exact
+//! per-turn value when present and use cumulative deltas only as a compatibility
+//! fallback. Summing cumulative snapshots would double-count; each non-zero
+//! delta is one independent API call. `input_tokens` includes cached input, so
+//! the cached portion is split off to bill at the cache_read rate.
 //!
 //! ## Model name normalization
 //! `normalize_model` strips vendor prefixes, `@pin` suffixes, and ISO / compact
@@ -205,7 +203,7 @@ pub fn parse_claude_file(path: &Path) -> (String, Vec<CallRecord>) {
 }
 
 /// Cumulative token snapshot tracked across a Codex session to compute deltas.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct CumulativeTokens {
     input: u64,
     cached_input: u64,
@@ -303,7 +301,10 @@ pub(crate) fn parse_codex_rollout(path: &Path) -> Option<ParsedCodexRollout> {
     let mut parent = CodexParentResolution::None;
     let mut cwd = String::new();
     let mut model = "unknown".to_string();
-    let mut prev_total = None;
+    let mut total_high_water = None;
+    let mut last_signature_by_source: HashMap<Option<String>, CodexTokenUsageSignature> =
+        HashMap::new();
+    let mut previous_token_signature = None;
     let mut event_index = 0u32;
     let mut token_events = Vec::new();
 
@@ -408,28 +409,52 @@ pub(crate) fn parse_codex_rollout(path: &Path) -> Option<ParsedCodexRollout> {
                     continue;
                 };
 
-                // Prefer cumulative `total_token_usage`; fall back to
-                // `last_token_usage` which is already an incremental value.
-                let (cumulative, is_total) = if let Some(total) = info.get("total_token_usage") {
-                    (parse_cumulative(total), true)
-                } else if let Some(last) = info.get("last_token_usage") {
-                    (parse_cumulative(last), false)
+                // `last_token_usage` is authoritative in current Codex
+                // rollouts. Older logs only expose cumulative
+                // `total_token_usage`, so retain the high-water fallback.
+                let total_snapshot = info.get("total_token_usage").and_then(parse_cumulative);
+                let last_snapshot = info.get("last_token_usage").and_then(parse_cumulative);
+                if total_snapshot.is_none() && last_snapshot.is_none() {
+                    continue;
+                }
+
+                // Match cc-switch's source-aware duplicate handling. A rate
+                // limit refresh may repeat a cumulative snapshot under a new
+                // source, while an exact last-token snapshot remains a new
+                // request even when the cumulative total did not move.
+                let snapshot_source = token_snapshot_source(payload);
+                let has_total_snapshot = total_snapshot.is_some();
+                let duplicate_snapshot = has_total_snapshot
+                    && (last_signature_by_source.get(&snapshot_source) == Some(&signature)
+                        || previous_token_signature.as_ref() == Some(&signature));
+                if has_total_snapshot {
+                    last_signature_by_source.insert(snapshot_source, signature.clone());
+                }
+                previous_token_signature = Some(signature.clone());
+
+                let delta = if duplicate_snapshot {
+                    DeltaTokens {
+                        input: 0,
+                        cached_input: 0,
+                        output: 0,
+                    }
+                } else if let Some(last) = last_snapshot {
+                    // `last_token_usage` is already the exact usage of this
+                    // request; never difference it against a prior request.
+                    DeltaTokens {
+                        input: last.input,
+                        cached_input: last.cached_input,
+                        output: last.output,
+                    }
+                } else if let Some(total) = total_snapshot.as_ref() {
+                    compute_delta(&total_high_water, total)
                 } else {
                     continue;
                 };
-                let Some(cur) = cumulative else { continue };
 
-                let delta = if is_total {
-                    let d = compute_delta(&prev_total, &cur);
-                    prev_total = Some(cur);
-                    d
-                } else {
-                    DeltaTokens {
-                        input: cur.input,
-                        cached_input: cur.cached_input,
-                        output: cur.output,
-                    }
-                };
+                if let Some(total) = total_snapshot.as_ref() {
+                    update_high_water(&mut total_high_water, total);
+                }
 
                 // Clamp cached to input (defensive against malformed logs).
                 let delta = DeltaTokens {
@@ -575,7 +600,18 @@ fn parse_token_signature(info: &Value) -> Option<CodexTokenUsageSignature> {
 /// Extract cumulative token fields, tolerating `cached_input_tokens` vs
 /// `cache_read_input_tokens` naming across Codex versions.
 fn parse_cumulative(v: &Value) -> Option<CumulativeTokens> {
-    if v.is_null() || !v.is_object() {
+    let fields = v.as_object()?;
+    if ![
+        "input_tokens",
+        "cached_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "total_tokens",
+    ]
+    .iter()
+    .any(|field| fields.contains_key(*field))
+    {
         return None;
     }
     Some(CumulativeTokens {
@@ -587,6 +623,25 @@ fn parse_cumulative(v: &Value) -> Option<CumulativeTokens> {
             .unwrap_or(0),
         output: v.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
     })
+}
+
+fn token_snapshot_source(payload: Option<&Value>) -> Option<String> {
+    payload
+        .and_then(|payload| payload.get("rate_limits"))
+        .and_then(|limits| limits.get("limit_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn update_high_water(high_water: &mut Option<CumulativeTokens>, current: &CumulativeTokens) {
+    if let Some(high_water) = high_water.as_mut() {
+        high_water.input = high_water.input.max(current.input);
+        high_water.cached_input = high_water.cached_input.max(current.cached_input);
+        high_water.output = high_water.output.max(current.output);
+    } else {
+        *high_water = Some(current.clone());
+    }
 }
 
 /// Delta between two cumulative readings. First reading (prev=None) is taken
@@ -832,6 +887,32 @@ mod tests {
         assert_eq!(calls[0].usage.input, 800);
         assert_eq!(calls[0].usage.cache_read, 200);
         assert_eq!(calls[0].usage.output, 50);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn codex_exact_last_usage_survives_unchanged_cumulative_total() {
+        let jsonl = r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10},"last_token_usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":10}}},"timestamp":"2021-01-01T00:00:00Z"}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":20}}},"timestamp":"2021-01-01T00:00:01Z"}"#;
+        let path = write_temp_jsonl("codex_last_same_total.jsonl", jsonl);
+        let (_, _, calls) = parse_codex_file(&path).expect("exact last usage");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].usage.input, 40);
+        assert_eq!(calls[0].usage.output, 10);
+        assert_eq!(calls[1].usage.input, 50);
+        assert_eq!(calls[1].usage.output, 20);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn codex_empty_last_usage_falls_back_to_cumulative_total() {
+        let jsonl = r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10},"last_token_usage":{}}},"timestamp":"2021-01-01T00:00:00Z"}"#;
+        let path = write_temp_jsonl("codex_empty_last.jsonl", jsonl);
+        let (_, _, calls) = parse_codex_file(&path).expect("cumulative fallback");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].usage.input, 80);
+        assert_eq!(calls[0].usage.cache_read, 20);
+        assert_eq!(calls[0].usage.output, 10);
         let _ = std::fs::remove_file(&path);
     }
 

@@ -13,6 +13,8 @@ export interface ShellProject {
 
 export interface ShellProps {
   selectedProject?: ShellProject | null;
+  /** Provider id used to inject the per-process statistics proxy route. */
+  terminalType?: string;
   initialCommand?: string;
   minimal?: boolean;
   autoConnect?: boolean;

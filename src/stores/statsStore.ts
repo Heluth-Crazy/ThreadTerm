@@ -5,6 +5,8 @@ import { useTerminalStore } from './terminalStore';
 import type {
   AgentStats,
   StatBucket,
+  StatsDashboard,
+  StatsDashboardFilters,
   StatsDoneEvent,
   StatsErrorEvent,
   StatsProgressEvent,
@@ -29,12 +31,16 @@ export const STATS_AUTO_REFRESH_HIDDEN_PANEL_INTERVAL_MS = 120_000;
 
 interface StatsState {
   snapshot: AgentStats | null;
+  dashboard: StatsDashboard | null;
+  dashboardLoading: boolean;
+  dashboardError: string | null;
   /** sessionId → bucket, used by per-card token badges. */
   bySession: Record<string, StatBucket>;
   loading: boolean;
   error: string | null;
   scope: StatsScope;
   range: StatsRange;
+  dashboardFilters: StatsDashboardFilters;
   scanned: number;
   total: number;
   activeRequestId: number;
@@ -46,7 +52,10 @@ interface StatsState {
   setPanelOpen: (open: boolean) => void;
   setScope: (scope: StatsScope) => void;
   setRange: (range: StatsRange) => void;
+  setDashboardFilters: (filters: StatsDashboardFilters) => void;
   compute: (opts?: { silent?: boolean }) => void;
+  loadDashboard: () => void;
+  loadMoreDashboard: () => void;
   handleProgress: (payload: StatsProgressEvent) => void;
   handleDone: (payload: StatsDoneEvent) => void;
   handleError: (payload: StatsErrorEvent) => void;
@@ -67,13 +76,33 @@ function isStatsBackedAiCard(
   );
 }
 
+function dashboardQueryKey(
+  scope: StatsScope,
+  range: StatsRange,
+  filters: StatsDashboardFilters,
+): string {
+  return JSON.stringify([
+    scope,
+    range,
+    filters.appType ?? '',
+    filters.model ?? '',
+    filters.status ?? 'all',
+    filters.source ?? 'all',
+    filters.projectPath ?? '',
+  ]);
+}
+
 export const useStatsStore = create<StatsState>((set, get) => ({
   snapshot: null,
+  dashboard: null,
+  dashboardLoading: false,
+  dashboardError: null,
   bySession: {},
   loading: false,
   error: null,
   scope: 'all',
   range: '30d',
+  dashboardFilters: { status: 'all', source: 'all' },
   scanned: 0,
   total: 0,
   activeRequestId: 0,
@@ -83,11 +112,15 @@ export const useStatsStore = create<StatsState>((set, get) => ({
 
   setPanelOpen: (open) => set({ panelOpen: open }),
   setScope: (scope) => {
-    set({ scope });
+    set({ scope, dashboard: null, dashboardError: null });
     get().compute();
   },
   setRange: (range) => {
-    set({ range });
+    set({ range, dashboard: null, dashboardError: null });
+    get().compute();
+  },
+  setDashboardFilters: (dashboardFilters) => {
+    set({ dashboardFilters, dashboard: null, dashboardError: null });
     get().compute();
   },
   compute: (opts) => {
@@ -115,6 +148,51 @@ export const useStatsStore = create<StatsState>((set, get) => ({
       }
     });
   },
+  loadDashboard: () => {
+    const scope = get().scope;
+    const range = get().range;
+    const filters = get().dashboardFilters;
+    const queryKey = dashboardQueryKey(scope, range, filters);
+    if (typeof tokenStats.dashboard !== 'function') {
+      set({ dashboardLoading: false });
+      return;
+    }
+    set({ dashboardLoading: true, dashboardError: null });
+    void tokenStats.dashboard(scope, range, 100, undefined, filters).then((dashboard) => {
+      if (dashboardQueryKey(get().scope, get().range, get().dashboardFilters) !== queryKey) return;
+      set({ dashboard, dashboardLoading: false, dashboardError: null });
+    }).catch((err) => {
+      if (dashboardQueryKey(get().scope, get().range, get().dashboardFilters) !== queryKey) return;
+      set({ dashboardLoading: false, dashboardError: String(err) });
+    });
+  },
+  loadMoreDashboard: () => {
+    const state = get();
+    const cursor = state.dashboard?.nextCursor;
+    if (!cursor || state.dashboardLoading || typeof tokenStats.dashboard !== 'function') return;
+    const { scope, range, dashboardFilters: filters } = state;
+    const queryKey = dashboardQueryKey(scope, range, filters);
+    set({ dashboardLoading: true, dashboardError: null });
+    void tokenStats.dashboard(scope, range, 100, cursor, filters).then((page) => {
+      if (dashboardQueryKey(get().scope, get().range, get().dashboardFilters) !== queryKey) return;
+      const current = get().dashboard;
+      if (!current) {
+        set({ dashboard: page, dashboardLoading: false, dashboardError: null });
+        return;
+      }
+      set({
+        dashboard: {
+          ...page,
+          requestLogs: [...current.requestLogs, ...page.requestLogs],
+        },
+        dashboardLoading: false,
+        dashboardError: null,
+      });
+    }).catch((err) => {
+      if (dashboardQueryKey(get().scope, get().range, get().dashboardFilters) !== queryKey) return;
+      set({ dashboardLoading: false, dashboardError: String(err) });
+    });
+  },
   handleProgress: (payload) => {
     if (payload.requestId !== get().activeRequestId) return;
     if (get().activeSilent) return;
@@ -134,6 +212,7 @@ export const useStatsStore = create<StatsState>((set, get) => ({
       error: null,
       lastComputedAt: Date.now(),
     });
+    get().loadDashboard();
   },
   handleError: (payload) => {
     if (payload.requestId !== get().activeRequestId) return;

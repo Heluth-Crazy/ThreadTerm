@@ -412,6 +412,10 @@ impl CodexAppManager {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(feature = "stats-proxy")]
+        for (key, value) in crate::stats::proxy::prepare_env("codex", None).await? {
+            command.env(key, value);
+        }
 
         let mut child = spawn_managed_codex_child(command)
             .map_err(|err| format!("Failed to start `{}`: {err}", launch.display()))?;

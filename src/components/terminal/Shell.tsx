@@ -121,6 +121,7 @@ function ShellTerminalSurface({
 
 function Shell({
   selectedProject,
+  terminalType,
   initialCommand,
   minimal = false,
   autoConnect = false,
@@ -286,6 +287,7 @@ function Shell({
     retryConnectNow,
   } = usePtyConnectionController({
     paneId,
+    terminalType,
     rendererScope,
     isInitialized,
     t,
