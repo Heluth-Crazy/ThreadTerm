@@ -48,6 +48,9 @@ function makeStats(): AgentStats {
 function resetStatsStore() {
   useStatsStore.setState({
     snapshot: makeStats(),
+    dashboard: null,
+    dashboardLoading: false,
+    dashboardError: null,
     dashboardFilters: { status: 'all', source: 'all' },
     bySession: {},
     loading: false,
@@ -112,11 +115,40 @@ describe('StatsPanel', () => {
     );
   });
 
+  it('does not render a previous-range snapshot while the new range is loading', () => {
+    useStatsStore.setState({
+      snapshot: makeStats(),
+      dashboard: null,
+      loading: false,
+      dashboardLoading: true,
+    });
+
+    render(<StatsPanel onClose={vi.fn()} />);
+
+    expect(screen.getByText('Scanning sessions…')).toBeVisible();
+    expect(screen.queryByText(/150 real tokens/)).not.toBeInTheDocument();
+  });
+
   it('follows the selected project directory for dashboard filtering', () => {
     render(<StatsPanel onClose={vi.fn()} projectPath="D:/repo/app" />);
 
     expect(screen.getByRole('textbox', { name: 'Project directory' })).toHaveValue('D:/repo/app');
     expect(useStatsStore.getState().dashboardFilters.projectPath).toBe('D:/repo/app');
+  });
+
+  it('clears a previous project filter when no project is selected', () => {
+    useStatsStore.setState({
+      dashboardFilters: {
+        status: 'all',
+        source: 'all',
+        projectPath: 'D:/repo/previous',
+      },
+    });
+
+    render(<StatsPanel onClose={vi.fn()} />);
+
+    expect(screen.getByRole('textbox', { name: 'Project directory' })).toHaveValue('');
+    expect(useStatsStore.getState().dashboardFilters.projectPath).toBeUndefined();
   });
 
   it.each([

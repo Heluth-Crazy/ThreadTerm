@@ -756,15 +756,10 @@ export function TerminalManager() {
   const handleCreate = useCallback(
     (options: TerminalCreateOptions) => {
       const id = createCard(options);
-      if (options.worktreePath) {
-        selectWorktree(options.projectPath, options.worktreePath, options.branchLabel);
-      } else {
-        selectProject(options.projectPath);
-      }
       setCreateOpen(false);
       focusMountedCard(id);
     },
-    [createCard, focusMountedCard, selectProject, selectWorktree],
+    [createCard, focusMountedCard],
   );
 
   const handleGridCreateTerminal = useCallback(
@@ -795,7 +790,6 @@ export function TerminalManager() {
           branchLabel: request.branchLabel,
           terminalType: 'shell',
         });
-        selectWorktree(request.projectPath, worktree.path, request.branchLabel);
         focusMountedCard(id);
         pushNotification({
           cardId: 'system:worktrees',
@@ -819,7 +813,7 @@ export function TerminalManager() {
         });
       }
     },
-    [cards, createCard, focusMountedCard, pushNotification, selectWorktree, selectedProjectName, t],
+    [cards, createCard, focusMountedCard, pushNotification, selectedProjectName, t],
   );
 
   const recentProjects = useMemo(

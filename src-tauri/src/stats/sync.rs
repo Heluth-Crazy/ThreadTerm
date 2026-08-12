@@ -57,6 +57,13 @@ impl SyncResult {
 
 const PROGRESS_EVERY: usize = 16;
 
+fn session_log_candidates(root: &Path) -> Vec<PathBuf> {
+    jsonl_files_recent_first(root, None)
+        .into_iter()
+        .map(|candidate| candidate.path)
+        .collect()
+}
+
 /// Bump when parser logic changes in a way that alters stored token/cost
 /// numbers. On the next sync a DB whose recorded version differs is wiped and
 /// fully re-ingested — `INSERT OR IGNORE` + the mtime gate otherwise freeze old
@@ -109,14 +116,6 @@ fn rebuild_if_parser_changed(conn: &rusqlite::Connection) -> bool {
     true
 }
 
-fn scan_lower_bound_after_rebuild(rebuilt: bool, lo_ms: Option<u64>) -> Option<u64> {
-    if rebuilt {
-        None
-    } else {
-        lo_ms
-    }
-}
-
 /// Force a full rebuild: drop ingested rows + sync cursors so the next
 /// `stats_compute` re-ingests every file from scratch with the current parser.
 pub fn rebuild_now() -> Result<(), String> {
@@ -130,16 +129,15 @@ pub fn rebuild_now() -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-/// Sync all providers' session logs into `usage_records`. Scans only files
-/// newer than `lo_ms` (coarse mtime pre-filter); the mtime gate then skips
-/// unchanged files entirely. `on_progress(scanned, total)` is called
-/// periodically so the caller can stream progress to the UI.
-pub fn sync_all<F: FnMut(usize, usize)>(lo_ms: Option<u64>, mut on_progress: F) -> SyncResult {
+/// Sync all providers' session logs into `usage_records`. Candidate discovery
+/// is intentionally independent of the dashboard time range: a file's mtime
+/// is not the timestamp of every usage record it contains. Per-file cursors
+/// still skip unchanged contents after candidates are discovered.
+pub fn sync_all<F: FnMut(usize, usize)>(mut on_progress: F) -> SyncResult {
     // One-time rebuild if the parser version changed since rows were ingested.
-    let rebuilt = get_db()
+    let _ = get_db()
         .map(|conn| rebuild_if_parser_changed(&conn))
         .unwrap_or(false);
-    let scan_lo_ms = scan_lower_bound_after_rebuild(rebuilt, lo_ms);
 
     // Collect candidates up front so `total` is known before the scan loop.
     // Codex always builds a complete rollout index: a recent child may fork
@@ -148,20 +146,14 @@ pub fn sync_all<F: FnMut(usize, usize)>(lo_ms: Option<u64>, mut on_progress: F) 
     // reparsing unchanged rollout contents.
     let mut claude_files = Vec::new();
     if let Some(root) = super::claude_root() {
-        for f in jsonl_files_recent_first(&root, scan_lo_ms) {
-            claude_files.push(f.path);
-        }
+        claude_files.extend(session_log_candidates(&root));
     }
     let mut codex_files = Vec::new();
     if let Some(root) = super::codex_root() {
-        for f in jsonl_files_recent_first(&root, None) {
-            codex_files.push(f.path);
-        }
+        codex_files.extend(session_log_candidates(&root));
         if let Some(config_root) = root.parent() {
             let archived_root = config_root.join("archived_sessions");
-            for f in jsonl_files_recent_first(&archived_root, None) {
-                codex_files.push(f.path);
-            }
+            codex_files.extend(session_log_candidates(&archived_root));
         }
     }
     codex_files.sort();
@@ -1323,9 +1315,25 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_scan_ignores_caller_time_window() {
-        assert_eq!(scan_lower_bound_after_rebuild(true, Some(123)), None);
-        assert_eq!(scan_lower_bound_after_rebuild(false, Some(123)), Some(123));
-        assert_eq!(scan_lower_bound_after_rebuild(false, None), None);
+    fn session_log_ingestion_has_no_dashboard_time_lower_bound() {
+        let directory = std::env::temp_dir().join(format!(
+            "threadterm-stats-range-independent-ingest-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("old-mtime-recent-record.jsonl");
+        std::fs::write(&path, "{\"timestamp\":\"2026-08-12T00:00:00Z\"}\n").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new()
+                .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(86_400)),
+        )
+        .unwrap();
+
+        let candidates = session_log_candidates(&directory);
+
+        assert_eq!(candidates, vec![path]);
+        let _ = std::fs::remove_dir_all(directory);
     }
 }

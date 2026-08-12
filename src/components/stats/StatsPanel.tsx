@@ -64,7 +64,9 @@ export function StatsPanel({ onClose, projectPath }: StatsPanelProps) {
   const compute = useStatsStore((s) => s.compute);
   const [proxyStatus, setProxyStatus] = useState<StatsProxyStatus | null>(null);
   const activeProjectPath = projectPath?.trim() || undefined;
-  const syncedProjectPath = useRef<string | undefined>(undefined);
+  // `null` is an initial sentinel. `undefined` is a real "all projects"
+  // selection and must still clear a filter left by a previous panel mount.
+  const syncedProjectPath = useRef<string | undefined | null>(null);
 
   // Opening stats follows the same project/worktree selection as the left
   // rail. A user can still clear or edit the field to inspect all projects or
@@ -82,10 +84,24 @@ export function StatsPanel({ onClose, projectPath }: StatsPanelProps) {
     setDashboardFilters({ ...dashboardFilters, ...patch });
   };
 
-  // Compute on first open if we have nothing yet.
+  // Compute on first open only when no synchronized snapshot exists. When a
+  // snapshot is already available (for example from badge auto-refresh), load
+  // its source-aware dashboard directly instead of hiding it behind a second
+  // filesystem scan.
   useEffect(() => {
-    if ((!snapshot || !dashboard) && !loading) compute();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Read after the project-filter synchronization effect above. Its state
+    // update is synchronous, while render-scoped selectors still describe the
+    // previous query during this commit.
+    const state = useStatsStore.getState();
+    if (!state.snapshot && !state.dashboard && !state.loading) {
+      state.compute();
+    } else if (
+      state.snapshot &&
+      !state.dashboard &&
+      !state.dashboardLoading
+    ) {
+      state.loadDashboard();
+    }
   }, []);
 
   // While the panel is open, the silent auto-refresh polls at the faster
@@ -242,7 +258,7 @@ export function StatsPanel({ onClose, projectPath }: StatsPanelProps) {
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {error || dashboardError ? (
           <p className="text-xs text-destructive">{error || dashboardError}</p>
-        ) : loading && !snapshot ? (
+        ) : !dashboard && (loading || dashboardLoading) ? (
           <p className="text-xs text-muted-foreground">
             {t('stats.loading', { defaultValue: 'Scanning sessions…' })}
             {total ? ` (${scanned}/${total})` : ''}

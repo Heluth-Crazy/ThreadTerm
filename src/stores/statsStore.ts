@@ -16,6 +16,7 @@ import type {
 import type { TerminalCard } from '../types/terminal';
 
 let requestCounter = 0;
+let dashboardGeneration = 0;
 
 /**
  * Background stats polling scans every JSONL session file under
@@ -112,15 +113,36 @@ export const useStatsStore = create<StatsState>((set, get) => ({
 
   setPanelOpen: (open) => set({ panelOpen: open }),
   setScope: (scope) => {
-    set({ scope, dashboard: null, dashboardError: null });
+    dashboardGeneration += 1;
+    set({
+      scope,
+      snapshot: null,
+      dashboard: null,
+      dashboardLoading: false,
+      dashboardError: null,
+    });
     get().compute();
   },
   setRange: (range) => {
-    set({ range, dashboard: null, dashboardError: null });
+    dashboardGeneration += 1;
+    set({
+      range,
+      snapshot: null,
+      dashboard: null,
+      dashboardLoading: false,
+      dashboardError: null,
+    });
     get().compute();
   },
   setDashboardFilters: (dashboardFilters) => {
-    set({ dashboardFilters, dashboard: null, dashboardError: null });
+    dashboardGeneration += 1;
+    set({
+      dashboardFilters,
+      snapshot: null,
+      dashboard: null,
+      dashboardLoading: false,
+      dashboardError: null,
+    });
     get().compute();
   },
   compute: (opts) => {
@@ -153,15 +175,18 @@ export const useStatsStore = create<StatsState>((set, get) => ({
     const range = get().range;
     const filters = get().dashboardFilters;
     const queryKey = dashboardQueryKey(scope, range, filters);
+    const generation = (dashboardGeneration += 1);
     if (typeof tokenStats.dashboard !== 'function') {
       set({ dashboardLoading: false });
       return;
     }
     set({ dashboardLoading: true, dashboardError: null });
     void tokenStats.dashboard(scope, range, 100, undefined, filters).then((dashboard) => {
+      if (dashboardGeneration !== generation) return;
       if (dashboardQueryKey(get().scope, get().range, get().dashboardFilters) !== queryKey) return;
       set({ dashboard, dashboardLoading: false, dashboardError: null });
     }).catch((err) => {
+      if (dashboardGeneration !== generation) return;
       if (dashboardQueryKey(get().scope, get().range, get().dashboardFilters) !== queryKey) return;
       set({ dashboardLoading: false, dashboardError: String(err) });
     });
@@ -172,8 +197,10 @@ export const useStatsStore = create<StatsState>((set, get) => ({
     if (!cursor || state.dashboardLoading || typeof tokenStats.dashboard !== 'function') return;
     const { scope, range, dashboardFilters: filters } = state;
     const queryKey = dashboardQueryKey(scope, range, filters);
+    const generation = (dashboardGeneration += 1);
     set({ dashboardLoading: true, dashboardError: null });
     void tokenStats.dashboard(scope, range, 100, cursor, filters).then((page) => {
+      if (dashboardGeneration !== generation) return;
       if (dashboardQueryKey(get().scope, get().range, get().dashboardFilters) !== queryKey) return;
       const current = get().dashboard;
       if (!current) {
@@ -189,6 +216,7 @@ export const useStatsStore = create<StatsState>((set, get) => ({
         dashboardError: null,
       });
     }).catch((err) => {
+      if (dashboardGeneration !== generation) return;
       if (dashboardQueryKey(get().scope, get().range, get().dashboardFilters) !== queryKey) return;
       set({ dashboardLoading: false, dashboardError: String(err) });
     });

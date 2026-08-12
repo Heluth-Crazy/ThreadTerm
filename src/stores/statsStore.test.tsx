@@ -8,10 +8,12 @@ import {
 } from './statsStore';
 import { useTerminalStore } from './terminalStore';
 import type { AgentStats } from '../types/stats';
+import type { StatsDashboard } from '../types/stats';
 import type { TerminalCard } from '../types/terminal';
 
 const bridgeMocks = vi.hoisted(() => ({
   compute: vi.fn(),
+  dashboard: vi.fn(),
   kill: vi.fn(),
 }));
 
@@ -24,6 +26,7 @@ vi.mock('../lib/tauri-bridge', () => ({
     compute: bridgeMocks.compute,
     cancel: vi.fn(),
     rebuild: vi.fn(),
+    dashboard: bridgeMocks.dashboard,
     onProgress: vi.fn(() => Promise.resolve(() => {})),
     onDone: vi.fn(() => Promise.resolve(() => {})),
     onError: vi.fn(() => Promise.resolve(() => {})),
@@ -76,9 +79,59 @@ function makeCard(overrides: Partial<TerminalCard>): TerminalCard {
   };
 }
 
+function makeDashboard(requestCount: number, requestId = `request-${requestCount}`): StatsDashboard {
+  return {
+    overview: {
+      requestCount,
+      successCount: requestCount,
+      failureCount: 0,
+      totalTokens: requestCount * 100,
+      realTotalTokens: requestCount * 100,
+      inputTokens: requestCount * 75,
+      outputTokens: requestCount * 25,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      cacheHitRate: 0,
+      successRate: 1,
+      totalCostUsd: requestCount / 100,
+      unpricedRequestCount: 0,
+      sessionCount: requestCount,
+      proxyRequestCount: 0,
+      sessionLogRequestCount: requestCount,
+    },
+    trends: [],
+    byProvider: [],
+    byModel: [],
+    requestLogs: [
+      {
+        requestId,
+        provider: 'codex',
+        appType: 'codex',
+        model: 'gpt-5-codex',
+        requestModel: 'gpt-5-codex',
+        pricingModel: 'gpt-5-codex',
+        usage: { input: 75, output: 25, cacheCreation: 0, cacheRead: 0 },
+        totalTokens: 100,
+        realTotalTokens: 100,
+        costUsd: 0.01,
+        pricingStatus: 'builtin',
+        success: true,
+        streaming: false,
+        dataSource: 'session_log',
+        createdAt: 1,
+      },
+    ],
+    nextCursor: null,
+    pricingVersion: 'test',
+  };
+}
+
 function resetStores() {
   useStatsStore.setState({
     snapshot: null,
+    dashboard: null,
+    dashboardLoading: false,
+    dashboardError: null,
     bySession: {},
     loading: false,
     error: null,
@@ -102,6 +155,8 @@ beforeEach(() => {
   vi.useFakeTimers();
   bridgeMocks.compute.mockReset();
   bridgeMocks.compute.mockResolvedValue(undefined);
+  bridgeMocks.dashboard.mockReset();
+  bridgeMocks.dashboard.mockResolvedValue(makeDashboard(1));
   bridgeMocks.kill.mockReset();
   resetStores();
 });
@@ -158,6 +213,86 @@ describe('statsStore silent compute', () => {
       total: 10,
       activeSilent: false,
     });
+  });
+});
+
+describe('statsStore dashboard query identity', () => {
+  it('clears the previous query snapshot before computing a new range', () => {
+    useStatsStore.setState({
+      snapshot: makeStats(),
+      dashboard: makeDashboard(30, 'previous-30d'),
+    });
+
+    act(() => useStatsStore.getState().setRange('all'));
+
+    expect(useStatsStore.getState()).toMatchObject({
+      range: 'all',
+      snapshot: null,
+      dashboard: null,
+      dashboardLoading: false,
+      loading: true,
+    });
+  });
+
+  it('keeps 30d and all results stable across repeated range switches', async () => {
+    bridgeMocks.dashboard.mockImplementation((_scope: string, range: string) =>
+      Promise.resolve(range === '30d' ? makeDashboard(30, '30d') : makeDashboard(90, 'all')),
+    );
+
+    for (const [range, expected] of [
+      ['30d', 30],
+      ['all', 90],
+      ['30d', 30],
+      ['all', 90],
+    ] as const) {
+      act(() => {
+        useStatsStore.getState().setRange(range);
+        useStatsStore.getState().loadDashboard();
+      });
+      await vi.waitFor(() => {
+        expect(useStatsStore.getState().dashboard?.overview.requestCount).toBe(expected);
+      });
+    }
+  });
+
+  it('rejects an old same-key dashboard response after a range round trip', async () => {
+    let resolveFirst30d: ((dashboard: StatsDashboard) => void) | undefined;
+    let calls = 0;
+    bridgeMocks.dashboard.mockImplementation((_scope: string, range: string) => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise<StatsDashboard>((resolve) => {
+          resolveFirst30d = resolve;
+        });
+      }
+      return Promise.resolve(
+        range === 'all' ? makeDashboard(90, 'all') : makeDashboard(31, 'latest-30d'),
+      );
+    });
+
+    act(() => useStatsStore.getState().loadDashboard());
+    act(() => {
+      useStatsStore.getState().setRange('all');
+      useStatsStore.getState().loadDashboard();
+    });
+    await vi.waitFor(() => {
+      expect(useStatsStore.getState().dashboard?.overview.requestCount).toBe(90);
+    });
+    act(() => {
+      useStatsStore.getState().setRange('30d');
+      useStatsStore.getState().loadDashboard();
+    });
+    await vi.waitFor(() => {
+      expect(useStatsStore.getState().dashboard?.overview.requestCount).toBe(31);
+    });
+
+    await act(async () => {
+      resolveFirst30d?.(makeDashboard(29, 'stale-30d'));
+      await Promise.resolve();
+    });
+
+    expect(useStatsStore.getState().dashboard?.overview.requestCount).toBe(31);
+    expect(useStatsStore.getState().dashboard?.requestLogs[0]?.requestId).toBe('latest-30d');
   });
 });
 

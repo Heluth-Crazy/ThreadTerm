@@ -23,7 +23,10 @@ mod types;
 pub mod proxy;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex,
+};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -37,6 +40,9 @@ use types::{AgentStats, StatsDashboard, StatsDashboardFilters};
 /// Monotonic generation. Each compute / cancel bumps it; a worker whose
 /// request_id no longer matches the latest generation bails silently.
 static STATS_GEN: AtomicU64 = AtomicU64::new(0);
+/// Serializes the durable ingestion writer. Range-specific aggregation runs
+/// only after the shared, idempotent ingest pass has settled.
+static STATS_INGEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,6 +146,9 @@ pub fn stats_cancel() {
 /// parser. Use when the on-disk numbers look stale.
 #[tauri::command]
 pub fn stats_rebuild() -> Result<(), String> {
+    let _ingest_guard = STATS_INGEST_LOCK
+        .lock()
+        .map_err(|_| "Statistics ingestion lock was poisoned".to_string())?;
     sync::rebuild_now()
 }
 
@@ -154,6 +163,9 @@ pub fn stats_dashboard(
     cursor: Option<String>,
     filters: Option<StatsDashboardFilters>,
 ) -> Result<StatsDashboard, String> {
+    let _ingest_guard = STATS_INGEST_LOCK
+        .lock()
+        .map_err(|_| "Statistics ingestion lock was poisoned".to_string())?;
     let (lo, hi) = parse_range(&range);
     let conn = crate::db::get_db()?;
     let result = if let Some(filters) = filters {
@@ -275,21 +287,24 @@ fn run_worker(
 ) -> Result<AgentStats, String> {
     let (lo, hi) = parse_range(range);
 
-    // Phase 1: incremental sync. sync_all streams progress as it walks files.
-    sync::sync_all(lo, |scanned, total| {
-        if request_id != STATS_GEN.load(Ordering::SeqCst) {
-            return;
+    // Phase 1: range-independent incremental ingest. Only one worker may
+    // mutate usage_records/session_log_sync at a time. Superseded workers may
+    // finish an idempotent shared ingest, but can never publish their result.
+    let ingest_guard = STATS_INGEST_LOCK
+        .lock()
+        .map_err(|_| "Statistics ingestion lock was poisoned".to_string())?;
+    sync::sync_all(|scanned, total| {
+        if request_id == STATS_GEN.load(Ordering::SeqCst) {
+            let _ = app.emit(
+                "stats://progress",
+                StatsProgress {
+                    request_id,
+                    scanned,
+                    total,
+                },
+            );
         }
-        let _ = app.emit(
-            "stats://progress",
-            StatsProgress {
-                request_id,
-                scanned,
-                total,
-            },
-        );
     });
-
     if request_id != STATS_GEN.load(Ordering::SeqCst) {
         return Err("cancelled".to_string());
     }
@@ -297,5 +312,7 @@ fn run_worker(
     // Phase 2: aggregate from the persisted usage_records within the
     // requested scope + time window.
     let conn = crate::db::get_db()?;
-    aggregate_from_db(&conn, scope, lo, hi).map_err(|e| e.to_string())
+    let snapshot = aggregate_from_db(&conn, scope, lo, hi).map_err(|e| e.to_string());
+    drop(ingest_guard);
+    snapshot
 }

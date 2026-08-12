@@ -6,9 +6,18 @@ use once_cell::sync::Lazy;
 use std::os::windows::process::CommandExt;
 #[cfg(target_os = "macos")]
 use std::process::Command;
+#[cfg(target_os = "windows")]
+use std::{
+    process::{Child, Command, ExitStatus, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(target_os = "windows")]
+const WINDOWS_SHELL_PROBE_TIMEOUT: Duration = Duration::from_millis(1_500);
 
 /// Pick the Windows shell by preference: pwsh (PowerShell 7+) > Windows
 /// PowerShell > cmd. Pure (no platform calls) so the ordering is unit-tested on
@@ -25,13 +34,17 @@ fn select_windows_shell(has_pwsh: bool, has_powershell: bool) -> &'static str {
 }
 
 /// Which shells are installed can't change while the app is running, but the
-/// `where` probes cost ~0.5-0.8s *each* on a cold PATH scan — and they used to
-/// run inside PTY_SPAWN_LOCK on every pty_create, serializing multi-card
-/// startup into multi-second delays before the first prompt appeared. Probe
-/// once, reuse forever.
+/// `where` probes cost ~0.5-0.8s on a cold PATH scan and can block indefinitely
+/// on an unhealthy network PATH entry. Probe once with a strict deadline, then
+/// reuse the result forever. A timed-out preferred shell safely falls back to
+/// the next candidate (and ultimately cmd.exe), so first PTY creation remains
+/// bounded.
 #[cfg(target_os = "windows")]
-static WINDOWS_SHELL: Lazy<&'static str> =
-    Lazy::new(|| select_windows_shell(which_exists("pwsh.exe"), which_exists("powershell.exe")));
+static WINDOWS_SHELL: Lazy<&'static str> = Lazy::new(|| {
+    let has_pwsh = which_exists("pwsh.exe");
+    let has_powershell = !has_pwsh && which_exists("powershell.exe");
+    select_windows_shell(has_pwsh, has_powershell)
+});
 
 /// Returns the default shell for the current platform.
 pub(super) fn default_shell() -> String {
@@ -136,13 +149,44 @@ pub(super) fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str) {
 
 #[cfg(target_os = "windows")]
 fn which_exists(name: &str) -> bool {
-    let mut command = std::process::Command::new("where");
+    let where_executable = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .map(|root| root.join("System32").join("where.exe"))
+        .unwrap_or_else(|| std::path::PathBuf::from("where.exe"));
+    let mut command = Command::new(where_executable);
     command.creation_flags(CREATE_NO_WINDOW);
     command
-        .arg(name)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .args(["/Q", name])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    matches!(
+        wait_for_child_with_timeout(&mut child, WINDOWS_SHELL_PROBE_TIMEOUT),
+        Ok(Some(status)) if status.success()
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn wait_for_child_with_timeout(
+    child: &mut Child,
+    timeout: Duration,
+) -> std::io::Result<Option<ExitStatus>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Normalize a working directory for Windows `CommandBuilder::cwd`: ConPTY
@@ -157,9 +201,15 @@ pub(super) fn normalize_windows_cwd(dir: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "windows")]
-    use super::which_exists;
     use super::{normalize_windows_cwd, select_windows_shell};
+    #[cfg(target_os = "windows")]
+    use super::{wait_for_child_with_timeout, which_exists, CREATE_NO_WINDOW};
+    #[cfg(target_os = "windows")]
+    use std::{
+        os::windows::process::CommandExt,
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
 
     #[test]
     fn windows_shell_prefers_pwsh_then_powershell_then_cmd() {
@@ -185,5 +235,25 @@ mod tests {
     #[test]
     fn windows_shell_probe_finds_cmd() {
         assert!(which_exists("cmd.exe"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_shell_probe_timeout_kills_a_slow_probe() {
+        let mut command = Command::new("ping.exe");
+        command
+            .creation_flags(CREATE_NO_WINDOW)
+            .args(["-n", "5", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().expect("start slow probe");
+        let started = Instant::now();
+
+        let status = wait_for_child_with_timeout(&mut child, Duration::from_millis(30))
+            .expect("wait for slow probe");
+
+        assert!(status.is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

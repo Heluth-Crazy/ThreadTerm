@@ -36,6 +36,7 @@ pub async fn provider_list_agent_sessions(
     let provider = AgentSessionProvider::parse(&request.provider)?;
     let (_registration, reporter) =
         progress::register_catalog_scan(app.clone(), request.request_id, provider);
+    reporter.report(types::AgentSessionCatalogPhase::Discovering, 0, None)?;
     let limit = normalize_page_limit(request.limit);
     let cursor = request.cursor;
     let query = request.query;

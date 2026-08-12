@@ -56,7 +56,11 @@ const xtermMock = vi.hoisted(() => {
     scrollToBottom = vi.fn();
     hasSelection = vi.fn(() => false);
     attachCustomKeyEventHandler = vi.fn();
-    onData = vi.fn(() => ({ dispose: vi.fn() }));
+    dataHandlers = new Set<(data: string) => void>();
+    onData = vi.fn((cb: (data: string) => void) => {
+      this.dataHandlers.add(cb);
+      return { dispose: () => this.dataHandlers.delete(cb) };
+    });
     onScroll = vi.fn((cb: () => void) => {
       this.scrollHandlers.push(cb);
       return { dispose: vi.fn() };

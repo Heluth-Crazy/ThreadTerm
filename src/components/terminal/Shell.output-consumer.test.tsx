@@ -12,6 +12,34 @@ const ptyMock = getPtyMock();
 const xtermMock = getXtermMock();
 
 describe('Shell — PTY output consumer lifecycle', () => {
+  it('accepts input and renders output on the first PTY connection', async () => {
+    renderMinimalShell('first-pane');
+    await waitForConnected();
+    const term = xtermMock.instances[0];
+
+    act(() => {
+      for (const handler of term.dataHandlers) handler('echo ready\r');
+    });
+    await waitFor(() => {
+      expect(ptyMock.input).toHaveBeenCalledWith('first-pane', 'echo ready\r');
+    });
+
+    act(() => {
+      for (const handler of ptyMock.outputHandlers) {
+        handler({ id: 'first-pane', data: 'ready\r\n', seq: 1 });
+      }
+    });
+    await waitFor(() => {
+      expect(term.write).toHaveBeenCalledWith('ready\r\n', expect.any(Function));
+      expect(ptyMock.ack).toHaveBeenCalledWith(
+        'first-pane',
+        1,
+        'renderer',
+        expect.any(String),
+      );
+    });
+  });
+
   it('registers a unique renderer consumer and unregisters it on unmount', async () => {
     const { unmount } = renderMinimalShell();
     await waitForConnected();

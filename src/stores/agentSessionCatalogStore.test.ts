@@ -202,6 +202,38 @@ describe('useAgentSessionCatalogStore', () => {
     });
   });
 
+  it('keeps a long scan alive while correlated heartbeats continue', async () => {
+    vi.useFakeTimers();
+    listAgentSessions.mockImplementationOnce(() => new Promise(() => {}));
+    void useAgentSessionCatalogStore.getState().ensureLoaded('codex');
+    const requestId = listAgentSessions.mock.calls[0]?.[0]?.requestId as number;
+
+    for (let heartbeat = 1; heartbeat <= 11; heartbeat += 1) {
+      await vi.advanceTimersByTimeAsync(2_000);
+      useAgentSessionCatalogStore.getState().handleProgress({
+        requestId,
+        provider: 'codex',
+        phase: 'scanning',
+        completed: 0,
+        total: null,
+        elapsedMs: heartbeat * 2_000,
+      });
+    }
+
+    expect(useAgentSessionCatalogStore.getState().providers.codex.loadState).toBe(
+      'loading',
+    );
+    expect(cancelAgentSessionScan).not.toHaveBeenCalledWith(requestId);
+
+    await vi.advanceTimersByTimeAsync(
+      AGENT_SESSION_CATALOG_STALL_TIMEOUT_MS,
+    );
+    expect(cancelAgentSessionScan).toHaveBeenCalledWith(requestId);
+    expect(useAgentSessionCatalogStore.getState().providers.codex.errorMessage).toBe(
+      AGENT_SESSION_CATALOG_STALLED_ERROR,
+    );
+  });
+
   it('preserves selected summaries when a query replaces provider rows', async () => {
     listAgentSessions
       .mockResolvedValueOnce({

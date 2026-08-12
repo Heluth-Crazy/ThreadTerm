@@ -83,15 +83,20 @@ export function useTerminalNavigation({
 
   const focusMountedCard = useCallback(
     (cardId: string) => {
-      const card = cards.find((item) => item.id === cardId);
-      if (card) selectCardScope(card);
+      // Card creation and navigation can happen in the same event turn. The
+      // render-scoped `cards` array is stale until React renders again, while
+      // the Zustand store already contains the newly-created card.
+      const card = useTerminalStore
+        .getState()
+        .cards.find((item) => item.id === cardId);
+      if (!card) return;
+      selectCardScope(card);
       mountCardInBackground(cardId);
       focusCard(cardId);
       setPrimaryView('workspace');
       setViewMode('focus');
     },
     [
-      cards,
       focusCard,
       mountCardInBackground,
       selectCardScope,

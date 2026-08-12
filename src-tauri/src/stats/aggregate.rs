@@ -480,6 +480,47 @@ mod tests {
     }
 
     #[test]
+    fn repeated_range_round_trips_are_deeply_stable() {
+        let conn = mem_conn_with_rows();
+        insert_row(
+            &conn,
+            "recent",
+            "claude-opus-4-8",
+            200,
+            20,
+            3.0,
+            Some("recent-session"),
+            "/repo/recent",
+            5_000,
+        );
+        insert_row(
+            &conn,
+            "historic",
+            "claude-sonnet-4-5",
+            100,
+            10,
+            1.5,
+            Some("historic-session"),
+            "/repo/historic",
+            1_000,
+        );
+
+        let thirty_first = aggregate_from_db(&conn, "all", Some(2_000_000), None).unwrap();
+        let all_first = aggregate_from_db(&conn, "all", None, None).unwrap();
+        let thirty_second = aggregate_from_db(&conn, "all", Some(2_000_000), None).unwrap();
+        let all_second = aggregate_from_db(&conn, "all", None, None).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(thirty_first).unwrap(),
+            serde_json::to_value(thirty_second).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(all_first).unwrap(),
+            serde_json::to_value(all_second).unwrap()
+        );
+    }
+
+    #[test]
     fn aggregate_from_db_filters_by_scope() {
         let conn = mem_conn_with_rows();
         insert_row(

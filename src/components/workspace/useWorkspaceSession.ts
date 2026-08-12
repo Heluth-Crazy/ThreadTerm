@@ -156,12 +156,28 @@ export function useWorkspaceSession({
   dirtyByTabIdRef.current = dirtyByTabId;
   const terminalCloseRequestRef = useRef(terminalCloseRequest);
   terminalCloseRequestRef.current = terminalCloseRequest;
+  const selectionInFlightRef = useRef<{
+    rootPath: string;
+    generation: number;
+    promise: Promise<WorkspaceRecord | null>;
+  } | null>(null);
+  const navigationGenerationRef = useRef(0);
+  const terminalOpenInFlightRef = useRef<{
+    cardId: string;
+    rootPath: string;
+    generation: number;
+    promise: Promise<void>;
+  } | null>(null);
 
   const workspaceRootPath = workspace?.canonicalRoot ?? null;
   const workspaceUnavailable = workspace?.availability === 'unavailable';
 
   const applySnapshot = useCallback(
     (snapshot: Awaited<ReturnType<typeof workspaceClient.getSnapshot>>) => {
+      // Async open flows may request another snapshot before React commits the
+      // state update below. Keep the guard ref authoritative immediately so a
+      // freshly selected workspace is not mistaken for the previous one.
+      selectedWorkspaceIdRef.current = snapshot.workspace.id;
       setWorkspace(snapshot.workspace);
       setSelectedWorkspaceId(snapshot.workspace.id);
       setTabs(snapshot.tabs);
@@ -181,8 +197,9 @@ export function useWorkspaceSession({
   );
 
   const refreshSnapshot = useCallback(
-    async (workspaceId: string) => {
+    async (workspaceId: string, shouldApply?: () => boolean) => {
       const snapshot = await workspaceClient.getSnapshot(workspaceId);
+      if (shouldApply && !shouldApply()) return snapshot;
       if (selectedWorkspaceIdRef.current && selectedWorkspaceIdRef.current !== workspaceId) {
         return snapshot;
       }
@@ -194,29 +211,44 @@ export function useWorkspaceSession({
 
   const selectionGenerationRef = useRef(0);
   const selectWorkspaceByRoot = useCallback(
-    async (rootPath: string) => {
+    (rootPath: string): Promise<WorkspaceRecord | null> => {
       const trimmed = rootPath.trim();
-      if (!trimmed) return null;
+      if (!trimmed) return Promise.resolve(null);
+      const inFlight = selectionInFlightRef.current;
+      if (
+        inFlight &&
+        samePath(inFlight.rootPath, trimmed) &&
+        inFlight.generation === selectionGenerationRef.current
+      ) {
+        return inFlight.promise;
+      }
       const generation = selectionGenerationRef.current + 1;
       selectionGenerationRef.current = generation;
       setLoading(true);
       setError(null);
-      try {
-        const record = await workspaceClient.ensure(trimmed);
-        const snapshot = await workspaceClient.getSnapshot(record.id);
-        if (selectionGenerationRef.current !== generation) return record;
-        applySnapshot(snapshot);
-        return record;
-      } catch (err) {
-        if (selectionGenerationRef.current !== generation) return null;
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message);
-        return null;
-      } finally {
-        if (selectionGenerationRef.current === generation) {
-          setLoading(false);
+      const promise = (async () => {
+        try {
+          const record = await workspaceClient.ensure(trimmed);
+          const snapshot = await workspaceClient.getSnapshot(record.id);
+          if (selectionGenerationRef.current !== generation) return record;
+          applySnapshot(snapshot);
+          return record;
+        } catch (err) {
+          if (selectionGenerationRef.current !== generation) return null;
+          const message = err instanceof Error ? err.message : String(err);
+          setError(message);
+          return null;
+        } finally {
+          if (selectionGenerationRef.current === generation) {
+            setLoading(false);
+          }
+          if (selectionInFlightRef.current?.generation === generation) {
+            selectionInFlightRef.current = null;
+          }
         }
-      }
+      })();
+      selectionInFlightRef.current = { rootPath: trimmed, generation, promise };
+      return promise;
     },
     [applySnapshot],
   );
@@ -290,6 +322,7 @@ export function useWorkspaceSession({
 
   const setActiveTabId = useCallback(
     async (tabId: string) => {
+      navigationGenerationRef.current += 1;
       const workspaceId = selectedWorkspaceIdRef.current;
       setActiveTabIdState(tabId);
       if (!workspaceId) return;
@@ -303,61 +336,102 @@ export function useWorkspaceSession({
   );
 
   const openTerminalTab = useCallback(
-    async (card: TerminalCard) => {
+    (card: TerminalCard): Promise<void> => {
       const root = effectiveWorktreePath(card);
-      const record = await selectWorkspaceByRoot(root);
-      if (!record) return;
-      const tab = await workspaceClient.openTab(record.id, {
-        kind: 'terminal',
-        title: card.projectName || pathBasename(root),
-        cardId: card.id,
+      const inFlight = terminalOpenInFlightRef.current;
+      if (
+        inFlight &&
+        inFlight.cardId === card.id &&
+        samePath(inFlight.rootPath, root) &&
+        inFlight.generation === navigationGenerationRef.current
+      ) {
+        return inFlight.promise;
+      }
+
+      const generation = navigationGenerationRef.current + 1;
+      navigationGenerationRef.current = generation;
+      const isLatest = () => navigationGenerationRef.current === generation;
+      const promise = (async () => {
+        try {
+          const record = await selectWorkspaceByRoot(root);
+          if (!record || !isLatest()) return;
+          const tab = await workspaceClient.openTab(record.id, {
+            kind: 'terminal',
+            title: card.projectName || pathBasename(root),
+            cardId: card.id,
+          });
+          if (!isLatest()) return;
+          await workspaceClient.setActiveTab(record.id, tab.id, DESKTOP_MAIN_SURFACE);
+          if (!isLatest()) return;
+          setActiveTabIdState(tab.id);
+          await refreshSnapshot(record.id, isLatest);
+        } finally {
+          if (terminalOpenInFlightRef.current?.generation === generation) {
+            terminalOpenInFlightRef.current = null;
+          }
+        }
       });
-      await workspaceClient.setActiveTab(record.id, tab.id, DESKTOP_MAIN_SURFACE);
-      setActiveTabIdState(tab.id);
-      await refreshSnapshot(record.id);
+      const running = promise();
+      terminalOpenInFlightRef.current = {
+        cardId: card.id,
+        rootPath: root,
+        generation,
+        promise: running,
+      };
+      return running;
     },
     [refreshSnapshot, selectWorkspaceByRoot],
   );
 
   const openWorkspaceFile = useCallback(
     async (rootPath: string, entry: DirEntry) => {
+      const generation = navigationGenerationRef.current + 1;
+      navigationGenerationRef.current = generation;
+      const isLatest = () => navigationGenerationRef.current === generation;
       const record = await selectWorkspaceByRoot(rootPath);
-      if (!record) return;
+      if (!record || !isLatest()) return;
       const relativePath = relativeFromRoot(rootPath, entry.path);
       const tab = await workspaceClient.openTab(record.id, {
         kind: 'file',
         title: entry.name || pathBasename(entry.path),
         relativePath,
       });
+      if (!isLatest()) return;
       await workspaceClient.setActiveTab(record.id, tab.id, DESKTOP_MAIN_SURFACE);
+      if (!isLatest()) return;
       setActiveTabIdState(tab.id);
       setWorkspacePanelState((state) => ({
         ...state,
         selectedFilePath: entry.path,
       }));
-      await refreshSnapshot(record.id);
+      await refreshSnapshot(record.id, isLatest);
     },
     [refreshSnapshot, selectWorkspaceByRoot],
   );
 
   const openWorkspaceDiff = useCallback(
     async (entry: GitStatusEntry) => {
+      const generation = navigationGenerationRef.current + 1;
+      navigationGenerationRef.current = generation;
+      const isLatest = () => navigationGenerationRef.current === generation;
       const root = entry.repositoryRoot;
       const record = await selectWorkspaceByRoot(root);
-      if (!record) return;
+      if (!record || !isLatest()) return;
       const relativePath = relativeFromRoot(root, entry.path);
       const tab = await workspaceClient.openTab(record.id, {
         kind: 'diff',
         title: pathBasename(entry.path),
         relativePath,
       });
+      if (!isLatest()) return;
       await workspaceClient.setActiveTab(record.id, tab.id, DESKTOP_MAIN_SURFACE);
+      if (!isLatest()) return;
       setActiveTabIdState(tab.id);
       setWorkspacePanelState((state) => ({
         ...state,
         selectedChangePath: entry.path,
       }));
-      await refreshSnapshot(record.id);
+      await refreshSnapshot(record.id, isLatest);
     },
     [refreshSnapshot, selectWorkspaceByRoot],
   );
@@ -825,12 +899,15 @@ export function useWorkspaceSession({
   useEffect(() => {
     if (!focusedCardId) {
       lastFocusedTerminalRef.current = null;
+      navigationGenerationRef.current += 1;
       return;
     }
     if (lastFocusedTerminalRef.current === focusedCardId) return;
-    lastFocusedTerminalRef.current = focusedCardId;
-    const card = cards.find((item) => item.id === focusedCardId);
+    const card = useTerminalStore
+      .getState()
+      .cards.find((item) => item.id === focusedCardId);
     if (!card) return;
+    lastFocusedTerminalRef.current = focusedCardId;
     void openTerminalTab(card);
   }, [focusedCardId, cards, openTerminalTab]);
 
