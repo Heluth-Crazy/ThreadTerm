@@ -790,8 +790,18 @@
     "missingCli": "{{provider}} CLI が見つかりません",
     "unavailable": "{{provider}} の履歴を利用できません",
     "error": "セッションの読み込みに失敗しました",
+    "stalled": "履歴スキャンの進捗が停止しました。再試行してください。",
     "retry": "再試行",
     "desktopOnly": "セッション復元はデスクトップアプリでのみ利用できます。",
+    "scanStarting": "履歴スキャンを準備中…",
+    "scanElapsed": "{{seconds}}秒",
+    "scanPhase": {
+      "discovering": "履歴ファイルを検出中",
+      "connecting": "Provider に接続中",
+      "listing": "セッション一覧を取得中",
+      "scanning": "セッションメタデータを読み込み中",
+      "enriching": "最初のメッセージを読み込み中"
+    },
     "titleKind": {
       "renamed": "名前変更済み",
       "firstPrompt": "最初のプロンプト",

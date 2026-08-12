@@ -167,7 +167,6 @@ export const pty = {
     listen<AttentionRequiredEvent>('attention-required', (e) => cb(e.payload)),
 
 };
-
 export interface WorktreeInfo {
   path: string;
   head: string;
@@ -285,6 +284,8 @@ export interface ProviderSessionInfo {
 
 export type {
   AgentSessionAvailability,
+  AgentSessionCatalogPhase,
+  AgentSessionCatalogProgress,
   AgentSessionMetadataKey,
   AgentSessionMetadataResult,
   AgentSessionPage,
@@ -296,6 +297,7 @@ export type {
 } from '../types/agentSession';
 
 import type {
+  AgentSessionCatalogProgress,
   AgentSessionPage,
   AgentSessionProvider,
   AgentSessionMetadataResult,
@@ -334,6 +336,15 @@ export const providerSessions = {
   /** On-demand paginated catalog. Does not create cards. */
   listAgentSessions: (request: ListAgentSessionsRequest): Promise<AgentSessionPage> =>
     invoke<AgentSessionPage>('provider_list_agent_sessions', { request }),
+
+  cancelAgentSessionScan: (requestId: number): Promise<void> =>
+    invoke<void>('provider_cancel_agent_session_scan', { requestId }),
+
+  onCatalogProgress: (
+    cb: (payload: AgentSessionCatalogProgress) => void,
+  ): Promise<() => void> =>
+    listen<AgentSessionCatalogProgress>('agent-session://catalog-progress', (event) =>
+      cb(event.payload)),
 
   /** Exact metadata for visible bound cards. Separate from recovery catalog state. */
   resolveMetadata: (

@@ -1,7 +1,9 @@
 use super::preview::{is_generic_session_title, sanitize_preview};
+use super::progress::CatalogProgressReporter;
 use super::types::{
-    empty_page, read_timestamp_ms, AgentSessionAvailability, AgentSessionMetadataLookup,
-    AgentSessionPage, AgentSessionProvider, AgentSessionSummary, TitleKind,
+    empty_page, read_timestamp_ms, AgentSessionAvailability, AgentSessionCatalogPhase,
+    AgentSessionMetadataLookup, AgentSessionPage, AgentSessionProvider, AgentSessionSummary,
+    TitleKind,
 };
 use rusqlite::{params_from_iter, Connection, OpenFlags};
 use serde_json::{json, Value};
@@ -228,14 +230,31 @@ fn sqlite_timestamp_ms(value: Option<i64>) -> Option<u64> {
     })
 }
 
-pub async fn list_codex_session_page(
+pub(crate) async fn list_codex_session_page_with_progress(
     app: &AppHandle,
     cursor: Option<&str>,
     limit: usize,
     query: Option<&str>,
-) -> AgentSessionPage {
+    reporter: &CatalogProgressReporter,
+) -> Result<AgentSessionPage, String> {
     let params = thread_list_params(cursor, limit, query);
-    match crate::codex_app::list_threads_raw(app, params).await {
+    let response = crate::codex_app::list_threads_raw_with_progress(app, params, reporter).await;
+    if reporter.is_cancelled() {
+        return Err("Agent session catalog scan was cancelled".into());
+    }
+    if let Ok(value) = &response {
+        let total = value
+            .get("data")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        reporter.report(AgentSessionCatalogPhase::Scanning, total, Some(total))?;
+    }
+    Ok(map_codex_list_result(response, query))
+}
+
+fn map_codex_list_result(response: Result<Value, String>, query: Option<&str>) -> AgentSessionPage {
+    match response {
         Ok(response) => {
             let (items, next_cursor) = map_thread_list_response(&response, query);
             AgentSessionPage {

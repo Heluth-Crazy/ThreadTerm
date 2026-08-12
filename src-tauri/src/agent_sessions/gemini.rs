@@ -1,8 +1,9 @@
 use super::preview::{is_meaningful_user_text, sanitize_preview};
+use super::progress::CatalogProgressReporter;
 use super::types::{
-    empty_page, read_timestamp_ms, AgentSessionAvailability, AgentSessionMetadataLookup,
-    AgentSessionPage, AgentSessionProvider, AgentSessionSummary, TitleKind,
-    MAX_METADATA_FILE_BYTES,
+    empty_page, read_timestamp_ms, AgentSessionAvailability, AgentSessionCatalogPhase,
+    AgentSessionMetadataLookup, AgentSessionPage, AgentSessionProvider, AgentSessionSummary,
+    TitleKind, MAX_METADATA_FILE_BYTES,
 };
 use serde_json::Value;
 use std::fs::{self, File};
@@ -12,6 +13,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const GEMINI_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const GEMINI_PROBE_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+const GEMINI_FILES_SCANNED_PER_PAGE: usize = 500;
+const GEMINI_CATALOG_FILE_CAP: usize = 10_000;
+const GEMINI_CATALOG_ENTRY_CAP: usize = 20_000;
 
 pub(crate) fn resolve_gemini_sessions(
     lookups: &[AgentSessionMetadataLookup],
@@ -39,113 +43,249 @@ pub(crate) fn resolve_gemini_sessions(
         .collect()
 }
 
-pub async fn list_gemini_session_page(
+pub(crate) async fn list_gemini_session_page_with_progress(
     cursor: Option<&str>,
     limit: usize,
     query: Option<&str>,
-) -> AgentSessionPage {
-    match ensure_gemini_cli_available().await {
+    reporter: &CatalogProgressReporter,
+) -> Result<AgentSessionPage, String> {
+    list_gemini_session_page_impl(cursor, limit, query, reporter).await
+}
+
+async fn list_gemini_session_page_impl(
+    cursor: Option<&str>,
+    limit: usize,
+    query: Option<&str>,
+    reporter: &CatalogProgressReporter,
+) -> Result<AgentSessionPage, String> {
+    reporter.report(AgentSessionCatalogPhase::Connecting, 0, None)?;
+    let probe = ensure_gemini_cli_available_with_progress(reporter).await;
+    match probe {
         Ok(false) => {
-            return empty_page(
+            return Ok(empty_page(
                 AgentSessionProvider::Gemini,
                 AgentSessionAvailability::MissingCli,
                 Some("Gemini CLI was not found".into()),
-            );
+            ));
+        }
+        Err(super::process::BackgroundCommandError::Cancelled) => {
+            return Err("Agent session catalog scan was cancelled".into());
         }
         Err(_) => {
-            return empty_page(
+            return Ok(empty_page(
                 AgentSessionProvider::Gemini,
                 AgentSessionAvailability::Error,
                 Some("Failed to probe Gemini CLI".into()),
-            );
+            ));
         }
         Ok(true) => {}
     }
 
     let Some(root) = gemini_tmp_root() else {
-        return empty_page(
+        return Ok(empty_page(
             AgentSessionProvider::Gemini,
             AgentSessionAvailability::Unavailable,
             Some("Gemini history directory is unavailable".into()),
-        );
+        ));
     };
     if !root.is_dir() {
-        return empty_page(
+        return Ok(empty_page(
             AgentSessionProvider::Gemini,
             AgentSessionAvailability::Unavailable,
             Some("Gemini history was not found".into()),
-        );
+        ));
     }
 
     let cursor = cursor.map(ToOwned::to_owned);
     let query = query.map(ToOwned::to_owned);
+    let reporter = reporter.clone();
     match tokio::task::spawn_blocking(move || {
-        list_gemini_session_page_from_root(&root, cursor.as_deref(), limit, query.as_deref())
+        list_gemini_session_page_from_root_with_progress(
+            &root,
+            cursor.as_deref(),
+            limit,
+            query.as_deref(),
+            Some(&reporter),
+        )
     })
     .await
     {
-        Ok(page) => page,
-        Err(_) => empty_page(
+        Ok(result) => result,
+        Err(_) => Ok(empty_page(
             AgentSessionProvider::Gemini,
             AgentSessionAvailability::Error,
             Some("Gemini history scan failed".into()),
-        ),
+        )),
     }
 }
 
-fn list_gemini_session_page_from_root(
+#[derive(Debug, Clone)]
+struct GeminiChatCandidate {
+    path: PathBuf,
+    project_cwd: String,
+    modified_ms: Option<u64>,
+}
+
+fn list_gemini_session_page_from_root_with_progress(
     root: &Path,
     cursor: Option<&str>,
     limit: usize,
     query: Option<&str>,
-) -> AgentSessionPage {
-    let mut items = list_gemini_sessions_from_root(root);
-    if let Some(q) = query.map(str::trim).filter(|v| !v.is_empty()) {
-        let needle = q.to_ascii_lowercase();
-        items.retain(|item| {
-            item.id.to_ascii_lowercase().contains(&needle)
-                || item.project_path.to_ascii_lowercase().contains(&needle)
-                || item
-                    .first_user_message_preview
-                    .as_ref()
-                    .map(|preview| preview.to_ascii_lowercase().contains(&needle))
-                    .unwrap_or(false)
-        });
+    reporter: Option<&CatalogProgressReporter>,
+) -> Result<AgentSessionPage, String> {
+    if let Some(reporter) = reporter {
+        reporter.report(AgentSessionCatalogPhase::Discovering, 0, None)?;
     }
-    items.sort_by(|a, b| {
-        b.updated_at
+    let mut candidates = collect_gemini_chat_candidates(root, reporter)?;
+    candidates.sort_by(|a, b| {
+        b.modified_ms
             .unwrap_or(0)
-            .cmp(&a.updated_at.unwrap_or(0))
-            .then_with(|| a.id.cmp(&b.id))
+            .cmp(&a.modified_ms.unwrap_or(0))
+            .then_with(|| a.path.cmp(&b.path))
     });
 
-    let offset = cursor
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(0);
-    let end = offset.saturating_add(limit);
-    let next_cursor = if end < items.len() {
-        Some(end.to_string())
-    } else {
-        None
-    };
-    let page_items = items
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect::<Vec<_>>();
+    list_gemini_candidate_page(
+        &candidates,
+        cursor,
+        limit,
+        query,
+        reporter,
+        &mut |candidate| parse_gemini_chat_file(&candidate.path, &candidate.project_cwd),
+    )
+}
 
-    AgentSessionPage {
+fn list_gemini_candidate_page<F>(
+    candidates: &[GeminiChatCandidate],
+    cursor: Option<&str>,
+    limit: usize,
+    query: Option<&str>,
+    reporter: Option<&CatalogProgressReporter>,
+    parser: &mut F,
+) -> Result<AgentSessionPage, String>
+where
+    F: FnMut(&GeminiChatCandidate) -> Option<AgentSessionSummary>,
+{
+    let mut index = cursor
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(candidates.len());
+    let scan_total = candidates
+        .len()
+        .saturating_sub(index)
+        .min(GEMINI_FILES_SCANNED_PER_PAGE);
+    if let Some(reporter) = reporter {
+        reporter.report(AgentSessionCatalogPhase::Scanning, 0, Some(scan_total))?;
+    }
+    let mut scanned = 0usize;
+    let mut page_items = Vec::with_capacity(limit);
+    while index < candidates.len()
+        && scanned < GEMINI_FILES_SCANNED_PER_PAGE
+        && page_items.len() < limit
+    {
+        if let Some(reporter) = reporter {
+            reporter.check_cancelled()?;
+        }
+        let candidate = &candidates[index];
+        index = index.saturating_add(1);
+        scanned = scanned.saturating_add(1);
+        if let Some(summary) = parser(candidate) {
+            if matches_query(&summary, query) {
+                page_items.push(summary);
+            }
+        }
+        if let Some(reporter) = reporter {
+            reporter.report(
+                AgentSessionCatalogPhase::Scanning,
+                scanned,
+                Some(scan_total),
+            )?;
+        }
+    }
+    if let Some(reporter) = reporter {
+        reporter.report_now(
+            AgentSessionCatalogPhase::Scanning,
+            scanned,
+            Some(scan_total),
+        )?;
+    }
+    let next_cursor = (index < candidates.len()).then(|| index.to_string());
+
+    Ok(AgentSessionPage {
         provider: AgentSessionProvider::Gemini,
         availability: AgentSessionAvailability::Available,
         items: page_items,
         next_cursor,
         scanned_at: super::types::now_ms(),
         warning: None,
-    }
+    })
 }
 
-async fn ensure_gemini_cli_available() -> Result<bool, super::process::BackgroundCommandError> {
-    match super::process::run_background_cli(
+fn collect_gemini_chat_candidates(
+    root: &Path,
+    reporter: Option<&CatalogProgressReporter>,
+) -> Result<Vec<GeminiChatCandidate>, String> {
+    let mut candidates = Vec::new();
+    let mut entries_scanned = 0usize;
+    let Ok(projects) = fs::read_dir(root) else {
+        return Ok(candidates);
+    };
+    for project in projects.flatten() {
+        if entries_scanned >= GEMINI_CATALOG_ENTRY_CAP
+            || candidates.len() >= GEMINI_CATALOG_FILE_CAP
+        {
+            break;
+        }
+        entries_scanned = entries_scanned.saturating_add(1);
+        if let Some(reporter) = reporter {
+            reporter.report(AgentSessionCatalogPhase::Discovering, entries_scanned, None)?;
+        }
+        let project_path = project.path();
+        if !project_path.is_dir() {
+            continue;
+        }
+        let chats_dir = project_path.join("chats");
+        if !chats_dir.is_dir() {
+            continue;
+        }
+        let Some(project_cwd) = read_project_cwd(&project_path) else {
+            continue;
+        };
+        let Ok(chats) = fs::read_dir(chats_dir) else {
+            continue;
+        };
+        for chat in chats.flatten() {
+            if entries_scanned >= GEMINI_CATALOG_ENTRY_CAP
+                || candidates.len() >= GEMINI_CATALOG_FILE_CAP
+            {
+                break;
+            }
+            entries_scanned = entries_scanned.saturating_add(1);
+            if let Some(reporter) = reporter {
+                reporter.report(AgentSessionCatalogPhase::Discovering, entries_scanned, None)?;
+            }
+            let path = chat.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+            let modified_ms = chat
+                .metadata()
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(system_time_ms);
+            candidates.push(GeminiChatCandidate {
+                path,
+                project_cwd: project_cwd.clone(),
+                modified_ms,
+            });
+        }
+    }
+    Ok(candidates)
+}
+
+async fn ensure_gemini_cli_available_with_progress(
+    reporter: &CatalogProgressReporter,
+) -> Result<bool, super::process::BackgroundCommandError> {
+    match super::process::run_background_cli_with_progress(
         "gemini",
         &["--version"],
         super::process::BackgroundCommandLimits {
@@ -153,6 +293,10 @@ async fn ensure_gemini_cli_available() -> Result<bool, super::process::Backgroun
             stdout_bytes: GEMINI_PROBE_OUTPUT_MAX_BYTES,
             stderr_bytes: GEMINI_PROBE_OUTPUT_MAX_BYTES,
         },
+        reporter,
+        AgentSessionCatalogPhase::Connecting,
+        0,
+        None,
     )
     .await
     {
@@ -160,6 +304,23 @@ async fn ensure_gemini_cli_available() -> Result<bool, super::process::Backgroun
         Err(super::process::BackgroundCommandError::MissingCli) => Ok(false),
         Err(error) => Err(error),
     }
+}
+
+fn matches_query(summary: &AgentSessionSummary, query: Option<&str>) -> bool {
+    let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    let needle = query.to_ascii_lowercase();
+    summary.id.to_ascii_lowercase().contains(&needle)
+        || summary.project_path.to_ascii_lowercase().contains(&needle)
+        || summary
+            .native_title
+            .as_ref()
+            .is_some_and(|title| title.to_ascii_lowercase().contains(&needle))
+        || summary
+            .first_user_message_preview
+            .as_ref()
+            .is_some_and(|preview| preview.to_ascii_lowercase().contains(&needle))
 }
 
 fn gemini_tmp_root() -> Option<PathBuf> {
@@ -393,6 +554,7 @@ fn system_time_ms(time: SystemTime) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -403,6 +565,38 @@ mod tests {
             "threadterm-gemini-catalog-{label}-{}-{id}",
             std::process::id()
         ))
+    }
+
+    fn candidate(index: usize) -> GeminiChatCandidate {
+        GeminiChatCandidate {
+            path: PathBuf::from(format!("session-{index}.json")),
+            project_cwd: "/repo/gemini-app".into(),
+            modified_ms: Some(10_000u64.saturating_sub(index as u64)),
+        }
+    }
+
+    fn candidate_summary(candidate: &GeminiChatCandidate) -> AgentSessionSummary {
+        let id = candidate
+            .path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        AgentSessionSummary {
+            provider: AgentSessionProvider::Gemini,
+            id: id.clone(),
+            project_path: candidate.project_cwd.clone(),
+            native_title: None,
+            title_kind: TitleKind::FirstPrompt,
+            first_user_message_preview: Some(format!("preview {id}")),
+            created_at: None,
+            updated_at: candidate.modified_ms,
+            message_count: Some(1),
+            git_branch: None,
+            source_kind: Some("project-chat".into()),
+            parent_session_id: None,
+            resumable: true,
+        }
     }
 
     #[test]
@@ -475,5 +669,76 @@ mod tests {
         fs::write(chats.join("broken.json"), "{not-json").expect("write");
         assert!(list_gemini_sessions_from_root(&root).is_empty());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn candidate_first_pages_are_disjoint_and_parse_only_rows_needed() {
+        let candidates = (0..1_000).map(candidate).collect::<Vec<_>>();
+        let (_registration, reporter) =
+            super::super::progress::test_catalog_scan(913, AgentSessionProvider::Gemini);
+        let mut parsed = 0usize;
+        let first = list_gemini_candidate_page(
+            &candidates,
+            None,
+            25,
+            None,
+            Some(&reporter),
+            &mut |candidate| {
+                parsed = parsed.saturating_add(1);
+                Some(candidate_summary(candidate))
+            },
+        )
+        .expect("first page");
+        let second = list_gemini_candidate_page(
+            &candidates,
+            first.next_cursor.as_deref(),
+            25,
+            None,
+            None,
+            &mut |candidate| {
+                parsed = parsed.saturating_add(1);
+                Some(candidate_summary(candidate))
+            },
+        )
+        .expect("second page");
+
+        assert_eq!(parsed, 50);
+        assert_eq!(first.next_cursor.as_deref(), Some("25"));
+        assert_eq!(second.next_cursor.as_deref(), Some("50"));
+        assert_eq!(
+            reporter.test_last_progress(),
+            Some((AgentSessionCatalogPhase::Scanning, 25, Some(500)))
+        );
+        let first_ids = first
+            .items
+            .iter()
+            .map(|item| &item.id)
+            .collect::<HashSet<_>>();
+        assert!(second
+            .items
+            .iter()
+            .all(|item| !first_ids.contains(&item.id)));
+    }
+
+    #[test]
+    fn candidate_window_advances_over_malformed_and_filtered_rows() {
+        let candidates = (0..600).map(candidate).collect::<Vec<_>>();
+        let mut parsed = 0usize;
+        let page = list_gemini_candidate_page(
+            &candidates,
+            None,
+            40,
+            Some("never-matches"),
+            None,
+            &mut |candidate| {
+                parsed = parsed.saturating_add(1);
+                (parsed % 7 != 0).then(|| candidate_summary(candidate))
+            },
+        )
+        .expect("bounded page");
+
+        assert!(page.items.is_empty());
+        assert_eq!(parsed, GEMINI_FILES_SCANNED_PER_PAGE);
+        assert_eq!(page.next_cursor.as_deref(), Some("500"));
     }
 }

@@ -146,6 +146,9 @@ async fn resolve_provider_group(
                 opencode::OpenCodeListError::CommandFailed(message) => {
                     ProviderResolveFailure::Error(message)
                 }
+                opencode::OpenCodeListError::Cancelled => {
+                    ProviderResolveFailure::Error("OpenCode session scan was cancelled".into())
+                }
             }),
         AgentSessionProvider::Claude => {
             spawn_blocking_provider("Claude", move || {

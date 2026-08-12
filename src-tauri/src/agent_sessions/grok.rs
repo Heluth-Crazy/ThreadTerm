@@ -1,8 +1,9 @@
 use super::preview::{is_generic_session_title, sanitize_preview};
+use super::progress::CatalogProgressReporter;
 use super::types::{
-    empty_page, read_timestamp_ms, AgentSessionAvailability, AgentSessionMetadataLookup,
-    AgentSessionPage, AgentSessionProvider, AgentSessionSummary, TitleKind,
-    MAX_METADATA_FILE_BYTES,
+    empty_page, read_timestamp_ms, AgentSessionAvailability, AgentSessionCatalogPhase,
+    AgentSessionMetadataLookup, AgentSessionPage, AgentSessionProvider, AgentSessionSummary,
+    TitleKind, MAX_METADATA_FILE_BYTES,
 };
 use serde_json::Value;
 use std::collections::HashSet;
@@ -17,27 +18,38 @@ const GROK_RECENT_SESSION_DIR_CAP: usize = 512;
 const GROK_CATALOG_SUMMARY_FILE_CAP: usize = 10_000;
 const GROK_CATALOG_ENTRY_CAP: usize = 20_000;
 
-pub fn list_grok_session_page(
+pub(crate) fn list_grok_session_page_with_progress(
     cursor: Option<&str>,
     limit: usize,
     query: Option<&str>,
-) -> AgentSessionPage {
+    reporter: &CatalogProgressReporter,
+) -> Result<AgentSessionPage, String> {
+    list_grok_session_page_impl(cursor, limit, query, reporter)
+}
+
+fn list_grok_session_page_impl(
+    cursor: Option<&str>,
+    limit: usize,
+    query: Option<&str>,
+    reporter: &CatalogProgressReporter,
+) -> Result<AgentSessionPage, String> {
+    reporter.report(AgentSessionCatalogPhase::Discovering, 0, None)?;
     let Some(root) = grok_sessions_root() else {
-        return empty_page(
+        return Ok(empty_page(
             AgentSessionProvider::Grok,
             AgentSessionAvailability::Unavailable,
             Some("Grok Build sessions directory is unavailable".into()),
-        );
+        ));
     };
     if !root.is_dir() {
-        return empty_page(
+        return Ok(empty_page(
             AgentSessionProvider::Grok,
             AgentSessionAvailability::Unavailable,
             Some("Grok Build sessions directory was not found".into()),
-        );
+        ));
     }
 
-    list_grok_session_page_from_root(&root, cursor, limit, query)
+    list_grok_session_page_from_root_with_progress(&root, cursor, limit, query, Some(reporter))
 }
 
 pub(crate) fn resolve_grok_sessions(
@@ -88,13 +100,25 @@ pub fn find_recent_grok_session(
     matches.pop()
 }
 
+#[cfg(test)]
 fn list_grok_session_page_from_root(
     root: &Path,
     cursor: Option<&str>,
     limit: usize,
     query: Option<&str>,
 ) -> AgentSessionPage {
-    let mut candidates = collect_summary_files(root);
+    list_grok_session_page_from_root_with_progress(root, cursor, limit, query, None)
+        .expect("Grok scan without cancellation cannot fail")
+}
+
+fn list_grok_session_page_from_root_with_progress(
+    root: &Path,
+    cursor: Option<&str>,
+    limit: usize,
+    query: Option<&str>,
+    reporter: Option<&CatalogProgressReporter>,
+) -> Result<AgentSessionPage, String> {
+    let mut candidates = collect_summary_files_with_progress(root, reporter)?;
     candidates.sort_by(|a, b| {
         b.modified_ms
             .unwrap_or(0)
@@ -108,8 +132,18 @@ fn list_grok_session_page_from_root(
         .min(candidates.len());
     let mut scanned = 0usize;
     let mut items = Vec::with_capacity(limit);
+    let scan_total = candidates
+        .len()
+        .saturating_sub(index)
+        .min(GROK_FILES_SCANNED_PER_PAGE);
+    if let Some(reporter) = reporter {
+        reporter.report(AgentSessionCatalogPhase::Scanning, 0, Some(scan_total))?;
+    }
 
     while index < candidates.len() && scanned < GROK_FILES_SCANNED_PER_PAGE && items.len() < limit {
+        if let Some(reporter) = reporter {
+            reporter.check_cancelled()?;
+        }
         let candidate = &candidates[index];
         index = index.saturating_add(1);
         scanned = scanned.saturating_add(1);
@@ -118,6 +152,20 @@ fn list_grok_session_page_from_root(
                 items.push(summary);
             }
         }
+        if let Some(reporter) = reporter {
+            reporter.report(
+                AgentSessionCatalogPhase::Scanning,
+                scanned,
+                Some(scan_total),
+            )?;
+        }
+    }
+    if let Some(reporter) = reporter {
+        reporter.report_now(
+            AgentSessionCatalogPhase::Scanning,
+            scanned,
+            Some(scan_total),
+        )?;
     }
 
     let next_cursor = if index < candidates.len() {
@@ -126,14 +174,14 @@ fn list_grok_session_page_from_root(
         None
     };
 
-    AgentSessionPage {
+    Ok(AgentSessionPage {
         provider: AgentSessionProvider::Grok,
         availability: AgentSessionAvailability::Available,
         items,
         next_cursor,
         scanned_at: super::types::now_ms(),
         warning: None,
-    }
+    })
 }
 
 fn resolve_grok_sessions_from_root(
@@ -213,17 +261,23 @@ struct SummaryFileCandidate {
     modified_ms: Option<u64>,
 }
 
-fn collect_summary_files(root: &Path) -> Vec<SummaryFileCandidate> {
+fn collect_summary_files_with_progress(
+    root: &Path,
+    reporter: Option<&CatalogProgressReporter>,
+) -> Result<Vec<SummaryFileCandidate>, String> {
     let mut out = Vec::new();
     let mut entries_scanned = 0usize;
     let Ok(cwd_dirs) = fs::read_dir(root) else {
-        return out;
+        return Ok(out);
     };
     for cwd_dir in cwd_dirs.flatten() {
         if entries_scanned >= GROK_CATALOG_ENTRY_CAP {
-            return out;
+            return Ok(out);
         }
         entries_scanned = entries_scanned.saturating_add(1);
+        if let Some(reporter) = reporter {
+            reporter.report(AgentSessionCatalogPhase::Discovering, entries_scanned, None)?;
+        }
         let cwd_path = cwd_dir.path();
         if !cwd_path.is_dir() {
             continue;
@@ -233,9 +287,12 @@ fn collect_summary_files(root: &Path) -> Vec<SummaryFileCandidate> {
         };
         for session in sessions.flatten() {
             if entries_scanned >= GROK_CATALOG_ENTRY_CAP {
-                return out;
+                return Ok(out);
             }
             entries_scanned = entries_scanned.saturating_add(1);
+            if let Some(reporter) = reporter {
+                reporter.report(AgentSessionCatalogPhase::Discovering, entries_scanned, None)?;
+            }
             let session_path = session.path();
             if !session_path.is_dir() {
                 continue;
@@ -253,11 +310,11 @@ fn collect_summary_files(root: &Path) -> Vec<SummaryFileCandidate> {
                 modified_ms,
             });
             if out.len() >= GROK_CATALOG_SUMMARY_FILE_CAP {
-                return out;
+                return Ok(out);
             }
         }
     }
-    out
+    Ok(out)
 }
 
 pub(crate) fn parse_grok_summary_file(path: &Path) -> Option<AgentSessionSummary> {
@@ -813,6 +870,39 @@ mod tests {
         let page2 = list_grok_session_page_from_root(&root, Some("2"), 2, None);
         assert_eq!(page2.items.len(), 2);
         assert_ne!(page1.items[0].id, page2.items[0].id);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn controlled_scan_reports_real_total_and_honors_cancellation() {
+        let root = temp_root("progress-cancel");
+        write_summary(
+            &root,
+            "workspace",
+            "session",
+            r#"{"info":{"id":"session","cwd":"/repo"},"generated_title":"Session"}"#,
+        );
+        let (_registration, reporter) =
+            super::super::progress::test_catalog_scan(912, AgentSessionProvider::Grok);
+
+        let page =
+            list_grok_session_page_from_root_with_progress(&root, None, 40, None, Some(&reporter))
+                .expect("controlled page");
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(
+            reporter.test_last_progress(),
+            Some((AgentSessionCatalogPhase::Scanning, 1, Some(1)))
+        );
+
+        assert!(super::super::progress::cancel_catalog_scan(912));
+        assert!(list_grok_session_page_from_root_with_progress(
+            &root,
+            None,
+            40,
+            None,
+            Some(&reporter),
+        )
+        .is_err());
         let _ = fs::remove_dir_all(root);
     }
 }

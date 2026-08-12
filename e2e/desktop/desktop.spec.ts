@@ -794,6 +794,77 @@ test('session recovery stays lazy and resumes selected Codex history only when o
   expect(errors).toEqual([]);
 });
 
+test('session recovery reports real progress, cancels superseded scans, and surfaces provider failure', async ({
+  page,
+}) => {
+  const agentSessions: SeedAgentSession[] = [
+    {
+      provider: 'claude',
+      id: 'claude-complete-history',
+      projectPath: '/tmp/claude-complete-history',
+      nativeTitle: 'Complete history row',
+      titleKind: 'explicit',
+      firstUserMessagePreview: 'Fully resolved preview',
+      updatedAt: 1_700_000_000_000,
+      resumable: true,
+    },
+  ];
+  await installFakeTauri(page, [], agentSessions, [
+    {
+      provider: 'claude',
+      delayMs: 650,
+      progress: [
+        { afterMs: 100, phase: 'discovering', completed: 12, total: null },
+        { afterMs: 250, phase: 'scanning', completed: 5, total: 10 },
+      ],
+    },
+    {
+      provider: 'codex',
+      delayMs: 650,
+      progress: [
+        { afterMs: 100, phase: 'listing', completed: 0, total: null },
+      ],
+      availability: 'error',
+      warning: 'Codex catalog fixture failed explicitly',
+    },
+  ]);
+  const errors = trackPageErrors(page);
+
+  await page.goto('/');
+  await page.locator('button[title="Restore local Agent sessions"]').click();
+  const dialog = page.getByRole('dialog', { name: 'Restore local sessions' });
+  await expect(dialog.getByText('5 / 10 · 50%')).toBeVisible();
+  await expect(dialog.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50');
+  await expect(dialog.getByText('Complete history row', { exact: true })).toBeVisible();
+
+  await dialog.getByRole('button', { name: 'Codex', exact: true }).click();
+  await expect(dialog.getByText('Listing sessions')).toBeVisible();
+  await dialog.getByRole('textbox').fill('supersede');
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const state = (window as unknown as {
+          __fakeAgentSessions: {
+            catalogCalls: Array<{ provider: string; requestId: number }>;
+            cancelledRequestIds: number[];
+          };
+        }).__fakeAgentSessions;
+        const codexRequest = state.catalogCalls.find(
+          (call) => call.provider === 'codex',
+        );
+        return Boolean(
+          codexRequest
+          && state.cancelledRequestIds.includes(codexRequest.requestId),
+        );
+      }),
+    )
+    .toBe(true);
+
+  await expect(dialog.getByText('Codex catalog fixture failed explicitly')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Retry' })).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
 // ── Journey 6: edit an existing card without recreating it ──────────────────
 
 async function openFocusedTerminalEditor(page: Page) {

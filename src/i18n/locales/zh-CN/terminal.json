@@ -790,8 +790,18 @@
     "missingCli": "未找到 {{provider}} CLI",
     "unavailable": "{{provider}} 历史不可用",
     "error": "加载会话失败",
+    "stalled": "历史扫描已停止报告进度，请重试以重新扫描。",
     "retry": "重试",
     "desktopOnly": "会话恢复仅在桌面端可用。",
+    "scanStarting": "正在准备历史扫描…",
+    "scanElapsed": "{{seconds}} 秒",
+    "scanPhase": {
+      "discovering": "正在发现历史文件",
+      "connecting": "正在连接 Provider",
+      "listing": "正在获取会话列表",
+      "scanning": "正在读取会话元数据",
+      "enriching": "正在读取首条消息"
+    },
     "titleKind": {
       "renamed": "已重命名",
       "firstPrompt": "首条 Prompt",

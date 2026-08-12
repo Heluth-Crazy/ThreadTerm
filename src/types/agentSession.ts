@@ -33,7 +33,6 @@ export interface AgentSessionSummary {
   parentSessionId?: string | null;
   resumable: boolean;
 }
-
 export interface AgentSessionPage {
   provider: AgentSessionProvider;
   availability: AgentSessionAvailability;
@@ -44,10 +43,27 @@ export interface AgentSessionPage {
 }
 
 export interface ListAgentSessionsRequest {
+  requestId: number;
   provider: AgentSessionProvider;
   cursor?: string | null;
   limit?: number | null;
   query?: string | null;
+}
+
+export type AgentSessionCatalogPhase =
+  | 'discovering'
+  | 'connecting'
+  | 'listing'
+  | 'scanning'
+  | 'enriching';
+
+export interface AgentSessionCatalogProgress {
+  requestId: number;
+  provider: AgentSessionProvider;
+  phase: AgentSessionCatalogPhase;
+  completed: number;
+  total?: number | null;
+  elapsedMs: number;
 }
 
 /** Exact visible-card metadata lookup key. Separate from recovery catalog state. */

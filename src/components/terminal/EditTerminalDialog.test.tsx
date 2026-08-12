@@ -1,11 +1,13 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard } from '../../types/terminal';
 import { EditTerminalDialog } from './EditTerminalDialog';
 
 const bridgeMocks = vi.hoisted(() => ({
   listAgentSessions: vi.fn(),
+  cancelAgentSessionScan: vi.fn().mockResolvedValue(undefined),
+  catalogProgress: null as ((payload: Record<string, unknown>) => void) | null,
 }));
 
 vi.mock('../../lib/tauri-bridge', () => ({
@@ -13,6 +15,14 @@ vi.mock('../../lib/tauri-bridge', () => ({
   providerSessions: {
     listAgentSessions: (...args: unknown[]) =>
       bridgeMocks.listAgentSessions(...args),
+    cancelAgentSessionScan: (...args: unknown[]) =>
+      bridgeMocks.cancelAgentSessionScan(...args),
+    onCatalogProgress: vi.fn((callback: (payload: Record<string, unknown>) => void) => {
+      bridgeMocks.catalogProgress = callback;
+      return Promise.resolve(() => {
+        bridgeMocks.catalogProgress = null;
+      });
+    }),
   },
   pty: {
     kill: vi.fn(),
@@ -41,11 +51,16 @@ function makeCard(overrides: Partial<TerminalCard> = {}): TerminalCard {
 describe('EditTerminalDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    bridgeMocks.catalogProgress = null;
     useTerminalStore.setState({
       cards: [],
       archivedCards: [],
       pendingTerminalConfigurations: {},
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('selects a current-project history and submits a save-only draft', async () => {
@@ -299,5 +314,118 @@ describe('EditTerminalDialog', () => {
     expect(bridgeMocks.listAgentSessions).toHaveBeenLastCalledWith(
       expect.objectContaining({ cursor: 'page-2' }),
     );
+  });
+
+  it('shows only correlated truthful progress while history is loading', async () => {
+    vi.useFakeTimers();
+    const card = makeCard();
+    useTerminalStore.setState({ cards: [card] });
+    bridgeMocks.listAgentSessions.mockImplementationOnce(() => new Promise(() => {}));
+
+    render(
+      <EditTerminalDialog
+        open
+        card={card}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        onDiscardPending={vi.fn()}
+        onLocateConflict={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Codex' }));
+    fireEvent.click(screen.getByRole('button', { name: '恢复会话' }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    const requestId = bridgeMocks.listAgentSessions.mock.calls[0]?.[0]?.requestId as number;
+
+    await act(async () => {
+      bridgeMocks.catalogProgress?.({
+        requestId: requestId + 1,
+        provider: 'codex',
+        phase: 'listing',
+        completed: 9,
+        total: 10,
+        elapsedMs: 1_000,
+      });
+    });
+    expect(screen.queryByText('9 / 10 · 90%')).not.toBeInTheDocument();
+
+    await act(async () => {
+      bridgeMocks.catalogProgress?.({
+        requestId,
+        provider: 'codex',
+        phase: 'listing',
+        completed: 5,
+        total: 10,
+        elapsedMs: 2_000,
+      });
+    });
+    expect(screen.getByText('5 / 10 · 50%')).toBeVisible();
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50');
+  });
+
+  it('turns a silent edit-dialog scan into a retryable error', async () => {
+    vi.useFakeTimers();
+    const card = makeCard();
+    useTerminalStore.setState({ cards: [card] });
+    bridgeMocks.listAgentSessions.mockImplementationOnce(() => new Promise(() => {}));
+
+    render(
+      <EditTerminalDialog
+        open
+        card={card}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        onDiscardPending={vi.fn()}
+        onLocateConflict={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Claude' }));
+    fireEvent.click(screen.getByRole('button', { name: '恢复会话' }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    const requestId = bridgeMocks.listAgentSessions.mock.calls[0]?.[0]?.requestId as number;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+
+    expect(bridgeMocks.cancelAgentSessionScan).toHaveBeenCalledWith(requestId);
+    expect(
+      screen.getByText('历史扫描已停止报告进度，请重试以重新扫描。'),
+    ).toBeVisible();
+    expect(screen.getByRole('button', { name: '重试' })).toBeEnabled();
+  });
+
+  it('shows an explicit provider error page instead of an empty catalog', async () => {
+    const card = makeCard();
+    useTerminalStore.setState({ cards: [card] });
+    bridgeMocks.listAgentSessions.mockResolvedValueOnce({
+      provider: 'opencode',
+      availability: 'error',
+      items: [],
+      nextCursor: null,
+      scannedAt: 100,
+      warning: 'OpenCode session command timed out',
+    });
+
+    render(
+      <EditTerminalDialog
+        open
+        card={card}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        onDiscardPending={vi.fn()}
+        onLocateConflict={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'OpenCode' }));
+    fireEvent.click(screen.getByRole('button', { name: '恢复会话' }));
+
+    expect(
+      await screen.findByText('OpenCode session command timed out'),
+    ).toBeVisible();
+    expect(screen.getByRole('button', { name: '重试' })).toBeEnabled();
   });
 });

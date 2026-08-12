@@ -6,12 +6,16 @@ import {
   agentSessionSelectionKey,
   deriveAgentSessionTitle,
 } from '../../lib/agentSessionTitle';
-import { useAgentSessionCatalogStore } from '../../stores/agentSessionCatalogStore';
+import {
+  AGENT_SESSION_CATALOG_STALLED_ERROR,
+  useAgentSessionCatalogStore,
+} from '../../stores/agentSessionCatalogStore';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { isCatalogProviderSessionType, providerSessionKey } from '../../stores/terminal/helpers';
 import type { AgentSessionProvider, AgentSessionSummary } from '../../types/agentSession';
 import { AGENT_SESSION_PROVIDERS } from '../../types/agentSession';
 import type { ProviderSessionImportInfo } from '../../types/terminal';
+import { AgentSessionCatalogProgressView } from './AgentSessionCatalogProgressView';
 import { getTerminalTypeMeta } from './terminalTypeMeta';
 
 export interface SessionRecoveryPanelProps {
@@ -144,13 +148,8 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
 
     if (providerState.loadState === 'loading' && providerState.items.length === 0) {
       return (
-        <div className="flex flex-1 flex-col gap-2 p-2" aria-busy="true">
-          {Array.from({ length: 6 }).map((_, index) => (
-            <div
-              key={index}
-              className="h-12 animate-pulse rounded-md bg-muted/50"
-            />
-          ))}
+        <div className="flex flex-1 flex-col justify-center" aria-busy="true">
+          <AgentSessionCatalogProgressView progress={providerState.progress} />
         </div>
       );
     }
@@ -162,7 +161,9 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
       return (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-center">
           <p className="text-[11px] text-muted-foreground">
-            {providerState.errorMessage ||
+            {(providerState.errorMessage === AGENT_SESSION_CATALOG_STALLED_ERROR
+              ? t('sessionRecovery.stalled')
+              : providerState.errorMessage) ||
               providerState.warning ||
               t('sessionRecovery.error')}
           </p>
@@ -207,7 +208,8 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
     }
 
     return (
-      <ul className="flex-1 space-y-1 overflow-y-auto p-1.5">
+      <div className="flex min-h-0 flex-1 flex-col">
+      <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto p-1.5">
         {providerState.items.map((summary) => {
           const key = agentSessionSelectionKey(summary.provider, summary.id);
           const statusKey = providerSessionKey(summary.provider, summary.id);
@@ -271,6 +273,12 @@ export function SessionRecoveryPanel({ onClose }: SessionRecoveryPanelProps) {
           );
         })}
       </ul>
+      {providerState.loadState === 'loading' ? (
+        <div className="shrink-0 border-t border-border" aria-busy="true">
+          <AgentSessionCatalogProgressView progress={providerState.progress} />
+        </div>
+      ) : null}
+      </div>
     );
   };
 

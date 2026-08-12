@@ -43,6 +43,7 @@ import { SessionRecoveryPanel } from './SessionRecoveryPanel';
 import { SessionDock } from './SessionDock';
 import { StatsPanel } from '../stats/StatsPanel';
 import { useStatsAutoRefresh, useStatsSubscription } from '../../stores/statsStore';
+import { useAgentSessionCatalogSubscription } from '../../stores/agentSessionCatalogStore';
 import { CommandPalette } from '../palette/CommandPalette';
 import type { TerminalCreateOptions, TerminalType } from '../../types/terminal';
 import { useSupervisor } from '../../lib/supervisor/useSupervisor';
@@ -119,7 +120,6 @@ const TERMINAL_TYPES: TerminalType[] = [
 function normalizeTerminalType(value: string): TerminalType {
   return TERMINAL_TYPES.includes(value as TerminalType) ? (value as TerminalType) : 'custom';
 }
-
 export function TerminalManager() {
   const { t } = useTranslation('terminal');
   const cards = useTerminalStore((s) => s.cards);
@@ -209,6 +209,7 @@ export function TerminalManager() {
     selectedWorktreePath,
   });
   useStatsSubscription();
+  useAgentSessionCatalogSubscription();
   useStatsAutoRefresh();
 
   // Shortcut hint: dismissible, persisted across sessions.

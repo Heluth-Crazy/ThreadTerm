@@ -4,11 +4,13 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  RotateCcw,
   Search,
   Settings2,
   X,
 } from 'lucide-react';
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -20,6 +22,13 @@ import { useTranslation } from 'react-i18next';
 import {
   deriveAgentSessionTitle,
 } from '../../lib/agentSessionTitle';
+import { nextAgentSessionCatalogRequestId } from '../../lib/agentSessionRequestId';
+import {
+  AGENT_SESSION_CATALOG_STALL_TIMEOUT_MS,
+  AGENT_SESSION_CATALOG_STALLED_ERROR,
+  isValidAgentSessionCatalogProgress,
+  mergeAgentSessionCatalogProgress,
+} from '../../lib/agentSessionCatalogProgress';
 import {
   findTerminalSessionBindingConflict,
   isAgentTerminalType,
@@ -36,10 +45,12 @@ import {
 } from '../../lib/worktreePaths';
 import { useTerminalStore } from '../../stores/terminalStore';
 import type {
+  AgentSessionCatalogProgress,
   AgentSessionPage,
   AgentSessionSummary,
 } from '../../types/agentSession';
 import type { TerminalCard, TerminalType } from '../../types/terminal';
+import { AgentSessionCatalogProgressView } from './AgentSessionCatalogProgressView';
 import { terminalTypeMeta } from './terminalTypeMeta';
 
 export type TerminalConfigurationAction = 'save' | 'apply';
@@ -131,6 +142,9 @@ export function EditTerminalDialog({
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogLoadingMore, setCatalogLoadingMore] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [catalogProgress, setCatalogProgress] =
+    useState<AgentSessionCatalogProgress | null>(null);
+  const [catalogRetrySeq, setCatalogRetrySeq] = useState(0);
   const [busyAction, setBusyAction] =
     useState<TerminalConfigurationAction | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -148,7 +162,30 @@ export function EditTerminalDialog({
     : null;
   const catalogRequestKey = `${provider ?? ''}\u0000${query.trim()}`;
   const catalogRequestKeyRef = useRef(catalogRequestKey);
+  const activeCatalogRequestIdsRef = useRef(new Set<number>());
+  const catalogWatchdogsRef = useRef(new Map<number, number>());
   catalogRequestKeyRef.current = catalogRequestKey;
+
+  const clearCatalogWatchdog = useCallback((requestId: number) => {
+    const watchdog = catalogWatchdogsRef.current.get(requestId);
+    if (watchdog === undefined) return;
+    window.clearTimeout(watchdog);
+    catalogWatchdogsRef.current.delete(requestId);
+  }, []);
+
+  const armCatalogWatchdog = useCallback((requestId: number) => {
+    clearCatalogWatchdog(requestId);
+    const watchdog = window.setTimeout(() => {
+      catalogWatchdogsRef.current.delete(requestId);
+      if (!activeCatalogRequestIdsRef.current.delete(requestId)) return;
+      void providerSessions.cancelAgentSessionScan(requestId).catch(() => {});
+      setCatalogProgress(null);
+      setCatalogLoading(false);
+      setCatalogLoadingMore(false);
+      setCatalogError(AGENT_SESSION_CATALOG_STALLED_ERROR);
+    }, AGENT_SESSION_CATALOG_STALL_TIMEOUT_MS);
+    catalogWatchdogsRef.current.set(requestId, watchdog);
+  }, [clearCatalogWatchdog]);
 
   useEffect(() => {
     if (!open || !cardId || !activeTerminalType) return;
@@ -187,6 +224,7 @@ export function EditTerminalDialog({
     setCatalogLoading(false);
     setCatalogLoadingMore(false);
     setCatalogError(null);
+    setCatalogProgress(null);
     setActionError(null);
     setConflict(null);
     setBusyAction(null);
@@ -201,6 +239,37 @@ export function EditTerminalDialog({
   ]);
 
   useEffect(() => {
+    if (!open || typeof providerSessions.onCatalogProgress !== 'function') return;
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+    providerSessions
+      .onCatalogProgress((progress) => {
+        if (
+          !activeCatalogRequestIdsRef.current.has(progress.requestId)
+          || !isValidAgentSessionCatalogProgress(progress)
+        ) {
+          return;
+        }
+        setCatalogProgress((previous) =>
+          mergeAgentSessionCatalogProgress(previous, progress),
+        );
+        armCatalogWatchdog(progress.requestId);
+      })
+      .then((unlisten) => {
+        if (cancelled) {
+          unlisten();
+        } else {
+          stop = unlisten;
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [armCatalogWatchdog, open]);
+
+  useEffect(() => {
     if (!open || launchMode !== 'resume' || !provider) return;
     if (!isTauriEnv()) {
       setCatalogError(t('edit.desktopOnly'));
@@ -208,14 +277,20 @@ export function EditTerminalDialog({
     }
 
     let cancelled = false;
+    const activeRequestIds = activeCatalogRequestIdsRef.current;
     const requestKey = catalogRequestKey;
+    const requestId = nextAgentSessionCatalogRequestId();
     setCatalog(null);
     setCatalogLoading(true);
     setCatalogLoadingMore(false);
     setCatalogError(null);
+    setCatalogProgress(null);
     const timer = window.setTimeout(() => {
+      activeRequestIds.add(requestId);
+      armCatalogWatchdog(requestId);
       void providerSessions
         .listAgentSessions({
+          requestId,
           provider,
           limit: 80,
           query: query.trim() || null,
@@ -224,7 +299,13 @@ export function EditTerminalDialog({
           if (
             cancelled
             || catalogRequestKeyRef.current !== requestKey
+            || !activeRequestIds.has(requestId)
           ) {
+            return;
+          }
+          if (page.availability !== 'available') {
+            setCatalog(null);
+            setCatalogError(page.warning || t('sessionRecovery.error'));
             return;
           }
           setCatalog(page);
@@ -233,6 +314,7 @@ export function EditTerminalDialog({
           if (
             cancelled
             || catalogRequestKeyRef.current !== requestKey
+            || !activeRequestIds.has(requestId)
           ) {
             return;
           }
@@ -242,6 +324,11 @@ export function EditTerminalDialog({
           );
         })
         .finally(() => {
+          clearCatalogWatchdog(requestId);
+          activeRequestIds.delete(requestId);
+          setCatalogProgress((current) =>
+            current?.requestId === requestId ? null : current,
+          );
           if (
             !cancelled
             && catalogRequestKeyRef.current === requestKey
@@ -254,8 +341,23 @@ export function EditTerminalDialog({
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      for (const activeRequestId of activeRequestIds) {
+        clearCatalogWatchdog(activeRequestId);
+        void providerSessions.cancelAgentSessionScan(activeRequestId).catch(() => {});
+      }
+      activeRequestIds.clear();
     };
-  }, [catalogRequestKey, launchMode, open, provider, query, t]);
+  }, [
+    armCatalogWatchdog,
+    catalogRequestKey,
+    catalogRetrySeq,
+    clearCatalogWatchdog,
+    launchMode,
+    open,
+    provider,
+    query,
+    t,
+  ]);
 
   useEffect(() => {
     if (!open) return;
@@ -352,16 +454,28 @@ export function EditTerminalDialog({
     }
     const requestKey = catalogRequestKey;
     const cursor = catalog.nextCursor;
+    const requestId = nextAgentSessionCatalogRequestId();
     setCatalogLoadingMore(true);
     setCatalogError(null);
+    setCatalogProgress(null);
+    activeCatalogRequestIdsRef.current.add(requestId);
+    armCatalogWatchdog(requestId);
     try {
       const nextPage = await providerSessions.listAgentSessions({
+        requestId,
         provider,
         cursor,
         limit: 80,
         query: query.trim() || null,
       });
-      if (catalogRequestKeyRef.current !== requestKey) return;
+      if (
+        catalogRequestKeyRef.current !== requestKey
+        || !activeCatalogRequestIdsRef.current.has(requestId)
+      ) return;
+      if (nextPage.availability !== 'available') {
+        setCatalogError(nextPage.warning || t('sessionRecovery.error'));
+        return;
+      }
       setCatalog((current) => {
         if (!current || current.provider !== nextPage.provider) {
           return nextPage;
@@ -381,11 +495,19 @@ export function EditTerminalDialog({
         };
       });
     } catch (error) {
-      if (catalogRequestKeyRef.current !== requestKey) return;
+      if (
+        catalogRequestKeyRef.current !== requestKey
+        || !activeCatalogRequestIdsRef.current.has(requestId)
+      ) return;
       setCatalogError(
         error instanceof Error ? error.message : String(error),
       );
     } finally {
+      clearCatalogWatchdog(requestId);
+      activeCatalogRequestIdsRef.current.delete(requestId);
+      setCatalogProgress((current) =>
+        current?.requestId === requestId ? null : current,
+      );
       if (catalogRequestKeyRef.current === requestKey) {
         setCatalogLoadingMore(false);
       }
@@ -680,12 +802,24 @@ export function EditTerminalDialog({
 
                     <div className="h-56 overflow-y-auto rounded-lg border border-border bg-muted/15 p-1.5">
                       {catalogError ? (
-                        <div className="flex h-full items-center justify-center px-4 text-center text-[11px] text-destructive">
-                          {catalogError}
+                        <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center text-[11px] text-destructive">
+                          <span>
+                            {catalogError === AGENT_SESSION_CATALOG_STALLED_ERROR
+                              ? t('sessionRecovery.stalled')
+                              : catalogError}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setCatalogRetrySeq((value) => value + 1)}
+                            className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-muted-foreground hover:bg-accent"
+                          >
+                            <RotateCcw className="h-3 w-3" />
+                            {t('sessionRecovery.retry')}
+                          </button>
                         </div>
                       ) : catalogLoading && !catalog ? (
-                        <div className="flex h-full items-center justify-center">
-                          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                        <div className="flex h-full flex-col justify-center">
+                          <AgentSessionCatalogProgressView progress={catalogProgress} />
                         </div>
                       ) : displayedSessions.length === 0 ? (
                         <div className="flex h-full items-center justify-center px-4 text-center text-[11px] text-muted-foreground">
@@ -763,6 +897,14 @@ export function EditTerminalDialog({
                         </ul>
                       )}
                     </div>
+                    {catalogLoadingMore && catalog ? (
+                      <div className="rounded-md border border-border">
+                        <AgentSessionCatalogProgressView
+                          progress={catalogProgress}
+                          compact
+                        />
+                      </div>
+                    ) : null}
                     {catalog?.nextCursor && !catalogError && (
                       <button
                         type="button"

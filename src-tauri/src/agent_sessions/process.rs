@@ -1,3 +1,5 @@
+use super::progress::{CatalogProgressReporter, CATALOG_HEARTBEAT_INTERVAL};
+use super::types::AgentSessionCatalogPhase;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
@@ -20,6 +22,7 @@ pub(crate) struct BackgroundCommandLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackgroundCommandError {
     MissingCli,
+    Cancelled,
     TimedOut,
     OutputTooLarge(&'static str),
     Io(std::io::ErrorKind),
@@ -54,12 +57,35 @@ pub(crate) async fn run_background_cli(
 ) -> Result<BackgroundCommandOutput, BackgroundCommandError> {
     let mut command = background_cli_command(name);
     command.args(args);
-    run_background_command(command, limits).await
+    run_background_command(command, limits, None).await
+}
+
+pub(crate) async fn run_background_cli_with_progress(
+    name: &str,
+    args: &[&str],
+    limits: BackgroundCommandLimits,
+    reporter: &CatalogProgressReporter,
+    phase: AgentSessionCatalogPhase,
+    completed: usize,
+    total: Option<usize>,
+) -> Result<BackgroundCommandOutput, BackgroundCommandError> {
+    if reporter.is_cancelled() {
+        return Err(BackgroundCommandError::Cancelled);
+    }
+    let mut command = background_cli_command(name);
+    command.args(args);
+    run_background_command(command, limits, Some((reporter, phase, completed, total))).await
 }
 
 async fn run_background_command(
     mut command: Command,
     limits: BackgroundCommandLimits,
+    progress: Option<(
+        &CatalogProgressReporter,
+        AgentSessionCatalogPhase,
+        usize,
+        Option<usize>,
+    )>,
 ) -> Result<BackgroundCommandOutput, BackgroundCommandError> {
     command
         .stdin(Stdio::null())
@@ -98,12 +124,27 @@ async fn run_background_command(
         Finished(Result<ExitStatus, std::io::Error>),
         Overflow(&'static str),
         TimedOut,
+        Cancelled,
     }
 
-    let completion = tokio::select! {
-        status = child.wait() => Completion::Finished(status),
-        stream = overflow_rx.recv() => Completion::Overflow(stream.unwrap_or("output")),
-        _ = tokio::time::sleep(limits.timeout) => Completion::TimedOut,
+    let deadline = tokio::time::sleep(limits.timeout);
+    tokio::pin!(deadline);
+    let mut heartbeat = tokio::time::interval(CATALOG_HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let completion = loop {
+        tokio::select! {
+            status = child.wait() => break Completion::Finished(status),
+            stream = overflow_rx.recv() => break Completion::Overflow(stream.unwrap_or("output")),
+            _ = &mut deadline => break Completion::TimedOut,
+            _ = heartbeat.tick(), if progress.is_some() => {
+                let Some((reporter, phase, completed, total)) = progress else {
+                    continue;
+                };
+                if reporter.report(phase, completed, total).is_err() {
+                    break Completion::Cancelled;
+                }
+            }
+        }
     };
 
     let status = match completion {
@@ -125,6 +166,14 @@ async fn run_background_command(
             let _ = stdout_task.await;
             let _ = stderr_task.await;
             return Err(BackgroundCommandError::TimedOut);
+        }
+        Completion::Cancelled => {
+            terminate_background_child(&mut child).await;
+            stdout_task.abort();
+            stderr_task.abort();
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            return Err(BackgroundCommandError::Cancelled);
         }
     };
 
@@ -240,7 +289,11 @@ mod tests {
                 std::io::stdout().write_all(&bytes).expect("write output");
             }
             Ok("sleep") => {
-                std::thread::sleep(Duration::from_millis(600));
+                let sleep_ms = std::env::var("THREADTERM_BACKGROUND_COMMAND_SLEEP_MS")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(600);
+                std::thread::sleep(Duration::from_millis(sleep_ms));
                 if let Some(marker) = std::env::var_os("THREADTERM_BACKGROUND_COMMAND_MARKER") {
                     std::fs::write(marker, b"survived").expect("write marker");
                 }
@@ -279,11 +332,49 @@ mod tests {
                 stdout_bytes: 64 * 1024,
                 stderr_bytes: 64 * 1024,
             },
+            None,
         )
         .await;
         assert!(matches!(result, Err(BackgroundCommandError::TimedOut)));
         tokio::time::sleep(Duration::from_millis(700)).await;
         assert!(!marker.exists(), "timed-out child was still able to write");
+        let _ = std::fs::remove_file(marker);
+    }
+
+    #[tokio::test]
+    async fn cancelled_command_terminates_the_managed_child() {
+        let marker = std::env::temp_dir().join(format!(
+            "threadterm-background-cancel-marker-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let mut command = test_child_command("sleep");
+        command.env("THREADTERM_BACKGROUND_COMMAND_MARKER", &marker);
+        command.env("THREADTERM_BACKGROUND_COMMAND_SLEEP_MS", "2300");
+        let (_registration, reporter) = super::super::progress::test_catalog_scan(
+            903,
+            super::super::types::AgentSessionProvider::Opencode,
+        );
+
+        let cancel = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(super::super::progress::cancel_catalog_scan(903));
+        });
+        let result = run_background_command(
+            command,
+            BackgroundCommandLimits {
+                timeout: Duration::from_secs(5),
+                stdout_bytes: 64 * 1024,
+                stderr_bytes: 64 * 1024,
+            },
+            Some((&reporter, AgentSessionCatalogPhase::Enriching, 0, Some(1))),
+        )
+        .await;
+        cancel.await.expect("cancel task");
+
+        assert!(matches!(result, Err(BackgroundCommandError::Cancelled)));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!marker.exists(), "cancelled child was still able to write");
         let _ = std::fs::remove_file(marker);
     }
 
@@ -296,6 +387,7 @@ mod tests {
                 stdout_bytes: 1024,
                 stderr_bytes: 64 * 1024,
             },
+            None,
         )
         .await;
         assert!(matches!(

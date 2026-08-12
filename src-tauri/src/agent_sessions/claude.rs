@@ -1,7 +1,9 @@
 use super::preview::{is_meaningful_user_text, sanitize_preview};
+use super::progress::CatalogProgressReporter;
 use super::types::{
-    empty_page, AgentSessionAvailability, AgentSessionMetadataLookup, AgentSessionPage,
-    AgentSessionProvider, AgentSessionSummary, TitleKind, MAX_METADATA_FILE_BYTES,
+    empty_page, AgentSessionAvailability, AgentSessionCatalogPhase, AgentSessionMetadataLookup,
+    AgentSessionPage, AgentSessionProvider, AgentSessionSummary, TitleKind,
+    MAX_METADATA_FILE_BYTES,
 };
 use once_cell::sync::Lazy;
 use serde_json::Value;
@@ -34,27 +36,38 @@ struct ClaudeCacheEntry {
 static CLAUDE_PARSE_CACHE: Lazy<Mutex<HashMap<PathBuf, ClaudeCacheEntry>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-pub fn list_claude_session_page(
+pub(crate) fn list_claude_session_page_with_progress(
     cursor: Option<&str>,
     limit: usize,
     query: Option<&str>,
-) -> AgentSessionPage {
+    reporter: &CatalogProgressReporter,
+) -> Result<AgentSessionPage, String> {
+    list_claude_session_page_impl(cursor, limit, query, reporter)
+}
+
+fn list_claude_session_page_impl(
+    cursor: Option<&str>,
+    limit: usize,
+    query: Option<&str>,
+    reporter: &CatalogProgressReporter,
+) -> Result<AgentSessionPage, String> {
+    reporter.report(AgentSessionCatalogPhase::Discovering, 0, None)?;
     let Some(root) = claude_projects_root() else {
-        return empty_page(
+        return Ok(empty_page(
             AgentSessionProvider::Claude,
             AgentSessionAvailability::Unavailable,
             Some("Claude projects directory is unavailable".into()),
-        );
+        ));
     };
     if !root.is_dir() {
-        return empty_page(
+        return Ok(empty_page(
             AgentSessionProvider::Claude,
             AgentSessionAvailability::Unavailable,
             Some("Claude projects directory was not found".into()),
-        );
+        ));
     }
 
-    list_claude_session_page_from_root(&root, cursor, limit, query)
+    list_claude_session_page_from_root_with_progress(&root, cursor, limit, query, Some(reporter))
 }
 
 pub(crate) fn resolve_claude_sessions(
@@ -165,18 +178,50 @@ fn paths_loosely_match(candidate: &str, requested: &str) -> bool {
     crate::workspace::same_project_path(candidate, requested)
 }
 
+#[cfg(test)]
 fn list_claude_session_page_from_root(
     root: &Path,
     cursor: Option<&str>,
     limit: usize,
     query: Option<&str>,
 ) -> AgentSessionPage {
-    let files = crate::provider_sessions::jsonl_files_recent_first(root, None);
+    list_claude_session_page_from_root_with_progress(root, cursor, limit, query, None)
+        .expect("Claude scan without cancellation cannot fail")
+}
+
+fn list_claude_session_page_from_root_with_progress(
+    root: &Path,
+    cursor: Option<&str>,
+    limit: usize,
+    query: Option<&str>,
+    reporter: Option<&CatalogProgressReporter>,
+) -> Result<AgentSessionPage, String> {
+    let mut observer = |entries_scanned| {
+        if let Some(reporter) = reporter {
+            reporter.report(AgentSessionCatalogPhase::Discovering, entries_scanned, None)?;
+        }
+        Ok(())
+    };
+    let files = crate::provider_sessions::jsonl_files_recent_first_with_progress(
+        root,
+        None,
+        &mut observer,
+    )?;
     let mut index = decode_offset_cursor(cursor).unwrap_or(0).min(files.len());
     let mut scanned = 0usize;
     let mut items = Vec::with_capacity(limit);
+    let scan_total = files
+        .len()
+        .saturating_sub(index)
+        .min(CLAUDE_FILES_SCANNED_PER_PAGE);
+    if let Some(reporter) = reporter {
+        reporter.report(AgentSessionCatalogPhase::Scanning, 0, Some(scan_total))?;
+    }
 
     while index < files.len() && scanned < CLAUDE_FILES_SCANNED_PER_PAGE && items.len() < limit {
+        if let Some(reporter) = reporter {
+            reporter.check_cancelled()?;
+        }
         let file = &files[index];
         index = index.saturating_add(1);
         scanned = scanned.saturating_add(1);
@@ -186,6 +231,20 @@ fn list_claude_session_page_from_root(
                 items.push(parsed.summary);
             }
         }
+        if let Some(reporter) = reporter {
+            reporter.report(
+                AgentSessionCatalogPhase::Scanning,
+                scanned,
+                Some(scan_total),
+            )?;
+        }
+    }
+    if let Some(reporter) = reporter {
+        reporter.report_now(
+            AgentSessionCatalogPhase::Scanning,
+            scanned,
+            Some(scan_total),
+        )?;
     }
 
     let next_cursor = if index < files.len() {
@@ -194,14 +253,14 @@ fn list_claude_session_page_from_root(
         None
     };
 
-    AgentSessionPage {
+    Ok(AgentSessionPage {
         provider: AgentSessionProvider::Claude,
         availability: AgentSessionAvailability::Available,
         items,
         next_cursor,
         scanned_at: super::types::now_ms(),
         warning: None,
-    }
+    })
 }
 
 fn claude_projects_root() -> Option<PathBuf> {
@@ -807,5 +866,41 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         CLAUDE_PARSE_CACHE.lock().expect("cache").clear();
         crate::provider_sessions::clear_jsonl_scan_cache_for_tests();
+    }
+
+    #[test]
+    fn controlled_scan_reports_real_total_and_honors_cancellation() {
+        let root = temp_root("progress-cancel");
+        write_jsonl(
+            &root.join("session.jsonl"),
+            "{\"cwd\":\"/repo\",\"sessionId\":\"session\"}\n",
+        );
+        let (_registration, reporter) =
+            super::super::progress::test_catalog_scan(910, AgentSessionProvider::Claude);
+
+        let page = list_claude_session_page_from_root_with_progress(
+            &root,
+            None,
+            40,
+            None,
+            Some(&reporter),
+        )
+        .expect("controlled page");
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(
+            reporter.test_last_progress(),
+            Some((AgentSessionCatalogPhase::Scanning, 1, Some(1)))
+        );
+
+        assert!(super::super::progress::cancel_catalog_scan(910));
+        assert!(list_claude_session_page_from_root_with_progress(
+            &root,
+            None,
+            40,
+            None,
+            Some(&reporter),
+        )
+        .is_err());
+        let _ = fs::remove_dir_all(root);
     }
 }

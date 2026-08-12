@@ -790,8 +790,18 @@
     "missingCli": "{{provider}} CLI was not found",
     "unavailable": "{{provider}} history is unavailable",
     "error": "Failed to load sessions",
+    "stalled": "The history scan stopped reporting progress. Retry to scan again.",
     "retry": "Retry",
     "desktopOnly": "Session recovery is available in the desktop app.",
+    "scanStarting": "Preparing history scan…",
+    "scanElapsed": "{{seconds}}s",
+    "scanPhase": {
+      "discovering": "Discovering history files",
+      "connecting": "Connecting to Provider",
+      "listing": "Listing sessions",
+      "scanning": "Reading session metadata",
+      "enriching": "Reading first messages"
+    },
     "titleKind": {
       "renamed": "Renamed",
       "firstPrompt": "First prompt",

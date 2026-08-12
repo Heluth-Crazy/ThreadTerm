@@ -515,6 +515,19 @@ pub(crate) fn clear_jsonl_scan_cache_for_tests() {
 }
 
 pub fn jsonl_files_recent_first(root: &Path, since_ms: Option<u64>) -> Vec<SessionFileCandidate> {
+    let mut observer = |_entries_scanned| Ok(());
+    jsonl_files_recent_first_with_progress(root, since_ms, &mut observer)
+        .expect("infallible JSONL scan observer")
+}
+
+pub(crate) fn jsonl_files_recent_first_with_progress<F>(
+    root: &Path,
+    since_ms: Option<u64>,
+    observer: &mut F,
+) -> Result<Vec<SessionFileCandidate>, String>
+where
+    F: FnMut(usize) -> Result<(), String>,
+{
     let key = JsonlScanCacheKey {
         root: root.to_path_buf(),
         since_ms,
@@ -523,13 +536,15 @@ pub fn jsonl_files_recent_first(root: &Path, since_ms: Option<u64>) -> Vec<Sessi
     if let Ok(cache) = JSONL_SCAN_CACHE.lock() {
         if let Some(entry) = cache.get(&key) {
             if entry.collected_at.elapsed() <= JSONL_SCAN_CACHE_TTL {
-                return entry.files.clone();
+                observer(entry.files.len())?;
+                return Ok(entry.files.clone());
             }
         }
     }
 
     let mut files = Vec::new();
-    collect_jsonl_files(root, since_ms, &mut files);
+    let mut entries_scanned = 0usize;
+    collect_jsonl_files(root, since_ms, &mut files, &mut entries_scanned, observer)?;
     files.sort_by_key(|file| std::cmp::Reverse(file.modified_ms.unwrap_or(0)));
 
     if let Ok(mut cache) = JSONL_SCAN_CACHE.lock() {
@@ -543,22 +558,33 @@ pub fn jsonl_files_recent_first(root: &Path, since_ms: Option<u64>) -> Vec<Sessi
         );
     }
 
-    files
+    Ok(files)
 }
 
-fn collect_jsonl_files(dir: &Path, since_ms: Option<u64>, out: &mut Vec<SessionFileCandidate>) {
+fn collect_jsonl_files<F>(
+    dir: &Path,
+    since_ms: Option<u64>,
+    out: &mut Vec<SessionFileCandidate>,
+    entries_scanned: &mut usize,
+    observer: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(usize) -> Result<(), String>,
+{
     let Ok(entries) = fs::read_dir(dir) else {
-        return;
+        return Ok(());
     };
 
     for entry in entries.flatten() {
+        *entries_scanned = entries_scanned.saturating_add(1);
+        observer(*entries_scanned)?;
         let path = entry.path();
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
 
         if file_type.is_dir() {
-            collect_jsonl_files(&path, since_ms, out);
+            collect_jsonl_files(&path, since_ms, out, entries_scanned, observer)?;
             continue;
         }
 
@@ -589,6 +615,7 @@ fn collect_jsonl_files(dir: &Path, since_ms: Option<u64>, out: &mut Vec<SessionF
 
         out.push(SessionFileCandidate { path, modified_ms });
     }
+    Ok(())
 }
 
 fn system_time_ms(time: SystemTime) -> Option<u64> {

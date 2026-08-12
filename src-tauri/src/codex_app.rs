@@ -1,7 +1,10 @@
+use crate::agent_sessions::progress::{CatalogProgressReporter, CATALOG_HEARTBEAT_INTERVAL};
+use crate::agent_sessions::types::AgentSessionCatalogPhase;
 use once_cell::sync::Lazy;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::future::Future;
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -24,6 +27,12 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
 
 type PendingRequest = oneshot::Sender<Result<Value, String>>;
 type PendingMap = Arc<Mutex<HashMap<u64, PendingRequest>>>;
+
+struct PendingRequestGuard {
+    id: u64,
+    pending: PendingMap,
+    active: bool,
+}
 
 use crate::service_child::{
     spawn_managed_service_child as spawn_managed_codex_child,
@@ -219,11 +228,26 @@ pub async fn codex_app_list_skills(app: AppHandle, cwd: String) -> Result<Value,
         .await
 }
 
-/// Paginated `thread/list` for the on-demand Agent Session Catalog.
-/// Discovery-only: does not create/resume threads or open cards.
-pub async fn list_threads_raw(app: &AppHandle, params: Value) -> Result<Value, String> {
-    CODEX_APP_MANAGER.ensure_initialized(app).await?;
-    CODEX_APP_MANAGER.send_request("thread/list", params).await
+pub(crate) async fn list_threads_raw_with_progress(
+    app: &AppHandle,
+    params: Value,
+    reporter: &CatalogProgressReporter,
+) -> Result<Value, String> {
+    let deadline = tokio::time::Instant::now() + RESPONSE_TIMEOUT;
+    reporter.report(AgentSessionCatalogPhase::Connecting, 0, None)?;
+    CODEX_APP_MANAGER
+        .ensure_initialized_for_catalog(app, deadline, reporter)
+        .await?;
+    reporter.report(AgentSessionCatalogPhase::Listing, 0, None)?;
+    CODEX_APP_MANAGER
+        .send_request_for_catalog(
+            "thread/list",
+            params,
+            deadline,
+            reporter,
+            AgentSessionCatalogPhase::Listing,
+        )
+        .await
 }
 
 impl CodexAppManager {
@@ -399,6 +423,59 @@ impl CodexAppManager {
         Ok(())
     }
 
+    async fn ensure_initialized_for_catalog(
+        &self,
+        app: &AppHandle,
+        deadline: tokio::time::Instant,
+        reporter: &CatalogProgressReporter,
+    ) -> Result<(), String> {
+        let needs_init = await_catalog_step(
+            self.ensure_process(app),
+            deadline,
+            reporter,
+            AgentSessionCatalogPhase::Connecting,
+            "Codex session catalog connection",
+        )
+        .await?;
+        if !needs_init {
+            return Ok(());
+        }
+
+        let response = self
+            .send_request_for_catalog(
+                "initialize",
+                json!({
+                    "clientInfo": {
+                        "name": "threadterm",
+                        "title": "ThreadTerm",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    },
+                    "capabilities": {
+                        "experimentalApi": true,
+                        "requestAttestation": false,
+                    },
+                }),
+                deadline,
+                reporter,
+                AgentSessionCatalogPhase::Connecting,
+            )
+            .await?;
+        {
+            let mut state = self.state.lock().await;
+            state.initialized = true;
+            state.initialize_response = Some(response);
+            state.last_error = None;
+        }
+        await_catalog_step(
+            self.send_notification("initialized", json!({})),
+            deadline,
+            reporter,
+            AgentSessionCatalogPhase::Connecting,
+            "Codex session catalog initialization",
+        )
+        .await
+    }
+
     async fn ensure_process(&self, app: &AppHandle) -> Result<bool, String> {
         let mut state = self.state.lock().await;
         if state.stdin.is_some() {
@@ -448,7 +525,17 @@ impl CodexAppManager {
         Ok(true)
     }
 
-    async fn send_request(&self, method: &str, params: Value) -> Result<Value, String> {
+    async fn begin_request(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<
+        (
+            oneshot::Receiver<Result<Value, String>>,
+            PendingRequestGuard,
+        ),
+        String,
+    > {
         let (id, stdin, pending) = {
             let mut state = self.state.lock().await;
             let stdin = state
@@ -462,6 +549,11 @@ impl CodexAppManager {
 
         let (tx, rx) = oneshot::channel();
         pending.lock().await.insert(id, tx);
+        let mut guard = PendingRequestGuard {
+            id,
+            pending,
+            active: true,
+        };
         let line = format!(
             "{}\n",
             json!({
@@ -472,16 +564,72 @@ impl CodexAppManager {
         );
 
         if let Err(err) = write_line(stdin, line).await {
-            pending.lock().await.remove(&id);
+            guard.cleanup().await;
             return Err(err);
         }
+        Ok((rx, guard))
+    }
+
+    async fn send_request(&self, method: &str, params: Value) -> Result<Value, String> {
+        let (rx, mut guard) = self.begin_request(method, params).await?;
 
         match tokio::time::timeout(RESPONSE_TIMEOUT, rx).await {
-            Ok(Ok(response)) => response,
-            Ok(Err(_)) => Err("Codex app-server response channel closed".to_string()),
+            Ok(Ok(response)) => {
+                guard.disarm();
+                response
+            }
+            Ok(Err(_)) => {
+                guard.disarm();
+                Err("Codex app-server response channel closed".to_string())
+            }
             Err(_) => {
-                pending.lock().await.remove(&id);
+                guard.cleanup().await;
                 Err(format!("Codex app-server request `{method}` timed out"))
+            }
+        }
+    }
+
+    async fn send_request_for_catalog(
+        &self,
+        method: &str,
+        params: Value,
+        deadline: tokio::time::Instant,
+        reporter: &CatalogProgressReporter,
+        phase: AgentSessionCatalogPhase,
+    ) -> Result<Value, String> {
+        reporter.check_cancelled()?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err("Codex session catalog timed out".into());
+        }
+        let (mut rx, mut guard) = await_catalog_step(
+            self.begin_request(method, params),
+            deadline,
+            reporter,
+            phase,
+            "Codex session catalog request",
+        )
+        .await?;
+        let mut heartbeat = tokio::time::interval(CATALOG_HEARTBEAT_INTERVAL);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                response = &mut rx => {
+                    guard.disarm();
+                    return match response {
+                        Ok(response) => response,
+                        Err(_) => Err("Codex app-server response channel closed".to_string()),
+                    };
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    guard.cleanup().await;
+                    return Err("Codex session catalog timed out".into());
+                }
+                _ = heartbeat.tick() => {
+                    if let Err(error) = reporter.report(phase, 0, None) {
+                        guard.cleanup().await;
+                        return Err(error);
+                    }
+                }
             }
         }
     }
@@ -561,6 +709,58 @@ impl CodexAppManager {
             let _ = tx.send(Err(message.clone()));
         }
         let _ = app.emit(DISCONNECTED_EVENT, CodexAppDisconnectedPayload { message });
+    }
+}
+
+impl PendingRequestGuard {
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+
+    async fn cleanup(&mut self) {
+        if self.active {
+            self.pending.lock().await.remove(&self.id);
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for PendingRequestGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let id = self.id;
+        let pending = self.pending.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                pending.lock().await.remove(&id);
+            });
+        }
+    }
+}
+
+async fn await_catalog_step<F, T>(
+    future: F,
+    deadline: tokio::time::Instant,
+    reporter: &CatalogProgressReporter,
+    phase: AgentSessionCatalogPhase,
+    timeout_label: &str,
+) -> Result<T, String>
+where
+    F: Future<Output = Result<T, String>>,
+{
+    tokio::pin!(future);
+    let mut heartbeat = tokio::time::interval(CATALOG_HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            result = &mut future => return result,
+            _ = tokio::time::sleep_until(deadline) => {
+                return Err(format!("{timeout_label} timed out"));
+            }
+            _ = heartbeat.tick() => reporter.report(phase, 0, None)?,
+        }
     }
 }
 
@@ -923,6 +1123,62 @@ mod tests {
             &json!({"id": 1, "method": "item/tool/call"})
         ));
         assert!(!is_response_message(&json!({"method": "turn/started"})));
+    }
+
+    #[tokio::test]
+    async fn pending_request_cleanup_removes_the_abandoned_entry() {
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, _rx) = oneshot::channel();
+        pending.lock().await.insert(17, tx);
+        let mut guard = PendingRequestGuard {
+            id: 17,
+            pending: pending.clone(),
+            active: true,
+        };
+
+        guard.cleanup().await;
+
+        assert!(pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dropping_a_pending_request_guard_schedules_cleanup() {
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, _rx) = oneshot::channel();
+        pending.lock().await.insert(18, tx);
+        drop(PendingRequestGuard {
+            id: 18,
+            pending: pending.clone(),
+            active: true,
+        });
+
+        for _ in 0..10 {
+            if pending.lock().await.is_empty() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("dropped pending request remained registered");
+    }
+
+    #[tokio::test]
+    async fn catalog_wait_stops_when_its_request_is_cancelled() {
+        let (_registration, reporter) = crate::agent_sessions::progress::test_catalog_scan(
+            904,
+            crate::agent_sessions::types::AgentSessionProvider::Codex,
+        );
+        assert!(crate::agent_sessions::progress::cancel_catalog_scan(904));
+
+        let result = await_catalog_step(
+            std::future::pending::<Result<(), String>>(),
+            tokio::time::Instant::now() + Duration::from_secs(1),
+            &reporter,
+            AgentSessionCatalogPhase::Connecting,
+            "catalog test",
+        )
+        .await;
+
+        assert!(result.is_err_and(|error| error.contains("cancelled")));
     }
 
     #[test]

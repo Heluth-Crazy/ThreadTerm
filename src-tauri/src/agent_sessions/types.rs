@@ -17,6 +17,17 @@ pub enum AgentSessionProvider {
 }
 
 impl AgentSessionProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Opencode => "opencode",
+            Self::Gemini => "gemini",
+            Self::Kimi => "kimi",
+            Self::Grok => "grok",
+        }
+    }
+
     pub fn parse(value: &str) -> Result<Self, String> {
         match value.trim() {
             "claude" => Ok(Self::Claude),
@@ -134,6 +145,7 @@ pub struct AgentSessionPage {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListAgentSessionsRequest {
+    pub request_id: u64,
     pub provider: String,
     #[serde(default)]
     pub cursor: Option<String>,
@@ -141,6 +153,28 @@ pub struct ListAgentSessionsRequest {
     pub limit: Option<usize>,
     #[serde(default)]
     pub query: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentSessionCatalogPhase {
+    Discovering,
+    Connecting,
+    Listing,
+    Scanning,
+    Enriching,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionCatalogProgress {
+    pub request_id: u64,
+    pub provider: AgentSessionProvider,
+    pub phase: AgentSessionCatalogPhase,
+    pub completed: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
+    pub elapsed_ms: u64,
 }
 
 pub fn normalize_page_limit(limit: Option<usize>) -> usize {
@@ -234,6 +268,26 @@ mod tests {
         assert_eq!(json["updatedAt"], 2);
         assert_eq!(json["messageCount"], 3);
         assert!(json.get("gitBranch").is_none());
+    }
+
+    #[test]
+    fn serializes_privacy_safe_catalog_progress() {
+        let progress = AgentSessionCatalogProgress {
+            request_id: 42,
+            provider: AgentSessionProvider::Opencode,
+            phase: AgentSessionCatalogPhase::Enriching,
+            completed: 2,
+            total: Some(4),
+            elapsed_ms: 1250,
+        };
+        let json = serde_json::to_value(progress).expect("serialize progress");
+        assert_eq!(json["requestId"], 42);
+        assert_eq!(json["provider"], "opencode");
+        assert_eq!(json["phase"], "enriching");
+        assert_eq!(json["completed"], 2);
+        assert_eq!(json["total"], 4);
+        assert_eq!(json["elapsedMs"], 1250);
+        assert_eq!(json.as_object().map(serde_json::Map::len), Some(6));
     }
 
     #[test]

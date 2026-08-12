@@ -52,6 +52,19 @@ export interface SeedAgentSession {
   resumable: boolean;
 }
 
+export interface SeedAgentSessionCatalogBehavior {
+  provider: SeedAgentSession['provider'];
+  delayMs?: number;
+  progress?: Array<{
+    afterMs: number;
+    phase: 'discovering' | 'connecting' | 'listing' | 'scanning' | 'enriching';
+    completed: number;
+    total?: number | null;
+  }>;
+  availability?: 'available' | 'missingCli' | 'unavailable' | 'error';
+  warning?: string | null;
+}
+
 export function makeSeedCards(count: number): SeedCard[] {
   const now = Date.now();
   return Array.from({ length: count }, (_, index) => {
@@ -97,9 +110,14 @@ export function makeSeedCodexCard(): SeedCard {
 interface FakeSeed {
   persistedState: Record<string, unknown>;
   agentSessions: SeedAgentSession[];
+  catalogBehaviors: SeedAgentSessionCatalogBehavior[];
 }
 
-function buildSeed(cards: SeedCard[], agentSessions: SeedAgentSession[]): FakeSeed {
+function buildSeed(
+  cards: SeedCard[],
+  agentSessions: SeedAgentSession[],
+  catalogBehaviors: SeedAgentSessionCatalogBehavior[],
+): FakeSeed {
   return {
     persistedState: {
       cards,
@@ -117,6 +135,7 @@ function buildSeed(cards: SeedCard[], agentSessions: SeedAgentSession[]): FakeSe
       supervisorEnabled: false,
     },
     agentSessions,
+    catalogBehaviors,
   };
 }
 
@@ -156,7 +175,12 @@ function installInPage(seed: FakeSeed): void {
   const ackedThrough: Record<string, number> = {};
   const inputs: Record<string, string[]> = {};
   const agentSessionState = {
-    catalogCalls: [] as Array<{ provider: string; query: string | null }>,
+    catalogCalls: [] as Array<{
+      provider: string;
+      query: string | null;
+      requestId: number;
+    }>,
+    cancelledRequestIds: [] as number[],
     recentListCalls: 0,
     resumeResolveCalls: [] as Array<{ provider: string; sessionId: string }>,
     codexAppOpenCardCalls: 0,
@@ -424,10 +448,35 @@ function installInPage(seed: FakeSeed): void {
       }
       case 'provider_list_agent_sessions': {
         const request = (a.request ?? {}) as Record<string, unknown>;
+        const requestId = Number(request.requestId ?? 0);
         const provider = String(request.provider ?? 'claude');
         const query = typeof request.query === 'string' ? request.query.trim() : '';
         const needle = query.toLocaleLowerCase();
-        agentSessionState.catalogCalls.push({ provider, query: query || null });
+        agentSessionState.catalogCalls.push({
+          provider,
+          query: query || null,
+          requestId,
+        });
+        const behavior = seed.catalogBehaviors.find(
+          (candidate) => candidate.provider === provider,
+        );
+        for (const progress of behavior?.progress ?? []) {
+          window.setTimeout(() => {
+            emitEvent('agent-session://catalog-progress', {
+              requestId,
+              provider,
+              phase: progress.phase,
+              completed: progress.completed,
+              total: progress.total ?? null,
+              elapsedMs: progress.afterMs,
+            });
+          }, progress.afterMs);
+        }
+        if ((behavior?.delayMs ?? 0) > 0) {
+          await new Promise((resolve) => {
+            window.setTimeout(resolve, behavior?.delayMs ?? 0);
+          });
+        }
         const items = seed.agentSessions.filter((session) => {
           if (session.provider !== provider) return false;
           if (!needle) return true;
@@ -440,13 +489,18 @@ function installInPage(seed: FakeSeed): void {
         });
         return {
           provider,
-          availability: 'available',
-          items,
+          availability: behavior?.availability ?? 'available',
+          items: behavior?.availability && behavior.availability !== 'available'
+            ? []
+            : items,
           nextCursor: null,
           scannedAt: Date.now(),
-          warning: null,
+          warning: behavior?.warning ?? null,
         };
       }
+      case 'provider_cancel_agent_session_scan':
+        agentSessionState.cancelledRequestIds.push(Number(a.requestId ?? 0));
+        return null;
       case 'provider_resolve_agent_session_metadata': {
         const request = (a.request ?? {}) as { keys?: Array<Record<string, unknown>> };
         const keys = Array.isArray(request.keys) ? request.keys : [];
@@ -763,6 +817,10 @@ export async function installFakeTauri(
   page: Page,
   cards: SeedCard[],
   agentSessions: SeedAgentSession[] = [],
+  catalogBehaviors: SeedAgentSessionCatalogBehavior[] = [],
 ): Promise<void> {
-  await page.addInitScript(installInPage, buildSeed(cards, agentSessions));
+  await page.addInitScript(
+    installInPage,
+    buildSeed(cards, agentSessions, catalogBehaviors),
+  );
 }
