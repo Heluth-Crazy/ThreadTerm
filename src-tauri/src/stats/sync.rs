@@ -82,9 +82,31 @@ fn session_log_candidates(root: &Path) -> Vec<PathBuf> {
 /// last-token usage and refresh cc-switch-aligned fallback pricing.
 const STATS_PARSER_VERSION: i64 = 10;
 
-/// Wipe `usage_records` + `session_log_sync` when the stored parser version
-/// doesn't match the current one, then stamp the new version. Returns true when
-/// a rebuild happened. Best-effort; schema is guaranteed by `db::init_database`.
+fn rebuild_session_rows(
+    conn: &rusqlite::Connection,
+    parser_version: Option<i64>,
+) -> rusqlite::Result<()> {
+    let transaction = conn.unchecked_transaction()?;
+    transaction.execute_batch(
+        "DELETE FROM usage_records WHERE data_source != 'proxy';
+         DELETE FROM usage_daily_rollups;
+         DELETE FROM session_log_sync;",
+    )?;
+    if let Some(version) = parser_version {
+        transaction.execute(
+            "INSERT OR REPLACE INTO stats_meta (key, value) VALUES ('parser_version', ?1)",
+            params![version.to_string()],
+        )?;
+    } else {
+        transaction.execute("DELETE FROM stats_meta WHERE key = 'parser_version'", [])?;
+    }
+    transaction.commit()
+}
+
+/// Rebuild session-derived rows and cursors when the stored parser version
+/// doesn't match the current one, then stamp the new version. Proxy rows are
+/// request facts that cannot be recovered from provider session logs, so a
+/// session parser migration must never delete them.
 fn rebuild_if_parser_changed(conn: &rusqlite::Connection) -> bool {
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS stats_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
@@ -101,32 +123,21 @@ fn rebuild_if_parser_changed(conn: &rusqlite::Connection) -> bool {
     if stored == STATS_PARSER_VERSION {
         return false;
     }
-    let _ = conn.execute_batch(
-        "DELETE FROM usage_records;
-         DELETE FROM usage_daily_rollups;
-         DELETE FROM session_log_sync;",
-    );
-    let _ = conn.execute(
-        "INSERT OR REPLACE INTO stats_meta (key, value) VALUES ('parser_version', ?1)",
-        params![STATS_PARSER_VERSION.to_string()],
-    );
+    if let Err(error) = rebuild_session_rows(conn, Some(STATS_PARSER_VERSION)) {
+        tracing::warn!(%error, "[STATS-SYNC] failed to rebuild session usage rows");
+        return false;
+    }
     tracing::info!(
-        "[STATS-SYNC] parser version {stored} -> {STATS_PARSER_VERSION}: rebuilt usage_records"
+        "[STATS-SYNC] parser version {stored} -> {STATS_PARSER_VERSION}: rebuilt session usage rows"
     );
     true
 }
 
-/// Force a full rebuild: drop ingested rows + sync cursors so the next
-/// `stats_compute` re-ingests every file from scratch with the current parser.
+/// Force a full session-log rebuild while preserving proxy request facts. The
+/// next `stats_compute` re-ingests every provider session source from scratch.
 pub fn rebuild_now() -> Result<(), String> {
     let conn = get_db()?;
-    conn.execute_batch(
-        "DELETE FROM usage_records;
-         DELETE FROM usage_daily_rollups;
-         DELETE FROM session_log_sync;
-         DELETE FROM stats_meta WHERE key = 'parser_version';",
-    )
-    .map_err(|e| e.to_string())
+    rebuild_session_rows(&conn, None).map_err(|e| e.to_string())
 }
 
 /// Sync all providers' session logs into `usage_records`. Candidate discovery
@@ -251,11 +262,10 @@ fn line_count(path: &Path) -> i64 {
 /// Dedup is by the `request_id` primary key alone (`session:{msg_id}` for
 /// Claude, `codex_session:{sid}:{idx}` for Codex) — both are stable across
 /// re-syncs, so `INSERT OR IGNORE` is exact. We deliberately do NOT also dedup
-/// by token shape + timestamp: ThreadTerm has no proxy writing `usage_records`
-/// (the only writer is this module), so there is no cross-source duplicate to
-/// catch — a shape match only ever means two *distinct* API calls that happen
-/// to look alike, and dropping the second under-counts usage (Codex deltas are
-/// small, uniform integers at second resolution, so they collide easily).
+/// by token shape + timestamp: the proxy is a separate writer, and cross-source
+/// reconciliation belongs to the dashboard where status/project context is
+/// available. A shape match inside ingestion can also represent two distinct
+/// calls and would under-count uniform Codex deltas.
 fn insert_record(
     conn: &rusqlite::Connection,
     request_id: &str,
@@ -1272,7 +1282,7 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_wipes_rows_when_version_missing_then_is_idempotent() {
+    fn rebuild_preserves_proxy_rows_when_version_missing_then_is_idempotent() {
         let conn = mem_conn();
         // Simulate stale rows ingested by an older parser (no version stamped).
         let r = record("claude-opus-4-8", 100, 10, Some(1_609_459_200_000));
@@ -1284,19 +1294,36 @@ mod tests {
             "/p",
             1_609_459_200
         ));
+        conn.execute(
+            "INSERT INTO usage_records
+                (request_id, provider, model, input_tokens, output_tokens,
+                 created_at, data_source)
+             VALUES ('proxy-request', 'codex', 'gpt-5.6-codex', 50, 5, 1609459200, 'proxy')",
+            [],
+        )
+        .unwrap();
         update_sync_state(&conn, "/old.jsonl", 1_700_000_000_000, 5);
 
-        // First sync after the version bump: rows + cursors wiped, version stamped.
+        // First sync after the version bump: rebuildable session rows and
+        // cursors are wiped, but proxy request facts survive.
         assert!(rebuild_if_parser_changed(&conn), "stale DB must rebuild");
-        let rows: i64 = conn
-            .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT request_id, data_source FROM usage_records ORDER BY request_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
             .unwrap();
         let cursors: i64 = conn
             .query_row("SELECT COUNT(*) FROM session_log_sync", [], |row| {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(rows, 0, "stale usage rows cleared");
+        assert_eq!(
+            rows,
+            vec![("proxy-request".to_string(), "proxy".to_string())],
+            "proxy request facts must survive a session parser rebuild"
+        );
         assert_eq!(cursors, 0, "sync cursors cleared so files re-parse");
         let parser_version: String = conn
             .query_row(
@@ -1311,6 +1338,60 @@ mod tests {
         assert!(
             !rebuild_if_parser_changed(&conn),
             "matching version must not rebuild"
+        );
+    }
+
+    #[test]
+    fn manual_rebuild_preserves_proxy_rows_and_clears_parser_stamp() {
+        let conn = mem_conn();
+        let session = record("claude-opus-4-8", 100, 10, Some(1_609_459_200_000));
+        assert!(insert_record(
+            &conn,
+            "session:msg_1",
+            "claude",
+            &session,
+            "/p",
+            1_609_459_200
+        ));
+        conn.execute(
+            "INSERT INTO usage_records
+                (request_id, provider, model, input_tokens, output_tokens,
+                 created_at, data_source)
+             VALUES ('proxy-request', 'codex', 'gpt-5.6-codex', 50, 5, 1609459200, 'proxy')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO stats_meta (key, value) VALUES ('parser_version', '10')",
+            [],
+        )
+        .unwrap();
+        update_sync_state(&conn, "/old.jsonl", 1_700_000_000_000, 5);
+
+        rebuild_session_rows(&conn, None).expect("manual session rebuild");
+
+        let request_ids: Vec<String> = conn
+            .prepare("SELECT request_id FROM usage_records ORDER BY request_id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(request_ids, vec!["proxy-request"]);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM session_log_sync", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM stats_meta WHERE key = 'parser_version'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
         );
     }
 

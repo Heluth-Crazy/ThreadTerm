@@ -56,6 +56,7 @@ export function StatsPanel({ onClose, projectPath }: StatsPanelProps) {
   const scope = useStatsStore((s) => s.scope);
   const scanned = useStatsStore((s) => s.scanned);
   const total = useStatsStore((s) => s.total);
+  const activeSilent = useStatsStore((s) => s.activeSilent);
   const setRange = useStatsStore((s) => s.setRange);
   const setScope = useStatsStore((s) => s.setScope);
   const dashboardFilters = useStatsStore((s) => s.dashboardFilters);
@@ -84,24 +85,14 @@ export function StatsPanel({ onClose, projectPath }: StatsPanelProps) {
     setDashboardFilters({ ...dashboardFilters, ...patch });
   };
 
-  // Compute on first open only when no synchronized snapshot exists. When a
-  // snapshot is already available (for example from badge auto-refresh), load
-  // its source-aware dashboard directly instead of hiding it behind a second
-  // filesystem scan.
+  // Query persisted SQLite data before starting the process's first session
+  // sync. `loadDashboard` coalesces with the project-filter effect above, so a
+  // project-scoped first open still performs one DB read and one sync at most.
   useEffect(() => {
-    // Read after the project-filter synchronization effect above. Its state
-    // update is synchronous, while render-scoped selectors still describe the
-    // previous query during this commit.
     const state = useStatsStore.getState();
-    if (!state.snapshot && !state.dashboard && !state.loading) {
-      state.compute();
-    } else if (
-      state.snapshot &&
-      !state.dashboard &&
-      !state.dashboardLoading
-    ) {
-      state.loadDashboard();
-    }
+    void state.loadDashboard().finally(() => {
+      useStatsStore.getState().ensureInitialSync();
+    });
   }, []);
 
   // While the panel is open, the silent auto-refresh polls at the faster
@@ -253,12 +244,22 @@ export function StatsPanel({ onClose, projectPath }: StatsPanelProps) {
             {t('stats.proxyActive', { defaultValue: 'Loopback stats proxy active' })}
           </span>
         )}
+        {loading && !activeSilent && dashboard && (
+          <span className="text-[10px] text-muted-foreground">
+            {t('stats.loading', { defaultValue: 'Scanning sessions…' })}
+            {total ? ` (${scanned}/${total})` : ''}
+          </span>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {error || dashboardError ? (
           <p className="text-xs text-destructive">{error || dashboardError}</p>
-        ) : !dashboard && (loading || dashboardLoading) ? (
+        ) : !dashboard && dashboardLoading ? (
+          <p className="text-xs text-muted-foreground">
+            {t('stats.loadingDashboard', { defaultValue: 'Loading saved statistics…' })}
+          </p>
+        ) : !dashboard && loading ? (
           <p className="text-xs text-muted-foreground">
             {t('stats.loading', { defaultValue: 'Scanning sessions…' })}
             {total ? ` (${scanned}/${total})` : ''}

@@ -28,9 +28,8 @@ use std::sync::{
     Mutex,
 };
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::Local;
+use chrono::{DateTime, Days, Local, TimeZone};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
@@ -66,30 +65,30 @@ struct StatsErrorEvent {
     error: String,
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// Map a range token to a `(lo_ms, hi_ms)` window. `today` starts at the
 /// machine's local midnight, matching cc-switch's user-facing day boundary.
 fn parse_range(range: &str) -> (Option<u64>, Option<u64>) {
-    let now = now_ms();
-    let day = 86_400_000u64;
-    let local_today = Local::now()
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .and_then(|midnight| midnight.and_local_timezone(Local).single())
-        .map(|midnight| midnight.timestamp_millis().max(0) as u64)
-        .unwrap_or_else(|| now - now % day);
-    match range {
-        "today" => (Some(local_today), None),
-        "7d" => (Some(local_today.saturating_sub(7 * day)), None),
-        "30d" => (Some(local_today.saturating_sub(30 * day)), None),
-        _ => (None, None),
-    }
+    parse_range_at(range, Local::now())
+}
+
+fn parse_range_at(range: &str, now: DateTime<Local>) -> (Option<u64>, Option<u64>) {
+    let now_ms = now.timestamp_millis().max(0) as u64;
+    let days_before_today = match range {
+        "today" => Some(0),
+        "7d" => Some(6),
+        "30d" => Some(29),
+        _ => None,
+    };
+    let lo = days_before_today.and_then(|days| {
+        let date = now.date_naive().checked_sub_days(Days::new(days))?;
+        let midnight = date.and_hms_opt(0, 0, 0)?;
+        let localized = midnight
+            .and_local_timezone(Local)
+            .earliest()
+            .or_else(|| Local.from_local_datetime(&midnight).latest())?;
+        Some(localized.timestamp_millis().max(0) as u64)
+    });
+    (lo, Some(now_ms))
 }
 
 /// Claude session root. Honours `CLAUDE_CONFIG_DIR` (Claude Code's override),
@@ -315,4 +314,45 @@ fn run_worker(
     let snapshot = aggregate_from_db(&conn, scope, lo, hi).map_err(|e| e.to_string());
     drop(ingest_guard);
     snapshot
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_ranges_include_exact_local_calendar_days_and_end_now() {
+        let now = Local
+            .with_ymd_and_hms(2026, 8, 13, 12, 34, 56)
+            .single()
+            .expect("unambiguous local noon");
+        let now_ms = now.timestamp_millis() as u64;
+
+        for (range, expected_date) in [
+            ("today", (2026, 8, 13)),
+            ("7d", (2026, 8, 7)),
+            ("30d", (2026, 7, 15)),
+        ] {
+            let (lo, hi) = parse_range_at(range, now);
+            let expected = Local
+                .with_ymd_and_hms(expected_date.0, expected_date.1, expected_date.2, 0, 0, 0)
+                .earliest()
+                .expect("local midnight")
+                .timestamp_millis() as u64;
+            assert_eq!(lo, Some(expected), "range {range}");
+            assert_eq!(hi, Some(now_ms), "range {range}");
+        }
+    }
+
+    #[test]
+    fn all_range_has_no_lower_bound_but_excludes_future_rows() {
+        let now = Local
+            .with_ymd_and_hms(2026, 8, 13, 12, 34, 56)
+            .single()
+            .expect("unambiguous local noon");
+        assert_eq!(
+            parse_range_at("all", now),
+            (None, Some(now.timestamp_millis() as u64))
+        );
+    }
 }

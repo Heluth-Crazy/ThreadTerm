@@ -137,6 +137,7 @@ function resetStores() {
     error: null,
     scope: 'all',
     range: '30d',
+    dashboardFilters: { status: 'all', source: 'all' },
     scanned: 0,
     total: 0,
     activeRequestId: 0,
@@ -168,6 +169,16 @@ afterEach(() => {
 });
 
 describe('statsStore silent compute', () => {
+  it('starts the initial sync once', () => {
+    act(() => {
+      useStatsStore.getState().ensureInitialSync({ silent: true });
+      useStatsStore.getState().ensureInitialSync({ silent: true });
+    });
+
+    expect(bridgeMocks.compute).toHaveBeenCalledTimes(1);
+    expect(useStatsStore.getState().activeSilent).toBe(true);
+  });
+
   it('does not toggle loading or progress, but still updates session buckets on done', () => {
     useStatsStore.setState({ scanned: 3, total: 5 });
 
@@ -217,7 +228,7 @@ describe('statsStore silent compute', () => {
 });
 
 describe('statsStore dashboard query identity', () => {
-  it('clears the previous query snapshot before computing a new range', () => {
+  it('queries SQLite without scanning or discarding badge data for a new range', () => {
     useStatsStore.setState({
       snapshot: makeStats(),
       dashboard: makeDashboard(30, 'previous-30d'),
@@ -227,11 +238,19 @@ describe('statsStore dashboard query identity', () => {
 
     expect(useStatsStore.getState()).toMatchObject({
       range: 'all',
-      snapshot: null,
+      snapshot: makeStats(),
       dashboard: null,
-      dashboardLoading: false,
-      loading: true,
+      dashboardLoading: true,
+      loading: false,
     });
+    expect(bridgeMocks.compute).not.toHaveBeenCalled();
+    expect(bridgeMocks.dashboard).toHaveBeenCalledWith(
+      'all',
+      'all',
+      100,
+      undefined,
+      { status: 'all', source: 'all' },
+    );
   });
 
   it('keeps 30d and all results stable across repeated range switches', async () => {
@@ -239,20 +258,25 @@ describe('statsStore dashboard query identity', () => {
       Promise.resolve(range === '30d' ? makeDashboard(30, '30d') : makeDashboard(90, 'all')),
     );
 
+    await act(async () => {
+      await useStatsStore.getState().loadDashboard();
+    });
+    expect(useStatsStore.getState().dashboard?.overview.requestCount).toBe(30);
+
     for (const [range, expected] of [
-      ['30d', 30],
       ['all', 90],
       ['30d', 30],
       ['all', 90],
+      ['30d', 30],
     ] as const) {
       act(() => {
         useStatsStore.getState().setRange(range);
-        useStatsStore.getState().loadDashboard();
       });
       await vi.waitFor(() => {
         expect(useStatsStore.getState().dashboard?.overview.requestCount).toBe(expected);
       });
     }
+    expect(bridgeMocks.compute).not.toHaveBeenCalled();
   });
 
   it('rejects an old same-key dashboard response after a range round trip', async () => {
@@ -270,17 +294,17 @@ describe('statsStore dashboard query identity', () => {
       );
     });
 
-    act(() => useStatsStore.getState().loadDashboard());
+    act(() => {
+      void useStatsStore.getState().loadDashboard();
+    });
     act(() => {
       useStatsStore.getState().setRange('all');
-      useStatsStore.getState().loadDashboard();
     });
     await vi.waitFor(() => {
       expect(useStatsStore.getState().dashboard?.overview.requestCount).toBe(90);
     });
     act(() => {
       useStatsStore.getState().setRange('30d');
-      useStatsStore.getState().loadDashboard();
     });
     await vi.waitFor(() => {
       expect(useStatsStore.getState().dashboard?.overview.requestCount).toBe(31);
@@ -294,13 +318,62 @@ describe('statsStore dashboard query identity', () => {
     expect(useStatsStore.getState().dashboard?.overview.requestCount).toBe(31);
     expect(useStatsStore.getState().dashboard?.requestLogs[0]?.requestId).toBe('latest-30d');
   });
+
+  it('uses DB-only queries for scope and dashboard filters', async () => {
+    act(() => useStatsStore.getState().setScope('codex'));
+    await vi.waitFor(() => expect(bridgeMocks.dashboard).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      useStatsStore.getState().setDashboardFilters({
+        status: 'success',
+        source: 'proxy',
+        projectPath: 'D:/repo/app',
+      });
+    });
+    await vi.waitFor(() => expect(bridgeMocks.dashboard).toHaveBeenCalledTimes(2));
+
+    expect(bridgeMocks.compute).not.toHaveBeenCalled();
+    expect(bridgeMocks.dashboard).toHaveBeenLastCalledWith(
+      'codex',
+      '30d',
+      100,
+      undefined,
+      {
+        status: 'success',
+        source: 'proxy',
+        projectPath: 'D:/repo/app',
+      },
+    );
+  });
+
+  it('coalesces identical in-flight dashboard queries', async () => {
+    let resolveDashboard: ((dashboard: StatsDashboard) => void) | undefined;
+    bridgeMocks.dashboard.mockImplementation(
+      () =>
+        new Promise<StatsDashboard>((resolve) => {
+          resolveDashboard = resolve;
+        }),
+    );
+
+    const first = useStatsStore.getState().loadDashboard();
+    const second = useStatsStore.getState().loadDashboard();
+
+    expect(second).toBe(first);
+    expect(bridgeMocks.dashboard).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveDashboard?.(makeDashboard(30));
+      await first;
+    });
+  });
 });
 
 describe('useStatsAutoRefresh', () => {
   it('runs immediately and then on the relaxed interval while the panel is closed', () => {
     mockVisibility('visible');
-    useTerminalStore.setState({
-      cards: [makeCard({ terminalType: 'codex', providerSessionId: 'codex-session-1' })],
+    act(() => {
+      useTerminalStore.setState({
+        cards: [makeCard({ terminalType: 'codex', providerSessionId: 'codex-session-1' })],
+      });
     });
 
     const { unmount } = renderHook(() => useStatsAutoRefresh());
@@ -361,6 +434,26 @@ describe('useStatsAutoRefresh', () => {
     visibility.mockReturnValue('visible');
     act(() => {
       document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(bridgeMocks.compute).toHaveBeenCalledTimes(2);
+  });
+
+  it('changes the polling interval without rescanning when the panel opens', () => {
+    mockVisibility('visible');
+    useTerminalStore.setState({
+      cards: [makeCard({ terminalType: 'codex', providerSessionId: 'codex-session-1' })],
+    });
+
+    renderHook(() => useStatsAutoRefresh());
+    expect(bridgeMocks.compute).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      useStatsStore.getState().setPanelOpen(true);
+    });
+    expect(bridgeMocks.compute).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      vi.advanceTimersByTime(STATS_AUTO_REFRESH_INTERVAL_MS);
     });
     expect(bridgeMocks.compute).toHaveBeenCalledTimes(2);
   });

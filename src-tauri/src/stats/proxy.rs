@@ -4,7 +4,7 @@
 //! ephemeral random path. It forwards bytes to an explicit upstream allowlist
 //! and records only usage metadata after the response stream completes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -20,7 +20,7 @@ use rand::Rng;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex as AsyncMutex};
 
 use super::pricing;
 use super::types::UsageSummary;
@@ -58,6 +58,56 @@ struct ProxyState {
     config: Arc<ValidatedProxyConfig>,
     client: Client,
     project_routes: SharedProjectRoutes,
+}
+
+/// Keeps response metadata parsing memory-bounded without losing the terminal
+/// usage event emitted at the end of an SSE response. Non-streaming JSON needs
+/// its opening bytes to remain parseable, while streaming responses need the
+/// newest bytes, so the retention direction is selected per response.
+struct BoundedResponseCapture {
+    bytes: VecDeque<u8>,
+    keep_tail: bool,
+}
+
+impl BoundedResponseCapture {
+    fn new(keep_tail: bool) -> Self {
+        Self {
+            bytes: VecDeque::new(),
+            keep_tail,
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) {
+        if self.keep_tail {
+            if chunk.len() >= MAX_CAPTURED_RESPONSE_BYTES {
+                self.bytes.clear();
+                self.bytes.extend(
+                    chunk[chunk.len().saturating_sub(MAX_CAPTURED_RESPONSE_BYTES)..]
+                        .iter()
+                        .copied(),
+                );
+                return;
+            }
+            let overflow = self
+                .bytes
+                .len()
+                .saturating_add(chunk.len())
+                .saturating_sub(MAX_CAPTURED_RESPONSE_BYTES);
+            if overflow > 0 {
+                self.bytes.drain(..overflow);
+            }
+            self.bytes.extend(chunk.iter().copied());
+            return;
+        }
+
+        let remaining = MAX_CAPTURED_RESPONSE_BYTES.saturating_sub(self.bytes.len());
+        self.bytes
+            .extend(chunk[..chunk.len().min(remaining)].iter().copied());
+    }
+
+    fn to_vec(&self) -> Vec<u8> {
+        self.bytes.iter().copied().collect()
+    }
 }
 
 type SharedProjectRoutes = Arc<Mutex<ProjectRouteRegistry>>;
@@ -98,7 +148,7 @@ impl ProjectRouteRegistry {
 /// dropping the response body before the upstream reaches EOF; `Drop` keeps
 /// that request visible instead of losing its status/timing metadata.
 struct ProxyStreamFinalizer {
-    captured: Arc<Mutex<Vec<u8>>>,
+    captured: Arc<Mutex<BoundedResponseCapture>>,
     provider: String,
     request_id: String,
     model: String,
@@ -148,11 +198,25 @@ struct ValidatedProxyConfig {
 }
 
 static RUNTIME: Lazy<Mutex<Option<Runtime>>> = Lazy::new(|| Mutex::new(None));
+static LIFECYCLE_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
+
+fn build_proxy_router(state: ProxyState, route_prefix: &str) -> Router {
+    // ThreadTerm currently uses Axum 0.7. Its matchit syntax is `:name` for a
+    // dynamic segment and `*name` for a trailing catch-all. The brace syntax
+    // belongs to Axum 0.8 and panics during Router construction on 0.7.
+    let route = format!("/{route_prefix}/:provider/*path");
+    let root_route = format!("/{route_prefix}/:provider");
+    Router::new()
+        .route(&route, any(proxy_handler))
+        .route(&root_route, any(proxy_root_handler))
+        .with_state(state)
+}
 
 #[tauri::command]
 pub async fn stats_proxy_start(
     config: Option<StatsProxyConfig>,
 ) -> Result<StatsProxyStatus, String> {
+    let _lifecycle_guard = LIFECYCLE_LOCK.lock().await;
     if let Some(runtime) = RUNTIME
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
@@ -179,12 +243,7 @@ pub async fn stats_proxy_start(
             .map_err(|error| format!("Failed to create stats proxy client: {error}"))?,
         project_routes: project_routes.clone(),
     };
-    let route = format!("/{route_prefix}/{{provider}}/{{*path}}");
-    let root_route = format!("/{route_prefix}/{{provider}}");
-    let app = Router::new()
-        .route(&route, any(proxy_handler))
-        .route(&root_route, any(proxy_root_handler))
-        .with_state(state);
+    let app = build_proxy_router(state, &route_prefix);
     let (stop_tx, stop_rx) = oneshot::channel();
     tokio::spawn(async move {
         let _ = axum::serve(listener, app)
@@ -215,6 +274,7 @@ pub async fn stats_proxy_start(
 
 #[tauri::command]
 pub async fn stats_proxy_stop() -> Result<(), String> {
+    let _lifecycle_guard = LIFECYCLE_LOCK.lock().await;
     if let Some(mut runtime) = RUNTIME
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
@@ -439,7 +499,8 @@ async fn proxy_request(
             write_proxy_record(ProxyRecordInput {
                 request_id,
                 provider,
-                model: request_model,
+                model: request_model.clone(),
+                request_model,
                 project_path,
                 usage: UsageSummary::default(),
                 status_code: None,
@@ -466,7 +527,7 @@ async fn proxy_request(
             .is_some_and(|value| value.contains("text/event-stream"));
     let response_headers = copy_response_headers(upstream.headers());
     let body_stream = upstream.bytes_stream();
-    let captured = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let captured = Arc::new(Mutex::new(BoundedResponseCapture::new(response_streaming)));
     let finalizer = ProxyStreamFinalizer {
         captured,
         provider,
@@ -499,10 +560,7 @@ async fn proxy_request(
                             .captured
                             .lock()
                             .unwrap_or_else(|poison| poison.into_inner());
-                        let remaining = MAX_CAPTURED_RESPONSE_BYTES.saturating_sub(captured.len());
-                        if remaining > 0 {
-                            captured.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-                        }
+                        captured.push(&chunk);
                     }
                     Some((
                         Ok::<Bytes, std::io::Error>(chunk),
@@ -554,7 +612,7 @@ fn split_project_route(routes: &SharedProjectRoutes, path: &str) -> (Option<Stri
 
 #[allow(clippy::too_many_arguments)]
 fn finalize_proxy_record(
-    captured: &Arc<Mutex<Vec<u8>>>,
+    captured: &Arc<Mutex<BoundedResponseCapture>>,
     provider: &str,
     request_id: &str,
     model: &str,
@@ -568,13 +626,20 @@ fn finalize_proxy_record(
     let body = captured
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
-        .clone();
+        .to_vec();
+    let parsed = parse_response_usage(provider, &body);
+    let response_model = parsed
+        .model
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(model);
     write_proxy_record(ProxyRecordInput {
         request_id: request_id.to_string(),
         provider: provider.to_string(),
-        model: model.to_string(),
+        model: response_model.to_string(),
+        request_model: model.to_string(),
         project_path: project_path.map(ToOwned::to_owned),
-        usage: parse_usage(provider, &body),
+        usage: parsed.usage,
         status_code: Some(status_code),
         error,
         latency_ms: first_token_ms,
@@ -686,9 +751,16 @@ fn copy_response_headers(source: &reqwest::header::HeaderMap) -> HeaderMap {
     headers
 }
 
-fn parse_usage(provider: &str, body: &[u8]) -> UsageSummary {
+#[derive(Default)]
+struct ParsedResponseUsage {
+    usage: UsageSummary,
+    model: Option<String>,
+}
+
+fn parse_response_usage(provider: &str, body: &[u8]) -> ParsedResponseUsage {
     let text = String::from_utf8_lossy(body);
     let mut usage = UsageSummary::default();
+    let mut model = None;
     let mut found = false;
     for candidate in response_json_candidates(&text) {
         let Some(value) = candidate else { continue };
@@ -696,15 +768,25 @@ fn parse_usage(provider: &str, body: &[u8]) -> UsageSummary {
             continue;
         };
         found = true;
-        usage.input = usage.input.max(parsed.input);
-        usage.output = usage.output.max(parsed.output);
-        usage.cache_creation = usage.cache_creation.max(parsed.cache_creation);
-        usage.cache_read = usage.cache_read.max(parsed.cache_read);
+        usage.input = usage.input.max(parsed.usage.input);
+        usage.output = usage.output.max(parsed.usage.output);
+        usage.cache_creation = usage.cache_creation.max(parsed.usage.cache_creation);
+        usage.cache_read = usage.cache_read.max(parsed.usage.cache_read);
+        if parsed
+            .model
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        {
+            model = parsed.model;
+        }
     }
-    if found {
-        usage
-    } else {
-        UsageSummary::default()
+    ParsedResponseUsage {
+        usage: if found {
+            usage
+        } else {
+            UsageSummary::default()
+        },
+        model,
     }
 }
 
@@ -724,35 +806,44 @@ fn response_json_candidates(text: &str) -> Vec<Option<Value>> {
         .collect()
 }
 
-fn parse_usage_value(provider: &str, value: Value) -> Option<UsageSummary> {
+fn parse_usage_value(provider: &str, value: Value) -> Option<ParsedResponseUsage> {
+    let body = value
+        .get("response")
+        .filter(|response| response.get("usage").is_some())
+        .unwrap_or(&value);
     match provider {
         "anthropic" | "claude" => {
-            let usage = value.get("usage").or_else(|| {
-                value
-                    .get("message")
-                    .and_then(|message| message.get("usage"))
-            })?;
-            Some(UsageSummary {
-                input: usage
-                    .get("input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                output: usage
-                    .get("output_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                cache_creation: usage
-                    .get("cache_creation_input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                cache_read: usage
-                    .get("cache_read_input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
+            let usage = body
+                .get("usage")
+                .or_else(|| body.get("message").and_then(|message| message.get("usage")))?;
+            Some(ParsedResponseUsage {
+                usage: UsageSummary {
+                    input: usage
+                        .get("input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    output: usage
+                        .get("output_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    cache_creation: usage
+                        .get("cache_creation_input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    cache_read: usage
+                        .get("cache_read_input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                },
+                model: body
+                    .get("model")
+                    .or_else(|| body.get("message").and_then(|message| message.get("model")))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             })
         }
         "gemini" => {
-            let usage = value.get("usageMetadata")?;
+            let usage = body.get("usageMetadata")?;
             let input = usage
                 .get("promptTokenCount")
                 .and_then(Value::as_u64)
@@ -761,26 +852,38 @@ fn parse_usage_value(provider: &str, value: Value) -> Option<UsageSummary> {
                 .get("cachedContentTokenCount")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            Some(UsageSummary {
-                input: input.saturating_sub(cache_read),
-                output: usage
-                    .get("candidatesTokenCount")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                cache_creation: 0,
-                cache_read,
+            Some(ParsedResponseUsage {
+                usage: UsageSummary {
+                    input: input.saturating_sub(cache_read),
+                    output: usage
+                        .get("totalTokenCount")
+                        .and_then(Value::as_u64)
+                        .map(|total| total.saturating_sub(input))
+                        .or_else(|| usage.get("candidatesTokenCount").and_then(Value::as_u64))
+                        .unwrap_or(0),
+                    cache_creation: 0,
+                    cache_read,
+                },
+                model: body
+                    .get("modelVersion")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             })
         }
         "openai" | "codex" | "opencode" | "xai" | "grok" => {
-            let usage = value.get("usage")?;
+            let usage = body.get("usage")?;
             let input_total = usage
                 .get("prompt_tokens")
                 .or_else(|| usage.get("input_tokens"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
             let cache_read = usage
-                .get("prompt_tokens_details")
-                .and_then(|details| details.get("cached_tokens"))
+                .get("cache_read_input_tokens")
+                .or_else(|| {
+                    usage
+                        .get("prompt_tokens_details")
+                        .and_then(|details| details.get("cached_tokens"))
+                })
                 .or_else(|| {
                     usage
                         .get("input_tokens_details")
@@ -788,15 +891,37 @@ fn parse_usage_value(provider: &str, value: Value) -> Option<UsageSummary> {
                 })
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            Some(UsageSummary {
-                input: input_total.saturating_sub(cache_read),
-                output: usage
-                    .get("completion_tokens")
-                    .or_else(|| usage.get("output_tokens"))
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                cache_creation: 0,
-                cache_read,
+            let cache_creation = usage
+                .get("cache_creation_input_tokens")
+                .or_else(|| {
+                    usage
+                        .get("prompt_tokens_details")
+                        .and_then(|details| details.get("cache_write_tokens"))
+                })
+                .or_else(|| {
+                    usage
+                        .get("input_tokens_details")
+                        .and_then(|details| details.get("cache_write_tokens"))
+                })
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            Some(ParsedResponseUsage {
+                usage: UsageSummary {
+                    input: input_total
+                        .saturating_sub(cache_read)
+                        .saturating_sub(cache_creation),
+                    output: usage
+                        .get("completion_tokens")
+                        .or_else(|| usage.get("output_tokens"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    cache_creation,
+                    cache_read,
+                },
+                model: body
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             })
         }
         _ => None,
@@ -807,6 +932,7 @@ struct ProxyRecordInput {
     request_id: String,
     provider: String,
     model: String,
+    request_model: String,
     project_path: Option<String>,
     usage: UsageSummary,
     status_code: Option<i64>,
@@ -844,7 +970,7 @@ fn write_proxy_record(input: ProxyRecordInput) {
             input.request_id,
             input.provider,
             input.model,
-            input.model,
+            input.request_model,
             input.model,
             input.usage.input,
             input.usage.output,
@@ -906,12 +1032,49 @@ fn plain_response(status: StatusCode, message: &str) -> Response {
 mod tests {
     use super::*;
 
+    fn test_proxy_config() -> StatsProxyConfig {
+        StatsProxyConfig {
+            anthropic_upstream: Some("https://api.anthropic.com".to_string()),
+            openai_upstream: Some("https://api.openai.com".to_string()),
+            gemini_upstream: Some("https://generativelanguage.googleapis.com".to_string()),
+            xai_upstream: Some("https://api.x.ai".to_string()),
+        }
+    }
+
+    fn test_proxy_state() -> ProxyState {
+        ProxyState {
+            config: Arc::new(validate_config(test_proxy_config()).expect("valid config")),
+            client: Client::builder().build().expect("client"),
+            project_routes: Arc::new(Mutex::new(ProjectRouteRegistry::default())),
+        }
+    }
+
+    #[test]
+    fn axum_07_router_accepts_provider_and_trailing_catch_all_routes() {
+        let _router = build_proxy_router(test_proxy_state(), "threadterm-test");
+    }
+
+    #[tokio::test]
+    async fn concurrent_proxy_start_reuses_one_runtime() {
+        stats_proxy_stop().await.expect("reset proxy runtime");
+        let config = test_proxy_config();
+        let (first, second) = tokio::join!(
+            stats_proxy_start(Some(config.clone())),
+            stats_proxy_start(Some(config))
+        );
+        let first = first.expect("first proxy start");
+        let second = second.expect("second proxy start");
+        assert_eq!(first.port, second.port);
+        assert_eq!(first.route_prefix, second.route_prefix);
+        stats_proxy_stop().await.expect("stop proxy runtime");
+    }
+
     #[test]
     fn parses_anthropic_stream_usage_without_persisting_body() {
         let body = br#"data: {"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":30}}}
 
 data: {"type":"message_delta","usage":{"output_tokens":7}}"#;
-        let usage = parse_usage("anthropic", body);
+        let usage = parse_response_usage("anthropic", body).usage;
         assert_eq!(usage.input, 10);
         assert_eq!(usage.cache_read, 30);
         assert_eq!(usage.output, 7);
@@ -919,11 +1082,43 @@ data: {"type":"message_delta","usage":{"output_tokens":7}}"#;
 
     #[test]
     fn openai_cached_input_is_split_from_uncached_input() {
-        let body = br#"{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":40}}}"#;
-        let usage = parse_usage("openai", body);
-        assert_eq!(usage.input, 60);
+        let body = br#"{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":40,"cache_write_tokens":10}}}"#;
+        let usage = parse_response_usage("openai", body).usage;
+        assert_eq!(usage.input, 50);
         assert_eq!(usage.cache_read, 40);
+        assert_eq!(usage.cache_creation, 10);
         assert_eq!(usage.output, 20);
+    }
+
+    #[test]
+    fn parses_codex_response_completed_usage_and_actual_model() {
+        let body = br#"data: {"type":"response.completed","response":{"id":"resp_123","model":"gpt-5.6-codex","usage":{"input_tokens":1000,"output_tokens":80,"input_tokens_details":{"cached_tokens":300,"cache_write_tokens":100}}}}
+
+data: [DONE]"#;
+        let parsed = parse_response_usage("codex", body);
+        assert_eq!(parsed.usage.input, 600);
+        assert_eq!(parsed.usage.output, 80);
+        assert_eq!(parsed.usage.cache_read, 300);
+        assert_eq!(parsed.usage.cache_creation, 100);
+        assert_eq!(parsed.model.as_deref(), Some("gpt-5.6-codex"));
+    }
+
+    #[test]
+    fn streaming_capture_retains_final_usage_after_the_memory_limit() {
+        let mut capture = BoundedResponseCapture::new(true);
+        let mut prefix = vec![b'x'; MAX_CAPTURED_RESPONSE_BYTES + 128];
+        prefix.push(b'\n');
+        capture.push(&prefix);
+        capture.push(
+            br#"data: {"type":"response.completed","response":{"usage":{"input_tokens":42,"output_tokens":7}}}
+"#,
+        );
+
+        let bytes = capture.to_vec();
+        assert_eq!(bytes.len(), MAX_CAPTURED_RESPONSE_BYTES);
+        let usage = parse_response_usage("codex", &bytes).usage;
+        assert_eq!(usage.input, 42);
+        assert_eq!(usage.output, 7);
     }
 
     #[test]
