@@ -1,9 +1,9 @@
 //! Cooperative PTY shutdown for interactive terminals.
 //!
-//! Shutdown state intentionally lives outside [`PtySession`]. That keeps the
-//! hot PTY object and its lock graph unchanged while still serializing control
-//! input for each PTY id. The existing `pty_kill` command remains the explicit
-//! force path; nothing in this module escalates to it automatically.
+//! Shutdown attempt state intentionally lives outside [`PtySession`] while the
+//! session retains ownership of live PTY resources. The existing `pty_kill`
+//! command remains the explicit force path; nothing in this module escalates
+//! to it automatically.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -16,11 +16,12 @@ use sysinfo::System;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use super::registry;
-use super::session::{PtyInputRequest, PtySession};
+use super::session::{close_master, PtyInputRequest, PtySession};
 
 const GRACEFUL_SHUTDOWN_WINDOW: Duration = Duration::from_secs(5);
 const INTERRUPT_SETTLE_DELAY: Duration = Duration::from_millis(150);
 const KIMI_EOF_DELAY: Duration = Duration::from_millis(100);
+const PROVIDER_INPUT_DELAY: Duration = Duration::from_millis(100);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -99,6 +100,14 @@ impl ShutdownAttempt {
             attempt_id: self.id.clone(),
             outcome,
             stage: self.stage(),
+        }
+    }
+
+    fn observe_agent_descendants(&mut self, current: &HashSet<u32>, exit_write_count: usize) {
+        self.tracked_descendants.extend(current.iter().copied());
+        if current.is_empty() {
+            self.interrupt_sent = true;
+            self.agent_exit_writes_sent = exit_write_count;
         }
     }
 }
@@ -258,37 +267,53 @@ pub(super) async fn graceful_shutdown(
         .lock()
         .map_err(|error| format!("Failed to lock PTY child for '{id}': {error}"))?
         .process_id();
-
-    if let Some(root_pid) = root_pid {
-        let current_descendants = tokio::task::spawn_blocking(move || {
-            let mut system = System::new_all();
-            system.refresh_processes();
-            descendant_pids(root_pid, &process_parent_map(&system))
-        })
-        .await
-        .map_err(|error| format!("Failed to inspect PTY process tree for '{id}': {error}"))?;
-        update_attempt(&slot, &id, |attempt| {
-            attempt.tracked_descendants.extend(current_descendants);
-        })?;
-    }
-
-    if !read_attempt(&slot, &id, |attempt| attempt.interrupt_sent)? {
-        write_control(&session, &id, vec![0x03]).await?;
-        update_attempt(&slot, &id, |attempt| attempt.interrupt_sent = true)?;
-        sleep_until_or_deadline(INTERRUPT_SETTLE_DELAY, deadline).await;
-    }
-
     let profile = read_attempt(&slot, &id, |attempt| attempt.profile)?;
     let writes = provider_exit_writes(profile);
-    loop {
-        let sent = read_attempt(&slot, &id, |attempt| attempt.agent_exit_writes_sent)?;
-        let Some(write) = writes.get(sent) else {
-            break;
-        };
-        write_control(&session, &id, write.to_vec()).await?;
-        update_attempt(&slot, &id, |attempt| attempt.agent_exit_writes_sent += 1)?;
-        if profile == GracefulShutdownProfile::Kimi && sent + 1 < writes.len() {
-            sleep_until_or_deadline(KIMI_EOF_DELAY, deadline).await;
+
+    let agent_already_exited = if let Some(root_pid) = root_pid {
+        let current_descendants = inspect_descendants(root_pid, &id).await?;
+        update_attempt(&slot, &id, |attempt| {
+            attempt.observe_agent_descendants(&current_descendants, writes.len());
+        })?;
+        current_descendants.is_empty()
+    } else {
+        false
+    };
+
+    if !agent_already_exited {
+        if !read_attempt(&slot, &id, |attempt| attempt.interrupt_sent)? {
+            write_control(&session, &id, vec![0x03]).await?;
+            update_attempt(&slot, &id, |attempt| attempt.interrupt_sent = true)?;
+            sleep_until_or_deadline(INTERRUPT_SETTLE_DELAY, deadline).await;
+        }
+
+        loop {
+            let sent = read_attempt(&slot, &id, |attempt| attempt.agent_exit_writes_sent)?;
+            let Some(write) = writes.get(sent) else {
+                break;
+            };
+            if let Some(root_pid) = root_pid {
+                let current_descendants = inspect_descendants(root_pid, &id).await?;
+                update_attempt(&slot, &id, |attempt| {
+                    attempt.observe_agent_descendants(&current_descendants, writes.len());
+                })?;
+                if current_descendants.is_empty() {
+                    break;
+                }
+            }
+            write_control(&session, &id, write.to_vec()).await?;
+            update_attempt(&slot, &id, |attempt| attempt.agent_exit_writes_sent += 1)?;
+            if sent + 1 < writes.len() {
+                let delay = if matches!(
+                    profile,
+                    GracefulShutdownProfile::Kimi | GracefulShutdownProfile::Generic
+                ) {
+                    KIMI_EOF_DELAY
+                } else {
+                    PROVIDER_INPUT_DELAY
+                };
+                sleep_until_or_deadline(delay, deadline).await;
+            }
         }
     }
 
@@ -330,9 +355,24 @@ pub(super) async fn graceful_shutdown(
         return Ok(result);
     }
 
-    if !read_attempt(&slot, &id, |attempt| attempt.shell_exit_sent)? {
-        write_control(&session, &id, b"exit\r".to_vec()).await?;
+    if shell_has_exited(&session, &id)? {
         update_attempt(&slot, &id, |attempt| attempt.shell_exit_sent = true)?;
+        if close_master(&session, &id)? {
+            tracing::debug!(id = %id, "released PTY master after observed shell exit");
+        }
+    } else if !read_attempt(&slot, &id, |attempt| attempt.shell_exit_sent)? {
+        let write_result = write_control(&session, &id, b"exit\r".to_vec()).await;
+        // A failed write can still be partial, and the dedicated writer exits
+        // after any I/O error. Never inject a second shell command on a
+        // continuation; the child observation below remains authoritative.
+        update_attempt(&slot, &id, |attempt| attempt.shell_exit_sent = true)?;
+        if let Err(error) = write_result {
+            tracing::debug!(
+                id = %id,
+                error = %error,
+                "shell exit write failed; observing the child for a concurrent exit"
+            );
+        }
     }
 
     while Instant::now() < deadline {
@@ -343,6 +383,14 @@ pub(super) async fn graceful_shutdown(
             forget(&id);
             return Ok(result);
         }
+
+        if shell_has_exited(&session, &id)? {
+            update_attempt(&slot, &id, |attempt| attempt.shell_exit_sent = true)?;
+            if close_master(&session, &id)? {
+                tracing::debug!(id = %id, "released PTY master after shell exit");
+            }
+        }
+
         tokio::time::sleep(
             PROCESS_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
         )
@@ -350,6 +398,26 @@ pub(super) async fn graceful_shutdown(
     }
 
     timeout_result(&slot, &id)
+}
+
+async fn inspect_descendants(root_pid: u32, id: &str) -> Result<HashSet<u32>, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut system = System::new_all();
+        system.refresh_processes();
+        descendant_pids(root_pid, &process_parent_map(&system))
+    })
+    .await
+    .map_err(|error| format!("Failed to inspect PTY process tree for '{id}': {error}"))
+}
+
+fn shell_has_exited(session: &PtySession, id: &str) -> Result<bool, String> {
+    session
+        .child
+        .lock()
+        .map_err(|error| format!("Failed to lock PTY child for '{id}': {error}"))?
+        .try_wait()
+        .map(|status| status.is_some())
+        .map_err(|error| format!("Failed to poll PTY child for '{id}': {error}"))
 }
 
 fn timeout_result(slot: &ShutdownSlot, id: &str) -> Result<GracefulShutdownResult, String> {
@@ -410,17 +478,22 @@ async fn sleep_until_or_deadline(duration: Duration, deadline: Instant) {
 }
 
 fn provider_exit_writes(profile: GracefulShutdownProfile) -> &'static [&'static [u8]] {
-    const EXIT: &[u8] = b"/exit\r";
-    const QUIT: &[u8] = b"/quit\r";
+    const EXIT: &[u8] = b"/exit";
+    const QUIT: &[u8] = b"/quit";
+    const ENTER: &[u8] = b"\r";
     const EOF: &[u8] = &[0x04];
     match profile {
-        GracefulShutdownProfile::Gemini => &[QUIT],
+        GracefulShutdownProfile::Gemini => &[QUIT, ENTER],
         GracefulShutdownProfile::Kimi => &[EOF, EOF],
-        GracefulShutdownProfile::Generic => &[EOF],
+        // Generic sessions cannot assume a Provider slash command. Two EOFs
+        // cover CLIs such as Kimi that require confirmation; the process-tree
+        // refresh before every write prevents the second EOF from leaking into
+        // the shell when the foreground process exits after the first one.
+        GracefulShutdownProfile::Generic => &[EOF, EOF],
         GracefulShutdownProfile::Claude
         | GracefulShutdownProfile::Codex
         | GracefulShutdownProfile::Opencode
-        | GracefulShutdownProfile::Grok => &[EXIT],
+        | GracefulShutdownProfile::Grok => &[EXIT, ENTER],
     }
 }
 
@@ -500,24 +573,437 @@ fn wait_for_descendants(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+    use std::io::{Read, Write};
+    use std::sync::mpsc;
+    use std::thread;
+
+    const REAL_SMOKE_PROVIDER_ENV: &str = "THREADTERM_GRACEFUL_SHUTDOWN_SMOKE_PROVIDER";
+    const REAL_SMOKE_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
+    const REAL_SMOKE_READY_TIMEOUT: Duration = Duration::from_secs(30);
+    const REAL_SMOKE_OUTPUT_TAIL_BYTES: usize = 4_096;
+    const REAL_SMOKE_MAX_SHUTDOWN_WINDOWS: u8 = 6;
+
+    struct RealSmokeChild {
+        child: Box<dyn portable_pty::Child + Send + Sync>,
+        root_pid: u32,
+        armed: bool,
+    }
+
+    impl RealSmokeChild {
+        fn new(child: Box<dyn portable_pty::Child + Send + Sync>, root_pid: u32) -> Self {
+            Self {
+                child,
+                root_pid,
+                armed: true,
+            }
+        }
+
+        fn disarm(&mut self) {
+            self.armed = false;
+        }
+    }
+
+    impl Drop for RealSmokeChild {
+        fn drop(&mut self) {
+            if !self.armed {
+                return;
+            }
+
+            let mut system = System::new_all();
+            system.refresh_processes();
+            let parents = process_parent_map(&system);
+            for pid in descendant_pids(self.root_pid, &parents) {
+                if let Some(process) = system.process(sysinfo::Pid::from_u32(pid)) {
+                    let _ = process.kill();
+                }
+            }
+            let _ = self.child.kill();
+        }
+    }
+
+    fn real_smoke_provider() -> Result<(GracefulShutdownProfile, &'static str), String> {
+        let provider = std::env::var(REAL_SMOKE_PROVIDER_ENV).map_err(|_| {
+            format!(
+                "set {REAL_SMOKE_PROVIDER_ENV} to claude, codex, opencode, gemini, kimi, generic-kimi, or grok"
+            )
+        })?;
+        match provider.trim().to_ascii_lowercase().as_str() {
+            "claude" => Ok((GracefulShutdownProfile::Claude, "claude")),
+            "codex" => Ok((GracefulShutdownProfile::Codex, "codex")),
+            "opencode" => Ok((GracefulShutdownProfile::Opencode, "opencode")),
+            "gemini" => Ok((GracefulShutdownProfile::Gemini, "gemini")),
+            "kimi" => Ok((GracefulShutdownProfile::Kimi, "kimi")),
+            // Exercises a Provider launched from a shell/custom-command card,
+            // where the frontend must deliberately use the generic profile.
+            "generic-kimi" => Ok((GracefulShutdownProfile::Generic, "kimi")),
+            "grok" => Ok((GracefulShutdownProfile::Grok, "grok")),
+            unsupported => Err(format!(
+                "unsupported {REAL_SMOKE_PROVIDER_ENV} value '{unsupported}'"
+            )),
+        }
+    }
+
+    fn current_descendants(root_pid: u32) -> HashSet<u32> {
+        let mut system = System::new_all();
+        system.refresh_processes();
+        descendant_pids(root_pid, &process_parent_map(&system))
+    }
+
+    fn alive_pids(pids: &HashSet<u32>) -> HashSet<u32> {
+        let mut system = System::new_all();
+        system.refresh_processes();
+        pids.iter()
+            .copied()
+            .filter(|pid| system.process(sysinfo::Pid::from_u32(*pid)).is_some())
+            .collect()
+    }
+
+    fn describe_pids(pids: &HashSet<u32>) -> Vec<String> {
+        let mut system = System::new_all();
+        system.refresh_processes();
+        let mut descriptions = pids
+            .iter()
+            .filter_map(|pid| {
+                system.process(sysinfo::Pid::from_u32(*pid)).map(|process| {
+                    format!(
+                        "{pid}: name={:?} parent={:?} status={:?} exe={:?} cmd={:?}",
+                        process.name(),
+                        process.parent().map(|parent| parent.as_u32()),
+                        process.status(),
+                        process.exe(),
+                        process.cmd()
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        descriptions.sort();
+        descriptions
+    }
+
+    fn output_tail(output: &Arc<Mutex<Vec<u8>>>) -> String {
+        let output = output.lock().expect("lock real smoke output");
+        let start = output.len().saturating_sub(REAL_SMOKE_OUTPUT_TAIL_BYTES);
+        String::from_utf8_lossy(&output[start..]).into_owned()
+    }
+
+    fn wait_for_output(output: &Arc<Mutex<Vec<u8>>>, needle: &[u8], deadline: Instant) -> bool {
+        while Instant::now() < deadline {
+            let found = output
+                .lock()
+                .expect("lock real smoke output")
+                .windows(needle.len())
+                .any(|window| window == needle);
+            if found {
+                return true;
+            }
+            thread::sleep(PROCESS_POLL_INTERVAL);
+        }
+        false
+    }
+
+    fn wait_for_provider_process(
+        root_pid: u32,
+        baseline: &HashSet<u32>,
+        deadline: Instant,
+    ) -> HashSet<u32> {
+        let mut observed = HashSet::new();
+        while Instant::now() < deadline {
+            let current = current_descendants(root_pid);
+            observed.extend(current.difference(baseline).copied());
+            if !observed.is_empty() {
+                return observed;
+            }
+            thread::sleep(PROCESS_POLL_INTERVAL);
+        }
+        observed
+    }
+
+    fn run_real_provider_smoke() -> Result<(), String> {
+        let (profile, command) = real_smoke_provider()?;
+        let pty_system = NativePtySystem::default();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 40,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|error| format!("open real smoke PTY: {error}"))?;
+
+        let shell = super::super::shell::default_shell();
+        let mut shell_command = CommandBuilder::new(&shell);
+        let working_dir = std::env::current_dir()
+            .map_err(|error| format!("resolve real smoke working directory: {error}"))?;
+        #[cfg(target_os = "windows")]
+        shell_command.cwd(super::super::shell::normalize_windows_cwd(
+            &working_dir.to_string_lossy(),
+        ));
+        #[cfg(not(target_os = "windows"))]
+        shell_command.cwd(&working_dir);
+        super::super::shell::configure_shell_command(&mut shell_command, &shell);
+        if profile == GracefulShutdownProfile::Opencode {
+            // Keep the smoke deterministic without changing user settings or
+            // starting configured third-party MCP daemons. Provider-core PTY
+            // lifecycle is the acceptance boundary; plugin persistence keeps
+            // the normal timeout/explicit-force behavior.
+            shell_command.env("OPENCODE_DISABLE_AUTOUPDATE", "1");
+            shell_command.env("OPENCODE_PURE", "1");
+        }
+
+        let child = pair
+            .slave
+            .spawn_command(shell_command)
+            .map_err(|error| format!("spawn real smoke shell '{shell}': {error}"))?;
+        let root_pid = child
+            .process_id()
+            .ok_or_else(|| "real smoke shell did not expose a process id".to_string())?;
+        let mut child = RealSmokeChild::new(child, root_pid);
+        drop(pair.slave);
+
+        let mut writer = pair
+            .master
+            .take_writer()
+            .map_err(|error| format!("open real smoke PTY writer: {error}"))?;
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|error| format!("open real smoke PTY reader: {error}"))?;
+        let master = pair.master;
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let output_for_reader = output.clone();
+        let (reader_finished_tx, reader_finished_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut buffer = [0_u8; 8_192];
+            let result = loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break Ok(()),
+                    Ok(read) => {
+                        let mut output = output_for_reader
+                            .lock()
+                            .expect("lock real smoke reader output");
+                        output.extend_from_slice(&buffer[..read]);
+                        if output.len() > REAL_SMOKE_OUTPUT_TAIL_BYTES * 2 {
+                            let drain = output.len() - REAL_SMOKE_OUTPUT_TAIL_BYTES;
+                            output.drain(..drain);
+                        }
+                    }
+                    Err(error) => break Err(error.to_string()),
+                }
+            };
+            let _ = reader_finished_tx.send(result);
+        });
+
+        thread::sleep(Duration::from_millis(750));
+        let baseline = current_descendants(root_pid);
+        writer
+            .write_all(format!("{command}\r").as_bytes())
+            .and_then(|_| writer.flush())
+            .map_err(|error| format!("start real smoke provider '{command}': {error}"))?;
+
+        let provider_pids = wait_for_provider_process(
+            root_pid,
+            &baseline,
+            Instant::now() + REAL_SMOKE_STARTUP_TIMEOUT,
+        );
+        if provider_pids.is_empty() {
+            return Err(format!(
+                "provider '{command}' did not start a child process within {:?}; output tail:\n{}",
+                REAL_SMOKE_STARTUP_TIMEOUT,
+                output_tail(&output)
+            ));
+        }
+
+        // Let the interactive CLI finish drawing its first prompt. OpenCode
+        // starts configured MCP servers after its process appears, so its
+        // visible prompt is the reliable readiness boundary. No model request
+        // is sent; the only following bytes are the production exit protocol
+        // and the shell's normal `exit` command.
+        if profile == GracefulShutdownProfile::Opencode
+            && !wait_for_output(
+                &output,
+                b"Ask anything",
+                Instant::now() + REAL_SMOKE_READY_TIMEOUT,
+            )
+        {
+            return Err(format!(
+                "provider '{command}' did not reach its interactive prompt within {:?}; output tail:\n{}",
+                REAL_SMOKE_READY_TIMEOUT,
+                output_tail(&output)
+            ));
+        }
+        thread::sleep(Duration::from_secs(2));
+        let shutdown_started = Instant::now();
+        let mut shutdown_deadline = shutdown_started + GRACEFUL_SHUTDOWN_WINDOW;
+        let mut shutdown_windows = 1_u8;
+        let mut tracked = current_descendants(root_pid);
+
+        if !tracked.is_empty() {
+            writer
+                .write_all(&[0x03])
+                .and_then(|_| writer.flush())
+                .map_err(|error| format!("interrupt real smoke provider '{command}': {error}"))?;
+            thread::sleep(INTERRUPT_SETTLE_DELAY);
+            for (index, write) in provider_exit_writes(profile).iter().enumerate() {
+                let current = current_descendants(root_pid);
+                tracked.extend(current.iter().copied());
+                if current.is_empty() {
+                    break;
+                }
+                writer
+                    .write_all(write)
+                    .and_then(|_| writer.flush())
+                    .map_err(|error| format!("send exit protocol to '{command}': {error}"))?;
+                if index + 1 < provider_exit_writes(profile).len() {
+                    let delay = if matches!(
+                        profile,
+                        GracefulShutdownProfile::Kimi | GracefulShutdownProfile::Generic
+                    ) {
+                        KIMI_EOF_DELAY
+                    } else {
+                        PROVIDER_INPUT_DELAY
+                    };
+                    thread::sleep(delay);
+                }
+            }
+        }
+
+        loop {
+            while Instant::now() < shutdown_deadline {
+                tracked.extend(current_descendants(root_pid));
+                tracked = alive_pids(&tracked);
+                if tracked.is_empty() {
+                    break;
+                }
+                thread::sleep(PROCESS_POLL_INTERVAL);
+            }
+            if tracked.is_empty() || shutdown_windows == REAL_SMOKE_MAX_SHUTDOWN_WINDOWS {
+                break;
+            }
+
+            // Mirrors the timeout dialog's "wait another 5 seconds" action:
+            // the authoritative attempt gets a fresh window without sending
+            // Ctrl+C or the Provider exit sequence a second time.
+            shutdown_windows += 1;
+            shutdown_deadline = Instant::now() + GRACEFUL_SHUTDOWN_WINDOW;
+        }
+        if !tracked.is_empty() {
+            return Err(format!(
+                "provider '{command}' left descendants {tracked:?} after {shutdown_windows} shutdown windows: {:?}; output tail:\n{}",
+                describe_pids(&tracked),
+                output_tail(&output)
+            ));
+        }
+
+        let mut exit_status = child
+            .child
+            .try_wait()
+            .map_err(|error| format!("poll real smoke shell '{shell}': {error}"))?;
+        let exit_write_error = if exit_status.is_none() {
+            writer
+                .write_all(b"exit\r")
+                .and_then(|_| writer.flush())
+                .err()
+        } else {
+            None
+        };
+        let writer_guard = if exit_write_error.is_some() {
+            drop(writer);
+            None
+        } else {
+            Some(writer)
+        };
+
+        loop {
+            while Instant::now() < shutdown_deadline {
+                exit_status = child
+                    .child
+                    .try_wait()
+                    .map_err(|error| format!("poll real smoke shell '{shell}': {error}"))?;
+                if exit_status.is_some() {
+                    break;
+                }
+                thread::sleep(PROCESS_POLL_INTERVAL);
+            }
+            if exit_status.is_some() || shutdown_windows == REAL_SMOKE_MAX_SHUTDOWN_WINDOWS {
+                break;
+            }
+
+            // Continue the same authoritative attempt without replaying the
+            // shell exit write. This mirrors the timeout dialog's wait action.
+            shutdown_windows += 1;
+            shutdown_deadline = Instant::now() + GRACEFUL_SHUTDOWN_WINDOW;
+        }
+        let Some(exit_status) = exit_status else {
+            if let Some(error) = exit_write_error {
+                return Err(format!(
+                    "exit real smoke shell '{shell}' failed before the shell remained alive: {error}; output tail:\n{}",
+                    output_tail(&output)
+                ));
+            }
+            return Err(format!(
+                "shell '{shell}' did not exit inside the shared {:?} shutdown window; output tail:\n{}",
+                GRACEFUL_SHUTDOWN_WINDOW,
+                output_tail(&output)
+            ));
+        };
+
+        drop(master);
+        let reader_result = loop {
+            let remaining = shutdown_deadline.saturating_duration_since(Instant::now());
+            match reader_finished_rx.recv_timeout(remaining) {
+                Ok(result) => break result,
+                Err(mpsc::RecvTimeoutError::Timeout)
+                    if shutdown_windows < REAL_SMOKE_MAX_SHUTDOWN_WINDOWS =>
+                {
+                    shutdown_windows += 1;
+                    shutdown_deadline = Instant::now() + GRACEFUL_SHUTDOWN_WINDOW;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(format!(
+                        "PTY reader did not observe EOF after {shutdown_windows} shutdown windows"
+                    ));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("real smoke PTY reader completion channel closed".to_string());
+                }
+            }
+        };
+        drop(writer_guard);
+        reader_result.map_err(|error| format!("real smoke PTY reader failed: {error}"))?;
+        let remaining = alive_pids(&provider_pids);
+        if !remaining.is_empty() {
+            return Err(format!(
+                "provider '{command}' left observed processes alive after PTY EOF: {remaining:?}"
+            ));
+        }
+
+        child.disarm();
+        println!(
+            "real graceful shutdown smoke passed: provider={command} profile={profile:?} root_pid={root_pid} provider_pids={provider_pids:?} shell_status={exit_status} windows={shutdown_windows} elapsed={:?}",
+            shutdown_started.elapsed()
+        );
+        Ok(())
+    }
 
     #[test]
     fn provider_profiles_use_documented_exit_sequences() {
         assert_eq!(
             provider_exit_writes(GracefulShutdownProfile::Claude),
-            &[b"/exit\r".as_slice()]
+            &[b"/exit".as_slice(), b"\r".as_slice()]
         );
         assert_eq!(
             provider_exit_writes(GracefulShutdownProfile::Codex),
-            &[b"/exit\r".as_slice()]
+            &[b"/exit".as_slice(), b"\r".as_slice()]
         );
         assert_eq!(
             provider_exit_writes(GracefulShutdownProfile::Opencode),
-            &[b"/exit\r".as_slice()]
+            &[b"/exit".as_slice(), b"\r".as_slice()]
         );
         assert_eq!(
             provider_exit_writes(GracefulShutdownProfile::Gemini),
-            &[b"/quit\r".as_slice()]
+            &[b"/quit".as_slice(), b"\r".as_slice()]
         );
         assert_eq!(
             provider_exit_writes(GracefulShutdownProfile::Kimi),
@@ -525,11 +1011,11 @@ mod tests {
         );
         assert_eq!(
             provider_exit_writes(GracefulShutdownProfile::Grok),
-            &[b"/exit\r".as_slice()]
+            &[b"/exit".as_slice(), b"\r".as_slice()]
         );
         assert_eq!(
             provider_exit_writes(GracefulShutdownProfile::Generic),
-            &[&[0x04]]
+            &[&[0x04], &[0x04]]
         );
     }
 
@@ -550,6 +1036,34 @@ mod tests {
         assert_eq!(attempt.stage(), GracefulShutdownStage::AgentExit);
         attempt.shell_exit_sent = true;
         assert_eq!(attempt.stage(), GracefulShutdownStage::ShellExit);
+    }
+
+    #[test]
+    fn empty_agent_snapshot_skips_every_remaining_provider_write() {
+        let mut attempt =
+            ShutdownAttempt::new("attempt-1".to_string(), GracefulShutdownProfile::Kimi);
+        let write_count = provider_exit_writes(attempt.profile).len();
+
+        attempt.observe_agent_descendants(&HashSet::new(), write_count);
+
+        assert!(attempt.interrupt_sent);
+        assert_eq!(attempt.agent_exit_writes_sent, write_count);
+        assert_eq!(attempt.stage(), GracefulShutdownStage::AgentExit);
+    }
+
+    #[test]
+    fn live_agent_snapshot_tracks_process_without_advancing_shutdown() {
+        let mut attempt =
+            ShutdownAttempt::new("attempt-1".to_string(), GracefulShutdownProfile::Kimi);
+        let current = HashSet::from([41, 42]);
+        let write_count = provider_exit_writes(attempt.profile).len();
+
+        attempt.observe_agent_descendants(&current, write_count);
+
+        assert_eq!(attempt.tracked_descendants, current);
+        assert!(!attempt.interrupt_sent);
+        assert_eq!(attempt.agent_exit_writes_sent, 0);
+        assert_eq!(attempt.stage(), GracefulShutdownStage::Interrupt);
     }
 
     #[test]
@@ -627,5 +1141,11 @@ mod tests {
         );
         assert!(slot.attempt.lock().expect("lock attempt").is_none());
         forget(id);
+    }
+
+    #[test]
+    #[ignore = "requires an installed, authenticated interactive Provider CLI"]
+    fn real_provider_exits_before_shell_and_pty_eof() {
+        run_real_provider_smoke().expect("real Provider graceful shutdown smoke");
     }
 }

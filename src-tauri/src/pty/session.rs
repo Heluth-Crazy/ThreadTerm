@@ -231,7 +231,7 @@ pub(super) struct PtyInputRequest {
 /// All interior-mutable fields are protected by Mutex so the struct is Sync.
 pub(super) struct PtySession {
     pub(super) input_tx: mpsc::Sender<PtyInputRequest>,
-    pub(super) master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
+    pub(super) master: Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>,
     pub(super) child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     pub(super) _working_dir: String,
     pub(super) state: RwLock<SessionState>,
@@ -251,6 +251,23 @@ pub(super) struct PtySession {
     pub(super) last_size: Mutex<(u16, u16)>,
     pub(super) suppress_output_activity_until: Mutex<Option<Instant>>,
     pub(super) killed: AtomicBool,
+}
+
+/// Release the PTY owner after the direct shell has exited. On Windows,
+/// ConPTY keeps the cloned output pipe open until the pseudo-console owner is
+/// dropped, so waiting for reader EOF before releasing this handle deadlocks
+/// session cleanup.
+pub(super) fn close_master(session: &PtySession, id: &str) -> Result<bool, String> {
+    let master = session
+        .master
+        .lock()
+        .map_err(|error| format!("Failed to lock PTY master for '{id}': {error}"))?
+        .take();
+    let Some(master) = master else {
+        return Ok(false);
+    };
+    drop(master);
+    Ok(true)
 }
 
 // ── Event payload (sibling needs to emit it) ────────────────────────────────

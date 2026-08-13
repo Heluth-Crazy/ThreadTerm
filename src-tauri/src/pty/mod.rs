@@ -172,7 +172,7 @@ pub async fn pty_create(
 
     let session = Arc::new(PtySession {
         input_tx,
-        master: Mutex::new(pair.master),
+        master: Mutex::new(Some(pair.master)),
         child: Mutex::new(child),
         _working_dir: working_dir,
         state: RwLock::new(SessionState::Idle),
@@ -316,6 +316,9 @@ pub async fn pty_resize(id: String, rows: u16, cols: u16) -> Result<(), String> 
         .master
         .lock()
         .map_err(|e| format!("Failed to lock PTY master: {e}"))?;
+    let master = master
+        .as_ref()
+        .ok_or_else(|| format!("PTY session '{id}' is closing"))?;
 
     master
         .resize(PtySize {
