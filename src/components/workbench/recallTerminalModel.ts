@@ -2,6 +2,7 @@ import type { BranchRow } from '../../lib/tauri-bridge';
 import {
   effectiveWorktreePath,
   normalizeComparablePath,
+  projectDisplayName,
   samePath,
   worktreeDisplayLabel,
 } from '../../lib/worktreePaths';
@@ -32,7 +33,7 @@ export function buildRecallProjectOptions(
   for (const card of cards) {
     const key = normalizeComparablePath(card.projectPath);
     if (!byPath.has(key)) {
-      byPath.set(key, { path: card.projectPath, name: card.projectName });
+      byPath.set(key, { path: card.projectPath, name: projectDisplayName(card) });
     }
   }
   return Array.from(byPath.values()).sort(

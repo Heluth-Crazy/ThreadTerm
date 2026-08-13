@@ -108,6 +108,8 @@ export interface TerminalCard {
   ptyId: string;
   projectPath: string;
   projectName: string;
+  /** Stable directory-level label. Historical session cards may use projectName as their card title. */
+  projectLabel?: string;
   worktreePath?: string;
   /** Human-readable branch/worktree label when the card belongs to a branch view. */
   branchLabel?: string;

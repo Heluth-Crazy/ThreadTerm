@@ -146,6 +146,27 @@ describe('StatsPanel', () => {
     expect(screen.getByText(/cache read 325/)).toBeInTheDocument();
   });
 
+  it('keeps all-history trend bars visible by compacting long daily series', () => {
+    const dashboard = makeDashboard();
+    dashboard.trends = Array.from({ length: 365 }, (_, index) => ({
+      periodStart: 1_700_000_000 + index * 86_400,
+      requestCount: 1,
+      successCount: 1,
+      totalTokens: 10,
+      realTotalTokens: 10,
+      costUsd: index === 364 ? 1 : 0,
+    }));
+    useStatsStore.setState({ dashboard });
+
+    render(<StatsPanel onClose={vi.fn()} />);
+
+    const bars = screen.getAllByTestId('stats-trend-bar');
+    expect(bars.length).toBeGreaterThan(1);
+    expect(bars.length).toBeLessThanOrEqual(48);
+    expect(bars.every((bar) => bar.classList.contains('min-w-[2px]'))).toBe(true);
+    expect(bars.at(-1)).toHaveStyle({ height: '100%' });
+  });
+
   it('queries persisted usage without scanning when scoped to OpenCode', async () => {
     render(<StatsPanel onClose={vi.fn()} />);
 

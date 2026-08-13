@@ -142,6 +142,7 @@ describe('terminalStore — card lifecycle', () => {
     expect(card).toMatchObject({
       ptyId: 'codex-session-1',
       projectName: 'app',
+      projectLabel: 'app',
       projectPath: '/repo/app',
       terminalType: 'codex',
       providerSessionState: 'bound',
@@ -226,12 +227,14 @@ describe('terminalStore — card lifecycle', () => {
           providerSessionState: 'bound',
           status: 'idle',
           projectName: 'Build UI',
+          projectLabel: 'app',
         }),
         expect.objectContaining({
           terminalType: 'gemini',
           providerSessionId: 'gem-1',
           providerSessionState: 'bound',
           status: 'idle',
+          projectLabel: 'gemini',
         }),
       ]),
     );
@@ -796,7 +799,7 @@ describe('terminalStore — persistence shape contract', () => {
 
     const persisted = readPersistedState();
     expect(Object.keys(persisted.state ?? {}).sort()).toEqual(PERSISTED_TOP_LEVEL_KEYS);
-    expect(persisted.version).toBe(20);
+    expect(persisted.version).toBe(21);
   });
 
   it('persists each card with a stable key set', () => {
@@ -920,6 +923,47 @@ describe('terminalStore — persistence shape contract', () => {
     );
   });
 
+  it('migrates historical session titles into a separate directory-level project label', async () => {
+    const now = 1_700_000_000_000;
+    localStorage.removeItem('threadterm-terminal-store');
+    localStorage.setItem(
+      'threadterm-terminal-store',
+      JSON.stringify({
+        version: 20,
+        state: {
+          cards: [{
+            id: 'legacy-card',
+            ptyId: 'codex-session-1',
+            projectPath: 'C:\\repo\\actual-project',
+            projectName: 'Historical session title',
+            terminalType: 'codex',
+            providerSessionId: 'codex-session-1',
+            providerSessionState: 'bound',
+            providerSessionBoundAt: now,
+            status: 'idle',
+            createdAt: now,
+            lastActivity: now,
+            lastOutput: '',
+            lastReplyPreview: '',
+            messageCount: 0,
+            events: [],
+            unread: false,
+          }],
+          archivedCards: [],
+          notifications: [],
+        },
+      }),
+    );
+
+    resetStore();
+    await useTerminalStore.persist.rehydrate();
+
+    expect(useTerminalStore.getState().cards[0]).toMatchObject({
+      projectName: 'Historical session title',
+      projectLabel: 'actual-project',
+    });
+  });
+
   it('restores a large current-version workspace without losing card output', async () => {
     localStorage.removeItem('threadterm-terminal-store');
     const cardIds: string[] = [];
@@ -947,7 +991,7 @@ describe('terminalStore — persistence shape contract', () => {
     expect(restoredCards.map((card) => card.id)).toEqual(cardIds);
     expect(restoredCards[0]?.lastOutput).toContain('card-0:');
     expect(restoredCards.at(-1)?.lastOutput).toContain('card-179:');
-    expect(persisted.version).toBe(20);
+    expect(persisted.version).toBe(21);
   });
 });
 

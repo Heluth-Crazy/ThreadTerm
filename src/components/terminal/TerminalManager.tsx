@@ -52,7 +52,11 @@ import {
   isTauriEnv,
   mobileBridge,
 } from '../../lib/tauri-bridge';
-import { cardMatchesWorktree, samePath } from '../../lib/worktreePaths';
+import {
+  cardMatchesWorktree,
+  projectDisplayName,
+  samePath,
+} from '../../lib/worktreePaths';
 import { clearProjectBranchCache } from './useProjectBranches';
 import { clearProjectWorktreeCache } from './useProjectWorktrees';
 import { useRightSurfaceStack, type RightSurface } from './useRightSurfaceStack';
@@ -147,7 +151,7 @@ export function TerminalManager() {
     const card =
       cards.find((c) => c.projectPath === selectedProjectPath) ??
       archivedCards.find((c) => c.projectPath === selectedProjectPath);
-    return card?.projectName ?? selectedProjectPath;
+    return card ? projectDisplayName(card) : selectedProjectPath;
   }, [archivedCards, cards, selectedProjectPath]);
 
   const selectedProjectArchivedCards = useMemo(() => {
@@ -402,17 +406,23 @@ export function TerminalManager() {
   // The desktop primary view is the sole authority for which main surface is
   // visible. Workspace loading/session state never covers another page by
   // itself.
-  const workspaceShellVisible =
-    primaryView === 'workspace' && !mobileViewActive;
   const requestedWorkspaceRoot = selectedWorktreePath || selectedProjectPath;
+  const workspaceShellVisible =
+    primaryView === 'workspace' && !mobileViewActive && Boolean(requestedWorkspaceRoot);
   const workspaceReady = Boolean(
     selectedWorkspaceId &&
     requestedWorkspaceRoot &&
     samePath(workspaceRootPath, requestedWorkspaceRoot),
   );
+  useEffect(() => {
+    if (primaryView === 'workspace' && !requestedWorkspaceRoot) {
+      setPrimaryView('workbench');
+    }
+  }, [primaryView, requestedWorkspaceRoot]);
   const workspaceTabsVisible = workspaceShellVisible && workspaceReady;
   const workbenchVisible =
-    primaryPageVisible && primaryView === 'workbench';
+    primaryPageVisible &&
+    (primaryView === 'workbench' || (primaryView === 'workspace' && !requestedWorkspaceRoot));
   const terminalsVisible =
     primaryPageVisible && primaryView === 'terminals';
   // Shortcut hint / terminal chrome: active terminal tab, or the terminals grid.
@@ -779,8 +789,9 @@ export function TerminalManager() {
         const worktree = await git.worktrees.add(request.projectPath, request.branch);
         clearProjectBranchCache();
         clearProjectWorktreeCache();
+        const matchingCard = cards.find((card) => card.projectPath === request.projectPath);
         const projectName =
-          cards.find((card) => card.projectPath === request.projectPath)?.projectName ??
+          (matchingCard ? projectDisplayName(matchingCard) : null) ??
           selectedProjectName ??
           pathBasename(request.projectPath);
         const id = createCard({
@@ -817,7 +828,7 @@ export function TerminalManager() {
   );
 
   const recentProjects = useMemo(
-    () => cards.map((c) => ({ path: c.projectPath, name: c.projectName })),
+    () => cards.map((c) => ({ path: c.projectPath, name: projectDisplayName(c) })),
     [cards],
   );
   const workbenchScopeLabel = selectedProjectName

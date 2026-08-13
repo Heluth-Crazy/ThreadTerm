@@ -50,6 +50,7 @@ import {
   cardMatchesWorktree,
   parsePendingWorktreePath,
   pathBasename,
+  projectDisplayName,
 } from '../../lib/worktreePaths';
 
 interface PendingWorktreeCreateRequest {
@@ -205,7 +206,7 @@ export function CardGrid({
   const selectedProjectLabel = useMemo(() => {
     if (!selectedProjectPath) return null;
     const c = cards.find((x) => x.projectPath === selectedProjectPath);
-    return c?.projectName ?? pathBasename(selectedProjectPath);
+    return c ? projectDisplayName(c) : pathBasename(selectedProjectPath);
   }, [cards, selectedProjectPath]);
 
   const pendingWorktreeSelection = useMemo(

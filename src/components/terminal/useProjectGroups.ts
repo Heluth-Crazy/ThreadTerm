@@ -13,6 +13,7 @@
 import { useMemo } from 'react';
 import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard, TerminalStatus } from '../../types/terminal';
+import { projectDisplayName } from '../../lib/worktreePaths';
 
 export interface ProjectGroup {
   path: string;
@@ -35,7 +36,7 @@ export function groupCardsByProject(cards: TerminalCard[]): ProjectGroup[] {
     } else {
       byPath.set(card.projectPath, {
         path: card.projectPath,
-        name: card.projectName,
+        name: projectDisplayName(card),
         cards: [card],
         unreadCount: card.unread ? 1 : 0,
         lastActivity: card.lastActivity,

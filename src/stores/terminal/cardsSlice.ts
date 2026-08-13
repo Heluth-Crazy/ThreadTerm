@@ -18,6 +18,7 @@ import {
   effectiveWorktreePath,
   isPendingWorktreePath,
   pathBasename,
+  projectDisplayName,
   samePath,
 } from '../../lib/worktreePaths';
 import {
@@ -174,8 +175,8 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
             ),
           ),
       );
-      const projectNames = new Map(
-        knownCards.map((card) => [card.projectPath, card.projectName]),
+      const projectLabels = new Map(
+        knownCards.map((card) => [card.projectPath, projectDisplayName(card)]),
       );
       const cards = [...state.cards];
       let projectCardOrder = state.projectCardOrder ?? {};
@@ -214,16 +215,17 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
 
         const now = Date.now();
         const hint = session.projectNameHint?.trim();
+        const projectLabel =
+          projectLabels.get(session.projectPath) ?? pathBasename(session.projectPath);
         const projectName =
-          (hint && hint.length > 0 && hint.length <= 80 ? hint : null) ??
-          projectNames.get(session.projectPath) ??
-          pathBasename(session.projectPath);
+          (hint && hint.length > 0 && hint.length <= 80 ? hint : null) ?? projectLabel;
         const id = uid();
         cards.push({
           id,
           ptyId: session.id,
           projectPath: session.projectPath,
           projectName,
+          projectLabel,
           terminalType: session.provider,
           providerSessionId: session.id,
           providerSessionState: 'bound',
@@ -248,7 +250,7 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
         });
         projectCardOrder = prependProjectCardOrder(projectCardOrder, session.projectPath, id);
         activeKeys.add(key);
-        projectNames.set(session.projectPath, projectName);
+        projectLabels.set(session.projectPath, projectLabel);
         imported += 1;
         results.push({
           id: session.id,

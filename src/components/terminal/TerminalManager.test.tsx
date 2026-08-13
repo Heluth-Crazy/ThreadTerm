@@ -953,6 +953,8 @@ describe('TerminalManager shortcut hint layout', () => {
     expect(nativeDialogMocks.confirmDialog).not.toHaveBeenCalled();
     expect(useTerminalStore.getState().cards.some((card) => card.id === cardId)).toBe(false);
     expect(screen.getAllByRole('button', { name: 'README.md' }).length).toBeGreaterThan(0);
+    expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workspace');
+    expect(screen.queryByTestId('workspace-scope-loading')).not.toBeInTheDocument();
   });
 
   it('archives a terminal without deleting shared file tabs', async () => {
@@ -984,12 +986,18 @@ describe('TerminalManager shortcut hint layout', () => {
   });
 
   it('removes a clean card without prompting', async () => {
-    const cardId = useTerminalStore.getState().createCard({
+    const store = useTerminalStore.getState();
+    const cardId = store.createCard({
       projectName: 'repo',
       projectPath: '/tmp/repo',
       terminalType: 'shell',
     });
+    store.focusCard(cardId);
     render(<TerminalManager />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workspace');
+    });
 
     let removed = false;
     await act(async () => {
@@ -999,6 +1007,10 @@ describe('TerminalManager shortcut hint layout', () => {
     expect(removed).toBe(true);
     expect(nativeDialogMocks.confirmDialog).not.toHaveBeenCalled();
     expect(useTerminalStore.getState().cards).toHaveLength(0);
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workbench');
+    });
+    expect(screen.queryByTestId('workspace-scope-loading')).not.toBeInTheDocument();
   });
 
   it('mobile close ends the terminal and keeps the shared file draft', async () => {

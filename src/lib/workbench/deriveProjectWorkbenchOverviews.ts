@@ -1,4 +1,5 @@
 import type { TerminalCard } from '../../types/terminal';
+import { projectDisplayName } from '../worktreePaths';
 import { deriveWorkbenchSummary } from './deriveAttentionItems';
 import type {
   AttentionItem,
@@ -29,7 +30,7 @@ export function deriveProjectWorkbenchOverviews(
     const summary = deriveWorkbenchSummary(projectCards, projectAttention);
     return {
       projectPath,
-      projectName: projectCards[0]?.projectName || projectPath,
+      projectName: projectCards[0] ? projectDisplayName(projectCards[0]) : projectPath,
       followedCount: projectCards.filter((card) => followedIds.has(card.id))
         .length,
       runningCount: projectCards.filter((card) => card.status === 'running')

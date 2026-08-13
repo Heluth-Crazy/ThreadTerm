@@ -57,4 +57,16 @@ describe('groupCardsByProject', () => {
     const a = groups[0];
     expect(Array.from(a.statuses).sort()).toEqual(['running', 'waiting']);
   });
+
+  it('uses a stable project label instead of a historical session card title', () => {
+    const groups = groupCardsByProject([
+      mkCard({
+        projectPath: 'C:\\repo\\actual-project',
+        projectName: 'Historical session title',
+        projectLabel: 'actual-project',
+      }),
+    ]);
+
+    expect(groups[0].name).toBe('actual-project');
+  });
 });

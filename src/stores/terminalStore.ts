@@ -42,6 +42,8 @@ import {
   parsePersistedTerminalLaunchConfiguration,
   type TerminalLaunchConfiguration,
 } from '../lib/terminalConfiguration';
+import { pathBasename } from '../lib/worktreePaths';
+import type { TerminalCard } from '../types/terminal';
 
 type PersistedTerminalState = Partial<
   Pick<
@@ -79,6 +81,28 @@ function compactPendingTerminalConfigurations(
     if (configuration) pending[cardId] = configuration;
   }
   return pending;
+}
+
+function isLegacyCatalogImportedCard(card: TerminalCard): boolean {
+  return Boolean(
+    card.providerSessionId &&
+      card.providerSessionState === 'bound' &&
+      card.ptyId === card.providerSessionId &&
+      card.providerSessionBoundAt === card.createdAt,
+  );
+}
+
+function repairLegacyImportedProjectLabels<T extends TerminalCard>(
+  cards: T[],
+  projectLabels: ReadonlyMap<string, string>,
+): T[] {
+  return cards.map((card) => {
+    if (card.projectLabel?.trim() || !isLegacyCatalogImportedCard(card)) return card;
+    return {
+      ...card,
+      projectLabel: projectLabels.get(card.projectPath) ?? pathBasename(card.projectPath),
+    };
+  });
 }
 
 export {
@@ -151,7 +175,7 @@ export const useTerminalStore = create<TerminalStore>()(
         // AI Supervisor v0.1 (PRD D3) — master switch persisted; default OFF.
         supervisorEnabled: state.supervisorEnabled,
       }),
-      version: 20,
+      version: 21,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         const nextState = { ...state } as Partial<TerminalStore> & Record<string, unknown>;
@@ -185,9 +209,22 @@ export const useTerminalStore = create<TerminalStore>()(
           };
           return migrateLegacyKimiGrokCard(base);
         });
+        const projectLabels = new Map<string, string>();
+        for (const card of [...(cards ?? []), ...archivedCards]) {
+          if (isLegacyCatalogImportedCard(card) || projectLabels.has(card.projectPath)) continue;
+          projectLabels.set(
+            card.projectPath,
+            card.projectLabel?.trim() || card.projectName.trim() || pathBasename(card.projectPath),
+          );
+        }
+        const repairedCards = repairLegacyImportedProjectLabels(cards ?? [], projectLabels);
+        const repairedArchivedCards = repairLegacyImportedProjectLabels(
+          archivedCards,
+          projectLabels,
+        );
         const validCardIds = new Set([
-          ...(cards ?? []).map((card) => card.id),
-          ...archivedCards.map((card) => card.id),
+          ...repairedCards.map((card) => card.id),
+          ...repairedArchivedCards.map((card) => card.id),
         ]);
         return {
           ...nextState,
@@ -197,19 +234,19 @@ export const useTerminalStore = create<TerminalStore>()(
           // v16 — focus-mode session dock metadata.
           recentlyViewedCardIds: compactRecentCardIds(
             state.recentlyViewedCardIds,
-            cards ?? [],
+            repairedCards,
           ),
           dockPinned: state.dockPinned ?? false,
           // v12 — project-scoped manual card order. Empty means existing
           // cards are projected in their current store order until the user
           // creates or drags a card in a project view.
-          projectCardOrder: compactProjectCardOrder(state.projectCardOrder, cards ?? []),
+          projectCardOrder: compactProjectCardOrder(state.projectCardOrder, repairedCards),
           // v15 — branch/worktree card filtering state.
           selectedWorktreePath: state.selectedWorktreePath ?? null,
           selectedWorktreeLabel: state.selectedWorktreeLabel ?? null,
           // v13 — archived cards live outside the active card list so existing
           // views and bridge snapshots keep showing only active cards.
-          archivedCards,
+          archivedCards: repairedArchivedCards,
           // v17 — desktop pet removed; only the OS-notification preference
           //       survives, as a boolean. Read the new field when present,
           //       else fall back to the legacy petConfig (notificationMode
@@ -221,7 +258,7 @@ export const useTerminalStore = create<TerminalStore>()(
             state.pendingTerminalConfigurations,
             validCardIds,
           ),
-          cards,
+          cards: repairedCards,
         };
       },
     },

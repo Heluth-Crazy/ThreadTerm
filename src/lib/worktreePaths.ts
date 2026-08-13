@@ -10,6 +10,7 @@ export interface PendingWorktreeSelection {
 export interface WorktreePathCard {
   projectPath: string;
   projectName?: string;
+  projectLabel?: string;
   worktreePath?: string | null;
   branchLabel?: string | null;
 }
@@ -52,6 +53,10 @@ export function effectiveWorktreePath(card: WorktreePathCard): string {
 export function pathBasename(path: string): string {
   const trimmed = path.replace(/[\\/]+$/, '');
   return trimmed.split(/[\\/]/).pop() || trimmed || path;
+}
+
+export function projectDisplayName(card: WorktreePathCard): string {
+  return card.projectLabel?.trim() || card.projectName?.trim() || pathBasename(card.projectPath);
 }
 
 export function worktreeDisplayLabel(card: WorktreePathCard): string {

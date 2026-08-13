@@ -316,7 +316,8 @@ function DashboardContent({
   if (overview.requestCount === 0) {
     return <p className="text-xs text-muted-foreground">{t('stats.empty', { defaultValue: 'No usage in this window.' })}</p>;
   }
-  const maxTrend = Math.max(...dashboard.trends.map((point) => point.costUsd), 0.0001);
+  const displayTrends = compactTrendPoints(dashboard.trends);
+  const maxTrend = Math.max(...displayTrends.map((point) => point.costUsd), 0.0001);
   return (
     <>
       <div className="mb-4 rounded-lg border border-border bg-foreground/5 p-3">
@@ -341,16 +342,17 @@ function DashboardContent({
         </div>
       </div>
 
-      {dashboard.trends.length > 0 && (
+      {displayTrends.length > 0 && (
         <div className="mb-4">
           <h3 className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t('stats.trend', { defaultValue: 'Trend' })}</h3>
-          <div className="flex h-20 items-end gap-1 rounded-md border border-border/60 bg-foreground/[0.03] px-2 py-2">
-            {dashboard.trends.map((point) => (
+          <div className="flex h-20 items-end gap-px rounded-md border border-border/60 bg-foreground/[0.03] px-2 py-2">
+            {displayTrends.map((point) => (
               <div
                 key={point.periodStart}
-                className="min-w-0 flex-1 rounded-t bg-primary/60"
+                data-testid="stats-trend-bar"
+                className="min-w-[2px] flex-1 rounded-t bg-primary/60"
                 style={{ height: `${Math.max(4, (point.costUsd / maxTrend) * 100)}%` }}
-                title={`${new Date(point.periodStart * 1000).toLocaleDateString()} · ${formatCost(point.costUsd)}`}
+                title={`${formatTrendPeriod(point.periodStart, point.periodEnd)} · ${formatCost(point.costUsd)}`}
               />
             ))}
           </div>
@@ -402,6 +404,40 @@ function DashboardContent({
       <PricingEditor />
     </>
   );
+}
+
+const MAX_DISPLAY_TREND_BARS = 48;
+
+function compactTrendPoints(
+  trends: StatsDashboard['trends'],
+): Array<StatsDashboard['trends'][number] & { periodEnd: number }> {
+  if (trends.length === 0) return [];
+  const bucketSize = Math.max(1, Math.ceil(trends.length / MAX_DISPLAY_TREND_BARS));
+  const points: Array<StatsDashboard['trends'][number] & { periodEnd: number }> = [];
+  for (let index = 0; index < trends.length; index += bucketSize) {
+    const bucket = trends.slice(index, index + bucketSize);
+    const first = bucket[0];
+    const last = bucket[bucket.length - 1];
+    points.push({
+      periodStart: first.periodStart,
+      periodEnd: last.periodStart,
+      requestCount: bucket.reduce((sum, point) => sum + point.requestCount, 0),
+      successCount: bucket.reduce((sum, point) => sum + point.successCount, 0),
+      totalTokens: bucket.reduce((sum, point) => sum + point.totalTokens, 0),
+      realTotalTokens: bucket.reduce((sum, point) => sum + point.realTotalTokens, 0),
+      costUsd: bucket.reduce(
+        (sum, point) => sum + (Number.isFinite(point.costUsd) ? point.costUsd : 0),
+        0,
+      ),
+    });
+  }
+  return points;
+}
+
+function formatTrendPeriod(periodStart: number, periodEnd: number): string {
+  const start = new Date(periodStart * 1000).toLocaleDateString();
+  if (periodStart === periodEnd) return start;
+  return `${start} – ${new Date(periodEnd * 1000).toLocaleDateString()}`;
 }
 
 function PricingEditor() {
