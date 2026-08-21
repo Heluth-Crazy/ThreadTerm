@@ -1177,7 +1177,7 @@ export function TerminalManager() {
 
         {workspaceShellVisible && !workspaceReady && (
           <div
-            className="absolute inset-0 z-[1] bg-background"
+            className="absolute inset-0 z-[1] bg-background/20"
             data-testid="workspace-scope-loading"
           >
             {workspaceError && !workspaceLoading ? (
@@ -1209,7 +1209,7 @@ export function TerminalManager() {
 
         {/* Workspace home — no terminal required */}
         {workspaceShellVisible && workspaceReady && homeActive && (
-          <div className="absolute inset-0 z-[1] bg-background">
+          <div className="absolute inset-0 z-[1] bg-background/20">
             <WorkspaceHome
               workspace={workspace}
               workspaceCards={workspaceCards}

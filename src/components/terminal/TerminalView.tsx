@@ -272,7 +272,7 @@ export const TerminalView = memo(function TerminalView({
   };
 
   return (
-    <div className="flex h-full w-full flex-col bg-background">
+    <div className="flex h-full w-full flex-col bg-background/20">
       {/* Header */}
       <div className="flex h-15 shrink-0 items-center justify-between gap-2 border-b border-border px-2 py-2 sm:gap-3 sm:px-3">
         <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
