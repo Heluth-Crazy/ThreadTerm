@@ -706,12 +706,12 @@ describe('TerminalManager shortcut hint layout', () => {
     bridgeMocks.isTauriEnv.mockReturnValue(true);
     const store = useTerminalStore.getState();
     const providers = [
-      { id: 'claude', icon: '.lucide-bot' },
-      { id: 'codex', icon: '.lucide-code-xml' },
-      { id: 'opencode', icon: '.lucide-square-terminal' },
-      { id: 'gemini', icon: '.lucide-sparkles' },
-      { id: 'kimi', icon: '.lucide-moon' },
-      { id: 'grok', icon: '.lucide-zap' },
+      { id: 'claude', icon: '[data-agent-icon="claude"]' },
+      { id: 'codex', icon: '[data-agent-icon="codex"]' },
+      { id: 'opencode', icon: '[data-agent-icon="opencode"]' },
+      { id: 'gemini', icon: '[data-agent-icon="gemini"]' },
+      { id: 'kimi', icon: '[data-agent-icon="kimi"]' },
+      { id: 'grok', icon: '[data-agent-icon="grok"]' },
     ] as const;
     const cardIds = providers.map(({ id }) => {
       const cardId = store.createCard({

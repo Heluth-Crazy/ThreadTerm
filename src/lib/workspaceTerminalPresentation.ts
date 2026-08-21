@@ -1,7 +1,6 @@
 import type { TFunction } from 'i18next';
-import type { LucideIcon } from 'lucide-react';
 import { deriveAgentSessionTitle } from './agentSessionTitle';
-import { getTerminalTypeMeta } from '../components/terminal/terminalTypeMeta';
+import { getTerminalTypeMeta, type TerminalTypeMeta } from '../components/terminal/terminalTypeMeta';
 import type { AgentSessionSummary } from '../types/agentSession';
 import type { TerminalCard, TerminalStatus } from '../types/terminal';
 
@@ -9,7 +8,7 @@ export interface WorkspaceTerminalPresentation {
   primaryTitle: string;
   secondaryTitle?: string;
   typeLabel: string;
-  Icon: LucideIcon;
+  Icon: TerminalTypeMeta['Icon'];
   statusLabel: string;
   detailLabels: string[];
   /** Identity details without type/status/activity (branch, intent). */

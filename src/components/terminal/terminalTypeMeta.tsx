@@ -3,24 +3,27 @@
  * and default launch command. Centralised here so the card, switcher and
  * create dialog all stay in sync.
  */
+import type { ComponentType } from 'react';
 import {
-  Bot,
-  Code2,
   Container,
   FileCode,
-  Moon,
   Package,
-  SquareTerminal,
-  Sparkles,
   Terminal as TerminalIcon,
-  Zap,
-  type LucideIcon,
 } from 'lucide-react';
 import type { TerminalType } from '../../types/terminal';
+import {
+  ClaudeBrandIcon,
+  CodexBrandIcon,
+  GeminiBrandIcon,
+  GrokBrandIcon,
+  KimiBrandIcon,
+  OpencodeBrandIcon,
+} from './agentIcons';
 
 export interface TerminalTypeMeta {
   label: string;
-  Icon: LucideIcon;
+  /** Lucide generic icon or inline brand-SVG component; rendered via <Icon className=... />. */
+  Icon: ComponentType<{ className?: string }>;
   /** Tailwind colour accent (text-*). */
   accent: string;
   /** Default command to launch after PTY spawn. Empty string = no command. */
@@ -36,37 +39,37 @@ export const terminalTypeMeta: Record<TerminalType, TerminalTypeMeta> = {
   },
   claude: {
     label: 'Claude',
-    Icon: Bot,
+    Icon: ClaudeBrandIcon,
     accent: 'text-amber-500',
     defaultCommand: 'claude',
   },
   codex: {
     label: 'Codex',
-    Icon: Code2,
+    Icon: CodexBrandIcon,
     accent: 'text-emerald-500',
     defaultCommand: 'codex',
   },
   opencode: {
     label: 'OpenCode',
-    Icon: SquareTerminal,
+    Icon: OpencodeBrandIcon,
     accent: 'text-indigo-500',
     defaultCommand: 'opencode',
   },
   gemini: {
     label: 'Gemini',
-    Icon: Sparkles,
+    Icon: GeminiBrandIcon,
     accent: 'text-sky-500',
     defaultCommand: 'gemini',
   },
   kimi: {
     label: 'Kimi Code',
-    Icon: Moon,
+    Icon: KimiBrandIcon,
     accent: 'text-fuchsia-500',
     defaultCommand: 'kimi',
   },
   grok: {
     label: 'Grok Build',
-    Icon: Zap,
+    Icon: GrokBrandIcon,
     accent: 'text-orange-500',
     defaultCommand: 'grok',
   },
