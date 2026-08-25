@@ -33,6 +33,10 @@ interface ManagedStateWrite {
   imported: boolean;
 }
 
+interface ManagedStateSetOutcome {
+  reconciled: boolean;
+}
+
 interface ManagedStateChanged {
   key: string;
   sourceId: string;
@@ -142,6 +146,23 @@ export function writeManagedStateItem(
     valueCache.set(key, value);
     return;
   }
+
+  if (key === MANAGED_STATE_KEYS.terminal) {
+    return tauriInvoke<ManagedStateSetOutcome>('managed_state_set_v2', {
+      key,
+      value,
+      sourceId,
+    }).then(({ reconciled }) => {
+      if (reconciled) {
+        // Backend reconciliation may have merged this write with a newer
+        // authoritative card. Let the next read pull that value.
+        valueCache.delete(key);
+      } else {
+        valueCache.set(key, value);
+      }
+    });
+  }
+
   return tauriInvoke<void>('managed_state_set', { key, value, sourceId }).then(() => {
     valueCache.set(key, value);
   });

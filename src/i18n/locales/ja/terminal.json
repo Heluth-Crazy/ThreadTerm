@@ -155,6 +155,8 @@
       "openResult": "結果を表示",
       "openTerminal": "ターミナルを開く",
       "details": "詳細",
+      "ignore": "無視",
+      "ignoreHint": "開かずに無視する",
       "viewAllTerminals": "すべてのターミナルを表示",
       "addToWorkbench": "ワークベンチに追加",
       "removeFromWorkbench": "ワークベンチから外す",
@@ -297,11 +299,23 @@
     "projectFilter": "プロジェクトディレクトリ",
     "allProjects": "すべてのプロジェクト",
     "unassigned": "未割り当て",
-    "status": { "all": "すべての状態", "success": "成功", "failure": "失敗" },
-    "source": { "all": "すべてのソース", "proxy": "プロキシ", "session": "セッションログ" },
+    "status": {
+      "all": "すべての状態",
+      "success": "成功",
+      "failure": "失敗"
+    },
+    "source": {
+      "all": "すべてのソース",
+      "proxy": "プロキシ",
+      "session": "セッションログ"
+    },
     "loadingMore": "読み込み中…",
     "loadMore": "さらに読み込む",
-    "proxyActive": "ループバック統計プロキシが有効"
+    "proxyActive": "ループバック統計プロキシが有効",
+    "loadingDashboard": "保存された統計を読み込み中…",
+    "unpriced": "未価格",
+    "rangeLabel": "期間",
+    "scopeLabel": "スコープ"
   },
   "workspace": {
     "viewSwitchLabel": "プロジェクト表示",
@@ -418,6 +432,10 @@
     "optional": "任意",
     "initialCommandPlaceholder": "例: npm run build",
     "defaultCommandHint": "空のままにすると種類の既定コマンドを使用します",
+    "executionMode": "実行モード",
+    "interactiveMode": "インタラクティブ shell",
+    "oneShotMode": "ワンショット（実行して終了）",
+    "oneShotHint": "プロセス作成時にコマンドを実行し、最終出力を保持します。",
     "cancel": "キャンセル",
     "create": "作成"
   },
@@ -449,7 +467,10 @@
       "error": "エラー概要",
       "shell": "ターミナル出力",
       "more": "+{{count}} 行をフィルター"
-    }
+    },
+    "activeFor": "アクティブ {{time}}",
+    "messageCountTitle_one": "{{count}}件のメッセージ",
+    "messageCountTitle_other": "{{count}}件のメッセージ"
   },
   "aiSession": {
     "missingCli": "{{cli}} CLI が見つかりません",
@@ -508,7 +529,17 @@
     "elicitation": "MCP 入力要求",
     "toolCall": "Tool 呼び出し",
     "permissionApproval": "権限承認",
-    "request": "Codex リクエスト"
+    "request": "Codex リクエスト",
+    "ready": "準備完了",
+    "connectingShort": "接続中",
+    "slashButton": "コマンド",
+    "skillButton": "スキル",
+    "loadingSkills": "スキルを読み込み中…",
+    "noMenuMatches": "一致するコマンドやスキルがありません。",
+    "commandCompactDesc": "現在の会話コンテキストを圧縮します。",
+    "commandGoalDesc": "アクティブな Codex スレッドのゴールを設定します。",
+    "commandStopDesc": "実行中のターンを中断します。",
+    "commandSkillDesc": "このスキルを次のメッセージに添付します。"
   },
   "claudeChat": {
     "title": "Claude Chat",
@@ -594,12 +625,29 @@
     "cardClosed": "（カードは閉じられたかアーカイブ済み）",
     "systemSource": "システム",
     "dismiss": "閉じる",
+    "targetUnavailable": "この通知の対象は利用できなくなりました。",
+    "targetNavigationFailed": "通知の対象を開けませんでした。未読のままです。",
+    "markTerminalRead": "このターミナルの通知を既読にする",
+    "presentationLabel": "ターミナル通知",
+    "presentationEmptySummary": "このターミナルに対応が必要です。",
+    "presentationOpen": "通知を開く：{{title}}",
+    "presentationClose": "通知を閉じる",
+    "kind": {
+      "waiting": "入力待ち",
+      "completed": "完了",
+      "failed": "失敗",
+      "attention": "要確認"
+    },
     "replyReadyBodyFallback": "出力を確認するにはクリック",
     "replyReadyTitle": "✓ {{project}} が返信しました",
     "replyReadyEvent": "返信準備完了",
     "processExited": "プロセス終了、コード {{code}}",
     "processCompleted": "プロセス完了",
     "sessionClosed": "セッション終了",
+    "oneShotCompletedTitle": "✓ {{project}} が完了しました",
+    "oneShotFailedTitle": "✕ {{project}} が失敗しました",
+    "oneShotCompletedEvent": "ワンショット完了",
+    "oneShotFailedEvent": "ワンショット失敗",
     "autoRestartLimitTitle": "{{project}} の自動再起動を停止しました",
     "autoRestartLimitBody": "{{max}} 回のリトライ上限に達しました。",
     "autoRestartLimitEvent": "自動再起動が {{max}} 回の上限に達しました",
@@ -733,6 +781,14 @@
     "scrollToBottom": "最下部へ戻る",
     "newLinesBelow": "新しい出力 {{count}} 行"
   },
+  "oneShot": {
+    "queued": "ワンショットをキューしました",
+    "running": "ワンショット実行中",
+    "completed": "ワンショット完了",
+    "failed": "ワンショット失敗",
+    "interrupted": "ワンショット中断",
+    "runAgain": "もう一度実行"
+  },
   "status": {
     "idle": "待機中",
     "running": "実行中",
@@ -758,7 +814,9 @@
       "change-intent": "意図変更",
       "toggle-overlay": "オーバーレイ切替",
       "settings": "設定"
-    }
+    },
+    "emptyTitle": "一致する項目がありません",
+    "emptyDescription": "別のコマンドまたは検索語をお試しください。"
   },
   "types": {
     "shell": "Shell",
@@ -807,5 +865,11 @@
       "firstPrompt": "最初のプロンプト",
       "providerTitle": "Provider タイトル"
     }
+  },
+  "chatWindow": {
+    "range": "全{{total}}件中 {{start}}–{{end}}件を表示",
+    "older": "前へ",
+    "newer": "次へ",
+    "latest": "最新"
   }
 }

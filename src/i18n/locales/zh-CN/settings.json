@@ -54,7 +54,8 @@
         "rose-pine": "玫瑰与松木色调，终端前景对比更清楚。",
         "kanagawa": "水墨感配色，适配会话卡片和终端阅读。",
         "solarized-contrast": "Solarized 灵感配色，增强前景文字对比度。"
-      }
+      },
+      "deleteTitle": "删除主题"
     }
   },
   "close": "关闭设置",
@@ -209,11 +210,35 @@
     "sending": "发送中…",
     "sent": "已发送到系统通知服务。如果没有看到横幅，请检查系统通知设置或使用正式包验证。",
     "failed": "发送失败，详情请查看开发日志。",
+    "clicked": "测试通知已点击，已打开选中的终端。",
+    "degraded": "已通过备用通知通道发送，可能无法可靠响应点击。",
+    "disabledBySystem": "应用或操作系统已禁用系统通知。",
+    "reason": {
+      "identityUnavailable": "Windows 通知身份不可用。",
+      "disabledForApplication": "已为 ThreadTerm 禁用通知。",
+      "disabledForUser": "此 Windows 用户已禁用通知。",
+      "disabledByGroupPolicy": "Windows 策略已禁用通知。",
+      "disabledByManifest": "应用清单已禁用通知。",
+      "nativeShowFailed": "Windows 无法显示原生通知。",
+      "pluginFallbackFailed": "备用通知通道也发送失败。"
+    },
+    "identitySource": {
+      "nsisShortcut": "身份：已安装应用快捷方式",
+      "runtimeRegistration": "身份：运行时注册"
+    },
     "testTitle": "ThreadTerm 测试通知",
     "testBody": "如果你看到这条通知，说明系统通知链路可用。",
     "preference": {
       "title": "系统通知开关",
       "description": "允许 ThreadTerm 针对会话事件发送系统通知。",
+      "osLabel": "系统通知",
+      "osDescription": "通过操作系统发送完成、提醒和失败事件。",
+      "previewLabel": "在系统通知中显示摘要",
+      "previewDescription": "保留来源标签，并包含经过清理的简短任务摘要。",
+      "compatibilityLabel": "Agent CLI 兼容完成检测",
+      "compatibilityDescription": "在没有结构化完成事件时，使用受保护的提供商提示和空闲检测。",
+      "privacyNote": "启用摘要后，系统通知正文只包含经过清理的终端输出；诊断日志不会记录任务内容。",
+      "reliabilityNote": "系统通知被阻止、降级或关闭时，应用内通知账本仍是权威记录。",
       "enabled": "已启用",
       "disabled": "已停用"
     }

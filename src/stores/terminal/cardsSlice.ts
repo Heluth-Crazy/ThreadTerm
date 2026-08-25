@@ -64,6 +64,19 @@ function compactPendingTerminalConfigurations(
   );
 }
 
+function nextStartupProjectionEpoch(currentEpoch: string): string {
+  const first = uuid().replace(/-/g, '');
+  if (first !== currentEpoch) return first;
+
+  const retry = uuid().replace(/-/g, '');
+  if (retry !== currentEpoch) return retry;
+
+  // Keep the final fallback opaque and lowercase-hex even when a test/runtime
+  // UUID source is unexpectedly deterministic.
+  const finalNibble = first.endsWith('0') ? '1' : '0';
+  return `${first.slice(0, -1)}${finalNibble}`;
+}
+
 export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => {
   const outputSanitizers = new Map<
     string,
@@ -87,6 +100,13 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
   createCard: (options) => {
     const id = uid();
     const now = Date.now();
+    // A one-shot process must have a concrete command at creation time. Keep
+    // malformed/legacy callers interactive rather than creating a generation
+    // that Rust cannot execute.
+    const executionMode =
+      options.executionMode === 'oneShot' && options.command?.trim()
+        ? 'oneShot'
+        : 'interactive';
     const card: TerminalCard = {
       id,
       ptyId: id, // 1:1 by default; Rust side uses the same id
@@ -96,6 +116,11 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
       branchLabel: options.branchLabel,
       terminalType: options.terminalType,
       command: options.command,
+      executionMode,
+      oneShotRun:
+        executionMode === 'oneShot'
+          ? { generation: 1, state: 'queued', requestedAt: now }
+          : undefined,
       providerSessionId:
         options.terminalType === 'claude' || options.terminalType === 'grok'
           ? uuid()
@@ -274,8 +299,6 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
       const focusedCardId = state.focusedCardId === id ? null : state.focusedCardId;
       const lastActiveCardId =
         state.lastActiveCardId === id ? null : state.lastActiveCardId;
-      // also drop notifications targeting this card
-      const notifications = state.notifications.filter((n) => n.cardId !== id);
       // if the removed card was the last one for its project and the project
       // was selected, fall back to "All"
       let selectedProjectPath = state.selectedProjectPath;
@@ -313,7 +336,6 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
         cards,
         focusedCardId,
         lastActiveCardId,
-        notifications,
         selectedProjectPath,
         selectedWorktreePath,
         selectedWorktreeLabel,
@@ -351,7 +373,6 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
         state.pendingFocusCardId === id ? null : state.pendingFocusCardId;
       const pendingLocateCardId =
         state.pendingLocateCardId === id ? null : state.pendingLocateCardId;
-      const notifications = state.notifications.filter((n) => n.cardId !== id);
       const pinnedCardIds = state.pinnedCardIds.filter((pinnedId) => pinnedId !== id);
       const recentlyViewedCardIds = state.recentlyViewedCardIds.filter(
         (recentId) => recentId !== id,
@@ -370,7 +391,6 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
         lastActiveCardId,
         pendingFocusCardId,
         pendingLocateCardId,
-        notifications,
         pinnedCardIds,
         recentlyViewedCardIds,
         projectCardOrder,
@@ -505,6 +525,25 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
           }
         : undefined;
 
+      const startupSideEffects = existing.startupSideEffects;
+      const reconfiguredStartupSideEffects = startupSideEffects
+        ? {
+            schema: 1 as const,
+            projectionEpoch: nextStartupProjectionEpoch(
+              startupSideEffects.projectionEpoch,
+            ),
+            parentProjectionEpoch: startupSideEffects.projectionEpoch,
+            applied: startupSideEffects.applied.map((record) =>
+              record.kind === 'recordUserSubmit'
+                ? { ...record, timeline: 'retired' as const }
+                : { ...record, binding: 'retired' as const },
+            ),
+          }
+        : undefined;
+      const retiredStartupTokens = startupSideEffects
+        ? new Set(startupSideEffects.applied.map((record) => record.token))
+        : undefined;
+
       const configuredCard = appendEvent(
         {
           ...existing,
@@ -539,6 +578,16 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
           lastReplyPreview: '',
           unread: false,
           autoRestart,
+          ...(reconfiguredStartupSideEffects
+            ? {
+                startupSideEffects: reconfiguredStartupSideEffects,
+                events: existing.events.filter(
+                  (event) =>
+                    !event.startupEffectToken
+                    || !retiredStartupTokens?.has(event.startupEffectToken),
+                ),
+              }
+            : {}),
         },
         {
           at: now,
@@ -573,11 +622,6 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
 
       return {
         cards,
-        notifications: state.notifications.map((notification) =>
-          notification.cardId === id && !notification.read
-            ? { ...notification, read: true }
-            : notification,
-        ),
         projectCardOrder,
         pendingTerminalConfigurations,
         ...(workspaceChanged
@@ -665,6 +709,107 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
     });
   },
 
+  markOneShotRunRunning: (id, generation) => {
+    let changed = false;
+    set((state) => {
+      const idx = state.cards.findIndex((card) => card.id === id);
+      const card = idx >= 0 ? state.cards[idx] : undefined;
+      if (
+        !card ||
+        card.executionMode !== 'oneShot' ||
+        card.oneShotRun?.generation !== generation ||
+        card.oneShotRun.state !== 'queued'
+      ) {
+        return state;
+      }
+      changed = true;
+      const cards = [...state.cards];
+      cards[idx] = {
+        ...card,
+        status: 'running',
+        lastActivity: Date.now(),
+        oneShotRun: { ...card.oneShotRun, state: 'running' },
+      };
+      return { cards };
+    });
+    return changed;
+  },
+
+  finishOneShotRun: (id, input) => {
+    let changed = false;
+    set((state) => {
+      const idx = state.cards.findIndex((card) => card.id === id);
+      const card = idx >= 0 ? state.cards[idx] : undefined;
+      if (
+        !card ||
+        card.executionMode !== 'oneShot' ||
+        card.oneShotRun?.generation !== input.generation ||
+        (card.oneShotRun.state !== 'queued' && card.oneShotRun.state !== 'running')
+      ) {
+        return state;
+      }
+      changed = true;
+      const cards = [...state.cards];
+      const finishedAt = input.finishedAt ?? Date.now();
+      cards[idx] = {
+        ...card,
+        status:
+          input.state === 'completed'
+            ? 'completed'
+            : input.state === 'failed'
+              ? 'failed'
+              : 'idle',
+        oneShotRun: {
+          ...card.oneShotRun,
+          state: input.state,
+          finishedAt,
+          ...(input.exitCode === undefined ? { exitCode: undefined } : { exitCode: input.exitCode }),
+        },
+        lastActivity: finishedAt,
+      };
+      return { cards };
+    });
+    return changed;
+  },
+
+  runOneShotAgain: (id, now = Date.now()) => {
+    let nextGeneration: number | null = null;
+    set((state) => {
+      const idx = state.cards.findIndex((card) => card.id === id);
+      const card = idx >= 0 ? state.cards[idx] : undefined;
+      const run = card?.oneShotRun;
+      if (
+        !card ||
+        card.executionMode !== 'oneShot' ||
+        !card.command?.trim() ||
+        !run ||
+        (run.state !== 'completed' && run.state !== 'failed' && run.state !== 'interrupted')
+      ) {
+        return state;
+      }
+      nextGeneration = run.generation + 1;
+      const cards = [...state.cards];
+      cards[idx] = {
+        ...card,
+        // Rotating the PTY id makes late events from the previous generation
+        // unresolvable, so a completed run can never overwrite a newer run.
+        ptyId: `${id}-oneshot-${nextGeneration}-${uid()}`,
+        status: 'idle',
+        lastActivity: now,
+        lastOutput: '',
+        lastReplyPreview: '',
+        unread: false,
+        oneShotRun: {
+          generation: nextGeneration,
+          state: 'queued',
+          requestedAt: now,
+        },
+      };
+      return { cards };
+    });
+    return nextGeneration;
+  },
+
   updateCardReplyPreview: (id, preview) =>
     set((state) => {
       const idx = state.cards.findIndex((c) => c.id === id);
@@ -680,7 +825,15 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
       const idx = state.cards.findIndex((c) => c.id === id);
       if (idx === -1) return state;
       const cards = [...state.cards];
-      cards[idx] = appendEvent(cards[idx], { at: event.at ?? Date.now(), kind: event.kind, summary: event.summary });
+      cards[idx] = appendEvent(cards[idx], {
+        at: event.at ?? Date.now(),
+        kind: event.kind,
+        summary: event.summary,
+        ...(event.summaryKey === undefined ? {} : { summaryKey: event.summaryKey }),
+        ...(event.startupEffectToken === undefined
+          ? {}
+          : { startupEffectToken: event.startupEffectToken }),
+      });
       return { cards };
     }),
 
@@ -732,12 +885,7 @@ export const createCardsSlice: TerminalSliceCreator<CardsSlice> = (set, get) => 
         changed = true;
         return { ...card, unread: false };
       });
-      const notifications = state.notifications.map((notification) => {
-        if (notification.cardId !== id || notification.read) return notification;
-        changed = true;
-        return { ...notification, read: true };
-      });
-      return changed ? { cards, notifications } : state;
+      return changed ? { cards } : state;
     }),
 
   markProviderSessionBound: (id, providerSessionId) =>

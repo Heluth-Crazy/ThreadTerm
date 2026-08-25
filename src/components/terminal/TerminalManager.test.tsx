@@ -5,6 +5,8 @@ import { __resetMetadataCacheForTests } from '../../stores/agentSessionMetadataC
 import { clearWorkspaceLoadCaches } from '../files/workspaceLoadCache';
 import { localWorkspaceAuthority } from '../../lib/workspace/localAuthority';
 import { TerminalManager } from './TerminalManager';
+import { resolveNotificationTarget } from './notificationTarget';
+import { NotificationPresentationProvider } from './NotificationPresentationProvider';
 
 const settingsWindowMocks = vi.hoisted(() => ({
   openSettingsWindow: vi.fn().mockResolvedValue(true),
@@ -229,6 +231,7 @@ function resetStore() {
     notificationCentreOpen: false,
     pendingFocusCardId: null,
     pendingLocateCardId: null,
+    pendingArchivedNotificationTarget: null,
     recentlyViewedCardIds: [],
     dockPinned: false,
     selectedWorktreePath: null,
@@ -320,6 +323,36 @@ describe('TerminalManager shortcut hint layout', () => {
     bridgeMocks.ptyKill.mockResolvedValue(undefined);
     bridgeMocks.resolveMetadata.mockResolvedValue([]);
     nativeDialogMocks.confirmDialog.mockResolvedValue(false);
+  });
+
+  it('anchors presentation in the main content column before any right rail sibling', async () => {
+    render(
+      <NotificationPresentationProvider>
+        <TerminalManager />
+      </NotificationPresentationProvider>,
+    );
+    act(() => {
+      useTerminalStore.getState().pushNotification({
+        cardId: 'card-1',
+        at: Date.now(),
+        kind: 'completed',
+        title: 'anchored event',
+        body: 'main content only',
+      });
+    });
+
+    const mainColumn = await screen.findByTestId('terminal-main-content-column');
+    const stack = await screen.findByTestId('notification-toast-stack');
+    expect(mainColumn).toHaveClass('relative');
+    expect(mainColumn).toContainElement(stack);
+    expect(mainColumn.parentElement?.querySelector(':scope > aside')).toBeNull();
+
+    fireEvent.click(screen.getByTitle(/用量|Token/));
+    await waitFor(() => {
+      expect(mainColumn.parentElement?.querySelector(':scope > aside')).toBeInTheDocument();
+    });
+    const rightRail = mainColumn.parentElement?.querySelector(':scope > aside');
+    expect(rightRail).not.toContainElement(stack);
   });
 
   it('opens the native settings window from the toolbar gear', () => {
@@ -676,6 +709,63 @@ describe('TerminalManager shortcut hint layout', () => {
       expect(useTerminalStore.getState().cards.map((card) => card.id)).toEqual([id]);
     });
     expect(useTerminalStore.getState().archivedCards).toHaveLength(0);
+  });
+
+  it('opens an archived notification target, pulses it, and never restores it', async () => {
+    const store = useTerminalStore.getState();
+    const cardId = store.createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'codex',
+    });
+    const notification = store.pushNotification({
+      cardId,
+      kind: 'completed',
+      title: 'done',
+      body: '',
+    });
+    store.archiveCard(cardId);
+
+    render(<TerminalManager />);
+    const resultPromise = resolveNotificationTarget(notification.id, cardId);
+
+    const archivedItem = await screen.findByTestId(`archived-card-${cardId}`);
+    await waitFor(() => expect(archivedItem).toHaveClass('animate-pulse'));
+    const result = await resultPromise;
+
+    expect(result).toMatchObject({ kind: 'archived', accepted: true });
+    expect(useTerminalStore.getState().cards).toHaveLength(0);
+    expect(useTerminalStore.getState().archivedCards.map((card) => card.id)).toEqual([cardId]);
+    expect(useTerminalStore.getState().notifications[0]?.read).toBe(true);
+    expect(useTerminalStore.getState().pendingArchivedNotificationTarget).toBeNull();
+  });
+
+  it('cancels an archived target that disappears before location and keeps it unread', async () => {
+    const store = useTerminalStore.getState();
+    const cardId = store.createCard({
+      projectName: 'repo',
+      projectPath: '/tmp/repo',
+      terminalType: 'codex',
+    });
+    const notification = store.pushNotification({
+      cardId,
+      kind: 'completed',
+      title: 'disappearing archive target',
+      body: '',
+    });
+    store.archiveCard(cardId);
+
+    render(<TerminalManager />);
+    let resultPromise!: ReturnType<typeof resolveNotificationTarget>;
+    act(() => {
+      resultPromise = resolveNotificationTarget(notification.id, cardId);
+      useTerminalStore.setState({ archivedCards: [] });
+    });
+
+    const result = await resultPromise;
+    expect(result.kind).toBe('error');
+    expect(useTerminalStore.getState().notifications[0]?.read).toBe(false);
+    expect(useTerminalStore.getState().pendingArchivedNotificationTarget).toBeNull();
   });
 
   it('opens selected workspace files in a main-content tab while keeping the terminal mounted', async () => {

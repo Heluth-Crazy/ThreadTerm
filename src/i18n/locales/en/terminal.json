@@ -155,6 +155,8 @@
       "openResult": "View result",
       "openTerminal": "Open terminal",
       "details": "Details",
+      "ignore": "Ignore",
+      "ignoreHint": "Ignore without opening",
       "viewAllTerminals": "View all terminals",
       "addToWorkbench": "Add to Workbench",
       "removeFromWorkbench": "Remove from Workbench",
@@ -297,11 +299,23 @@
     "projectFilter": "Project directory",
     "allProjects": "All projects",
     "unassigned": "Unassigned",
-    "status": { "all": "All status", "success": "Success", "failure": "Failure" },
-    "source": { "all": "All sources", "proxy": "Proxy", "session": "Session log" },
+    "status": {
+      "all": "All status",
+      "success": "Success",
+      "failure": "Failure"
+    },
+    "source": {
+      "all": "All sources",
+      "proxy": "Proxy",
+      "session": "Session log"
+    },
     "loadingMore": "Loading…",
     "loadMore": "Load more",
-    "proxyActive": "Loopback stats proxy active"
+    "proxyActive": "Loopback stats proxy active",
+    "loadingDashboard": "Loading saved statistics…",
+    "unpriced": "unpriced",
+    "rangeLabel": "Range",
+    "scopeLabel": "Scope"
   },
   "workspace": {
     "viewSwitchLabel": "Project view",
@@ -418,6 +432,10 @@
     "optional": "optional",
     "initialCommandPlaceholder": "e.g. npm run build",
     "defaultCommandHint": "Leave empty to use the type's default command",
+    "executionMode": "Execution mode",
+    "interactiveMode": "Interactive shell",
+    "oneShotMode": "One-shot (run and exit)",
+    "oneShotHint": "Runs the command at process creation and keeps the final output.",
     "cancel": "Cancel",
     "create": "Create"
   },
@@ -449,7 +467,10 @@
       "error": "Error summary",
       "shell": "Terminal output",
       "more": "+{{count}} filtered"
-    }
+    },
+    "activeFor": "Active {{time}}",
+    "messageCountTitle_one": "{{count}} message",
+    "messageCountTitle_other": "{{count}} messages"
   },
   "aiSession": {
     "missingCli": "{{cli}} CLI missing",
@@ -508,7 +529,17 @@
     "elicitation": "MCP elicitation",
     "toolCall": "Tool call",
     "permissionApproval": "Permission approval",
-    "request": "Codex request"
+    "request": "Codex request",
+    "ready": "Ready",
+    "connectingShort": "Connecting",
+    "slashButton": "Commands",
+    "skillButton": "Skills",
+    "loadingSkills": "Loading skills…",
+    "noMenuMatches": "No matching commands or skills.",
+    "commandCompactDesc": "Compact the current conversation context.",
+    "commandGoalDesc": "Set a goal for the active Codex thread.",
+    "commandStopDesc": "Interrupt the running turn.",
+    "commandSkillDesc": "Attach this skill to the next message."
   },
   "claudeChat": {
     "title": "Claude Chat",
@@ -594,12 +625,29 @@
     "cardClosed": "(card closed or archived)",
     "systemSource": "System",
     "dismiss": "Dismiss",
+    "targetUnavailable": "This notification target is no longer available.",
+    "targetNavigationFailed": "Could not open this notification target. It remains unread.",
+    "markTerminalRead": "Mark this terminal's notifications as read",
+    "presentationLabel": "Terminal notifications",
+    "presentationEmptySummary": "This terminal needs your attention.",
+    "presentationOpen": "Open notification: {{title}}",
+    "presentationClose": "Dismiss notification",
+    "kind": {
+      "waiting": "waiting",
+      "completed": "completed",
+      "failed": "failed",
+      "attention": "attention"
+    },
     "replyReadyBodyFallback": "Tap to review the output",
     "replyReadyTitle": "✓ {{project}} replied",
     "replyReadyEvent": "reply ready",
     "processExited": "process exited with code {{code}}",
     "processCompleted": "process completed",
     "sessionClosed": "session closed",
+    "oneShotCompletedTitle": "✓ {{project}} completed",
+    "oneShotFailedTitle": "✕ {{project}} failed",
+    "oneShotCompletedEvent": "one-shot completed",
+    "oneShotFailedEvent": "one-shot failed",
     "autoRestartLimitTitle": "{{project}} auto restart stopped",
     "autoRestartLimitBody": "Retry limit reached after {{max}} attempts.",
     "autoRestartLimitEvent": "auto restart limit reached after {{max}} attempts",
@@ -733,6 +781,14 @@
     "scrollToBottom": "Scroll to bottom",
     "newLinesBelow": "{{count}} new lines"
   },
+  "oneShot": {
+    "queued": "One-shot queued",
+    "running": "One-shot running",
+    "completed": "One-shot completed",
+    "failed": "One-shot failed",
+    "interrupted": "One-shot interrupted",
+    "runAgain": "Run again"
+  },
   "status": {
     "idle": "Idle",
     "running": "Running",
@@ -758,7 +814,9 @@
       "change-intent": "Change intent",
       "toggle-overlay": "Toggle overlay",
       "settings": "Settings"
-    }
+    },
+    "emptyTitle": "No matches found",
+    "emptyDescription": "Try a different command or search term."
   },
   "types": {
     "shell": "Shell",
@@ -807,5 +865,11 @@
       "firstPrompt": "First prompt",
       "providerTitle": "Provider title"
     }
+  },
+  "chatWindow": {
+    "range": "Showing {{start}}–{{end}} of {{total}}",
+    "older": "Earlier",
+    "newer": "Newer",
+    "latest": "Latest"
   }
 }

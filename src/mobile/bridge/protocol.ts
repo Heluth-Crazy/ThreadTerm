@@ -51,6 +51,8 @@ export interface NotificationEntry {
     family: string;
     episodeKey?: string | null;
     fingerprint?: string | null;
+    signalSource?: string | null;
+    confidence?: string | null;
   } | null;
 }
 

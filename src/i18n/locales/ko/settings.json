@@ -54,7 +54,8 @@
         "rose-pine": "차분한 장미와 소나무 톤에 더 선명한 터미널 대비를 더했습니다.",
         "kanagawa": "수묵화 느낌의 색상을 세션 카드와 터미널에 맞게 조정했습니다.",
         "solarized-contrast": "Solarized에서 영감을 받은 색상에 더 강한 전경 대비를 적용했습니다."
-      }
+      },
+      "deleteTitle": "테마 삭제"
     }
   },
   "close": "설정 닫기",
@@ -209,11 +210,35 @@
     "sending": "보내는 중…",
     "sent": "OS 알림 서비스로 보냈습니다. 배너가 보이지 않으면 집중 모드를 확인하거나 패키징된 빌드로 검증하세요.",
     "failed": "보내기에 실패했습니다. 개발 로그를 확인하세요.",
+    "clicked": "테스트 알림을 클릭했고 선택한 터미널을 열었습니다.",
+    "degraded": "대체 알림 채널로 전달했습니다. 클릭 활성화가 제공되지 않을 수 있습니다.",
+    "disabledBySystem": "앱 또는 운영 체제에서 시스템 알림이 비활성화되어 있습니다.",
+    "reason": {
+      "identityUnavailable": "Windows 알림 ID를 사용할 수 없습니다.",
+      "disabledForApplication": "ThreadTerm 알림이 비활성화되어 있습니다.",
+      "disabledForUser": "이 Windows 사용자의 알림이 비활성화되어 있습니다.",
+      "disabledByGroupPolicy": "Windows 정책으로 알림이 비활성화되어 있습니다.",
+      "disabledByManifest": "앱 매니페스트로 알림이 비활성화되어 있습니다.",
+      "nativeShowFailed": "Windows에서 네이티브 알림을 표시하지 못했습니다.",
+      "pluginFallbackFailed": "대체 알림 채널도 실패했습니다."
+    },
+    "identitySource": {
+      "nsisShortcut": "ID: 설치된 앱 바로 가기",
+      "runtimeRegistration": "ID: 런타임 등록"
+    },
     "testTitle": "ThreadTerm 테스트 알림",
     "testBody": "이 알림이 보이면 시스템 알림 경로가 작동 중입니다.",
     "preference": {
       "title": "알림 전송",
       "description": "세션 이벤트의 시스템 알림을 ThreadTerm에서 보내도록 허용합니다.",
+      "osLabel": "시스템 알림",
+      "osDescription": "완료, 주의, 실패 이벤트를 운영 체제를 통해 보냅니다.",
+      "previewLabel": "시스템 알림에 요약 표시",
+      "previewDescription": "출처 레이블을 유지하고 정리된 짧은 작업 요약을 포함합니다.",
+      "compatibilityLabel": "Agent CLI 호환 완료 감지",
+      "compatibilityDescription": "구조화된 완료 이벤트가 없을 때 보호된 공급자 프롬프트와 유휴 감지를 사용합니다.",
+      "privacyNote": "요약을 켜도 OS 알림 본문에는 정리된 터미널 출력만 포함되며 진단 로그에는 작업 내용이 기록되지 않습니다.",
+      "reliabilityNote": "시스템 알림이 차단, 저하 또는 닫혀도 앱 내 알림 장부가 권위 있는 기록으로 남습니다.",
       "enabled": "켜짐",
       "disabled": "꺼짐"
     }

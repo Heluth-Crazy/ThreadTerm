@@ -1,7 +1,8 @@
-import { Check, FolderGit2, SquareTerminal } from 'lucide-react';
+import { Check, FolderGit2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { worktreeDisplayLabel } from '../../lib/worktreePaths';
 import type { TerminalCard } from '../../types/terminal';
+import { getTerminalTypeMeta } from '../terminal/terminalTypeMeta';
 
 interface RecallTerminalListProps {
   cards: readonly TerminalCard[];
@@ -25,6 +26,8 @@ export function RecallTerminalList({
           {cards.map((card) => {
             const alreadyFollowed = followedCardIds.has(card.id);
             const selected = selectedCardIds.has(card.id);
+            const typeMeta = getTerminalTypeMeta(card.terminalType);
+            const TypeIcon = typeMeta.Icon;
             return (
               <label
                 key={card.id}
@@ -44,7 +47,7 @@ export function RecallTerminalList({
                   className="h-3.5 w-3.5 rounded border-border accent-primary"
                 />
                 <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-foreground/[0.05] text-muted-foreground">
-                  <SquareTerminal className="h-4 w-4" />
+                  <TypeIcon className={`h-4 w-4 ${typeMeta.accent}`} />
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="flex min-w-0 items-center gap-1.5">

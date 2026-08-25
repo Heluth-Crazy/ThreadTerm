@@ -1,4 +1,11 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ProjectOverviewGrid } from '../workbench/ProjectOverviewGrid';
 import { useWorkbenchStore } from '../../stores/workbenchStore';
@@ -205,6 +212,34 @@ describe('ProjectSidebar navigation and branch rows', () => {
     expect(disclosureColumns.every((column) => column.className.includes('w-4'))).toBe(true);
     expect(screen.getAllByTestId('sidebar-disclosure-placeholder')).toHaveLength(2);
     expect(screen.getAllByTestId('sidebar-disclosure-toggle')).toHaveLength(1);
+  });
+
+  it('locks horizontal list scrolling only while a project drag is active', async () => {
+    useTerminalStore.getState().createCard({
+      projectName: 'ThreadTerm',
+      projectPath: '/repo/threadterm',
+      terminalType: 'shell',
+    });
+
+    render(<ProjectSidebar />);
+    const projectList = screen.getByText('Project filter').closest('nav');
+    const dragHandle = screen.getByTestId('sidebar-project-drag-handle');
+    expect(projectList).not.toBeNull();
+
+    projectList!.scrollLeft = 12;
+    fireEvent.keyDown(dragHandle, { code: 'Space', key: ' ' });
+    projectList!.scrollLeft = 80;
+    projectList!.scrollTop = 40;
+    fireEvent.scroll(projectList!);
+    expect(projectList!.scrollLeft).toBe(12);
+    expect(projectList!.scrollTop).toBe(40);
+
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    fireEvent.keyDown(document, { code: 'Escape', key: 'Escape' });
+    await waitFor(() => expect(dragHandle).not.toHaveAttribute('aria-pressed', 'true'));
+    projectList!.scrollLeft = 80;
+    fireEvent.scroll(projectList!);
+    expect(projectList!.scrollLeft).toBe(80);
   });
 
   it('keeps the sidebar and Workbench project overview in one shared order', () => {

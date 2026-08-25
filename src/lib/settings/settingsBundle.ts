@@ -36,6 +36,8 @@ export interface SettingsBundleCustomThemesSection {
 
 export interface SettingsBundleTerminalSection {
   osNotificationsEnabled: boolean;
+  osNotificationPreviewEnabled: boolean;
+  agentCliCompatibilityCompletionEnabled: boolean;
 }
 
 export interface SettingsBundleOverlaySection {
@@ -113,6 +115,14 @@ function normalizeTerminalSettings(value: unknown): SettingsBundleTerminalSectio
   const record = isRecord(value) ? value : {};
   return {
     osNotificationsEnabled: readOsNotificationsEnabled(record),
+    osNotificationPreviewEnabled:
+      typeof record.osNotificationPreviewEnabled === 'boolean'
+        ? record.osNotificationPreviewEnabled
+        : true,
+    agentCliCompatibilityCompletionEnabled:
+      typeof record.agentCliCompatibilityCompletionEnabled === 'boolean'
+        ? record.agentCliCompatibilityCompletionEnabled
+        : true,
   };
 }
 
@@ -248,7 +258,9 @@ export function summarizeSettingsBundleSection(
     case 'terminal': {
       const section = bundle.sections.terminal;
       if (!section) return 'Not set';
-      return `notifications ${section.osNotificationsEnabled ? 'on' : 'off'}`;
+      return `notifications ${section.osNotificationsEnabled ? 'on' : 'off'}, preview ${
+        section.osNotificationPreviewEnabled ? 'on' : 'off'
+      }, Agent CLI compatibility ${section.agentCliCompatibilityCompletionEnabled ? 'on' : 'off'}`;
     }
     case 'overlay': {
       const section = bundle.sections.overlay;

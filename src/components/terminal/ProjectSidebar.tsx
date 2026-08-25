@@ -16,6 +16,7 @@ import {
   memo,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type KeyboardEvent,
@@ -161,6 +162,8 @@ export function ProjectSidebar({
   const pushNotification = useTerminalStore((s) => s.pushNotification);
 
   const [collapsed, setCollapsed] = useState(false);
+  const projectListRef = useRef<HTMLElement>(null);
+  const lockedProjectListScrollLeftRef = useRef<number | null>(null);
   const rail = isMobile ? false : collapsed || compact;
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -175,7 +178,34 @@ export function ProjectSidebar({
     reconcileProjectOrder(projectPaths);
   }, [projectPaths, reconcileProjectOrder]);
 
+  const handleProjectDragStart = () => {
+    lockedProjectListScrollLeftRef.current =
+      projectListRef.current?.scrollLeft ?? null;
+  };
+
+  const handleProjectListScroll = () => {
+    const lockedScrollLeft = lockedProjectListScrollLeftRef.current;
+    const projectList = projectListRef.current;
+    if (
+      lockedScrollLeft !== null
+      && projectList
+      && projectList.scrollLeft !== lockedScrollLeft
+    ) {
+      projectList.scrollLeft = lockedScrollLeft;
+    }
+  };
+
+  const releaseProjectListHorizontalScroll = () => {
+    const lockedScrollLeft = lockedProjectListScrollLeftRef.current;
+    const projectList = projectListRef.current;
+    if (lockedScrollLeft !== null && projectList) {
+      projectList.scrollLeft = lockedScrollLeft;
+    }
+    lockedProjectListScrollLeftRef.current = null;
+  };
+
   const handleProjectDragEnd = ({ active, over }: DragEndEvent) => {
+    releaseProjectListHorizontalScroll();
     if (!over || active.id === over.id) return;
     moveProject(String(active.id), String(over.id), projectPaths);
   };
@@ -324,7 +354,11 @@ export function ProjectSidebar({
         />
       </div>
 
-      <nav className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+      <nav
+        ref={projectListRef}
+        onScroll={handleProjectListScroll}
+        className="min-h-0 flex-1 overflow-y-auto px-2 py-2"
+      >
         {!rail && (
           <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
             {t('sidebar.projectFilter', { defaultValue: 'Project filter' })}
@@ -349,6 +383,8 @@ export function ProjectSidebar({
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
+          onDragStart={handleProjectDragStart}
+          onDragCancel={releaseProjectListHorizontalScroll}
           onDragEnd={handleProjectDragEnd}
         >
           <SortableContext

@@ -17,6 +17,12 @@ import type {
   StatsRange,
   StatsScope,
 } from '../types/stats';
+import type {
+  PtyCreateSessionV2Request,
+  PtyCreateSessionV2Result,
+  PtyStartupSnapshot,
+} from '../types/ptyStartup';
+import type { TerminalLaunchPhasePayload } from './terminalLaunchDiagnostics';
 
 /** Returns true when running inside the Tauri desktop webview. */
 export const isTauriEnv = (): boolean =>
@@ -50,6 +56,16 @@ export interface PtyOutputPayload {
   seq: number;
 }
 
+/**
+ * Optional process-at-creation launch contract.  The field is deliberately
+ * additive: older callers continue to create an interactive shell and keep
+ * the existing initial-command path.
+ */
+export interface PtyLaunchDescriptor {
+  executionMode: 'oneShot';
+  command: string;
+}
+
 export interface PtyAttachSnapshot {
   ptyId: string;
   data: string;
@@ -69,6 +85,8 @@ export interface AttentionRequiredEvent {
   /** Stable normalized matching line; absent for older backend builds. */
   fingerprint?: string;
 }
+
+export const PTY_LAUNCH_PHASE_EVENT = 'pty-launch-phase';
 
 export type GracefulShutdownProfile =
   | 'claude'
@@ -99,8 +117,64 @@ export const pty = {
     rows: number,
     cols: number,
     provider?: string,
-  ): Promise<string> =>
-    invoke<string>('pty_create', { id, workingDir, rows, cols, provider }),
+    launch?: PtyLaunchDescriptor,
+  ): Promise<string> => {
+    const payload: {
+      id: string;
+      workingDir: string;
+      rows: number;
+      cols: number;
+      provider?: string;
+      launch?: PtyLaunchDescriptor;
+    } = { id, workingDir, rows, cols, provider };
+    if (launch) payload.launch = launch;
+    return invoke<string>('pty_create', payload);
+  },
+
+  /**
+   * Instrumented create path. Kept separate from `create` so older renderer
+   * test doubles and integrations retain the original call shape while the
+   * desktop bridge can correlate Rust launch phases with one UI attempt.
+   */
+  createWithLaunchAttempt: (
+    id: string,
+    workingDir: string,
+    rows: number,
+    cols: number,
+    provider: string | undefined,
+    launchAttemptId: string,
+    launch?: PtyLaunchDescriptor,
+  ): Promise<string> => {
+    const payload: {
+      id: string;
+      workingDir: string;
+      rows: number;
+      cols: number;
+      provider: string | undefined;
+      launchAttemptId: string;
+      launch?: PtyLaunchDescriptor;
+    } = {
+      id,
+      workingDir,
+      rows,
+      cols,
+      provider,
+      launchAttemptId,
+    };
+    if (launch) payload.launch = launch;
+    return invoke<string>('pty_create', payload);
+  },
+
+  createSessionV2: (
+    request: PtyCreateSessionV2Request,
+  ): Promise<PtyCreateSessionV2Result> =>
+    invoke<PtyCreateSessionV2Result>('pty_create_session_v2', { request }),
+
+  getStartupState: (
+    ptyId: string,
+    generation: string,
+  ): Promise<PtyStartupSnapshot | null> =>
+    invoke<PtyStartupSnapshot | null>('pty_get_startup_state', { ptyId, generation }),
 
   input: (id: string, data: string): Promise<void> =>
     invoke<void>('pty_input', { id, data }),
@@ -155,8 +229,12 @@ export const pty = {
   onOutput: (cb: (payload: PtyOutputPayload) => void): Promise<() => void> =>
     listen<PtyOutputPayload>('pty-output', (e) => cb(e.payload)),
 
-  onExit: (cb: (payload: { id: string; code?: number | null }) => void): Promise<() => void> =>
-    listen<{ id: string; code?: number | null }>('pty-exit', (e) => cb(e.payload)),
+  onExit: (
+    cb: (payload: { id: string; code?: number | null; generation?: string }) => void,
+  ): Promise<() => void> =>
+    listen<{ id: string; code?: number | null; generation?: string }>('pty-exit', (e) =>
+      cb(e.payload),
+    ),
 
   onStateChanged: (
     cb: (payload: { ptyId: string; state: SessionState }) => void,
@@ -165,6 +243,14 @@ export const pty = {
 
   onAttentionRequired: (cb: (payload: AttentionRequiredEvent) => void): Promise<() => void> =>
     listen<AttentionRequiredEvent>('attention-required', (e) => cb(e.payload)),
+
+  onLaunchPhase: (
+    cb: (payload: TerminalLaunchPhasePayload) => void,
+  ): Promise<() => void> =>
+    listen<TerminalLaunchPhasePayload>(PTY_LAUNCH_PHASE_EVENT, (e) => cb(e.payload)),
+
+  onStartupState: (cb: (payload: PtyStartupSnapshot) => void): Promise<() => void> =>
+    listen<PtyStartupSnapshot>('pty-startup-state', (e) => cb(e.payload)),
 
 };
 export interface WorktreeInfo {

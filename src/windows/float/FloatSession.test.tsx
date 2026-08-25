@@ -15,10 +15,14 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('../../components/terminal/Shell', () => ({
-  default: ({ resumeLoading }: { resumeLoading?: boolean }) => (
+  default: ({ resumeLoading, providerStartup }: {
+    resumeLoading?: boolean;
+    providerStartup?: { kind: string; command: string };
+  }) => (
     <div
       data-testid="float-shell"
       data-resume-loading={String(Boolean(resumeLoading))}
+      data-provider-startup={providerStartup?.kind ?? 'none'}
     />
   ),
 }));
@@ -28,15 +32,12 @@ vi.mock('../../components/terminal/useValidatedProviderSessionLaunch', () => ({
     lifecycleCard: card,
     launch: {
       command: 'agent resume session-a',
+      provider: 'gemini',
       action: launchMock.action,
     },
     status: 'ready',
     retry: vi.fn(),
   }),
-}));
-
-vi.mock('../../components/terminal/useProviderSessionLifecycle', () => ({
-  useProviderSessionLifecycle: () => vi.fn(),
 }));
 
 vi.mock('../../stores/terminalStore', () => ({
@@ -95,6 +96,15 @@ describe('FloatSession history progress forwarding', () => {
     expect(screen.getByTestId('float-shell')).toHaveAttribute(
       'data-resume-loading',
       'false',
+    );
+  });
+
+  it('passes the validated Provider descriptor to Shell', () => {
+    render(<FloatSession card={CARD} />);
+
+    expect(screen.getByTestId('float-shell')).toHaveAttribute(
+      'data-provider-startup',
+      'provider',
     );
   });
 });

@@ -54,7 +54,8 @@
         "rose-pine": "Muted rose and pine tones with clearer terminal contrast.",
         "kanagawa": "Ink-wash colors adapted for session cards and terminals.",
         "solarized-contrast": "Solarized-inspired hues with stronger foreground contrast."
-      }
+      },
+      "deleteTitle": "Delete theme"
     }
   },
   "close": "Close settings",
@@ -209,11 +210,35 @@
     "sending": "Sending…",
     "sent": "Sent to the OS notification service. If no banner appears, check your system notification settings or verify with a packaged build.",
     "failed": "Send failed. Check the development logs for details.",
+    "clicked": "Test notification clicked; the selected terminal was opened.",
+    "degraded": "Delivered through the fallback notification channel. Activation may be unavailable.",
+    "disabledBySystem": "System notifications are disabled by the app or operating system.",
+    "reason": {
+      "identityUnavailable": "Windows notification identity is unavailable.",
+      "disabledForApplication": "Notifications are disabled for ThreadTerm.",
+      "disabledForUser": "Notifications are disabled in Windows for this user.",
+      "disabledByGroupPolicy": "Notifications are disabled by Windows policy.",
+      "disabledByManifest": "Notifications are disabled by the application manifest.",
+      "nativeShowFailed": "Windows could not show the native notification.",
+      "pluginFallbackFailed": "The fallback notification channel also failed."
+    },
+    "identitySource": {
+      "nsisShortcut": "Identity: installed app shortcut",
+      "runtimeRegistration": "Identity: runtime registration"
+    },
     "testTitle": "ThreadTerm test notification",
     "testBody": "If you see this notification, the system notification path is working.",
     "preference": {
       "title": "Notification delivery",
       "description": "Allow ThreadTerm to send system notifications for session events.",
+      "osLabel": "System notifications",
+      "osDescription": "Send completion, attention, and failure events through the operating system.",
+      "previewLabel": "Show summary in system notifications",
+      "previewDescription": "Include a sanitized, short task summary while retaining the source label.",
+      "compatibilityLabel": "Agent CLI compatibility completion",
+      "compatibilityDescription": "Use guarded provider prompts and idle detection when structured completion is unavailable.",
+      "privacyNote": "When summaries are enabled, only sanitized terminal output is included in the OS notification body; diagnostic logs never include task content.",
+      "reliabilityNote": "The in-app notification ledger remains authoritative when system delivery is blocked, degraded, or dismissed.",
       "enabled": "Enabled",
       "disabled": "Disabled"
     }

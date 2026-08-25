@@ -35,6 +35,8 @@ interface CreateTerminalOutputPipelineOptions {
   scrollTerminalToBottom: (shouldFocus?: boolean, shouldRefresh?: boolean) => void;
   scheduleNewOutputFlush: () => void;
   scheduleTerminalRefresh: () => void;
+  onTerminalWriteStarted?: () => void;
+  onTerminalWriteCompleted?: () => void;
   resumeLoadingObserverRef?: MutableRefObject<ResumeLoadingProgressObserver | null>;
 }
 
@@ -52,6 +54,8 @@ export function createTerminalOutputPipeline({
   scrollTerminalToBottom,
   scheduleNewOutputFlush,
   scheduleTerminalRefresh,
+  onTerminalWriteStarted,
+  onTerminalWriteCompleted,
   resumeLoadingObserverRef,
 }: CreateTerminalOutputPipelineOptions): OutputSequencer {
   const synchronizedRefreshGate = createSynchronizedFrameRefreshGate();
@@ -135,6 +139,9 @@ export function createTerminalOutputPipeline({
           synchronizedRefreshGate.isOpen(),
         );
       }
+      if (data) {
+        onTerminalWriteCompleted?.();
+      }
       ackWritten();
     };
 
@@ -158,6 +165,7 @@ export function createTerminalOutputPipeline({
         }
         const slice = data.slice(offset, offset + SNAPSHOT_RESTORE_CHUNK_CHARS);
         offset += SNAPSHOT_RESTORE_CHUNK_CHARS;
+        onTerminalWriteStarted?.();
         term.write(slice, writeNextSlice);
       };
       writeNextSlice();
@@ -166,6 +174,7 @@ export function createTerminalOutputPipeline({
       // inside those frames when history or composer height changes;
       // removing the clears leaves the previous layout underneath the
       // new one and makes prompt rows visibly jump between redraws.
+      onTerminalWriteStarted?.();
       term.write(data, finalize);
     }
   });

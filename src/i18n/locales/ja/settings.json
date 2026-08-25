@@ -54,7 +54,8 @@
         "rose-pine": "落ち着いたローズとパインの色調で、ターミナルの前景を読みやすくしています。",
         "kanagawa": "水墨画のような配色をセッションカードとターミナル向けに調整しました。",
         "solarized-contrast": "Solarized 風の色相に、より強い文字コントラストを加えたテーマです。"
-      }
+      },
+      "deleteTitle": "テーマを削除"
     }
   },
   "close": "設定を閉じる",
@@ -209,11 +210,35 @@
     "sending": "送信中…",
     "sent": "OS 通知サービスへ送信しました。バナーが表示されない場合はシステム通知設定を確認するか、正式ビルドで検証してください。",
     "failed": "送信に失敗しました。開発ログを確認してください。",
+    "clicked": "テスト通知をクリックしました。選択中のターミナルを開きました。",
+    "degraded": "代替通知経路で配信しました。クリックによる起動は保証されません。",
+    "disabledBySystem": "アプリまたは OS のシステム通知が無効です。",
+    "reason": {
+      "identityUnavailable": "Windows 通知 ID を利用できません。",
+      "disabledForApplication": "ThreadTerm の通知が無効です。",
+      "disabledForUser": "この Windows ユーザーの通知が無効です。",
+      "disabledByGroupPolicy": "Windows ポリシーによって通知が無効です。",
+      "disabledByManifest": "アプリ マニフェストによって通知が無効です。",
+      "nativeShowFailed": "Windows がネイティブ通知を表示できませんでした。",
+      "pluginFallbackFailed": "代替通知経路も失敗しました。"
+    },
+    "identitySource": {
+      "nsisShortcut": "ID: インストール済みアプリのショートカット",
+      "runtimeRegistration": "ID: ランタイム登録"
+    },
     "testTitle": "ThreadTerm テスト通知",
     "testBody": "この通知が表示されれば、システム通知経路は動作しています。",
     "preference": {
       "title": "通知の配信",
       "description": "セッションイベントのシステム通知を ThreadTerm に許可します。",
+      "osLabel": "システム通知",
+      "osDescription": "完了、注意、失敗イベントを OS 経由で送信します。",
+      "previewLabel": "システム通知に概要を表示",
+      "previewDescription": "送信元ラベルを残し、サニタイズした短いタスク概要を含めます。",
+      "compatibilityLabel": "Agent CLI 互換完了検出",
+      "compatibilityDescription": "構造化された完了イベントがない場合に、保護されたプロンプトとアイドル検出を使います。",
+      "privacyNote": "概要を有効にしても、OS 通知本文にはサニタイズ済みの端末出力だけが含まれ、診断ログにタスク内容は記録されません。",
+      "reliabilityNote": "OS 通知がブロック、低下、または閉じられても、アプリ内通知台帳が正しい記録です。",
       "enabled": "有効",
       "disabled": "無効"
     }

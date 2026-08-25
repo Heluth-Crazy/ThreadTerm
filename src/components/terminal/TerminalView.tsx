@@ -30,8 +30,8 @@ import {
   AI_CLI_SESSION_BADGE_CLASS,
   getAiCliSessionBadge,
 } from './providerSession';
-import { useProviderSessionLifecycle } from './useProviderSessionLifecycle';
 import { useValidatedProviderSessionLaunch } from './useValidatedProviderSessionLaunch';
+import { buildProviderStartupIntent } from './providerStartup';
 import { ProviderSessionLaunchPlaceholder } from './ProviderSessionLaunchPlaceholder';
 import { AiIntentSelect } from './AiIntentSelect';
 import { AutoRestartControls } from './AutoRestartControls';
@@ -80,6 +80,9 @@ export const TerminalView = memo(function TerminalView({
   const { t } = useTranslation('terminal');
   const recordUserSubmit = useTerminalStore((s) => s.recordUserSubmit);
   const markCardRead = useTerminalStore((s) => s.markCardRead);
+  const markOneShotRunRunning = useTerminalStore((s) => s.markOneShotRunRunning);
+  const finishOneShotRun = useTerminalStore((s) => s.finishOneShotRun);
+  const runOneShotAgain = useTerminalStore((s) => s.runOneShotAgain);
   const setCardAutoRestartEnabled = useTerminalStore((s) => s.setCardAutoRestartEnabled);
   const setCardAutoRestartMaxRetries = useTerminalStore((s) => s.setCardAutoRestartMaxRetries);
 
@@ -115,6 +118,8 @@ export const TerminalView = memo(function TerminalView({
   const TypeIcon = typeMeta.Icon;
   const autoRestart = normalizeAutoRestartConfig(card.autoRestart);
   const paneId = card.ptyId || card.id;
+  const isOneShot = card.executionMode === 'oneShot' && Boolean(card.oneShotRun);
+  const oneShotCommand = isOneShot ? card.command?.trim() : undefined;
   const isCodexCard = card.terminalType === 'codex';
   const isClaudeCard = card.terminalType === 'claude';
   const supportsChat = isCodexCard || isClaudeCard;
@@ -146,7 +151,6 @@ export const TerminalView = memo(function TerminalView({
   // Treat the card's optional `command` as an initial command to execute
   // in the PTY right after spawn.
   const {
-    lifecycleCard,
     launch,
     status: providerSessionLaunchStatus,
     retry: retryProviderSessionLaunch,
@@ -155,10 +159,9 @@ export const TerminalView = memo(function TerminalView({
     typeMeta.defaultCommand,
   );
   const initialCommand = launch?.command;
-  const onProviderInitialCommandSent = useProviderSessionLifecycle(
-    lifecycleCard,
-    launch,
-    active,
+  const providerStartup = useMemo(
+    () => (launch ? buildProviderStartupIntent(card.id, launch) ?? undefined : undefined),
+    [card.id, launch],
   );
 
   useEffect(() => {
@@ -240,10 +243,26 @@ export const TerminalView = memo(function TerminalView({
     useSupervisorStore.getState().recordAction(card.id);
   }, [card.id, recordUserSubmit, t]);
 
-  const handleInitialCommandSent = useCallback(() => {
-    recordSubmit();
-    onProviderInitialCommandSent();
-  }, [onProviderInitialCommandSent, recordSubmit]);
+  const handleOneShotRunStarted = useCallback(() => {
+    const generation = card.oneShotRun?.generation;
+    if (generation !== undefined) {
+      markOneShotRunRunning(card.id, generation);
+    }
+  }, [card.id, card.oneShotRun?.generation, markOneShotRunRunning]);
+
+  const handleOneShotRunInterrupted = useCallback(() => {
+    const generation = card.oneShotRun?.generation;
+    if (generation !== undefined) {
+      finishOneShotRun(card.id, {
+        generation,
+        state: 'interrupted',
+      });
+    }
+  }, [card.id, card.oneShotRun?.generation, finishOneShotRun]);
+
+  const handleOneShotRunAgain = useCallback(() => {
+    runOneShotAgain(card.id);
+  }, [card.id, runOneShotAgain]);
 
   const selectedProject = useMemo(
     () => ({
@@ -483,20 +502,27 @@ export const TerminalView = memo(function TerminalView({
             id={`terminal-shell-${card.id}`}
             className="relative min-h-0 flex-1 bg-[var(--terminal-background)]"
           >
-            {launch ? (
+            {(isOneShot ? Boolean(oneShotCommand) : Boolean(launch)) ? (
               <Shell
                 selectedProject={selectedProject}
                 terminalType={card.terminalType}
-                initialCommand={initialCommand}
+                initialCommand={oneShotCommand ?? initialCommand}
+                providerStartup={providerStartup}
                 minimal={true}
                 autoConnect={true}
                 paneId={paneId}
                 active={active}
                 preservePtyOnUnmount={true}
                 suppressInitialCommandWhenPtyExists={true}
-                resumeLoading={launch.action === 'resume'}
+                resumeLoading={launch?.action === 'resume'}
                 autoReconnectOnExit={false}
-                onInitialCommandSent={handleInitialCommandSent}
+                executionMode={card.executionMode}
+                oneShotRunState={card.oneShotRun?.state}
+                oneShotFinalOutput={card.lastOutput}
+                onOneShotRunStarted={isOneShot ? handleOneShotRunStarted : undefined}
+                onOneShotRunInterrupted={
+                  isOneShot ? handleOneShotRunInterrupted : undefined
+                }
                 onUserSubmit={recordSubmit}
                 onDisconnect={undefined}
               />
@@ -512,9 +538,32 @@ export const TerminalView = memo(function TerminalView({
 
       {/* Footer */}
       <div className="flex items-center justify-between border-t border-border px-3 py-1 text-[11px] text-muted-foreground">
-        <span>
-          id:&nbsp;<span className="font-mono">{card.id.slice(0, 10)}</span>
-        </span>
+        <div className="flex min-w-0 items-center gap-2">
+          <span>
+            id:&nbsp;<span className="font-mono">{card.id.slice(0, 10)}</span>
+          </span>
+          {isOneShot && card.oneShotRun && (
+            <span data-testid="one-shot-run-state" className="truncate">
+              {t(`oneShot.${card.oneShotRun.state}`, {
+                defaultValue: `One-shot: ${card.oneShotRun.state}`,
+              })}
+            </span>
+          )}
+        </div>
+        {isOneShot &&
+          card.oneShotRun &&
+          (card.oneShotRun.state === 'completed' ||
+            card.oneShotRun.state === 'failed' ||
+            card.oneShotRun.state === 'interrupted') && (
+            <button
+              type="button"
+              data-testid="one-shot-run-again"
+              onClick={handleOneShotRunAgain}
+              className="shrink-0 rounded border border-border px-2 py-0.5 font-medium text-foreground hover:bg-accent"
+            >
+              {t('oneShot.runAgain', { defaultValue: 'Run again' })}
+            </button>
+          )}
         <span>
           {t('view.footer', {
             count: card.messageCount,

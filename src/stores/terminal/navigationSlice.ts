@@ -2,8 +2,8 @@
  * 导航 slice —— 聚焦模式、卡片切换、session dock 最近浏览，以及全局悬浮
  * selector 的置顶列表。
  *
- * 聚焦卡片时会经共享 `set` 把该卡片与其通知标记为已读（分别归 cards /
- * notifications slice 所有）。
+ * 聚焦卡片时只清除普通 activity 的 `cards.unread` 标记；通知条目必须由
+ * 用户明确点击/确认后才能标记已读。
  */
 import type { TerminalCard } from '../../types/terminal';
 import { cardsForProjectView, recentCardIdsAfterFocus } from './helpers';
@@ -33,13 +33,8 @@ export const createNavigationSlice: TerminalSliceCreator<NavigationSlice> = (set
           changed = true;
           return { ...card, unread: false };
         });
-        const notifications = state.notifications.map((notification) => {
-          if (notification.cardId !== id || notification.read) return notification;
-          changed = true;
-          return { ...notification, read: true };
-        });
         return changed || recentChanged
-          ? { cards, notifications, recentlyViewedCardIds }
+          ? { cards, recentlyViewedCardIds }
           : state;
       }
       // when leaving a card, remember it as last-active for double-ctrl switching
@@ -49,24 +44,17 @@ export const createNavigationSlice: TerminalSliceCreator<NavigationSlice> = (set
           : state.lastActiveCardId;
       // mark the newly focused card as read
       let cards = state.cards;
-      let notifications = state.notifications;
       if (id) {
         const idx = state.cards.findIndex((c) => c.id === id);
         if (idx !== -1 && state.cards[idx].unread) {
           cards = [...state.cards];
           cards[idx] = { ...cards[idx], unread: false };
         }
-        if (state.notifications.some((n) => n.cardId === id && !n.read)) {
-          notifications = state.notifications.map((n) =>
-            n.cardId === id && !n.read ? { ...n, read: true } : n,
-          );
-        }
       }
       return {
         focusedCardId: id,
         lastActiveCardId,
         cards,
-        notifications,
         recentlyViewedCardIds: recentCardIdsAfterFocus(
           state.recentlyViewedCardIds,
           id,

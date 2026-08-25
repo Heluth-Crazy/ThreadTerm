@@ -8,8 +8,12 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+    <!-- Pre-paint theme bootstrap: same pattern as settings.html. Without it
+         dark-mode users saw a white first frame because applySavedTheme()
+         only runs after the JS bundle loads. -->
+    <script src="/theme-init.js"></script>
     <style>
-      html, body, #root { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+      html, body, #root { margin: 0; padding: 0; height: 100%; overflow: hidden; background: hsl(var(--background)); }
     </style>
   </head>
   <body>

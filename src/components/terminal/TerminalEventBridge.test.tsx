@@ -5,6 +5,7 @@ import {
   deriveWorkbenchSummary,
 } from '../../lib/workbench/deriveAttentionItems';
 import { deriveExecutionGroups } from '../../lib/workbench/deriveExecutionGroups';
+import { MANAGED_STATE_KEYS } from '../../lib/managedState';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { DEFAULT_WORKBENCH_RULES } from '../../stores/workbenchStore';
 import {
@@ -54,6 +55,18 @@ const loggerMocks = vi.hoisted(() => ({
   warn: vi.fn(),
 }));
 
+const managedStateMocks = vi.hoisted(() => {
+  const mocks = {
+    handler: undefined as undefined | ((key: string) => void),
+    listen: vi.fn(),
+  };
+  mocks.listen.mockImplementation((handler: (key: string) => void) => {
+    mocks.handler = handler;
+    return Promise.resolve(() => {});
+  });
+  return mocks;
+});
+
 vi.mock('../../lib/tauri-bridge', () => ({
   isTauriEnv: () => true,
   pty: bridgeMocks.pty,
@@ -85,6 +98,16 @@ vi.mock('../../lib/logger', () => ({
     warn: loggerMocks.warn,
   },
 }));
+
+vi.mock('../../lib/managedState', async () => {
+  const actual = await vi.importActual<typeof import('../../lib/managedState')>(
+    '../../lib/managedState',
+  );
+  return {
+    ...actual,
+    listenManagedStateChanges: managedStateMocks.listen,
+  };
+});
 
 function resetStore() {
   useTerminalStore.setState({
@@ -123,6 +146,7 @@ describe('TerminalEventBridge status reconciliation', () => {
     bridgeMocks.listeners.state = undefined;
     bridgeMocks.listeners.exit = undefined;
     bridgeMocks.listeners.attention = undefined;
+    managedStateMocks.handler = undefined;
   bridgeMocks.headlessIds.clear();
   bridgeMocks.headlessPreviewById.clear();
     bridgeMocks.pty.getAllSessionStates.mockResolvedValue({});
@@ -146,6 +170,44 @@ describe('TerminalEventBridge status reconciliation', () => {
       expect(useTerminalStore.getState().getCardById(id)?.status).toBe('running');
     });
     expect(bridgeMocks.pty.getAllSessionStates).toHaveBeenCalled();
+  });
+
+  it('rehydrates terminal state before syncing managed-state changes', async () => {
+    createCard();
+    const rehydrate = deferred<void>();
+    const rehydrateSpy = vi
+      .spyOn(useTerminalStore.persist, 'rehydrate')
+      .mockReturnValue(rehydrate.promise);
+    bridgeMocks.pty.getAllSessionStates.mockResolvedValue({});
+
+    render(<TerminalEventBridge />);
+
+    await waitFor(() => {
+      expect(managedStateMocks.handler).toBeDefined();
+      expect(bridgeMocks.pty.getAllSessionStates).toHaveBeenCalledTimes(2);
+    });
+    const syncCallsBeforeChange = bridgeMocks.pty.getAllSessionStates.mock.calls.length;
+
+    act(() => {
+      managedStateMocks.handler?.(MANAGED_STATE_KEYS.workbench);
+    });
+    expect(rehydrateSpy).not.toHaveBeenCalled();
+    expect(bridgeMocks.pty.getAllSessionStates).toHaveBeenCalledTimes(syncCallsBeforeChange);
+
+    act(() => {
+      managedStateMocks.handler?.(MANAGED_STATE_KEYS.terminal);
+    });
+    expect(rehydrateSpy).toHaveBeenCalledTimes(1);
+    expect(bridgeMocks.pty.getAllSessionStates).toHaveBeenCalledTimes(syncCallsBeforeChange);
+
+    await act(async () => {
+      rehydrate.resolve();
+    });
+    await waitFor(() => {
+      expect(bridgeMocks.pty.getAllSessionStates).toHaveBeenCalledTimes(
+        syncCallsBeforeChange + 1,
+      );
+    });
   });
 
   it('reconciles multiple cards with a single batch IPC call', async () => {
@@ -324,6 +386,8 @@ describe('TerminalEventBridge status reconciliation', () => {
       origin: 'reply',
       family: 'completion',
       episodeKey: `completion:${id}:1`,
+      signalSource: 'agent_cli_idle',
+      confidence: 'compatible',
     });
     expect(state.getCardById(id)?.unread).toBe(true);
 
@@ -430,6 +494,12 @@ describe('TerminalEventBridge status reconciliation', () => {
     expect(notification?.title).toContain('Codex');
     expect(notification?.title).toContain('CLI');
     expect(notification?.body).toContain('PATH');
+    expect(notification?.routing).toMatchObject({
+      origin: 'pty',
+      family: 'failure',
+      signalSource: 'agent_cli_prompt',
+      confidence: 'compatible',
+    });
     expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(true);
   });
 
@@ -552,6 +622,72 @@ describe('TerminalEventBridge status reconciliation', () => {
     expect(card?.autoRestart).toBeUndefined();
     expect(card?.ptyId).toBe(id);
     expect(useTerminalStore.getState().notifications).toHaveLength(0);
+  });
+
+  it.each([
+    { code: 0, state: 'completed' as const, kind: 'completed' as const },
+    { code: 17, state: 'failed' as const, kind: 'failed' as const },
+  ])('treats one-shot exit $code as an authoritative $state outcome', async ({ code, state, kind }) => {
+    const id = useTerminalStore.getState().createCard({
+      projectName: 'one-shot',
+      projectPath: '/tmp/one-shot',
+      terminalType: 'shell',
+      command: 'printf result',
+      executionMode: 'oneShot',
+    });
+    useTerminalStore.getState().updateCardReplyPreview(id, 'final output');
+
+    render(<TerminalEventBridge />);
+    await waitFor(() => expect(bridgeMocks.listeners.exit).toBeDefined());
+
+    act(() => {
+      bridgeMocks.listeners.exit?.({ id, code });
+    });
+
+    const store = useTerminalStore.getState();
+    expect(store.getCardById(id)?.oneShotRun).toMatchObject({
+      generation: 1,
+      state,
+      exitCode: code,
+    });
+    expect(store.getCardById(id)?.autoRestart).toBeUndefined();
+    expect(store.notifications).toHaveLength(1);
+    expect(store.notifications[0]).toMatchObject({
+      cardId: id,
+      kind,
+      routing: {
+        origin: 'reply',
+        family: 'completion',
+        episodeKey: 'one-shot:1',
+        signalSource: 'one_shot_exit',
+        confidence: 'authoritative',
+      },
+    });
+  });
+
+  it('records an intentional/unknown one-shot termination as interrupted without notifying', async () => {
+    const id = useTerminalStore.getState().createCard({
+      projectName: 'cancelled',
+      projectPath: '/tmp/cancelled',
+      terminalType: 'shell',
+      command: 'sleep 10',
+      executionMode: 'oneShot',
+    });
+
+    render(<TerminalEventBridge />);
+    await waitFor(() => expect(bridgeMocks.listeners.exit).toBeDefined());
+
+    act(() => {
+      bridgeMocks.listeners.exit?.({ id, code: null });
+    });
+
+    const store = useTerminalStore.getState();
+    expect(store.getCardById(id)?.oneShotRun).toMatchObject({
+      generation: 1,
+      state: 'interrupted',
+    });
+    expect(store.getCardById(id)?.oneShotRun?.exitCode).toBeUndefined();
+    expect(store.notifications).toHaveLength(0);
   });
 
   it('records the exact non-one exit code from the backend', async () => {

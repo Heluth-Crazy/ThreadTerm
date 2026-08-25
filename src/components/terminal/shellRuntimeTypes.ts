@@ -1,5 +1,7 @@
 import type { createOutputAcknowledger } from './outputAcknowledger';
 import type { createOutputSequencer } from './outputSequencer';
+import type { OneShotRunState, TerminalExecutionMode } from '../../types/terminal';
+import type { PtyProviderStartupIntent } from '../../types/ptyStartup';
 
 export type OutputSequencer = ReturnType<typeof createOutputSequencer>;
 export type OutputAcknowledger = ReturnType<typeof createOutputAcknowledger>;
@@ -16,6 +18,8 @@ export interface ShellProps {
   /** Provider id used to inject the per-process statistics proxy route. */
   terminalType?: string;
   initialCommand?: string;
+  /** Backend-owned Provider launch descriptor. Never dispatched through `pty.input`. */
+  providerStartup?: PtyProviderStartupIntent;
   minimal?: boolean;
   autoConnect?: boolean;
   paneId?: string;
@@ -26,7 +30,12 @@ export interface ShellProps {
   suppressInitialCommandWhenPtyExists?: boolean;
   resumeLoading?: boolean;
   autoReconnectOnExit?: boolean;
-  onInitialCommandSent?: () => void;
+  /** Opt-in execute-and-exit launch; interactive remains the default. */
+  executionMode?: TerminalExecutionMode;
+  oneShotRunState?: OneShotRunState;
+  oneShotFinalOutput?: string;
+  onOneShotRunStarted?: () => void;
+  onOneShotRunInterrupted?: () => void;
   onUserSubmit?: () => void;
 }
 

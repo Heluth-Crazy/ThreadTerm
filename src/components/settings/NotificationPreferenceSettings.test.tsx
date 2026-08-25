@@ -15,7 +15,11 @@ vi.mock('react-i18next', async (importOriginal) => {
 });
 
 beforeEach(() => {
-  useTerminalStore.setState({ osNotificationsEnabled: true });
+  useTerminalStore.setState({
+    osNotificationsEnabled: true,
+    osNotificationPreviewEnabled: true,
+    agentCliCompatibilityCompletionEnabled: true,
+  });
 });
 
 afterEach(() => {
@@ -26,16 +30,29 @@ describe('NotificationPreferenceSettings', () => {
   it('reflects the current OS-notification preference', () => {
     useTerminalStore.setState({ osNotificationsEnabled: true });
     render(<NotificationPreferenceSettings />);
-    expect(screen.getByRole('checkbox')).toBeChecked();
+    expect(screen.getByLabelText('notifications.preference.osLabel')).toBeChecked();
+    expect(screen.getByLabelText('notifications.preference.previewLabel')).toBeChecked();
+    expect(screen.getByLabelText('notifications.preference.compatibilityLabel')).toBeChecked();
   });
 
   it('toggles OS notifications off and on', () => {
     render(<NotificationPreferenceSettings />);
 
-    fireEvent.click(screen.getByRole('checkbox'));
+    const master = screen.getByLabelText('notifications.preference.osLabel');
+    fireEvent.click(master);
     expect(useTerminalStore.getState().osNotificationsEnabled).toBe(false);
 
-    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(master);
     expect(useTerminalStore.getState().osNotificationsEnabled).toBe(true);
+  });
+
+  it('toggles summary preview and Agent CLI compatibility independently', () => {
+    render(<NotificationPreferenceSettings />);
+
+    fireEvent.click(screen.getByLabelText('notifications.preference.previewLabel'));
+    fireEvent.click(screen.getByLabelText('notifications.preference.compatibilityLabel'));
+
+    expect(useTerminalStore.getState().osNotificationPreviewEnabled).toBe(false);
+    expect(useTerminalStore.getState().agentCliCompatibilityCompletionEnabled).toBe(false);
   });
 });

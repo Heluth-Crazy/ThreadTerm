@@ -1,5 +1,11 @@
 use portable_pty::CommandBuilder;
 
+mod bootstrap;
+pub(super) use bootstrap::{configure_powershell_ready_command, powershell_utf8_enabled};
+
+#[cfg(test)]
+mod bootstrap_tests;
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use once_cell::sync::Lazy;
 #[cfg(target_os = "windows")]
@@ -147,6 +153,90 @@ pub(super) fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str) {
     cmd.env("FORCE_COLOR", "3");
 }
 
+fn is_cmd_shell(shell: &str) -> bool {
+    shell
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(shell)
+        .eq_ignore_ascii_case("cmd")
+        || shell
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(shell)
+            .eq_ignore_ascii_case("cmd.exe")
+}
+
+fn configure_interactive_shell_command_with_offline(
+    cmd: &mut CommandBuilder,
+    shell: &str,
+    offline: bool,
+) {
+    configure_shell_command(cmd, shell);
+    if offline && is_cmd_shell(shell) {
+        // `/d` disables AutoRun and `/q` keeps the synthetic harness prompt
+        // deterministic.  This branch is never compiled into production.
+        cmd.args(["/d", "/q"]);
+    } else if offline && bootstrap::is_powershell_shell(shell) {
+        // Keep the synthetic harness independent of user profile startup even
+        // when no encoded readiness bootstrap is needed.
+        cmd.arg("-NoProfile");
+    }
+}
+
+/// Configure an ordinary interactive shell.  The offline harness adds only
+/// the cmd switches needed to prevent machine-local AutoRun state from
+/// affecting a synthetic create; the production path is byte-for-byte the
+/// historical command setup.
+pub(super) fn configure_interactive_shell_command(cmd: &mut CommandBuilder, shell: &str) {
+    #[cfg(feature = "terminal-startup-harness")]
+    let offline = crate::terminal_startup_harness::offline_attestation().is_enabled();
+    #[cfg(not(feature = "terminal-startup-harness"))]
+    let offline = false;
+    configure_interactive_shell_command_with_offline(cmd, shell, offline);
+}
+
+/// Configure a shell to execute exactly one command and then terminate.
+///
+/// The command is passed as one argument to the selected shell rather than
+/// interpolated into a platform-specific wrapper. This keeps the PTY's cwd,
+/// provider environment, and terminal variables identical to interactive
+/// sessions while making the child exit code authoritative for one-shot runs.
+pub(super) fn configure_one_shot_command(cmd: &mut CommandBuilder, shell: &str, command: &str) {
+    configure_shell_command(cmd, shell);
+    for arg in one_shot_command_args(shell, command) {
+        cmd.arg(arg);
+    }
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn one_shot_command_args(shell: &str, command: &str) -> Vec<String> {
+    let shell_name = shell
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(shell)
+        .to_ascii_lowercase();
+
+    if shell_name == "cmd.exe" || shell_name == "cmd" {
+        return vec!["/d".into(), "/q".into(), "/c".into(), command.into()];
+    }
+
+    if shell_name == "pwsh.exe"
+        || shell_name == "pwsh"
+        || shell_name == "powershell.exe"
+        || shell_name == "powershell"
+    {
+        return vec![
+            "-NoLogo".into(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
+            command.into(),
+        ];
+    }
+
+    vec!["-c".into(), command.into()]
+}
+
 #[cfg(target_os = "windows")]
 fn which_exists(name: &str) -> bool {
     let where_executable = std::env::var_os("SystemRoot")
@@ -201,9 +291,13 @@ pub(super) fn normalize_windows_cwd(dir: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_windows_cwd, select_windows_shell};
+    use super::{
+        configure_interactive_shell_command_with_offline, normalize_windows_cwd,
+        one_shot_command_args, select_windows_shell,
+    };
     #[cfg(target_os = "windows")]
     use super::{wait_for_child_with_timeout, which_exists, CREATE_NO_WINDOW};
+    use portable_pty::CommandBuilder;
     #[cfg(target_os = "windows")]
     use std::{
         os::windows::process::CommandExt,
@@ -228,6 +322,72 @@ mod tests {
         assert_eq!(
             normalize_windows_cwd("C:\\already\\native"),
             "C:\\already\\native"
+        );
+    }
+
+    #[test]
+    fn one_shot_shell_arguments_are_platform_specific_and_single_command() {
+        assert_eq!(
+            one_shot_command_args("cmd.exe", "echo hello"),
+            vec!["/d", "/q", "/c", "echo hello"]
+        );
+        assert_eq!(
+            one_shot_command_args("C:\\Program Files\\PowerShell\\pwsh.exe", "Write-Output ok"),
+            vec![
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Write-Output ok"
+            ]
+        );
+        assert_eq!(
+            one_shot_command_args("/bin/bash", "printf one-shot"),
+            vec!["-c", "printf one-shot"]
+        );
+    }
+
+    #[test]
+    fn ordinary_interactive_shell_arguments_preserve_default_mode() {
+        let mut command = CommandBuilder::new("cmd.exe");
+        configure_interactive_shell_command_with_offline(&mut command, "cmd.exe", false);
+        assert_eq!(
+            command
+                .get_argv()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["cmd.exe"]
+        );
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    #[test]
+    fn offline_interactive_cmd_disables_autorun_and_keeps_quiet_mode() {
+        let mut command = CommandBuilder::new("cmd.exe");
+        configure_interactive_shell_command_with_offline(&mut command, "cmd.exe", true);
+        assert_eq!(
+            command
+                .get_argv()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["cmd.exe", "/d", "/q"]
+        );
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    #[test]
+    fn offline_plain_powershell_disables_profile_loading() {
+        let mut command = CommandBuilder::new("pwsh.exe");
+        configure_interactive_shell_command_with_offline(&mut command, "pwsh.exe", true);
+        assert_eq!(
+            command
+                .get_argv()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["pwsh.exe", "-NoProfile"]
         );
     }
 

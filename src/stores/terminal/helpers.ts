@@ -120,10 +120,18 @@ export function prepareAutoRestartForPersistence(card: TerminalCard): TerminalCa
 }
 
 export function terminalPreferenceSnapshotFromState(
-  state: Pick<TerminalStore, 'osNotificationsEnabled' | 'supervisorEnabled'>,
+  state: Pick<
+    TerminalStore,
+    | 'osNotificationsEnabled'
+    | 'osNotificationPreviewEnabled'
+    | 'agentCliCompatibilityCompletionEnabled'
+    | 'supervisorEnabled'
+  >,
 ): TerminalPreferenceSnapshot {
   return {
     osNotificationsEnabled: state.osNotificationsEnabled,
+    osNotificationPreviewEnabled: state.osNotificationPreviewEnabled,
+    agentCliCompatibilityCompletionEnabled: state.agentCliCompatibilityCompletionEnabled,
     supervisorEnabled: state.supervisorEnabled,
   };
 }

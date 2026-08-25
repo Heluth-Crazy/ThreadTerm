@@ -177,6 +177,7 @@ export function renderWorkbench(overrides: Partial<Parameters<typeof WorkbenchVi
   const callbacks = {
     onOpenTerminal: vi.fn(),
     onOpenAttention: vi.fn(),
+    onIgnoreAttention: vi.fn(),
     onOpenGroup: vi.fn(),
     onOpenRules: vi.fn(),
     onNavigateTerminals: vi.fn(),

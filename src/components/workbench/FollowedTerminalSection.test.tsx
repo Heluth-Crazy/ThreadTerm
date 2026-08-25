@@ -4,6 +4,30 @@ import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard } from '../../types/terminal';
 import { FollowedTerminalSection } from './FollowedTerminalSection';
 
+/**
+ * happy-dom performs no layout, so scroll metrics are always 0. Overriding
+ * them on the scroller instance lets the edge-fade logic (audit P0 #1) be
+ * exercised deterministically.
+ */
+function overrideScrollMetrics(
+  el: HTMLElement,
+  metrics: { scrollWidth: number; clientWidth: number; scrollLeft: number },
+) {
+  Object.defineProperty(el, 'scrollWidth', {
+    configurable: true,
+    value: metrics.scrollWidth,
+  });
+  Object.defineProperty(el, 'clientWidth', {
+    configurable: true,
+    value: metrics.clientWidth,
+  });
+  Object.defineProperty(el, 'scrollLeft', {
+    configurable: true,
+    value: metrics.scrollLeft,
+    writable: true,
+  });
+}
+
 vi.mock('react-i18next', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-i18next')>();
   return {
@@ -101,5 +125,78 @@ describe('FollowedTerminalSection rename', () => {
 
     expect(useTerminalStore.getState().cards[0].projectName).toBe('Repo');
     expect(screen.queryByRole('textbox', { name: 'Rename card' })).toBeNull();
+  });
+});
+
+describe('FollowedTerminalSection collapsed overflow fades', () => {
+  beforeEach(() => {
+    useTerminalStore.setState({ cards: [makeCard()] });
+  });
+
+  it('hints at clipped content with a right-edge fade while more cards remain', () => {
+    renderSection(makeCard());
+
+    const scroller = screen.getByTestId('followed-terminal-scroller');
+    overrideScrollMetrics(scroller, {
+      scrollWidth: 504,
+      clientWidth: 300,
+      scrollLeft: 0,
+    });
+    fireEvent.scroll(scroller);
+
+    expect(screen.getByTestId('followed-scroll-fade-right')).toBeInTheDocument();
+    expect(screen.queryByTestId('followed-scroll-fade-left')).toBeNull();
+  });
+
+  it('swaps the fade to the left edge once scrolled to the end', () => {
+    renderSection(makeCard());
+
+    const scroller = screen.getByTestId('followed-terminal-scroller');
+    overrideScrollMetrics(scroller, {
+      scrollWidth: 504,
+      clientWidth: 300,
+      scrollLeft: 204,
+    });
+    fireEvent.scroll(scroller);
+
+    expect(screen.getByTestId('followed-scroll-fade-left')).toBeInTheDocument();
+    expect(screen.queryByTestId('followed-scroll-fade-right')).toBeNull();
+  });
+
+  it('renders no fades when everything fits', () => {
+    renderSection(makeCard());
+
+    const scroller = screen.getByTestId('followed-terminal-scroller');
+    overrideScrollMetrics(scroller, {
+      scrollWidth: 248,
+      clientWidth: 300,
+      scrollLeft: 0,
+    });
+    fireEvent.scroll(scroller);
+
+    expect(screen.queryByTestId('followed-scroll-fade-left')).toBeNull();
+    expect(screen.queryByTestId('followed-scroll-fade-right')).toBeNull();
+  });
+
+  it('expanded mode wraps instead of scrolling and shows no fades', () => {
+    const { rerender } = render(
+      <FollowedTerminalSection
+        cards={[makeCard(), makeCard({ id: 'card-2', ptyId: 'card-2' })]}
+        totalCount={2}
+        now={NOW}
+        queryActive={false}
+        onOpenTerminal={vi.fn()}
+        onUnfollowCard={vi.fn()}
+        onOpenRecall={vi.fn()}
+      />,
+    );
+
+    // Expand via the header toggle.
+    fireEvent.click(screen.getByTitle('Show all'));
+
+    expect(screen.queryByTestId('followed-terminal-scroller')).toBeNull();
+    expect(screen.queryByTestId('followed-scroll-fade-left')).toBeNull();
+    expect(screen.queryByTestId('followed-scroll-fade-right')).toBeNull();
+    expect(rerender).toBeDefined();
   });
 });

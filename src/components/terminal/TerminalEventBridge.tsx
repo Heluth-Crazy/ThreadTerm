@@ -8,7 +8,7 @@
  * Wiring:
  *   pty-output                  → updateCardOutput + updateCardReplyPreview
  *   session-state-changed       → updateCardStatus
- *   attention-required          → pushNotification + markUnread
+ *   attention-required          → completion coordinator / interaction ledger
  *   pty-exit                    → updateCardStatus('completed' | 'failed')
  *
  * Ids: new cards default to `TerminalCard.ptyId === TerminalCard.id`, but
@@ -46,6 +46,14 @@ import {
   listenManagedStateChanges,
   MANAGED_STATE_KEYS,
 } from '../../lib/managedState';
+import {
+  AGENT_CLI_COMPATIBILITY_IDLE_MS,
+  AGENT_CLI_MIN_RUNNING_MS,
+  AGENT_CLI_PROMPT_SETTLE_MS,
+  detectAgentCliPrompt,
+  getAgentCliCompletionFingerprint,
+  isAgentCliCompatibilityCandidate,
+} from './agentCliCompletion';
 
 // Map Rust SessionState → UI TerminalStatus.
 function mapSessionState(state: SessionState): TerminalStatus {
@@ -105,6 +113,18 @@ interface AttentionEpisode {
   fingerprints: Set<string>;
 }
 
+interface CompatibilityRun {
+  generation: number;
+  runningSince: number;
+  lastOutputAt: number;
+  phase: 'running' | 'idle';
+}
+
+interface CompatibilityTimers {
+  prompt?: number;
+  idle?: number;
+}
+
 export interface TerminalEventBridgeDiagnostics {
   activeRuntimeCount: number;
   activeRuntimeIds: string[];
@@ -158,6 +178,9 @@ export function TerminalEventBridge(): null {
   const lastProcessedOutputSeqRef = useRef<Map<string, number>>(new Map());
   /** Transient retry timers; persisted card state stores only serializable metadata. */
   const autoRestartTimersRef = useRef<Map<string, number>>(new Map());
+  /** Runtime-only guarded Agent CLI compatibility state. */
+  const compatibilityRunsRef = useRef<Map<string, CompatibilityRun>>(new Map());
+  const compatibilityTimersRef = useRef<Map<string, CompatibilityTimers>>(new Map());
   const bridgeMountedAtRef = useRef(Date.now());
 
   useEffect(() => {
@@ -187,6 +210,8 @@ export function TerminalEventBridge(): null {
     const lastOutputSeq = lastOutputSeqRef.current;
     const lastProcessedOutputSeq = lastProcessedOutputSeqRef.current;
     const autoRestartTimers = autoRestartTimersRef.current;
+    const compatibilityRuns = compatibilityRunsRef.current;
+    const compatibilityTimers = compatibilityTimersRef.current;
 
     // Resolve Rust PTY ids back to card ids. Most sessions are 1:1, but the
     // floating overlay must tolerate persisted cards where `ptyId` differs.
@@ -217,6 +242,19 @@ export function TerminalEventBridge(): null {
       ),
     );
 
+    function clearCompatibilityTimers(cardId: string) {
+      const timers = compatibilityTimers.get(cardId);
+      if (!timers) return;
+      if (timers.prompt !== undefined) window.clearTimeout(timers.prompt);
+      if (timers.idle !== undefined) window.clearTimeout(timers.idle);
+      compatibilityTimers.delete(cardId);
+    }
+
+    function clearCompatibilityRun(cardId: string) {
+      clearCompatibilityTimers(cardId);
+      compatibilityRuns.delete(cardId);
+    }
+
     const lifecycle = createPtyRuntimeLifecycle((runtime) => {
       disposeHeadless(runtime.cardId);
       outputBuffer.discardCard(runtime.cardId);
@@ -227,6 +265,7 @@ export function TerminalEventBridge(): null {
       runningStateRef.current.delete(runtime.cardId);
       replyDebounceRef.current.delete(runtime.cardId);
       replyInputCheckpointRef.current.delete(runtime.cardId);
+      clearCompatibilityRun(runtime.cardId);
       clearAutoRestartTimer(runtime.cardId);
       for (let index = pendingBackgroundOutput.length - 1; index >= 0; index -= 1) {
         if (pendingBackgroundOutput[index].id === runtime.ptyId) {
@@ -353,6 +392,7 @@ export function TerminalEventBridge(): null {
         acknowledgeBackgroundOutput(id, seq, runtime.generation);
         return;
       }
+      noteCompatibilityOutput(card);
       try {
         feedHeadless(card.id, data, () => {
           if (
@@ -362,6 +402,7 @@ export function TerminalEventBridge(): null {
           ) {
             outputBuffer.requestPreview(card.id, () => readHeadlessPreview(card.id));
           }
+          maybeScheduleCompatibilityPrompt(card.id);
           acknowledgeBackgroundOutput(id, seq, runtime.generation);
         });
       } catch {
@@ -411,6 +452,7 @@ export function TerminalEventBridge(): null {
                 resolve();
                 return;
               }
+              noteCompatibilityOutput(card);
               disposeHeadless(card.id);
               try {
                 feedHeadless(card.id, data, () => {
@@ -421,6 +463,7 @@ export function TerminalEventBridge(): null {
                   ) {
                     outputBuffer.requestPreview(card.id, () => readHeadlessPreview(card.id));
                   }
+                  maybeScheduleCompatibilityPrompt(card.id);
                   acknowledgeBackgroundOutput(id, snapshot.seq, runtime.generation);
                   resolve();
                 });
@@ -509,6 +552,242 @@ export function TerminalEventBridge(): null {
       return baseline;
     }
 
+    function compatibilityEnabled(): boolean {
+      return useTerminalStore.getState().agentCliCompatibilityCompletionEnabled;
+    }
+
+    function ensureCompatibilityRun(card: TerminalCard): CompatibilityRun | null {
+      if (!compatibilityEnabled() || !isAgentCliCompatibilityCandidate(card)) {
+        clearCompatibilityRun(card.id);
+        return null;
+      }
+
+      const checkpoint = getReplyInputCheckpoint(card);
+      if (card.messageCount <= checkpoint) {
+        clearCompatibilityRun(card.id);
+        return null;
+      }
+
+      const existing = compatibilityRuns.get(card.id);
+      if (existing?.generation === card.messageCount) return existing;
+      if (existing) clearCompatibilityRun(card.id);
+
+      const now = Date.now();
+      const run: CompatibilityRun = {
+        generation: card.messageCount,
+        runningSince: runningState.get(card.id)?.runningSince ?? now,
+        lastOutputAt: now,
+        phase: card.status === 'running' ? 'running' : 'idle',
+      };
+      compatibilityRuns.set(card.id, run);
+      return run;
+    }
+
+    function compatibilityPreview(card: TerminalCard): string {
+      return readHeadlessPreview(card.id) || card.lastReplyPreview || card.lastOutput;
+    }
+
+    function publishCompatibilityCompletion(
+      cardId: string,
+      source: 'agent_cli_prompt' | 'agent_cli_idle',
+      prompt: string | null = null,
+    ) {
+      if (!compatibilityEnabled()) return;
+      const store = useTerminalStore.getState();
+      const card = store.getCardById(cardId);
+      if (!card || !isAgentCliCompatibilityCandidate(card)) return;
+
+      const checkpoint = getReplyInputCheckpoint(card);
+      if (card.messageCount <= checkpoint) {
+        clearCompatibilityRun(cardId);
+        return;
+      }
+      const run = compatibilityRuns.get(cardId);
+      if (!run || run.generation !== card.messageCount) return;
+
+      // Consume this generation before calling the coordinator.  A stronger
+      // structured signal already committed for the same episode therefore
+      // cannot cause a later compatibility timer to reopen it.
+      clearCompatibilityRun(cardId);
+      replyInputCheckpoint.set(cardId, card.messageCount);
+
+      outputBuffer.flushCard(cardId);
+      const latestCard = store.getCardById(cardId) ?? card;
+      const preview = buildCardPreview(latestCard, { maxLines: 3 });
+      const snippet =
+        preview.bodyLines.join('\n').trim() ||
+        i18n.t('terminal:notifications.replyReadyBodyFallback');
+      const fingerprint =
+        source === 'agent_cli_prompt' && prompt
+          ? getAgentCliCompletionFingerprint(latestCard.terminalType, prompt) ??
+            normalizeNotificationFingerprint(`${latestCard.terminalType}:${prompt}`)
+          : normalizeNotificationFingerprint(snippet);
+      const title = i18n.t('terminal:notifications.replyReadyTitle', {
+        project: latestCard.projectName,
+      });
+      const result = store.ingestCompletionSignal(
+        {
+          cardId,
+          episodeKey: `completion:${cardId}:${latestCard.messageCount}`,
+          fingerprint,
+          source,
+          confidence: 'compatible',
+          outcome: 'completed',
+          at: Date.now(),
+          summary: snippet,
+        },
+        {
+          kind: 'completed',
+          title,
+          body: snippet.slice(0, 240),
+        },
+      );
+      if (result.kind !== 'ignored') {
+        store.appendEvent(cardId, {
+          kind: 'notification',
+          summary: i18n.t('terminal:notifications.replyReadyEvent'),
+        });
+      }
+    }
+
+    function scheduleCompatibilityIdle(card: TerminalCard, run: CompatibilityRun) {
+      if (!compatibilityEnabled() || !isAgentCliCompatibilityCandidate(card)) return;
+      const latest = useTerminalStore.getState().getCardById(card.id);
+      if (!latest || latest.messageCount !== run.generation) return;
+
+      const timers = compatibilityTimers.get(card.id) ?? {};
+      if (timers.idle !== undefined) window.clearTimeout(timers.idle);
+      const now = Date.now();
+      const minRunningDelay = Math.max(
+        0,
+        AGENT_CLI_MIN_RUNNING_MS - (now - run.runningSince),
+      );
+      const quietDelay = Math.max(
+        0,
+        AGENT_CLI_COMPATIBILITY_IDLE_MS - (now - run.lastOutputAt),
+      );
+      const delay = Math.max(minRunningDelay, quietDelay);
+      const timer = window.setTimeout(() => {
+        const currentTimers = compatibilityTimers.get(card.id);
+        if (currentTimers?.idle === timer) {
+          delete currentTimers.idle;
+          if (currentTimers.prompt === undefined) compatibilityTimers.delete(card.id);
+        }
+
+        const current = useTerminalStore.getState().getCardById(card.id);
+        const activeRun = compatibilityRuns.get(card.id);
+        if (
+          !current ||
+          !activeRun ||
+          activeRun.generation !== current.messageCount ||
+          !compatibilityEnabled() ||
+          current.status === 'waiting'
+        ) {
+          clearCompatibilityRun(card.id);
+          return;
+        }
+
+        const elapsed = Date.now() - activeRun.runningSince;
+        const quiet = Date.now() - activeRun.lastOutputAt;
+        if (
+          elapsed < AGENT_CLI_MIN_RUNNING_MS ||
+          quiet < AGENT_CLI_COMPATIBILITY_IDLE_MS
+        ) {
+          scheduleCompatibilityIdle(current, activeRun);
+          return;
+        }
+
+        const prompt = detectAgentCliPrompt(current.terminalType, compatibilityPreview(current));
+        publishCompatibilityCompletion(
+          current.id,
+          prompt ? 'agent_cli_prompt' : 'agent_cli_idle',
+          prompt,
+        );
+      }, delay);
+      timers.idle = timer;
+      compatibilityTimers.set(card.id, timers);
+    }
+
+    function scheduleCompatibilityPrompt(card: TerminalCard, prompt: string) {
+      const run = ensureCompatibilityRun(card);
+      if (!run || run.generation !== card.messageCount) return;
+
+      const timers = compatibilityTimers.get(card.id) ?? {};
+      if (timers.prompt !== undefined) window.clearTimeout(timers.prompt);
+      // A prompt is stronger than quiet-idle evidence.  Do not let an old
+      // idle timer win while the 500 ms settle window is pending.
+      if (timers.idle !== undefined) {
+        window.clearTimeout(timers.idle);
+        delete timers.idle;
+      }
+      const settleDelay = Math.max(
+        AGENT_CLI_PROMPT_SETTLE_MS,
+        AGENT_CLI_MIN_RUNNING_MS - (Date.now() - run.runningSince),
+      );
+      const timer = window.setTimeout(() => {
+        const currentTimers = compatibilityTimers.get(card.id);
+        if (currentTimers?.prompt === timer) {
+          delete currentTimers.prompt;
+          if (currentTimers.idle === undefined) compatibilityTimers.delete(card.id);
+        }
+        const current = useTerminalStore.getState().getCardById(card.id);
+        const activeRun = compatibilityRuns.get(card.id);
+        if (
+          !current ||
+          !activeRun ||
+          activeRun.generation !== current.messageCount ||
+          !compatibilityEnabled() ||
+          current.status === 'waiting'
+        ) {
+          clearCompatibilityRun(card.id);
+          return;
+        }
+        const latestPrompt = detectAgentCliPrompt(
+          current.terminalType,
+          compatibilityPreview(current),
+        );
+        if (!latestPrompt) {
+          if (activeRun.phase === 'idle') scheduleCompatibilityIdle(current, activeRun);
+          return;
+        }
+        publishCompatibilityCompletion(current.id, 'agent_cli_prompt', latestPrompt);
+      }, settleDelay);
+      timers.prompt = timer;
+      compatibilityTimers.set(card.id, timers);
+    }
+
+    function noteCompatibilityOutput(card: TerminalCard) {
+      if (!compatibilityEnabled() || !isAgentCliCompatibilityCandidate(card)) return;
+      const run = ensureCompatibilityRun(card);
+      if (!run) return;
+      run.lastOutputAt = Date.now();
+      clearCompatibilityTimers(card.id);
+      if (run.phase === 'idle') scheduleCompatibilityIdle(card, run);
+    }
+
+    function maybeScheduleCompatibilityPrompt(cardId: string) {
+      const card = useTerminalStore.getState().getCardById(cardId);
+      if (!card || !compatibilityEnabled() || !isAgentCliCompatibilityCandidate(card)) return;
+      const prompt = detectAgentCliPrompt(card.terminalType, compatibilityPreview(card));
+      if (prompt) scheduleCompatibilityPrompt(card, prompt);
+    }
+
+    function handleCompatibilitySubmission(card: TerminalCard) {
+      clearCompatibilityRun(card.id);
+      if (!compatibilityEnabled() || !isAgentCliCompatibilityCandidate(card)) return;
+      const checkpoint = getReplyInputCheckpoint(card);
+      if (card.messageCount <= checkpoint || card.status !== 'running') return;
+
+      const now = Date.now();
+      runningState.set(card.id, { runningSince: now });
+      compatibilityRuns.set(card.id, {
+        generation: card.messageCount,
+        runningSince: now,
+        lastOutputAt: now,
+        phase: 'running',
+      });
+    }
+
     function handleSessionState(ptyId: string, state: SessionState) {
       const store = useTerminalStore.getState();
       const card = getCardForPtyId(ptyId);
@@ -530,7 +809,23 @@ export function TerminalEventBridge(): null {
       store.updateCardStatus(cardId, next);
 
       if (next === 'running') {
+        const latestCard = useTerminalStore.getState().getCardById(cardId) ?? card;
+        const compatibilityRun = ensureCompatibilityRun(latestCard);
+        if (compatibilityRun) {
+          compatibilityRun.phase = 'running';
+          clearCompatibilityTimers(cardId);
+        }
         return;
+      }
+
+      if (next === 'waiting') {
+        clearCompatibilityRun(cardId);
+        runningStateRef.current.delete(cardId);
+        return;
+      }
+
+      if (next === 'completed' || next === 'failed') {
+        clearCompatibilityRun(cardId);
       }
 
       // Detect Running → Idle transition = agent finished responding.
@@ -542,6 +837,15 @@ export function TerminalEventBridge(): null {
         const inputCheckpoint = getReplyInputCheckpoint(latestCard);
         const currentInputCount = latestCard.messageCount;
         if (currentInputCount <= inputCheckpoint) return;
+
+        if (isAgentCliCompatibilityCandidate(latestCard) && compatibilityEnabled()) {
+          const compatibilityRun = ensureCompatibilityRun(latestCard);
+          if (!compatibilityRun) return;
+          compatibilityRun.runningSince = rs.runningSince;
+          compatibilityRun.phase = 'idle';
+          scheduleCompatibilityIdle(latestCard, compatibilityRun);
+          return;
+        }
 
         // Consume this input generation even when the duration/debounce gates
         // below decide not to toast. Otherwise a later focus redraw could reuse
@@ -562,23 +866,32 @@ export function TerminalEventBridge(): null {
           preview.bodyLines.join('\n').trim() ||
           i18n.t('terminal:notifications.replyReadyBodyFallback');
 
-        store.pushNotification({
-          cardId,
-          kind: 'completed',
-          title: i18n.t('terminal:notifications.replyReadyTitle', { project: latestCard.projectName }),
-          body: snippet.slice(0, 240),
-          routing: {
-            origin: 'reply',
-            family: 'completion',
+        const title = i18n.t('terminal:notifications.replyReadyTitle', {
+          project: latestCard.projectName,
+        });
+        const result = store.ingestCompletionSignal(
+          {
+            cardId,
             episodeKey: `completion:${cardId}:${currentInputCount}`,
             fingerprint: normalizeNotificationFingerprint(snippet),
+            source: 'agent_cli_idle',
+            confidence: 'compatible',
+            outcome: 'completed',
+            at: Date.now(),
+            summary: snippet,
           },
-        });
-        store.markUnread(cardId, true);
-        store.appendEvent(cardId, {
-          kind: 'notification',
-          summary: i18n.t('terminal:notifications.replyReadyEvent'),
-        });
+          {
+            kind: 'completed',
+            title,
+            body: snippet.slice(0, 240),
+          },
+        );
+        if (result.kind !== 'ignored') {
+          store.appendEvent(cardId, {
+            kind: 'notification',
+            summary: i18n.t('terminal:notifications.replyReadyEvent'),
+          });
+        }
         return;
       }
 
@@ -648,8 +961,26 @@ export function TerminalEventBridge(): null {
     window.addEventListener('focus', syncWhenVisible);
     document.addEventListener('visibilitychange', onVisibilityChange);
     void listenManagedStateChanges((key) => {
-      if (key === MANAGED_STATE_KEYS.terminal) {
-        void syncLiveSessionStates();
+      if (key !== MANAGED_STATE_KEYS.terminal) return;
+
+      try {
+        const rehydrate = useTerminalStore.persist.rehydrate();
+        void Promise.resolve(rehydrate)
+          .then(() => {
+            if (cancelled) return;
+            return syncLiveSessionStates();
+          })
+          .catch((error) => {
+            console.error(
+              '[TerminalEventBridge] failed to rehydrate terminal store after managed-state change:',
+              error,
+            );
+          });
+      } catch (error) {
+        console.error(
+          '[TerminalEventBridge] failed to rehydrate terminal store after managed-state change:',
+          error,
+        );
       }
     }).then((unlisten) => {
       if (cancelled) unlisten();
@@ -744,6 +1075,86 @@ export function TerminalEventBridge(): null {
         else nextStatus = 'idle';
         const store = useTerminalStore.getState();
         store.updateCardStatus(card.id, nextStatus);
+
+        // One-shot exits are the authoritative task boundary. They never use
+        // interactive auto-restart semantics, and an intentional/unknown
+        // termination is persisted as interrupted without creating evidence.
+        const oneShotRun = card.executionMode === 'oneShot' ? card.oneShotRun : undefined;
+        if (oneShotRun) {
+          const outcome =
+            code === 0
+              ? 'completed'
+              : typeof code === 'number'
+                ? 'failed'
+                : 'interrupted';
+          const changed = store.finishOneShotRun(card.id, {
+            generation: oneShotRun.generation,
+            state: outcome,
+            ...(typeof code === 'number' ? { exitCode: code } : {}),
+          });
+          if (!changed) return;
+
+          if (outcome !== 'interrupted') {
+            const latestCard = store.getCardById(card.id) ?? card;
+            const preview = buildCardPreview(latestCard, { maxLines: 3 });
+            const snippet =
+              preview.bodyLines.join('\n').trim() ||
+              i18n.t('terminal:notifications.replyReadyBodyFallback');
+            const result = store.ingestCompletionSignal(
+              {
+                cardId: card.id,
+                episodeKey: `one-shot:${oneShotRun.generation}`,
+                fingerprint: normalizeNotificationFingerprint(
+                  `one-shot:${oneShotRun.generation}:${code}:${snippet}`,
+                ),
+                source: 'one_shot_exit',
+                confidence: 'authoritative',
+                outcome,
+                at: Date.now(),
+                summary: snippet,
+              },
+              {
+                kind: outcome === 'completed' ? 'completed' : 'failed',
+                title:
+                  outcome === 'completed'
+                    ? i18n.t('terminal:notifications.oneShotCompletedTitle', {
+                        project: latestCard.projectName,
+                        defaultValue: '✓ {{project}} completed',
+                      })
+                    : i18n.t('terminal:notifications.oneShotFailedTitle', {
+                        project: latestCard.projectName,
+                        defaultValue: '✕ {{project}} failed',
+                      }),
+                body: snippet,
+              },
+            );
+            if (result.kind !== 'ignored') {
+              store.appendEvent(card.id, {
+                kind: 'notification',
+                summary:
+                  outcome === 'completed'
+                    ? i18n.t('terminal:notifications.oneShotCompletedEvent', {
+                        defaultValue: 'one-shot completed',
+                      })
+                    : i18n.t('terminal:notifications.oneShotFailedEvent', {
+                        defaultValue: 'one-shot failed',
+                      }),
+              });
+            }
+          }
+
+          store.appendEvent(card.id, {
+            kind: 'closed',
+            summary:
+              outcome === 'failed'
+                ? i18n.t('terminal:notifications.processExited', { code })
+                : outcome === 'completed'
+                  ? i18n.t('terminal:notifications.processCompleted')
+                  : i18n.t('terminal:notifications.sessionClosed'),
+          });
+          return;
+        }
+
         if (nextStatus === 'completed') {
           store.scheduleCardAutoRestart(card.id, { exitCode: 0, now: Date.now() });
         } else if (nextStatus === 'failed' && typeof code === 'number') {
@@ -771,6 +1182,11 @@ export function TerminalEventBridge(): null {
         const card = getCardForPtyId(ptyId);
         if (!card) return;
         const cardId = card.id;
+
+        // Approval/error attention is a terminal boundary for compatibility
+        // completion; leave interaction/failure producers to publish their
+        // own semantic notification below.
+        if (type === 'waiting' || type === 'error') clearCompatibilityRun(cardId);
 
         const store = useTerminalStore.getState();
 
@@ -800,23 +1216,47 @@ export function TerminalEventBridge(): null {
             ? i18n.t('terminal:notifications.errorTitle', { project: card.projectName })
             : i18n.t('terminal:notifications.inputTitle', { project: card.projectName });
 
+        const body = missingCli
+          ? i18n.t('terminal:notifications.missingCliBody', { cli: missingCli })
+          : message ||
+            (kind === 'failed'
+              ? i18n.t('terminal:notifications.errorBodyFallback')
+              : i18n.t('terminal:notifications.inputBodyFallback'));
+
+        if (kind === 'failed') {
+          const result = store.ingestCompletionSignal(
+            {
+              cardId,
+              episodeKey: `failure:${cardId}:${generation}`,
+              fingerprint,
+              source: 'agent_cli_prompt',
+              confidence: 'compatible',
+              outcome: 'failed',
+              at: Date.now(),
+              summary: body,
+              family: 'failure',
+              origin: 'pty',
+            },
+            { kind, title, body },
+          );
+          if (result.kind !== 'ignored') {
+            store.appendEvent(cardId, { kind: 'notification', summary: title });
+          }
+          return;
+        }
+
+        // Waiting/approval semantics remain owned by the PTY interaction
+        // producer. They intentionally do not enter the completion precedence
+        // path.
         store.pushNotification({
           cardId,
           kind,
           title,
-          body: missingCli
-            ? i18n.t('terminal:notifications.missingCliBody', { cli: missingCli })
-            : message ||
-              (kind === 'failed'
-                ? i18n.t('terminal:notifications.errorBodyFallback')
-                : i18n.t('terminal:notifications.inputBodyFallback')),
+          body,
           routing: {
             origin: 'pty',
-            family: kind === 'waiting' ? 'interaction' : 'failure',
-            episodeKey:
-              kind === 'waiting'
-                ? buildInteractionEpisodeKey(cardId, generation)
-                : `failure:${cardId}:${generation}`,
+            family: 'interaction',
+            episodeKey: buildInteractionEpisodeKey(cardId, generation),
             fingerprint,
           },
         });
@@ -838,7 +1278,10 @@ export function TerminalEventBridge(): null {
     let previousPtyByCard = new Map(
       useTerminalStore.getState().cards.map((card) => [card.id, card.ptyId || card.id]),
     );
-    const unsubscribeStoreLifecycle = useTerminalStore.subscribe((state) => {
+    let previousMessageCountByCard = new Map(
+      useTerminalStore.getState().cards.map((card) => [card.id, card.messageCount]),
+    );
+    const unsubscribeStoreLifecycle = useTerminalStore.subscribe((state, previousState) => {
       const currentPtyByCard = new Map(
         state.cards.map((card) => [card.id, card.ptyId || card.id]),
       );
@@ -851,6 +1294,46 @@ export function TerminalEventBridge(): null {
         );
       }
       previousPtyByCard = currentPtyByCard;
+
+      for (const card of state.cards) {
+        const previousCount = previousMessageCountByCard.get(card.id);
+        if (previousCount !== undefined && previousCount !== card.messageCount) {
+          handleCompatibilitySubmission(card);
+        }
+        previousMessageCountByCard.set(card.id, card.messageCount);
+      }
+      for (const cardId of previousMessageCountByCard.keys()) {
+        if (!currentPtyByCard.has(cardId)) {
+          clearCompatibilityRun(cardId);
+          previousMessageCountByCard.delete(cardId);
+        }
+      }
+
+      if (
+        previousState.agentCliCompatibilityCompletionEnabled &&
+        !state.agentCliCompatibilityCompletionEnabled
+      ) {
+        for (const cardId of compatibilityRuns.keys()) clearCompatibilityRun(cardId);
+      }
+
+      if (state.notifications !== previousState.notifications) {
+        for (const notification of state.notifications) {
+          const source = notification.routing?.signalSource;
+          if (
+            source === 'codex_chat' ||
+            source === 'claude_chat'
+          ) {
+            const activeRun = compatibilityRuns.get(notification.cardId);
+            if (
+              activeRun &&
+              notification.routing?.episodeKey ===
+                `completion:${notification.cardId}:${activeRun.generation}`
+            ) {
+              clearCompatibilityRun(notification.cardId);
+            }
+          }
+        }
+      }
 
       for (const cardId of autoRestartTimersRef.current.keys()) {
         const card = state.cards.find((candidate) => candidate.id === cardId);
@@ -886,6 +1369,9 @@ export function TerminalEventBridge(): null {
         window.clearTimeout(timer);
       }
       autoRestartTimers.clear();
+      for (const cardId of compatibilityTimers.keys()) clearCompatibilityTimers(cardId);
+      compatibilityRuns.clear();
+      compatibilityTimers.clear();
       attentionEpisodes.clear();
       runningState.clear();
       replyDebounce.clear();

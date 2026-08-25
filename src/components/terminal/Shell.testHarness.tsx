@@ -12,6 +12,7 @@ import { afterEach, beforeEach, expect, vi } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import type { PtyAttachSnapshot } from '../../lib/tauri-bridge';
+import type { PtyStartupSnapshot } from '../../types/ptyStartup';
 
 vi.mock('react-i18next', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-i18next')>();
@@ -99,11 +100,22 @@ vi.mock('@xterm/addon-webgl', () => ({
 const ptyMock = vi.hoisted(() => {
   const exitHandlers = new Set<(payload: { id: string; code?: number | null }) => void>();
   const outputHandlers = new Set<(payload: { id: string; data: string; seq: number }) => void>();
+  const startupHandlers = new Set<(payload: PtyStartupSnapshot) => void>();
   return {
     isTauri: { value: true },
     exitHandlers,
     outputHandlers,
+    startupHandlers,
     create: vi.fn(async (id: string) => id),
+    createSessionV2: vi.fn(async (request: { id: string }) => ({
+      ptyId: request.id,
+      generation: 'generation-1',
+      disposition: 'created',
+      shellFamily: 'posix',
+      descriptorDisposition: 'accepted',
+      startup: { ptyId: request.id, generation: 'generation-1', revision: 0, state: 'waiting' },
+    })),
+    getStartupState: vi.fn(async () => null),
     getSessionState: vi.fn(async () => {
       throw new Error('no session');
     }),
@@ -124,6 +136,10 @@ const ptyMock = vi.hoisted(() => {
       exitHandlers.add(cb);
       return () => exitHandlers.delete(cb);
     }),
+    onStartupState: vi.fn(async (cb: (payload: PtyStartupSnapshot) => void) => {
+      startupHandlers.add(cb);
+      return () => startupHandlers.delete(cb);
+    }),
   };
 });
 
@@ -132,6 +148,8 @@ vi.mock('../../lib/tauri-bridge', () => ({
   invoke: vi.fn(),
   pty: {
     create: ptyMock.create,
+    createSessionV2: ptyMock.createSessionV2,
+    getStartupState: ptyMock.getStartupState,
     getSessionState: ptyMock.getSessionState,
     input: ptyMock.input,
     resize: ptyMock.resize,
@@ -142,6 +160,7 @@ vi.mock('../../lib/tauri-bridge', () => ({
     attachSnapshot: ptyMock.attachSnapshot,
     onOutput: ptyMock.onOutput,
     onExit: ptyMock.onExit,
+    onStartupState: ptyMock.onStartupState,
   },
 }));
 
@@ -175,8 +194,27 @@ export function renderMinimalShell(
       preservePtyOnUnmount={true}
       autoReconnectOnExit={false}
       onDisconnect={undefined}
-      onInitialCommandSent={undefined}
       onUserSubmit={undefined}
+    />,
+  );
+}
+
+export function renderProviderShell(paneId = 'provider-pane') {
+  return render(
+    <Shell
+      selectedProject={PROJECT}
+      initialCommand="provider --start"
+      providerStartup={{
+        kind: 'provider', provider: 'claude', command: 'provider --start', cardId: 'card-1',
+        action: 'start', sideEffectPlan: { kind: 'discover' },
+      }}
+      minimal
+      autoConnect
+      paneId={paneId}
+      active
+      rendererScope="main"
+      preservePtyOnUnmount
+      autoReconnectOnExit={false}
     />,
   );
 }
@@ -210,7 +248,6 @@ export function renderShellProps(
       preservePtyOnUnmount={true}
       autoReconnectOnExit={false}
       onDisconnect={undefined}
-      onInitialCommandSent={undefined}
       onUserSubmit={undefined}
     />
   );
@@ -228,6 +265,7 @@ beforeEach(() => {
   ptyMock.isTauri.value = true;
   ptyMock.exitHandlers.clear();
   ptyMock.outputHandlers.clear();
+  ptyMock.startupHandlers.clear();
   xtermMock.instances.length = 0;
   vi.clearAllMocks();
 });

@@ -18,8 +18,36 @@ pub(super) fn get(id: &str) -> Option<Arc<PtySession>> {
     PTY_SESSIONS.get(id).map(|entry| entry.value().clone())
 }
 
-pub(super) fn remove(id: &str) -> Option<Arc<PtySession>> {
-    PTY_SESSIONS.remove(id).map(|(_, session)| session)
+/// Remove a session only when the registry still contains the exact Arc that
+/// the caller observed. DashMap's conditional removal keeps the identity
+/// check and removal under one shard lock, so an old reader cannot unregister
+/// a replacement generation with the same id.
+pub(super) fn remove_if_same(id: &str, expected: &Arc<PtySession>) -> Option<Arc<PtySession>> {
+    remove_if_same_from_map(&PTY_SESSIONS, id, expected)
+}
+
+/// Check whether the registry still contains the exact Arc observed by the
+/// caller. The DashMap read guard stays live through the pointer comparison,
+/// so a replacement cannot race this identity check.
+pub(super) fn is_current(id: &str, expected: &Arc<PtySession>) -> bool {
+    is_current_in_map(&PTY_SESSIONS, id, expected)
+}
+
+fn is_current_in_map<T>(sessions: &DashMap<String, Arc<T>>, id: &str, expected: &Arc<T>) -> bool {
+    sessions
+        .get(id)
+        .map(|current| Arc::ptr_eq(current.value(), expected))
+        .unwrap_or(false)
+}
+
+fn remove_if_same_from_map<T>(
+    sessions: &DashMap<String, Arc<T>>,
+    id: &str,
+    expected: &Arc<T>,
+) -> Option<Arc<T>> {
+    sessions
+        .remove_if(id, |_, current| Arc::ptr_eq(current, expected))
+        .map(|(_, session)| session)
 }
 
 /// Insert a freshly built session unless an entry already exists for `id`.
@@ -166,4 +194,11 @@ mod tests {
             assert_eq!(single.working_dir, listed.working_dir);
         }
     }
+}
+
+#[cfg(test)]
+mod identity_tests;
+#[cfg(test)]
+pub(super) fn remove(id: &str) -> Option<Arc<PtySession>> {
+    PTY_SESSIONS.remove(id).map(|(_, session)| session)
 }

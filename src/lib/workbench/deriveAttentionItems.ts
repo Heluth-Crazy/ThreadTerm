@@ -13,6 +13,10 @@ import type {
   WorkbenchRules,
   WorkbenchSummary,
 } from './types';
+import {
+  isAttentionItemIgnored,
+  type IgnoredAttentionEpisode,
+} from './ignoreAttention';
 
 interface DeriveAttentionItemsInput {
   cards: readonly TerminalCard[];
@@ -23,6 +27,7 @@ interface DeriveAttentionItemsInput {
   now: number;
   selectedProjectPath?: string | null;
   selectedWorktreePath?: string | null;
+  ignoredAttention?: readonly IgnoredAttentionEpisode[];
 }
 
 const SUPERVISOR_APPROVAL_RULES = new Set([
@@ -209,11 +214,14 @@ export function deriveAttentionItems(input: DeriveAttentionItemsInput): Attentio
     }
   }
 
-  return items.sort(
+  items.sort(
     (left, right) =>
       severityRank(right.severity) - severityRank(left.severity) ||
       right.occurredAt - left.occurredAt,
   );
+  const ignoredAttention = input.ignoredAttention;
+  if (!ignoredAttention?.length) return items;
+  return items.filter((item) => !isAttentionItemIgnored(item, ignoredAttention));
 }
 
 export function deriveWorkbenchSummary(

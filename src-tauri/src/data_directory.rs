@@ -611,7 +611,162 @@ fn resolve_data_root_from(
     Ok(resolved)
 }
 
+#[cfg(feature = "terminal-startup-harness")]
+const TERMINAL_STARTUP_HARNESS_ROOT_ENV: &str = "THREADTERM_TERMINAL_STARTUP_HARNESS_ROOT";
+#[cfg(feature = "terminal-startup-harness")]
+const TERMINAL_STARTUP_HARNESS_MARKER_FILE: &str = ".threadterm-terminal-startup-harness";
+#[cfg(feature = "terminal-startup-harness")]
+const TERMINAL_STARTUP_HARNESS_MARKER: &[u8] = b"threadterm-terminal-startup-harness-v1\n";
+
+#[cfg(feature = "terminal-startup-harness")]
+fn terminal_startup_harness_is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+#[cfg(feature = "terminal-startup-harness")]
+fn resolve_terminal_startup_harness_data_root() -> Result<ResolvedDataRoot, String> {
+    let raw_sandbox = std::env::var(TERMINAL_STARTUP_HARNESS_ROOT_ENV).map_err(|error| {
+        if matches!(error, std::env::VarError::NotPresent) {
+            "terminal_startup_harness_root_missing".to_string()
+        } else {
+            "terminal_startup_harness_root_invalid".to_string()
+        }
+    })?;
+    if raw_sandbox.is_empty() {
+        return Err("terminal_startup_harness_root_empty".to_string());
+    }
+
+    let sandbox = PathBuf::from(raw_sandbox);
+    if !sandbox.is_absolute() {
+        return Err("terminal_startup_harness_root_relative".to_string());
+    }
+
+    let sandbox_metadata = fs::symlink_metadata(&sandbox)
+        .map_err(|_| "terminal_startup_harness_root_invalid".to_string())?;
+    if terminal_startup_harness_is_link_or_reparse(&sandbox_metadata) || !sandbox_metadata.is_dir()
+    {
+        return Err("terminal_startup_harness_root_invalid".to_string());
+    }
+    let canonical_sandbox = sandbox
+        .canonicalize()
+        .map_err(|_| "terminal_startup_harness_root_invalid".to_string())?;
+
+    let marker_path = canonical_sandbox.join(TERMINAL_STARTUP_HARNESS_MARKER_FILE);
+    let marker_metadata = fs::symlink_metadata(&marker_path)
+        .map_err(|_| "terminal_startup_harness_marker_invalid".to_string())?;
+    if terminal_startup_harness_is_link_or_reparse(&marker_metadata) || !marker_metadata.is_file() {
+        return Err("terminal_startup_harness_marker_invalid".to_string());
+    }
+    let marker = fs::read(&marker_path)
+        .map_err(|_| "terminal_startup_harness_marker_invalid".to_string())?;
+    if marker.as_slice() != TERMINAL_STARTUP_HARNESS_MARKER {
+        return Err("terminal_startup_harness_marker_invalid".to_string());
+    }
+
+    let app_data = sandbox.join("app-data");
+    let app_data_metadata = fs::symlink_metadata(&app_data)
+        .map_err(|_| "terminal_startup_harness_app_data_invalid".to_string())?;
+    if terminal_startup_harness_is_link_or_reparse(&app_data_metadata)
+        || !app_data_metadata.is_dir()
+    {
+        return Err("terminal_startup_harness_app_data_invalid".to_string());
+    }
+    let canonical_app_data = app_data
+        .canonicalize()
+        .map_err(|_| "terminal_startup_harness_app_data_invalid".to_string())?;
+    let validated_app_data = validate_managed_root(&app_data)
+        .map_err(|_| "terminal_startup_harness_app_data_invalid".to_string())?;
+    if validated_app_data != canonical_app_data
+        || !canonical_app_data.starts_with(&canonical_sandbox)
+    {
+        return Err("terminal_startup_harness_app_data_invalid".to_string());
+    }
+
+    let manifest_path = canonical_app_data.join("manifest.json");
+    let manifest_metadata = fs::symlink_metadata(&manifest_path)
+        .map_err(|_| "terminal_startup_harness_manifest_invalid".to_string())?;
+    if terminal_startup_harness_is_link_or_reparse(&manifest_metadata)
+        || !manifest_metadata.is_file()
+    {
+        return Err("terminal_startup_harness_manifest_invalid".to_string());
+    }
+    let canonical_manifest = manifest_path
+        .canonicalize()
+        .map_err(|_| "terminal_startup_harness_manifest_invalid".to_string())?;
+    if !canonical_manifest.starts_with(&canonical_app_data)
+        || !canonical_manifest.starts_with(&canonical_sandbox)
+    {
+        return Err("terminal_startup_harness_manifest_invalid".to_string());
+    }
+
+    for child_name in ["database", "state", "webview", "migration"] {
+        let child = canonical_app_data.join(child_name);
+        let metadata = fs::symlink_metadata(&child)
+            .map_err(|_| "terminal_startup_harness_layout_invalid".to_string())?;
+        if terminal_startup_harness_is_link_or_reparse(&metadata) || !metadata.is_dir() {
+            return Err("terminal_startup_harness_layout_invalid".to_string());
+        }
+        let canonical_child = child
+            .canonicalize()
+            .map_err(|_| "terminal_startup_harness_layout_invalid".to_string())?;
+        if !canonical_child.starts_with(&canonical_app_data)
+            || !canonical_child.starts_with(&canonical_sandbox)
+        {
+            return Err("terminal_startup_harness_layout_invalid".to_string());
+        }
+    }
+
+    let bootstrap = canonical_sandbox.join("bootstrap");
+    let bootstrap_metadata = fs::symlink_metadata(&bootstrap)
+        .map_err(|_| "terminal_startup_harness_layout_invalid".to_string())?;
+    if terminal_startup_harness_is_link_or_reparse(&bootstrap_metadata)
+        || !bootstrap_metadata.is_dir()
+    {
+        return Err("terminal_startup_harness_layout_invalid".to_string());
+    }
+    let canonical_bootstrap = bootstrap
+        .canonicalize()
+        .map_err(|_| "terminal_startup_harness_layout_invalid".to_string())?;
+    if !canonical_bootstrap.starts_with(&canonical_sandbox) {
+        return Err("terminal_startup_harness_layout_invalid".to_string());
+    }
+    let isolated_pointer = canonical_bootstrap.join(BOOTSTRAP_POINTER_FILE);
+    Ok(ResolvedDataRoot::managed(
+        canonical_app_data,
+        isolated_pointer,
+        false,
+    ))
+}
+
+fn terminal_startup_harness_data_root_override() -> Option<Result<ResolvedDataRoot, String>> {
+    #[cfg(feature = "terminal-startup-harness")]
+    {
+        if !crate::terminal_startup_harness::offline_attestation().is_enabled() {
+            return Some(Err("terminal_startup_harness_offline_required".to_string()));
+        }
+        Some(resolve_terminal_startup_harness_data_root())
+    }
+    #[cfg(not(feature = "terminal-startup-harness"))]
+    {
+        None
+    }
+}
+
 pub fn resolve_startup_data_root() -> Result<ResolvedDataRoot, String> {
+    if let Some(harness_data_root) = terminal_startup_harness_data_root_override() {
+        return harness_data_root;
+    }
+
     let bootstrap_dir = bootstrap_config_dir()?;
     resolve_data_root_from(
         bootstrap_dir.clone(),
@@ -798,11 +953,38 @@ fn build_legacy_status(
     }
 }
 
+#[cfg(feature = "terminal-startup-harness")]
+fn terminal_startup_harness_recommended_root(active: &ResolvedDataRoot) -> Result<PathBuf, String> {
+    active
+        .root
+        .clone()
+        .ok_or_else(|| "terminal_startup_harness_root_unavailable".to_string())
+}
+
 #[tauri::command]
+#[allow(unreachable_code)]
 pub async fn data_directory_status(
     app: tauri::AppHandle,
     active: tauri::State<'_, ResolvedDataRoot>,
 ) -> Result<DataDirectoryStatus, String> {
+    let _ = &app;
+    #[cfg(feature = "terminal-startup-harness")]
+    {
+        if !crate::terminal_startup_harness::offline_attestation().is_enabled() {
+            return Err("terminal_startup_harness_offline_required".to_string());
+        }
+        let active = active.inner().clone();
+        let recommended_root = terminal_startup_harness_recommended_root(&active)?;
+        let application_path = std::env::current_exe().map_err(|error| {
+            format!("Could not resolve the ThreadTerm application path: {error}")
+        })?;
+        return tauri::async_runtime::spawn_blocking(move || {
+            build_managed_status(&active, application_path, recommended_root)
+        })
+        .await
+        .map_err(|error| format!("Could not inspect ThreadTerm data usage: {error}"));
+    }
+
     let application_path = std::env::current_exe()
         .map_err(|error| format!("Could not resolve the ThreadTerm application path: {error}"))?;
     let recommended_root = app
@@ -851,6 +1033,15 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    #[cfg(feature = "terminal-startup-harness")]
+    use std::{
+        ffi::OsString,
+        sync::{Mutex, OnceLock},
+    };
+
+    #[cfg(feature = "terminal-startup-harness")]
+    static TERMINAL_STARTUP_HARNESS_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
     struct TempDirectory {
         path: PathBuf,
     }
@@ -885,6 +1076,99 @@ mod tests {
             serde_json::to_vec(&DataRootManifest::default()).expect("manifest json"),
         )
         .expect("manifest");
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    fn prepare_terminal_startup_harness_root(root: &Path) {
+        let app_data = root.join("app-data");
+        for child in ["database", "state", "webview", "migration"] {
+            fs::create_dir_all(app_data.join(child)).expect("harness layout directory");
+        }
+        fs::create_dir_all(root.join("bootstrap")).expect("harness bootstrap directory");
+        fs::write(
+            root.join(TERMINAL_STARTUP_HARNESS_MARKER_FILE),
+            TERMINAL_STARTUP_HARNESS_MARKER,
+        )
+        .expect("harness marker");
+        fs::write(
+            app_data.join("manifest.json"),
+            serde_json::to_vec(&DataRootManifest::default()).expect("manifest json"),
+        )
+        .expect("harness manifest");
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    struct TerminalStartupHarnessEnvGuard {
+        previous: Option<OsString>,
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    impl TerminalStartupHarnessEnvGuard {
+        fn set(root: Option<&Path>) -> Self {
+            let previous = std::env::var_os(TERMINAL_STARTUP_HARNESS_ROOT_ENV);
+            match root {
+                Some(root) => std::env::set_var(TERMINAL_STARTUP_HARNESS_ROOT_ENV, root),
+                None => std::env::remove_var(TERMINAL_STARTUP_HARNESS_ROOT_ENV),
+            }
+            Self { previous }
+        }
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    impl Drop for TerminalStartupHarnessEnvGuard {
+        fn drop(&mut self) {
+            match self.previous.as_ref() {
+                Some(previous) => std::env::set_var(TERMINAL_STARTUP_HARNESS_ROOT_ENV, previous),
+                None => std::env::remove_var(TERMINAL_STARTUP_HARNESS_ROOT_ENV),
+            }
+        }
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    struct TerminalStartupHarnessOfflineEnvGuard {
+        previous: Option<OsString>,
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    impl TerminalStartupHarnessOfflineEnvGuard {
+        fn set(value: Option<&str>) -> Self {
+            let previous = std::env::var_os(
+                crate::terminal_startup_harness::TERMINAL_STARTUP_HARNESS_OFFLINE_ENV,
+            );
+            match value {
+                Some(value) => std::env::set_var(
+                    crate::terminal_startup_harness::TERMINAL_STARTUP_HARNESS_OFFLINE_ENV,
+                    value,
+                ),
+                None => std::env::remove_var(
+                    crate::terminal_startup_harness::TERMINAL_STARTUP_HARNESS_OFFLINE_ENV,
+                ),
+            }
+            Self { previous }
+        }
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    impl Drop for TerminalStartupHarnessOfflineEnvGuard {
+        fn drop(&mut self) {
+            match self.previous.as_ref() {
+                Some(previous) => std::env::set_var(
+                    crate::terminal_startup_harness::TERMINAL_STARTUP_HARNESS_OFFLINE_ENV,
+                    previous,
+                ),
+                None => std::env::remove_var(
+                    crate::terminal_startup_harness::TERMINAL_STARTUP_HARNESS_OFFLINE_ENV,
+                ),
+            }
+        }
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    fn lock_terminal_startup_harness_env() -> std::sync::MutexGuard<'static, ()> {
+        TERMINAL_STARTUP_HARNESS_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("harness environment lock")
     }
 
     #[test]
@@ -1263,5 +1547,137 @@ mod tests {
                 "pendingTransactionId".to_string(),
             ])
         );
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    #[test]
+    fn terminal_startup_harness_missing_root_env_fails_closed() {
+        let _lock = lock_terminal_startup_harness_env();
+        let _offline = TerminalStartupHarnessOfflineEnvGuard::set(Some("1"));
+        let _env = TerminalStartupHarnessEnvGuard::set(None);
+
+        let error = resolve_startup_data_root().expect_err("missing harness root");
+        assert_eq!(error, "terminal_startup_harness_root_missing");
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    #[test]
+    fn terminal_startup_harness_requires_exact_offline_attestation() {
+        let _lock = lock_terminal_startup_harness_env();
+        let fixture = TempDirectory::new("startup-harness-offline");
+        let sandbox = fixture.path.join("sandbox");
+        prepare_terminal_startup_harness_root(&sandbox);
+        let _env = TerminalStartupHarnessEnvGuard::set(Some(&sandbox));
+
+        for value in [None, Some("0"), Some("true"), Some(" 1")] {
+            let _offline = TerminalStartupHarnessOfflineEnvGuard::set(value);
+            let error = resolve_startup_data_root().expect_err("offline attestation required");
+            assert_eq!(error, "terminal_startup_harness_offline_required");
+            drop(_offline);
+        }
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    #[test]
+    fn terminal_startup_harness_valid_layout_resolves_isolated_managed_root() {
+        let _lock = lock_terminal_startup_harness_env();
+        let _offline = TerminalStartupHarnessOfflineEnvGuard::set(Some("1"));
+        let fixture = TempDirectory::new("startup-harness-valid");
+        let sandbox = fixture.path.join("sandbox");
+        prepare_terminal_startup_harness_root(&sandbox);
+        fs::write(
+            sandbox.join("bootstrap").join(BOOTSTRAP_POINTER_FILE),
+            b"not a real pointer",
+        )
+        .expect("poisoned harness pointer");
+        let _env = TerminalStartupHarnessEnvGuard::set(Some(&sandbox));
+
+        let resolved = resolve_startup_data_root().expect("resolve harness root");
+        let canonical_sandbox = sandbox.canonicalize().expect("canonical sandbox");
+        let canonical_app_data = canonical_sandbox.join("app-data");
+
+        assert_eq!(resolved.mode, DataDirectoryMode::Managed);
+        assert_eq!(resolved.root, Some(canonical_app_data.clone()));
+        assert_eq!(
+            resolved.database_file,
+            canonical_app_data.join("database").join("threadterm.db")
+        );
+        assert_eq!(
+            resolved.window_state_file,
+            canonical_app_data.join("state").join("window-state.json")
+        );
+        assert_eq!(
+            resolved.bootstrap_pointer_path,
+            canonical_sandbox
+                .join("bootstrap")
+                .join(BOOTSTRAP_POINTER_FILE)
+        );
+        assert!(!resolved.recovered_pointer_backup);
+        assert!(resolved.startup_migration.is_none());
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    #[test]
+    fn terminal_startup_harness_rejects_bad_marker_and_layout() {
+        let _lock = lock_terminal_startup_harness_env();
+        let _offline = TerminalStartupHarnessOfflineEnvGuard::set(Some("1"));
+        let fixture = TempDirectory::new("startup-harness-invalid");
+        let sandbox = fixture.path.join("sandbox");
+        prepare_terminal_startup_harness_root(&sandbox);
+        let _env = TerminalStartupHarnessEnvGuard::set(Some(&sandbox));
+
+        fs::write(
+            sandbox.join(TERMINAL_STARTUP_HARNESS_MARKER_FILE),
+            b"wrong-marker\n",
+        )
+        .expect("bad marker");
+        let marker_error = resolve_startup_data_root().expect_err("bad marker");
+        assert_eq!(marker_error, "terminal_startup_harness_marker_invalid");
+
+        fs::write(
+            sandbox.join(TERMINAL_STARTUP_HARNESS_MARKER_FILE),
+            TERMINAL_STARTUP_HARNESS_MARKER,
+        )
+        .expect("restore marker");
+        let invalid_manifest = DataRootManifest {
+            app_id: "com.example.other".to_string(),
+            ..DataRootManifest::default()
+        };
+        fs::write(
+            sandbox.join("app-data").join("manifest.json"),
+            serde_json::to_vec(&invalid_manifest).expect("invalid manifest json"),
+        )
+        .expect("invalid manifest");
+        let manifest_error = resolve_startup_data_root().expect_err("invalid manifest");
+        assert_eq!(manifest_error, "terminal_startup_harness_app_data_invalid");
+
+        fs::write(
+            sandbox.join("app-data").join("manifest.json"),
+            serde_json::to_vec(&DataRootManifest::default()).expect("manifest json"),
+        )
+        .expect("restore manifest");
+        fs::remove_dir_all(sandbox.join("app-data").join("migration")).expect("remove child");
+        let layout_error = resolve_startup_data_root().expect_err("missing child");
+        assert_eq!(layout_error, "terminal_startup_harness_layout_invalid");
+    }
+
+    #[cfg(feature = "terminal-startup-harness")]
+    #[test]
+    fn offline_status_recommends_the_validated_active_harness_root() {
+        let fixture = TempDirectory::new("startup-harness-status");
+        let root = fixture.path.join("app-data");
+        prepare_managed_root(&root);
+        fs::create_dir_all(root.join("migration")).expect("migration directory");
+        let active = ResolvedDataRoot::managed(
+            root.canonicalize().expect("canonical harness root"),
+            fixture.path.join("bootstrap").join(BOOTSTRAP_POINTER_FILE),
+            false,
+        );
+
+        let recommended = terminal_startup_harness_recommended_root(&active)
+            .expect("active harness root should be used");
+        assert_eq!(recommended, active.root.clone().unwrap());
+        assert!(!recommended.ends_with("Documents"));
+        assert!(!recommended.ends_with("ThreadTerm Data"));
     }
 }

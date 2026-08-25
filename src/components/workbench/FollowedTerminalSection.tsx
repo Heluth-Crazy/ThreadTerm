@@ -6,7 +6,7 @@ import {
   SquareTerminal,
   X,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { worktreeDisplayLabel } from '../../lib/worktreePaths';
 import { useTerminalStore } from '../../stores/terminalStore';
@@ -39,6 +39,115 @@ export function FollowedTerminalSection({
   const [expanded, setExpanded] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const renameCard = useTerminalStore((s) => s.renameCard);
+  // Collapsed state scrolls horizontally in the narrow aside column; without
+  // an edge hint the clipped next card reads as broken layout (audit P0).
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const [edgeFade, setEdgeFade] = useState({ left: false, right: false });
+
+  const syncEdgeFade = useCallback(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const maxScrollLeft = el.scrollWidth - el.clientWidth;
+    setEdgeFade({
+      left: el.scrollLeft > 0,
+      right: maxScrollLeft > 0 && el.scrollLeft < maxScrollLeft,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (expanded) return;
+    syncEdgeFade();
+    window.addEventListener('resize', syncEdgeFade);
+    return () => window.removeEventListener('resize', syncEdgeFade);
+  }, [expanded, cards.length, syncEdgeFade]);
+
+  const renderCard = (card: TerminalCard) => {
+    const preview = followedPreview(card);
+    return (
+      <article
+        key={card.id}
+        className="group flex w-[248px] shrink-0 items-stretch overflow-hidden rounded-lg border border-border bg-card/75 transition-colors hover:border-primary/30 hover:bg-card"
+      >
+        <button
+          type="button"
+          onClick={() => onOpenTerminal(card.id)}
+          aria-label={t('workbench.followed.openTerminal', {
+            name: card.projectName,
+            defaultValue: 'Open {{name}} terminal',
+          })}
+          className="min-w-0 flex-1 px-3 py-2 text-left"
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            <SquareTerminal className="h-3.5 w-3.5 shrink-0 text-primary" />
+            {/* Same interaction as the terminal card header: the name
+                owns its click region — single click is stopped so it
+                doesn't open the terminal, double-click enters rename. */}
+            <span
+              className="flex min-w-0 flex-1 items-center"
+              onClick={(event) => event.stopPropagation()}
+              onDoubleClick={(event) => {
+                event.stopPropagation();
+                if (editingId !== card.id) setEditingId(card.id);
+              }}
+              title={
+                editingId === card.id
+                  ? undefined
+                  : t('card.renameHint', { defaultValue: 'Double-click to rename' })
+              }
+            >
+              <EditableCardName
+                value={card.projectName}
+                editing={editingId === card.id}
+                onCommit={(name) => {
+                  renameCard(card.id, name);
+                  setEditingId(null);
+                }}
+                onCancel={() => setEditingId(null)}
+                ariaLabel={t('card.rename', { defaultValue: 'Rename card' })}
+                className="min-w-0 flex-1 truncate text-xs font-bold"
+              />
+            </span>
+            <span
+              className={[
+                'h-1.5 w-1.5 shrink-0 rounded-full',
+                statusDotClass(card.status),
+              ].join(' ')}
+            />
+          </span>
+          <span className="mt-1 flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
+            <span className="truncate">{worktreeDisplayLabel(card)}</span>
+            <span aria-hidden="true">·</span>
+            <span className="shrink-0 font-mono">{card.terminalType}</span>
+          </span>
+          <span className="mt-1.5 flex min-w-0 items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-[11px] text-foreground/75">
+              {preview ||
+                t(`status.${card.status}`, {
+                  defaultValue: card.status,
+                })}
+            </span>
+            <time className="shrink-0 text-[11px] text-muted-foreground/75">
+              {relativeTime(card.lastActivity, now, i18n.language)}
+            </time>
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => onUnfollowCard(card.id)}
+          title={t('workbench.followed.remove', {
+            defaultValue: 'Remove from Workbench',
+          })}
+          aria-label={t('workbench.followed.removeNamed', {
+            name: card.projectName,
+            defaultValue: 'Remove {{name}} from Workbench',
+          })}
+          className="grid w-8 shrink-0 place-items-center border-l border-border/70 text-muted-foreground opacity-70 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </article>
+    );
+  };
 
   return (
     <section aria-labelledby="workbench-followed-heading" className={className}>
@@ -86,101 +195,36 @@ export function FollowedTerminalSection({
       </div>
 
       {cards.length > 0 ? (
-        <div
-          className={
-            expanded
-              ? 'flex flex-wrap gap-2'
-              : 'flex gap-2 overflow-x-auto pb-1'
-          }
-        >
-          {cards.map((card) => {
-            const preview = followedPreview(card);
-            return (
-              <article
-                key={card.id}
-                className="group flex w-[248px] shrink-0 items-stretch overflow-hidden rounded-lg border border-border bg-card/75 transition-colors hover:border-primary/30 hover:bg-card"
-              >
-                <button
-                  type="button"
-                  onClick={() => onOpenTerminal(card.id)}
-                  aria-label={t('workbench.followed.openTerminal', {
-                    name: card.projectName,
-                    defaultValue: 'Open {{name}} terminal',
-                  })}
-                  className="min-w-0 flex-1 px-3 py-2 text-left"
-                >
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <SquareTerminal className="h-3.5 w-3.5 shrink-0 text-primary" />
-                    {/* Same interaction as the terminal card header: the name
-                        owns its click region — single click is stopped so it
-                        doesn't open the terminal, double-click enters rename. */}
-                    <span
-                      className="flex min-w-0 flex-1 items-center"
-                      onClick={(event) => event.stopPropagation()}
-                      onDoubleClick={(event) => {
-                        event.stopPropagation();
-                        if (editingId !== card.id) setEditingId(card.id);
-                      }}
-                      title={
-                        editingId === card.id
-                          ? undefined
-                          : t('card.renameHint', { defaultValue: 'Double-click to rename' })
-                      }
-                    >
-                      <EditableCardName
-                        value={card.projectName}
-                        editing={editingId === card.id}
-                        onCommit={(name) => {
-                          renameCard(card.id, name);
-                          setEditingId(null);
-                        }}
-                        onCancel={() => setEditingId(null)}
-                        ariaLabel={t('card.rename', { defaultValue: 'Rename card' })}
-                        className="min-w-0 flex-1 truncate text-xs font-bold"
-                      />
-                    </span>
-                    <span
-                      className={[
-                        'h-1.5 w-1.5 shrink-0 rounded-full',
-                        statusDotClass(card.status),
-                      ].join(' ')}
-                    />
-                  </span>
-                  <span className="mt-1 flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
-                    <span className="truncate">{worktreeDisplayLabel(card)}</span>
-                    <span aria-hidden="true">·</span>
-                    <span className="shrink-0 font-mono">{card.terminalType}</span>
-                  </span>
-                  <span className="mt-1.5 flex min-w-0 items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate text-[11px] text-foreground/75">
-                      {preview ||
-                        t(`status.${card.status}`, {
-                          defaultValue: card.status,
-                        })}
-                    </span>
-                    <time className="shrink-0 text-[11px] text-muted-foreground/75">
-                      {relativeTime(card.lastActivity, now, i18n.language)}
-                    </time>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onUnfollowCard(card.id)}
-                  title={t('workbench.followed.remove', {
-                    defaultValue: 'Remove from Workbench',
-                  })}
-                  aria-label={t('workbench.followed.removeNamed', {
-                    name: card.projectName,
-                    defaultValue: 'Remove {{name}} from Workbench',
-                  })}
-                  className="grid w-8 shrink-0 place-items-center border-l border-border/70 text-muted-foreground opacity-70 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </article>
-            );
-          })}
-        </div>
+        expanded ? (
+          <div className="flex flex-wrap gap-2">
+            {cards.map(renderCard)}
+          </div>
+        ) : (
+          <div className="relative">
+            <div
+              ref={scrollerRef}
+              onScroll={syncEdgeFade}
+              data-testid="followed-terminal-scroller"
+              className="flex gap-2 overflow-x-auto pb-1"
+            >
+              {cards.map(renderCard)}
+            </div>
+            {edgeFade.left && (
+              <span
+                aria-hidden="true"
+                data-testid="followed-scroll-fade-left"
+                className="pointer-events-none absolute inset-y-0 left-0 w-7 rounded-l-lg bg-gradient-to-r from-background to-transparent"
+              />
+            )}
+            {edgeFade.right && (
+              <span
+                aria-hidden="true"
+                data-testid="followed-scroll-fade-right"
+                className="pointer-events-none absolute inset-y-0 right-0 w-7 rounded-r-lg bg-gradient-to-l from-background to-transparent"
+              />
+            )}
+          </div>
+        )
       ) : (
         <button
           type="button"

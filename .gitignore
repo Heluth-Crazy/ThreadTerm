@@ -171,3 +171,7 @@ docs/*
 !docs/card-token-live-display-design.json
 !docs/windows-webview-removal-assessment.json
 .gitnexus
+
+# Downloaded Windows WebDriver binaries and raw local gate diagnostics.
+.cache/windows-terminal-startup/
+e2e/terminal-startup/reports/

@@ -135,6 +135,8 @@ describe('mobile workbench projection', () => {
         family: 'interaction',
         episodeKey: 'episode-1',
         fingerprint: 'input-request',
+        signalSource: 'agent_cli_prompt',
+        confidence: 'compatible',
       },
     };
 
@@ -153,6 +155,8 @@ describe('mobile workbench projection', () => {
           family: 'interaction',
           episodeKey: 'episode-1',
           fingerprint: 'input-request',
+          signalSource: 'agent_cli_prompt',
+          confidence: 'compatible',
         },
       },
     ]);

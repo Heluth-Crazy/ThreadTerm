@@ -1459,7 +1459,9 @@ mod tests {
             "routing": {
                 "origin": "pty",
                 "family": "interaction",
-                "episodeKey": "episode-1"
+                "episodeKey": "episode-1",
+                "signalSource": "agent_cli_prompt",
+                "confidence": "compatible"
             }
         }))
         .expect("notification fixture should deserialize");
@@ -1499,6 +1501,13 @@ mod tests {
 
         assert_eq!(snapshot.cards[0].id, "state-card");
         assert_eq!(snapshot.notifications[0].id, "notification-1");
+        let notification_json = serde_json::to_value(&snapshot.notifications[0])
+            .expect("notification should serialize");
+        assert_eq!(
+            notification_json["routing"]["signalSource"],
+            "agent_cli_prompt"
+        );
+        assert_eq!(notification_json["routing"]["confidence"], "compatible");
         assert_eq!(
             snapshot
                 .workbench

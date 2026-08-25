@@ -8,6 +8,7 @@ import {
   filterWorkbenchCards,
 } from './deriveAttentionItems';
 import { deriveExecutionGroups } from './deriveExecutionGroups';
+import { ignoredAttentionEpisodeFromItem } from './ignoreAttention';
 import { DEFAULT_WORKBENCH_RULES } from '../../stores/workbenchStore';
 
 const NOW = 1_800_000_000_000;
@@ -83,6 +84,7 @@ function derive(input: {
   requests?: PendingCodexRequest[];
   alerts?: SupervisorAlert[];
   rules?: Partial<typeof DEFAULT_WORKBENCH_RULES>;
+  ignoredAttention?: ReturnType<typeof ignoredAttentionEpisodeFromItem>[];
 }) {
   return deriveAttentionItems({
     cards: input.cards,
@@ -91,6 +93,7 @@ function derive(input: {
     codexRequests: input.requests ?? [],
     rules: { ...DEFAULT_WORKBENCH_RULES, ...input.rules },
     now: NOW,
+    ignoredAttention: input.ignoredAttention,
   });
 }
 
@@ -267,6 +270,49 @@ describe('deriveAttentionItems', () => {
 
     expect(filterWorkbenchCards(cards, 'C:\\repo\\app', 'c:/repo/app-feature')).toEqual([
       expect.objectContaining({ id: 'feature' }),
+    ]);
+  });
+
+  it('drops an ignored episode from needs-attention without hiding a later one', () => {
+    const finished = card('task', { status: 'idle', lastReplyPreview: 'task result' });
+    const completed = notification('completed-task', 'task', 'completed');
+    const items = derive({
+      cards: [finished],
+      notifications: [completed],
+    });
+    expect(items).toHaveLength(1);
+
+    const ignored = derive({
+      cards: [finished],
+      notifications: [completed],
+      ignoredAttention: [ignoredAttentionEpisodeFromItem(items[0]!, NOW)],
+    });
+    expect(ignored).toEqual([]);
+    expect(deriveWorkbenchSummary([finished], ignored)).toEqual({
+      attention: 0,
+      normalRunning: 0,
+      review: 0,
+      failed: 0,
+    });
+    expect(
+      derive({
+        cards: [card('task', { status: 'completed', lastReplyPreview: 'task result' })],
+        ignoredAttention: [ignoredAttentionEpisodeFromItem(items[0]!, NOW)],
+      }),
+    ).toEqual([]);
+
+    const later = notification('completed-later', 'task', 'completed', NOW + 1_000);
+    const nextItems = derive({
+      cards: [finished],
+      notifications: [later],
+      ignoredAttention: [ignoredAttentionEpisodeFromItem(items[0]!, NOW)],
+    });
+    expect(nextItems).toEqual([
+      expect.objectContaining({
+        cardId: 'task',
+        kind: 'review',
+        sourceId: 'completed-later',
+      }),
     ]);
   });
 

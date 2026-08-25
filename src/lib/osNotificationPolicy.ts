@@ -20,6 +20,8 @@ export interface OsNotificationEnvironment {
   enabled: boolean;
   foreground: boolean;
   focusedCardId: string | null;
+  /** Windows is system-primary; legacy platforms retain their existing policy. */
+  platform?: 'windows' | 'macos' | 'linux' | 'unknown';
 }
 
 export interface OsNotificationCoordinatorOptions {
@@ -27,6 +29,8 @@ export interface OsNotificationCoordinatorOptions {
   dispatch: (notification: NotificationEntry) => void | Promise<void>;
   coalesceMs?: number;
   cacheLimit?: number;
+  /** Called for every entry that has no OS delivery attempt. */
+  onSuppressed?: (notification: NotificationEntry) => void;
 }
 
 interface InteractionRecord {
@@ -38,6 +42,7 @@ interface PendingInteraction {
   genericPriority: number;
   codexCandidates: Map<string, NotificationEntry>;
   observed: Map<NotificationOrigin, Set<string>>;
+  suppressedCandidates: NotificationEntry[];
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -69,6 +74,10 @@ export function shouldDispatchOsNotification(
     if (notification.kind === 'failed') return !environment.foreground;
   }
 
+  // Windows notifications are the primary presentation channel. Focus only
+  // controls the in-app catch-up surface; it must never veto a native toast.
+  if (environment.platform === 'windows') return true;
+
   if (notification.kind === 'completed') {
     return !environment.foreground;
   }
@@ -97,6 +106,7 @@ export class OsNotificationCoordinator {
   private readonly dispatch: (notification: NotificationEntry) => void | Promise<void>;
   private readonly coalesceMs: number;
   private readonly cacheLimit: number;
+  private readonly onSuppressed?: (notification: NotificationEntry) => void;
   private readonly processedIds = new Map<string, true>();
   private readonly interactionRecords = new Map<string, InteractionRecord>();
   private readonly pendingInteractions = new Map<string, PendingInteraction>();
@@ -107,6 +117,7 @@ export class OsNotificationCoordinator {
     this.dispatch = options.dispatch;
     this.coalesceMs = options.coalesceMs ?? OS_NOTIFICATION_COALESCE_MS;
     this.cacheLimit = Math.max(16, options.cacheLimit ?? DEFAULT_CACHE_LIMIT);
+    this.onSuppressed = options.onSuppressed;
   }
 
   accept(notification: NotificationEntry): void {
@@ -127,11 +138,13 @@ export class OsNotificationCoordinator {
     const record = this.interactionRecords.get(episodeKey);
     if (record && this.consumeIfAlreadyObserved(record, origin, fingerprint)) {
       this.touchInteractionRecord(episodeKey, record);
+      this.onSuppressed?.(notification);
       return;
     }
 
     if (!shouldDispatchOsNotification(notification, this.getEnvironment())) {
       this.rememberInteraction(episodeKey, origin, fingerprint);
+      this.onSuppressed?.(notification);
       return;
     }
 
@@ -150,7 +163,10 @@ export class OsNotificationCoordinator {
   }
 
   private dispatchIfAllowed(notification: NotificationEntry): void {
-    if (!shouldDispatchOsNotification(notification, this.getEnvironment())) return;
+    if (!shouldDispatchOsNotification(notification, this.getEnvironment())) {
+      this.onSuppressed?.(notification);
+      return;
+    }
     void this.dispatch(notification);
   }
 
@@ -176,6 +192,7 @@ export class OsNotificationCoordinator {
         genericPriority: Number.NEGATIVE_INFINITY,
         codexCandidates: new Map(),
         observed: new Map(),
+        suppressedCandidates: [],
         timer: setTimeout(() => {
           this.flushInteraction(episodeKey);
         }, this.coalesceMs),
@@ -187,14 +204,23 @@ export class OsNotificationCoordinator {
     addObservedFingerprint(pending.observed, origin, fingerprint);
 
     if (origin === 'codex_request') {
+      if (pending.genericCandidate) pending.suppressedCandidates.push(pending.genericCandidate);
       pending.codexCandidates.set(fingerprint, notification);
+      return;
+    }
+
+    if (pending.codexCandidates.size > 0) {
+      pending.suppressedCandidates.push(notification);
       return;
     }
 
     const priority = INTERACTION_PRIORITY[origin];
     if (priority > pending.genericPriority) {
+      if (pending.genericCandidate) pending.suppressedCandidates.push(pending.genericCandidate);
       pending.genericCandidate = notification;
       pending.genericPriority = priority;
+    } else {
+      pending.suppressedCandidates.push(notification);
     }
   }
 
@@ -219,6 +245,9 @@ export class OsNotificationCoordinator {
 
     for (const candidate of candidates) {
       this.dispatchIfAllowed(candidate);
+    }
+    for (const candidate of pending.suppressedCandidates) {
+      this.onSuppressed?.(candidate);
     }
   }
 

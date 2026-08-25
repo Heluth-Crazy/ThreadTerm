@@ -93,7 +93,6 @@ describe('Shell — scroll-to-bottom indicator (P0-1)', () => {
           preservePtyOnUnmount={true}
           autoReconnectOnExit={false}
           onDisconnect={undefined}
-          onInitialCommandSent={undefined}
           onUserSubmit={undefined}
         />,
       );
@@ -122,7 +121,6 @@ describe('Shell — scroll-to-bottom indicator (P0-1)', () => {
           preservePtyOnUnmount={true}
           autoReconnectOnExit={false}
           onDisconnect={undefined}
-          onInitialCommandSent={undefined}
           onUserSubmit={undefined}
         />,
       );

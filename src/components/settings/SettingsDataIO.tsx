@@ -65,6 +65,10 @@ export function SettingsDataIO() {
     replaceCustomThemePacks,
   } = useTheme();
   const osNotificationsEnabled = useTerminalStore((s) => s.osNotificationsEnabled);
+  const osNotificationPreviewEnabled = useTerminalStore((s) => s.osNotificationPreviewEnabled);
+  const agentCliCompatibilityCompletionEnabled = useTerminalStore(
+    (s) => s.agentCliCompatibilityCompletionEnabled,
+  );
   const selectorMode = useOverlayStore((s) => s.selectorMode);
   const setSelectorMode = useOverlayStore((s) => s.setSelectorMode);
   const hotkeyA = useOverlayStore((s) => s.hotkeyA);
@@ -84,7 +88,11 @@ export function SettingsDataIO() {
     createSettingsBundle({
       themePreference: { themeMode, themePackId },
       customThemePacks: (themePacks as ThemePack[]).filter((pack) => pack.isCustom),
-      terminalSettings: { osNotificationsEnabled },
+      terminalSettings: {
+        osNotificationsEnabled,
+        osNotificationPreviewEnabled,
+        agentCliCompatibilityCompletionEnabled,
+      },
       overlaySettings: { selectorMode, hotkeyA, hotkeyB, lightweightMode },
     });
 
@@ -173,10 +181,16 @@ export function SettingsDataIO() {
       if (selected.has('terminal') && sections.terminal) {
         const terminalPreferences = {
           osNotificationsEnabled: sections.terminal.osNotificationsEnabled,
+          osNotificationPreviewEnabled: sections.terminal.osNotificationPreviewEnabled,
+          agentCliCompatibilityCompletionEnabled:
+            sections.terminal.agentCliCompatibilityCompletionEnabled,
           supervisorEnabled: useTerminalStore.getState().supervisorEnabled,
         };
         useTerminalStore.setState({
           osNotificationsEnabled: terminalPreferences.osNotificationsEnabled,
+          osNotificationPreviewEnabled: terminalPreferences.osNotificationPreviewEnabled,
+          agentCliCompatibilityCompletionEnabled:
+            terminalPreferences.agentCliCompatibilityCompletionEnabled,
         });
         void emitSettingsChanged({
           domain: 'terminal-preferences',

@@ -16,7 +16,11 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { terminalTypeMeta } from './terminalTypeMeta';
 import { isTauriEnv } from '../../lib/tauri-bridge';
-import type { TerminalCreateOptions, TerminalType } from '../../types/terminal';
+import type {
+  TerminalCreateOptions,
+  TerminalExecutionMode,
+  TerminalType,
+} from '../../types/terminal';
 
 /** Extract the last path segment (works for both POSIX and Windows paths). */
 function pathBasename(p: string): string {
@@ -51,6 +55,7 @@ export function CreateTerminalDialog({
   const [path, setPath] = useState('');
   const [type, setType] = useState<TerminalType>('shell');
   const [command, setCommand] = useState('');
+  const [executionMode, setExecutionMode] = useState<TerminalExecutionMode>('interactive');
 
   const canSubmit = name.trim().length > 0 && path.trim().length > 0;
 
@@ -71,12 +76,14 @@ export function CreateTerminalDialog({
       projectPath: path.trim(),
       terminalType: type,
       command: command.trim() ? command : undefined,
+      executionMode: command.trim() && executionMode === 'oneShot' ? 'oneShot' : undefined,
     });
     // Reset
     setName('');
     setPath('');
     setType('shell');
     setCommand('');
+    setExecutionMode('interactive');
   };
 
   const pickRecent = (p: RecentProject) => {
@@ -251,7 +258,11 @@ export function CreateTerminalDialog({
                   </label>
                   <input
                     value={command}
-                    onChange={(e) => setCommand(e.target.value)}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setCommand(value);
+                      if (!value.trim()) setExecutionMode('interactive');
+                    }}
                     placeholder={t('dialog.initialCommandPlaceholder')}
                     className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-ring/40"
                   />
@@ -266,6 +277,37 @@ export function CreateTerminalDialog({
                     .
                   </p>
                 </div>
+
+                {command.trim() && (
+                  <fieldset className="space-y-1.5">
+                    <legend className="text-xs font-medium">{t('dialog.executionMode')}</legend>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {([
+                        ['interactive', t('dialog.interactiveMode')] as const,
+                        ['oneShot', t('dialog.oneShotMode')] as const,
+                      ]).map(([value, label]) => (
+                        <label
+                          key={value}
+                          className="flex cursor-pointer items-center gap-2 rounded-md border border-border px-2.5 py-2 text-[11px] hover:bg-accent/40"
+                        >
+                          <input
+                            type="radio"
+                            name="terminal-execution-mode"
+                            value={value}
+                            checked={executionMode === value}
+                            onChange={() => setExecutionMode(value)}
+                          />
+                          <span>{label}</span>
+                        </label>
+                      ))}
+                    </div>
+                    {executionMode === 'oneShot' && (
+                      <p className="text-[11px] text-muted-foreground">
+                        {t('dialog.oneShotHint')}
+                      </p>
+                    )}
+                  </fieldset>
+                )}
               </div>
 
               {/* Footer */}

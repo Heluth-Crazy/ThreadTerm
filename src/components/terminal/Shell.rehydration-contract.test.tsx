@@ -13,6 +13,7 @@ import {
   getXtermMock,
   renderMinimalShell,
   renderShellProps,
+  TestShell,
   waitForConnected,
 } from './Shell.testHarness';
 
@@ -28,6 +29,61 @@ function historyLines(count: number): string {
 }
 
 describe('Shell — renderer rehydration contract (Batch 1 gate)', () => {
+  it('does not recreate a completed one-shot generation on bootstrap', async () => {
+    render(
+      <TestShell
+        selectedProject={{ name: 'proj', path: '/tmp/proj', fullPath: '/tmp/proj' }}
+        initialCommand="printf should-not-run"
+        executionMode="oneShot"
+        oneShotRunState="completed"
+        oneShotFinalOutput="persisted final output"
+        minimal={true}
+        autoConnect={true}
+        paneId="completed-one-shot"
+        preservePtyOnUnmount={true}
+      />,
+    );
+
+    await act(async () => {});
+    expect(ptyMock.create).not.toHaveBeenCalled();
+    expect(ptyMock.getSessionState).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="one-shot-final-output"]')?.textContent)
+      .toContain('persisted final output');
+  });
+
+  it('forwards a queued one-shot command at PTY creation without typing it later', async () => {
+    const onStarted = vi.fn();
+    render(
+      <TestShell
+        selectedProject={{ name: 'proj', path: '/tmp/proj', fullPath: '/tmp/proj' }}
+        initialCommand="printf one-shot"
+        executionMode="oneShot"
+        oneShotRunState="queued"
+        minimal={true}
+        autoConnect={true}
+        paneId="queued-one-shot"
+        preservePtyOnUnmount={true}
+        autoReconnectOnExit={false}
+        onOneShotRunStarted={onStarted}
+      />,
+    );
+
+    await waitForConnected();
+    expect(onStarted).toHaveBeenCalledTimes(1);
+    expect(ptyMock.create).toHaveBeenCalledWith(
+      'queued-one-shot',
+      '/tmp/proj',
+      expect.any(Number),
+      expect.any(Number),
+      undefined,
+      { executionMode: 'oneShot', command: 'printf one-shot' },
+    );
+    expect(ptyMock.input).not.toHaveBeenCalledWith(
+      'queued-one-shot',
+      expect.stringContaining('printf one-shot'),
+    );
+  });
+
   it('replays a full 3000-line history plus screen, cursor size, and watermark', async () => {
     const history = historyLines(3000);
     const screen = 'current-tui-screen\n';

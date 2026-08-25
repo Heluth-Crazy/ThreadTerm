@@ -32,6 +32,7 @@ import { CardFooter } from './CardFooter';
 import { CardHeader } from './CardHeader';
 import { CardPreviewPanel } from './CardPreviewPanel';
 import { normalizeAutoRestartConfig } from '../../lib/autoRestart';
+import { resolveTerminalEventSummary } from '../../lib/terminalEventSummary';
 import { worktreeDisplayLabel } from '../../lib/worktreePaths';
 import { useNotificationHighlight } from './useNotificationHighlight';
 
@@ -311,7 +312,7 @@ export const TerminalCardComponent = memo(function TerminalCardComponent({
                 <span className="shrink-0 text-[11px] text-muted-foreground/70">
                   {formatRelative(ev.at, t)}
                 </span>
-                <span className="truncate">{ev.summary}</span>
+                <span className="truncate">{resolveTerminalEventSummary(ev, t)}</span>
               </li>
             ))}
           </ul>

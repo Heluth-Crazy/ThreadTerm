@@ -19,15 +19,15 @@
  * Empty state: when no card id has been assigned yet we render a friendly
  * placeholder so the window isn't a blank rectangle.
  */
-import { useCallback, useEffect, useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import Shell from '../../components/terminal/Shell';
 import type { TerminalCard } from '../../types/terminal';
 import { getTerminalTypeMeta } from '../../components/terminal/terminalTypeMeta';
-import { useProviderSessionLifecycle } from '../../components/terminal/useProviderSessionLifecycle';
 import { useValidatedProviderSessionLaunch } from '../../components/terminal/useValidatedProviderSessionLaunch';
 import { ProviderSessionLaunchPlaceholder } from '../../components/terminal/ProviderSessionLaunchPlaceholder';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { buildProviderStartupIntent } from '../../components/terminal/providerStartup';
 
 export interface FloatSessionProps {
   card: TerminalCard | null;
@@ -49,7 +49,6 @@ export function FloatSession({ card, active = true }: FloatSessionProps) {
   );
   const typeMeta = card ? getTerminalTypeMeta(card.terminalType) : null;
   const {
-    lifecycleCard,
     launch,
     status: providerSessionLaunchStatus,
     retry: retryProviderSessionLaunch,
@@ -57,19 +56,8 @@ export function FloatSession({ card, active = true }: FloatSessionProps) {
     card,
     typeMeta?.defaultCommand,
   );
-  const onInitialCommandSent = useProviderSessionLifecycle(lifecycleCard, launch, true);
   const markCardRead = useTerminalStore((s) => s.markCardRead);
   const recordUserSubmit = useTerminalStore((s) => s.recordUserSubmit);
-
-  const recordSubmit = useCallback(() => {
-    if (!card) return;
-    recordUserSubmit(card.id, t('terminal:view.sentInput', { defaultValue: 'Sent input' }));
-  }, [card?.id, recordUserSubmit, t]);
-
-  const handleInitialCommandSent = useCallback(() => {
-    recordSubmit();
-    onInitialCommandSent();
-  }, [onInitialCommandSent, recordSubmit]);
 
   useEffect(() => {
     if (card?.unread) {
@@ -106,6 +94,9 @@ export function FloatSession({ card, active = true }: FloatSessionProps) {
   // existing session), so we never double-spawn.
   const paneId = card.ptyId || card.id;
   const initialCommand = launch?.command;
+  const providerStartup = launch
+    ? buildProviderStartupIntent(card.id, launch) ?? undefined
+    : undefined;
 
   return (
     <div id={`float-shell-${card.id}`} className="flex-1 min-h-0 bg-[var(--terminal-background)]">
@@ -117,6 +108,7 @@ export function FloatSession({ card, active = true }: FloatSessionProps) {
           // attaches. If it does not, the float starts the same command that
           // the main TerminalView would have started for this card.
           initialCommand={initialCommand}
+          providerStartup={providerStartup}
           minimal={true}
           autoConnect={true}
           paneId={paneId}
@@ -125,8 +117,9 @@ export function FloatSession({ card, active = true }: FloatSessionProps) {
           preservePtyOnUnmount={true}
           suppressInitialCommandWhenPtyExists={true}
           resumeLoading={launch.action === 'resume'}
-          onInitialCommandSent={handleInitialCommandSent}
-          onUserSubmit={recordSubmit}
+          onUserSubmit={() => {
+            recordUserSubmit(card.id, t('terminal:view.sentInput', { defaultValue: 'Sent input' }));
+          }}
           onDisconnect={undefined}
         />
       ) : (

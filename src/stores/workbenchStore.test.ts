@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import type { AttentionItem } from '../lib/workbench/types';
 import {
   DEFAULT_WORKBENCH_RULES,
   normalizeFollowedCardIds,
@@ -7,10 +8,35 @@ import {
 } from './workbenchStore';
 import { useTerminalStore } from './terminalStore';
 
+const reviewItem: AttentionItem = {
+  id: 'notification:note-1',
+  cardId: 'card-a',
+  kind: 'review',
+  severity: 'info',
+  sourceKind: 'notification',
+  sourceId: 'note-1',
+  occurredAt: 1_000,
+  projectPath: '/repo',
+  projectName: 'Repo',
+  terminalType: 'shell',
+  title: 'Done',
+  reasonCode: 'completed_unread',
+  capability: {
+    openRequest: false,
+    openTerminal: true,
+    openNotification: true,
+    openEvidence: false,
+  },
+};
+
 beforeEach(() => {
   localStorage.clear();
   useWorkbenchStore.getState().resetRules();
-  useWorkbenchStore.setState({ followedCardIds: [], projectOrder: [] });
+  useWorkbenchStore.setState({
+    followedCardIds: [],
+    projectOrder: [],
+    ignoredAttention: [],
+  });
 });
 describe('workbenchStore', () => {
   it('defaults stalled detection off and preserves the three safe projections', () => {
@@ -53,7 +79,23 @@ describe('workbenchStore', () => {
       'rules',
       'followedCardIds',
       'projectOrder',
+      'ignoredAttention',
     ]);
+  });
+
+  it('persists ignored attention episodes and drops entries for missing cards', () => {
+    useWorkbenchStore.getState().ignoreAttention(reviewItem);
+    useWorkbenchStore.getState().ignoreAttention(reviewItem);
+    expect(useWorkbenchStore.getState().ignoredAttention).toEqual([
+      expect.objectContaining({
+        cardId: reviewItem.cardId,
+        kind: reviewItem.kind,
+        sourceId: reviewItem.sourceId,
+      }),
+    ]);
+
+    useWorkbenchStore.getState().reconcileIgnoredAttention(['card-live']);
+    expect(useWorkbenchStore.getState().ignoredAttention).toEqual([]);
   });
 
   it('normalizes, prepends and deduplicates followed terminal ids', () => {
@@ -94,6 +136,7 @@ describe('workbenchStore', () => {
     });
     expect(useWorkbenchStore.getState().followedCardIds).toEqual([]);
     expect(useWorkbenchStore.getState().projectOrder).toEqual([]);
+    expect(useWorkbenchStore.getState().ignoredAttention).toEqual([]);
   });
 
   it('reconciles project paths without disturbing the retained manual order', () => {

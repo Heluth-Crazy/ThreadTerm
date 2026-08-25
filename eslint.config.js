@@ -4,6 +4,7 @@ import tseslint from 'typescript-eslint';
 export default [
   {
     ignores: [
+      '.cache/**',
       'dist/**',
       'mobile-app/dist/**',
       'src-tauri/**',

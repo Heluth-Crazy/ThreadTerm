@@ -42,6 +42,10 @@ export function SettingsSyncBridge(): null {
       ) {
         useTerminalStore.setState({
           osNotificationsEnabled: payload.terminalPreferences.osNotificationsEnabled,
+          osNotificationPreviewEnabled:
+            payload.terminalPreferences.osNotificationPreviewEnabled ?? true,
+          agentCliCompatibilityCompletionEnabled:
+            payload.terminalPreferences.agentCliCompatibilityCompletionEnabled ?? true,
           supervisorEnabled: payload.terminalPreferences.supervisorEnabled,
         });
       }

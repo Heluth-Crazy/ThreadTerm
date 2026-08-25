@@ -1,48 +1,38 @@
 /**
- * NotificationBridge
+ * Application-scoped OS notification bridge.
  *
- * Headless component that reacts to in-app notifications produced by the
- * {@link TerminalEventBridge} and surfaces them as OS notifications via
- * `@tauri-apps/plugin-notification`. Also listens for notification-action
- * clicks and focuses the originating card when the user clicks a toast.
- *
- * Graceful degradation:
- *   • If permission isn't granted yet, request it on first mount.
- *   • If the user denies, we silently fall back to the in-app bell.
- *   • In web/browser mode where Tauri isn't available, no OS toast is shown
- *     but the store still receives the entry.
+ * The Rust command owns native/plugin delivery and activation identity. This
+ * component only subscribes to committed ledger entries, listens for the
+ * event-level activation payload, and resolves that payload back through the
+ * notification ledger before navigation or acknowledgement.
  */
 import { useEffect } from 'react';
 import {
   isPermissionGranted,
   requestPermission,
-  sendNotification,
-  onAction,
 } from '@tauri-apps/plugin-notification';
 import { useTerminalStore } from '../../stores/terminalStore';
 import type { NotificationEntry } from '../../types/terminal';
-import { invoke, isTauriEnv } from '../../lib/tauri-bridge';
+import { isTauriEnv } from '../../lib/tauri-bridge';
 import { logger } from '../../lib/logger';
 import { OsNotificationCoordinator } from '../../lib/osNotificationPolicy';
+import { notificationPresentationDeliveryBus } from '../../lib/notificationPresentation';
+import {
+  buildNotificationBody,
+  notificationActivationReady,
+  notificationFeedbackBus,
+  notificationTestActivationRegistry,
+  publishNotificationTargetFeedback,
+  sendOsNotification,
+  subscribeNotificationActivations,
+} from '../../lib/notificationDelivery';
 import i18n from '../../i18n/config';
-import { openNotificationTarget } from './notificationTarget';
+import { openNotificationTarget, resolveNotificationTarget } from './notificationTarget';
 import { describeCardSource, formatCardSourceLabel } from './notificationSource';
 
-// Encodes a cardId into a numeric notification id that Tauri accepts.
-// We use a hash so repeated notifications for the same card share an id
-// slot and can be de-duplicated by the OS.
-function hashCardIdToNotifId(cardId: string): number {
-  let h = 0;
-  for (let i = 0; i < cardId.length; i++) {
-    h = (h << 5) - h + cardId.charCodeAt(i);
-    h |= 0; // force int32
-  }
-  // Positive 30-bit int — stay comfortably inside the 32-bit signed range.
-  return Math.abs(h) % 0x3fffffff;
-}
-
 export function NotificationBridge(): null {
-  // 1. Request permission once on mount.
+  // Request permission once on mount. Native delivery and the in-app ledger do
+  // not depend on this best-effort permission prompt.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -54,10 +44,16 @@ export function NotificationBridge(): null {
           granted = result === 'granted';
         }
         if (!cancelled && !granted) {
-          logger.warn('[NotificationBridge] OS notification permission was not granted on mount');
+          logger.warn('[NotificationBridge] OS permission was not granted', {
+            channel: 'permission',
+            status: 'disabled-by-system',
+          });
         }
       } catch {
-        /* ignore — bell still works */
+        logger.warn('[NotificationBridge] OS permission check failed', {
+          channel: 'permission',
+          status: 'failed',
+        });
       }
     })();
     return () => {
@@ -65,33 +61,73 @@ export function NotificationBridge(): null {
     };
   }, []);
 
-  // 2. Subscribe to OS notification clicks → queue focus + open the card.
+  // Listener -> Rust pending drain -> store subscription is one ordered chain.
+  // Historical IDs seed the coordinator, while the immediate post-subscribe
+  // snapshot closes the render/listener race for events committed meanwhile.
   useEffect(() => {
-    if (!isTauriEnv()) return;
-    let unsub: (() => void) | null = null;
-    (async () => {
-      try {
-        const listener = await onAction((options) => {
-          // We stashed the cardId as `options.extra?.cardId` when firing;
-          // `extra` is not part of Options but tauri forwards unknown keys.
-          const cardId =
-            (options as { extra?: { cardId?: string } }).extra?.cardId ??
-            extractCardIdFromTitle(options.title ?? '');
-          if (!cardId) return;
-          openNotificationTarget(cardId);
-        });
-        unsub = () => listener.unregister();
-      } catch {
-        /* ignore */
-      }
-    })();
-    return () => {
-      unsub?.();
-    };
-  }, []);
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    let unsubscribeStore: (() => void) | null = null;
+    const seenStoreIds = new Set(
+      useTerminalStore.getState().notifications.map((notification) => notification.id),
+    );
 
-  // 3. Whenever a new notification lands in the store, dispatch it to the OS.
-  useEffect(() => {
+    const handleActivation = async (notificationId: string): Promise<void> => {
+      if (disposed) return;
+
+      // Settings test toasts are intentionally runtime-only and never enter
+      // the ledger. They still carry an event ID and an exact optional card ID.
+      const testActivation = notificationTestActivationRegistry.consume(notificationId);
+      if (testActivation) {
+        if (!testActivation.cardId) {
+          testActivation.onClicked();
+          return;
+        }
+        if (openNotificationTarget(testActivation.cardId)) {
+          testActivation.onClicked();
+        } else {
+          notificationFeedbackBus.publish({
+            notificationId,
+            cardId: testActivation.cardId,
+            kind: 'error',
+            feedbackKey: 'notifications.targetNavigationFailed',
+          });
+          useTerminalStore.getState().toggleNotificationCentre(true);
+        }
+        return;
+      }
+
+      const entry = useTerminalStore
+        .getState()
+        .notifications.find((notification) => notification.id === notificationId);
+      if (!entry) {
+        // Native payloads intentionally contain no card ID. A missing ledger
+        // event cannot safely guess a target or acknowledge a sibling event.
+        notificationFeedbackBus.publish({
+          notificationId,
+          cardId: null,
+          kind: 'stale',
+          feedbackKey: 'notifications.targetNavigationFailed',
+        });
+        useTerminalStore.getState().toggleNotificationCentre(true);
+        return;
+      }
+
+      const result = await resolveNotificationTarget(notificationId, entry.cardId);
+      // Once an activation has been accepted by the process relay, finish
+      // target resolution even if React replays/unmounts this effect. The
+      // relay owns delivery identity; an effect cleanup must not turn an
+      // in-flight error or acknowledgement into a dropped activation.
+      if (result.accepted) return;
+      publishNotificationTargetFeedback({
+        notificationId,
+        cardId: entry.cardId,
+        kind: result.kind === 'missing' || result.kind === 'stale' ? result.kind : 'error',
+        feedbackKey: result.feedbackKey,
+      });
+      useTerminalStore.getState().toggleNotificationCentre(true);
+    };
+
     const coordinator = new OsNotificationCoordinator({
       getEnvironment: () => {
         const state = useTerminalStore.getState();
@@ -100,31 +136,74 @@ export function NotificationBridge(): null {
           foreground:
             document.visibilityState === 'visible' && document.hasFocus(),
           focusedCardId: state.focusedCardId,
+          platform: /Windows/i.test(navigator.userAgent) ? 'windows' : 'unknown',
         };
       },
       dispatch: dispatchOsNotification,
+      onSuppressed: (notification) => {
+        notificationPresentationDeliveryBus.resolve(notification.id, false);
+      },
     });
-    const unsub = useTerminalStore.subscribe((state, prev) => {
-      if (state.notifications === prev.notifications) return;
-      // find entries present in `state.notifications` but not in `prev.notifications`
-      const prevIds = new Set(prev.notifications.map((n) => n.id));
-      for (const n of state.notifications) {
-        if (prevIds.has(n.id)) continue;
-        coordinator.accept(n);
+
+    void (async () => {
+      try {
+        // Subscribe synchronously before awaiting the process-scoped
+        // listener/drain lease. The relay buffers IDs if StrictMode removes
+        // this effect during the deferred drain and flushes them to the next
+        // lease holder exactly once.
+        unlisten = subscribeNotificationActivations({ onNotificationId: handleActivation });
+        const activationReady = await notificationActivationReady();
+        if (!activationReady) {
+          // Fail closed: without a native activation listener, do not start
+          // new OS dispatches that would create unclickable toasts.
+          unlisten();
+          unlisten = null;
+          return;
+        }
+        if (disposed) {
+          unlisten();
+          unlisten = null;
+          return;
+        }
+
+        unsubscribeStore = useTerminalStore.subscribe((state, previousState) => {
+          if (disposed || state.notifications === previousState.notifications) return;
+          const previousIds = new Set(previousState.notifications.map((n) => n.id));
+          for (const notification of state.notifications) {
+            if (previousIds.has(notification.id) || seenStoreIds.has(notification.id)) continue;
+            seenStoreIds.add(notification.id);
+            coordinator.accept(notification);
+          }
+        });
+
+        // Catch entries committed after render but before subscription. The
+        // coordinator remains seeded with the hydrated IDs above.
+        for (const notification of useTerminalStore.getState().notifications) {
+          if (seenStoreIds.has(notification.id)) continue;
+          seenStoreIds.add(notification.id);
+          coordinator.accept(notification);
+        }
+      } catch {
+        logger.warn('[NotificationBridge] activation channel setup failed', {
+          notificationId: null,
+          channel: 'activation',
+          status: 'failed',
+        });
       }
-    });
+    })();
+
     return () => {
-      unsub();
+      disposed = true;
+      unlisten?.();
+      unsubscribeStore?.();
       coordinator.dispose();
+      seenStoreIds.clear();
     };
   }, []);
 
-  // 4. Periodic purge of read notifications older than 2 hours so the bell
-  //    doesn't accumulate noise across long sessions. We run this every
-  //    minute, which is cheap (a single `filter` over a bounded array).
+  // Purge only the bounded read history. Unread ledger evidence is retained.
   useEffect(() => {
     const TWO_HOURS_MS = 2 * 60 * 60_000;
-    // Kick once on mount to catch leftovers from a previous session.
     useTerminalStore.getState().purgeReadNotifications(TWO_HOURS_MS);
     const handle = setInterval(() => {
       useTerminalStore.getState().purgeReadNotifications(TWO_HOURS_MS);
@@ -135,59 +214,27 @@ export function NotificationBridge(): null {
   return null;
 }
 
-async function dispatchOsNotification(n: NotificationEntry): Promise<void> {
-  if (!isTauriEnv()) return;
-  const body = buildOsNotificationBody(n);
-  try {
-    await invoke('notification_send_os', {
-      title: n.title,
-      body,
-      cardId: n.cardId,
-    });
-    return;
-  } catch (error) {
-    logger.warn('[NotificationBridge] Rust OS notification failed; falling back to Web Notification', error);
-  }
-
-  try {
-    const granted = await isPermissionGranted();
-    if (!granted) {
-      const permission = await requestPermission();
-      if (permission !== 'granted') {
-        logger.warn('[NotificationBridge] OS notification permission was not granted', permission);
-        return;
-      }
-    }
-    sendNotification({
-      id: hashCardIdToNotifId(n.cardId),
-      title: n.title,
-      body,
-      // `extra` is forwarded to the onAction callback so we can round-trip cardId.
-      // This is an unknown field on `Options` but tolerated by the plugin.
-      ...( { extra: { cardId: n.cardId } } as any ),
-    });
-  } catch (error) {
-    logger.warn('[NotificationBridge] Web Notification fallback failed', error);
-  }
-}
-
-// Prefix the OS notification body with the originating card's source label
-// ("ThreadTerm · repo · Codex · Fix") so the user can tell which card fired
-// the toast without opening the app. Falls back to the raw body when the
-// notification isn't tied to a live card (e.g. `system:*` events).
-function buildOsNotificationBody(n: NotificationEntry): string {
-  const card = useTerminalStore.getState().getCardById(n.cardId);
-  if (!card) return n.body;
-  const source = formatCardSourceLabel(describeCardSource(card), (key, fallback) =>
-    i18n.t(`terminal:${key}`, fallback ?? key),
+async function dispatchOsNotification(notification: NotificationEntry): Promise<void> {
+  const state = useTerminalStore.getState();
+  const card = state.getCardById(notification.cardId);
+  const sourceLabel = card
+    ? formatCardSourceLabel(describeCardSource(card), (key, fallback) =>
+        i18n.t(`terminal:${key}`, fallback ?? key),
+      )
+    : null;
+  const body = buildNotificationBody({
+    sourceLabel,
+    summary: notification.body,
+    previewEnabled: state.osNotificationPreviewEnabled,
+  });
+  const receipt = await sendOsNotification({
+    notificationId: notification.id,
+    cardId: notification.cardId,
+    title: notification.title,
+    body,
+  });
+  notificationPresentationDeliveryBus.resolve(
+    notification.id,
+    receipt.channel === 'windows-native' && receipt.status === 'accepted',
   );
-  const header = `ThreadTerm · ${source}`;
-  return n.body ? `${header}\n${n.body}` : header;
-}
-
-// Fallback: in case `extra` isn't round-tripped by the plugin, some titles
-// embed `[cardId]` — we can parse it back out. Kept small and best-effort.
-function extractCardIdFromTitle(title: string): string | null {
-  const m = title.match(/\[([a-z0-9]+-[a-z0-9]+)\]/i);
-  return m ? m[1] : null;
 }

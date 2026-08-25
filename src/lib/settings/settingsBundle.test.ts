@@ -116,6 +116,8 @@ describe('settings bundle', () => {
     expect(json).not.toContain('card-secret');
     expect(json).not.toContain('audit-secret');
     expect(bundle.sections.terminal?.osNotificationsEnabled).toBe(true);
+    expect(bundle.sections.terminal?.osNotificationPreviewEnabled).toBe(true);
+    expect(bundle.sections.terminal?.agentCliCompatibilityCompletionEnabled).toBe(true);
     expect(bundle.sections.overlay?.lightweightMode).toBe(true);
   });
 
@@ -172,6 +174,29 @@ describe('settings bundle', () => {
     expect(parsed.kind).toBe('success');
     if (parsed.kind === 'success') {
       expect(parsed.bundle.sections.overlay?.lightweightMode).toBe(false);
+    }
+  });
+
+  it('defaults new notification preferences for older terminal sections', () => {
+    const parsed = parseSettingsBundle(JSON.stringify({
+      app: 'ThreadTerm',
+      kind: 'threadterm-settings-bundle',
+      schemaVersion: 1,
+      exportedAt: '2026-05-04T00:00:00.000Z',
+      sections: {
+        terminal: {
+          osNotificationsEnabled: false,
+        },
+      },
+    }));
+
+    expect(parsed.kind).toBe('success');
+    if (parsed.kind === 'success') {
+      expect(parsed.bundle.sections.terminal).toMatchObject({
+        osNotificationsEnabled: false,
+        osNotificationPreviewEnabled: true,
+        agentCliCompatibilityCompletionEnabled: true,
+      });
     }
   });
 

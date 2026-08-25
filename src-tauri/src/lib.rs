@@ -25,6 +25,11 @@ mod settings_window;
 mod startup_data_directory;
 mod stats;
 mod supervisor;
+mod terminal_startup_effect_store;
+#[cfg(feature = "terminal-startup-harness")]
+mod terminal_startup_harness;
+#[cfg(feature = "terminal-startup-harness")]
+mod terminal_startup_warmup_harness;
 mod workspace;
 
 use tauri::Manager;
@@ -94,11 +99,15 @@ pub fn run() {
         "ThreadTerm data location resolved"
     );
 
+    let managed_state = managed_state::ManagedStateStore::new(managed_state_dir);
+    let startup_side_effect_dispatcher = pty::startup_side_effect_dispatcher(managed_state.clone());
     let builder = tauri::Builder::default()
         .manage(data_root)
         .manage(data_cache::DataCacheRuntime::default())
         .manage(data_migration::DataMigrationRuntime::default())
-        .manage(managed_state::ManagedStateStore::new(managed_state_dir))
+        .manage(notification::NotificationRuntime::default())
+        .manage(managed_state)
+        .manage(startup_side_effect_dispatcher)
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -140,11 +149,31 @@ pub fn run() {
                 tracing::error!(error = %e, "Database initialisation failed");
                 e.to_string()
             })?;
+            #[cfg(not(feature = "terminal-startup-harness"))]
+            if notification::initialize_windows_notification_identity(
+                app.handle(),
+                app.state::<notification::NotificationRuntime>().inner(),
+            )
+            .is_err()
+            {
+                // The notification adapter returns a typed degraded receipt;
+                // identity repair must never prevent ThreadTerm from opening.
+                tracing::warn!(
+                    reason = "identity-unavailable",
+                    "Windows notification identity setup failed"
+                );
+            }
+            // The harness build must not register the production Windows
+            // notification AUMID in HKCU.  Notification commands remain
+            // present for API-shape coverage, but identity setup is skipped.
+            #[cfg(feature = "terminal-startup-harness")]
+            let _notification_identity_api = notification::initialize_windows_notification_identity;
             desktop_windows::create_main_window(app)?;
 
             overlay::load_settings();
             overlay::register_default_shortcuts(app.handle());
             overlay::prewarm_windows(app.handle());
+            pty::prewarm_windows_conpty();
             supervisor::init(app.handle().clone());
             bridge::set_app_handle(app.handle().clone());
             bridge::restore_bridge_on_startup();
@@ -193,12 +222,14 @@ pub fn run() {
             workspace::workspace_disconnect_surface,
             local_directory::open_local_directory,
             pty::pty_create,
+            pty::pty_create_session_v2,
             pty::pty_input,
             pty::pty_resize,
             pty::pty_kill,
             pty::pty_graceful_shutdown,
             pty::pty_cancel_graceful_shutdown,
             pty::pty_get_session_state,
+            pty::pty_get_startup_state,
             pty::pty_get_all_session_states,
             pty::pty_get_recent_output,
             pty::pty_attach_snapshot,
@@ -206,6 +237,7 @@ pub fn run() {
             pty::pty_unregister_output_consumer,
             pty::pty_ack,
             notification::notification_send_os,
+            notification::notification_drain_pending_activations,
             notification::window_focus_main,
             provider_sessions::provider_find_recent_session,
             provider_sessions::provider_list_recent_sessions,
@@ -278,6 +310,7 @@ pub fn run() {
             data_migration::data_migration_restart,
             managed_state::managed_state_get,
             managed_state::managed_state_set,
+            managed_state::managed_state_set_v2,
             managed_state::managed_state_remove,
             managed_state::managed_state_import_legacy,
             settings_window::settings_open,
@@ -291,6 +324,22 @@ pub fn run() {
             overlay::overlay_set_lightweight_mode,
             overlay::overlay_get_settings,
             overlay::overlay_update_shortcut,
+            #[cfg(feature = "terminal-startup-harness")]
+            terminal_startup_harness::terminal_startup_harness_status,
+            #[cfg(feature = "terminal-startup-harness")]
+            terminal_startup_harness::terminal_startup_harness_attest_runtime_udf,
+            #[cfg(feature = "terminal-startup-harness")]
+            terminal_startup_harness::terminal_startup_harness_prepare_case,
+            #[cfg(feature = "terminal-startup-harness")]
+            terminal_startup_harness::terminal_startup_harness_snapshot,
+            #[cfg(feature = "terminal-startup-harness")]
+            terminal_startup_harness::terminal_startup_harness_drive_case,
+            #[cfg(feature = "terminal-startup-harness")]
+            terminal_startup_harness::terminal_startup_harness_cleanup_case,
+            #[cfg(feature = "terminal-startup-harness")]
+            terminal_startup_warmup_harness::terminal_startup_harness_warmup_snapshot,
+            #[cfg(feature = "terminal-startup-harness")]
+            terminal_startup_warmup_harness::terminal_startup_harness_warmup_release,
         ])
         .run(tauri::generate_context!());
     tauri::async_runtime::block_on(claude_chat::shutdown());

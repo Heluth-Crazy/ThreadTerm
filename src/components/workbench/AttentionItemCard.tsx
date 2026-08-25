@@ -23,6 +23,7 @@ interface AttentionItemCardProps {
   followed: boolean;
   onOpenItem: (item: AttentionItem) => void;
   onOpenDetail: (item: AttentionItem) => void;
+  onIgnoreItem: (item: AttentionItem) => void;
   onToggleFollow: (item: AttentionItem) => void;
 }
 const KIND_STYLE: Record<
@@ -62,6 +63,7 @@ export const AttentionItemCard = memo(function AttentionItemCard({
   followed,
   onOpenItem,
   onOpenDetail,
+  onIgnoreItem,
   onToggleFollow,
 }: AttentionItemCardProps) {
   const { t, i18n } = useTranslation('terminal');
@@ -109,6 +111,7 @@ export const AttentionItemCard = memo(function AttentionItemCard({
             primaryAction={primaryAction}
             onOpen={() => onOpenItem(item)}
             onDetail={() => onOpenDetail(item)}
+            onIgnore={() => onIgnoreItem(item)}
             onToggleFollow={() => onToggleFollow(item)}
           />
         </div>
@@ -124,6 +127,7 @@ export const AttentionItemCard = memo(function AttentionItemCard({
           primaryAction={primaryAction}
           onOpen={() => onOpenItem(item)}
           onDetail={() => onOpenDetail(item)}
+          onIgnore={() => onIgnoreItem(item)}
           onToggleFollow={() => onToggleFollow(item)}
         />
       </div>
@@ -136,12 +140,14 @@ function ItemActions({
   primaryAction,
   onOpen,
   onDetail,
+  onIgnore,
   onToggleFollow,
 }: {
   followed: boolean;
   primaryAction: string;
   onOpen: () => void;
   onDetail: () => void;
+  onIgnore: () => void;
   onToggleFollow: () => void;
 }) {
   const { t } = useTranslation('terminal');
@@ -152,6 +158,9 @@ function ItemActions({
     : t('workbench.action.addToWorkbench', {
         defaultValue: 'Add to Workbench',
       });
+  const ignoreLabel = t('workbench.action.ignoreHint', {
+    defaultValue: 'Ignore without opening',
+  });
   return (
     <>
       <button
@@ -167,6 +176,14 @@ function ItemActions({
         className="h-[27px] rounded-md border border-border bg-foreground/[0.03] px-2.5 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
       >
         {t('workbench.action.details', { defaultValue: 'Details' })}
+      </button>
+      <button
+        type="button"
+        onClick={onIgnore}
+        title={ignoreLabel}
+        className="h-[27px] rounded-md border border-border bg-foreground/[0.03] px-2.5 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+      >
+        {t('workbench.action.ignore', { defaultValue: 'Ignore' })}
       </button>
       <button
         type="button"

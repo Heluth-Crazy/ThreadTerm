@@ -16,6 +16,14 @@ export default {
       },
     },
     extend: {
+      screens: {
+        // Referenced by the terminal header (AiIntentSelect wrapper, status
+        // chip label) before it existed here — the utilities were never
+        // generated, so those elements stayed hidden forever. Kept below the
+        // default `sm` so the narrow-desktop step behaves as originally
+        // intended. Guarded by src/tailwindScreenVariants.test.ts.
+        xs: "400px",
+      },
       colors: {
         border: "hsl(var(--border) / <alpha-value>)",
         input: "hsl(var(--input) / <alpha-value>)",

@@ -103,6 +103,17 @@ describe('shouldDispatchOsNotification', () => {
       }),
     ).toBe(false);
   });
+
+  it('uses Windows native delivery even while the target card is foreground', () => {
+    expect(
+      shouldDispatchOsNotification(notification('windows-foreground'), {
+        ...background,
+        foreground: true,
+        focusedCardId: 'card-a',
+        platform: 'windows',
+      }),
+    ).toBe(true);
+  });
 });
 
 describe('OsNotificationCoordinator', () => {
@@ -236,5 +247,24 @@ describe('OsNotificationCoordinator', () => {
     coordinator.dispose();
     vi.runAllTimers();
     expect(dispatched).toEqual([]);
+  });
+
+  it('reports every coalesced interaction loser as suppressed', () => {
+    const suppressed: string[] = [];
+    coordinator.dispose();
+    coordinator = new OsNotificationCoordinator({
+      getEnvironment: () => environment,
+      dispatch: (entry) => {
+        dispatched.push(entry);
+      },
+      onSuppressed: (entry) => suppressed.push(entry.id),
+    });
+    const episode = buildInteractionEpisodeKey('card-a', 5);
+    coordinator.accept(notification('pty', { routing: interactionRouting('pty', episode, 'prompt') }));
+    coordinator.accept(notification('supervisor', { routing: interactionRouting('supervisor', episode, 'rule') }));
+    coordinator.accept(notification('codex', { routing: interactionRouting('codex_request', episode, 'request') }));
+    vi.runAllTimers();
+    expect(dispatched.map((entry) => entry.id)).toEqual(['codex']);
+    expect(suppressed.sort()).toEqual(['pty', 'supervisor']);
   });
 });

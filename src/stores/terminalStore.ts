@@ -44,6 +44,7 @@ import {
 } from '../lib/terminalConfiguration';
 import { pathBasename } from '../lib/worktreePaths';
 import type { TerminalCard } from '../types/terminal';
+import { retainNotificationHistory } from '../lib/notificationLedger';
 
 type PersistedTerminalState = Partial<
   Pick<
@@ -63,6 +64,8 @@ type PersistedTerminalState = Partial<
     | 'notifications'
     | 'notificationCentreOpen'
     | 'osNotificationsEnabled'
+    | 'osNotificationPreviewEnabled'
+    | 'agentCliCompatibilityCompletionEnabled'
     | 'supervisorEnabled'
   >
 >;
@@ -110,7 +113,10 @@ export {
   MAX_RECENTLY_VIEWED_CARDS,
   MAX_CARD_NAME_LENGTH,
 } from './terminal/types';
-export type { ArchivedTerminalCard } from './terminal/types';
+export type {
+  ArchivedTerminalCard,
+  PendingArchivedNotificationTarget,
+} from './terminal/types';
 
 const terminalPersistStorage =
   createThrottledPersistStorage<PersistedTerminalState>(
@@ -169,13 +175,15 @@ export const useTerminalStore = create<TerminalStore>()(
         selectedWorktreeLabel: state.selectedWorktreeLabel,
         projectCardOrder: compactProjectCardOrder(state.projectCardOrder, state.cards),
         pinnedCardIds: state.pinnedCardIds,
-        notifications: state.notifications,
+        notifications: retainNotificationHistory(state.notifications),
         notificationCentreOpen: state.notificationCentreOpen,
         osNotificationsEnabled: state.osNotificationsEnabled,
+        osNotificationPreviewEnabled: state.osNotificationPreviewEnabled,
+        agentCliCompatibilityCompletionEnabled: state.agentCliCompatibilityCompletionEnabled,
         // AI Supervisor v0.1 (PRD D3) — master switch persisted; default OFF.
         supervisorEnabled: state.supervisorEnabled,
       }),
-      version: 21,
+      version: 22,
       migrate: (persisted) => {
         const state = persisted as Partial<TerminalStore>;
         const nextState = { ...state } as Partial<TerminalStore> & Record<string, unknown>;
@@ -188,6 +196,16 @@ export const useTerminalStore = create<TerminalStore>()(
         const cards = state.cards?.map((card) => {
           const base = {
             ...card,
+            executionMode: card.executionMode ?? ('interactive' as const),
+            oneShotRun:
+              card.oneShotRun &&
+              (card.oneShotRun.state === 'queued' || card.oneShotRun.state === 'running')
+                ? {
+                    ...card.oneShotRun,
+                    state: 'interrupted' as const,
+                    finishedAt: Date.now(),
+                  }
+                : card.oneShotRun,
             status: isTransientStatus(card.status) ? 'idle' as const : card.status,
             providerSessionState:
               card.providerSessionState ??
@@ -200,6 +218,16 @@ export const useTerminalStore = create<TerminalStore>()(
         const archivedCards = (state.archivedCards ?? []).map((card) => {
           const base = {
             ...card,
+            executionMode: card.executionMode ?? ('interactive' as const),
+            oneShotRun:
+              card.oneShotRun &&
+              (card.oneShotRun.state === 'queued' || card.oneShotRun.state === 'running')
+                ? {
+                    ...card.oneShotRun,
+                    state: 'interrupted' as const,
+                    finishedAt: Date.now(),
+                  }
+                : card.oneShotRun,
             status: isTransientStatus(card.status) ? 'idle' as const : card.status,
             unread: false,
             providerSessionState:
@@ -252,6 +280,13 @@ export const useTerminalStore = create<TerminalStore>()(
           //       else fall back to the legacy petConfig (notificationMode
           //       'system'/'both' → on).
           osNotificationsEnabled: readOsNotificationsEnabled(state),
+          osNotificationPreviewEnabled: state.osNotificationPreviewEnabled ?? true,
+          agentCliCompatibilityCompletionEnabled:
+            state.agentCliCompatibilityCompletionEnabled ?? true,
+          // v22 — old snapshots may have been count-bounded before the ledger
+          // semantics changed. Keep every unread item and only retain bounded
+          // recent read history while hydrating the upgraded store.
+          notifications: retainNotificationHistory(state.notifications ?? []),
           // v19 — pending terminal edits are persisted separately from cards
           // so save-only never changes active or mobile-visible configuration.
           pendingTerminalConfigurations: compactPendingTerminalConfigurations(

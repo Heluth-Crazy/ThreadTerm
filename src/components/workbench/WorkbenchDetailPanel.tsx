@@ -15,6 +15,7 @@ import type {
   WorkbenchPanelState,
 } from '../../lib/workbench/types';
 import type { NotificationEntry, TerminalCard } from '../../types/terminal';
+import { resolveTerminalEventSummary } from '../../lib/terminalEventSummary';
 import {
   attentionKindLabel,
   attentionReasonLabel,
@@ -176,7 +177,10 @@ function AttentionDetail({
       <div className="rounded-md border border-border bg-foreground/[0.025] p-3">
         <div className="text-xs font-semibold">{item.title}</div>
         {item.detail && (
-          <p className="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-muted-foreground">
+          <p
+            className="mt-1 max-w-full overflow-hidden whitespace-pre-wrap break-all text-[11px] leading-relaxed text-muted-foreground"
+            data-testid="workbench-attention-detail"
+          >
             {item.detail}
           </p>
         )}
@@ -209,7 +213,7 @@ function AttentionDetail({
           icon={<Activity className="h-3.5 w-3.5" />}
           rows={events.map((event) => ({
             id: `${event.at}:${event.kind}:${event.summary}`,
-            title: event.summary,
+            title: resolveTerminalEventSummary(event, t),
             meta: relativeTime(event.at, now, i18n.language),
           }))}
         />

@@ -19,6 +19,7 @@ interface WorkbenchAttentionSectionProps {
   onSelectFilter: (filter: WorkbenchAttentionFilter) => void;
   onOpenTerminal: (cardId: string) => void;
   onOpenAttention: (item: AttentionItem) => void;
+  onIgnoreAttention: (item: AttentionItem) => void;
   onSetCardFollowed: (cardId: string, followed: boolean) => void;
 }
 
@@ -31,6 +32,7 @@ export function WorkbenchAttentionSection({
   onSelectFilter,
   onOpenTerminal,
   onOpenAttention,
+  onIgnoreAttention,
   onSetCardFollowed,
 }: WorkbenchAttentionSectionProps) {
   const { t } = useTranslation('terminal');
@@ -85,6 +87,7 @@ export function WorkbenchAttentionSection({
               followed={followedCardIds.has(item.cardId)}
               onOpenItem={() => onOpenTerminal(item.cardId)}
               onOpenDetail={onOpenAttention}
+              onIgnoreItem={onIgnoreAttention}
               onToggleFollow={() =>
                 onSetCardFollowed(
                   item.cardId,

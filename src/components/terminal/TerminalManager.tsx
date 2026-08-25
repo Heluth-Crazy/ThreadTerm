@@ -92,6 +92,11 @@ import {
   useTerminalNavigation,
   type TerminalViewMode,
 } from './useTerminalNavigation';
+import {
+  registerArchivedNotificationNavigation,
+  type ArchivedNotificationTarget,
+} from './notificationTarget';
+import { NotificationToastStack } from './NotificationToastStack';
 import { useTerminalCommandPalette } from './useTerminalCommandPalette';
 import {
   getWorkbenchProjectAttentionCount,
@@ -134,7 +139,16 @@ export function TerminalManager() {
   const selectProject = useTerminalStore((s) => s.selectProject);
   const selectWorktree = useTerminalStore((s) => s.selectWorktree);
   const toggleNotificationCentre = useTerminalStore((s) => s.toggleNotificationCentre);
+  const notificationCentreOpen = useTerminalStore((s) => s.notificationCentreOpen);
+  const selectorOpen = useOverlayStore((s) => s.selectorOpen);
+  const selectorSurface = useOverlayStore((s) => s.selectorSurface);
   const unreadCount = useTerminalStore((s) => s.notifications.filter((n) => !n.read).length);
+  const pendingArchivedNotificationTarget = useTerminalStore(
+    (s) => s.pendingArchivedNotificationTarget,
+  );
+  const setPendingArchivedNotificationTarget = useTerminalStore(
+    (s) => s.setPendingArchivedNotificationTarget,
+  );
   const selectedProjectPath = useTerminalStore((s) => s.selectedProjectPath);
   const selectedWorktreePath = useTerminalStore((s) => s.selectedWorktreePath);
   const selectedWorktreeLabel = useTerminalStore((s) => s.selectedWorktreeLabel);
@@ -205,6 +219,7 @@ export function TerminalManager() {
     allProjectsWorkbenchModel,
     followCards,
     followedCardIds,
+    ignoreAttention,
     unfollowCard,
     workbenchModel,
   } = useWorkbenchModel({
@@ -232,6 +247,7 @@ export function TerminalManager() {
   // Evicted views unmount their xterm while the PTY survives in Rust
   // (`preservePtyOnUnmount`); re-focusing replays history via attachSnapshot.
   const mountedIdsRef = useRef<string[]>([]);
+  const archiveProjectPathRef = useRef<string | null>(selectedProjectPath);
   const [, bumpRender] = useState(0);
 
   const mountCardInBackground = useCallback((cardId: string) => {
@@ -318,9 +334,164 @@ export function TerminalManager() {
     toggleRightSurface,
   } = useRightSurfaceStack(isRightSurfaceAvailable);
 
+  type ArchivedNavigationWaiter = {
+    cardId: string;
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  };
+  const archivedNavigationWaitersRef = useRef<Map<string, ArchivedNavigationWaiter>>(new Map());
+
+  const cancelArchivedNotificationNavigation = useCallback(
+    (reason: string) => {
+      const error = new Error(reason);
+      for (const waiter of archivedNavigationWaitersRef.current.values()) {
+        waiter.reject(error);
+      }
+      archivedNavigationWaitersRef.current.clear();
+      setPendingArchivedNotificationTarget(null);
+      closeRightSurface('archive');
+    },
+    [closeRightSurface, setPendingArchivedNotificationTarget],
+  );
+
+  const handleArchivedNotificationNavigation = useCallback(
+    (target: ArchivedNotificationTarget): Promise<void> => {
+      const existing = archivedNavigationWaitersRef.current.get(target.notificationId);
+      if (existing && existing.cardId === target.cardId) return existing.promise;
+
+      // Only one archive snapshot can be visibly located at a time. A newer
+      // event supersedes an older pending request explicitly, so its resolver
+      // returns an error/unread result instead of hanging forever.
+      for (const [notificationId, waiter] of archivedNavigationWaitersRef.current) {
+        if (notificationId === target.notificationId) continue;
+        archivedNavigationWaitersRef.current.delete(notificationId);
+        waiter.reject(new Error('archive notification target superseded'));
+      }
+
+      const archivedCard = useTerminalStore
+        .getState()
+        .archivedCards.find((card) => card.id === target.cardId);
+      if (!archivedCard) {
+        return Promise.reject(new Error('archived notification target no longer exists'));
+      }
+
+      let resolveWaiter!: () => void;
+      let rejectWaiter!: (error: unknown) => void;
+      const promise = new Promise<void>((resolve, reject) => {
+        resolveWaiter = resolve;
+        rejectWaiter = reject;
+      });
+      archivedNavigationWaitersRef.current.set(target.notificationId, {
+        cardId: target.cardId,
+        promise,
+        resolve: resolveWaiter,
+        reject: rejectWaiter,
+      });
+
+      const store = useTerminalStore.getState();
+      // Archive navigation is deliberately non-restoring: it clears focus,
+      // selects only the archived snapshot's scope, and opens the archive
+      // surface. No PTY is mounted or relaunched by this path.
+      store.focusCard(null);
+      if (archivedCard.worktreePath) {
+        store.selectWorktree(
+          archivedCard.projectPath,
+          archivedCard.worktreePath,
+          archivedCard.branchLabel,
+        );
+      } else {
+        store.selectProject(archivedCard.projectPath);
+      }
+      setPrimaryView('terminals');
+      setViewMode('grid');
+      setMobileViewActive(false);
+      setWorkbenchPanel(null);
+      closeRightSurface('workbench');
+      setPendingArchivedNotificationTarget({
+        notificationId: target.notificationId,
+        cardId: target.cardId,
+      });
+      openRightSurface('archive');
+      return promise;
+    },
+    [
+      closeRightSurface,
+      openRightSurface,
+      setMobileViewActive,
+      setPendingArchivedNotificationTarget,
+      setPrimaryView,
+      setViewMode,
+      setWorkbenchPanel,
+    ],
+  );
+
+  const handleArchivedNotificationLocated = useCallback(
+    (target: { notificationId: string; cardId: string }) => {
+      const waiter = archivedNavigationWaitersRef.current.get(target.notificationId);
+      if (!waiter || waiter.cardId !== target.cardId) return;
+      archivedNavigationWaitersRef.current.delete(target.notificationId);
+      setPendingArchivedNotificationTarget(null);
+      waiter.resolve();
+    },
+    [setPendingArchivedNotificationTarget],
+  );
+
   useEffect(() => {
-    closeRightSurface('archive');
-  }, [closeRightSurface, selectedProjectPath]);
+    const unregister = registerArchivedNotificationNavigation(
+      handleArchivedNotificationNavigation,
+    );
+    return () => {
+      unregister();
+      cancelArchivedNotificationNavigation('archive notification navigation disposed');
+    };
+  }, [
+    cancelArchivedNotificationNavigation,
+    handleArchivedNotificationNavigation,
+  ]);
+
+  useEffect(() => {
+    const pending = pendingArchivedNotificationTarget;
+    if (!pending) return;
+    const archivedCard = archivedCards.find((card) => card.id === pending.cardId);
+    if (!archivedCard) {
+      cancelArchivedNotificationNavigation('archived notification target disappeared');
+      return;
+    }
+
+    const scopeReady =
+      selectedProjectPath === archivedCard.projectPath &&
+      (archivedCard.worktreePath
+        ? selectedWorktreePath === archivedCard.worktreePath
+        : selectedWorktreePath === null);
+    if (
+      activeRightSurface === 'archive' &&
+      scopeReady &&
+      !selectedProjectArchivedCards.some((card) => card.id === pending.cardId)
+    ) {
+      cancelArchivedNotificationNavigation('archived notification target is not visible');
+    }
+  }, [
+    activeRightSurface,
+    archivedCards,
+    cancelArchivedNotificationNavigation,
+    pendingArchivedNotificationTarget,
+    selectedProjectArchivedCards,
+    selectedProjectPath,
+    selectedWorktreePath,
+  ]);
+
+  useEffect(() => {
+    const projectChanged = archiveProjectPathRef.current !== selectedProjectPath;
+    archiveProjectPathRef.current = selectedProjectPath;
+    if (projectChanged && !pendingArchivedNotificationTarget) {
+      closeRightSurface('archive');
+    }
+  }, [
+    closeRightSurface,
+    pendingArchivedNotificationTarget,
+    selectedProjectPath,
+  ]);
 
   useEffect(() => {
     if (!sessionDockAvailable) {
@@ -562,6 +733,15 @@ export function TerminalManager() {
     setCreateOpen,
     setViewMode,
   });
+
+  const notificationPresentationBlocked =
+    notificationCentreOpen ||
+    paletteOpen ||
+    createOpen ||
+    Boolean(editingCard) ||
+    Boolean(terminalCloseRequest) ||
+    Boolean(dirtyCloseRequest) ||
+    (selectorOpen && selectorSurface === 'inline');
 
   useEffect(() => {
     if (!mobileBridgeSyncEnabled) return;
@@ -1063,7 +1243,10 @@ export function TerminalManager() {
           floating overlay) and stays below the top bar — never covering the
           shortcut buttons. */}
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div
+        className="relative flex min-w-0 flex-1 flex-col overflow-hidden"
+        data-testid="terminal-main-content-column"
+      >
         {workspaceTabsVisible && (
           <WorkspaceTabStrip
             tabs={workspaceTabs}
@@ -1127,6 +1310,15 @@ export function TerminalManager() {
                 attentionId: item.id,
               })
             }
+            onIgnoreAttention={(item) => {
+              ignoreAttention(item);
+              if (
+                workbenchPanel?.kind === 'attention' &&
+                workbenchPanel.attentionId === item.id
+              ) {
+                handleCloseWorkbenchPanel();
+              }
+            }}
             onOpenGroup={(group) =>
               handleOpenWorkbenchPanel({ kind: 'group', groupId: group.id })
             }
@@ -1319,6 +1511,8 @@ export function TerminalManager() {
           );
         })}
 
+        <NotificationToastStack blocked={notificationPresentationBlocked} />
+
       </div>
       </div>
 
@@ -1363,7 +1557,15 @@ export function TerminalManager() {
               projectName={selectedProjectName}
               cards={selectedProjectArchivedCards}
               onRestore={handleRestoreArchivedCard}
-              onClose={() => closeRightSurface('archive')}
+              onClose={() => {
+                if (pendingArchivedNotificationTarget) {
+                  cancelArchivedNotificationNavigation('archive panel closed');
+                } else {
+                  closeRightSurface('archive');
+                }
+              }}
+              pendingTarget={pendingArchivedNotificationTarget}
+              onTargetLocated={handleArchivedNotificationLocated}
             />
           )}
           {sessionDockVisible && (

@@ -11,10 +11,99 @@ use portable_pty::{Child, ChildKiller, ExitStatus};
 
 use super::events::{ANSI_STRIP, ERROR_PATTERNS, WAITING_PATTERNS};
 use super::session::{should_idle_after_quiet, PtyInputRequest, SessionState, OUTPUT_IDLE_GRACE};
-use super::{run_pty_input_writer, terminate_child_process};
+use super::startup::{StartupOutputConfig, StartupReadinessPolicy};
+use super::writer::spawn;
+use super::{
+    acquire_pty_create_gate, startup_output_config, startup_output_config_with_suppression,
+    terminate_child_process, PtyLaunchDescriptor, PtyShellFamily,
+};
+
+const STARTUP_TEST_NONCE: &str = "0123456789abcdef0123456789abcdef";
+
+#[test]
+fn provider_immediate_powershell_utf8_hides_the_bootstrap_marker_without_readiness() {
+    match startup_output_config(
+        true,
+        PtyShellFamily::Pwsh,
+        false,
+        StartupReadinessPolicy::Immediate,
+        true,
+        STARTUP_TEST_NONCE,
+    ) {
+        StartupOutputConfig::Marker {
+            nonce,
+            triggers_ready,
+        } => {
+            assert_eq!(nonce, STARTUP_TEST_NONCE);
+            assert!(!triggers_ready);
+        }
+        _ => panic!("UTF-8 bootstrap marker must stay private"),
+    }
+}
+
+#[test]
+fn cmd_suppressed_first_output_keeps_observation_without_readiness() {
+    let suppressed = startup_output_config_with_suppression(
+        true,
+        PtyShellFamily::Cmd,
+        false,
+        StartupReadinessPolicy::FirstOutput { timeout_ms: 750 },
+        false,
+        STARTUP_TEST_NONCE,
+        true,
+    );
+    assert_eq!(
+        suppressed,
+        StartupOutputConfig::FirstOutput {
+            triggers_ready: false,
+        }
+    );
+
+    let normal = startup_output_config(
+        true,
+        PtyShellFamily::Cmd,
+        false,
+        StartupReadinessPolicy::FirstOutput { timeout_ms: 750 },
+        false,
+        STARTUP_TEST_NONCE,
+    );
+    assert_eq!(
+        normal,
+        StartupOutputConfig::FirstOutput {
+            triggers_ready: true,
+        }
+    );
+}
 
 struct SharedWriter {
     bytes: Arc<Mutex<Vec<u8>>>,
+}
+
+#[test]
+fn one_shot_launch_descriptor_requires_a_non_empty_command() {
+    let descriptor = PtyLaunchDescriptor {
+        execution_mode: Some("oneShot".to_string()),
+        command: Some(" printf ok ".to_string()),
+    };
+    assert_eq!(
+        descriptor.one_shot_command().expect("valid descriptor"),
+        Some("printf ok".to_string())
+    );
+
+    let missing = PtyLaunchDescriptor {
+        execution_mode: Some("oneShot".to_string()),
+        command: Some("   ".to_string()),
+    };
+    assert!(missing.one_shot_command().is_err());
+}
+
+#[test]
+fn missing_launch_descriptor_keeps_interactive_spawn_default() {
+    let descriptor = PtyLaunchDescriptor {
+        execution_mode: None,
+        command: None,
+    };
+    assert_eq!(descriptor.one_shot_command().unwrap(), None);
 }
 
 impl Write for SharedWriter {
@@ -69,21 +158,12 @@ impl Child for TestChild {
 #[tokio::test]
 async fn pty_input_writer_preserves_one_thousand_writes_in_order() {
     let bytes = Arc::new(Mutex::new(Vec::new()));
-    let written_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let callback_count = written_count.clone();
-    let (sender, receiver) = tokio::sync::mpsc::channel(32);
     let writer_bytes = bytes.clone();
-    let worker = std::thread::spawn(move || {
-        run_pty_input_writer(
-            Box::new(SharedWriter {
-                bytes: writer_bytes,
-            }),
-            receiver,
-            move || {
-                callback_count.fetch_add(1, Ordering::SeqCst);
-            },
-        );
-    });
+    let arbiter = spawn(Box::new(SharedWriter {
+        bytes: writer_bytes,
+    }) as Box<dyn Write + Send>)
+    .expect("spawn PTY writer");
+    let sender = arbiter.input_sender();
 
     let mut completions = Vec::new();
     let mut expected = Vec::new();
@@ -105,10 +185,24 @@ async fn pty_input_writer_preserves_one_thousand_writes_in_order() {
             .expect("writer completion channel")
             .expect("write succeeds");
     }
-    worker.join().expect("input writer thread");
 
     assert_eq!(*bytes.lock().expect("shared writer lock"), expected);
-    assert_eq!(written_count.load(Ordering::SeqCst), 1000);
+}
+
+#[tokio::test]
+async fn keyed_create_gate_serializes_same_id_but_not_independent_ids() {
+    let owner = acquire_pty_create_gate("__gate-owner__").await;
+    let waiter = tokio::spawn(async {
+        let _lease = acquire_pty_create_gate("__gate-owner__").await;
+        true
+    });
+    tokio::task::yield_now().await;
+    assert!(!waiter.is_finished());
+
+    let independent = acquire_pty_create_gate("__gate-independent__").await;
+    drop(independent);
+    drop(owner);
+    assert!(waiter.await.expect("same-id waiter should finish"));
 }
 
 #[test]

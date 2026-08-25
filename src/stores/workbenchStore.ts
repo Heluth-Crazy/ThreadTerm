@@ -1,7 +1,14 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import type { WorkbenchRules } from '../lib/workbench/types';
+import type { AttentionItem, WorkbenchRules } from '../lib/workbench/types';
 import { managedStateStorage } from '../lib/managedState';
+import {
+  ignoredAttentionEpisodeFromItem,
+  matchesIgnoredAttention,
+  normalizeIgnoredAttention,
+  retainIgnoredAttention,
+  type IgnoredAttentionEpisode,
+} from '../lib/workbench/ignoreAttention';
 import {
   moveProjectPath,
   normalizeProjectOrder,
@@ -22,9 +29,12 @@ interface WorkbenchStore {
   rules: WorkbenchRules;
   followedCardIds: string[];
   projectOrder: string[];
+  ignoredAttention: IgnoredAttentionEpisode[];
   followCards: (cardIds: readonly string[]) => void;
   unfollowCard: (cardId: string) => void;
   reconcileFollowedCards: (validCardIds: readonly string[]) => void;
+  reconcileIgnoredAttention: (validCardIds: readonly string[]) => void;
+  ignoreAttention: (item: AttentionItem) => void;
   reconcileProjectOrder: (validProjectPaths: readonly string[]) => void;
   moveProject: (
     activeProjectPath: string,
@@ -91,6 +101,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       rules: { ...DEFAULT_WORKBENCH_RULES },
       followedCardIds: [],
       projectOrder: [],
+      ignoredAttention: [],
       followCards: (cardIds) =>
         set((state) => {
           const incoming = normalizeFollowedCardIds(cardIds);
@@ -115,6 +126,29 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           );
           if (followedCardIds.length === state.followedCardIds.length) return state;
           return { followedCardIds };
+        }),
+      reconcileIgnoredAttention: (validCardIds) =>
+        set((state) => {
+          const ignoredAttention = retainIgnoredAttention(
+            state.ignoredAttention,
+            validCardIds,
+          );
+          if (ignoredAttentionEquals(ignoredAttention, state.ignoredAttention)) {
+            return state;
+          }
+          return { ignoredAttention };
+        }),
+      ignoreAttention: (item) =>
+        set((state) => {
+          if (state.ignoredAttention.some((entry) => matchesIgnoredAttention(item, entry))) {
+            return state;
+          }
+          return {
+            ignoredAttention: retainIgnoredAttention([
+              ignoredAttentionEpisodeFromItem(item),
+              ...state.ignoredAttention,
+            ]),
+          };
         }),
       reconcileProjectOrder: (validProjectPaths) =>
         set((state) => {
@@ -157,13 +191,14 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
     }),
     {
       name: 'threadterm-workbench-store',
-      version: 3,
+      version: 4,
       storage: createJSONStorage(() => managedStateStorage),
       migrate: (persistedState) => persistedState,
       partialize: (state) => ({
         rules: state.rules,
         followedCardIds: state.followedCardIds,
         projectOrder: state.projectOrder,
+        ignoredAttention: state.ignoredAttention,
       }),
       merge: (persisted, current) => {
         const persistedRules =
@@ -178,13 +213,36 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           persisted && typeof persisted === 'object' && 'projectOrder' in persisted
             ? (persisted as { projectOrder?: unknown }).projectOrder
             : undefined;
+        const persistedIgnoredAttention =
+          persisted && typeof persisted === 'object' && 'ignoredAttention' in persisted
+            ? (persisted as { ignoredAttention?: unknown }).ignoredAttention
+            : undefined;
         return {
           ...current,
           rules: normalizeWorkbenchRules(persistedRules),
           followedCardIds: normalizeFollowedCardIds(persistedFollowedCardIds),
           projectOrder: normalizeProjectOrder(persistedProjectOrder),
+          ignoredAttention: normalizeIgnoredAttention(persistedIgnoredAttention),
         };
       },
     },
   ),
 );
+
+function ignoredAttentionEquals(
+  left: readonly IgnoredAttentionEpisode[],
+  right: readonly IgnoredAttentionEpisode[],
+): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((entry, index) => {
+    const other = right[index];
+    return (
+      other !== undefined &&
+      entry.cardId === other.cardId &&
+      entry.kind === other.kind &&
+      entry.sourceKind === other.sourceKind &&
+      entry.sourceId === other.sourceId &&
+      entry.occurredAt === other.occurredAt
+    );
+  });
+}

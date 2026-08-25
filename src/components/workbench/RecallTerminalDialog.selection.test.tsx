@@ -9,6 +9,14 @@ describe('RecallTerminalDialog selection', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  it('renders the shared terminal type brand icons', () => {
+    renderDialog();
+    const dialog = screen.getByRole('dialog');
+
+    expect(dialog.querySelector('[data-agent-icon="codex"]')).toBeInTheDocument();
+    expect(dialog.querySelector('[data-agent-icon="claude"]')).toBeInTheDocument();
+  });
+
   it('confirms selected terminals in original card order and then closes', () => {
     const { callbacks } = renderDialog();
     const dialog = screen.getByRole('dialog');

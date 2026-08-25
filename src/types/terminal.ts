@@ -15,6 +15,25 @@
 /** Frontend-facing status; mirrors (simplified) SessionState from pty.rs. */
 export type TerminalStatus = 'idle' | 'running' | 'waiting' | 'completed' | 'failed';
 
+/** How a terminal process is expected to reach a task boundary. */
+export type TerminalExecutionMode = 'interactive' | 'oneShot';
+
+export type OneShotRunState =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'interrupted';
+
+/** Persisted lifecycle marker for an explicit execute-and-exit run. */
+export interface OneShotRun {
+  generation: number;
+  state: OneShotRunState;
+  requestedAt: number;
+  finishedAt?: number;
+  exitCode?: number;
+}
+
 /** Native CLI session binding state for providers that support resume. */
 export type ProviderSessionState = 'unbound' | 'bound';
 
@@ -54,6 +73,31 @@ export interface TerminalEvent {
   kind: TerminalEventKind;
   /** 1-line human-readable summary (≤120 chars preferred). */
   summary: string;
+  /** Restricted localization key for backend-owned startup projections. */
+  summaryKey?: 'terminal:view.sentInput';
+  /** Opaque backend startup-effect identity for timeline reconciliation. */
+  startupEffectToken?: string;
+}
+
+export type TerminalStartupEffectRecord =
+  | {
+      token: string;
+      kind: 'recordUserSubmit';
+      at: number;
+      timeline: 'present' | 'retired';
+    }
+  | {
+      token: string;
+      kind: 'bindProviderSession' | 'discoverProviderSession';
+      at: number;
+      binding: 'active' | 'retired';
+    };
+
+export interface TerminalStartupSideEffects {
+  schema: 1;
+  projectionEpoch: string;
+  parentProjectionEpoch?: string;
+  applied: TerminalStartupEffectRecord[];
 }
 
 // ── Card auto restart (Stage 8.2) ────────────────────────────────────────────
@@ -134,6 +178,12 @@ export interface TerminalCard {
   codexAppBoundAt?: number;
   /** User-selected intent label for quickly scanning AI CLI cards. */
   aiIntent?: TerminalAiIntent;
+  /** Optional persisted projection for backend-owned Provider startup effects. */
+  startupSideEffects?: TerminalStartupSideEffects;
+  /** Missing values are legacy interactive cards. */
+  executionMode?: TerminalExecutionMode;
+  /** Optional one-shot generation; never auto-relaunched after reload. */
+  oneShotRun?: OneShotRun;
   status: TerminalStatus;
   /** Creation timestamp (epoch ms). */
   createdAt: number;
@@ -179,6 +229,33 @@ export interface NotificationRouting {
   episodeKey?: string;
   /** Stable normalized signal identity inside one episode. */
   fingerprint?: string;
+  /** Additive source metadata used by the completion coordinator. */
+  signalSource?: CompletionSignalSource;
+  confidence?: CompletionConfidence;
+}
+
+export type CompletionSignalSource =
+  | 'codex_chat'
+  | 'claude_chat'
+  | 'one_shot_exit'
+  | 'agent_cli_prompt'
+  | 'agent_cli_idle';
+
+export type CompletionConfidence = 'authoritative' | 'compatible';
+
+export interface CompletionSignal {
+  cardId: string;
+  episodeKey: string;
+  fingerprint: string;
+  source: CompletionSignalSource;
+  confidence: CompletionConfidence;
+  outcome: 'completed' | 'failed';
+  at: number;
+  summary?: string;
+  /** Optional non-completion family for legacy PTY failure evidence. */
+  family?: NotificationFamily;
+  /** Optional origin override; reply remains the default for completions. */
+  origin?: NotificationOrigin;
 }
 
 export interface NotificationEntry {
@@ -203,6 +280,7 @@ export interface TerminalCreateOptions {
   command?: string;
   worktreePath?: string;
   branchLabel?: string;
+  executionMode?: TerminalExecutionMode;
 }
 
 export interface ProviderSessionImportInfo {
@@ -237,6 +315,9 @@ export const MAX_LAST_OUTPUT_LENGTH = 2000;
 
 /** Max notifications retained in the centre. */
 export const MAX_NOTIFICATIONS = 100;
+
+/** Read-history retention window. Unread entries are never evicted by age. */
+export const NOTIFICATION_READ_RETENTION_MS = 2 * 60 * 60_000;
 
 /**
  * Max archived cards retained (FIFO, newest first). Archived cards persist to

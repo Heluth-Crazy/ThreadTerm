@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+pub(crate) mod discovery;
+
 const JSONL_SCAN_CACHE_TTL: Duration = Duration::from_millis(2_500);
 const SESSION_FILE_GRACE_MS: u64 = 120_000;
 const DEFAULT_PROVIDER_SESSION_LIST_LIMIT: usize = 200;
@@ -73,22 +75,7 @@ pub async fn provider_find_recent_session(
     excluded_session_ids: Option<Vec<String>>,
 ) -> Result<Option<ProviderSessionInfo>, String> {
     let excluded = excluded_session_ids.unwrap_or_default();
-    if provider == "opencode" {
-        let summaries =
-            crate::agent_sessions::opencode::list_opencode_sessions_for_discovery().await;
-        return Ok(find_unique_recent_from_summaries(
-            summaries,
-            "opencode",
-            &project_path,
-            since_ms,
-            &excluded,
-        ));
-    }
-    tokio::task::spawn_blocking(move || {
-        find_recent_provider_session(&provider, &project_path, since_ms, &excluded)
-    })
-    .await
-    .map_err(|e| format!("Provider session discovery task failed: {e}"))?
+    discovery::find_recent_session(&provider, &project_path, since_ms, &excluded).await
 }
 
 fn find_recent_provider_session(

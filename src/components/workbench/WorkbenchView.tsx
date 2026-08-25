@@ -46,6 +46,7 @@ interface WorkbenchViewProps {
   selectedWorktreePath: string | null;
   onOpenTerminal: (cardId: string) => void;
   onOpenAttention: (item: AttentionItem) => void;
+  onIgnoreAttention: (item: AttentionItem) => void;
   onOpenGroup: (group: ExecutionContextGroup) => void;
   onOpenRules: () => void;
   onNavigateTerminals: () => void;
@@ -72,6 +73,7 @@ export function WorkbenchView({
   selectedWorktreePath,
   onOpenTerminal,
   onOpenAttention,
+  onIgnoreAttention,
   onOpenGroup,
   onOpenRules,
   onNavigateTerminals,
@@ -260,6 +262,7 @@ export function WorkbenchView({
                   onSelectFilter={setFilter}
                   onOpenTerminal={onOpenTerminal}
                   onOpenAttention={onOpenAttention}
+                  onIgnoreAttention={onIgnoreAttention}
                   onSetCardFollowed={setCardFollowed}
                 />
                 <WorkbenchStalledSection
@@ -272,6 +275,7 @@ export function WorkbenchView({
                   }
                   onOpenTerminal={onOpenTerminal}
                   onOpenAttention={onOpenAttention}
+                  onIgnoreAttention={onIgnoreAttention}
                   onSetCardFollowed={setCardFollowed}
                 />
               </div>

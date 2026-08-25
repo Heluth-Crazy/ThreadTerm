@@ -190,4 +190,31 @@ describe('WorkbenchDetailPanel', () => {
       'break-all',
     );
   });
+
+  it('contains long unbroken attention details inside the summary card', () => {
+    const detail = `Fix formatting only, then re-stage and review.\n${'─'.repeat(160)}\n• Format check is clean`;
+    const item: AttentionItem = { ...failedItem, detail };
+
+    render(
+      <WorkbenchDetailPanel
+        panel={{ kind: 'attention', attentionId: item.id }}
+        attentionItems={[item]}
+        groups={[]}
+        cards={[makeCard()]}
+        notifications={[]}
+        now={NOW}
+        onOpenTerminal={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const summary = screen.getByTestId('workbench-attention-detail');
+    expect(summary.textContent).toBe(detail);
+    expect(summary).toHaveClass(
+      'max-w-full',
+      'overflow-hidden',
+      'whitespace-pre-wrap',
+      'break-all',
+    );
+  });
 });

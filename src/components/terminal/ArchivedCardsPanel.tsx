@@ -1,6 +1,10 @@
+import { useEffect, useRef, useState } from 'react';
 import { Archive, RotateCcw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { ArchivedTerminalCard } from '../../stores/terminalStore';
+import type {
+  ArchivedTerminalCard,
+  PendingArchivedNotificationTarget,
+} from '../../stores/terminalStore';
 import { getTerminalTypeMeta } from './terminalTypeMeta';
 
 export interface ArchivedCardsPanelProps {
@@ -8,6 +12,8 @@ export interface ArchivedCardsPanelProps {
   cards: ArchivedTerminalCard[];
   onRestore: (cardId: string) => void;
   onClose: () => void;
+  pendingTarget?: PendingArchivedNotificationTarget | null;
+  onTargetLocated?: (target: PendingArchivedNotificationTarget) => void;
 }
 
 function formatArchivedAt(value: number): string {
@@ -19,9 +25,40 @@ export function ArchivedCardsPanel({
   cards,
   onRestore,
   onClose,
+  pendingTarget = null,
+  onTargetLocated,
 }: ArchivedCardsPanelProps) {
   const { t } = useTranslation('terminal');
   const closeLabel = t('common.close', { defaultValue: 'Close' });
+  const [pulsingCardId, setPulsingCardId] = useState<string | null>(null);
+  const cardRefs = useRef<Record<string, HTMLLIElement | null>>({});
+  const locatedTargetKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!pendingTarget) {
+      locatedTargetKeyRef.current = null;
+      return;
+    }
+    const targetKey = `${pendingTarget.notificationId}:${pendingTarget.cardId}`;
+    if (
+      locatedTargetKeyRef.current === targetKey ||
+      !cards.some((card) => card.id === pendingTarget.cardId)
+    ) {
+      return;
+    }
+    const element = cardRefs.current[pendingTarget.cardId];
+    if (!element) return;
+    locatedTargetKeyRef.current = targetKey;
+    element.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+    setPulsingCardId(pendingTarget.cardId);
+    onTargetLocated?.(pendingTarget);
+  }, [cards, onTargetLocated, pendingTarget]);
+
+  useEffect(() => {
+    if (!pulsingCardId) return;
+    const timer = window.setTimeout(() => setPulsingCardId(null), 2400);
+    return () => window.clearTimeout(timer);
+  }, [pulsingCardId]);
 
   return (
     <div className="flex h-full flex-col">
@@ -33,6 +70,7 @@ export function ArchivedCardsPanel({
         <button
           type="button"
           onClick={onClose}
+          data-testid="archived-panel-close"
           title={closeLabel}
           aria-label={closeLabel}
           className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
@@ -53,7 +91,17 @@ export function ArchivedCardsPanel({
             return (
               <li
                 key={card.id}
-                className="rounded-md border border-border bg-muted/50 px-2 py-2"
+                ref={(element) => {
+                  cardRefs.current[card.id] = element;
+                }}
+                data-archived-card-id={card.id}
+                data-testid={`archived-card-${card.id}`}
+                className={[
+                  'rounded-md border border-border bg-muted/50 px-2 py-2',
+                  pulsingCardId === card.id
+                    ? 'animate-pulse ring-2 ring-info ring-offset-1 ring-offset-background'
+                    : '',
+                ].join(' ')}
               >
                 <div className="flex min-w-0 items-start gap-2">
                   <div

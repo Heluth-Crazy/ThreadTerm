@@ -31,7 +31,12 @@ interface MemoryEntry {
   value: string | null;
 }
 
-function installMemoryBackend() {
+interface MemoryBackendOptions {
+  terminalReconciled?: boolean;
+  terminalAuthoritativeValue?: string;
+}
+
+function installMemoryBackend(options: MemoryBackendOptions = {}) {
   const state = new Map<string, MemoryEntry>();
   mocks.invoke.mockImplementation(
     async (command: string, args: Record<string, unknown>) => {
@@ -51,6 +56,17 @@ function installMemoryBackend() {
       if (command === 'managed_state_set') {
         state.set(key, { initialized: true, value: String(args.value) });
         return undefined;
+      }
+      if (command === 'managed_state_set_v2') {
+        const reconciled =
+          key === MANAGED_STATE_KEYS.terminal && options.terminalReconciled === true;
+        state.set(key, {
+          initialized: true,
+          value: reconciled
+            ? options.terminalAuthoritativeValue ?? String(args.value)
+            : String(args.value),
+        });
+        return { reconciled };
       }
       if (command === 'managed_state_remove') {
         state.set(key, { initialized: true, value: null });
@@ -107,6 +123,63 @@ describe('managedStateStorage', () => {
 
     await expect(readManagedStateItem(MANAGED_STATE_KEYS.overlay)).resolves.toBeNull();
     expect(localStorage.getItem(MANAGED_STATE_KEYS.overlay)).toBe('legacy');
+  });
+
+  it('uses v2 for terminal writes and caches the incoming value when unreconciled', async () => {
+    mocks.tauri = true;
+    installMemoryBackend();
+
+    await writeManagedStateItem(MANAGED_STATE_KEYS.terminal, 'incoming');
+
+    expect(mocks.invoke).toHaveBeenCalledWith('managed_state_set_v2', {
+      key: MANAGED_STATE_KEYS.terminal,
+      value: 'incoming',
+      sourceId: expect.any(String),
+    });
+    expect(readManagedStateItem(MANAGED_STATE_KEYS.terminal)).toBe('incoming');
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === 'managed_state_get'),
+    ).toHaveLength(0);
+  });
+
+  it('clears the origin cache when v2 reconciles and reads the backend authority next', async () => {
+    mocks.tauri = true;
+    const state = installMemoryBackend({
+      terminalReconciled: true,
+      terminalAuthoritativeValue: 'authoritative',
+    });
+    state.set(MANAGED_STATE_KEYS.terminal, {
+      initialized: true,
+      value: 'cached',
+    });
+    await expect(readManagedStateItem(MANAGED_STATE_KEYS.terminal)).resolves.toBe('cached');
+
+    await writeManagedStateItem(MANAGED_STATE_KEYS.terminal, 'incoming');
+
+    await expect(readManagedStateItem(MANAGED_STATE_KEYS.terminal)).resolves.toBe(
+      'authoritative',
+    );
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === 'managed_state_get'),
+    ).toHaveLength(2);
+  });
+
+  it('keeps nonterminal desktop writes on the legacy command and cache behavior', async () => {
+    mocks.tauri = true;
+    installMemoryBackend();
+
+    await writeManagedStateItem(MANAGED_STATE_KEYS.overlay, 'incoming');
+
+    expect(mocks.invoke).toHaveBeenCalledWith('managed_state_set', {
+      key: MANAGED_STATE_KEYS.overlay,
+      value: 'incoming',
+      sourceId: expect.any(String),
+    });
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      'managed_state_set_v2',
+      expect.anything(),
+    );
+    expect(readManagedStateItem(MANAGED_STATE_KEYS.overlay)).toBe('incoming');
   });
 
   it('re-reads the winner when another WebView wins the import race', async () => {

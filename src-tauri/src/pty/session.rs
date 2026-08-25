@@ -5,9 +5,12 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::Emitter;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use crate::bridge;
+
+use super::startup::{PtyShellFamily, SessionStartup, StartupSideEffectDispatcher};
+use super::writer::{InputSender, PtyWriter, WriteCompletion};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -69,6 +72,23 @@ pub(super) const FLOW_CONTROL_LOW_WATERMARK: usize = 20_000;
 pub(super) const FLOW_CONTROL_WATCHDOG: Duration = Duration::from_secs(1);
 pub(super) const RENDERER_CONSUMER_TTL: Duration = Duration::from_secs(30);
 pub(super) const BACKGROUND_CONSUMER_TTL: Duration = Duration::from_secs(30);
+
+/// Parse process-scoped capability flags conservatively. Only the explicit
+/// true tokens are enabled; unset, empty, false and invalid values remain OFF
+/// until a later evidence-backed default decision changes that policy.
+pub(super) fn feature_flag_enabled(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "1" | "true" | "on" | "enabled"
+    )
+}
+
+pub(super) fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .as_deref()
+        .is_some_and(feature_flag_enabled)
+}
 
 static GLOBAL_OUTPUT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -230,7 +250,18 @@ pub(super) struct PtyInputRequest {
 /// Represents a live PTY session.
 /// All interior-mutable fields are protected by Mutex so the struct is Sync.
 pub(super) struct PtySession {
-    pub(super) input_tx: mpsc::Sender<PtyInputRequest>,
+    /// User/shutdown input is submitted to the same single-owner writer as
+    /// protocol and startup messages. The sender preserves the existing
+    /// async queue contract while the worker enforces lane priority.
+    pub(super) input_tx: InputSender,
+    pub(super) writer: PtyWriter,
+    pub(super) generation: String,
+    /// Fixed at native creation so attach responses never re-discover a shell.
+    pub(super) shell_family: PtyShellFamily,
+    pub(super) startup: SessionStartup,
+    /// Retained for the later startup-dispatch path. Creation only records this
+    /// context; output/readiness code remains its sole dispatcher owner.
+    pub(super) startup_side_effects: Mutex<Option<StartupSideEffectContext>>,
     pub(super) master: Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>,
     pub(super) child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     pub(super) _working_dir: String,
@@ -251,6 +282,38 @@ pub(super) struct PtySession {
     pub(super) last_size: Mutex<(u16, u16)>,
     pub(super) suppress_output_activity_until: Mutex<Option<Instant>>,
     pub(super) killed: AtomicBool,
+}
+
+pub(super) struct StartupSideEffectContext {
+    pub(super) dispatcher: StartupSideEffectDispatcher,
+    pub(super) project_path: String,
+}
+
+/// Install the process-owned side-effect context exactly once. The keyed PTY
+/// create gate serializes callers; this mutex also makes the invariant local
+/// to the session if a future attach path reaches it through another route.
+pub(super) fn install_startup_side_effect_context(
+    session: &PtySession,
+    dispatcher: StartupSideEffectDispatcher,
+    project_path: String,
+) -> Result<(), String> {
+    let mut context = session
+        .startup_side_effects
+        .lock()
+        .map_err(|_| "startup_side_effect_context_unavailable".to_string())?;
+    context.get_or_insert(StartupSideEffectContext {
+        dispatcher,
+        project_path,
+    });
+    Ok(())
+}
+
+/// Write a terminal protocol response directly through the same writer used
+/// by user input. This is intentionally separate from `pty_input`: device
+/// queries originate on the PTY reader thread and must not be routed through
+/// the renderer or wait for a WebView to be mounted.
+pub(super) fn write_control_bytes(session: &PtySession, data: &[u8]) -> WriteCompletion {
+    session.writer.enqueue_protocol(data)
 }
 
 /// Release the PTY owner after the direct shell has exited. On Windows,
@@ -1214,5 +1277,18 @@ mod tests {
     #[test]
     fn session_scrollback_budget_is_three_thousand_lines() {
         assert_eq!(SESSION_SCROLLBACK_LINES, 3000);
+    }
+
+    #[test]
+    fn capability_flags_are_strict_and_case_insensitive() {
+        for value in ["1", "true", "TRUE", "on", "Enabled"] {
+            assert!(feature_flag_enabled(value), "expected {value} to enable");
+        }
+        for value in ["", "0", "false", "off", "disabled", "yes", " true "] {
+            assert!(
+                !feature_flag_enabled(value),
+                "expected {value:?} to disable"
+            );
+        }
     }
 }

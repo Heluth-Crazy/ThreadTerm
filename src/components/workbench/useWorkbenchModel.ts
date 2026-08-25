@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSupervisorStore } from '../../lib/supervisor/supervisorStore';
 import {
   deriveAttentionItems,
   deriveWorkbenchSummary,
   filterWorkbenchCards,
 } from '../../lib/workbench/deriveAttentionItems';
+import { notificationIdsAcknowledgedByIgnore } from '../../lib/workbench/ignoreAttention';
+import type { AttentionItem } from '../../lib/workbench/types';
 import { deriveExecutionGroups } from '../../lib/workbench/deriveExecutionGroups';
 import {
   deriveFollowedCards,
@@ -27,6 +29,7 @@ interface WorkbenchModelSources {
   supervisorAlerts: ReturnType<typeof useSupervisorStore.getState>['alerts'];
   codexRequests: ReturnType<typeof useCodexRequestStore.getState>['requests'];
   followedCardIds: ReturnType<typeof useWorkbenchStore.getState>['followedCardIds'];
+  ignoredAttention: ReturnType<typeof useWorkbenchStore.getState>['ignoredAttention'];
   rules: ReturnType<typeof useWorkbenchStore.getState>['rules'];
   now: number;
 }
@@ -41,23 +44,52 @@ export function useWorkbenchModel({
   const codexRequests = useCodexRequestStore((state) => state.requests);
   const rules = useWorkbenchStore((state) => state.rules);
   const followedCardIds = useWorkbenchStore((state) => state.followedCardIds);
+  const ignoredAttention = useWorkbenchStore(
+    (state) => state.ignoredAttention,
+  );
   const followCards = useWorkbenchStore((state) => state.followCards);
   const unfollowCard = useWorkbenchStore((state) => state.unfollowCard);
+  const ignoreAttentionInStore = useWorkbenchStore(
+    (state) => state.ignoreAttention,
+  );
   const reconcileFollowedCards = useWorkbenchStore(
     (state) => state.reconcileFollowedCards,
+  );
+  const reconcileIgnoredAttention = useWorkbenchStore(
+    (state) => state.reconcileIgnoredAttention,
+  );
+  const markNotificationRead = useTerminalStore(
+    (state) => state.markNotificationRead,
   );
   const now = useMinuteNow();
   const activeCardIdKey = cards.map((card) => card.id).join('\u001f');
 
   useEffect(() => {
-    reconcileFollowedCards(activeCardIdKey ? activeCardIdKey.split('\u001f') : []);
-  }, [activeCardIdKey, reconcileFollowedCards]);
+    const validCardIds = activeCardIdKey ? activeCardIdKey.split('\u001f') : [];
+    reconcileFollowedCards(validCardIds);
+    reconcileIgnoredAttention(validCardIds);
+  }, [activeCardIdKey, reconcileFollowedCards, reconcileIgnoredAttention]);
+
+  const ignoreAttention = useCallback(
+    (item: AttentionItem) => {
+      ignoreAttentionInStore(item);
+      const notificationIds = notificationIdsAcknowledgedByIgnore(
+        item,
+        useTerminalStore.getState().notifications,
+      );
+      for (const notificationId of notificationIds) {
+        markNotificationRead(notificationId);
+      }
+    },
+    [ignoreAttentionInStore, markNotificationRead],
+  );
 
   const sources = {
     notifications,
     supervisorAlerts,
     codexRequests,
     followedCardIds,
+    ignoredAttention,
     rules,
     now,
   };
@@ -74,6 +106,7 @@ export function useWorkbenchModel({
     allProjectsWorkbenchModel,
     followCards,
     followedCardIds,
+    ignoreAttention,
     unfollowCard,
     workbenchModel,
   };
@@ -90,6 +123,7 @@ function useScopedWorkbenchModel(
     supervisorAlerts,
     codexRequests,
     followedCardIds,
+    ignoredAttention,
     rules,
     now,
   }: WorkbenchModelSources,
@@ -109,10 +143,12 @@ function useScopedWorkbenchModel(
         now,
         selectedProjectPath,
         selectedWorktreePath,
+        ignoredAttention,
       }),
     [
       cards,
       codexRequests,
+      ignoredAttention,
       notifications,
       now,
       rules,

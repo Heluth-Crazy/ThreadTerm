@@ -50,6 +50,7 @@ interface UsePtyOutputLifecycleOptions {
   ptyIdRef: MutableRefObject<string | null>;
   unlistenOutputRef: MutableRefObject<Unlisten | null>;
   unlistenExitRef: MutableRefObject<Unlisten | null>;
+  unlistenStartupRef: MutableRefObject<Unlisten | null>;
   outputSequencerRef: MutableRefObject<OutputSequencer | null>;
   outputConsumerRef: MutableRefObject<RendererOutputConsumer | null>;
   lastPtySizeRef: MutableRefObject<TerminalSize | null>;
@@ -71,6 +72,7 @@ export function usePtyOutputLifecycle({
   ptyIdRef,
   unlistenOutputRef,
   unlistenExitRef,
+  unlistenStartupRef,
   outputSequencerRef,
   outputConsumerRef,
   lastPtySizeRef,
@@ -186,8 +188,10 @@ export function usePtyOutputLifecycle({
   const cleanupListeners = useCallback(() => {
     unlistenOutputRef.current?.();
     unlistenExitRef.current?.();
+    unlistenStartupRef.current?.();
     unlistenOutputRef.current = null;
     unlistenExitRef.current = null;
+    unlistenStartupRef.current = null;
     outputSequencerRef.current?.reset();
     outputSequencerRef.current = null;
     const outputConsumer = outputConsumerRef.current;
@@ -198,6 +202,7 @@ export function usePtyOutputLifecycle({
     outputSequencerRef,
     unlistenExitRef,
     unlistenOutputRef,
+    unlistenStartupRef,
   ]);
 
   return {

@@ -11,6 +11,8 @@ import { NotificationCenter } from './components/terminal/NotificationCenter';
 import { SettingsSyncBridge } from './components/settings/SettingsSyncBridge';
 import { LegacyDataDirectoryNotice } from './components/settings/LegacyDataDirectoryNotice';
 import { CodexRequestBridge } from './components/codex/CodexRequestBridge';
+import { CompletionBridge } from './components/terminal/CompletionBridge';
+import { NotificationPresentationProvider } from './components/terminal/NotificationPresentationProvider';
 
 /**
  * Terminal Manager Lite — lightweight terminal orchestrator.
@@ -26,18 +28,21 @@ export default function App() {
   return (
     <I18nextProvider i18n={i18n}>
       <ThemeProvider>
-        <TerminalEventBridge />
-        <LifecycleDiagnosticsHost />
-        <CodexRequestBridge />
-        <NotificationBridge />
-        <KeyboardBridge />
-        <SettingsSyncBridge />
-        <div className="h-screen w-screen overflow-hidden bg-background text-foreground">
-          <TerminalManager />
-          <OverlayBridge />
-          <NotificationCenter />
-          <LegacyDataDirectoryNotice />
-        </div>
+        <NotificationPresentationProvider>
+          <TerminalEventBridge />
+          <LifecycleDiagnosticsHost />
+          <CodexRequestBridge />
+          <CompletionBridge />
+          <NotificationBridge />
+          <KeyboardBridge />
+          <SettingsSyncBridge />
+          <div className="h-screen w-screen overflow-hidden bg-background text-foreground">
+            <TerminalManager />
+            <OverlayBridge />
+            <NotificationCenter />
+            <LegacyDataDirectoryNotice />
+          </div>
+        </NotificationPresentationProvider>
       </ThemeProvider>
     </I18nextProvider>
   );

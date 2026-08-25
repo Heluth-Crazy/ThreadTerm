@@ -11,7 +11,9 @@ use tauri::Emitter;
 const MANAGED_STATE_FORMAT_VERSION: u32 = 1;
 pub const MANAGED_STATE_CHANGED_EVENT: &str = "managed-state://changed";
 
-const TERMINAL_STORE_KEY: &str = "threadterm-terminal-store";
+pub(crate) const TERMINAL_STORE_KEY: &str = "threadterm-terminal-store";
+pub(crate) const TERMINAL_STARTUP_EFFECTS_BACKEND_SOURCE_ID: &str =
+    "backend:terminal-startup-effects";
 const WORKBENCH_STORE_KEY: &str = "threadterm-workbench-store";
 const OVERLAY_STORE_KEY: &str = "threadterm-overlay";
 
@@ -70,6 +72,12 @@ pub struct ManagedStateWrite {
     pub imported: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedStateSetOutcome {
+    pub reconciled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ManagedStateChanged {
@@ -120,11 +128,41 @@ impl ManagedStateStore {
         })
     }
 
+    /// Update one managed value while holding the same process-local lock for
+    /// the read, backup repair, callback, and atomic replacement.
+    ///
+    /// The callback receives the current value and returns the replacement
+    /// value together with its result. A callback error returns before any
+    /// repair or write, so callers can fail closed without changing state.
+    pub fn update_value<T>(
+        &self,
+        key: &str,
+        update: impl FnOnce(Option<&str>) -> Result<(Option<String>, T), String>,
+    ) -> Result<T, String> {
+        let _guard = self.lock();
+        let path = self.bucket_path(key)?;
+        let (mut document, recovered_backup) = read_document(&path)?;
+        let current = document.values.get(key).map(String::as_str);
+        let (next_value, result) = update(current)?;
+
+        if recovered_backup {
+            restore_valid_backup_before_write(&path)?;
+        }
+        document.initialized_keys.insert(key.to_string());
+        match next_value {
+            Some(value) => {
+                document.values.insert(key.to_string(), value);
+            }
+            None => {
+                document.values.remove(key);
+            }
+        }
+        write_document_atomic(&path, &document)?;
+        Ok(result)
+    }
+
     pub fn set(&self, key: &str, value: String) -> Result<(), String> {
-        self.mutate(key, |document| {
-            document.initialized_keys.insert(key.to_string());
-            document.values.insert(key.to_string(), value);
-        })
+        self.update_value(key, |_| Ok((Some(value), ())))
     }
 
     pub fn remove(&self, key: &str) -> Result<(), String> {
@@ -335,6 +373,44 @@ async fn run_blocking<T: Send + 'static>(
         .map_err(|error| format!("Managed-state worker failed: {error}"))?
 }
 
+fn set_managed_state_value(
+    store: ManagedStateStore,
+    key: String,
+    value: String,
+) -> Result<ManagedStateSetOutcome, String> {
+    if key == TERMINAL_STORE_KEY {
+        let startup_store =
+            crate::terminal_startup_effect_store::TerminalStartupEffectStore::new(store);
+        let outcome: crate::terminal_startup_effect_store::TerminalSnapshotMergeOutcome =
+            startup_store.merge_webview_snapshot(value)?;
+        return Ok(ManagedStateSetOutcome {
+            reconciled: outcome.reconciled,
+        });
+    }
+    store.set(&key, value)?;
+    Ok(ManagedStateSetOutcome { reconciled: false })
+}
+
+fn emit_managed_state_changed(
+    app: &tauri::AppHandle,
+    key: String,
+    source_id: String,
+) -> Result<(), String> {
+    app.emit(
+        MANAGED_STATE_CHANGED_EVENT,
+        ManagedStateChanged { key, source_id },
+    )
+    .map_err(|error| format!("Could not publish managed-state update: {error}"))
+}
+
+pub(crate) fn emit_terminal_startup_effects_changed(app: &tauri::AppHandle) -> Result<(), String> {
+    emit_managed_state_changed(
+        app,
+        TERMINAL_STORE_KEY.to_string(),
+        TERMINAL_STARTUP_EFFECTS_BACKEND_SOURCE_ID.to_string(),
+    )
+}
+
 #[tauri::command]
 pub async fn managed_state_get(
     state: tauri::State<'_, ManagedStateStore>,
@@ -354,15 +430,33 @@ pub async fn managed_state_set(
 ) -> Result<(), String> {
     let store = state.inner().clone();
     let event_key = key.clone();
-    run_blocking(move || store.set(&key, value)).await?;
-    app.emit(
-        MANAGED_STATE_CHANGED_EVENT,
-        ManagedStateChanged {
-            key: event_key,
-            source_id,
-        },
-    )
-    .map_err(|error| format!("Could not publish managed-state update: {error}"))
+    let outcome = run_blocking(move || set_managed_state_value(store, key, value)).await?;
+    let event_source = if outcome.reconciled {
+        TERMINAL_STARTUP_EFFECTS_BACKEND_SOURCE_ID.to_string()
+    } else {
+        source_id
+    };
+    emit_managed_state_changed(&app, event_key, event_source)
+}
+
+#[tauri::command]
+pub async fn managed_state_set_v2(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ManagedStateStore>,
+    key: String,
+    value: String,
+    source_id: String,
+) -> Result<ManagedStateSetOutcome, String> {
+    let store = state.inner().clone();
+    let event_key = key.clone();
+    let outcome = run_blocking(move || set_managed_state_value(store, key, value)).await?;
+    let event_source = if outcome.reconciled {
+        TERMINAL_STARTUP_EFFECTS_BACKEND_SOURCE_ID.to_string()
+    } else {
+        source_id
+    };
+    emit_managed_state_changed(&app, event_key, event_source)?;
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -412,7 +506,10 @@ pub async fn managed_state_import_legacy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        sync::{Arc, Barrier},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     struct TempDirectory {
         path: PathBuf,
@@ -480,6 +577,144 @@ mod tests {
         let removed = store.get(TERMINAL_STORE_KEY).expect("removed read");
         assert!(removed.initialized);
         assert_eq!(removed.value, None);
+    }
+
+    #[test]
+    fn update_value_returns_typed_result_and_replaces_atomically() {
+        let fixture = TempDirectory::new("update-value");
+        let store = ManagedStateStore::new(fixture.path.clone());
+        store
+            .set(TERMINAL_STORE_KEY, "before".to_string())
+            .expect("initial value");
+
+        let result = store
+            .update_value(TERMINAL_STORE_KEY, |current| {
+                assert_eq!(current, Some("before"));
+                Ok((Some("after".to_string()), 42_u32))
+            })
+            .expect("update value");
+
+        assert_eq!(result, 42);
+        assert_eq!(
+            store
+                .get(TERMINAL_STORE_KEY)
+                .expect("read updated value")
+                .value
+                .as_deref(),
+            Some("after")
+        );
+    }
+
+    #[test]
+    fn update_value_none_removes_value_but_keeps_initialized_tombstone() {
+        let fixture = TempDirectory::new("update-remove");
+        let store = ManagedStateStore::new(fixture.path.clone());
+        store
+            .set(TERMINAL_STORE_KEY, "present".to_string())
+            .expect("initial value");
+
+        store
+            .update_value(TERMINAL_STORE_KEY, |current| {
+                assert_eq!(current, Some("present"));
+                Ok((None, ()))
+            })
+            .expect("remove value");
+
+        let read = store.get(TERMINAL_STORE_KEY).expect("read tombstone");
+        assert!(read.initialized);
+        assert_eq!(read.value, None);
+    }
+
+    #[test]
+    fn update_value_error_does_not_change_value_or_file() {
+        let fixture = TempDirectory::new("update-error");
+        let store = ManagedStateStore::new(fixture.path.clone());
+        store
+            .set(TERMINAL_STORE_KEY, "stable".to_string())
+            .expect("initial value");
+        let path = fixture.path.join("terminal.json");
+        let before = fs::read(&path).expect("read before");
+
+        let error = store
+            .update_value(TERMINAL_STORE_KEY, |_current| {
+                Err::<(Option<String>, ()), String>("reject update".to_string())
+            })
+            .expect_err("closure error");
+
+        assert_eq!(error, "reject update");
+        assert_eq!(fs::read(&path).expect("read after"), before);
+        assert_eq!(
+            store
+                .get(TERMINAL_STORE_KEY)
+                .expect("read unchanged value")
+                .value
+                .as_deref(),
+            Some("stable")
+        );
+    }
+
+    #[test]
+    fn update_value_repairs_a_valid_backup_before_committing() {
+        let fixture = TempDirectory::new("update-backup");
+        let store = ManagedStateStore::new(fixture.path.clone());
+        store
+            .set(TERMINAL_STORE_KEY, "first".to_string())
+            .expect("first value");
+        store
+            .set(TERMINAL_STORE_KEY, "second".to_string())
+            .expect("second value");
+        fs::write(fixture.path.join("terminal.json"), b"{ interrupted").expect("corrupt primary");
+
+        store
+            .update_value(TERMINAL_STORE_KEY, |current| {
+                assert_eq!(current, Some("first"));
+                Ok((Some("third".to_string()), ()))
+            })
+            .expect("repair and update");
+
+        let read = store.get(TERMINAL_STORE_KEY).expect("read repaired value");
+        assert!(!read.recovered_backup);
+        assert_eq!(read.value.as_deref(), Some("third"));
+    }
+
+    #[test]
+    fn update_value_serializes_concurrent_read_modify_writes() {
+        let fixture = TempDirectory::new("update-concurrent");
+        let store = ManagedStateStore::new(fixture.path.clone());
+        store
+            .set(TERMINAL_STORE_KEY, "0".to_string())
+            .expect("initial counter");
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let worker_store = store.clone();
+            let worker_barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                worker_barrier.wait();
+                worker_store
+                    .update_value(TERMINAL_STORE_KEY, |current| {
+                        let value = current
+                            .unwrap_or("0")
+                            .parse::<u32>()
+                            .expect("counter value");
+                        Ok((Some((value + 1).to_string()), ()))
+                    })
+                    .expect("increment counter");
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            worker.join().expect("worker completed");
+        }
+
+        assert_eq!(
+            store
+                .get(TERMINAL_STORE_KEY)
+                .expect("read counter")
+                .value
+                .as_deref(),
+            Some("2")
+        );
     }
 
     #[test]

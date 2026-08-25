@@ -49,6 +49,10 @@ impl Utf8StreamDecoder {
         let pending = std::mem::take(&mut self.pending);
         String::from_utf8_lossy(&pending).to_string()
     }
+
+    pub(super) fn buffered_len(&self) -> usize {
+        self.pending.len()
+    }
 }
 
 #[cfg(test)]

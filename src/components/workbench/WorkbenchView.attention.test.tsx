@@ -35,6 +35,16 @@ describe('WorkbenchView attention and overview', () => {
     expect(screen.queryByRole('button', { name: 'Ask steward' })).toBeNull();
   });
 
+  it('ignores an attention item without opening the terminal', () => {
+    const { callbacks } = renderWorkbench();
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Ignore' })[0]);
+
+    expect(callbacks.onIgnoreAttention).toHaveBeenCalledWith(approvalItem);
+    expect(callbacks.onOpenTerminal).not.toHaveBeenCalled();
+    expect(callbacks.onOpenAttention).not.toHaveBeenCalled();
+  });
+
   it('filters attention items locally and searches both items and groups', () => {
     renderWorkbench();
 

@@ -158,6 +158,8 @@ function toMobileNotificationRouting(
     family: routing.family,
     episodeKey: routing.episodeKey ?? null,
     fingerprint: routing.fingerprint ?? null,
+    signalSource: routing.signalSource ?? null,
+    confidence: routing.confidence ?? null,
   };
 }
 

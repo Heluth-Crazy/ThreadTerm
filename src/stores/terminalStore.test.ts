@@ -28,6 +28,8 @@ function resetStore() {
     pendingFocusCardId: null,
     highlightCardId: null,
     osNotificationsEnabled: true,
+    osNotificationPreviewEnabled: true,
+    agentCliCompatibilityCompletionEnabled: true,
     supervisorEnabled: false,
   });
 }
@@ -50,6 +52,73 @@ describe('terminalStore — card lifecycle', () => {
     expect(card?.events[0]?.kind).toBe('created');
     expect(card?.providerSessionId).toBeUndefined();
     expect(card?.providerSessionState).toBeUndefined();
+  });
+
+  it('persists one-shot generations through running, completion, and explicit rerun', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({
+      projectName: 'one-shot',
+      projectPath: '/tmp/one-shot',
+      terminalType: 'shell',
+      command: 'printf done',
+      executionMode: 'oneShot',
+    });
+
+    expect(useTerminalStore.getState().getCardById(id)?.oneShotRun).toMatchObject({
+      generation: 1,
+      state: 'queued',
+    });
+    expect(s.markOneShotRunRunning(id, 1)).toBe(true);
+    expect(useTerminalStore.getState().getCardById(id)?.oneShotRun?.state).toBe('running');
+    expect(
+      s.finishOneShotRun(id, {
+        generation: 1,
+        state: 'completed',
+        exitCode: 0,
+        finishedAt: 1234,
+      }),
+    ).toBe(true);
+
+    const completed = useTerminalStore.getState().getCardById(id);
+    expect(completed?.status).toBe('completed');
+    expect(completed?.oneShotRun).toMatchObject({
+      generation: 1,
+      state: 'completed',
+      exitCode: 0,
+      finishedAt: 1234,
+    });
+
+    const oldPtyId = completed?.ptyId;
+    expect(s.runOneShotAgain(id, 2000)).toBe(2);
+    const queued = useTerminalStore.getState().getCardById(id);
+    expect(queued?.ptyId).not.toBe(oldPtyId);
+    expect(queued?.oneShotRun).toEqual({
+      generation: 2,
+      state: 'queued',
+      requestedAt: 2000,
+    });
+    expect(queued?.lastOutput).toBe('');
+  });
+
+  it('rejects stale one-shot exit transitions and malformed one-shot cards', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({
+      projectName: 'interactive',
+      projectPath: '/tmp/interactive',
+      terminalType: 'shell',
+      command: 'printf done',
+      executionMode: 'oneShot',
+    });
+    expect(s.markOneShotRunRunning(id, 99)).toBe(false);
+    expect(s.finishOneShotRun(id, { generation: 99, state: 'failed' })).toBe(false);
+    const invalid = s.createCard({
+      projectName: 'invalid',
+      projectPath: '/tmp/invalid',
+      terminalType: 'shell',
+      executionMode: 'oneShot',
+    });
+    expect(useTerminalStore.getState().getCardById(invalid)?.executionMode).toBe('interactive');
+    expect(useTerminalStore.getState().getCardById(invalid)?.oneShotRun).toBeUndefined();
   });
 
   it('creates Claude cards with a generated provider session id', () => {
@@ -275,7 +344,8 @@ describe('terminalStore — card lifecycle', () => {
     expect(state.lastActiveCardId).toBeNull();
     expect(state.selectedProjectPath).toBe('/repo/app');
     expect(state.pinnedCardIds).toEqual([]);
-    expect(state.notifications).toEqual([]);
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0]?.cardId).toBe(id);
   });
 
   it('restores archived cards to the front of project order without focusing them', () => {
@@ -414,7 +484,33 @@ describe('terminalStore — card lifecycle', () => {
     expect(lastEvent?.summary).toBe('sent input');
   });
 
-  it('removeCard drops related notifications', () => {
+  it('preserves optional startup metadata when appending a timeline event', () => {
+    const store = useTerminalStore.getState();
+    const id = store.createCard({
+      projectName: 'foo',
+      projectPath: '/tmp/foo',
+      terminalType: 'shell',
+    });
+    const token = 'a'.repeat(32);
+
+    store.appendEvent(id, {
+      at: 123,
+      kind: 'user-input',
+      summary: 'Sent input',
+      summaryKey: 'terminal:view.sentInput',
+      startupEffectToken: token,
+    });
+
+    expect(useTerminalStore.getState().getCardById(id)?.events.at(-1)).toEqual({
+      at: 123,
+      kind: 'user-input',
+      summary: 'Sent input',
+      summaryKey: 'terminal:view.sentInput',
+      startupEffectToken: token,
+    });
+  });
+
+  it('removeCard preserves related notification evidence', () => {
     const s = useTerminalStore.getState();
     const id = s.createCard({
       projectName: 'foo',
@@ -429,7 +525,8 @@ describe('terminalStore — card lifecycle', () => {
     });
     expect(useTerminalStore.getState().notifications).toHaveLength(1);
     useTerminalStore.getState().removeCard(id);
-    expect(useTerminalStore.getState().notifications).toHaveLength(0);
+    expect(useTerminalStore.getState().notifications).toHaveLength(1);
+    expect(useTerminalStore.getState().notifications[0]?.cardId).toBe(id);
   });
 
   it.each(['remove', 'archive'] as const)(
@@ -571,10 +668,132 @@ describe('terminalStore — terminal configuration editing', () => {
       retryCount: 0,
     });
     expect(card?.autoRestart?.history[0]?.status).toBe('cancelled');
-    expect(state.notifications[0]?.read).toBe(true);
+    expect(card).not.toHaveProperty('startupSideEffects');
+    expect(state.notifications[0]?.read).toBe(false);
     expect(state.pinnedCardIds).toContain(id);
     expect(state.focusedCardId).toBe(id);
     expect(state.pendingTerminalConfigurations[id]).toBeUndefined();
+  });
+
+  it('advances and retires a startup projection when reconfiguring a projected card', () => {
+    const store = useTerminalStore.getState();
+    const id = store.createCard({
+      projectName: 'repo',
+      projectPath: '/repo',
+      terminalType: 'claude',
+    });
+    const initialEpoch = 'a'.repeat(32);
+    const submitToken = '1'.repeat(32);
+    const bindToken = '2'.repeat(32);
+    const discoverToken = '3'.repeat(32);
+
+    useTerminalStore.setState((state) => ({
+      cards: state.cards.map((card) =>
+        card.id === id
+          ? {
+              ...card,
+              messageCount: 3,
+              startupSideEffects: {
+                schema: 1,
+                projectionEpoch: initialEpoch,
+                applied: [
+                  {
+                    token: submitToken,
+                    kind: 'recordUserSubmit' as const,
+                    at: 100,
+                    timeline: 'present' as const,
+                  },
+                  {
+                    token: bindToken,
+                    kind: 'bindProviderSession' as const,
+                    at: 110,
+                    binding: 'active' as const,
+                  },
+                  {
+                    token: discoverToken,
+                    kind: 'discoverProviderSession' as const,
+                    at: 120,
+                    binding: 'active' as const,
+                  },
+                ],
+              },
+              events: [
+                ...card.events,
+                {
+                  at: 100,
+                  kind: 'user-input' as const,
+                  summary: 'startup submit',
+                  summaryKey: 'terminal:view.sentInput' as const,
+                  startupEffectToken: submitToken,
+                },
+                {
+                  at: 110,
+                  kind: 'status' as const,
+                  summary: 'provider bound',
+                  startupEffectToken: bindToken,
+                },
+                {
+                  at: 120,
+                  kind: 'status' as const,
+                  summary: 'provider discovered',
+                  startupEffectToken: discoverToken,
+                },
+                { at: 125, kind: 'output' as const, summary: 'ordinary event' },
+              ],
+            }
+          : card,
+      ),
+    }));
+
+    const before = useTerminalStore.getState().getCardById(id);
+    const nextPtyId = store.commitTerminalConfiguration(id, {
+      expectedPtyId: before?.ptyId ?? '',
+      configuration: {
+        terminalType: 'codex',
+        launchMode: 'default',
+      },
+      nextPtyId: 'reconfigured-pty',
+      now: 500,
+    });
+
+    const card = useTerminalStore.getState().getCardById(id);
+    const projection = card?.startupSideEffects;
+    expect(nextPtyId).toBe('reconfigured-pty');
+    expect(projection?.schema).toBe(1);
+    expect(projection?.projectionEpoch).toMatch(/^[0-9a-f]{32}$/);
+    expect(projection?.projectionEpoch).not.toBe(initialEpoch);
+    expect(projection?.parentProjectionEpoch).toBe(initialEpoch);
+    expect(projection?.applied).toEqual([
+      {
+        token: submitToken,
+        kind: 'recordUserSubmit',
+        at: 100,
+        timeline: 'retired',
+      },
+      {
+        token: bindToken,
+        kind: 'bindProviderSession',
+        at: 110,
+        binding: 'retired',
+      },
+      {
+        token: discoverToken,
+        kind: 'discoverProviderSession',
+        at: 120,
+        binding: 'retired',
+      },
+    ]);
+    expect(card?.messageCount).toBe(3);
+    expect(card?.events).toEqual(
+      expect.arrayContaining([
+        { at: 125, kind: 'output', summary: 'ordinary event' },
+      ]),
+    );
+    expect(card?.events.some((event) => event.startupEffectToken)).toBe(false);
+    expect(card?.events.at(-1)).toMatchObject({
+      at: 500,
+      kind: 'status',
+    });
   });
 
   it('does not overwrite a card when the expected PTY is stale', () => {
@@ -584,6 +803,27 @@ describe('terminalStore — terminal configuration editing', () => {
       projectPath: '/repo',
       terminalType: 'shell',
     });
+    useTerminalStore.setState((state) => ({
+      cards: state.cards.map((card) =>
+        card.id === id
+          ? {
+              ...card,
+              startupSideEffects: {
+                schema: 1,
+                projectionEpoch: 'f'.repeat(32),
+                applied: [
+                  {
+                    token: 'e'.repeat(32),
+                    kind: 'recordUserSubmit' as const,
+                    at: 1,
+                    timeline: 'present' as const,
+                  },
+                ],
+              },
+            }
+          : card,
+      ),
+    }));
     const before = useTerminalStore.getState().getCardById(id);
 
     expect(
@@ -596,6 +836,9 @@ describe('terminalStore — terminal configuration editing', () => {
       }),
     ).toBeNull();
     expect(useTerminalStore.getState().getCardById(id)).toBe(before);
+    expect(useTerminalStore.getState().getCardById(id)?.startupSideEffects).toEqual(
+      before?.startupSideEffects,
+    );
   });
 
   it('releases the previous Claude Chat state after applying a new configuration', () => {
@@ -757,6 +1000,8 @@ describe('terminalStore — persistence shape contract', () => {
     'notifications',
     'notificationCentreOpen',
     'osNotificationsEnabled',
+    'osNotificationPreviewEnabled',
+    'agentCliCompatibilityCompletionEnabled',
     'supervisorEnabled',
   ].sort();
 
@@ -768,6 +1013,7 @@ describe('terminalStore — persistence shape contract', () => {
     'projectPath',
     'projectName',
     'terminalType',
+    'executionMode',
     'status',
     'createdAt',
     'lastActivity',
@@ -799,7 +1045,7 @@ describe('terminalStore — persistence shape contract', () => {
 
     const persisted = readPersistedState();
     expect(Object.keys(persisted.state ?? {}).sort()).toEqual(PERSISTED_TOP_LEVEL_KEYS);
-    expect(persisted.version).toBe(21);
+    expect(persisted.version).toBe(22);
   });
 
   it('persists each card with a stable key set', () => {
@@ -923,6 +1169,56 @@ describe('terminalStore — persistence shape contract', () => {
     );
   });
 
+  it('migrates one-shot lifecycle state and defaults the new preferences', async () => {
+    const requestedAt = 1_700_000_000_000;
+    localStorage.removeItem('threadterm-terminal-store');
+    localStorage.setItem(
+      'threadterm-terminal-store',
+      JSON.stringify({
+        version: 21,
+        state: {
+          cards: [{
+            id: 'one-shot-card',
+            ptyId: 'one-shot-card',
+            projectPath: '/repo/one-shot',
+            projectName: 'one-shot',
+            terminalType: 'custom',
+            executionMode: 'oneShot',
+            oneShotRun: {
+              generation: 3,
+              state: 'running',
+              requestedAt,
+            },
+            status: 'running',
+            createdAt: requestedAt,
+            lastActivity: requestedAt,
+            lastOutput: '',
+            lastReplyPreview: '',
+            messageCount: 0,
+            events: [],
+            unread: false,
+          }],
+          archivedCards: [],
+          notifications: [],
+        },
+      }),
+    );
+
+    resetStore();
+    await useTerminalStore.persist.rehydrate();
+
+    const card = useTerminalStore.getState().cards[0];
+    expect(card?.executionMode).toBe('oneShot');
+    expect(card?.oneShotRun).toMatchObject({
+      generation: 3,
+      state: 'interrupted',
+      requestedAt,
+    });
+    expect(card?.oneShotRun?.finishedAt).toBeGreaterThanOrEqual(requestedAt);
+    expect(useTerminalStore.getState().osNotificationPreviewEnabled).toBe(true);
+    expect(useTerminalStore.getState().agentCliCompatibilityCompletionEnabled).toBe(true);
+  });
+
   it('migrates historical session titles into a separate directory-level project label', async () => {
     const now = 1_700_000_000_000;
     localStorage.removeItem('threadterm-terminal-store');
@@ -991,7 +1287,7 @@ describe('terminalStore — persistence shape contract', () => {
     expect(restoredCards.map((card) => card.id)).toEqual(cardIds);
     expect(restoredCards[0]?.lastOutput).toContain('card-0:');
     expect(restoredCards.at(-1)?.lastOutput).toContain('card-179:');
-    expect(persisted.version).toBe(21);
+    expect(persisted.version).toBe(22);
   });
 });
 
@@ -1502,7 +1798,7 @@ describe('terminalStore — notifications', () => {
     s.pushNotification({ cardId: id, kind: 'waiting', title: 't', body: 'b' });
     useTerminalStore.getState().focusCard(id);
     expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(false);
-    expect(useTerminalStore.getState().notifications[0]?.read).toBe(true);
+    expect(useTerminalStore.getState().notifications[0]?.read).toBe(false);
   });
 
   it('focusing an already-focused card still clears unread state', () => {
@@ -1514,18 +1810,46 @@ describe('terminalStore — notifications', () => {
     useTerminalStore.getState().focusCard(id);
 
     expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(false);
-    expect(useTerminalStore.getState().notifications[0]?.read).toBe(true);
+    expect(useTerminalStore.getState().notifications[0]?.read).toBe(false);
   });
 
-  it('markNotificationRead clears the card unread flag when it was the last unread notification', () => {
+  it('markNotificationRead acknowledges only the targeted notification', () => {
     const s = useTerminalStore.getState();
     const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
     const notification = s.pushNotification({ cardId: id, kind: 'waiting', title: 't', body: 'b' });
 
     s.markNotificationRead(notification.id);
 
-    expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(false);
+    expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(true);
     expect(useTerminalStore.getState().notifications[0]?.read).toBe(true);
+  });
+
+  it('marks one terminal notification set read only through the explicit bulk action', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+    const otherId = s.createCard({ projectName: 'b', projectPath: '/b', terminalType: 'shell' });
+    s.pushNotification({ cardId: id, kind: 'waiting', title: 't', body: 'b' });
+    s.pushNotification({ cardId: otherId, kind: 'waiting', title: 'other', body: 'b' });
+
+    useTerminalStore.getState().markTerminalNotificationsRead(id);
+
+    expect(useTerminalStore.getState().notifications.find((n) => n.cardId === id)?.read).toBe(true);
+    expect(useTerminalStore.getState().notifications.find((n) => n.cardId === otherId)?.read).toBe(false);
+    expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(true);
+  });
+
+  it('derives global and per-card unread notification counts', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+    const otherId = s.createCard({ projectName: 'b', projectPath: '/b', terminalType: 'shell' });
+    const first = s.pushNotification({ cardId: id, kind: 'waiting', title: 't', body: 'b' });
+    s.pushNotification({ cardId: id, kind: 'completed', title: 't2', body: 'b2' });
+    s.pushNotification({ cardId: otherId, kind: 'failed', title: 't3', body: 'b3' });
+    s.markNotificationRead(first.id);
+
+    expect(useTerminalStore.getState().getUnreadCount()).toBe(2);
+    expect(useTerminalStore.getState().getUnreadNotificationCount(id)).toBe(1);
+    expect(useTerminalStore.getState().getUnreadNotificationCount(otherId)).toBe(1);
   });
 
   it('markAllNotificationsRead does exactly that', () => {
@@ -1535,10 +1859,83 @@ describe('terminalStore — notifications', () => {
     s.pushNotification({ cardId: id, kind: 'failed', title: 't2', body: 'b2' });
     useTerminalStore.getState().markAllNotificationsRead();
     expect(useTerminalStore.getState().getUnreadCount()).toBe(0);
-    expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(false);
+    expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(true);
   });
 
-  it('clearNotifications clears card unread flags', () => {
+  it('bounds read history immediately when a large unread ledger is acknowledged', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+    const now = Date.now();
+    useTerminalStore.setState({
+      notifications: Array.from({ length: 125 }, (_, index) => ({
+        id: `unread-${index}`,
+        cardId: id,
+        at: now - index,
+        kind: 'completed' as const,
+        title: `Task ${index}`,
+        body: '',
+        read: false,
+      })),
+    });
+
+    useTerminalStore.getState().markAllNotificationsRead();
+
+    const notifications = useTerminalStore.getState().notifications;
+    expect(notifications).toHaveLength(100);
+    expect(notifications.every((notification) => notification.read)).toBe(true);
+    expect(notifications[0]?.id).toBe('unread-0');
+    expect(notifications.at(-1)?.id).toBe('unread-99');
+  });
+
+  it('applies the read-history bound to single and per-terminal acknowledgement', () => {
+    const s = useTerminalStore.getState();
+    const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
+    const now = Date.now();
+    const readHistory = Array.from({ length: 100 }, (_, index) => ({
+      id: `read-${index}`,
+      cardId: id,
+      at: now - index - 1,
+      kind: 'completed' as const,
+      title: `Read ${index}`,
+      body: '',
+      read: true,
+    }));
+    useTerminalStore.setState({
+      notifications: [
+        {
+          id: 'single-unread',
+          cardId: id,
+          at: now,
+          kind: 'completed',
+          title: 'Unread',
+          body: '',
+          read: false,
+        },
+        ...readHistory,
+      ],
+    });
+
+    useTerminalStore.getState().markNotificationRead('single-unread');
+    expect(useTerminalStore.getState().notifications).toHaveLength(100);
+    expect(useTerminalStore.getState().notifications[0]?.id).toBe('single-unread');
+
+    useTerminalStore.setState({
+      notifications: Array.from({ length: 101 }, (_, index) => ({
+        id: `card-unread-${index}`,
+        cardId: id,
+        at: now - index,
+        kind: 'completed' as const,
+        title: `Card ${index}`,
+        body: '',
+        read: false,
+      })),
+    });
+    useTerminalStore.getState().markTerminalNotificationsRead(id);
+    expect(useTerminalStore.getState().notifications).toHaveLength(100);
+    expect(useTerminalStore.getState().notifications.every((notification) => notification.read)).toBe(true);
+  });
+
+  it('clearNotifications does not rewrite ordinary card activity flags', () => {
     const s = useTerminalStore.getState();
     const id = s.createCard({ projectName: 'a', projectPath: '/a', terminalType: 'shell' });
     s.pushNotification({ cardId: id, kind: 'waiting', title: 't', body: 'b' });
@@ -1546,7 +1943,7 @@ describe('terminalStore — notifications', () => {
     s.clearNotifications();
 
     expect(useTerminalStore.getState().notifications).toHaveLength(0);
-    expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(false);
+    expect(useTerminalStore.getState().getCardById(id)?.unread).toBe(true);
   });
 
   it('highlightCard sets the pulse target and auto-expires', () => {
@@ -1591,6 +1988,8 @@ describe('terminalStore — notifications', () => {
 describe('terminalStore — OS notifications', () => {
   it('defaults OS notifications to on', () => {
     expect(useTerminalStore.getState().osNotificationsEnabled).toBe(true);
+    expect(useTerminalStore.getState().osNotificationPreviewEnabled).toBe(true);
+    expect(useTerminalStore.getState().agentCliCompatibilityCompletionEnabled).toBe(true);
   });
 
   it('toggles OS notifications', () => {
@@ -1599,6 +1998,16 @@ describe('terminalStore — OS notifications', () => {
 
     useTerminalStore.getState().setOsNotificationsEnabled(true);
     expect(useTerminalStore.getState().osNotificationsEnabled).toBe(true);
+  });
+
+  it('keeps summary preview and Agent CLI compatibility preferences independent', () => {
+    const store = useTerminalStore.getState();
+    store.setOsNotificationPreviewEnabled(false);
+    store.setAgentCliCompatibilityCompletionEnabled(false);
+
+    expect(useTerminalStore.getState().osNotificationsEnabled).toBe(true);
+    expect(useTerminalStore.getState().osNotificationPreviewEnabled).toBe(false);
+    expect(useTerminalStore.getState().agentCliCompatibilityCompletionEnabled).toBe(false);
   });
 });
 

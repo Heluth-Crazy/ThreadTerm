@@ -11,12 +11,15 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { pty } from '../../lib/tauri-bridge';
 import { unregisterTerminal } from './xtermRegistry';
+import { isAiCliTerminalType } from './providerSession';
+import { readTerminalConvertEolEnabled } from './terminalRenderFlags';
 import { CODEX_DEVICE_AUTH_URL, isCodexLoginCommand } from './shellAuth';
 import type {
   RendererOutputConsumer,
   ShellProject,
   TerminalSize,
 } from './shellRuntimeTypes';
+import type { TerminalType } from '../../types/terminal';
 
 async function waitForFonts(): Promise<void> {
   if (!document.fonts?.ready) return;
@@ -31,6 +34,7 @@ interface UseXtermLifecycleOptions {
   selectedProjectRef: MutableRefObject<ShellProject | null | undefined>;
   projectPath?: string;
   projectFullPath?: string;
+  terminalType: TerminalType;
   isRestarting: boolean;
   minimal: boolean;
   terminalHostRef: MutableRefObject<HTMLDivElement | null>;
@@ -72,6 +76,7 @@ export function useXtermLifecycle({
   selectedProjectRef,
   projectPath,
   projectFullPath,
+  terminalType,
   isRestarting,
   minimal,
   terminalHostRef,
@@ -119,7 +124,15 @@ export function useXtermLifecycle({
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       allowProposedApi: true,
       allowTransparency: false,
-      convertEol: true,
+      // Provider TUIs position each row explicitly and use bare LF while
+      // redrawing inline mode. `convertEol=true` turns that LF into an
+      // implicit CR, so the Codex status/composer can shift horizontally as
+      // the `• … esc to interrupt` frame is replaced. Keep ordinary shells
+      // on the historical Windows-friendly default, while agent CLIs use
+      // the VT-native behavior; explicit env/storage overrides still win.
+      convertEol: readTerminalConvertEolEnabled(
+        isAiCliTerminalType(terminalType) ? false : true,
+      ),
       scrollback: 3000,
       // Preserve ED2 semantics without turning a full-screen TUI repaint into
       // scrollback movement. Agent control sequences remain byte-identical.
@@ -354,6 +367,7 @@ export function useXtermLifecycle({
     setIsInitialized,
     setNewOutputLines,
     setScrolledUp,
+    terminalType,
     terminalHostRef,
     terminalRef,
     terminalThemeRef,

@@ -155,6 +155,8 @@
       "openResult": "查看结果",
       "openTerminal": "打开终端",
       "details": "详情",
+      "ignore": "忽略",
+      "ignoreHint": "忽略且不打开",
       "viewAllTerminals": "查看所有终端",
       "addToWorkbench": "加入工作台",
       "removeFromWorkbench": "移出工作台",
@@ -297,11 +299,23 @@
     "projectFilter": "项目目录",
     "allProjects": "全部项目",
     "unassigned": "未归属项目",
-    "status": { "all": "全部状态", "success": "成功", "failure": "失败" },
-    "source": { "all": "全部来源", "proxy": "代理", "session": "会话日志" },
+    "status": {
+      "all": "全部状态",
+      "success": "成功",
+      "failure": "失败"
+    },
+    "source": {
+      "all": "全部来源",
+      "proxy": "代理",
+      "session": "会话日志"
+    },
     "loadingMore": "加载中…",
     "loadMore": "加载更多",
-    "proxyActive": "本地回环统计代理已启用"
+    "proxyActive": "本地回环统计代理已启用",
+    "loadingDashboard": "正在加载已保存的统计…",
+    "unpriced": "未定价",
+    "rangeLabel": "时间范围",
+    "scopeLabel": "统计范围"
   },
   "workspace": {
     "viewSwitchLabel": "项目视图",
@@ -418,6 +432,10 @@
     "optional": "可选",
     "initialCommandPlaceholder": "例如 npm run build",
     "defaultCommandHint": "留空则使用该类型的默认命令",
+    "executionMode": "执行模式",
+    "interactiveMode": "交互式 shell",
+    "oneShotMode": "单次运行（运行后退出）",
+    "oneShotHint": "在进程创建时执行命令，并保留最终输出。",
     "cancel": "取消",
     "create": "创建"
   },
@@ -449,7 +467,10 @@
       "error": "错误摘要",
       "shell": "终端输出",
       "more": "+{{count}} 行已过滤"
-    }
+    },
+    "activeFor": "已活跃 {{time}}",
+    "messageCountTitle_one": "{{count}} 条消息",
+    "messageCountTitle_other": "{{count}} 条消息"
   },
   "aiSession": {
     "missingCli": "缺少 {{cli}} CLI",
@@ -508,7 +529,17 @@
     "elicitation": "MCP 表单请求",
     "toolCall": "Tool 调用",
     "permissionApproval": "权限审批",
-    "request": "Codex 请求"
+    "request": "Codex 请求",
+    "ready": "就绪",
+    "connectingShort": "连接中",
+    "slashButton": "命令",
+    "skillButton": "技能",
+    "loadingSkills": "正在加载技能…",
+    "noMenuMatches": "没有匹配的命令或技能。",
+    "commandCompactDesc": "压缩当前对话上下文。",
+    "commandGoalDesc": "为当前 Codex 线程设定目标。",
+    "commandStopDesc": "中断正在运行的轮次。",
+    "commandSkillDesc": "将此技能附加到下一条消息。"
   },
   "claudeChat": {
     "title": "Claude Chat",
@@ -594,12 +625,29 @@
     "cardClosed": "（卡片已关闭或已归档）",
     "systemSource": "系统",
     "dismiss": "忽略",
+    "targetUnavailable": "此通知的目标已不可用。",
+    "targetNavigationFailed": "无法打开此通知目标，通知仍保持未读。",
+    "markTerminalRead": "将此终端的通知标记为已读",
+    "presentationLabel": "终端通知",
+    "presentationEmptySummary": "此终端需要你的处理。",
+    "presentationOpen": "打开通知：{{title}}",
+    "presentationClose": "忽略通知",
+    "kind": {
+      "waiting": "等待输入",
+      "completed": "已完成",
+      "failed": "失败",
+      "attention": "需注意"
+    },
     "replyReadyBodyFallback": "点击查看输出",
     "replyReadyTitle": "✓ {{project}} 已回复",
     "replyReadyEvent": "回复已就绪",
     "processExited": "进程退出，代码 {{code}}",
     "processCompleted": "进程已完成",
     "sessionClosed": "会话已关闭",
+    "oneShotCompletedTitle": "✓ {{project}} 已完成",
+    "oneShotFailedTitle": "✕ {{project}} 失败",
+    "oneShotCompletedEvent": "单次运行已完成",
+    "oneShotFailedEvent": "单次运行失败",
     "autoRestartLimitTitle": "{{project}} 自动重启已停止",
     "autoRestartLimitBody": "已达到 {{max}} 次重试上限。",
     "autoRestartLimitEvent": "自动重启达到 {{max}} 次上限",
@@ -733,6 +781,14 @@
     "scrollToBottom": "回到底部",
     "newLinesBelow": "{{count}} 行新输出"
   },
+  "oneShot": {
+    "queued": "单次运行已排队",
+    "running": "单次运行中",
+    "completed": "单次运行已完成",
+    "failed": "单次运行失败",
+    "interrupted": "单次运行已中断",
+    "runAgain": "再次运行"
+  },
   "status": {
     "idle": "空闲",
     "running": "运行中",
@@ -758,7 +814,9 @@
       "change-intent": "更改意图",
       "toggle-overlay": "切换悬浮窗",
       "settings": "设置"
-    }
+    },
+    "emptyTitle": "未找到匹配项",
+    "emptyDescription": "尝试其他命令或搜索词。"
   },
   "types": {
     "shell": "Shell",
@@ -807,5 +865,11 @@
       "firstPrompt": "首条 Prompt",
       "providerTitle": "Provider 标题"
     }
+  },
+  "chatWindow": {
+    "range": "显示第 {{start}}–{{end}} 条，共 {{total}} 条",
+    "older": "更早",
+    "newer": "更新",
+    "latest": "最新"
   }
 }

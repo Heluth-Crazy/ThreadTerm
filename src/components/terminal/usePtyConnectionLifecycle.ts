@@ -9,10 +9,13 @@ import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { TFunction } from 'i18next';
 import { logger } from '../../lib/logger';
-import { isTauriEnv, pty } from '../../lib/tauri-bridge';
+import { isTauriEnv, pty, type PtyLaunchDescriptor } from '../../lib/tauri-bridge';
+import type { PtyProviderStartupIntent } from '../../types/ptyStartup';
+import { createTerminalLaunchTrace } from '../../lib/terminalLaunchDiagnostics';
 import { createOutputAcknowledger } from './outputAcknowledger';
 import { computeReconnectDelay, formatExitBanner } from './shellBehavior';
 import { createTerminalOutputPipeline } from './terminalOutputPipeline';
+import { createPtyStartupReconciliation } from './ptyStartupReconciliation';
 import {
   createRendererConsumerId,
   disposeRendererConsumer,
@@ -30,6 +33,7 @@ import type {
   TerminalSize,
   Unlisten,
 } from './shellRuntimeTypes';
+import type { OneShotRunState, TerminalExecutionMode } from '../../types/terminal';
 
 interface UsePtyConnectionControllerOptions {
   paneId?: string;
@@ -42,6 +46,7 @@ interface UsePtyConnectionControllerOptions {
   ptyIdRef: MutableRefObject<string | null>;
   unlistenOutputRef: MutableRefObject<Unlisten | null>;
   unlistenExitRef: MutableRefObject<Unlisten | null>;
+  unlistenStartupRef: MutableRefObject<Unlisten | null>;
   retryCountRef: MutableRefObject<number>;
   reconnectTimeoutRef: MutableRefObject<ReturnType<typeof setTimeout> | null>;
   manuallyDisconnectedRef: MutableRefObject<boolean>;
@@ -52,7 +57,11 @@ interface UsePtyConnectionControllerOptions {
   desiredPaneIdRef: MutableRefObject<string | undefined>;
   selectedProjectRef: MutableRefObject<ShellProject | null | undefined>;
   initialCommandRef: MutableRefObject<string | undefined>;
-  onInitialCommandSentRef: MutableRefObject<(() => void) | undefined>;
+  providerStartupRef: MutableRefObject<PtyProviderStartupIntent | undefined>;
+  executionModeRef: MutableRefObject<TerminalExecutionMode | undefined>;
+  oneShotRunStateRef: MutableRefObject<OneShotRunState | undefined>;
+  onOneShotRunStartedRef: MutableRefObject<(() => void) | undefined>;
+  onOneShotRunInterruptedRef: MutableRefObject<(() => void) | undefined>;
   activeRef: MutableRefObject<boolean>;
   preservePtyOnUnmountRef: MutableRefObject<boolean>;
   autoReconnectOnExitRef: MutableRefObject<boolean>;
@@ -106,6 +115,7 @@ export function usePtyConnectionController({
   ptyIdRef,
   unlistenOutputRef,
   unlistenExitRef,
+  unlistenStartupRef,
   retryCountRef,
   reconnectTimeoutRef,
   manuallyDisconnectedRef,
@@ -116,7 +126,11 @@ export function usePtyConnectionController({
   desiredPaneIdRef,
   selectedProjectRef,
   initialCommandRef,
-  onInitialCommandSentRef,
+  providerStartupRef,
+  executionModeRef,
+  oneShotRunStateRef,
+  onOneShotRunStartedRef,
+  onOneShotRunInterruptedRef,
   activeRef,
   preservePtyOnUnmountRef,
   autoReconnectOnExitRef,
@@ -255,6 +269,15 @@ export function usePtyConnectionController({
     if (isConnectingRef.current || isConnectedRef.current) return;
     const project = selectedProjectRef.current;
     if (!project || !terminalRef.current) return;
+    if (
+      executionModeRef.current === 'oneShot' &&
+      oneShotRunStateRef.current !== 'queued' &&
+      oneShotRunStateRef.current !== 'running'
+    ) {
+      // A terminal one-shot generation is a durable final state. Reopening
+      // the card or rehydrating the store must never execute it again.
+      return;
+    }
 
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -268,11 +291,23 @@ export function usePtyConnectionController({
     const setup = async () => {
       let localUnlistenOutput: Unlisten | null = null;
       let localUnlistenExit: Unlisten | null = null;
+      let localUnlistenLaunch: Unlisten | null = null;
+      let localUnlistenStartup: Unlisten | null = null;
       let localSequencer: OutputSequencer | null = null;
       let localOutputConsumer: RendererOutputConsumer | null = null;
+      let launchTrace: ReturnType<typeof createTerminalLaunchTrace> | null = null;
+      let startupListenerAvailable = false;
+      const startupReconciliation = createPtyStartupReconciliation();
+      const cleanupStartup = onceUnlisten(() => {
+        localUnlistenStartup?.();
+        startupReconciliation.dispose();
+      });
+      let firstPaintScheduled = false;
       const cleanupLocalSetup = () => {
         localUnlistenOutput?.();
         localUnlistenExit?.();
+        localUnlistenLaunch?.();
+        cleanupStartup();
         localSequencer?.reset();
         disposeRendererConsumer(localOutputConsumer);
 
@@ -281,6 +316,9 @@ export function usePtyConnectionController({
         }
         if (unlistenExitRef.current === localUnlistenExit) {
           unlistenExitRef.current = null;
+        }
+        if (unlistenStartupRef.current === cleanupStartup) {
+          unlistenStartupRef.current = null;
         }
         if (outputSequencerRef.current === localSequencer) {
           outputSequencerRef.current = null;
@@ -297,18 +335,68 @@ export function usePtyConnectionController({
 
         const projectPath = project.fullPath || project.path;
         const ptySessionId = paneId || `shell-${Date.now()}`;
-        let sessionAlreadyExists = false;
         const isStaleSetup = () =>
           connectGenerationRef.current !== setupGeneration ||
           (paneId && desiredPaneIdRef.current !== paneId);
+        launchTrace = createTerminalLaunchTrace({
+          ptyId: ptySessionId,
+          provider: terminalType,
+        });
+        launchTrace.mark('uiRequest');
+        // `connectPty` runs only after the xterm lifecycle has opened the
+        // terminal surface, so this mark brackets the first renderer attach.
+        launchTrace.mark('xtermOpened');
 
+        // The launch event is diagnostic-only. A missing/older bridge must
+        // never make a terminal fail to open.
+        if (typeof pty.onLaunchPhase === 'function') {
+          try {
+            localUnlistenLaunch = onceUnlisten(
+              await pty.onLaunchPhase((payload) => {
+                launchTrace?.acceptBackendPhase(payload);
+              }),
+            );
+          } catch {
+            localUnlistenLaunch = null;
+          }
+        }
+        // Functional startup observation is registered before a v2 create so
+        // an immediate backend dispatch cannot race this WebView. Listener
+        // failure is recoverable from the returned snapshot/query below.
+        if (providerStartupRef.current) {
+          try {
+            localUnlistenStartup = onceUnlisten(await pty.onStartupState((snapshot) => {
+              if (isStaleSetup()) return;
+              const observed = startupReconciliation.acceptEvent(snapshot);
+              if (observed.sent) {
+                resumeLoadingObserverRef?.current?.commandDispatching();
+              }
+              if (observed.needsQuery) {
+                void pty.getStartupState(snapshot.ptyId, snapshot.generation)
+                  .then((current) => {
+                    if (isStaleSetup()) return;
+                    const recovered = startupReconciliation.acceptQuery(snapshot.generation, current);
+                    if (recovered.sent) resumeLoadingObserverRef?.current?.commandDispatching();
+                  })
+                  .catch(() => {});
+              }
+            }));
+            startupListenerAvailable = true;
+          } catch {
+            localUnlistenStartup = null;
+          }
+        }
+        let sessionAlreadyExists = false;
         try {
           await pty.getSessionState(ptySessionId);
           sessionAlreadyExists = true;
         } catch {
           sessionAlreadyExists = false;
         }
-        if (isStaleSetup() || !terminalRef.current) return;
+        if (isStaleSetup() || !terminalRef.current) {
+          cleanupLocalSetup();
+          return;
+        }
         if (
           sessionAlreadyExists &&
           suppressInitialCommandWhenPtyExistsRef.current
@@ -320,15 +408,94 @@ export function usePtyConnectionController({
 
         const rows = terminalRef.current?.rows || 24;
         const cols = terminalRef.current?.cols || 120;
-        const connectedPtyId =
-          terminalType === undefined
-            ? await pty.create(ptySessionId, projectPath, rows, cols)
+        const oneShotCommand =
+          executionModeRef.current === 'oneShot'
+            ? initialCommandRef.current?.trim()
+            : undefined;
+        const oneShotLaunch: PtyLaunchDescriptor | undefined = oneShotCommand
+          ? { executionMode: 'oneShot', command: oneShotCommand }
+          : undefined;
+        if (oneShotLaunch && !sessionAlreadyExists) {
+          onOneShotRunStartedRef.current?.();
+        }
+        let connectedPtyId: string;
+        const providerStartup = providerStartupRef.current;
+        if (providerStartup) {
+          const created = await pty.createSessionV2({
+            id: ptySessionId,
+            workingDir: projectPath,
+            rows,
+            cols,
+            launchAttemptId: launchTrace?.launchAttemptId,
+            startup: providerStartup,
+          });
+          if (isStaleSetup() || !terminalRef.current) {
+            cleanupLocalSetup();
+            return;
+          }
+          connectedPtyId = created.ptyId;
+          const observed = startupReconciliation.acceptCreate(created);
+          if (created.disposition === 'attached') {
+            resumeLoadingObserverRef?.current?.skip();
+          } else if (observed.sent) {
+            resumeLoadingObserverRef?.current?.commandDispatching();
+          } else {
+            resumeLoadingObserverRef?.current?.connectionReady();
+          }
+          if (!startupListenerAvailable || observed.needsQuery) {
+            void pty.getStartupState(created.ptyId, created.generation)
+              .then((snapshot) => {
+                if (isStaleSetup()) return;
+                const recovered = startupReconciliation.acceptQuery(created.generation, snapshot);
+                if (recovered.sent) resumeLoadingObserverRef?.current?.commandDispatching();
+              })
+              .catch(() => {});
+          }
+        } else if (typeof pty.createWithLaunchAttempt === 'function' && launchTrace) {
+          connectedPtyId = oneShotLaunch
+            ? await pty.createWithLaunchAttempt(
+                ptySessionId,
+                projectPath,
+                rows,
+                cols,
+                terminalType,
+                launchTrace.launchAttemptId,
+                oneShotLaunch,
+              )
+            : await pty.createWithLaunchAttempt(
+                ptySessionId,
+                projectPath,
+                rows,
+                cols,
+                terminalType,
+                launchTrace.launchAttemptId,
+              );
+        } else if (terminalType === undefined) {
+          connectedPtyId = oneShotLaunch
+            ? await pty.create(ptySessionId, projectPath, rows, cols, undefined, oneShotLaunch)
+            : await pty.create(ptySessionId, projectPath, rows, cols);
+        } else {
+          connectedPtyId = oneShotLaunch
+            ? await pty.create(
+                ptySessionId,
+                projectPath,
+                rows,
+                cols,
+                terminalType,
+                oneShotLaunch,
+              )
             : await pty.create(ptySessionId, projectPath, rows, cols, terminalType);
-        if (isStaleSetup() || !terminalRef.current) return;
+        }
+        launchTrace?.mark('ptyCreateReturned');
+        if (isStaleSetup() || !terminalRef.current) {
+          cleanupLocalSetup();
+          return;
+        }
         const consumerId = createRendererConsumerId(rendererScope);
         await pty.registerOutputConsumer(connectedPtyId, consumerId);
         if (isStaleSetup() || !terminalRef.current) {
           await pty.unregisterOutputConsumer(connectedPtyId, consumerId).catch(() => {});
+          cleanupLocalSetup();
           return;
         }
         const outputAcknowledger = createOutputAcknowledger((request) =>
@@ -376,6 +543,20 @@ export function usePtyConnectionController({
           scrollTerminalToBottom,
           scheduleNewOutputFlush,
           scheduleTerminalRefresh,
+          onTerminalWriteStarted: () => {
+            launchTrace?.mark('xtermWriteStarted');
+          },
+          onTerminalWriteCompleted: () => {
+            launchTrace?.mark('xtermWriteCompleted');
+            if (launchTrace?.has('firstPaint') || firstPaintScheduled) return;
+            firstPaintScheduled = true;
+            const markPaint = () => launchTrace?.mark('firstPaint');
+            if (typeof queueMicrotask === 'function') {
+              queueMicrotask(markPaint);
+            } else {
+              Promise.resolve().then(markPaint);
+            }
+          },
           resumeLoadingObserverRef,
         });
         localSequencer = sequencer;
@@ -389,6 +570,12 @@ export function usePtyConnectionController({
             !terminalRef.current
           ) {
             return;
+          }
+          if (data) {
+            launchTrace?.mark('firstRawByte');
+            if (launchTrace?.has('startupCommandSent')) {
+              launchTrace.mark('firstPostCommandByte');
+            }
           }
           sequencer.receive({ seq, data });
         }));
@@ -414,7 +601,7 @@ export function usePtyConnectionController({
                 : t('shell.exitBannerClosed');
             term.write(formatExitBanner(code ?? null, label));
           }
-          if (autoReconnectOnExitRef.current) {
+          if (autoReconnectOnExitRef.current && executionModeRef.current !== 'oneShot') {
             scheduleReconnect(connectPty);
           } else {
             // Block the autoConnect effect from silently respawning the
@@ -433,6 +620,7 @@ export function usePtyConnectionController({
 
         unlistenOutputRef.current = unlistenOut;
         unlistenExitRef.current = unlistenExit;
+        unlistenStartupRef.current = cleanupStartup;
 
         try {
           const snapshot = await pty.attachSnapshot(connectedPtyId);
@@ -441,6 +629,7 @@ export function usePtyConnectionController({
             return;
           }
           if (snapshot) {
+            const snapshotText = `${snapshot.history || ''}${snapshot.data || ''}`;
             if (terminalRef.current) {
               terminalRef.current.clear();
               terminalRef.current.write('\x1b[2J\x1b[H');
@@ -471,6 +660,8 @@ export function usePtyConnectionController({
 
         const command = initialCommandRef.current;
         const shouldSendInitialCommand =
+          !providerStartup &&
+          executionModeRef.current !== 'oneShot' &&
           Boolean(command?.trim()) &&
           !(suppressInitialCommandWhenPtyExistsRef.current && sessionAlreadyExists);
 
@@ -494,17 +685,30 @@ export function usePtyConnectionController({
             cleanupLocalSetup();
             return;
           }
-          onInitialCommandSentRef.current?.();
+          launchTrace?.mark('startupCommandSent');
+          launchTrace?.mark('connected');
+        } else {
+          launchTrace?.mark('connected');
         }
       } catch (error) {
         cleanupLocalSetup();
         if (connectGenerationRef.current !== setupGeneration) return;
+        launchTrace?.mark('failed');
         resumeLoadingObserverRef?.current?.abort();
         logger.error('[Shell] PTY connection failed:', error);
         setConnectError(error instanceof Error ? error.message : String(error));
         setConnected(false);
         setConnecting(false);
-        scheduleReconnect(connectPty);
+        if (executionModeRef.current === 'oneShot') {
+          // A launch failure is terminal for this generation. Persisting an
+          // interrupted state lets the user choose Run again without an
+          // automatic shell recreation loop.
+          exitedRef.current = true;
+          setExitInfo({ code: null });
+          onOneShotRunInterruptedRef.current?.();
+        } else {
+          scheduleReconnect(connectPty);
+        }
       }
     };
 
@@ -517,15 +721,19 @@ export function usePtyConnectionController({
     desiredPaneIdRef,
     exitedRef,
     initialCommandRef,
+    executionModeRef,
+    oneShotRunStateRef,
     isConnectedRef,
     isConnectingRef,
     lastPtySizeRef,
-    onInitialCommandSentRef,
+    onOneShotRunInterruptedRef,
+    onOneShotRunStartedRef,
     outputConsumerRef,
     outputSequencerRef,
     paneId,
     pendingNewLinesRef,
     ptyIdRef,
+    providerStartupRef,
     reconnectTimeoutRef,
     recoverTerminalSurface,
     rendererScope,
@@ -550,6 +758,7 @@ export function usePtyConnectionController({
     terminalRef,
     unlistenExitRef,
     unlistenOutputRef,
+    unlistenStartupRef,
   ]);
 
   const connectToShell = useCallback(() => {

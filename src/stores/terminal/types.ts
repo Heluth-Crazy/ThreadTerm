@@ -8,6 +8,9 @@
 import type { StateCreator } from 'zustand';
 import type {
   NotificationEntry,
+  CompletionSignal,
+  NotificationKind,
+  OneShotRunState,
   TerminalCard,
   TerminalCreateOptions,
   TerminalEvent,
@@ -17,6 +20,7 @@ import type {
   ProviderSessionImportResult,
   TerminalStatus,
 } from '../../types/terminal';
+import type { CompletionIngestResult } from '../../lib/notificationLedger';
 import type { AutoRestartDecision } from '../../lib/autoRestart';
 import type { TerminalLaunchConfiguration } from '../../lib/terminalConfiguration';
 
@@ -31,6 +35,12 @@ export const MAX_CARD_NAME_LENGTH = 80;
 
 export interface ArchivedTerminalCard extends TerminalCard {
   archivedAt: number;
+}
+
+/** Runtime-only archive snapshot target requested by a notification activation. */
+export interface PendingArchivedNotificationTarget {
+  notificationId: string;
+  cardId: string;
 }
 
 export interface TerminalConfigurationCommitInput {
@@ -77,6 +87,19 @@ export interface CardsSlice {
     preview: string | null,
   ) => void;
   updateCardStatus: (id: string, status: TerminalStatus) => void;
+  /** Persist the one-shot lifecycle only for the current generation. */
+  markOneShotRunRunning: (id: string, generation: number) => boolean;
+  finishOneShotRun: (
+    id: string,
+    input: {
+      generation: number;
+      state: Exclude<OneShotRunState, 'queued' | 'running'>;
+      finishedAt?: number;
+      exitCode?: number;
+    },
+  ) => boolean;
+  /** Queue a new generation after an explicit user action; never auto-runs. */
+  runOneShotAgain: (id: string, now?: number) => number | null;
   updateCardReplyPreview: (id: string, preview: string) => void;
   appendEvent: (id: string, event: Omit<TerminalEvent, 'at'> & { at?: number }) => void;
   incrementMessageCount: (id: string) => void;
@@ -130,6 +153,8 @@ export interface NotificationsSlice {
    * the focus view. Transient — never persisted.
    */
   pendingLocateCardId: string | null;
+  /** Runtime-only archive snapshot target; never persisted or restored. */
+  pendingArchivedNotificationTarget: PendingArchivedNotificationTarget | null;
   /**
    * Card currently flashing its "you were looking for me" pulse after a
    * notification jump. Transient UI state — never persisted; cleared
@@ -140,6 +165,12 @@ export interface NotificationsSlice {
   // OS notifications
   osNotificationsEnabled: boolean;
   setOsNotificationsEnabled: (enabled: boolean) => void;
+  /** Include the sanitized summary in the OS channel. */
+  osNotificationPreviewEnabled: boolean;
+  setOsNotificationPreviewEnabled: (enabled: boolean) => void;
+  /** Heuristic Agent CLI completion is opt-out, independent of ledger writes. */
+  agentCliCompatibilityCompletionEnabled: boolean;
+  setAgentCliCompatibilityCompletionEnabled: (enabled: boolean) => void;
 
   /** Master switch for the AI Supervisor. Default OFF — when false, the
    *  backend doesn't subscribe to any events (zero CPU overhead). */
@@ -149,7 +180,12 @@ export interface NotificationsSlice {
   pushNotification: (
     n: Omit<NotificationEntry, 'id' | 'at' | 'read'> & { at?: number },
   ) => NotificationEntry;
+  ingestCompletionSignal: (
+    signal: CompletionSignal,
+    content: { kind: NotificationKind; title: string; body: string },
+  ) => CompletionIngestResult;
   markNotificationRead: (id: string) => void;
+  markTerminalNotificationsRead: (cardId: string) => void;
   markAllNotificationsRead: () => void;
   clearNotifications: () => void;
   removeNotification: (id: string) => void;
@@ -158,9 +194,13 @@ export interface NotificationsSlice {
   toggleNotificationCentre: (open?: boolean) => void;
   setPendingFocusCardId: (id: string | null) => void;
   setPendingLocateCardId: (id: string | null) => void;
+  setPendingArchivedNotificationTarget: (
+    target: PendingArchivedNotificationTarget | null,
+  ) => void;
   /** Flash the notification-locate pulse on a card; auto-expires (default 2.4s). */
   highlightCard: (id: string, ttlMs?: number) => void;
   getUnreadCount: () => number;
+  getUnreadNotificationCount: (cardId: string) => number;
 }
 
 // ── navigation slice (focus / pin / recently viewed) ───────────────────────

@@ -11,6 +11,7 @@ interface WorkbenchStalledSectionProps {
   onToggleExpanded: () => void;
   onOpenTerminal: (cardId: string) => void;
   onOpenAttention: (item: AttentionItem) => void;
+  onIgnoreAttention: (item: AttentionItem) => void;
   onSetCardFollowed: (cardId: string, followed: boolean) => void;
 }
 
@@ -22,6 +23,7 @@ export function WorkbenchStalledSection({
   onToggleExpanded,
   onOpenTerminal,
   onOpenAttention,
+  onIgnoreAttention,
   onSetCardFollowed,
 }: WorkbenchStalledSectionProps) {
   const { t } = useTranslation('terminal');
@@ -73,6 +75,7 @@ export function WorkbenchStalledSection({
               followed={followedCardIds.has(item.cardId)}
               onOpenItem={() => onOpenTerminal(item.cardId)}
               onOpenDetail={onOpenAttention}
+              onIgnoreItem={onIgnoreAttention}
               onToggleFollow={() =>
                 onSetCardFollowed(
                   item.cardId,

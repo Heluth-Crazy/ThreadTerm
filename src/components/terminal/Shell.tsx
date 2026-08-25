@@ -25,6 +25,11 @@ import type {
   TerminalSize,
   Unlisten,
 } from './shellRuntimeTypes';
+import type {
+  OneShotRunState,
+  TerminalExecutionMode,
+  TerminalType,
+} from '../../types/terminal';
 
 export type { ShellProps } from './shellRuntimeTypes';
 
@@ -123,6 +128,7 @@ function Shell({
   selectedProject,
   terminalType,
   initialCommand,
+  providerStartup,
   minimal = false,
   autoConnect = false,
   paneId,
@@ -133,7 +139,11 @@ function Shell({
   suppressInitialCommandWhenPtyExists = false,
   resumeLoading = false,
   autoReconnectOnExit = true,
-  onInitialCommandSent,
+  executionMode = 'interactive',
+  oneShotRunState,
+  oneShotFinalOutput = '',
+  onOneShotRunStarted,
+  onOneShotRunInterrupted,
   onUserSubmit,
 }: ShellProps) {
   const { t } = useTranslation('terminal');
@@ -145,6 +155,7 @@ function Shell({
   const ptyIdRef = useRef<string | null>(null);
   const unlistenOutputRef = useRef<Unlisten | null>(null);
   const unlistenExitRef = useRef<Unlisten | null>(null);
+  const unlistenStartupRef = useRef<Unlisten | null>(null);
   const retryCountRef = useRef(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const manuallyDisconnected = useRef(false);
@@ -179,7 +190,11 @@ function Shell({
 
   const selectedProjectRef = useRef<ShellProject | null | undefined>(selectedProject);
   const initialCommandRef = useRef<string | undefined>(initialCommand);
-  const onInitialCommandSentRef = useRef<(() => void) | undefined>(onInitialCommandSent);
+  const providerStartupRef = useRef(providerStartup);
+  const executionModeRef = useRef<TerminalExecutionMode | undefined>(executionMode);
+  const oneShotRunStateRef = useRef<OneShotRunState | undefined>(oneShotRunState);
+  const onOneShotRunStartedRef = useRef<(() => void) | undefined>(onOneShotRunStarted);
+  const onOneShotRunInterruptedRef = useRef<(() => void) | undefined>(onOneShotRunInterrupted);
   const onUserSubmitRef = useRef<(() => void) | undefined>(onUserSubmit);
   const activeRef = useRef(active);
   const preservePtyOnUnmountRef = useRef(preservePtyOnUnmount);
@@ -198,7 +213,11 @@ function Shell({
   useEffect(() => {
     selectedProjectRef.current = selectedProject;
     initialCommandRef.current = initialCommand;
-    onInitialCommandSentRef.current = onInitialCommandSent;
+    providerStartupRef.current = providerStartup;
+    executionModeRef.current = executionMode;
+    oneShotRunStateRef.current = oneShotRunState;
+    onOneShotRunStartedRef.current = onOneShotRunStarted;
+    onOneShotRunInterruptedRef.current = onOneShotRunInterrupted;
     onUserSubmitRef.current = onUserSubmit;
     activeRef.current = active;
     desiredPaneIdRef.current = paneId;
@@ -227,6 +246,7 @@ function Shell({
     ptyIdRef,
     unlistenOutputRef,
     unlistenExitRef,
+    unlistenStartupRef,
     outputSequencerRef,
     outputConsumerRef,
     lastPtySizeRef,
@@ -296,6 +316,7 @@ function Shell({
     ptyIdRef,
     unlistenOutputRef,
     unlistenExitRef,
+    unlistenStartupRef,
     retryCountRef,
     reconnectTimeoutRef,
     manuallyDisconnectedRef: manuallyDisconnected,
@@ -306,7 +327,11 @@ function Shell({
     desiredPaneIdRef,
     selectedProjectRef,
     initialCommandRef,
-    onInitialCommandSentRef,
+    providerStartupRef,
+    executionModeRef,
+    oneShotRunStateRef,
+    onOneShotRunStartedRef,
+    onOneShotRunInterruptedRef,
     activeRef,
     preservePtyOnUnmountRef,
     autoReconnectOnExitRef,
@@ -371,6 +396,10 @@ function Shell({
     selectedProjectRef,
     projectPath: selectedProject?.path,
     projectFullPath: selectedProject?.fullPath,
+    // ShellProps predates the stricter TerminalType union and keeps this
+    // prop optional for generic embeds. Unknown/omitted values use shell
+    // rendering semantics; provider cards pass a known union member.
+    terminalType: (terminalType ?? 'shell') as TerminalType,
     isRestarting,
     minimal,
     terminalHostRef: terminalRef,
@@ -469,6 +498,20 @@ function Shell({
           resumeLoadingPercent={resumeLoadingPercent}
           resumeLoadingVisible={resumeLoadingVisible}
         />
+        {executionMode === 'oneShot' &&
+          oneShotRunState !== 'queued' &&
+          oneShotRunState !== 'running' &&
+          !isConnected &&
+          !isConnecting &&
+          exitInfo === null &&
+          oneShotFinalOutput.trim() && (
+            <pre
+              data-testid="one-shot-final-output"
+              className="absolute inset-0 overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-xs text-gray-200"
+            >
+              {oneShotFinalOutput}
+            </pre>
+          )}
         {scrolledUp && (
           <button
             type="button"

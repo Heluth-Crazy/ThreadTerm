@@ -19,6 +19,8 @@ export interface ThemeSettingsSnapshot {
 
 export interface TerminalPreferenceSnapshot {
   osNotificationsEnabled: boolean;
+  osNotificationPreviewEnabled?: boolean;
+  agentCliCompatibilityCompletionEnabled?: boolean;
   supervisorEnabled: boolean;
 }
 
@@ -84,6 +86,14 @@ function normalizeTerminalPreferences(value: unknown): TerminalPreferenceSnapsho
 
   return {
     osNotificationsEnabled: readOsNotificationsEnabled(value),
+    osNotificationPreviewEnabled:
+      typeof value.osNotificationPreviewEnabled === 'boolean'
+        ? value.osNotificationPreviewEnabled
+        : true,
+    agentCliCompatibilityCompletionEnabled:
+      typeof value.agentCliCompatibilityCompletionEnabled === 'boolean'
+        ? value.agentCliCompatibilityCompletionEnabled
+        : true,
     supervisorEnabled: value.supervisorEnabled,
   };
 }
