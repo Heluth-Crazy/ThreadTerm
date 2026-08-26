@@ -1,0 +1,19 @@
+{
+  "name": "threadterm-terminal-host",
+  "version": "0.1.0",
+  "description": "Connect-only MCP access to a running ThreadTerm terminal host.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Threadterm Terminal Host",
+    "shortDescription": "Create and manage terminals in a running ThreadTerm desktop.",
+    "longDescription": "A local, connect-only MCP bridge for the ThreadTerm terminal-host daemon.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": ["Use the ThreadTerm terminal host only when ThreadTerm is already running."]
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -1079,6 +1079,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
+ "subtle",
 ]
 
 [[package]]
@@ -2088,6 +2089,15 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "html5ever"
@@ -6040,6 +6050,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "terminal-host-core"
+version = "0.1.0"
+dependencies = [
+ "portable-pty",
+ "rusqlite",
+ "tattoy-wezterm-term",
+ "tempfile",
+ "terminal-host-protocol",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "terminal-host-protocol"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "terminfo"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6164,6 +6196,8 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-window-state",
  "tauri-winrt-notification",
+ "terminal-host-protocol",
+ "threadterm-terminal-host",
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
@@ -6175,6 +6209,25 @@ dependencies = [
  "windows 0.61.3",
  "windows-core 0.61.2",
  "windows-registry",
+]
+
+[[package]]
+name = "threadterm-terminal-host"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.2.17",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "terminal-host-core",
+ "terminal-host-protocol",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+ "windows 0.61.3",
 ]
 
 [[package]]

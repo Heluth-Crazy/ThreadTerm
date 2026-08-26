@@ -38,7 +38,13 @@ function collectFiles(dir: string, extensions: RegExp, out: string[] = []): stri
 }
 
 const sourceRoots = [join(__dirname, 'components'), join(__dirname, 'windows')];
-const htmlEntries = ['index.html', 'selector.html', 'float.html', 'settings.html'].map(
+const htmlEntries = [
+  'index.html',
+  'selector.html',
+  'float.html',
+  'settings.html',
+  'terminal-host.html',
+].map(
   (name) => join(__dirname, '..', name),
 );
 

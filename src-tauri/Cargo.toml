@@ -13,8 +13,23 @@ default-run = "threadterm"
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[workspace]
+resolver = "2"
+members = [
+    "terminal-host-protocol",
+    "terminal-host-core",
+    "threadterm-terminal-host",
+]
+default-members = ["."]
+
 [features]
 default = ["mobile-bridge", "stats-proxy"]
+# Enables the additive development daemon client and dedicated runtime-only
+# window. Ordinary ThreadTerm cards remain on the in-process PTY runtime.
+terminal-daemon-owner = [
+    "dep:threadterm-terminal-host",
+    "threadterm-terminal-host/terminal-daemon-owner",
+]
 # Non-shipping observability for the real Windows WebDriver gate. This is
 # intentionally opt-in so release installers retain the exact public command
 # surface.
@@ -49,6 +64,8 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+terminal-host-protocol = { path = "terminal-host-protocol" }
+threadterm-terminal-host = { path = "threadterm-terminal-host", optional = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
@@ -99,7 +116,7 @@ window-vibrancy = "0.6.0"
 tauri-winrt-notification = "0.7.2"
 windows-registry = "0.5"
 webview2-com = "0.38.2"
-windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell", "UI_Notifications"] }
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "UI_Notifications"] }
 windows-core = "0.61.2"
 window-vibrancy = "0.6.0"
 

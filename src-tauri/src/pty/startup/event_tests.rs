@@ -77,7 +77,7 @@ fn legacy_startup_registration_selects_interactive_or_one_shot() {
 #[tokio::test]
 async fn invalid_generation_uses_stable_error() {
     assert_eq!(
-        crate::pty::pty_get_startup_state("missing".to_owned(), "not-a-generation".to_owned())
+        crate::pty::in_process_startup_state("missing".to_owned(), "not-a-generation".to_owned())
             .await
             .expect_err("invalid generation must be rejected"),
         STARTUP_INVALID_GENERATION

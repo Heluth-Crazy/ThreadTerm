@@ -19,9 +19,10 @@ pub(super) use dispatch::{arm_startup_with_harness, drive_harness_case};
 pub(super) use dispatch::{dispatch_if_ready, resubmit_sent_effects};
 #[cfg(test)]
 pub(super) use event::generation_matches;
-pub(super) use event::{emit_startup_state, snapshot_for_generation};
+pub(super) use event::{snapshot_for_generation, PTY_STARTUP_STATE_EVENT};
 
-pub(crate) use effects::{StartupSideEffectDispatcher, StartupSideEffectRequest};
+pub(crate) use effects::StartupSideEffectDispatcher;
+pub use effects::StartupSideEffectRequest;
 #[cfg(test)]
 pub(super) use marker::STARTUP_MARKER_INVALID;
 pub(super) use output::{StartupOutputConfig, StartupOutputObservation};

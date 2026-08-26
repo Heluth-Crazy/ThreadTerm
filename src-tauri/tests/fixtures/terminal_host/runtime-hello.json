@@ -1,0 +1,5 @@
+{
+  "protocol_version": { "major": 1, "minor": 0 },
+  "runtime_id": "runtime-6e91e18a",
+  "capabilities": ["catalog", "attach", "resync", "close"]
+}

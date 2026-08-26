@@ -1,0 +1,17 @@
+{
+  "tools": [
+    "terminal_host_status",
+    "terminal_create",
+    "terminal_get",
+    "terminal_list",
+    "terminal_present",
+    "terminal_close"
+  ],
+  "errors": {
+    "app_unavailable": { "code": "app_unavailable", "message": "A desktop client is not available.", "effect": "no_effect", "request_id": "consumer-a:install-7:workspace-4d2c:operation-0001", "handle": null, "retryable": true },
+    "unsupported_platform": { "code": "unsupported_platform", "message": "Terminal hosting is unavailable on this platform.", "effect": "no_effect", "request_id": null, "handle": null, "retryable": false },
+    "surface_failed": { "code": "surface_failed", "message": "The session was created but its surface was not ready.", "effect": "session_created", "request_id": "consumer-a:install-7:workspace-4d2c:operation-0001", "handle": "e5f0af36-3b98-4f24-91e0-a467416e2836", "retryable": false },
+    "outcome_unknown": { "code": "internal_error", "message": "The create outcome is unknown; retry the same request ID.", "effect": "outcome_unknown", "request_id": "consumer-a:install-7:workspace-4d2c:operation-0001", "handle": null, "retryable": true },
+    "terminal_not_found": { "code": "terminal_not_found", "message": "No live terminal remains for this handle.", "effect": "no_effect", "request_id": null, "handle": null, "retryable": false }
+  }
+}

@@ -25,6 +25,10 @@ mod settings_window;
 mod startup_data_directory;
 mod stats;
 mod supervisor;
+#[cfg(all(windows, feature = "terminal-daemon-owner"))]
+mod terminal_host_client;
+#[cfg(all(windows, feature = "terminal-daemon-owner"))]
+mod terminal_host_window;
 mod terminal_startup_effect_store;
 #[cfg(feature = "terminal-startup-harness")]
 mod terminal_startup_harness;
@@ -91,6 +95,8 @@ pub fn run() {
         .state_dir
         .clone()
         .expect("resolved ThreadTerm data root must provide a managed-state directory");
+    #[cfg(all(windows, feature = "terminal-daemon-owner"))]
+    let terminal_host_profile_dir = managed_state_dir.clone();
     #[cfg(feature = "mobile-bridge")]
     bridge::configure_secure_identity_dir(managed_state_dir.clone());
     tracing::info!(
@@ -101,6 +107,8 @@ pub fn run() {
 
     let managed_state = managed_state::ManagedStateStore::new(managed_state_dir);
     let startup_side_effect_dispatcher = pty::startup_side_effect_dispatcher(managed_state.clone());
+    #[cfg(all(windows, feature = "terminal-daemon-owner"))]
+    let terminal_host_window_runtime = terminal_host_window::TerminalHostWindowRuntime::new();
     let builder = tauri::Builder::default()
         .manage(data_root)
         .manage(data_cache::DataCacheRuntime::default())
@@ -108,6 +116,9 @@ pub fn run() {
         .manage(notification::NotificationRuntime::default())
         .manage(managed_state)
         .manage(startup_side_effect_dispatcher)
+        // Every PTY command resolves this one process-wide adapter through
+        // `State`; omitting it makes command invocation fail before dispatch.
+        .manage(pty::InProcessTerminalRuntime)
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -131,10 +142,13 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_fs::init());
 
+    #[cfg(all(windows, feature = "terminal-daemon-owner"))]
+    let builder = builder.manage(terminal_host_window_runtime);
+
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());
 
-    let run_result = builder
+    let builder = builder
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -169,6 +183,14 @@ pub fn run() {
             #[cfg(feature = "terminal-startup-harness")]
             let _notification_identity_api = notification::initialize_windows_notification_identity;
             desktop_windows::create_main_window(app)?;
+
+            #[cfg(all(windows, feature = "terminal-daemon-owner"))]
+            app.state::<terminal_host_window::TerminalHostWindowRuntime>()
+                .start(
+                    app.handle().clone(),
+                    terminal_host_profile_dir.clone(),
+                    terminal_host_window::development_daemon_executable(),
+                );
 
             overlay::load_settings();
             overlay::register_default_shortcuts(app.handle());
@@ -324,6 +346,20 @@ pub fn run() {
             overlay::overlay_set_lightweight_mode,
             overlay::overlay_get_settings,
             overlay::overlay_update_shortcut,
+            #[cfg(all(windows, feature = "terminal-daemon-owner"))]
+            terminal_host_window::terminal_host_surface_bootstrap,
+            #[cfg(all(windows, feature = "terminal-daemon-owner"))]
+            terminal_host_window::terminal_host_input,
+            #[cfg(all(windows, feature = "terminal-daemon-owner"))]
+            terminal_host_window::terminal_host_resize,
+            #[cfg(all(windows, feature = "terminal-daemon-owner"))]
+            terminal_host_window::terminal_host_ack,
+            #[cfg(all(windows, feature = "terminal-daemon-owner"))]
+            terminal_host_window::terminal_host_resync,
+            #[cfg(all(windows, feature = "terminal-daemon-owner"))]
+            terminal_host_window::terminal_host_surface_ready,
+            #[cfg(all(windows, feature = "terminal-daemon-owner"))]
+            terminal_host_window::terminal_host_surface_hidden,
             #[cfg(feature = "terminal-startup-harness")]
             terminal_startup_harness::terminal_startup_harness_status,
             #[cfg(feature = "terminal-startup-harness")]
@@ -340,8 +376,25 @@ pub fn run() {
             terminal_startup_warmup_harness::terminal_startup_harness_warmup_snapshot,
             #[cfg(feature = "terminal-startup-harness")]
             terminal_startup_warmup_harness::terminal_startup_harness_warmup_release,
-        ])
-        .run(tauri::generate_context!());
+        ]);
+    #[cfg(all(windows, feature = "terminal-daemon-owner"))]
+    let run_result = match builder.build(tauri::generate_context!()) {
+        Ok(app) => {
+            app.run(|app, event| {
+                if matches!(
+                    event,
+                    tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+                ) {
+                    app.state::<terminal_host_window::TerminalHostWindowRuntime>()
+                        .mark_shutting_down();
+                }
+            });
+            Ok(())
+        }
+        Err(error) => Err(error),
+    };
+    #[cfg(not(all(windows, feature = "terminal-daemon-owner")))]
+    let run_result = builder.run(tauri::generate_context!());
     tauri::async_runtime::block_on(claude_chat::shutdown());
     let audit = db::shutdown_audit_writer(std::time::Duration::from_secs(2));
     if audit.failed > 0 || audit.dropped > 0 || audit.pending > 0 || audit.shutdown_timeouts > 0 {

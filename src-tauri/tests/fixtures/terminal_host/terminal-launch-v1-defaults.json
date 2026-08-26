@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "request_id": "consumer-a:install-7:workspace-4d2c:operation-0001",
+  "executable": "C:\\Windows\\System32\\cmd.exe",
+  "args": ["/d", "/c", "echo terminal-host"],
+  "cwd": "C:\\workspaces\\demo",
+  "title": "Terminal host smoke",
+  "placement": "window",
+  "presentation": null,
+  "exit_behavior": null
+}

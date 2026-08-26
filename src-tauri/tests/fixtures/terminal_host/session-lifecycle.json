@@ -1,0 +1,10 @@
+{
+  "create": { "request_id": "consumer-a:install-7:workspace-4d2c:operation-0001", "placement": "window" },
+  "get_by_request_id": { "handle": null, "request_id": "consumer-a:install-7:workspace-4d2c:operation-0001" },
+  "get_result": { "handle": "e5f0af36-3b98-4f24-91e0-a467416e2836", "state": "running" },
+  "list": { "sessions": [{ "handle": "e5f0af36-3b98-4f24-91e0-a467416e2836", "state": "running" }] },
+  "attach": { "handle": "e5f0af36-3b98-4f24-91e0-a467416e2836", "stream_generation": "stream-1" },
+  "resync": { "handle": "e5f0af36-3b98-4f24-91e0-a467416e2836", "stream_generation": "stream-1", "reason": "output_gap" },
+  "close_by_handle": { "handle": "e5f0af36-3b98-4f24-91e0-a467416e2836", "request_id": null },
+  "close_result": { "code": "terminal_not_found", "message": "No live terminal remains for this handle.", "effect": "no_effect", "request_id": null, "handle": null, "retryable": false }
+}

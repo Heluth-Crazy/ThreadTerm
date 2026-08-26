@@ -26,6 +26,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { CardGrid } from './CardGrid';
+import { TerminalHostSurfaces } from './host/TerminalHostSurfaces';
 import {
   DEFAULT_WARM_SURFACE_LIMIT,
   MAX_MOUNTED_TERMINAL_VIEWS,
@@ -1345,14 +1346,19 @@ export function TerminalManager() {
               : 'pointer-events-none',
           ].join(' ')}
         >
-          <CardGrid
-            onCreateTerminal={handleGridCreateTerminal}
-            onCreateWorktreeTerminal={handleCreateWorktreeTerminal}
-            onOpenTerminal={handleOpenTerminal}
-            onEditTerminal={openTerminalEditor}
-            onRemoveCard={requestRemoveCard}
-            onArchiveCard={requestArchiveCard}
-          />
+          <div className="flex h-full w-full flex-col overflow-y-auto">
+            <TerminalHostSurfaces />
+            <div className="min-h-0 flex-1">
+              <CardGrid
+                onCreateTerminal={handleGridCreateTerminal}
+                onCreateWorktreeTerminal={handleCreateWorktreeTerminal}
+                onOpenTerminal={handleOpenTerminal}
+                onEditTerminal={openTerminalEditor}
+                onRemoveCard={requestRemoveCard}
+                onArchiveCard={requestArchiveCard}
+              />
+            </div>
+          </div>
         </motion.div>
 
         {/* Mobile-access view layer — replaces the grid when "移动端" is selected. */}

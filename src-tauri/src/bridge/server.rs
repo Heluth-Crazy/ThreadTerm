@@ -913,7 +913,7 @@ async fn handle_client_message(
             rows,
         } => {
             let pty_id = context.runtime.pty_id_for_card(&card_id);
-            crate::pty::pty_resize(pty_id, rows, cols)
+            crate::pty::bridge_resize(pty_id, rows, cols)
                 .await
                 .map_err(|message| ("command_failed".to_string(), message))
                 .map(|_| Vec::new())
@@ -1073,7 +1073,7 @@ async fn paced_pty_input(
             device,
             &mut shutdown,
             &mut auth_revision,
-            crate::pty::pty_input(card_id.to_string(), body.to_string()),
+            crate::pty::bridge_input(card_id.to_string(), body.to_string()),
         )
         .await?;
         if let Err(message) = result {
@@ -1106,7 +1106,7 @@ async fn paced_pty_input(
                 device,
                 &mut shutdown,
                 &mut auth_revision,
-                crate::pty::pty_input(card_id.to_string(), single),
+                crate::pty::bridge_input(card_id.to_string(), single),
             )
             .await?;
             if let Err(message) = result {

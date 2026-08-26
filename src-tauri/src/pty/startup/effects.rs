@@ -11,14 +11,14 @@ pub(crate) const DISCOVERY_INTERVAL_MS: u64 = 1_500;
 pub(crate) const DISCOVERY_LOOKBACK_MS: u64 = 5_000;
 
 #[derive(Clone)]
-pub(crate) struct StartupSideEffectRequest {
-    pub(crate) pty_id: String,
-    pub(crate) generation: String,
-    pub(crate) provider: AgentSessionProvider,
-    pub(crate) card_id: String,
-    pub(crate) project_path: String,
-    pub(crate) sent_at_ms: u64,
-    pub(crate) side_effect_plan: PtyStartupSideEffectPlan,
+pub struct StartupSideEffectRequest {
+    pub pty_id: String,
+    pub generation: String,
+    pub provider: AgentSessionProvider,
+    pub card_id: String,
+    pub project_path: String,
+    pub sent_at_ms: u64,
+    pub side_effect_plan: PtyStartupSideEffectPlan,
 }
 
 impl StartupSideEffectRequest {
@@ -58,19 +58,6 @@ impl StartupSideEffectDispatcher {
             store: TerminalStartupEffectStore::new(managed_state),
             ledger: Arc::new(Mutex::new(StartupEffectLedger::new())),
         }
-    }
-
-    pub(crate) fn submit(
-        &self,
-        app_handle: tauri::AppHandle,
-        request: StartupSideEffectRequest,
-    ) -> Result<(), String> {
-        request.validate()?;
-        let dispatcher = self.clone();
-        tauri::async_runtime::spawn(async move {
-            dispatcher.process(app_handle, request).await;
-        });
-        Ok(())
     }
 
     pub(super) fn claim(&self, key: StartupSideEffectKey) -> Result<Option<String>, String> {

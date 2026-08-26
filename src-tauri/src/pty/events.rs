@@ -5,8 +5,6 @@ use std::time::{Duration, Instant};
 use once_cell::sync::Lazy;
 use portable_pty::ExitStatus;
 use regex::RegexSet;
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
 
 use crate::bridge;
 
@@ -15,9 +13,6 @@ use super::session::{self, PtySession, SessionState, OUTPUT_IDLE_POLL, STARTUP_E
 use super::startup::{PtyStartupTrigger, StartupOutputObservation};
 use super::utf8::Utf8StreamDecoder;
 use super::writer::WriteCompletion;
-
-const MAIN_WINDOW_LABEL: &str = "main";
-const FLOAT_WINDOW_LABEL: &str = "float";
 
 // ── Regex patterns (compiled once) ───────────────────────────────────────────
 
@@ -407,39 +402,6 @@ fn da1_authority_enabled() -> bool {
     *DA1_AUTHORITY_ENABLED
 }
 
-// ── Event payloads ───────────────────────────────────────────────────────────
-
-#[derive(Clone, Serialize)]
-struct PtyOutputPayload {
-    id: String,
-    data: String,
-    seq: u64,
-}
-
-#[derive(Clone, Serialize)]
-struct PtyExitPayload {
-    id: String,
-    code: Option<u32>,
-    generation: String,
-}
-
-#[derive(Clone, Serialize)]
-struct PtyProtocolFailurePayload {
-    id: String,
-    code: &'static str,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AttentionRequiredPayload {
-    pty_id: String,
-    session_id: String,
-    #[serde(rename = "type")]
-    attention_type: String,
-    message: String,
-    fingerprint: String,
-}
-
 // ── Background workers ───────────────────────────────────────────────────────
 
 pub(super) fn spawn_output_idle_watcher(id: String, ses: Arc<PtySession>) {
@@ -659,7 +621,9 @@ fn observe_startup_output(
 ) -> Result<StartupOutputObservation, String> {
     let observation = ses.startup.observe_output(bytes, |snapshot| {
         if registry::is_current(id, ses) {
-            super::startup::emit_startup_state(&ses.app_handle, snapshot);
+            if let Ok(host) = session::session_host(ses) {
+                let _ = host.publish_startup(snapshot.clone());
+            }
         }
     })?;
     #[cfg(feature = "terminal-startup-harness")]
@@ -676,7 +640,9 @@ fn finish_startup_output(
 ) -> Result<StartupOutputObservation, String> {
     let observation = ses.startup.finish_output(|snapshot| {
         if registry::is_current(id, ses) {
-            super::startup::emit_startup_state(&ses.app_handle, snapshot);
+            if let Ok(host) = session::session_host(ses) {
+                let _ = host.publish_startup(snapshot.clone());
+            }
         }
     })?;
     #[cfg(feature = "terminal-startup-harness")]
@@ -704,12 +670,7 @@ fn record_startup_output_evidence(
 }
 
 /// Background reader: reads chunks from the PTY and emits Tauri events.
-pub(super) fn stream_pty_output(
-    id: String,
-    reader: Box<dyn Read + Send>,
-    ses: Arc<PtySession>,
-    app_handle: AppHandle,
-) {
+pub(super) fn stream_pty_output(id: String, reader: Box<dyn Read + Send>, ses: Arc<PtySession>) {
     let (read_tx, read_rx) = mpsc::sync_channel(COALESCE_RAW_QUEUE_CAPACITY);
     spawn_pty_reader(reader, ses.clone(), read_tx);
 
@@ -748,7 +709,6 @@ pub(super) fn stream_pty_output(
                 &mut pending_since,
                 &mut fast_flush_detector,
                 &ses,
-                &app_handle,
                 &mut last_attention_time,
                 &mut last_preview_flush,
                 attention_debounce,
@@ -822,7 +782,7 @@ pub(super) fn stream_pty_output(
                             add_raw_credit(&mut pending_bytes, eligible_credit);
                         }
                         protocol_failed = true;
-                        terminate_after_protocol_failure(&id, &ses, &app_handle);
+                        terminate_after_protocol_failure(&id, &ses);
                         break;
                     }
                 };
@@ -847,7 +807,7 @@ pub(super) fn stream_pty_output(
                     if protocol_failed {
                         // Wake any flow-control waiter before publishing the
                         // already-decided bytes from this read.
-                        terminate_after_protocol_failure(&id, &ses, &app_handle);
+                        terminate_after_protocol_failure(&id, &ses);
                     }
                     if (scan.da1_queries > 0 || startup_output.matched > 0) && !protocol_failed {
                         flush_pending_pty_output(
@@ -857,7 +817,6 @@ pub(super) fn stream_pty_output(
                             &mut pending_since,
                             &mut fast_flush_detector,
                             &ses,
-                            &app_handle,
                             &mut last_attention_time,
                             &mut last_preview_flush,
                             attention_debounce,
@@ -876,7 +835,7 @@ pub(super) fn stream_pty_output(
                 pending.push_str(&data);
 
                 if protocol_failed {
-                    terminate_after_protocol_failure(&id, &ses, &app_handle);
+                    terminate_after_protocol_failure(&id, &ses);
                     break;
                 }
 
@@ -891,7 +850,6 @@ pub(super) fn stream_pty_output(
                         &mut pending_since,
                         &mut fast_flush_detector,
                         &ses,
-                        &app_handle,
                         &mut last_attention_time,
                         &mut last_preview_flush,
                         attention_debounce,
@@ -911,7 +869,6 @@ pub(super) fn stream_pty_output(
                     &mut pending_since,
                     &mut fast_flush_detector,
                     &ses,
-                    &app_handle,
                     &mut last_attention_time,
                     &mut last_preview_flush,
                     attention_debounce,
@@ -930,7 +887,6 @@ pub(super) fn stream_pty_output(
                     &mut pending_since,
                     &mut fast_flush_detector,
                     &ses,
-                    &app_handle,
                     &mut last_attention_time,
                     &mut last_preview_flush,
                     attention_debounce,
@@ -948,7 +904,6 @@ pub(super) fn stream_pty_output(
                     &mut pending_since,
                     &mut fast_flush_detector,
                     &ses,
-                    &app_handle,
                     &mut last_attention_time,
                     &mut last_preview_flush,
                     attention_debounce,
@@ -1033,7 +988,6 @@ pub(super) fn stream_pty_output(
             &mut pending_since,
             &mut fast_flush_detector,
             &ses,
-            &app_handle,
             &mut last_attention_time,
             &mut last_preview_flush,
             attention_debounce,
@@ -1091,7 +1045,9 @@ pub(super) fn stream_pty_output(
 
     let _ = ses.startup.cancel(PtyStartupTrigger::PtyExit, |snapshot| {
         if registry::is_current(&id, &ses) {
-            super::startup::emit_startup_state(&ses.app_handle, snapshot);
+            if let Ok(host) = session::session_host(&ses) {
+                let _ = host.publish_startup(snapshot.clone());
+            }
         }
     });
 
@@ -1113,14 +1069,13 @@ pub(super) fn stream_pty_output(
         return;
     }
 
-    let _ = app_handle.emit(
-        "pty-exit",
-        PtyExitPayload {
+    if let Ok(host) = session::session_host(&ses) {
+        let _ = host.publish(super::TerminalEvent::Exit {
             id: id.clone(),
             code,
             generation: ses.generation.clone(),
-        },
-    );
+        });
+    }
 
     if !registry::is_current(&id, &ses) {
         return;
@@ -1138,19 +1093,18 @@ pub(super) fn stream_pty_output(
     tracing::info!(id = %id, "PTY session ended");
 }
 
-fn terminate_after_protocol_failure(id: &str, session: &Arc<PtySession>, app_handle: &AppHandle) {
+fn terminate_after_protocol_failure(id: &str, session: &Arc<PtySession>) {
     session::mark_killed(session);
     if let Ok(mut child) = session.child.lock() {
         let _ = child.kill();
     }
     let _ = session::close_master(session, id);
-    let _ = app_handle.emit(
-        "pty-protocol-failure",
-        PtyProtocolFailurePayload {
+    if let Ok(host) = session::session_host(session) {
+        let _ = host.publish(super::TerminalEvent::ProtocolFailure {
             id: id.to_string(),
             code: "protocol_reply_partial",
-        },
-    );
+        });
+    }
 }
 
 fn exit_code_from_status(status: ExitStatus) -> Option<u32> {
@@ -1171,7 +1125,6 @@ fn flush_pending_pty_output(
     pending_since: &mut Option<Instant>,
     fast_flush_detector: &mut FastFlushDetector,
     ses: &Arc<PtySession>,
-    app_handle: &AppHandle,
     last_attention_time: &mut Instant,
     last_preview_flush: &mut Instant,
     attention_debounce: Duration,
@@ -1191,7 +1144,6 @@ fn flush_pending_pty_output(
                 "",
                 *pending_bytes,
                 ses,
-                app_handle,
                 last_attention_time,
                 last_preview_flush,
                 attention_debounce,
@@ -1216,7 +1168,6 @@ fn flush_pending_pty_output(
         &data,
         byte_count,
         ses,
-        app_handle,
         last_attention_time,
         last_preview_flush,
         attention_debounce,
@@ -1233,7 +1184,6 @@ fn emit_pty_output_chunk(
     data: &str,
     byte_count: usize,
     ses: &Arc<PtySession>,
-    app_handle: &AppHandle,
     last_attention_time: &mut Instant,
     last_preview_flush: &mut Instant,
     attention_debounce: Duration,
@@ -1248,14 +1198,13 @@ fn emit_pty_output_chunk(
     // therefore observe either the whole chunk or none of it, never a payload
     // paired with the previous sequence number.
     let (seq, apply_elapsed) = session::commit_output(ses, data, ack_bytes);
-    emit_pty_output_to_terminal_windows(
-        app_handle,
-        PtyOutputPayload {
+    if let Ok(host) = session::session_host(ses) {
+        let _ = host.publish(super::TerminalEvent::Output {
             id: id.to_string(),
             data: data.to_string(),
             seq,
-        },
-    );
+        });
+    }
     bridge::broadcast_terminal_output(id, data, seq);
 
     if data.is_empty() {
@@ -1294,16 +1243,15 @@ fn emit_pty_output_chunk(
         if last_attention_time.elapsed() > attention_debounce {
             *last_attention_time = Instant::now();
             let fingerprint = matching_line_fingerprint(&cleaned, &WAITING_PATTERNS);
-            let _ = app_handle.emit(
-                "attention-required",
-                AttentionRequiredPayload {
+            if let Ok(host) = session::session_host(ses) {
+                let _ = host.publish(super::TerminalEvent::AttentionRequired {
                     pty_id: id.to_string(),
                     session_id: id.to_string(),
                     attention_type: "waiting".to_string(),
                     message: "Agent needs your input".to_string(),
                     fingerprint,
-                },
-            );
+                });
+            }
             bridge::broadcast_attention(id, "waiting", "Agent needs your input");
         }
     }
@@ -1319,16 +1267,15 @@ fn emit_pty_output_chunk(
     {
         *last_attention_time = Instant::now();
         let fingerprint = matching_line_fingerprint(&cleaned, &ERROR_PATTERNS);
-        let _ = app_handle.emit(
-            "attention-required",
-            AttentionRequiredPayload {
+        if let Ok(host) = session::session_host(ses) {
+            let _ = host.publish(super::TerminalEvent::AttentionRequired {
                 pty_id: id.to_string(),
                 session_id: id.to_string(),
                 attention_type: "error".to_string(),
                 message: "Agent encountered an error".to_string(),
                 fingerprint,
-            },
-        );
+            });
+        }
         bridge::broadcast_attention(id, "failed", "Agent encountered an error");
     }
 
@@ -1355,13 +1302,6 @@ fn matching_line_fingerprint(cleaned: &str, patterns: &RegexSet) -> String {
         .chars()
         .take(240)
         .collect()
-}
-
-fn emit_pty_output_to_terminal_windows(app_handle: &AppHandle, payload: PtyOutputPayload) {
-    let _ = app_handle.emit_to(MAIN_WINDOW_LABEL, "pty-output", payload.clone());
-    if app_handle.get_webview_window(FLOAT_WINDOW_LABEL).is_some() {
-        let _ = app_handle.emit_to(FLOAT_WINDOW_LABEL, "pty-output", payload);
-    }
 }
 
 #[cfg(test)]

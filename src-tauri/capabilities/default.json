@@ -6,7 +6,8 @@
     "main",
     "settings",
     "selector",
-    "float"
+    "float",
+    "terminal-host-*"
   ],
   "permissions": [
     "core:default",

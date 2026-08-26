@@ -1,0 +1,22 @@
+[package]
+name = "terminal-host-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77.2"
+license = "MIT"
+publish = false
+
+[features]
+default = []
+pty-runtime = ["dep:portable-pty", "dep:wezterm-term"]
+
+[dependencies]
+portable-pty = { version = "0.8", optional = true }
+rusqlite = { version = "0.31", features = ["bundled"] }
+terminal-host-protocol = { path = "../terminal-host-protocol" }
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+wezterm-term = { package = "tattoy-wezterm-term", version = "0.1.0-fork.5", optional = true }
+
+[dev-dependencies]
+tempfile = "3"

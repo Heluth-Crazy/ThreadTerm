@@ -46,6 +46,8 @@
     "release": "release-it",
     "prepublishOnly": "npm run build",
     "tauri:dev": "tauri dev",
+    "build:terminal-host:dev": "cargo build --manifest-path src-tauri/Cargo.toml -p threadterm-terminal-host --features terminal-daemon-owner",
+    "tauri:dev:terminal-host": "npm run build:terminal-host:dev && tauri dev --features terminal-daemon-owner",
     "tauri:build": "tauri build",
     "tauri:build:windows": "tauri build --config src-tauri/tauri.windows.conf.json --bundles nsis"
   },

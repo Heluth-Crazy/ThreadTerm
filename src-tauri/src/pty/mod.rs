@@ -13,10 +13,17 @@
 mod emulator;
 mod events;
 mod registry;
+mod runtime;
 mod session;
 mod shell;
 mod shutdown;
 mod startup;
+mod tauri_runtime;
+// Phase 0 reserves the strict, consumer-neutral DTO boundary. Runtime routing
+// intentionally starts in a later phase, so this module is not yet referenced
+// by a production command path.
+#[allow(dead_code)]
+mod terminal_host_contract;
 mod utf8;
 mod warmup;
 #[cfg(target_os = "windows")]
@@ -24,14 +31,22 @@ mod warmup_windows;
 mod writer;
 
 pub use registry::list_live_sessions;
+pub use runtime::{
+    InProcessTerminalRuntime, OutputConsumer, RuntimeCloseRequest, RuntimeCreateRequest,
+    RuntimeCreateResult, RuntimeCreateStartup, RuntimeFuture, RuntimeSessionSelector,
+    TerminalEvent, TerminalEventSink, TerminalLaunchObserver, TerminalLaunchPhase, TerminalRuntime,
+    TerminalSessionHost,
+};
 pub use session::{LivePtySessionSnapshot, PtyAttachSnapshot, SessionState};
 pub use shutdown::{GracefulShutdownProfile, GracefulShutdownResult};
 pub use startup::{
     validate_generation, AgentSessionProvider, PtyCreateDisposition, PtyCreateSessionV2Result,
     PtyDescriptorDisposition, PtyShellFamily, PtyStartupAction, PtyStartupCoordinator,
     PtyStartupIntent, PtyStartupSideEffectPlan, PtyStartupSnapshot, PtyStartupState,
-    PtyStartupTrigger, STARTUP_DESCRIPTOR_CONFLICT, STARTUP_INVALID_GENERATION,
+    PtyStartupTrigger, StartupSideEffectRequest, STARTUP_DESCRIPTOR_CONFLICT,
+    STARTUP_INVALID_GENERATION,
 };
+use tauri_runtime::{TauriTerminalHost, TauriTerminalLaunchObserver};
 
 /// Snapshot a single live PTY session by id (used by the bridge to build a
 /// `CardMeta` for incremental card-added broadcasts). Returns `None` when no
@@ -73,13 +88,14 @@ use std::time::Instant;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Manager, State, Window};
+use serde::Deserialize;
+use tauri::{Manager, State, Window};
 
 use session::{
     clear_waiting_for_input, install_startup_side_effect_context, mark_killed,
-    suppress_output_activity_for, PtyInputRequest, PtySession, StartupSideEffectContext,
-    OUTPUT_BUFFER_MAX_BYTES, RESIZE_OUTPUT_ACTIVITY_SUPPRESS, SESSION_SCROLLBACK_LINES,
+    replace_session_host, suppress_output_activity_for, PtyInputRequest, PtySession,
+    StartupSideEffectContext, OUTPUT_BUFFER_MAX_BYTES, RESIZE_OUTPUT_ACTIVITY_SUPPRESS,
+    SESSION_SCROLLBACK_LINES,
 };
 
 #[cfg(all(feature = "terminal-startup-harness", feature = "stats-proxy"))]
@@ -91,14 +107,6 @@ use crate::terminal_startup_harness::{
     HarnessDriveAction, HarnessHookError, HarnessPrepareCaseRequest, HarnessShellReceipt,
     HarnessTiming,
 };
-
-enum CreateStartup {
-    Legacy,
-    Explicit {
-        intent: PtyStartupIntent,
-        dispatcher: startup::StartupSideEffectDispatcher,
-    },
-}
 
 #[cfg(feature = "terminal-startup-harness")]
 const HARNESS_CASE_BIND_FAILED: &str = "harness_case_bind_failed";
@@ -174,15 +182,6 @@ fn cleanup_failed_harness_session(id: &str, session: &Arc<PtySession>) {
     mark_killed(&session);
     terminate_session_process(&session);
     let _ = session::close_master(&session, id);
-}
-
-struct CreateOutcome {
-    id: String,
-    disposition: PtyCreateDisposition,
-    descriptor_disposition: PtyDescriptorDisposition,
-    generation: String,
-    shell_family: PtyShellFamily,
-    startup: PtyStartupSnapshot,
 }
 
 fn spawn_writer_for_startup(
@@ -294,18 +293,6 @@ fn legacy_session_startup(
     legacy_startup_coordinator(pty_id, generation, one_shot).map(startup::SessionStartup::new)
 }
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PtyLaunchPhasePayload {
-    launch_attempt_id: String,
-    pty_id: String,
-    phase: String,
-    elapsed_ms: f64,
-    domain: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    provider: Option<String>,
-}
-
 /// Optional process-at-creation launch descriptor. Missing descriptors retain
 /// the historical interactive PTY contract and initial-command input path.
 #[derive(Clone, Debug, Deserialize)]
@@ -333,8 +320,8 @@ impl PtyLaunchDescriptor {
     }
 }
 
-fn emit_launch_phase(
-    window: &Window,
+fn observe_launch_phase(
+    observer: &dyn TerminalLaunchObserver,
     launch_attempt_id: Option<&str>,
     pty_id: &str,
     phase: &str,
@@ -344,17 +331,14 @@ fn emit_launch_phase(
     let Some(launch_attempt_id) = launch_attempt_id else {
         return;
     };
-    let _ = window.emit(
-        PTY_LAUNCH_PHASE_EVENT,
-        PtyLaunchPhasePayload {
-            launch_attempt_id: launch_attempt_id.to_owned(),
-            pty_id: pty_id.to_owned(),
-            phase: phase.to_owned(),
-            elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
-            domain: "backend",
-            provider: provider.map(str::to_owned),
-        },
-    );
+    let _ = observer.observe(TerminalLaunchPhase {
+        launch_attempt_id: launch_attempt_id.to_owned(),
+        pty_id: pty_id.to_owned(),
+        phase: phase.to_owned(),
+        elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+        domain: "backend",
+        provider: provider.map(str::to_owned),
+    });
 }
 
 /// Start the one-time, opt-in Windows ConPTY initialization. The worker is
@@ -394,12 +378,45 @@ pub async fn pty_graceful_shutdown(
     id: String,
     attempt_id: String,
     profile: GracefulShutdownProfile,
+    runtime: State<'_, InProcessTerminalRuntime>,
+) -> Result<GracefulShutdownResult, String> {
+    runtime
+        .inner()
+        .close(
+            RuntimeSessionSelector::Id(id),
+            RuntimeCloseRequest::Graceful {
+                attempt_id,
+                profile,
+            },
+        )
+        .await
+        .and_then(|result| result.into_graceful())
+}
+
+async fn in_process_graceful_shutdown(
+    id: String,
+    attempt_id: String,
+    profile: GracefulShutdownProfile,
 ) -> Result<GracefulShutdownResult, String> {
     shutdown::graceful_shutdown(id, attempt_id, profile).await
 }
 
 #[tauri::command]
-pub async fn pty_cancel_graceful_shutdown(id: String, attempt_id: String) -> Result<bool, String> {
+pub async fn pty_cancel_graceful_shutdown(
+    id: String,
+    attempt_id: String,
+    runtime: State<'_, InProcessTerminalRuntime>,
+) -> Result<bool, String> {
+    runtime
+        .inner()
+        .cancel_graceful_shutdown(id, attempt_id)
+        .await
+}
+
+async fn in_process_cancel_graceful_shutdown(
+    id: String,
+    attempt_id: String,
+) -> Result<bool, String> {
     shutdown::cancel_graceful_shutdown(id, attempt_id).await
 }
 
@@ -417,20 +434,28 @@ pub async fn pty_create(
     launch_attempt_id: Option<String>,
     launch: Option<PtyLaunchDescriptor>,
     window: Window,
+    runtime: State<'_, InProcessTerminalRuntime>,
 ) -> Result<String, String> {
-    create_session(
-        id,
-        working_dir,
-        rows,
-        cols,
-        provider,
-        launch_attempt_id,
-        launch,
-        CreateStartup::Legacy,
-        window,
-    )
-    .await
-    .map(|outcome| outcome.id)
+    let host = TauriTerminalHost::new(window.app_handle().clone(), None);
+    let observer = TauriTerminalLaunchObserver::new(window);
+    runtime
+        .inner()
+        .create(
+            RuntimeCreateRequest {
+                id,
+                working_dir,
+                rows,
+                cols,
+                provider,
+                launch_attempt_id,
+                launch,
+                startup: RuntimeCreateStartup::Legacy,
+            },
+            host,
+            observer,
+        )
+        .await
+        .map(|outcome| outcome.id)
 }
 
 /// Additive create/attach API. Explicit startup intent is registered while the
@@ -440,6 +465,7 @@ pub(crate) async fn pty_create_session_v2(
     request: startup::PtyCreateSessionV2Request,
     window: Window,
     dispatcher: State<'_, startup::StartupSideEffectDispatcher>,
+    runtime: State<'_, InProcessTerminalRuntime>,
 ) -> Result<PtyCreateSessionV2Result, String> {
     request.validate().map_err(str::to_owned)?;
     let provider = match &request.startup {
@@ -450,21 +476,28 @@ pub(crate) async fn pty_create_session_v2(
         PtyStartupIntent::OneShot { descriptor } => Some(descriptor.clone()),
         _ => None,
     };
-    let outcome = create_session(
-        request.id,
-        request.working_dir,
-        request.rows,
-        request.cols,
-        provider,
-        request.launch_attempt_id,
-        launch,
-        CreateStartup::Explicit {
-            intent: request.startup,
-            dispatcher: dispatcher.inner().clone(),
-        },
-        window,
-    )
-    .await?;
+    let host = TauriTerminalHost::new(
+        window.app_handle().clone(),
+        Some(dispatcher.inner().clone()),
+    );
+    let observer = TauriTerminalLaunchObserver::new(window);
+    let outcome = runtime
+        .inner()
+        .create(
+            RuntimeCreateRequest {
+                id: request.id,
+                working_dir: request.working_dir,
+                rows: request.rows,
+                cols: request.cols,
+                provider,
+                launch_attempt_id: request.launch_attempt_id,
+                launch,
+                startup: RuntimeCreateStartup::Explicit(request.startup),
+            },
+            host,
+            observer,
+        )
+        .await?;
     Ok(PtyCreateSessionV2Result {
         pty_id: outcome.id,
         generation: outcome.generation,
@@ -477,16 +510,20 @@ pub(crate) async fn pty_create_session_v2(
 
 #[allow(clippy::too_many_arguments)]
 async fn create_session(
-    id: String,
-    working_dir: String,
-    rows: u16,
-    cols: u16,
-    provider: Option<String>,
-    launch_attempt_id: Option<String>,
-    launch: Option<PtyLaunchDescriptor>,
-    startup_registration: CreateStartup,
-    window: Window,
-) -> Result<CreateOutcome, String> {
+    request: RuntimeCreateRequest,
+    host: Arc<dyn TerminalSessionHost>,
+    observer: Arc<dyn TerminalLaunchObserver>,
+) -> Result<RuntimeCreateResult, String> {
+    let RuntimeCreateRequest {
+        id,
+        working_dir,
+        rows,
+        cols,
+        provider,
+        launch_attempt_id,
+        launch,
+        startup: startup_registration,
+    } = request;
     #[cfg(feature = "terminal-startup-harness")]
     let harness_offline_attested =
         crate::terminal_startup_harness::offline_attestation().is_enabled();
@@ -513,25 +550,22 @@ async fn create_session(
     let launch_started_at = Instant::now();
     if let Some(session) = registry::get(&id) {
         let descriptor_disposition = match &startup_registration {
-            CreateStartup::Legacy => PtyDescriptorDisposition::NotApplicable,
-            CreateStartup::Explicit { intent, dispatcher } => {
+            RuntimeCreateStartup::Legacy => PtyDescriptorDisposition::NotApplicable,
+            RuntimeCreateStartup::Explicit(intent) => {
+                replace_session_host(&session, Arc::clone(&host))?;
                 let disposition = session.startup.claim(intent.clone(), |snapshot| {
-                    startup::emit_startup_state(&session.app_handle, snapshot);
+                    let _ = host.publish_startup(snapshot.clone());
                 })?;
                 if matches!(intent, PtyStartupIntent::Provider { .. }) {
-                    install_startup_side_effect_context(
-                        &session,
-                        dispatcher.clone(),
-                        session._working_dir.clone(),
-                    )?;
+                    install_startup_side_effect_context(&session, session._working_dir.clone())?;
                     let _ = startup::dispatch_if_ready(&id, &session)?;
                     startup::resubmit_sent_effects(&id, &session)?;
                 }
                 disposition
             }
         };
-        emit_launch_phase(
-            &window,
+        observe_launch_phase(
+            observer.as_ref(),
             launch_attempt_id.as_deref(),
             &id,
             "ptyCreateReturned",
@@ -539,7 +573,7 @@ async fn create_session(
             provider.as_deref(),
         );
         tracing::debug!(id = %id, "pty_create: id already bound, returning existing session");
-        return Ok(CreateOutcome {
+        return Ok(RuntimeCreateResult {
             id,
             disposition: PtyCreateDisposition::Attached,
             descriptor_disposition,
@@ -570,16 +604,11 @@ async fn create_session(
     let shell_path = shell::default_shell();
     let provider_startup = matches!(
         &startup_registration,
-        CreateStartup::Explicit {
-            intent: PtyStartupIntent::Provider { .. },
-            ..
-        }
+        RuntimeCreateStartup::Explicit(PtyStartupIntent::Provider { .. })
     );
-    let (rejected_attach_intent, rejected_attach_dispatcher) = match &startup_registration {
-        CreateStartup::Explicit { intent, dispatcher } => {
-            (Some(intent.clone()), Some(dispatcher.clone()))
-        }
-        CreateStartup::Legacy => (None, None),
+    let rejected_attach_intent = match &startup_registration {
+        RuntimeCreateStartup::Explicit(intent) => Some(intent.clone()),
+        RuntimeCreateStartup::Legacy => None,
     };
     let generation = startup::mint_generation()?;
     let shell_family = startup::classify_shell_family(&shell_path);
@@ -587,15 +616,14 @@ async fn create_session(
         startup::startup_readiness_policy(shell_family, startup::provider_shell_ready_enabled());
     let (startup_runtime, descriptor_disposition, startup_side_effects) = match startup_registration
     {
-        CreateStartup::Legacy => (
+        RuntimeCreateStartup::Legacy => (
             legacy_session_startup(&id, &generation, one_shot_command.is_some())?,
             PtyDescriptorDisposition::NotApplicable,
             None,
         ),
-        CreateStartup::Explicit { intent, dispatcher } => {
+        RuntimeCreateStartup::Explicit(intent) => {
             let startup_side_effects = matches!(&intent, PtyStartupIntent::Provider { .. })
                 .then_some(StartupSideEffectContext {
-                    dispatcher,
                     project_path: working_dir.clone(),
                 });
             (
@@ -619,8 +647,8 @@ async fn create_session(
     let offline_provider_env_skip = false;
     #[cfg(feature = "stats-proxy")]
     if provider.is_some() && !offline_provider_env_skip {
-        emit_launch_phase(
-            &window,
+        observe_launch_phase(
+            observer.as_ref(),
             launch_attempt_id.as_deref(),
             &id,
             "providerEnvStarted",
@@ -640,8 +668,8 @@ async fn create_session(
     let proxy_env: Vec<(String, String)> = Vec::new();
     #[cfg(feature = "stats-proxy")]
     if provider.is_some() && !offline_provider_env_skip {
-        emit_launch_phase(
-            &window,
+        observe_launch_phase(
+            observer.as_ref(),
             launch_attempt_id.as_deref(),
             &id,
             "providerEnvReady",
@@ -652,8 +680,8 @@ async fn create_session(
 
     let (pair, mut child) = {
         #[cfg(target_os = "windows")]
-        emit_launch_phase(
-            &window,
+        observe_launch_phase(
+            observer.as_ref(),
             launch_attempt_id.as_deref(),
             &id,
             "spawnGateWaitStarted",
@@ -665,8 +693,8 @@ async fn create_session(
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         #[cfg(target_os = "windows")]
-        emit_launch_phase(
-            &window,
+        observe_launch_phase(
+            observer.as_ref(),
             launch_attempt_id.as_deref(),
             &id,
             "spawnGateAcquired",
@@ -676,8 +704,8 @@ async fn create_session(
         #[cfg(not(target_os = "windows"))]
         let _spawn_guard = ();
 
-        emit_launch_phase(
-            &window,
+        observe_launch_phase(
+            observer.as_ref(),
             launch_attempt_id.as_deref(),
             &id,
             "openPtyStarted",
@@ -696,8 +724,8 @@ async fn create_session(
 
         let pair = match pty_system.openpty(size) {
             Ok(pair) => {
-                emit_launch_phase(
-                    &window,
+                observe_launch_phase(
+                    observer.as_ref(),
                     launch_attempt_id.as_deref(),
                     &id,
                     "openPtyReady",
@@ -744,8 +772,8 @@ async fn create_session(
 
         let child = match pair.slave.spawn_command(cmd) {
             Ok(child) => {
-                emit_launch_phase(
-                    &window,
+                observe_launch_phase(
+                    observer.as_ref(),
                     launch_attempt_id.as_deref(),
                     &id,
                     "childSpawned",
@@ -797,7 +825,7 @@ async fn create_session(
         child: Mutex::new(child),
         _working_dir: working_dir.clone(),
         state: RwLock::new(SessionState::Idle),
-        app_handle: window.app_handle().clone(),
+        host: RwLock::new(Arc::clone(&host)),
         output_buffer: RwLock::new(String::with_capacity(OUTPUT_BUFFER_MAX_BYTES.min(8192))),
         output_commit: Mutex::new(()),
         output_seq: Mutex::new(0),
@@ -858,23 +886,19 @@ async fn create_session(
             let _ = c.kill();
         }
         tracing::debug!(id = %id, "pty_create: id already bound, returning existing session");
-        return Ok(CreateOutcome {
+        return Ok(RuntimeCreateResult {
             id: id.clone(),
             disposition: PtyCreateDisposition::Attached,
             descriptor_disposition: match rejected_attach_intent {
                 None => PtyDescriptorDisposition::NotApplicable,
                 Some(intent) => {
+                    replace_session_host(&rejected, Arc::clone(&host))?;
                     let disposition = rejected.startup.claim(intent.clone(), |snapshot| {
-                        startup::emit_startup_state(&rejected.app_handle, snapshot);
+                        let _ = host.publish_startup(snapshot.clone());
                     })?;
                     if matches!(intent, PtyStartupIntent::Provider { .. }) {
-                        let dispatcher = rejected_attach_dispatcher
-                            .as_ref()
-                            .expect("explicit intent has dispatcher")
-                            .clone();
                         install_startup_side_effect_context(
                             &rejected,
-                            dispatcher,
                             rejected._working_dir.clone(),
                         )?;
                         let _ = startup::dispatch_if_ready(&id, &rejected)?;
@@ -917,9 +941,8 @@ async fn create_session(
     events::spawn_output_idle_watcher(id.clone(), session.clone());
     let stream_id = id.clone();
     let stream_session = session.clone();
-    let handle = window.app_handle().clone();
     std::thread::spawn(move || {
-        events::stream_pty_output(stream_id, reader, stream_session, handle);
+        events::stream_pty_output(stream_id, reader, stream_session);
     });
 
     if provider_startup {
@@ -952,7 +975,7 @@ async fn create_session(
     }
 
     tracing::info!(id = %id, shell = %shell_path, "PTY session created");
-    Ok(CreateOutcome {
+    Ok(RuntimeCreateResult {
         id,
         disposition: PtyCreateDisposition::Created,
         descriptor_disposition,
@@ -964,7 +987,22 @@ async fn create_session(
 
 /// Write data (keystrokes) to a PTY session.
 #[tauri::command]
-pub async fn pty_input(id: String, data: String) -> Result<(), String> {
+pub async fn pty_input(
+    id: String,
+    data: String,
+    runtime: State<'_, InProcessTerminalRuntime>,
+) -> Result<(), String> {
+    runtime.inner().input(id, data).await
+}
+
+/// Explicit non-Tauri adapter for the authenticated mobile bridge. It shares
+/// the same stateless in-process runtime façade as the desktop command path;
+/// it does not create a second registry or fabricate Tauri `State`.
+pub(crate) async fn bridge_input(id: String, data: String) -> Result<(), String> {
+    InProcessTerminalRuntime.input(id, data).await
+}
+
+async fn in_process_input(id: String, data: String) -> Result<(), String> {
     let session = registry::get(&id).ok_or_else(|| format!("PTY session '{}' not found", id))?;
 
     let _shutdown_input_permit = shutdown::prepare_for_user_input(&id).await?;
@@ -993,7 +1031,22 @@ pub async fn pty_input(id: String, data: String) -> Result<(), String> {
 
 /// Resize a PTY session.
 #[tauri::command]
-pub async fn pty_resize(id: String, rows: u16, cols: u16) -> Result<(), String> {
+pub async fn pty_resize(
+    id: String,
+    rows: u16,
+    cols: u16,
+    runtime: State<'_, InProcessTerminalRuntime>,
+) -> Result<(), String> {
+    runtime.inner().resize(id, rows, cols).await
+}
+
+/// See [`bridge_input`]. The bridge keeps its own authentication, pacing, and
+/// error mapping around this call.
+pub(crate) async fn bridge_resize(id: String, rows: u16, cols: u16) -> Result<(), String> {
+    InProcessTerminalRuntime.resize(id, rows, cols).await
+}
+
+async fn in_process_resize(id: String, rows: u16, cols: u16) -> Result<(), String> {
     let session = registry::get(&id).ok_or_else(|| format!("PTY session '{}' not found", id))?;
 
     {
@@ -1058,7 +1111,18 @@ fn terminate_session_process(session: &PtySession) {
 }
 
 #[tauri::command]
-pub async fn pty_kill(id: String) -> Result<(), String> {
+pub async fn pty_kill(
+    id: String,
+    runtime: State<'_, InProcessTerminalRuntime>,
+) -> Result<(), String> {
+    runtime
+        .inner()
+        .close(RuntimeSessionSelector::Id(id), RuntimeCloseRequest::Force)
+        .await
+        .and_then(|result| result.into_forced())
+}
+
+async fn in_process_kill(id: String) -> Result<(), String> {
     let _create_gate = acquire_pty_create_gate(&id).await;
     shutdown::forget(&id);
     if let Some(observed) = registry::get(&id) {
@@ -1068,7 +1132,9 @@ pub async fn pty_kill(id: String) -> Result<(), String> {
         let _ = observed
             .startup
             .cancel(PtyStartupTrigger::Killed, |snapshot| {
-                startup::emit_startup_state(&observed.app_handle, snapshot)
+                if let Ok(host) = session::session_host(&observed) {
+                    let _ = host.publish_startup(snapshot.clone());
+                }
             });
         if let Some(session) = registry::remove_if_same(&id, &observed) {
             mark_killed(&session);
@@ -1113,7 +1179,14 @@ pub async fn pty_kill(id: String) -> Result<(), String> {
 
 /// Get the current state of a PTY session.
 #[tauri::command]
-pub async fn pty_get_session_state(pty_id: String) -> Result<SessionState, String> {
+pub async fn pty_get_session_state(
+    pty_id: String,
+    runtime: State<'_, InProcessTerminalRuntime>,
+) -> Result<SessionState, String> {
+    runtime.inner().session_state(pty_id).await
+}
+
+async fn in_process_session_state(pty_id: String) -> Result<SessionState, String> {
     let session =
         registry::get(&pty_id).ok_or_else(|| format!("PTY session '{}' not found", pty_id))?;
 
@@ -1128,6 +1201,14 @@ pub async fn pty_get_session_state(pty_id: String) -> Result<SessionState, Strin
 /// Missing sessions and stale generations intentionally converge to `None`.
 #[tauri::command]
 pub async fn pty_get_startup_state(
+    pty_id: String,
+    generation: String,
+    runtime: State<'_, InProcessTerminalRuntime>,
+) -> Result<Option<PtyStartupSnapshot>, String> {
+    runtime.inner().startup_state(pty_id, generation).await
+}
+
+async fn in_process_startup_state(
     pty_id: String,
     generation: String,
 ) -> Result<Option<PtyStartupSnapshot>, String> {
@@ -1148,19 +1229,39 @@ pub async fn pty_get_startup_state(
 /// poll costs one IPC regardless of card count; ids missing from the map
 /// mean the PTY is no longer registered.
 #[tauri::command]
-pub async fn pty_get_all_session_states() -> Result<HashMap<String, SessionState>, String> {
+pub async fn pty_get_all_session_states(
+    runtime: State<'_, InProcessTerminalRuntime>,
+) -> Result<HashMap<String, SessionState>, String> {
+    runtime.inner().all_session_states().await
+}
+
+async fn in_process_all_session_states() -> Result<HashMap<String, SessionState>, String> {
     Ok(registry::all_session_states())
 }
 
 /// Read recent output for a live PTY session so a second webview can render
 /// context immediately after attaching instead of looking like a fresh shell.
 #[tauri::command]
-pub async fn pty_get_recent_output(pty_id: String) -> Result<Option<String>, String> {
+pub async fn pty_get_recent_output(
+    pty_id: String,
+    runtime: State<'_, InProcessTerminalRuntime>,
+) -> Result<Option<String>, String> {
+    runtime.inner().recent_output(pty_id).await
+}
+
+async fn in_process_recent_output(pty_id: String) -> Result<Option<String>, String> {
     Ok(get_recent_output(&pty_id))
 }
 
 #[tauri::command]
-pub async fn pty_attach_snapshot(pty_id: String) -> Result<Option<PtyAttachSnapshot>, String> {
+pub async fn pty_attach_snapshot(
+    pty_id: String,
+    runtime: State<'_, InProcessTerminalRuntime>,
+) -> Result<Option<PtyAttachSnapshot>, String> {
+    runtime.inner().attach_snapshot(pty_id).await
+}
+
+async fn in_process_attach_snapshot(pty_id: String) -> Result<Option<PtyAttachSnapshot>, String> {
     let Some(session) = registry::get(&pty_id) else {
         return Ok(None);
     };
@@ -1174,7 +1275,21 @@ pub fn attach_snapshot_for_bridge(pty_id: &str) -> Option<PtyAttachSnapshot> {
 }
 
 #[tauri::command]
-pub async fn pty_register_output_consumer(id: String, consumer_id: String) -> Result<(), String> {
+pub async fn pty_register_output_consumer(
+    id: String,
+    consumer_id: String,
+    runtime: State<'_, InProcessTerminalRuntime>,
+) -> Result<(), String> {
+    runtime
+        .inner()
+        .register_output_consumer(id, consumer_id)
+        .await
+}
+
+async fn in_process_register_output_consumer(
+    id: String,
+    consumer_id: String,
+) -> Result<(), String> {
     if consumer_id.trim().is_empty() {
         return Err("Output consumer id cannot be empty".to_string());
     }
@@ -1194,7 +1309,21 @@ pub async fn pty_register_output_consumer(id: String, consumer_id: String) -> Re
 }
 
 #[tauri::command]
-pub async fn pty_unregister_output_consumer(id: String, consumer_id: String) -> Result<(), String> {
+pub async fn pty_unregister_output_consumer(
+    id: String,
+    consumer_id: String,
+    runtime: State<'_, InProcessTerminalRuntime>,
+) -> Result<(), String> {
+    runtime
+        .inner()
+        .unregister_output_consumer(id, consumer_id)
+        .await
+}
+
+async fn in_process_unregister_output_consumer(
+    id: String,
+    consumer_id: String,
+) -> Result<(), String> {
     let Some(session) = registry::get(&id) else {
         return Ok(());
     };
@@ -1204,6 +1333,20 @@ pub async fn pty_unregister_output_consumer(id: String, consumer_id: String) -> 
 
 #[tauri::command]
 pub async fn pty_ack(
+    id: String,
+    through_seq: u64,
+    consumer_kind: String,
+    consumer_id: Option<String>,
+    runtime: State<'_, InProcessTerminalRuntime>,
+) -> Result<(), String> {
+    let consumer = OutputConsumer::from_legacy(consumer_kind, consumer_id)?;
+    runtime
+        .inner()
+        .acknowledge_output(RuntimeSessionSelector::Id(id), through_seq, consumer)
+        .await
+}
+
+async fn in_process_acknowledge_output(
     id: String,
     through_seq: u64,
     consumer_kind: String,

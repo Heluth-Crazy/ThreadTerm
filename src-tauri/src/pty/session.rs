@@ -4,12 +4,11 @@ use std::sync::{Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::Emitter;
 use tokio::sync::oneshot;
 
 use crate::bridge;
 
-use super::startup::{PtyShellFamily, SessionStartup, StartupSideEffectDispatcher};
+use super::startup::{PtyShellFamily, SessionStartup};
 use super::writer::{InputSender, PtyWriter, WriteCompletion};
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -259,14 +258,16 @@ pub(super) struct PtySession {
     /// Fixed at native creation so attach responses never re-discover a shell.
     pub(super) shell_family: PtyShellFamily,
     pub(super) startup: SessionStartup,
-    /// Retained for the later startup-dispatch path. Creation only records this
-    /// context; output/readiness code remains its sole dispatcher owner.
+    /// Provider startup retains only its project path. The host owns the
+    /// capability used to submit side effects.
     pub(super) startup_side_effects: Mutex<Option<StartupSideEffectContext>>,
     pub(super) master: Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>,
     pub(super) child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     pub(super) _working_dir: String,
     pub(super) state: RwLock<SessionState>,
-    pub(super) app_handle: tauri::AppHandle,
+    /// Explicit attach may replace a legacy host with one carrying the
+    /// process-owned provider dispatcher.
+    pub(super) host: RwLock<std::sync::Arc<dyn super::TerminalSessionHost>>,
     /// Raw circular buffer used when a second webview attaches to the same PTY.
     pub(super) output_buffer: RwLock<String>,
     /// Serializes output sequence assignment, screen-buffer advancement,
@@ -285,7 +286,6 @@ pub(super) struct PtySession {
 }
 
 pub(super) struct StartupSideEffectContext {
-    pub(super) dispatcher: StartupSideEffectDispatcher,
     pub(super) project_path: String,
 }
 
@@ -294,18 +294,35 @@ pub(super) struct StartupSideEffectContext {
 /// to the session if a future attach path reaches it through another route.
 pub(super) fn install_startup_side_effect_context(
     session: &PtySession,
-    dispatcher: StartupSideEffectDispatcher,
     project_path: String,
 ) -> Result<(), String> {
     let mut context = session
         .startup_side_effects
         .lock()
         .map_err(|_| "startup_side_effect_context_unavailable".to_string())?;
-    context.get_or_insert(StartupSideEffectContext {
-        dispatcher,
-        project_path,
-    });
+    context.get_or_insert(StartupSideEffectContext { project_path });
     Ok(())
+}
+
+pub(super) fn replace_session_host(
+    session: &PtySession,
+    host: std::sync::Arc<dyn super::TerminalSessionHost>,
+) -> Result<(), String> {
+    *session
+        .host
+        .write()
+        .map_err(|_| "terminal_session_host_unavailable".to_string())? = host;
+    Ok(())
+}
+
+pub(super) fn session_host(
+    session: &PtySession,
+) -> Result<std::sync::Arc<dyn super::TerminalSessionHost>, String> {
+    session
+        .host
+        .read()
+        .map(|host| std::sync::Arc::clone(&host))
+        .map_err(|_| "terminal_session_host_unavailable".to_string())
 }
 
 /// Write a terminal protocol response directly through the same writer used
@@ -333,15 +350,6 @@ pub(super) fn close_master(session: &PtySession, id: &str) -> Result<bool, Strin
     Ok(true)
 }
 
-// ── Event payload (sibling needs to emit it) ────────────────────────────────
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionStateChangedPayload {
-    pty_id: String,
-    state: SessionState,
-}
-
 // ── State-machine helpers ────────────────────────────────────────────────────
 
 /// Update session state and emit `session-state-changed` if changed.
@@ -354,13 +362,12 @@ struct SessionStateChangedPayload {
 /// former lock cycle without weakening event ordering.
 pub(super) fn set_session_state(session: &PtySession, id: &str, new_state: SessionState) {
     update_session_state_with_publish(&session.state, new_state, |state| {
-        let _ = session.app_handle.emit(
-            "session-state-changed",
-            SessionStateChangedPayload {
+        if let Ok(host) = session_host(session) {
+            let _ = host.publish(super::TerminalEvent::SessionStateChanged {
                 pty_id: id.to_string(),
                 state: state.clone(),
-            },
-        );
+            });
+        }
         bridge::broadcast_state(id, state);
     });
 }

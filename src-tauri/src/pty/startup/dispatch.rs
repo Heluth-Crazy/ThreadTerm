@@ -2,8 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::{
-    emit_startup_state, PtyStartupSnapshot, PtyStartupTrigger, StartupEffectDescriptor,
-    StartupReadinessPolicy,
+    PtyStartupSnapshot, PtyStartupTrigger, StartupEffectDescriptor, StartupReadinessPolicy,
 };
 use crate::pty::registry;
 use crate::pty::session::{self, PtySession, SessionState};
@@ -13,7 +12,6 @@ use crate::pty::writer::WriteCompletion;
 use crate::terminal_startup_harness::{HarnessDriveAction, HarnessTiming};
 
 struct EffectContext {
-    dispatcher: super::StartupSideEffectDispatcher,
     project_path: String,
 }
 
@@ -285,27 +283,25 @@ fn submit_effect(
     sent_at_ms: u64,
     context: EffectContext,
 ) -> Result<(), String> {
-    context.dispatcher.submit(
-        session.app_handle.clone(),
-        super::StartupSideEffectRequest {
-            pty_id: id.to_owned(),
-            generation: session.generation.clone(),
-            provider: effect.provider(),
-            card_id: effect.card_id().to_owned(),
-            project_path: context.project_path,
-            sent_at_ms,
-            side_effect_plan: effect.side_effect_plan().clone(),
-        },
-    )
+    let host = session::session_host(session)?;
+    host.submit_startup_side_effect(super::StartupSideEffectRequest {
+        pty_id: id.to_owned(),
+        generation: session.generation.clone(),
+        provider: effect.provider(),
+        card_id: effect.card_id().to_owned(),
+        project_path: context.project_path,
+        sent_at_ms,
+        side_effect_plan: effect.side_effect_plan().clone(),
+    })
 }
 
 fn effect_context(session: &PtySession) -> Result<EffectContext, String> {
+    session::session_host(session)?.ensure_startup_side_effect_dispatcher()?;
     let context = session
         .startup_side_effects
         .lock()
         .map_err(|_| "startup_side_effect_context_unavailable".to_string())?;
     require_effect_context(context.as_ref().map(|context| EffectContext {
-        dispatcher: context.dispatcher.clone(),
         project_path: context.project_path.clone(),
     }))
 }
@@ -316,7 +312,9 @@ fn require_effect_context(context: Option<EffectContext>) -> Result<EffectContex
 
 fn publish(id: &str, session: &Arc<PtySession>, snapshot: &PtyStartupSnapshot) {
     if registry::is_current(id, session) {
-        emit_startup_state(&session.app_handle, snapshot);
+        if let Ok(host) = session::session_host(session) {
+            let _ = host.publish_startup(snapshot.clone());
+        }
     }
 }
 

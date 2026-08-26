@@ -34,12 +34,14 @@ export default defineConfig(({ command, mode }) => {
         // Multi-page build — each HTML entry becomes its own bundle served
         // by Tauri. `main` is the primary window; `selector` and `float`
         // are the secondary overlay windows created on demand by
-        // `src-tauri/src/overlay.rs`.
+        // `src-tauri/src/overlay.rs`. `terminalHost` is a runtime-only
+        // daemon surface and never enters the persisted terminal-card store.
         input: {
           main: 'index.html',
           settings: 'settings.html',
           selector: 'selector.html',
           float: 'float.html',
+          terminalHost: 'terminal-host.html',
         },
         output: {
           manualChunks: {

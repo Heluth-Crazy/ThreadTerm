@@ -1,0 +1,16 @@
+{
+  "platform": "windows",
+  "runtime_state": "available",
+  "desktop_available": true,
+  "runtime_id": "runtime-6e91e18a",
+  "protocol_version": 1,
+  "contract_versions": ["terminal-launch/v1"],
+  "capabilities": [
+    "terminal.create",
+    "terminal.get-by-request-id",
+    "terminal.present",
+    "terminal.close-by-handle",
+    "presentation.window.background",
+    "exit.close-on-exit"
+  ]
+}

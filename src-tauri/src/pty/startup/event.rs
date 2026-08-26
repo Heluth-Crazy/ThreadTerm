@@ -1,14 +1,6 @@
-use tauri::{AppHandle, Emitter};
-
 use super::types::PtyStartupSnapshot;
 
 pub(crate) const PTY_STARTUP_STATE_EVENT: &str = "pty-startup-state";
-
-/// Publish only the privacy-safe startup projection. The snapshot is the
-/// complete wire payload: pty id, generation, revision, state, and trigger.
-pub(crate) fn emit_startup_state(app: &AppHandle, snapshot: &PtyStartupSnapshot) {
-    let _ = app.emit(PTY_STARTUP_STATE_EVENT, snapshot);
-}
 
 /// A startup event/query is valid only for the generation that owns the
 /// session. Keeping this comparison separate makes stale responses easy to

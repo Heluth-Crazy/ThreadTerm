@@ -1,7 +1,5 @@
-use crate::managed_state;
 use crate::provider_sessions;
 use crate::terminal_startup_effect_store::{StartupEffectCommit, StartupEffectCommitOutcome};
-use tauri::AppHandle;
 
 use super::effect_ledger::{StartupSideEffectKey, StartupSideEffectKind};
 use super::effects::{
@@ -11,7 +9,10 @@ use super::effects::{
 use super::PtyStartupSideEffectPlan;
 
 impl StartupSideEffectDispatcher {
-    pub(super) async fn process(&self, app: AppHandle, request: StartupSideEffectRequest) {
+    pub(crate) async fn process<F>(&self, request: StartupSideEffectRequest, notify: &F)
+    where
+        F: Fn() -> Result<(), String> + Send + Sync,
+    {
         let provider = request.provider.as_str().to_owned();
         let key = StartupSideEffectKey {
             pty_id: request.pty_id.clone(),
@@ -22,14 +23,16 @@ impl StartupSideEffectDispatcher {
         let pty_id = request.pty_id.clone();
         let at_ms = request.sent_at_ms;
         let _ = self
-            .commit_one(&app, key, move |token| {
-                StartupEffectCommit::RecordUserSubmit {
+            .commit_one(
+                key,
+                move |token| StartupEffectCommit::RecordUserSubmit {
                     token,
                     card_id,
                     pty_id,
                     at_ms,
-                }
-            })
+                },
+                notify,
+            )
             .await;
 
         match request.side_effect_plan.clone() {
@@ -45,25 +48,30 @@ impl StartupSideEffectDispatcher {
                 let pty_id = request.pty_id.clone();
                 let provider = provider.clone();
                 let at_ms = request.sent_at_ms;
-                self.commit_one(&app, key, move |token| {
-                    StartupEffectCommit::BindProviderSession {
+                self.commit_one(
+                    key,
+                    move |token| StartupEffectCommit::BindProviderSession {
                         token,
                         card_id,
                         pty_id,
                         provider,
                         provider_session_id,
                         at_ms,
-                    }
-                })
+                    },
+                    notify,
+                )
                 .await;
             }
             PtyStartupSideEffectPlan::Discover => {
-                self.discover(&app, request, provider).await;
+                self.discover(request, provider, notify).await;
             }
         }
     }
 
-    async fn discover(&self, app: &AppHandle, request: StartupSideEffectRequest, provider: String) {
+    async fn discover<F>(&self, request: StartupSideEffectRequest, provider: String, notify: &F)
+    where
+        F: Fn() -> Result<(), String> + Send + Sync,
+    {
         let key = StartupSideEffectKey {
             pty_id: request.pty_id.clone(),
             generation: request.generation.clone(),
@@ -100,16 +108,19 @@ impl StartupSideEffectDispatcher {
                 let pty_id = request.pty_id.clone();
                 let provider_for_commit = provider.clone();
                 let at_ms = request.sent_at_ms;
-                self.commit_with_token(app, key, token, move |token| {
-                    StartupEffectCommit::DiscoverProviderSession {
+                self.commit_with_token(
+                    key,
+                    token,
+                    move |token| StartupEffectCommit::DiscoverProviderSession {
                         token,
                         card_id,
                         pty_id,
                         provider: provider_for_commit,
                         provider_session_id: session.id,
                         at_ms,
-                    }
-                })
+                    },
+                    notify,
+                )
                 .await;
                 return;
             }
@@ -118,7 +129,12 @@ impl StartupSideEffectDispatcher {
         self.terminal(&key, &token);
     }
 
-    async fn commit_one<F>(&self, app: &AppHandle, key: StartupSideEffectKey, build: F) -> bool
+    async fn commit_one<F>(
+        &self,
+        key: StartupSideEffectKey,
+        build: F,
+        notify: &(impl Fn() -> Result<(), String> + Send + Sync),
+    ) -> bool
     where
         F: FnOnce(String) -> StartupEffectCommit + Send + 'static,
     {
@@ -130,28 +146,26 @@ impl StartupSideEffectDispatcher {
                 return false;
             }
         };
-        self.commit_with_token(app, key, token, build).await
+        self.commit_with_token(key, token, build, notify).await
     }
 
     async fn commit_with_token<F>(
         &self,
-        app: &AppHandle,
         key: StartupSideEffectKey,
         token: String,
         build: F,
+        notify: &(impl Fn() -> Result<(), String> + Send + Sync),
     ) -> bool
     where
         F: FnOnce(String) -> StartupEffectCommit + Send + 'static,
     {
         let effect = build(token.clone());
         let store = self.store.clone();
-        let result = tauri::async_runtime::spawn_blocking(move || store.commit(effect)).await;
+        let result = tokio::task::spawn_blocking(move || store.commit(effect)).await;
         match result {
             Ok(Ok(outcome)) => {
                 self.terminal(&key, &token);
-                if should_emit(outcome)
-                    && managed_state::emit_terminal_startup_effects_changed(app).is_err()
-                {
+                if should_emit(outcome) && notify().is_err() {
                     tracing::warn!("terminal startup effect change event was not published");
                 }
                 true
@@ -166,7 +180,7 @@ impl StartupSideEffectDispatcher {
 
     async fn bound_ids(&self, provider: String) -> Result<Vec<String>, String> {
         let store = self.store.clone();
-        tauri::async_runtime::spawn_blocking(move || store.bound_provider_session_ids(&provider))
+        tokio::task::spawn_blocking(move || store.bound_provider_session_ids(&provider))
             .await
             .map_err(|_| "startup effect worker unavailable".to_string())?
     }
