@@ -28,6 +28,7 @@ import {
   disposeHeadless,
   disposeAllHeadless,
   getHeadlessPreviewDiagnostics,
+  isHeadlessAlternateScreen,
   readHeadlessPreview,
 } from './headlessPreview';
 import { createCardOutputBuffer } from './outputBuffer';
@@ -228,7 +229,16 @@ export function TerminalEventBridge(): null {
         flushCardUpdate: (cardId, data, preview) => {
           const store = useTerminalStore.getState();
           if (!store.cards.some((card) => card.id === cardId)) return;
-          store.updateCardOutputAndPreview(cardId, data, preview);
+          // A full-screen TUI emits renderer frames (cursor moves, clears and
+          // complete screen repaints), not append-only terminal output. Keep
+          // its clean headless preview for cards, but do not turn every frame
+          // into `lastOutput`/`lastActivity` churn. Identical previews already
+          // no-op in the store, isolating Workbench from cosmetic redraws.
+          store.updateCardOutputAndPreview(
+            cardId,
+            isHeadlessAlternateScreen(cardId) ? null : data,
+            preview,
+          );
         },
       },
       OUTPUT_FLUSH_MS,

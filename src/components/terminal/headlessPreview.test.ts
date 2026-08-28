@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   disposeAllHeadless,
   feedHeadless,
+  isHeadlessAlternateScreen,
   readHeadlessPreview,
 } from './headlessPreview';
 
@@ -56,6 +57,14 @@ describe('headlessPreview — OSC visual transparency', () => {
 });
 
 describe('headlessPreview — terminal redraw behavior', () => {
+  it('reports whether the active headless buffer is the alternate screen', async () => {
+    await feedAndRead('alternate-mode', '\x1b[?1049hTUI frame');
+    expect(isHeadlessAlternateScreen('alternate-mode')).toBe(true);
+
+    await feedAndRead('alternate-mode', '\x1b[?1049l');
+    expect(isHeadlessAlternateScreen('alternate-mode')).toBe(false);
+  });
+
   it('drops stale rows after a full-screen redraw', async () => {
     await feedAndRead('full-redraw', 'stale top\r\nstale bottom');
 

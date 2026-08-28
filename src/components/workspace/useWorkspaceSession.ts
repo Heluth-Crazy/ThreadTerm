@@ -12,6 +12,7 @@ import {
 } from 'react';
 import type { TFunction } from 'i18next';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { useWorkbenchStore } from '../../stores/workbenchStore';
 import type { TerminalCard } from '../../types/terminal';
 import {
   isTauriEnv,
@@ -641,7 +642,10 @@ export function useWorkspaceSession({
         tabsRef.current.some((tab) => tab.kind === 'file' || tab.kind === 'diff');
       const store = useTerminalStore.getState();
       if (store.cards.some((candidate) => candidate.id === card.id)) {
-        if (action === 'archive') store.archiveCard(card.id);
+        const keepFollowedSnapshot =
+          action === 'remove' &&
+          useWorkbenchStore.getState().followedCardIds.includes(card.id);
+        if (action === 'archive' || keepFollowedSnapshot) store.archiveCard(card.id);
         else store.removeCard(card.id);
       }
       if (preserveWorkspaceScope) {

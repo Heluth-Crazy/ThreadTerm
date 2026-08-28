@@ -20,6 +20,14 @@ import type { TerminalCard } from '../../types/terminal';
 
 interface WorkbenchModelInput {
   cards: readonly TerminalCard[];
+  archivedCards: readonly TerminalCard[];
+  selectedProjectPath: string | null;
+  selectedWorktreePath: string | null;
+}
+
+interface ScopedWorkbenchModelInput {
+  cards: readonly TerminalCard[];
+  followableCards: readonly TerminalCard[];
   selectedProjectPath: string | null;
   selectedWorktreePath: string | null;
 }
@@ -36,6 +44,7 @@ interface WorkbenchModelSources {
 
 export function useWorkbenchModel({
   cards,
+  archivedCards,
   selectedProjectPath,
   selectedWorktreePath,
 }: WorkbenchModelInput) {
@@ -58,17 +67,25 @@ export function useWorkbenchModel({
   const reconcileIgnoredAttention = useWorkbenchStore(
     (state) => state.reconcileIgnoredAttention,
   );
+  const reconcilePinnedProjects = useWorkbenchStore(
+    (state) => state.reconcilePinnedProjects,
+  );
   const markNotificationRead = useTerminalStore(
     (state) => state.markNotificationRead,
   );
   const now = useMinuteNow();
+  const retainedCards = useMemo(
+    () => [...cards, ...archivedCards],
+    [archivedCards, cards],
+  );
   const activeCardIdKey = cards.map((card) => card.id).join('\u001f');
+  const retainedCardIdKey = retainedCards.map((card) => card.id).join('\u001f');
 
   useEffect(() => {
-    const validCardIds = activeCardIdKey ? activeCardIdKey.split('\u001f') : [];
+    const validCardIds = retainedCardIdKey ? retainedCardIdKey.split('\u001f') : [];
     reconcileFollowedCards(validCardIds);
-    reconcileIgnoredAttention(validCardIds);
-  }, [activeCardIdKey, reconcileFollowedCards, reconcileIgnoredAttention]);
+    reconcileIgnoredAttention(activeCardIdKey ? activeCardIdKey.split('\u001f') : []);
+  }, [activeCardIdKey, reconcileFollowedCards, reconcileIgnoredAttention, retainedCardIdKey]);
 
   const ignoreAttention = useCallback(
     (item: AttentionItem) => {
@@ -84,6 +101,16 @@ export function useWorkbenchModel({
     [ignoreAttentionInStore, markNotificationRead],
   );
 
+  const acknowledgeAttention = useCallback(
+    (item: AttentionItem) => {
+      ignoreAttentionInStore(item);
+      if (item.sourceKind === 'notification') {
+        markNotificationRead(item.sourceId);
+      }
+    },
+    [ignoreAttentionInStore, markNotificationRead],
+  );
+
   const sources = {
     notifications,
     supervisorAlerts,
@@ -94,15 +121,24 @@ export function useWorkbenchModel({
     now,
   };
   const workbenchModel = useScopedWorkbenchModel(
-    { cards, selectedProjectPath, selectedWorktreePath },
+    { cards, followableCards: retainedCards, selectedProjectPath, selectedWorktreePath },
     sources,
   );
   const allProjectsWorkbenchModel = useScopedWorkbenchModel(
-    { cards, selectedProjectPath: null, selectedWorktreePath: null },
+    { cards, followableCards: retainedCards, selectedProjectPath: null, selectedWorktreePath: null },
     sources,
   );
 
+  const projectPathKey = allProjectsWorkbenchModel.projectOverviews
+    .map((project) => project.projectPath)
+    .join('');
+  useEffect(() => {
+    const validProjectPaths = projectPathKey ? projectPathKey.split('') : [];
+    reconcilePinnedProjects(validProjectPaths);
+  }, [projectPathKey, reconcilePinnedProjects]);
+
   return {
+    acknowledgeAttention,
     allProjectsWorkbenchModel,
     followCards,
     followedCardIds,
@@ -115,9 +151,10 @@ export function useWorkbenchModel({
 function useScopedWorkbenchModel(
   {
     cards,
+    followableCards,
     selectedProjectPath,
     selectedWorktreePath,
-  }: WorkbenchModelInput,
+  }: ScopedWorkbenchModelInput,
   {
     notifications,
     supervisorAlerts,
@@ -180,12 +217,12 @@ function useScopedWorkbenchModel(
   const followedCards = useMemo(
     () =>
       deriveFollowedCards(
-        cards,
+        followableCards,
         followedCardIds,
         selectedProjectPath,
         selectedWorktreePath,
       ),
-    [cards, followedCardIds, selectedProjectPath, selectedWorktreePath],
+    [followableCards, followedCardIds, selectedProjectPath, selectedWorktreePath],
   );
   const projectOverviews = useMemo(
     () =>

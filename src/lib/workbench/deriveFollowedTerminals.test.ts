@@ -88,6 +88,18 @@ describe('followed terminal derivation', () => {
     ).toEqual(['feature']);
   });
 
+  it('includes active and archived followed cards together in explicit follow order', () => {
+    const active = card('active');
+    const archived = {
+      ...card('archived', { projectName: 'Archived' }),
+      archivedAt: 2,
+    };
+
+    expect(
+      deriveFollowedCards([active, archived], ['archived', 'active']).map(({ id }) => id),
+    ).toEqual(['archived', 'active']);
+  });
+
   it('builds stable alphabetical project overviews from active cards', () => {
     const cards = [
       card('beta-running'),

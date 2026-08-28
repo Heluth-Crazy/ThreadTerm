@@ -1,6 +1,5 @@
 import type {
   AttentionItem,
-  ExecutionContextGroup,
   WorkbenchAttentionFilter,
 } from '../../lib/workbench/types';
 import type { TerminalCard } from '../../types/terminal';
@@ -22,22 +21,6 @@ export function attentionSearchText(item: AttentionItem): string {
     item.branchLabel,
     item.worktreePath,
     item.terminalType,
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLocaleLowerCase();
-}
-
-export function executionGroupSearchText(
-  group: ExecutionContextGroup,
-): string {
-  return [
-    group.projectName,
-    group.projectPath,
-    group.branchLabel,
-    group.worktreePath,
-    group.preview,
-    ...group.terminalTypes,
   ]
     .filter(Boolean)
     .join(' ')

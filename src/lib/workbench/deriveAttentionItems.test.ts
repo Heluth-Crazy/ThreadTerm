@@ -117,6 +117,99 @@ describe('deriveAttentionItems', () => {
     expect(items.every((item) => item.capability.openRequest)).toBe(true);
   });
 
+  it('suppresses every lower-priority source for a structured request while preserving distinct requests', () => {
+    const items = derive({
+      cards: [card('card-a', { status: 'completed' })],
+      requests: [
+        request('approval-a', 'card-a', 'item/commandExecution/requestApproval'),
+        request('input-a', 'card-a', 'item/tool/requestUserInput'),
+      ],
+      alerts: [alert('alert-a', 'card-a')],
+      notifications: [notification('completed-a', 'card-a', 'completed')],
+    });
+
+    expect(items.map((item) => [item.sourceKind, item.sourceId])).toEqual([
+      ['structured_request', 'approval-a'],
+      ['structured_request', 'input-a'],
+    ]);
+  });
+
+  it('uses a supervisor alert instead of lower-priority notification or terminal-state items', () => {
+    const items = derive({
+      cards: [card('card-a', { status: 'completed' })],
+      alerts: [alert('alert-a', 'card-a')],
+      notifications: [notification('completed-a', 'card-a', 'completed')],
+    });
+
+    expect(items).toEqual([
+      expect.objectContaining({
+        sourceKind: 'supervisor_alert',
+        sourceId: 'alert-a',
+      }),
+    ]);
+  });
+
+  it('uses the current waiting episode instead of an older unread completion for the same card', () => {
+    const items = derive({
+      cards: [card('card-a', { status: 'waiting' })],
+      notifications: [
+        notification('waiting-current', 'card-a', 'waiting', NOW - 24_000),
+        notification('completed-old', 'card-a', 'completed', NOW - 6 * 60 * 60_000),
+      ],
+    });
+
+    expect(items).toEqual([
+      expect.objectContaining({
+        cardId: 'card-a',
+        kind: 'waiting_input',
+        sourceId: 'waiting-current',
+      }),
+    ]);
+  });
+
+  it('uses the current failure episode instead of an older unread completion for the same card', () => {
+    const items = derive({
+      cards: [card('card-a', { status: 'failed' })],
+      notifications: [
+        notification('failed-current', 'card-a', 'failed', NOW - 24_000),
+        notification('completed-old', 'card-a', 'completed', NOW - 6 * 60 * 60_000),
+      ],
+    });
+
+    expect(items).toEqual([
+      expect.objectContaining({
+        cardId: 'card-a',
+        kind: 'failed',
+        sourceId: 'failed-current',
+      }),
+    ]);
+  });
+
+  it('does not resurrect an older completion when the current episode category is hidden', () => {
+    const completed = notification(
+      'completed-old',
+      'card-a',
+      'completed',
+      NOW - 6 * 60 * 60_000,
+    );
+
+    expect(
+      derive({
+        cards: [card('card-a', { status: 'waiting' })],
+        notifications: [completed],
+        rules: { includeWaiting: false },
+      }),
+    ).toEqual([]);
+    expect(
+      derive({
+        cards: [card('card-a', { status: 'running' })],
+        requests: [request('input-current', 'card-a', 'item/tool/requestUserInput')],
+        notifications: [completed],
+        rules: { includeWaiting: false },
+      }),
+    ).toEqual([]);
+  });
+
   it('projects waiting, failed, and unread completed cards without inventing capabilities', () => {
     const items = derive({
       cards: [

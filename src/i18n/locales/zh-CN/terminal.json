@@ -55,7 +55,14 @@
     },
     "attention": {
       "title": "需要处理",
-      "count": "{{count}} 项"
+      "count": "{{count}} 项",
+      "viewAll": "查看全部"
+    },
+    "stats": {
+      "label": "工作台统计",
+      "terminals": "终端",
+      "followed": "关注数量",
+      "noTerminals": "当前范围内没有终端。"
     },
     "followed": {
       "title": "关注终端",
@@ -63,6 +70,7 @@
       "collapse": "收起",
       "expand": "展开全部",
       "openTerminal": "打开 {{name}} 终端",
+      "closed": "已关闭",
       "remove": "移出工作台",
       "removeNamed": "将 {{name}} 移出工作台",
       "noSearchResults": "没有关注终端匹配当前搜索。",
@@ -76,7 +84,17 @@
       "attention": "处理",
       "review": "复核",
       "failed": "异常",
-      "reorder": "拖动调整“{{project}}”的顺序"
+      "reorder": "拖动调整“{{project}}”的顺序",
+      "viewAll": "查看全部",
+      "pinManage": "置顶管理",
+      "pinZone": "主页置顶（最多 6 个）",
+      "allProjects": "全部项目",
+      "pinnedBadge": "已置顶",
+      "pinFullHint": "最多置顶 6 个项目，请先移除一个。",
+      "emptyPinnedTitle": "还没有置顶项目",
+      "emptyPinnedHint": "在「查看全部」中把常用项目拖到置顶区。",
+      "emptyPinnedAction": "选择项目置顶",
+      "unpin": "取消置顶 {{project}}"
     },
     "recall": {
       "title": "召回终端",
@@ -111,14 +129,6 @@
       "title": "无进展观察",
       "count": "{{count}} 个终端",
       "hint": "仍在运行，但超过规则阈值没有新输出"
-    },
-    "groups": {
-      "title": "执行上下文",
-      "subtitle": "按项目和 worktree 聚合，不推测任务"
-    },
-    "group": {
-      "terminals": "{{count}} 个终端",
-      "attention": "{{count}} 项需处理"
     },
     "groupStatus": {
       "failed": "异常",
@@ -157,7 +167,6 @@
       "details": "详情",
       "ignore": "忽略",
       "ignoreHint": "忽略且不打开",
-      "viewAllTerminals": "查看所有终端",
       "addToWorkbench": "加入工作台",
       "removeFromWorkbench": "移出工作台",
       "follow": "关注",
@@ -170,8 +179,7 @@
       "noScopeTerminalsTitle": "当前范围没有终端",
       "noScopeTerminalsBody": "请选择其他项目或工作树，或在当前范围新建终端。",
       "noSearchResults": "没有注意项匹配当前搜索。",
-      "noAttention": "当前范围内没有需要你处理的事项。",
-      "noActiveContexts": "当前范围内没有活动执行上下文。"
+      "noAttention": "当前范围内没有需要你处理的事项。"
     },
     "notifications": {
       "approvalTitle": "Codex 需要批准",

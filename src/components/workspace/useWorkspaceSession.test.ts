@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import type { TFunction } from 'i18next';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { useWorkbenchStore } from '../../stores/workbenchStore';
 import { useClaudeChatStore } from '../../stores/claudeChatStore';
 import { pty } from '../../lib/tauri-bridge';
 import { localWorkspaceAuthority } from '../../lib/workspace/localAuthority';
@@ -23,6 +24,7 @@ function resetStore() {
     selectedProjectPath: null,
     selectedWorktreePath: null,
   });
+  useWorkbenchStore.setState({ followedCardIds: [] });
 }
 
 function enableTauriEnvironment() {
@@ -469,6 +471,42 @@ describe('useWorkspaceSession worktree isolation', () => {
     );
     expect(forceKill).not.toHaveBeenCalled();
     expect(useTerminalStore.getState().cards.some((card) => card.id === id)).toBe(false);
+  });
+
+  it('archives a followed card after close-and-end instead of deleting its snapshot', async () => {
+    vi.spyOn(pty, 'gracefulShutdown').mockResolvedValue({
+      attemptId: 'attempt-followed',
+      outcome: 'graceful',
+      stage: 'shellExit',
+    });
+    const id = useTerminalStore.getState().createCard({
+      projectName: 'followed repo',
+      projectPath: '/followed-repo',
+      terminalType: 'shell',
+    });
+    useWorkbenchStore.setState({ followedCardIds: [id] });
+    enableTauriEnvironment();
+    const { result } = renderHook(() =>
+      useWorkspaceSession({
+        cards: useTerminalStore.getState().cards,
+        focusedCardId: id,
+        selectedProjectPath: '/followed-repo',
+        selectedWorktreePath: null,
+        t,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.requestRemoveCard(id);
+    });
+
+    expect(useTerminalStore.getState().cards).not.toContainEqual(
+      expect.objectContaining({ id }),
+    );
+    expect(useTerminalStore.getState().archivedCards).toContainEqual(
+      expect.objectContaining({ id }),
+    );
+    expect(useWorkbenchStore.getState().followedCardIds).toContain(id);
   });
 
   it('keeps the card after timeout and continues the same graceful attempt without force', async () => {

@@ -62,13 +62,19 @@ export function deriveAttentionItems(input: DeriveAttentionItemsInput): Attentio
     (notification) => !notification.read && cardById.has(notification.cardId),
   );
   const items: AttentionItem[] = [];
-  const waitingSourceByCard = new Set<string>();
+  // A higher-priority source represents the card's current attention episode.
+  // Lower-priority projections (notifications and terminal state) are evidence,
+  // not separate work items. Structured requests remain deliberately exempt from
+  // per-card deduplication because several pending requests are independently
+  // actionable.
+  const higherPrioritySourceByCard = new Set<string>();
   const semanticKeys = new Set<string>();
 
-  if (input.rules.includeWaiting) {
-    for (const request of input.codexRequests) {
-      const card = cardById.get(request.cardId);
-      if (!card) continue;
+  for (const request of input.codexRequests) {
+    const card = cardById.get(request.cardId);
+    if (!card) continue;
+    higherPrioritySourceByCard.add(card.id);
+    if (input.rules.includeWaiting) {
       const kind = classifyCodexRequest(request.method);
       items.push(
         makeItem({
@@ -85,13 +91,15 @@ export function deriveAttentionItems(input: DeriveAttentionItemsInput): Attentio
           openRequest: true,
         }),
       );
-      waitingSourceByCard.add(card.id);
     }
+  }
 
-    for (const alert of input.supervisorAlerts) {
-      if (alert.acted || waitingSourceByCard.has(alert.cardId)) continue;
-      const card = cardById.get(alert.cardId);
-      if (!card) continue;
+  for (const alert of input.supervisorAlerts) {
+    if (alert.acted || higherPrioritySourceByCard.has(alert.cardId)) continue;
+    const card = cardById.get(alert.cardId);
+    if (!card) continue;
+    higherPrioritySourceByCard.add(card.id);
+    if (input.rules.includeWaiting) {
       const kind: AttentionKind = SUPERVISOR_APPROVAL_RULES.has(alert.ruleId)
         ? 'approval'
         : 'waiting_input';
@@ -110,53 +118,60 @@ export function deriveAttentionItems(input: DeriveAttentionItemsInput): Attentio
           openRequest: false,
         }),
       );
-      waitingSourceByCard.add(card.id);
     }
   }
 
   for (const card of cards) {
+    if (higherPrioritySourceByCard.has(card.id)) continue;
     const latestByKind = latestUnreadNotificationsForCard(unreadNotifications, card.id);
 
-    if (input.rules.includeWaiting && card.status === 'waiting' && !waitingSourceByCard.has(card.id)) {
-      const source = latestByKind.waiting ?? latestByKind.attention;
-      addSemanticItem(items, semanticKeys, `${card.id}:waiting`, () =>
-        makeItem({
-          card,
-          kind: 'waiting_input',
-          severity: 'warning',
-          sourceKind: source ? 'notification' : 'terminal_state',
-          sourceId: source?.id ?? card.id,
-          occurredAt: source?.at ?? card.lastActivity,
-          title: source?.title ?? card.projectName,
-          detail: cleanDetail(source?.body ?? card.lastReplyPreview),
-          reasonCode: 'waiting_state',
-          notificationId: source?.id ?? null,
-          openRequest: false,
-        }),
-      );
+    if (card.status === 'waiting') {
+      if (input.rules.includeWaiting) {
+        const source = latestByKind.waiting ?? latestByKind.attention;
+        addSemanticItem(items, semanticKeys, `${card.id}:waiting`, () =>
+          makeItem({
+            card,
+            kind: 'waiting_input',
+            severity: 'warning',
+            sourceKind: source ? 'notification' : 'terminal_state',
+            sourceId: source?.id ?? card.id,
+            occurredAt: source?.at ?? card.lastActivity,
+            title: source?.title ?? card.projectName,
+            detail: cleanDetail(source?.body ?? card.lastReplyPreview),
+            reasonCode: 'waiting_state',
+            notificationId: source?.id ?? null,
+            openRequest: false,
+          }),
+        );
+      }
+      // The card's current waiting state is the active attention episode.
+      // Older unread completion evidence must not surface as a second item for
+      // the same terminal.
+      continue;
     }
 
-    if (
-      input.rules.includeFailed &&
-      card.status === 'failed' &&
-      !hasPendingAutoRestart(card)
-    ) {
-      const source = latestByKind.failed;
-      addSemanticItem(items, semanticKeys, `${card.id}:failed`, () =>
-        makeItem({
-          card,
-          kind: 'failed',
-          severity: 'critical',
-          sourceKind: source ? 'notification' : 'terminal_state',
-          sourceId: source?.id ?? card.id,
-          occurredAt: source?.at ?? card.lastActivity,
-          title: source?.title ?? card.projectName,
-          detail: cleanDetail(source?.body ?? card.lastReplyPreview),
-          reasonCode: 'failed_state',
-          notificationId: source?.id ?? null,
-          openRequest: false,
-        }),
-      );
+    if (card.status === 'failed') {
+      if (input.rules.includeFailed && !hasPendingAutoRestart(card)) {
+        const source = latestByKind.failed;
+        addSemanticItem(items, semanticKeys, `${card.id}:failed`, () =>
+          makeItem({
+            card,
+            kind: 'failed',
+            severity: 'critical',
+            sourceKind: source ? 'notification' : 'terminal_state',
+            sourceId: source?.id ?? card.id,
+            occurredAt: source?.at ?? card.lastActivity,
+            title: source?.title ?? card.projectName,
+            detail: cleanDetail(source?.body ?? card.lastReplyPreview),
+            reasonCode: 'failed_state',
+            notificationId: source?.id ?? null,
+            openRequest: false,
+          }),
+        );
+      }
+      // Failure is likewise the current episode; a retained completion
+      // notification from an earlier run is only historical evidence.
+      continue;
     }
 
     const completedSource = latestByKind.completed;

@@ -5,28 +5,24 @@ import {
 } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  attentionFilterMatches,
-} from '../../lib/workbench/deriveAttentionItems';
 import type {
   AttentionItem,
-  ExecutionContextGroup,
   ProjectWorkbenchOverview,
+  WorkbenchAttentionFilter,
   WorkbenchSummary as WorkbenchSummaryData,
-  WorkbenchViewFilter,
 } from '../../lib/workbench/types';
 import type { TerminalCard } from '../../types/terminal';
+import { AttentionItemsDialog } from './AttentionItemsDialog';
 import { FollowedTerminalSection } from './FollowedTerminalSection';
 import { ProjectOverviewGrid } from './ProjectOverviewGrid';
 import { RecallTerminalDialog } from './RecallTerminalDialog';
 import { WorkbenchAttentionSection } from './WorkbenchAttentionSection';
 import { WorkbenchEmptyTerminalState } from './WorkbenchEmptyTerminalState';
-import { WorkbenchExecutionGroupsSection } from './WorkbenchExecutionGroupsSection';
+import { FollowedTerminalsDialog, TerminalsListDialog } from './WorkbenchListDialogs';
 import { WorkbenchStalledSection } from './WorkbenchStalledSection';
-import { WorkbenchSummary } from './WorkbenchSummary';
+import { WorkbenchStatStrip } from './WorkbenchStatStrip';
 import {
   attentionSearchText,
-  executionGroupSearchText,
   followedTerminalSearchText,
 } from './workbenchPresentation';
 
@@ -37,7 +33,6 @@ interface WorkbenchViewProps {
   stalledItems: readonly AttentionItem[];
   followedCards: readonly TerminalCard[];
   followedCardIds: readonly string[];
-  groups: readonly ExecutionContextGroup[];
   projectOverviews: readonly ProjectWorkbenchOverview[];
   summary: WorkbenchSummaryData;
   now: number;
@@ -45,11 +40,10 @@ interface WorkbenchViewProps {
   selectedProjectPath: string | null;
   selectedWorktreePath: string | null;
   onOpenTerminal: (cardId: string) => void;
+  onAcknowledgeAttention: (item: AttentionItem) => void;
   onOpenAttention: (item: AttentionItem) => void;
   onIgnoreAttention: (item: AttentionItem) => void;
-  onOpenGroup: (group: ExecutionContextGroup) => void;
   onOpenRules: () => void;
-  onNavigateTerminals: () => void;
   onCreateTerminal: () => void;
   onFollowCards: (cardIds: readonly string[]) => void;
   onUnfollowCard: (cardId: string) => void;
@@ -64,7 +58,6 @@ export function WorkbenchView({
   stalledItems,
   followedCards,
   followedCardIds,
-  groups,
   projectOverviews,
   summary,
   now,
@@ -72,11 +65,10 @@ export function WorkbenchView({
   selectedProjectPath,
   selectedWorktreePath,
   onOpenTerminal,
+  onAcknowledgeAttention,
   onOpenAttention,
   onIgnoreAttention,
-  onOpenGroup,
   onOpenRules,
-  onNavigateTerminals,
   onCreateTerminal,
   onFollowCards,
   onUnfollowCard,
@@ -84,10 +76,34 @@ export function WorkbenchView({
   onShowAllProjects,
 }: WorkbenchViewProps) {
   const { t } = useTranslation('terminal');
-  const [filter, setFilter] = useState<WorkbenchViewFilter>('all');
   const [query, setQuery] = useState('');
   const [recallOpen, setRecallOpen] = useState(false);
   const [stalledExpanded, setStalledExpanded] = useState(false);
+  const handleOpenAttentionItem = useCallback(
+    (item: AttentionItem) => {
+      onOpenTerminal(item.cardId);
+      if (item.kind === 'review') {
+        onAcknowledgeAttention(item);
+      }
+    },
+    [onAcknowledgeAttention, onOpenTerminal],
+  );
+  // 需要处理卡片外不再带筛选；点统计条或「查看全部」时带着对应筛选打开弹窗
+  const [attentionDialog, setAttentionDialog] = useState<{
+    open: boolean;
+    filter: WorkbenchAttentionFilter;
+  }>({ open: false, filter: 'all' });
+  const openAttentionDialog = useCallback(
+    (filter: WorkbenchAttentionFilter = 'all') =>
+      setAttentionDialog({ open: true, filter }),
+    [],
+  );
+  const closeAttentionDialog = useCallback(
+    () => setAttentionDialog((prev) => ({ ...prev, open: false })),
+    [],
+  );
+  const [terminalsDialogOpen, setTerminalsDialogOpen] = useState(false);
+  const [followedDialogOpen, setFollowedDialogOpen] = useState(false);
   const openRecall = useCallback(() => setRecallOpen(true), []);
   const closeRecall = useCallback(() => setRecallOpen(false), []);
   const setCardFollowed = useCallback(
@@ -102,36 +118,15 @@ export function WorkbenchView({
     () => new Set(followedCardIds),
     [followedCardIds],
   );
-  const normalRunningCardIds = useMemo(() => {
-    const cardsWithAttention = new Set(attentionItems.map((item) => item.cardId));
-    return new Set(
-      cards
-        .filter(
-          (card) => card.status === 'running' && !cardsWithAttention.has(card.id),
-        )
-        .map((card) => card.id),
-    );
-  }, [attentionItems, cards]);
 
   const visibleItems = useMemo(
     () =>
       attentionItems.filter(
         (item) =>
-          filter !== 'running' &&
-          attentionFilterMatches(item, filter) &&
-          (!normalizedQuery || attentionSearchText(item).includes(normalizedQuery)),
+          !normalizedQuery ||
+          attentionSearchText(item).includes(normalizedQuery),
       ),
-    [attentionItems, filter, normalizedQuery],
-  );
-  const visibleGroups = useMemo(
-    () =>
-      groups.filter(
-        (group) =>
-          (filter !== 'running' ||
-            group.cardIds.some((cardId) => normalRunningCardIds.has(cardId))) &&
-          (!normalizedQuery || executionGroupSearchText(group).includes(normalizedQuery)),
-      ),
-    [filter, groups, normalRunningCardIds, normalizedQuery],
+    [attentionItems, normalizedQuery],
   );
   const visibleFollowedCards = useMemo(
     () =>
@@ -166,7 +161,7 @@ export function WorkbenchView({
       data-testid="workbench-view"
       className="h-full w-full overflow-y-auto bg-background/20"
     >
-      <div className="mx-auto w-full max-w-[1180px] px-4 pb-8 pt-4 md:px-6 md:pt-5 xl:max-w-[1680px]">
+      <div className="mx-auto flex min-h-full w-full max-w-[1180px] flex-col px-4 pb-8 pt-4 md:px-6 md:pt-5 xl:max-w-[1680px]">
         <header className="flex flex-wrap items-center gap-2">
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-2">
@@ -227,10 +222,13 @@ export function WorkbenchView({
           </div>
         </header>
 
-        <WorkbenchSummary
-          summary={summary}
-          activeFilter={filter}
-          onSelectFilter={setFilter}
+        <WorkbenchStatStrip
+          attentionCount={summary.attention}
+          terminalCount={cards.length}
+          followedCount={followedCards.length}
+          onOpenAttention={() => openAttentionDialog('all')}
+          onOpenTerminals={() => setTerminalsDialogOpen(true)}
+          onOpenFollowed={() => setFollowedDialogOpen(true)}
         />
 
         {cards.length === 0 ? (
@@ -249,67 +247,139 @@ export function WorkbenchView({
               onCreateTerminal={onCreateTerminal}
             />
           </>
-        ) : (
-          <>
-            <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
-              <div className="min-w-0">
-                <WorkbenchAttentionSection
-                  items={visibleItems}
-                  filter={filter}
-                  followedCardIds={followedIdSet}
-                  now={now}
-                  queryActive={Boolean(normalizedQuery)}
-                  onSelectFilter={setFilter}
-                  onOpenTerminal={onOpenTerminal}
-                  onOpenAttention={onOpenAttention}
-                  onIgnoreAttention={onIgnoreAttention}
-                  onSetCardFollowed={setCardFollowed}
-                />
-                <WorkbenchStalledSection
-                  items={visibleStalledItems}
-                  expanded={stalledExpanded}
-                  followedCardIds={followedIdSet}
-                  now={now}
-                  onToggleExpanded={() =>
-                    setStalledExpanded((value) => !value)
-                  }
-                  onOpenTerminal={onOpenTerminal}
-                  onOpenAttention={onOpenAttention}
-                  onIgnoreAttention={onIgnoreAttention}
-                  onSetCardFollowed={setCardFollowed}
-                />
-              </div>
-
-              <aside className="flex min-w-0 flex-col gap-5">
-                <FollowedTerminalSection
-                  className=""
-                  cards={visibleFollowedCards}
-                  totalCount={followedCards.length}
-                  now={now}
-                  queryActive={Boolean(normalizedQuery)}
-                  onOpenTerminal={onOpenTerminal}
-                  onUnfollowCard={onUnfollowCard}
-                  onOpenRecall={openRecall}
-                />
-                {!selectedProjectPath && (
-                  <ProjectOverviewGrid
-                    className=""
-                    projects={visibleProjectOverviews}
-                    onSelectProject={onSelectProject}
-                  />
-                )}
-              </aside>
+        ) : !selectedProjectPath ? (
+          // 总工作台：左侧项目总览为主区，右侧列依次为需要处理 / 无进展 / 关注列表；
+          // 卡片高度撑满可视区域（min-h-full + items-stretch），空态不塌缩。
+          <div className="mt-5 grid flex-1 items-stretch gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="flex min-w-0 flex-col">
+              <ProjectOverviewGrid
+                className="flex-1"
+                projects={visibleProjectOverviews}
+                onSelectProject={onSelectProject}
+              />
             </div>
 
-            <WorkbenchExecutionGroupsSection
-              groups={visibleGroups}
-              now={now}
-              onOpenGroup={onOpenGroup}
-              onNavigateTerminals={onNavigateTerminals}
-            />
-          </>
+            <aside className="flex min-h-0 flex-col gap-4">
+              <WorkbenchAttentionSection
+                className="flex-1"
+                cardLayout="compact"
+                items={visibleItems}
+                followedCardIds={followedIdSet}
+                now={now}
+                queryActive={Boolean(normalizedQuery)}
+                onOpenAll={() => openAttentionDialog('all')}
+                onOpenItem={handleOpenAttentionItem}
+                onOpenAttention={onOpenAttention}
+                onIgnoreAttention={onIgnoreAttention}
+                onSetCardFollowed={setCardFollowed}
+              />
+              <WorkbenchStalledSection
+                cardLayout="compact"
+                items={visibleStalledItems}
+                expanded={stalledExpanded}
+                followedCardIds={followedIdSet}
+                now={now}
+                onToggleExpanded={() => setStalledExpanded((value) => !value)}
+                onOpenTerminal={onOpenTerminal}
+                onOpenAttention={onOpenAttention}
+                onIgnoreAttention={onIgnoreAttention}
+                onSetCardFollowed={setCardFollowed}
+              />
+              <FollowedTerminalSection
+                className="flex-1"
+                cards={visibleFollowedCards}
+                totalCount={followedCards.length}
+                now={now}
+                queryActive={Boolean(normalizedQuery)}
+                onOpenTerminal={onOpenTerminal}
+                onUnfollowCard={onUnfollowCard}
+                onOpenRecall={openRecall}
+              />
+            </aside>
+          </div>
+        ) : (
+          <div className="mt-5 grid flex-1 items-stretch gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
+            <div className="flex min-w-0 flex-col">
+              <WorkbenchAttentionSection
+                className="flex-1"
+                items={visibleItems}
+                followedCardIds={followedIdSet}
+                now={now}
+                queryActive={Boolean(normalizedQuery)}
+                onOpenAll={() => openAttentionDialog('all')}
+                onOpenItem={handleOpenAttentionItem}
+                onOpenAttention={onOpenAttention}
+                onIgnoreAttention={onIgnoreAttention}
+                onSetCardFollowed={setCardFollowed}
+              />
+              <WorkbenchStalledSection
+                items={visibleStalledItems}
+                expanded={stalledExpanded}
+                followedCardIds={followedIdSet}
+                now={now}
+                onToggleExpanded={() =>
+                  setStalledExpanded((value) => !value)
+                }
+                onOpenTerminal={onOpenTerminal}
+                onOpenAttention={onOpenAttention}
+                onIgnoreAttention={onIgnoreAttention}
+                onSetCardFollowed={setCardFollowed}
+              />
+            </div>
+
+            <aside className="flex min-h-0 flex-col">
+              <FollowedTerminalSection
+                className="flex-1"
+                cards={visibleFollowedCards}
+                totalCount={followedCards.length}
+                now={now}
+                queryActive={Boolean(normalizedQuery)}
+                onOpenTerminal={onOpenTerminal}
+                onUnfollowCard={onUnfollowCard}
+                onOpenRecall={openRecall}
+              />
+            </aside>
+          </div>
         )}
       </div>
+      <TerminalsListDialog
+        open={terminalsDialogOpen}
+        cards={cards}
+        now={now}
+        onClose={() => setTerminalsDialogOpen(false)}
+        onOpenTerminal={(cardId) => {
+          setTerminalsDialogOpen(false);
+          onOpenTerminal(cardId);
+        }}
+      />
+      <FollowedTerminalsDialog
+        open={followedDialogOpen}
+        cards={visibleFollowedCards}
+        now={now}
+        onClose={() => setFollowedDialogOpen(false)}
+        onOpenTerminal={(cardId) => {
+          setFollowedDialogOpen(false);
+          onOpenTerminal(cardId);
+        }}
+        onUnfollowCard={onUnfollowCard}
+        onOpenRecall={() => {
+          setFollowedDialogOpen(false);
+          openRecall();
+        }}
+      />
+      <AttentionItemsDialog
+        open={attentionDialog.open}
+        items={visibleItems}
+        followedCardIds={followedIdSet}
+        now={now}
+        queryActive={Boolean(normalizedQuery)}
+        initialFilter={attentionDialog.filter}
+        onClose={closeAttentionDialog}
+        onOpenItem={handleOpenAttentionItem}
+        onOpenAttention={onOpenAttention}
+        onIgnoreAttention={onIgnoreAttention}
+        onSetCardFollowed={setCardFollowed}
+      />
       <RecallTerminalDialog
         open={recallOpen}
         cards={allCards}

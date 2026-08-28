@@ -153,6 +153,24 @@ pub(super) fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str) {
     cmd.env("FORCE_COLOR", "3");
 }
 
+/// Keep native Windows Codex readable when its terminal-background probe falls
+/// back to ConPTY's legacy dark palette. ANSI-16 makes Codex inherit xterm's
+/// configured background for message/composer cells instead of emitting a
+/// stale true-colour fill. Other providers and platforms retain true colour.
+pub(super) fn configure_provider_terminal_env(
+    cmd: &mut CommandBuilder,
+    managed_provider_startup: bool,
+    provider: Option<&str>,
+) {
+    #[cfg(target_os = "windows")]
+    if managed_provider_startup && provider == Some("codex") {
+        cmd.env("FORCE_COLOR", "1");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = (cmd, managed_provider_startup, provider);
+}
+
 fn is_cmd_shell(shell: &str) -> bool {
     shell
         .rsplit(['/', '\\'])
@@ -292,8 +310,8 @@ pub(super) fn normalize_windows_cwd(dir: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        configure_interactive_shell_command_with_offline, normalize_windows_cwd,
-        one_shot_command_args, select_windows_shell,
+        configure_interactive_shell_command_with_offline, configure_provider_terminal_env,
+        normalize_windows_cwd, one_shot_command_args, select_windows_shell,
     };
     #[cfg(target_os = "windows")]
     use super::{wait_for_child_with_timeout, which_exists, CREATE_NO_WINDOW};
@@ -358,6 +376,48 @@ mod tests {
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
             vec!["cmd.exe"]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_codex_inherits_the_terminal_background_instead_of_stale_rgb_fill() {
+        let mut command = CommandBuilder::new("pwsh.exe");
+        configure_interactive_shell_command_with_offline(&mut command, "pwsh.exe", false);
+
+        configure_provider_terminal_env(&mut command, true, Some("codex"));
+
+        assert_eq!(
+            command.get_env("FORCE_COLOR"),
+            Some(std::ffi::OsStr::new("1"))
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_non_codex_providers_keep_true_colour() {
+        let mut command = CommandBuilder::new("pwsh.exe");
+        configure_interactive_shell_command_with_offline(&mut command, "pwsh.exe", false);
+
+        configure_provider_terminal_env(&mut command, true, Some("claude"));
+
+        assert_eq!(
+            command.get_env("FORCE_COLOR"),
+            Some(std::ffi::OsStr::new("3"))
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_custom_codex_commands_keep_the_caller_colour_contract() {
+        let mut command = CommandBuilder::new("pwsh.exe");
+        configure_interactive_shell_command_with_offline(&mut command, "pwsh.exe", false);
+
+        configure_provider_terminal_env(&mut command, false, Some("codex"));
+
+        assert_eq!(
+            command.get_env("FORCE_COLOR"),
+            Some(std::ffi::OsStr::new("3"))
         );
     }
 

@@ -217,6 +217,7 @@ export function TerminalManager() {
   const [createOpen, setCreateOpen] = useState(false);
   const [mobileViewActive, setMobileViewActive] = useState(false);
   const {
+    acknowledgeAttention,
     allProjectsWorkbenchModel,
     followCards,
     followedCardIds,
@@ -225,6 +226,7 @@ export function TerminalManager() {
     workbenchModel,
   } = useWorkbenchModel({
     cards,
+    archivedCards,
     selectedProjectPath,
     selectedWorktreePath,
   });
@@ -698,6 +700,17 @@ export function TerminalManager() {
     },
     [handleSelectPrimaryViewBase, selectProject],
   );
+  const handleOpenWorkbenchTerminal = useCallback(
+    (cardId: string) => {
+      const store = useTerminalStore.getState();
+      if (!store.cards.some((card) => card.id === cardId)) {
+        if (!store.archivedCards.some((card) => card.id === cardId)) return;
+        store.restoreArchivedCard(cardId);
+      }
+      handleOpenTerminal(cardId);
+    },
+    [handleOpenTerminal],
+  );
   const handleSelectWorktreeScope = useCallback(
     (projectPath: string, worktreePath: string, label?: string | null) => {
       selectWorktree(projectPath, worktreePath, label);
@@ -1035,7 +1048,6 @@ export function TerminalManager() {
 
   return (
     <div className="relative flex h-full w-full bg-mesh overflow-hidden">
-      <div className="absolute inset-0 bg-grid pointer-events-none" />
 
       {/* Sidebar - Desktop: fixed, Mobile: drawer */}
       <div className={[
@@ -1297,14 +1309,14 @@ export function TerminalManager() {
             stalledItems={workbenchModel.stalledItems}
             followedCards={workbenchModel.followedCards}
             followedCardIds={followedCardIds}
-            groups={workbenchModel.groups}
             projectOverviews={allProjectsWorkbenchModel.projectOverviews}
             summary={workbenchModel.summary}
             now={workbenchModel.now}
             scopeLabel={workbenchScopeLabel}
             selectedProjectPath={selectedProjectPath}
             selectedWorktreePath={selectedWorktreePath}
-            onOpenTerminal={handleOpenTerminal}
+            onOpenTerminal={handleOpenWorkbenchTerminal}
+            onAcknowledgeAttention={acknowledgeAttention}
             onOpenAttention={(item) =>
               handleOpenWorkbenchPanel({
                 kind: 'attention',
@@ -1320,11 +1332,7 @@ export function TerminalManager() {
                 handleCloseWorkbenchPanel();
               }
             }}
-            onOpenGroup={(group) =>
-              handleOpenWorkbenchPanel({ kind: 'group', groupId: group.id })
-            }
             onOpenRules={() => handleOpenWorkbenchPanel({ kind: 'rules' })}
-            onNavigateTerminals={() => handleSelectPrimaryView('terminals')}
             onCreateTerminal={() => setCreateOpen(true)}
             onFollowCards={followCards}
             onUnfollowCard={unfollowCard}

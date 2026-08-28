@@ -14,6 +14,7 @@ const bridgeMocks = vi.hoisted(() => {
   return {
     listeners,
     headlessPreviewById: new Map<string, string>(),
+    headlessAlternateIds: new Set<string>(),
     pty: {
       getAllSessionStates: vi.fn(() => Promise.resolve({})),
       attachSnapshot: vi.fn(() => Promise.resolve(null)),
@@ -56,6 +57,7 @@ vi.mock('./headlessPreview', () => ({
     activeCount: bridgeMocks.headlessPreviewById.size,
     cardIds: [...bridgeMocks.headlessPreviewById.keys()],
   })),
+  isHeadlessAlternateScreen: vi.fn((id: string) => bridgeMocks.headlessAlternateIds.has(id)),
 }));
 
 vi.mock('../../lib/logger', () => ({
@@ -123,6 +125,7 @@ beforeEach(() => {
   bridgeMocks.listeners.exit = undefined;
   bridgeMocks.listeners.attention = undefined;
   bridgeMocks.headlessPreviewById.clear();
+  bridgeMocks.headlessAlternateIds.clear();
   vi.clearAllMocks();
 });
 

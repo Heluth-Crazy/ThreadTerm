@@ -55,7 +55,14 @@
     },
     "attention": {
       "title": "처리 필요",
-      "count": "{{count}}개"
+      "count": "{{count}}개",
+      "viewAll": "모두 보기"
+    },
+    "stats": {
+      "label": "워크벤치 통계",
+      "terminals": "터미널",
+      "followed": "팔로우 수",
+      "noTerminals": "이 범위에 터미널이 없습니다."
     },
     "followed": {
       "title": "팔로우한 터미널",
@@ -63,6 +70,7 @@
       "collapse": "접기",
       "expand": "모두 보기",
       "openTerminal": "{{name}} 터미널 열기",
+      "closed": "종료됨",
       "remove": "워크벤치에서 제거",
       "removeNamed": "{{name}}을(를) 워크벤치에서 제거",
       "noSearchResults": "검색과 일치하는 팔로우한 터미널이 없습니다.",
@@ -76,7 +84,17 @@
       "attention": "처리",
       "review": "검토",
       "failed": "오류",
-      "reorder": "{{project}} 드래그하여 순서 변경"
+      "reorder": "{{project}} 드래그하여 순서 변경",
+      "viewAll": "전체 보기",
+      "pinManage": "고정 관리",
+      "pinZone": "홈에 고정 (최대 6개)",
+      "allProjects": "모든 프로젝트",
+      "pinnedBadge": "고정됨",
+      "pinFullHint": "최대 6개까지 고정할 수 있습니다. 먼저 하나를 제거하세요.",
+      "emptyPinnedTitle": "아직 고정된 프로젝트가 없습니다",
+      "emptyPinnedHint": "'전체 보기'에서 자주 쓰는 프로젝트를 고정 영역으로 드래그하세요.",
+      "emptyPinnedAction": "프로젝트 고정하기",
+      "unpin": "{{project}} 고정 해제"
     },
     "recall": {
       "title": "터미널 불러오기",
@@ -111,14 +129,6 @@
       "title": "진행 없음 관찰",
       "count": "터미널 {{count}}개",
       "hint": "실행 중이지만 규칙 임계값을 초과하여 출력 없음"
-    },
-    "groups": {
-      "title": "실행 컨텍스트",
-      "subtitle": "추정한 작업이 아닌 프로젝트와 worktree 기준 그룹"
-    },
-    "group": {
-      "terminals": "터미널 {{count}}개",
-      "attention": "{{count}}개 처리 필요"
     },
     "groupStatus": {
       "failed": "오류",
@@ -157,7 +167,6 @@
       "details": "세부 정보",
       "ignore": "무시",
       "ignoreHint": "열지 않고 무시",
-      "viewAllTerminals": "모든 터미널 보기",
       "addToWorkbench": "워크벤치에 추가",
       "removeFromWorkbench": "워크벤치에서 제거",
       "follow": "팔로우",
@@ -170,8 +179,7 @@
       "noScopeTerminalsTitle": "현재 범위에 터미널이 없습니다",
       "noScopeTerminalsBody": "다른 프로젝트나 워크트리를 선택하거나 현재 범위에 터미널을 만드세요.",
       "noSearchResults": "검색과 일치하는 주의 항목이 없습니다.",
-      "noAttention": "이 범위에서 처리할 항목이 없습니다.",
-      "noActiveContexts": "이 범위에 활성 실행 컨텍스트가 없습니다."
+      "noAttention": "이 범위에서 처리할 항목이 없습니다."
     },
     "notifications": {
       "approvalTitle": "Codex 승인이 필요합니다",

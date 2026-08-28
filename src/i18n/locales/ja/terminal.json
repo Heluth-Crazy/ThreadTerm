@@ -55,7 +55,14 @@
     },
     "attention": {
       "title": "対応が必要",
-      "count": "{{count}} 件"
+      "count": "{{count}} 件",
+      "viewAll": "すべて表示"
+    },
+    "stats": {
+      "label": "ワークベンチ統計",
+      "terminals": "ターミナル",
+      "followed": "フォロー数",
+      "noTerminals": "この範囲にターミナルはありません。"
     },
     "followed": {
       "title": "フォロー中のターミナル",
@@ -63,6 +70,7 @@
       "collapse": "折りたたむ",
       "expand": "すべて表示",
       "openTerminal": "{{name}} のターミナルを開く",
+      "closed": "終了",
       "remove": "ワークベンチから外す",
       "removeNamed": "{{name}} をワークベンチから外す",
       "noSearchResults": "検索に一致するフォロー中のターミナルはありません。",
@@ -76,7 +84,17 @@
       "attention": "対応",
       "review": "確認",
       "failed": "異常",
-      "reorder": "ドラッグして「{{project}}」を並べ替え"
+      "reorder": "ドラッグして「{{project}}」を並べ替え",
+      "viewAll": "すべて表示",
+      "pinManage": "ピン管理",
+      "pinZone": "ホームにピン（最大 6 件）",
+      "allProjects": "すべてのプロジェクト",
+      "pinnedBadge": "ピン済み",
+      "pinFullHint": "ピンは最大 6 件です。先に 1 件削除してください。",
+      "emptyPinnedTitle": "ピン留めされたプロジェクトはまだありません",
+      "emptyPinnedHint": "「すべて表示」でよく使うプロジェクトをピンエリアにドラッグしてください。",
+      "emptyPinnedAction": "プロジェクトをピン",
+      "unpin": "{{project}} のピンを解除"
     },
     "recall": {
       "title": "ターミナルを呼び戻す",
@@ -111,14 +129,6 @@
       "title": "進展なしウォッチ",
       "count": "{{count}} 台の端末",
       "hint": "実行中だが、ルールのしきい値を超えて出力なし"
-    },
-    "groups": {
-      "title": "実行コンテキスト",
-      "subtitle": "推測したタスクではなく、プロジェクトと worktree で集約"
-    },
-    "group": {
-      "terminals": "{{count}} ターミナル",
-      "attention": "{{count}} 件の対応が必要"
     },
     "groupStatus": {
       "failed": "異常",
@@ -157,7 +167,6 @@
       "details": "詳細",
       "ignore": "無視",
       "ignoreHint": "開かずに無視する",
-      "viewAllTerminals": "すべてのターミナルを表示",
       "addToWorkbench": "ワークベンチに追加",
       "removeFromWorkbench": "ワークベンチから外す",
       "follow": "フォロー",
@@ -170,8 +179,7 @@
       "noScopeTerminalsTitle": "この範囲にはターミナルがありません",
       "noScopeTerminalsBody": "別のプロジェクトまたはワークツリーを選ぶか、この範囲にターミナルを作成してください。",
       "noSearchResults": "検索に一致する注意項目はありません。",
-      "noAttention": "この範囲で対応が必要な項目はありません。",
-      "noActiveContexts": "この範囲にアクティブな実行コンテキストはありません。"
+      "noAttention": "この範囲で対応が必要な項目はありません。"
     },
     "notifications": {
       "approvalTitle": "Codex の承認が必要です",

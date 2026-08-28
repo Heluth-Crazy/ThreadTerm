@@ -21,11 +21,15 @@ interface AttentionItemCardProps {
   item: AttentionItem;
   now: number;
   followed: boolean;
+  layout?: AttentionItemCardLayout;
   onOpenItem: (item: AttentionItem) => void;
   onOpenDetail: (item: AttentionItem) => void;
   onIgnoreItem: (item: AttentionItem) => void;
   onToggleFollow: (item: AttentionItem) => void;
 }
+
+export type AttentionItemCardLayout = 'compact' | 'wide';
+
 const KIND_STYLE: Record<
   AttentionKind,
   { icon: LucideIcon; border: string; badge: string }
@@ -61,6 +65,7 @@ export const AttentionItemCard = memo(function AttentionItemCard({
   item,
   now,
   followed,
+  layout = 'wide',
   onOpenItem,
   onOpenDetail,
   onIgnoreItem,
@@ -75,12 +80,17 @@ export const AttentionItemCard = memo(function AttentionItemCard({
     : item.kind === 'review'
       ? t('workbench.action.openResult', { defaultValue: 'View result' })
       : t('workbench.action.openTerminal', { defaultValue: 'Open terminal' });
+  const compact = layout === 'compact';
 
   return (
     <article
       data-kind={item.kind}
+      data-layout={layout}
       className={[
-        'grid min-h-[72px] grid-cols-[28px_minmax(0,1fr)] items-center gap-3 rounded-lg border border-l-2 border-border bg-card/80 px-3 py-2 transition-colors hover:border-border hover:bg-card sm:grid-cols-[28px_minmax(0,1fr)_auto]',
+        'grid min-h-[72px] items-center gap-3 rounded-lg border border-l-2 border-border bg-card/80 px-3 py-2 transition-colors hover:border-border hover:bg-card',
+        compact
+          ? 'grid-cols-[28px_minmax(0,1fr)]'
+          : 'grid-cols-[28px_minmax(0,1fr)_auto]',
         style.border,
       ].join(' ')}
     >
@@ -105,8 +115,33 @@ export const AttentionItemCard = memo(function AttentionItemCard({
         {item.detail && (
           <div className="truncate text-[11px] text-muted-foreground">{item.detail}</div>
         )}
-        <div className="mt-2 flex flex-wrap items-center gap-1.5 sm:hidden">
+        {compact && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground/75">
+              <Clock3 className="h-3 w-3" />
+              {relativeTime(item.occurredAt, now, i18n.language)}
+            </span>
+            <ItemActions
+              compact
+              followed={followed}
+              primaryAction={primaryAction}
+              onOpen={() => onOpenItem(item)}
+              onDetail={() => onOpenDetail(item)}
+              onIgnore={() => onIgnoreItem(item)}
+              onToggleFollow={() => onToggleFollow(item)}
+            />
+          </div>
+        )}
+      </div>
+
+      {!compact && (
+        <div className="flex items-center gap-2">
+          <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground/75">
+            <Clock3 className="h-3 w-3" />
+            {relativeTime(item.occurredAt, now, i18n.language)}
+          </span>
           <ItemActions
+            compact={false}
             followed={followed}
             primaryAction={primaryAction}
             onOpen={() => onOpenItem(item)}
@@ -115,27 +150,13 @@ export const AttentionItemCard = memo(function AttentionItemCard({
             onToggleFollow={() => onToggleFollow(item)}
           />
         </div>
-      </div>
-
-      <div className="hidden items-center gap-2 sm:flex">
-        <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground/75">
-          <Clock3 className="h-3 w-3" />
-          {relativeTime(item.occurredAt, now, i18n.language)}
-        </span>
-        <ItemActions
-          followed={followed}
-          primaryAction={primaryAction}
-          onOpen={() => onOpenItem(item)}
-          onDetail={() => onOpenDetail(item)}
-          onIgnore={() => onIgnoreItem(item)}
-          onToggleFollow={() => onToggleFollow(item)}
-        />
-      </div>
+      )}
     </article>
   );
 });
 
 function ItemActions({
+  compact,
   followed,
   primaryAction,
   onOpen,
@@ -143,6 +164,7 @@ function ItemActions({
   onIgnore,
   onToggleFollow,
 }: {
+  compact: boolean;
   followed: boolean;
   primaryAction: string;
   onOpen: () => void;
@@ -202,11 +224,13 @@ function ItemActions({
         ) : (
           <Bookmark className="h-3 w-3" />
         )}
-        <span className="hidden lg:inline">
-          {followed
-            ? t('workbench.action.followed', { defaultValue: 'Followed' })
-            : t('workbench.action.follow', { defaultValue: 'Follow' })}
-        </span>
+        {!compact && (
+          <span className="hidden lg:inline">
+            {followed
+              ? t('workbench.action.followed', { defaultValue: 'Followed' })
+              : t('workbench.action.follow', { defaultValue: 'Follow' })}
+          </span>
+        )}
       </button>
     </>
   );

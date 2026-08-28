@@ -4,30 +4,6 @@ import { useTerminalStore } from '../../stores/terminalStore';
 import type { TerminalCard } from '../../types/terminal';
 import { FollowedTerminalSection } from './FollowedTerminalSection';
 
-/**
- * happy-dom performs no layout, so scroll metrics are always 0. Overriding
- * them on the scroller instance lets the edge-fade logic (audit P0 #1) be
- * exercised deterministically.
- */
-function overrideScrollMetrics(
-  el: HTMLElement,
-  metrics: { scrollWidth: number; clientWidth: number; scrollLeft: number },
-) {
-  Object.defineProperty(el, 'scrollWidth', {
-    configurable: true,
-    value: metrics.scrollWidth,
-  });
-  Object.defineProperty(el, 'clientWidth', {
-    configurable: true,
-    value: metrics.clientWidth,
-  });
-  Object.defineProperty(el, 'scrollLeft', {
-    configurable: true,
-    value: metrics.scrollLeft,
-    writable: true,
-  });
-}
-
 vi.mock('react-i18next', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-i18next')>();
   return {
@@ -128,75 +104,62 @@ describe('FollowedTerminalSection rename', () => {
   });
 });
 
-describe('FollowedTerminalSection collapsed overflow fades', () => {
+describe('FollowedTerminalSection vertical list', () => {
   beforeEach(() => {
     useTerminalStore.setState({ cards: [makeCard()] });
   });
 
-  it('hints at clipped content with a right-edge fade while more cards remain', () => {
-    renderSection(makeCard());
-
-    const scroller = screen.getByTestId('followed-terminal-scroller');
-    overrideScrollMetrics(scroller, {
-      scrollWidth: 504,
-      clientWidth: 300,
-      scrollLeft: 0,
-    });
-    fireEvent.scroll(scroller);
-
-    expect(screen.getByTestId('followed-scroll-fade-right')).toBeInTheDocument();
-    expect(screen.queryByTestId('followed-scroll-fade-left')).toBeNull();
-  });
-
-  it('swaps the fade to the left edge once scrolled to the end', () => {
-    renderSection(makeCard());
-
-    const scroller = screen.getByTestId('followed-terminal-scroller');
-    overrideScrollMetrics(scroller, {
-      scrollWidth: 504,
-      clientWidth: 300,
-      scrollLeft: 204,
-    });
-    fireEvent.scroll(scroller);
-
-    expect(screen.getByTestId('followed-scroll-fade-left')).toBeInTheDocument();
-    expect(screen.queryByTestId('followed-scroll-fade-right')).toBeNull();
-  });
-
-  it('renders no fades when everything fits', () => {
-    renderSection(makeCard());
-
-    const scroller = screen.getByTestId('followed-terminal-scroller');
-    overrideScrollMetrics(scroller, {
-      scrollWidth: 248,
-      clientWidth: 300,
-      scrollLeft: 0,
-    });
-    fireEvent.scroll(scroller);
-
-    expect(screen.queryByTestId('followed-scroll-fade-left')).toBeNull();
-    expect(screen.queryByTestId('followed-scroll-fade-right')).toBeNull();
-  });
-
-  it('expanded mode wraps instead of scrolling and shows no fades', () => {
-    const { rerender } = render(
+  it('renders every card as a full-width row, scrolling inside the card body', () => {
+    const callbacks = {
+      onOpenTerminal: vi.fn(),
+      onUnfollowCard: vi.fn(),
+      onOpenRecall: vi.fn(),
+    };
+    render(
       <FollowedTerminalSection
-        cards={[makeCard(), makeCard({ id: 'card-2', ptyId: 'card-2' })]}
+        cards={[
+          makeCard(),
+          makeCard({ id: 'card-2', ptyId: 'card-2', projectName: 'Docs' }),
+        ]}
         totalCount={2}
         now={NOW}
         queryActive={false}
-        onOpenTerminal={vi.fn()}
-        onUnfollowCard={vi.fn()}
-        onOpenRecall={vi.fn()}
+        {...callbacks}
       />,
     );
 
-    // Expand via the header toggle.
-    fireEvent.click(screen.getByTitle('Show all'));
-
+    // The name also appears in the row subtitle via worktreeDisplayLabel,
+    // so assert on the accessible open buttons instead of bare text.
+    expect(
+      screen.getByRole('button', { name: 'Open Repo terminal' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Open Docs terminal' }),
+    ).toBeInTheDocument();
+    // No horizontal scroller / expand toggle anymore — the column list owns it.
     expect(screen.queryByTestId('followed-terminal-scroller')).toBeNull();
-    expect(screen.queryByTestId('followed-scroll-fade-left')).toBeNull();
-    expect(screen.queryByTestId('followed-scroll-fade-right')).toBeNull();
-    expect(rerender).toBeDefined();
+    expect(screen.queryByTitle('Show all')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Docs terminal' }));
+    expect(callbacks.onOpenTerminal).toHaveBeenCalledWith('card-2');
+  });
+
+  it('marks an archived row Closed, opens it through the callback, and disables rename', () => {
+    const archivedCard: TerminalCard & { archivedAt: number } = {
+      ...makeCard({ projectName: 'Closed terminal' }),
+      archivedAt: NOW - 2_000,
+    };
+    const callbacks = renderSection(archivedCard);
+
+    expect(screen.getByText('Closed')).toBeInTheDocument();
+    expect(screen.queryByTitle('Double-click to rename')).toBeNull();
+
+    fireEvent.doubleClick(screen.getAllByText('Closed terminal')[0]);
+    expect(screen.queryByRole('textbox', { name: 'Rename card' })).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open Closed terminal terminal' }),
+    );
+    expect(callbacks.onOpenTerminal).toHaveBeenCalledWith('card-1');
   });
 });

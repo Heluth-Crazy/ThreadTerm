@@ -35,6 +35,7 @@ beforeEach(() => {
   useWorkbenchStore.setState({
     followedCardIds: [],
     projectOrder: [],
+    pinnedProjects: [],
     ignoredAttention: [],
   });
 });
@@ -79,6 +80,7 @@ describe('workbenchStore', () => {
       'rules',
       'followedCardIds',
       'projectOrder',
+      'pinnedProjects',
       'ignoredAttention',
     ]);
   });
@@ -136,6 +138,7 @@ describe('workbenchStore', () => {
     });
     expect(useWorkbenchStore.getState().followedCardIds).toEqual([]);
     expect(useWorkbenchStore.getState().projectOrder).toEqual([]);
+    expect(useWorkbenchStore.getState().pinnedProjects).toEqual([]);
     expect(useWorkbenchStore.getState().ignoredAttention).toEqual([]);
   });
 
@@ -193,16 +196,110 @@ describe('workbenchStore', () => {
     ]);
   });
 
-  it('unfollows explicitly and removes only ids missing from the active card set', () => {
+  it('unfollows explicitly and prunes only truly missing followed ids', () => {
+    useWorkbenchStore
+      .getState()
+      .followCards(['card-active', 'card-archived', 'card-missing']);
+    useWorkbenchStore.getState().unfollowCard('card-active');
+    expect(useWorkbenchStore.getState().followedCardIds).toEqual([
+      'card-archived',
+      'card-missing',
+    ]);
+
+    // The model supplies active and archived card ids as valid; only the
+    // absent id is pruned by store-level reconciliation.
+    useWorkbenchStore
+      .getState()
+      .reconcileFollowedCards(['card-archived', 'card-live']);
+    expect(useWorkbenchStore.getState().followedCardIds).toEqual(['card-archived']);
+  });
+
+  it('unfollows explicitly without changing unrelated followed ids', () => {
     useWorkbenchStore.getState().followCards(['card-a', 'card-b', 'card-c']);
     useWorkbenchStore.getState().unfollowCard('card-b');
     expect(useWorkbenchStore.getState().followedCardIds).toEqual([
       'card-a',
       'card-c',
     ]);
+  });
 
-    useWorkbenchStore.getState().reconcileFollowedCards(['card-c', 'card-live']);
-    expect(useWorkbenchStore.getState().followedCardIds).toEqual(['card-c']);
+  it('pins and unpins projects while enforcing the six-project cap', () => {
+    useWorkbenchStore.getState().pinProject('/repo/a');
+    useWorkbenchStore.getState().pinProject('/repo/a');
+    useWorkbenchStore.getState().pinProject('');
+    expect(useWorkbenchStore.getState().pinnedProjects).toEqual(['/repo/a']);
+
+    for (const path of ['/repo/b', '/repo/c', '/repo/d', '/repo/e', '/repo/f']) {
+      useWorkbenchStore.getState().pinProject(path);
+    }
+    expect(useWorkbenchStore.getState().pinnedProjects).toHaveLength(6);
+
+    useWorkbenchStore.getState().pinProject('/repo/g');
+    expect(useWorkbenchStore.getState().pinnedProjects).not.toContain('/repo/g');
+
+    useWorkbenchStore.getState().unpinProject('/repo/a');
+    expect(useWorkbenchStore.getState().pinnedProjects).toEqual([
+      '/repo/b',
+      '/repo/c',
+      '/repo/d',
+      '/repo/e',
+      '/repo/f',
+    ]);
+
+    useWorkbenchStore.getState().unpinProject('/repo/missing');
+    expect(useWorkbenchStore.getState().pinnedProjects).toHaveLength(5);
+  });
+
+  it('prunes pinned projects that no longer exist', () => {
+    useWorkbenchStore.setState({
+      pinnedProjects: ['/repo/a', '/repo/stale', '/repo/b'],
+    });
+
+    useWorkbenchStore
+      .getState()
+      .reconcilePinnedProjects(['/repo/a', '/repo/b', '/repo/c']);
+
+    expect(useWorkbenchStore.getState().pinnedProjects).toEqual([
+      '/repo/a',
+      '/repo/b',
+    ]);
+  });
+
+  it('normalizes persisted pinned projects on rehydrate', async () => {
+    localStorage.setItem(
+      'threadterm-workbench-store',
+      JSON.stringify({
+        version: 4,
+        state: {
+          rules: DEFAULT_WORKBENCH_RULES,
+          followedCardIds: [],
+          projectOrder: [],
+          pinnedProjects: [
+            '/repo/a',
+            '',
+            '/repo/a',
+            42,
+            '/repo/b',
+            '/repo/c',
+            '/repo/d',
+            '/repo/e',
+            '/repo/f',
+            '/repo/g',
+          ],
+        },
+      }),
+    );
+
+    await useWorkbenchStore.persist.rehydrate();
+
+    expect(useWorkbenchStore.getState().pinnedProjects).toEqual([
+      '/repo/a',
+      '/repo/b',
+      '/repo/c',
+      '/repo/d',
+      '/repo/e',
+      '/repo/f',
+    ]);
   });
 
   it('keeps the overlay pin slate independent from Workbench follows', () => {

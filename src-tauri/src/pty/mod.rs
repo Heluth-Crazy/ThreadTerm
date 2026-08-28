@@ -769,6 +769,7 @@ async fn create_session(
         for (key, value) in &proxy_env {
             cmd.env(key, value);
         }
+        shell::configure_provider_terminal_env(&mut cmd, provider_startup, provider.as_deref());
 
         let child = match pair.slave.spawn_command(cmd) {
             Ok(child) => {

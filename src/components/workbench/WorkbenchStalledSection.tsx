@@ -1,13 +1,17 @@
 import { ChevronDown, ChevronUp, TimerOff } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AttentionItem } from '../../lib/workbench/types';
-import { AttentionItemCard } from './AttentionItemCard';
+import {
+  AttentionItemCard,
+  type AttentionItemCardLayout,
+} from './AttentionItemCard';
 
 interface WorkbenchStalledSectionProps {
   items: readonly AttentionItem[];
   expanded: boolean;
   followedCardIds: ReadonlySet<string>;
   now: number;
+  cardLayout?: AttentionItemCardLayout;
   onToggleExpanded: () => void;
   onOpenTerminal: (cardId: string) => void;
   onOpenAttention: (item: AttentionItem) => void;
@@ -20,6 +24,7 @@ export function WorkbenchStalledSection({
   expanded,
   followedCardIds,
   now,
+  cardLayout = 'wide',
   onToggleExpanded,
   onOpenTerminal,
   onOpenAttention,
@@ -33,7 +38,7 @@ export function WorkbenchStalledSection({
   return (
     <section
       aria-labelledby="workbench-stalled-heading"
-      className="mt-3 rounded-lg border border-border/70 bg-card/40"
+      className="shrink-0 rounded-xl border border-border/70 bg-card/50"
     >
       <button
         type="button"
@@ -73,6 +78,7 @@ export function WorkbenchStalledSection({
               item={item}
               now={now}
               followed={followedCardIds.has(item.cardId)}
+              layout={cardLayout}
               onOpenItem={() => onOpenTerminal(item.cardId)}
               onOpenDetail={onOpenAttention}
               onIgnoreItem={onIgnoreAttention}

@@ -89,6 +89,14 @@ describe('providerSession launch command builder', () => {
     });
   });
 
+  it('preserves an explicitly configured Codex command', () => {
+    const result = buildTerminalLaunchCommand(
+      card({ terminalType: 'codex', command: 'codex -c tui.animations=false' }),
+      'codex',
+    );
+    expect(result).toEqual({ command: 'codex -c tui.animations=false' });
+  });
+
   it('resumes a bound Codex session', () => {
     const result = buildTerminalLaunchCommand(
       card({

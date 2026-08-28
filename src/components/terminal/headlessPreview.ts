@@ -78,6 +78,15 @@ export function readHeadlessPreview(id: string): string {
 }
 
 /**
+ * Full-screen applications redraw cells in the alternate buffer. Their raw
+ * byte stream is renderer state, not an append-only transcript, so callers
+ * must not persist every redraw as card activity.
+ */
+export function isHeadlessAlternateScreen(id: string): boolean {
+  return terms.get(id)?.buffer.active.type === 'alternate';
+}
+
+/**
  * Read the last N non-blank rows from the active buffer as a single
  * newline-joined string. Limits each row to ~240 visible chars to keep
  * the preview card layout honest.

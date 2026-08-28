@@ -26,6 +26,7 @@ const bridgeMocks = vi.hoisted(() => {
     listeners,
     headlessIds: new Set<string>(),
     headlessPreviewById: new Map<string, string>(),
+    headlessAlternateIds: new Set<string>(),
     pty: {
       getAllSessionStates: vi.fn(),
       attachSnapshot: vi.fn((_id: string): Promise<unknown> => Promise.resolve(null)),
@@ -91,6 +92,7 @@ vi.mock('./headlessPreview', () => ({
     activeCount: bridgeMocks.headlessIds.size,
     cardIds: Array.from(bridgeMocks.headlessIds),
   })),
+  isHeadlessAlternateScreen: vi.fn((id: string) => bridgeMocks.headlessAlternateIds.has(id)),
 }));
 
 vi.mock('../../lib/logger', () => ({
@@ -147,8 +149,9 @@ describe('TerminalEventBridge status reconciliation', () => {
     bridgeMocks.listeners.exit = undefined;
     bridgeMocks.listeners.attention = undefined;
     managedStateMocks.handler = undefined;
-  bridgeMocks.headlessIds.clear();
-  bridgeMocks.headlessPreviewById.clear();
+    bridgeMocks.headlessIds.clear();
+    bridgeMocks.headlessPreviewById.clear();
+    bridgeMocks.headlessAlternateIds.clear();
     bridgeMocks.pty.getAllSessionStates.mockResolvedValue({});
     bridgeMocks.pty.attachSnapshot.mockResolvedValue(null);
     loggerMocks.warn.mockReset();
@@ -879,6 +882,50 @@ describe('TerminalEventBridge status reconciliation', () => {
       expect(useTerminalStore.getState().getCardById(id)?.lastOutput).toContain('chunk-50;');
     });
     expect(useTerminalStore.getState().getCardById(id)?.lastOutput).toContain('chunk-1;');
+  });
+
+  it('keeps an alternate-screen preview current without churning raw output activity', async () => {
+    const id = createCard('codex');
+    bridgeMocks.headlessAlternateIds.add(id);
+    render(<TerminalEventBridge />);
+    await waitFor(() => expect(bridgeMocks.listeners.output).toBeDefined());
+    const before = useTerminalStore.getState().getCardById(id);
+
+    act(() => {
+      bridgeMocks.listeners.output?.({ id, data: 'redrawn TUI frame', seq: 1 });
+    });
+
+    await waitFor(() => {
+      expect(useTerminalStore.getState().getCardById(id)?.lastReplyPreview)
+        .toBe('redrawn TUI frame');
+    });
+    const after = useTerminalStore.getState().getCardById(id);
+    expect(after?.lastOutput).toBe(before?.lastOutput);
+    expect(after?.lastActivity).toBe(before?.lastActivity);
+
+    act(() => {
+      for (let seq = 2; seq <= 20; seq += 1) {
+        bridgeMocks.listeners.output?.({ id, data: 'redrawn TUI frame', seq });
+      }
+    });
+    await waitFor(() => {
+      expect(bridgeMocks.pty.ack).toHaveBeenCalledWith(
+        id,
+        20,
+        'background',
+        undefined,
+      );
+    });
+    expect(useTerminalStore.getState().getCardById(id)).toBe(after);
+
+    bridgeMocks.headlessAlternateIds.delete(id);
+    act(() => {
+      bridgeMocks.listeners.output?.({ id, data: 'ordinary shell output', seq: 21 });
+    });
+    await waitFor(() => {
+      expect(useTerminalStore.getState().getCardById(id)?.lastOutput)
+        .toContain('ordinary shell output');
+    });
   });
 
   it.each(['remove', 'archive'] as const)(

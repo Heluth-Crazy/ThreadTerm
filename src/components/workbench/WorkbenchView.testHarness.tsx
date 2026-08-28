@@ -2,11 +2,11 @@ import { render } from '@testing-library/react';
 import { beforeEach, vi } from 'vitest';
 import type {
   AttentionItem,
-  ExecutionContextGroup,
   WorkbenchSummary,
 } from '../../lib/workbench/types';
 import type { BranchRow } from '../../lib/tauri-bridge';
 import type { TerminalCard } from '../../types/terminal';
+import { useWorkbenchStore } from '../../stores/workbenchStore';
 import { WorkbenchView } from './WorkbenchView';
 
 const projectBranchesMock = vi.hoisted(() => ({
@@ -50,6 +50,7 @@ export const NOW = 1_000_000;
 
 beforeEach(() => {
   projectBranchesMock.branches = [];
+  useWorkbenchStore.setState({ pinnedProjects: [] });
 });
 
 export function makeCard(overrides: Partial<TerminalCard> = {}): TerminalCard {
@@ -115,6 +116,28 @@ export const failedItem: AttentionItem = {
   },
 };
 
+export const reviewItem: AttentionItem = {
+  id: 'notification:completed-1',
+  cardId: 'card-1',
+  kind: 'review',
+  severity: 'info',
+  sourceKind: 'notification',
+  sourceId: 'completed-1',
+  occurredAt: NOW - 1_000,
+  projectPath: '/repo',
+  projectName: 'Repo',
+  terminalType: 'codex',
+  title: 'Result ready',
+  detail: 'Agent finished the task',
+  reasonCode: 'completed_unread',
+  capability: {
+    openRequest: false,
+    openTerminal: true,
+    openNotification: true,
+    openEvidence: true,
+  },
+};
+
 export const stalledItem: AttentionItem = {
   id: 'terminal_state:card-9',
   cardId: 'card-9',
@@ -137,35 +160,6 @@ export const stalledItem: AttentionItem = {
   },
 };
 
-export const executionGroup: ExecutionContextGroup = {  id: '/repo\u001f/repo',
-  projectPath: '/repo',
-  projectName: 'Repo',
-  worktreePath: '/repo',
-  cardIds: ['card-1', 'card-2'],
-  terminalCount: 2,
-  terminalTypes: ['codex', 'claude'],
-  attentionCount: 2,
-  status: 'attention',
-  terminalStatuses: ['waiting', 'failed'],
-  lastActivity: NOW - 2_000,
-  preview: 'latest real output',
-};
-
-export const runningGroup: ExecutionContextGroup = {
-  id: '/running\u001f/running',
-  projectPath: '/running',
-  projectName: 'Running',
-  worktreePath: '/running',
-  cardIds: ['card-3'],
-  terminalCount: 1,
-  terminalTypes: ['codex'],
-  attentionCount: 0,
-  status: 'running',
-  terminalStatuses: ['running'],
-  lastActivity: NOW - 1_000,
-  preview: 'steady output',
-};
-
 export const summary: WorkbenchSummary = {
   attention: 2,
   normalRunning: 0,
@@ -176,11 +170,10 @@ export const summary: WorkbenchSummary = {
 export function renderWorkbench(overrides: Partial<Parameters<typeof WorkbenchView>[0]> = {}) {
   const callbacks = {
     onOpenTerminal: vi.fn(),
+    onAcknowledgeAttention: vi.fn(),
     onOpenAttention: vi.fn(),
     onIgnoreAttention: vi.fn(),
-    onOpenGroup: vi.fn(),
     onOpenRules: vi.fn(),
-    onNavigateTerminals: vi.fn(),
     onCreateTerminal: vi.fn(),
     onFollowCards: vi.fn(),
     onUnfollowCard: vi.fn(),
@@ -205,7 +198,6 @@ export function renderWorkbench(overrides: Partial<Parameters<typeof WorkbenchVi
     stalledItems: [],
     followedCards: [],
     followedCardIds: [],
-    groups: [executionGroup],
     projectOverviews: [],
     summary,
     now: NOW,

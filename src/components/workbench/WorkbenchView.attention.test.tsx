@@ -1,11 +1,11 @@
-import { fireEvent, screen } from '@testing-library/react';
+import { fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
+import { useWorkbenchStore } from '../../stores/workbenchStore';
 import {
   approvalItem,
-  executionGroup,
   makeCard,
   renderWorkbench,
-  runningGroup,
+  reviewItem,
   stalledItem,
 } from './WorkbenchView.testHarness';
 
@@ -15,16 +15,13 @@ describe('WorkbenchView attention and overview', () => {
 
     expect(screen.getByText('Approval needed')).toBeInTheDocument();
     expect(screen.getByText('Build failed')).toBeInTheDocument();
-    expect(screen.getByText('latest real output')).toBeInTheDocument();
 
     fireEvent.click(screen.getAllByRole('button', { name: 'View request' })[0]);
     expect(callbacks.onOpenTerminal).toHaveBeenCalledWith('card-1');
+    expect(callbacks.onAcknowledgeAttention).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Details' })[0]);
     expect(callbacks.onOpenAttention).toHaveBeenCalledWith(approvalItem);
-
-    fireEvent.click(screen.getByText('latest real output').closest('button')!);
-    expect(callbacks.onOpenGroup).toHaveBeenCalledWith(executionGroup);
 
     fireEvent.click(screen.getByRole('button', { name: 'Attention rules' }));
     expect(callbacks.onOpenRules).toHaveBeenCalledTimes(1);
@@ -33,6 +30,38 @@ describe('WorkbenchView attention and overview', () => {
     expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Adjust plan' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Ask steward' })).toBeNull();
+  });
+
+  it('uses a compact attention-card layout in the all-projects side rail', () => {
+    renderWorkbench();
+
+    const section = screen.getByRole('region', { name: 'Needs attention' });
+    const primaryAction = within(section).getByRole('button', {
+      name: 'View request',
+    });
+    const actions = primaryAction.parentElement;
+    const card = primaryAction.closest('article');
+
+    expect(card).toHaveAttribute('data-layout', 'compact');
+    expect(card).toHaveClass('grid-cols-[28px_minmax(0,1fr)]');
+    expect(actions).toHaveClass('flex-wrap');
+    expect(within(actions!).getByText('3 seconds ago')).toBeInTheDocument();
+  });
+
+  it('uses a wide attention-card layout in a selected project workbench', () => {
+    renderWorkbench({ selectedProjectPath: '/repo' });
+
+    const section = screen.getByRole('region', { name: 'Needs attention' });
+    const primaryAction = within(section).getByRole('button', {
+      name: 'View request',
+    });
+    const actions = primaryAction.parentElement;
+    const card = primaryAction.closest('article');
+
+    expect(card).toHaveAttribute('data-layout', 'wide');
+    expect(card).toHaveClass('grid-cols-[28px_minmax(0,1fr)_auto]');
+    expect(actions).toHaveClass('flex');
+    expect(actions).not.toHaveClass('flex-wrap');
   });
 
   it('ignores an attention item without opening the terminal', () => {
@@ -45,83 +74,121 @@ describe('WorkbenchView attention and overview', () => {
     expect(callbacks.onOpenAttention).not.toHaveBeenCalled();
   });
 
-  it('filters attention items locally and searches both items and groups', () => {
+  it('acknowledges a completed result when opening it from the attention list', () => {
+    const { callbacks } = renderWorkbench({
+      attentionItems: [reviewItem],
+      summary: {
+        attention: 1,
+        normalRunning: 0,
+        review: 1,
+        failed: 0,
+      },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'View result' }));
+
+    expect(callbacks.onOpenTerminal).toHaveBeenCalledWith('card-1');
+    expect(callbacks.onAcknowledgeAttention).toHaveBeenCalledWith(reviewItem);
+    expect(callbacks.onIgnoreAttention).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges a completed result from the view-all dialog', () => {
+    const { callbacks } = renderWorkbench({
+      attentionItems: [reviewItem],
+      summary: {
+        attention: 1,
+        normalRunning: 0,
+        review: 1,
+        failed: 0,
+      },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Needs attention: 1' }));
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'View result' }));
+
+    expect(callbacks.onOpenTerminal).toHaveBeenCalledWith('card-1');
+    expect(callbacks.onAcknowledgeAttention).toHaveBeenCalledWith(reviewItem);
+    expect(callbacks.onIgnoreAttention).not.toHaveBeenCalled();
+  });
+
+  it('shows every item in the section and filters inside the view-all dialog', () => {
     renderWorkbench();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Failed' }));
-    expect(screen.queryByText('Approval needed')).toBeNull();
-    expect(screen.getByText('Build failed')).toBeInTheDocument();
+    // No filter chips outside the dialog — the section shows all items.
+    const section = screen.getByRole('region', { name: 'Needs attention' });
+    expect(within(section).getByText('Approval needed')).toBeInTheDocument();
+    expect(within(section).getByText('Build failed')).toBeInTheDocument();
+    expect(within(section).queryByRole('button', { name: 'Failed' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Needs attention: 2' }));
+    fireEvent.click(within(section).getByRole('button', { name: 'View all' }));
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Failed' }));
+    expect(within(dialog).queryByText('Approval needed')).toBeNull();
+    expect(within(dialog).getByText('Build failed')).toBeInTheDocument();
+  });
+
+  it('searches attention items from the header search', () => {
+    renderWorkbench();
+
     fireEvent.change(screen.getByRole('textbox', { name: 'Search workbench' }), {
       target: { value: 'other' },
     });
 
     expect(screen.queryByText('Approval needed')).toBeNull();
     expect(screen.getByText('Build failed')).toBeInTheDocument();
-    expect(screen.queryByText('latest real output')).toBeNull();
   });
 
-  it('keeps summary status changes inside the workbench', () => {
-    const { callbacks } = renderWorkbench({
-      cards: [
-        makeCard(),
-        makeCard({
-          id: 'card-2',
-          ptyId: 'card-2',
-          projectPath: '/other',
-          projectName: 'Other',
-          terminalType: 'claude',
-          status: 'failed',
-        }),
-        makeCard({
-          id: 'card-3',
-          ptyId: 'card-3',
-          projectPath: '/running',
-          projectName: 'Running',
-          status: 'running',
-        }),
-      ],
-      groups: [executionGroup, runningGroup],
-      summary: {
-        attention: 2,
-        normalRunning: 1,
-        review: 0,
-        failed: 1,
-      },
-    });
+  it('opens the attention dialog from the stat strip', () => {
+    renderWorkbench();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Failed' }));
-    expect(screen.getByText('Build failed')).toBeInTheDocument();
-
-    const runningFilter = screen.getByRole('button', {
-      name: 'Running normally: 1',
-    });
-    fireEvent.click(runningFilter);
-
-    expect(runningFilter).toHaveAttribute('aria-pressed', 'true');
-    expect(callbacks.onNavigateTerminals).not.toHaveBeenCalled();
-    expect(screen.getByTestId('workbench-view')).toBeInTheDocument();
-    expect(screen.getByText('steady output')).toBeInTheDocument();
-    expect(screen.queryByText('latest real output')).toBeNull();
-    expect(screen.queryByText('Approval needed')).toBeNull();
-    expect(screen.queryByText('Build failed')).toBeNull();
-
+    // The attention cell opens the dialog unfiltered; chips live inside it.
     fireEvent.click(screen.getByRole('button', { name: 'Needs attention: 2' }));
-    expect(screen.getByText('Approval needed')).toBeInTheDocument();
-    expect(screen.getByText('Build failed')).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Approval needed')).toBeInTheDocument();
+    expect(within(dialog).getByText('Build failed')).toBeInTheDocument();
 
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Failed' }));
+    expect(within(dialog).queryByText('Approval needed')).toBeNull();
+    expect(within(dialog).getByText('Build failed')).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByTestId('workbench-view')).toBeInTheDocument();
+  });
+
+  it('opens terminal and followed list dialogs from the stat strip', () => {
+    const { callbacks } = renderWorkbench({
+      followedCards: [makeCard()],
+      followedCardIds: ['card-1'],
+    });
+
+    // Terminals cell lists every terminal in scope; clicking a row opens it.
+    fireEvent.click(screen.getByRole('button', { name: 'Terminals: 2' }));
+    let dialog = screen.getByRole('dialog');
     fireEvent.click(
-      screen.getByRole('button', { name: /^View all terminals/ }),
+      within(dialog).getByRole('button', { name: 'Open Other terminal' }),
     );
-    expect(callbacks.onNavigateTerminals).toHaveBeenCalledTimes(1);
+    expect(callbacks.onOpenTerminal).toHaveBeenCalledWith('card-2');
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    // Followed cell lists followed terminals and offers recall.
+    fireEvent.click(screen.getByRole('button', { name: 'Followed: 1' }));
+    dialog = screen.getByRole('dialog');
+    expect(
+      within(dialog).getByRole('button', { name: 'Open Repo terminal' }),
+    ).toBeInTheDocument();
+    // Recall hands over to the recall dialog (a dialog is still open).
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Recall terminals' }),
+    );
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 
   it('explains an empty project scope and offers terminal creation', () => {
     const { callbacks } = renderWorkbench({
       cards: [],
       attentionItems: [],
-      groups: [],
       scopeLabel: 'Repo · feature/empty',
       summary: {
         attention: 0,
@@ -148,16 +215,24 @@ describe('WorkbenchView attention and overview', () => {
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByText('Quiet dev server')).toBeInTheDocument();
+    const stalledCard = screen.getByText('Quiet dev server').closest('article');
+    expect(stalledCard).toHaveAttribute('data-layout', 'compact');
 
-    // Stalled kind is not part of the attention filter chips anymore.
-    expect(screen.queryByRole('button', { name: 'No progress' })).toBeNull();
+    // Stalled kind is not part of the attention filters; the chips now live
+    // inside the view-all dialog.
+    const section = screen.getByRole('region', { name: 'Needs attention' });
+    fireEvent.click(within(section).getByRole('button', { name: 'View all' }));
+    const dialog = screen.getByRole('dialog');
     expect(
-      screen.getByRole('button', { name: 'All pending' }),
+      within(dialog).queryByRole('button', { name: 'No progress' }),
+    ).toBeNull();
+    expect(
+      within(dialog).getByRole('button', { name: 'All pending' }),
     ).toBeInTheDocument();
   });
 
-  it('opens a project scope from the global project overview', () => {
+  it('opens a project scope from a pinned project card', () => {
+    useWorkbenchStore.setState({ pinnedProjects: ['/alpha'] });
     const { callbacks } = renderWorkbench({
       projectOverviews: [
         {

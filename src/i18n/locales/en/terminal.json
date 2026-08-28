@@ -55,7 +55,14 @@
     },
     "attention": {
       "title": "Needs attention",
-      "count": "{{count}} items"
+      "count": "{{count}} items",
+      "viewAll": "View all"
+    },
+    "stats": {
+      "label": "Workbench stats",
+      "terminals": "Terminals",
+      "followed": "Followed",
+      "noTerminals": "No terminals in this scope."
     },
     "followed": {
       "title": "Followed terminals",
@@ -63,6 +70,7 @@
       "collapse": "Collapse",
       "expand": "Show all",
       "openTerminal": "Open {{name}} terminal",
+      "closed": "Closed",
       "remove": "Remove from Workbench",
       "removeNamed": "Remove {{name}} from Workbench",
       "noSearchResults": "No followed terminals match this search.",
@@ -76,7 +84,17 @@
       "attention": "Attention",
       "review": "Review",
       "failed": "Failed",
-      "reorder": "Drag to reorder {{project}}"
+      "reorder": "Drag to reorder {{project}}",
+      "viewAll": "View all",
+      "pinManage": "Pin management",
+      "pinZone": "Pinned on home (max 6)",
+      "allProjects": "All projects",
+      "pinnedBadge": "Pinned",
+      "pinFullHint": "You can pin up to 6 projects. Remove one first.",
+      "emptyPinnedTitle": "No pinned projects yet",
+      "emptyPinnedHint": "Drag frequently used projects into the pin zone from \"View all\".",
+      "emptyPinnedAction": "Pin a project",
+      "unpin": "Unpin {{project}}"
     },
     "recall": {
       "title": "Recall terminals",
@@ -111,14 +129,6 @@
       "title": "No-progress watch",
       "count": "{{count}} terminals",
       "hint": "Running, but quiet beyond the rule threshold"
-    },
-    "groups": {
-      "title": "Execution contexts",
-      "subtitle": "Grouped by project and worktree, without inferred tasks"
-    },
-    "group": {
-      "terminals": "{{count}} terminals",
-      "attention": "{{count}} need attention"
     },
     "groupStatus": {
       "failed": "Failed",
@@ -157,7 +167,6 @@
       "details": "Details",
       "ignore": "Ignore",
       "ignoreHint": "Ignore without opening",
-      "viewAllTerminals": "View all terminals",
       "addToWorkbench": "Add to Workbench",
       "removeFromWorkbench": "Remove from Workbench",
       "follow": "Follow",
@@ -170,8 +179,7 @@
       "noScopeTerminalsTitle": "No terminals in this scope",
       "noScopeTerminalsBody": "Choose another project or worktree, or create a terminal in this scope.",
       "noSearchResults": "No attention items match this search.",
-      "noAttention": "Nothing needs your attention in this scope.",
-      "noActiveContexts": "No active execution contexts in this scope."
+      "noAttention": "Nothing needs your attention in this scope."
     },
     "notifications": {
       "approvalTitle": "Codex needs approval",

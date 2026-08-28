@@ -15,6 +15,12 @@ import {
   projectOrdersEqual,
   reconcileProjectPathOrder,
 } from '../lib/workbench/projectOrder';
+import {
+  MAX_PINNED_PROJECTS,
+  normalizePinnedProjects,
+  pinnedProjectsEqual,
+  reconcilePinnedProjectPaths,
+} from '../lib/workbench/pinnedProjects';
 
 export const DEFAULT_WORKBENCH_RULES: WorkbenchRules = {
   includeWaiting: true,
@@ -29,6 +35,7 @@ interface WorkbenchStore {
   rules: WorkbenchRules;
   followedCardIds: string[];
   projectOrder: string[];
+  pinnedProjects: string[];
   ignoredAttention: IgnoredAttentionEpisode[];
   followCards: (cardIds: readonly string[]) => void;
   unfollowCard: (cardId: string) => void;
@@ -36,6 +43,9 @@ interface WorkbenchStore {
   reconcileIgnoredAttention: (validCardIds: readonly string[]) => void;
   ignoreAttention: (item: AttentionItem) => void;
   reconcileProjectOrder: (validProjectPaths: readonly string[]) => void;
+  pinProject: (projectPath: string) => void;
+  unpinProject: (projectPath: string) => void;
+  reconcilePinnedProjects: (validProjectPaths: readonly string[]) => void;
   moveProject: (
     activeProjectPath: string,
     overProjectPath: string,
@@ -101,6 +111,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       rules: { ...DEFAULT_WORKBENCH_RULES },
       followedCardIds: [],
       projectOrder: [],
+      pinnedProjects: [],
       ignoredAttention: [],
       followCards: (cardIds) =>
         set((state) => {
@@ -159,6 +170,37 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           if (projectOrdersEqual(projectOrder, state.projectOrder)) return state;
           return { projectOrder };
         }),
+      pinProject: (projectPath) =>
+        set((state) => {
+          if (
+            projectPath.trim().length === 0 ||
+            state.pinnedProjects.includes(projectPath) ||
+            state.pinnedProjects.length >= MAX_PINNED_PROJECTS
+          ) {
+            return state;
+          }
+          return { pinnedProjects: [...state.pinnedProjects, projectPath] };
+        }),
+      unpinProject: (projectPath) =>
+        set((state) => {
+          if (!state.pinnedProjects.includes(projectPath)) return state;
+          return {
+            pinnedProjects: state.pinnedProjects.filter(
+              (pinnedPath) => pinnedPath !== projectPath,
+            ),
+          };
+        }),
+      reconcilePinnedProjects: (validProjectPaths) =>
+        set((state) => {
+          const pinnedProjects = reconcilePinnedProjectPaths(
+            state.pinnedProjects,
+            validProjectPaths,
+          );
+          if (pinnedProjectsEqual(pinnedProjects, state.pinnedProjects)) {
+            return state;
+          }
+          return { pinnedProjects };
+        }),
       moveProject: (
         activeProjectPath,
         overProjectPath,
@@ -191,13 +233,14 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
     }),
     {
       name: 'threadterm-workbench-store',
-      version: 4,
+      version: 5,
       storage: createJSONStorage(() => managedStateStorage),
       migrate: (persistedState) => persistedState,
       partialize: (state) => ({
         rules: state.rules,
         followedCardIds: state.followedCardIds,
         projectOrder: state.projectOrder,
+        pinnedProjects: state.pinnedProjects,
         ignoredAttention: state.ignoredAttention,
       }),
       merge: (persisted, current) => {
@@ -213,6 +256,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           persisted && typeof persisted === 'object' && 'projectOrder' in persisted
             ? (persisted as { projectOrder?: unknown }).projectOrder
             : undefined;
+        const persistedPinnedProjects =
+          persisted && typeof persisted === 'object' && 'pinnedProjects' in persisted
+            ? (persisted as { pinnedProjects?: unknown }).pinnedProjects
+            : undefined;
         const persistedIgnoredAttention =
           persisted && typeof persisted === 'object' && 'ignoredAttention' in persisted
             ? (persisted as { ignoredAttention?: unknown }).ignoredAttention
@@ -222,6 +269,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           rules: normalizeWorkbenchRules(persistedRules),
           followedCardIds: normalizeFollowedCardIds(persistedFollowedCardIds),
           projectOrder: normalizeProjectOrder(persistedProjectOrder),
+          pinnedProjects: normalizePinnedProjects(persistedPinnedProjects),
           ignoredAttention: normalizeIgnoredAttention(persistedIgnoredAttention),
         };
       },
