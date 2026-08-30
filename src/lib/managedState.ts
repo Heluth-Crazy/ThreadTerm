@@ -18,6 +18,7 @@ export const MANAGED_STATE_KEYS = {
   customThemes: 'threadterm-custom-theme-packs',
   previewUrls: 'threadterm-html-preview-service-urls',
   shortcutHintDismissed: 'threadterm-shortcut-hint-dismissed',
+  workspaceSidebarDisclosure: 'threadterm-workspace-sidebar-disclosure',
 } as const;
 
 export type ManagedStateKey =

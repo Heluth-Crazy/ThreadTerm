@@ -423,7 +423,17 @@
     "terminalCloseTabOnly": "仅关闭标签",
     "draftPending": "正在同步草稿…",
     "homeUntitled": "工作区",
-    "homeTab": "主页"
+    "homeTab": "主页",
+    "catalog": {
+      "sessions": "会话",
+      "files": "文件",
+      "changes": "改动",
+      "empty": "没有打开的内容",
+      "loading": "正在加载已打开内容…",
+      "retry": "重试",
+      "unsaved": "未保存",
+      "conflict": "冲突"
+    }
   },
   "dialog": {
     "chooseProjectDirectory": "选择项目目录",

@@ -43,6 +43,7 @@ import {
 import type { DirEntry } from '../files/fileMeta';
 import type { WorkspacePanelState } from '../files/WorkspacePanel';
 import { selectMountedWorkspaceEditors } from '../files/workspaceEditorLifecycle';
+import type { WorkspaceCatalogTabRef } from './useWorkspaceCatalog';
 
 const DEFAULT_WORKSPACE_PANEL_STATE: WorkspacePanelState = {
   tab: 'explorer',
@@ -160,8 +161,10 @@ export function useWorkspaceSession({
   const selectionInFlightRef = useRef<{
     rootPath: string;
     generation: number;
+    kind: 'plain' | 'targeted';
     promise: Promise<WorkspaceRecord | null>;
   } | null>(null);
+  const targetedActivationWriteTailRef = useRef<Promise<void>>(Promise.resolve());
   const navigationGenerationRef = useRef(0);
   const terminalOpenInFlightRef = useRef<{
     cardId: string;
@@ -169,27 +172,36 @@ export function useWorkspaceSession({
     generation: number;
     promise: Promise<void>;
   } | null>(null);
+  const lastFocusedTerminalRef = useRef<string | null>(null);
 
   const workspaceRootPath = workspace?.canonicalRoot ?? null;
   const workspaceUnavailable = workspace?.availability === 'unavailable';
 
   const applySnapshot = useCallback(
-    (snapshot: Awaited<ReturnType<typeof workspaceClient.getSnapshot>>) => {
+    (
+      snapshot: Awaited<ReturnType<typeof workspaceClient.getSnapshot>>,
+      forcedActiveTabId?: string,
+    ) => {
       // Async open flows may request another snapshot before React commits the
       // state update below. Keep the guard ref authoritative immediately so a
       // freshly selected workspace is not mistaken for the previous one.
       selectedWorkspaceIdRef.current = snapshot.workspace.id;
       setWorkspace(snapshot.workspace);
       setSelectedWorkspaceId(snapshot.workspace.id);
+      tabsRef.current = snapshot.tabs;
       setTabs(snapshot.tabs);
       const tabIds = new Set(snapshot.tabs.map((tab) => tab.id));
-      setActiveTabIdState(activeTabFromSnapshot(snapshot.viewStates, tabIds));
+      const nextActiveTabId = forcedActiveTabId && tabIds.has(forcedActiveTabId)
+        ? forcedActiveTabId
+        : activeTabFromSnapshot(snapshot.viewStates, tabIds);
+      setActiveTabIdState(nextActiveTabId);
       const dirty: Record<string, boolean> = {};
       const conflict: Record<string, boolean> = {};
       for (const meta of snapshot.draftMetas) {
         if (meta.dirty) dirty[meta.tabId] = true;
         if (meta.conflict !== 'none') conflict[meta.tabId] = true;
       }
+      dirtyByTabIdRef.current = dirty;
       setDirtyByTabId(dirty);
       setConflictByTabId(conflict);
       setError(null);
@@ -248,11 +260,105 @@ export function useWorkspaceSession({
           }
         }
       })();
-      selectionInFlightRef.current = { rootPath: trimmed, generation, promise };
+      selectionInFlightRef.current = {
+        rootPath: trimmed,
+        generation,
+        kind: 'plain',
+        promise,
+      };
       return promise;
     },
     [applySnapshot],
   );
+
+  const activateExistingWorkspaceTab = useCallback(
+    (ref: WorkspaceCatalogTabRef): Promise<WorkspaceTab | null> => {
+      const rootPath = ref.rootPath.trim();
+      if (!rootPath) return Promise.resolve(null);
+      const selectionGeneration = selectionGenerationRef.current + 1;
+      const navigationGeneration = navigationGenerationRef.current + 1;
+      selectionGenerationRef.current = selectionGeneration;
+      navigationGenerationRef.current = navigationGeneration;
+      setLoading(true);
+      setError(null);
+      let activatedTab: WorkspaceTab | null = null;
+      const isLatest = () => (
+        selectionGenerationRef.current === selectionGeneration
+        && navigationGenerationRef.current === navigationGeneration
+      );
+      const promise = (async (): Promise<WorkspaceRecord | null> => {
+        try {
+          const snapshot = await workspaceClient.getSnapshot(ref.workspaceId);
+          if (!isLatest() || !samePath(snapshot.workspace.canonicalRoot, rootPath)) {
+            return null;
+          }
+          const tab = snapshot.tabs.find((candidate) => candidate.id === ref.tabId);
+          if (
+            !tab
+            || tab.kind !== ref.kind
+            || (tab.cardId ?? null) !== ref.cardId
+            || (tab.relativePath ?? null) !== ref.relativePath
+          ) {
+            return null;
+          }
+          // Authority writes cannot be cancelled once sent. Serialize exact-tab
+          // activations and re-check freshness at the head of the queue so an
+          // older slow write can never land after the user's latest choice.
+          const write = targetedActivationWriteTailRef.current
+            .catch(() => undefined)
+            .then(async () => {
+              if (!isLatest()) return false;
+              await workspaceClient.setActiveTab(
+                snapshot.workspace.id,
+                tab.id,
+                DESKTOP_MAIN_SURFACE,
+              );
+              return isLatest();
+            });
+          targetedActivationWriteTailRef.current = write.then(
+            () => undefined,
+            () => undefined,
+          );
+          if (!await write) return null;
+          activatedTab = tab;
+          applySnapshot(snapshot, tab.id);
+          if (tab.kind === 'terminal' && tab.cardId) {
+            const liveCard = useTerminalStore
+              .getState()
+              .cards.find((card) => card.id === tab.cardId);
+            if (liveCard) {
+              lastFocusedTerminalRef.current = liveCard.id;
+              useTerminalStore.getState().focusCard(liveCard.id);
+            }
+          }
+          return snapshot.workspace;
+        } catch (reason) {
+          if (isLatest()) setError(reason instanceof Error ? reason.message : String(reason));
+          return null;
+        } finally {
+          if (selectionGenerationRef.current === selectionGeneration) setLoading(false);
+          if (selectionInFlightRef.current?.generation === selectionGeneration) {
+            selectionInFlightRef.current = null;
+          }
+        }
+      })();
+      selectionInFlightRef.current = {
+        rootPath,
+        generation: selectionGeneration,
+        kind: 'targeted',
+        promise,
+      };
+      return promise.then(() => activatedTab);
+    },
+    [applySnapshot],
+  );
+
+  const cancelPendingWorkspaceActivation = useCallback(() => {
+    selectionGenerationRef.current += 1;
+    navigationGenerationRef.current += 1;
+    selectionInFlightRef.current = null;
+    setLoading(false);
+  }, []);
 
   // Keep workspace metadata ready when the project/worktree scope changes.
   // Page visibility belongs to desktop navigation, not this data hook.
@@ -899,11 +1005,16 @@ export function useWorkspaceSession({
   );
 
   // When focusing a card, open/focus its terminal tab in the shared workspace.
-  const lastFocusedTerminalRef = useRef<string | null>(null);
   useEffect(() => {
     if (!focusedCardId) {
       lastFocusedTerminalRef.current = null;
-      navigationGenerationRef.current += 1;
+      const selection = selectionInFlightRef.current;
+      const targetedSelectionIsCurrent = Boolean(
+        selection
+        && selection.kind === 'targeted'
+        && selection.generation === selectionGenerationRef.current,
+      );
+      if (!targetedSelectionIsCurrent) navigationGenerationRef.current += 1;
       return;
     }
     if (lastFocusedTerminalRef.current === focusedCardId) return;
@@ -1031,6 +1142,8 @@ export function useWorkspaceSession({
     terminalCloseRequest,
     dirtyCloseRequest,
     selectWorkspaceByRoot,
+    activateExistingWorkspaceTab,
+    cancelPendingWorkspaceActivation,
     setActiveTabId,
     openTerminalTab,
     openWorkspaceFile,

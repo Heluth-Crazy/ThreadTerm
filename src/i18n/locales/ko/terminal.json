@@ -423,7 +423,17 @@
     "terminalCloseTabOnly": "탭만 닫기",
     "draftPending": "초안 동기화 중…",
     "homeUntitled": "워크스페이스",
-    "homeTab": "홈"
+    "homeTab": "홈",
+    "catalog": {
+      "sessions": "세션",
+      "files": "파일",
+      "changes": "변경 사항",
+      "empty": "열린 항목 없음",
+      "loading": "열린 콘텐츠 불러오는 중…",
+      "retry": "다시 시도",
+      "unsaved": "저장되지 않음",
+      "conflict": "충돌"
+    }
   },
   "dialog": {
     "chooseProjectDirectory": "프로젝트 디렉터리 선택",

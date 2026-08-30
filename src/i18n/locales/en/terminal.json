@@ -423,7 +423,17 @@
     "terminalCloseTabOnly": "Close tab only",
     "draftPending": "Syncing draft…",
     "homeUntitled": "Workspace",
-    "homeTab": "Home"
+    "homeTab": "Home",
+    "catalog": {
+      "sessions": "Sessions",
+      "files": "Files",
+      "changes": "Changes",
+      "empty": "None open",
+      "loading": "Loading open content…",
+      "retry": "Retry",
+      "unsaved": "Unsaved",
+      "conflict": "Conflict"
+    }
   },
   "dialog": {
     "chooseProjectDirectory": "Choose project directory",

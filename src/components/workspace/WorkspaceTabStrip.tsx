@@ -9,7 +9,6 @@ import { useTranslation } from 'react-i18next';
 import {
   FileText,
   GitCompare,
-  Home,
   TerminalSquare,
   X,
 } from 'lucide-react';
@@ -19,7 +18,6 @@ import {
   isAgentSessionProvider,
 } from '../../types/agentSession';
 import type { WorkspaceTab } from '../../lib/workspace/types';
-import { HOME_TAB_ID } from '../../lib/workspace/types';
 import {
   buildWorkspaceTerminalPresentation,
   type WorkspaceTerminalPresentation,
@@ -33,7 +31,6 @@ interface WorkspaceTabStripProps {
   activeTabId: string;
   dirtyTabIds: Record<string, boolean>;
   workspaceCards?: TerminalCard[];
-  homeLabel: string;
   closeLabel: string;
   closeCurrentLabel: string;
   closeAllLabel: string;
@@ -74,7 +71,6 @@ export function WorkspaceTabStrip({
   activeTabId,
   dirtyTabIds,
   workspaceCards = [],
-  homeLabel,
   closeLabel,
   closeCurrentLabel,
   closeAllLabel,
@@ -96,6 +92,10 @@ export function WorkspaceTabStrip({
     null,
   );
   const [dragTabId, setDragTabId] = useState<string | null>(null);
+  const concreteTabs = useMemo(
+    () => tabs.filter((tab) => tab.kind !== 'home'),
+    [tabs],
+  );
 
   useEffect(() => {
     if (!menu) return;
@@ -134,7 +134,7 @@ export function WorkspaceTabStrip({
       setDragTabId(null);
       return;
     }
-    const ids = tabs.map((tab) => tab.id);
+    const ids = concreteTabs.map((tab) => tab.id);
     const from = ids.indexOf(dragTabId);
     const to = ids.indexOf(targetTabId);
     if (from < 0 || to < 0) {
@@ -154,21 +154,7 @@ export function WorkspaceTabStrip({
       data-terminal-context-menu
       data-testid="workspace-tab-strip"
     >
-      <button
-        type="button"
-        onClick={() => onActivate(HOME_TAB_ID)}
-        className={[
-          'inline-flex h-7 max-w-[180px] shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] transition-colors',
-          activeTabId === HOME_TAB_ID
-            ? 'bg-primary/15 text-foreground'
-            : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
-        ].join(' ')}
-        data-testid="workspace-tab-home"
-      >
-        <Home className="h-3.5 w-3.5 shrink-0" />
-        <span className="truncate">{homeLabel}</span>
-      </button>
-      {tabs.map((tab) => {
+      {concreteTabs.map((tab) => {
         const card =
           tab.kind === 'terminal' && tab.cardId
             ? cardsById.get(tab.cardId)

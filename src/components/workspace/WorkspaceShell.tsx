@@ -57,7 +57,6 @@ export function WorkspaceShell({
         activeTabId={activeTabId}
         dirtyTabIds={dirtyByTabId}
         workspaceCards={workspaceCards}
-        homeLabel={t('workspace.homeTab', { defaultValue: 'Home' })}
         closeLabel={t('common.close', { defaultValue: 'Close' })}
         closeCurrentLabel={t('workspace.closeCurrentTab', { defaultValue: 'Close current' })}
         closeAllLabel={t('workspace.closeAllTabs', { defaultValue: 'Close all' })}

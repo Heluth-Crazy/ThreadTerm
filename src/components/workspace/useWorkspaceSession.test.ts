@@ -758,4 +758,331 @@ describe('useWorkspaceSession worktree isolation', () => {
       expect(result.current.tabs.some((tab) => tab.id === fileTabId)).toBe(false),
     );
   });
+
+  it('activates an exact existing catalog tab without opening or recreating it', async () => {
+    const cardId = useTerminalStore.getState().createCard({
+      projectName: 'repo',
+      projectPath: '/repo',
+      terminalType: 'shell',
+    });
+    const record = await workspaceClient.ensure('/repo');
+    const tab = await workspaceClient.openTab(record.id, {
+      kind: 'terminal',
+      cardId,
+      title: 'repo',
+    });
+    const openTab = vi.spyOn(workspaceClient, 'openTab');
+    const setActiveTab = vi.spyOn(workspaceClient, 'setActiveTab');
+    const { result } = renderHook(() =>
+      useWorkspaceSession({
+        cards: useTerminalStore.getState().cards,
+        focusedCardId: null,
+        selectedProjectPath: null,
+        selectedWorktreePath: null,
+        t,
+      }),
+    );
+
+    let activated = null;
+    await act(async () => {
+      activated = await result.current.activateExistingWorkspaceTab({
+        workspaceId: record.id,
+        rootPath: '/repo',
+        tabId: tab.id,
+        kind: 'terminal',
+        cardId,
+        relativePath: null,
+      });
+    });
+
+    expect(activated).toEqual(expect.objectContaining({ id: tab.id }));
+    expect(openTab).not.toHaveBeenCalled();
+    expect(setActiveTab).toHaveBeenCalledWith(record.id, tab.id, 'desktop:main');
+    expect(result.current.activeTabId).toBe(tab.id);
+    expect(result.current.tabs.filter((candidate) => candidate.id === tab.id)).toHaveLength(1);
+  });
+
+  it('lets the same-root scope effect join a targeted catalog activation', async () => {
+    const record = await workspaceClient.ensure('/repo');
+    const tab = await workspaceClient.openTab(record.id, {
+      kind: 'file',
+      relativePath: 'src/app.ts',
+      title: 'app.ts',
+    });
+    const originalGetSnapshot = workspaceClient.getSnapshot.bind(workspaceClient);
+    let releaseSnapshot!: () => void;
+    const snapshotGate = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    const getSnapshot = vi.spyOn(workspaceClient, 'getSnapshot')
+      .mockImplementation(async (workspaceId) => {
+        if (workspaceId === record.id) await snapshotGate;
+        return originalGetSnapshot(workspaceId);
+      });
+    const ensure = vi.spyOn(workspaceClient, 'ensure');
+    const cards = useTerminalStore.getState().cards;
+    const { result } = renderHook(() =>
+      useWorkspaceSession({
+        cards,
+        focusedCardId: null,
+        selectedProjectPath: null,
+        selectedWorktreePath: null,
+        t,
+      }),
+    );
+
+    let activation!: ReturnType<typeof result.current.activateExistingWorkspaceTab>;
+    let selection!: ReturnType<typeof result.current.selectWorkspaceByRoot>;
+    act(() => {
+      activation = result.current.activateExistingWorkspaceTab({
+        workspaceId: record.id,
+        rootPath: '/repo',
+        tabId: tab.id,
+        kind: 'file',
+        cardId: null,
+        relativePath: 'src/app.ts',
+      });
+      selection = result.current.selectWorkspaceByRoot('/repo');
+    });
+    expect(ensure).not.toHaveBeenCalled();
+    expect(getSnapshot).toHaveBeenCalledTimes(1);
+    releaseSnapshot();
+
+    let activated = null;
+    let selected = null;
+    await act(async () => {
+      [activated, selected] = await Promise.all([activation, selection]);
+    });
+    expect(activated).toEqual(expect.objectContaining({ id: tab.id }));
+    expect(selected).toEqual(expect.objectContaining({ id: record.id }));
+    await waitFor(() => expect(result.current.activeTabId).toBe(tab.id));
+    expect(result.current.selectedWorkspaceId).toBe(record.id);
+  });
+
+  it('rejects a stale catalog identity and a tab closed during activation', async () => {
+    const record = await workspaceClient.ensure('/repo');
+    const tab = await workspaceClient.openTab(record.id, {
+      kind: 'file',
+      relativePath: 'src/app.ts',
+      title: 'app.ts',
+    });
+    const setActiveTab = vi.spyOn(workspaceClient, 'setActiveTab');
+    const openTab = vi.spyOn(workspaceClient, 'openTab');
+    const { result } = renderHook(() =>
+      useWorkspaceSession({
+        cards: [],
+        focusedCardId: null,
+        selectedProjectPath: null,
+        selectedWorktreePath: null,
+        t,
+      }),
+    );
+
+    let mismatch = null;
+    await act(async () => {
+      mismatch = await result.current.activateExistingWorkspaceTab({
+        workspaceId: record.id,
+        rootPath: '/repo',
+        tabId: tab.id,
+        kind: 'file',
+        cardId: null,
+        relativePath: 'src/other.ts',
+      });
+    });
+    expect(mismatch).toBeNull();
+    expect(setActiveTab).not.toHaveBeenCalled();
+
+    const originalGetSnapshot = workspaceClient.getSnapshot.bind(workspaceClient);
+    let releaseSnapshot!: () => void;
+    const snapshotGate = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    vi.spyOn(workspaceClient, 'getSnapshot').mockImplementation(async (workspaceId) => {
+      if (workspaceId === record.id) await snapshotGate;
+      return originalGetSnapshot(workspaceId);
+    });
+    let activationPromise!: ReturnType<typeof result.current.activateExistingWorkspaceTab>;
+    act(() => {
+      activationPromise = result.current.activateExistingWorkspaceTab({
+        workspaceId: record.id,
+        rootPath: '/repo',
+        tabId: tab.id,
+        kind: 'file',
+        cardId: null,
+        relativePath: 'src/app.ts',
+      });
+    });
+    await workspaceClient.commitClose(record.id, [
+      { tabId: tab.id, kind: 'closeClean' },
+    ]);
+    releaseSnapshot();
+
+    let closedResult = null;
+    await act(async () => {
+      closedResult = await activationPromise;
+    });
+    expect(closedResult).toBeNull();
+    expect(openTab).not.toHaveBeenCalled();
+    expect((await originalGetSnapshot(record.id)).tabs.some((candidate) => candidate.id === tab.id))
+      .toBe(false);
+  });
+
+  it('serializes cross-root authority writes so a slower A cannot overwrite B', async () => {
+    const workspaceA = await workspaceClient.ensure('/repo-a');
+    const workspaceB = await workspaceClient.ensure('/repo-b');
+    const tabA = await workspaceClient.openTab(workspaceA.id, {
+      kind: 'file',
+      relativePath: 'a.ts',
+      title: 'a.ts',
+    });
+    const tabB = await workspaceClient.openTab(workspaceB.id, {
+      kind: 'file',
+      relativePath: 'b.ts',
+      title: 'b.ts',
+    });
+    const originalSetActiveTab = workspaceClient.setActiveTab.bind(workspaceClient);
+    let releaseA!: () => void;
+    const aWriteGate = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    const completedWrites: string[] = [];
+    const setActiveTab = vi.spyOn(workspaceClient, 'setActiveTab')
+      .mockImplementation(async (workspaceId, tabId, surfaceId) => {
+        // Model the backend completing A after the user has already chosen B.
+        // The hook must queue B behind that in-flight write, then reassert B.
+        if (tabId === tabA.id) await aWriteGate;
+        const result = await originalSetActiveTab(workspaceId, tabId, surfaceId);
+        completedWrites.push(tabId);
+        return result;
+      });
+    const { result } = renderHook(() =>
+      useWorkspaceSession({
+        cards: [],
+        focusedCardId: null,
+        selectedProjectPath: null,
+        selectedWorktreePath: null,
+        t,
+      }),
+    );
+
+    let activationA!: ReturnType<typeof result.current.activateExistingWorkspaceTab>;
+    act(() => {
+      activationA = result.current.activateExistingWorkspaceTab({
+        workspaceId: workspaceA.id,
+        rootPath: '/repo-a',
+        tabId: tabA.id,
+        kind: 'file',
+        cardId: null,
+        relativePath: 'a.ts',
+      });
+    });
+    await waitFor(() => expect(setActiveTab).toHaveBeenCalledWith(
+      workspaceA.id,
+      tabA.id,
+      'desktop:main',
+    ));
+    let activationB!: ReturnType<typeof result.current.activateExistingWorkspaceTab>;
+    act(() => {
+      activationB = result.current.activateExistingWorkspaceTab({
+        workspaceId: workspaceB.id,
+        rootPath: '/repo-b',
+        tabId: tabB.id,
+        kind: 'file',
+        cardId: null,
+        relativePath: 'b.ts',
+      });
+    });
+    expect(setActiveTab).not.toHaveBeenCalledWith(workspaceB.id, tabB.id, 'desktop:main');
+    releaseA();
+    await act(async () => {
+      await Promise.all([activationA, activationB]);
+    });
+
+    expect(completedWrites).toEqual([tabA.id, tabB.id]);
+    const authorityB = await workspaceClient.getSnapshot(workspaceB.id);
+    expect(authorityB.viewStates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        surfaceId: 'desktop:main',
+        activeTabId: tabB.id,
+      }),
+    ]));
+    expect(result.current.selectedWorkspaceId).toBe(workspaceB.id);
+    expect(result.current.activeTabId).toBe(tabB.id);
+  });
+
+  it('serializes exact-tab authority writes so the latest same-workspace choice wins', async () => {
+    const workspace = await workspaceClient.ensure('/repo');
+    const tabA = await workspaceClient.openTab(workspace.id, {
+      kind: 'file',
+      relativePath: 'a.ts',
+      title: 'a.ts',
+    });
+    const tabB = await workspaceClient.openTab(workspace.id, {
+      kind: 'file',
+      relativePath: 'b.ts',
+      title: 'b.ts',
+    });
+    const originalSetActiveTab = workspaceClient.setActiveTab.bind(workspaceClient);
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    const setActiveTab = vi.spyOn(workspaceClient, 'setActiveTab')
+      .mockImplementation(async (workspaceId, tabId, surfaceId) => {
+        if (tabId === tabA.id) await gateA;
+        return originalSetActiveTab(workspaceId, tabId, surfaceId);
+      });
+    const { result } = renderHook(() =>
+      useWorkspaceSession({
+        cards: [],
+        focusedCardId: null,
+        selectedProjectPath: null,
+        selectedWorktreePath: null,
+        t,
+      }),
+    );
+
+    let activationA!: ReturnType<typeof result.current.activateExistingWorkspaceTab>;
+    let activationB!: ReturnType<typeof result.current.activateExistingWorkspaceTab>;
+    act(() => {
+      activationA = result.current.activateExistingWorkspaceTab({
+        workspaceId: workspace.id,
+        rootPath: '/repo',
+        tabId: tabA.id,
+        kind: 'file',
+        cardId: null,
+        relativePath: 'a.ts',
+      });
+    });
+    await waitFor(() => expect(setActiveTab).toHaveBeenCalledWith(
+      workspace.id,
+      tabA.id,
+      'desktop:main',
+    ));
+    act(() => {
+      activationB = result.current.activateExistingWorkspaceTab({
+        workspaceId: workspace.id,
+        rootPath: '/repo',
+        tabId: tabB.id,
+        kind: 'file',
+        cardId: null,
+        relativePath: 'b.ts',
+      });
+    });
+    expect(setActiveTab).not.toHaveBeenCalledWith(workspace.id, tabB.id, 'desktop:main');
+
+    releaseA();
+    await act(async () => {
+      await Promise.all([activationA, activationB]);
+    });
+
+    const authoritative = await workspaceClient.getSnapshot(workspace.id);
+    expect(authoritative.viewStates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        surfaceId: 'desktop:main',
+        activeTabId: tabB.id,
+      }),
+    ]));
+    expect(result.current.activeTabId).toBe(tabB.id);
+  });
 });

@@ -23,6 +23,7 @@ import {
   HOME_TAB_ID,
   MAX_DRAFT_BYTES,
 } from './types';
+import { normalizeComparablePath } from '../worktreePaths';
 
 interface LocalWorkspace {
   record: WorkspaceRecord;
@@ -41,7 +42,7 @@ function nowMs(): number {
 }
 
 function normalizeRoot(rootPath: string): string {
-  return rootPath.replace(/[\\/]+$/, '').replace(/\\/g, '/');
+  return rootPath.trim().replace(/[\\/]+$/, '').replace(/\\/g, '/');
 }
 
 function publish(event: WorkspaceEvent): void {
@@ -91,7 +92,8 @@ export const localWorkspaceAuthority = {
   },
 
   ensure(rootPath: string): Promise<WorkspaceRecord> {
-    const key = normalizeRoot(rootPath);
+    const canonicalRoot = normalizeRoot(rootPath);
+    const key = normalizeComparablePath(canonicalRoot);
     const existingId = workspacesByRoot.get(key);
     if (existingId) {
       const ws = workspacesById.get(existingId);
@@ -101,8 +103,8 @@ export const localWorkspaceAuthority = {
     const id = `local-ws-${nextId++}`;
     const record: WorkspaceRecord = {
       id,
-      canonicalRoot: key,
-      displayPath: key,
+      canonicalRoot,
+      displayPath: canonicalRoot,
       availability: 'available',
       createdAtUnixMs: now,
       updatedAtUnixMs: now,

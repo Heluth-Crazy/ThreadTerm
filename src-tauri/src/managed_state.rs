@@ -17,7 +17,7 @@ pub(crate) const TERMINAL_STARTUP_EFFECTS_BACKEND_SOURCE_ID: &str =
 const WORKBENCH_STORE_KEY: &str = "threadterm-workbench-store";
 const OVERLAY_STORE_KEY: &str = "threadterm-overlay";
 
-const PREFERENCE_KEYS: [&str; 7] = [
+const PREFERENCE_KEYS: [&str; 8] = [
     "userLanguage",
     "themeMode",
     "themePackId",
@@ -25,6 +25,7 @@ const PREFERENCE_KEYS: [&str; 7] = [
     "threadterm-custom-theme-packs",
     "threadterm-html-preview-service-urls",
     "threadterm-shortcut-hint-dismissed",
+    "threadterm-workspace-sidebar-disclosure",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -544,6 +545,11 @@ mod tests {
         );
         assert_eq!(
             bucket_file_for_key("userLanguage").expect("preference key"),
+            "preferences.json"
+        );
+        assert_eq!(
+            bucket_file_for_key("threadterm-workspace-sidebar-disclosure")
+                .expect("workspace sidebar disclosure preference"),
             "preferences.json"
         );
         for rejected in [

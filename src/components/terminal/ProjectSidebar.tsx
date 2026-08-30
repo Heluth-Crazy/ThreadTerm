@@ -67,6 +67,14 @@ import { AttentionDot } from './AttentionDot';
 import type { PrimaryView } from '../../lib/workbench/types';
 import { orderProjectItems } from '../../lib/workbench/projectOrder';
 import { useWorkbenchStore } from '../../stores/workbenchStore';
+import { WorkspaceScopeCatalog } from './WorkspaceScopeCatalog';
+import type { WorkspaceCatalogTabRef } from '../workspace/useWorkspaceCatalog';
+
+export interface WorkspaceCatalogScopeOwner {
+  projectPath: string;
+  worktreePath: string | null;
+  worktreeLabel: string | null;
+}
 
 interface ProjectSidebarProps {
   className?: string;
@@ -80,6 +88,10 @@ interface ProjectSidebarProps {
     projectPath: string,
     worktreePath: string,
     label?: string | null,
+  ) => void;
+  onActivateWorkspaceTab?: (
+    ref: WorkspaceCatalogTabRef,
+    owner: WorkspaceCatalogScopeOwner,
   ) => void;
   attentionCount?: number;
   getProjectAttentionCount?: (projectPath: string) => number;
@@ -116,6 +128,7 @@ export function ProjectSidebar({
   onSelectPrimaryView = () => {},
   onSelectProject,
   onSelectWorktree,
+  onActivateWorkspaceTab,
   attentionCount = 0,
   getProjectAttentionCount = zeroProjectAttentionCount,
   getWorktreeAttentionCount = zeroWorktreeAttentionCount,
@@ -405,6 +418,7 @@ export function ProjectSidebar({
                 selectedWorktreePath={selectedWorktreePath}
                 attentionCount={getProjectAttentionCount(g.path)}
                 getWorktreeAttentionCount={getWorktreeAttentionCount}
+                onActivateWorkspaceTab={isMobile ? undefined : onActivateWorkspaceTab}
               />
             ))}
           </SortableContext>
@@ -509,6 +523,10 @@ interface ProjectBranchSectionProps {
     branchLabel?: string,
   ) => void;
   onSelectWorktree: (projectPath: string, worktreePath: string, label?: string | null) => void;
+  onActivateWorkspaceTab?: (
+    ref: WorkspaceCatalogTabRef,
+    owner: WorkspaceCatalogScopeOwner,
+  ) => void;
   onCreateWorktreeAndOpen: (
     projectPath: string,
     projectName: string,
@@ -526,6 +544,7 @@ function ProjectBranchSection({
   selectedWorktreePath,
   onOpenTerminal,
   onSelectWorktree,
+  onActivateWorkspaceTab,
   onCreateWorktreeAndOpen,
   attentionCount,
   getWorktreeAttentionCount,
@@ -543,6 +562,15 @@ function ProjectBranchSection({
   const { branches, loading, error, refresh } = useProjectBranches(group.path);
   const [expanded, setExpanded] = useState(false);
   const hasBranches = branches.length > 0;
+  // A materialized main worktree is still a real, user-selectable scope. Move
+  // the root catalog under that row instead of showing the same root twice.
+  // Until branch discovery materializes it, the project remains the fallback
+  // catalog owner.
+  const hasSameRootMaterializedWorktree = branches.some(
+    ({ worktreePath }) => Boolean(worktreePath && samePath(worktreePath, group.path)),
+  );
+  const hasCatalog = Boolean(onActivateWorkspaceTab) && !hasSameRootMaterializedWorktree;
+  const childrenPanelId = `sidebar-project-children-${encodeURIComponent(group.path)}`;
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -627,27 +655,43 @@ function ProjectBranchSection({
         }
         onClick={onSelect}
         auxActions={auxActions}
-        hasChildren={hasBranches}
+        hasChildren={hasBranches || hasCatalog}
         expanded={expanded}
         toggleTitle={expanded ? t('sidebar.collapse') : t('sidebar.expand')}
+        controlsId={childrenPanelId}
         onToggle={(event) => {
           event.stopPropagation();
           setExpanded((value) => !value);
         }}
       />
-      {!collapsed && hasBranches && expanded && (
-        <ProjectBranchTree
-          projectPath={group.path}
-          projectName={group.name}
-          branches={branches}
-          error={error}
-          refresh={refresh}
-          selectedWorktreePath={selectedWorktreePath}
-          onOpenTerminal={onOpenTerminal}
-          onSelectWorktree={onSelectWorktree}
-          onCreateWorktreeAndOpen={onCreateWorktreeAndOpen}
-          getWorktreeAttentionCount={getWorktreeAttentionCount}
-        />
+      {!collapsed && (hasBranches || hasCatalog) && (
+        <div id={childrenPanelId} hidden={!expanded}>
+          {expanded && hasCatalog && onActivateWorkspaceTab && (
+            <WorkspaceScopeCatalog
+              rootPath={group.path}
+              onActivate={(ref) => onActivateWorkspaceTab(ref, {
+                projectPath: group.path,
+                worktreePath: null,
+                worktreeLabel: null,
+              })}
+            />
+          )}
+          {expanded && hasBranches && (
+            <ProjectBranchTree
+              projectPath={group.path}
+              projectName={group.name}
+              branches={branches}
+              error={error}
+              refresh={refresh}
+              selectedWorktreePath={selectedWorktreePath}
+              onOpenTerminal={onOpenTerminal}
+              onSelectWorktree={onSelectWorktree}
+              onCreateWorktreeAndOpen={onCreateWorktreeAndOpen}
+              getWorktreeAttentionCount={getWorktreeAttentionCount}
+              onActivateWorkspaceTab={onActivateWorkspaceTab}
+            />
+          )}
+        </div>
       )}
     </div>
   );
@@ -682,6 +726,10 @@ interface ProjectBranchTreeProps {
     branchLabel?: string,
   ) => void;
   onSelectWorktree: (projectPath: string, worktreePath: string, label?: string | null) => void;
+  onActivateWorkspaceTab?: (
+    ref: WorkspaceCatalogTabRef,
+    owner: WorkspaceCatalogScopeOwner,
+  ) => void;
   onCreateWorktreeAndOpen: (
     projectPath: string,
     projectName: string,
@@ -708,12 +756,16 @@ function ProjectBranchTree({
   selectedWorktreePath,
   onOpenTerminal,
   onSelectWorktree,
+  onActivateWorkspaceTab,
   onCreateWorktreeAndOpen,
   getWorktreeAttentionCount,
 }: ProjectBranchTreeProps) {
   const { t } = useTranslation('terminal');
   const [showAll, setShowAll] = useState(false);
   const [creatingBranch, setCreatingBranch] = useState<string | null>(null);
+  const [expandedWorktrees, setExpandedWorktrees] = useState<Set<string>>(
+    () => new Set(),
+  );
   const visibleBranches = visibleBranchRows(branches, showAll);
   const hiddenCount = branches.length - visibleBranches.length;
 
@@ -754,6 +806,11 @@ function ProjectBranchTree({
           const detailClass = branch.isCurrent
             ? 'text-primary/70'
             : 'text-muted-foreground';
+          const hasCatalog = Boolean(worktreePath && onActivateWorkspaceTab);
+          const worktreeExpanded = expandedWorktrees.has(branch.branch);
+          const catalogPanelId = `sidebar-worktree-catalog-${encodeURIComponent(
+            `${projectPath}:${branch.branch}:${worktreePath}`,
+          )}`;
           const runBranchAction = async (event: MouseEvent | KeyboardEvent) => {
             event.stopPropagation();
             if (isCreating) return;
@@ -776,105 +833,124 @@ function ProjectBranchTree({
             }
           };
           return (
-            <button
-              key={branch.branch}
-              type="button"
-              title={
-                worktreePath
-                  ? `${branch.branch} — ${worktreePath}`
-                  : branch.branch
-              }
-              onClick={() => onSelectWorktree(projectPath, targetWorktreePath, branch.branch)}
-              className={[
-                'group relative flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent',
-                isSelected ? 'bg-primary/10 text-primary' : branchTextClass,
-              ].join(' ')}
-            >
-              {isSelected && (
-                <span
-                  aria-hidden="true"
-                  className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-primary"
-                />
-              )}
-              <span className={['shrink-0 group-hover:text-primary', branchIconClass].join(' ')}>
-                <GitBranch className="h-3.5 w-3.5" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium">{branch.branch}</span>
-                {detail && (
-                  <span className={['block truncate text-[11px]', detailClass].join(' ')}>
-                    {detail}
-                  </span>
+            <div key={branch.branch} data-testid="sidebar-worktree-section">
+              <div className="group flex min-w-0 items-stretch gap-0.5">
+                {hasCatalog ? (
+                  <button
+                    type="button"
+                    data-testid="sidebar-worktree-disclosure-toggle"
+                    aria-expanded={worktreeExpanded}
+                    aria-controls={catalogPanelId}
+                    aria-label={worktreeExpanded ? t('sidebar.collapse') : t('sidebar.expand')}
+                    title={worktreeExpanded ? t('sidebar.collapse') : t('sidebar.expand')}
+                    onClick={() => setExpandedWorktrees((current) => {
+                      const next = new Set(current);
+                      if (next.has(branch.branch)) next.delete(branch.branch);
+                      else next.add(branch.branch);
+                      return next;
+                    })}
+                    className="flex w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {worktreeExpanded
+                      ? <ChevronDown className="h-3 w-3" aria-hidden="true" />
+                      : <ChevronRight className="h-3 w-3" aria-hidden="true" />}
+                  </button>
+                ) : (
+                  <span aria-hidden="true" className="w-6 shrink-0" />
                 )}
-              </span>
-              {branchAttentionCount > 0 && (
-                <span
-                  data-testid="sidebar-worktree-attention-count"
-                  title={t('sidebar.attentionCount', {
-                    count: branchAttentionCount,
-                    defaultValue: '{{count}} items need attention',
-                  })}
-                  className="shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-warning"
+                <button
+                  type="button"
+                  title={worktreePath ? `${branch.branch} — ${worktreePath}` : branch.branch}
+                  onClick={() => onSelectWorktree(
+                    projectPath,
+                    targetWorktreePath,
+                    branch.branch,
+                  )}
+                  className={[
+                    'relative flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    isSelected ? 'bg-primary/10 text-primary' : branchTextClass,
+                  ].join(' ')}
                 >
-                  {branchAttentionCount > 99 ? '99+' : branchAttentionCount}
-                </span>
+                  {isSelected && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute bottom-1.5 left-0 top-1.5 w-0.5 rounded-full bg-primary"
+                    />
+                  )}
+                  <span className={['shrink-0 group-hover:text-primary', branchIconClass].join(' ')}>
+                    <GitBranch className="h-3.5 w-3.5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{branch.branch}</span>
+                    {detail && (
+                      <span className={['block truncate text-[11px]', detailClass].join(' ')}>
+                        {detail}
+                      </span>
+                    )}
+                  </span>
+                  {branchAttentionCount > 0 && (
+                    <span
+                      data-testid="sidebar-worktree-attention-count"
+                      title={t('sidebar.attentionCount', {
+                        count: branchAttentionCount,
+                        defaultValue: '{{count}} items need attention',
+                      })}
+                      className="shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-warning"
+                    >
+                      {branchAttentionCount > 99 ? '99+' : branchAttentionCount}
+                    </span>
+                  )}
+                  {branch.isCurrent && (
+                    <span
+                      aria-label={t('sidebar.currentBranch', { defaultValue: 'Current branch' })}
+                      title={t('sidebar.currentBranch', { defaultValue: 'Current branch' })}
+                      className="mr-0.5 shrink-0 rounded bg-primary/15 px-1 py-0.5 text-[11px] font-medium leading-none text-primary"
+                    >
+                      {t('sidebar.currentShort', { defaultValue: 'Current' })}
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  disabled={isCreating}
+                  aria-label={worktreePath
+                    ? t('sidebar.openWorktreeTerminal')
+                    : t('sidebar.createWorktree', {
+                        defaultValue: 'Create worktree and open terminal',
+                      })}
+                  title={worktreePath
+                    ? t('sidebar.openWorktreeTerminal')
+                    : t('sidebar.createWorktree', {
+                        defaultValue: 'Create worktree and open terminal',
+                      })}
+                  onClick={(event) => void runBranchAction(event)}
+                  className="flex w-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-60 transition-opacity hover:bg-accent hover:text-primary group-hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+                >
+                  {isCreating
+                    ? <Loader2
+                        className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none"
+                        aria-hidden="true"
+                      />
+                    : worktreePath
+                      ? <Terminal className="h-3.5 w-3.5" aria-hidden="true" />
+                      : <Plus className="h-3.5 w-3.5" aria-hidden="true" />}
+                </button>
+              </div>
+              {hasCatalog && worktreePath && onActivateWorkspaceTab && (
+                <div id={catalogPanelId} hidden={!worktreeExpanded}>
+                  {worktreeExpanded && (
+                    <WorkspaceScopeCatalog
+                      rootPath={worktreePath}
+                      onActivate={(ref) => onActivateWorkspaceTab(ref, {
+                        projectPath,
+                        worktreePath,
+                        worktreeLabel: branch.branch,
+                      })}
+                    />
+                  )}
+                </div>
               )}
-              {branch.isCurrent && (
-                <span
-                  aria-label={t('sidebar.currentBranch', { defaultValue: 'Current branch' })}
-                  title={t('sidebar.currentBranch', { defaultValue: 'Current branch' })}
-                  className="mr-0.5 shrink-0 rounded bg-primary/15 px-1 py-0.5 text-[11px] font-medium leading-none text-primary"
-                >
-                  {t('sidebar.currentShort', { defaultValue: 'Current' })}
-                </span>
-              )}
-              {isCreating ? (
-                <Loader2
-                  className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground"
-                  aria-label={t('sidebar.creatingWorktree', {
-                    defaultValue: 'Creating worktree...',
-                  })}
-                />
-              ) : worktreePath ? (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  aria-label={t('sidebar.openWorktreeTerminal')}
-                  title={t('sidebar.openWorktreeTerminal')}
-                  onClick={runBranchAction}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      void runBranchAction(event);
-                    }
-                  }}
-                  className="shrink-0 text-muted-foreground opacity-60 transition-opacity hover:text-primary group-hover:opacity-100"
-                >
-                  <Terminal className="h-3.5 w-3.5" />
-                </span>
-              ) : (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  aria-label={t('sidebar.createWorktree', {
-                    defaultValue: 'Create worktree and open terminal',
-                  })}
-                  title={t('sidebar.createWorktree', {
-                    defaultValue: 'Create worktree and open terminal',
-                  })}
-                  onClick={runBranchAction}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      void runBranchAction(event);
-                    }
-                  }}
-                  className="shrink-0 text-muted-foreground opacity-60 transition-opacity hover:text-primary group-hover:opacity-100"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </span>
-              )}
-            </button>
+            </div>
           );
         })}
         {hiddenCount > 0 && (
@@ -911,6 +987,7 @@ interface SidebarRowProps {
   hasChildren?: boolean;
   expanded?: boolean;
   toggleTitle?: string;
+  controlsId?: string;
   onToggle?: (e: MouseEvent) => void;
 }
 
@@ -931,23 +1008,15 @@ const SidebarRow = memo(function SidebarRow({
   hasChildren = false,
   expanded = false,
   toggleTitle,
+  controlsId,
   onToggle,
 }: SidebarRowProps) {
   const { t } = useTranslation('terminal');
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <div
       onContextMenu={onContextMenu}
-      title={
-        collapsed
-          ? `${label} (${count})${
-              attentionCount > 0 ? ` · ${attentionCount}` : ''
-            }`
-          : subLabel || label
-      }
       className={[
-        'group relative flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors',
+        'group relative flex w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors',
         collapsed ? 'justify-center' : '',
         selected
           ? 'bg-primary/10 text-primary'
@@ -967,27 +1036,22 @@ const SidebarRow = memo(function SidebarRow({
           className="flex h-full w-4 shrink-0 items-center justify-center"
         >
           {hasChildren && onToggle ? (
-            <span
-              role="button"
-              tabIndex={0}
+            <button
+              type="button"
               data-testid="sidebar-disclosure-toggle"
+              aria-expanded={expanded}
+              aria-controls={controlsId}
+              aria-label={toggleTitle}
               onClick={onToggle}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onToggle(e as unknown as MouseEvent);
-                }
-              }}
               title={toggleTitle}
-              className="flex h-5 w-4 items-center justify-center text-muted-foreground hover:text-primary"
+              className="flex h-5 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {expanded ? (
                 <ChevronDown className="h-3 w-3" />
               ) : (
                 <ChevronRight className="h-3 w-3" />
               )}
-            </span>
+            </button>
           ) : (
             <span
               aria-hidden="true"
@@ -997,15 +1061,30 @@ const SidebarRow = memo(function SidebarRow({
           )}
         </span>
       )}
-      <span className="relative shrink-0">
-        {icon}
-        {(unread > 0 || attentionCount > 0) && (
-          <AttentionDot size="sm" className="absolute -right-1 -top-1" />
-        )}
-      </span>
+      <button
+        type="button"
+        onClick={onClick}
+        title={
+          collapsed
+            ? `${label} (${count})${
+                attentionCount > 0 ? ` · ${attentionCount}` : ''
+              }`
+            : subLabel || label
+        }
+        className={[
+          'flex min-w-0 flex-1 items-center gap-2 self-stretch rounded py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          collapsed ? 'justify-center' : '',
+        ].join(' ')}
+      >
+        <span className="relative shrink-0">
+          {icon}
+          {(unread > 0 || attentionCount > 0) && (
+            <AttentionDot size="sm" className="absolute -right-1 -top-1" />
+          )}
+        </span>
 
-      {!collapsed && (
-        <>
+        {!collapsed && (
+          <>
           {/* Single-line label; full path lives in the button `title` tooltip
               so the row height stays constant (no layout shift on hover). */}
           <span
@@ -1042,45 +1121,38 @@ const SidebarRow = memo(function SidebarRow({
           >
             {count}
           </span>
-          {/* Hover actions float over the row's right edge instead of occupying
-              flow width — otherwise their (invisible) boxes would push the count
-              badge left by a per-row-variable amount and misalign it. On hover
-              the badge fades out and these fade in, so they never overlap. */}
-          {auxActions.length > 0 && (
-            <span
-              className={[
-                'absolute top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100',
-                dragHandleReserved ? 'right-8' : 'right-2',
-              ].join(' ')}
+          </>
+        )}
+      </button>
+      {/* Hover actions float over the row's right edge instead of occupying
+          flow width — otherwise their (invisible) boxes would push the count
+          badge left by a per-row-variable amount and misalign it. On hover
+          the badge fades out and these fade in, so they never overlap. */}
+      {!collapsed && auxActions.length > 0 && (
+        <span
+          className={[
+            'absolute top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100',
+            dragHandleReserved ? 'right-8' : 'right-2',
+          ].join(' ')}
+        >
+          {auxActions.map((action) => (
+            <button
+              key={action.key}
+              type="button"
+              onClick={action.onClick}
+              title={action.title}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              {auxActions.map((action) => (
-                <span
-                  key={action.key}
-                  role="button"
-                  tabIndex={0}
-                  onClick={action.onClick}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      action.onClick(e as unknown as MouseEvent);
-                    }
-                  }}
-                  title={action.title}
-                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-primary"
-                >
-                  {action.icon}
-                </span>
-              ))}
-            </span>
-          )}
-          {dragHandleReserved &&
-            (dragHandle ?? (
-              <span aria-hidden="true" className="h-5 w-5 shrink-0" />
-            ))}
-        </>
+              {action.icon}
+            </button>
+          ))}
+        </span>
       )}
-    </button>
+      {!collapsed && dragHandleReserved &&
+        (dragHandle ?? (
+          <span aria-hidden="true" className="h-5 w-5 shrink-0" />
+        ))}
+    </div>
   );
 }, areSidebarRowPropsEqual);
 
@@ -1098,6 +1170,7 @@ function areSidebarRowPropsEqual(prev: SidebarRowProps, next: SidebarRowProps): 
     prev.hasChildren === next.hasChildren &&
     prev.expanded === next.expanded &&
     prev.toggleTitle === next.toggleTitle &&
+    prev.controlsId === next.controlsId &&
     renderIconsEqual(prev.icon, next.icon) &&
     auxActionsEqual(prev.auxActions, next.auxActions)
   );

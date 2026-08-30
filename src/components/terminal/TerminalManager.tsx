@@ -37,7 +37,10 @@ import { useOverlayStore } from '../../stores/overlayStore';
 import { TerminalView } from './TerminalView';
 import { CreateTerminalDialog } from './CreateTerminalDialog';
 import { EditTerminalDialog } from './EditTerminalDialog';
-import { ProjectSidebar } from './ProjectSidebar';
+import {
+  ProjectSidebar,
+  type WorkspaceCatalogScopeOwner,
+} from './ProjectSidebar';
 import { MobileAccessSettings } from '../settings/MobileAccessSettings';
 import { ArchivedCardsPanel } from './ArchivedCardsPanel';
 import { SessionRecoveryPanel } from './SessionRecoveryPanel';
@@ -80,7 +83,6 @@ import {
   DirtyTabCloseDialog,
   TerminalTabCloseDialog,
   useWorkspaceSession,
-  WorkspaceHome,
   WorkspaceTabStrip,
 } from '../workspace';
 import { joinRootRelative } from '../../lib/workspace/paths';
@@ -89,6 +91,12 @@ import type { GitStatusEntry } from '../../lib/tauri-bridge';
 import { publishWorkspaceEditorDiagnostics } from '../../lib/lifecycle/workspaceEditorDiagnostics';
 import { useMobileWorkbenchSync } from './useMobileWorkbenchSync';
 import { useWorkspaceAgentMetadata } from '../workspace/useWorkspaceAgentMetadata';
+import {
+  WorkspaceCatalogProvider,
+  useWorkspaceCatalog,
+  useWorkspaceCatalogEntries,
+  type WorkspaceCatalogTabRef,
+} from '../workspace/useWorkspaceCatalog';
 import {
   useTerminalNavigation,
   type TerminalViewMode,
@@ -539,14 +547,13 @@ export function TerminalManager() {
   });
   const {
     selectedWorkspaceId,
-    workspace,
     workspaceRootPath,
-    workspaceUnavailable,
     loading: workspaceLoading,
     error: workspaceError,
     tabs: workspaceTabs,
     activeTabId: activeContentTabId,
     dirtyByTabId: dirtyWorkspaceTabIds,
+    conflictByTabId: conflictWorkspaceTabIds,
     workspacePanelState,
     homeActive,
     terminalTabActive,
@@ -574,9 +581,10 @@ export function TerminalManager() {
     requestArchiveCard,
     requestCardWorkspaceReset,
     selectWorkspaceByRoot,
+    activateExistingWorkspaceTab,
+    cancelPendingWorkspaceActivation,
     diagnostics: workspaceDiagnostics,
   } = workspaceSession;
-  useWorkspaceAgentMetadata(workspaceCards);
   // The desktop primary view is the sole authority for which main surface is
   // visible. Workspace loading/session state never covers another page by
   // itself.
@@ -588,6 +596,38 @@ export function TerminalManager() {
     requestedWorkspaceRoot &&
     samePath(workspaceRootPath, requestedWorkspaceRoot),
   );
+  const workspaceCatalogOverlay = useMemo(() => ({
+    workspaceId: selectedWorkspaceId,
+    rootPath: workspaceRootPath,
+    tabs: workspaceTabs,
+    dirtyByTabId: dirtyWorkspaceTabIds,
+    conflictByTabId: conflictWorkspaceTabIds,
+    activeTabId: activeContentTabId,
+    workspaceVisible: workspaceShellVisible && workspaceReady,
+  }), [
+    activeContentTabId,
+    conflictWorkspaceTabIds,
+    dirtyWorkspaceTabIds,
+    selectedWorkspaceId,
+    workspaceReady,
+    workspaceRootPath,
+    workspaceShellVisible,
+    workspaceTabs,
+  ]);
+  const workspaceCatalog = useWorkspaceCatalog(workspaceCatalogOverlay);
+  const workspaceCatalogEntries = useWorkspaceCatalogEntries(workspaceCatalog);
+  const catalogMetadataCards = useMemo(() => {
+    const registeredRoots = new Set(workspaceCatalog.getRegisteredRootKeys());
+    const cardIds = new Set(workspaceCards.map((card) => card.id));
+    for (const entry of workspaceCatalogEntries) {
+      if (!registeredRoots.has(entry.rootKey)) continue;
+      for (const tab of entry.tabs) {
+        if (tab.kind === 'terminal' && tab.cardId) cardIds.add(tab.cardId);
+      }
+    }
+    return cards.filter((card) => cardIds.has(card.id));
+  }, [cards, workspaceCards, workspaceCatalog, workspaceCatalogEntries]);
+  useWorkspaceAgentMetadata(catalogMetadataCards);
   useEffect(() => {
     if (primaryView === 'workspace' && !requestedWorkspaceRoot) {
       setPrimaryView('workbench');
@@ -679,26 +719,105 @@ export function TerminalManager() {
     setViewMode,
     setWorkbenchPanel,
   });
+  const workspaceNavigationRequestRef = useRef(0);
+  const hasConcreteWorkspaceTab = workspaceTabs.some(
+    (tab) => tab.kind === 'terminal' || tab.kind === 'file' || tab.kind === 'diff',
+  );
+  useEffect(() => {
+    if (
+      primaryView === 'workspace' &&
+      workspaceReady &&
+      (homeActive || !hasConcreteWorkspaceTab)
+    ) {
+      workspaceNavigationRequestRef.current += 1;
+      cancelPendingWorkspaceActivation();
+      handleSelectPrimaryViewBase('workbench');
+    }
+  }, [
+    cancelPendingWorkspaceActivation,
+    handleSelectPrimaryViewBase,
+    hasConcreteWorkspaceTab,
+    homeActive,
+    primaryView,
+    workspaceReady,
+  ]);
   const handleSelectPrimaryView = useCallback(
     (view: typeof primaryView) => {
-      handleSelectPrimaryViewBase(view);
-      if (view === 'workspace' && workspaceReady && activeTerminalCardId) {
-        focusMountedCard(activeTerminalCardId);
+      const request = workspaceNavigationRequestRef.current + 1;
+      workspaceNavigationRequestRef.current = request;
+      cancelPendingWorkspaceActivation();
+      if (view !== 'workspace') {
+        handleSelectPrimaryViewBase(view);
+        return;
       }
+
+      // Workspace is entered only after an authoritative concrete tab has
+      // been revalidated. The switch never creates a replacement tab.
+      handleSelectPrimaryViewBase('workbench');
+      if (!requestedWorkspaceRoot) return;
+      const entry = workspaceCatalog.getEntry(requestedWorkspaceRoot);
+      const selectedScopeReady = Boolean(
+        selectedWorkspaceId &&
+        workspaceReady &&
+        workspaceRootPath &&
+        samePath(workspaceRootPath, requestedWorkspaceRoot),
+      );
+      const sourceWorkspaceId = selectedScopeReady
+        ? selectedWorkspaceId
+        : entry.workspaceId;
+      if (!sourceWorkspaceId) return;
+      const sourceTabs = selectedScopeReady ? workspaceTabs : entry.tabs;
+      const concreteTabs = sourceTabs
+        .filter((tab) => (
+          tab.kind === 'terminal' || tab.kind === 'file' || tab.kind === 'diff'
+        ))
+        .sort((left, right) => left.sharedOrder - right.sharedOrder);
+      const tab = concreteTabs.find(
+        (candidate) => selectedScopeReady && candidate.id === activeContentTabId,
+      )
+        ?? concreteTabs[0];
+      if (!tab || tab.kind === 'home') return;
+      const ref: WorkspaceCatalogTabRef = {
+        workspaceId: sourceWorkspaceId,
+        rootPath: selectedScopeReady
+          ? (workspaceRootPath ?? requestedWorkspaceRoot)
+          : (entry.canonicalRoot ?? requestedWorkspaceRoot),
+        tabId: tab.id,
+        kind: tab.kind,
+        cardId: tab.cardId ?? null,
+        relativePath: tab.relativePath ?? null,
+      };
+      void activateExistingWorkspaceTab(ref).then((activated) => {
+        if (!activated) {
+          workspaceCatalog.invalidateWorkspace(ref.workspaceId);
+          return;
+        }
+        if (workspaceNavigationRequestRef.current === request) {
+          handleSelectPrimaryViewBase('workspace');
+        }
+      });
     },
     [
-      activeTerminalCardId,
-      focusMountedCard,
+      activateExistingWorkspaceTab,
+      activeContentTabId,
+      cancelPendingWorkspaceActivation,
       handleSelectPrimaryViewBase,
+      requestedWorkspaceRoot,
+      selectedWorkspaceId,
+      workspaceCatalog,
       workspaceReady,
+      workspaceRootPath,
+      workspaceTabs,
     ],
   );
   const handleSelectProjectScope = useCallback(
     (projectPath: string | null) => {
+      workspaceNavigationRequestRef.current += 1;
+      cancelPendingWorkspaceActivation();
       selectProject(projectPath);
       handleSelectPrimaryViewBase('workbench');
     },
-    [handleSelectPrimaryViewBase, selectProject],
+    [cancelPendingWorkspaceActivation, handleSelectPrimaryViewBase, selectProject],
   );
   const handleOpenWorkbenchTerminal = useCallback(
     (cardId: string) => {
@@ -713,11 +832,47 @@ export function TerminalManager() {
   );
   const handleSelectWorktreeScope = useCallback(
     (projectPath: string, worktreePath: string, label?: string | null) => {
+      workspaceNavigationRequestRef.current += 1;
+      cancelPendingWorkspaceActivation();
       selectWorktree(projectPath, worktreePath, label);
-      handleSelectPrimaryViewBase('workspace');
+      handleSelectPrimaryViewBase('workbench');
     },
-    [handleSelectPrimaryViewBase, selectWorktree],
+    [cancelPendingWorkspaceActivation, handleSelectPrimaryViewBase, selectWorktree],
   );
+  const handleActivateWorkspaceCatalogTab = useCallback((
+    ref: WorkspaceCatalogTabRef,
+    owner: WorkspaceCatalogScopeOwner,
+  ) => {
+    const request = workspaceNavigationRequestRef.current + 1;
+    workspaceNavigationRequestRef.current = request;
+    cancelPendingWorkspaceActivation();
+    if (owner.worktreePath) {
+      selectWorktree(
+        owner.projectPath,
+        owner.worktreePath,
+        owner.worktreeLabel,
+      );
+    } else {
+      selectProject(owner.projectPath);
+    }
+    handleSelectPrimaryViewBase('workbench');
+    void activateExistingWorkspaceTab(ref).then((activated) => {
+      if (!activated) {
+        workspaceCatalog.invalidateWorkspace(ref.workspaceId);
+        return;
+      }
+      if (workspaceNavigationRequestRef.current === request) {
+        handleSelectPrimaryViewBase('workspace');
+      }
+    });
+  }, [
+    activateExistingWorkspaceTab,
+    cancelPendingWorkspaceActivation,
+    handleSelectPrimaryViewBase,
+    selectProject,
+    selectWorktree,
+    workspaceCatalog,
+  ]);
   const {
     editingCard,
     pendingConfiguration: pendingEditingConfiguration,
@@ -1055,20 +1210,23 @@ export function TerminalManager() {
         isMobile ? 'absolute inset-y-0 left-0 shadow-2xl' : '',
         isMobile && !sidebarOpen ? '-translate-x-full' : 'translate-x-0'
       ].join(' ')}>
-        <ProjectSidebar
-          onCloseMobile={() => setSidebarOpen(false)}
-          onCreateTerminal={() => setCreateOpen(true)}
-          primaryView={primaryView}
-          onSelectPrimaryView={handleSelectPrimaryView}
-          onSelectProject={handleSelectProjectScope}
-          onSelectWorktree={handleSelectWorktreeScope}
-          attentionCount={allProjectsWorkbenchModel.summary.attention}
-          getProjectAttentionCount={getProjectAttentionCount}
-          getWorktreeAttentionCount={getWorktreeAttentionCount}
-          compact={isSidebarCompact}
-          isMobile={isMobile}
-          onExitMobileView={() => setMobileViewActive(false)}
-        />
+        <WorkspaceCatalogProvider controller={workspaceCatalog}>
+          <ProjectSidebar
+            onCloseMobile={() => setSidebarOpen(false)}
+            onCreateTerminal={() => setCreateOpen(true)}
+            primaryView={primaryView}
+            onSelectPrimaryView={handleSelectPrimaryView}
+            onSelectProject={handleSelectProjectScope}
+            onSelectWorktree={handleSelectWorktreeScope}
+            onActivateWorkspaceTab={handleActivateWorkspaceCatalogTab}
+            attentionCount={allProjectsWorkbenchModel.summary.attention}
+            getProjectAttentionCount={getProjectAttentionCount}
+            getWorktreeAttentionCount={getWorktreeAttentionCount}
+            compact={isSidebarCompact}
+            isMobile={isMobile}
+            onExitMobileView={() => setMobileViewActive(false)}
+          />
+        </WorkspaceCatalogProvider>
       </div>
 
       {/* Mobile Sidebar Backdrop */}
@@ -1266,7 +1424,6 @@ export function TerminalManager() {
             activeTabId={activeContentTabId}
             dirtyTabIds={dirtyWorkspaceTabIds}
             workspaceCards={workspaceCards}
-            homeLabel={t('workspace.homeTab', { defaultValue: 'Home' })}
             closeLabel={t('common.close', { defaultValue: 'Close' })}
             closeCurrentLabel={t('workspace.closeCurrentTab', { defaultValue: 'Close current' })}
             closeAllLabel={t('workspace.closeAllTabs', { defaultValue: 'Close all' })}
@@ -1387,21 +1544,25 @@ export function TerminalManager() {
             data-testid="workspace-scope-loading"
           >
             {workspaceError && !workspaceLoading ? (
-              <WorkspaceHome
-                workspace={null}
-                workspaceCards={[]}
-                tabs={[]}
-                dirtyByTabId={{}}
-                error={workspaceError}
-                onOpenTerminal={handleOpenTerminal}
-                onCreateTerminal={() => setCreateOpen(true)}
-                onActivateTab={() => undefined}
-                onRetry={() => {
-                  if (requestedWorkspaceRoot) {
-                    void selectWorkspaceByRoot(requestedWorkspaceRoot);
-                  }
-                }}
-              />
+              <div className="flex h-full items-center justify-center px-6">
+                <div
+                  role="alert"
+                  className="max-w-md rounded-md border border-destructive/30 bg-background/80 p-4 text-sm text-foreground"
+                >
+                  <p className="text-destructive">{workspaceError}</p>
+                  <button
+                    type="button"
+                    className="mt-3 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                    onClick={() => {
+                      if (requestedWorkspaceRoot) {
+                        void selectWorkspaceByRoot(requestedWorkspaceRoot);
+                      }
+                    }}
+                  >
+                    {t('workspace.retry', { defaultValue: 'Retry' })}
+                  </button>
+                </div>
+              </div>
             ) : (
               <div
                 role="status"
@@ -1410,28 +1571,6 @@ export function TerminalManager() {
                 {t('workspace.loading', { defaultValue: 'Loading workspace…' })}
               </div>
             )}
-          </div>
-        )}
-
-        {/* Workspace home — no terminal required */}
-        {workspaceShellVisible && workspaceReady && homeActive && (
-          <div className="absolute inset-0 z-[1] bg-background/20">
-            <WorkspaceHome
-              workspace={workspace}
-              workspaceCards={workspaceCards}
-              tabs={workspaceTabs}
-              dirtyByTabId={dirtyWorkspaceTabIds}
-              unavailable={workspaceUnavailable}
-              error={workspaceError}
-              onOpenTerminal={handleOpenTerminal}
-              onCreateTerminal={() => setCreateOpen(true)}
-              onActivateTab={(tabId) => void setActiveContentTabId(tabId)}
-              onRetry={() => {
-                if (requestedWorkspaceRoot) {
-                  void selectWorkspaceByRoot(requestedWorkspaceRoot);
-                }
-              }}
-            />
           </div>
         )}
 
