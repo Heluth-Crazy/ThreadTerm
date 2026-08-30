@@ -8,7 +8,10 @@ import { pty } from '../../lib/tauri-bridge';
 import { localWorkspaceAuthority } from '../../lib/workspace/localAuthority';
 import { workspaceClient } from '../../lib/workspace/client';
 import { HOME_TAB_ID, type WorkspaceRecord } from '../../lib/workspace/types';
-import { useWorkspaceSession } from './useWorkspaceSession';
+import {
+  type TerminalTabOpenResult,
+  useWorkspaceSession,
+} from './useWorkspaceSession';
 
 const t = ((
   key: string,
@@ -271,7 +274,6 @@ describe('useWorkspaceSession worktree isolation', () => {
   });
 
   it('keeps the latest terminal active when an earlier terminal open finishes late', async () => {
-    const slowRecord = await localWorkspaceAuthority.ensure('/slow-terminal');
     const fastRecord = await localWorkspaceAuthority.ensure('/fast-terminal');
     const slowCardId = useTerminalStore.getState().createCard({
       projectName: 'slow',
@@ -293,7 +295,7 @@ describe('useWorkspaceSession worktree isolation', () => {
     vi.spyOn(workspaceClient, 'ensure').mockImplementation(async (rootPath) => {
       if (rootPath === '/slow-terminal') {
         await slowGate;
-        return slowRecord;
+        throw new Error('slow workspace failed');
       }
       return fastRecord;
     });
@@ -308,16 +310,21 @@ describe('useWorkspaceSession worktree isolation', () => {
       }),
     );
 
-    let slowOpen: Promise<void> = Promise.resolve();
+    let slowOpen: Promise<TerminalTabOpenResult> = Promise.resolve({ outcome: 'superseded' });
+    let fastOpen!: TerminalTabOpenResult;
     await act(async () => {
       slowOpen = result.current.openTerminalTab(slowCard);
-      await result.current.openTerminalTab(fastCard);
+      fastOpen = await result.current.openTerminalTab(fastCard);
     });
+    expect(fastOpen).toEqual(expect.objectContaining({
+      outcome: 'opened',
+      tab: expect.objectContaining({ cardId: fastCardId }),
+    }));
     expect(result.current.activeTerminalCardId).toBe(fastCardId);
 
     await act(async () => {
       releaseSlow?.();
-      await slowOpen;
+      expect(await slowOpen).toEqual({ outcome: 'superseded' });
     });
 
     expect(result.current.workspaceRootPath).toBe('/fast-terminal');
@@ -352,21 +359,208 @@ describe('useWorkspaceSession worktree isolation', () => {
       }),
     );
 
-    let firstOpen: Promise<void> = Promise.resolve();
-    let duplicateOpen: Promise<void> = Promise.resolve();
+    let firstOpen: Promise<TerminalTabOpenResult> = Promise.resolve({ outcome: 'superseded' });
+    let duplicateOpen: Promise<TerminalTabOpenResult> = Promise.resolve({ outcome: 'superseded' });
     act(() => {
       firstOpen = result.current.openTerminalTab(card);
       duplicateOpen = result.current.openTerminalTab(card);
     });
     expect(duplicateOpen).toBe(firstOpen);
 
+    let resultOfOpen!: TerminalTabOpenResult;
     await act(async () => {
       releaseEnsure?.();
-      await Promise.all([firstOpen, duplicateOpen]);
+      [resultOfOpen] = await Promise.all([firstOpen, duplicateOpen]);
     });
 
     expect(openTab).toHaveBeenCalledTimes(1);
+    expect(resultOfOpen).toEqual(expect.objectContaining({
+      outcome: 'opened',
+      tab: expect.objectContaining({ cardId }),
+    }));
     expect(result.current.activeTerminalCardId).toBe(cardId);
+  });
+
+  it('returns failed when the latest workspace ensure fails', async () => {
+    const cardId = useTerminalStore.getState().createCard({
+      projectName: 'failed ensure',
+      projectPath: '/failed-ensure',
+      terminalType: 'shell',
+    });
+    const card = useTerminalStore.getState().cards.find((item) => item.id === cardId)!;
+    vi.spyOn(workspaceClient, 'ensure').mockRejectedValue(new Error('ensure unavailable'));
+    const { result } = renderHook(() =>
+      useWorkspaceSession({
+        cards: useTerminalStore.getState().cards,
+        focusedCardId: null,
+        selectedProjectPath: null,
+        selectedWorktreePath: null,
+        t,
+      }),
+    );
+
+    let opened!: TerminalTabOpenResult;
+    await act(async () => {
+      opened = await result.current.openTerminalTab(card);
+    });
+
+    expect(opened).toEqual(expect.objectContaining({
+      outcome: 'failed',
+      error: expect.objectContaining({ message: 'ensure unavailable' }),
+    }));
+  });
+
+  it('returns failed when the latest terminal tab open fails', async () => {
+    const cardId = useTerminalStore.getState().createCard({
+      projectName: 'failed tab',
+      projectPath: '/failed-tab',
+      terminalType: 'shell',
+    });
+    const card = useTerminalStore.getState().cards.find((item) => item.id === cardId)!;
+    vi.spyOn(workspaceClient, 'openTab').mockRejectedValue(new Error('tab unavailable'));
+    const { result } = renderHook(() =>
+      useWorkspaceSession({
+        cards: useTerminalStore.getState().cards,
+        focusedCardId: null,
+        selectedProjectPath: null,
+        selectedWorktreePath: null,
+        t,
+      }),
+    );
+
+    let opened!: TerminalTabOpenResult;
+    await act(async () => {
+      opened = await result.current.openTerminalTab(card);
+    });
+
+    expect(opened).toEqual(expect.objectContaining({
+      outcome: 'failed',
+      error: expect.objectContaining({ message: 'tab unavailable' }),
+    }));
+  });
+
+  it('prepares a canonical terminal tab for focus without a second open', async () => {
+    const cardId = useTerminalStore.getState().createCard({
+      projectName: 'prepared terminal',
+      projectPath: '/prepared-terminal',
+      terminalType: 'shell',
+    });
+    const card = useTerminalStore.getState().cards.find((item) => item.id === cardId)!;
+    const openTab = vi.spyOn(workspaceClient, 'openTab');
+    const setActiveTab = vi.spyOn(workspaceClient, 'setActiveTab');
+    const { result, rerender } = renderHook(
+      ({ focusedCardId }: { focusedCardId: string | null }) =>
+        useWorkspaceSession({
+          cards: useTerminalStore.getState().cards,
+          focusedCardId,
+          selectedProjectPath: null,
+          selectedWorktreePath: null,
+          t,
+        }),
+      { initialProps: { focusedCardId: null as string | null } },
+    );
+
+    let prepared!: TerminalTabOpenResult;
+    await act(async () => {
+      prepared = await result.current.prepareTerminalTabForFocus(card);
+    });
+    expect(prepared).toEqual(expect.objectContaining({
+      outcome: 'opened',
+      tab: expect.objectContaining({ cardId }),
+    }));
+    result.current.commitPreparedTerminalFocus(cardId);
+    rerender({ focusedCardId: cardId });
+    await act(async () => {});
+
+    expect(openTab).toHaveBeenCalledTimes(1);
+    expect(setActiveTab).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a pending canonical preparation current while null focus receives restored cards', async () => {
+    const cardId = useTerminalStore.getState().createCard({
+      projectName: 'restored terminal',
+      projectPath: '/restored-terminal',
+      terminalType: 'shell',
+    });
+    const card = useTerminalStore.getState().cards.find((item) => item.id === cardId)!;
+    const record = await localWorkspaceAuthority.ensure('/restored-terminal');
+    let releaseEnsure!: () => void;
+    const ensureGate = new Promise<void>((resolve) => {
+      releaseEnsure = resolve;
+    });
+    vi.spyOn(workspaceClient, 'ensure').mockImplementation(async () => {
+      await ensureGate;
+      return record;
+    });
+    const openTab = vi.spyOn(workspaceClient, 'openTab');
+    const setActiveTab = vi.spyOn(workspaceClient, 'setActiveTab');
+    const { result, rerender } = renderHook(
+      ({ cards, focusedCardId }: {
+        cards: (typeof card)[];
+        focusedCardId: string | null;
+      }) => useWorkspaceSession({
+        cards,
+        focusedCardId,
+        selectedProjectPath: null,
+        selectedWorktreePath: null,
+        t,
+      }),
+      { initialProps: { cards: [] as (typeof card)[], focusedCardId: null as string | null } },
+    );
+
+    let prepared!: TerminalTabOpenResult;
+    let pending!: Promise<TerminalTabOpenResult>;
+    act(() => {
+      pending = result.current.prepareTerminalTabForFocus(card);
+    });
+    rerender({ cards: useTerminalStore.getState().cards, focusedCardId: null });
+    await act(async () => {
+      releaseEnsure();
+      prepared = await pending;
+    });
+
+    expect(prepared).toEqual(expect.objectContaining({ outcome: 'opened' }));
+    result.current.commitPreparedTerminalFocus(cardId);
+    rerender({ cards: useTerminalStore.getState().cards, focusedCardId: cardId });
+    await act(async () => {});
+    expect(openTab).toHaveBeenCalledTimes(1);
+    expect(setActiveTab).toHaveBeenCalledTimes(1);
+  });
+
+  it('supersedes pending normal terminal navigation after an actual focus-to-null transition', async () => {
+    const cardId = useTerminalStore.getState().createCard({
+      projectName: 'focus transition',
+      projectPath: '/focus-transition',
+      terminalType: 'shell',
+    });
+    const card = useTerminalStore.getState().cards.find((item) => item.id === cardId)!;
+    const record = await localWorkspaceAuthority.ensure('/focus-transition');
+    let releaseEnsure!: () => void;
+    const ensureGate = new Promise<void>((resolve) => {
+      releaseEnsure = resolve;
+    });
+    const ensure = vi.spyOn(workspaceClient, 'ensure').mockImplementation(async () => {
+      await ensureGate;
+      return record;
+    });
+    const openTab = vi.spyOn(workspaceClient, 'openTab');
+    const { rerender } = renderHook(
+      ({ focusedCardId }: { focusedCardId: string | null }) => useWorkspaceSession({
+        cards: [card],
+        focusedCardId,
+        selectedProjectPath: null,
+        selectedWorktreePath: null,
+        t,
+      }),
+      { initialProps: { focusedCardId: cardId as string | null } },
+    );
+
+    await waitFor(() => expect(ensure).toHaveBeenCalledTimes(1));
+    rerender({ focusedCardId: null });
+    await act(async () => {
+      releaseEnsure();
+    });
+    expect(openTab).not.toHaveBeenCalled();
   });
 
   it('opens the first focused terminal from live state while render cards lag', async () => {

@@ -409,6 +409,48 @@ describe('deriveAttentionItems', () => {
     ]);
   });
 
+  it('anchors terminal-state episodes to status transitions instead of output activity', () => {
+    const waiting = card('waiting', {
+      status: 'waiting',
+      lastActivity: NOW - 2_000,
+      events: [{ at: NOW - 3_000, kind: 'status', summary: 'waiting' }],
+    });
+    const [item] = derive({ cards: [waiting] });
+    expect(item).toMatchObject({
+      kind: 'waiting_input',
+      sourceKind: 'terminal_state',
+      occurredAt: NOW - 3_000,
+    });
+
+    const ignored = [ignoredAttentionEpisodeFromItem(item!, NOW - 1_000)];
+    const outputAdvanced = {
+      ...waiting,
+      lastActivity: NOW + 10_000,
+      lastOutput: 'renderer redraw after acknowledgement',
+    };
+    expect(
+      derive({ cards: [outputAdvanced], ignoredAttention: ignored }),
+    ).toEqual([]);
+
+    const reenteredWaiting = {
+      ...outputAdvanced,
+      events: [
+        ...outputAdvanced.events,
+        { at: NOW + 11_000, kind: 'status' as const, summary: 'running' },
+        { at: NOW + 12_000, kind: 'status' as const, summary: 'waiting' },
+      ],
+    };
+    expect(
+      derive({ cards: [reenteredWaiting], ignoredAttention: ignored }),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'waiting_input',
+        sourceKind: 'terminal_state',
+        occurredAt: NOW + 12_000,
+      }),
+    ]);
+  });
+
   it('counts running cards only when they have no attention', () => {
     const cards = [
       card('normal'),

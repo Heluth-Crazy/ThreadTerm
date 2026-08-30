@@ -113,8 +113,8 @@ describe('WorkbenchRulesPanel', () => {
 });
 
 describe('WorkbenchDetailPanel', () => {
-  it('shows only available evidence and keeps its footer action navigation-only', () => {
-    const onOpenTerminal = vi.fn();
+  it('shows only available evidence and delegates its footer action to terminal recovery', () => {
+    const onOpenTerminal = vi.fn().mockResolvedValue(true);
     const onClose = vi.fn();
 
     render(
@@ -170,7 +170,7 @@ describe('WorkbenchDetailPanel', () => {
         cards={[makeCard({ status: 'running' })]}
         notifications={[]}
         now={NOW}
-        onOpenTerminal={vi.fn()}
+        onOpenTerminal={vi.fn().mockResolvedValue(true)}
         onClose={vi.fn()}
       />,
     );
@@ -203,7 +203,7 @@ describe('WorkbenchDetailPanel', () => {
         cards={[makeCard()]}
         notifications={[]}
         now={NOW}
-        onOpenTerminal={vi.fn()}
+        onOpenTerminal={vi.fn().mockResolvedValue(true)}
         onClose={vi.fn()}
       />,
     );
@@ -216,5 +216,51 @@ describe('WorkbenchDetailPanel', () => {
       'whitespace-pre-wrap',
       'break-all',
     );
+  });
+
+  it('keeps the detail panel open when an async terminal open fails', async () => {
+    const onOpenTerminal = vi.fn().mockRejectedValue(new Error('recovery failed'));
+
+    render(
+      <WorkbenchDetailPanel
+        panel={{ kind: 'attention', attentionId: failedItem.id }}
+        attentionItems={[failedItem]}
+        groups={[]}
+        cards={[makeCard()]}
+        notifications={[]}
+        now={NOW}
+        onOpenTerminal={onOpenTerminal}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open terminal' }));
+
+    await Promise.resolve();
+    expect(onOpenTerminal).toHaveBeenCalledWith('card-1');
+    expect(screen.getByTestId('workbench-detail-panel')).toBeInTheDocument();
+  });
+
+  it('keeps the detail panel open when terminal recovery resolves unavailable', async () => {
+    const onOpenTerminal = vi.fn().mockResolvedValue(false);
+
+    render(
+      <WorkbenchDetailPanel
+        panel={{ kind: 'attention', attentionId: failedItem.id }}
+        attentionItems={[failedItem]}
+        groups={[]}
+        cards={[makeCard()]}
+        notifications={[]}
+        now={NOW}
+        onOpenTerminal={onOpenTerminal}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open terminal' }));
+
+    await Promise.resolve();
+    expect(onOpenTerminal).toHaveBeenCalledWith('card-1');
+    expect(screen.getByTestId('workbench-detail-panel')).toBeInTheDocument();
   });
 });

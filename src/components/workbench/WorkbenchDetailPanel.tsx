@@ -31,7 +31,7 @@ interface WorkbenchDetailPanelProps {
   cards: readonly TerminalCard[];
   notifications: readonly NotificationEntry[];
   now: number;
-  onOpenTerminal: (cardId: string) => void;
+  onOpenTerminal: (cardId: string) => Promise<boolean>;
   onClose: () => void;
 }
 
@@ -71,6 +71,9 @@ export function WorkbenchDetailPanel({
         ? attentionKindLabel(item.kind, t)
         : group?.projectName ??
           t('workbench.detail.unavailable', { defaultValue: 'Item unavailable' });
+  const safelyOpenTerminal = (cardId: string) => {
+    void onOpenTerminal(cardId).catch(() => undefined);
+  };
 
   return (
     <div
@@ -115,7 +118,7 @@ export function WorkbenchDetailPanel({
             group={group}
             cards={cards.filter((candidate) => group.cardIds.includes(candidate.id))}
             now={now}
-            onOpenTerminal={onOpenTerminal}
+            onOpenTerminal={safelyOpenTerminal}
           />
         ) : (
           <div className="rounded-md border border-dashed border-border p-4 text-center text-[11px] text-muted-foreground">
@@ -136,7 +139,7 @@ export function WorkbenchDetailPanel({
           <button
             type="button"
             onClick={() =>
-              onOpenTerminal(item ? item.cardId : (group?.cardIds[0] ?? ''))
+              safelyOpenTerminal(item ? item.cardId : (group?.cardIds[0] ?? ''))
             }
             className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-[11px] font-semibold text-primary-foreground"
           >

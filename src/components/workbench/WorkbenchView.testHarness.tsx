@@ -169,7 +169,7 @@ export const summary: WorkbenchSummary = {
 
 export function renderWorkbench(overrides: Partial<Parameters<typeof WorkbenchView>[0]> = {}) {
   const callbacks = {
-    onOpenTerminal: vi.fn(),
+    onOpenTerminal: vi.fn().mockResolvedValue(true),
     onAcknowledgeAttention: vi.fn(),
     onOpenAttention: vi.fn(),
     onIgnoreAttention: vi.fn(),

@@ -135,7 +135,7 @@ export function deriveAttentionItems(input: DeriveAttentionItemsInput): Attentio
             severity: 'warning',
             sourceKind: source ? 'notification' : 'terminal_state',
             sourceId: source?.id ?? card.id,
-            occurredAt: source?.at ?? card.lastActivity,
+            occurredAt: source?.at ?? terminalStateEpisodeAt(card),
             title: source?.title ?? card.projectName,
             detail: cleanDetail(source?.body ?? card.lastReplyPreview),
             reasonCode: 'waiting_state',
@@ -160,7 +160,7 @@ export function deriveAttentionItems(input: DeriveAttentionItemsInput): Attentio
             severity: 'critical',
             sourceKind: source ? 'notification' : 'terminal_state',
             sourceId: source?.id ?? card.id,
-            occurredAt: source?.at ?? card.lastActivity,
+            occurredAt: source?.at ?? terminalStateEpisodeAt(card),
             title: source?.title ?? card.projectName,
             detail: cleanDetail(source?.body ?? card.lastReplyPreview),
             reasonCode: 'failed_state',
@@ -187,7 +187,7 @@ export function deriveAttentionItems(input: DeriveAttentionItemsInput): Attentio
           severity: 'info',
           sourceKind: source ? 'notification' : 'terminal_state',
           sourceId: source?.id ?? card.id,
-          occurredAt: source?.at ?? card.lastActivity,
+          occurredAt: source?.at ?? terminalStateEpisodeAt(card),
           title: source?.title ?? card.projectName,
           detail: cleanDetail(source?.body ?? card.lastReplyPreview),
           reasonCode: 'completed_unread',
@@ -265,6 +265,19 @@ export function attentionFilterMatches(
   if (filter === 'all') return true;
   if (filter === 'waiting') return item.kind === 'waiting_input';
   return item.kind === filter;
+}
+
+/**
+ * A terminal-state attention item represents a status transition, not later
+ * output activity. Output and preview writes advance `lastActivity`, so using
+ * it after acknowledgement would incorrectly create a new episode.
+ */
+function terminalStateEpisodeAt(card: TerminalCard): number {
+  for (let index = card.events.length - 1; index >= 0; index -= 1) {
+    const event = card.events[index];
+    if (event?.kind === 'status') return event.at;
+  }
+  return card.lastActivity;
 }
 
 function hasPendingAutoRestart(card: TerminalCard): boolean {

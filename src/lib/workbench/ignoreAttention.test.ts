@@ -48,26 +48,30 @@ function notification(
 }
 
 describe('ignoreAttention', () => {
-  it('hides the current review episode including a completed-state fallback', () => {
-    const ignored = [ignoredAttentionEpisodeFromItem(item, 1_500)];
-    const fallback: AttentionItem = {
-      ...item,
-      id: 'terminal_state:card-1',
-      sourceKind: 'terminal_state',
-      sourceId: 'card-1',
-      occurredAt: 1_200,
-      capability: {
-        ...item.capability,
-        openNotification: false,
-      },
-    };
+  it.each(['waiting_input', 'failed', 'review'] as const)(
+    'hides the current %s episode including its terminal-state fallback',
+    (kind) => {
+      const episode = { ...item, kind };
+      const ignored = [ignoredAttentionEpisodeFromItem(episode, 1_500)];
+      const fallback: AttentionItem = {
+        ...episode,
+        id: 'terminal_state:card-1',
+        sourceKind: 'terminal_state',
+        sourceId: 'card-1',
+        occurredAt: 1_200,
+        capability: {
+          ...item.capability,
+          openNotification: false,
+        },
+      };
 
-    expect(isAttentionItemIgnored(item, ignored)).toBe(true);
-    expect(isAttentionItemIgnored(fallback, ignored)).toBe(true);
-    expect(
-      isAttentionItemIgnored({ ...item, occurredAt: 1_501 }, ignored),
-    ).toBe(false);
-  });
+      expect(isAttentionItemIgnored(episode, ignored)).toBe(true);
+      expect(isAttentionItemIgnored(fallback, ignored)).toBe(true);
+      expect(
+        isAttentionItemIgnored({ ...episode, occurredAt: 1_501 }, ignored),
+      ).toBe(false);
+    },
+  );
 
   it('keeps a later structured request independent from an ignored one', () => {
     const approval: AttentionItem = {

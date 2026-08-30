@@ -39,7 +39,7 @@ interface WorkbenchViewProps {
   scopeLabel: string | null;
   selectedProjectPath: string | null;
   selectedWorktreePath: string | null;
-  onOpenTerminal: (cardId: string) => void;
+  onOpenTerminal: (cardId: string) => Promise<boolean>;
   onAcknowledgeAttention: (item: AttentionItem) => void;
   onOpenAttention: (item: AttentionItem) => void;
   onIgnoreAttention: (item: AttentionItem) => void;
@@ -80,9 +80,14 @@ export function WorkbenchView({
   const [recallOpen, setRecallOpen] = useState(false);
   const [stalledExpanded, setStalledExpanded] = useState(false);
   const handleOpenAttentionItem = useCallback(
-    (item: AttentionItem) => {
-      onOpenTerminal(item.cardId);
-      if (item.kind === 'review') {
+    async (item: AttentionItem) => {
+      let opened = false;
+      try {
+        opened = await onOpenTerminal(item.cardId);
+      } catch {
+        // The recovery funnel reports actionable errors; keep this UI action safe.
+      }
+      if (opened) {
         onAcknowledgeAttention(item);
       }
     },

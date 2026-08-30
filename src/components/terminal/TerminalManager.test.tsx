@@ -1,6 +1,7 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTerminalStore } from '../../stores/terminalStore';
+import { DEFAULT_WORKBENCH_RULES, useWorkbenchStore } from '../../stores/workbenchStore';
 import { __resetMetadataCacheForTests } from '../../stores/agentSessionMetadataCache';
 import { clearWorkspaceLoadCaches } from '../files/workspaceLoadCache';
 import { localWorkspaceAuthority } from '../../lib/workspace/localAuthority';
@@ -260,6 +261,11 @@ vi.mock('../Settings', () => ({
 
 function resetStore() {
   __resetMetadataCacheForTests();
+  useWorkbenchStore.setState({
+    followedCardIds: [],
+    ignoredAttention: [],
+    rules: { ...DEFAULT_WORKBENCH_RULES },
+  });
   useTerminalStore.setState({
     cards: [],
     archivedCards: [],
@@ -471,6 +477,39 @@ describe('TerminalManager shortcut hint layout', () => {
       }),
     );
     expect(bridgeMocks.syncCards).not.toHaveBeenCalled();
+  });
+
+  it('opens a waiting Needs attention terminal and clears its actionable attention', async () => {
+    const store = useTerminalStore.getState();
+    const cardId = store.createCard({
+      projectName: 'waiting repo', projectPath: '/tmp/waiting-repo', terminalType: 'shell',
+    });
+    store.updateCardStatus(cardId, 'waiting');
+    const notification = store.pushNotification({
+      cardId,
+      kind: 'waiting',
+      title: 'Waiting for input',
+      body: 'Choose an option',
+    });
+
+    render(<TerminalManager />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开终端' }));
+
+    await waitFor(() => {
+      expect(useTerminalStore.getState().focusedCardId).toBe(cardId);
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workspace');
+      expect(screen.getByTestId('workspace-tab-terminal')).toBeInTheDocument();
+      expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'open workbench' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workbench');
+      expect(screen.queryByText('Waiting for input')).toBeNull();
+      expect(useTerminalStore.getState().notifications.find(
+        (item) => item.id === notification.id,
+      )?.read).toBe(true);
+    });
   });
 
   it('publishes the latest mobile state within one second during continuous terminal activity', async () => {
@@ -748,6 +787,155 @@ describe('TerminalManager shortcut hint layout', () => {
     expect(screen.getByTestId('workspace-tab-file')).toHaveTextContent('catalog.ts');
     expect((await localWorkspaceAuthority.getSnapshot(workspace.id)).tabs)
       .toHaveLength(before.tabs.length);
+  });
+
+  it('recovers an archived followed row through the real Workbench open handler', async () => {
+    const store = useTerminalStore.getState();
+    const cardId = store.createCard({
+      projectName: 'repo', projectPath: '/tmp/repo', terminalType: 'shell',
+    });
+    useWorkbenchStore.getState().followCards([cardId]);
+    store.archiveCard(cardId);
+
+    render(<TerminalManager />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开 repo 终端' }));
+
+    await waitFor(() => {
+      expect(useTerminalStore.getState().cards.map((card) => card.id)).toEqual([cardId]);
+      expect(useTerminalStore.getState().archivedCards).toHaveLength(0);
+      expect(useTerminalStore.getState().focusedCardId).toBe(cardId);
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workspace');
+      expect(screen.getByTestId('workspace-tab-terminal')).toBeInTheDocument();
+      expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
+    });
+  });
+
+  it('closes the Workbench detail panel only after its terminal opens', async () => {
+    const store = useTerminalStore.getState();
+    const cardId = store.createCard({
+      projectName: 'review terminal', projectPath: '/tmp/repo', terminalType: 'shell',
+    });
+    const notification = store.pushNotification({
+      cardId,
+      kind: 'waiting',
+      title: 'Waiting for input',
+      body: 'Choose an option',
+    });
+    store.updateCardStatus(cardId, 'waiting');
+
+    render(<TerminalManager />);
+    fireEvent.click(await screen.findByRole('button', { name: /详情|Details/ }));
+    const detailPanel = await screen.findByTestId('workbench-detail-panel');
+
+    fireEvent.click(within(detailPanel).getByRole('button', { name: /打开终端|Open terminal/ }));
+
+    await waitFor(() => {
+      expect(useTerminalStore.getState().focusedCardId).toBe(cardId);
+      expect(screen.queryByTestId('workbench-detail-panel')).not.toBeInTheDocument();
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workspace');
+      expect(screen.getByTestId('mock-shell')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'open workbench' }));
+    await waitFor(() => {
+      expect(screen.queryByText('Waiting for input')).toBeNull();
+      expect(useTerminalStore.getState().notifications.find(
+        (item) => item.id === notification.id,
+      )?.read).toBe(true);
+    });
+  });
+
+  it('keeps a detail-panel attention unacknowledged when recovery fails', async () => {
+    const store = useTerminalStore.getState();
+    const cardId = store.createCard({
+      projectName: 'failed detail', projectPath: '/tmp/failed-detail', terminalType: 'shell',
+    });
+    const notification = store.pushNotification({
+      cardId,
+      kind: 'waiting',
+      title: 'Waiting for input',
+      body: 'Choose an option',
+    });
+    store.updateCardStatus(cardId, 'waiting');
+    const ensure = vi.spyOn(localWorkspaceAuthority, 'ensure').mockRejectedValueOnce(
+      new Error('workspace unavailable'),
+    );
+
+    render(<TerminalManager />);
+    fireEvent.click(await screen.findByRole('button', { name: /详情|Details/ }));
+    const detailPanel = await screen.findByTestId('workbench-detail-panel');
+    fireEvent.click(within(detailPanel).getByRole('button', { name: /打开终端|Open terminal/ }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('workbench-detail-panel')).toBeInTheDocument();
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workbench');
+      expect(useTerminalStore.getState().notifications.find(
+        (item) => item.id === notification.id,
+      )?.read).toBe(false);
+    });
+    ensure.mockRestore();
+  });
+
+  it('recovers an archived terminal Workspace catalog row without eager scope mutation', async () => {
+    const store = useTerminalStore.getState();
+    const cardId = store.createCard({
+      projectName: 'repo', projectPath: '/tmp/repo', terminalType: 'shell',
+    });
+    const workspace = await localWorkspaceAuthority.ensure('/tmp/repo');
+    const tab = await localWorkspaceAuthority.openTab(workspace.id, {
+      kind: 'terminal', title: 'repo', cardId,
+    });
+    store.archiveCard(cardId);
+    projectSidebarMocks.catalogRef = {
+      workspaceId: workspace.id,
+      rootPath: workspace.canonicalRoot,
+      tabId: tab.id,
+      kind: 'terminal',
+      cardId,
+      relativePath: null,
+    };
+
+    render(<TerminalManager />);
+    fireEvent.click(screen.getByRole('button', { name: 'activate catalog tab' }));
+
+    await waitFor(() => {
+      expect(useTerminalStore.getState().archivedCards).toHaveLength(0);
+      expect(useTerminalStore.getState().focusedCardId).toBe(cardId);
+      expect(useTerminalStore.getState().selectedProjectPath).toBe('/tmp/repo');
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workspace');
+      expect(screen.getByTestId('workspace-tab-terminal')).toBeInTheDocument();
+    });
+  });
+
+  it('leaves the current Workspace intact when a catalog terminal identity is missing', async () => {
+    const store = useTerminalStore.getState();
+    const activeId = store.createCard({
+      projectName: 'other', projectPath: '/tmp/other', terminalType: 'shell',
+    });
+    store.focusCard(activeId);
+    const workspace = await localWorkspaceAuthority.ensure('/tmp/repo');
+    const missingTab = await localWorkspaceAuthority.openTab(workspace.id, {
+      kind: 'terminal', title: 'missing', cardId: 'missing-card',
+    });
+    projectSidebarMocks.catalogRef = {
+      workspaceId: workspace.id,
+      rootPath: workspace.canonicalRoot,
+      tabId: missingTab.id,
+      kind: 'terminal',
+      cardId: 'missing-card',
+      relativePath: null,
+    };
+
+    render(<TerminalManager />);
+    await waitFor(() => expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workspace'));
+    fireEvent.click(screen.getByRole('button', { name: 'activate catalog tab' }));
+
+    await waitFor(() => {
+      expect(useTerminalStore.getState()).toMatchObject({
+        selectedProjectPath: '/tmp/other', focusedCardId: activeId,
+      });
+      expect(screen.getByTestId('mock-primary-view')).toHaveTextContent('workspace');
+      expect(screen.getByTestId('workspace-tab-terminal')).toBeInTheDocument();
+    });
   });
 
   it('opens a selected worktree Workspace and keeps that scope when returning to Workbench', async () => {

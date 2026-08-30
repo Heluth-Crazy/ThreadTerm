@@ -1,8 +1,9 @@
-import { fireEvent, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import { useWorkbenchStore } from '../../stores/workbenchStore';
 import {
   approvalItem,
+  failedItem,
   makeCard,
   renderWorkbench,
   reviewItem,
@@ -10,7 +11,7 @@ import {
 } from './WorkbenchView.testHarness';
 
 describe('WorkbenchView attention and overview', () => {
-  it('renders real attention signals with navigation-only actions', () => {
+  it('acknowledges a successfully opened approval item', async () => {
     const { callbacks } = renderWorkbench();
 
     expect(screen.getByText('Approval needed')).toBeInTheDocument();
@@ -18,7 +19,9 @@ describe('WorkbenchView attention and overview', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: 'View request' })[0]);
     expect(callbacks.onOpenTerminal).toHaveBeenCalledWith('card-1');
-    expect(callbacks.onAcknowledgeAttention).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(callbacks.onAcknowledgeAttention).toHaveBeenCalledWith(approvalItem),
+    );
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Details' })[0]);
     expect(callbacks.onOpenAttention).toHaveBeenCalledWith(approvalItem);
@@ -74,7 +77,7 @@ describe('WorkbenchView attention and overview', () => {
     expect(callbacks.onOpenAttention).not.toHaveBeenCalled();
   });
 
-  it('acknowledges a completed result when opening it from the attention list', () => {
+  it('acknowledges a completed result when opening it from the attention list', async () => {
     const { callbacks } = renderWorkbench({
       attentionItems: [reviewItem],
       summary: {
@@ -88,11 +91,13 @@ describe('WorkbenchView attention and overview', () => {
     fireEvent.click(screen.getByRole('button', { name: 'View result' }));
 
     expect(callbacks.onOpenTerminal).toHaveBeenCalledWith('card-1');
-    expect(callbacks.onAcknowledgeAttention).toHaveBeenCalledWith(reviewItem);
+    await waitFor(() =>
+      expect(callbacks.onAcknowledgeAttention).toHaveBeenCalledWith(reviewItem),
+    );
     expect(callbacks.onIgnoreAttention).not.toHaveBeenCalled();
   });
 
-  it('acknowledges a completed result from the view-all dialog', () => {
+  it('acknowledges a completed result from the view-all dialog', async () => {
     const { callbacks } = renderWorkbench({
       attentionItems: [reviewItem],
       summary: {
@@ -108,8 +113,64 @@ describe('WorkbenchView attention and overview', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'View result' }));
 
     expect(callbacks.onOpenTerminal).toHaveBeenCalledWith('card-1');
-    expect(callbacks.onAcknowledgeAttention).toHaveBeenCalledWith(reviewItem);
+    await waitFor(() =>
+      expect(callbacks.onAcknowledgeAttention).toHaveBeenCalledWith(reviewItem),
+    );
     expect(callbacks.onIgnoreAttention).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'waiting-input',
+      {
+        ...approvalItem,
+        id: 'terminal_state:card-1:waiting',
+        kind: 'waiting_input' as const,
+        sourceKind: 'terminal_state' as const,
+        sourceId: 'card-1',
+        title: 'Input needed',
+        reasonCode: 'waiting_state' as const,
+        capability: { ...approvalItem.capability, openRequest: false },
+      },
+    ],
+    ['failed', failedItem],
+  ])('acknowledges a successfully opened %s item', async (_kind, item) => {
+    const { callbacks } = renderWorkbench({
+      attentionItems: [item],
+      summary: {
+        attention: 1,
+        normalRunning: 0,
+        review: 0,
+        failed: item.kind === 'failed' ? 1 : 0,
+      },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open terminal' }));
+
+    await waitFor(() =>
+      expect(callbacks.onAcknowledgeAttention).toHaveBeenCalledWith(item),
+    );
+  });
+
+  it('keeps a completed result unacknowledged when opening does not succeed', async () => {
+    const onOpenTerminal = vi.fn().mockResolvedValue(false);
+    const { callbacks } = renderWorkbench({
+      attentionItems: [reviewItem],
+      summary: {
+        attention: 1,
+        normalRunning: 0,
+        review: 1,
+        failed: 0,
+      },
+      onOpenTerminal,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'View result' }));
+
+    await waitFor(() =>
+      expect(onOpenTerminal).toHaveBeenCalledWith('card-1'),
+    );
+    expect(callbacks.onAcknowledgeAttention).not.toHaveBeenCalled();
   });
 
   it('shows every item in the section and filters inside the view-all dialog', () => {

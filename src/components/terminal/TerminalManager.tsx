@@ -117,6 +117,7 @@ import {
   writeManagedPreference,
 } from '../../lib/managedState';
 import { publishMountedTerminalSurfaces } from '../../lib/lifecycle/mountedTerminalSurfaces';
+import { useTerminalRecovery } from './useTerminalRecovery';
 
 const TERMINAL_TYPES: TerminalType[] = [
   'shell',
@@ -582,6 +583,8 @@ export function TerminalManager() {
     requestCardWorkspaceReset,
     selectWorkspaceByRoot,
     activateExistingWorkspaceTab,
+    prepareTerminalTabForFocus,
+    commitPreparedTerminalFocus,
     cancelPendingWorkspaceActivation,
     diagnostics: workspaceDiagnostics,
   } = workspaceSession;
@@ -819,16 +822,46 @@ export function TerminalManager() {
     },
     [cancelPendingWorkspaceActivation, handleSelectPrimaryViewBase, selectProject],
   );
+  const reportTerminalRecoveryFailure = useCallback((cardId: string, error: unknown) => {
+    pushNotification({
+      cardId,
+      kind: 'failed',
+      title: t('workspace.terminalOpenFailed', { defaultValue: 'Unable to open terminal' }),
+      body: error instanceof Error ? error.message : String(error),
+    });
+  }, [pushNotification, t]);
+  const recoverTerminal = useTerminalRecovery({
+    mountCard: mountCardInBackground,
+    prepareTerminalTabForFocus,
+    commitPreparedTerminalFocus,
+    activateExistingWorkspaceTab,
+    invalidateWorkspace: workspaceCatalog.invalidateWorkspace,
+    focusMountedCard,
+    reportFailure: reportTerminalRecoveryFailure,
+  });
   const handleOpenWorkbenchTerminal = useCallback(
-    (cardId: string) => {
-      const store = useTerminalStore.getState();
-      if (!store.cards.some((card) => card.id === cardId)) {
-        if (!store.archivedCards.some((card) => card.id === cardId)) return;
-        store.restoreArchivedCard(cardId);
+    async (cardId: string) => {
+      const opened = await recoverTerminal(cardId);
+      if (opened) {
+        handleCloseWorkbenchPanel();
+        setMobileViewActive(false);
       }
-      handleOpenTerminal(cardId);
+      return opened;
     },
-    [handleOpenTerminal],
+    [handleCloseWorkbenchPanel, recoverTerminal],
+  );
+  const handleOpenWorkbenchDetailTerminal = useCallback(
+    async (cardId: string) => {
+      const attention = workbenchPanel?.kind === 'attention'
+        ? workbenchModel.attentionItems.find(
+            (item) => item.id === workbenchPanel.attentionId && item.cardId === cardId,
+          )
+        : undefined;
+      const opened = await handleOpenWorkbenchTerminal(cardId);
+      if (opened && attention) acknowledgeAttention(attention);
+      return opened;
+    },
+    [acknowledgeAttention, handleOpenWorkbenchTerminal, workbenchModel.attentionItems, workbenchPanel],
   );
   const handleSelectWorktreeScope = useCallback(
     (projectPath: string, worktreePath: string, label?: string | null) => {
@@ -841,27 +874,30 @@ export function TerminalManager() {
   );
   const handleActivateWorkspaceCatalogTab = useCallback((
     ref: WorkspaceCatalogTabRef,
-    owner: WorkspaceCatalogScopeOwner,
+    _owner: WorkspaceCatalogScopeOwner,
   ) => {
+    if (ref.kind === 'terminal' && ref.cardId) {
+      const request = workspaceNavigationRequestRef.current + 1;
+      workspaceNavigationRequestRef.current = request;
+      void recoverTerminal(ref.cardId, {
+        kind: 'workspaceTab',
+        ref,
+        canContinue: () => workspaceNavigationRequestRef.current === request,
+      });
+      return;
+    }
     const request = workspaceNavigationRequestRef.current + 1;
     workspaceNavigationRequestRef.current = request;
     cancelPendingWorkspaceActivation();
-    if (owner.worktreePath) {
-      selectWorktree(
-        owner.projectPath,
-        owner.worktreePath,
-        owner.worktreeLabel,
-      );
+    if (_owner.worktreePath) {
+      selectWorktree(_owner.projectPath, _owner.worktreePath, _owner.worktreeLabel);
     } else {
-      selectProject(owner.projectPath);
+      selectProject(_owner.projectPath);
     }
     handleSelectPrimaryViewBase('workbench');
     void activateExistingWorkspaceTab(ref).then((activated) => {
-      if (!activated) {
-        workspaceCatalog.invalidateWorkspace(ref.workspaceId);
-        return;
-      }
-      if (workspaceNavigationRequestRef.current === request) {
+      if (!activated) workspaceCatalog.invalidateWorkspace(ref.workspaceId);
+      else if (workspaceNavigationRequestRef.current === request) {
         handleSelectPrimaryViewBase('workspace');
       }
     });
@@ -869,6 +905,7 @@ export function TerminalManager() {
     activateExistingWorkspaceTab,
     cancelPendingWorkspaceActivation,
     handleSelectPrimaryViewBase,
+    recoverTerminal,
     selectProject,
     selectWorktree,
     workspaceCatalog,
@@ -1429,13 +1466,14 @@ export function TerminalManager() {
             closeAllLabel={t('workspace.closeAllTabs', { defaultValue: 'Close all' })}
             closeOthersLabel={t('workspace.closeOtherTabs', { defaultValue: 'Close others' })}
             onActivate={(tabId) => {
-              void setActiveContentTabId(tabId);
               if (tabId.startsWith('terminal:')) {
                 const cardId = tabId.slice('terminal:'.length);
                 if (cardId) {
-                  focusMountedCard(cardId);
+                  void recoverTerminal(cardId);
                 }
+                return;
               }
+              void setActiveContentTabId(tabId);
             }}
             onClose={(tabId) => void closeWorkspaceTab(tabId)}
             onCloseAll={() => void closeAllWorkspaceTabs()}
@@ -1737,7 +1775,7 @@ export function TerminalManager() {
               cards={workbenchModel.filteredCards}
               notifications={workbenchModel.notifications}
               now={workbenchModel.now}
-              onOpenTerminal={handleOpenTerminal}
+              onOpenTerminal={handleOpenWorkbenchDetailTerminal}
               onClose={handleCloseWorkbenchPanel}
             />
           )}

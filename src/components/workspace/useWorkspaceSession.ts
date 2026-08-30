@@ -110,6 +110,16 @@ export interface MountedWorkspaceContentView {
   tab: WorkspaceTab;
 }
 
+/**
+ * The observable result of a canonical terminal-tab open. `opened` means the
+ * tab was made active while this request was still the latest navigation
+ * intent; `superseded` must not be used to commit terminal focus.
+ */
+export type TerminalTabOpenResult =
+  | { outcome: 'opened'; tab: WorkspaceTab }
+  | { outcome: 'superseded' }
+  | { outcome: 'failed'; error: Error };
+
 interface UseWorkspaceSessionOptions {
   cards: TerminalCard[];
   focusedCardId: string | null;
@@ -170,9 +180,10 @@ export function useWorkspaceSession({
     cardId: string;
     rootPath: string;
     generation: number;
-    promise: Promise<void>;
+    promise: Promise<TerminalTabOpenResult>;
   } | null>(null);
   const lastFocusedTerminalRef = useRef<string | null>(null);
+  const observedFocusedCardIdRef = useRef<string | null>(focusedCardId);
 
   const workspaceRootPath = workspace?.canonicalRoot ?? null;
   const workspaceUnavailable = workspace?.availability === 'unavailable';
@@ -223,6 +234,10 @@ export function useWorkspaceSession({
   );
 
   const selectionGenerationRef = useRef(0);
+  const selectionFailureRef = useRef<{
+    generation: number;
+    error: Error;
+  } | null>(null);
   const selectWorkspaceByRoot = useCallback(
     (rootPath: string): Promise<WorkspaceRecord | null> => {
       const trimmed = rootPath.trim();
@@ -237,6 +252,7 @@ export function useWorkspaceSession({
       }
       const generation = selectionGenerationRef.current + 1;
       selectionGenerationRef.current = generation;
+      selectionFailureRef.current = null;
       setLoading(true);
       setError(null);
       const promise = (async () => {
@@ -248,8 +264,9 @@ export function useWorkspaceSession({
           return record;
         } catch (err) {
           if (selectionGenerationRef.current !== generation) return null;
-          const message = err instanceof Error ? err.message : String(err);
-          setError(message);
+          const error = err instanceof Error ? err : new Error(String(err));
+          selectionFailureRef.current = { generation, error };
+          setError(error.message);
           return null;
         } finally {
           if (selectionGenerationRef.current === generation) {
@@ -443,7 +460,7 @@ export function useWorkspaceSession({
   );
 
   const openTerminalTab = useCallback(
-    (card: TerminalCard): Promise<void> => {
+    (card: TerminalCard): Promise<TerminalTabOpenResult> => {
       const root = effectiveWorktreePath(card);
       const inFlight = terminalOpenInFlightRef.current;
       if (
@@ -458,20 +475,37 @@ export function useWorkspaceSession({
       const generation = navigationGenerationRef.current + 1;
       navigationGenerationRef.current = generation;
       const isLatest = () => navigationGenerationRef.current === generation;
-      const promise = (async () => {
+      const promise = (async (): Promise<TerminalTabOpenResult> => {
         try {
-          const record = await selectWorkspaceByRoot(root);
-          if (!record || !isLatest()) return;
+          const selection = selectWorkspaceByRoot(root);
+          const selectionGeneration = selectionGenerationRef.current;
+          const record = await selection;
+          if (!record) {
+            if (!isLatest()) return { outcome: 'superseded' };
+            const failure = selectionFailureRef.current;
+            return failure?.generation === selectionGeneration
+              ? { outcome: 'failed', error: failure.error }
+              : { outcome: 'superseded' };
+          }
+          if (!isLatest()) return { outcome: 'superseded' };
           const tab = await workspaceClient.openTab(record.id, {
             kind: 'terminal',
             title: card.projectName || pathBasename(root),
             cardId: card.id,
           });
-          if (!isLatest()) return;
+          if (!isLatest()) return { outcome: 'superseded' };
           await workspaceClient.setActiveTab(record.id, tab.id, DESKTOP_MAIN_SURFACE);
-          if (!isLatest()) return;
+          if (!isLatest()) return { outcome: 'superseded' };
           setActiveTabIdState(tab.id);
           await refreshSnapshot(record.id, isLatest);
+          if (!isLatest()) return { outcome: 'superseded' };
+          return { outcome: 'opened', tab };
+        } catch (reason) {
+          if (!isLatest()) return { outcome: 'superseded' };
+          return {
+            outcome: 'failed',
+            error: reason instanceof Error ? reason : new Error(String(reason)),
+          };
         } finally {
           if (terminalOpenInFlightRef.current?.generation === generation) {
             terminalOpenInFlightRef.current = null;
@@ -489,6 +523,21 @@ export function useWorkspaceSession({
     },
     [refreshSnapshot, selectWorkspaceByRoot],
   );
+
+  /**
+   * Establish the terminal tab before TerminalManager commits focus. The
+   * caller must synchronously commit the successful preparation immediately
+   * before focus, so an unrelated render while focus is still null cannot
+   * clear the gate.
+   */
+  const prepareTerminalTabForFocus = useCallback(
+    (card: TerminalCard): Promise<TerminalTabOpenResult> => openTerminalTab(card),
+    [openTerminalTab],
+  );
+
+  const commitPreparedTerminalFocus = useCallback((cardId: string) => {
+    lastFocusedTerminalRef.current = cardId;
+  }, []);
 
   const openWorkspaceFile = useCallback(
     async (rootPath: string, entry: DirEntry) => {
@@ -1006,7 +1055,10 @@ export function useWorkspaceSession({
 
   // When focusing a card, open/focus its terminal tab in the shared workspace.
   useEffect(() => {
+    const previousFocusedCardId = observedFocusedCardIdRef.current;
+    observedFocusedCardIdRef.current = focusedCardId;
     if (!focusedCardId) {
+      if (previousFocusedCardId === null) return;
       lastFocusedTerminalRef.current = null;
       const selection = selectionInFlightRef.current;
       const targetedSelectionIsCurrent = Boolean(
@@ -1146,6 +1198,8 @@ export function useWorkspaceSession({
     cancelPendingWorkspaceActivation,
     setActiveTabId,
     openTerminalTab,
+    prepareTerminalTabForFocus,
+    commitPreparedTerminalFocus,
     openWorkspaceFile,
     openWorkspaceDiff,
     reorderTabs,
