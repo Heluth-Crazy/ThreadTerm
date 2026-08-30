@@ -154,6 +154,26 @@ describe('WorkspaceScopeCatalog', () => {
     expect(buttons[3].textContent?.endsWith('0')).toBe(true);
   });
 
+  it('uses progressively nested semantic surfaces without changing catalog content', () => {
+    renderCatalog({ tabs: [tab('terminal:one', 'terminal', 1)] });
+
+    const catalog = screen.getByTestId('workspace-scope-catalog');
+    expect(catalog).toHaveClass('border-border/70', 'bg-muted/25');
+
+    const sessions = screen.getByTestId('workspace-catalog-category-sessions');
+    const header = within(sessions).getAllByRole('button')[0];
+    expect(header).toHaveClass('bg-background/70', 'text-foreground');
+
+    const panelId = header.getAttribute('aria-controls');
+    expect(panelId).toBeTruthy();
+    const panel = document.getElementById(panelId!);
+    expect(panel).toHaveClass('ml-5', 'border-l', 'pl-2');
+    expect(within(panel!).getByTestId('workspace-catalog-row-terminal:one'))
+      .toHaveTextContent('terminal:one');
+
+    expect(screen.getAllByRole('button')).toHaveLength(4);
+  });
+
   it('reuses provider metadata presentation and the official agent icon', () => {
     const cardId = useTerminalStore.getState().createCard({
       projectName: 'Fallback card title',

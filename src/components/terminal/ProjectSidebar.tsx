@@ -770,7 +770,7 @@ function ProjectBranchTree({
   const hiddenCount = branches.length - visibleBranches.length;
 
   return (
-    <div className="mb-1 ml-4 border-l border-border/60 pl-2">
+    <div className="mb-1 ml-4 border-l border-border/80 pl-2">
       {error && (
         <div className="px-2 py-1 text-[11px] text-destructive">
           {error}
@@ -834,7 +834,12 @@ function ProjectBranchTree({
           };
           return (
             <div key={branch.branch} data-testid="sidebar-worktree-section">
-              <div className="group flex min-w-0 items-stretch gap-0.5">
+              <div
+                className={[
+                  'group flex min-w-0 items-stretch gap-0.5 rounded-md transition-colors',
+                  worktreeExpanded ? 'bg-muted/40' : '',
+                ].join(' ')}
+              >
                 {hasCatalog ? (
                   <button
                     type="button"

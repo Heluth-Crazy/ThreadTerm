@@ -86,6 +86,8 @@ describe('WorkspaceScopeCatalog theme adaptation', () => {
     const filesCategory = screen.getByTestId('workspace-catalog-category-files');
     const filesHeader = within(filesCategory).getByRole('button');
     fireEvent.click(filesHeader);
+    expect(catalog).toHaveClass('border-border/70', 'bg-muted/25');
+    expect(filesHeader).toHaveClass('bg-background/70', 'text-foreground');
     const selectedRow = screen.getByTitle('src/app.ts');
     expect(selectedRow).toHaveAttribute('aria-current', 'page');
     expect(selectedRow.className).toContain('bg-primary/10');

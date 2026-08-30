@@ -98,6 +98,8 @@ describe('ProjectSidebar navigation and branch rows', () => {
     const worktreeToggles = screen.getAllByTestId('sidebar-worktree-disclosure-toggle');
     expect(worktreeToggles).toHaveLength(2);
     fireEvent.click(worktreeToggles[0]);
+    expect(screen.getAllByTestId('sidebar-worktree-section')[0].firstElementChild)
+      .toHaveClass('bg-muted/40');
     expect(screen.getAllByTestId('workspace-scope-catalog')).toHaveLength(1);
     fireEvent.click(screen.getByTestId(`workspace-catalog-row-${terminalTab.id}`));
     expect(onActivateWorkspaceTab).toHaveBeenCalledWith(

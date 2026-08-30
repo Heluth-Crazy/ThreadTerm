@@ -88,7 +88,7 @@ function WorkspaceScopeCatalogInner({
     <div
       data-testid="workspace-scope-catalog"
       data-workspace-root={rootPath}
-      className="mb-1 ml-4 border-l border-border/60 pl-2"
+      className="relative mb-1 ml-5 mt-1 rounded-md border border-border/70 bg-muted/25 p-1 before:absolute before:-left-3 before:top-0 before:h-3 before:w-3 before:rounded-bl-md before:border-b before:border-l before:border-border/80"
     >
       {categories.map((category) => (
         <CatalogCategory
@@ -161,13 +161,21 @@ function CatalogCategory({
   });
 
   return (
-    <div data-testid={`workspace-catalog-category-${category.id}`}>
+    <div
+      data-testid={`workspace-catalog-category-${category.id}`}
+      className="space-y-0.5"
+    >
       <button
         type="button"
         aria-expanded={expanded}
         aria-controls={panelId}
         onClick={onToggle}
-        className="flex min-h-6 w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+        className={[
+          'flex min-h-6 w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px] font-semibold transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          expanded
+            ? 'bg-background/70 text-foreground shadow-sm'
+            : 'text-muted-foreground',
+        ].join(' ')}
       >
         {expanded
           ? <ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" />
@@ -186,9 +194,12 @@ function CatalogCategory({
         </span>
       </button>
       {expanded && (
-        <div id={panelId} className="space-y-0.5 pb-1">
+        <div
+          id={panelId}
+          className="ml-5 space-y-0.5 border-l border-border/60 pb-1 pl-2 pt-0.5"
+        >
           {category.rows.length === 0 ? (
-            <div className="px-7 py-1 text-[11px] text-muted-foreground">
+            <div className="px-2 py-1 text-[11px] text-muted-foreground">
               {t('workspace.catalog.empty', { defaultValue: 'None open' })}
             </div>
           ) : category.rows.map((row) => (
