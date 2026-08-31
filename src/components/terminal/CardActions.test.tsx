@@ -253,4 +253,21 @@ describe('CardActions', () => {
 
     expect(onToggleWorkbenchFollow).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps enabled auto-restart controls from collapsing in the wide footer', () => {
+    renderActions({
+      autoRestartEnabled: true,
+      autoRestartMaxRetries: 3,
+      onToggleAutoRestart: vi.fn(),
+      onChangeAutoRestartMaxRetries: vi.fn(),
+    });
+
+    expect(screen.getByTitle('autoRestart.disable')).toHaveClass('h-7', 'w-7', 'shrink-0');
+    expect(screen.getByLabelText('autoRestart.maxRetries')).toHaveClass(
+      'h-7',
+      'w-14',
+      'shrink-0',
+      'pr-7',
+    );
+  });
 });
