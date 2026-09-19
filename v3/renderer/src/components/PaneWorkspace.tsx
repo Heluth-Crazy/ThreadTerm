@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { ContentRef, PaneLayout, Session } from "@threadterm/protocol";
 import { confirmCloseEditors } from "../dirtyEditors";
 import { useTranslation } from "../i18n";
@@ -9,8 +9,10 @@ import {
   closeTab,
   reorderTab,
   resizeSplit,
+  paneCount,
+  paneIdsIn,
 } from "../workspaceLayout";
-import { operationId, request } from "../bridge";
+import { openWindow, operationId, request } from "../bridge";
 import { TerminalSurface } from "./TerminalSurface";
 import { ChatView } from "./ChatView";
 import { FileWorkspace } from "./FileWorkspace";
@@ -26,11 +28,25 @@ type Props = {
   onChange: (next: PaneLayout) => void;
   onSessionChanged?: () => void;
   ownerSessionId?: string;
+  onPickSession?: (paneId: string) => void;
 };
-export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompatibility, onSessionChanged, ownerSessionId }: Props) {
+export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompatibility, onSessionChanged, ownerSessionId, onPickSession }: Props) {
   const [selectedPaneId, setSelectedPaneId] = useState<string>();
   const [fullscreenPaneId, setFullscreenPaneId] = useState<string>();
   const [resumedSessionIds, setResumedSessionIds] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    if (!fullscreenPaneId) return;
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFullscreenPaneId(undefined);
+    };
+    addEventListener("keydown", key);
+    return () => removeEventListener("keydown", key);
+  }, [fullscreenPaneId]);
+  useEffect(() => {
+    const ids = paneIdsIn(layout);
+    if (fullscreenPaneId && !ids.includes(fullscreenPaneId)) setFullscreenPaneId(undefined);
+    if (selectedPaneId && !ids.includes(selectedPaneId)) setSelectedPaneId(undefined);
+  }, [layout, fullscreenPaneId, selectedPaneId]);
   const render = (node: PaneLayout): ReactNode =>
     node.kind === "split" ? (
       <Split node={node} root={layout} render={render} onChange={onChange} />
@@ -46,6 +62,8 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
         fullscreen={fullscreenPaneId === node.id}
         onFocus={() => setSelectedPaneId(node.id)}
         onToggleFullscreen={() => setFullscreenPaneId(current => current === node.id ? undefined : node.id)}
+        onSplit={(paneId) => setSelectedPaneId(paneId)}
+        onPickSession={onPickSession}
         onSessionChanged={onSessionChanged}
         ownerSessionId={ownerSessionId}
         resumedSessionIds={resumedSessionIds}
@@ -129,6 +147,8 @@ function Pane({
   fullscreen,
   onFocus,
   onToggleFullscreen,
+  onSplit,
+  onPickSession,
   onSessionChanged,
   resumedSessionIds,
   onResumed,
@@ -144,6 +164,8 @@ function Pane({
   fullscreen: boolean;
   onFocus: () => void;
   onToggleFullscreen: () => void;
+  onSplit: (paneId: string) => void;
+  onPickSession?: (paneId: string) => void;
   onSessionChanged?: () => void;
   resumedSessionIds: Set<string>;
   onResumed: (sessionId: string) => void;
@@ -157,6 +179,13 @@ function Pane({
     tab?.kind === "session"
       ? sessions.find((item) => item.id === tab.sessionId)
       : undefined;
+  const paneLimit = paneCount(layout) >= 4;
+  const lastPane = paneCount(layout) === 1;
+  const split = (direction: "horizontal" | "vertical") => {
+    const paneId = crypto.randomUUID();
+    onChange(splitPane(layout, node.id, direction, paneId));
+    onSplit(paneId);
+  };
   const close = (mode: "current" | "others" | "all") => {
     const targets =
       mode === "current"
@@ -177,7 +206,14 @@ function Pane({
       onChange(next);
     });
   };
-  const content = session?.readOnly && !resumedSessionIds.has(session.id) ? (
+  const content = node.tabs.length === 0 ? (
+    <div className="pane-empty">
+      <Icon name="plus" />
+      <strong>{zh?"空窗格":"Empty pane"}</strong>
+      <p className="note">{zh?"为此窗格选择一个会话；取消选择将移除该窗格。":"Pick a session for this pane; cancelling removes it."}</p>
+      <button className="btn btn-primary" onClick={() => onPickSession?.(node.id)}>{zh?"选择会话":"Choose session"}</button>
+    </div>
+  ) : session?.readOnly && !resumedSessionIds.has(session.id) ? (
     <ImportedHistoryView session={session} onResumed={() => onResumed(session.id)} />
   ) : session ? (
     session.mode === "terminal" ? (
@@ -233,10 +269,18 @@ function Pane({
         <button className="icon-btn" title={zh?"全屏窗格":"Fullscreen pane"} aria-label={zh?"全屏窗格":"Fullscreen pane"} aria-pressed={fullscreen} onClick={(event) => { event.stopPropagation(); onToggleFullscreen(); }}>
           <Icon name="panel" />
         </button>
-        <button className="icon-btn" title={zh?"拆分窗格":"Split pane"} aria-label={zh?"拆分窗格":"Split pane"} onClick={() => tab && onChange(splitPane(layout, node.id, tab))}>
+        <button className="icon-btn" disabled={paneLimit} title={paneLimit ? (zh?"最多 4 个窗格":"Up to 4 panes") : (zh?"左右拆分":"Split right")} aria-label={zh?"左右拆分":"Split right"} onClick={() => split("horizontal")}>
           <Icon name="split" />
         </button>
-        <button className="ws-compact-action" onClick={() => close("others")}>{zh?"关闭其他":"Close others"}</button>
+        <button className="icon-btn" disabled={paneLimit} title={paneLimit ? (zh?"最多 4 个窗格":"Up to 4 panes") : (zh?"上下拆分":"Split down")} aria-label={zh?"上下拆分":"Split down"} onClick={() => split("vertical")}>
+          <Icon name="split" style={{ transform: "rotate(90deg)" }} />
+        </button>
+        {session && !session.readOnly && (
+          <button className="icon-btn" title={zh?"弹出为浮窗":"Open floating window"} aria-label={zh?"弹出为浮窗":"Open floating window"} onClick={() => void openWindow({ sessionId: session.id }).catch((error) => setIssue(error instanceof Error ? error.message : String(error)))}>
+            <Icon name="popout" />
+          </button>
+        )}
+        <button className="ws-compact-action" disabled={node.tabs.length <= 1} onClick={() => close("others")}>{zh?"关闭其他":"Close others"}</button>
         {session && !session.readOnly && ["starting", "running", "idle", "waiting"].includes(session.status) && (
           <button className="ws-compact-action danger"
             onClick={() =>
@@ -257,8 +301,9 @@ function Pane({
         )}
         <button
           className="icon-btn"
+          disabled={lastPane}
           aria-label={zh?"关闭窗格":"Close pane"}
-          title={zh?"关闭窗格":"Close pane"}
+          title={lastPane ? (zh?"至少保留一个窗格":"Keep at least one pane") : (zh?"关闭窗格":"Close pane")}
           onClick={() => {
             const editors = node.tabs
               .filter((item) => item.kind !== "session")
