@@ -28,6 +28,10 @@ pub struct Session {
     pub native_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cols: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<i32>,
     pub followed: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub read_only: bool,

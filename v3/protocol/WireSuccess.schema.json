@@ -261,6 +261,12 @@
         "exitCode": {
           "type": "number"
         },
+        "cols": {
+          "type": "number"
+        },
+        "rows": {
+          "type": "number"
+        },
         "followed": {
           "type": "boolean"
         },

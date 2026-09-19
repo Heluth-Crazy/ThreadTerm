@@ -15,3 +15,5 @@
 
 .terminal-inspect-selection {position:absolute;right:18px;top:8px;z-index:2;background:var(--raised);border:1px solid var(--border);border-radius:6px;}
 .terminal-completion-hint { position:absolute; right:18px; bottom:12px; z-index:2; border:1px solid var(--border); border-radius:6px; background:var(--raised); color:var(--muted); padding:5px 8px; font-size:12px; }
+.terminal-host.fixed-geometry { overflow:auto; }
+.terminal-host.fixed-geometry .xterm { height:auto; }
