@@ -30,11 +30,49 @@ export const addPane = (layout: PaneLayout, tab: ContentRef): PaneLayout =>
           activeTabId: tab.id,
         },
       };
-/** Split only the selected leaf; the workspace-wide add action stays separate. */
-export const splitPane = (layout: PaneLayout, paneId: string, tab: ContentRef): PaneLayout => {
+/** Split only the selected leaf; the new second leaf starts empty. */
+export const splitPane = (
+  layout: PaneLayout,
+  paneId: string,
+  direction: "horizontal" | "vertical",
+  newPaneId: string = crypto.randomUUID(),
+): PaneLayout => {
   if (paneCount(layout) >= 4) return layout;
   const visit = (node: PaneLayout): PaneLayout => {
-    if (node.kind === "pane") return node.id === paneId ? addPane(node, tab) : node;
+    if (node.kind === "pane")
+      return node.id === paneId
+        ? {
+            kind: "split",
+            id: crypto.randomUUID(),
+            direction,
+            ratio: 0.5,
+            first: node,
+            second: { kind: "pane", id: newPaneId, tabs: [], activeTabId: null },
+          }
+        : node;
+    const first = visit(node.first), second = visit(node.second);
+    return first === node.first && second === node.second ? node : { ...node, first, second };
+  };
+  return visit(layout);
+};
+export const paneIdsIn = (layout: PaneLayout): string[] =>
+  layout.kind === "pane"
+    ? [layout.id]
+    : [...paneIdsIn(layout.first), ...paneIdsIn(layout.second)];
+export const sessionIdsIn = (layout: PaneLayout): string[] =>
+  layout.kind === "pane"
+    ? layout.tabs.flatMap((tab) => (tab.kind === "session" ? [tab.sessionId] : []))
+    : [...sessionIdsIn(layout.first), ...sessionIdsIn(layout.second)];
+export const addTabToPane = (
+  layout: PaneLayout,
+  paneId: string,
+  tab: ContentRef,
+): PaneLayout => {
+  const visit = (node: PaneLayout): PaneLayout => {
+    if (node.kind === "pane")
+      return node.id !== paneId || node.tabs.some((item) => item.id === tab.id)
+        ? node
+        : { ...node, tabs: [...node.tabs, tab], activeTabId: tab.id };
     const first = visit(node.first), second = visit(node.second);
     return first === node.first && second === node.second ? node : { ...node, first, second };
   };

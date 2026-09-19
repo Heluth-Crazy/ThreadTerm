@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { addPane, closePane, paneCount, resizeSplit, splitPane } from '../renderer/src/workspaceLayout.ts';
+import { addPane, addTabToPane, closePane, paneCount, paneIdsIn, resizeSplit, sessionIdsIn, splitPane } from '../renderer/src/workspaceLayout.ts';
 
 const tab = id => ({ id: `tab-${id}`, kind: 'session', sessionId: id });
 const pane = id => ({ kind: 'pane', id, tabs: [tab(id)], activeTabId: `tab-${id}` });
@@ -8,39 +8,47 @@ const pair = () => ({ kind: 'split', id: 'outer', direction: 'horizontal', ratio
 
 test('splitting the left leaf preserves the outer ratio and the right pane', () => {
   const original = pair();
-  const next = splitPane(original, 'left', tab('new'));
+  const next = splitPane(original, 'left', 'horizontal', 'new-pane');
   assert.equal(paneCount(next), 3);
   assert.equal(next.id, original.id);
   assert.equal(next.ratio, .65);
   assert.equal(next.second, original.second);
   assert.equal(next.first.first, original.first);
-  assert.deepEqual(next.first.second.tabs, [tab('new')]);
   assert.equal(original.first.kind, 'pane', 'input tree is not mutated');
+});
+
+test('the new leaf starts empty, takes the given direction and the caller pane id', () => {
+  const next = splitPane(pair(), 'left', 'vertical', 'new-pane');
+  assert.equal(next.first.kind, 'split');
+  assert.equal(next.first.direction, 'vertical');
+  assert.equal(next.first.ratio, .5);
+  assert.equal(next.first.first.id, 'left');
+  assert.deepEqual(next.first.second, { kind: 'pane', id: 'new-pane', tabs: [], activeTabId: null });
 });
 
 test('a nested right leaf splits without replacing unrelated branches or orientation', () => {
   const left = pair();
   const original = { kind: 'split', id: 'top', direction: 'vertical', ratio: .4, first: left, second: pane('bottom') };
-  const next = splitPane(original, 'right', tab('fourth'));
+  const next = splitPane(original, 'right', 'horizontal', 'fourth-pane');
   assert.equal(paneCount(next), 4);
   assert.equal(next.direction, 'vertical');
   assert.equal(next.ratio, .4);
   assert.equal(next.second, original.second);
   assert.equal(next.first.first, left.first);
   assert.equal(next.first.second.first, left.second);
-  assert.equal(next.first.second.second.tabs[0].sessionId, 'fourth');
+  assert.deepEqual(next.first.second.second, { kind: 'pane', id: 'fourth-pane', tabs: [], activeTabId: null });
 });
 
 test('missing targets and the workspace-wide four-pane limit are no-ops', () => {
   const two = pair();
-  assert.equal(splitPane(two, 'missing', tab('new')), two);
-  const four = splitPane(splitPane(two, 'left', tab('third')), 'right', tab('fourth'));
-  assert.equal(splitPane(four, 'left', tab('fifth')), four);
+  assert.equal(splitPane(two, 'missing', 'horizontal'), two);
+  const four = splitPane(splitPane(two, 'left', 'horizontal'), 'right', 'vertical');
+  assert.equal(splitPane(four, 'left', 'horizontal'), four);
   assert.equal(addPane(four, tab('fifth')), four);
 });
 
 test('inner resize changes only the addressed ratio and retains persisted layout shape', () => {
-  const original = splitPane(pair(), 'left', tab('third'));
+  const original = splitPane(pair(), 'left', 'horizontal');
   const next = resizeSplit(original, original.first.id, .8);
   assert.equal(next.ratio, original.ratio);
   assert.equal(next.first.ratio, .8);
@@ -52,9 +60,27 @@ test('inner resize changes only the addressed ratio and retains persisted layout
 
 test('closing the added leaf restores the original layout and global add still wraps the root', () => {
   const original = pair();
-  const next = splitPane(original, 'left', tab('new'));
+  const next = splitPane(original, 'left', 'horizontal');
   assert.deepEqual(closePane(next, next.first.second.id), original);
   const global = addPane(original, tab('global'));
   assert.equal(global.first, original);
   assert.equal(global.second.tabs[0].sessionId, 'global');
+});
+
+test('addTabToPane appends the tab to the addressed leaf and activates it', () => {
+  const original = splitPane(pair(), 'left', 'horizontal', 'new-pane');
+  const next = addTabToPane(original, 'new-pane', tab('third'));
+  assert.deepEqual(next.first.second.tabs, [tab('third')]);
+  assert.equal(next.first.second.activeTabId, 'tab-third');
+  assert.equal(next.first.first, original.first.first);
+  assert.equal(next.second, original.second);
+  assert.equal(addTabToPane(original, 'missing', tab('third')), original);
+  assert.equal(addTabToPane(next, 'new-pane', tab('third')), next, 'same tab id is not duplicated');
+});
+
+test('paneIdsIn and sessionIdsIn collect across the whole tree', () => {
+  const layout = addTabToPane(splitPane(pair(), 'left', 'vertical', 'new-pane'), 'new-pane', tab('third'));
+  assert.deepEqual(paneIdsIn(layout), ['left', 'new-pane', 'right']);
+  assert.deepEqual(sessionIdsIn(layout), ['left', 'third', 'right']);
+  assert.deepEqual(sessionIdsIn(splitPane(pair(), 'left', 'horizontal')), ['left', 'right'], 'empty panes contribute no sessions');
 });
