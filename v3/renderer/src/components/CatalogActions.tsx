@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { CatalogVisibility, ProjectCatalogItem, Session, Worktree } from '@threadterm/protocol';
 import { openDirectory, operationId, request } from '../bridge';
@@ -121,14 +121,25 @@ export function CatalogActions({target,projects,trees,sessions,visibility,onChan
 
 export function CatalogPopover({anchor,onClose,label,children}:{anchor:HTMLElement;onClose:()=>void;label:string;children:ReactNode}){
   const panel=useRef<HTMLDivElement>(null),callback=useRef(onClose);callback.current=onClose;
-  const [position,setPosition]=useState({left:8,top:8});
+  const [position,setPosition]=useState<{left:number;top:number}>();
+  const mounted=position!==undefined;
+  useLayoutEffect(()=>{
+    const place=()=>{
+      const box=anchor.getBoundingClientRect(),height=panel.current?.offsetHeight??0;
+      const next={left:Math.max(8,Math.min(innerWidth-288,box.right+6)),top:Math.max(8,Math.min(innerHeight-height-8,box.top))};
+      setPosition(current=>current&&current.left===next.left&&current.top===next.top?current:next);
+    };
+    place();
+    if(!mounted)return;
+    if(!panel.current?.contains(document.activeElement))panel.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    addEventListener('resize',place);
+    return()=>removeEventListener('resize',place);
+  },[anchor,mounted]);
   useEffect(()=>{
-    const place=()=>{const box=anchor.getBoundingClientRect(),height=panel.current?.offsetHeight??0;setPosition({left:Math.max(8,Math.min(innerWidth-288,box.right+6)),top:Math.max(8,Math.min(innerHeight-height-8,box.top))});};
-    place();panel.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
     const pointer=(event:PointerEvent)=>{if(!panel.current?.contains(event.target as Node)&&!anchor.contains(event.target as Node))callback.current();};
     const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();callback.current();}if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();const buttons=Array.from(panel.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')??[]),index=buttons.indexOf(document.activeElement as HTMLButtonElement);buttons[(index+(event.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length]?.focus();}};
-    addEventListener('pointerdown',pointer);addEventListener('keydown',key,true);addEventListener('resize',place);
-    return()=>{removeEventListener('pointerdown',pointer);removeEventListener('keydown',key,true);removeEventListener('resize',place);if(anchor.isConnected)anchor.focus();};
+    addEventListener('pointerdown',pointer);addEventListener('keydown',key,true);
+    return()=>{removeEventListener('pointerdown',pointer);removeEventListener('keydown',key,true);if(anchor.isConnected)anchor.focus();};
   },[anchor]);
-  return createPortal(<div ref={panel} className="popover catalogue-popover" role="menu" aria-label={label} style={position}>{children}</div>,document.body);
+  return position&&createPortal(<div ref={panel} className="popover catalogue-popover" role="menu" aria-label={label} style={position}>{children}</div>,document.body);
 }
