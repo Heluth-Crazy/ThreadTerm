@@ -1,0 +1,21 @@
+{
+  "generatedAt": "2026-09-08T16:36:56.281Z",
+  "browser": "Chromium",
+  "results": [
+    {
+      "name": "source-frame-1280",
+      "status": "passed",
+      "durationMs": 363
+    },
+    {
+      "name": "source-frame-1440",
+      "status": "passed",
+      "durationMs": 281
+    },
+    {
+      "name": "source-frame-1920",
+      "status": "passed",
+      "durationMs": 320
+    }
+  ]
+}

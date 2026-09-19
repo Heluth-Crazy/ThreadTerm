@@ -1,0 +1,96 @@
+{
+  "generatedAt": "2026-09-09T14:01:42.894Z",
+  "browser": "Chromium",
+  "results": [
+    {
+      "name": "source-storage-isolation",
+      "status": "passed",
+      "durationMs": 1442
+    },
+    {
+      "name": "create-Codex-terminal",
+      "status": "passed",
+      "durationMs": 735
+    },
+    {
+      "name": "create-Codex-chat",
+      "status": "passed",
+      "durationMs": 1623
+    },
+    {
+      "name": "create-Claude-Code-terminal",
+      "status": "passed",
+      "durationMs": 675
+    },
+    {
+      "name": "create-Claude-Code-chat",
+      "status": "passed",
+      "durationMs": 1649
+    },
+    {
+      "name": "create-Kimi-terminal",
+      "status": "passed",
+      "durationMs": 656
+    },
+    {
+      "name": "create-Kimi-chat",
+      "status": "passed",
+      "durationMs": 1628
+    },
+    {
+      "name": "create-Gemini-terminal",
+      "status": "passed",
+      "durationMs": 650
+    },
+    {
+      "name": "create-Gemini-chat",
+      "status": "passed",
+      "durationMs": 1667
+    },
+    {
+      "name": "create-OpenCode-terminal",
+      "status": "passed",
+      "durationMs": 679
+    },
+    {
+      "name": "create-OpenCode-chat",
+      "status": "passed",
+      "durationMs": 1570
+    },
+    {
+      "name": "create-worktree-and-cancel",
+      "status": "passed",
+      "durationMs": 660
+    },
+    {
+      "name": "chat-approve-reject",
+      "status": "passed",
+      "durationMs": 2445
+    },
+    {
+      "name": "chat-stop-cancels-stream",
+      "status": "passed",
+      "durationMs": 2040
+    },
+    {
+      "name": "lifecycle-error-retry-and-config-cancel",
+      "status": "passed",
+      "durationMs": 752
+    },
+    {
+      "name": "editor-type-save-undo-theme-reload",
+      "status": "passed",
+      "durationMs": 1423
+    },
+    {
+      "name": "editor-dirty-close-cancel-discard",
+      "status": "passed",
+      "durationMs": 753
+    },
+    {
+      "name": "settings-theme-supervisor-language",
+      "status": "passed",
+      "durationMs": 1119
+    }
+  ]
+}

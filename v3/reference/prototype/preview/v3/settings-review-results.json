@@ -1,0 +1,46 @@
+{
+  "generatedAt": "2026-09-09T14:00:59.723Z",
+  "browser": "Chromium",
+  "results": [
+    {
+      "name": "settings-import-whitelists-and-previews-real-differences",
+      "status": "passed",
+      "durationMs": 791
+    },
+    {
+      "name": "settings-migration-requires-current-safe-precheck",
+      "status": "passed",
+      "durationMs": 1106
+    },
+    {
+      "name": "settings-migration-cancel-fences-old-timer-and-restart-updates-location",
+      "status": "passed",
+      "durationMs": 3261
+    },
+    {
+      "name": "settings-mobile-expiry-token-and-command-receipt",
+      "status": "passed",
+      "durationMs": 1719
+    },
+    {
+      "name": "settings-migration-rollback-restores-retained-activated-source",
+      "status": "passed",
+      "durationMs": 2503
+    },
+    {
+      "name": "settings-theme-import-requires-reviewable-valid-json",
+      "status": "passed",
+      "durationMs": 848
+    },
+    {
+      "name": "settings-compatibility-and-notification-test-state-are-visible",
+      "status": "passed",
+      "durationMs": 959
+    },
+    {
+      "name": "settings-external-tool-lifecycle-is-reviewable-and-windows-guarded",
+      "status": "passed",
+      "durationMs": 1331
+    }
+  ]
+}

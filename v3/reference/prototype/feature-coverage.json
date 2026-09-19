@@ -1,0 +1,3124 @@
+{
+  "schemaVersion": 1,
+  "scope": "desktop-prototype",
+  "status": "reviewed",
+  "items": [
+    {
+      "id": "F-001",
+      "capability": "首次进入、欢迎与开始工作引导",
+      "source": "原型",
+      "currentStatus": "仅原型",
+      "baselineCoverage": "完整",
+      "requirement": "原型提出，纳入 [REQ-01](./需求说明书.zh-CN.md#req-01) 待定首版形态",
+      "evidence": "原稿 §0、§3、§13；中",
+      "verification": "complete",
+      "entry": "Welcome and `开始体验`; `verify` startup flow.",
+      "scenario": "Welcome and `开始体验`; `verify` startup flow.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-002",
+      "capability": "从项目目录开始创建工作",
+      "source": "两者",
+      "currentStatus": "已接入",
+      "baselineCoverage": "部分（Composer 为模拟）",
+      "requirement": "保留并由 [REQ-01](./需求说明书.zh-CN.md#req-01)、[REQ-02](./需求说明书.zh-CN.md#req-02) 定义真实路径",
+      "evidence": "[CreateTerminalDialog L46](../../src/components/terminal/CreateTerminalDialog.tsx#L46)；高",
+      "verification": "complete",
+      "entry": "Composer / session creator; creates local synthetic session only.",
+      "scenario": "Composer / session creator; creates local synthetic session only.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-003",
+      "capability": "项目按终端卡片目录聚合出现",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型有预置项目",
+      "requirement": "保留；不能承诺独立空项目登记，见 [REQ-02](./需求说明书.zh-CN.md#req-02)",
+      "evidence": "[useProjectGroups L1](../../src/components/terminal/useProjectGroups.ts#L1)；高",
+      "verification": "complete",
+      "entry": "Sidebar project groups and project overview.",
+      "scenario": "Sidebar project groups and project overview.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-004",
+      "capability": "项目侧栏排序、刷新和打开目录",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "部分",
+      "requirement": "保留并补原型，关联 [REQ-02](./需求说明书.zh-CN.md#req-02)、[REQ-09](./需求说明书.zh-CN.md#req-09)",
+      "evidence": "[ProjectSidebar L140](../../src/components/terminal/ProjectSidebar.tsx#L140)、[L538](../../src/components/terminal/ProjectSidebar.tsx#L538)；高",
+      "verification": "complete",
+      "entry": "项目菜单 → 固定/上移/下移、刷新目录状态、查看目录。刷新生成带时间的可查看回执。",
+      "scenario": "项目菜单 → 固定/上移/下移、刷新目录状态、查看目录。刷新生成带时间的可查看回执。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-005",
+      "capability": "项目固定与排序",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型未涉及",
+      "requirement": "保留并补原型，归 [REQ-02](./需求说明书.zh-CN.md#req-02)；现有 6 项只是观察值",
+      "evidence": "[ProjectOverviewGrid L27](../../src/components/workbench/ProjectOverviewGrid.tsx#L27)、[pinnedProjects L1](../../src/lib/workbench/pinnedProjects.ts#L1)；高",
+      "verification": "complete",
+      "entry": "项目菜单 → 固定/取消固定、上移/下移；刷新后保留顺序。",
+      "scenario": "项目菜单 → 固定/取消固定、上移/下移；刷新后保留顺序。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-006",
+      "capability": "展开项目的分支/工作目录、切换范围、打开会话或已有工作区标签",
+      "source": "两者",
+      "currentStatus": "现有范围选择和内容入口已接入；新版概览导航仅原型",
+      "baselineCoverage": "部分（新版项目/分支页为演示）",
+      "requirement": "保留现有入口和原型目标，不混称新版概览已经实现，归 [REQ-02](./需求说明书.zh-CN.md#req-02)、[REQ-04](./需求说明书.zh-CN.md#req-04)",
+      "evidence": "[ProjectSidebar L538](../../src/components/terminal/ProjectSidebar.tsx#L538)、[L750](../../src/components/terminal/ProjectSidebar.tsx#L750)；原稿 §2、§6–7；高",
+      "verification": "complete",
+      "entry": "Expand project, open worktree/session, project/tree routes.",
+      "scenario": "Expand project, open worktree/session, project/tree routes.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-007",
+      "capability": "工作区/项目目录内容的终端、文件、改动入口",
+      "source": "两者",
+      "currentStatus": "已接入",
+      "baselineCoverage": "部分（三槽简报为演示）",
+      "requirement": "差异待评审，归 [REQ-04](./需求说明书.zh-CN.md#req-04)",
+      "evidence": "[workspaceCatalogModel L75](../../src/components/workspace/workspaceCatalogModel.ts#L75)；原稿 §6；中",
+      "verification": "complete",
+      "entry": "Workspace terminal/file/diff tabs and overview entry points.",
+      "scenario": "Workspace terminal/file/diff tabs and overview entry points.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-008",
+      "capability": "读取本地分支、当前/上游和提交信息",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型合成展示",
+      "requirement": "保留，归 [REQ-03](./需求说明书.zh-CN.md#req-03)、[REQ-04](./需求说明书.zh-CN.md#req-04)",
+      "evidence": "[git.rs L217](../../src-tauri/src/git.rs#L217)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "Worktree overview branch/path/commit fixture.",
+      "scenario": "Worktree overview branch/path/commit fixture.",
+      "category": "implementation-boundary",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "真实 Git 分支/上游/提交读取属于后端；界面使用合成目录信息，未宣称读取磁盘。"
+    },
+    {
+      "id": "F-009",
+      "capability": "识别已有工作树并为既有分支创建工作树后开终端",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型仅模拟新树",
+      "requirement": "保留；和原型“空树”分开，归 [REQ-03](./需求说明书.zh-CN.md#req-03)",
+      "evidence": "[git.rs L601](../../src-tauri/src/git.rs#L601)；高",
+      "verification": "partial",
+      "entry": "项目菜单 → 发现已有分支工作树 → 复用目录身份 → 创建对话框；取消不创建会话。",
+      "scenario": "项目菜单 → 发现已有分支工作树 → 复用目录身份 → 创建对话框；取消不创建会话。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "已发现/复用已有工作树，也可新建空工作树；尚未合并成“已有分支无工作树 → 创建工作树并启动”的单条向导。"
+    },
+    {
+      "id": "F-010",
+      "capability": "原型新建空工作树",
+      "source": "原型",
+      "currentStatus": "仅原型",
+      "baselineCoverage": "完整（模拟）",
+      "requirement": "原型提出；不可写成已实现 Git 创建，归 [REQ-03](./需求说明书.zh-CN.md#req-03) 待评审",
+      "evidence": "原稿 §13.8；中",
+      "verification": "complete",
+      "entry": "Project/tree menu → new worktree, validation and cancel.",
+      "scenario": "Project/tree menu → new worktree, validation and cancel.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-011",
+      "capability": "原型移除工作树及运行/草稿/差异拦截",
+      "source": "原型",
+      "currentStatus": "仅原型",
+      "baselineCoverage": "完整（模拟）",
+      "requirement": "待评审；现有未据此宣称完成移除，归 [REQ-03](./需求说明书.zh-CN.md#req-03)",
+      "evidence": "原稿 §7、§13.9；中",
+      "verification": "complete",
+      "entry": "`remove-tree`; running/draft/diff guard and retained history.",
+      "scenario": "`remove-tree`; running/draft/diff guard and retained history.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-012",
+      "capability": "缺失工作树重新定位",
+      "source": "原型",
+      "currentStatus": "仅原型",
+      "baselineCoverage": "完整（模拟）",
+      "requirement": "待评审恢复规则，归 [REQ-03](./需求说明书.zh-CN.md#req-03)",
+      "evidence": "原稿 §7、§13.7；中",
+      "verification": "complete",
+      "entry": "Missing-tree overview → `relocate`; absolute-path/conflict guard.",
+      "scenario": "Missing-tree overview → `relocate`; absolute-path/conflict guard.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-013",
+      "capability": "工作区可用于非 Git 的有效目录",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，需求须区分空结果与读取失败，归 [REQ-02](./需求说明书.zh-CN.md#req-02)、[REQ-24](./需求说明书.zh-CN.md#req-24)",
+      "evidence": "[workspace_ensure L26](../../src-tauri/src/workspace/commands.rs#L26)、[ensure_workspace L182](../../src-tauri/src/workspace/service.rs#L182)；高",
+      "verification": "complete",
+      "entry": "User menu → add local directory; no filesystem access.",
+      "scenario": "User menu → add local directory; no filesystem access.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-014",
+      "capability": "分支列表初显 8 项、可展开",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留并补原型，归 [REQ-03](./需求说明书.zh-CN.md#req-03)；数量不是永久限制",
+      "evidence": "[ProjectSidebar L538](../../src/components/terminal/ProjectSidebar.tsx#L538)；高",
+      "verification": "complete",
+      "entry": "侧栏项目展开；超过 8 个工作目录时提供显示其余/收起，并记住选择。",
+      "scenario": "侧栏项目展开；超过 8 个工作目录时提供显示其余/收起，并记住选择。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-015",
+      "capability": "输入/选择目录和终端名称",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "Composer 模拟",
+      "requirement": "保留，归 [REQ-05](./需求说明书.zh-CN.md#req-05)",
+      "evidence": "[CreateTerminalDialog L46](../../src/components/terminal/CreateTerminalDialog.tsx#L46)；高",
+      "verification": "complete",
+      "entry": "Creator directory/tree/name fields.",
+      "scenario": "Creator directory/tree/name fields.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-016",
+      "capability": "选择终端类型和可选启动命令",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "部分",
+      "requirement": "保留，归 [REQ-05](./需求说明书.zh-CN.md#req-05)",
+      "evidence": "[CreateTerminalDialog L84](../../src/components/terminal/CreateTerminalDialog.tsx#L84)；高",
+      "verification": "complete",
+      "entry": "Creator provider/mode/startup configuration.",
+      "scenario": "Creator provider/mode/startup configuration.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-017",
+      "capability": "交互终端与执行后退出的单次任务",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型不执行输入",
+      "requirement": "保留，归 [REQ-05](./需求说明书.zh-CN.md#req-05)、[REQ-06](./需求说明书.zh-CN.md#req-06)",
+      "evidence": "[CreateTerminalDialog L111](../../src/components/terminal/CreateTerminalDialog.tsx#L111)；高",
+      "verification": "complete",
+      "entry": "Terminal and one-shot creation/lifecycle shown; commands never execute.",
+      "scenario": "Terminal and one-shot creation/lifecycle shown; commands never execute.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-018",
+      "capability": "空闲、运行、等待、完成、失败等卡片/任务状态",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型五态不同",
+      "requirement": "保留；不把两套状态硬合并，归 [REQ-06](./需求说明书.zh-CN.md#req-06)",
+      "evidence": "[terminal.ts L15](../../src/types/terminal.ts#L15)、[L60](../../src/types/terminal.ts#L60)；高",
+      "verification": "complete",
+      "entry": "Core states plus session lifecycle status cards.",
+      "scenario": "Core states plus session lifecycle status cards.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-019",
+      "capability": "手动再次运行任务",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-06](./需求说明书.zh-CN.md#req-06)",
+      "evidence": "[cardsSlice L775](../../src/stores/terminal/cardsSlice.ts#L775)；高",
+      "verification": "complete",
+      "entry": "Failed-session retry action and retry outcome.",
+      "scenario": "Failed-session retry action and retry outcome.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-020",
+      "capability": "改名与编辑终端配置",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型有改名",
+      "requirement": "保留，归 [REQ-05](./需求说明书.zh-CN.md#req-05)",
+      "evidence": "[CardActions L206](../../src/components/terminal/CardActions.tsx#L206)；高",
+      "verification": "complete",
+      "entry": "Rename and configuration dialog/cancel/save.",
+      "scenario": "Rename and configuration dialog/cancel/save.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-021",
+      "capability": "保存配置供下次重启，或确认后立即保存并重启（会中断运行）",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留并明确中断后果，归 [REQ-05](./需求说明书.zh-CN.md#req-05)、[REQ-24](./需求说明书.zh-CN.md#req-24)",
+      "evidence": "[EditTerminalDialog L1059](../../src/components/terminal/EditTerminalDialog.tsx#L1059)、[useTerminalConfigurationEditor L266](../../src/components/terminal/useTerminalConfigurationEditor.ts#L266)；高",
+      "verification": "complete",
+      "entry": "Configuration restart consequences simulated, never restart a process.",
+      "scenario": "Configuration restart consequences simulated, never restart a process.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-022",
+      "capability": "固定终端至快捷选择器",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型未明确",
+      "requirement": "保留，归 [REQ-10](./需求说明书.zh-CN.md#req-10)；和关注、书签分列",
+      "evidence": "[CardActions L268](../../src/components/terminal/CardActions.tsx#L268)、[terminal.json L467](../../src/i18n/locales/zh-CN/terminal.json#L467)；高",
+      "verification": "complete",
+      "entry": "卡片/会话菜单 → 固定到快捷选择；命令面板的快捷选择分组，不改变关注或书签。",
+      "scenario": "卡片/会话菜单 → 固定到快捷选择；命令面板的快捷选择分组，不改变关注或书签。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-023",
+      "capability": "快捷选择器最多 6 张固定卡",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留当前行为；未来容量待评审，归 [REQ-10](./需求说明书.zh-CN.md#req-10)",
+      "evidence": "[terminal.json L467](../../src/i18n/locales/zh-CN/terminal.json#L467)；高",
+      "verification": "complete",
+      "entry": "快捷选择固定满 6 项时阻止第 7 项；可取消后再固定，数量为本轮演示规则。",
+      "scenario": "快捷选择固定满 6 项时阻止第 7 项；可取消后再固定，数量为本轮演示规则。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-024",
+      "capability": "复制路径和在系统中打开目录",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型只演示",
+      "requirement": "保留，归 [REQ-09](./需求说明书.zh-CN.md#req-09)；不等同打开输出中的文件",
+      "evidence": "[CardActions L206](../../src/components/terminal/CardActions.tsx#L206)、[L350](../../src/components/terminal/CardActions.tsx#L350)；高",
+      "verification": "complete",
+      "entry": "项目/树/会话菜单 → 复制目录路径、查看目录（演示）；剪贴板不可用时弹出可复制文本。",
+      "scenario": "项目/树/会话菜单 → 复制目录路径、查看目录（演示）；剪贴板不可用时弹出可复制文本。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-025",
+      "capability": "归档终端快照",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型结束后保留展示",
+      "requirement": "保留，归 [REQ-06](./需求说明书.zh-CN.md#req-06)、[REQ-08](./需求说明书.zh-CN.md#req-08)；不是删除或完整备份",
+      "evidence": "[cardsSlice L354](../../src/stores/terminal/cardsSlice.ts#L354)；高",
+      "verification": "complete",
+      "entry": "End/archive preserves output/history locally.",
+      "scenario": "End/archive preserves output/history locally.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-026",
+      "capability": "从归档/通知恢复会话",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型历史入口不闭环",
+      "requirement": "保留并补原型，归 [REQ-08](./需求说明书.zh-CN.md#req-08)",
+      "evidence": "[useTerminalRecovery L55](../../src/components/terminal/useTerminalRecovery.ts#L55)；高",
+      "verification": "complete",
+      "entry": "History/read/restore and notification-to-inbox/session path.",
+      "scenario": "History/read/restore and notification-to-inbox/session path.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-027",
+      "capability": "所有终端的卡片搜索",
+      "source": "两者",
+      "currentStatus": "已接入",
+      "baselineCoverage": "完整",
+      "requirement": "保留，归 [REQ-09](./需求说明书.zh-CN.md#req-09)；现有搜索只查卡片元信息",
+      "evidence": "[cardSearch L1](../../src/lib/cardSearch.ts#L1)；原稿 §5；高",
+      "verification": "complete",
+      "entry": "`#/terminals` search.",
+      "scenario": "`#/terminals` search.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-028",
+      "capability": "响应式网格、焦点/全屏、活动优先与项目内拖动",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "部分",
+      "requirement": "保留，归 [REQ-09](./需求说明书.zh-CN.md#req-09)、[REQ-13](./需求说明书.zh-CN.md#req-13)",
+      "evidence": "[CardGrid L78](../../src/components/terminal/CardGrid.tsx#L78)、[L385](../../src/components/terminal/CardGrid.tsx#L385)；高",
+      "verification": "partial",
+      "entry": "所有终端的网格、作用域拖动、筛选禁重排；工作区聚焦与四格并排。",
+      "scenario": "所有终端的网格、作用域拖动、筛选禁重排；工作区聚焦与四格并排。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "网格、活动优先、作用域拖动和工作区聚焦已实现；缺少独立终端全屏模式。"
+    },
+    {
+      "id": "F-029",
+      "capability": "筛选时禁用歧义重排",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留为可靠性规则，归 [REQ-24](./需求说明书.zh-CN.md#req-24)",
+      "evidence": "[CardGrid L151](../../src/components/terminal/CardGrid.tsx#L151)；高",
+      "verification": "complete",
+      "entry": "Filtered terminal grid has `data-order-locked=\"true\"`.",
+      "scenario": "Filtered terminal grid has `data-order-locked=\"true\"`.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-030",
+      "capability": "结束会话、保留输出/历史的原型演示",
+      "source": "原型",
+      "currentStatus": "仅原型",
+      "baselineCoverage": "完整（不触发真实结束）",
+      "requirement": "作为交互资料；真实生命周期归 [REQ-06](./需求说明书.zh-CN.md#req-06)",
+      "evidence": "原稿 §13.6；中",
+      "verification": "complete",
+      "entry": "End confirmation → read-only retained record.",
+      "scenario": "End confirmation → read-only retained record.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-031",
+      "capability": "Shell、Claude、Codex、OpenCode、Gemini、Kimi、Grok",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型仅 Claude/Codex/Gemini/Shell",
+      "requirement": "全部保留，归 [REQ-05](./需求说明书.zh-CN.md#req-05)、[REQ-07](./需求说明书.zh-CN.md#req-07)",
+      "evidence": "[terminal.ts L43](../../src/types/terminal.ts#L43)、[providerSession L147](../../src/components/terminal/providerSession.ts#L147)；高",
+      "verification": "complete",
+      "entry": "新建终端 → 提供者与模式。五类同时支持 Terminal/Chat，保留 Grok、Shell、命令预设。",
+      "scenario": "新建终端 → 提供者与模式。五类同时支持 Terminal/Chat，保留 Grok、Shell、命令预设。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-032",
+      "capability": "npm/yarn/pnpm/docker/python/node/custom 命令预设",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-05](./需求说明书.zh-CN.md#req-05)",
+      "evidence": "[terminal.ts L43](../../src/types/terminal.ts#L43)、[terminalConfiguration L237](../../src/lib/terminalConfiguration.ts#L237)；高",
+      "verification": "complete",
+      "entry": "Command presets and reviewed preset commands; never invoke tooling.",
+      "scenario": "Command presets and reviewed preset commands; never invoke tooling.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-033",
+      "capability": "AI 创建、恢复、发现本机记录的供应方适配",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型合成会话",
+      "requirement": "保留，归 [REQ-07](./需求说明书.zh-CN.md#req-07)、[REQ-08](./需求说明书.zh-CN.md#req-08)",
+      "evidence": "[providerSession L147](../../src/components/terminal/providerSession.ts#L147)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "Provider discovery/CLI records replaced by synthetic fixtures.",
+      "scenario": "Provider discovery/CLI records replaced by synthetic fixtures.",
+      "category": "implementation-boundary",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "提供者发现、创建和恢复适配属于真实 CLI 后端；五类双模式与历史流程使用合成适配结果。"
+    },
+    {
+      "id": "F-034",
+      "capability": "本机 AI 历史扫描、供应方切换、搜索与分页",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型仅基础历史筛选",
+      "requirement": "保留并补原型，归 [REQ-08](./需求说明书.zh-CN.md#req-08)",
+      "evidence": "[SessionRecoveryPanel L35](../../src/components/terminal/SessionRecoveryPanel.tsx#L35)、[agentSessionCatalogStore L72](../../src/stores/agentSessionCatalogStore.ts#L72)；高",
+      "verification": "complete",
+      "entry": "History scan/provider/search/page fixture in sessions feature.",
+      "scenario": "History scan/provider/search/page fixture in sessions feature.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-035",
+      "capability": "扫描进度、耗时、重试和导入为卡片",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-08](./需求说明书.zh-CN.md#req-08)",
+      "evidence": "[agentSessionCatalogStore L182](../../src/stores/agentSessionCatalogStore.ts#L182)；高",
+      "verification": "complete",
+      "entry": "Scan progress/retry/import-card states.",
+      "scenario": "Scan progress/retry/import-card states.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-036",
+      "capability": "恢复前检查活动/归档卡重复占用",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留为恢复防护，归 [REQ-08](./需求说明书.zh-CN.md#req-08)、[REQ-24](./需求说明书.zh-CN.md#req-24)",
+      "evidence": "[EditTerminalDialog L115](../../src/components/terminal/EditTerminalDialog.tsx#L115)；高",
+      "verification": "complete",
+      "entry": "Restore duplicate ownership/occupied-record guard.",
+      "scenario": "Restore duplicate ownership/occupied-record guard.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-037",
+      "capability": "普通 Shell 不按 AI 供应方会话 ID 恢复",
+      "source": "现有",
+      "currentStatus": "已接入边界",
+      "baselineCoverage": "原型未区分",
+      "requirement": "保留准确边界，归 [REQ-08](./需求说明书.zh-CN.md#req-08)",
+      "evidence": "[providerSession L147](../../src/components/terminal/providerSession.ts#L147)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "Shell history is not represented as provider-session-ID recovery.",
+      "scenario": "Shell history is not represented as provider-session-ID recovery.",
+      "category": "implementation-boundary",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "Shell 不使用 AI 提供者会话 ID 恢复；历史中只读显示，无恢复按钮。"
+    },
+    {
+      "id": "F-038",
+      "capability": "Claude 与 Codex 图形聊天",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型未连接",
+      "requirement": "保留，归 [REQ-07](./需求说明书.zh-CN.md#req-07)；不扩展为六类通用聊天",
+      "evidence": "[CodexChatView L87](../../src/components/codex/CodexChatView.tsx#L87)、[ClaudeChatView L47](../../src/components/claude/ClaudeChatView.tsx#L47)；高",
+      "verification": "complete",
+      "entry": "五类 Chat 使用同一个模拟流式会话协议；批准/拒绝、停止、失败重试和导出均有状态。",
+      "scenario": "五类 Chat 使用同一个模拟流式会话协议；批准/拒绝、停止、失败重试和导出均有状态。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。",
+      "approvedOverride": "本轮已明确批准五类提供者双模式；模式仅在创建或明确恢复时选择。"
+    },
+    {
+      "id": "F-039",
+      "capability": "图形聊天的流式回复、发送和可用性检查",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-07](./需求说明书.zh-CN.md#req-07)",
+      "evidence": "[CodexChatView L213](../../src/components/codex/CodexChatView.tsx#L213)、[ClaudeChatView L125](../../src/components/claude/ClaudeChatView.tsx#L125)；高",
+      "verification": "complete",
+      "entry": "Send/stream/stop/error/retry flow.",
+      "scenario": "Send/stream/stop/error/retry flow.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-040",
+      "capability": "Codex 绑定 CLI 记录时默认终端，否则默认图形聊天",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留为现有差异，归 [REQ-07](./需求说明书.zh-CN.md#req-07)",
+      "evidence": "[TerminalView L60](../../src/components/terminal/TerminalView.tsx#L60)；高",
+      "verification": "complete",
+      "entry": "创建或显式恢复时选模式，保留最近选择；运行中的会话不提供热切换。",
+      "scenario": "创建或显式恢复时选模式，保留最近选择；运行中的会话不提供热切换。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。",
+      "approvedOverride": "本轮已明确批准五类提供者双模式；模式仅在创建或明确恢复时选择。"
+    },
+    {
+      "id": "F-041",
+      "capability": "恢复前校验可交互根记录",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留为防误恢复规则，归 [REQ-08](./需求说明书.zh-CN.md#req-08)",
+      "evidence": "[useValidatedProviderSessionLaunch L30](../../src/components/terminal/useValidatedProviderSessionLaunch.ts#L30)；高",
+      "verification": "complete",
+      "entry": "Restore eligibility/duplicate validation.",
+      "scenario": "Restore eligibility/duplicate validation.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-042",
+      "capability": "AI 意图标记：评审/修复/调研/测试/文档",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型有选择性提示",
+      "requirement": "保留，归 [REQ-07](./需求说明书.zh-CN.md#req-07)；标记不自动执行任务",
+      "evidence": "[AiIntentSelect L15](../../src/components/terminal/AiIntentSelect.tsx#L15)；高",
+      "verification": "complete",
+      "entry": "Creator/session intent fields and visible labels.",
+      "scenario": "Creator/session intent fields and visible labels.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-043",
+      "capability": "鼠标选择、复制粘贴和上滚阅读",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型仅模拟输入",
+      "requirement": "保留，归 [REQ-15](./需求说明书.zh-CN.md#req-15)",
+      "evidence": "[useXtermLifecycle L170](../../src/components/terminal/useXtermLifecycle.ts#L170)；高",
+      "verification": "complete",
+      "entry": "终端输出可选中复制、输入可粘贴，上滚阅读保留位置。",
+      "scenario": "终端输出可选中复制、输入可粘贴，上滚阅读保留位置。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-044",
+      "capability": "阅读旧输出时不被新输出拖走、新输出计数和回底部",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-15](./需求说明书.zh-CN.md#req-15)",
+      "evidence": "[Shell L505](../../src/components/terminal/Shell.tsx#L505)；高",
+      "verification": "complete",
+      "entry": "会话菜单 → 追加演示输出；上滚时保持位置、累加新输出数量，点击回到最新。",
+      "scenario": "会话菜单 → 追加演示输出；上滚时保持位置、累加新输出数量，点击回到最新。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-045",
+      "capability": "退出后保留输出，重连/重启重试",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型只读历史",
+      "requirement": "保留，归 [REQ-06](./需求说明书.zh-CN.md#req-06)、[REQ-15](./需求说明书.zh-CN.md#req-15)",
+      "evidence": "[Shell L184](../../src/components/terminal/Shell.tsx#L184)、[L505](../../src/components/terminal/Shell.tsx#L505)；高",
+      "verification": "complete",
+      "entry": "Ended/read-only history plus retry/restart fixture.",
+      "scenario": "Ended/read-only history plus retry/restart fixture.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-046",
+      "capability": "Codex 登录链接打开或复制",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-07](./需求说明书.zh-CN.md#req-07)",
+      "evidence": "[Shell L505](../../src/components/terminal/Shell.tsx#L505)；高",
+      "verification": "complete",
+      "entry": "Codex 会话菜单 → 登录链接 → 复制或本地登录页预览；example 地址不发送请求。",
+      "scenario": "Codex 会话菜单 → 登录链接 → 复制或本地登录页预览；example 地址不发送请求。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-047",
+      "capability": "Block Inspector、块级 AI 解释与桌面宠物",
+      "source": "历史",
+      "currentStatus": "仅历史资料线索",
+      "baselineCoverage": "原型未涉及",
+      "requirement": "仅作 [REQ-07](./需求说明书.zh-CN.md#req-07)、[REQ-15](./需求说明书.zh-CN.md#req-15) 的评审背景，不列为现有或本轮承诺",
+      "evidence": "[块级 AI 阶段计划](../../docs/archive/2026-05-02-stage6-ai-inline-and-bottom-action-bar.md)、[宠物计划](../../docs/archive/2026-05-10-desktop-floating-pet.md#plan-桌面悬浮宠物-desktop-floating-pet)；低",
+      "verification": "out-of-ui-denominator",
+      "entry": "Explicitly not introduced.",
+      "scenario": "Explicitly not introduced.",
+      "category": "historical-or-unconfirmed",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "基线明确不是已交付或本轮承诺；保留记录，不新增相应产品域。"
+    },
+    {
+      "id": "F-125",
+      "capability": "将 AI 卡片会话导出为 Markdown 文件",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "本轮明确去掉",
+      "requirement": "主应用保留；v3 原型不再提供下载入口。产品需求仍归 [REQ-07](./需求说明书.zh-CN.md#req-07)",
+      "evidence": "[TerminalCard L179](../../src/components/terminal/TerminalCard.tsx#L179)、[exportAiSession L48](../../src/lib/ai/exportAiSession.ts#L48)、[CardActions L240](../../src/components/terminal/CardActions.tsx#L240)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "Explicitly removed from this prototype: no Chat header or session-menu Markdown download.",
+      "scenario": "Explicitly removed from this prototype: no Chat header or session-menu Markdown download.",
+      "category": "prototype-excluded",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "本轮原型明确去掉下载 AI Markdown；主应用仍保留导出。不计入桌面交互完成率分母。"
+    },
+    {
+      "id": "F-048",
+      "capability": "关注清单",
+      "source": "两者",
+      "currentStatus": "已接入",
+      "baselineCoverage": "完整",
+      "requirement": "保留，归 [REQ-10](./需求说明书.zh-CN.md#req-10)；独立于固定和书签",
+      "evidence": "[FollowedTerminalSection L26](../../src/components/workbench/FollowedTerminalSection.tsx#L26)；原稿 §1.3；高",
+      "verification": "complete",
+      "entry": "Follow list, rename and per-session toggle.",
+      "scenario": "Follow list, rename and per-session toggle.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-049",
+      "capability": "找回终端的范围/项目/树/关键词筛选",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型部分",
+      "requirement": "保留，归 [REQ-08](./需求说明书.zh-CN.md#req-08)、[REQ-09](./需求说明书.zh-CN.md#req-09)",
+      "evidence": "[RecallTerminalDialog L28](../../src/components/workbench/RecallTerminalDialog.tsx#L28)、[RecallTerminalFilters L43](../../src/components/workbench/RecallTerminalFilters.tsx#L43)；高",
+      "verification": "complete",
+      "entry": "All Terminals project/tree/status/query filters.",
+      "scenario": "All Terminals project/tree/status/query filters.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-050",
+      "capability": "多选关注",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型完整（演示）",
+      "requirement": "保留，归 [REQ-10](./需求说明书.zh-CN.md#req-10)",
+      "evidence": "[RecallTerminalDialog L28](../../src/components/workbench/RecallTerminalDialog.tsx#L28)；高",
+      "verification": "complete",
+      "entry": "Follow dialog multi-select; cancel leaves durable selection unchanged.",
+      "scenario": "Follow dialog multi-select; cancel leaves durable selection unchanged.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-051",
+      "capability": "历史书签",
+      "source": "原型",
+      "currentStatus": "仅原型",
+      "baselineCoverage": "完整（本地演示）",
+      "requirement": "待确认与现有历史入口的衔接，归 [REQ-08](./需求说明书.zh-CN.md#req-08)、[REQ-10](./需求说明书.zh-CN.md#req-10)",
+      "evidence": "原稿 §8、§13、§16；中",
+      "verification": "complete",
+      "entry": "Bookmark action and local persistence.",
+      "scenario": "Bookmark action and local persistence.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-052",
+      "capability": "待处理汇总/筛选、打开关联终端、只读详情、忽略/已读和关注",
+      "source": "两者",
+      "currentStatus": "已接入",
+      "baselineCoverage": "完整（详情只读，不提供实际审批）",
+      "requirement": "保留，归 [REQ-11](./需求说明书.zh-CN.md#req-11)；现有打开终端后会确认事项，确认/忽略不得自动批准 AI 请求",
+      "evidence": "[WorkbenchView L82](../../src/components/workbench/WorkbenchView.tsx#L82)、[AttentionItemCard L158](../../src/components/workbench/AttentionItemCard.tsx#L158)、[useWorkbenchModel L90](../../src/components/workbench/useWorkbenchModel.ts#L90)；原稿 §4；高",
+      "verification": "complete",
+      "entry": "Inbox/filter/detail/ignore/read/resolve; read never approves a tool request.",
+      "scenario": "Inbox/filter/detail/ignore/read/resolve; read never approves a tool request.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-053",
+      "capability": "应用内提示、系统通知、按终端清读",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型 Toast/通知演示",
+      "requirement": "保留，归 [REQ-11](./需求说明书.zh-CN.md#req-11)",
+      "evidence": "[NotificationCenter L55](../../src/components/terminal/NotificationCenter.tsx#L55)、[NotificationToastStack L73](../../src/components/terminal/NotificationToastStack.tsx#L73)；高",
+      "verification": "complete",
+      "entry": "Toast and notification popover; no system notification API.",
+      "scenario": "Toast and notification popover; no system notification API.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-054",
+      "capability": "待输入/失败/完成/新回复/重试上限事件跳转",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型演示",
+      "requirement": "保留，归 [REQ-11](./需求说明书.zh-CN.md#req-11)",
+      "evidence": "[TerminalEventBridge L500](../../src/components/terminal/TerminalEventBridge.tsx#L500)、[L1143](../../src/components/terminal/TerminalEventBridge.tsx#L1143)；高",
+      "verification": "complete",
+      "entry": "Attention event types route to record/context.",
+      "scenario": "Attention event types route to record/context.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-055",
+      "capability": "通知中心打开时抑制应用内浮动提示",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留为避免重复打扰规则，归 [REQ-11](./需求说明书.zh-CN.md#req-11)",
+      "evidence": "[NotificationPresentationProvider L36](../../src/components/terminal/NotificationPresentationProvider.tsx#L36)；高",
+      "verification": "complete",
+      "entry": "打开通知中心时抑制新增应用内浮动提示，仅更新可及性播报。",
+      "scenario": "打开通知中心时抑制新增应用内浮动提示，仅更新可及性播报。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-056",
+      "capability": "卡片自动重启、次数、倒计时、历史和上限通知",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-06](./需求说明书.zh-CN.md#req-06)、[REQ-11](./需求说明书.zh-CN.md#req-11)；1/2/3/5/10 只是当前选项",
+      "evidence": "[AutoRestartControls L12](../../src/components/terminal/AutoRestartControls.tsx#L12)、[autoRestartSlice L18](../../src/stores/terminal/autoRestartSlice.ts#L18)；高",
+      "verification": "complete",
+      "entry": "Auto-retry count/limit/countdown/history fixture.",
+      "scenario": "Auto-retry count/limit/countdown/history fixture.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-057",
+      "capability": "停用自动重启取消待执行重启",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型有停滞规则，非同一能力",
+      "requirement": "保留，归 [REQ-06](./需求说明书.zh-CN.md#req-06)",
+      "evidence": "[AutoRestartStatus L20](../../src/components/terminal/AutoRestartStatus.tsx#L20)；高",
+      "verification": "complete",
+      "entry": "Cancelling pending retry is represented in lifecycle settings.",
+      "scenario": "Cancelling pending retry is represented in lifecycle settings.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-058",
+      "capability": "AI 交互完成兼容辅助判断且可关闭",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留并说明并非无误保证，归 [REQ-11](./需求说明书.zh-CN.md#req-11)、[REQ-24](./需求说明书.zh-CN.md#req-24)",
+      "evidence": "[agentCliCompletion L52](../../src/components/terminal/agentCliCompletion.ts#L52)；高",
+      "verification": "complete",
+      "entry": "设置 → 快捷键与通知 → AI 完成兼容辅助判断，可独立关闭；不是可靠性保证。",
+      "scenario": "设置 → 快捷键与通知 → AI 完成兼容辅助判断，可独立关闭；不是可靠性保证。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-059",
+      "capability": "监督提醒默认关闭、仅本次启动内统计",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型有本地停滞规则",
+      "requirement": "保留，归 [REQ-11](./需求说明书.zh-CN.md#req-11)",
+      "evidence": "[SupervisorSettings L1](../../src/components/settings/SupervisorSettings.tsx#L1)；高",
+      "verification": "complete",
+      "entry": "Supervisor default-off and local-session counters.",
+      "scenario": "Supervisor default-off and local-session counters.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-060",
+      "capability": "原型历史路由回所有终端并高亮",
+      "source": "原型",
+      "currentStatus": "仅原型",
+      "baselineCoverage": "演示限制",
+      "requirement": "不能取消完整历史/恢复；入口形态待评审，归 [REQ-08](./需求说明书.zh-CN.md#req-08)",
+      "evidence": "[app.js L817](./app.js#L817)；原稿 §1、§5、§16；中",
+      "verification": "complete",
+      "entry": "History alias returns to All Terminals and highlights target.",
+      "scenario": "History alias returns to All Terminals and highlights target.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-061",
+      "capability": "命令面板：搜索、创建、跳转、意图、设置和焦点返回",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型 Ctrl+K",
+      "requirement": "保留，归 [REQ-09](./需求说明书.zh-CN.md#req-09)、[REQ-20](./需求说明书.zh-CN.md#req-20)",
+      "evidence": "[useTerminalCommandPalette L42](../../src/components/terminal/useTerminalCommandPalette.ts#L42)、[CommandPalette L33](../../src/components/palette/CommandPalette.tsx#L33)；高",
+      "verification": "complete",
+      "entry": "Ctrl/Cmd+K command palette, search/create/jump/settings and focus return.",
+      "scenario": "Ctrl/Cmd+K command palette, search/create/jump/settings and focus return.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-062",
+      "capability": "最近会话 Dock，按访问排序和键盘操作",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型最近列表",
+      "requirement": "保留，归 [REQ-09](./需求说明书.zh-CN.md#req-09)",
+      "evidence": "[SessionDock L75](../../src/components/terminal/SessionDock.tsx#L75)；高",
+      "verification": "complete",
+      "entry": "工作台/侧栏最近会话按访问记录排序，可通过普通键盘焦点打开。",
+      "scenario": "工作台/侧栏最近会话按访问记录排序，可通过普通键盘焦点打开。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-063",
+      "capability": "回网格、前后会话、上次活跃等快捷导航",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型部分",
+      "requirement": "保留，归 [REQ-09](./需求说明书.zh-CN.md#req-09)、[REQ-20](./需求说明书.zh-CN.md#req-20)",
+      "evidence": "[KeyboardBridge L36](../../src/components/terminal/KeyboardBridge.tsx#L36)、[L141](../../src/components/terminal/KeyboardBridge.tsx#L141)；高",
+      "verification": "partial",
+      "entry": "工作区顶部回网格/上一/下一，Alt+左右切换。",
+      "scenario": "工作区顶部回网格/上一/下一，Alt+左右切换。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "回网格、上一/下一会话与 Alt+方向键已实现；缺少“上次活跃会话”专用快捷键。"
+    },
+    {
+      "id": "F-064",
+      "capability": "固定目录身份的工作区主页",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型工作区",
+      "requirement": "保留，归 [REQ-12](./需求说明书.zh-CN.md#req-12)",
+      "evidence": "[WorkspaceShell L9](../../src/components/workspace/WorkspaceShell.tsx#L9)、[WorkspaceHome L80](../../src/components/workspace/WorkspaceHome.tsx#L80)；高",
+      "verification": "complete",
+      "entry": "Workspace route retains project/tree/session identity.",
+      "scenario": "Workspace route retains project/tree/session identity.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-065",
+      "capability": "工作区主页的终端、最近文件/改动和错误重试",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型部分",
+      "requirement": "保留，归 [REQ-12](./需求说明书.zh-CN.md#req-12)、[REQ-24](./需求说明书.zh-CN.md#req-24)",
+      "evidence": "[WorkspaceHome L80](../../src/components/workspace/WorkspaceHome.tsx#L80)；高",
+      "verification": "complete",
+      "entry": "Workspace terminal/recent file/diff and retry entry.",
+      "scenario": "Workspace terminal/recent file/diff and retry entry.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-066",
+      "capability": "会话、文件、变更标签",
+      "source": "两者",
+      "currentStatus": "已接入",
+      "baselineCoverage": "完整（演示）",
+      "requirement": "保留，归 [REQ-12](./需求说明书.zh-CN.md#req-12)",
+      "evidence": "[WorkspaceTabStrip L69](../../src/components/workspace/WorkspaceTabStrip.tsx#L69)；原稿 §8；高",
+      "verification": "complete",
+      "entry": "Terminal/file/diff tabs.",
+      "scenario": "Terminal/file/diff tabs.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-067",
+      "capability": "标签拖动和关闭当前/全部/其他",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型部分",
+      "requirement": "保留，归 [REQ-12](./需求说明书.zh-CN.md#req-12)",
+      "evidence": "[WorkspaceTabStrip L69](../../src/components/workspace/WorkspaceTabStrip.tsx#L69)、[L258](../../src/components/workspace/WorkspaceTabStrip.tsx#L258)；高",
+      "verification": "complete",
+      "entry": "文件本地标签拖动重排；关闭当前/其他/全部；存在草稿时统一保存/放弃/取消。",
+      "scenario": "文件本地标签拖动重排；关闭当前/其他/全部；存在草稿时统一保存/放弃/取消。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "editor-src/editor-main.js",
+        "features/editor.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/editor-review-results.json",
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-068",
+      "capability": "关闭脏文件：保存/放弃/取消和外部修改冲突",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型内存草稿对话框",
+      "requirement": "保留，归 [REQ-16](./需求说明书.zh-CN.md#req-16)、[REQ-24](./需求说明书.zh-CN.md#req-24)",
+      "evidence": "[DirtyTabCloseDialog L60](../../src/components/workspace/DirtyTabCloseDialog.tsx#L60)；高",
+      "verification": "complete",
+      "entry": "Dirty close cancel/discard/save and external conflict workflow.",
+      "scenario": "Dirty close cancel/discard/save and external conflict workflow.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "editor-src/editor-main.js",
+        "features/editor.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/editor-review-results.json",
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-069",
+      "capability": "终端标签可仅关闭视图或同时结束会话；结束失败/超时仍保留",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型区分关闭窗格与结束",
+      "requirement": "保留两种选择和等待/保留/强制结束路径；文件与差异草稿不随终端结束删除，归 [REQ-06](./需求说明书.zh-CN.md#req-06)、[REQ-12](./需求说明书.zh-CN.md#req-12)",
+      "evidence": "[TerminalTabCloseDialog L107](../../src/components/workspace/TerminalTabCloseDialog.tsx#L107)、[useWorkspaceSession L949](../../src/components/workspace/useWorkspaceSession.ts#L949)、[L819](../../src/components/workspace/useWorkspaceSession.ts#L819)；高",
+      "verification": "complete",
+      "entry": "结束会话对话框提供仅关视图、正常结束、模拟失败/超时、继续等待/保留/重试/强制结束。",
+      "scenario": "结束会话对话框提供仅关视图、正常结束、模拟失败/超时、继续等待/保留/重试/强制结束。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/sessions.js",
+        "features/sessions.css",
+        "app.js"
+      ],
+      "workflowEvidence": [
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-070",
+      "capability": "文件栏根目录不随终端 `cd` 改变",
+      "source": "现有",
+      "currentStatus": "已接入边界",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留并明确浏览上下文和文件归属，归 [REQ-12](./需求说明书.zh-CN.md#req-12)",
+      "evidence": "[TerminalManager L307](../../src/components/terminal/TerminalManager.tsx#L307)、[L1722](../../src/components/terminal/TerminalManager.tsx#L1722)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "No real shell `cd` or filesystem root change.",
+      "scenario": "No real shell `cd` or filesystem root change.",
+      "category": "implementation-boundary",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "固定目录身份是实现约束；终端演示输入不会修改文件归属或项目根。"
+    },
+    {
+      "id": "F-071",
+      "capability": "工作区快照、标签与草稿依固定目录管理",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型内存态",
+      "requirement": "保留，归 [REQ-12](./需求说明书.zh-CN.md#req-12)、[REQ-16](./需求说明书.zh-CN.md#req-16)",
+      "evidence": "[useWorkspaceSession L142](../../src/components/workspace/useWorkspaceSession.ts#L142)、[service.rs L182](../../src-tauri/src/workspace/service.rs#L182)；高",
+      "verification": "complete",
+      "entry": "Durable feature state/drafts and workspace identity.",
+      "scenario": "Durable feature state/drafts and workspace identity.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "editor-src/editor-main.js",
+        "features/editor.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/editor-review-results.json",
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-072",
+      "capability": "普通工作区并排：原型同树最多四格",
+      "source": "原型",
+      "currentStatus": "仅原型",
+      "baselineCoverage": "完整（2×2 模拟）",
+      "requirement": "待评审范围与规模，归 [REQ-13](./需求说明书.zh-CN.md#req-13)；不是全面禁止跨树",
+      "evidence": "原稿 §8、§14.7、§18；中",
+      "verification": "complete",
+      "entry": "Same-tree split adds up to four panes, with guard and reorder.",
+      "scenario": "Same-tree split adds up to four panes, with guard and reorder.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-073",
+      "capability": "预设布局可跨工作树",
+      "source": "原型",
+      "currentStatus": "仅原型",
+      "baselineCoverage": "完整（模拟）",
+      "requirement": "与 F-072 分作场景，归 [REQ-13](./需求说明书.zh-CN.md#req-13)、[REQ-18](./需求说明书.zh-CN.md#req-18)",
+      "evidence": "原稿 §9、§13.11；中",
+      "verification": "complete",
+      "entry": "Preset multi-tree layout is distinct from ordinary same-tree split.",
+      "scenario": "Preset multi-tree layout is distinct from ordinary same-tree split.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-074",
+      "capability": "主窗口选择器、置顶浮动终端和铺排/轮播",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型页内浮窗",
+      "requirement": "保留，归 [REQ-14](./需求说明书.zh-CN.md#req-14)；两者不是同一实现",
+      "evidence": "[overlayStore L42](../../src/stores/overlayStore.ts#L42)、[OverlayBridge L79](../../src/components/overlays/OverlayBridge.tsx#L79)；高",
+      "verification": "partial",
+      "entry": "同树四格、预设跨树、浮动/置顶/返回主工作区，保持原会话身份。",
+      "scenario": "同树四格、预设跨树、浮动/置顶/返回主工作区，保持原会话身份。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "主工作区、选择器和置顶浮动会话共用身份；未完整展开多浮窗铺排/轮播模式。"
+    },
+    {
+      "id": "F-075",
+      "capability": "可重绑浮窗全局热键和恢复默认",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型仅键盘合同",
+      "requirement": "保留，归 [REQ-14](./需求说明书.zh-CN.md#req-14)、[REQ-20](./需求说明书.zh-CN.md#req-20)",
+      "evidence": "[OverlayHotkeysSettings L190](../../src/components/settings/OverlayHotkeysSettings.tsx#L190)；高",
+      "verification": "complete",
+      "entry": "Shortcut configuration is visible; no OS global hotkey registration.",
+      "scenario": "Shortcut configuration is visible; no OS global hotkey registration.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-076",
+      "capability": "轻量模式禁用独立浮层",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-14](./需求说明书.zh-CN.md#req-14)、[REQ-20](./需求说明书.zh-CN.md#req-20)",
+      "evidence": "[OverlayHotkeysSettings L38](../../src/components/settings/OverlayHotkeysSettings.tsx#L38)；高",
+      "verification": "complete",
+      "entry": "Lightweight mode controls the simulated floating layer.",
+      "scenario": "Lightweight mode controls the simulated floating layer.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-077",
+      "capability": "目录树逐级展开",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型文件树",
+      "requirement": "保留，归 [REQ-16](./需求说明书.zh-CN.md#req-16)",
+      "evidence": "[FileTree L22](../../src/components/files/FileTree.tsx#L22)、[FileTreeNode L47](../../src/components/files/FileTreeNode.tsx#L47)；高",
+      "verification": "complete",
+      "entry": "工作区右侧文件详情面板 → src/tests/preview 目录逐级展开、筛选、打开文件。",
+      "scenario": "工作区右侧文件详情面板 → src/tests/preview 目录逐级展开、筛选、打开文件。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "editor-src/editor-main.js",
+        "features/editor.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/editor-review-results.json",
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-078",
+      "capability": "文本编辑、行号、折叠、语法、换行和保存",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型草稿编辑",
+      "requirement": "保留，归 [REQ-16](./需求说明书.zh-CN.md#req-16)",
+      "evidence": "[WorkspaceCodeEditor L704](../../src/components/files/WorkspaceCodeEditor.tsx#L704)；高",
+      "verification": "complete",
+      "entry": "CodeMirror editing, lines/fold/syntax/wrap/save/undo-redo.",
+      "scenario": "CodeMirror editing, lines/fold/syntax/wrap/save/undo-redo.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "editor-src/editor-main.js",
+        "features/editor.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/editor-review-results.json",
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-079",
+      "capability": "持久化草稿、同步状态与磁盘冲突保护",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型草稿仅内存",
+      "requirement": "保留，归 [REQ-16](./需求说明书.zh-CN.md#req-16)、[REQ-24](./需求说明书.zh-CN.md#req-24)",
+      "evidence": "[WorkspaceContentViews L59](../../src/components/files/WorkspaceContentViews.tsx#L59)、[files.rs L174](../../src-tauri/src/files.rs#L174)；高",
+      "verification": "complete",
+      "entry": "Durable drafts and explicit external-change conflict handling.",
+      "scenario": "Durable drafts and explicit external-change conflict handling.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "editor-src/editor-main.js",
+        "features/editor.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/editor-review-results.json",
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-080",
+      "capability": "当前 1MB 文件上限与 NUL 二进制不可编辑",
+      "source": "现有",
+      "currentStatus": "已接入边界",
+      "baselineCoverage": "未涉及",
+      "requirement": "如实保留当前限制，未来容量待评审，归 [REQ-16](./需求说明书.zh-CN.md#req-16)",
+      "evidence": "[files.rs L23](../../src-tauri/src/files.rs#L23)、[L176](../../src-tauri/src/files.rs#L176)；高",
+      "verification": "complete",
+      "entry": "演示数据 → 只读/二进制/大文件/读取失败，或选择对应 fixture 标签；当前编辑上限演示为 1 MB。",
+      "scenario": "演示数据 → 只读/二进制/大文件/读取失败，或选择对应 fixture 标签；当前编辑上限演示为 1 MB。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "editor-src/editor-main.js",
+        "features/editor.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/editor-review-results.json",
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-081",
+      "capability": "Markdown 相对图片限定工作区内、网页链接外开",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型未涉及",
+      "requirement": "保留，归 [REQ-16](./需求说明书.zh-CN.md#req-16)、[REQ-24](./需求说明书.zh-CN.md#req-24)",
+      "evidence": "[WorkspaceCodeEditor L294](../../src/components/files/WorkspaceCodeEditor.tsx#L294)；高",
+      "verification": "complete",
+      "entry": "Markdown 在工作区本地预览；内容转义，图片/外链保持惰性，不访问任意文件或网络。",
+      "scenario": "Markdown 在工作区本地预览；内容转义，图片/外链保持惰性，不访问任意文件或网络。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "editor-src/editor-main.js",
+        "features/editor.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/editor-review-results.json",
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-082",
+      "capability": "静态 HTML 预览已保存桌面版本",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及（原型只有文本草稿编辑）",
+      "requirement": "保留，归 [REQ-16](./需求说明书.zh-CN.md#req-16)；不承诺草稿与磁盘预览一致",
+      "evidence": "[WorkspaceCodeEditor L374](../../src/components/files/WorkspaceCodeEditor.tsx#L374)；高",
+      "verification": "complete",
+      "entry": "saved-demo.html → 编辑草稿 → 预览仍看保存版本 → 保存后预览更新；空 sandbox。",
+      "scenario": "saved-demo.html → 编辑草稿 → 预览仍看保存版本 → 保存后预览更新；空 sandbox。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "editor-src/editor-main.js",
+        "features/editor.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/editor-review-results.json",
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-083",
+      "capability": "开发服务页面需输入 http/https 预览地址",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-16](./需求说明书.zh-CN.md#req-16)；不是所有网页自动渲染",
+      "evidence": "[WorkspaceCodeEditor L498](../../src/components/files/WorkspaceCodeEditor.tsx#L498)；高",
+      "verification": "complete",
+      "entry": "developer-address.fixture.html → 预览 → 输入 http/https 地址并校验 → 本地合成页面。",
+      "scenario": "developer-address.fixture.html → 预览 → 输入 http/https 地址并校验 → 本地合成页面。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "editor-src/editor-main.js",
+        "features/editor.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/editor-review-results.json",
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-084",
+      "capability": "暂存/未暂存/未跟踪状态及文本对比",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型合成差异",
+      "requirement": "保留，归 [REQ-17](./需求说明书.zh-CN.md#req-17)",
+      "evidence": "[WorkspacePanel L199](../../src/components/files/WorkspacePanel.tsx#L199)、[git.rs L373](../../src-tauri/src/git.rs#L373)；高",
+      "verification": "complete",
+      "entry": "Staged/unstaged/untracked diff fixtures.",
+      "scenario": "Staged/unstaged/untracked diff fixtures.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "editor-src/editor-main.js",
+        "features/editor.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/editor-review-results.json",
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-085",
+      "capability": "编辑未暂存侧、按行/块还原后保存",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型未涉及",
+      "requirement": "保留，归 [REQ-17](./需求说明书.zh-CN.md#req-17)",
+      "evidence": "[WorkspaceContentViews L293](../../src/components/files/WorkspaceContentViews.tsx#L293)、[WorkspaceCodeEditor L843](../../src/components/files/WorkspaceCodeEditor.tsx#L843)；高",
+      "verification": "complete",
+      "entry": "Current-side edit/save plus distinct line/hunk revert.",
+      "scenario": "Current-side edit/save plus distinct line/hunk revert.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "editor-src/editor-main.js",
+        "features/editor.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/editor-review-results.json",
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-086",
+      "capability": "暂存侧只读",
+      "source": "现有",
+      "currentStatus": "已接入边界",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-17](./需求说明书.zh-CN.md#req-17)",
+      "evidence": "[WorkspaceContentViews L529](../../src/components/files/WorkspaceContentViews.tsx#L529)；高",
+      "verification": "complete",
+      "entry": "Staged diff is read-only.",
+      "scenario": "Staged diff is read-only.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "editor-src/editor-main.js",
+        "features/editor.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/editor-review-results.json",
+        "preview/v3/verification-results.json",
+        "preview/v3/session-workflows-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-087",
+      "capability": "完整图形 Git 提交、推拉和合并入口",
+      "source": "现有",
+      "currentStatus": "未查到",
+      "baselineCoverage": "原型未涉及",
+      "requirement": "作为 [REQ-17](./需求说明书.zh-CN.md#req-17) 的范围边界记录；不写成已有能力或本轮新增承诺",
+      "evidence": "[WorkspacePanel L199](../../src/components/files/WorkspacePanel.tsx#L199) 已覆盖本轮确认的状态/对比入口；低",
+      "verification": "out-of-ui-denominator",
+      "entry": "No graph commit/push/pull/merge UI.",
+      "scenario": "No graph commit/push/pull/merge UI.",
+      "category": "historical-or-unconfirmed",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "基线明确不是已交付或本轮承诺；保留记录，不新增相应产品域。"
+    },
+    {
+      "id": "F-088",
+      "capability": "保存工作预设、布局和待审阅命令",
+      "source": "原型",
+      "currentStatus": "仅原型",
+      "baselineCoverage": "完整（离线）",
+      "requirement": "原型提出，归 [REQ-18](./需求说明书.zh-CN.md#req-18)；命令不自动执行",
+      "evidence": "原稿 §9、§11、§13.11；中",
+      "verification": "complete",
+      "entry": "Save preset with layout and reviewed commands.",
+      "scenario": "Save preset with layout and reviewed commands.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-089",
+      "capability": "预览预设、选择可用工作树/命令后恢复视图",
+      "source": "原型",
+      "currentStatus": "仅原型",
+      "baselineCoverage": "完整（离线）",
+      "requirement": "待评审启动与失效目标处理，归 [REQ-18](./需求说明书.zh-CN.md#req-18)",
+      "evidence": "原稿 §9、§13.11；中",
+      "verification": "complete",
+      "entry": "Preview, unavailable-tree disabling, entry/command selection, confirm.",
+      "scenario": "Preview, unavailable-tree disabling, entry/command selection, confirm.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-090",
+      "capability": "预设恢复不覆盖草稿或未发送输入",
+      "source": "原型",
+      "currentStatus": "仅原型",
+      "baselineCoverage": "演示规则",
+      "requirement": "保留为数据保护功能清单，归 [REQ-18](./需求说明书.zh-CN.md#req-18)、[REQ-24](./需求说明书.zh-CN.md#req-24)；实现细节另行评审",
+      "evidence": "原稿 §13.11；中",
+      "verification": "complete",
+      "entry": "Preset flow retains drafts and unsent terminal input; commands do not auto-run.",
+      "scenario": "Preset flow retains drafts and unsent terminal input; commands do not auto-run.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-091",
+      "capability": "统计范围和筛选：时间、项目、提供方、模型、成败、来源",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型合成统计",
+      "requirement": "保留，归 [REQ-19](./需求说明书.zh-CN.md#req-19)",
+      "evidence": "[StatsPanel L24](../../src/components/stats/StatsPanel.tsx#L24)、[L138](../../src/components/stats/StatsPanel.tsx#L138)；高",
+      "verification": "complete",
+      "entry": "Usage-details time/provider/model/result/source filters.",
+      "scenario": "Usage-details time/provider/model/result/source filters.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-092",
+      "capability": "Token、请求/会话、成功/缓存率、趋势、拆分与明细分页",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型合成数字/曲线",
+      "requirement": "保留，归 [REQ-19](./需求说明书.zh-CN.md#req-19)",
+      "evidence": "[StatsPanel L305](../../src/components/stats/StatsPanel.tsx#L305)；高",
+      "verification": "complete",
+      "entry": "项目用量面板与明细 → 合成请求/会话、成功/缓存率、趋势拆分、分页。",
+      "scenario": "项目用量面板与明细 → 合成请求/会话、成功/缓存率、趋势拆分、分页。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-093",
+      "capability": "未归属项目和未定价标注",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-19](./需求说明书.zh-CN.md#req-19)",
+      "evidence": "[StatsPanel L138](../../src/components/stats/StatsPanel.tsx#L138)；高",
+      "verification": "complete",
+      "entry": "Unknown/unattributed row is explicit.",
+      "scenario": "Unknown/unattributed row is explicit.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-094",
+      "capability": "模型单价维护只影响费用估算",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型有价格展示",
+      "requirement": "保留，归 [REQ-19](./需求说明书.zh-CN.md#req-19)；不改变模型或账户",
+      "evidence": "[StatsPanel L305](../../src/components/stats/StatsPanel.tsx#L305)；高",
+      "verification": "complete",
+      "entry": "明细下方估算单价 → 保存后重新计算当前合成范围估算，不改变模型或账户。",
+      "scenario": "明细下方估算单价 → 保存后重新计算当前合成范围估算，不改变模型或账户。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-095",
+      "capability": "费用为估算、未知价格不可当余额/账单",
+      "source": "现有",
+      "currentStatus": "已接入边界",
+      "baselineCoverage": "原型价格为假设",
+      "requirement": "保留准确性边界，归 [REQ-19](./需求说明书.zh-CN.md#req-19)、[REQ-24](./需求说明书.zh-CN.md#req-24)",
+      "evidence": "[pricing.rs L94](../../src-tauri/src/stats/pricing.rs#L94)、[L225](../../src-tauri/src/stats/pricing.rs#L225)；高",
+      "verification": "complete",
+      "entry": "UI labels prices as estimates/hypotheses, never balance/billing.",
+      "scenario": "UI labels prices as estimates/hypotheses, never balance/billing.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-096",
+      "capability": "跨树汇总、Shell 时长和状态历史曲线",
+      "source": "两者",
+      "currentStatus": "当前数据能力不足",
+      "baselineCoverage": "原型合成展示",
+      "requirement": "待评审数据口径；不可称当前真实统计，归 [REQ-19](./需求说明书.zh-CN.md#req-19)",
+      "evidence": "`docs/project-home-ui-refactor-plan.zh-CN.md` 审阅结论；中",
+      "verification": "complete",
+      "entry": "Cross-tree/Shell-hour/status chart fixtures labelled as demo data.",
+      "scenario": "Cross-tree/Shell-hour/status chart fixtures labelled as demo data.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-097",
+      "capability": "Local Pro：¥199、一次买断、12 个月更新和权益",
+      "source": "原型",
+      "currentStatus": "仅原型",
+      "baselineCoverage": "完整（演示）",
+      "requirement": "商业探索待确认，归 [REQ-25](./需求说明书.zh-CN.md#req-25)；不实施支付或改变免费能力",
+      "evidence": "原稿 §12、§16；中",
+      "verification": "complete",
+      "entry": "Local Pro offer has no payment/account/network path.",
+      "scenario": "Local Pro offer has no payment/account/network path.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-098",
+      "capability": "外观、系统浅深色、内置/自定义主题和预览",
+      "source": "两者",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型主题切换",
+      "requirement": "保留，归 [REQ-20](./需求说明书.zh-CN.md#req-20)",
+      "evidence": "[Settings L97](../../src/components/settings/Settings.tsx#L97)、[L235](../../src/components/settings/Settings.tsx#L235)；高",
+      "verification": "complete",
+      "entry": "Light/dark/system/custom-theme preview settings.",
+      "scenario": "Light/dark/system/custom-theme preview settings.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-099",
+      "capability": "中英语言及窗口同步",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-20](./需求说明书.zh-CN.md#req-20)",
+      "evidence": "[LanguageSelector L12](../../src/components/settings/LanguageSelector.tsx#L12)、[L51](../../src/components/settings/LanguageSelector.tsx#L51)；高",
+      "verification": "partial",
+      "entry": "本地用户 → 设置 → 外观与语言；主要导航和设置即时切换。",
+      "scenario": "本地用户 → 设置 → 外观与语言；主要导航和设置即时切换。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "设置抽屉和主要导航支持中英切换并持久化；部分继承页面和演示文本仍为中文。"
+    },
+    {
+      "id": "F-100",
+      "capability": "两类全局热键、浮窗模式和轻量模式设置",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型部分",
+      "requirement": "保留，归 [REQ-20](./需求说明书.zh-CN.md#req-20)",
+      "evidence": "[OverlayHotkeysSettings L219](../../src/components/settings/OverlayHotkeysSettings.tsx#L219)；高",
+      "verification": "complete",
+      "entry": "Overlay/floating/lightweight preferences.",
+      "scenario": "Overlay/floating/lightweight preferences.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-101",
+      "capability": "其余大多数快捷键仅说明、非全部可配置",
+      "source": "现有",
+      "currentStatus": "已接入边界",
+      "baselineCoverage": "原型键盘合同",
+      "requirement": "保留准确范围，归 [REQ-20](./需求说明书.zh-CN.md#req-20)",
+      "evidence": "[KeyboardShortcutsSettings L19](../../src/components/settings/KeyboardShortcutsSettings.tsx#L19)；高",
+      "verification": "complete",
+      "entry": "Keyboard-contract/help and supported editable shortcuts only.",
+      "scenario": "Keyboard-contract/help and supported editable shortcuts only.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-126",
+      "capability": "自定义主题包的导入、导出与删除确认",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型仅两种主题演示",
+      "requirement": "保留并补原型，归 [REQ-20](./需求说明书.zh-CN.md#req-20)",
+      "evidence": "[Settings L104](../../src/components/settings/Settings.tsx#L104)、[L126](../../src/components/settings/Settings.tsx#L126)、[L143](../../src/components/settings/Settings.tsx#L143)；高",
+      "verification": "complete",
+      "entry": "Custom-theme import/export/delete-confirm settings flow.",
+      "scenario": "Custom-theme import/export/delete-confirm settings flow.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-102",
+      "capability": "系统通知偏好、预览、兼容判定和发送测试",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型仅离线提示",
+      "requirement": "保留，归 [REQ-11](./需求说明书.zh-CN.md#req-11)、[REQ-20](./需求说明书.zh-CN.md#req-20)",
+      "evidence": "[NotificationPreferenceSettings L6](../../src/components/settings/NotificationPreferenceSettings.tsx#L6)、[NotificationSettings L34](../../src/components/settings/NotificationSettings.tsx#L34)；高",
+      "verification": "complete",
+      "entry": "Notification preferences/test/compatibility explanations; no system send.",
+      "scenario": "Notification preferences/test/compatibility explanations; no system send.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-103",
+      "capability": "设置专用 JSON 导出、差异预览和分栏目覆盖导入",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型 localStorage",
+      "requirement": "保留，归 [REQ-21](./需求说明书.zh-CN.md#req-21)",
+      "evidence": "[SettingsDataIO L87](../../src/components/settings/SettingsDataIO.tsx#L87)、[settingsBundle L145](../../src/lib/settings/settingsBundle.ts#L145)；高",
+      "verification": "complete",
+      "entry": "Whitelisted settings JSON export, preview, selected-section import.",
+      "scenario": "Whitelisted settings JSON export, preview, selected-section import.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-104",
+      "capability": "设置包只含主题、通知、浮层/快捷键/轻量设置",
+      "source": "现有",
+      "currentStatus": "已接入边界",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留边界，归 [REQ-21](./需求说明书.zh-CN.md#req-21)；不是会话/输出/密钥/设备/审计完整备份",
+      "evidence": "[settingsBundle L22](../../src/lib/settings/settingsBundle.ts#L22)、[L145](../../src/lib/settings/settingsBundle.ts#L145)；高",
+      "verification": "complete",
+      "entry": "Import/export text states whitelist; explicitly not complete backup.",
+      "scenario": "Import/export text states whitelist; explicitly not complete backup.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-105",
+      "capability": "数据位置、类别、大小和数量概览",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-21](./需求说明书.zh-CN.md#req-21)",
+      "evidence": "[DataDirectoryOverview L51](../../src/components/settings/DataDirectoryOverview.tsx#L51)、[dataDirectory L34](../../src/lib/dataDirectory.ts#L34)；高",
+      "verification": "complete",
+      "entry": "Settings data-location/category/count fixture.",
+      "scenario": "Settings data-location/category/count fixture.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-106",
+      "capability": "数据迁移：目标选择、预检、保留源、进度、重启/取消/回滚/清理",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-21](./需求说明书.zh-CN.md#req-21)",
+      "evidence": "[DataDirectorySettings L43](../../src/components/settings/DataDirectorySettings.tsx#L43)、[DataMigrationForm L10](../../src/components/settings/DataMigrationForm.tsx#L10)、[DataMigrationStatusSection L18](../../src/components/settings/DataMigrationStatusSection.tsx#L18)；高",
+      "verification": "complete",
+      "entry": "设置 → 数据与迁移：目标预检、进度、取消、保留源、激活、回滚、确认后清理。",
+      "scenario": "设置 → 数据与迁移：目标预检、进度、取消、保留源、激活、回滚、确认后清理。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-107",
+      "capability": "下次启动清理可重建缓存、macOS 不可用",
+      "source": "现有",
+      "currentStatus": "已接入边界",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-21](./需求说明书.zh-CN.md#req-21)",
+      "evidence": "[DataCacheSettings L13](../../src/components/settings/DataCacheSettings.tsx#L13)；高",
+      "verification": "complete",
+      "entry": "Rebuild-cache/platform-boundary setting.",
+      "scenario": "Rebuild-cache/platform-boundary setting.",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-108",
+      "capability": "普通用户账户/API Key、检查/自动更新、诊断导出 UI",
+      "source": "现有",
+      "currentStatus": "未查到",
+      "baselineCoverage": "原型仅“关于原型”",
+      "requirement": "作为 [REQ-20](./需求说明书.zh-CN.md#req-20)、[REQ-21](./需求说明书.zh-CN.md#req-21) 的范围边界记录；不补写成已交付或本轮承诺",
+      "evidence": "[Settings L33](../../src/components/settings/Settings.tsx#L33) 是本轮确认的设置入口范围；低",
+      "verification": "out-of-ui-denominator",
+      "entry": "Account/API-key/update/diagnostics UI intentionally absent.",
+      "scenario": "Account/API-key/update/diagnostics UI intentionally absent.",
+      "category": "historical-or-unconfirmed",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "基线明确不是已交付或本轮承诺；保留记录，不新增相应产品域。"
+    },
+    {
+      "id": "F-109",
+      "capability": "Windows 其他工具可创建、查看、列出、展示和关闭终端",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-23](./需求说明书.zh-CN.md#req-23)；非 Windows 不可用",
+      "evidence": "[bridge.rs L23](../../plugins/threadterm-terminal-host/src/bridge.rs#L23)、[TerminalHostSurfaces L22](../../src/components/terminal/host/TerminalHostSurfaces.tsx#L22)；高",
+      "verification": "complete",
+      "entry": "设置 → 外部工具：Windows 演示目录、创建/查看/列表/显示/温和或强制关闭，显示合成回执。",
+      "scenario": "设置 → 外部工具：Windows 演示目录、创建/查看/列表/显示/温和或强制关闭，显示合成回执。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-110",
+      "capability": "工具调用需已有绝对目录，可工作区/独立窗口、后台/聚焦和温和/强制关闭",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-23](./需求说明书.zh-CN.md#req-23)",
+      "evidence": "[bridge.rs L23](../../plugins/threadterm-terminal-host/src/bridge.rs#L23)、[TerminalHostApp L46](../../src/windows/terminal-host/TerminalHostApp.tsx#L46)；高",
+      "verification": "complete",
+      "entry": "外部工具表单校验已知绝对演示目录，选择工作区/独立窗口和后台/聚焦。",
+      "scenario": "外部工具表单校验已知绝对演示目录，选择工作区/独立窗口和后台/聚焦。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-127",
+      "capability": "侧栏“全部项目”清除范围筛选，具体项目/工作目录可选；另有“全部终端”页面入口",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型有所有终端页和独立项目/树页",
+      "requirement": "保留，归 [REQ-02](./需求说明书.zh-CN.md#req-02)、[REQ-04](./需求说明书.zh-CN.md#req-04)、[REQ-09](./需求说明书.zh-CN.md#req-09)；“全部项目”不切换页面，“全部终端”会切换页面，二者不得混称",
+      "evidence": "[ProjectSidebar L337](../../src/components/terminal/ProjectSidebar.tsx#L337)、[L380](../../src/components/terminal/ProjectSidebar.tsx#L380)、[L670](../../src/components/terminal/ProjectSidebar.tsx#L670)；高",
+      "verification": "complete",
+      "entry": "侧栏“项目 · 全部项目”范围选择 → 项目/树筛选；清除后恢复列表，不切换页面。主导航所有终端单独跳转。",
+      "scenario": "侧栏“项目 · 全部项目”范围选择 → 项目/树筛选；清除后恢复列表，不切换页面。主导航所有终端单独跳转。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-128",
+      "capability": "当前范围标签、范围空态与待处理来源提示",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "原型分区/空态演示",
+      "requirement": "保留，归 [REQ-09](./需求说明书.zh-CN.md#req-09)、[REQ-11](./需求说明书.zh-CN.md#req-11)",
+      "evidence": "[WorkbenchView L176](../../src/components/workbench/WorkbenchView.tsx#L176)、[WorkbenchDetailPanel L194](../../src/components/workbench/WorkbenchDetailPanel.tsx#L194)；高",
+      "verification": "complete",
+      "entry": "侧栏范围标签、列表空态、待处理来源和关联会话保留上下文。",
+      "scenario": "侧栏范围标签、列表空态、待处理来源和关联会话保留上下文。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "app.js",
+        "features/core.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/core-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/visuals-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-111",
+      "capability": "开关移动访问、二维码配对、只读/完全控制、设备撤销",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-22](./需求说明书.zh-CN.md#req-22)",
+      "evidence": "[MobileAccessSettings L87](../../src/components/settings/MobileAccessSettings.tsx#L87)、[bridge server L241](../../src-tauri/src/bridge/server.rs#L241)；高",
+      "verification": "complete",
+      "entry": "设置 → 桌面移动连接：开关、配对码、权限、新设备、断开/重连、改名/撤销。",
+      "scenario": "设置 → 桌面移动连接：开关、配对码、权限、新设备、断开/重连、改名/撤销。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。"
+    },
+    {
+      "id": "F-112",
+      "capability": "浏览器配对、设备命名和身份校验",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-22](./需求说明书.zh-CN.md#req-22)",
+      "evidence": "[mobile App L172](../../mobile-app/src/App.tsx#L172)、[L903](../../mobile-app/src/App.tsx#L903)；高",
+      "verification": "complete",
+      "entry": "桌面设备列表改名和模拟配对身份；手机端浏览器配对界面明确延期。",
+      "scenario": "桌面设备列表改名和模拟配对身份；手机端浏览器配对界面明确延期。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。",
+      "desktopProjection": "本行计数仅覆盖已批准的桌面连接管理；手机 UI 和真实协议不计为实现。"
+    },
+    {
+      "id": "F-113",
+      "capability": "当前配对码 5 分钟、设备令牌 24 小时",
+      "source": "现有",
+      "currentStatus": "已接入边界",
+      "baselineCoverage": "未涉及",
+      "requirement": "记录为当前值，不定为永久限制，归 [REQ-22](./需求说明书.zh-CN.md#req-22)",
+      "evidence": "[pairing.rs L17](../../src-tauri/src/bridge/pairing.rs#L17)；高",
+      "verification": "complete",
+      "entry": "五分钟配对码与 24 小时设备令牌分别演示；配对码过期只阻止新配对，设备按自身令牌授权。",
+      "scenario": "五分钟配对码与 24 小时设备令牌分别演示；配对码过期只阻止新配对，设备按自身令牌授权。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。",
+      "desktopProjection": "本行计数仅覆盖已批准的桌面连接管理；手机 UI 和真实协议不计为实现。"
+    },
+    {
+      "id": "F-114",
+      "capability": "自动连接、心跳、重连与补快照",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-22](./需求说明书.zh-CN.md#req-22)；静态审阅，不以测试文件宣称已验证",
+      "evidence": "[useBridgeConnection L59](../../mobile-app/src/bridge/useBridgeConnection.ts#L59)、[mobile App L190](../../mobile-app/src/App.tsx#L190)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "No mobile transport/heartbeat/reconnect implementation in desktop prototype.",
+      "scenario": "No mobile transport/heartbeat/reconnect implementation in desktop prototype.",
+      "category": "implementation-boundary",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "真实连接、心跳和补快照属于传输实现；桌面只演示连接/断开/重连状态。"
+    },
+    {
+      "id": "F-115",
+      "capability": "移动端项目/树/会话浏览、搜索、创建、打开、激活、改名、关闭",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-22](./需求说明书.zh-CN.md#req-22)",
+      "evidence": "[MainTerminal L141](../../mobile-app/src/MainTerminal.tsx#L141)、[protocol L167](../../src/mobile/bridge/protocol.ts#L167)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "Phone project/tree/session UI is explicitly deferred.",
+      "scenario": "Phone project/tree/session UI is explicitly deferred.",
+      "category": "phone-deferred",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "按已确认的桌面优先范围，手机界面/移动实现延期。"
+    },
+    {
+      "id": "F-116",
+      "capability": "移动端实时输出、详细终端、输入和常用组合键",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-22](./需求说明书.zh-CN.md#req-22)",
+      "evidence": "[InputBar L23](../../mobile-app/src/input/InputBar.tsx#L23)、[MainTerminal L141](../../mobile-app/src/MainTerminal.tsx#L141)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "Phone terminal/input/key UI is explicitly deferred.",
+      "scenario": "Phone terminal/input/key UI is explicitly deferred.",
+      "category": "phone-deferred",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "按已确认的桌面优先范围，手机界面/移动实现延期。"
+    },
+    {
+      "id": "F-117",
+      "capability": "只读/完全控制在客户端和服务端校验",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-22](./需求说明书.zh-CN.md#req-22)、[REQ-24](./需求说明书.zh-CN.md#req-24)",
+      "evidence": "[permissions L18](../../mobile-app/src/bridge/permissions.ts#L18)、[authz.rs L72](../../src-tauri/src/bridge/authz.rs#L72)；高",
+      "verification": "complete",
+      "entry": "设备命令按钮与处理函数均检查连接、撤销、令牌和完全控制；真实服务端校验不在原型中。",
+      "scenario": "设备命令按钮与处理函数均检查连接、撤销、令牌和完全控制；真实服务端校验不在原型中。",
+      "category": "desktop-ui",
+      "eligibleDesktopUI": true,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "所有运行和文件结果均为合成演示；不代表真实 CLI/OS/服务端交付。",
+      "desktopProjection": "本行计数仅覆盖已批准的桌面连接管理；手机 UI 和真实协议不计为实现。"
+    },
+    {
+      "id": "F-118",
+      "capability": "移动主题和语言同步",
+      "source": "现有",
+      "currentStatus": "已接入",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留，归 [REQ-22](./需求说明书.zh-CN.md#req-22)",
+      "evidence": "[MobileAccessSettings L40](../../src/components/settings/MobileAccessSettings.tsx#L40)、[mobile App L250](../../mobile-app/src/App.tsx#L250)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "Desktop settings may choose language/theme; phone synchronization UI is deferred.",
+      "scenario": "Desktop settings may choose language/theme; phone synchronization UI is deferred.",
+      "category": "phone-deferred",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "按已确认的桌面优先范围，手机界面/移动实现延期。"
+    },
+    {
+      "id": "F-119",
+      "capability": "安全工作区、共享标签、文件/diff/草稿和编辑权 UI/协议/服务",
+      "source": "现有",
+      "currentStatus": "部分/未接通",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留为待接通能力，归 [REQ-22](./需求说明书.zh-CN.md#req-22)",
+      "evidence": "[mobile WorkspaceHome L27](../../mobile-app/src/workspace/WorkspaceHome.tsx#L27)、[LeaseDialog L17](../../mobile-app/src/workspace/LeaseDialog.tsx#L17)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "Shared mobile workspace protocol/UI is not this desktop prototype.",
+      "scenario": "Shared mobile workspace protocol/UI is not this desktop prototype.",
+      "category": "phone-deferred",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "按已确认的桌面优先范围，手机界面/移动实现延期。"
+    },
+    {
+      "id": "F-120",
+      "capability": "当前移动主路径仍 terminal-only，拒绝工作区命令",
+      "source": "现有",
+      "currentStatus": "部分/未接通",
+      "baselineCoverage": "未涉及",
+      "requirement": "明确不误报为完整手机文件工作区，归 [REQ-22](./需求说明书.zh-CN.md#req-22)",
+      "evidence": "[mobile App L211](../../mobile-app/src/App.tsx#L211)、[legacyWebBridgeClient L113](../../mobile-app/src/bridge/legacyWebBridgeClient.ts#L113)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "Terminal-only mobile path is not recreated.",
+      "scenario": "Terminal-only mobile path is not recreated.",
+      "category": "phone-deferred",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "按已确认的桌面优先范围，手机界面/移动实现延期。"
+    },
+    {
+      "id": "F-121",
+      "capability": "移动文件编辑的保存/放弃/冲突和接管申请",
+      "source": "现有",
+      "currentStatus": "部分/未接通",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留为安全工作区待接通范围，归 [REQ-22](./需求说明书.zh-CN.md#req-22)",
+      "evidence": "[FileEditor L33](../../mobile-app/src/workspace/FileEditor.tsx#L33)、[DiffViewer L12](../../mobile-app/src/workspace/DiffViewer.tsx#L12)、[LeaseDialog L17](../../mobile-app/src/workspace/LeaseDialog.tsx#L17)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "Mobile editor lease/conflict/takeover UI is deferred.",
+      "scenario": "Mobile editor lease/conflict/takeover UI is deferred.",
+      "category": "phone-deferred",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "按已确认的桌面优先范围，手机界面/移动实现延期。"
+    },
+    {
+      "id": "F-122",
+      "capability": "各设备自行选择当前标签，不强制同步视图",
+      "source": "现有",
+      "currentStatus": "部分/未接通",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留为待接通行为边界，归 [REQ-22](./需求说明书.zh-CN.md#req-22)",
+      "evidence": "[WorkspaceShell L73](../../mobile-app/src/workspace/WorkspaceShell.tsx#L73)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "Per-device current-tab behavior is deferred with phone UI.",
+      "scenario": "Per-device current-tab behavior is deferred with phone UI.",
+      "category": "phone-deferred",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "按已确认的桌面优先范围，手机界面/移动实现延期。"
+    },
+    {
+      "id": "F-123",
+      "capability": "iOS 原生插件仍待 Mac 集成",
+      "source": "现有",
+      "currentStatus": "部分/未接通",
+      "baselineCoverage": "未涉及",
+      "requirement": "不称正式可交付；平台顺序待评审，归 [REQ-22](./需求说明书.zh-CN.md#req-22)",
+      "evidence": "[mobile README L1](../../mobile-app/src-tauri/README.md#L1)、[mobile lib.rs L1](../../mobile-app/src-tauri/src/lib.rs#L1)；高",
+      "verification": "out-of-ui-denominator",
+      "entry": "iOS native integration is not in scope.",
+      "scenario": "iOS native integration is not in scope.",
+      "category": "phone-deferred",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "按已确认的桌面优先范围，手机界面/移动实现延期。"
+    },
+    {
+      "id": "F-124",
+      "capability": "离线可见/未同步输入保护不等于离线执行桌面命令",
+      "source": "现有",
+      "currentStatus": "部分/未接通",
+      "baselineCoverage": "未涉及",
+      "requirement": "保留安全边界，归 [REQ-22](./需求说明书.zh-CN.md#req-22)、[REQ-24](./需求说明书.zh-CN.md#req-24)",
+      "evidence": "[FileEditor L33](../../mobile-app/src/workspace/FileEditor.tsx#L33)；中",
+      "verification": "out-of-ui-denominator",
+      "entry": "Offline mobile protection/execution boundary is not in scope.",
+      "scenario": "Offline mobile protection/execution boundary is not in scope.",
+      "category": "phone-deferred",
+      "eligibleDesktopUI": false,
+      "implementationEvidence": [
+        "features/settings.js",
+        "features/settings.css"
+      ],
+      "workflowEvidence": [
+        "preview/v3/settings-review-results.json",
+        "preview/v3/desktop-completion-results.json",
+        "preview/v3/verification-results.json"
+      ],
+      "limitation": "按已确认的桌面优先范围，手机界面/移动实现延期。"
+    }
+  ],
+  "updatedAt": "2026-09-09T01:18:29.804Z",
+  "methodology": "以 128 个基线 F-ID 保留追溯。分母为已批准的桌面可见交互投影；真实后端、已明确不承诺项、本轮原型明确去掉项、延期手机项单列。部分完成项不算完成。每行结合实现审阅和关联工作流证据，不声称 128 项均有独立自动化用例。",
+  "summary": {
+    "baselineItems": 128,
+    "eligibleDesktopUI": 110,
+    "complete": 105,
+    "partial": 5,
+    "completionPercent": 95.45,
+    "implementationBoundaries": 5,
+    "historicalOrUnconfirmed": 3,
+    "prototypeExcluded": 1,
+    "phoneDeferred": 9
+  },
+  "residuals": [
+    {
+      "id": "F-009",
+      "capability": "识别已有工作树并为既有分支创建工作树后开终端",
+      "limitation": "已发现/复用已有工作树，也可新建空工作树；尚未合并成“已有分支无工作树 → 创建工作树并启动”的单条向导。"
+    },
+    {
+      "id": "F-028",
+      "capability": "响应式网格、焦点/全屏、活动优先与项目内拖动",
+      "limitation": "网格、活动优先、作用域拖动和工作区聚焦已实现；缺少独立终端全屏模式。"
+    },
+    {
+      "id": "F-063",
+      "capability": "回网格、前后会话、上次活跃等快捷导航",
+      "limitation": "回网格、上一/下一会话与 Alt+方向键已实现；缺少“上次活跃会话”专用快捷键。"
+    },
+    {
+      "id": "F-074",
+      "capability": "主窗口选择器、置顶浮动终端和铺排/轮播",
+      "limitation": "主工作区、选择器和置顶浮动会话共用身份；未完整展开多浮窗铺排/轮播模式。"
+    },
+    {
+      "id": "F-099",
+      "capability": "中英语言及窗口同步",
+      "limitation": "设置抽屉和主要导航支持中英切换并持久化；部分继承页面和演示文本仍为中文。"
+    }
+  ]
+}

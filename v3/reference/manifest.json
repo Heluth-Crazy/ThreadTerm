@@ -1,0 +1,492 @@
+[
+  {
+    "path": "功能对照与审阅记录.zh-CN.md",
+    "sha256": "EAB95C8C8B956E51F90A717BB05120B7520B561813124F6204320994C0D807D0",
+    "bytes": 48305
+  },
+  {
+    "path": "需求说明书.zh-CN.md",
+    "sha256": "F9EA0C30757D42EDFED8299FA2215B0011623A1E4381ED72868E5FBD4F9E63FC",
+    "bytes": 34859
+  },
+  {
+    "path": "原型交互附录.zh-CN.md",
+    "sha256": "C947A62FEF6D4990BB6FD62FFAB0E919E838FE1411D984E228ABD30BF30F05A1",
+    "bytes": 77722
+  },
+  {
+    "path": "app.js",
+    "sha256": "E407491658FB3469E18F9F83AC0A38E27AE7254E0E3611E0A9CB532A4BE98EFF",
+    "bytes": 250432
+  },
+  {
+    "path": "editor-build.mjs",
+    "sha256": "244ACD6AACCAFE17153F27FCE15C47D697633D86E962072654F3FAC3ACDAC9B4",
+    "bytes": 432
+  },
+  {
+    "path": "feature-coverage.json",
+    "sha256": "F9BCE85233496FA2ED9AB077AD752E2D314CB8C9CF68370995B5C504C81852D5",
+    "bytes": 148017
+  },
+  {
+    "path": "index.html",
+    "sha256": "058B4C61F13BD44F032AC0A0CBD1DA2D17084E7D0083E25C45FF3B9E6E1D1BA9",
+    "bytes": 2591
+  },
+  {
+    "path": "package.json",
+    "sha256": "16069F19E9D7B7014C1DAC9CF116179642B53008BED38560EE271F17131A346B",
+    "bytes": 1233
+  },
+  {
+    "path": "README.md",
+    "sha256": "6A68AB03312170789A76B27FD71EFDE03F270D85F9F98EFA0BE07364890520A0",
+    "bytes": 4240
+  },
+  {
+    "path": "REDESIGN.zh-CN.md",
+    "sha256": "2D2C935231B294308314DA0CACB42BBDB687ED0DE14D339051F632A0B2915491",
+    "bytes": 52553
+  },
+  {
+    "path": "styles.css",
+    "sha256": "778A1BE97846E3624E6471A030FA6692E0FCABDF879A82CAA9399A5C75C937D6",
+    "bytes": 90326
+  },
+  {
+    "path": "VERIFICATION.md",
+    "sha256": "0A54A1309FAE099F61E0260FA8EACBB6E7F2F12FBB23365CF840B38AD07536CE",
+    "bytes": 7614
+  },
+  {
+    "path": "editor-src\\editor-main.js",
+    "sha256": "D39E0FCE54B7D53D4D0D24A531F3301493576927BE87B9E5C28ACD3FDCEEF048",
+    "bytes": 32489
+  },
+  {
+    "path": "features\\API.md",
+    "sha256": "08A5AE28A224D8079175CAB69BD67BA322936E444F3A505194B031DD7289C147",
+    "bytes": 7225
+  },
+  {
+    "path": "features\\core.css",
+    "sha256": "E73468D3B16DE2D0CAA70CEABE7C8DBA530AD990EBCE3B5B3560CDD9E91CC24A",
+    "bytes": 753
+  },
+  {
+    "path": "features\\editor.css",
+    "sha256": "CEB182734828661F9612636649BDC02523FC834E21E25AEB1CE7D140636CCE00",
+    "bytes": 3498
+  },
+  {
+    "path": "features\\editor.js",
+    "sha256": "6F8B47B8D336C66DCE75D226FFDD026FEE3977C7A1B06F4D5803AF9021651450",
+    "bytes": 297
+  },
+  {
+    "path": "features\\sessions.css",
+    "sha256": "DA5F0C879A298833F6228CD20E0A6DE8338F8323F5B16C1B56F313DEB6F117C9",
+    "bytes": 7284
+  },
+  {
+    "path": "features\\sessions.js",
+    "sha256": "1D5AEDDB30B0357560054F8FA5E345F062E8BA651FEC358419E612807C72EB63",
+    "bytes": 63624
+  },
+  {
+    "path": "features\\settings.css",
+    "sha256": "1C1A23BF1EDD5D4093F4930C43DBB4C1099DD52B6CE90F903A4DB01A52915C99",
+    "bytes": 8291
+  },
+  {
+    "path": "features\\settings.js",
+    "sha256": "EB5FF2E03CE44824C7BFF694237A70806C43093FC0016C9121E0113C5A32CFBD",
+    "bytes": 47217
+  },
+  {
+    "path": "preview\\catalog-archived-projects.png",
+    "sha256": "2D9866AF6A40E1B9F0D0A7D3252CB750A77927070E47474BDA9BA5E267841E38",
+    "bytes": 144961
+  },
+  {
+    "path": "preview\\catalog-branch-menu.png",
+    "sha256": "09469C291055EFD446A36AF47967F098094F4547FD54B0B12CA176FB4C353130",
+    "bytes": 152617
+  },
+  {
+    "path": "preview\\catalog-project-menu.png",
+    "sha256": "B11A482EDD1466809D70E527CE27B231391FA5F717F6A0122E0EA8A987754CF2",
+    "bytes": 144626
+  },
+  {
+    "path": "preview\\project-docs-dark-1440.png",
+    "sha256": "B9F18752E72B42DA37BCF3DD1E2D9E24A6B378B3D576C6C7FFB15698B3AAEFD1",
+    "bytes": 102444
+  },
+  {
+    "path": "preview\\project-orbit-empty-dark-1440.png",
+    "sha256": "2FBB5A2DBC9E63E8C8EC7CC73E55C14F8604939EE120AA27887D131AEAF53A7F",
+    "bytes": 145206
+  },
+  {
+    "path": "preview\\project-orbit-focus-dark-1440.png",
+    "sha256": "71221CDB719D7B943344A79880471D467989EE0D75FD639033106083567ABBE6",
+    "bytes": 153274
+  },
+  {
+    "path": "preview\\project-orbit-focus-light-1440.png",
+    "sha256": "8A93F33FDA5B4BC34039E655DD5BAE72298A2366258830515C8B52CDDAF84B69",
+    "bytes": 167220
+  },
+  {
+    "path": "preview\\project-pulse-dark-1440.png",
+    "sha256": "0594920F5A9F5619009BCF5916922939790FA258A71CE7FBE8BD79BE3C6DB94F",
+    "bytes": 106625
+  },
+  {
+    "path": "preview\\worktree-checkout-empty-dark-1440.png",
+    "sha256": "CF894C76681F37BA453E422DDD37E4E88D8923771B86EB47A9CD4EDDE8D3E11A",
+    "bytes": 125561
+  },
+  {
+    "path": "preview\\worktree-checkout-focus-dark-1440.png",
+    "sha256": "8E9EF4B48E96E234BFD5965778D3307925FF5A5452B91707A13C0DBDEC7A21F8",
+    "bytes": 144451
+  },
+  {
+    "path": "preview\\worktree-hotfix-dark-1440.png",
+    "sha256": "24B2006CB17202B0E499A0A8C1D285E7E62006BDCDE81D4075A7D2F654A5E2DD",
+    "bytes": 106712
+  },
+  {
+    "path": "preview\\ws-split-2.png",
+    "sha256": "365209B9A3E25E97CBB66DF90406A0EBA9A9487459DEE61FD42F50215081D053",
+    "bytes": 128464
+  },
+  {
+    "path": "preview\\ws-split-4.png",
+    "sha256": "F377FC77127AA6B9B4BABD0A25BD62CCB9E81DAF4128C880AA7D0E4E36D3B039",
+    "bytes": 161693
+  },
+  {
+    "path": "preview\\ws-split-focus.png",
+    "sha256": "9190063B88E958E48450D3CADDE534984AA047CD3E634DDCD2BCC1DD70863423",
+    "bytes": 134566
+  },
+  {
+    "path": "preview\\wt-checkout-inprogress.png",
+    "sha256": "A5CFB07A408971B2629260FD5E4F305D6CC399C8882F9A6685BAE39E732254A5",
+    "bytes": 155500
+  },
+  {
+    "path": "preview\\wt-docs-main.png",
+    "sha256": "9556F227E9F98CD3853C450726E7087AAA995E9C7005909C8D07744D10F9A31E",
+    "bytes": 106828
+  },
+  {
+    "path": "preview\\wt-orbit-checkout.png",
+    "sha256": "AF92EA6160BE3FE786072F129AF236C9CD0F0170C35F55E33B3FE7E597D1A6B7",
+    "bytes": 145327
+  },
+  {
+    "path": "preview\\wt-orbit-clean.png",
+    "sha256": "8E4C33CC464A7B626C667DACC8BC5C154AB2D1810DA833B2508FA2EE3951E3C2",
+    "bytes": 97935
+  },
+  {
+    "path": "preview\\wt-orbit-hotfix.png",
+    "sha256": "F9827CD080E41B22E4FD0EB174871B501FD22F3931A23F642149104B76863903",
+    "bytes": 106946
+  },
+  {
+    "path": "preview\\wt-orbit-main.png",
+    "sha256": "915F0B686B0C21E54327B037E0C9FE5DE77B47B566A6178675F4AE3B155FC90B",
+    "bytes": 112420
+  },
+  {
+    "path": "preview\\wt-orbit-missing.png",
+    "sha256": "BE14040F58A27951517E296005D5C2DB69C520C97FE1129C0A2D33966C3BEEC3",
+    "bytes": 107403
+  },
+  {
+    "path": "preview\\wt-pulse-main.png",
+    "sha256": "789F9B591C92367B7A051CA6876C68337A59B18D22F6EFD6F4D7395B007CE7FD",
+    "bytes": 111674
+  },
+  {
+    "path": "preview\\v3\\baseline-results.json",
+    "sha256": "4EDC9E4C2AC82F893F10D3257AAE8D3448458A7BD209E25D08096B17490DBCAA",
+    "bytes": 386
+  },
+  {
+    "path": "preview\\v3\\core-review-results.json",
+    "sha256": "A318228FAE7B1ABE94C70C64DD21CEF27AEF2182AEDBF80FDD10E3CE9BF662C7",
+    "bytes": 1185
+  },
+  {
+    "path": "preview\\v3\\desktop-completion-results.json",
+    "sha256": "08814253091D6900DF93B83C42A98BCAB4ECE0DEA90B8B6F0C92F0AC715449F6",
+    "bytes": 921
+  },
+  {
+    "path": "preview\\v3\\editor-review-results.json",
+    "sha256": "909F7E49894C1AB56AA84FC302F9972A8950E6E8207DF34176CBE66FBDE86231",
+    "bytes": 1200
+  },
+  {
+    "path": "preview\\v3\\failure-history-import-resume-reuses-active-and-archived-owner.png",
+    "sha256": "5D923695DB461968FE61BD1120AD02582CD941FF7A3068006CCDE6E26130A272",
+    "bytes": 168626
+  },
+  {
+    "path": "preview\\v3\\failure-history-missing-directory-confirmed-relocation.png",
+    "sha256": "5D923695DB461968FE61BD1120AD02582CD941FF7A3068006CCDE6E26130A272",
+    "bytes": 168626
+  },
+  {
+    "path": "preview\\v3\\failure-history-read-root-validation-shell-boundary.png",
+    "sha256": "5D923695DB461968FE61BD1120AD02582CD941FF7A3068006CCDE6E26130A272",
+    "bytes": 168626
+  },
+  {
+    "path": "preview\\v3\\failure-history-scan-cancel-error-filter-pagination.png",
+    "sha256": "5D923695DB461968FE61BD1120AD02582CD941FF7A3068006CCDE6E26130A272",
+    "bytes": 168626
+  },
+  {
+    "path": "preview\\v3\\failure-one-shot-completes-keeps-output-runs-again.png",
+    "sha256": "68F0B1AB3758FC3A97558B0718215E406CA532F7938A8398C3784FF8A34556E2",
+    "bytes": 105913
+  },
+  {
+    "path": "preview\\v3\\lint-results.json",
+    "sha256": "116E94C6743BC2C2A641C46232697AFF2D21C69509EB52A72AAE80327973444E",
+    "bytes": 115
+  },
+  {
+    "path": "preview\\v3\\session-workflows-results.json",
+    "sha256": "309E0DA17492EAF72B1F68C8C9C93D7264803FCF05543ED12C4DB415F146FBBB",
+    "bytes": 1898
+  },
+  {
+    "path": "preview\\v3\\settings-review-results.json",
+    "sha256": "2986DA7CB9BD35880C564600ECFA1900942CE9BB760FCA583DD67D6FE2AE00E8",
+    "bytes": 1211
+  },
+  {
+    "path": "preview\\v3\\source-frame-metrics.json",
+    "sha256": "9B74CB15C668D1238D13235AD8993687855C88A85B0D90AA3C496290F3A166A5",
+    "bytes": 2118
+  },
+  {
+    "path": "preview\\v3\\source-integrity.json",
+    "sha256": "43CFC9DE2ECCE547EE808D34F6A094B8A277E623FF2CED1B0382AF274874E76A",
+    "bytes": 8180
+  },
+  {
+    "path": "preview\\v3\\source-project-1280.png",
+    "sha256": "FCDED1F54BC6741076B4B1FD3FC53A4537B4A55429C67E06CC6FECA5F15209D4",
+    "bytes": 85752
+  },
+  {
+    "path": "preview\\v3\\source-project-1440.png",
+    "sha256": "8B9AD321D172BD5EC07515F0A33A2CF9E0C1874068A30902DA4A88BCA6FFB115",
+    "bytes": 91316
+  },
+  {
+    "path": "preview\\v3\\source-project-1920.png",
+    "sha256": "B9135A776DACFDBBBF210634AECB0498BD0D76B902B6088B3A67B13252804CD1",
+    "bytes": 103274
+  },
+  {
+    "path": "preview\\v3\\v3-app-window-create-1440x900.png",
+    "sha256": "33155DC7E49CC223B6996426F8DE36F73DECEB5D342A89AE2186F0A450146290",
+    "bytes": 194909
+  },
+  {
+    "path": "preview\\v3\\v3-app-window-desktop-1440x900.png",
+    "sha256": "C6F03268936E9F81F71355F6EA4D40DF5BDA9EB4F676DC5893BBD7681C0712D0",
+    "bytes": 167357
+  },
+  {
+    "path": "preview\\v3\\v3-app-window-desktop-dark-1440x900.png",
+    "sha256": "FC1A7BCB9ED8A170654655B3DF0EDEBC2314846AEF35E3B5CEA758B6B37CA9F2",
+    "bytes": 153514
+  },
+  {
+    "path": "preview\\v3\\v3-app-window-max-1440x900.png",
+    "sha256": "2737E06639752F3FB492DC4A47DB97E57ECB406CCFDB3BEEC5ED4DFE4D983C90",
+    "bytes": 147489
+  },
+  {
+    "path": "preview\\v3\\v3-app-window-settings-1440x900.png",
+    "sha256": "3053105EB7363F50BC7FE7A3EEA2F05826244F8E5812E3F7B7CDE25588F7673A",
+    "bytes": 165422
+  },
+  {
+    "path": "preview\\v3\\v3-chat-pending-approval-1440x900.png",
+    "sha256": "9B933333367C5BF26ECADB45FF296C1086D7EB765A86CA8D7F8B831EA9EE27C1",
+    "bytes": 164278
+  },
+  {
+    "path": "preview\\v3\\v3-editor-codemirror-1440x900.png",
+    "sha256": "85D406310181C7895B836B0469F05D6BD572F39399B3BF8DDC8849342A0C5BEA",
+    "bytes": 160473
+  },
+  {
+    "path": "preview\\v3\\v3-project-activity-dialog-1440x900.png",
+    "sha256": "5BFCB3F70ECC32EB235DA17CBEEC5F493795AFA53F4F117CAAF1B6663623ED09",
+    "bytes": 198684
+  },
+  {
+    "path": "preview\\v3\\v3-project-dark-1280x800.png",
+    "sha256": "08665C7D94B1EBE3D6340326451842F20468D054335FEEDDD5220EB353556B16",
+    "bytes": 137562
+  },
+  {
+    "path": "preview\\v3\\v3-project-dark-1440x900.png",
+    "sha256": "A53C2D741B7F9395C5959249B356F9E846E6CDA41A1828CF8ABEEC3B6DE10FE9",
+    "bytes": 153475
+  },
+  {
+    "path": "preview\\v3\\v3-project-dark-1920x1080.png",
+    "sha256": "A32E6541434CA0C5795C9391A46A59F483380A2CAD8A56E1096210510903A46A",
+    "bytes": 253770
+  },
+  {
+    "path": "preview\\v3\\v3-project-follow-dialog-1440x900.png",
+    "sha256": "ACD5D0487FBC632C2A27091A41E36C3F2DB2F3434E9D742A843ABE9A14226CE2",
+    "bytes": 203889
+  },
+  {
+    "path": "preview\\v3\\v3-project-light-1280x800.png",
+    "sha256": "A2D04ADD86AFC874B75D51C58FD7C63A752E77C6D4E81753F01B29D7D7612BDB",
+    "bytes": 150112
+  },
+  {
+    "path": "preview\\v3\\v3-project-light-1440x900.png",
+    "sha256": "515196E88EF72473491CBB4DFEA29A7AAE569A5DB0377A8C2833332A567462E0",
+    "bytes": 167284
+  },
+  {
+    "path": "preview\\v3\\v3-project-light-1920x1080.png",
+    "sha256": "7210493EF7963A25D7C7B2818C0C71D70777B2C13FE4AC9A42B75EF3652BCBFF",
+    "bytes": 280436
+  },
+  {
+    "path": "preview\\v3\\v3-project-usage-dialog-1440x900.png",
+    "sha256": "3AEC57767193BB7C2BC8C0DBE7C39B92D09F748B02F0B631C0DA81D31A63AB70",
+    "bytes": 185088
+  },
+  {
+    "path": "preview\\v3\\v3-settings-dark-1440x900.png",
+    "sha256": "08952D013A54FD14FE68E338BE57658C05EC81D3BC759DEC3E0FF93A74D09F80",
+    "bytes": 131729
+  },
+  {
+    "path": "preview\\v3\\v3-settings-light-1440x900.png",
+    "sha256": "8899C05E34CEFFFFC1108B82B57C4B257ED9978170DB2B060BE76107E1EE15B0",
+    "bytes": 140954
+  },
+  {
+    "path": "preview\\v3\\v3-terminals-rail-history-1440x900.png",
+    "sha256": "AAB022AE37A3144F55E00A6676EBAA91284F1C5A7D5EBFB557FAF696124213F8",
+    "bytes": 169886
+  },
+  {
+    "path": "preview\\v3\\v3-terminals-rail-inspect-1440x900.png",
+    "sha256": "36862254961C15C5E5CA8E7B7071EB72A5F826195609F9848691D6690F14C8E8",
+    "bytes": 182062
+  },
+  {
+    "path": "preview\\v3\\v3-workspace-four-pane-1440x900.png",
+    "sha256": "6BBB2434D593D88671E08750022592FA939526C0FBE1AE7F14379A9D65DF985C",
+    "bytes": 223617
+  },
+  {
+    "path": "preview\\v3\\verification-results.json",
+    "sha256": "F0D81CC5547AC93DD63BADA58472385F5DF801D4B4B6F201D8FFD7AAC08436C7",
+    "bytes": 2001
+  },
+  {
+    "path": "preview\\v3\\verification-summary.json",
+    "sha256": "A423A0633F58584E07CD55B956C00654A35DAA39A1D3173BC6F5F5183F1C1986",
+    "bytes": 1979
+  },
+  {
+    "path": "preview\\v3\\visuals-results.json",
+    "sha256": "196A56697C4D805C4DE70EFF3A58AF6E291E566A38D17D0D94A48D31009885B9",
+    "bytes": 11873
+  },
+  {
+    "path": "tests\\baseline.mjs",
+    "sha256": "3A83CDED9B49BBD3CA1F3C277F2681AA77FC6C208C5FDF8AE81BC9CDC6AFC481",
+    "bytes": 1395
+  },
+  {
+    "path": "tests\\core-review.mjs",
+    "sha256": "3C8F50895616951720878145AADC2881CB190A2FE70EE41D0D86D96D24C00FAC",
+    "bytes": 12400
+  },
+  {
+    "path": "tests\\desktop-completion.mjs",
+    "sha256": "BB513D060FF47727501F98C2AE8FB31721EDE4F2719961FBF8A196235A7B4B34",
+    "bytes": 8046
+  },
+  {
+    "path": "tests\\editor-review.mjs",
+    "sha256": "118E0EB922B2BFA4B21F015882CE5C98BB1D663396EC4E9A5A572B101DF6723C",
+    "bytes": 11262
+  },
+  {
+    "path": "tests\\eslint.config.mjs",
+    "sha256": "F4C26D1270AFFD5F24983A55678C9E61F10620083A0F29D2C570542C10CE4EEB",
+    "bytes": 1202
+  },
+  {
+    "path": "tests\\harness.mjs",
+    "sha256": "E39645E44E96BEC059B0E2F934AC6B7CEFB0C51CF5135B2120B764A13774DCAF",
+    "bytes": 4462
+  },
+  {
+    "path": "tests\\run.mjs",
+    "sha256": "2B8543575EE5F943CFDD0618575DA12C267A03AB21F86CBF821A079A855A7D34",
+    "bytes": 2465
+  },
+  {
+    "path": "tests\\session-workflows.mjs",
+    "sha256": "55AFC123A565B580469A59373DBEE1260496A51573022287919F233339742F36",
+    "bytes": 18934
+  },
+  {
+    "path": "tests\\settings-review.mjs",
+    "sha256": "FC5C6C2688BE64D0177781D8C0D132B671395297503682266DBA853D16316ECE",
+    "bytes": 11098
+  },
+  {
+    "path": "tests\\verify.mjs",
+    "sha256": "838440B21E8488B0D6C7A7589DCC4FF7C39F0A897262DAA2E0E77941B1032001",
+    "bytes": 10389
+  },
+  {
+    "path": "tests\\visuals.mjs",
+    "sha256": "9419F95A057903EEFF543E8BA868863D459D99CED1CA7E8CD1F7D6317AA57B20",
+    "bytes": 6643
+  },
+  {
+    "path": "vendor\\editor.bundle.js",
+    "sha256": "ACB84649A20821019552403E5B64409AFC96DC5086B9AB0124A170D3B8CC94FE",
+    "bytes": 1708127
+  },
+  {
+    "path": "vendor\\editor.bundle.js.map",
+    "sha256": "2C401809B2781A3B64DD393391355A27FDCFE1BE92AE29121FED99EE11531291",
+    "bytes": 2985912
+  },
+  {
+    "path": "vendor\\THIRD-PARTY-LICENSES.txt",
+    "sha256": "F2F33662A1413645D32EF843F2A31C72DB9B7445730A55A3B279324C5DCD793C",
+    "bytes": 49865
+  }
+]

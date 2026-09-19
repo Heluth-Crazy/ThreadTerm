@@ -1,0 +1,9 @@
+# ThreadTerm V3 approved production scope
+
+Windows-first Electron + React/TypeScript and an independent Rust daemon, developed on feat/v3-electron-rebuild. Latest reference/prototype is the visual and interaction reference, never a source of production mock data. Fresh V3 data namespace; no V2 import. All five providers (Codex, Claude Code, Kimi, Gemini, OpenCode) need real Terminal and structured Chat, native history discovery and eligible resume. Shell/Grok/custom executable terminals remain supported. Mode is selected on creation, no live mode conversion promise.
+
+Complete projects/worktrees, all-terminals history/detail rail, attention inbox, followed/recent items, search, presets, daily CodeMirror editing and conflict-safe drafts, Git status/diff/actions, Markdown/HTML previews, four-pane workspaces, independent windows, themes/language/shortcuts, data backup/relocation, desktop device pairing/permissions, terminal-host MCP and genuine usage statistics. Remove AI Markdown download and all Local/Pro purchasing/trials. Phone UI and VS Code extension deferred; no LSP requirement.
+
+Closing main window continues in tray; renderer/main crashes must not kill runtime work. Explicit quit with running tasks asks before termination. Runtime crash recovers persisted state and marks jobs interrupted, never blindly repeats commands. Native provider history remains discoverable despite no V2 migration.
+
+Acceptance: actual Windows Electron app and installer; light/dark at 1280/1440/1920; real PTY I/O/resize/reconnect; all five real Chat adapters and histories; duplicate-native-owner rejection; approval fencing; renderer/main crash recovery; drafts/IME/undo/conflict; runtime, TypeScript and integration checks; no fake success when CLI/auth unavailable. Missing environment requirements must be reported accurately.

@@ -1,0 +1,76 @@
+{
+  "generatedAt": "2026-09-09T14:01:50.092Z",
+  "browser": "Chromium",
+  "results": [
+    {
+      "name": "history-scan-cancel-error-filter-pagination",
+      "status": "passed",
+      "durationMs": 3794
+    },
+    {
+      "name": "history-read-root-validation-shell-boundary",
+      "status": "passed",
+      "durationMs": 1566
+    },
+    {
+      "name": "history-import-resume-reuses-active-and-archived-owner",
+      "status": "passed",
+      "durationMs": 2254
+    },
+    {
+      "name": "history-missing-directory-confirmed-relocation",
+      "status": "passed",
+      "durationMs": 1618
+    },
+    {
+      "name": "one-shot-completes-keeps-output-runs-again",
+      "status": "passed",
+      "durationMs": 4477
+    },
+    {
+      "name": "custom-directory-identity-survives-reload",
+      "status": "passed",
+      "durationMs": 674
+    },
+    {
+      "name": "automatic-retry-disable-cancels-pending-run",
+      "status": "passed",
+      "durationMs": 4184
+    },
+    {
+      "name": "configuration-restart-requires-confirmation",
+      "status": "passed",
+      "durationMs": 631
+    },
+    {
+      "name": "notification-reading-does-not-approve-chat-tool",
+      "status": "passed",
+      "durationMs": 1707
+    },
+    {
+      "name": "chat-stream-does-not-replace-editor-or-draft",
+      "status": "passed",
+      "durationMs": 2416
+    },
+    {
+      "name": "ime-composition-defers-chat-completion-render",
+      "status": "passed",
+      "durationMs": 2489
+    },
+    {
+      "name": "reading-old-terminal-output-retains-position-and-exact-unread-count",
+      "status": "passed",
+      "durationMs": 804
+    },
+    {
+      "name": "end-failure-timeout-keeps-session-and-force-end-retains-draft",
+      "status": "passed",
+      "durationMs": 1972
+    },
+    {
+      "name": "reset-visible-confirmation-preserves-source",
+      "status": "passed",
+      "durationMs": 778
+    }
+  ]
+}

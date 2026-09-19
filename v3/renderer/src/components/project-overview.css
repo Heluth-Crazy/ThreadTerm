@@ -1,0 +1,14 @@
+.runtime-overlay { position:fixed; }
+.metric-unrecorded { display:block; min-height:20px; line-height:20px; color:var(--faint); font-size:11px; }
+.project-tools { position:relative; }
+.project-tools-menu { position:absolute; right:0; top:100%; z-index:10; min-width:180px; }
+.project-file-page { height:100%; display:flex; flex-direction:column; min-height:0; }
+.project-file-page > .file-workspace { flex:1; }
+.project-tree-form { display:grid; gap:14px; }
+.project-tree-form > label { display:grid; gap:6px; font-size:12px; }
+.project-tree-form input, .project-tree-form .tt-select { min-width:0; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg); color:var(--text); }
+.project-tree-form .tt-select-trigger { min-height:30px; padding:7px 9px; }
+.project-activity .tl-row { width:100%; }
+/* The header row mixes the 32px primary action with regular 28px controls —
+   pin the row to one height like every other page-actions row. */
+.ov-head .page-actions .btn { height:28px; }

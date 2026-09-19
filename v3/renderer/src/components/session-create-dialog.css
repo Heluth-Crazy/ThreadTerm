@@ -1,0 +1,3 @@
+.create-form .create-block { border:0; padding:0; margin:0; min-width:0; }
+.create-form .create-block > .create-label { display:block; }
+.create-form .create-choice input[type="radio"] { width:auto; }

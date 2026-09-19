@@ -1,0 +1,511 @@
+{
+  "generatedAt": "2026-09-09T14:02:21.453Z",
+  "browser": "Chromium",
+  "results": [
+    {
+      "name": "project-overview-light-1280",
+      "status": "passed",
+      "durationMs": 572
+    },
+    {
+      "name": "project-overview-dark-1280",
+      "status": "passed",
+      "durationMs": 1143
+    },
+    {
+      "name": "project-overview-light-1440",
+      "status": "passed",
+      "durationMs": 495
+    },
+    {
+      "name": "project-overview-dark-1440",
+      "status": "passed",
+      "durationMs": 1158
+    },
+    {
+      "name": "project-overview-light-1920",
+      "status": "passed",
+      "durationMs": 560
+    },
+    {
+      "name": "project-overview-dark-1920",
+      "status": "passed",
+      "durationMs": 1480
+    },
+    {
+      "name": "editor-codemirror-1440",
+      "status": "passed",
+      "durationMs": 604
+    },
+    {
+      "name": "chat-pending-approval-1440",
+      "status": "passed",
+      "durationMs": 1530
+    },
+    {
+      "name": "settings-light-1440",
+      "status": "passed",
+      "durationMs": 1214
+    },
+    {
+      "name": "settings-dark-1440",
+      "status": "passed",
+      "durationMs": 1166
+    },
+    {
+      "name": "workspace-four-pane-1440",
+      "status": "passed",
+      "durationMs": 704
+    },
+    {
+      "name": "source-frame-comparisons",
+      "status": "passed",
+      "comparisons": [
+        {
+          "width": 1280,
+          "height": 800,
+          "theme": "light",
+          "expected": {
+            "sidebar": {
+              "x": 0,
+              "y": 0,
+              "width": 240,
+              "height": 776
+            },
+            "main": {
+              "x": 240,
+              "y": 0,
+              "width": 1040,
+              "height": 776
+            }
+          },
+          "actual": {
+            "desktop": {
+              "x": 0,
+              "y": 0,
+              "width": 1280,
+              "height": 800
+            },
+            "window": {
+              "x": 16,
+              "y": 22,
+              "width": 1248,
+              "height": 762
+            },
+            "chrome": {
+              "x": 17,
+              "y": 23,
+              "width": 1246,
+              "height": 36
+            },
+            "shell": {
+              "x": 17,
+              "y": 59,
+              "width": 1246,
+              "height": 724
+            },
+            "sidebar": {
+              "x": 17,
+              "y": 59,
+              "width": 240,
+              "height": 700
+            },
+            "main": {
+              "x": 257,
+              "y": 59,
+              "width": 1006,
+              "height": 700
+            },
+            "horizontalOverflow": false,
+            "verticalOverflow": false,
+            "relative": {
+              "sidebar": {
+                "x": 0,
+                "y": 0,
+                "width": 240,
+                "height": 700
+              },
+              "main": {
+                "x": 240,
+                "y": 0,
+                "width": 1006,
+                "height": 700
+              }
+            }
+          },
+          "deviations": []
+        },
+        {
+          "width": 1280,
+          "height": 800,
+          "theme": "dark",
+          "expected": {
+            "sidebar": {
+              "x": 0,
+              "y": 0,
+              "width": 240,
+              "height": 776
+            },
+            "main": {
+              "x": 240,
+              "y": 0,
+              "width": 1040,
+              "height": 776
+            }
+          },
+          "actual": {
+            "desktop": {
+              "x": 0,
+              "y": 0,
+              "width": 1280,
+              "height": 800
+            },
+            "window": {
+              "x": 16,
+              "y": 22,
+              "width": 1248,
+              "height": 762
+            },
+            "chrome": {
+              "x": 17,
+              "y": 23,
+              "width": 1246,
+              "height": 36
+            },
+            "shell": {
+              "x": 17,
+              "y": 59,
+              "width": 1246,
+              "height": 724
+            },
+            "sidebar": {
+              "x": 17,
+              "y": 59,
+              "width": 240,
+              "height": 700
+            },
+            "main": {
+              "x": 257,
+              "y": 59,
+              "width": 1006,
+              "height": 700
+            },
+            "horizontalOverflow": false,
+            "verticalOverflow": false,
+            "relative": {
+              "sidebar": {
+                "x": 0,
+                "y": 0,
+                "width": 240,
+                "height": 700
+              },
+              "main": {
+                "x": 240,
+                "y": 0,
+                "width": 1006,
+                "height": 700
+              }
+            }
+          },
+          "deviations": []
+        },
+        {
+          "width": 1440,
+          "height": 900,
+          "theme": "light",
+          "expected": {
+            "sidebar": {
+              "x": 0,
+              "y": 0,
+              "width": 240,
+              "height": 876
+            },
+            "main": {
+              "x": 240,
+              "y": 0,
+              "width": 1200,
+              "height": 876
+            }
+          },
+          "actual": {
+            "desktop": {
+              "x": 0,
+              "y": 0,
+              "width": 1440,
+              "height": 900
+            },
+            "window": {
+              "x": 16,
+              "y": 22,
+              "width": 1408,
+              "height": 862
+            },
+            "chrome": {
+              "x": 17,
+              "y": 23,
+              "width": 1406,
+              "height": 36
+            },
+            "shell": {
+              "x": 17,
+              "y": 59,
+              "width": 1406,
+              "height": 824
+            },
+            "sidebar": {
+              "x": 17,
+              "y": 59,
+              "width": 240,
+              "height": 800
+            },
+            "main": {
+              "x": 257,
+              "y": 59,
+              "width": 1166,
+              "height": 800
+            },
+            "horizontalOverflow": false,
+            "verticalOverflow": false,
+            "relative": {
+              "sidebar": {
+                "x": 0,
+                "y": 0,
+                "width": 240,
+                "height": 800
+              },
+              "main": {
+                "x": 240,
+                "y": 0,
+                "width": 1166,
+                "height": 800
+              }
+            }
+          },
+          "deviations": []
+        },
+        {
+          "width": 1440,
+          "height": 900,
+          "theme": "dark",
+          "expected": {
+            "sidebar": {
+              "x": 0,
+              "y": 0,
+              "width": 240,
+              "height": 876
+            },
+            "main": {
+              "x": 240,
+              "y": 0,
+              "width": 1200,
+              "height": 876
+            }
+          },
+          "actual": {
+            "desktop": {
+              "x": 0,
+              "y": 0,
+              "width": 1440,
+              "height": 900
+            },
+            "window": {
+              "x": 16,
+              "y": 22,
+              "width": 1408,
+              "height": 862
+            },
+            "chrome": {
+              "x": 17,
+              "y": 23,
+              "width": 1406,
+              "height": 36
+            },
+            "shell": {
+              "x": 17,
+              "y": 59,
+              "width": 1406,
+              "height": 824
+            },
+            "sidebar": {
+              "x": 17,
+              "y": 59,
+              "width": 240,
+              "height": 800
+            },
+            "main": {
+              "x": 257,
+              "y": 59,
+              "width": 1166,
+              "height": 800
+            },
+            "horizontalOverflow": false,
+            "verticalOverflow": false,
+            "relative": {
+              "sidebar": {
+                "x": 0,
+                "y": 0,
+                "width": 240,
+                "height": 800
+              },
+              "main": {
+                "x": 240,
+                "y": 0,
+                "width": 1166,
+                "height": 800
+              }
+            }
+          },
+          "deviations": []
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "theme": "light",
+          "expected": {
+            "sidebar": {
+              "x": 0,
+              "y": 0,
+              "width": 240,
+              "height": 1056
+            },
+            "main": {
+              "x": 240,
+              "y": 0,
+              "width": 1680,
+              "height": 1056
+            }
+          },
+          "actual": {
+            "desktop": {
+              "x": 0,
+              "y": 0,
+              "width": 1920,
+              "height": 1080
+            },
+            "window": {
+              "x": 200,
+              "y": 22,
+              "width": 1520,
+              "height": 1042
+            },
+            "chrome": {
+              "x": 201,
+              "y": 23,
+              "width": 1518,
+              "height": 36
+            },
+            "shell": {
+              "x": 201,
+              "y": 59,
+              "width": 1518,
+              "height": 1004
+            },
+            "sidebar": {
+              "x": 201,
+              "y": 59,
+              "width": 240,
+              "height": 980
+            },
+            "main": {
+              "x": 441,
+              "y": 59,
+              "width": 1278,
+              "height": 980
+            },
+            "horizontalOverflow": false,
+            "verticalOverflow": false,
+            "relative": {
+              "sidebar": {
+                "x": 0,
+                "y": 0,
+                "width": 240,
+                "height": 980
+              },
+              "main": {
+                "x": 240,
+                "y": 0,
+                "width": 1278,
+                "height": 980
+              }
+            }
+          },
+          "deviations": []
+        },
+        {
+          "width": 1920,
+          "height": 1080,
+          "theme": "dark",
+          "expected": {
+            "sidebar": {
+              "x": 0,
+              "y": 0,
+              "width": 240,
+              "height": 1056
+            },
+            "main": {
+              "x": 240,
+              "y": 0,
+              "width": 1680,
+              "height": 1056
+            }
+          },
+          "actual": {
+            "desktop": {
+              "x": 0,
+              "y": 0,
+              "width": 1920,
+              "height": 1080
+            },
+            "window": {
+              "x": 200,
+              "y": 22,
+              "width": 1520,
+              "height": 1042
+            },
+            "chrome": {
+              "x": 201,
+              "y": 23,
+              "width": 1518,
+              "height": 36
+            },
+            "shell": {
+              "x": 201,
+              "y": 59,
+              "width": 1518,
+              "height": 1004
+            },
+            "sidebar": {
+              "x": 201,
+              "y": 59,
+              "width": 240,
+              "height": 980
+            },
+            "main": {
+              "x": 441,
+              "y": 59,
+              "width": 1278,
+              "height": 980
+            },
+            "horizontalOverflow": false,
+            "verticalOverflow": false,
+            "relative": {
+              "sidebar": {
+                "x": 0,
+                "y": 0,
+                "width": 240,
+                "height": 980
+              },
+              "main": {
+                "x": 240,
+                "y": 0,
+                "width": 1278,
+                "height": 980
+              }
+            }
+          },
+          "deviations": []
+        }
+      ]
+    }
+  ]
+}

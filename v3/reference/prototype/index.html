@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>ThreadTerm · 消费级应用原型</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23101214'/%3E%3Cpath d='M9 10l7 6-7 6M17 22h7' stroke='%2383e1c2' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="features/core.css" />
+    <link rel="stylesheet" href="features/editor.css" />
+    <link rel="stylesheet" href="features/sessions.css" />
+    <link rel="stylesheet" href="features/settings.css" />
+  </head>
+  <body>
+    <div class="desktop" data-desktop>
+      <div class="desktop-ambient" aria-hidden="true">
+        <span class="desktop-wordmark">ThreadTerm</span>
+        <span class="desktop-clock" data-desktop-clock></span>
+      </div>
+      <section class="app-window" role="application" aria-label="ThreadTerm">
+        <header class="app-chrome">
+          <div class="app-traffic">
+            <span class="app-dot close" aria-hidden="true"></span>
+            <span class="app-dot min" aria-hidden="true"></span>
+            <button type="button" class="app-dot max" data-action="app-window-toggle" aria-label="放大窗口" aria-pressed="false" title="放大"></button>
+          </div>
+          <div class="app-chrome-title">ThreadTerm</div>
+          <div class="app-chrome-meta">本地工作台</div>
+        </header>
+        <div class="app-stage">
+          <div id="app"></div>
+          <!-- 浮层（对话框 / 弹出层 / toast）挂在窗口内，不盖住桌面 -->
+          <div id="layers"></div>
+        </div>
+      </section>
+    </div>
+    <!-- 可及性播报区：toast 与重要状态变化同步写入 -->
+    <div id="live" class="sr-only" aria-live="polite"></div>
+    <script src="app.js"></script>
+    <script src="vendor/editor.bundle.js"></script>
+    <script src="features/editor.js"></script>
+    <script src="features/sessions.js"></script>
+    <script src="features/settings.js"></script>
+  </body>
+</html>

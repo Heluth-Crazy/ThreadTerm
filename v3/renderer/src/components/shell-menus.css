@@ -1,0 +1,8 @@
+.shell-menu { position:fixed; z-index:70; width:340px; max-width:calc(100vw - 16px); padding:0; }
+.shell-menu-above { transform:translateY(-100%); }
+.shell-menu-head,.account-row { display:flex; align-items:center; gap:8px; min-height:42px; padding:8px 10px; border-bottom:1px solid var(--border); }
+.shell-menu-head strong,.account-row strong { font-size:13px; }.shell-menu-head .icon-btn,.account-row .icon-btn { margin-left:auto; }
+.notif-list { max-height:360px; overflow:auto; }.notif-row { border:0; }.shell-menu-empty { padding:14px; color:var(--muted); font-size:12px; }
+.shell-menu-foot { display:flex; gap:4px; padding:6px; border-top:1px solid var(--border); }.shell-menu-foot .menu-item { flex:1; }
+.account-avatar { display:grid; place-items:center; width:28px; height:28px; border-radius:50%; background:var(--primary-tint); color:var(--primary); font-size:12px; }.account-row small { display:block; margin-top:2px; color:var(--muted); font-size:11px; }
+.shell-menu-field { display:grid; gap:5px; padding:9px 10px; color:var(--muted); font-size:11px; }.shell-menu-field .tt-select { min-height:30px; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg); color:var(--text); }.shell-menu-field .tt-select-trigger { min-height:28px; padding:4px 7px; }

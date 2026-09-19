@@ -1,0 +1,51 @@
+{
+  "generatedAt": "2026-09-09T14:00:46.283Z",
+  "browser": "Chromium",
+  "results": [
+    {
+      "name": "project-catalog-actions-are-distinct",
+      "status": "passed",
+      "durationMs": 976
+    },
+    {
+      "name": "all-terminals-protects-order-while-filtered",
+      "status": "passed",
+      "durationMs": 396
+    },
+    {
+      "name": "quick-selector-pin-is-independent-and-capped",
+      "status": "passed",
+      "durationMs": 532
+    },
+    {
+      "name": "workspace-visit-order-and-keyboard-navigation",
+      "status": "passed",
+      "durationMs": 400
+    },
+    {
+      "name": "workspace-split-float-and-preset-commands-stay-scoped",
+      "status": "passed",
+      "durationMs": 4740
+    },
+    {
+      "name": "usage-details-filter-and-pagination",
+      "status": "passed",
+      "durationMs": 748
+    },
+    {
+      "name": "multi-follow-cancel-submit-and-worktree-guards",
+      "status": "passed",
+      "durationMs": 978
+    },
+    {
+      "name": "notifications-read-without-resolving",
+      "status": "passed",
+      "durationMs": 348
+    },
+    {
+      "name": "reset-isolates-v3-storage",
+      "status": "passed",
+      "durationMs": 507
+    }
+  ]
+}

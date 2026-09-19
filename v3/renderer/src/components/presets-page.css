@@ -1,0 +1,56 @@
+.presets-page .surface-error { margin-bottom:12px; }
+.preset-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; }
+.preset-card { position:relative; padding:0; overflow:hidden; }
+.preset-card-main { display:block; width:100%; padding:16px; border:0; background:transparent; color:inherit; text-align:left; }
+.preset-card:hover { border-color:var(--faint); }
+.preset-card-main:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+.preset-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; color:var(--muted); font-size:12px; }
+.preset-map { display:grid; gap:8px; height:96px; margin-bottom:12px; }
+.preset-map.cols-2 { grid-template-columns:1fr 1fr; }
+.preset-map.cols-3 { grid-template-columns:1fr 1fr 1fr; }
+.pm-col { display:flex; flex-direction:column; gap:6px; min-width:0; overflow:hidden; padding:6px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); }
+.pm-panes { display:grid; flex:1; min-height:0; gap:6px; }
+.pm-panes.focus { grid-template-columns:1fr; }
+.pm-pane { display:grid; align-content:start; min-width:0; gap:4px; padding:5px 6px; border:1px solid var(--border); border-radius:6px; background:var(--raised); }
+.pm-title { display:flex; align-items:center; min-width:0; gap:4px; font-size:12px; color:var(--text); }
+.pm-title span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pm-title .ico,.pm-title .brand-ico { flex:0 0 auto; width:11px; height:11px; }
+.pm-pane i { display:block; height:3px; border-radius:2px; background:var(--soft); opacity:.7; }
+.pm-pane i.short { width:55%; }
+.preset-title { font-size:16px; font-weight:600; }
+.preset-sub { margin-top:2px; color:var(--muted); font-size:13px; }
+.preset-meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:12px; }
+.preset-open { display:inline-flex; align-items:center; gap:2px; margin-left:auto; color:var(--mint); font-size:13px; }
+.preset-open .ico { width:14px; height:14px; }
+.preset-card-actions { display:flex; justify-content:flex-end; gap:4px; padding:0 12px 12px; }
+.presets-empty { display:grid; justify-items:center; gap:8px; padding:48px 24px; text-align:center; color:var(--muted); }
+.presets-empty > .ico { width:28px; height:28px; color:var(--primary); }
+.presets-empty h2 { color:var(--text); font-size:16px; font-weight:600; }
+.presets-empty p { max-width:390px; font-size:13px; line-height:1.5; }
+.preset-editor { display:grid; gap:16px; }
+.preset-editor > label { display:grid; gap:6px; color:var(--muted); font-size:12px; }
+.preset-editor input[type="text"],.preset-editor input:not([type]),.preset-editor textarea { width:100%; min-width:0; padding:8px 10px; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg); color:var(--text); font:inherit; }
+.preset-editor textarea { resize:vertical; font-family:var(--mono); font-size:12px; }
+.preset-editor fieldset { display:grid; gap:8px; min-width:0; margin:0; padding:0; border:0; }
+.preset-editor legend { margin-bottom:4px; color:var(--muted); font-size:12px; }
+.preset-session-group { display:grid; gap:2px; padding:8px; border:1px solid var(--border); border-radius:var(--radius); background:var(--raised); }
+.preset-session-group h3 { display:grid; gap:2px; margin:0 0 3px; color:var(--text); font-size:12px; font-weight:600; }
+.preset-session-group h3 small,.preset-session-option small { color:var(--muted); font-size:11px; font-weight:400; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.preset-session-option { display:flex; align-items:center; gap:8px; padding:5px; border-radius:var(--radius); cursor:pointer; }
+.preset-session-option:hover { background:var(--soft); }
+.preset-session-option > span { display:grid; min-width:0; gap:2px; font-size:13px; }
+.preset-session-option .brand-ico { flex:0 0 auto; width:16px; height:16px; }
+@media (max-width:700px) { .preset-grid { grid-template-columns:1fr; } }
+
+.presets-page .principle{display:flex;gap:11px;align-items:flex-start;margin-top:16px;padding:14px}.presets-page .principle>.ico{flex:0 0 auto;width:20px;height:20px;color:var(--mint)}.presets-page .principle b{font-size:13px}.presets-page .principle p{margin-top:3px;color:var(--muted);font-size:12px;line-height:1.45}
+
+.pm-branch{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden;color:var(--muted);font:12px var(--mono);text-overflow:ellipsis;white-space:nowrap}.pm-branch .ico{flex:0 0 auto;width:11px;height:11px}
+
+/* Keep controls within the reference card rather than adding another card row. */
+.presets-page .preset-card { padding:0; overflow:visible; }
+.presets-page .preset-card-main { padding:16px; border-radius:var(--radius-card); }
+.presets-page .preset-card-actions { position:absolute; left:12px; top:12px; padding:0; z-index:2; }
+.presets-page .preset-card-actions summary { display:grid; place-items:center; width:28px; height:24px; border:1px solid var(--border); border-radius:6px; background:var(--surface); cursor:pointer; opacity:0; }
+.presets-page .preset-card:hover .preset-card-actions summary,.presets-page .preset-card:focus-within .preset-card-actions summary,.presets-page .preset-card-actions[open] summary { opacity:1; }
+.presets-page .preset-card-actions summary::-webkit-details-marker { display:none; }
+.presets-page .preset-card-actions .popover { position:absolute; top:28px; left:0; min-width:120px; }

@@ -1,0 +1,36 @@
+.project-catalog { position:relative; }
+.project-catalog .catalog-head { min-width:0; }
+.project-catalog .side-label { display:flex; align-items:center; gap:4px; width:100%; border:0; background:transparent; text-align:left; }
+.project-catalog .side-scope { display:flex; cursor:pointer; overflow:visible; }
+.project-catalog .side-scope .grow { flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.project-catalog .side-scope .ico { width:12px; height:12px; margin-left:auto; flex:none; }
+.project-catalog .side-scope[aria-expanded="true"] { color:var(--text); }
+.catalog-scope-menu, .catalog-menu { position:absolute; z-index:20; display:grid; min-width:156px; padding:4px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); box-shadow:var(--shadow); }
+.catalog-scope-menu { top:calc(100% - 2px); left:12px; max-height:240px; overflow:auto; }
+.catalog-scope-menu button, .catalog-menu button { height:28px; padding:0 8px; border:0; border-radius:var(--radius); background:transparent; color:var(--text); text-align:left; font-size:12px; white-space:nowrap; }
+.catalog-scope-menu button:hover, .catalog-menu button:hover { background:var(--soft); }
+.project-catalog .proj-row-wrap, .project-catalog .tree-row-wrap, .project-catalog .sess-row-wrap { position:relative; display:flex; align-items:center; min-width:0; }
+.project-catalog .proj-row-wrap .proj-row, .project-catalog .tree-row-wrap .tree-row, .project-catalog .sess-row-wrap .sess-row { flex:1; min-width:0; }
+.project-catalog .tree-list { margin:1px 0 4px; }
+.project-catalog .catalog-tree-group { display:contents; }
+.project-catalog .tree-row { padding-left:26px; }
+.project-catalog .sess-row { padding-left:44px; }
+.project-catalog .row-more { position:absolute; right:2px; top:50%; z-index:2; width:22px; height:22px; padding:0; transform:translateY(-50%); opacity:0; pointer-events:none; }
+.project-catalog .row-more .ico { width:14px; height:14px; }
+.project-catalog .proj-row-wrap:hover .row-more, .project-catalog .tree-row-wrap:hover .row-more, .project-catalog .sess-row-wrap:hover .row-more, .project-catalog .proj-row-wrap:focus-within .row-more, .project-catalog .tree-row-wrap:focus-within .row-more, .project-catalog .sess-row-wrap:focus-within .row-more, .project-catalog .row-more:focus-visible, .project-catalog .row-more[aria-expanded="true"] { opacity:1; pointer-events:auto; }
+.project-catalog .proj-row-wrap:hover .badge, .project-catalog .tree-row-wrap:hover .badge, .project-catalog .sess-row-wrap:hover .follow-star { visibility:hidden; }
+/* The hover-revealed ··· button floats over the row's right edge — reserve its
+   width so it never lands on the truncated name's ellipsis. */
+.project-catalog .proj-row-wrap:hover .proj-row, .project-catalog .tree-row-wrap:hover .tree-row, .project-catalog .sess-row-wrap:hover .sess-row, .project-catalog .proj-row-wrap:focus-within .proj-row, .project-catalog .tree-row-wrap:focus-within .tree-row, .project-catalog .sess-row-wrap:focus-within .sess-row { padding-right:26px; }
+.project-catalog .catalog-menu { top:25px; right:2px; }
+.project-catalog .tree-new { display:grid; place-items:center; border:0; border-radius:var(--radius); background:var(--surface); color:var(--muted); }
+.project-catalog .tree-new:hover { background:var(--soft); color:var(--text); }
+.catalog-more-trees { justify-self:start; margin:2px 0 0 26px; padding:2px 8px; font-size:11px; }
+.catalogue-popover { position:fixed; z-index:900; width:280px; max-height:calc(100vh - 16px); overflow:auto; }
+.catalogue-popover .menu-item { width:100%; }
+.catalogue-popover .menu-item .grow { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.catalogue-popover .menu-note { white-space:normal; }
+.catalog-discovery { display:grid; gap:4px; }
+.catalog-discovery .menu-item { min-height:48px; height:auto; width:100%; text-align:left; }
+.catalog-discovery .menu-item small { display:block; color:var(--muted); font-size:11px; margin-top:4px; }
+@media (hover:none) { .project-catalog .row-more { opacity:.72; pointer-events:auto; } .project-catalog .proj-row, .project-catalog .tree-row, .project-catalog .sess-row { padding-right:26px; } }

@@ -1,0 +1,10 @@
+.chat-network-notice {
+  border: 1px solid var(--border);
+  background: var(--bg-secondary, var(--bg));
+  border-radius: 12px;
+  padding: 14px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.chat-network-notice strong { font-weight: 600; }
+.chat-network-notice p { margin: 4px 0 0; color: var(--text-secondary); }

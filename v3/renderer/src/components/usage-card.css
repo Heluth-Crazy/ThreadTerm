@@ -1,0 +1,25 @@
+.v3-chat-message.is-native.assistant.is-usage { width:100%; max-width:100%; }
+.usage-card { box-sizing:border-box; width:100%; min-width:0; display:grid; gap:18px; padding:18px 20px; border:1px solid var(--border); border-radius:var(--radius-card); background:var(--surface); color:var(--text); white-space:normal; font-size:13px; line-height:1.5; }
+.usage-card-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.usage-card-heading strong { font-size:14px; font-weight:600; }
+.usage-card-plan { color:var(--muted); font-size:12px; }
+.usage-card-section { min-width:0; display:grid; gap:14px; padding-top:16px; border-top:1px solid var(--border); }
+.usage-card h4 { margin:0; font-size:12px; font-weight:600; }
+.usage-limit { display:grid; min-width:0; gap:7px; }
+.usage-limit-heading { display:flex; justify-content:space-between; align-items:baseline; gap:16px; min-width:0; }
+.usage-limit-heading > span:first-child { min-width:0; overflow-wrap:anywhere; }
+.usage-card .usage-limit-heading b { display:inline; margin:0; font-size:inherit; font-weight:500; }
+.usage-limit-value { flex-shrink:0; font-variant-numeric:tabular-nums; }
+.usage-limit-value small { color:var(--muted); font-size:11px; margin-left:4px; }
+.usage-limit-meter { width:100%; height:6px; overflow:hidden; border-radius:999px; background:var(--soft); }
+.usage-limit-meter > span { display:block; height:100%; border-radius:inherit; background:var(--primary); }
+.usage-limit-meta { display:flex; justify-content:flex-end; gap:12px; flex-wrap:wrap; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+.usage-stat-heading { display:flex; align-items:baseline; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+.usage-stat-heading > span { color:var(--muted); font-size:11px; }
+.usage-card-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(180px,100%),1fr)); gap:14px 24px; margin:0; min-width:0; }
+.usage-card-stats > div { min-width:0; }
+.usage-card-stats dt { color:var(--muted); font-size:11px; margin:0 0 4px; }
+.usage-card-stats dd { margin:0; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+.usage-stat-context { grid-column:1 / -1; }
+.usage-card-notice { margin:0; color:var(--muted); font-size:12px; overflow-wrap:anywhere; white-space:pre-wrap; }
+.usage-card-notice.is-error { color:var(--danger); }

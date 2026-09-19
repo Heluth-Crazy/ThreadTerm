@@ -1,0 +1,33 @@
+/* Scoped CodeMirror host; original workspace hierarchy remains intact. */
+.tt-editor-shell { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); border-radius: 0 0 var(--radius-card) var(--radius-card); }
+.tt-editor-host { flex: 1; min-height: 0; overflow: hidden; }
+.tt-editor-meta { display: flex; gap: 9px; align-items: center; min-height: 28px; padding: 0 12px; color: var(--faint); border-bottom: 1px solid var(--border); font: 11px var(--mono); }
+.tt-editor-meta [data-testid="editor-dirty"] { color: var(--warning, #bf7a1a); }
+.tt-editor-tabs { display: flex; gap: 2px; overflow-x: auto; padding: 5px 8px 0; background: var(--surface); border-bottom: 1px solid var(--border); }
+.tt-editor-tab { border: 0; border-radius: 5px 5px 0 0; padding: 5px 8px; background: transparent; color: var(--muted); font: 11px var(--mono); white-space: nowrap; }
+.tt-editor-tab:hover, .tt-editor-tab.active { background: var(--soft); color: var(--text); }
+.tt-file-tree details details { margin-left: 10px; }
+.tt-file-tree summary { display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 7px 2px; color: var(--muted); font: 11px var(--mono); }
+.tt-file-tree summary::before { content: '›'; width: 8px; }
+.tt-file-tree details[open] > summary::before { content: '⌄'; }
+.tt-file-tree .file-link { padding-left: 12px; white-space: normal; }
+.tt-file-tree [hidden] { display: none !important; }
+.tt-editor-conflict { display: flex; align-items: center; gap: 8px; padding: 6px 12px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); font-size: 12px; }
+.tt-editor-conflict button { border: 1px solid currentColor; border-radius: 4px; background: transparent; color: inherit; font-size: 11px; }
+.tt-editor-shell .cm-editor { height: 100%; outline: 0; font: 13px/1.6 var(--mono); }
+.tt-editor-shell .cm-scroller { overflow: auto; font-family: var(--mono); }
+.tt-editor-shell .cm-gutters { background: var(--surface); color: var(--faint); border-right: 1px solid var(--border); }
+.tt-editor-shell .cm-activeLine, .tt-editor-shell .cm-activeLineGutter { background: color-mix(in srgb, var(--mint) 8%, transparent); }
+.tt-editor-shell .cm-selectionBackground, .tt-editor-shell .cm-content ::selection { background: color-mix(in srgb, var(--mint) 30%, transparent) !important; }
+.tt-editor-state { padding: 28px; color: var(--muted); }
+.tt-editor-state b { color: var(--text); display: block; margin-bottom: 6px; }
+.tt-preview-frame { width: 100%; height: 100%; border: 0; background: #fff; color: #202124; }
+.tt-preview-markdown { overflow: auto; padding: 24px; color: var(--text); line-height: 1.65; }
+.tt-preview-markdown h1, .tt-preview-markdown h2, .tt-preview-markdown h3 { margin: 0 0 12px; }
+.tt-preview-markdown code { padding: 1px 4px; border-radius: 3px; background: var(--soft); font-family: var(--mono); }
+.tt-diff-shell { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); border-radius: var(--radius-card); }
+.tt-diff-host { flex: 1; min-height: 0; overflow: auto; }
+.tt-diff-host .cm-mergeView { min-height: 100%; font: 13px/1.6 var(--mono); }
+.tt-diff-host .cm-editor { height: 100%; }
+.tt-diff-host .cm-gutters { background: var(--surface); color: var(--faint); border-color: var(--border); }
+.tt-diff-revert { border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); font: 11px var(--mono); }

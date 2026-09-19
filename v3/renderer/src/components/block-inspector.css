@@ -1,0 +1,12 @@
+.block-inspector { position: absolute; z-index: 20; inset: 16px 16px auto auto; width: min(540px, calc(100% - 32px)); max-height: calc(100% - 32px); overflow: auto; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--raised); box-shadow: 0 14px 40px rgb(0 0 0 / 32%); }
+.block-inspector-heading { display: flex; gap: 12px; justify-content: space-between; align-items: start; }
+.block-inspector-heading h2 { margin: 0; font-size: 15px; }
+.block-inspector-heading p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.block-inspector-text { max-height: 280px; overflow: auto; margin: 12px 0; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 "Cascadia Code", Consolas, monospace; }
+.block-inspector-explain { display: grid; gap: 8px; }
+.block-inspector-explain label { display: grid; gap: 5px; font-size: 12px; }
+.block-inspector-explain .tt-select { min-height: 32px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+.block-inspector-explain .tt-select-trigger { min-height: 30px; padding: 5px; }
+.block-inspector-explain p, .block-inspector-created { margin: 0; color: var(--muted); font-size: 12px; }
+.block-inspector-created code { overflow-wrap: anywhere; }
+@media (max-width: 640px) { .block-inspector { inset: 8px; width: auto; max-height: calc(100% - 16px); } }

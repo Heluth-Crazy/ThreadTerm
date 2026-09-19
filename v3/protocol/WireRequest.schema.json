@@ -1,0 +1,4205 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "RequestParams<\"catalog.visibility.list\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"catalog.visibility.update\">": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "project",
+            "worktree",
+            "session"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "visibility": {
+          "type": "string",
+          "enum": [
+            "active",
+            "archived",
+            "removed"
+          ]
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "visibility",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"device.status\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"device.enable\">": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"device.disable\">": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"device.pairing.create\">": {
+      "type": "object",
+      "properties": {
+        "permission": {
+          "$ref": "#/definitions/DevicePermission"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "permission",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "DevicePermission": {
+      "type": "string",
+      "enum": [
+        "readonly",
+        "fullcontrol"
+      ]
+    },
+    "RequestParams<\"device.pairing.cancel\">": {
+      "type": "object",
+      "properties": {
+        "pairingId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pairingId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"device.list\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"device.rename\">": {
+      "type": "object",
+      "properties": {
+        "deviceId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "deviceId",
+        "name",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"device.renew\">": {
+      "type": "object",
+      "properties": {
+        "deviceId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "deviceId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"device.revoke\">": {
+      "type": "object",
+      "properties": {
+        "deviceId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "deviceId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"terminal.read\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "cursor": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "tail": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.lookup\">": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.resume\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.rerun\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.present\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "placement": {
+          "type": "string",
+          "enum": [
+            "workspace",
+            "window"
+          ]
+        },
+        "presentation": {
+          "type": "string",
+          "enum": [
+            "background",
+            "focused"
+          ]
+        },
+        "workspacePath": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "placement",
+        "presentation",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.read\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.snapshot\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.draft.read\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.draft.save\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "text",
+        "expectedRevision",
+        "leaseEpoch",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"data.status\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"data.backup\">": {
+      "type": "object",
+      "properties": {
+        "targetPath": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "targetPath",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"data.relocation.status\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"data.relocation.prepare\">": {
+      "type": "object",
+      "properties": {
+        "targetPath": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "targetPath",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"data.relocation.cancel\">": {
+      "type": "object",
+      "properties": {
+        "preparedOperationId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "preparedOperationId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"settings.export\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"settings.import.preview\">": {
+      "type": "object",
+      "properties": {
+        "bundle": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bundle"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"settings.import.apply\">": {
+      "type": "object",
+      "properties": {
+        "bundle": {
+          "type": "string"
+        },
+        "selected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bundle",
+        "selected",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"preset.list\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"preset.save\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "sessions": {
+          "type": "array",
+          "items": {}
+        },
+        "layout": {
+          "$ref": "#/definitions/PaneLayout"
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "sessions",
+        "layout",
+        "commands",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "PaneLayout": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pane"
+            },
+            "id": {
+              "type": "string"
+            },
+            "tabs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ContentRef"
+              }
+            },
+            "activeTabId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "tabs",
+            "activeTabId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "split"
+            },
+            "id": {
+              "type": "string"
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "horizontal",
+                "vertical"
+              ]
+            },
+            "ratio": {
+              "type": "number"
+            },
+            "first": {
+              "$ref": "#/definitions/PaneLayout"
+            },
+            "second": {
+              "$ref": "#/definitions/PaneLayout"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "direction",
+            "ratio",
+            "first",
+            "second"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ContentRef": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "session"
+            },
+            "sessionId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "sessionId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "file",
+                "diff",
+                "preview"
+              ]
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "projectId",
+            "path"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RequestParams<\"preset.delete\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"usage.query\">": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "status": {
+          "$ref": "#/definitions/SessionStatus"
+        },
+        "source": {
+          "$ref": "#/definitions/UsageSource"
+        },
+        "sourceSessionId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProviderId": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "claude",
+        "kimi",
+        "gemini",
+        "opencode",
+        "shell",
+        "grok",
+        "custom"
+      ]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "running",
+        "idle",
+        "waiting",
+        "exited",
+        "interrupted",
+        "error"
+      ]
+    },
+    "UsageSource": {
+      "type": "string",
+      "enum": [
+        "created",
+        "native-history",
+        "rerun"
+      ]
+    },
+    "RequestParams<\"runtime.health\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"runtime.shutdown\">": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"runtime.snapshot\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"project.add\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"project.remove\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"project.catalog.list\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"project.update\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "sortOrder": {
+          "type": "number"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.create\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "mode": {
+          "$ref": "#/definitions/SessionMode"
+        },
+        "executable": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nativeId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cwd",
+        "provider",
+        "mode",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "SessionMode": {
+      "type": "string",
+      "enum": [
+        "terminal",
+        "chat"
+      ]
+    },
+    "RequestParams<\"history.import\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "nativeId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/definitions/SessionMode"
+        },
+        "title": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "nativeId",
+        "cwd",
+        "mode",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.config.read\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.config.save\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "mode": {
+          "$ref": "#/definitions/SessionMode"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "executable": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "provider",
+        "mode",
+        "cwd",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.retry.read\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.retry.update\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "maxRetries": {
+          "type": "number"
+        },
+        "delaySeconds": {
+          "type": "number"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "enabled",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.stop\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "force": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sessionId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.organize\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "archived": {
+          "type": "boolean"
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "bookmarked": {
+          "type": "boolean"
+        },
+        "intent": {
+          "type": "string",
+          "enum": [
+            "review",
+            "fix",
+            "research",
+            "test",
+            "docs",
+            "none"
+          ]
+        },
+        "sortOrder": {
+          "type": "number"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.update\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "followed": {
+          "type": "boolean"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.claim\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "clientId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "clientId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.renew\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"session.release\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"terminal.input\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "data": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "data",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"terminal.resize\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "cols": {
+          "type": "number"
+        },
+        "rows": {
+          "type": "number"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "cols",
+        "rows",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"settings.update\">": {
+      "type": "object",
+      "properties": {
+        "patch": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "patch",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"provider.list\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"history.list\">": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"history.read\">": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "nativeId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "nativeId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.send\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "text",
+        "operationId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.cancel\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "leaseEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.approve\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "approvalId": {
+          "type": "string"
+        },
+        "choiceId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "approvalId",
+        "choiceId",
+        "leaseEpoch",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.options\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.option.set\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "optionId": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "optionId",
+        "value",
+        "leaseEpoch",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.connection\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"chat.connect\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "leaseEpoch",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"filesystem.list\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"filesystem.read\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"filesystem.image\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"filesystem.write\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "expectedFingerprint": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "expectedFingerprint",
+        "operationId",
+        "path",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"draft.list\">": {
+      "$ref": "#/definitions/FileScope"
+    },
+    "FileScope": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"draft.put\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "baseFingerprint": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "baseFingerprint",
+        "content",
+        "expectedRevision",
+        "operationId",
+        "path",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"draft.delete\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"git.status\">": {
+      "$ref": "#/definitions/FileScope"
+    },
+    "RequestParams<\"git.stage\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expectedFingerprints": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "paths",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.unstage\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expectedFingerprints": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "paths",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.commit\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message",
+        "operationId",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.fetch\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.pull\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.push\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.merge\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "branch",
+        "operationId",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.merge.abort\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "projectId"
+      ]
+    },
+    "RequestParams<\"git.diff\">": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "staged": {
+          "type": "boolean"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "projectId",
+        "staged"
+      ]
+    },
+    "RequestParams<\"worktree.list\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"worktree.create\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "createBranch": {
+          "type": "boolean"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId",
+        "path",
+        "branch",
+        "createBranch",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"worktree.remove\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"worktree.branches\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"worktree.relocate\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"workspace.save\">": {
+      "$ref": "#/definitions/WorkspaceSave"
+    },
+    "WorkspaceSave": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        },
+        "layout": {
+          "$ref": "#/definitions/PaneLayout"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "layout",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"workspace.delete\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"inbox.read\">": {
+      "type": "object",
+      "properties": {
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ids",
+        "operationId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "catalog.visibility.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22catalog.visibility.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "catalog.visibility.update"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22catalog.visibility.update%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.status"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22device.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.enable"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22device.enable%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.disable"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22device.disable%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.pairing.create"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22device.pairing.create%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.pairing.cancel"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22device.pairing.cancel%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22device.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.rename"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22device.rename%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.renew"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22device.renew%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "device.revoke"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22device.revoke%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "terminal.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22terminal.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.lookup"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.lookup%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.resume"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.resume%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.rerun"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.rerun%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.present"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.present%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.snapshot"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.snapshot%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.draft.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.draft.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.draft.save"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.draft.save%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "data.status"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22data.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "data.backup"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22data.backup%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "data.relocation.status"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22data.relocation.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "data.relocation.prepare"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22data.relocation.prepare%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "data.relocation.cancel"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22data.relocation.cancel%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "settings.export"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22settings.export%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "settings.import.preview"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22settings.import.preview%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "settings.import.apply"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22settings.import.apply%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preset.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22preset.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preset.save"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22preset.save%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "preset.delete"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22preset.delete%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "usage.query"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22usage.query%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "runtime.health"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22runtime.health%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "runtime.shutdown"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22runtime.shutdown%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "runtime.snapshot"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22runtime.snapshot%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "project.add"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22project.add%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "project.remove"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22project.remove%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "project.catalog.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22project.catalog.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "project.update"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22project.update%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.create"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.create%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "history.import"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22history.import%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.config.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.config.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.config.save"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.config.save%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.retry.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.retry.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.retry.update"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.retry.update%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.stop"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.stop%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.organize"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.organize%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.update"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.update%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.claim"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.claim%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.renew"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.renew%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.release"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.release%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "terminal.input"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22terminal.input%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "terminal.resize"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22terminal.resize%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "settings.update"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22settings.update%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "provider.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22provider.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "history.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22history.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "history.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22history.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.send"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.send%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.cancel"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.cancel%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.approve"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.approve%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.options"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.options%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.option.set"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.option.set%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.connection"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.connection%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.connect"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22chat.connect%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.image"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.image%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.write"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22filesystem.write%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "draft.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22draft.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "draft.put"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22draft.put%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "draft.delete"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22draft.delete%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.status"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.status%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.stage"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.stage%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.unstage"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.unstage%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.commit"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.commit%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.fetch"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.fetch%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.pull"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.pull%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.push"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.push%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.merge"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.merge%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.merge.abort"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.merge.abort%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.diff"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22git.diff%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "worktree.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22worktree.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "worktree.create"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22worktree.create%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "worktree.remove"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22worktree.remove%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "worktree.branches"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22worktree.branches%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "worktree.relocate"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22worktree.relocate%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "workspace.save"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22workspace.save%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "workspace.delete"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22workspace.delete%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "inbox.read"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22inbox.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "discriminator": {
+    "propertyName": "method"
+  },
+  "$id": "https://threadterm.local/v3/WireRequest"
+}

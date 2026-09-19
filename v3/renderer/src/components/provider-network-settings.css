@@ -1,0 +1,20 @@
+.provider-network-settings { display: grid; gap: 14px; }
+.provider-network-state { align-self: flex-start; border: 1px solid var(--border); border-radius: 999px; padding: 4px 9px; color: var(--muted); font-size: 12px; line-height: 1.2; }
+.provider-network-state.is-custom { border-color: color-mix(in srgb, var(--primary) 50%, var(--border)); background: var(--primary-tint); color: var(--text); }
+.provider-network-settings fieldset { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; }
+.provider-network-settings legend { margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+.provider-network-option { display: flex !important; align-items: flex-start; gap: 10px; margin: 0 !important; padding: 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+.provider-network-option:has(input:checked) { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); background: var(--primary-tint); }
+.provider-network-option input { margin: 3px 0 0; accent-color: var(--primary); }
+.provider-network-option span { display: grid; gap: 3px; }
+.provider-network-option small, .provider-network-fields small, .provider-network-apply-note { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.provider-network-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.provider-network-fields label { margin: 0 !important; }
+.provider-network-fields input { width: 100%; box-sizing: border-box; }
+.provider-network-field-error { color: var(--danger, #b42318); font-size: 12px; line-height: 1.4; }
+.provider-network-apply-note { margin: 0 !important; padding-top: 2px; }
+.provider-network-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.provider-network-notice { margin: 0 !important; color: var(--muted); }
+.provider-network-save-error { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger, #b42318) 45%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--danger, #b42318) 8%, var(--surface)); color: var(--text); }
+.provider-network-save-error p { margin-top: 4px !important; }
+@media (max-width: 720px) { .provider-network-fields { grid-template-columns: 1fr; } .provider-network-actions { justify-content: stretch; } .provider-network-actions button { flex: 1 1 160px; } }

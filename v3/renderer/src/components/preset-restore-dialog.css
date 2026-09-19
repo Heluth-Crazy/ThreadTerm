@@ -1,0 +1,22 @@
+.preset-restore-dialog{width:min(880px,100%)!important;max-height:min(720px,90%)!important;background:var(--surface)!important}.preset-restore-dialog .dlg-head{padding:16px 20px 12px}.preset-restore-dialog .dlg-head h2{font-size:16px;font-weight:600}.preset-restore-dialog .dlg-head p{margin-top:2px;font-size:13px}.preset-restore-dialog .dlg-body{padding:16px 26px;overflow-y:auto}.preset-restore-dialog .dlg-foot{padding:12px 20px 16px;border-top:0}.preset-restore{gap:16px}.preset-restore>p{font-size:13px}.preset-restore-map{gap:4px}.preset-restore-map>b{font-size:13px}.preset-restore-map>small{display:inline;margin-left:4px}.preset-layout-map{display:grid;min-height:132px;gap:8px;margin-top:3px}.preset-layout-map.cols-2{grid-template-columns:1fr 1fr!important}.preset-layout-map.cols-3{grid-template-columns:repeat(3,1fr)!important}.preset-layout-map .pm-col{display:flex;flex-direction:column;gap:6px;min-width:0;overflow:hidden;padding:6px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}.preset-layout-map .pm-branch{display:flex;align-items:center;gap:4px;min-width:0;color:var(--muted);font:12px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.preset-layout-map .pm-branch .ico{width:11px;height:11px}.preset-layout-map .pm-panes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:6px;flex:1;min-height:0}.preset-layout-map .pm-pane{display:grid;align-content:start;gap:4px;min-width:0;padding:5px 6px;border:1px solid var(--border);border-radius:6px;background:var(--raised)}.preset-layout-map .pm-title{display:flex;align-items:center;gap:4px;min-width:0;color:var(--text);font-size:12px}.preset-layout-map .pm-title span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.preset-layout-map .pm-title .ico{flex:0 0 auto;width:11px;height:11px;color:inherit}.preset-layout-map .pm-pane i{display:block;height:3px;border-radius:2px;background:var(--soft);opacity:.7}.preset-layout-map .pm-pane i.short{width:55%}.preset-restore-summary{display:grid;grid-template-columns:auto 1fr!important;gap:6px 12px;padding:0;background:transparent;font-size:13px}.preset-restore-entry{gap:8px;padding:12px;margin:0;border:0;border-radius:var(--radius-card);background:var(--raised)}.preset-restore-entry dl{gap:6px 16px;font-size:13px}.preset-restore-entry code{font:13px var(--mono)}.preset-restore-session{display:none}.preset-restore-commands{gap:6px}.preset-restore-commands>b{font-size:12px}.cmd-check{padding:0;background:transparent;font-size:12px}.hint{font-size:12px}@media(max-width:760px){.preset-restore-dialog{width:calc(100% - 32px)!important}.preset-layout-map.cols-2,.preset-layout-map.cols-3{grid-template-columns:1fr}}
+
+.preset-restore-dialog .dlg-body { padding:16px 20px; min-height:0; }
+.preset-restore { display:grid; gap:16px; }
+.preset-restore-map>b { font-size:12px; font-weight:400; color:var(--muted); }
+.preset-restore-map>small { color:var(--faint); font-size:11px; }
+.preset-restore-summary { margin:0; grid-template-columns:72px 1fr!important; }
+.preset-restore-summary dt,.preset-restore-entry dt { color:var(--muted); }
+.preset-restore-summary dd,.preset-restore-entry dd { margin:0; min-width:0; overflow-wrap:anywhere; }
+.preset-restore-scopes { display:grid; gap:8px; }
+.preset-restore-entry { display:grid; gap:8px; }
+.preset-restore-entry dl { display:grid; grid-template-columns:72px 1fr; margin:0; }
+.preset-restore-entry .checkline { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); }
+.preset-restore-session { display:flex; align-items:center; gap:8px; padding:5px 0; }
+.preset-restore-session span { flex:1; min-width:0; display:grid; gap:3px; font-size:12px; }
+.preset-restore-session small { color:var(--muted); }
+.preset-restore-session em { font-size:11px; font-style:normal; color:var(--muted); }
+.preset-restore-commands { display:grid; gap:6px; }
+.preset-restore-commands .cmd-check { display:flex; align-items:center; gap:8px; }
+.preset-restore-commands code { overflow-wrap:anywhere; }
+.preset-restore-dialog .dlg-foot .sheet-foot-meta { margin-right:auto; }
+.preset-layout-map .pm-panes.focus:has(>.pm-pane:only-child) { grid-template-columns:1fr!important; }
