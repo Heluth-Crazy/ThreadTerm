@@ -69,6 +69,18 @@ impl Database {
                 [],
             )?;
         }
+        let session_columns = connection
+            .prepare("PRAGMA table_info(sessions)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for column in ["cols", "rows"] {
+            if !session_columns.iter().any(|name| name == column) {
+                connection.execute(
+                    &format!("ALTER TABLE sessions ADD COLUMN {column} INTEGER"),
+                    [],
+                )?;
+            }
+        }
         let epoch: Option<String> = connection
             .query_row("SELECT value FROM metadata WHERE key='epoch'", [], |r| {
                 r.get(0)
@@ -476,7 +488,7 @@ impl Database {
                 return Err(anyhow!("invalid_history_transcript"));
             }
             let timestamp=now();
-            let session=Session { id:Uuid::new_v4().to_string(), project_id:request.project_id.map(str::to_owned), worktree_path:Some(request.cwd.to_owned()), title:request.title.unwrap_or(request.provider).to_owned(), provider:request.provider.to_owned(), mode:request.mode.to_owned(), status:"idle".into(), created_at:timestamp.clone(), updated_at:timestamp, native_id:Some(request.native_id.to_owned()), exit_code:None, followed:false, read_only:true, organization:SessionOrganization::default() };
+            let session=Session { id:Uuid::new_v4().to_string(), project_id:request.project_id.map(str::to_owned), worktree_path:Some(request.cwd.to_owned()), title:request.title.unwrap_or(request.provider).to_owned(), provider:request.provider.to_owned(), mode:request.mode.to_owned(), status:"idle".into(), created_at:timestamp.clone(), updated_at:timestamp, native_id:Some(request.native_id.to_owned()), exit_code:None, cols:None, rows:None, followed:false, read_only:true, organization:SessionOrganization::default() };
             tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)",params![session.id,session.project_id,session.worktree_path,session.title,session.provider,session.mode,session.status,session.created_at,session.updated_at,session.native_id,session.exit_code,session.followed])?;
             tx.execute(
                 "INSERT INTO session_launch_configs(session_id,revision,provider,mode,cwd,project_id,title,executable,args_json,source_session_id) VALUES(?,1,?,?,?,?,?,NULL,'[]',NULL)",
@@ -506,6 +518,15 @@ impl Database {
         } else {
             Ok(())
         }
+    }
+    pub fn set_session_terminal_size(&self, id: &str, cols: i32, rows: i32) -> Result<()> {
+        self.transaction(|tx| {
+            tx.execute(
+                "UPDATE sessions SET cols=?,rows=? WHERE id=?",
+                params![cols, rows, id],
+            )?;
+            Ok(())
+        })
     }
     pub fn restore_imported_read_only(&self, original: &Session) -> Result<()> {
         if !original.read_only {
@@ -620,6 +641,8 @@ impl Database {
             updated_at: now,
             native_id: request.native_id.map(str::to_owned),
             exit_code: None,
+            cols: None,
+            rows: None,
             followed: false,
             read_only: false,
             organization: SessionOrganization::default(),
@@ -1047,7 +1070,7 @@ fn collect_projects(conn: &Connection) -> Result<Vec<Project>> {
     Ok(projects)
 }
 fn collect_sessions(conn: &Connection) -> Result<Vec<Session>> {
-    let mut stmt=conn.prepare("SELECT id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only FROM sessions ORDER BY created_at")?;
+    let mut stmt=conn.prepare("SELECT id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only,cols,rows FROM sessions ORDER BY created_at")?;
     let rows = stmt.query_map([], |r| {
         Ok(Session {
             id: r.get(0)?,
@@ -1063,6 +1086,8 @@ fn collect_sessions(conn: &Connection) -> Result<Vec<Session>> {
             exit_code: r.get(10)?,
             followed: r.get(11)?,
             read_only: r.get(12)?,
+            cols: r.get(13)?,
+            rows: r.get(14)?,
             organization: SessionOrganization::default(),
         })
     })?;
@@ -1137,7 +1162,7 @@ fn session_organization(conn: &Connection, id: &str) -> Result<SessionOrganizati
         .unwrap_or_else(|| Ok(SessionOrganization::default()))
 }
 fn read_session(conn: &Connection, id: &str) -> Result<Session> {
-    let mut session = conn.query_row("SELECT id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only FROM sessions WHERE id=?",[id],|r|Ok(Session{id:r.get(0)?,project_id:r.get(1)?,worktree_path:r.get(2)?,title:r.get(3)?,provider:r.get(4)?,mode:r.get(5)?,status:r.get(6)?,created_at:r.get(7)?,updated_at:r.get(8)?,native_id:r.get(9)?,exit_code:r.get(10)?,followed:r.get(11)?,read_only:r.get(12)?,organization:SessionOrganization::default()}))?;
+    let mut session = conn.query_row("SELECT id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only,cols,rows FROM sessions WHERE id=?",[id],|r|Ok(Session{id:r.get(0)?,project_id:r.get(1)?,worktree_path:r.get(2)?,title:r.get(3)?,provider:r.get(4)?,mode:r.get(5)?,status:r.get(6)?,created_at:r.get(7)?,updated_at:r.get(8)?,native_id:r.get(9)?,exit_code:r.get(10)?,followed:r.get(11)?,read_only:r.get(12)?,cols:r.get(13)?,rows:r.get(14)?,organization:SessionOrganization::default()}))?;
     session.organization = session_organization(conn, id)?;
     Ok(session)
 }

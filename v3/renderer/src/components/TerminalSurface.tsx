@@ -38,6 +38,11 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   const completionHintsRef = useRef(completionHints);
   const [actionBusy, setActionBusy] = useState(false);
   const canControl = isLive(session);
+  const recordedCols = session?.cols, recordedRows = session?.rows;
+  const fixedSize = !canControl && typeof recordedCols === "number" && typeof recordedRows === "number"
+    && Number.isInteger(recordedCols) && Number.isInteger(recordedRows) && recordedCols > 0 && recordedRows > 0
+    ? { cols: recordedCols, rows: recordedRows }
+    : undefined;
   useEffect(() => { completionHintsRef.current = completionHints; if (!completionHints) setCompletionHint(false); }, [completionHints]);
   useEffect(() => { if (terminalRef.current) terminalRef.current.options.theme = terminalTheme(theme); }, [theme]);
   useEffect(() => {
@@ -45,7 +50,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     let disposed = false; let unsubscribeOutput: (() => void) | undefined; let leaseEpoch: number | undefined; let releaseControl: (() => void) | undefined;
     let controlGeneration = 0;
     let lastResize: string | undefined;
-    const terminal = new Terminal({ cursorBlink: true, fontFamily: '"Cascadia Code", Consolas, monospace', fontSize: 13, lineHeight: 1.55, minimumContrastRatio: 4.5, scrollback: 10000, scrollOnEraseInDisplay: false, windowsPty: window.threadterm.windowsPty, theme: terminalTheme(theme) });
+    const terminal = new Terminal({ ...(fixedSize ? { cols: fixedSize.cols, rows: fixedSize.rows } : {}), cursorBlink: true, fontFamily: '"Cascadia Code", Consolas, monospace', fontSize: 13, lineHeight: 1.55, minimumContrastRatio: 4.5, scrollback: 10000, scrollOnEraseInDisplay: false, windowsPty: window.threadterm.windowsPty, theme: terminalTheme(theme) });
     terminalRef.current = terminal;
     const fit = new FitAddon(); terminal.loadAddon(fit); terminal.open(element);
     terminal.loadAddon(new WebLinksAddon((_event, url) => setSelectedLink(url)));
@@ -56,6 +61,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     terminal.options.disableStdin = true; setIssue(undefined); setCompletionHint(false);
     const resize = () => {
       if (disposed || element.clientWidth === 0 || element.clientHeight === 0) return;
+      if (fixedSize) return;
       try {
         fit.fit();
         if (!leaseEpoch) return;
@@ -146,7 +152,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     : session?.readOnly
       ? (zh ? "已保存记录 · 只读" : "Saved record · read-only")
       : (zh ? "历史输出 · 已结束" : "History output · ended");
-  return <div className="terminal-wrap term"><header className="term-head"><b>{title}</b><span className="grow demo">{providerLabel(provider)} · {provenance}</span><button className={`btn-ghost icon-btn star${session?.followed ? " on" : ""}`} disabled={!session || actionBusy} aria-label={session?.followed ? (zh ? "取消关注" : "Unfollow") : (zh ? "关注" : "Follow")} aria-pressed={Boolean(session?.followed)} onClick={() => void toggleFollow()}>{session?.followed ? "★" : "☆"}</button>{isLive(session) && <button className="btn-ghost btn term-stop" disabled={actionBusy} onClick={() => void stop()}>{zh ? "结束会话" : "End session"}</button>}<span hidden={!issue} className="term-read-state">{issue ? (zh ? '需要注意' : 'Attention') : session?.readOnly ? (zh ? "只读" : "Read-only") : (zh ? '已连接' : 'Connected')}</span></header><div className="v3-session-controls"><span className="v3-mode">{session?.mode === "chat" ? (zh ? "聊天" : "Chat") : "Terminal · " + (zh ? "交互式" : "interactive")}</span><span className="grow" />{onCloseView && <button className="btn" onClick={onCloseView}>{zh ? "关闭视图" : "Close view"}</button>}{onConfigure && <button className="btn" onClick={onConfigure}>{zh ? "配置" : "Configure"}</button>}{session && !session.readOnly && <button className="btn" disabled={actionBusy} onClick={() => void rerun()}>{zh ? "再次运行" : "Rerun"}</button>}</div><div className="terminal-host term-output" ref={host} aria-label={zh ? '实时终端输出' : 'Live terminal output'} />
+  return <div className="terminal-wrap term"><header className="term-head"><b>{title}</b><span className="grow demo">{providerLabel(provider)} · {provenance}</span><button className={`btn-ghost icon-btn star${session?.followed ? " on" : ""}`} disabled={!session || actionBusy} aria-label={session?.followed ? (zh ? "取消关注" : "Unfollow") : (zh ? "关注" : "Follow")} aria-pressed={Boolean(session?.followed)} onClick={() => void toggleFollow()}>{session?.followed ? "★" : "☆"}</button>{isLive(session) && <button className="btn-ghost btn term-stop" disabled={actionBusy} onClick={() => void stop()}>{zh ? "结束会话" : "End session"}</button>}<span hidden={!issue} className="term-read-state">{issue ? (zh ? '需要注意' : 'Attention') : session?.readOnly ? (zh ? "只读" : "Read-only") : (zh ? '已连接' : 'Connected')}</span></header><div className="v3-session-controls"><span className="v3-mode">{session?.mode === "chat" ? (zh ? "聊天" : "Chat") : "Terminal · " + (zh ? "交互式" : "interactive")}</span><span className="grow" />{onCloseView && <button className="btn" onClick={onCloseView}>{zh ? "关闭视图" : "Close view"}</button>}{onConfigure && <button className="btn" onClick={onConfigure}>{zh ? "配置" : "Configure"}</button>}{session && !session.readOnly && <button className="btn" disabled={actionBusy} onClick={() => void rerun()}>{zh ? "再次运行" : "Rerun"}</button>}</div><div className={`terminal-host term-output${fixedSize ? " fixed-geometry" : ""}`} ref={host} aria-label={zh ? '实时终端输出' : 'Live terminal output'} />
     {hasSelection&&<button className="terminal-inspect-selection" onClick={()=>setInspected(terminalRef.current?.getSelection()??'')}>{zh?'检查选区':'Inspect selection'}</button>}
     {inspected!==undefined&&<BlockInspector sessionId={sessionId} text={inspected} onClose={()=>setInspected(undefined)}/>}
     {unread > 0 && <button className="terminal-new-output" onClick={() => {terminalRef.current?.scrollToBottom();setUnread(0);}}>{zh ? `${unread} 批新输出 · 回到底部` : `${unread} new updates · Back to bottom`}</button>}

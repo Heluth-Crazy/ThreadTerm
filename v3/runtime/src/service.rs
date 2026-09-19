@@ -457,6 +457,13 @@ impl RuntimeService {
                     self.leases
                         .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
                     self.pty.resize(&p.session_id, p.cols, p.rows)?;
+                    if let Err(error) = self.db.set_session_terminal_size(
+                        &p.session_id,
+                        i32::from(p.cols),
+                        i32::from(p.rows),
+                    ) {
+                        eprintln!("terminal size could not be persisted: {error}");
+                    }
                     Ok(Value::Null)
                 }
                 "settings.update" => {
