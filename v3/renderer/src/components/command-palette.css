@@ -1,0 +1,1 @@
+.shell-palette-scrim { z-index:80; align-items:start; padding-top:min(18vh,150px); }.palette { width:min(620px,calc(100vw - 32px)); max-height:min(560px,calc(100vh - 64px)); display:flex; flex-direction:column; overflow:hidden; }.palette-empty { padding:18px; color:var(--muted); font-size:13px; }

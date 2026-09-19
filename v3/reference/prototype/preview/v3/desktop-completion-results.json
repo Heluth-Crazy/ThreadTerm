@@ -1,0 +1,36 @@
+{
+  "generatedAt": "2026-09-09T13:59:43.048Z",
+  "browser": "Chromium",
+  "results": [
+    {
+      "name": "app-window-chrome-contains-overlays-and-can-maximize",
+      "status": "passed",
+      "durationMs": 756
+    },
+    {
+      "name": "project-scope-filters-without-changing-page-and-all-clears-scope",
+      "status": "passed",
+      "durationMs": 786
+    },
+    {
+      "name": "directory-preview-refresh-and-discovery-retain-tree-identity",
+      "status": "passed",
+      "durationMs": 695
+    },
+    {
+      "name": "usage-estimate-recomputes-after-price-edit",
+      "status": "passed",
+      "durationMs": 438
+    },
+    {
+      "name": "empty-worktree-create-cancel-and-eight-branch-disclosure",
+      "status": "passed",
+      "durationMs": 1490
+    },
+    {
+      "name": "shortcut-conflict-preserves-binding-and-valid-binding-opens-palette",
+      "status": "passed",
+      "durationMs": 1242
+    }
+  ]
+}

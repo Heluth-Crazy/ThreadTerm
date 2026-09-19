@@ -1,0 +1,87 @@
+{
+  "name": "threadterm-v3",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "desktop-dist/main.cjs",
+  "workspaces": [
+    "protocol",
+    "renderer",
+    "providers/claude-sdk"
+  ],
+  "dependencies": {
+    "@threadterm/protocol": "file:protocol"
+  },
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail \"npm run dev:renderer\" \"npm run dev:desktop\"",
+    "dev:renderer": "vite --config vite.config.ts --host 127.0.0.1",
+    "dev:desktop": "npm run build:desktop && wait-on http://127.0.0.1:5173 && cross-env THREADTERM_V3_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "protocol:generate": "node protocol/generate.mjs",
+    "test:protocol": "node --experimental-strip-types --test protocol/contracts.test.mjs",
+    "build": "npm run protocol:generate && npm run build:claude-sdk && npm run build:desktop && npm run build:renderer",
+    "build:claude-sdk": "npm --workspace @threadterm/v3-claude-sdk run build",
+    "build:desktop": "esbuild desktop/src/main.ts --bundle --platform=node --target=node22 --format=cjs --external:electron --outfile=desktop-dist/main.cjs && esbuild desktop/src/preload.ts --bundle --platform=node --target=node22 --format=cjs --external:electron --outfile=desktop-dist/preload.cjs",
+    "build:renderer": "vite build --config vite.config.ts",
+    "build:runtime": "cargo build --manifest-path runtime/Cargo.toml --release --bins",
+    "typecheck": "npm run typecheck:desktop && npm run typecheck:renderer",
+    "typecheck:desktop": "tsc --noEmit -p tsconfig.desktop.json",
+    "typecheck:renderer": "npm --workspace @threadterm/v3-renderer run typecheck",
+    "test:terminal": "esbuild desktop/test/terminal-environment.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/terminal-environment.test.cjs && node --test desktop-dist/terminal-environment.test.cjs desktop/test/terminal-buffer-semantics.test.cjs && node --experimental-strip-types --test qa/control-lease.test.ts",
+    "test:desktop": "esbuild desktop/test/output-fanout.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/output-fanout.test.cjs && esbuild desktop/src/stdioGuards.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/stdioGuards.test.cjs && esbuild desktop/src/windowChrome.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/windowChrome.test.cjs && esbuild desktop/src/runtime-handshake.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/runtime-handshake.test.cjs && node --test desktop-dist/output-fanout.test.cjs desktop-dist/stdioGuards.test.cjs desktop-dist/windowChrome.test.cjs desktop-dist/runtime-handshake.test.cjs desktop/test/terminal-buffer-semantics.test.cjs",
+    "dist:win": "npm run build && npm run build:runtime && electron-builder --win nsis",
+    "start": "electron ."
+  },
+  "build": {
+    "appId": "com.threadterm.v3",
+    "productName": "ThreadTerm",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop-dist/main.cjs",
+      "desktop-dist/preload.cjs",
+      "desktop-dist/renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "runtime/target/release/threadterm-v3-runtime.exe",
+        "to": "runtime/threadterm-v3-runtime.exe"
+      },
+      {
+        "from": "providers/claude-sdk/dist/claude-sdk-host.mjs",
+        "to": "runtime/claude-sdk-host.mjs"
+      },
+      {
+        "from": "providers/claude-sdk/dist/claude-sdk-cli.exe",
+        "to": "runtime/claude-sdk-cli.exe"
+      },
+      {
+        "from": "runtime/target/release/threadterm-v3-mcp.exe",
+        "to": "runtime/threadterm-v3-mcp.exe"
+      }
+    ],
+    "nsis": {
+      "shortcutName": "ThreadTerm V3",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "desktop/installer/safe-process-check.nsh"
+    }
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "22.15.3",
+    "@vitejs/plugin-react": "6.1.1",
+    "ajv": "8.20.0",
+    "concurrently": "9.1.2",
+    "cross-env": "7.0.3",
+    "electron": "44.3.0",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.2",
+    "ts-json-schema-generator": "2.9.0",
+    "typescript": "5.9.3",
+    "vite": "8.2.2",
+    "wait-on": "8.0.3"
+  }
+}

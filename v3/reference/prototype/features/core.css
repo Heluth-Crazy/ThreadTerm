@@ -1,0 +1,14 @@
+/* Additive extension-host styles. Feature-specific styles stay in their owner files. */
+[data-tt-feature-mounted] {
+  min-width: 0;
+}
+
+/* The overflow controls fade in on a row hover. They must still receive the
+   first pointer movement into their hit area, otherwise the full-width row
+   button captures it and the project/tree/session menus cannot be opened. */
+.row-more {
+  pointer-events: auto;
+}
+.side-scope { display: block; width: 100%; border: 0; border-radius: 0; background: transparent; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; cursor: pointer; }
+.side-scope:hover { color: var(--text); }
+.side-scope:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }

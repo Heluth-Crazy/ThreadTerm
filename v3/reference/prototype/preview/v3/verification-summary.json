@@ -1,0 +1,84 @@
+{
+  "generatedAt": "2026-09-08T17:43:05.510Z",
+  "scope": "static prototype only",
+  "lint": {
+    "status": "passed",
+    "files": 17
+  },
+  "typeCheck": "Not applicable: plain JavaScript; production TypeScript/Rust unchanged.",
+  "steps": [
+    {
+      "step": "editor build",
+      "status": "passed"
+    },
+    {
+      "step": "tests/verify.mjs",
+      "report": "verification-results.json",
+      "scenarios": 18,
+      "passed": 18,
+      "failed": 0
+    },
+    {
+      "step": "tests/core-review.mjs",
+      "report": "core-review-results.json",
+      "scenarios": 9,
+      "passed": 9,
+      "failed": 0
+    },
+    {
+      "step": "tests/editor-review.mjs",
+      "report": "editor-review-results.json",
+      "scenarios": 8,
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "step": "tests/settings-review.mjs",
+      "report": "settings-review-results.json",
+      "scenarios": 8,
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "step": "tests/session-workflows.mjs",
+      "report": "session-workflows-results.json",
+      "scenarios": 14,
+      "passed": 14,
+      "failed": 0
+    },
+    {
+      "step": "tests/desktop-completion.mjs",
+      "report": "desktop-completion-results.json",
+      "scenarios": 5,
+      "passed": 5,
+      "failed": 0
+    },
+    {
+      "step": "tests/visuals.mjs",
+      "report": "visuals-results.json",
+      "scenarios": 12,
+      "passed": 12,
+      "failed": 0
+    }
+  ],
+  "followUpChecks": [
+    {
+      "step": "tests/visuals.mjs",
+      "generatedAt": "2026-09-08T17:45:54.671Z",
+      "report": "visuals-results.json",
+      "reason": "Corrected project screenshot readiness check and normalized existing scope button styling.",
+      "scenarios": 12,
+      "passed": 12,
+      "failed": 0
+    },
+    {
+      "step": "scoped ESLint",
+      "checkedAt": "2026-09-08T17:51:39.070Z",
+      "files": 17,
+      "errors": 0,
+      "warnings": 0,
+      "status": "passed",
+      "report": "lint-results.json"
+    }
+  ]
+}

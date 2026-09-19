@@ -1,0 +1,119 @@
+[
+  {
+    "width": 1280,
+    "height": 800,
+    "route": "/project/orbit",
+    "regions": [
+      {
+        "tag": "DIV",
+        "class": "shell",
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800
+      },
+      {
+        "tag": "ASIDE",
+        "class": "sidebar",
+        "x": 0,
+        "y": 0,
+        "width": 240,
+        "height": 776
+      },
+      {
+        "tag": "MAIN",
+        "class": "main flush",
+        "x": 240,
+        "y": 0,
+        "width": 1040,
+        "height": 776
+      },
+      {
+        "tag": "ASIDE",
+        "class": "usage-panel",
+        "x": 853.328125,
+        "y": 193,
+        "width": 410.671875,
+        "height": 567
+      }
+    ]
+  },
+  {
+    "width": 1440,
+    "height": 900,
+    "route": "/project/orbit",
+    "regions": [
+      {
+        "tag": "DIV",
+        "class": "shell",
+        "x": 0,
+        "y": 0,
+        "width": 1440,
+        "height": 900
+      },
+      {
+        "tag": "ASIDE",
+        "class": "sidebar",
+        "x": 0,
+        "y": 0,
+        "width": 240,
+        "height": 876
+      },
+      {
+        "tag": "MAIN",
+        "class": "main flush",
+        "x": 240,
+        "y": 0,
+        "width": 1200,
+        "height": 876
+      },
+      {
+        "tag": "ASIDE",
+        "class": "usage-panel",
+        "x": 946.65625,
+        "y": 193,
+        "width": 477.328125,
+        "height": 667
+      }
+    ]
+  },
+  {
+    "width": 1920,
+    "height": 1080,
+    "route": "/project/orbit",
+    "regions": [
+      {
+        "tag": "DIV",
+        "class": "shell",
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "tag": "ASIDE",
+        "class": "sidebar",
+        "x": 0,
+        "y": 0,
+        "width": 240,
+        "height": 1056
+      },
+      {
+        "tag": "MAIN",
+        "class": "main flush",
+        "x": 240,
+        "y": 0,
+        "width": 1680,
+        "height": 1056
+      },
+      {
+        "tag": "ASIDE",
+        "class": "usage-panel",
+        "x": 1226.65625,
+        "y": 193,
+        "width": 677.328125,
+        "height": 847
+      }
+    ]
+  }
+]

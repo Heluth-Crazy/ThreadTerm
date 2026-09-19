@@ -1,0 +1,9 @@
+node_modules/
+desktop-dist/
+runtime/target/
+runtime/target-qa/
+providers/claude-sdk/dist/
+release/
+release-*/
+qa/results/
+*.log

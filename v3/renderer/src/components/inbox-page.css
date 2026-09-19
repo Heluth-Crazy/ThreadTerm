@@ -1,0 +1,8 @@
+.inbox-menu-anchor { position:relative; }
+.inbox-menu { position:absolute; right:0; top:100%; z-index:12; min-width:200px; }
+.inbox-page .inbox-list { overflow:visible; }
+.inbox-rules { display:grid; gap:16px; padding:16px; }
+.inbox-rules label { display:flex; align-items:center; gap:8px; font-size:12px; }
+.inbox-rules input[type=number] { width:70px; border:1px solid var(--border); border-radius:var(--radius); color:var(--text); background:var(--bg); padding:6px; }
+.inbox-rules p, .inbox-record p { font-size:12px; line-height:1.6; color:var(--muted); }
+.inbox-record { display:grid; gap:12px; padding:16px; }

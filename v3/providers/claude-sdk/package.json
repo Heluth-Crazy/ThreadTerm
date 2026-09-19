@@ -1,0 +1,17 @@
+{
+  "name": "@threadterm/v3-claude-sdk",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "ThreadTerm V3 worker for the official Claude Agent SDK",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.266"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.9"
+  }
+}

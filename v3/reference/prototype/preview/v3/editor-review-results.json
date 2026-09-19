@@ -1,0 +1,46 @@
+{
+  "generatedAt": "2026-09-09T14:02:18.265Z",
+  "browser": "Chromium",
+  "results": [
+    {
+      "name": "editor retains redo after a shell rerender",
+      "status": "passed",
+      "durationMs": 1362
+    },
+    {
+      "name": "diff reverts selected line and hunk, then makes staged content readonly",
+      "status": "passed",
+      "durationMs": 768
+    },
+    {
+      "name": "external conflict requires an explicit resolution before save",
+      "status": "passed",
+      "durationMs": 576
+    },
+    {
+      "name": "search replace and document tabs retain separate drafts",
+      "status": "passed",
+      "durationMs": 836
+    },
+    {
+      "name": "document tab close supports cancel save discard and reorder",
+      "status": "passed",
+      "durationMs": 948
+    },
+    {
+      "name": "saved previews and unavailable file states are explicit",
+      "status": "passed",
+      "durationMs": 1119
+    },
+    {
+      "name": "file-tree-expands-and-close-others-keeps-current-draft",
+      "status": "passed",
+      "durationMs": 919
+    },
+    {
+      "name": "readonly-and-scenario-file-guards-survive-cached-editor-state",
+      "status": "passed",
+      "durationMs": 869
+    }
+  ]
+}
