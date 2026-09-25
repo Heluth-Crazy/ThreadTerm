@@ -38,6 +38,7 @@ impl Database {
              CREATE TABLE IF NOT EXISTS outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS leases (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, client_id TEXT NOT NULL, epoch INTEGER NOT NULL, expires_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS output_chunks (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, start_cursor INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(session_id,start_cursor));
+             CREATE TABLE IF NOT EXISTS deferred_codex_launches (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, phase TEXT NOT NULL, error_code TEXT, error_message TEXT, cwd TEXT);
              CREATE TABLE IF NOT EXISTS chat_items (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS chat_drafts (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, revision INTEGER NOT NULL, text TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS session_organization (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, data TEXT NOT NULL);
@@ -66,6 +67,18 @@ impl Database {
         if !has_read_only {
             connection.execute(
                 "ALTER TABLE sessions ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        let has_deferred_cwd = connection
+            .prepare("PRAGMA table_info(deferred_codex_launches)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "cwd");
+        if !has_deferred_cwd {
+            connection.execute(
+                "ALTER TABLE deferred_codex_launches ADD COLUMN cwd TEXT",
                 [],
             )?;
         }
@@ -313,6 +326,132 @@ impl Database {
         result
             .map(|raw| serde_json::from_str(&raw).context("decoding idempotent result"))
             .transpose()
+    }
+    pub fn deferred_codex_launch(&self, session_id: &str) -> Result<Option<Value>> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("database lock poisoned"))?;
+        conn.query_row(
+            "SELECT phase,error_code,error_message FROM deferred_codex_launches WHERE session_id=?",
+            [session_id],
+            |row| {
+                let phase: String = row.get(0)?;
+                let code: Option<String> = row.get(1)?;
+                let message: Option<String> = row.get(2)?;
+                let mut result = json!({"phase":phase});
+                if let (Some(code), Some(message)) = (code, message) {
+                    result["error"] = json!({"code":code,"message":message});
+                }
+                Ok(result)
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+    pub fn deferred_codex_cwd(&self, session_id: &str) -> Result<Option<String>> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("database lock poisoned"))?;
+        conn.query_row(
+            "SELECT cwd FROM deferred_codex_launches WHERE session_id=?",
+            [session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map(|cwd| cwd.flatten())
+        .map_err(Into::into)
+    }
+    pub fn begin_deferred_codex_launch(&self, session_id: &str) -> Result<()> {
+        self.transaction(|tx| {
+            let session = session_tx(tx, session_id)?;
+            if session.provider != "codex" || session.mode != "terminal" || session.status != "starting" {
+                return Err(anyhow!("invalid_deferred_launch_state"));
+            }
+            tx.execute(
+                "INSERT INTO deferred_codex_launches(session_id,phase,error_code,error_message) VALUES (?,'preparing',NULL,NULL) ON CONFLICT(session_id) DO UPDATE SET phase='preparing',error_code=NULL,error_message=NULL",
+                [session_id],
+            )?;
+            emit(tx, "state.changed", json!({"sessionId":session_id,"kind":"session.launch"}))?;
+            Ok(())
+        })
+    }
+    pub fn set_deferred_codex_launch_phase(&self, session_id: &str, phase: &str) -> Result<()> {
+        if !matches!(phase, "launching" | "running") {
+            return Err(anyhow!("invalid_deferred_launch_phase"));
+        }
+        self.transaction(|tx| {
+            if tx.execute(
+                "UPDATE deferred_codex_launches SET phase=?,error_code=NULL,error_message=NULL WHERE session_id=? AND phase IN ('preparing','launching')",
+                params![phase, session_id],
+            )? != 1 {
+                return Err(anyhow!("invalid_deferred_launch_state"));
+            }
+            emit(tx, "state.changed", json!({"sessionId":session_id,"kind":"session.launch"}))?;
+            Ok(())
+        })
+    }
+    pub fn fail_deferred_codex_launch(
+        &self,
+        session_id: &str,
+        code: &str,
+        message: &str,
+    ) -> Result<()> {
+        self.transaction(|tx| {
+            let previous: String = tx.query_row("SELECT status FROM sessions WHERE id=?",[session_id],|row|row.get(0))?;
+            if !matches!(previous.as_str(), "starting" | "running" | "error") {
+                return Err(anyhow!("invalid_deferred_launch_state"));
+            }
+            if previous != "error" {
+                tx.execute("UPDATE sessions SET status='error',exit_code=NULL,updated_at=? WHERE id=?", params![now(),session_id])?;
+                let data=json!({"sessionId":session_id,"status":"error","previousStatus":previous,"exitCode":null});
+                emit(tx,"session.status",data.clone())?;
+                emit(tx,"state.changed",data)?;
+            }
+            if tx.execute(
+                "UPDATE deferred_codex_launches SET phase='failed',error_code=?,error_message=? WHERE session_id=? AND phase IN ('preparing','launching')",
+                params![code,message,session_id],
+            )? != 1 {
+                return Err(anyhow!("invalid_deferred_launch_state"));
+            }
+            emit(tx,"state.changed",json!({"sessionId":session_id,"kind":"session.launch"}))?;
+            Ok(())
+        })
+    }
+    pub fn cancel_deferred_codex_launch(&self, session_id: &str) -> Result<()> {
+        self.transaction(|tx| {
+            let previous: String = tx.query_row("SELECT status FROM sessions WHERE id=?",[session_id],|row|row.get(0))?;
+            if previous == "starting" {
+                tx.execute("UPDATE sessions SET status='exited',exit_code=NULL,updated_at=? WHERE id=?", params![now(),session_id])?;
+                let data=json!({"sessionId":session_id,"status":"exited","previousStatus":"starting","exitCode":null});
+                emit(tx,"session.status",data.clone())?;
+                emit(tx,"state.changed",data)?;
+            }
+            tx.execute("UPDATE deferred_codex_launches SET phase='cancelled',error_code=NULL,error_message=NULL WHERE session_id=? AND phase IN ('preparing','launching')",[session_id])?;
+            emit(tx,"state.changed",json!({"sessionId":session_id,"kind":"session.launch"}))?;
+            Ok(())
+        })
+    }
+    /// Binds a provider-native conversation identity captured for a terminal
+    /// session (pre-assigned at launch or parsed from the provider's own exit
+    /// output), then announces the change so session lists pick up the new
+    /// resumable identity. Unlike `bind_session` this emits `state.changed`;
+    /// it is for one-shot terminal captures, not chat worker events.
+    pub fn bind_native_id(&self, id: &str, native_id: &str) -> Result<()> {
+        self.transaction(|tx| {
+            let prior:Option<String>=tx.query_row("SELECT native_id FROM sessions WHERE id=?",[id],|r|r.get(0))?;
+            if let Some(prior)=prior.as_deref() {
+                if prior==native_id { return Ok(false); }
+                return Err(anyhow!("native_identity_conflict"));
+            }
+            let owner:Option<String>=tx.query_row("SELECT other.id FROM sessions other JOIN sessions current ON current.id=? WHERE other.provider=current.provider AND other.native_id=? AND other.id<>? LIMIT 1",params![id,native_id,id],|r|r.get(0)).optional()?;
+            if let Some(owner)=owner{return Err(anyhow!("native_session_exists:{owner}"));}
+            tx.execute("UPDATE sessions SET native_id=?,updated_at=? WHERE id=?",params![native_id,now(),id])?;
+            emit(tx,"state.changed",json!({"sessionId":id,"kind":"session.native_bound"}))?;
+            Ok(true)
+        })?;
+        Ok(())
     }
     pub fn bind_session(&self, id: &str, cwd: Option<&str>, native_id: Option<&str>) -> Result<()> {
         self.transaction(|tx| {
@@ -608,6 +747,13 @@ impl Database {
     }
 
     pub fn create_session(&self, request: CreateSession<'_>) -> Result<Session> {
+        self.create_session_with_deferred(request, None)
+    }
+    pub fn create_session_with_deferred(
+        &self,
+        request: CreateSession<'_>,
+        deferred_cwd: Option<&str>,
+    ) -> Result<Session> {
         let mut conn = self
             .connection
             .lock()
@@ -648,6 +794,18 @@ impl Database {
             organization: SessionOrganization::default(),
         };
         tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", params![session.id,session.project_id,session.worktree_path,session.title,session.provider,session.mode,session.status,session.created_at,session.updated_at,session.native_id,session.exit_code,session.followed])?;
+        if let Some(cwd) = deferred_cwd {
+            if request.provider != "codex"
+                || request.mode != "terminal"
+                || request.native_id.is_some()
+            {
+                return Err(anyhow!("deferred_launch_unsupported"));
+            }
+            tx.execute(
+                "INSERT INTO deferred_codex_launches(session_id,phase,error_code,error_message,cwd) VALUES (?,'preparing',NULL,NULL,?)",
+                params![session.id,cwd],
+            )?;
+        }
         complete(&tx, request.operation_id, "session.create", &session)?;
         emit(&tx, "state.changed", json!({"kind":"session"}))?;
         tx.commit()?;
@@ -815,6 +973,19 @@ impl Database {
         )?;
         Ok(())
     }
+    /// The persisted end cursor of a session's output stream. Resume seeds the
+    /// in-memory store from this so post-restart appends never reuse cursor 0.
+    pub fn output_end(&self, session_id: &str) -> Result<i64> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("database lock poisoned"))?;
+        Ok(conn.query_row(
+            "SELECT COALESCE(MAX(start_cursor+length(data)),0) FROM output_chunks WHERE session_id=?",
+            [session_id],
+            |row| row.get(0),
+        )?)
+    }
     pub fn output_from(
         &self,
         session_id: &str,
@@ -825,19 +996,50 @@ impl Database {
             .connection
             .lock()
             .map_err(|_| anyhow!("database lock poisoned"))?;
-        let mut stmt=conn.prepare("SELECT start_cursor,data FROM output_chunks WHERE session_id=? AND start_cursor + length(data)>? ORDER BY start_cursor")?;
+        // `start_cursor + length(data) > cursor` cannot use the second half of
+        // the output_chunks primary key.  On a long-lived terminal that made
+        // every 64 KiB credit scan the complete persisted prefix.  Seek once
+        // to the possible containing chunk, then walk the ordered suffix.
+        //
+        // A preceding chunk can be stale when a stream has a persisted gap, so
+        // retain the old overlap predicate below rather than assuming cursor
+        // continuity from the key lookup alone.
+        let first_start = conn
+            .query_row(
+                "SELECT start_cursor FROM output_chunks \
+                 WHERE session_id=? AND start_cursor<=? \
+                 ORDER BY start_cursor DESC LIMIT 1",
+                params![session_id, cursor],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(cursor);
+        let mut stmt = conn.prepare(
+            "SELECT start_cursor,data FROM output_chunks \
+             WHERE session_id=? AND start_cursor>=? ORDER BY start_cursor",
+        )?;
         let mut out = Vec::new();
-        let mut total = 0;
-        let rows = stmt.query_map(params![session_id, cursor], |r| {
+        let mut total: usize = 0;
+        let rows = stmt.query_map(params![session_id, first_start], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
         })?;
+        let mut expected_cursor = cursor;
         for row in rows {
             let row = row?;
-            total += row.1.len();
-            if total > max_bytes && !out.is_empty() {
+            let end = row.0.saturating_add(row.1.len() as i64);
+            if row.1.is_empty() || end <= cursor {
+                continue;
+            }
+            let next_total = total.saturating_add(row.1.len());
+            if next_total > max_bytes && !out.is_empty() {
                 break;
-            };
+            }
+            if row.0 > expected_cursor {
+                return Err(anyhow!("terminal_history_gap"));
+            }
             out.push(row);
+            total = next_total;
+            expected_cursor = expected_cursor.max(end);
         }
         Ok(out)
     }
@@ -869,7 +1071,7 @@ impl Database {
             .optional()?
             .unwrap_or(0);
         let from = if tail {
-            end.saturating_sub(max_bytes as i64)
+            end.saturating_sub(max_bytes as i64).max(0)
         } else {
             cursor.unwrap_or(0)
         };
@@ -891,19 +1093,31 @@ impl Database {
             Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
         })?;
         let mut data = Vec::with_capacity(max_bytes.min((end - from).max(0) as usize));
+        let mut expected_cursor = from;
         for row in rows {
             let (start, chunk) = row?;
+            if chunk.is_empty() {
+                continue;
+            }
             let offset = (from - start).max(0) as usize;
             if offset >= chunk.len() {
                 continue;
             }
             let take = (max_bytes - data.len()).min(chunk.len() - offset);
+            if take == 0 {
+                break;
+            }
+            let actual_start = start.saturating_add(offset as i64);
+            if actual_start > expected_cursor {
+                return Err(anyhow!("terminal_history_gap"));
+            }
             data.extend_from_slice(&chunk[offset..offset + take]);
+            expected_cursor = expected_cursor.max(actual_start.saturating_add(take as i64));
             if data.len() == max_bytes {
                 break;
             }
         }
-        let next = from.saturating_add(data.len() as i64);
+        let next = expected_cursor;
         let truncated = if tail { from > 0 } else { next < end };
         Ok((from, next, truncated, data))
     }
@@ -913,6 +1127,10 @@ impl Database {
             tx.execute(
                 "UPDATE sessions SET status='interrupted',updated_at=? WHERE read_only=0 AND status IN ('starting','running','idle','waiting')",
                 [&timestamp],
+            )?;
+            tx.execute(
+                "UPDATE deferred_codex_launches SET phase='failed',error_code='runtime_interrupted',error_message='Runtime stopped during Codex startup; retry this session' WHERE phase IN ('preparing','launching') AND session_id IN (SELECT id FROM sessions WHERE status='interrupted')",
+                [],
             )?;
             // Older builds classified imported idle cards as live during startup.
             // Heal those rows back to the only valid non-interactive import state.
@@ -1436,6 +1654,10 @@ mod tests {
                 operation_id: "tail-session",
             })
             .unwrap();
+        assert_eq!(
+            db.read_output_window(&session.id, None, true, 1).unwrap(),
+            (0, 0, false, Vec::new())
+        );
         db.append_output(&session.id, 0, &vec![b'a'; 6_000])
             .unwrap();
         db.append_output(&session.id, 6_000, &vec![b'b'; 6_000])
@@ -1456,11 +1678,207 @@ mod tests {
             .unwrap();
         assert_eq!((from, next, truncated), (5_999, 6_002, true));
         assert_eq!(page, vec![b'a', b'b', b'b']);
+        let short = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "short-tail",
+            })
+            .unwrap();
+        db.append_output(&short.id, 0, b"ok").unwrap();
+        assert_eq!(
+            db.read_output_window(&short.id, None, true, 8192).unwrap(),
+            (0, 2, false, b"ok".to_vec())
+        );
         assert!(db
             .read_output_window("missing", None, true, 8_192)
             .unwrap_err()
             .to_string()
             .contains("session_not_found"));
+    }
+    #[test]
+    fn output_history_gaps_fail_instead_of_forging_continuous_cursors() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let create = |operation_id| {
+            db.create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id,
+            })
+            .unwrap()
+        };
+
+        let leading_gap = create("leading-output-gap");
+        db.append_output(&leading_gap.id, 5, b"later").unwrap();
+        for error in [
+            db.output_from(&leading_gap.id, 0, 64)
+                .unwrap_err()
+                .to_string(),
+            db.read_output_window(&leading_gap.id, Some(0), false, 64)
+                .unwrap_err()
+                .to_string(),
+        ] {
+            assert!(error.contains("terminal_history_gap"), "{error}");
+        }
+
+        let middle_gap = create("middle-output-gap");
+        db.append_output(&middle_gap.id, 0, b"one").unwrap();
+        db.append_output(&middle_gap.id, 6, b"two").unwrap();
+        // A requested page ending at the first chunk never reads across the
+        // gap, so it remains valid and can be resumed at the boundary.
+        assert_eq!(
+            db.output_from(&middle_gap.id, 0, 3).unwrap(),
+            vec![(0, b"one".to_vec())]
+        );
+        assert_eq!(
+            db.read_output_window(&middle_gap.id, Some(0), false, 3)
+                .unwrap(),
+            (0, 3, true, b"one".to_vec())
+        );
+        for error in [
+            db.output_from(&middle_gap.id, 0, 64)
+                .unwrap_err()
+                .to_string(),
+            db.read_output_window(&middle_gap.id, Some(0), false, 64)
+                .unwrap_err()
+                .to_string(),
+        ] {
+            assert!(error.contains("terminal_history_gap"), "{error}");
+        }
+
+        let contiguous = create("partial-output-chunk");
+        db.append_output(&contiguous.id, 0, b"abcdefghij").unwrap();
+        db.append_output(&contiguous.id, 10, b"klmnop").unwrap();
+        let rows = db.output_from(&contiguous.id, 5, 64).unwrap();
+        assert_eq!(
+            rows,
+            vec![(0, b"abcdefghij".to_vec()), (10, b"klmnop".to_vec())]
+        );
+        assert_eq!(
+            db.read_output_window(&contiguous.id, Some(5), false, 7)
+                .unwrap(),
+            (5, 12, true, b"fghijkl".to_vec())
+        );
+
+        let empty = create("empty-output-chunk");
+        db.append_output(&empty.id, 0, b"").unwrap();
+        assert!(db.output_from(&empty.id, 0, 64).unwrap().is_empty());
+        assert_eq!(
+            db.read_output_window(&empty.id, Some(0), false, 64)
+                .unwrap(),
+            (0, 0, false, Vec::new())
+        );
+    }
+    #[test]
+    fn output_from_seeks_to_the_containing_chunk_then_scans_only_the_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "output-seek-session",
+            })
+            .unwrap();
+        for index in 0..2_048_i64 {
+            db.append_output(&session.id, index * 16, &[index as u8; 16])
+                .unwrap();
+        }
+
+        // The first returned row remains whole: transport trims it at the
+        // requested byte cursor, preserving its established partial-chunk API.
+        let inside = db.output_from(&session.id, 16 * 1_000 + 7, 32).unwrap();
+        assert_eq!(inside.len(), 2);
+        assert_eq!(inside[0].0, 16 * 1_000);
+        assert_eq!(inside[0].1, vec![1_000_u16 as u8; 16]);
+        assert_eq!(inside[1].0, 16 * 1_001);
+        assert!(db
+            .output_from(&session.id, 16 * 2_048, 32)
+            .unwrap()
+            .is_empty());
+
+        let conn = db.connection.lock().unwrap();
+        let mut predecessor_statement = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT start_cursor FROM output_chunks \
+                 WHERE session_id=? AND start_cursor<=? \
+                 ORDER BY start_cursor DESC LIMIT 1",
+            )
+            .unwrap();
+        let predecessor_detail = predecessor_statement
+            .query_map(params![session.id, 16_i64 * 1_000 + 7], |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let mut statement = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT start_cursor,data FROM output_chunks \
+                 WHERE session_id=? AND start_cursor>=? ORDER BY start_cursor",
+            )
+            .unwrap();
+        let detail = statement
+            .query_map(params![session.id, 16_i64 * 1_000], |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        for (label, plan) in [("predecessor", &predecessor_detail), ("suffix", &detail)] {
+            assert!(
+                plan.iter()
+                    .any(|step| step.contains("SEARCH output_chunks")),
+                "expected indexed {label} seek, got {plan:?}"
+            );
+            assert!(
+                !plan.iter().any(|step| step.contains("SCAN output_chunks")),
+                "{label} query must not scan the persisted output prefix: {plan:?}"
+            );
+        }
+    }
+    #[test]
+    fn interrupted_deferred_codex_startup_retains_a_retryable_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let session = db
+            .create_session_with_deferred(
+                CreateSession {
+                    project_id: None,
+                    title: None,
+                    provider: "codex",
+                    mode: "terminal",
+                    native_id: None,
+                    operation_id: "interrupted-deferred",
+                },
+                Some(dir.path().to_str().unwrap()),
+            )
+            .unwrap();
+        assert_eq!(
+            db.deferred_codex_launch(&session.id).unwrap().unwrap()["phase"],
+            "preparing"
+        );
+        assert_eq!(
+            db.deferred_codex_cwd(&session.id).unwrap().as_deref(),
+            dir.path().to_str()
+        );
+        db.mark_live_sessions_interrupted().unwrap();
+        let after = db.session_by_id(&session.id).unwrap().unwrap();
+        assert_eq!(after.status, "interrupted");
+        assert!(after.native_id.is_none());
+        let launch = db.deferred_codex_launch(&session.id).unwrap().unwrap();
+        assert_eq!(launch["phase"], "failed");
+        assert_eq!(launch["error"]["code"], "runtime_interrupted");
     }
     #[test]
     fn native_id_is_unique_even_after_the_original_session_exits() {

@@ -172,15 +172,31 @@ impl ProviderAdapter for GrokAdapter {
             chat,
             history,
             resume,
+            terminal_resume_capture: self.terminal_capture().as_str(),
             reason: protocol.err().or(probe_error),
             auth: grok_auth_state(),
         }
     }
 
-    fn terminal_command(&self, native_id: Option<&str>) -> Result<TerminalCommand, ProviderError> {
-        let args = if let Some(id) = native_id {
+    fn terminal_command(
+        &self,
+        resume_id: Option<&str>,
+        assign_id: Option<&str>,
+    ) -> Result<TerminalCommand, ProviderError> {
+        let args = if let Some(id) = resume_id {
             validate_native_id(id)?;
             vec!["--resume".to_owned(), id.to_owned()]
+        } else if let Some(id) = assign_id {
+            // `grok --session-id <uuid>` names a NEW conversation, so the native
+            // identity is known before the PTY starts.
+            validate_native_id(id)?;
+            if !super::common::is_uuid(id) {
+                return Err(ProviderError::new(
+                    "invalid_native_id",
+                    "Grok --session-id requires a UUID",
+                ));
+            }
+            vec!["--session-id".to_owned(), id.to_owned()]
         } else {
             Vec::new()
         };
@@ -193,6 +209,10 @@ impl ProviderAdapter for GrokAdapter {
             args: spec.args,
             display: spec.display,
         })
+    }
+
+    fn terminal_capture(&self) -> super::TerminalCapture {
+        super::TerminalCapture::PreAssigned
     }
 
     fn history_list(
@@ -1896,6 +1916,18 @@ fn parse_slash(text: &str) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preassigned_identity_does_not_parse_exit_output() {
+        let adapter = GrokAdapter::new(
+            broadcast::channel(1).0,
+            crate::providers::network::NetworkSettings::default(),
+        );
+        assert_eq!(
+            adapter.terminal_capture(),
+            super::super::TerminalCapture::PreAssigned
+        );
+    }
 
     #[test]
     fn native_usage_preserves_units_and_absent_metrics() {

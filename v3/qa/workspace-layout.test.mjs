@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { addPane, addTabToPane, closePane, paneCount, paneIdsIn, resizeSplit, sessionIdsIn, splitPane } from '../renderer/src/workspaceLayout.ts';
+import { addPane, addTabToPane, closePane, paneCount, paneIdsIn, reconcileSessionLayout, resizeSplit, sessionIdsIn, splitPane } from '../renderer/src/workspaceLayout.ts';
 
 const tab = id => ({ id: `tab-${id}`, kind: 'session', sessionId: id });
 const pane = id => ({ kind: 'pane', id, tabs: [tab(id)], activeTabId: `tab-${id}` });
@@ -83,4 +83,24 @@ test('paneIdsIn and sessionIdsIn collect across the whole tree', () => {
   assert.deepEqual(paneIdsIn(layout), ['left', 'new-pane', 'right']);
   assert.deepEqual(sessionIdsIn(layout), ['left', 'third', 'right']);
   assert.deepEqual(sessionIdsIn(splitPane(pair(), 'left', 'horizontal')), ['left', 'right'], 'empty panes contribute no sessions');
+});
+
+test('reconciling a restored layout replaces a removed-only tab with the routed session', () => {
+  const original = pane('removed');
+  const next = reconcileSessionLayout(original, new Set(['current']), 'current');
+  assert.deepEqual(next.tabs, [{ id: 'session-current', kind: 'session', sessionId: 'current' }]);
+  assert.equal(next.activeTabId, 'session-current');
+  assert.deepEqual(original, pane('removed'), 'persisted input is not mutated');
+});
+
+test('reconciling prunes stale tabs and activates an existing routed session without changing siblings', () => {
+  const original = pair();
+  const file = { id: 'readme', kind: 'file', projectId: 'project', path: 'README.md' };
+  original.first.tabs = [tab('removed'), file, tab('current')];
+  original.first.activeTabId = 'tab-removed';
+  const next = reconcileSessionLayout(original, new Set(['current', 'right']), 'current');
+  assert.deepEqual(next.first.tabs, [file, tab('current')]);
+  assert.equal(next.first.activeTabId, 'tab-current');
+  assert.equal(next.second, original.second);
+  assert.deepEqual(sessionIdsIn(next), ['current', 'right']);
 });

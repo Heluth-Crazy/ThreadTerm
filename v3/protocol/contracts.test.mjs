@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason} from './index.ts';
 
+test('deferred terminal launch has an additive typed request and durable phase result',()=>{
+ validateRequest('session.create',{cwd:'C:\\repo',provider:'codex',mode:'terminal',deferLaunch:true,operationId:'o'});
+ assert.throws(()=>validateRequest('session.create',{cwd:'C:\\repo',provider:'codex',mode:'terminal',deferLaunch:'yes',operationId:'o'}));
+ validateRequest('session.launch.read',{sessionId:'s'});
+ assert.throws(()=>validateRequest('session.launch.read',{sessionId:''}));
+ for(const phase of ['preparing','launching','running','failed','cancelled']) validateResult('session.launch.read',{phase});
+ validateResult('session.launch.read',{phase:'failed',error:{code:'native_prepare_failed',message:'Retry available'}});
+ assert.throws(()=>validateResult('session.launch.read',{phase:'ready'}));
+ assert.throws(()=>validateResult('session.launch.read',{phase:'failed',error:{message:'missing code'}}));
+});
+
 test('preload rejects unknown methods and unauthenticated control writes',()=>{
  assert.throws(()=>validateRequest('shell.exec',{command:'whoami'}));
  assert.throws(()=>validateRequest('terminal.input',{sessionId:'s',data:'x'}));

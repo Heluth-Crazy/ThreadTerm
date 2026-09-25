@@ -64,6 +64,7 @@ impl ProviderAdapter for OpenCodeAdapter {
             chat: installed && auth != "unauthenticated",
             history: installed,
             resume: installed,
+            terminal_resume_capture: self.terminal_capture().as_str(),
             reason: if installed {
                 probe_error
             } else {
@@ -73,9 +74,13 @@ impl ProviderAdapter for OpenCodeAdapter {
         }
     }
 
-    fn terminal_command(&self, native_id: Option<&str>) -> Result<TerminalCommand, ProviderError> {
+    fn terminal_command(
+        &self,
+        resume_id: Option<&str>,
+        assign_id: Option<&str>,
+    ) -> Result<TerminalCommand, ProviderError> {
         let mut args = Vec::new();
-        if let Some(id) = native_id {
+        if let Some(id) = resume_id.or(assign_id) {
             validate_native_id(id)?;
             args.extend(["--session".to_owned(), id.to_owned()]);
         }
@@ -88,6 +93,23 @@ impl ProviderAdapter for OpenCodeAdapter {
             args: spec.args,
             display: spec.display,
         })
+    }
+
+    fn terminal_capture(&self) -> super::TerminalCapture {
+        super::TerminalCapture::PreAssigned
+    }
+
+    fn prepare_terminal(&self, cwd: &str) -> Result<Option<String>, ProviderError> {
+        // Create through the authenticated local native API. No prompt/turn
+        // is sent, and the terminal subsequently opens this exact session.
+        let server = OpenCodeServer::start(cwd, "terminal-prepare", broadcast::channel(1).0)?;
+        let session =
+            server.json(server.request(reqwest::Method::POST, "/session", Some(json!({})))?)?;
+        let id = session.get("id").and_then(Value::as_str).ok_or_else(|| {
+            ProviderError::new("provider_protocol", "OpenCode returned no session id")
+        })?;
+        validate_native_id(id)?;
+        Ok(Some(id.to_owned()))
     }
 
     fn history_list(
@@ -686,6 +708,14 @@ fn opencode_transcript(raw: &Value) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn terminal_identity_is_prepared_through_native_session_api() {
+        let adapter = OpenCodeAdapter::new(broadcast::channel(1).0);
+        assert_eq!(
+            adapter.terminal_capture(),
+            super::super::TerminalCapture::PreAssigned
+        );
+    }
     #[test]
     fn filters_history_by_cwd() {
         assert!(opencode_history_item(&json!({"id":"s","directory":"/a"}), Some("/b")).is_none());

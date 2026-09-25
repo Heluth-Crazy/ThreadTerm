@@ -63,6 +63,65 @@ export const sessionIdsIn = (layout: PaneLayout): string[] =>
   layout.kind === "pane"
     ? layout.tabs.flatMap((tab) => (tab.kind === "session" ? [tab.sessionId] : []))
     : [...sessionIdsIn(layout.first), ...sessionIdsIn(layout.second)];
+/** Remove session tabs that are no longer visible, then reveal the routed
+ * session in its existing pane or add it to the first pane. */
+export const reconcileSessionLayout = (
+  layout: PaneLayout,
+  visibleSessionIds: ReadonlySet<string>,
+  routedSessionId: string,
+): PaneLayout => {
+  const visible = new Set(visibleSessionIds);
+  visible.add(routedSessionId);
+  const prune = (node: PaneLayout): PaneLayout => {
+    if (node.kind === "pane") {
+      const tabs = node.tabs.filter(
+        (tab) => tab.kind !== "session" || visible.has(tab.sessionId),
+      );
+      const activeTabId = tabs.some((tab) => tab.id === node.activeTabId)
+        ? node.activeTabId
+        : (tabs[0]?.id ?? null);
+      return tabs.length === node.tabs.length && activeTabId === node.activeTabId
+        ? node
+        : { ...node, tabs, activeTabId };
+    }
+    const first = prune(node.first), second = prune(node.second);
+    return first === node.first && second === node.second ? node : { ...node, first, second };
+  };
+  const focus = (node: PaneLayout): { layout: PaneLayout; found: boolean } => {
+    if (node.kind === "pane") {
+      const tab = node.tabs.find(
+        (item) => item.kind === "session" && item.sessionId === routedSessionId,
+      );
+      return tab
+        ? { layout: node.activeTabId === tab.id ? node : { ...node, activeTabId: tab.id }, found: true }
+        : { layout: node, found: false };
+    }
+    const first = focus(node.first);
+    if (first.found)
+      return {
+        layout: first.layout === node.first ? node : { ...node, first: first.layout },
+        found: true,
+      };
+    const second = focus(node.second);
+    return {
+      layout: second.layout === node.second ? node : { ...node, second: second.layout },
+      found: second.found,
+    };
+  };
+  const pruned = prune(layout);
+  const focused = focus(pruned);
+  if (focused.found) return focused.layout;
+  const tab: ContentRef = {
+    id: `session-${routedSessionId}`,
+    kind: "session",
+    sessionId: routedSessionId,
+  };
+  const addToFirstPane = (node: PaneLayout): PaneLayout =>
+    node.kind === "pane"
+      ? { ...node, tabs: [...node.tabs, tab], activeTabId: tab.id }
+      : { ...node, first: addToFirstPane(node.first) };
+  return addToFirstPane(pruned);
+};
 export const addTabToPane = (
   layout: PaneLayout,
   paneId: string,

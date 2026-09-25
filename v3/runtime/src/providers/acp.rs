@@ -179,13 +179,18 @@ impl ProviderAdapter for AcpAdapter {
             chat,
             history,
             resume,
+            terminal_resume_capture: self.terminal_capture().as_str(),
             reason: protocol.err().or(probe_error),
             auth: "unknown".to_owned(),
         }
     }
 
-    fn terminal_command(&self, native_id: Option<&str>) -> Result<TerminalCommand, ProviderError> {
-        let args = match (self.kind, native_id) {
+    fn terminal_command(
+        &self,
+        resume_id: Option<&str>,
+        assign_id: Option<&str>,
+    ) -> Result<TerminalCommand, ProviderError> {
+        let args = match (self.kind, resume_id.or(assign_id)) {
             (AcpKind::Kimi, Some(id)) => {
                 validate_native_id(id)?;
                 vec!["--session".to_owned(), id.to_owned()]
@@ -208,6 +213,38 @@ impl ProviderAdapter for AcpAdapter {
             args: spec.args,
             display: spec.display,
         })
+    }
+
+    fn terminal_capture(&self) -> super::TerminalCapture {
+        match self.kind {
+            AcpKind::Kimi => super::TerminalCapture::PreAssigned,
+            AcpKind::Gemini => super::TerminalCapture::None,
+        }
+    }
+
+    fn prepare_terminal(&self, cwd: &str) -> Result<Option<String>, ProviderError> {
+        if !matches!(self.kind, AcpKind::Kimi) {
+            return Ok(None);
+        }
+        let (process, _) = self.temporary(None)?;
+        let response = process.request("session/new", json!({"cwd":cwd,"mcpServers":[]}))?;
+        let id = response
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ProviderError::new("provider_protocol", "Kimi returned no session id")
+            })?;
+        validate_native_id(id)?;
+        // The CLI and ACP share native storage. Confirm the exact identity is
+        // loadable from a separate process before giving it to the terminal.
+        drop(process);
+        let (verifier, initialized) = self.temporary(None)?;
+        ensure_capability(&initialized, "load", "session/load")?;
+        verifier.request(
+            "session/load",
+            json!({"sessionId":id,"cwd":cwd,"mcpServers":[]}),
+        )?;
+        Ok(Some(id.to_owned()))
     }
 
     fn history_list(
@@ -1866,6 +1903,18 @@ mod tests {
         assert_eq!(
             acp_history_item("kimi", &json!({"sessionId":"s1","title":"Hi"})).unwrap()["nativeId"],
             "s1"
+        );
+    }
+    #[test]
+    fn kimi_prepares_identity_through_acp_while_gemini_remains_unverified() {
+        let adapter = AcpAdapter::kimi(broadcast::channel(1).0);
+        assert_eq!(
+            adapter.terminal_capture(),
+            super::super::TerminalCapture::PreAssigned
+        );
+        assert_eq!(
+            AcpAdapter::gemini(broadcast::channel(1).0).terminal_capture(),
+            super::super::TerminalCapture::None
         );
     }
     #[test]

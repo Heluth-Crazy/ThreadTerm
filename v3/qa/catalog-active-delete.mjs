@@ -13,14 +13,14 @@ const report={startedAt:new Date().toISOString(),staticFixture:true,checks:[],vi
 
 function extendActiveDeleteFixture(){
   const prior=window.threadterm.request.bind(window.threadterm),priorSubscribe=window.threadterm.onEvent.bind(window.threadterm);
-  const listeners=new Set(),visibility=[],statePromise=prior('runtime.snapshot',{});let sequence=0,failStopFor,activateDuringStop,releaseHeldStop,holdNextStop=false;
+  const listeners=new Set(),visibility=[],statePromise=prior('runtime.snapshot',{}),heldSnapshots=[];let sequence=0,failStopFor,activateDuringStop,releaseHeldStop,holdNextStop=false,snapshotCalls=0,holdSnapshots=false;
   const active=session=>!session.readOnly&&['starting','running','idle','waiting'].includes(session.status);
   const changed=()=>listeners.forEach(listener=>listener({v:1,event:'state.changed',epoch:'active-delete-fixture',seq:++sequence,data:{kind:'catalog.visibility'}}));
-  window.__catalogActiveDelete={failStopFor:sessionId=>{failStopFor=sessionId;},setStatus:async(sessionId,status)=>{const state=await statePromise,session=state.sessions.find(row=>row.id===sessionId);if(!session)throw new Error('session_not_found');session.status=status;changed();},addLongActiveSessions:async count=>{const state=await statePromise,base=state.sessions.find(row=>row.projectId==='orbit');for(let index=0;index<count;index+=1)state.sessions.push({...base,id:`long-active-${index}`,title:`Long active session ${index} — catalogue confirmation must keep its actions reachable`,worktreePath:'D:/demo/orbit-web',status:'running'});changed();},activateDuringStop:config=>{activateDuringStop=config;},holdNextStop:()=>{holdNextStop=true;},releaseHeldStop:()=>{releaseHeldStop?.();}};
+  window.__catalogActiveDelete={failStopFor:sessionId=>{failStopFor=sessionId;},setStatus:async(sessionId,status)=>{const state=await statePromise,session=state.sessions.find(row=>row.id===sessionId);if(!session)throw new Error('session_not_found');session.status=status;changed();},addLongActiveSessions:async count=>{const state=await statePromise,base=state.sessions.find(row=>row.projectId==='orbit');for(let index=0;index<count;index+=1)state.sessions.push({...base,id:`long-active-${index}`,title:`Long active session ${index} — catalogue confirmation must keep its actions reachable`,worktreePath:'D:/demo/orbit-web',status:'running'});changed();},activateDuringStop:config=>{activateDuringStop=config;},holdNextStop:()=>{holdNextStop=true;},releaseHeldStop:()=>{releaseHeldStop?.();},snapshotCallCount:()=>snapshotCalls,holdSnapshots:()=>{holdSnapshots=true;},releaseSnapshots:()=>{holdSnapshots=false;let release;while(release=heldSnapshots.shift())release();}};
   window.threadterm.onEvent=listener=>{listeners.add(listener);const unsubscribe=priorSubscribe(listener);return()=>{listeners.delete(listener);unsubscribe();};};
   window.threadterm.request=async(method,params)=>{
     const state=await statePromise;
-    if(method==='runtime.snapshot')return structuredClone(state);
+    if(method==='runtime.snapshot'){snapshotCalls+=1;if(holdSnapshots)await new Promise(resolve=>heldSnapshots.push(resolve));return structuredClone(state);}
     if(method==='catalog.visibility.list')return structuredClone(visibility);
     if(method==='session.stop'){
       window.__parityFixture.calls.push({method,params});
@@ -74,6 +74,31 @@ try{
     await confirm('取消');assert.equal(await page.locator('.sess-row').filter({hasText:'开发服务器'}).count(),1);
     const calls=await page.evaluate(start=>window.__parityFixture.calls.slice(start),before);assert.equal(calls.some(call=>call.method==='session.stop'||call.method==='catalog.visibility.update'),false);
   });
+  await caseOf('active-delete-dialog-opens-immediately-while-snapshot-is-held',async()=>{
+    await page.evaluate(()=>window.__catalogActiveDelete.holdSnapshots());
+    try{
+      await more('.sess-row-wrap','开发服务器');const before=await page.evaluate(()=>window.__catalogActiveDelete.snapshotCallCount());
+      await choose('删除');const dialog=page.getByRole('dialog');await dialog.getByRole('heading',{name:'会话需要结束后才可删除'}).waitFor();await dialog.getByText('此范围内有 1 个活动会话').waitFor();
+      assert.equal(await page.evaluate(start=>window.__catalogActiveDelete.snapshotCallCount()-start,before),0);await confirm('取消');
+    }finally{await page.evaluate(()=>window.__catalogActiveDelete.releaseSnapshots());}
+  });
+  await caseOf('inactive-delete-dialog-opens-immediately-while-snapshot-is-held',async()=>{
+    await page.evaluate(()=>window.__catalogActiveDelete.holdSnapshots());
+    try{
+      await more('.sess-row-wrap','API 检查');const before=await page.evaluate(()=>window.__catalogActiveDelete.snapshotCallCount());
+      await choose('删除');const dialog=page.getByRole('dialog');await dialog.getByRole('heading',{name:'删除目录记录'}).waitFor();
+      assert.equal(await page.evaluate(start=>window.__catalogActiveDelete.snapshotCallCount()-start,before),0);await confirm('取消');
+    }finally{await page.evaluate(()=>window.__catalogActiveDelete.releaseSnapshots());}
+  });
+  await caseOf('session-activated-after-dialog-open-switches-to-end-and-delete',async()=>{
+    await more('.sess-row-wrap','API 检查');const before=await page.evaluate(()=>window.__parityFixture.calls.length);
+    await choose('删除');const dialog=page.getByRole('dialog');await dialog.getByRole('heading',{name:'删除目录记录'}).waitFor();
+    await page.evaluate(()=>window.__catalogActiveDelete.setStatus('pulse-shell','running'));
+    await confirm('确认删除');
+    await dialog.getByRole('heading',{name:'会话需要结束后才可删除'}).waitFor();await dialog.getByText('此范围内有 1 个活动会话').waitFor();await dialog.getByText('需要结束：API 检查',{exact:true}).waitFor();
+    const calls=await page.evaluate(start=>window.__parityFixture.calls.slice(start),before);assert.equal(calls.some(call=>call.method==='session.stop'||call.method==='catalog.visibility.update'),false);
+    await page.evaluate(()=>window.__catalogActiveDelete.setStatus('pulse-shell','exited'));await confirm('取消');
+  });
   await caseOf('stop-failure-keeps-delete-dialog-recoverable',async()=>{
     await page.evaluate(()=>window.__catalogActiveDelete.failStopFor('orbit-shell'));
     const before=await page.evaluate(()=>window.__parityFixture.calls.length);
@@ -113,6 +138,18 @@ try{
   await caseOf('long-active-session-list-scrolls-within-a-visible-confirmation-footer',async()=>{
     await page.evaluate(()=>window.__catalogActiveDelete.addLongActiveSessions(24));await more('.proj-row-wrap','orbit-web');await choose('删除');
     const dialog=page.getByRole('dialog'),body=dialog.locator('.dlg-body'),footer=dialog.locator('.dlg-foot');await dialog.getByText('此范围内有 24 个活动会话').waitFor();const [bodyBox,footerBox]=await Promise.all([body.boundingBox(),footer.boundingBox()]);assert.ok((bodyBox?.height??0)>0&&body.evaluate(element=>element.scrollHeight>element.clientHeight));assert.ok((footerBox?.y??Infinity)+(footerBox?.height??0)<=900);await confirm('取消');
+  });
+  await caseOf('session-ended-before-end-and-delete-continues-without-restopping',async()=>{
+    const refreshMark=await page.evaluate(()=>window.__catalogActiveDelete.snapshotCallCount());
+    await page.evaluate(()=>window.__catalogActiveDelete.setStatus('pulse-shell','running'));
+    await page.waitForFunction(mark=>window.__catalogActiveDelete.snapshotCallCount()>mark,refreshMark);
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    await more('.sess-row-wrap','API 检查');const before=await page.evaluate(()=>window.__parityFixture.calls.length);
+    await choose('删除');const dialog=page.getByRole('dialog');await dialog.getByRole('heading',{name:'会话需要结束后才可删除'}).waitFor();await dialog.getByText('此范围内有 1 个活动会话').waitFor();
+    await page.evaluate(()=>window.__catalogActiveDelete.setStatus('pulse-shell','exited'));
+    await confirm('结束并删除');
+    await page.locator('.sess-row').filter({hasText:'API 检查'}).waitFor({state:'detached'});
+    const calls=await page.evaluate(start=>window.__parityFixture.calls.slice(start),before);assert.equal(calls.some(call=>call.method==='session.stop'),false);assert.ok(calls.some(call=>call.method==='catalog.visibility.update'&&call.params.kind==='session'&&call.params.visibility==='removed'));
   });
   await page.screenshot({path:join(out,'complete.png'),animations:'disabled'});
 }catch(error){report.errors.push(error.stack??String(error));}

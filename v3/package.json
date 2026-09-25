@@ -13,7 +13,7 @@
     "@threadterm/protocol": "file:protocol"
   },
   "scripts": {
-    "dev": "concurrently --kill-others-on-fail \"npm run dev:renderer\" \"npm run dev:desktop\"",
+    "dev": "concurrently --kill-others --success first \"npm run dev:renderer\" \"npm run dev:desktop\"",
     "dev:renderer": "vite --config vite.config.ts --host 127.0.0.1",
     "dev:desktop": "npm run build:desktop && wait-on http://127.0.0.1:5173 && cross-env THREADTERM_V3_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
     "protocol:generate": "node protocol/generate.mjs",
@@ -27,7 +27,7 @@
     "typecheck:desktop": "tsc --noEmit -p tsconfig.desktop.json",
     "typecheck:renderer": "npm --workspace @threadterm/v3-renderer run typecheck",
     "test:terminal": "esbuild desktop/test/terminal-environment.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/terminal-environment.test.cjs && node --test desktop-dist/terminal-environment.test.cjs desktop/test/terminal-buffer-semantics.test.cjs && node --experimental-strip-types --test qa/control-lease.test.ts",
-    "test:desktop": "esbuild desktop/test/output-fanout.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/output-fanout.test.cjs && esbuild desktop/src/stdioGuards.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/stdioGuards.test.cjs && esbuild desktop/src/windowChrome.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/windowChrome.test.cjs && esbuild desktop/src/runtime-handshake.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/runtime-handshake.test.cjs && node --test desktop-dist/output-fanout.test.cjs desktop-dist/stdioGuards.test.cjs desktop-dist/windowChrome.test.cjs desktop-dist/runtime-handshake.test.cjs desktop/test/terminal-buffer-semantics.test.cjs",
+    "test:desktop": "esbuild desktop/test/output-fanout.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/output-fanout.test.cjs && esbuild desktop/src/stdioGuards.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/stdioGuards.test.cjs && esbuild desktop/src/windowChrome.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/windowChrome.test.cjs && esbuild desktop/src/runtime-handshake.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/runtime-handshake.test.cjs && esbuild desktop/test/runtime-client-replay.test.ts --bundle --platform=node --format=cjs --external:electron --outfile=desktop-dist/runtime-client-replay.test.cjs && node --test desktop-dist/runtime-client-replay.test.cjs desktop-dist/output-fanout.test.cjs desktop-dist/stdioGuards.test.cjs desktop-dist/windowChrome.test.cjs desktop-dist/runtime-handshake.test.cjs desktop/test/terminal-buffer-semantics.test.cjs",
     "dist:win": "npm run build && npm run build:runtime && electron-builder --win nsis",
     "start": "electron ."
   },

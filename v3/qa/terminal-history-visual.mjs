@@ -79,7 +79,16 @@ window.threadterm = {
   },
   request: async (method, params) => {
     window.qaBridgeMetrics.requests.push({ method, params });
+    if (method === 'terminal.read') return { nextCursor: initialBytes.byteLength };
     if (method === 'session.claim' || method === 'session.renew') return { leaseEpoch: 73 };
+    if (method === 'session.resume') {
+      window.qaSetStatus('starting');
+      await new Promise(resolve => setTimeout(resolve, 150));
+      window.qaStartingDisabled = window.qaTerminal.options.disableStdin;
+      window.qaSetStatus('running');
+      return { id: params.sessionId };
+    }
+    if (method === 'session.rerun') return { id: 'qa-new-conversation' };
     return null;
   },
   openExternal: async () => {},
@@ -97,13 +106,18 @@ function Fixture() {
   const [hints, setHints] = useState(false);
   window.qaSetStatus = setStatus;
   window.qaSetHints = setHints;
+  // Agent sessions carry a captured native identity; the ended surface then
+  // offers native resume instead of the limitation note, keeping the chrome
+  // height stable across the running-to-ended transition this fixture checks.
   const session = {
     id: 'qa-terminal-history', provider: 'kimi', mode: 'terminal', status,
     title: 'Terminal history QA', createdAt: 'now', updatedAt: 'now',
+    nativeId: 'qa-native-thread', cols: 80, rows: 24,
   };
   return <I18nProvider locale="en-US"><div className="qa-terminal"><TerminalSurface
     sessionId={session.id} provider="kimi" theme="dark"
     terminalCompatibility={{aiCompletionHints:hints}} session={session}
+    onOpenSession={id => { window.qaOpenedSession = id; }}
   /></div></I18nProvider>;
 }
 document.documentElement.dataset.theme = 'dark';
@@ -155,9 +169,11 @@ const report = { passed: false, checks: [], screenshots: [] };
 try {
   app = await electron.launch({ args: [join(scratch, 'main.cjs')] });
   page = await app.firstWindow();
+  page.setDefaultTimeout(20000);
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.waitForFunction(() => window.qaTerminal?.buffer.active.baseY > 1_000, null, { timeout: 15_000 });
+  await page.waitForFunction(() => !document.querySelector('.term-replaying') && !window.qaTerminal.options.disableStdin);
 
   const initial = await terminalState(page);
   assert.equal(initial.scrollback, 10_000);
@@ -200,7 +216,9 @@ try {
   });
   const afterOutput = await terminalState(page);
   assert.equal(afterOutput.viewportY, scrolled.viewportY, 'new output moved the user away from the history being read');
-  assert.ok(afterOutput.baseY - scrolled.baseY >= 40, 'the 40 appended rows did not extend the terminal buffer');
+  // Expanding from recorded replay rows to live rows can leave space beneath
+  // the old cursor. Assert retained output, not an assumed scroll delta.
+  assert.equal(await page.evaluate(() => Array.from({length: window.qaTerminal.buffer.active.length}, (_, i) => window.qaTerminal.buffer.active.getLine(i)?.translateToString(true)).filter(line => /^LIVE-\d{3}/.test(line ?? '')).length), 40, 'the appended rows were not retained');
   await page.locator('.terminal-new-output').waitFor();
   report.checks.push('new output preserves the scrolled viewport and exposes the return-to-bottom control');
 
@@ -231,6 +249,9 @@ try {
     return before === window.qaTerminal;
   });
   await page.getByText('History output · ended').waitFor();
+  const resumeButton = page.getByRole('button', { name: 'Resume' });
+  await resumeButton.waitFor();
+  assert.equal(await resumeButton.isEnabled(), true, 'an ended session with a native identity must offer native resume');
   const exited = await terminalState(page);
   assert.equal(terminalIdentityPreserved, true, 'running-to-exited replaced the xterm instance');
   assert.equal(exited.viewportY, afterOutput.viewportY, 'running-to-exited changed the history viewport');
@@ -240,6 +261,24 @@ try {
   await page.screenshot({ path: join(out, 'history-preserved-after-exit.png') });
   report.screenshots.push('history-preserved-after-exit.png');
   report.checks.push('running-to-exited preserves the xterm instance, history buffer, viewport, and single subscription');
+
+  const claimsBefore = await page.evaluate(() => window.qaBridgeMetrics.requests.filter(r => r.method === 'session.claim').length);
+  const resizesBefore = await page.evaluate(() => window.qaBridgeMetrics.requests.filter(r => r.method === 'terminal.resize').length);
+  await page.evaluate(() => { window.qaOriginalTerminal = window.qaTerminal; });
+  await resumeButton.click();
+  await page.getByText('Live output · local session').waitFor();
+  assert.equal(await page.evaluate(() => window.qaStartingDisabled), true, 'starting reservation must not enable input before a PTY exists');
+  await page.waitForFunction(count => window.qaBridgeMetrics.requests.filter(r => r.method === 'terminal.resize').length > count, resizesBefore);
+  assert.equal(await page.evaluate(() => window.qaTerminal === window.qaOriginalTerminal), true);
+  assert.equal(await page.evaluate(() => window.qaTerminal.options.disableStdin), false);
+  assert.equal(await page.evaluate(() => window.qaBridgeMetrics.subscribeCalls), 1);
+  assert.ok(await page.evaluate(count => window.qaBridgeMetrics.requests.filter(r => r.method === 'session.claim').length > count, claimsBefore));
+  await page.evaluate(() => window.qaTerminal.input('resume-input'));
+  await page.waitForFunction(() => window.qaBridgeMetrics.requests.some(r => r.method === 'terminal.input' && r.params.data === 'resume-input'));
+  await page.evaluate(() => window.qaSetStatus('exited'));
+  await page.getByRole('button', { name: 'New with same config' }).click();
+  await page.waitForFunction(() => window.qaOpenedSession === 'qa-new-conversation');
+  report.checks.push('resume retains xterm/subscription and restores lease, live sizing and input; rerun opens the new identity');
 
   assert.deepEqual(errors, []);
   report.passed = true;

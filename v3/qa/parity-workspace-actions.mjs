@@ -85,7 +85,7 @@ async function dirtyExit(page, choice) {
   await page.locator('.ws-back').click();
   const dialog = page.locator('[role="dialog"]');
   await dialog.waitFor();
-  await dialog.getByRole('button', { name: ({ cancel: /cancel|取消/i, discard: /discard|放弃/i, save: /save|保存/i })[choice] }).click();
+  await dialog.getByRole('button', { name: ({ cancel: /cancel|取消/i, discard: /discard|放弃/i, save: /^(save file|保存文件)$/i })[choice] }).click();
 }
 async function runCase(name, page, url, action) {
   try {
@@ -134,9 +134,9 @@ async function run() {
       await peer.click();
       await page.waitForFunction(() => window.__workspaceCalls.some(call => call.method === 'workspace.save' && call.params.layout.kind === 'split'));
       assert.equal(await page.locator('.pane-workspace .workspace-pane').count(), 2);
-      await page.getByRole('button', { name: /exit split|退出并排/i }).click();
+      await page.getByRole('button', { name: /collapse to single pane|收起为单窗格/i }).click();
       await page.waitForFunction(() => window.__workspaceCalls.filter(call => call.method === 'workspace.save').some(call => call.params.layout.kind === 'pane'));
-      assert.equal(await page.locator('.pane-workspace').count(), 0);
+      assert.equal(await page.locator('.pane-workspace').count(), 1);
     });
 
     for (const choice of ['cancel', 'discard', 'save']) await runCase(`dirty-navigation-${choice}`, page, url, async () => {
