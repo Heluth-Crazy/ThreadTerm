@@ -115,6 +115,7 @@ impl ProviderAdapter for CodexAdapter {
             chat: installed && auth == "authenticated",
             history: installed,
             resume: installed,
+            terminal_resume_capture: self.terminal_capture().as_str(),
             reason: if !installed {
                 Some("Codex CLI is not installed".to_owned())
             } else if auth != "authenticated" {
@@ -126,16 +127,22 @@ impl ProviderAdapter for CodexAdapter {
         }
     }
 
-    fn terminal_command(&self, native_id: Option<&str>) -> Result<TerminalCommand, ProviderError> {
+    fn terminal_command(
+        &self,
+        resume_id: Option<&str>,
+        assign_id: Option<&str>,
+    ) -> Result<TerminalCommand, ProviderError> {
         let mut args = Vec::new();
-        if let Some(native_id) = native_id {
+        if let Some(native_id) = resume_id.or(assign_id) {
             validate_native_id(native_id)?;
-            let process = self.temporary_process()?;
-            let response = process.request(
-                "thread/read",
-                json!({"threadId":native_id,"includeTurns":false}),
-            )?;
-            validate_resume_thread(response.get("thread").unwrap_or(&response))?;
+            if resume_id.is_some() {
+                let process = self.temporary_process()?;
+                let response = process.request(
+                    "thread/read",
+                    json!({"threadId":native_id,"includeTurns":false}),
+                )?;
+                validate_resume_thread(response.get("thread").unwrap_or(&response))?;
+            }
             args.extend(["resume".to_owned(), native_id.to_owned()]);
         }
         args.push("--no-alt-screen".to_owned());
@@ -148,6 +155,41 @@ impl ProviderAdapter for CodexAdapter {
             args: spec.args,
             display: spec.display,
         })
+    }
+
+    fn terminal_capture(&self) -> super::TerminalCapture {
+        // Codex has no caller-supplied --session-id flag. Use its structured
+        // app-server thread/start API before creating the PTY instead.
+        super::TerminalCapture::PreAssigned
+    }
+
+    fn prepare_terminal(&self, cwd: &str) -> Result<Option<String>, ProviderError> {
+        let process = self.temporary_process()?;
+        let response = process.request("thread/start", json!({"cwd":cwd,"threadSource":"user"}))?;
+        let thread = response
+            .get("thread")
+            .cloned()
+            .unwrap_or_else(|| response.clone());
+        let native_id = thread.get("id").and_then(Value::as_str).ok_or_else(|| {
+            ProviderError::new("provider_protocol", "Codex returned no thread id")
+        })?;
+        validate_native_id(native_id)?;
+        // thread/start allocates an id but Codex does not persist an empty
+        // rollout. Materialize it through the native history API without a
+        // model turn, user message, or additional developer instructions.
+        process.request(
+            "thread/inject_items",
+            json!({"threadId":native_id,"items":[{"type":"message","role":"developer","content":[]}]}),
+        )?;
+        // A different process must be able to load it before the PTY is
+        // launched. Never return a merely in-memory thread as resumable.
+        let verifier = self.temporary_process()?;
+        let stored = verifier.request(
+            "thread/read",
+            json!({"threadId":native_id,"includeTurns":true}),
+        )?;
+        validate_resume_thread(stored.get("thread").unwrap_or(&stored))?;
+        Ok(Some(native_id.to_owned()))
     }
 
     fn history_list(
@@ -2114,6 +2156,29 @@ mod tests {
             assert!(validate_resume_thread(&thread).is_err());
         }
         assert!(validate_resume_thread(&json!({"source":"cli","ephemeral":false})).is_ok());
+    }
+
+    #[test]
+    fn terminal_output_never_becomes_codex_identity_evidence() {
+        // Codex identity is obtained only from app-server thread/start. There
+        // is intentionally no output parser that could bind spoofed text.
+        let adapter = CodexAdapter::new(broadcast::channel(1).0);
+        assert_eq!(
+            adapter.terminal_capture(),
+            super::super::TerminalCapture::PreAssigned
+        );
+    }
+
+    #[test]
+    fn precreated_thread_id_launches_codex_resume_without_output_parsing() {
+        let adapter = CodexAdapter::new(broadcast::channel(1).0);
+        let id = "01a0be7e-b463-7bd0-8d12-c184185b3a0f";
+        let command = adapter.terminal_command(None, Some(id)).unwrap();
+        assert!(command
+            .args
+            .windows(2)
+            .any(|pair| { pair[0] == "resume" && pair[1] == id }));
+        assert!(command.args.contains(&"--no-alt-screen".to_owned()));
     }
 
     #[test]

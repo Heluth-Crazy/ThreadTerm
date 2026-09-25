@@ -1,6 +1,44 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "RequestResult<\"session.launch.read\">": {
+      "$ref": "#/definitions/TerminalLaunchState"
+    },
+    "TerminalLaunchState": {
+      "type": "object",
+      "properties": {
+        "phase": {
+          "type": "string",
+          "enum": [
+            "preparing",
+            "launching",
+            "running",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "phase"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"catalog.visibility.list\">": {
       "type": "array",
       "items": {
@@ -1358,6 +1396,13 @@
         "resume": {
           "type": "boolean"
         },
+        "terminalResumeCapture": {
+          "type": "string",
+          "enum": [
+            "preassigned",
+            "none"
+          ]
+        },
         "reason": {
           "type": "string"
         },
@@ -2419,6 +2464,32 @@
     }
   },
   "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.launch.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22session.launch.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
     {
       "type": "object",
       "properties": {

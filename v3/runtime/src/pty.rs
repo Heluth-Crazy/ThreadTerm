@@ -40,14 +40,28 @@ impl PtyManager {
         args: &[String],
     ) -> Result<()> {
         let pty_system = portable_pty::native_pty_system();
+        // A resumed process must start in the geometry of the retained screen,
+        // not draw its first frames at 80x24 into a differently-sized xterm.
+        let session = db.session_by_id(session_id)?.context("session missing")?;
+        let cols = session
+            .cols
+            .and_then(|n| u16::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(80);
+        let rows = session
+            .rows
+            .and_then(|n| u16::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(24);
         let pair = pty_system
             .openpty(PtySize {
-                rows: 24,
-                cols: 80,
+                rows,
+                cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
             .context("opening PTY")?;
+        db.set_session_terminal_size(session_id, i32::from(cols), i32::from(rows))?;
         #[cfg(windows)]
         let gate = crate::bootstrap::BootstrapGate::new()?;
         #[cfg(windows)]
@@ -152,10 +166,21 @@ impl PtyManager {
             if let Ok(mut exit) = live.exit_code.lock() {
                 *exit = code;
             }
+            // A stop/relaunch can replace the registry entry before this
+            // generation's waiter wakes up. Only the owning generation may
+            // remove the entry or finalize the durable session state; an old
+            // waiter must never mark a newly launched PTY exited.
             if let Ok(mut registry) = wait_sessions.lock() {
-                registry.remove(&wait_id);
+                if registry
+                    .get(&wait_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &live))
+                {
+                    // Keep ownership through the status write: stop must not
+                    // release this id for relaunch between check and finalize.
+                    let _ = db.set_session_status(&wait_id, "exited", code);
+                    registry.remove(&wait_id);
+                }
             }
-            let _ = db.set_session_status(&wait_id, "exited", code);
         });
         Ok(())
     }
@@ -374,5 +399,71 @@ mod tests {
             "force stop must not remove another session"
         );
         manager.stop(&db, &second.id, true).unwrap();
+    }
+
+    #[test]
+    fn old_waiter_cannot_finalize_a_relaunched_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "relaunch-race",
+            })
+            .unwrap();
+        let manager = PtyManager::new(Arc::new(OutputStore::default()));
+        #[cfg(windows)]
+        let (program, args) = ("cmd.exe", vec!["/Q".to_owned(), "/K".to_owned()]);
+        #[cfg(not(windows))]
+        let (program, args) = ("/bin/sh", vec![]);
+        db.set_session_terminal_size(&session.id, 117, 37).unwrap();
+        for _ in 0..4 {
+            manager
+                .launch(
+                    Arc::clone(&db),
+                    &session.id,
+                    dir.path().to_str().unwrap(),
+                    Some(program),
+                    &args,
+                )
+                .unwrap();
+            let size = manager
+                .live(&session.id)
+                .unwrap()
+                .master
+                .lock()
+                .unwrap()
+                .get_size()
+                .unwrap();
+            assert_eq!(
+                (size.cols, size.rows),
+                (117, 37),
+                "relaunch changed the recorded geometry"
+            );
+            manager.stop(&db, &session.id, true).unwrap();
+        }
+        manager
+            .launch(
+                Arc::clone(&db),
+                &session.id,
+                dir.path().to_str().unwrap(),
+                Some(program),
+                &args,
+            )
+            .unwrap();
+        thread::sleep(Duration::from_millis(150));
+        assert_eq!(
+            db.session_by_id(&session.id).unwrap().unwrap().status,
+            "running"
+        );
+        assert!(manager.live(&session.id).is_ok());
+        manager
+            .input(&session.id, b"echo RELAUNCHED_OK\r\n")
+            .unwrap();
+        manager.stop(&db, &session.id, true).unwrap();
     }
 }

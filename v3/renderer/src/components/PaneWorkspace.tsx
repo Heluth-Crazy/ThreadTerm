@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import type { ContentRef, PaneLayout, Session } from "@threadterm/protocol";
+import type { ContentRef, PaneLayout, ProviderCapability, Session } from "@threadterm/protocol";
 import { confirmCloseEditors } from "../dirtyEditors";
 import { useTranslation } from "../i18n";
 import {
@@ -25,12 +25,14 @@ type Props = {
   sessions: Session[];
   theme: "light" | "dark";
   terminalCompatibility: unknown;
+  providers?: ProviderCapability[];
   onChange: (next: PaneLayout) => void;
   onSessionChanged?: () => void;
+  onOpenSession?: (sessionId: string) => void;
   ownerSessionId?: string;
   onPickSession?: (paneId: string) => void;
 };
-export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompatibility, onSessionChanged, ownerSessionId, onPickSession }: Props) {
+export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompatibility, providers = [], onSessionChanged, onOpenSession, ownerSessionId, onPickSession }: Props) {
   const [selectedPaneId, setSelectedPaneId] = useState<string>();
   const [fullscreenPaneId, setFullscreenPaneId] = useState<string>();
   const [resumedSessionIds, setResumedSessionIds] = useState<Set<string>>(() => new Set());
@@ -65,6 +67,8 @@ export function PaneWorkspace({ layout, sessions, onChange, theme, terminalCompa
         onSplit={(paneId) => setSelectedPaneId(paneId)}
         onPickSession={onPickSession}
         onSessionChanged={onSessionChanged}
+        onOpenSession={onOpenSession}
+        providers={providers}
         ownerSessionId={ownerSessionId}
         resumedSessionIds={resumedSessionIds}
         onResumed={(sessionId) => setResumedSessionIds(current => new Set(current).add(sessionId))}
@@ -150,6 +154,8 @@ function Pane({
   onSplit,
   onPickSession,
   onSessionChanged,
+  onOpenSession,
+  providers,
   resumedSessionIds,
   onResumed,
   ownerSessionId,
@@ -167,6 +173,8 @@ function Pane({
   onSplit: (paneId: string) => void;
   onPickSession?: (paneId: string) => void;
   onSessionChanged?: () => void;
+  onOpenSession?: (sessionId: string) => void;
+  providers: ProviderCapability[];
   resumedSessionIds: Set<string>;
   onResumed: (sessionId: string) => void;
   ownerSessionId?: string;
@@ -217,7 +225,7 @@ function Pane({
     <ImportedHistoryView session={session} onResumed={() => onResumed(session.id)} />
   ) : session ? (
     session.mode === "terminal" ? (
-      <TerminalSurface sessionId={session.id} provider={session.provider} session={session} theme={theme} terminalCompatibility={terminalCompatibility} onChanged={onSessionChanged} />
+      <TerminalSurface sessionId={session.id} provider={session.provider} session={session} theme={theme} terminalCompatibility={terminalCompatibility} resumeCapture={providers.find((item) => item.id === session.provider)?.terminalResumeCapture} onChanged={onSessionChanged} onOpenSession={onOpenSession} />
     ) : (
       <ChatView session={session} />
     )

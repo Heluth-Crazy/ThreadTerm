@@ -69,9 +69,8 @@ export function CatalogActions({target,projects,trees,sessions,visibility,onChan
     if(remaining.length){setSessionsToEnd(remaining);setDeleteNotice('scope-changed');return;}
     await changeVisibility('removed',{visibility:latestVisibility,sessions:latestSnapshot.sessions});
   };
-  const beginDelete=async()=>{
-    const current=await request('runtime.snapshot',{}),active=sessionsInCatalogScope(target,current.sessions,project?.path).filter(isActiveSession);
-    close();setIssue(undefined);setDeleteNotice(undefined);setName(target.name);setSessionsToEnd(active);setDialog(active.length?'remove-active':'remove');
+  const beginDelete=()=>{
+    close();setIssue(undefined);setDeleteNotice(undefined);setName(target.name);setSessionsToEnd(activeSessions);setDialog(activeSessions.length?'remove-active':'remove');
   };
   const deleteCatalogRecord=async()=>{
     const current=await request('runtime.snapshot',{}),active=sessionsInCatalogScope(target,current.sessions,project?.path).filter(isActiveSession);
@@ -101,7 +100,7 @@ export function CatalogActions({target,projects,trees,sessions,visibility,onChan
       {session&&item(session.pinned?text('Unpin from quick switch','取消固定快捷选择'):text('Pin to quick switch','固定到快捷选择'),'star',()=>void run(()=>organize({pinned:!session.pinned})))}
       <div className="menu-sep"/>
       {archived?item(text('Restore','恢复'),'archive',()=>void run(()=>changeVisibility('active'))):item(text('Archive','归档'),'archive',()=>begin('archive'))}
-      {item(text('Delete','删除'),'trash',()=>void run(beginDelete),true)}
+      {item(text('Delete','删除'),'trash',beginDelete,true)}
       {target.kind!=='session'&&<><div className="menu-sep"/><div className="menu-label">{target.kind==='project'?text('Archived branches','归档的分支'):text('Archived sessions','归档的会话')}</div>{archivedTargets.length?archivedTargets.map(row=><button type="button" role="menuitem" className="menu-item" disabled={busy} key={row.id} onClick={()=>void run(async()=>{await restoreCatalogTarget(row,visibility,sessions.find(session=>session.id===row.id));onChanged();close();})}><Icon name={row.kind==='session'?'terminal':'branch'}/><span className="grow">{row.name}</span><span className="dim">{text('Restore','恢复')}</span></button>):<div className="menu-note">{text('No archived items','暂无归档内容')}</div>}</>}
       <div className="menu-sep"/>
       {target.kind!=='session'&&onNewSession&&item(text('New terminal','新建终端'),'plus',()=>{close();onNewSession(target.projectId,target.path);})}

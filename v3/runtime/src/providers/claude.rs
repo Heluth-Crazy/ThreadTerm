@@ -132,16 +132,32 @@ impl ProviderAdapter for ClaudeAdapter {
             chat,
             history: worker,
             resume: chat,
+            terminal_resume_capture: self.terminal_capture().as_str(),
             reason,
             auth,
         }
     }
 
-    fn terminal_command(&self, native_id: Option<&str>) -> Result<TerminalCommand, ProviderError> {
+    fn terminal_command(
+        &self,
+        resume_id: Option<&str>,
+        assign_id: Option<&str>,
+    ) -> Result<TerminalCommand, ProviderError> {
         let mut args = Vec::new();
-        if let Some(id) = native_id {
+        if let Some(id) = resume_id {
             validate_native_id(id)?;
             args.extend(["--resume".to_owned(), id.to_owned()]);
+        } else if let Some(id) = assign_id {
+            // Claude adopts a caller-chosen UUID for a new conversation, so the
+            // native identity is known before the PTY starts.
+            validate_native_id(id)?;
+            if !super::common::is_uuid(id) {
+                return Err(ProviderError::new(
+                    "invalid_native_id",
+                    "Claude --session-id requires a UUID",
+                ));
+            }
+            args.extend(["--session-id".to_owned(), id.to_owned()]);
         }
         let path = find_executable("claude").ok_or_else(|| {
             ProviderError::unavailable("claude", "Claude executable was not found on PATH")
@@ -152,6 +168,10 @@ impl ProviderAdapter for ClaudeAdapter {
             args: spec.args,
             display: spec.display,
         })
+    }
+
+    fn terminal_capture(&self) -> super::TerminalCapture {
+        super::TerminalCapture::PreAssigned
     }
 
     fn history_list(

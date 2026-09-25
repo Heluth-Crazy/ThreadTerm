@@ -15,7 +15,7 @@ export interface Session { id:string; projectId?:string; worktreePath?:string; t
 export interface SessionConfig { sessionId:string; revision:number; provider:ProviderId; mode:SessionMode; cwd:string; projectId?:string; title?:string; executable?:string; args:string[]; sourceSessionId?:string }
 export interface SessionRetryAttempt { id:string; sourceSessionId:string; attempt:number; dueAt:string; status:'pending'|'claimed'|'cancelled'|'completed'|'exhausted'; operationId:string; createdAt:string }
 export interface SessionRetryState { sessionId:string; revision:number; enabled:boolean; maxRetries:number; delaySeconds:number; attempts:SessionRetryAttempt[] }
-export interface ProviderCapability { id:ProviderId; name:string; installed:boolean; version?:string; terminal:boolean; chat:boolean; history:boolean; resume:boolean; reason?:string; auth?:'authenticated'|'unauthenticated'|'unknown' }
+export interface ProviderCapability { id:ProviderId; name:string; installed:boolean; version?:string; terminal:boolean; chat:boolean; history:boolean; resume:boolean; terminalResumeCapture?:'preassigned'|'none'; reason?:string; auth?:'authenticated'|'unauthenticated'|'unknown' }
 export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; [key:string]:unknown }
 export interface Workspace { id:string; name:string; revision:number; layout:PaneLayout; projectId?:string; worktreePath?:string }
 export interface Preset { id:string; name:string; revision:number; sessions:unknown[]; layout:PaneLayout; commands:string[] }
@@ -82,7 +82,9 @@ export interface PairedDevice { id:string; name:string; permission:DevicePermiss
 export interface DataRelocationStatus { frozen:boolean; sourceRoot:string; targetRoot?:string }
 export interface DataRelocationPrepared { sourceRoot:string; targetRoot:string; activationToken:string }
 export interface RuntimeEvent { v:1; event:string; epoch:string; seq:number; data:unknown }
+export interface TerminalLaunchState { phase:'preparing'|'launching'|'running'|'failed'|'cancelled'; error?:{code:string;message:string} }
 export interface RequestMap {
+ 'session.launch.read': [{sessionId:string},TerminalLaunchState];
  'catalog.visibility.list': [{},CatalogVisibility[]];
  'catalog.visibility.update': [{kind:CatalogVisibility['kind'];id:string;visibility:CatalogVisibility['visibility'];expectedRevision:number;operationId:string},CatalogVisibility];
  'device.status': [{},RemoteAccessStatus];
@@ -123,7 +125,7 @@ export interface RequestMap {
  'project.remove': [{id:string;operationId:string},null];
  'project.catalog.list': [{},ProjectCatalogItem[]];
  'project.update': [{id:string;name?:string;pinned?:boolean;sortOrder?:number;expectedRevision:number;operationId:string},ProjectCatalogItem];
- 'session.create': [{projectId?:string;cwd:string;title?:string;provider:ProviderId;mode:SessionMode;executable?:string;args?:string[];nativeId?:string;operationId:string},Session];
+ 'session.create': [{projectId?:string;cwd:string;title?:string;provider:ProviderId;mode:SessionMode;executable?:string;args?:string[];nativeId?:string;deferLaunch?:boolean;operationId:string},Session];
  'history.import': [{projectId?:string;provider:ProviderId;nativeId:string;cwd:string;mode:SessionMode;title?:string;operationId:string},Session];
  'session.config.read': [{sessionId:string},SessionConfig];
  'session.config.save': [{sessionId:string;provider:ProviderId;mode:SessionMode;cwd:string;projectId?:string;title?:string;executable?:string;args?:string[];expectedRevision:number;operationId:string},SessionConfig];
@@ -199,8 +201,9 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read'] as const satisfies readonly Method[];
+export const METHODS = ['session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read'] as const satisfies readonly Method[];
 const stringFields: Partial<Record<Method,readonly string[]>> = {
+ 'session.launch.read':['sessionId'],
  'catalog.visibility.update':['kind','id','visibility','operationId'],
  'session.resume':['sessionId','operationId'],
  'session.organize':['sessionId','operationId'],'git.merge':['projectId','branch','operationId'],'git.merge.abort':['projectId','operationId'],

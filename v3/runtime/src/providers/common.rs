@@ -721,6 +721,17 @@ pub fn validate_native_id(value: &str) -> Result<(), ProviderError> {
     Ok(())
 }
 
+/// True for canonical UUID text (`8-4-4-4-12` hexadecimal), the shape Codex,
+/// Claude, and Grok use for native session ids.
+pub fn is_uuid(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('-').collect();
+    let lengths = [8, 4, 4, 4, 12];
+    parts.len() == 5
+        && parts.iter().zip(lengths).all(|(part, length)| {
+            part.len() == length && part.chars().all(|c| c.is_ascii_hexdigit())
+        })
+}
+
 /// Builds the public history page without serializing an absent cursor as
 /// JSON null. Optional TypeScript properties do not accept null on the wire.
 pub fn history_page(items: Vec<Value>, next_cursor: Option<Value>) -> Value {

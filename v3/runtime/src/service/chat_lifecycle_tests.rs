@@ -39,12 +39,17 @@ impl ProviderAdapter for FixtureAdapter {
             chat: true,
             history: false,
             resume: false,
+            terminal_resume_capture: "none",
             reason: None,
             auth: "authenticated".into(),
         }
     }
 
-    fn terminal_command(&self, _native_id: Option<&str>) -> Result<TerminalCommand, ProviderError> {
+    fn terminal_command(
+        &self,
+        _resume_id: Option<&str>,
+        _assign_id: Option<&str>,
+    ) -> Result<TerminalCommand, ProviderError> {
         Err(ProviderError::new(
             "fixture_terminal_unsupported",
             "fixture only supports Chat",
@@ -180,9 +185,10 @@ impl Fixture {
             },
             db: Arc::clone(&db),
             leases: LeaseManager::default(),
-            pty: PtyManager::new(Arc::clone(&output)),
+            pty: Arc::new(PtyManager::new(Arc::clone(&output))),
+            deferred_launch: Arc::new(Mutex::new(DeferredLaunchGate::default())),
             output,
-            providers: Providers::for_test(vec![adapter]),
+            providers: Arc::new(Providers::for_test(vec![adapter])),
             shutdown_requested: AtomicBool::new(false),
             shutdown_pending: AtomicBool::new(false),
             relocation_gate: RwLock::new(()),

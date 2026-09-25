@@ -47,7 +47,9 @@ const bridge: ThreadTermBridge = {
       finally { void ipcRenderer.invoke('threadterm:ack-output', subscriptionId); }
     };
     ipcRenderer.on('threadterm:output', handler);
-    const result = await ipcRenderer.invoke('threadterm:subscribe-output', sessionId, cursor, subscriptionId) as unknown;
+    let result: unknown;
+    try { result = await ipcRenderer.invoke('threadterm:subscribe-output', sessionId, cursor, subscriptionId) as unknown; }
+    catch (error) { ipcRenderer.removeListener('threadterm:output', handler); throw error; }
     if (!isRecord(result) || typeof result.id !== 'string') { ipcRenderer.removeListener('threadterm:output', handler); throw new Error('Output subscription was rejected'); }
     return () => {
       ipcRenderer.removeListener('threadterm:output', handler);

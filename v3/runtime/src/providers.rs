@@ -87,12 +87,33 @@ pub struct ProviderCapability {
     pub chat: bool,
     pub history: bool,
     pub resume: bool,
+    /// How a provider-native conversation id becomes known for a NEW terminal
+    /// session launched by ThreadTerm: "preassigned" (a provider-owned
+    /// structured API or provider flag binds the id before PTY launch), or
+    /// "none" (terminal resume is unavailable for new sessions). Terminal
+    /// output is never treated as identity evidence.
+    pub terminal_resume_capture: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// `authenticated`, `unauthenticated`, or `unknown`. This is additive to
     /// the V1 renderer contract and avoids claiming that installation implies
     /// a usable account.
     pub auth: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalCapture {
+    PreAssigned,
+    None,
+}
+
+impl TerminalCapture {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::PreAssigned => "preassigned",
+            Self::None => "none",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -108,7 +129,8 @@ pub trait ProviderRuntime: Send + Sync {
     fn terminal_command(
         &self,
         provider: &str,
-        native_id: Option<&str>,
+        resume_id: Option<&str>,
+        assign_id: Option<&str>,
     ) -> Result<Value, ProviderError>;
     fn history_list(
         &self,
@@ -155,7 +177,27 @@ pub trait ProviderRuntime: Send + Sync {
 pub(crate) trait ProviderAdapter: Send + Sync {
     fn id(&self) -> &'static str;
     fn capability(&self) -> ProviderCapability;
-    fn terminal_command(&self, native_id: Option<&str>) -> Result<TerminalCommand, ProviderError>;
+    /// Builds the PTY launch command. `resume_id` continues an existing native
+    /// conversation; `assign_id` identifies a NEW conversation, either prepared
+    /// through a provider API or assigned through a native CLI flag. Providers
+    /// without pre-assignment support ignore `assign_id`; passing both is a
+    /// caller bug and rejected.
+    fn terminal_command(
+        &self,
+        resume_id: Option<&str>,
+        assign_id: Option<&str>,
+    ) -> Result<TerminalCommand, ProviderError>;
+    /// How a native conversation id becomes known for new terminal sessions.
+    fn terminal_capture(&self) -> TerminalCapture {
+        TerminalCapture::None
+    }
+    /// Creates the native conversation identity for a new terminal session
+    /// through a provider-owned structured API. Providers without a verified
+    /// pre-assignment channel must return `None`; terminal output is never an
+    /// authoritative identity source.
+    fn prepare_terminal(&self, _cwd: &str) -> Result<Option<String>, ProviderError> {
+        Ok(None)
+    }
     fn history_list(
         &self,
         cursor: Option<&str>,
@@ -334,6 +376,22 @@ impl Providers {
         })
     }
 
+    /// How a provider's native conversation id becomes known for a new
+    /// terminal session. Unknown providers cannot capture one.
+    pub(crate) fn terminal_capture(&self, provider: &str) -> TerminalCapture {
+        self.adapter(provider)
+            .map(|adapter| adapter.terminal_capture())
+            .unwrap_or(TerminalCapture::None)
+    }
+
+    pub(crate) fn prepare_terminal(
+        &self,
+        provider: &str,
+        cwd: &str,
+    ) -> Result<Option<String>, ProviderError> {
+        self.adapter(provider)?.prepare_terminal(cwd)
+    }
+
     fn worker_handle(&self, session_id: &str) -> Result<SharedChat, ProviderError> {
         let mut chats = self
             .chats
@@ -459,10 +517,20 @@ impl ProviderRuntime for Providers {
     fn terminal_command(
         &self,
         provider: &str,
-        native_id: Option<&str>,
+        resume_id: Option<&str>,
+        assign_id: Option<&str>,
     ) -> Result<Value, ProviderError> {
-        serde_json::to_value(self.adapter(provider)?.terminal_command(native_id)?)
-            .map_err(|error| ProviderError::new("provider_internal", error.to_string()))
+        if resume_id.is_some() && assign_id.is_some() {
+            return Err(ProviderError::new(
+                "provider_internal",
+                "resume and pre-assigned identities are mutually exclusive",
+            ));
+        }
+        serde_json::to_value(
+            self.adapter(provider)?
+                .terminal_command(resume_id, assign_id)?,
+        )
+        .map_err(|error| ProviderError::new("provider_internal", error.to_string()))
     }
 
     fn history_list(

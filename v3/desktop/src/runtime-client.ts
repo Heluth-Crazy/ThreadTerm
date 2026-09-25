@@ -35,7 +35,9 @@ interface AuthRequest { kind: 'auth'; clientId: string; protocol: number; contra
 interface Authenticated { kind: 'authenticated'; principal: string; epoch: string; hmac: string; contract?: number }
 interface PendingRequest { method: Method; resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: NodeJS.Timeout }
 interface OutputSubscription { id: string; sessionId: string; cursor: number; onChunk: (chunk: OutputChunk) => void | Promise<void> }
-interface OutputGroup { sessionId: string; cursor: number; fanout: OutputFanout }
+interface OutputGroup { sessionId: string; cursor: number; fanout: OutputFanout; delivery: Promise<void> }
+
+const OUTPUT_BACKFILL_PAGE_BYTES = 64 * 1024;
 
 export class RuntimeUnavailableError extends Error {
   constructor(message: string) { super(message); this.name = 'RuntimeUnavailableError'; }
@@ -44,6 +46,12 @@ export class RuntimeUnavailableError extends Error {
 export class ProtocolIncompatibleError extends Error {
   readonly code = 'protocol_incompatible';
   constructor(message: string) { super(message); this.name = 'ProtocolIncompatibleError'; }
+}
+
+/** A typed runtime command failure retained inside the Electron main client. */
+export class RuntimeRequestError extends Error {
+  readonly code: string;
+  constructor(error: RuntimeError) { super(error.message); this.name = 'RuntimeRequestError'; this.code = error.code; }
 }
 
 class LengthPrefixedSocket {
@@ -114,6 +122,7 @@ export async function runtimePipeIsOpen(): Promise<boolean> {
 }
 
 export class RuntimeClient {
+  constructor(private readonly options: { autoLaunch?: boolean } = {}) {}
   private control?: LengthPrefixedSocket;
   private output?: LengthPrefixedSocket;
   private readonly clientId = randomUUID();
@@ -124,6 +133,7 @@ export class RuntimeClient {
   private connecting?: Promise<void>;
   private reconnectTimer?: NodeJS.Timeout;
   private expectedDisconnect = false;
+  private suspended = false;
   private disconnecting = false;
   private runtimeEpoch = '';
   private sawDisconnect = false;
@@ -131,6 +141,7 @@ export class RuntimeClient {
 
   async request<M extends Method>(method: M, params: RequestParams<M>): Promise<RequestResult<M>> {
     await this.ensureConnected();
+    this.assertOpen();
     const id = randomUUID();
     const message: ControlRequest = { v: PROTOCOL_VERSION, id, method, params: params as Record<string, unknown> };
     return new Promise<RequestResult<M>>((resolvePromise, reject) => {
@@ -149,29 +160,97 @@ export class RuntimeClient {
   async subscribeOutput(sessionId: string, cursor: number, onChunk: (chunk: OutputChunk) => void | Promise<void>): Promise<() => void> {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error('Invalid output cursor');
     await this.ensureConnected();
+    this.assertOpen();
     const id = randomUUID();
     const subscription: OutputSubscription = { id, sessionId, cursor, onChunk };
     let group = this.outputGroups.get(sessionId);
     const isNewGroup = !group;
-    if (!group) { group = { sessionId, cursor, fanout: new OutputFanout() }; this.outputGroups.set(sessionId, group); }
+    if (!group) { group = { sessionId, cursor, fanout: new OutputFanout(), delivery: Promise.resolve() }; this.outputGroups.set(sessionId, group); }
     this.subscriptions.set(id, subscription);
-    const removeConsumer = group.fanout.add(id, onChunk);
+    // A group has one upstream cursor.  A view which joins it later must not
+    // rewind that cursor (which would duplicate bytes for every existing view),
+    // but it still needs the history it explicitly requested.  Gate live bytes
+    // for this consumer while the control pipe reads the bounded missing range.
+    // That gate also preserves byte order if a live output frame arrives while
+    // its backfill request is in flight.
+    let active = true;
+    let resolveLiveGate!: () => void;
+    const liveGate = new Promise<void>((resolvePromise) => { resolveLiveGate = resolvePromise; });
+    let deliveredCursor = cursor;
+    const deliver = async (chunk: OutputChunk, ceiling = Number.POSITIVE_INFINITY): Promise<void> => {
+      if (!active) return;
+      if (chunk.gap) {
+        if (chunk.cursor > deliveredCursor) {
+          await onChunk({ ...chunk, data: new Uint8Array(), cursor: chunk.cursor, gap: true });
+          deliveredCursor = chunk.cursor;
+        }
+        return;
+      }
+      const start = Math.max(chunk.cursor, deliveredCursor);
+      const end = Math.min(chunk.cursor + chunk.data.byteLength, ceiling);
+      if (end <= start) return;
+      const offset = start - chunk.cursor;
+      const data = offset === 0 && end === chunk.cursor + chunk.data.byteLength
+        ? chunk.data
+        : chunk.data.slice(offset, offset + end - start);
+      await onChunk({ sessionId, cursor: start, data });
+      deliveredCursor = end;
+    };
+    const removeConsumer = group.fanout.add(id, async (chunk) => {
+      await liveGate;
+      await deliver(chunk);
+    });
+    const cleanup = () => {
+      active = false;
+      resolveLiveGate();
+      removeConsumer();
+      this.subscriptions.delete(id);
+      if (group!.fanout.size !== 0) return;
+      if (this.output) { try { this.sendOutputFrame(5, { sessionId }); } catch { /* disconnect path owns cleanup */ } }
+      group!.fanout.dispose();
+      if (this.outputGroups.get(sessionId) === group) this.outputGroups.delete(sessionId);
+    };
     try {
       if (isNewGroup) {
         this.sendOutputFrame(3, { sessionId, cursor });
         this.sendOutputFrame(2, { sessionId, credit: INITIAL_OUTPUT_CREDIT });
+      } else {
+        const end = group.cursor;
+        await this.backfillConsumer(sessionId, cursor, end, deliver);
       }
-    } catch (error) { removeConsumer(); this.subscriptions.delete(id); if (isNewGroup) this.outputGroups.delete(sessionId); throw error; }
-    return () => {
-      removeConsumer(); this.subscriptions.delete(id);
-      if (group!.fanout.size === 0) {
-        // Tell the daemon immediately that no local renderer still consumes
-        // this stream; reconnect only replays groups retained in this map.
-        if (this.output) { try { this.sendOutputFrame(5, { sessionId }); } catch { /* disconnect path owns cleanup */ } }
-        group!.fanout.dispose();
-        this.outputGroups.delete(sessionId);
+      resolveLiveGate();
+    } catch (error) { cleanup(); throw error; }
+    return cleanup;
+  }
+
+  private async backfillConsumer(
+    sessionId: string,
+    cursor: number,
+    end: number,
+    deliver: (chunk: OutputChunk, ceiling?: number) => Promise<void>,
+  ): Promise<void> {
+    let next = cursor;
+    while (next < end) {
+      const requestedCursor = next;
+      const page = await this.request('terminal.read', { sessionId, cursor: next, limit: OUTPUT_BACKFILL_PAGE_BYTES });
+      if (page.fromCursor > next) {
+        // The read may observe newer output after the snapshot.  Do not move
+        // this consumer beyond its captured boundary or it would trim those
+        // newer live bytes when the gate opens.
+        await deliver({ sessionId, cursor: Math.min(page.fromCursor, end), data: new Uint8Array(), gap: true }, end);
       }
-    };
+      // A read which starts at or beyond the captured boundary has fully
+      // accounted for this consumer's requested range.  It is valid for that
+      // page to be gap-only and report no advancing nextCursor.
+      if (page.fromCursor >= end) return;
+      const data = Buffer.from(page.data, 'base64');
+      await deliver({ sessionId, cursor: page.fromCursor, data }, end);
+      // A page that neither advances the logical cursor nor reaches the
+      // captured watermark cannot be retried safely: it would leave this
+      // consumer permanently blocking shared-stream credits.
+      if (page.nextCursor <= requestedCursor) throw new RuntimeUnavailableError('Runtime output history did not advance');
+      next = page.nextCursor;
+    }
   }
 
   dispose(): void {
@@ -179,11 +258,23 @@ export class RuntimeClient {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.control?.close();
     this.output?.close();
+    this.control = undefined;
+    this.output = undefined;
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new RuntimeUnavailableError('Desktop is closing')); }
     this.pending.clear();
   }
 
+  setSuspended(suspended: boolean): void {
+    this.suspended = suspended;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    if (!suspended && !this.expectedDisconnect) {
+      void this.ensureConnected().catch(error => this.handleDisconnect(asError(error)));
+    }
+  }
+
   private async ensureConnected(): Promise<void> {
+    this.assertOpen();
     if (this.incompatible) throw this.incompatible;
     if (this.control && this.output) return;
     if (!this.connecting) this.connecting = this.connectAndAuthenticate().finally(() => { this.connecting = undefined; });
@@ -192,21 +283,30 @@ export class RuntimeClient {
 
   private async connectAndAuthenticate(): Promise<void> {
     const pipes = await runtimePipes();
+    this.assertOpen();
     if (!readCredential()) {
+      if (this.options.autoLaunch === false) throw new RuntimeUnavailableError('Runtime is not running');
       await launchRuntimeIfNeeded();
     }
+    this.assertOpen();
     const token = await waitForCredential();
+    this.assertOpen();
     let control: LengthPrefixedSocket;
     try { control = await connectUntilReady(pipes.control, CONNECT_TIMEOUT_MS); }
     catch {
+      this.assertOpen();
+      if (this.options.autoLaunch === false) throw new RuntimeUnavailableError('Runtime is not running');
       await launchRuntimeIfNeeded();
+      this.assertOpen();
       control = await connectUntilReady(pipes.control, RUNTIME_READY_TIMEOUT_MS);
     }
     try {
+      this.assertOpen();
       const session = await authenticate(control, token, this.clientId);
+      this.assertOpen();
       this.attachControl(control);
       const output = await connectUntilReady(pipes.output, RUNTIME_READY_TIMEOUT_MS);
-      try { await authenticate(output, token, this.clientId); this.attachOutput(output); }
+      try { this.assertOpen(); await authenticate(output, token, this.clientId); this.assertOpen(); this.attachOutput(output); }
       catch (error) { output.close(); throw error; }
       const previousEpoch = this.runtimeEpoch;
       this.runtimeEpoch = session.epoch;
@@ -233,7 +333,9 @@ export class RuntimeClient {
 
   private attachOutput(output: LengthPrefixedSocket): void {
     this.output = output;
-    output.onFrame((frame) => { void this.handleOutputFrame(frame); });
+    output.onFrame((frame) => {
+      void this.handleOutputFrame(frame, output).catch((error) => this.handleDisconnect(asError(error)));
+    });
     output.onFailure((error) => this.handleDisconnect(error));
     for (const group of this.outputGroups.values()) {
       this.sendOutputFrame(3, { sessionId: group.sessionId, cursor: group.cursor });
@@ -250,7 +352,7 @@ export class RuntimeClient {
     if (!pending) return;
     clearTimeout(pending.timer);
     this.pending.delete(value.id);
-    if (value.error) pending.reject(new Error(value.error.message));
+    if (value.error) pending.reject(new RuntimeRequestError(value.error));
     else {
       try {
         validateResult(pending.method, value.result);
@@ -261,7 +363,7 @@ export class RuntimeClient {
     }
   }
 
-  private async handleOutputFrame(frame: Buffer): Promise<void> {
+  private async handleOutputFrame(frame: Buffer, origin = this.output): Promise<void> {
     if (frame.length < 5) { this.handleDisconnect(new Error('Runtime sent a malformed output frame')); return; }
     const kind = frame.readUInt8(0);
     const headerLength = frame.readUInt32LE(1);
@@ -272,13 +374,41 @@ export class RuntimeClient {
     const data = new Uint8Array(frame.subarray(5 + headerLength));
     const group = this.outputGroups.get(header.sessionId);
     if (!group) return;
-    if (kind === 4) await group.fanout.publish({ sessionId: header.sessionId, cursor: header.cursor ?? group.cursor, data, gap: true });
+    if (kind === 4) {
+      const cursor = header.cursor ?? group.cursor;
+      // A runtime gap explicitly skips unavailable durable bytes.  Advance the
+      // shared watermark before fanout so a later consumer or reconnect never
+      // resubscribes from the lost prefix.
+      group.cursor = Math.max(group.cursor, cursor);
+      await this.queueOutput(group, { sessionId: header.sessionId, cursor, data, gap: true }, 0, origin);
+    }
     else if (kind === 1) {
       const cursor = header.cursor ?? group.cursor;
       group.cursor = cursor + data.byteLength;
-      await group.fanout.publish({ sessionId: header.sessionId, cursor, data });
-      this.sendOutputFrame(2, { sessionId: header.sessionId, credit: Math.min(data.byteLength, MAX_OUTPUT_CREDIT) });
+      await this.queueOutput(group, { sessionId: header.sessionId, cursor, data }, Math.min(data.byteLength, MAX_OUTPUT_CREDIT), origin);
     }
+  }
+
+  private assertOpen(): void {
+    if (this.expectedDisconnect) throw new RuntimeUnavailableError('Desktop is closing');
+    if (this.suspended) throw new RuntimeUnavailableError('Desktop shutdown is in progress');
+  }
+
+  private queueOutput(group: OutputGroup, chunk: OutputChunk, credit = 0, origin?: LengthPrefixedSocket): Promise<void> {
+    const delivery = group.delivery.then(async () => {
+      await group.fanout.publish(chunk);
+      // A delayed consumer may finish after this session was unsubscribed or
+      // after the output pipe reconnected.  Credit belongs to the transport
+      // which supplied this exact frame; never pay it into a newer stream.
+      if (credit > 0 && !this.expectedDisconnect && this.output === origin && this.outputGroups.get(group.sessionId) === group) {
+        this.sendOutputFrame(2, { sessionId: group.sessionId, credit });
+      }
+    });
+    // Keep later frames ordered even if this transport is about to fail.  The
+    // originating call still receives the failure, and the normal reconnect
+    // path owns recovery of the group cursor.
+    group.delivery = delivery.catch((error) => { this.handleDisconnect(asError(error)); });
+    return delivery;
   }
 
   private sendOutputFrame(kind: number, header: Record<string, unknown>): void {
@@ -303,7 +433,7 @@ export class RuntimeClient {
     this.pending.clear();
     this.sawDisconnect = true;
     this.emitSynthetic('runtime.transport', { state: 'disconnected', epoch: this.runtimeEpoch, reason: error.message });
-    if (this.incompatible) return;
+    if (this.incompatible || this.suspended) return;
     if (!this.reconnectTimer) this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       void this.ensureConnected().catch((caught) => {

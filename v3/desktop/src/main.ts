@@ -27,6 +27,8 @@ const outputSubscriptions = new Map<string, { ownerId: number; unsubscribe?: () 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let allowQuit = false;
+let quitPending = false;
+let stoppingRuntime = false;
 let lastSessionId: string | undefined;
 let lastNotificationSeq = 0;
 let lightweightMode = false;
@@ -57,6 +59,7 @@ function createAdminRuntime(): RuntimeClient {
 }
 function attachAdminRuntime(client: RuntimeClient): void {
   client.onEvent((event) => {
+    if (stoppingRuntime) return;
     if (event.event === 'presentation.requested') presentRuntimeSession(event.data);
     // Settings are persisted as a state.changed outbox event, never as an
     // invented "settings" transport event. Refresh immediately so shortcut
@@ -256,13 +259,16 @@ function registerIpc(): void {
     if (typeof sessionId !== 'string' || !sessionId || !Number.isSafeInteger(cursor) || Number(cursor) < 0 || typeof id !== 'string' || !id) throw new Error('Invalid output subscription');
     const outputCursor = Number(cursor);
     outputSubscriptions.set(id, { ownerId: event.sender.id, acknowledgements: [] });
-    const unsubscribe = await runtimeFor(event).subscribeOutput(sessionId, outputCursor, (chunk) => new Promise<void>((resolvePromise) => {
-      if (event.sender.isDestroyed()) { resolvePromise(); return; }
-      const subscription = outputSubscriptions.get(id);
-      if (!subscription) { resolvePromise(); return; }
-      subscription.acknowledgements.push(resolvePromise);
-      event.sender.send('threadterm:output', { id, chunk });
-    }));
+    let unsubscribe: () => void;
+    try {
+      unsubscribe = await runtimeFor(event).subscribeOutput(sessionId, outputCursor, (chunk) => new Promise<void>((resolvePromise) => {
+        if (event.sender.isDestroyed()) { resolvePromise(); return; }
+        const subscription = outputSubscriptions.get(id);
+        if (!subscription) { resolvePromise(); return; }
+        subscription.acknowledgements.push(resolvePromise);
+        event.sender.send('threadterm:output', { id, chunk });
+      }));
+    } catch (error) { closeOutputSubscription(id); throw error; }
     const subscription = outputSubscriptions.get(id);
     if (!subscription) { unsubscribe(); throw new Error('Output subscription was cancelled'); }
     subscription.unsubscribe = unsubscribe;
@@ -510,48 +516,74 @@ async function windowAction(event: IpcMainInvokeEvent, action: unknown): Promise
 }
 
 async function requestQuit(): Promise<void> {
-  if (allowQuit) return;
-  const active = await hasActiveSessions();
-  if (active) {
-    const options = {
-      type: 'warning',
-      buttons: ['Keep ThreadTerm running', 'Quit application'],
-      defaultId: 0,
-      cancelId: 0,
-      title: 'Sessions are still running',
-      message: 'Quitting will stop all running sessions and the ThreadTerm runtime.',
-      detail: 'Keep ThreadTerm running to leave this work untouched in the background.',
-    } satisfies Electron.MessageBoxOptions;
-    const result = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
-    if (result.response !== 1) return;
-  }
+  if (allowQuit || quitPending) return;
+  quitPending = true;
+  // Tray quit must never attach its confirmation to an invisible owner.
   try {
-    await adminRuntime.request('runtime.shutdown', { operationId: randomUUID() });
-  } catch (error) {
-    const options = {
-      type: 'error',
-      title: 'ThreadTerm could not stop the runtime',
-      message: error instanceof Error ? error.message : 'The runtime did not confirm shutdown.',
-      detail: 'The application remains open so running work is not abandoned without confirmation.',
-    } satisfies Electron.MessageBoxOptions;
-    if (mainWindow) await dialog.showMessageBox(mainWindow, options); else await dialog.showMessageBox(options);
-    return;
-  }
-  allowQuit = true;
-  for (const subscription of outputSubscriptions.values()) subscription.unsubscribe?.();
-  outputSubscriptions.clear();
-  app.quit();
+    showMainWindow();
+    const runtimeRunning = await runtimePipeIsOpen();
+    const active = runtimeRunning && await hasActiveSessions();
+    if (active) {
+      const options = {
+        type: 'warning',
+        buttons: ['Keep ThreadTerm running', 'Quit application'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'Sessions are still running',
+        message: 'Quitting will stop all running sessions and the ThreadTerm runtime.',
+        detail: 'Keep ThreadTerm running to leave this work untouched in the background.',
+      } satisfies Electron.MessageBoxOptions;
+      const result = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+      if (result.response !== 1) return;
+    }
+    stoppingRuntime = true;
+    // Stop every ordinary client's reconnect/auto-launch before asking the
+    // daemon to exit. A dedicated no-launch client owns the final handshake.
+    adminRuntime.setSuspended(true);
+    for (const client of windowRuntimes.values()) client.setSuspended(true);
+    const shutdownClient = new RuntimeClient({ autoLaunch: false });
+    try {
+      if (runtimeRunning) {
+        try { await shutdownClient.request('runtime.shutdown', { operationId: randomUUID() }); }
+        finally { shutdownClient.dispose(); }
+        const deadline = Date.now() + 12_000;
+        while (await runtimePipeIsOpen()) {
+          if (Date.now() >= deadline) throw new Error('The runtime acknowledged shutdown but did not release its pipe');
+          await delay(100);
+        }
+      }
+    } catch (error) {
+      stoppingRuntime = false;
+      adminRuntime.setSuspended(false);
+      for (const client of windowRuntimes.values()) client.setSuspended(false);
+      const options = {
+        type: 'error',
+        title: 'ThreadTerm could not stop the runtime',
+        message: error instanceof Error ? error.message : 'The runtime did not confirm shutdown.',
+        detail: 'The application remains open so running work is not abandoned without confirmation.',
+      } satisfies Electron.MessageBoxOptions;
+      if (mainWindow) await dialog.showMessageBox(mainWindow, options); else await dialog.showMessageBox(options);
+      return;
+    } finally { shutdownClient.dispose(); }
+    allowQuit = true;
+    for (const id of [...outputSubscriptions.keys()]) closeOutputSubscription(id);
+    adminRuntime.dispose();
+    for (const client of windowRuntimes.values()) client.dispose();
+    windowRuntimes.clear();
+    app.quit();
+  } finally { quitPending = false; }
 }
 
 async function hasActiveSessions(): Promise<boolean> {
   try {
     const snapshot = await adminRuntime.request('runtime.snapshot', {});
-    return snapshot.sessions.some((session) => ['starting', 'running', 'waiting'].includes(session.status));
-  } catch { return false; }
+    return snapshot.sessions.some((session) => ['starting', 'running', 'idle', 'waiting'].includes(session.status));
+  } catch { return true; } // Unknown runtime state is not evidence that work is safe to stop.
 }
 
 function closeOutputSubscription(id: string): void { const subscription = outputSubscriptions.get(id); if (subscription) { for (const acknowledge of subscription.acknowledgements.splice(0)) acknowledge(); subscription.unsubscribe?.(); } outputSubscriptions.delete(id); }
 function runtimeFor(event: IpcMainInvokeEvent): RuntimeClient {
+  if (stoppingRuntime) throw new Error('ThreadTerm is shutting down');
   const key = event.sender.id;
   let client = windowRuntimes.get(key);
   if (!client) {

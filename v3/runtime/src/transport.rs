@@ -13,7 +13,18 @@ use sha2::Sha256;
 use std::sync::Arc;
 
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
+const TERMINAL_HISTORY_GAP: &str = "terminal_history_gap";
 type HmacSha256 = Hmac<Sha256>;
+
+fn is_terminal_history_gap(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string() == TERMINAL_HISTORY_GAP)
+}
+
+fn advance_cursor_past_history_gap(cursor: &mut i64, durable_end: i64) {
+    *cursor = durable_end;
+}
 
 #[cfg(windows)]
 pub async fn serve(service: Arc<RuntimeService>, credential: String) -> Result<()> {
@@ -211,9 +222,26 @@ async fn serve_output(
         for (id, (cursor, credit)) in &mut subscriptions {
             while *credit > 0 {
                 let chunks =
-                    service
+                    match service
                         .db
-                        .output_from(id, *cursor, (*credit as usize).min(MAX_FRAME))?;
+                        .output_from(id, *cursor, (*credit as usize).min(MAX_FRAME))
+                    {
+                        Ok(chunks) => chunks,
+                        Err(error) if is_terminal_history_gap(&error) => {
+                            // A corrupt/legacy gap belongs to this subscription,
+                            // not to every terminal multiplexed on this pipe.  Do
+                            // not invent bytes across it: tell the consumer to
+                            // skip to the durable end.  Keep the existing credit:
+                            // kind 4 carries no bytes to acknowledge, and that
+                            // credit must remain available for later live output.
+                            let end = service.db.output_end(id)?;
+                            write_output(&mut pipe, 4, &json!({"sessionId":id,"cursor":end}), &[])
+                                .await?;
+                            advance_cursor_past_history_gap(cursor, end);
+                            break;
+                        }
+                        Err(error) => return Err(error),
+                    };
                 if chunks.is_empty() {
                     break;
                 }
@@ -420,5 +448,27 @@ mod decoder_tests {
         assert_eq!(decoder.read(&mut reader).await.unwrap(), body);
         writer.write_all(&frame).await.unwrap();
         assert_eq!(decoder.read(&mut reader).await.unwrap(), body);
+    }
+
+    #[test]
+    fn history_gap_is_the_only_database_error_recovered_per_subscription() {
+        assert!(is_terminal_history_gap(&anyhow::anyhow!(
+            TERMINAL_HISTORY_GAP
+        )));
+        assert!(is_terminal_history_gap(
+            &anyhow::anyhow!(TERMINAL_HISTORY_GAP).context("output read")
+        ));
+        assert!(!is_terminal_history_gap(&anyhow::anyhow!(
+            "database lock poisoned"
+        )));
+    }
+
+    #[test]
+    fn history_gap_advances_only_the_subscription_cursor_not_its_live_credit() {
+        let mut cursor = 12;
+        let credit = 64 * 1024;
+        advance_cursor_past_history_gap(&mut cursor, 96);
+        assert_eq!(cursor, 96);
+        assert_eq!(credit, 64 * 1024, "gap frames do not consume output credit");
     }
 }

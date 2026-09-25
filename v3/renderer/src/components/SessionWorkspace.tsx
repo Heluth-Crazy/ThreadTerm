@@ -7,7 +7,7 @@ import { insertTerminalText } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
 import { addSessionTab } from '../presentation';
 import { displayPath, sameCanonicalScope } from '../projectScope';
-import { addPane, addTabToPane, closePane, paneCount, sessionIdsIn } from '../workspaceLayout';
+import { addPane, addTabToPane, closePane, paneCount, reconcileSessionLayout, sessionIdsIn } from '../workspaceLayout';
 import { FileWorkspace } from './FileWorkspace';
 import { PaneWorkspace } from './PaneWorkspace';
 import { AgentIcon, Icon } from './PrototypeIcon';
@@ -26,7 +26,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const {locale}=useTranslation(),zh=locale==='zh-CN';
  const project=data.projects.find(p=>p.id===session.projectId),path=session.worktreePath??project?.path;
  const restored=data.workspaces.find(w=>w.projectId===session.projectId&&sameCanonicalScope(w.worktreePath??project?.path,path));
- const [layout,setLayout]=useState<PaneLayout>(initialLayout??restored?.layout??initialFor(session));
+ const [layout,setLayout]=useState<PaneLayout>(()=>initialLayout??(restored?reconcileSessionLayout(restored.layout,new Set(data.sessions.map(item=>item.id)),session.id):initialFor(session)));
  const workspace=paneCount(layout)>1;
  const [view,setView]=useState<'terminal'|'file'|'diff'>('terminal');
  const [fileOpened,setFileOpened]=useState(false),[filePath,setFilePath]=useState<string>(),[fileDirty,setFileDirty]=useState(false);
@@ -96,7 +96,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    {issue&&<p className="surface-error" role="alert">{issue}</p>}
    <div className={`ws-content${inspector?' with-drawer':''}`}><div className="ws-pane">
     <div className="workspace-content-host" hidden={view!=='terminal'}>
-     <PaneWorkspace layout={layout} sessions={data.sessions} theme={theme} terminalCompatibility={data.settings.terminalCompatibility} onChange={save} onSessionChanged={onChanged} ownerSessionId={session.id} onPickSession={(paneId)=>{setPicker({mode:'fill',paneId});setQuery('');}}/>
+     <PaneWorkspace layout={layout} sessions={data.sessions} theme={theme} terminalCompatibility={data.settings.terminalCompatibility} providers={data.providers} onChange={save} onSessionChanged={onChanged} onOpenSession={onSelect} ownerSessionId={session.id} onPickSession={(paneId)=>{setPicker({mode:'fill',paneId});setQuery('');}}/>
     </div>
     {fileOpened&&project&&<div className="workspace-content-host" hidden={view==='terminal'}><FileWorkspace projectId={project.id} worktreePath={path} initialPath={filePath} initialView={view==='diff'?'diff':'file'} view={view==='diff'?'diff':'file'} onViewChange={next=>switchView(next==='diff'?'diff':'file')} onDocumentChange={value=>{setFilePath(value.path);setFileDirty(value.dirty);}} editorId={`session-workspace:${session.id}`} ownerSessionId={session.id}/></div>}
    </div>{inspector&&<aside className="inspector" aria-label={zh?'会话详情面板':'Session details'}><div className="ins-head">{zh?'文件':'Files'}</div><div className="ins-scroll">
