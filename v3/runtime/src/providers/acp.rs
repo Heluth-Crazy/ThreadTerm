@@ -7,8 +7,8 @@ use super::{
         command_output, encode_approval_id, history_page, insert_optional, validate_native_id,
         version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess,
     },
-    emit, ChatSession, ProviderAdapter, ProviderCapability, ProviderError, ProviderEvent,
-    TerminalCommand,
+    emit_bound as emit, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
+    ProviderEvent, ScopedProviderEvents, TerminalCommand,
 };
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -81,10 +81,10 @@ impl AcpAdapter {
         ui: Arc<Mutex<AcpUiState>>,
         capture: Option<Arc<Mutex<Vec<Value>>>>,
         replay_gate: Arc<AtomicBool>,
+        events: ScopedProviderEvents,
         project_events: bool,
     ) -> Result<(JsonLineProcess, Value), ProviderError> {
         let spec = CommandSpec::provider(self.kind.command(), self.kind.acp_args())?;
-        let events = self.events.clone();
         let provider = self.kind.id();
         let owned_session = session_id.to_owned();
         let think_open = Arc::new(Mutex::new(false));
@@ -141,6 +141,7 @@ impl AcpAdapter {
             Arc::new(Mutex::new(AcpUiState::default())),
             capture,
             Arc::new(AtomicBool::new(false)),
+            ScopedProviderEvents::new(self.events.clone(), "history"),
             false,
         )
     }
@@ -158,7 +159,10 @@ impl ProviderAdapter for AcpAdapter {
                 .map(|(_, initialized)| initialized)
                 .map_err(|error| error.message)
         } else {
-            Err(format!("{} CLI is not installed", self.kind.name()))
+            Err(acp_probe_failure_reason(
+                self.kind.name(),
+                probe_error.clone(),
+            ))
         };
         let (chat, history, resume) = protocol
             .as_ref()
@@ -201,13 +205,14 @@ impl ProviderAdapter for AcpAdapter {
             }
             (_, None) => Vec::new(),
         };
-        let path = super::common::find_executable(self.kind.command()).ok_or_else(|| {
-            ProviderError::unavailable(
-                self.kind.id(),
-                format!("{} executable was not found on PATH", self.kind.command()),
-            )
-        })?;
-        let spec = CommandSpec::from_path(path, args);
+        let path =
+            crate::providers::common::find_executable(self.kind.command()).ok_or_else(|| {
+                ProviderError::unavailable(
+                    self.kind.id(),
+                    format!("{} executable was not found on PATH", self.kind.command()),
+                )
+            })?;
+        let spec = CommandSpec::from_path(path, args)?;
         Ok(TerminalCommand {
             program: spec.program,
             args: spec.args,
@@ -226,6 +231,12 @@ impl ProviderAdapter for AcpAdapter {
         if !matches!(self.kind, AcpKind::Kimi) {
             return Ok(None);
         }
+        // Kimi's TUI uses process.cwd(), which omits Windows verbatim prefixes.
+        // ACP accepts either spelling but stores it as a distinct workspace key;
+        // session/load alone succeeds globally and cannot catch the mismatch.
+        // Keep runtime canonical paths/containment unchanged; adapt only this
+        // native terminal session's creation and verification boundary.
+        let cwd = kimi_terminal_cwd(cwd);
         let (process, _) = self.temporary(None)?;
         let response = process.request("session/new", json!({"cwd":cwd,"mcpServers":[]}))?;
         let id = response
@@ -304,6 +315,26 @@ impl ProviderAdapter for AcpAdapter {
         cwd: &str,
         native_id: Option<&str>,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.open_chat_scoped(
+            session_id,
+            cwd,
+            native_id,
+            &uuid::Uuid::new_v4().to_string(),
+        )
+    }
+
+    fn scopes_chat_events(&self) -> bool {
+        true
+    }
+
+    fn open_chat_scoped(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        let events = ScopedProviderEvents::new(self.events.clone(), worker_token);
         if matches!(self.kind, AcpKind::Kimi) {
             super::kimi_plan_usage::prefetch();
         }
@@ -320,6 +351,7 @@ impl ProviderAdapter for AcpAdapter {
             Arc::clone(&ui),
             None,
             Arc::clone(&replay_gate),
+            events.clone(),
             true,
         )?;
         let response = if let Some(id) = native_id {
@@ -361,15 +393,9 @@ impl ProviderAdapter for AcpAdapter {
             merge_acp_ui(&mut state, &response);
             merge_acp_ui(&mut state, &initialized);
         }
-        emit_chat_ui(
-            &self.events,
-            self.kind.id(),
-            session_id,
-            Some(&bound_id),
-            &ui,
-        );
+        emit_chat_ui(&events, self.kind.id(), session_id, Some(&bound_id), &ui);
         emit(
-            &self.events,
+            &events,
             self.kind.id(),
             session_id,
             Some(&bound_id),
@@ -383,12 +409,16 @@ impl ProviderAdapter for AcpAdapter {
             session_id: session_id.to_owned(),
             native_id: bound_id,
             cwd: cwd.to_owned(),
-            events: self.events.clone(),
+            events,
             active_turn,
             permissions,
             ui,
         }))
     }
+}
+
+fn acp_probe_failure_reason(name: &str, probe_error: Option<String>) -> String {
+    probe_error.unwrap_or_else(|| format!("{name} CLI is not installed"))
 }
 
 #[derive(Clone)]
@@ -403,6 +433,7 @@ struct PermissionRequest {
 struct AcpUiState {
     options: Vec<Value>,
     commands: Vec<Value>,
+    config_generation: u64,
     last_emitted: Option<String>,
     usage_reply: Option<PendingUsageReply>,
 }
@@ -418,7 +449,7 @@ struct PendingUsageReply {
 
 #[derive(Clone)]
 struct UsageReplyContext {
-    events: broadcast::Sender<ProviderEvent>,
+    events: ScopedProviderEvents,
     session_id: String,
     native_id: String,
     turn_id: String,
@@ -496,7 +527,7 @@ struct AcpChat {
     session_id: String,
     native_id: String,
     cwd: String,
-    events: broadcast::Sender<ProviderEvent>,
+    events: ScopedProviderEvents,
     active_turn: Arc<Mutex<Option<String>>>,
     permissions: Arc<Mutex<HashMap<String, PermissionRequest>>>,
     ui: Arc<Mutex<AcpUiState>>,
@@ -1051,25 +1082,90 @@ impl ChatSession for AcpChat {
     }
 
     fn set_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
+        let config_generation = self
+            .ui
+            .lock()
+            .map(|state| state.config_generation)
+            .unwrap_or_default();
         let result = self.process.request(
             "session/set_config_option",
             json!({"sessionId":self.native_id,"configId":option_id,"value":value}),
         );
         let result = match result {
             Ok(value) => value,
-            Err(_) => self.process.request(
-                "session/set_model",
-                json!({"sessionId":self.native_id,"modelId":value}),
-            )?,
+            Err(error) => {
+                // The legacy session/set_model interface exists only for agents
+                // that genuinely do not implement session/set_config_option,
+                // and only a model change may use it. Argument rejections,
+                // authentication failures, timeouts and disconnects describe a
+                // failed or uncertain setting, never a model fallback.
+                let method_missing = error
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.get("code"))
+                    .and_then(Value::as_i64)
+                    == Some(-32601);
+                if option_id == "model" && method_missing {
+                    self.process.request(
+                        "session/set_model",
+                        json!({"sessionId":self.native_id,"modelId":value}),
+                    )?
+                } else {
+                    return Err(error);
+                }
+            }
         };
         if let Ok(mut state) = self.ui.lock() {
+            // An intervening ACP config notification is a newer full snapshot.
+            // The delayed RPC reply must not roll it back.
+            if state.config_generation != config_generation {
+                drop(state);
+                emit_chat_ui(
+                    &self.events,
+                    self.provider,
+                    &self.session_id,
+                    Some(&self.native_id),
+                    &self.ui,
+                );
+                return Ok(self.ui_state());
+            }
+            // The agent's reply is authoritative: a normalized or canonical
+            // value it returns wins over the submitted text. Only when the
+            // reply says nothing about this option do we keep the accepted
+            // submission as the optimistic current value.
             merge_acp_ui(&mut state, &result);
-            if let Some(option) = state
-                .options
-                .iter_mut()
-                .find(|option| option.get("id").and_then(Value::as_str) == Some(option_id))
-            {
-                option["value"] = json!(value);
+            let confirmed = result
+                .get("configOptions")
+                .or_else(|| result.get("availableConfigOptions"))
+                .and_then(Value::as_array)
+                .map(|options| {
+                    options.iter().any(|option| {
+                        option
+                            .get("configId")
+                            .or_else(|| option.get("id"))
+                            .and_then(Value::as_str)
+                            == Some(option_id)
+                    })
+                })
+                .unwrap_or(false)
+                || result
+                    .get("configOption")
+                    .or_else(|| result.get("option"))
+                    .and_then(|option| {
+                        option
+                            .get("configId")
+                            .or_else(|| option.get("id"))
+                            .and_then(Value::as_str)
+                    })
+                    == Some(option_id);
+            if !confirmed {
+                if let Some(option) = state
+                    .options
+                    .iter_mut()
+                    .find(|option| option.get("id").and_then(Value::as_str) == Some(option_id))
+                {
+                    option["value"] = json!(value);
+                }
             }
         }
         emit_chat_ui(
@@ -1164,7 +1260,7 @@ fn find_session_cwd(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_acp_message(
-    events: &broadcast::Sender<ProviderEvent>,
+    events: &ScopedProviderEvents,
     provider: &str,
     session_id: &str,
     native: &Mutex<Option<String>>,
@@ -1250,6 +1346,14 @@ fn emit_acp_message(
         if let Ok(mut state) = ui.lock() {
             merge_acp_ui(&mut state, update);
             merge_acp_ui(&mut state, &params);
+            if [update, &params].iter().any(|value| {
+                value.get("configOptions").is_some()
+                    || value.get("availableConfigOptions").is_some()
+                    || value.get("configOption").is_some()
+                    || value.get("option").is_some()
+            }) {
+                state.config_generation = state.config_generation.wrapping_add(1);
+            }
         }
         emit_chat_ui(events, provider, session_id, native_id.as_deref(), ui);
     }
@@ -1330,6 +1434,40 @@ fn emit_acp_message(
         event_kind,
         json!({"raw":raw}),
     );
+    if event_kind == "chat.item" {
+        if let Some((tool_id, part)) = acp_tool_part(update, kind) {
+            emit(
+                events,
+                provider,
+                session_id,
+                native_id.as_deref(),
+                turn_id.as_deref(),
+                "chat.item",
+                json!({"item":{"id":tool_id},"merge":true,"part":part}),
+            );
+        }
+    }
+}
+
+fn acp_tool_part(update: &Value, kind: &str) -> Option<(String, Value)> {
+    if !kind.contains("tool_call") && !kind.contains("toolCall") {
+        return None;
+    }
+    let tool_id = update.get("toolCallId").and_then(Value::as_str)?.to_owned();
+    let status = match update.get("status").and_then(Value::as_str) {
+        Some("completed" | "complete" | "success") => "complete",
+        Some("failed" | "error") => "failed",
+        Some("pending" | "in_progress" | "running") | None if kind == "tool_call" => "running",
+        Some("pending" | "in_progress" | "running") => "running",
+        Some(other) => other,
+        None => "complete",
+    };
+    let mut part = json!({"type":"tool","toolId":tool_id,"status":status,"data":update});
+    if let Some(title) = update.get("title").and_then(Value::as_str) {
+        part["toolName"] = json!(title);
+    }
+    crate::file_references::enrich_tool_part(&mut part, None);
+    Some((tool_id, part))
 }
 
 fn acp_part_type(kind: &str) -> Option<&'static str> {
@@ -1342,7 +1480,7 @@ fn acp_part_type(kind: &str) -> Option<&'static str> {
 
 #[allow(clippy::too_many_arguments)]
 fn emit_chat_delta(
-    events: &broadcast::Sender<ProviderEvent>,
+    events: &ScopedProviderEvents,
     provider: &str,
     session_id: &str,
     native_id: Option<&str>,
@@ -1538,7 +1676,7 @@ fn kimi_command_guidance(name: &str) -> Option<&'static str> {
 }
 
 fn emit_chat_ui(
-    events: &broadcast::Sender<ProviderEvent>,
+    events: &ScopedProviderEvents,
     provider: &str,
     session_id: &str,
     native_id: Option<&str>,
@@ -1689,23 +1827,360 @@ fn acp_history_item(provider: &str, row: &Value) -> Option<Value> {
 }
 
 fn acp_transcript(raw: &[Value]) -> Vec<Value> {
-    raw.iter().enumerate().filter_map(|(index, message)| {
+    let entries: Vec<Value> = raw.iter().enumerate().filter_map(|(index, message)| {
         let update = message.get("params")?.get("update")?;
         let kind = update.get("sessionUpdate").or_else(|| update.get("type"))?.as_str()?;
+        if let Some((tool_id, part)) = acp_tool_part(update, kind) {
+            return Some(json!({"id":format!("acp-tool-{tool_id}"),"role":"tool","parts":[part],"createdAt":Utc::now().to_rfc3339()}));
+        }
         let content = update.get("content").unwrap_or(update);
         let text = content.get("text").and_then(Value::as_str)?;
         let part_type = acp_part_type(kind).unwrap_or("text");
         let role = if kind.contains("user") { "user" } else if kind.contains("thought") || kind.contains("Thought") || kind.contains("agent") || kind.contains("assistant") { "assistant" } else { return None; };
         Some(json!({"id":format!("acp-{index}"),"role":role,"parts":[{"type":part_type,"text":text}],"createdAt":Utc::now().to_rfc3339()}))
-    }).collect()
+    }).collect();
+    let mut transcript = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if entry.get("role").and_then(Value::as_str) == Some("tool") {
+            crate::file_references::upsert_history_tool(&mut transcript, entry);
+        } else {
+            transcript.push(entry);
+        }
+    }
+    transcript
+}
+
+fn kimi_terminal_cwd(cwd: &str) -> std::borrow::Cow<'_, str> {
+    #[cfg(windows)]
+    if let Some(std::path::Component::Prefix(prefix)) =
+        std::path::Path::new(cwd).components().next()
+    {
+        match prefix.kind() {
+            std::path::Prefix::VerbatimDisk(_) => {
+                return std::borrow::Cow::Borrowed(&cwd[4..]);
+            }
+            std::path::Prefix::VerbatimUNC(_, _) => {
+                return std::borrow::Cow::Owned(format!(r"\\{}", &cwd[8..]));
+            }
+            _ => {}
+        }
+    }
+    std::borrow::Cow::Borrowed(cwd)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn kimi_and_gemini_tool_updates_keep_native_identity_and_file_candidates() {
+        for provider in ["kimi", "gemini"] {
+            let (sender, mut receiver) = broadcast::channel(16);
+            let events = ScopedProviderEvents::new(sender, "worker");
+            let native = Mutex::new(Some("native".to_owned()));
+            let active = Mutex::new(Some("turn".to_owned()));
+            let permissions = Mutex::new(HashMap::new());
+            let think = Mutex::new(false);
+            let ui = Mutex::new(AcpUiState::default());
+            for update in [
+                json!({"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"Read File","status":"running","locations":[{"path":"src/a.rs","line":3}],"rawInput":{"path":"src/b.rs"}}),
+                json!({"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"failed","rawOutput":{"filePath":"src/c.rs"}}),
+            ] {
+                emit_acp_message(
+                    &events,
+                    provider,
+                    "session",
+                    &native,
+                    &active,
+                    &permissions,
+                    &think,
+                    &ui,
+                    json!({"method":"session/update","params":{"sessionId":"native","update":update}}),
+                );
+                let raw = receiver.try_recv().unwrap();
+                assert_eq!(raw.kind, "chat.item");
+                let projected = receiver.try_recv().unwrap();
+                assert_eq!(projected.kind, "chat.item");
+                assert_eq!(projected.worker_token.as_deref(), Some("worker"));
+                assert_eq!(projected.native_id.as_deref(), Some("native"));
+                assert_eq!(projected.turn_id.as_deref(), Some("turn"));
+                assert_eq!(projected.data["item"]["id"], "tc-1");
+                assert_eq!(projected.data["part"]["toolId"], "tc-1");
+                assert!(projected.data["part"]["fileReferences"]
+                    .as_array()
+                    .is_some());
+            }
+            let history = acp_transcript(&[
+                json!({"params":{"update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"Read File","rawInput":{"path":"src/b.rs"}}}}),
+                json!({"params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"failed","rawOutput":{"path":"src/d.rs"}}}}),
+            ]);
+            assert_eq!(history.len(), 1);
+            assert_eq!(history[0]["parts"][0]["status"], "failed");
+            assert_eq!(
+                history[0]["parts"][0]["fileReferences"][0]["path"],
+                "src/b.rs"
+            );
+            assert_eq!(
+                history[0]["parts"][0]["fileReferences"][1]["path"],
+                "src/d.rs"
+            );
+        }
+    }
+
+    #[test]
+    fn kimi_terminal_cwd_preserves_non_verbatim_paths() {
+        for path in [
+            r"D:\Repo\工作 目录",
+            "D:/Repo/",
+            r"\\server\share\repo",
+            "/tmp/repo",
+            r"\\.\device",
+            r"\\?\Volume{abc}\repo",
+        ] {
+            assert_eq!(kimi_terminal_cwd(path), path);
+        }
+    }
+
+    #[test]
+    fn kimi_terminal_cwd_uses_cli_windows_spelling_only_on_windows() {
+        for (verbatim, plain) in [
+            (r"\\?\D:\Repo\工作 目录", r"D:\Repo\工作 目录"),
+            (r"\\?\d:\Repo\", r"d:\Repo\"),
+            (r"\\?\D:\", r"D:\"),
+            (
+                r"\\?\UNC\server\share\工作 目录",
+                r"\\server\share\工作 目录",
+            ),
+            (r"\\?\UNC\server\share\", r"\\server\share\"),
+        ] {
+            let expected = if cfg!(windows) { plain } else { verbatim };
+            assert_eq!(kimi_terminal_cwd(verbatim), expected);
+        }
+    }
+
+    #[test]
+    fn usage_notifications_keep_the_originating_worker_token() {
+        let (context, mut receiver) = usage_reply_fixture();
+        context.finish(Ok(json!({})), None);
+        for expected_kind in ["chat.item", "chat.turn.completed"] {
+            let event = receiver.try_recv().unwrap();
+            assert_eq!(event.kind, expected_kind);
+            assert_eq!(event.worker_token.as_deref(), Some("test-worker"));
+        }
+        let (events, _) = broadcast::channel(4);
+        assert!(AcpAdapter::kimi(events.clone()).scopes_chat_events());
+        assert!(AcpAdapter::gemini(events).scopes_chat_events());
+    }
+
+    #[test]
+    fn acp_native_notification_paths_keep_the_worker_token() {
+        for provider in ["kimi", "gemini"] {
+            let (sender, mut receiver) = broadcast::channel(32);
+            let events = ScopedProviderEvents::new(sender, "old-worker");
+            let native = Mutex::new(Some("native".to_owned()));
+            let active = Mutex::new(Some("turn".to_owned()));
+            let permissions = Mutex::new(HashMap::new());
+            let ui = Mutex::new(AcpUiState::default());
+            for raw in [
+                json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"agent_message_chunk","content":{"text":"answer"}}}}),
+                json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"agent_thought_chunk","content":{"text":"reasoning"}}}}),
+                json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"config_option_update","configOptions":[]}}}),
+                json!({"id":1,"method":"session/request_permission","params":{"sessionId":"native","options":[{"optionId":"deny","kind":"reject_once","name":"Deny"}]}}),
+                json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"tool_call","toolCallId":"tool"}}}),
+            ] {
+                emit_acp_message(
+                    &events,
+                    provider,
+                    "session",
+                    &native,
+                    &active,
+                    &permissions,
+                    &Mutex::new(false),
+                    &ui,
+                    raw,
+                );
+                let mut count = 0;
+                while let Ok(event) = receiver.try_recv() {
+                    count += 1;
+                    assert_eq!(event.worker_token.as_deref(), Some("old-worker"));
+                    assert_eq!(event.provider, provider);
+                    assert_eq!(event.native_id.as_deref(), Some("native"));
+                }
+                assert!(count > 0);
+            }
+        }
+    }
+
+    #[test]
+    fn failed_version_probe_keeps_its_specific_error() {
+        assert_eq!(
+            acp_probe_failure_reason("Gemini", Some("version probe timed out".into())),
+            "version probe timed out"
+        );
+        assert_eq!(
+            acp_probe_failure_reason("Kimi", None),
+            "Kimi CLI is not installed"
+        );
+    }
+
+    #[cfg(windows)]
+    struct SettingsFixture {
+        chat: AcpChat,
+        log: std::path::PathBuf,
+        _dir: tempfile::TempDir,
+    }
+
+    #[cfg(windows)]
+    fn settings_fixture(provider: &'static str, scenario: &str) -> SettingsFixture {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("settings-calls.jsonl");
+        std::fs::write(&log, "").unwrap();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../qa/fixtures/fake-acp-settings.cjs");
+        let spec = CommandSpec::provider("node", &[fixture.to_str().unwrap()]).unwrap();
+        let (events, _) = broadcast::channel(32);
+        let events = ScopedProviderEvents::new(events, "test-worker");
+        let native = Arc::new(Mutex::new(Some("qa-acp-settings-session".to_owned())));
+        let active_turn = Arc::new(Mutex::new(None));
+        let permissions = Arc::new(Mutex::new(HashMap::new()));
+        let think_open = Arc::new(Mutex::new(false));
+        let ui = Arc::new(Mutex::new(AcpUiState::default()));
+        let callback = {
+            let events = events.clone();
+            let native = Arc::clone(&native);
+            let active_turn = Arc::clone(&active_turn);
+            let permissions = Arc::clone(&permissions);
+            let think_open = Arc::clone(&think_open);
+            let ui = Arc::clone(&ui);
+            Arc::new(move |raw| {
+                emit_acp_message(
+                    &events,
+                    provider,
+                    "settings-qa",
+                    &native,
+                    &active_turn,
+                    &permissions,
+                    &think_open,
+                    &ui,
+                    raw,
+                );
+            })
+        };
+        let process = JsonLineProcess::spawn(
+            "acp-settings-qa",
+            &spec,
+            None,
+            &[
+                ("THREADTERM_QA_ACP_SETTINGS_LOG", log.to_str().unwrap()),
+                ("THREADTERM_QA_ACP_SETTINGS_SCENARIO", scenario),
+            ],
+            EnvelopeStyle::JsonRpc2,
+            callback,
+        )
+        .unwrap();
+        let initialized = process.request("initialize", json!({})).unwrap();
+        assert_eq!(initialized["protocolVersion"], 1);
+        let opened = process
+            .request("session/new", json!({"cwd":dir.path().to_string_lossy()}))
+            .unwrap();
+        merge_acp_ui(&mut ui.lock().unwrap(), &opened);
+        SettingsFixture {
+            chat: AcpChat {
+                provider,
+                process,
+                session_id: "settings-qa".to_owned(),
+                native_id: "qa-acp-settings-session".to_owned(),
+                cwd: dir.path().to_string_lossy().into_owned(),
+                events,
+                active_turn,
+                permissions,
+                ui,
+            },
+            log,
+            _dir: dir,
+        }
+    }
+
+    #[cfg(windows)]
+    fn setting_calls(log: &std::path::Path, method: &str) -> usize {
+        std::fs::read_to_string(log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|entry| entry["method"] == method)
+            .count()
+    }
+
+    #[cfg(windows)]
+    fn current_setting(state: &Value, option_id: &str) -> Option<String> {
+        state["options"]
+            .as_array()?
+            .iter()
+            .find(|option| option["id"] == option_id)?["value"]
+            .as_str()
+            .map(ToOwned::to_owned)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn settings_contract_is_shared_by_kimi_and_gemini() {
+        for provider in ["kimi", "gemini"] {
+            let mut rejected = settings_fixture(provider, "default");
+            let original = rejected.chat.ui_state();
+            let error = rejected.chat.set_option("thinking", "reject").unwrap_err();
+            assert!(error.message.contains("thinking rejected"));
+            assert_eq!(rejected.chat.ui_state(), original);
+            assert_eq!(setting_calls(&rejected.log, "session/set_model"), 0);
+
+            let normalized = rejected.chat.set_option("model", "new-model").unwrap();
+            assert_eq!(normalized["options"][0]["value"], "NEW-MODEL");
+            let next = rejected.chat.set_option("model", "second-model").unwrap();
+            assert_eq!(next["options"][0]["value"], "SECOND-MODEL");
+
+            for invalid in ["bad-model", "auth-error"] {
+                assert!(rejected.chat.set_option("model", invalid).is_err());
+                assert_eq!(
+                    rejected.chat.ui_state()["options"][0]["value"],
+                    "SECOND-MODEL"
+                );
+                assert_eq!(setting_calls(&rejected.log, "session/set_model"), 0);
+            }
+            let mut legacy = settings_fixture(provider, "method-missing");
+            assert_eq!(
+                legacy.chat.set_option("model", "old-api").unwrap()["options"][0]["value"],
+                "old-api"
+            );
+            assert_eq!(setting_calls(&legacy.log, "session/set_model"), 1);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn config_notification_wins_over_an_older_setting_response() {
+        for provider in ["kimi", "gemini"] {
+            let mut fixture = settings_fixture(provider, "default");
+            let result = fixture
+                .chat
+                .set_option("thinking", "late-response")
+                .unwrap();
+            assert_eq!(
+                current_setting(&result, "thinking").as_deref(),
+                Some("ultra")
+            );
+            assert_eq!(
+                current_setting(&fixture.chat.ui_state(), "thinking").as_deref(),
+                Some("ultra")
+            );
+            assert_eq!(
+                current_setting(&result, "model").as_deref(),
+                Some("old-model")
+            );
+        }
+    }
+
     fn usage_reply_fixture() -> (UsageReplyContext, broadcast::Receiver<ProviderEvent>) {
         let (events, receiver) = broadcast::channel(16);
+        let events = ScopedProviderEvents::new(events, "test-worker");
         let context = UsageReplyContext {
             events,
             session_id: "s".into(),
@@ -1947,6 +2422,192 @@ mod tests {
         assert_eq!(state.options[0]["id"], "model");
         assert_eq!(state.options[0]["value"], "kimi-for-coding");
         assert_eq!(state.commands[0]["name"], "compact");
+    }
+
+    /// A JSON-RPC ACP fixture: rejects `thinking`, normalizes accepted model
+    /// values to uppercase, fails `model` set_config_option with
+    /// method-not-found only when told to, and logs every method it receives.
+    #[cfg(windows)]
+    fn fake_acp_agent(
+        dir: &std::path::Path,
+        model_method_missing: bool,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let script = dir.join("fake-acp-agent.mjs");
+        let log = dir.join("calls.log");
+        let script_body = format!(
+            r#"import {{ createInterface }} from 'node:readline';
+import {{ appendFileSync }} from 'node:fs';
+const log = {log:?};
+const modelMethodMissing = {model_method_missing};
+createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line => {{
+  let req; try {{ req = JSON.parse(line); }} catch {{ return; }}
+  if (typeof req.method !== 'string') return;
+  appendFileSync(log, req.method + '\n');
+  const reply = result => process.stdout.write(JSON.stringify({{ jsonrpc: '2.0', id: req.id, result }}) + '\n');
+  const fail = (code, message) => process.stdout.write(JSON.stringify({{ jsonrpc: '2.0', id: req.id, error: {{ code, message }} }}) + '\n');
+  if (req.method === 'session/set_config_option') {{
+    const {{ configId, value }} = req.params;
+    if (configId === 'thinking') return fail(-32602, 'Invalid params: thinking does not support this value');
+    if (configId === 'model' && modelMethodMissing) return fail(-32601, 'Method not found: session/set_config_option');
+    if (configId === 'model' && value === 'bad-model') return fail(-32602, 'Invalid params: unknown model');
+    if (configId === 'model') return reply({{ configOptions: [{{ configId: 'model', name: 'Model', currentValue: String(value).toUpperCase(), options: [] }}] }});
+    return reply({{ configOptions: [{{ configId, name: configId, currentValue: value, options: [] }}] }});
+  }}
+  if (req.method === 'session/set_model') return reply({{ configOptions: [{{ configId: 'model', name: 'Model', currentValue: req.params.modelId, options: [] }}] }});
+  reply({{}});
+}});
+"#,
+            log = log.to_string_lossy().replace('\\', "\\\\"),
+            model_method_missing = model_method_missing,
+        );
+        std::fs::write(&script, script_body).unwrap();
+        (script, log)
+    }
+
+    #[cfg(windows)]
+    fn fake_acp_chat(script: &std::path::Path) -> Option<AcpChat> {
+        let node = crate::providers::common::find_executable("node")?;
+        let spec = crate::providers::common::CommandSpec::from_path(
+            node,
+            vec![script.to_string_lossy().into_owned()],
+        )
+        .unwrap();
+        let process = crate::providers::common::JsonLineProcess::spawn(
+            "fake-acp",
+            &spec,
+            None,
+            &[],
+            crate::providers::common::EnvelopeStyle::JsonRpc2,
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let (events, _) = broadcast::channel(16);
+        Some(AcpChat {
+            provider: "kimi",
+            process,
+            session_id: "s".into(),
+            native_id: "n".into(),
+            cwd: String::new(),
+            events: ScopedProviderEvents::new(events, "test-worker"),
+            active_turn: Arc::new(Mutex::new(None)),
+            permissions: Arc::new(Mutex::new(HashMap::new())),
+            ui: Arc::new(Mutex::new(AcpUiState::default())),
+        })
+    }
+
+    #[cfg(windows)]
+    struct FakeAcp {
+        _dir: tempfile::TempDir,
+        log: std::path::PathBuf,
+        chat: AcpChat,
+    }
+
+    #[cfg(windows)]
+    fn fake_acp(model_method_missing: bool) -> Option<FakeAcp> {
+        let dir = tempfile::tempdir().unwrap();
+        let (script, log) = fake_acp_agent(dir.path(), model_method_missing);
+        let chat = fake_acp_chat(&script)?;
+        Some(FakeAcp {
+            _dir: dir,
+            log,
+            chat,
+        })
+    }
+
+    #[cfg(windows)]
+    fn logged_methods(log: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The audit reproduction: the agent rejects a thinking change, and no
+    /// set_model rescue may follow. The UI must keep the previous value.
+    #[cfg(windows)]
+    #[test]
+    fn a_rejected_non_model_setting_never_falls_back_to_set_model() {
+        let Some(mut fake) = fake_acp(false) else {
+            eprintln!("node is unavailable; skipping ACP fixture test");
+            return;
+        };
+        let error = fake.chat.set_option("thinking", "high").unwrap_err();
+        assert!(
+            error.message.contains("thinking"),
+            "the original setting error must surface: {}",
+            error.message
+        );
+        assert!(
+            !logged_methods(&fake.log)
+                .iter()
+                .any(|method| method == "session/set_model"),
+            "a rejected thinking change must not call session/set_model"
+        );
+        assert!(fake.chat.ui.lock().unwrap().options.is_empty());
+    }
+
+    /// Only a method-not-found error for the model option may use the legacy
+    /// session/set_model interface; invalid values must not trigger it.
+    #[cfg(windows)]
+    #[test]
+    fn model_fallback_is_limited_to_method_not_found() {
+        let Some(mut missing) = fake_acp(true) else {
+            eprintln!("node is unavailable; skipping ACP fixture test");
+            return;
+        };
+        let state = missing.chat.set_option("model", "k2").unwrap();
+        assert!(
+            logged_methods(&missing.log)
+                .iter()
+                .any(|method| method == "session/set_model"),
+            "method-not-found for the model option must try the legacy interface"
+        );
+        let model = state["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["id"] == "model")
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            model["value"], "k2",
+            "the legacy interface reply carries the confirmed value"
+        );
+
+        let Some(mut invalid) = fake_acp(false) else {
+            return;
+        };
+        let error = invalid.chat.set_option("model", "bad-model").unwrap_err();
+        assert!(error.message.contains("unknown model"));
+        assert!(
+            !logged_methods(&invalid.log)
+                .iter()
+                .any(|method| method == "session/set_model"),
+            "an invalid model value must not trigger the fallback"
+        );
+    }
+
+    /// A successful set adopts the agent-normalized value, not the submitted one.
+    #[cfg(windows)]
+    #[test]
+    fn a_successful_set_adopts_the_agent_confirmed_value() {
+        let Some(mut fake) = fake_acp(false) else {
+            eprintln!("node is unavailable; skipping ACP fixture test");
+            return;
+        };
+        let state = fake.chat.set_option("model", "k2").unwrap();
+        let model = state["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["id"] == "model")
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            model["value"], "K2",
+            "the agent-normalized value must win over the submitted text"
+        );
     }
     #[test]
     fn splits_kimi_think_tags_across_chunks() {

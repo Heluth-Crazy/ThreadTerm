@@ -1,18 +1,20 @@
 /* Native pane hosts preserve the reference geometry; shared .ws and .term
    classes are defined by the approved stylesheet. */
-.ws-content.pane-workspace { position:relative; padding:0; min-width:0; min-height:0; flex:1; }
-.pane-split { display:flex; min-width:0; min-height:0; flex:1; gap:4px; }
+.ws-content.pane-workspace { position:relative; display:flex; flex-direction:column; padding:0; min-width:0; min-height:0; flex:1; }
+.pane-grid { position:relative; display:flex; flex:1; min-width:0; min-height:0; gap:4px; }
+.pane-grid > .workspace-pane { position:absolute; }
+.pane-split { display:flex; min-width:0; min-height:0; gap:var(--pane-gap,4px); }
+.pane-grid > .pane-split { position:absolute; pointer-events:none; z-index:2; }
 .pane-split.vertical { flex-direction:column; }
 .pane-split.horizontal { flex-direction:row; }
 .pane-split-child { display:flex; min-width:0; min-height:0; }
 .pane-split-child > .workspace-pane { flex:1; min-width:0; min-height:0; }
-.pane-divider { flex:0 0 4px; position:relative; z-index:3; touch-action:none; user-select:none; }
+.pane-divider { flex:0 0 var(--pane-divider-size,4px); position:relative; z-index:3; touch-action:none; user-select:none; pointer-events:auto; }
 .pane-split.horizontal > .pane-divider { cursor:col-resize; }
 .pane-split.vertical > .pane-divider { cursor:row-resize; }
 .pane-divider:hover { background:var(--primary); border-radius:4px; }
-.workspace-pane.ws-pane { overflow:hidden; border-radius:var(--radius-card); background:var(--surface); }
-.workspace-pane.ws-pane.selected { box-shadow:0 0 0 1.5px var(--primary); }
-.workspace-pane.ws-pane.selected > .ws-tile-bar { background:var(--primary-tint); }
+.workspace-pane.ws-pane { overflow:hidden; border:1px solid var(--border); border-radius:8px; background:var(--surface); box-shadow:none; }
+.workspace-pane.ws-pane.selected > .pane-identity { color:var(--text); }
 .workspace-pane.ws-pane.fullscreen { position:absolute; inset:2px; z-index:8; }
 .workspace-pane .ws-pane-tab { display:flex; align-items:center; gap:5px; min-width:0; max-width:220px; height:24px; padding:0 4px; border:0; background:transparent; color:inherit; font-size:12px; }
 .workspace-pane .ws-pane-tab.active { font-weight:600; }
@@ -20,8 +22,41 @@
 .workspace-pane .ws-compact-action { height:24px; padding:0 8px; border:1px solid var(--border); border-radius:var(--radius); background:transparent; font-size:11px; }
 .pane-body { display:flex; flex:1; min-width:0; min-height:0; overflow:hidden; }
 .pane-body > .terminal-wrap,.pane-body > .chat-view,.pane-body > .file-workspace { flex:1; min-width:0; min-height:0; }
+.pane-tab-surface { display:flex; flex:1; min-width:0; min-height:0; overflow:hidden; }
+.pane-tab-surface > * { flex:1; min-width:0; min-height:0; }
+.workspace-pane[hidden],.pane-tab-surface[hidden] { display:none !important; }
 .terminal-link-actions { flex:0 0 auto; }
 .pane-focused .workspace-pane:not(.fullscreen) { visibility:hidden; }
+.pane-focused .pane-split { visibility:hidden; }
 .pane-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; flex:1; min-width:0; min-height:0; padding:16px; color:var(--muted); text-align:center; }
 .pane-empty .ico { width:28px; height:28px; opacity:.55; }
+.workspace-toolbar-host { flex:none; min-width:0; }
+.workspace-tabbar.ws-strip { display:flex; flex:none; align-items:center; min-width:0; min-height:42px; padding:4px 8px; gap:8px; border-bottom:1px solid var(--border); }
+.workspace-tabs { display:flex; flex:1; min-width:0; align-items:center; gap:3px; overflow-x:auto; scrollbar-width:thin; }
+/* Overflow edges fade (24px = TAB_FADE in WorkspaceTabBar) instead of cutting a tab mid-word. */
+.workspace-tabs.fade-start { mask-image:linear-gradient(to right, transparent, #000 24px); }
+.workspace-tabs.fade-end { mask-image:linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+.workspace-tabs.fade-start.fade-end { mask-image:linear-gradient(to right, transparent, #000 24px, #000 calc(100% - 24px), transparent); }
+.workspace-tab { display:flex; flex:none; align-items:center; max-width:240px; min-width:0; border-radius:7px; color:var(--muted); }
+.workspace-tab:hover { background:var(--soft); }
+.workspace-tab.active { background:var(--primary-tint); color:var(--text); }
+.workspace-tab-select { display:flex; align-items:center; gap:7px; height:30px; min-width:0; padding:0 4px 0 9px; border:0; background:transparent; color:inherit; font:inherit; font-size:12px; text-align:left; }
+.workspace-tab-select span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.workspace-tab-select .ico,.workspace-tab-select .agent-icon { flex:none; width:14px; height:14px; }
+.workspace-tab-close { display:grid; place-items:center; flex:none; width:24px; height:26px; margin-right:2px; padding:0; border:0; border-radius:5px; background:transparent; color:var(--muted); }
+.workspace-tab-close .ico { width:12px; height:12px; }
+.workspace-tab-close:hover { color:var(--text); background:var(--border); }
+.workspace-tab-select:focus-visible,.workspace-tab-close:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+.workspace-tab-actions,.workspace-primary-actions { display:flex; align-items:center; flex:none; gap:5px; }
+.workspace-tab-actions .icon-btn { width:28px; height:28px; }
+.workspace-primary-actions .btn { min-height:28px; padding:4px 8px; font-size:12px; }
+.catalogue-popover:has(.workspace-tab-menu) { width:168px; min-width:168px; }
+.workspace-action-menu { display:flex; flex-direction:column; min-width:0; gap:2px; }
+.workspace-action-menu .menu-item { display:flex; align-items:center; gap:8px; min-height:30px; text-align:left; }
+.pane-identity { display:flex; flex:none; align-items:center; min-width:0; height:24px; gap:6px; padding:0 10px; color:var(--muted); font-size:11px; }
+.pane-identity span { white-space:nowrap; text-overflow:ellipsis; overflow:hidden; }
+.pane-identity .agent-icon { width:12px; height:12px; }
+.surface-local-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:4px 8px; }
 .pane-empty .note { margin:0; font-size:12px; }
+/* Tabs cut by a strip edge keep their label but not their close button (no lone × in the edge fade). */
+.workspace-tab[data-clipped] .workspace-tab-close { visibility:hidden; }

@@ -1,5 +1,5 @@
 //! Converts native provider updates into stable, persisted renderer chat items.
-use crate::{db::Database, domain::ChatItem};
+use crate::{db::Database, domain::ChatItem, file_references};
 use anyhow::Result;
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
@@ -76,13 +76,14 @@ fn notify_reply(
     Ok(())
 }
 
-fn upsert_chat_part(parts: &mut Vec<Value>, part: Value) {
+fn upsert_chat_part(parts: &mut Vec<Value>, mut part: Value) {
     let tool_id = part.get("toolId").and_then(Value::as_str);
     if let Some(tool_id) = tool_id {
         if let Some(existing) = parts
             .iter_mut()
             .find(|item| item.get("toolId").and_then(Value::as_str) == Some(tool_id))
         {
+            file_references::enrich_tool_part(&mut part, Some(existing));
             if let (Some(target), Some(source)) = (existing.as_object_mut(), part.as_object()) {
                 for (key, value) in source {
                     target.insert(key.clone(), value.clone());
@@ -91,6 +92,7 @@ fn upsert_chat_part(parts: &mut Vec<Value>, part: Value) {
             return;
         }
     }
+    file_references::enrich_tool_part(&mut part, None);
     parts.push(part);
 }
 
@@ -178,6 +180,7 @@ pub fn record(
   let previous:Option<String>=tx.query_row("SELECT data FROM chat_items WHERE id=?",[&id],|r|r.get(0)).optional()?;
   let mut item=previous.and_then(|s|serde_json::from_str::<ChatItem>(&s).ok()).unwrap_or(ChatItem{id:id.clone(),role:if category=="user"{"user"}else{"assistant"}.into(),parts:Vec::new(),created_at:now.clone(),turn_id:turn.map(str::to_owned),elapsed_ms:None});
   let mut changed=false;
+  let mut resolved_pending_approval=false;
   match kind {
    "message.user"=>{
     complete_streaming_items(tx,session_id,&now)?;
@@ -196,10 +199,10 @@ pub fn record(
     }
    }
    "chat.item"=>{
-    if let Some(parts)=data.get("parts").and_then(Value::as_array){item.parts=parts.clone();changed=true;}
+    if let Some(parts)=data.get("parts").and_then(Value::as_array){item.parts=parts.clone();file_references::enrich_parts(&mut item.parts);changed=true;}
     else if let Some(part)=data.get("part"){
      if data.get("merge").and_then(Value::as_bool)==Some(true){upsert_chat_part(&mut item.parts,part.clone());changed=true;}
-     else {item.parts=vec![part.clone()];changed=true;}
+     else {item.parts=vec![part.clone()];file_references::enrich_parts(&mut item.parts);changed=true;}
     }
     else if let Some(raw)=raw_item {
      let kind=raw.get("type").and_then(Value::as_str).unwrap_or("tool");
@@ -210,7 +213,7 @@ pub fn record(
       if !text.is_empty(){item.parts=vec![json!({"type":"text","text":text})];changed=true;}
      } else if matches!(kind,"agentThought"|"reasoning"|"thinking") {
       if !text.is_empty(){item.parts=vec![json!({"type":"thinking","text":text,"status":"complete"})];changed=true;}
-     } else {item.parts=vec![json!({"type":"tool","toolName":raw.get("name").and_then(Value::as_str).unwrap_or(kind),"toolId":native_item.unwrap_or(&id),"status":raw.get("status").and_then(Value::as_str).unwrap_or("running"),"data":raw})];changed=true;}
+     } else {item.parts=vec![json!({"type":"tool","toolName":raw.get("name").and_then(Value::as_str).unwrap_or(kind),"toolId":native_item.unwrap_or(&id),"status":raw.get("status").and_then(Value::as_str).unwrap_or("running"),"data":raw})];file_references::enrich_parts(&mut item.parts);changed=true;}
     }
    }
    "chat.approval"=>{
@@ -222,8 +225,21 @@ pub fn record(
     }
    }
    "chat.approval.resolved"=>{
-    let status=match data.get("status").and_then(Value::as_str) { Some("outcomeUnknown")=>"outcomeUnknown", _=>"resolved" };
-    for part in &mut item.parts {if part.get("type").and_then(Value::as_str)==Some("approval"){part["status"]=json!(status);changed=true;}}
+    // `expired` retires one card (cancelled/superseded) without implying any
+    // approval and without reopening the turn; other statuses resolve it.
+    let expired=data.get("status").and_then(Value::as_str)==Some("expired");
+    let status=if expired{"expired"}else{match data.get("status").and_then(Value::as_str) { Some("outcomeUnknown")=>"outcomeUnknown", _=>"resolved" }};
+    for part in &mut item.parts {if part.get("type").and_then(Value::as_str)==Some("approval"){
+     let previous_status=part.get("status").and_then(Value::as_str);
+     if previous_status==Some("expired") && !expired {continue;}
+     resolved_pending_approval |= matches!(previous_status,Some("pending"|"submitting"));
+     part["status"]=json!(status);
+     if expired {
+      if let (Some(target),Some(outcome))=(part.pointer_mut("/data").and_then(Value::as_object_mut),data.get("outcome")) {target.insert("outcome".into(),outcome.clone());}
+      if let (Some(target),Some(message))=(part.pointer_mut("/data").and_then(Value::as_object_mut),data.get("message")) {target.insert("message".into(),message.clone());}
+     }
+     changed=true;
+    }}
     tx.execute("UPDATE inbox SET resolved=1,read=1 WHERE id=?",[&id])?;
    }
    "chat.connection"=>{
@@ -233,7 +249,9 @@ pub fn record(
      payload
     })?,now])?;
     let phase=data.get("phase").and_then(Value::as_str).unwrap_or("");
-    if matches!(phase,"failed"|"disconnected"|"unavailable") {
+    // A replacement worker cannot inherit actionable permissions from the
+    // prior connection. Its connecting event precedes its native events.
+    if matches!(phase,"connecting"|"failed"|"disconnected"|"unavailable") {
      expire_pending_parts(tx,session_id,&now)?;
     }
    }
@@ -258,7 +276,7 @@ pub fn record(
    tx.execute("INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,turn_id=excluded.turn_id",params![id,session_id,turn,"message",payload,item.created_at])?;
    tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.item',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"item":item}))?,now])?;
   }
-  let status=match kind {"chat.turn.started"=>Some("running"),"chat.turn.completed"=>Some("idle"),"chat.approval"=>Some("waiting"),"chat.approval.resolved"=>Some("running"),"chat.error"=>Some("error"),_=>None};
+  let status=match kind {"chat.turn.started"=>Some("running"),"chat.turn.completed"=>Some("idle"),"chat.approval"=>Some("waiting"),"chat.approval.resolved" if !resolved_pending_approval || data.get("status").and_then(Value::as_str)==Some("expired")=>None,"chat.approval.resolved"=>Some(if has_pending_approval(tx,session_id)? {"waiting"}else{"running"}),"chat.error"=>Some("error"),_=>None};
   if let Some(status)=status {
    // Provider readers can deliver a final completion/error after an explicit
    // stop or runtime recovery has already made the session terminal. Keep
@@ -278,6 +296,24 @@ pub fn record(
   if status.is_some()||usage.is_some() {tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"kind":kind}))?,now])?;}
   Ok(())
  })
+}
+
+fn has_pending_approval(tx: &rusqlite::Transaction<'_>, session_id: &str) -> Result<bool> {
+    let mut statement = tx.prepare("SELECT data FROM chat_items WHERE session_id=?")?;
+    let rows = statement.query_map([session_id], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        let item: ChatItem = serde_json::from_str(&row?)?;
+        if item.parts.iter().any(|part| {
+            part.get("type").and_then(Value::as_str) == Some("approval")
+                && matches!(
+                    part.get("status").and_then(Value::as_str),
+                    Some("pending" | "submitting")
+                )
+        }) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn expire_pending_approvals(db: &Database, session_id: &str) -> Result<()> {
@@ -355,6 +391,66 @@ fn expire_pending_parts_matching(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approval_resolution_keeps_sibling_waiting_and_ignores_late_unknown_replies() {
+        for provider in crate::providers::SUPPORTED_PROVIDERS {
+            let root = tempfile::tempdir().unwrap();
+            let db = Database::open(&root.path().join("approvals.sqlite")).unwrap();
+            db.transaction(|tx| {
+                tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('s','test',?,'chat','running','now','now')", [provider])?;
+                Ok(())
+            }).unwrap();
+            for id in ["one", "two"] {
+                record(
+                    &db,
+                    "s",
+                    Some("turn"),
+                    "chat.approval",
+                    &json!({"approvalId":id}),
+                )
+                .unwrap();
+            }
+            record(
+                &db,
+                "s",
+                Some("turn"),
+                "chat.approval.resolved",
+                &json!({"approvalId":"one"}),
+            )
+            .unwrap();
+            assert_eq!(
+                db.session_by_id("s").unwrap().unwrap().status,
+                "waiting",
+                "{provider}: sibling still pending"
+            );
+            record(
+                &db,
+                "s",
+                Some("turn"),
+                "chat.approval.resolved",
+                &json!({"approvalId":"two"}),
+            )
+            .unwrap();
+            assert_eq!(db.session_by_id("s").unwrap().unwrap().status, "running");
+            record(&db, "s", Some("turn"), "chat.turn.completed", &json!({})).unwrap();
+            for id in ["one", "missing"] {
+                record(
+                    &db,
+                    "s",
+                    Some("turn"),
+                    "chat.approval.resolved",
+                    &json!({"approvalId":id}),
+                )
+                .unwrap();
+                assert_eq!(
+                    db.session_by_id("s").unwrap().unwrap().status,
+                    "idle",
+                    "{provider}: late/unknown resolution"
+                );
+            }
+        }
+    }
     use tempfile::tempdir;
     fn db() -> Database {
         let dir = tempdir().unwrap();
@@ -768,6 +864,76 @@ mod tests {
         assert_eq!(item.parts[1]["text"], "a.txt");
     }
     #[test]
+    fn six_provider_tool_shapes_keep_bounded_candidates_across_partial_updates() {
+        for (provider, data, expected) in [
+            (
+                "codex",
+                json!({"type":"fileChange","changes":[{"path":"src/codex.rs"}]}),
+                "src/codex.rs",
+            ),
+            (
+                "claude",
+                json!({"type":"tool_use","input":{"file_path":"src/claude.rs"}}),
+                "src/claude.rs",
+            ),
+            (
+                "kimi",
+                json!({"sessionUpdate":"tool_call","locations":[{"path":"src/kimi.rs"}]}),
+                "src/kimi.rs",
+            ),
+            (
+                "gemini",
+                json!({"sessionUpdate":"tool_call","rawInput":{"path":"src/gemini.rs"}}),
+                "src/gemini.rs",
+            ),
+            (
+                "grok",
+                json!({"sessionUpdate":"tool_call","rawOutput":{"filePath":"src/grok.rs"}}),
+                "src/grok.rs",
+            ),
+            (
+                "opencode",
+                json!({"type":"tool","state":{"input":{"filepath":"src/opencode.rs"}}}),
+                "src/opencode.rs",
+            ),
+        ] {
+            let db = db();
+            let tool_id = format!("{provider}-tool");
+            let part = json!({"type":"tool","toolId":tool_id,"status":"running","data":data});
+            record(
+                &db,
+                "s",
+                Some("t"),
+                "chat.item",
+                &json!({"merge":true,"part":part}),
+            )
+            .unwrap();
+            record(&db, "s", Some("t"), "chat.item", &json!({"merge":true,"part":{
+                "type":"tool","toolId":tool_id,"status":"failed","data":{"output":{"path":"src/later.rs"}}
+            }})).unwrap();
+            // A repeated partial update must not duplicate either candidate.
+            record(&db, "s", Some("t"), "chat.item", &json!({"merge":true,"part":{
+                "type":"tool","toolId":tool_id,"status":"failed","data":{"output":{"path":"src/later.rs"}}
+            }})).unwrap();
+            let item = db
+                .chat_items("s")
+                .unwrap()
+                .into_iter()
+                .find(|item| item.role == "assistant")
+                .unwrap();
+            assert_eq!(item.parts.len(), 1, "{provider}");
+            assert_eq!(item.parts[0]["status"], "failed", "{provider}");
+            assert_eq!(
+                item.parts[0]["data"],
+                json!({"output":{"path":"src/later.rs"}})
+            );
+            assert_eq!(
+                item.parts[0]["fileReferences"],
+                json!([{"path":expected},{"path":"src/later.rs"}])
+            );
+        }
+    }
+    #[test]
     fn approval_projection_keeps_native_choices_and_expires_stale_pending() {
         let db = db();
         record(
@@ -827,5 +993,76 @@ mod tests {
         .unwrap();
         let unknown = db.chat_items("s").unwrap().pop().unwrap();
         assert_eq!(unknown.parts[0]["status"], "outcomeUnknown");
+    }
+    #[test]
+    fn expired_resolution_targets_one_card_and_never_reopens_the_turn() {
+        let db = db();
+        for approval in ["a1", "a2"] {
+            record(
+                &db,
+                "s",
+                Some("t1"),
+                "chat.approval",
+                &json!({
+                    "approvalId":approval,
+                    "part":{"type":"approval","approvalId":approval,"status":"pending","data":{"approvalId":approval,"choices":[],"submittable":true}}
+                }),
+            )
+            .unwrap();
+        }
+        assert_eq!(db.session_by_id("s").unwrap().unwrap().status, "waiting");
+        record(
+            &db,
+            "s",
+            Some("t1"),
+            "chat.approval.resolved",
+            &json!({"approvalId":"a1","status":"expired","outcome":"cancelled","message":"Request cancelled"}),
+        )
+        .unwrap();
+        let items = db.chat_items("s").unwrap();
+        let first = items
+            .iter()
+            .find(|item| item.id == "s:approval:a1")
+            .unwrap();
+        assert_eq!(first.parts[0]["status"], "expired");
+        assert_eq!(first.parts[0]["data"]["outcome"], "cancelled");
+        let second = items
+            .iter()
+            .find(|item| item.id == "s:approval:a2")
+            .unwrap();
+        assert_eq!(
+            second.parts[0]["status"], "pending",
+            "the other card must stay pending"
+        );
+        // A cancellation must not flip a waiting/idle session back to running.
+        assert_eq!(db.session_by_id("s").unwrap().unwrap().status, "waiting");
+        let inbox_resolved: bool = db
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT resolved FROM inbox WHERE id='s:approval:a1'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert!(inbox_resolved, "cancelled card inbox entry must resolve");
+        // Repeating the cancellation is idempotent.
+        record(
+            &db,
+            "s",
+            Some("t1"),
+            "chat.approval.resolved",
+            &json!({"approvalId":"a1","status":"expired","outcome":"cancelled"}),
+        )
+        .unwrap();
+        let again = db.chat_items("s").unwrap();
+        assert_eq!(
+            again
+                .iter()
+                .find(|item| item.id == "s:approval:a1")
+                .unwrap()
+                .parts[0]["status"],
+            "expired"
+        );
     }
 }

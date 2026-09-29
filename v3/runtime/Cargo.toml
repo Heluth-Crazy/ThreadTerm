@@ -17,15 +17,18 @@ anyhow = "1.0"
 base64 = "0.22"
 bytes = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
+globset = "0.4"
 hex = "0.4"
 hmac = "0.12"
 http-body-util = "0.1"
 hyper = { version = "1.6", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+ignore = "0.4"
 local-ip-address = "0.6.5"
 portable-pty = "0.8"
 rand = "0.8"
 rcgen = "0.13"
+regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "backup"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -39,7 +42,7 @@ rustls-pemfile = "2.2"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Console", "Win32_Globalization", "Win32_UI_Shell"] }
 
 [dev-dependencies]
 tempfile = "3.14"

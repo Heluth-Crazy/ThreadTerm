@@ -7,7 +7,7 @@ use super::{
         encode_approval_id, history_page, insert_optional, validate_native_id, version_probe,
         CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
-    emit, ChatSession, ProviderAdapter, ProviderCapability, ProviderError, ProviderEvent,
+    emit_scoped, ChatSession, ProviderAdapter, ProviderCapability, ProviderError, ProviderEvent,
     TerminalCommand,
 };
 use chrono::{TimeZone, Utc};
@@ -38,10 +38,12 @@ impl CodexAdapter {
         ui: Arc<Mutex<CodexUiState>>,
         responder: Arc<Mutex<Option<JsonLineResponder>>>,
         project_events: bool,
+        worker_token: &str,
     ) -> Result<JsonLineProcess, ProviderError> {
         let spec = CommandSpec::provider("codex", &["app-server", "--stdio"])?;
         let events = self.events.clone();
         let owned_session_id = session_id.to_owned();
+        let worker_token = worker_token.to_owned();
         let on_message = Arc::new(move |raw: Value| {
             if project_events {
                 emit_codex_message(
@@ -52,6 +54,7 @@ impl CodexAdapter {
                     &active_turn,
                     &ui,
                     &responder,
+                    &worker_token,
                     raw,
                 );
             }
@@ -84,6 +87,7 @@ impl CodexAdapter {
             Arc::new(Mutex::new(CodexUiState::default())),
             Arc::new(Mutex::new(None)),
             false,
+            "",
         )
     }
 }
@@ -116,13 +120,7 @@ impl ProviderAdapter for CodexAdapter {
             history: installed,
             resume: installed,
             terminal_resume_capture: self.terminal_capture().as_str(),
-            reason: if !installed {
-                Some("Codex CLI is not installed".to_owned())
-            } else if auth != "authenticated" {
-                Some("Codex CLI is not authenticated".to_owned())
-            } else {
-                probe_error
-            },
+            reason: codex_capability_reason(installed, &auth, probe_error),
             auth,
         }
     }
@@ -149,7 +147,7 @@ impl ProviderAdapter for CodexAdapter {
         let path = super::common::find_executable("codex").ok_or_else(|| {
             ProviderError::unavailable("codex", "Codex executable was not found on PATH")
         })?;
-        let spec = CommandSpec::from_path(path, args);
+        let spec = CommandSpec::from_path(path, args)?;
         Ok(TerminalCommand {
             program: spec.program,
             args: spec.args,
@@ -227,6 +225,25 @@ impl ProviderAdapter for CodexAdapter {
         cwd: &str,
         native_id: Option<&str>,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.open_chat_scoped(
+            session_id,
+            cwd,
+            native_id,
+            &uuid::Uuid::new_v4().to_string(),
+        )
+    }
+
+    fn scopes_chat_events(&self) -> bool {
+        true
+    }
+
+    fn open_chat_scoped(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
         let native = Arc::new(Mutex::new(None));
         let approvals = Arc::new(Mutex::new(HashMap::new()));
         let active_turn = new_codex_turn_state();
@@ -240,6 +257,7 @@ impl ProviderAdapter for CodexAdapter {
             Arc::clone(&ui),
             Arc::clone(&responder),
             true,
+            worker_token,
         )?;
         if let Ok(mut slot) = responder.lock() {
             *slot = Some(process.responder());
@@ -269,7 +287,7 @@ impl ProviderAdapter for CodexAdapter {
         if let Ok(mut value) = native.lock() {
             *value = Some(native_id.clone());
         }
-        emit(
+        emit_scoped(
             &self.events,
             "codex",
             session_id,
@@ -277,6 +295,7 @@ impl ProviderAdapter for CodexAdapter {
             None,
             "session.ready",
             json!({"nativeId":native_id}),
+            Some(worker_token),
         );
         let prior_status = ui.lock().ok().map(|state| state.status.clone());
         let mut loaded = load_codex_ui(&process, &thread, &thread_response, cwd);
@@ -286,7 +305,13 @@ impl ProviderAdapter for CodexAdapter {
         if let Ok(mut state) = ui.lock() {
             *state = loaded;
         }
-        emit_chat_ui(&self.events, session_id, Some(&native_id), &ui);
+        emit_chat_ui(
+            &self.events,
+            session_id,
+            Some(&native_id),
+            &ui,
+            worker_token,
+        );
         schedule_codex_status_reads(&process, &ui, None);
         Ok(Box::new(CodexChat {
             process,
@@ -297,7 +322,22 @@ impl ProviderAdapter for CodexAdapter {
             cwd: cwd.to_owned(),
             events: self.events.clone(),
             ui,
+            worker_token: worker_token.to_owned(),
         }))
+    }
+}
+
+fn codex_capability_reason(
+    installed: bool,
+    auth: &str,
+    probe_error: Option<String>,
+) -> Option<String> {
+    if !installed {
+        Some(probe_error.unwrap_or_else(|| "Codex CLI is not installed".to_owned()))
+    } else if auth != "authenticated" {
+        Some("Codex CLI is not authenticated".to_owned())
+    } else {
+        probe_error
     }
 }
 
@@ -323,6 +363,7 @@ struct CodexChat {
     cwd: String,
     events: broadcast::Sender<ProviderEvent>,
     ui: Arc<Mutex<CodexUiState>>,
+    worker_token: String,
 }
 
 #[derive(Clone)]
@@ -358,8 +399,13 @@ impl ChatSession for CodexChat {
         self.process.is_alive()
     }
 
+    fn validate_send(&self, _text: &str) -> Result<(), ProviderError> {
+        self.validate_active_turn()
+    }
+
     fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError> {
         validate_native_id(operation_id)?;
+        self.validate_send(text)?;
         if let Some(result) = self.dispatch_slash(text.trim(), operation_id)? {
             return Ok(result);
         }
@@ -459,7 +505,7 @@ impl ChatSession for CodexChat {
         match sent {
             Ok(()) => {
                 approvals.remove(approval_id);
-                emit(
+                emit_scoped(
                     &self.events,
                     "codex",
                     &self.session_id,
@@ -467,6 +513,7 @@ impl ChatSession for CodexChat {
                     Some(turn_id),
                     "chat.approval.resolved",
                     json!({"approvalId":approval_id,"outcome":"submitted"}),
+                    Some(&self.worker_token),
                 );
                 Ok(())
             }
@@ -480,7 +527,7 @@ impl ChatSession for CodexChat {
                 if let Some(pending) = approvals.get_mut(approval_id) {
                     pending.state.mark_unknown();
                 }
-                emit(
+                emit_scoped(
                     &self.events,
                     "codex",
                     &self.session_id,
@@ -488,6 +535,7 @@ impl ChatSession for CodexChat {
                     Some(turn_id),
                     "chat.approval.resolved",
                     json!({"approvalId":approval_id,"status":"outcomeUnknown","outcome":"unknown"}),
+                    Some(&self.worker_token),
                 );
                 Err(ProviderError::new(
                     "approval_outcome_unknown",
@@ -517,6 +565,21 @@ impl ChatSession for CodexChat {
 }
 
 impl CodexChat {
+    fn validate_active_turn(&self) -> Result<(), ProviderError> {
+        let (active, _) = &*self.active_turn;
+        if active
+            .lock()
+            .map_err(|_| ProviderError::new("provider_internal", "Codex turn lock poisoned"))?
+            .is_some()
+        {
+            return Err(ProviderError::new(
+                "turn_in_progress",
+                "Codex session already has an active turn",
+            ));
+        }
+        Ok(())
+    }
+
     fn start_turn(
         &mut self,
         operation_id: &str,
@@ -546,6 +609,7 @@ impl CodexChat {
         let session_id = self.session_id.clone();
         let native_id = self.native_id.clone();
         let approvals = Arc::clone(&self.approvals);
+        let worker_token = self.worker_token.clone();
         let request = self.process.request_async(
             "turn/start",
             json!({
@@ -563,7 +627,7 @@ impl CodexChat {
                             None,
                         );
                     }
-                    emit(
+                    emit_scoped(
                         &events,
                         "codex",
                         &session_id,
@@ -571,6 +635,7 @@ impl CodexChat {
                         Some(&public_id),
                         "chat.error",
                         json!({"code":error.code,"message":error.message,"details":error.details}),
+                        Some(&worker_token),
                     );
                 }
             },
@@ -594,14 +659,7 @@ impl CodexChat {
             return Ok(None);
         };
         match name {
-            "model" if !args.is_empty() => {
-                self.apply_option("model", args)?;
-                Ok(Some(json!({"turnId":operation_id})))
-            }
-            "plan" => {
-                self.apply_option("mode", "plan")?;
-                Ok(Some(json!({"turnId":operation_id})))
-            }
+            "model" | "plan" => Ok(Some(self.setting_command(name, args, operation_id))),
             "status" | "usage" => {
                 // Emit the cached report first, then refresh account/quota
                 // data. Each callback replaces this same chat item so a
@@ -615,6 +673,7 @@ impl CodexChat {
                 let refresh_cwd = self.cwd.clone();
                 let refresh_ui = Arc::clone(&self.ui);
                 let refresh_turn = Arc::clone(&self.active_turn);
+                let refresh_worker_token = self.worker_token.clone();
                 let refresh = Arc::new(move || {
                     emit_codex_status_item(
                         &refresh_events,
@@ -623,6 +682,7 @@ impl CodexChat {
                         CodexStatusCommand {
                             operation_id: &refresh_operation_id,
                             command: &refresh_command,
+                            worker_token: &refresh_worker_token,
                         },
                         &refresh_cwd,
                         &refresh_ui,
@@ -636,6 +696,7 @@ impl CodexChat {
                     CodexStatusCommand {
                         operation_id,
                         command: name,
+                        worker_token: &self.worker_token,
                     },
                     &self.cwd,
                     &self.ui,
@@ -647,7 +708,7 @@ impl CodexChat {
             "compact" => {
                 self.process
                     .request("thread/compact/start", json!({"threadId":self.native_id}))?;
-                emit(
+                emit_scoped(
                     &self.events,
                     "codex",
                     &self.session_id,
@@ -655,6 +716,7 @@ impl CodexChat {
                     Some(operation_id),
                     "chat.turn.completed",
                     json!({"command":"compact"}),
+                    Some(&self.worker_token),
                 );
                 Ok(Some(json!({"turnId":operation_id})))
             }
@@ -692,6 +754,104 @@ impl CodexChat {
                 .find(|skill| skill.name.eq_ignore_ascii_case(name))
                 .cloned()
         })
+    }
+
+    fn setting_command(&mut self, name: &str, args: &str, operation_id: &str) -> Value {
+        emit_scoped(
+            &self.events,
+            "codex",
+            &self.session_id,
+            Some(&self.native_id),
+            Some(operation_id),
+            "chat.turn.started",
+            json!({"command":name}),
+            Some(&self.worker_token),
+        );
+        let result = match name {
+            "model" if args.is_empty() || matches!(args, "?" | "status") => Ok(format!(
+                "Model: {}",
+                self.current_setting("model")
+                    .unwrap_or_else(|| "unavailable".to_owned())
+            )),
+            "model" if args.split_whitespace().count() == 1 => {
+                self.apply_option("model", args).map(|_| {
+                    format!(
+                        "Model: {}",
+                        self.current_setting("model")
+                            .unwrap_or_else(|| args.to_owned())
+                    )
+                })
+            }
+            "model" => Err(ProviderError::new(
+                "invalid_command",
+                "Usage: /model [model-id]",
+            )),
+            "plan" if matches!(args, "?" | "status") => Ok(format!(
+                "Mode: {}",
+                self.current_setting("mode")
+                    .unwrap_or_else(|| "unavailable".to_owned())
+            )),
+            "plan" => {
+                let mode = match args {
+                    "" | "on" | "plan" => Ok("plan"),
+                    "off" | "default" => Ok("default"),
+                    _ => Err(ProviderError::new(
+                        "invalid_command",
+                        "Usage: /plan [on|off|status]",
+                    )),
+                };
+                mode.and_then(|mode| {
+                    self.apply_option("mode", mode).map(|_| {
+                        format!(
+                            "Mode: {}",
+                            self.current_setting("mode")
+                                .unwrap_or_else(|| mode.to_owned())
+                        )
+                    })
+                })
+            }
+            _ => unreachable!(),
+        };
+        match result {
+            Ok(text) => emit_scoped(
+                &self.events,
+                "codex",
+                &self.session_id,
+                Some(&self.native_id),
+                Some(operation_id),
+                "chat.item",
+                json!({"parts":[{"type":"text","text":text,"status":"complete"}],"command":name}),
+                Some(&self.worker_token),
+            ),
+            Err(error) => emit_scoped(
+                &self.events,
+                "codex",
+                &self.session_id,
+                Some(&self.native_id),
+                Some(operation_id),
+                "chat.error",
+                json!({"code":error.code,"message":error.message,"details":error.details,"command":name}),
+                Some(&self.worker_token),
+            ),
+        }
+        emit_scoped(
+            &self.events,
+            "codex",
+            &self.session_id,
+            Some(&self.native_id),
+            Some(operation_id),
+            "chat.turn.completed",
+            json!({"command":name}),
+            Some(&self.worker_token),
+        );
+        json!({"turnId":operation_id})
+    }
+
+    fn current_setting(&self, option_id: &str) -> Option<String> {
+        self.ui
+            .lock()
+            .ok()
+            .and_then(|state| option_value(Some(&state), option_id))
     }
 
     fn apply_option(&mut self, option_id: &str, value: &str) -> Result<Value, ProviderError> {
@@ -733,6 +893,7 @@ impl CodexChat {
             &self.session_id,
             Some(&self.native_id),
             &self.ui,
+            &self.worker_token,
         );
         Ok(self.ui_state())
     }
@@ -791,6 +952,7 @@ struct CodexStatusState {
 struct CodexStatusCommand<'a> {
     operation_id: &'a str,
     command: &'a str,
+    worker_token: &'a str,
 }
 
 #[derive(Clone)]
@@ -1594,6 +1756,7 @@ fn emit_chat_ui(
     session_id: &str,
     native_id: Option<&str>,
     ui: &Mutex<CodexUiState>,
+    worker_token: &str,
 ) {
     let data = ui
         .lock()
@@ -1602,8 +1765,15 @@ fn emit_chat_ui(
             json!({"sessionId":session_id,"options":state.options.clone(),"commands":state.commands.clone()})
         })
         .unwrap_or_else(|| json!({"sessionId":session_id,"options":[],"commands":[]}));
-    emit(
-        events, "codex", session_id, native_id, None, "chat.ui", data,
+    emit_scoped(
+        events,
+        "codex",
+        session_id,
+        native_id,
+        None,
+        "chat.ui",
+        data,
+        Some(worker_token),
     );
 }
 
@@ -1624,7 +1794,7 @@ fn emit_codex_status_item(
     let mut status = codex_status_report(native_id, cwd, ui.as_deref(), active_turn.as_ref());
     status["kind"] = json!(request.command);
     let text = codex_status_text_from_report(&status);
-    emit(
+    emit_scoped(
         events,
         "codex",
         session_id,
@@ -1640,6 +1810,7 @@ fn emit_codex_status_item(
             }],
             "command":request.command
         }),
+        Some(request.worker_token),
     );
 }
 
@@ -1726,6 +1897,7 @@ fn emit_codex_message(
     active_turn: &CodexTurnState,
     ui: &Mutex<CodexUiState>,
     responder: &Mutex<Option<JsonLineResponder>>,
+    worker_token: &str,
     raw: Value,
 ) {
     let native_id = native.lock().ok().and_then(|value| value.clone());
@@ -1801,7 +1973,7 @@ fn emit_codex_message(
                 | "applyPatchApproval"
         );
         if !supported {
-            emit(
+            emit_scoped(
                 events,
                 "codex",
                 session_id,
@@ -1811,6 +1983,7 @@ fn emit_codex_message(
                 json!({
                     "code":"unsupported_server_request","message":format!("Codex requested unsupported interaction {method}"),"raw":raw
                 }),
+                Some(worker_token),
             );
             return;
         }
@@ -1851,7 +2024,7 @@ fn emit_codex_message(
             turn_id.as_deref(),
             submittable,
         );
-        emit(
+        emit_scoped(
             events,
             "codex",
             session_id,
@@ -1865,6 +2038,7 @@ fn emit_codex_message(
                 "choices":choices,
                 "part":{"type":"approval","approvalId":approval_id,"status":"pending","data":payload}
             }),
+            Some(worker_token),
         );
         return;
     }
@@ -1881,7 +2055,7 @@ fn emit_codex_message(
             state.status.thread_settings = settings.clone();
             merge_json_values(&mut state.status.thread_response, settings);
         }
-        emit_chat_ui(events, session_id, native_id.as_deref(), ui);
+        emit_chat_ui(events, session_id, native_id.as_deref(), ui, worker_token);
         return;
     }
     match method {
@@ -1963,7 +2137,7 @@ fn emit_codex_message(
         // than creating a second, empty assistant row for the duration.
         data["item"] = json!({"id": item_id});
     }
-    emit(
+    emit_scoped(
         events,
         "codex",
         session_id,
@@ -1971,6 +2145,7 @@ fn emit_codex_message(
         turn_id.as_deref(),
         kind,
         data,
+        Some(worker_token),
     );
     if matches!(method, "turn/completed" | "thread/compacted" | "error") {
         if let Some(turn_id) = turn_id {
@@ -2109,6 +2284,7 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
                             .and_then(Value::as_str)
                             .map(|value| json!(value)),
                     );
+                    crate::file_references::enrich_tool_part(&mut part, None);
                     ("tool", vec![part])
                 }
             };
@@ -2146,6 +2322,203 @@ fn extract_text(item: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_version_probe_keeps_its_specific_error() {
+        assert_eq!(
+            codex_capability_reason(false, "unknown", Some("version probe timed out".into())),
+            Some("version probe timed out".into())
+        );
+        assert_eq!(
+            codex_capability_reason(false, "unknown", None),
+            Some("Codex CLI is not installed".into())
+        );
+    }
+
+    #[test]
+    fn native_reader_producers_keep_the_reserved_worker_token() {
+        let (events, mut received) = broadcast::channel(16);
+        let native = Mutex::new(Some("native-1".to_owned()));
+        let approvals = Mutex::new(HashMap::new());
+        let active_turn = new_codex_turn_state();
+        let ui = Mutex::new(CodexUiState::default());
+        let responder = Mutex::new(None);
+        for raw in [
+            json!({"method":"turn/started","params":{"turn":{"id":"native-turn"}}}),
+            json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"command":"echo qa"}}),
+            json!({"method":"thread/settings/updated","params":{"threadSettings":{"model":"qa-model"}}}),
+            json!({"kind":"process.error","message":"fake reader EOF"}),
+        ] {
+            emit_codex_message(
+                &events,
+                "session-1",
+                &native,
+                &approvals,
+                &active_turn,
+                &ui,
+                &responder,
+                "reserved-token",
+                raw,
+            );
+        }
+        let observed: Vec<_> = std::iter::from_fn(|| received.try_recv().ok()).collect();
+        assert_eq!(
+            observed
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "chat.turn.started",
+                "chat.approval",
+                "chat.ui",
+                "provider.event"
+            ]
+        );
+        assert!(observed
+            .iter()
+            .all(|event| event.worker_token.as_deref() == Some("reserved-token")));
+        assert_eq!(
+            approvals.lock().unwrap().len(),
+            1,
+            "approval is not auto-submitted"
+        );
+    }
+
+    #[test]
+    fn local_settings_emit_one_turn_and_do_not_complete_an_active_turn() {
+        let scratch = tempfile::tempdir().unwrap();
+        let log = scratch.path().join("requests.jsonl");
+        std::fs::write(&log, "").unwrap();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../qa/fixtures/fake-codex-slash.cjs");
+        let spec = CommandSpec::provider("node", &[fixture.to_str().unwrap()]).unwrap();
+        let process = JsonLineProcess::spawn(
+            "codex-slash-test",
+            &spec,
+            None,
+            &[
+                ("THREADTERM_QA_CODEX_SLASH_LOG", log.to_str().unwrap()),
+                (
+                    "THREADTERM_QA_CODEX_SLASH_CWD",
+                    scratch.path().to_str().unwrap(),
+                ),
+            ],
+            EnvelopeStyle::Codex,
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let (events, mut received) = broadcast::channel(32);
+        let active_turn = new_codex_turn_state();
+        let mut chat = CodexChat {
+            process,
+            native_id: "qa-codex-slash-thread".to_owned(),
+            approvals: Arc::new(Mutex::new(HashMap::new())),
+            active_turn: Arc::clone(&active_turn),
+            session_id: "session-qa".to_owned(),
+            cwd: scratch.path().to_string_lossy().into_owned(),
+            events,
+            ui: Arc::new(Mutex::new(CodexUiState {
+                options: vec![
+                    json!({"id":"model","value":"qa-model-a"}),
+                    json!({"id":"mode","value":"default"}),
+                ],
+                ..CodexUiState::default()
+            })),
+            worker_token: "qa-worker-token".to_owned(),
+        };
+        for (command, turn, expected_kind) in [
+            ("/model", "query", "chat.item"),
+            ("/plan invalid", "invalid", "chat.error"),
+            ("/plan", "plan", "chat.item"),
+        ] {
+            assert_eq!(chat.send(command, turn).unwrap()["turnId"], turn);
+            let kinds = std::iter::from_fn(|| received.try_recv().ok())
+                .filter(|event| event.kind.starts_with("chat.") && event.kind != "chat.ui")
+                .map(|event| {
+                    assert_eq!(event.turn_id.as_deref(), Some(turn));
+                    assert_eq!(event.worker_token.as_deref(), Some("qa-worker-token"));
+                    event.kind
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                kinds,
+                vec![
+                    "chat.turn.started".to_owned(),
+                    expected_kind.to_owned(),
+                    "chat.turn.completed".to_owned()
+                ]
+            );
+        }
+        assert_eq!(
+            chat.send("/status", "status-turn").unwrap()["turnId"],
+            "status-turn"
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut status_items = 0;
+        while status_items < 3 && Instant::now() < deadline {
+            match received.try_recv() {
+                Ok(event) => {
+                    assert_eq!(event.worker_token.as_deref(), Some("qa-worker-token"));
+                    if event.kind == "chat.item" && event.turn_id.as_deref() == Some("status-turn")
+                    {
+                        status_items += 1;
+                    }
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                other => panic!("scoped /status callback failed: {other:?}"),
+            }
+        }
+        assert_eq!(
+            status_items, 3,
+            "cached status and both async account callbacks"
+        );
+        let before = std::fs::read_to_string(&log).unwrap();
+        {
+            let (active, _) = &*active_turn;
+            *active.lock().unwrap() = Some(ActiveCodexTurn {
+                public_id: "normal-turn".to_owned(),
+                native_id: Some("native-normal".to_owned()),
+                assistant_item_id: None,
+                started_at: Instant::now(),
+            });
+        }
+        assert_eq!(
+            chat.validate_send("/plan").unwrap_err().code,
+            "turn_in_progress"
+        );
+        assert_eq!(
+            chat.send("/plan", "conflict").unwrap_err().code,
+            "turn_in_progress"
+        );
+        assert!(received.try_recv().is_err());
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), before);
+        let (active, _) = &*active_turn;
+        assert_eq!(
+            active.lock().unwrap().as_ref().unwrap().public_id,
+            "normal-turn"
+        );
+        *active.lock().unwrap() = None;
+        assert_eq!(
+            chat.send("qa fail ordinary turn", "failed-turn").unwrap()["turnId"],
+            "failed-turn"
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match received.try_recv() {
+                Ok(event) if event.kind == "chat.error" => {
+                    assert_eq!(event.turn_id.as_deref(), Some("failed-turn"));
+                    assert_eq!(event.worker_token.as_deref(), Some("qa-worker-token"));
+                    break;
+                }
+                Ok(_) | Err(broadcast::error::TryRecvError::Empty) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                other => panic!("missing scoped async turn/start error: {other:?}"),
+            }
+        }
+    }
     #[test]
     fn child_and_ephemeral_threads_are_not_interactive_resume_targets() {
         for thread in [
@@ -2203,10 +2576,15 @@ mod tests {
     fn transcript_preserves_tool_parts() {
         let items = codex_transcript_items(&json!({"turns":[{"id":"turn_1","items":[
             {"id":"i1","type":"agentMessage","text":"done"},
-            {"id":"i2","type":"commandExecution","status":"completed"}
+            {"id":"i2","type":"commandExecution","status":"completed"},
+            {"id":"i3","type":"fileChange","status":"failed","changes":[{"path":"src/a.rs"},{"path":"src/b.rs"}]}
         ]}]}));
         assert_eq!(items[0]["parts"][0]["text"], "done");
         assert_eq!(items[1]["parts"][0]["toolName"], "commandExecution");
+        assert_eq!(
+            items[2]["parts"][0]["fileReferences"],
+            json!([{"path":"src/a.rs"},{"path":"src/b.rs"}])
+        );
     }
 
     #[test]
@@ -2436,6 +2814,7 @@ mod tests {
             CodexStatusCommand {
                 operation_id: "status-turn",
                 command: "status",
+                worker_token: "status-worker-token",
             },
             "D:/workspace",
             &ui,
@@ -2448,6 +2827,7 @@ mod tests {
             CodexStatusCommand {
                 operation_id: "usage-turn",
                 command: "usage",
+                worker_token: "status-worker-token",
             },
             "D:/workspace",
             &ui,
@@ -2456,6 +2836,8 @@ mod tests {
 
         let status = receiver.try_recv().unwrap();
         let usage = receiver.try_recv().unwrap();
+        assert_eq!(status.worker_token.as_deref(), Some("status-worker-token"));
+        assert_eq!(usage.worker_token.as_deref(), Some("status-worker-token"));
         assert_eq!(status.data["command"], "status");
         assert_eq!(status.data["parts"][0]["data"]["kind"], "status");
         assert_eq!(usage.data["command"], "usage");

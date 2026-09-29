@@ -19,6 +19,8 @@ const run=(cmd,args,cwd)=>new Promise((res,rej)=>{const p=spawn(cmd,args,{cwd,wi
 const shot=name=>page.screenshot({path:join(out,name)});
 try {
   await mkdir(out,{recursive:true}); await mkdir(project,{recursive:true});
+  // The desktop opens data/runtime.log before the runtime creates its directory.
+  await mkdir(join(scratch,'data'),{recursive:true}); await mkdir(join(scratch,'profile'),{recursive:true});
   await run('git',['init'],project); await run('git',['config','user.email','qa@example.test'],project); await run('git',['config','user.name','QA'],project);
   await writeFile(join(project,'README.md'),'chat compose visual\n'); await run('git',['add','.'],project); await run('git',['commit','-m','init'],project);
   app=await electron.launch({args:[resolve('.')],env,timeout:60000});

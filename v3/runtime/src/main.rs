@@ -32,6 +32,7 @@ async fn main() -> Result<()> {
     threadterm_v3_runtime::settings_services::initialize(&db)?;
     threadterm_v3_runtime::session_configs::initialize(&db)?;
     threadterm_v3_runtime::retry_scheduler::initialize(&db)?;
+    threadterm_v3_runtime::review::initialize(&db)?;
     db.mark_live_sessions_interrupted()?;
     let service = Arc::new(RuntimeService::new(config, db));
     service.initialize_remote()?;

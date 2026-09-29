@@ -34,3 +34,12 @@
 .catalog-discovery .menu-item { min-height:48px; height:auto; width:100%; text-align:left; }
 .catalog-discovery .menu-item small { display:block; color:var(--muted); font-size:11px; margin-top:4px; }
 @media (hover:none) { .project-catalog .row-more { opacity:.72; pointer-events:auto; } .project-catalog .proj-row, .project-catalog .tree-row, .project-catalog .sess-row { padding-right:26px; } }
+/* A selected session owns the sidebar highlight; its branch row only reads as current. */
+.project-catalog .tree-row.contains-active { color:var(--text); }
+/* Branch names: the prefix (feature/) gives way before the leaf. */
+.project-catalog .tree-row .branch.branch-split { display:flex; min-width:0; }
+.project-catalog .branch-split .branch-prefix { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--faint); }
+.project-catalog .tree-row:hover .branch-prefix, .project-catalog .tree-row.active .branch-prefix, .project-catalog .tree-row.contains-active .branch-prefix { color:var(--muted); }
+/* The leaf keeps its full width (flex-shrink 0: a shrinkable leaf lost ~0.1px to rounding at 125% and showed an
+   ellipsis while it fit); it truncates only when it alone is wider than the row, leaving 2ch for the prefix. */
+.project-catalog .branch-split .branch-leaf { flex:0 0 auto; max-width:calc(100% - 2ch); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

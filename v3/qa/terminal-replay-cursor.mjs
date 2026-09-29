@@ -298,13 +298,25 @@ try {
   await page.evaluate(() => window.qaShow('live-transition', 'en'));
   await waitForBuffer('line two');
   await page.waitForFunction(() => window.qaMetrics.requests.some(call => call.method === 'session.claim'), null, { timeout: 10_000 });
+  // A claim resolves before xterm's scheduled DOM paint. Assert the rendered
+  // live cursor after that paint instead of racing the output/write callback.
+  if (!evidenceOnly) {
+    await page.waitForFunction(() => Boolean(document.querySelector('.terminal-host .xterm-cursor')), null, { timeout: 10_000, polling: 50 });
+  }
   await page.evaluate(() => { window.qaLiveTerminal = window.qaTerminal; });
   const live = await collectEvidence('live-transition:live');
   if (!evidenceOnly) {
     assert.ok(live.cursorSpan, 'a live terminal keeps its host cursor');
   }
   await page.evaluate(() => window.qaSetStatus('exited'));
-  await page.getByText('History output · ended').waitFor();
+  await page.locator('.term-ended-banner').waitFor();
+  if(!evidenceOnly){
+    // Missing native identity stays honestly non-resumable: the footer says why and offers a fresh
+    // conversation instead of a Resume that cannot work.
+    assert.equal(await page.getByRole('button',{name:'Resume',exact:true}).count(),0,'missing native identity offers no Resume');
+    assert.match(await page.locator('.term-ended-banner').innerText(),/can't be resumed: no native session ID/);
+    assert.equal(await page.locator('.term-ended-banner').getByRole('button',{name:'New with same config',exact:true}).isEnabled(),true);
+  }
   if (!evidenceOnly) {
     await page.waitForFunction(() => !document.querySelector('.terminal-host .xterm-cursor'), null, { timeout: 10_000, polling: 100 });
   }

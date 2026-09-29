@@ -180,9 +180,24 @@ pub fn run() -> Result<i32> {
     if !config.hidden && unsafe { SetConsoleCtrlHandler(Some(keep_bootstrap_alive), 1) } == 0 {
         return Err(std::io::Error::last_os_error().into());
     }
-    let mut command = std::process::Command::new(&config.program);
+    let mut command =
+        match crate::providers::common::windows_script_invocation(&config.program, &config.args)? {
+            Some(invocation) => {
+                use std::os::windows::process::CommandExt;
+                let mut command = std::process::Command::new(&invocation.program);
+                command.args(&invocation.args);
+                // Fully prepared cmd.exe command line; must reach CreateProcess
+                // verbatim because cmd.exe applies its own quote rules.
+                command.raw_arg(&invocation.raw_payload);
+                command
+            }
+            None => {
+                let mut command = std::process::Command::new(&config.program);
+                command.args(&config.args);
+                command
+            }
+        };
     command
-        .args(&config.args)
         .current_dir(&config.cwd)
         .env_remove(GATE_ENV)
         .env_remove(COMMAND_ENV);

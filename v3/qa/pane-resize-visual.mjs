@@ -32,6 +32,8 @@ function Fixture(){
   return React.createElement(I18nProvider,{locale:'en'},React.createElement(PaneWorkspace,{layout,sessions:[],theme:document.documentElement.dataset.theme==='dark'?'dark':'light',terminalCompatibility:{},onChange:setLayout}));
 }
 createRoot(document.getElementById('root')).render(React.createElement(Fixture));
+window.qaPointerTrace=[];
+for(const type of ['pointerdown','pointerup','gotpointercapture','lostpointercapture'])addEventListener(type,event=>{window.qaPointerId=event.pointerId;window.qaPointerTrace.push({type,target:event.target.closest?.('[data-split-id]')?.dataset.splitId,x:event.clientX,y:event.clientY});},true);
 `;
 await build({ stdin: { contents: entry, resolveDir: resolve('.'), loader: 'tsx' }, bundle: true, outfile: join(scratch, 'qa.js'), jsx: 'automatic' });
 await writeFile(join(scratch, 'index.html'), `<meta charset="utf-8"><link rel="stylesheet" href="qa.css"><style>
@@ -40,7 +42,7 @@ html,body,#root{width:100%;height:100%;margin:0;overflow:hidden}#root{display:fl
 .ws-tile-bar{display:flex;flex:0 0 32px;min-width:0}.pane-body{display:flex;flex:1;min-width:0;min-height:0}.pane-divider{background:color-mix(in srgb,#579 18%,transparent)}
 html[data-theme="dark"]{background:#12161d;color:#ecf2f8}html[data-theme="light"]{background:#fff;color:#20242a}
 </style><div id="root"></div><script src="qa.js"></script>`);
-await writeFile(join(scratch, 'main.cjs'), `const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(scratch, 'profile'))});app.whenReady().then(()=>{const w=new BrowserWindow({width:1280,height:900,show:true,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true}});w.loadFile(${JSON.stringify(join(scratch, 'index.html'))});});`);
+await writeFile(join(scratch, 'main.cjs'), `const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(scratch, 'profile'))});app.whenReady().then(()=>{const w=new BrowserWindow({width:1280,height:900,show:false,webPreferences:{backgroundThrottling:false,contextIsolation:true,nodeIntegration:false,sandbox:true}});w.loadFile(${JSON.stringify(join(scratch, 'index.html'))});});`);
 
 const near = (actual, expected, message, tolerance = 2) => assert.ok(Math.abs(actual - expected) <= tolerance, `${message}: expected ${expected} ±${tolerance}, got ${actual}`);
 let app;
@@ -48,6 +50,7 @@ const report = { startedAt: new Date().toISOString(), passed: false, checks: [],
 try {
   app = await electron.launch({ args: [join(scratch, 'main.cjs')] });
   const page = await app.firstWindow();
+  page.setDefaultTimeout(15_000);
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.waitForFunction(() => window.qaRender && window.qaLayout);
@@ -77,7 +80,9 @@ try {
     const ratiosBefore=await ratios();
     const start={x:r.left+r.width/2,y:r.top+r.height/2};
     const end=vertical?{x:start.x,y:parent.top+parent.height*fraction}:{x:parent.left+parent.width*fraction,y:start.y};
+    assert.equal(await target.evaluate((element,point)=>element.contains(document.elementFromPoint(point.x,point.y)),start),true,`${splitId} must be the real pointer target`);
     await page.mouse.move(start.x,start.y); await page.mouse.down(); await page.waitForTimeout(10);
+    assert.equal(await target.evaluate(element=>element.hasPointerCapture(window.qaPointerId)),true,`${splitId} must capture the pointer before dragging`);
     const afterDown=await box(dividerTarget(splitId));
     near(vertical ? afterDown.top+afterDown.height/2 : afterDown.left+afterDown.width/2, vertical ? start.y : start.x, `pointer-down on ${splitId} does not move its divider`);
     assert.deepEqual(await ratios(),ratiosBefore,`pointer-down on ${splitId} does not change a ratio`);
@@ -104,7 +109,10 @@ try {
   await page.evaluate(() => window.qaRender('two'));
   await page.waitForFunction(() => window.qaLayout.id === 'root-two');
   const originalRight=await box('[data-pane-id="right"]');
-  await page.locator('[data-pane-id="left"] button[aria-label="Split pane"]').click();
+  await page.getByRole('tab',{name:'missing-left',exact:true}).click();
+  await page.getByRole('button',{name:'Workspace actions',exact:true}).click();
+  await page.getByRole('button',{name:'Split right',exact:true}).click();
+  await page.keyboard.press('Escape');
   await page.waitForFunction(() => window.qaLayout.kind === 'split' && window.qaLayout.first.kind === 'split');
   assert.equal((await layout()).second.id, 'right', 'splitting left retains the original right leaf');
   const rightAfterSplit=await box('[data-pane-id="right"]');
@@ -148,12 +156,15 @@ try {
   await page.evaluate(() => window.qaRender('three'));
   await page.waitForFunction(() => window.qaLayout.id === 'root-three');
   const leafBeforeFullscreen=await box('[data-pane-id="left-a"]');
-  const workspace=await box('.pane-workspace');
-  await page.locator('[data-pane-id="left-a"] button[aria-label="Fullscreen pane"]').click();
+  const workspace=await box('.pane-grid');
+  await page.getByRole('tab',{name:'missing-left-a',exact:true}).click();
+  await page.getByRole('button',{name:'Workspace actions',exact:true}).click();
+  await page.getByRole('button',{name:'Fullscreen pane',exact:true}).click();
   const fullscreen=await box('[data-pane-id="left-a"].fullscreen');
   near(fullscreen.left,workspace.left+2,'fullscreen pane begins at workspace inset',2); near(fullscreen.top,workspace.top+2,'fullscreen pane begins at workspace top inset',2);
   near(fullscreen.right,workspace.right-2,'fullscreen pane ends at workspace inset',2); near(fullscreen.bottom,workspace.bottom-2,'fullscreen pane ends at workspace bottom inset',2);
-  await page.locator('[data-pane-id="left-a"] button[aria-label="Fullscreen pane"]').click();
+  await page.getByRole('button',{name:'Restore pane',exact:true}).click();
+  await page.keyboard.press('Escape');
   const leafAfterRestore=await box('[data-pane-id="left-a"]');
   for (const side of ['left','top','right','bottom','width','height']) near(leafAfterRestore[side],leafBeforeFullscreen[side],`fullscreen restore preserves ${side}`,1);
   report.checks.push('nested fullscreen fills workspace and restores the original leaf geometry');
@@ -169,6 +180,7 @@ try {
   report.passed=true;
 } catch (error) {
   report.error=error instanceof Error ? error.stack : String(error);
+  if(app)report.pointerTrace=await app.windows()[0]?.evaluate(()=>window.qaPointerTrace).catch(()=>[]);
   process.exitCode=1;
   if (app) await app.windows()[0]?.screenshot({path:join(out,'failure.png')}).catch(()=>{});
 } finally {

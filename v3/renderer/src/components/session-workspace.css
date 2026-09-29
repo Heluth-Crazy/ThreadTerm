@@ -5,3 +5,6 @@
 .runtime-workspace .ws-chip .dot.primary { background:var(--primary); }
 .runtime-workspace.terminal-fullscreen .ws-top,.runtime-workspace.terminal-fullscreen .ws-tabrow,.runtime-workspace.terminal-fullscreen .ws-strip { display:none; }
 .runtime-workspace.terminal-fullscreen .ws-content { padding:2px; }
+.workspace-file-error { display:flex; flex:none; align-items:center; gap:8px; padding:6px 12px; color:var(--text); background:var(--surface); font-size:12px; }
+.workspace-file-error > span { flex:1; min-width:0; overflow-wrap:anywhere; }
+.workspace-file-error code { color:var(--muted); }

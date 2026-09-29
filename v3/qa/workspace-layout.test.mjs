@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { addPane, addTabToPane, closePane, paneCount, paneIdsIn, reconcileSessionLayout, resizeSplit, sessionIdsIn, splitPane } from '../renderer/src/workspaceLayout.ts';
+import { addPane, addTabToPane, closePane, paneCount, paneIdsIn, reconcileSessionLayout, resizeSplit, sessionIdsIn, sessionOnlyLayout, splitPane } from '../renderer/src/workspaceLayout.ts';
 
 const tab = id => ({ id: `tab-${id}`, kind: 'session', sessionId: id });
 const pane = id => ({ kind: 'pane', id, tabs: [tab(id)], activeTabId: `tab-${id}` });
@@ -103,4 +103,29 @@ test('reconciling prunes stale tabs and activates an existing routed session wit
   assert.equal(next.first.activeTabId, 'tab-current');
   assert.equal(next.second, original.second);
   assert.deepEqual(sessionIdsIn(next), ['current', 'right']);
+});
+
+test('a session opens alone: non-session tabs drop, emptied panes collapse, unsaved file tabs stay', () => {
+  const history = { id: 'h', kind: 'history', projectId: 'p' };
+  const diff = { id: 'd', kind: 'diff', projectId: 'p', path: 'src/a.ts' };
+  const draft = { id: 'f', kind: 'file', projectId: 'p', path: 'notes.md' };
+  // left: session A + history (history active); right: a file-only column (diff).
+  const layout = { kind: 'split', id: 'outer', direction: 'horizontal', ratio: .5,
+    first: { kind: 'pane', id: 'left', tabs: [tab('a'), history], activeTabId: 'h' },
+    second: { kind: 'pane', id: 'right', tabs: [diff], activeTabId: 'd' } };
+  const alone = sessionOnlyLayout(layout, () => false);
+  assert.deepEqual(alone, { kind: 'pane', id: 'left', tabs: [tab('a')], activeTabId: 'tab-a' });
+  // A file tab with unsaved edits keeps its column and the split.
+  const kept = sessionOnlyLayout({ ...layout, second: { ...layout.second, tabs: [diff, draft], activeTabId: 'd' } }, item => item.id === 'f');
+  assert.equal(kept.kind, 'split');
+  assert.deepEqual(kept.second.tabs.map(item => item.id), ['f']);
+  assert.equal(kept.second.activeTabId, 'f');
+  assert.equal(kept.first.activeTabId, 'tab-a');
+  // Splits between sessions survive; nothing to drop returns the same object.
+  const sessions = pair();
+  assert.equal(sessionOnlyLayout(sessions, () => false), sessions);
+  // Only non-session content: an empty leaf remains for the routed session.
+  const only = sessionOnlyLayout({ kind: 'pane', id: 'solo', tabs: [history], activeTabId: 'h' }, () => false);
+  assert.deepEqual(only, { kind: 'pane', id: 'solo', tabs: [], activeTabId: null });
+  assert.deepEqual(sessionIdsIn(reconcileSessionLayout(only, new Set(['b']), 'b')), ['b']);
 });

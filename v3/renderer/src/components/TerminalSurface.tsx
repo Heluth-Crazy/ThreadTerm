@@ -2,17 +2,19 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { openExternal, operationId, outputSubscription, request } from "../bridge";
 import { acquireControl } from '../controlLease';
 import { registerTerminalInputTarget } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
-import { displayPath } from "../projectScope";
 import { terminalTheme } from '../terminalTheme';
 import './terminal-surface.css';
 import {BlockInspector} from './BlockInspector';
 import { AgentIcon, Icon } from './PrototypeIcon';
 import { AgentLoadingMark } from './AgentLoadingMark';
+import { SessionSurfaceContext, SurfaceActions } from './SessionSurfaceContext';
+import { parseFileReference } from '../fileReferences';
+import { createTerminalFileLinkHitArea, createTerminalFileLinkInteraction, terminalFileLinks } from './terminalFileLinks';
 import type { ProviderId, Session, TerminalLaunchState } from "@threadterm/protocol";
 import {
   aiCompletionHintsEnabled,
@@ -21,7 +23,9 @@ import {
 } from "./terminalCompletionHint";
 
 type Props = { sessionId: string; provider: ProviderId; theme: "light" | "dark"; terminalCompatibility: unknown; session?: Session; onConfigure?: () => void; onCloseView?: () => void; onChanged?: () => void; onOpenSession?: (id: string) => void; resumeCapture?: "preassigned" | "none" };
-const providerLabel = (provider: ProviderId) => provider === "claude" ? "Claude Code" : provider === "codex" ? "Codex" : provider[0].toUpperCase() + provider.slice(1);
+// A failed screen recovery is shown once, in the overlay: a plain-language reason for the
+// user and the technical detail behind a disclosure (never as a second .surface-error line).
+type ReplayFailure = { reason: "stalled" | "gap" | "error"; detail: string };
 const isLive = (session?: Session) => Boolean(session && !session.readOnly && ["starting", "running", "idle", "waiting"].includes(session.status));
 // Raw PTY logs can contain hours of animation, not merely conversation text.
 // Bound each read, not the history prefix needed by the terminal parser.
@@ -32,8 +36,66 @@ const hasVisibleTerminalFrame = (terminal: Terminal) => {
   return Array.from({ length: terminal.rows }, (_, row) => buffer.getLine(buffer.baseY + row)?.translateToString(true).trim() ?? "").some(Boolean);
 };
 
+// Presentation may hide the xterm cursor while a session is read-only. Keep
+// the provider's last DECTCEM choice separately so returning to a live PTY
+// does not reveal a second cursor over a provider-painted input caret.
+const nativeCursorVisibility = () => {
+  let state: 'text' | 'escape' | 'csi' | 'string' | 'string-escape' = 'text';
+  let privateMode = false;
+  let validCsi = false;
+  let intermediate = false;
+  let parameterValue = 0;
+  let parameterHasDigits = false;
+  let parameterCount = 0;
+  let hasCursorParameter = false;
+  let parametersStarted = false;
+  let visible: boolean | undefined;
+  const escapeByte = (byte: number) => {
+    if (byte === 0x5b) { state = 'csi'; privateMode = false; validCsi = true; intermediate = false; parameterValue = 0; parameterHasDigits = false; parameterCount = 0; hasCursorParameter = false; parametersStarted = false; }
+    else if (byte === 0x5d || byte === 0x50 || byte === 0x5e || byte === 0x5f) state = 'string';
+    else state = byte === 0x1b ? 'escape' : 'text';
+  };
+  return {
+    observe(bytes: Uint8Array) {
+      for (const byte of bytes) {
+        if (state === 'string') {
+          if (byte === 0x1b) state = 'string-escape';
+          else if (byte === 0x07 || byte === 0x18 || byte === 0x1a) state = 'text';
+        } else if (state === 'string-escape' || state === 'escape') {
+          escapeByte(byte);
+        } else if (state === 'csi') {
+          if (byte === 0x1b) state = 'escape';
+          else if (byte === 0x18 || byte === 0x1a) state = 'text'; // CAN/SUB cancel CSI.
+          else if (byte >= 0x40 && byte <= 0x7e) {
+            if (validCsi && privateMode && !intermediate && (hasCursorParameter || (parameterCount < 32 && parameterHasDigits && parameterValue === 25)) && (byte === 0x68 || byte === 0x6c)) visible = byte === 0x68;
+            state = 'text';
+          } else if (byte >= 0x20 && byte <= 0x2f) intermediate = true;
+          else if (byte === 0x3f && !privateMode && !parametersStarted && !intermediate) privateMode = true;
+          else if (byte >= 0x30 && byte <= 0x39 && !intermediate) {
+            parametersStarted = true;
+            parameterHasDigits = true;
+            parameterValue = Math.min(26, parameterValue * 10 + byte - 0x30);
+          } else if (byte === 0x3b && !intermediate) {
+            hasCursorParameter ||= parameterCount < 32 && parameterHasDigits && parameterValue === 25;
+            parameterValue = 0;
+            parameterHasDigits = false;
+            parameterCount += 1;
+            parametersStarted = true;
+          }
+          else if (byte < 0x20 || byte === 0x7f) { /* C0/DEL executes or is ignored without cancelling CSI. */ }
+          else validCsi = false;
+        } else if (byte === 0x1b) state = 'escape';
+      }
+    },
+    isVisible: () => visible !== false,
+  };
+};
+
 export function TerminalSurface({ sessionId, provider, theme, terminalCompatibility, session, onConfigure, onCloseView, onChanged, onOpenSession, resumeCapture }: Props) {
   const {locale} = useTranslation();
+  const surface = useContext(SessionSurfaceContext);
+  const openFileRef = useRef(surface?.openFile);
+  openFileRef.current = surface?.openFile;
   const zh = locale === 'zh-CN';
   const host = useRef<HTMLDivElement>(null); const terminalRef = useRef<Terminal | undefined>(undefined);
   const controlRef = useRef<((enabled: boolean) => void) | undefined>(undefined);
@@ -42,6 +104,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   const [selectedLink, setSelectedLink] = useState<string>();
   const [inspected, setInspected] = useState<string>();
   const [hasSelection,setHasSelection] = useState(false);
+  const [selectionFile, setSelectionFile] = useState<import('@threadterm/protocol').FileReference>();
   const [completionHint, setCompletionHint] = useState(false);
   const completionHints = aiCompletionHintsEnabled(terminalCompatibility);
   const completionHintsRef = useRef(completionHints);
@@ -64,6 +127,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   const replayKey = `${provider}:${sessionId}`;
   const [replay, setReplay] = useState(() => ({ key: replayKey, phase: "catching" as "catching" | "ready" | "failed" }));
   const [replayAttempt, setReplayAttempt] = useState(0);
+  const [replayFailure, setReplayFailure] = useState<ReplayFailure>();
   if (replay.key !== replayKey) setReplay({ key: replayKey, phase: "catching" });
   const replaying = replay.key !== replayKey || replay.phase === "catching";
   const replayFailed = replay.key === replayKey && replay.phase === "failed";
@@ -82,8 +146,11 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   // fixedSize through a ref so a resumed session leaves fixed-geometry replay
   // and rejoins live fitting/resizing instead of staying frozen.
   const fixedSizeRef = useRef(fixedSize);
-  useEffect(() => { fixedSizeRef.current = fixedSize; }, [fixedSize]);
+  // Layout effect: the ended footer appears in the same commit and shrinks the host; the
+  // ResizeObserver fires before passive effects, so a stale ref would refit (reflow) the frame.
+  useLayoutEffect(() => { fixedSizeRef.current = fixedSize; }, [fixedSize]);
   const canControlRef = useRef(canControl);
+  const nativeCursorRef = useRef<ReturnType<typeof nativeCursorVisibility> | undefined>(undefined);
   // The banner belongs to opening a legacy replay. A session that was live in this surface
   // keeps its built frame when it ends (the banner would shrink the host and reflow the
   // viewport), so the latch is keyed by session and adjusted during render on switches.
@@ -119,14 +186,15 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     let replayAborted = false;
     let replayTimer: number | undefined;
     let replayCursor = 0;
+    let replayTotal: number | undefined;
     let replayLastProgress = Date.now();
-    const failReplay = (message: string) => {
+    const failReplay = (reason: ReplayFailure["reason"], detail: string) => {
       if (disposed || replayComplete || replayAborted) return;
       replayAborted = true;
       window.clearInterval(replayTimer);
       for (const settle of pendingWrites) settle();
       unsubscribeOutput?.(); unsubscribeOutput = undefined;
-      setIssue(message);
+      setReplayFailure({ reason, detail });
       setReplay({ key: replayKey, phase: "failed" });
     };
     const pendingWrites = new Set<() => void>();
@@ -134,8 +202,10 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     let lastResize: string | undefined;
     let resizeRetried: string | undefined;
     const resizeFailureNote = "Terminal resize was rejected; the provider may keep using the previous size until the next successful resize.";
-    const terminal = new Terminal({ ...(fixedSize ? { cols: fixedSize.cols, rows: fixedSize.rows } : {}), cursorBlink: true, fontFamily: '"Cascadia Code", Consolas, monospace', fontSize: 13, lineHeight: 1.55, minimumContrastRatio: 4.5, scrollback: 10000, scrollOnEraseInDisplay: false, windowsPty: window.threadterm.windowsPty, theme: terminalTheme(theme) });
+    const terminal = new Terminal({ ...(fixedSize ? { cols: fixedSize.cols, rows: fixedSize.rows } : {}), cursorBlink: true, fontFamily: '"Cascadia Code", Consolas, monospace', fontSize: 13, lineHeight: 1.35, minimumContrastRatio: 4.5, scrollback: 10000, scrollOnEraseInDisplay: false, windowsPty: window.threadterm.windowsPty, theme: terminalTheme(theme) });
     terminalRef.current = terminal;
+    const nativeCursor = nativeCursorVisibility();
+    nativeCursorRef.current = nativeCursor;
     const fit = new FitAddon(); terminal.loadAddon(fit); terminal.open(element);
     const noteRenderedStartupFrame = (cursor: number, chunk: import("@threadterm/protocol").OutputChunk) => {
       // This is presentation evidence only, never a claim that Codex is ready:
@@ -162,11 +232,19 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
       startupFrameSeenRef.current = true; setStartupFrameSeen(true);
     };
     terminal.loadAddon(new WebLinksAddon((_event, url) => setSelectedLink(url)));
-    const selectionDisposable=terminal.onSelectionChange(()=>setHasSelection(terminal.hasSelection()));
+    const fileLinkInteraction = createTerminalFileLinkInteraction(element);
+    const fileLinkDisposable = terminal.registerLinkProvider({ provideLinks: (line, callback) => {
+      callback(openFileRef.current ? terminalFileLinks(terminal, line, reference => openFileRef.current?.(reference), fileLinkInteraction) : undefined);
+    } });
+    const fileLinkHitArea = openFileRef.current ? createTerminalFileLinkHitArea(terminal, reference => openFileRef.current?.(reference)) : undefined;
+    const selectionDisposable=terminal.onSelectionChange(()=>{
+      setHasSelection(terminal.hasSelection());
+      setSelectionFile(parseFileReference(terminal.getSelection().trim()));
+    });
     const scrollDisposable = terminal.onScroll(() => {
       if (terminal.buffer.active.viewportY >= terminal.buffer.active.baseY) setUnread(0);
     });
-    terminal.options.disableStdin = true; setIssue(undefined); setCompletionHint(false);
+    terminal.options.disableStdin = true; setIssue(undefined); setReplayFailure(undefined); setCompletionHint(false);
     // Legacy records have no trustworthy geometry. Keep their documented
     // best-effort current-pane replay instead of inventing an 80x24 history.
     if (!fixedSize) { try { fit.fit(); } catch { /* host may not be measurable yet */ } }
@@ -216,7 +294,10 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     controlRef.current = setControl;
     replayTimer = window.setInterval(() => {
       if (!replayComplete && Date.now() - replayLastProgress >= REPLAY_STALL_MS) {
-        failReplay(zh ? `终端回放已停止推进（游标 ${replayCursor}）。请重试恢复画面；原始历史未改动。` : `Terminal replay stopped advancing at byte ${replayCursor}. Retry screen recovery; retained history is unchanged.`);
+        const seconds = REPLAY_STALL_MS / 1000;
+        failReplay("stalled", replayTotal === undefined
+          ? (zh ? `terminal.read（历史边界）在 ${seconds} 秒内没有响应。` : `terminal.read (history boundary) did not answer within ${seconds} s.`)
+          : (zh ? `回放停在第 ${replayCursor} / ${replayTotal} 字节（${seconds} 秒无进展）。` : `Replay stopped advancing at byte ${replayCursor} of ${replayTotal} (no progress for ${seconds} s).`));
       }
     }, 1000);
     void (async () => {
@@ -227,6 +308,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
         if (disposed || replayAborted) return;
         const replayEnd = boundary.nextCursor;
         if (!Number.isSafeInteger(replayEnd) || replayEnd < 0) throw new Error("Terminal replay returned an invalid history boundary.");
+        replayTotal = replayEnd;
         // ANSI and UTF-8 are stateful across arbitrary byte boundaries. Until
         // we have a real terminal checkpoint, every replay must begin at zero.
         const replayStart = 0;
@@ -247,12 +329,13 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
           if (disposed || replayAborted) return;
           if (chunk.gap) {
             if (!replayComplete) {
-              failReplay(zh ? "历史输出存在缺口，无法完整恢复此片段。原始记录未改动。" : "Historical output has a gap; this replay segment cannot be restored completely. Retained history is unchanged.");
+              failReplay("gap", zh ? `保留的输出有缺口，从第 ${chunk.cursor} 字节才继续（已回放 ${replayCursor} / ${replayEnd}）。` : `Retained output has a gap and resumes at byte ${chunk.cursor} (replayed ${replayCursor} of ${replayEnd}).`);
               return;
             }
             setIssue("Some older terminal output is no longer available. Live output continues.");
           }
           if (chunk.data.byteLength) {
+            nativeCursor.observe(chunk.data);
             if (completionHintsRef.current) {
               outputTail = appendTerminalOutputTail(
                 outputTail,
@@ -311,10 +394,11 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
         replaySubscribed = true;
         if (replayCursor >= replayEnd) finishReplay();
       } catch (error) {
-        failReplay(error instanceof Error ? error.message : "Terminal could not connect.");
+        const message = error instanceof Error ? error.message : String(error ?? "Terminal could not connect.");
+        failReplay(message.includes("terminal_history_gap") ? "gap" : "error", message);
       }
     })();
-    return () => { disposed = true; resumeFrameProbeRef.current?.dispose(); resumeFrameProbeRef.current = undefined; window.clearInterval(replayTimer); for (const settle of pendingWrites) settle(); setControl(false); unregisterInput(); observer.disconnect(); dataDisposable.dispose(); scrollDisposable.dispose(); selectionDisposable.dispose(); unsubscribeOutput?.(); terminal.dispose(); if (terminalRef.current === terminal) terminalRef.current = undefined; if (controlRef.current === setControl) controlRef.current = undefined; };
+    return () => { disposed = true; resumeFrameProbeRef.current?.dispose(); resumeFrameProbeRef.current = undefined; window.clearInterval(replayTimer); for (const settle of pendingWrites) settle(); setControl(false); unregisterInput(); observer.disconnect(); dataDisposable.dispose(); scrollDisposable.dispose(); selectionDisposable.dispose(); fileLinkDisposable.dispose(); fileLinkHitArea?.dispose(); fileLinkInteraction.dispose(); unsubscribeOutput?.(); terminal.dispose(); if (terminalRef.current === terminal) terminalRef.current = undefined; if (nativeCursorRef.current === nativeCursor) nativeCursorRef.current = undefined; if (controlRef.current === setControl) controlRef.current = undefined; };
   }, [provider, sessionId, replayAttempt]);
   useEffect(() => {
     const setControl = controlRef.current;
@@ -327,8 +411,9 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     // presentation instance only (never persisted, subscribed bytes stay untouched).
     const terminal = terminalRef.current;
     if (!terminal) return;
-    // A resumed session returns to live: undo the replay cursor hiding.
-    if (canControl) { terminal.write("\x1b[?25h"); return; }
+    // A resumed session returns to the provider's own cursor mode, not an
+    // unconditional visible host cursor (Claude paints its input caret).
+    if (canControl) { terminal.write(nativeCursorRef.current?.isVisible() === false ? "\x1b[?25l" : "\x1b[?25h"); return; }
     terminal.write("\x1b[?25l", () => { if (terminalRef.current === terminal) terminal.refresh(0, terminal.rows - 1); });
   }, [canControl]);
   // Deferred Codex creation owns a durable launch record. Polling is limited to
@@ -428,10 +513,9 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
   const deferredRetry = provider === "codex" && (launch?.phase === "failed" || launch?.phase === "cancelled");
   const resumeBlocked = agentProvider && ended && !session?.nativeId && !deferredRetry
     ? (resumeCapture === "none"
-      ? (zh ? "该 Provider 的终端会话不支持原生恢复" : "This provider's terminal sessions cannot be resumed natively")
-      : (zh ? "该记录缺少原生会话标识，无法确认原对话。请新建会话。" : "This record has no native conversation identity. Start a new session to continue."))
+      ? (zh ? "该提供方不支持恢复终端会话。" : "This provider can't resume terminal sessions.")
+      : (zh ? "无法恢复此对话：没有记录原生会话标识。" : "This conversation can't be resumed: no native session ID was recorded."))
     : undefined;
-  const title = session?.title ?? providerLabel(provider);
   const reportedLaunch = launch ?? (provider === "codex" && session?.mode === "terminal" && session?.status === "starting" ? { phase: "preparing" as const } : undefined);
   const launchPending = startupLaunchPending && !startupFrameSeen;
   const launchFailed = reportedLaunch?.phase === "failed";
@@ -453,32 +537,81 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
       : reportedLaunch?.phase === "preparing"
         ? (zh ? "正在准备 Codex 会话…" : "Preparing Codex session…")
         : (zh ? "正在等待 Codex 终端画面…" : "Waiting for the Codex terminal screen…");
-  const provenance = replaying
-    ? (zh ? "本地会话" : "Local session")
-    : session?.status === "starting"
-    ? (zh ? "正在启动 · 本地会话" : "Starting · local session")
-    : canControl
-    ? (zh ? "实时输出 · 本地会话" : "Live output · local session")
-    : session?.readOnly
-      ? (zh ? "已保存记录 · 只读" : "Saved record · read-only")
-      : (zh ? "历史输出 · 已结束" : "History output · ended");
-  return <div className="terminal-wrap term"><header className="term-head"><b>{title}</b><span className="grow demo">{providerLabel(provider)} · {provenance}</span><button className={`btn-ghost icon-btn star${session?.followed ? " on" : ""}`} disabled={!session || actionBusy} aria-label={session?.followed ? (zh ? "取消关注" : "Unfollow") : (zh ? "关注" : "Follow")} aria-pressed={Boolean(session?.followed)} onClick={() => void toggleFollow()}>{session?.followed ? "★" : "☆"}</button>{isLive(session) && <button className="btn-ghost btn term-stop" disabled={actionBusy} onClick={() => void stop()}>{zh ? "结束会话" : "End session"}</button>}<span hidden={!issue} className="term-read-state">{issue ? (zh ? '需要注意' : 'Attention') : session?.readOnly ? (zh ? "只读" : "Read-only") : (zh ? '已连接' : 'Connected')}</span></header><div className="v3-session-controls"><span className="v3-mode">{session?.mode === "chat" ? (zh ? "聊天" : "Chat") : "Terminal · " + (ended ? (zh ? "历史只读" : "read-only history") : (zh ? "交互式" : "interactive"))}</span><span className="grow" />{launchPending && !replaying && !showTerminal && <button type="button" className="btn" onClick={() => setShowTerminal(true)}>{zh ? "显示终端" : "Show terminal"}</button>}{onCloseView && <button className="btn" onClick={onCloseView}>{zh ? "关闭视图" : "Close view"}</button>}{onConfigure && <button className="btn" onClick={onConfigure}>{zh ? "配置" : "Configure"}</button>}{session && !session.readOnly && ended && agentProvider && <button className="btn btn-primary" disabled={actionBusy || Boolean(resumeBlocked)} title={resumeBlocked ?? (zh ? "通过 Provider 原生机制恢复原对话" : "Resume the original conversation natively")} onClick={() => void resume()}>{resuming ? (zh ? "恢复中…" : "Resuming…") : (zh ? "继续会话" : "Resume")}</button>}{session && !session.readOnly && ended && agentProvider && <button className="btn" disabled={actionBusy} title={zh ? "沿用保存的配置开始全新对话" : "Start a fresh conversation with the saved configuration"} onClick={() => void rerun()}>{zh ? "新建同配置会话" : "New with same config"}</button>}{session && !session.readOnly && ended && !agentProvider && <button className="btn" disabled={actionBusy} onClick={() => void rerun()}>{zh ? "重新执行" : "Run again"}</button>}</div>{unknownGeometry && <p className="term-legacy-note" role="status">{zh ? "该历史会话未记录终端尺寸，部分全屏界面可能错位。重新运行可生成可稳定回放的新记录。" : "This historical session has no recorded terminal size; full-screen interfaces may be misaligned. Rerun it to create a new record that replays reliably."}</p>}{resumeBlocked && <p className="term-resume-note" role="note">{resumeBlocked}</p>}<div className="term-content"><div className={`terminal-host term-output${fixedSize ? " fixed-geometry" : ""}`} ref={host} aria-label={zh ? '实时终端输出' : 'Live terminal output'} />
-    {hasSelection&&<button className="terminal-inspect-selection" onClick={()=>setInspected(terminalRef.current?.getSelection()??'')}>{zh?'检查选区':'Inspect selection'}</button>}
+  const replayFailureText = replayFailure?.reason === "stalled"
+    ? (zh ? "加载历史输出时没有响应。" : "Loading the saved output stopped responding.")
+    : replayFailure?.reason === "gap"
+      ? (zh ? "部分历史输出已缺失，无法完整重建画面。" : "Part of the saved output is missing, so the screen can't be rebuilt exactly.")
+      : (zh ? "无法加载历史输出。" : "The saved output couldn't be loaded.");
+  const retryReplay = () => { setReplayFailure(undefined); setReplay({ key: replayKey, phase: "catching" }); setReplayAttempt(value => value + 1); };
+  // One footer states why the terminal takes no input and offers the next step. It sits where
+  // input would go; the overlay owns failed/pending launches, so the footer waits for them.
+  const endedBanner = session && (session.readOnly || ended) && !launchFailed && !(launchPending && !showTerminal)
+    ? {
+      title: session.readOnly ? (zh ? "只读记录" : "Read-only record") : (zh ? "会话已结束" : "Session ended"),
+      detail: session.readOnly ? (zh ? "这是保存的终端输出，无法继续输入。" : "Showing saved terminal output; it can't take input.")
+        : resumeBlocked ?? (zh ? "正在显示保存的输出。" : "Showing saved output."),
+      action: session.readOnly ? undefined
+        : agentProvider && !resumeBlocked
+          ? <button type="button" className="btn" disabled={actionBusy} title={zh ? "通过提供方原生机制恢复原对话" : "Continue the original conversation"} onClick={() => void resume()}>{resuming ? (zh ? "恢复中…" : "Resuming…") : (zh ? "继续会话" : "Resume")}</button>
+          : agentProvider
+            ? <button type="button" className="btn" disabled={actionBusy} title={zh ? "沿用保存的配置开始全新对话" : "Start a fresh conversation with the saved configuration"} onClick={() => void rerun()}>{zh ? "新建同配置会话" : "New with same config"}</button>
+            : <button type="button" className="btn" disabled={actionBusy} onClick={() => void rerun()}>{zh ? "重新执行" : "Run again"}</button>,
+    }
+    : undefined;
+  const hasEndedBanner = Boolean(endedBanner);
+  useLayoutEffect(() => {
+    // A session that ends while shown keeps its xterm at the live size (fixed geometry); the
+    // footer takes its height from the host, so keep the last rows (exit output) in view.
+    const element = host.current;
+    if (hasEndedBanner && sawControl.value && element) element.scrollTop = element.scrollHeight;
+  }, [hasEndedBanner, sawControl.value]);
+  return <div className="terminal-wrap term">
+    <div className="terminal-local-action-row">
+    <SurfaceActions slot="primary">
+      {launchPending && !replaying && !showTerminal && <button type="button" className="btn" onClick={() => setShowTerminal(true)}>{zh ? "显示终端" : "Show terminal"}</button>}
+    </SurfaceActions>
+    <SurfaceActions slot="menu">
+      <button className="menu-item" disabled={!session || actionBusy} aria-label={session?.followed ? (zh ? "取消关注" : "Unfollow") : (zh ? "关注" : "Follow")} aria-pressed={Boolean(session?.followed)} onClick={() => void toggleFollow()}>{session?.followed ? (zh ? "取消关注" : "Unfollow") : (zh ? "关注" : "Follow")}</button>
+      {isLive(session) && <button className="menu-item danger term-stop" disabled={actionBusy} onClick={() => void stop()}>{zh ? "结束会话" : "End session"}</button>}
+      {session && !session.readOnly && ended && agentProvider && <button className="menu-item" disabled={actionBusy} title={zh ? "沿用保存的配置开始全新对话" : "Start a fresh conversation with the saved configuration"} onClick={() => void rerun()}>{zh ? "新建同配置会话" : "New with same config"}</button>}
+      {onConfigure && <button className="menu-item" onClick={onConfigure}>{zh ? "配置" : "Configure"}</button>}
+      {onCloseView && <button className="menu-item" onClick={onCloseView}>{zh ? "关闭视图" : "Close view"}</button>}
+    </SurfaceActions>
+    </div>
+    {unknownGeometry && <p className="term-legacy-note" role="status">{zh ? "该历史会话未记录终端尺寸，部分全屏界面可能错位。重新运行可生成可稳定回放的新记录。" : "This historical session has no recorded terminal size; full-screen interfaces may be misaligned. Rerun it to create a new record that replays reliably."}</p>}
+    <div className="term-content"><div className={`terminal-host term-output${fixedSize ? " fixed-geometry" : ""}`} ref={host} aria-label={zh ? '实时终端输出' : 'Live terminal output'} />
+    {(hasSelection || (selectionFile && openFileRef.current)) && <div className="terminal-selection-actions">
+      {selectionFile && openFileRef.current && <button type="button" className="terminal-open-selection" onClick={() => openFileRef.current?.(selectionFile)} title={selectionFile.path}>{zh ? '打开所选文件' : 'Open selected file'}</button>}
+      {hasSelection&&<button type="button" className="terminal-inspect-selection" onClick={()=>setInspected(terminalRef.current?.getSelection()??'')}>{zh?'检查选区':'Inspect selection'}</button>}
+    </div>}
     {inspected!==undefined&&<BlockInspector sessionId={sessionId} text={inspected} onClose={()=>setInspected(undefined)}/>}
-    {unread > 0 && <button className="terminal-new-output" onClick={() => {terminalRef.current?.scrollToBottom();setUnread(0);}}>{zh ? `${unread} 批新输出 · 回到底部` : `${unread} new updates · Back to bottom`}</button>}
+    {unread > 0 && <button className="terminal-new-output" onClick={() => {terminalRef.current?.scrollToBottom();setUnread(0);}}>{zh ? `${unread} 批新输出 · 回到底部` : `${unread} new ${unread === 1 ? 'update' : 'updates'} · Back to bottom`}</button>}
     {completionHints && completionHint && <p className="terminal-completion-hint" role="status">{zh ? "可能已准备好输入" : "Possibly ready for input"}</p>}
     {selectedLink && <div className="terminal-link-actions"><span title={selectedLink}>{selectedLink}</span><button onClick={() => void openExternal(selectedLink).catch(error => setIssue(String(error)))}>{zh ? '在浏览器中打开' : 'Open in browser'}</button><button onClick={() => void navigator.clipboard.writeText(selectedLink).catch(error => setIssue(String(error)))}>{zh ? '复制链接' : 'Copy link'}</button><button onClick={() => setSelectedLink(undefined)}>{zh ? '关闭' : 'Close'}</button></div>}
-    {issue && <div className="surface-error" role="alert">{issue}</div>}
-    {(replaying || replayFailed || launchFailed || (launchPending && !showTerminal)) && <div className={`term-loading-overlay${replaying ? " term-replaying" : ""}${replayFailed || launchFailed ? " is-failed" : ""}`} role={replayFailed || launchFailed ? "alert" : "status"} aria-live="polite" aria-label={loadingStatus}>
+    {issue && !replayFailed && <div className="surface-error" role="alert">{issue}</div>}
+    {(replaying || replayFailed || launchFailed || (launchPending && !showTerminal)) && <div className={`term-loading-overlay${replaying ? " term-replaying" : ""}${replayFailed || launchFailed ? " is-failed" : ""}`} role={replayFailed || launchFailed ? "alert" : "status"} aria-live="polite" aria-label={replayFailed ? (zh ? "无法显示终端画面" : "Couldn't show the terminal screen") : loadingStatus}>
       <div className="chat-connect-center">
         <AgentLoadingMark provider={provider} active={!replayFailed && !launchFailed} />
-        {(replayFailed || launchFailed) && <p className="chat-connect-status">{replayFailed ? (zh ? "终端画面恢复失败。" : "Terminal screen recovery failed.") : loadingStatus}</p>}
-        {replayFailed && issue && <p className="chat-connect-hint">{issue}</p>}
-        {replayFailed && <button type="button" className="btn" onClick={() => { setIssue(undefined); setReplay({ key: replayKey, phase: "catching" }); setReplayAttempt(value => value + 1); }}>{zh ? "重试恢复画面" : "Retry screen recovery"}</button>}
+        {launchFailed && !replayFailed && <p className="chat-connect-status">{loadingStatus}</p>}
+        {replayFailed && <>
+          <p className="chat-connect-status">{zh ? "无法显示终端画面" : "Couldn't show the terminal screen"}</p>
+          <p className="chat-connect-hint">{replayFailureText} {zh ? "会话记录没有改动。" : "The session record is unchanged."}</p>
+          <button type="button" className="btn" onClick={retryReplay}>{zh ? "重试" : "Retry"}</button>
+          {replayFailure && <details className="term-failure-details">
+            <summary>{zh ? "详细信息" : "Details"}<Icon name="chevD" /></summary>
+            <p>{replayFailure.detail}</p>
+          </details>}
+        </>}
         {launchFailed && <><p className="chat-connect-hint">{zh ? "会话记录已保留；重试不会创建新的对话。" : "The session record is retained; retry does not create a new conversation."}</p><button type="button" className="btn chat-connect-retry" disabled={actionBusy} onClick={() => void retryDeferredLaunch()}>{resuming ? (zh ? "正在重试…" : "Retrying…") : (zh ? "重试启动" : "Retry startup")}</button></>}
         {launchReadIssue && <><p className="chat-connect-hint">{zh ? `无法检查启动状态：${launchReadIssue}` : `Unable to check startup status: ${launchReadIssue}`}</p><button type="button" className="btn" onClick={() => setLaunchAttempt(value => value + 1)}>{zh ? "重新检查" : "Check again"}</button></>}
       </div>
     </div>}
-    {provider !== "codex" && session?.status === "starting" && <div className="term-starting" role="status" aria-live="polite"><div className="spinner" /><strong>{resuming ? (zh ? "正在恢复原对话…" : "Resuming conversation…") : (zh ? "正在启动终端…" : "Starting terminal…")}</strong></div>}
-    </div><footer className="term-foot">{session?.worktreePath ? `${zh ? "工作目录" : "Working directory"} · ${displayPath(session.worktreePath)}` : (zh ? "返回工作台不会关闭会话" : "Returning to the workspace does not close the session")}</footer></div>;
+    {provider !== "codex" && session?.status === "starting" && <div className="term-starting" role="status" aria-live="polite"><AgentLoadingMark provider={provider} active /><strong className="sr-only">{resuming ? (zh ? "正在恢复原对话…" : "Resuming conversation…") : (zh ? "正在启动终端…" : "Starting terminal…")}</strong></div>}
+    </div>
+    {endedBanner && <div className={`term-ended-banner${session?.readOnly ? " is-readonly" : ""}`} role="note">
+      <span className="term-ended-dot" aria-hidden="true" />
+      <p><strong>{endedBanner.title}</strong><span>{endedBanner.detail}</span></p>
+      {endedBanner.action}
+    </div>}
+    </div>;
 }

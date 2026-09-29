@@ -80,6 +80,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { useSupervision } from "./useSupervision";
 import { parseSupervision } from "./supervision";
 import { visibleCatalogSnapshot } from "./catalogVisibility";
+import { sessionWorkspaceKey } from "./sessionFileViews";
 
 const TerminalSurface = lazy(async () => ({
   default: (await import("./components/TerminalSurface")).TerminalSurface,
@@ -144,7 +145,7 @@ export function App() {
   const [recentIds, setRecentIds] = useState<string[]>(() => { try { const value: unknown = JSON.parse(localStorage.getItem("threadterm.v3.recent-session-ids") ?? "[]"); return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string").slice(0, 12) : []; } catch { return []; } });
   useEffect(() => { try { localStorage.setItem("threadterm.v3.recent-session-ids", JSON.stringify(recentIds)); } catch { /* Navigation still works when browser storage is unavailable. */ } }, [recentIds]);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(true);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [sessionHistoryOpen, setSessionHistoryOpen] = useState(false);
   const [historyTargetId, setHistoryTargetId] = useState<string>();
   const [companionOpen, setCompanionOpen] = useState(true);
@@ -153,6 +154,7 @@ export function App() {
     workspacePath?: string;
   }>();
   const [presetLayout, setPresetLayout] = useState<PaneLayout>();
+  const [navigationEpoch,setNavigationEpoch]=useState(0);
   const [presetCommands, setPresetCommands] = useState<string[]>([]);
   const presetLayoutRef = useRef<PaneLayout | undefined>(undefined);
   presetLayoutRef.current = presetLayout;
@@ -253,12 +255,25 @@ export function App() {
     });
     setCompanionOpen(true);
   };
+  /** "Back" from a session returns to its branch (worktree) home page, like the sidebar's branch row; sessions
+   * outside a project go to All terminals. */
+  const sessionHome = (target?: Session): Route => {
+    const home = target?.projectId ? data?.projects.find(item => item.id === target.projectId) : undefined;
+    return home ? {kind: "project", id: home.id, worktreePath: target!.worktreePath ?? home.path} : {kind: "all"};
+  };
+  const navigationState = useRef({route, session, data});
+  navigationState.current = {route, session, data};
   const navigate = useCallback(async (next: Route) => {
-    if (!(await confirmCloseEditors())) return;
+    const current = navigationState.current;
+    const destination = next.kind === 'session' ? current.data?.sessions.find(item => item.id === next.id) : undefined;
+    const retained = current.route.kind === 'session' && current.session && destination && current.data
+      && sessionWorkspaceKey(current.session, current.data.projects) === sessionWorkspaceKey(destination, current.data.projects);
+    if (!retained && !(await confirmCloseEditors())) return;
     if (next.kind !== "session" || !next.id || !presetLayoutRef.current || !presetSessionIds(presetLayoutRef.current).includes(next.id)) {
       setPresetLayout(undefined); setPresetCommands([]);
     }
     setRoute(next);
+    setNavigationEpoch(value=>value+1);
     if (next.kind === "session" && next.id)
       setRecentIds((current) =>
         [next.id!, ...current.filter((id) => id !== next.id)].slice(0, 8),
@@ -467,8 +482,20 @@ export function App() {
             <Loading />
           ) : sessionView === "ready" && session ? (
             <SessionWorkspace
-              key={session.id} session={session} data={workspaceData??data} theme={theme}
-              onBack={() => void navigate({kind:"all"})}
+              key={sessionWorkspaceKey(session,data.projects)} session={session} data={workspaceData??data} theme={theme}
+              navigationKey={navigationEpoch}
+              onActiveSession={id=>{
+                if(route.kind!=='session'||route.id===id)return;
+                const target=(workspaceData??data).sessions.find(item=>item.id===id);
+                if(!target)return;
+                // Internal focus in this retained workspace must not create a
+                // navigation epoch (it would cancel a just-clicked file link).
+                // Cross-scope preset tabs do replace the workspace and need the
+                // same dirty-file guard as explicit navigation.
+                if(sessionWorkspaceKey(target,data.projects)!==sessionWorkspaceKey(session,data.projects))void navigate({kind:'session',id});
+                else setRoute({kind:'session',id});
+              }}
+              onBack={() => void navigate(sessionHome(session))}
               onSelect={(id) => void navigate({kind:"session",id})}
               onProject={(id,worktreePath) => void navigate({kind:"project",id,worktreePath})}
               onChanged={() => void refresh()}
@@ -479,7 +506,7 @@ export function App() {
               onClearCommands={() => setPresetCommands([])}
             />
           ) : sessionView === "opening" ? (
-            <SessionOpening onBack={() => void navigate({kind:"all"})} />
+            <SessionOpening onBack={() => void navigate(sessionHome(session))} />
           ) : route.kind === "project" && project ? (
             <ProjectOverview
               key={`${project.id}:${route.worktreePath ?? "root"}`}
@@ -551,7 +578,7 @@ export function App() {
           />
         )}
         {shellMenu&&data&&(shellMenu.kind==='account'?<AccountMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSettings={()=>{setShellMenu(undefined);setSettingsOpen(true);}}/>:<NotificationMenu data={data} anchor={shellMenu.anchor} onClose={()=>setShellMenu(undefined)} onChanged={()=>void refresh()} onSession={id=>{setShellMenu(undefined);void navigate({kind:"session",id});}} onInbox={()=>{setShellMenu(undefined);void navigate({kind:"inbox"});}}/>)}
-        {paletteOpen && data && <CommandPalette data={data} onClose={()=>setPaletteOpen(false)} onSession={id=>void navigate({kind:"session",id})} onProject={id=>void navigate({kind:"project",id})} onCreate={()=>setCreatorOpen(true)} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onPresets={()=>void navigate({kind:"presets"})} onSettings={()=>setSettingsOpen(true)}/>}
+        {paletteOpen && data && <CommandPalette data={data} workbench={route.kind === "session" || route.kind === "workspace"} onClose={()=>setPaletteOpen(false)} onSession={id=>void navigate({kind:"session",id})} onProject={id=>void navigate({kind:"project",id})} onCreate={()=>setCreatorOpen(true)} onAll={()=>void navigate({kind:"all"})} onInbox={()=>void navigate({kind:"inbox"})} onPresets={()=>void navigate({kind:"presets"})} onSettings={()=>setSettingsOpen(true)}/>}
         {creatorOpen && data && (
           <SessionCreateDialog data={data}
             initialProjectId={creatorDefaults?.projectId} initialPath={creatorDefaults?.path} initialProvider={creatorDefaults?.provider} initialTitle={creatorDefaults?.title}
@@ -646,7 +673,7 @@ function SessionOpening({ onBack }: { onBack: () => void }) {
   return (
     <section className="ws session-screen runtime-workspace" aria-busy="true" aria-label={zh ? "正在打开会话" : "Opening session"}>
       <header className="ws-top">
-        <button className="ws-back" onClick={onBack}><Icon name="back" /><span>{zh ? "返回工作台" : "Back to workbench"}</span></button>
+        <button className="ws-back" onClick={onBack}><Icon name="back" /><span>{zh ? "返回" : "Back"}</span></button>
       </header>
       <div className="state">
         <div className="spinner" />

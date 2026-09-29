@@ -8,7 +8,71 @@
 .project-tree-form > label { display:grid; gap:6px; font-size:12px; }
 .project-tree-form input, .project-tree-form .tt-select { min-width:0; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg); color:var(--text); }
 .project-tree-form .tt-select-trigger { min-height:30px; padding:7px 9px; }
-.project-activity .tl-row { width:100%; }
 /* The header row mixes the 32px primary action with regular 28px controls —
    pin the row to one height like every other page-actions row. */
-.ov-head .page-actions .btn { height:28px; }
+.ov-page-head .page-actions .btn { height:28px; }
+
+/* Project / branch home (user decision 2026-09-28: departs from the prototype's fixed 3:2:3 brief slots).
+   Sections take their natural height and the page scrolls as a whole; no inner scrollers, no empty slots. */
+.ov-page { container:ov-page / inline-size; display:flex; flex-direction:column; gap:16px; min-height:100%; padding:16px; font-variant-numeric:tabular-nums; }
+.ov-page-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding-bottom:16px; border-bottom:1px solid var(--border); }
+.ov-head-main { min-width:0; }
+.ov-title-row { display:flex; align-items:center; gap:10px; min-width:0; }
+.ov-title-row .page-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ov-title-row .chip { flex:0 0 auto; }
+.ov-page-head .page-sub { margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ov-page-head .page-sub .mono { font-size:12px; }
+
+/* One summary strip: status counts, then usage. Hairlines come from the 1px grid gap over --border. */
+.ov-metrics { display:grid; grid-template-columns:minmax(0,5fr) minmax(0,4fr); gap:1px; overflow:hidden; border:1px solid var(--border); border-radius:var(--radius-card); background:var(--border); }
+.ov-metric-group { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0,1fr); gap:1px; min-width:0; }
+.ov-metric-group.ov-usage { grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) auto; grid-auto-flow:row; }
+.ov-metric { display:flex; flex-direction:column; justify-content:center; gap:4px; min-width:0; min-height:68px; margin:0; padding:12px 16px; border:0; border-radius:0; background:var(--surface); color:inherit; font:inherit; text-align:left; }
+button.ov-metric { cursor:pointer; }
+button.ov-metric:hover { background:color-mix(in srgb, var(--text) 3%, var(--surface)); }
+button.ov-metric:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+.ov-metric-label { overflow:hidden; color:var(--muted); font-size:11px; font-weight:500; line-height:16px; text-overflow:ellipsis; white-space:nowrap; }
+.ov-metric b { font-size:20px; font-weight:600; line-height:24px; letter-spacing:-.02em; }
+.ov-metric b.st-running { color:var(--st-running); }
+.ov-metric b.st-needs { color:var(--st-needs); }
+.ov-metric b.st-stalled { color:var(--st-stalled); }
+.ov-metric-value { display:flex; align-items:baseline; gap:8px; min-width:0; }
+.ov-metric-value i { overflow:hidden; color:var(--muted); font-size:12px; font-style:normal; text-overflow:ellipsis; white-space:nowrap; }
+.ov-spark { flex:1 1 auto; align-self:center; min-width:48px; max-width:120px; margin-left:auto; color:color-mix(in srgb, var(--text) 38%, transparent); }
+.ov-spark .spark { display:block; width:100%; height:18px; }
+.ov-metric-note { color:var(--faint); font-size:12px; line-height:24px; }
+.ov-usage-none { grid-column:span 2; }
+.ov-metric.ov-metric-more { flex-direction:row; align-items:center; gap:2px; padding:0 12px 0 14px; color:var(--muted); font-size:12px; white-space:nowrap; }
+.ov-metric.ov-metric-more:hover { color:var(--text); }
+.ov-metric-more .ico { width:14px; height:14px; }
+
+.ov-body { display:grid; grid-template-columns:minmax(0,1fr) minmax(280px,360px); gap:16px; align-items:start; }
+.ov-main, .ov-side { display:grid; gap:16px; align-content:start; min-width:0; }
+.ov-sec { min-width:0; padding:12px 16px 10px; border:1px solid var(--border); border-radius:var(--radius-card); background:var(--surface); }
+.ov-sec-head { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:28px; margin-bottom:4px; }
+.ov-sec-head h2 { min-width:0; margin:0; font-size:13px; font-weight:600; }
+.ov-sec-head .count { margin-left:6px; color:var(--faint); font-size:13px; font-weight:400; }
+.ov-sec-head .btn.ov-head-btn { height:24px; min-height:24px; padding:0 8px; gap:4px; color:var(--muted); font-size:12px; }
+.ov-sec-head .btn.ov-head-btn:hover { color:var(--text); }
+.ov-head-btn .ico { width:14px; height:14px; }
+.ov-empty { margin:0; padding:4px 0 8px; color:var(--muted); font-size:12px; line-height:1.5; }
+.ov-list { display:grid; margin:0 -8px; }
+.ov-row { display:flex; align-items:center; gap:10px; width:100%; min-width:0; min-height:48px; margin:0; padding:6px 8px; border:0; border-radius:var(--radius); background:transparent; color:inherit; font:inherit; font-size:13px; text-align:left; cursor:pointer; }
+.ov-row:hover { background:var(--soft); }
+.ov-row:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+.ov-row > .brand-ico, .ov-row > .ico:first-child { flex:0 0 auto; width:16px; height:16px; }
+.ov-tree-row > .ico:first-child { color:var(--muted); }
+.ov-row-main { display:grid; flex:1 1 auto; gap:2px; min-width:0; }
+.ov-row-title, .ov-row-ctx { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ov-row-title { font-weight:500; line-height:16px; }
+.ov-tree-row .ov-row-title { font-family:var(--mono); font-size:12.5px; }
+.ov-row-ctx { color:var(--muted); font-size:12px; line-height:16px; }
+.ov-row .chip { flex:0 0 auto; }
+.ov-row-go { flex:0 0 auto; width:14px; height:14px; color:var(--faint); }
+.ov-row-time { flex:0 0 auto; width:76px; color:var(--muted); font-size:12px; white-space:nowrap; }
+.project-activity .ov-list { margin:0; }
+
+@container ov-page (max-width: 980px) {
+  .ov-metrics { grid-template-columns:minmax(0,1fr); }
+  .ov-body { grid-template-columns:minmax(0,1fr); }
+}

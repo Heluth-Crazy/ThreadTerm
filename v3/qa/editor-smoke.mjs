@@ -6,19 +6,24 @@ import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import assert from 'node:assert/strict';
 const scratch=await mkdtemp(join(tmpdir(),'threadterm-v3-editor-'));
+let currentStage='setup';
+const stage=(name)=>{currentStage=name;console.log(`[editor-smoke] ${new Date().toISOString()} ${name}`);};
 const project=join(scratch,'project');await mkdir(join(project,'nested'),{recursive:true});
 await writeFile(join(project,'note.txt'),'initial');await writeFile(join(project,'other.txt'),'other');
 await writeFile(join(project,'nested','README.md'),'# Preview\n\n![pixel](pixel.png)\n\n<script>window.PREVIEW_RAN=true</script>');
 await writeFile(join(project,'nested','pixel.png'),Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0c8AAAAASUVORK5CYII=','base64'));
-const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_PIPE:`\\\\.\\pipe\\threadterm-v3-editor-${randomUUID()}`,THREADTERM_V3_RUNTIME:resolve('runtime/target/debug/threadterm-v3-runtime.exe')};
-const daemon=spawn(env.THREADTERM_V3_RUNTIME,[],{env,windowsHide:true,stdio:'ignore'});let app;
+const env={...process.env,THREADTERM_V3_DATA:join(scratch,'data'),THREADTERM_V3_USER_DATA:join(scratch,'electron'),THREADTERM_V3_PIPE:`\\\\.\\pipe\\threadterm-v3-editor-${randomUUID()}`,THREADTERM_V3_RUNTIME:resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')};
+let runtimeLog='';const daemon=spawn(env.THREADTERM_V3_RUNTIME,[],{env,windowsHide:true,stdio:['ignore','ignore','pipe']});daemon.stderr.on('data',chunk=>{runtimeLog+=chunk;});let app;
 try{
- app=await electron.launch({args:[resolve('.')],env});const page=await app.firstWindow();const errors=[];page.on('pageerror',error=>errors.push(error.message));
- await page.waitForFunction(()=>!!window.threadterm);
+ stage('runtime spawned');stage('electron launch begin');app=await electron.launch({args:[resolve('.')],env,timeout:30_000});stage('electron launched');const page=await app.firstWindow({timeout:20_000});stage('first window');page.setDefaultTimeout(15_000);const errors=[];page.on('pageerror',error=>errors.push(error.message));
+ await page.waitForFunction(()=>!!window.threadterm,{timeout:15_000});stage('bridge ready');
  const projectRecord=await page.evaluate(async path=>{const s=await window.threadterm.request('runtime.snapshot',{});await window.threadterm.request('settings.update',{patch:{language:'en'},expectedRevision:s.settings.revision,operationId:crypto.randomUUID()});return window.threadterm.request('project.add',{path,name:'Editor QA',operationId:crypto.randomUUID()});},project);
+ stage('project added');if(process.env.THREADTERM_V3_QA_THEME)await page.evaluate(async theme=>{const s=await window.threadterm.request('runtime.snapshot',{});await window.threadterm.request('settings.update',{patch:{theme},expectedRevision:s.settings.revision,operationId:crypto.randomUUID()});},process.env.THREADTERM_V3_QA_THEME);stage('theme applied');
  await page.getByRole('button',{name:'Editor QA',exact:true}).click();
- await page.getByRole('button',{name:'Files',exact:true}).click();
- await page.getByRole('button',{name:'note.txt',exact:true}).click();
+ await page.getByRole('button',{name:'Project actions',exact:true}).click();await page.getByRole('button',{name:'Files',exact:true}).click();stage('project Files opened');
+ // The standalone page's tools panel is the shared workbench Explorer: rows are tree items keyed by data-path.
+ const row=path=>page.locator(`.wb-tree [data-path="${path}"]`);
+ if(await page.getByRole('button',{name:'Browse files',exact:true}).count())await page.getByRole('button',{name:'Browse files',exact:true}).click();await row('note.txt').click();stage('note opened');
  const editor=page.locator('.cm-content[contenteditable=true]');await editor.waitFor();
  await editor.click();await page.keyboard.press('Control+a');await page.keyboard.insertText('edited 中文');
  await page.waitForFunction(async id=>(await window.threadterm.request('draft.list',{projectId:id})).some(d=>d.path==='note.txt'&&d.content==='edited 中文'),projectRecord.id);
@@ -26,21 +31,22 @@ try{
  await page.waitForFunction(async id=>(await window.threadterm.request('filesystem.read',{projectId:id,path:'note.txt'})).content==='edited 中文',projectRecord.id);
  assert.equal(await readFile(join(project,'note.txt'),'utf8'),'edited 中文');
  await editor.click();await page.keyboard.press('Control+End');await page.keyboard.insertText(' unsaved');
- await page.getByRole('button',{name:'other.txt',exact:true}).click();await page.getByRole('dialog',{name:'Save changes to this file?'}).waitFor();
+ await row('other.txt').click();await page.getByRole('dialog',{name:'Save changes to this file?'}).waitFor();
  await page.getByRole('button',{name:'Cancel',exact:true}).click();assert.ok((await editor.innerText()).includes('unsaved'));
- await page.getByRole('button',{name:'other.txt',exact:true}).click();await page.getByRole('button',{name:'Discard changes',exact:true}).click();
- await page.waitForFunction(()=>document.querySelector('.editor-bar')?.textContent?.includes('other.txt'));
+ await row('other.txt').click();await page.getByRole('button',{name:'Discard changes',exact:true}).click();
+ await page.waitForFunction(()=>document.querySelector('.file-bar .path')?.textContent?.includes('other.txt'));
  assert.equal(await readFile(join(project,'note.txt'),'utf8'),'edited 中文');
- await page.getByRole('button',{name:'note.txt',exact:true}).click();await editor.click();await page.keyboard.press('Control+End');await page.keyboard.insertText(' local');
+ await page.getByRole('button',{name:'Close current',exact:true}).click();await page.waitForFunction(()=>document.querySelector('.file-bar .path')?.textContent?.includes('note.txt'));
+ await row('note.txt').click();await editor.click();await page.keyboard.press('Control+End');await page.keyboard.insertText(' local');
  await writeFile(join(project,'note.txt'),'external update');await page.keyboard.press('Control+s');
  await page.getByRole('alert').filter({hasText:'file_conflict'}).waitFor();assert.equal(await readFile(join(project,'note.txt'),'utf8'),'external update');
- await page.getByRole('button',{name:/nested/}).click();await page.getByRole('button',{name:'README.md',exact:true}).click();await page.getByRole('button',{name:'Discard changes',exact:true}).click();
+ await row('nested').click();await row('nested/README.md').click();await page.getByRole('button',{name:'Discard changes',exact:true}).click();
  await page.getByRole('button',{name:'Preview',exact:true}).click();await page.locator('.markdown-preview h1').waitFor();
  await page.waitForFunction(()=>document.querySelector('.markdown-preview img')?.getAttribute('src')?.startsWith('data:image/png;base64,'));
  assert.equal(await page.evaluate(()=>window.PREVIEW_RAN),undefined);assert.equal(await page.locator('.markdown-preview script').count(),0);
- await mkdir('qa/results',{recursive:true});await page.screenshot({path:'qa/results/editor-preview.png'});
- assert.deepEqual(errors,[]);
+ await mkdir('qa/results',{recursive:true});await page.screenshot({path:`qa/results/editor-preview-${process.env.THREADTERM_V3_QA_THEME??'default'}.png`});
+ stage('preview screenshot saved');assert.deepEqual(errors,[]);
  await page.evaluate(()=>window.threadterm.request('runtime.shutdown',{operationId:crypto.randomUUID()}));
- const report={passed:true,checks:['non-Git scope files','directory expansion','CodeMirror input+Chinese','draft autosync','Ctrl+S latest content','dirty switch cancel/discard','external fingerprint conflict','scoped Markdown image','Markdown scripts removed'],scratch};await writeFile('qa/results/editor-smoke.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report));
-}catch(error){console.error(error);process.exitCode=1;if(app)await app.windows()[0]?.screenshot({path:'qa/results/editor-failure.png'}).catch(()=>{});}
+ const report={passed:true,checks:['non-Git scope files','directory expansion','CodeMirror input+Chinese','draft autosync','Ctrl+S latest content','dirty switch cancel/discard','close-current selects adjacent open file','external fingerprint conflict','filesystem.image Markdown asset','Markdown scripts removed'],scratch};await writeFile('qa/results/editor-smoke.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report));
+}catch(error){console.error(`[editor-smoke] failed during ${currentStage}`,error, runtimeLog);process.exitCode=1;if(app)await app.windows()[0]?.screenshot({path:'qa/results/editor-failure.png'}).catch(()=>{});}
 finally{if(app){await app.evaluate(({app})=>{setTimeout(()=>app.exit(),0)}).catch(()=>{});await app.close().catch(()=>{});}if(daemon.exitCode===null)daemon.kill();}

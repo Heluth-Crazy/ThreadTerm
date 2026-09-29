@@ -55,31 +55,37 @@ async function reset(page, url) {
   await page.locator('.sess-row').first().click();
   await page.locator('.session-screen.runtime-workspace').waitFor();
 }
-async function openFileWorkspace(page) {
-  await page.locator('.ws-tabrow .tab').nth(1).click();
-  const browse = page.getByRole('button', { name: /browse files|浏览文件/i });
-  if (await browse.count()) {
-    await browse.click();
-    const file = page.locator('.tt-file-tree .file-link').first();
-    await file.wait();
-    await file.click();
-  }
-  await page.locator('.tt-editor-shell .cm-content').waitFor();
+// Files and diffs open from the workbench side bar (the inspector file list and the in-tab
+// "Files & Git" panel were replaced by it).
+async function sideView(page, name) {
+  const button = page.locator('.wb-switcher').getByRole('button', { name });
+  if (await button.getAttribute('aria-pressed') !== 'true') await button.click();
 }
 async function revealFileTree(page) {
-  for (let step = 0; step < 20; step += 1) {
-    const closed = page.locator('.tt-file-tree details:not([open]) > summary');
+  await sideView(page, /^(files|文件)$/i);
+  await page.locator('.wb-tree [role="treeitem"]').first().waitFor();
+  for (let step = 0; step < 40; step += 1) {
+    const closed = page.locator('.wb-tree [role="treeitem"][aria-expanded="false"]');
     if (!await closed.count()) return;
     await closed.first().click();
     await page.waitForTimeout(30);
   }
 }
+const fileRows = (page, name) => page.locator('.wb-tree [role="treeitem"]:not([aria-expanded])').filter({ has: page.locator('.wb-name', { hasText: name }) });
+async function openFileWorkspace(page) {
+  await revealFileTree(page);
+  await fileRows(page, /\.(?:tsx?|jsx?|json|rs|txt)$/i).first().click();
+  await page.locator('.tt-editor-shell .cm-content:visible').waitFor();
+}
+async function workspaceAction(page,name){await page.getByRole('button',{name:/workspace actions|工作区操作/i}).click();await page.getByRole('button',{name}).click();await page.keyboard.press('Escape');}
+async function openDiff(page){await sideView(page,/^(source control|源代码管理)$/i);await page.locator('.wb-changes .wb-change-open').first().click();await page.locator('.tt-diff-shell:visible').waitFor();}
 async function editCurrentFile(page, marker) {
-  const editor = page.locator('.tt-editor-shell .cm-content');
+  const editor = page.locator('.tt-editor-shell .cm-content:visible');
   await editor.click();
   await page.keyboard.press('Control+End');
   await page.keyboard.type(marker);
-  await page.locator('[data-testid="editor-dirty"]:not([hidden])').waitFor();
+  await page.locator('.file-workspace.embedded:visible .file-view-tabs button:not([disabled])').filter({hasText:/^(save file|保存文件)$/i}).waitFor();
+  assert.ok((await editor.innerText()).includes(marker.trim()), 'visible editor retains the unsaved marker');
 }
 async function dirtyExit(page, choice) {
   await page.locator('.ws-back').click();
@@ -129,12 +135,13 @@ async function run() {
     const url = productionServer.origin + '/?theme=light';
 
     await runCase('workspace-split-save-and-exit', page, url, async () => {
-      await page.getByRole('button', { name: /side by side|并排查看/i }).click();
+      await workspaceAction(page,/split right|左右拆分/i);
+      await page.getByRole('button',{name:/^choose session$|^选择会话$/i}).click();
       const peer = page.locator('.switcher-row').first();
       await peer.click();
       await page.waitForFunction(() => window.__workspaceCalls.some(call => call.method === 'workspace.save' && call.params.layout.kind === 'split'));
       assert.equal(await page.locator('.pane-workspace .workspace-pane').count(), 2);
-      await page.getByRole('button', { name: /collapse to single pane|收起为单窗格/i }).click();
+      await workspaceAction(page,/^close pane$|^关闭窗格$/i);
       await page.waitForFunction(() => window.__workspaceCalls.filter(call => call.method === 'workspace.save').some(call => call.params.layout.kind === 'pane'));
       assert.equal(await page.locator('.pane-workspace').count(), 1);
     });
@@ -145,35 +152,32 @@ async function run() {
       await dirtyExit(page, choice);
       if (choice === 'cancel') {
         await page.locator('.session-screen.runtime-workspace').waitFor();
-        assert.equal(await page.locator('[data-testid="editor-dirty"]:not([hidden])').count(), 1);
+        assert.equal(await page.getByRole('button',{name:/^(save file|保存文件)$/i}).isEnabled(),true);
+        assert.ok((await page.locator('.tt-editor-shell .cm-content:visible').innerText()).includes('QA-cancel'));
       } else {
-        await page.locator('.all-terminals-page, .terminals-page').first().waitFor();
+        // Back leaves a session for its branch home page (user decision 2026-09-28), not All terminals.
+        await page.locator('[data-testid="project-home"]').waitFor();
         if (choice === 'save') await page.waitForFunction(() => window.__workspaceCalls.some(call => call.method === 'filesystem.write' && call.params.content.includes('QA-save')));
       }
     });
 
     await runCase('markdown-and-html-preview-exit', page, url, async () => {
       await openFileWorkspace(page);
-      await page.locator('.file-tools-button').click();
       await revealFileTree(page);
-      const links = page.locator('.tt-file-tree .file-link');
-      const names = await links.allTextContents();
-      const markdown = names.find(name => /\.mdx?$/i.test(name.trim()));
-      const html = names.find(name => /\.html?$/i.test(name.trim()));
-      assert.ok(markdown, 'fixture must expose a Markdown file');
-      assert.ok(html, 'fixture must expose an HTML file');
-      await links.filter({ hasText: markdown }).first().click();
-      await page.locator('.file-bar .btn').filter({ hasText: /preview|预览/i }).click();
-      await page.locator('.file-preview .markdown-preview').waitFor();
-      await links.filter({ hasText: html }).first().click();
-      await page.locator('.file-bar .btn').filter({ hasText: /preview|预览/i }).click();
+      const markdown = fileRows(page, /\.mdx?$/i), html = fileRows(page, /\.html?$/i);
+      assert.ok(await markdown.count(), 'fixture must expose a Markdown file');
+      assert.ok(await html.count(), 'fixture must expose an HTML file');
+      await markdown.first().click();
+      if(!await page.locator('.file-preview .markdown-preview:visible').count())await page.getByRole('button',{name:/^(preview|预览)$/i}).click();
+      await page.locator('.file-preview .markdown-preview:visible').waitFor();
+      await html.first().click();
+      await page.getByRole('button',{name:/^(preview|预览)$/i}).click();
       await page.locator('iframe[title="Saved HTML preview"]').waitFor();
-      await page.locator('.ws-tabrow .tab').nth(2).click();
-      await page.locator('.tt-diff-shell').waitFor();
+      await openDiff(page);
     });
 
     await runCase('diff-line-hunk-undo-and-save', page, url, async () => {
-      await page.locator('.ws-tabrow .tab').nth(2).click();
+      await openFileWorkspace(page);await openDiff(page);
       const current = page.locator('.tt-diff-shell .tt-diff-host .cm-content').last();
       await current.waitFor();
       await current.click();
@@ -204,6 +208,7 @@ async function run() {
     await productionServer?.close().catch(() => {});
     await referenceServer?.close().catch(() => {});
     report.completedAt = new Date().toISOString();
+    if(report.errors.length||report.checks.some(check=>check.passed===false))process.exitCode=1;
     await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ out, report }, null, 2));
   }
