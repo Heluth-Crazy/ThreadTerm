@@ -210,3 +210,35 @@ export const closeTab = (
         first: closeTab(layout.first, paneId, tabId),
         second: closeTab(layout.second, paneId, tabId),
       };
+/**
+ * A session opens as just its sessions (user decision 2026-09-28): drop every non-session tab that `keep`
+ * rejects (callers keep file tabs with unsaved edits), prefer a session tab as each pane's active tab and
+ * collapse panes left empty. Session tabs and the split geometry between them are kept. Never returns an
+ * empty layout: if every pane empties, the first pane stays as an empty leaf for the routed session.
+ */
+export const sessionOnlyLayout = (
+  layout: PaneLayout,
+  keep: (tab: Exclude<ContentRef, { kind: "session" }>) => boolean,
+): PaneLayout => {
+  const emptied: string[] = [];
+  const prune = (node: PaneLayout): PaneLayout => {
+    if (node.kind === "pane") {
+      const tabs = node.tabs.filter((tab) => tab.kind === "session" || keep(tab));
+      if (tabs.length === node.tabs.length) return node;
+      if (!tabs.length) emptied.push(node.id);
+      const activeTabId = tabs.some((tab) => tab.id === node.activeTabId)
+        ? node.activeTabId
+        : (tabs.find((tab) => tab.kind === "session")?.id ?? tabs[0]?.id ?? null);
+      return { ...node, tabs, activeTabId };
+    }
+    const first = prune(node.first), second = prune(node.second);
+    return first === node.first && second === node.second ? node : { ...node, first, second };
+  };
+  let next = prune(layout);
+  for (const id of emptied) {
+    const collapsed = closePane(next, id);
+    if (!collapsed) return { kind: "pane", id, tabs: [], activeTabId: null };
+    next = collapsed;
+  }
+  return next;
+};

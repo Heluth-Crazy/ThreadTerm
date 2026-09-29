@@ -22,9 +22,42 @@ struct FixtureAdapter {
     status_before_return: Option<(Arc<Database>, &'static str)>,
     opens: Arc<AtomicUsize>,
     stops: Arc<AtomicUsize>,
+    alive: Arc<Mutex<Arc<std::sync::atomic::AtomicBool>>>,
+    worker_tokens: Arc<Mutex<Vec<String>>>,
+    initial_liveness: bool,
 }
 
 impl ProviderAdapter for FixtureAdapter {
+    fn preflight_terminal_resume(&self, cwd: &str, native_id: &str) -> Result<(), ProviderError> {
+        assert!(std::path::Path::new(cwd).is_dir());
+        if native_id == "missing-history" {
+            Err(ProviderError::new(
+                "session_has_no_native_history",
+                "No persisted native history",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn scopes_chat_events(&self) -> bool {
+        true
+    }
+
+    fn open_chat_scoped(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.worker_tokens
+            .lock()
+            .unwrap()
+            .push(worker_token.to_owned());
+        self.open_chat(session_id, cwd, native_id)
+    }
+
     fn id(&self) -> &'static str {
         "grok"
     }
@@ -100,17 +133,27 @@ impl ProviderAdapter for FixtureAdapter {
         }
         Ok(Box::new(FixtureChat {
             stops: Arc::clone(&self.stops),
+            alive: {
+                let flag = Arc::new(std::sync::atomic::AtomicBool::new(self.initial_liveness));
+                *self.alive.lock().unwrap() = Arc::clone(&flag);
+                flag
+            },
         }))
     }
 }
 
 struct FixtureChat {
     stops: Arc<AtomicUsize>,
+    alive: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ChatSession for FixtureChat {
     fn native_id(&self) -> Option<String> {
         Some("fixture-native".into())
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive.load(AtomicOrdering::SeqCst)
     }
 
     fn send(&mut self, _text: &str, _operation_id: &str) -> Result<Value, ProviderError> {
@@ -143,6 +186,8 @@ struct Fixture {
     db: Arc<Database>,
     opens: Arc<AtomicUsize>,
     stops: Arc<AtomicUsize>,
+    alive: Arc<Mutex<Arc<std::sync::atomic::AtomicBool>>>,
+    worker_tokens: Arc<Mutex<Vec<String>>>,
     started: Option<Receiver<()>>,
     release: Option<SyncSender<()>>,
 }
@@ -163,6 +208,10 @@ impl Fixture {
         crate::retry_scheduler::initialize(&db).unwrap();
         let opens = Arc::new(AtomicUsize::new(0));
         let stops = Arc::new(AtomicUsize::new(0));
+        let worker_tokens = Arc::new(Mutex::new(Vec::new()));
+        let alive = Arc::new(Mutex::new(Arc::new(std::sync::atomic::AtomicBool::new(
+            true,
+        ))));
         let (started_tx, started_rx) = mpsc::sync_channel(1);
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let adapter = Arc::new(FixtureAdapter {
@@ -174,6 +223,9 @@ impl Fixture {
             status_before_return: status_before_return.map(|status| (Arc::clone(&db), status)),
             opens: Arc::clone(&opens),
             stops: Arc::clone(&stops),
+            alive: Arc::clone(&alive),
+            worker_tokens: Arc::clone(&worker_tokens),
+            initial_liveness: true,
         });
         let output = Arc::new(OutputStore::default());
         let service = Arc::new(RuntimeService {
@@ -202,6 +254,8 @@ impl Fixture {
             db,
             opens,
             stops,
+            alive,
+            worker_tokens,
             started: slow.then_some(started_rx),
             release: slow.then_some(release_tx),
         }
@@ -253,6 +307,49 @@ impl Fixture {
                 "operationId":operation_id
             }),
         }
+    }
+}
+
+#[test]
+fn terminal_resume_preflight_failure_preserves_identity_status_output_and_operation() {
+    let fixture = Fixture::new(false, None);
+    let session = fixture
+        .db
+        .create_session(crate::db::CreateSession {
+            project_id: None,
+            title: Some("Missing native history"),
+            provider: "grok",
+            mode: "terminal",
+            native_id: Some("missing-history"),
+            operation_id: "preflight-create",
+        })
+        .unwrap();
+    fixture
+        .db
+        .set_session_status(&session.id, "exited", Some(0))
+        .unwrap();
+    fixture
+        .db
+        .append_output(&session.id, 0, b"retained original bytes")
+        .unwrap();
+    let before =
+        serde_json::to_value(fixture.db.session_by_id(&session.id).unwrap().unwrap()).unwrap();
+    let end = fixture.db.output_end(&session.id).unwrap();
+    for _ in 0..2 {
+        let error = fixture.service.dispatch("desktop", RpcRequest {
+            v: 1,
+            id: "resume-check".into(),
+            method: "session.resume".into(),
+            params: json!({"sessionId":session.id,"cwd":fixture.root.path(),"operationId":"preflight-resume"}),
+        }).unwrap_err();
+        assert_eq!(error.code, "session_has_no_native_history");
+        assert_eq!(
+            serde_json::to_value(fixture.db.session_by_id(&session.id).unwrap().unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(fixture.db.output_end(&session.id).unwrap(), end);
+        assert!(fixture.db.operation("preflight-resume").unwrap().is_none());
+        assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 0);
     }
 }
 
@@ -557,4 +654,324 @@ fn connection_handoff_preserves_an_early_running_state() {
     assert_eq!(session.status, "running");
     assert_eq!(session.native_id.as_deref(), Some("fixture-native"));
     assert_eq!(fixture.stops.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[test]
+fn internal_worker_death_disconnects_and_explicit_reconnect_replaces_the_generation() {
+    let fixture = Fixture::new(false, None);
+    let created = fixture.create("create-internal-death");
+    let session_id = created["id"].as_str().unwrap().to_owned();
+    let lease_epoch = fixture.claim(&session_id);
+    let connected = fixture
+        .service
+        .dispatch(
+            "desktop",
+            Fixture::connect_request(&session_id, lease_epoch, "connect-before-death"),
+        )
+        .unwrap();
+    assert_eq!(connected["phase"], "ready");
+    let generation = connected["connectionGeneration"].as_u64().unwrap();
+
+    // A close notice for a healthy worker is a no-op (late or stale signal).
+    fixture.service.providers.note_session_closed(&session_id);
+    let state = fixture.service.connection_state(&session_id).unwrap();
+    assert_eq!(state["phase"], "ready");
+
+    // The worker dies internally while its host would still look alive.
+    fixture
+        .alive
+        .lock()
+        .unwrap()
+        .store(false, AtomicOrdering::SeqCst);
+    fixture.service.providers.note_session_closed(&session_id);
+    let state = fixture.service.connection_state(&session_id).unwrap();
+    assert_eq!(state["phase"], "disconnected");
+    assert!(state["connectionGeneration"].as_u64().unwrap() > generation);
+
+    // An explicit reconnect replaces the dead worker and keeps the identity.
+    let reconnected = fixture
+        .service
+        .dispatch(
+            "desktop",
+            Fixture::connect_request(&session_id, lease_epoch, "connect-after-death"),
+        )
+        .unwrap();
+    assert_eq!(reconnected["phase"], "ready");
+    assert_eq!(reconnected["nativeId"], "fixture-native");
+    assert_eq!(fixture.opens.load(AtomicOrdering::SeqCst), 2);
+    assert!(
+        reconnected["connectionGeneration"].as_u64().unwrap()
+            > state["connectionGeneration"].as_u64().unwrap()
+    );
+}
+
+fn scoped_event(session_id: &str, token: Option<&str>, kind: &str, data: Value) -> ProviderEvent {
+    ProviderEvent {
+        provider: "grok".into(),
+        session_id: session_id.into(),
+        native_id: Some("fixture-native".into()),
+        turn_id: Some("fixture-turn".into()),
+        kind: kind.into(),
+        data,
+        worker_token: token.map(ToOwned::to_owned),
+    }
+}
+
+#[test]
+fn queued_old_worker_events_cannot_change_a_reconnected_session() {
+    let fixture = Fixture::new(false, None);
+    let created = fixture.create("create-scope");
+    let id = created["id"].as_str().unwrap();
+    let providers = &fixture.service.providers;
+    providers.chat_open(id, "grok", "fixture", None).unwrap();
+    let old_token = fixture.worker_tokens.lock().unwrap()[0].clone();
+    providers.chat_stop(id).unwrap();
+    let old_connection = providers.chat_connection(id);
+    providers
+        .chat_open(id, "grok", "fixture", Some("fixture-native"))
+        .unwrap();
+    let new_token = fixture.worker_tokens.lock().unwrap()[1].clone();
+    project_provider_event(
+        &fixture.db,
+        providers,
+        &scoped_event(id, Some(&new_token), "chat.turn.completed", json!({})),
+    );
+    for token in [Some(old_token.as_str()), None] {
+        project_provider_event(
+            &fixture.db,
+            providers,
+            &scoped_event(id, token, "chat.error", json!({"message":"stale worker"})),
+        );
+        assert_eq!(
+            fixture.db.session_by_id(id).unwrap().unwrap().status,
+            "idle"
+        );
+    }
+    let approval = scoped_event(
+        id,
+        Some(&new_token),
+        "chat.approval",
+        json!({"approvalId":"current-approval","message":"current permission"}),
+    );
+    project_provider_event(&fixture.db, providers, &approval);
+    project_provider_event(
+        &fixture.db,
+        providers,
+        &ProviderEvent {
+            provider: "runtime".into(),
+            session_id: id.into(),
+            native_id: None,
+            turn_id: None,
+            kind: "chat.connection".into(),
+            data: old_connection,
+            worker_token: None,
+        },
+    );
+    let items = fixture.db.chat_items(id).unwrap();
+    assert!(
+        items
+            .iter()
+            .flat_map(|item| &item.parts)
+            .any(|part| part.get("status").and_then(Value::as_str) == Some("pending")),
+        "old disconnect must not expire a new permission: {items:?}"
+    );
+    let mut conflict = scoped_event(
+        id,
+        Some(&new_token),
+        "chat.error",
+        json!({"message":"identity conflict"}),
+    );
+    conflict.native_id = Some("wrong-native".into());
+    project_provider_event(&fixture.db, providers, &conflict);
+    assert_eq!(
+        fixture.db.session_by_id(id).unwrap().unwrap().status,
+        "waiting"
+    );
+    assert_eq!(
+        fixture
+            .db
+            .session_by_id(id)
+            .unwrap()
+            .unwrap()
+            .native_id
+            .as_deref(),
+        Some("fixture-native")
+    );
+}
+
+#[test]
+fn final_worker_error_survives_liveness_poll_but_not_explicit_stop() {
+    let fixture = Fixture::new(false, None);
+    let created = fixture.create("create-final-event");
+    let id = created["id"].as_str().unwrap();
+    let providers = &fixture.service.providers;
+    providers.chat_open(id, "grok", "fixture", None).unwrap();
+    let token = fixture.worker_tokens.lock().unwrap()[0].clone();
+    fixture
+        .alive
+        .lock()
+        .unwrap()
+        .store(false, AtomicOrdering::SeqCst);
+    assert_eq!(providers.chat_connection(id)["phase"], "disconnected");
+    project_provider_event(
+        &fixture.db,
+        providers,
+        &scoped_event(
+            id,
+            Some(&token),
+            "chat.error",
+            json!({"message":"final error"}),
+        ),
+    );
+    assert_eq!(
+        fixture.db.session_by_id(id).unwrap().unwrap().status,
+        "error"
+    );
+    providers.chat_stop(id).unwrap();
+    project_provider_event(
+        &fixture.db,
+        providers,
+        &scoped_event(id, Some(&token), "chat.turn.started", json!({})),
+    );
+    assert_eq!(
+        fixture.db.session_by_id(id).unwrap().unwrap().status,
+        "error"
+    );
+}
+
+#[test]
+fn provider_handoff_does_not_publish_an_already_dead_worker() {
+    let adapter = FixtureAdapter {
+        gate: None,
+        failure: Mutex::new(None),
+        status_before_return: None,
+        opens: Arc::new(AtomicUsize::new(0)),
+        stops: Arc::new(AtomicUsize::new(0)),
+        alive: Arc::new(Mutex::new(Arc::new(std::sync::atomic::AtomicBool::new(
+            false,
+        )))),
+        worker_tokens: Arc::new(Mutex::new(Vec::new())),
+        initial_liveness: false,
+    };
+    let providers = Providers::for_test(vec![Arc::new(adapter)]);
+    assert_eq!(
+        providers
+            .chat_open("s", "grok", "fixture", None)
+            .unwrap_err()
+            .code,
+        "provider_disconnected"
+    );
+    assert_eq!(providers.chat_connection("s")["phase"], "failed");
+    assert!(!providers.chat_is_open("s"));
+}
+
+#[test]
+fn connecting_events_accept_current_worker_and_stop_fences_early_notifications() {
+    let fixture = Fixture::new(true, None);
+    let created = fixture.create("create-early-scoped");
+    let id = created["id"].as_str().unwrap().to_owned();
+    let providers = fixture.service.providers.clone();
+    let opening_id = id.clone();
+    let opening =
+        std::thread::spawn(move || providers.chat_open(&opening_id, "grok", "fixture", None));
+    fixture
+        .started
+        .as_ref()
+        .unwrap()
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    let token = fixture.worker_tokens.lock().unwrap()[0].clone();
+    let providers = &fixture.service.providers;
+    let event = scoped_event(&id, Some(&token), "chat.turn.started", json!({}));
+    project_provider_event(&fixture.db, providers, &event);
+    assert_eq!(
+        fixture.db.session_by_id(&id).unwrap().unwrap().status,
+        "running"
+    );
+    assert!(serde_json::to_value(&event)
+        .unwrap()
+        .get("workerToken")
+        .is_none());
+    providers.chat_stop(&id).unwrap();
+    project_provider_event(
+        &fixture.db,
+        providers,
+        &scoped_event(&id, Some(&token), "chat.error", json!({"message":"late"})),
+    );
+    assert_eq!(
+        fixture.db.session_by_id(&id).unwrap().unwrap().status,
+        "running"
+    );
+    fixture.release.as_ref().unwrap().send(()).unwrap();
+    assert_eq!(
+        opening.join().unwrap().unwrap_err().code,
+        "chat_connect_superseded"
+    );
+}
+
+#[test]
+fn replacement_connecting_expires_old_cards_before_new_worker_cards_arrive() {
+    let fixture = Fixture::new(false, None);
+    let created = fixture.create("create-reconnect-permission");
+    let id = created["id"].as_str().unwrap();
+    let providers = &fixture.service.providers;
+    providers.chat_open(id, "grok", "fixture", None).unwrap();
+    let old_token = fixture.worker_tokens.lock().unwrap()[0].clone();
+    project_provider_event(
+        &fixture.db,
+        providers,
+        &scoped_event(
+            id,
+            Some(&old_token),
+            "chat.approval",
+            json!({"approvalId":"old"}),
+        ),
+    );
+    fixture
+        .alive
+        .lock()
+        .unwrap()
+        .store(false, AtomicOrdering::SeqCst);
+    let mut events = providers.subscribe();
+    providers
+        .chat_open(id, "grok", "fixture", Some("fixture-native"))
+        .unwrap();
+    while let Ok(event) = events.try_recv() {
+        project_provider_event(&fixture.db, providers, &event);
+    }
+    let token = fixture.worker_tokens.lock().unwrap()[1].clone();
+    project_provider_event(
+        &fixture.db,
+        providers,
+        &scoped_event(
+            id,
+            Some(&token),
+            "chat.approval",
+            json!({"approvalId":"new"}),
+        ),
+    );
+    project_provider_event(
+        &fixture.db,
+        providers,
+        &scoped_event(
+            id,
+            Some(&old_token),
+            "chat.error",
+            json!({"message":"EOF queued before reconnect"}),
+        ),
+    );
+    let items = fixture.db.chat_items(id).unwrap();
+    let part_for = |approval_id| {
+        items
+            .iter()
+            .flat_map(|item| &item.parts)
+            .find(|part| part["approvalId"] == approval_id)
+            .unwrap()
+    };
+    assert_eq!(part_for("old")["status"], "expired");
+    assert_eq!(part_for("new")["status"], "pending");
+    assert_eq!(
+        fixture.db.session_by_id(id).unwrap().unwrap().status,
+        "waiting"
+    );
 }

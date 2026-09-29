@@ -1,13 +1,15 @@
 use super::ProviderError;
 use crate::job::SessionJob;
 use serde_json::{json, Value};
+#[cfg(any(test, not(windows)))]
+use std::process::Command;
 use std::{
     collections::HashMap,
     env,
     ffi::OsStr,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, ChildStdin, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
@@ -40,74 +42,146 @@ impl CommandSpec {
                 format!("{command} executable was not found on PATH"),
             )
         })?;
-        Ok(Self::from_path(
-            path,
-            args.iter().map(|value| (*value).to_owned()).collect(),
-        ))
+        Self::from_path(path, args.iter().map(|value| (*value).to_owned()).collect())
     }
 
-    pub fn from_path(path: PathBuf, args: Vec<String>) -> Self {
+    /// Builds a launch spec for an executable path. The program and arguments
+    /// stay structured; Windows command scripts are validated here but wrapped
+    /// in their `cmd.exe` invocation only at the actual spawn points.
+    pub fn from_path(path: PathBuf, args: Vec<String>) -> Result<Self, ProviderError> {
         #[cfg(windows)]
-        if is_windows_script(&path) {
-            let command_line = std::iter::once(quote_cmd_arg(&path.to_string_lossy()))
-                .chain(args.iter().map(|arg| quote_cmd_arg(arg)))
-                .collect::<Vec<_>>()
-                .join(" ");
-            return Self {
-                display: command_line.clone(),
-                program: "cmd.exe".to_owned(),
-                args: vec![
-                    "/d".to_owned(),
-                    "/s".to_owned(),
-                    "/c".to_owned(),
-                    command_line,
-                ],
-            };
-        }
-
+        windows_script_invocation(&path.to_string_lossy(), &args)?;
         let program = path.to_string_lossy().into_owned();
         let display = std::iter::once(program.as_str())
             .chain(args.iter().map(String::as_str))
             .collect::<Vec<_>>()
             .join(" ");
-        Self {
+        Ok(Self {
             program,
             args,
             display,
-        }
+        })
     }
 
-    pub fn command(&self) -> Command {
+    #[cfg(any(test, not(windows)))]
+    pub fn command(&self) -> Result<Command, ProviderError> {
+        #[cfg(windows)]
+        if let Some(invocation) = windows_script_invocation(&self.program, &self.args)? {
+            use std::os::windows::process::CommandExt;
+            let mut command = Command::new(&invocation.program);
+            command.args(&invocation.args);
+            // The /c payload is a fully prepared cmd.exe command line. Appending
+            // it verbatim avoids the MSVC-style quoting that would otherwise
+            // corrupt the inner quotes before cmd.exe parses them.
+            command.raw_arg(&invocation.raw_payload);
+            hide_background_window(&mut command);
+            return Ok(command);
+        }
         let mut command = Command::new(&self.program);
         command.args(&self.args);
         hide_background_window(&mut command);
-        command
+        Ok(command)
     }
 }
 
 #[cfg(windows)]
-fn is_windows_script(path: &Path) -> bool {
-    path.extension()
-        .and_then(OsStr::to_str)
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "cmd" | "bat" | "ps1"
-            )
-        })
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WindowsScriptInvocation {
+    pub program: String,
+    pub args: Vec<String>,
+    pub raw_payload: String,
 }
 
+/// Resolves how a Windows command script must be launched: `Ok(None)` for
+/// native executables, `Ok(Some)` with the `cmd.exe` invocation for cmd/bat
+/// scripts, and an explicit error for PowerShell scripts (unsupported) and for
+/// arguments that cannot be represented safely on a cmd.exe command line.
 #[cfg(windows)]
-fn quote_cmd_arg(value: &str) -> String {
-    let escaped = value
-        .replace('^', "^^")
-        .replace('&', "^&")
-        .replace('|', "^|")
-        .replace('<', "^<")
-        .replace('>', "^>")
-        .replace('%', "%%")
-        .replace('"', "\\\"");
-    format!("\"{escaped}\"")
+pub(crate) fn windows_script_invocation(
+    program: &str,
+    args: &[String],
+) -> Result<Option<WindowsScriptInvocation>, ProviderError> {
+    let extension = Path::new(program)
+        .extension()
+        .and_then(OsStr::to_str)
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("cmd") | Some("bat") => {}
+        Some("ps1") => {
+            return Err(ProviderError::new(
+                "provider_script_unsupported",
+                format!(
+                    "{program} is a PowerShell script, which ThreadTerm cannot launch directly; install the provider's .cmd or .exe entry point instead"
+                ),
+            ));
+        }
+        _ => return Ok(None),
+    }
+    let mut tokens = vec![quote_cmd_token(program)?];
+    for arg in args {
+        tokens.push(quote_cmd_token(arg)?);
+    }
+    // `cmd /s /c` strips the first and last quote of the payload before running
+    // it, so the inner command line is wrapped in one extra outer pair.
+    let raw_payload = format!("\"{}\"", tokens.join(" "));
+    Ok(Some(WindowsScriptInvocation {
+        program: "cmd.exe".to_owned(),
+        args: ["/d", "/s", "/v:off", "/c"]
+            .iter()
+            .map(|flag| (*flag).to_owned())
+            .collect(),
+        raw_payload,
+    }))
+}
+
+/// Quotes one token for a cmd.exe script command line. Inside double quotes
+/// `& | < > ^ !` are literal; `%` is never safe because cmd.exe expands
+/// `%VAR%` patterns even inside quotes, and `"` cannot be represented
+/// faithfully through batch shims that forward `%*` to a native executable.
+/// Both are rejected instead of being silently corrupted.
+#[cfg(windows)]
+fn quote_cmd_token(value: &str) -> Result<String, ProviderError> {
+    if value.contains(['\0', '\r', '\n']) {
+        return Err(ProviderError::new(
+            "invalid_argument",
+            "argument contains a control character and cannot be passed to a Windows command script",
+        ));
+    }
+    if value.contains('%') {
+        return Err(ProviderError::new(
+            "invalid_argument",
+            "argument contains '%' and cannot be passed safely to a Windows command script because cmd.exe expands %VAR% patterns",
+        ));
+    }
+    if value.contains('"') {
+        return Err(ProviderError::new(
+            "invalid_argument",
+            "argument contains a double quote and cannot be passed safely to a Windows command script",
+        ));
+    }
+    if value.is_empty() {
+        return Ok("\"\"".to_owned());
+    }
+    let needs_quotes = value.chars().any(|character| {
+        matches!(
+            character,
+            ' ' | '\t' | '&' | '|' | '<' | '>' | '^' | '!' | '(' | ')' | ',' | ';' | '='
+        )
+    });
+    // npm-style shims forward `%*` to a native executable. A trailing slash
+    // before our closing quote escapes that quote in the native argv parser,
+    // potentially merging the following argument into this one.
+    if needs_quotes && value.ends_with('\\') {
+        return Err(ProviderError::new(
+            "invalid_argument",
+            "argument ends in a backslash after requiring quotes and cannot be passed safely through a Windows command script",
+        ));
+    }
+    Ok(if needs_quotes {
+        format!("\"{value}\"")
+    } else {
+        value.to_owned()
+    })
 }
 
 pub fn find_executable(command: &str) -> Option<PathBuf> {
@@ -157,8 +231,13 @@ fn prefer_native_opencode(path: PathBuf) -> PathBuf {
 }
 
 pub fn command_output(spec: &CommandSpec, timeout: Duration) -> Result<String, ProviderError> {
-    let mut command = spec.command();
+    #[cfg(windows)]
+    let (mut child, job) = spawn_managed_service(spec, None, &[])?;
+    #[cfg(not(windows))]
+    let mut command = spec.command()?;
+    #[cfg(not(windows))]
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(not(windows))]
     let mut child = command.spawn().map_err(|error| {
         ProviderError::new(
             "provider_launch_failed",
@@ -189,6 +268,8 @@ pub fn command_output(spec: &CommandSpec, timeout: Duration) -> Result<String, P
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
+                #[cfg(windows)]
+                drop(job);
                 let stdout = String::from_utf8_lossy(&stdout_reader.join().unwrap_or_default())
                     .trim()
                     .to_owned();
@@ -206,6 +287,8 @@ pub fn command_output(spec: &CommandSpec, timeout: Duration) -> Result<String, P
             }
             Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(25)),
             Ok(None) => {
+                #[cfg(windows)]
+                drop(job);
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = stdout_reader.join();
@@ -220,6 +303,8 @@ pub fn command_output(spec: &CommandSpec, timeout: Duration) -> Result<String, P
                 ));
             }
             Err(error) => {
+                #[cfg(windows)]
+                drop(job);
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = stdout_reader.join();
@@ -234,12 +319,9 @@ pub fn command_output(spec: &CommandSpec, timeout: Duration) -> Result<String, P
 }
 
 pub fn version_probe(command: &str) -> (bool, Option<String>, Option<String>) {
-    let Ok(spec) = CommandSpec::provider(command, &["--version"]) else {
-        return (
-            false,
-            None,
-            Some(format!("{command} executable was not found on PATH")),
-        );
+    let spec = match CommandSpec::provider(command, &["--version"]) {
+        Ok(spec) => spec,
+        Err(error) => return (false, None, Some(error.message)),
     };
     match command_output(&spec, Duration::from_secs(5)) {
         Ok(output) => (
@@ -251,7 +333,7 @@ pub fn version_probe(command: &str) -> (bool, Option<String>, Option<String>) {
                 .map(ToOwned::to_owned),
             None,
         ),
-        Err(error) => (true, None, Some(error.message)),
+        Err(error) => (false, None, Some(error.message)),
     }
 }
 
@@ -332,6 +414,11 @@ pub fn spawn_managed_service(
             ProviderError::new("provider_launch_failed", "current directory is unavailable")
         })?;
 
+    // Validate script launch arguments before opening the bootstrap gate so an
+    // unencodable argument fails fast instead of surfacing as a gate timeout.
+    #[cfg(windows)]
+    windows_script_invocation(&spec.program, &spec.args)?;
+
     #[cfg(windows)]
     let (mut command, gate) = {
         let gate = crate::bootstrap::BootstrapGate::new().map_err(|error| {
@@ -351,7 +438,7 @@ pub fn spawn_managed_service(
         (command, gate)
     };
     #[cfg(not(windows))]
-    let mut command = spec.command();
+    let mut command = spec.command()?;
 
     command
         .current_dir(&owned_cwd)
@@ -756,7 +843,7 @@ pub fn insert_optional(object: &mut Value, key: &str, value: Option<Value>) {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 fn hide_background_window(command: &mut Command) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -815,5 +902,387 @@ mod tests {
         let _ = child.wait();
         drop(job);
         assert!(observed, "bootstrap did not preserve service stdin/stdout");
+    }
+}
+
+/// Cross-path fixtures proving a Windows cmd/bat script receives its arguments
+/// byte-for-byte. The batch file mirrors how npm shims parse their command
+/// line: one cmd.exe parse of the `/c` payload, then batch parameter handling.
+#[cfg(all(test, windows))]
+pub(crate) mod windows_script_fixtures {
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+
+    /// Writes `echoargs.cmd` into `dir`. The script stores each argument with
+    /// delayed expansion disabled, then echoes it back with delayed expansion
+    /// so metacharacters in the value are never re-parsed by cmd.
+    pub(crate) fn write_echo_fixture(dir: &Path) -> PathBuf {
+        let script = dir.join("echoargs.cmd");
+        let mut content = String::from("@echo off\r\nsetlocal DisableDelayedExpansion\r\n");
+        for index in 1..=6 {
+            content.push_str(&format!("set \"__{index}=%~{index}\"\r\n"));
+        }
+        content.push_str("setlocal EnableDelayedExpansion\r\n");
+        for index in 1..=6 {
+            content.push_str(&format!("echo(ARG{index}=!__{index}!\r\n"));
+        }
+        content.push_str("echo(DONE\r\n");
+        std::fs::File::create(&script)
+            .unwrap()
+            .write_all(content.as_bytes())
+            .unwrap();
+        script
+    }
+
+    /// Extracts the echoed argument values in order. Panics unless the script
+    /// ran to completion.
+    pub(crate) fn parse_echo_output(output: &str) -> Vec<String> {
+        let mut args = Vec::new();
+        let mut done = false;
+        for line in output.lines() {
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line == "DONE" {
+                done = true;
+                break;
+            }
+            if let Some(value) = line
+                .strip_prefix("ARG")
+                .and_then(|rest| rest.split_once('='))
+                .map(|(_, value)| value)
+            {
+                args.push(value.to_owned());
+            }
+        }
+        assert!(done, "echo fixture did not complete; output was:\n{output}");
+        args
+    }
+
+    /// Compares echoed arguments against the launch arguments, ignoring the
+    /// empty trailing echoes for parameters that were never passed.
+    pub(crate) fn assert_echo_matches(output: &str, expected: &[String]) {
+        let parsed = parse_echo_output(output);
+        assert!(
+            parsed.len() >= expected.len(),
+            "echo fixture returned too few args: {parsed:?}"
+        );
+        assert_eq!(&parsed[..expected.len()], expected, "arguments mangled");
+    }
+
+    /// Removes ANSI CSI (`ESC [ ... final`) and OSC (`ESC ] ... BEL`) sequences
+    /// so echoed lines can be found in ConPTY output. Only used on test
+    /// captures; never applied to retained terminal bytes.
+    pub(crate) fn strip_ansi(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '\u{1b}' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    let mut prev = '\0';
+                    for c in chars.by_ref() {
+                        if c == '\u{7}' || (prev == '\u{1b}' && c == '\\') {
+                            break;
+                        }
+                        prev = c;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// A script directory whose path contains spaces and non-ASCII characters,
+    /// matching npm prefixes under real user profiles.
+    pub(crate) fn fixture_dir() -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("带 空格 dir");
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = write_echo_fixture(&dir);
+        (root, script)
+    }
+
+    /// cmd.exe writes pipe and ConPTY output in the machine OEM codepage; tests
+    /// decode it explicitly instead of lossy UTF-8 so non-ASCII checks work.
+    pub(crate) fn oem_decode(bytes: &[u8]) -> String {
+        use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP};
+        if bytes.is_empty() {
+            return String::new();
+        }
+        unsafe {
+            let len = MultiByteToWideChar(
+                CP_OEMCP,
+                0,
+                bytes.as_ptr(),
+                bytes.len() as i32,
+                std::ptr::null_mut(),
+                0,
+            );
+            let mut wide = vec![0u16; len as usize];
+            MultiByteToWideChar(
+                CP_OEMCP,
+                0,
+                bytes.as_ptr(),
+                bytes.len() as i32,
+                wide.as_mut_ptr(),
+                len,
+            );
+            String::from_utf16_lossy(&wide)
+        }
+    }
+
+    /// The closest value cmd.exe can carry for `value`: its OEM best-fit form.
+    /// On machines whose OEM codepage cannot represent a character this yields
+    /// the fallback, keeping assertions portable while still proving full
+    /// fidelity wherever the character is representable.
+    pub(crate) fn oem_attainable(value: &str) -> String {
+        use windows_sys::Win32::Globalization::{WideCharToMultiByte, CP_OEMCP};
+        let wide: Vec<u16> = value.encode_utf16().collect();
+        let bytes = unsafe {
+            let len = WideCharToMultiByte(
+                CP_OEMCP,
+                0,
+                wide.as_ptr(),
+                wide.len() as i32,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+            );
+            let mut bytes = vec![0u8; len as usize];
+            WideCharToMultiByte(
+                CP_OEMCP,
+                0,
+                wide.as_ptr(),
+                wide.len() as i32,
+                bytes.as_mut_ptr(),
+                len,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+            );
+            bytes
+        };
+        oem_decode(&bytes)
+    }
+
+    pub(crate) fn oem_attainable_args(args: &[String]) -> Vec<String> {
+        args.iter().map(|arg| oem_attainable(arg)).collect()
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_script_tests {
+    use super::windows_script_fixtures::{
+        assert_echo_matches, fixture_dir, oem_attainable_args, oem_decode,
+    };
+    use super::*;
+
+    /// Every argument in this matrix must reach a cmd/bat script unchanged.
+    fn argument_matrix() -> Vec<String> {
+        vec![
+            "plain".to_owned(),
+            "with space".to_owned(),
+            "中文参数".to_owned(),
+            "a&b|c<d>e".to_owned(),
+            "caret^bang!".to_owned(),
+            "(paren),semi;eq=al".to_owned(),
+        ]
+    }
+
+    fn extra_argument_matrix() -> Vec<String> {
+        vec![
+            String::new(),
+            "trail\\".to_owned(),
+            "--session-id".to_owned(),
+            "550e8400-e29b-41d4-a716-446655440000".to_owned(),
+        ]
+    }
+
+    fn run_command_bytes(spec: &CommandSpec, cwd: &Path) -> Vec<u8> {
+        let mut command = spec.command().unwrap();
+        command
+            .current_dir(cwd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let mut bytes = Vec::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        let mut err = Vec::new();
+        child.stderr.take().unwrap().read_to_end(&mut err).unwrap();
+        let status = child.wait().unwrap();
+        assert!(status.success(), "script failed: {}", oem_decode(&err));
+        bytes
+    }
+
+    fn native_npm_shim_args(args: Vec<String>) -> Vec<String> {
+        let (root, _) = fixture_dir();
+        let directory = root.path().join("npm shim");
+        std::fs::create_dir_all(&directory).unwrap();
+        let shim = directory.join("native-args.cmd");
+        std::fs::write(&shim, "@echo off\r\nnode \"%~dp0native-args.cjs\" %*\r\n").unwrap();
+        std::fs::write(
+            directory.join("native-args.cjs"),
+            "process.stdout.write(JSON.stringify(process.argv.slice(2)))\n",
+        )
+        .unwrap();
+        let spec = CommandSpec::from_path(shim, args).unwrap();
+        serde_json::from_slice(&run_command_bytes(&spec, &directory)).unwrap()
+    }
+
+    #[test]
+    fn npm_style_shim_preserves_native_node_arguments() {
+        let args = vec![
+            "with space".to_owned(),
+            "中文参数".to_owned(),
+            "a&b|c<d>e".to_owned(),
+            "caret^bang!".to_owned(),
+            String::new(),
+        ];
+        assert_eq!(native_npm_shim_args(args.clone()), args);
+    }
+
+    #[test]
+    fn npm_style_shim_does_not_silently_mangle_quoted_trailing_backslash() {
+        let args = vec!["C:\\foo bar\\".to_owned(), "next".to_owned()];
+        let error = CommandSpec::from_path(PathBuf::from("native-args.cmd"), args).unwrap_err();
+        assert_eq!(error.code, "invalid_argument");
+        assert!(error.message.contains("backslash"));
+    }
+
+    #[test]
+    fn script_args_round_trip_through_plain_command() {
+        let (_root, script) = fixture_dir();
+        let cwd = script.parent().unwrap();
+        for args in [argument_matrix(), extra_argument_matrix()] {
+            let spec = CommandSpec::from_path(script.clone(), args.clone()).unwrap();
+            let output = oem_decode(&run_command_bytes(&spec, cwd));
+            assert_echo_matches(&output, &oem_attainable_args(&args));
+        }
+    }
+
+    #[test]
+    fn script_args_round_trip_through_managed_service_bootstrap() {
+        let (_root, script) = fixture_dir();
+        let cwd = script.parent().unwrap().to_string_lossy().into_owned();
+        for args in [argument_matrix(), extra_argument_matrix()] {
+            let spec = CommandSpec::from_path(script.clone(), args.clone()).unwrap();
+            let (mut child, job) = spawn_managed_service(&spec, Some(&cwd), &[]).unwrap();
+            let mut stdout = child.stdout.take().unwrap();
+            let mut bytes = Vec::new();
+            let _ = stdout.read_to_end(&mut bytes);
+            let _ = child.wait();
+            drop(job);
+            assert_echo_matches(&oem_decode(&bytes), &oem_attainable_args(&args));
+        }
+    }
+
+    #[test]
+    fn script_launch_rejects_arguments_cmd_cannot_carry() {
+        let (_root, script) = fixture_dir();
+        for bad in [
+            "100%done",
+            "%PATH%",
+            "%*",
+            "quote\"in",
+            "line\nbreak",
+            "carriage\rreturn",
+        ] {
+            let result = CommandSpec::from_path(script.clone(), vec![bad.to_owned()]);
+            let error = result.unwrap_err();
+            assert_eq!(error.code, "invalid_argument", "arg {bad:?}");
+        }
+    }
+
+    #[test]
+    fn powershell_script_entries_are_explicitly_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("tool.ps1");
+        std::fs::write(&script, "Write-Output hi\r\n").unwrap();
+        let error = CommandSpec::from_path(script, Vec::new()).unwrap_err();
+        assert_eq!(error.code, "provider_script_unsupported");
+    }
+
+    #[test]
+    fn native_exe_specs_stay_direct() {
+        let kernel = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+        let exe = Path::new(&kernel).join("System32").join("where.exe");
+        if !exe.is_file() {
+            return;
+        }
+        let spec =
+            CommandSpec::from_path(exe.clone(), vec!["/R".to_owned(), kernel.clone()]).unwrap();
+        assert_eq!(spec.program, exe.to_string_lossy());
+        assert_eq!(spec.args, vec!["/R".to_owned(), kernel]);
+    }
+
+    #[test]
+    fn nonzero_script_version_probe_is_not_reported_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("broken-tool.cmd");
+        std::fs::write(
+            &script,
+            "@echo off\r\necho broken version probe 1>&2\r\nexit /b 17\r\n",
+        )
+        .unwrap();
+        let (installed, version, reason) = version_probe(&script.to_string_lossy());
+        assert!(
+            !installed,
+            "a failed version probe cannot authorize terminal launch"
+        );
+        assert!(version.is_none());
+        assert!(reason.unwrap_or_default().contains("broken version probe"));
+    }
+
+    #[test]
+    fn command_output_closes_descendant_pipes_before_returning() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("background-tool.cmd");
+        std::fs::write(
+            &script,
+            "@echo off\r\nstart \"\" /b powershell.exe -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 2\"\r\necho parentdone\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+        let spec = CommandSpec::from_path(script, Vec::new()).unwrap();
+        let started = std::time::Instant::now();
+        let output = command_output(&spec, Duration::from_millis(500)).unwrap();
+        assert!(output.contains("parentdone"));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "finished probe waited for a background descendant's output pipe"
+        );
+    }
+
+    #[test]
+    fn command_output_timeout_closes_descendant_pipes_before_joining() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("slow-background-tool.cmd");
+        std::fs::write(
+            &script,
+            "@echo off\r\nstart \"\" /b powershell.exe -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 2\"\r\nping -n 5 127.0.0.1 >nul\r\n",
+        )
+        .unwrap();
+        let spec = CommandSpec::from_path(script, Vec::new()).unwrap();
+        let started = std::time::Instant::now();
+        let error = command_output(&spec, Duration::from_millis(150)).unwrap_err();
+        assert_eq!(error.code, "provider_timeout");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "timed-out probe waited for a background descendant's output pipe"
+        );
     }
 }

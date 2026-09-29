@@ -111,6 +111,124 @@ pub async fn serve(_service: Arc<RuntimeService>, _credential: String) -> Result
     bail!("ThreadTerm V3 runtime named-pipe transport is Windows-only")
 }
 
+/// How a control request is scheduled on its connection. Replies carry the request id, so
+/// requests in different lanes may complete out of order; each sequenced lane keeps arrival order.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lane {
+    /// Read-only and possibly slow (Git, file walks, review diffs, history pages): run
+    /// concurrently, so one slow read never holds up terminal.read or a status poll. The
+    /// desktop has one control connection; one-at-a-time dispatch let a slow request stall
+    /// replay ("stopped at byte 0") and time out git.status (branch chip fell back to the folder).
+    Concurrent,
+    /// Terminal control (input, resize and the lease guarding them): arrival order, independent
+    /// of slow mutations, so a 120 s `git push` never freezes typing or lets the lease lapse.
+    Terminal,
+    /// Everything else: one at a time in arrival order, as before.
+    Ordered,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn request_lane(method: &str) -> Lane {
+    match method {
+        "terminal.read"
+        | "session.launch.read"
+        | "git.status"
+        | "git.diff"
+        | "git.log"
+        | "git.branches"
+        | "git.commit.show"
+        | "git.commit.diff"
+        | "git.blame"
+        | "filesystem.list"
+        | "filesystem.read"
+        | "filesystem.files"
+        | "filesystem.search"
+        | "review.list"
+        | "review.changes"
+        | "review.diff"
+        | "worktree.branches"
+        | "usage.query"
+        | "history.list"
+        | "history.read"
+        | "draft.list" => Lane::Concurrent,
+        "terminal.input" | "terminal.resize" | "session.claim" | "session.renew"
+        | "session.release" => Lane::Terminal,
+        _ => Lane::Ordered,
+    }
+}
+
+#[cfg(windows)]
+/// Concurrent reads in flight per connection; the reader stops taking frames while all are busy.
+const MAX_CONCURRENT_READS: usize = 16;
+#[cfg(windows)]
+/// Queued requests per sequenced lane before the reader waits (the old loop read nothing while busy).
+const LANE_QUEUE: usize = 64;
+
+#[cfg(windows)]
+struct Reply {
+    body: Result<Value>,
+    sequenced: bool,
+    accepted_shutdown: bool,
+}
+
+#[cfg(windows)]
+async fn run_request(
+    service: Arc<RuntimeService>,
+    principal: String,
+    request: RpcRequest,
+    sequenced: bool,
+) -> Reply {
+    let id = request.id.clone();
+    let is_shutdown = request.method == "runtime.shutdown";
+    let result = tokio::task::spawn_blocking(move || service.dispatch(&principal, request))
+        .await
+        .unwrap_or_else(|_| {
+            Err(crate::domain::RpcError {
+                code: "runtime_error".into(),
+                message: "runtime command worker failed".into(),
+                details: None,
+            })
+        });
+    let accepted_shutdown = is_shutdown && result.is_ok();
+    let response = match result {
+        Ok(result) => RpcResponse::Ok {
+            v: PROTOCOL_VERSION,
+            id,
+            result,
+        },
+        Err(error) => RpcResponse::Err {
+            v: PROTOCOL_VERSION,
+            id,
+            error,
+        },
+    };
+    Reply {
+        body: serde_json::to_value(response).map_err(Into::into),
+        sequenced,
+        accepted_shutdown,
+    }
+}
+
+#[cfg(windows)]
+/// One sequential worker per sequenced lane; its replies go to the connection's single writer.
+fn lane_worker(
+    service: Arc<RuntimeService>,
+    principal: String,
+    replies: tokio::sync::mpsc::UnboundedSender<Reply>,
+) -> tokio::sync::mpsc::Sender<RpcRequest> {
+    let (sender, mut requests) = tokio::sync::mpsc::channel::<RpcRequest>(LANE_QUEUE);
+    tokio::spawn(async move {
+        while let Some(request) = requests.recv().await {
+            let reply = run_request(Arc::clone(&service), principal.clone(), request, true).await;
+            if replies.send(reply).is_err() {
+                break;
+            }
+        }
+    });
+    sender
+}
+
 #[cfg(windows)]
 async fn serve_control(
     mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
@@ -119,25 +237,51 @@ async fn serve_control(
 ) -> Result<()> {
     let principal = authenticate(&mut pipe, credential, &service.db.epoch()?).await?;
     let mut sent_seq = service.db.snapshot()?.revision;
+    let (mut reader, mut writer) = tokio::io::split(pipe);
     let mut decoder = FrameDecoder::default();
+    let (replies, mut completed) = tokio::sync::mpsc::unbounded_channel::<Reply>();
+    let ordered = lane_worker(Arc::clone(&service), principal.clone(), replies.clone());
+    let terminal = lane_worker(Arc::clone(&service), principal.clone(), replies.clone());
+    let reads = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS));
+    // Sequenced requests without a reply yet. Events wait for them, as in the old one-at-a-time
+    // loop, so a mutation's reply is still written before the events it caused.
+    let mut sequenced_in_flight = 0usize;
     loop {
         tokio::select! {
-            frame = decoder.read(&mut pipe) => {
+            frame = decoder.read(&mut reader) => {
                 let request: RpcRequest = serde_json::from_slice(&frame?)?;
-                let id = request.id.clone();
-                let is_shutdown = request.method == "runtime.shutdown";
-                let dispatch_service=Arc::clone(&service);
-                let dispatch_principal=principal.clone();
-                let result=tokio::task::spawn_blocking(move || dispatch_service.dispatch(&dispatch_principal,request)).await
-                    .context("runtime command worker failed")?;
-                let accepted_shutdown = is_shutdown && result.is_ok();
-                let response = match result { Ok(result) => RpcResponse::Ok { v: PROTOCOL_VERSION, id, result }, Err(error) => RpcResponse::Err { v: PROTOCOL_VERSION, id, error } };
-                let delivery = write_json(&mut pipe, &serde_json::to_value(response)?).await;
-                if accepted_shutdown {
+                match request_lane(&request.method) {
+                    Lane::Ordered => {
+                        sequenced_in_flight += 1;
+                        ordered.send(request).await.context("ordered lane stopped")?;
+                    }
+                    Lane::Terminal => {
+                        sequenced_in_flight += 1;
+                        terminal.send(request).await.context("terminal lane stopped")?;
+                    }
+                    Lane::Concurrent => {
+                        let permit = Arc::clone(&reads).acquire_owned().await.context("read pool closed")?;
+                        let service = Arc::clone(&service);
+                        let principal = principal.clone();
+                        let replies = replies.clone();
+                        tokio::spawn(async move {
+                            let reply = run_request(service, principal, request, false).await;
+                            drop(permit);
+                            let _ = replies.send(reply);
+                        });
+                    }
+                }
+            }
+            Some(reply) = completed.recv() => {
+                if reply.sequenced {
+                    sequenced_in_flight = sequenced_in_flight.saturating_sub(1);
+                }
+                let delivery = write_json(&mut writer, &reply.body?).await;
+                if reply.accepted_shutdown {
                     // Do not tear down Tokio while the response is still in the
                     // pipe. New clients acknowledge receipt; older clients get
                     // a bounded drain window before the requested shutdown.
-                    if delivery.is_ok() { let _ = tokio::time::timeout(std::time::Duration::from_secs(2), decoder.read(&mut pipe)).await; }
+                    if delivery.is_ok() { let _ = tokio::time::timeout(std::time::Duration::from_secs(2), decoder.read(&mut reader)).await; }
                     service.acknowledge_shutdown();
                     delivery?;
                     return Ok(());
@@ -146,14 +290,16 @@ async fn serve_control(
             }
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
         }
-        let epoch = service.db.epoch()?;
-        for (seq, event, data) in service.db.events_after(sent_seq)? {
-            write_json(
-                &mut pipe,
-                &json!({"v":PROTOCOL_VERSION,"event":event,"epoch":epoch,"seq":seq,"data":data}),
-            )
-            .await?;
-            sent_seq = seq;
+        if sequenced_in_flight == 0 {
+            let epoch = service.db.epoch()?;
+            for (seq, event, data) in service.db.events_after(sent_seq)? {
+                write_json(
+                    &mut writer,
+                    &json!({"v":PROTOCOL_VERSION,"event":event,"epoch":epoch,"seq":seq,"data":data}),
+                )
+                .await?;
+                sent_seq = seq;
+            }
         }
         if service.shutdown_requested() {
             return Ok(());
@@ -461,6 +607,48 @@ mod decoder_tests {
         assert!(!is_terminal_history_gap(&anyhow::anyhow!(
             "database lock poisoned"
         )));
+    }
+
+    #[test]
+    fn slow_reads_run_concurrently_and_terminal_control_keeps_its_own_order() {
+        for read in [
+            "terminal.read",
+            "git.status",
+            "git.diff",
+            "git.log",
+            "review.changes",
+            "filesystem.search",
+            "usage.query",
+        ] {
+            assert_eq!(request_lane(read), Lane::Concurrent, "{read}");
+        }
+        for control in [
+            "terminal.input",
+            "terminal.resize",
+            "session.claim",
+            "session.renew",
+            "session.release",
+        ] {
+            assert_eq!(request_lane(control), Lane::Terminal, "{control}");
+        }
+        // Mutations and anything unlisted stay one at a time in arrival order.
+        for method in [
+            "git.fetch",
+            "git.push",
+            "git.commit",
+            "git.index.write",
+            "session.resume",
+            "session.stop",
+            "worktree.list",
+            "workspace.save",
+            "filesystem.write",
+            "review.checkpoint",
+            "review.revert",
+            "runtime.shutdown",
+            "not.a.method",
+        ] {
+            assert_eq!(request_lane(method), Lane::Ordered, "{method}");
+        }
     }
 
     #[test]

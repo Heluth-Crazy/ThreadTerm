@@ -106,8 +106,11 @@ try {
   const history=(await records()).filter(row=>row.type==='spawn'&&row.args.includes('stdio')).at(-1);
   assert.equal(history.env.HTTPS_PROXY,'http://portable.invalid:8123','history helper receives settings');
   const terminal=await create('terminal');
-  const terminalRows=await waitFor(records,rows=>rows.some(row=>row.type==='spawn'&&row.args.length===0),'terminal child');
-  assert.equal(terminalRows.find(row=>row.type==='spawn'&&row.args.length===0).env.HTTPS_PROXY,'http://portable.invalid:8123');
+  // Terminal creation preassigns the native ID; it no longer launches Grok
+  // with an empty argument list. Keep distinguishing it from ACP helpers.
+  const isTerminalSpawn=row=>row.type==='spawn'&&row.args.length===2&&row.args[0]==='--session-id';
+  const terminalRows=await waitFor(records,rows=>rows.some(isTerminalSpawn),'terminal child');
+  assert.equal(terminalRows.find(isTerminalSpawn).env.HTTPS_PROXY,'http://portable.invalid:8123');
   await peer.request('session.stop',{sessionId:terminal.id,operationId:randomUUID()});
   await save({mode:'inherit',proxyUrl:'',noProxy:''});
   const third=await create();

@@ -2,6 +2,30 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason} from './index.ts';
 
+test('file preview owners are additive and validated without changing file scope',()=>{
+ const file={id:'file',kind:'preview',projectId:'p',path:'README.md'};
+ const layout={kind:'pane',id:'pane',tabs:[file],activeTabId:'file'};
+ validateLayout(layout);
+ const params={name:'Preview',layout,expectedRevision:0,operationId:'owned'};
+ validateRequest('workspace.save',params);
+ const owned={...layout,tabs:[{...file,ownerSessionId:'session-a'}]};
+ validateRequest('workspace.save',{...params,layout:owned});
+ validateResult('workspace.save',{id:'workspace',name:'Preview',revision:1,layout:owned});
+ for(const ownerSessionId of ['',null,2,'a\nb','x'.repeat(257)])assert.throws(()=>validateRequest('workspace.save',{...params,layout:{...layout,tabs:[{...file,ownerSessionId}]}}));
+});
+
+test('file references are additive, scoped by session, and bounded at the request boundary',()=>{
+ validateRequest('filesystem.resolve',{sessionId:'s',path:'src/main.ts',line:5,column:2});
+ validateRequest('filesystem.resolve',{sessionId:'s',path:'src/main.ts',column:2});
+ for(const patch of [{sessionId:''},{path:''},{path:'a\0b'},{path:'x'.repeat(16385)},{line:0},{column:1000001},{line:1.5},{projectId:'injected-scope'}])assert.throws(()=>validateRequest('filesystem.resolve',{sessionId:'s',path:'a.ts',...patch}));
+ validateResult('filesystem.resolve',{projectId:'p',worktreePath:'D:/repo',path:'image',kind:'image',line:1});
+ assert.throws(()=>validateResult('filesystem.resolve',{path:'a.ts',kind:'text'}));
+ validateResult('chat.read',[{id:'tool',role:'assistant',createdAt:'now',parts:[{type:'tool',status:'failed',fileReferences:[{path:'README.md',line:2}]}]}]);
+ const layout={kind:'pane',id:'pane',tabs:[{id:'image',kind:'preview',projectId:'p',path:'image',assetKind:'image'}],activeTabId:'image'};
+ validateRequest('workspace.save',{name:'Test',layout,expectedRevision:0,operationId:'test'});
+ assert.throws(()=>validateRequest('workspace.save',{name:'Test',layout:{...layout,tabs:[{...layout.tabs[0],assetKind:'script'}]},expectedRevision:0,operationId:'test'}));
+});
+
 test('deferred terminal launch has an additive typed request and durable phase result',()=>{
  validateRequest('session.create',{cwd:'C:\\repo',provider:'codex',mode:'terminal',deferLaunch:true,operationId:'o'});
  assert.throws(()=>validateRequest('session.create',{cwd:'C:\\repo',provider:'codex',mode:'terminal',deferLaunch:'yes',operationId:'o'}));

@@ -6,16 +6,23 @@ import { AgentIcon, Icon } from "./PrototypeIcon";
 import { useTranslation } from "../i18n";
 import "./command-palette.css";
 
-type Props = { data: Snapshot; onClose: () => void; onSession: (id: string) => void; onProject: (id: string) => void; onCreate: () => void; onAll: () => void; onInbox: () => void; onPresets: () => void; onSettings: () => void };
+type Props = { data: Snapshot; onClose: () => void; onSession: (id: string) => void; onProject: (id: string) => void; onCreate: () => void; onAll: () => void; onInbox: () => void; onPresets: () => void; onSettings: () => void; workbench?: boolean };
 type Entry = { id: string; group: string; label: string; detail: string; icon: string; run: () => void };
-export function CommandPalette({ data, onClose, onSession, onProject, onCreate, onAll, onInbox, onPresets, onSettings }: Props) {
+export function CommandPalette({ data, onClose, onSession, onProject, onCreate, onAll, onInbox, onPresets, onSettings, workbench = false }: Props) {
   const { locale } = useTranslation(); const zh = locale === "zh-CN"; const copy = (en: string, cn: string) => zh ? cn : en;
   const [query, setQuery] = useState(""); const [active, setActive] = useState(0); const input = useRef<HTMLInputElement>(null);
+  const workbenchEntry = (view: string, label: string, detail: string, icon: string): Entry => ({ id:`workbench:${view}`, group:copy("Workspace", "工作区"), label, detail, icon, run:() => dispatchEvent(new CustomEvent("threadterm:workbench", { detail:{ view } })) });
   const entries = useMemo<Entry[]>(() => [
+    ...(workbench ? [
+      workbenchEntry("quick-open", copy("Go to file…", "转到文件…"), "Ctrl+P", "file"),
+      workbenchEntry("search", copy("Search in files", "在文件中搜索"), "Ctrl+Shift+F", "search"),
+      workbenchEntry("scm", copy("Source Control", "源代码管理"), "Ctrl+Shift+G", "branch"),
+      workbenchEntry("changes", copy("Agent changes", "Agent 改动"), copy("Review changes since checkpoints", "审查检查点以来的改动"), "spark"),
+    ] : []),
     { id:"new", group:copy("Actions", "动作"), label:copy("New terminal", "新建终端"), detail:copy("Create a session", "创建后直达会话"), icon:"plus", run:onCreate }, { id:"all", group:copy("Actions", "动作"), label:copy("All terminals", "打开所有终端"), detail:copy("Browse sessions", "查找会话与记录"), icon:"terminal", run:onAll }, { id:"inbox", group:copy("Actions", "动作"), label:copy("Open inbox", "打开待处理队列"), detail:copy(`${data.inbox.filter(item => isActionableInboxItem(item)).length} unread`, `${data.inbox.filter(item => isActionableInboxItem(item)).length} 项`), icon:"inbox", run:onInbox }, { id:"presets", group:copy("Actions", "动作"), label:copy("Work presets", "打开工作预设"), detail:copy("Saved layouts", "预览后恢复"), icon:"layers", run:onPresets }, { id:"settings", group:copy("Actions", "动作"), label:copy("Settings", "设置"), detail:copy("Local preferences", "本地偏好"), icon:"gear", run:onSettings },
     ...data.projects.map(project => ({ id:`project:${project.id}`, group:copy("Projects", "项目"), label:project.name, detail:`${displayPath(project.path)} · ${copy("Project overview", "项目总览")}`, icon:"folder", run:() => onProject(project.id) })),
     ...data.sessions.map(session => ({ id:`session:${session.id}`, group:copy("Sessions", "会话"), label:session.title, detail:`${session.provider} · ${session.status}`, icon:"terminal", run:() => onSession(session.id) })),
-  ], [copy, data, onAll, onCreate, onInbox, onPresets, onProject, onSession, onSettings]);
+  ], [copy, data, onAll, onCreate, onInbox, onPresets, onProject, onSession, onSettings, workbench]);
   const matches = entries.filter(entry => `${entry.label} ${entry.detail} ${entry.group}`.toLowerCase().includes(query.toLowerCase()));
   useEffect(() => { input.current?.focus(); }, []); useEffect(() => setActive(0), [query]);
   useEffect(() => { const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); onClose(); } else if (event.key === "ArrowDown") { event.preventDefault(); setActive(value => Math.min(value + 1, Math.max(0, matches.length - 1))); } else if (event.key === "ArrowUp") { event.preventDefault(); setActive(value => Math.max(0, value - 1)); } else if (event.key === "Enter" && matches[active]) { event.preventDefault(); matches[active].run(); onClose(); } }; addEventListener("keydown", key); return () => removeEventListener("keydown", key); }, [active, matches, onClose]);

@@ -22,7 +22,9 @@ export interface Preset { id:string; name:string; revision:number; sessions:unkn
 export interface InboxItem { id:string; sessionId:string; kind:string; title:string; createdAt:string; read:boolean }
 export interface Snapshot { epoch:string; revision:number; projects:Project[]; sessions:Session[]; settings:Settings; workspaces:Workspace[]; presets:Preset[]; inbox:InboxItem[]; providers:ProviderCapability[] }
 export interface NativeHistoryItem { provider:ProviderId; nativeId:string; title:string; cwd?:string; updatedAt:string; resumable:boolean; reason?:string }
-export interface ChatPart { type:'text'|'thinking'|'tool'|'approval'|'usage'|'error'|'status'; text?:string; toolName?:string; toolId?:string; approvalId?:string; status?:string; data?:unknown }
+export interface FileReference { path:string; line?:number; column?:number }
+export interface ResolvedFileReference extends FileScope, FileReference { kind:'text'|'image' }
+export interface ChatPart { type:'text'|'thinking'|'tool'|'approval'|'usage'|'error'|'status'; text?:string; toolName?:string; toolId?:string; approvalId?:string; status?:string; data?:unknown; fileReferences?:FileReference[] }
 export interface ChatItem { id:string; role:'user'|'assistant'|'system'|'tool'; parts:ChatPart[]; createdAt:string; turnId?:string; elapsedMs?:number }
 export interface ChatSessionChoice { value:string; name:string }
 export interface ChatSessionOption { id:string; name:string; value:string; choices:ChatSessionChoice[] }
@@ -151,6 +153,7 @@ export interface RequestMap {
  'chat.connection': [{sessionId:string},ChatConnectionState];
  'chat.connect': [{sessionId:string;leaseEpoch:number;operationId:string},ChatConnectionState];
  'filesystem.list': [FileScope&{path:string},FileEntry[]];
+ 'filesystem.resolve': [{sessionId:string}&FileReference,ResolvedFileReference];
  'filesystem.read': [FileScope&{path:string},FileDocument];
  'filesystem.image': [FileScope&{path:string},{mime:'image/png'|'image/jpeg'|'image/gif'|'image/webp';data:string}];
  'filesystem.write': [FileScope&{path:string;content:string;expectedFingerprint:string;operationId:string},FileDocument];
@@ -160,13 +163,32 @@ export interface RequestMap {
  'git.status': [FileScope,GitStatus];
  'git.stage': [FileScope&{paths:string[];expectedFingerprints?:Record<string,string>;operationId:string},{paths:string[]}];
  'git.unstage': [FileScope&{paths:string[];expectedFingerprints?:Record<string,string>;operationId:string},{paths:string[]}];
- 'git.commit': [FileScope&{message:string;operationId:string},{commit:string}];
+ 'git.commit': [FileScope&{message:string;amend?:boolean;operationId:string},{commit:string}];
  'git.fetch': [FileScope&{operationId:string},{output:string}];
  'git.pull': [FileScope&{operationId:string},{output:string}];
- 'git.push': [FileScope&{operationId:string},{output:string}];
+ 'git.push': [FileScope&{setUpstream?:boolean;operationId:string},{output:string}];
  'git.merge': [FileScope&{branch:string;operationId:string},{output:string;conflicted:boolean}];
  'git.merge.abort': [FileScope&{operationId:string},{output:string}];
  'git.diff': [FileScope&{path:string;staged:boolean},GitDiff];
+ 'git.index.write': [FileScope&{path:string;content:string;expectedIndexFingerprint:string|null;operationId:string},{path:string;indexFingerprint:string}];
+ 'git.discard': [FileScope&{paths:string[];expectedFingerprints?:Record<string,string>;operationId:string},{paths:string[];recycled:string[]}];
+ 'git.checkout': [FileScope&{branch:string;create?:boolean;startPoint?:string;operationId:string},{branch:string}];
+ 'git.branch.delete': [FileScope&{branch:string;force?:boolean;operationId:string},{branch:string}];
+ 'git.branches': [FileScope,GitBranches];
+ 'git.log': [FileScope&{path?:string;skip?:number;limit?:number;all?:boolean},GitLog];
+ 'git.commit.show': [FileScope&{commit:string},GitCommitDetail];
+ 'git.commit.diff': [FileScope&{commit:string;path:string;originalPath?:string},GitTextPair];
+ 'git.blame': [FileScope&{path:string},GitBlame];
+ 'filesystem.create': [FileScope&{path:string;kind:'file'|'directory';operationId:string},FileEntry];
+ 'filesystem.rename': [FileScope&{path:string;newPath:string;operationId:string},FileEntry];
+ 'filesystem.delete': [FileScope&{path:string;permanent?:boolean;operationId:string},{path:string;recycled:boolean}];
+ 'filesystem.files': [FileScope,FileListResult];
+ 'filesystem.search': [FileScope&SearchQuery,SearchResult];
+ 'review.list': [{sessionId:string},ReviewState];
+ 'review.changes': [{sessionId:string;from:string;to?:string},{files:ReviewFile[]}];
+ 'review.diff': [{sessionId:string;from:string;to?:string;path:string},ReviewDiff];
+ 'review.revert': [{sessionId:string;checkpointId:string;paths:string[];expectedFingerprints:Record<string,string|null>;operationId:string},{restored:string[];recycled:string[]}];
+ 'review.checkpoint': [{sessionId:string;kind:'manual'|'baseline';operationId:string},ReviewCheckpoint];
  'worktree.list': [{projectId:string},Worktree[]];
  'worktree.create': [{projectId:string;path:string;branch:string;createBranch:boolean;operationId:string},Worktree];
  'worktree.remove': [{id:string;operationId:string},null];
@@ -201,8 +223,9 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read'] as const satisfies readonly Method[];
+export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint'] as const satisfies readonly Method[];
 const stringFields: Partial<Record<Method,readonly string[]>> = {
+ 'filesystem.resolve':['sessionId','path'],
  'session.launch.read':['sessionId'],
  'catalog.visibility.update':['kind','id','visibility','operationId'],
  'session.resume':['sessionId','operationId'],
@@ -231,6 +254,10 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'worktree.list':['projectId'],'worktree.create':['projectId','path','branch','operationId'],
  'worktree.remove':['id','operationId'],'workspace.save':['name','operationId'],
  'workspace.delete':['id','operationId'],'inbox.read':['operationId'],
+ 'git.index.write':['projectId','path','operationId'],'git.discard':['projectId','operationId'],'git.checkout':['projectId','branch','operationId'],'git.branch.delete':['projectId','branch','operationId'],
+ 'git.branches':['projectId'],'git.log':['projectId'],'git.commit.show':['projectId','commit'],'git.commit.diff':['projectId','commit','path'],'git.blame':['projectId','path'],
+ 'filesystem.create':['projectId','path','kind','operationId'],'filesystem.rename':['projectId','path','newPath','operationId'],'filesystem.delete':['projectId','path','operationId'],'filesystem.files':['projectId'],'filesystem.search':['projectId','query'],
+ 'review.list':['sessionId'],'review.changes':['sessionId','from'],'review.diff':['sessionId','from','path'],'review.revert':['sessionId','checkpointId','operationId'],'review.checkpoint':['sessionId','kind','operationId'],
 };
 export function isRecord(value:unknown):value is Record<string,unknown> { return typeof value==='object' && value!==null && !Array.isArray(value); }
 export function validateRequest(method:unknown,params:unknown):asserts method is Method {
@@ -260,9 +287,35 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(m==='settings.update'&&(!isRecord(params.patch)||!Number.isSafeInteger(params.expectedRevision))) throw new Error('Invalid settings revision or patch');
  if(m==='chat.approve'&&(typeof params.choiceId!=='string'||!params.choiceId)) throw new Error('Invalid approval choice');
  if(m==='filesystem.list' && typeof params.path!=='string') throw new Error('Invalid path');
+ if(m==='filesystem.resolve') {
+  if(String(params.path).length>16*1024||String(params.path).includes('\0')) throw new Error('Invalid file reference');
+  for(const key of ['line','column']) if(params[key]!==undefined&&(!Number.isSafeInteger(params[key])||Number(params[key])<1||Number(params[key])>1_000_000)) throw new Error(`Invalid ${key}`);
+ }
  if(['filesystem.write','draft.put'].includes(m) && (typeof params.content!=='string'||params.content.length>1024*1024)) throw new Error('Invalid file content');
  if(['catalog.visibility.update','session.organize','project.update','draft.put','draft.delete','workspace.save','workspace.delete','settings.import.apply','preset.save','preset.delete','session.config.save','session.retry.update'].includes(m)&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<0)) throw new Error('Invalid revision');
  if(m==='git.diff'&&typeof params.staged!=='boolean') throw new Error('Invalid diff mode');
+ const pathOk=(value:unknown)=>typeof value==='string'&&value.length>0&&value.length<=4096&&!value.includes('\0');
+ if(['filesystem.create','filesystem.rename','filesystem.delete','git.index.write','git.blame','git.commit.diff','review.diff'].includes(m)&&!pathOk(params.path)) throw new Error('Invalid path');
+ if(m==='filesystem.rename'&&!pathOk(params.newPath)) throw new Error('Invalid path');
+ if(m==='git.log'&&params.path!==undefined&&!pathOk(params.path)) throw new Error('Invalid path');
+ if(m==='git.log'&&params.all!==undefined&&typeof params.all!=='boolean') throw new Error('Invalid history scope');
+ if(m==='git.log'&&params.skip!==undefined&&(!Number.isSafeInteger(params.skip)||Number(params.skip)<0||Number(params.skip)>1_000_000)) throw new Error('Invalid history offset');
+ if(m==='filesystem.search') {
+  if(String(params.query).length>1000) throw new Error('Invalid search query');
+  for(const key of ['include','exclude']) if(params[key]!==undefined&&(typeof params[key]!=='string'||String(params[key]).length>2000)) throw new Error(`Invalid ${key}`);
+ }
+ if(m==='git.index.write') {
+  if(typeof params.content!=='string'||params.content.length>1024*1024) throw new Error('Invalid file content');
+  if(!('expectedIndexFingerprint' in params)||(params.expectedIndexFingerprint!==null&&(typeof params.expectedIndexFingerprint!=='string'||!params.expectedIndexFingerprint))) throw new Error('Invalid index fingerprint');
+ }
+ if(['git.stage','git.unstage','git.discard','review.revert'].includes(m)&&(!Array.isArray(params.paths)||params.paths.length===0||params.paths.length>500||params.paths.some(path=>!pathOk(path)))) throw new Error('Invalid paths');
+ if(m==='review.revert') {
+  const expected=params.expectedFingerprints,paths=params.paths as string[];
+  if(!isRecord(expected)||Object.keys(expected).some(key=>!paths.includes(key))||paths.some(path=>!(path in expected))||Object.values(expected).some(value=>value!==null&&(typeof value!=='string'||!value))) throw new Error('Invalid fingerprints');
+ }
+ if(['git.checkout','git.branch.delete'].includes(m)&&(String(params.branch).length>255||String(params.branch).startsWith('-'))) throw new Error('Invalid branch');
+ if(m==='git.checkout'&&params.startPoint!==undefined&&(typeof params.startPoint!=='string'||!params.startPoint||params.startPoint.length>255||params.startPoint.startsWith('-'))) throw new Error('Invalid start point');
+ if(['git.commit.show','git.commit.diff'].includes(m)&&!/^[0-9a-f]{4,64}$/i.test(String(params.commit))) throw new Error('Invalid commit');
  if(m==='session.retry.update' && (typeof params.enabled!=='boolean'||(params.maxRetries!==undefined&&(!Number.isInteger(params.maxRetries)||Number(params.maxRetries)<1||Number(params.maxRetries)>10))||(params.delaySeconds!==undefined&&(!Number.isInteger(params.delaySeconds)||Number(params.delaySeconds)<1||Number(params.delaySeconds)>3600)))) throw new Error('Invalid retry policy');
  if(m==='worktree.create'&&typeof params.createBranch!=='boolean') throw new Error('Invalid branch mode');
  if(m==='inbox.read'&&(!Array.isArray(params.ids)||params.ids.length>500||params.ids.some(id=>typeof id!=='string'||!id))) throw new Error('Invalid inbox ids');
@@ -292,7 +345,17 @@ export function validateLayout(value:unknown):asserts value is PaneLayout {
     if(!isRecord(tab)||typeof tab.id!=='string'||!tab.id||tabs.has(tab.id)) throw new Error('Invalid workspace tab');
     tabs.add(tab.id);
     if(tab.kind==='session') { if(typeof tab.sessionId!=='string'||!tab.sessionId) throw new Error('Invalid session tab'); }
-    else if(['file','diff','preview'].includes(String(tab.kind))) { if(typeof tab.projectId!=='string'||!tab.projectId||typeof tab.path!=='string'||!tab.path) throw new Error('Invalid file tab'); }
+    else if(['file','diff','preview'].includes(String(tab.kind))) {
+     if(typeof tab.projectId!=='string'||!tab.projectId||typeof tab.path!=='string'||!tab.path) throw new Error('Invalid file tab');
+     if(tab.ownerSessionId!==undefined&&(typeof tab.ownerSessionId!=='string'||!tab.ownerSessionId||tab.ownerSessionId.length>256||/[\u0000-\u001f\u007f]/.test(tab.ownerSessionId))) throw new Error('Invalid file tab owner');
+    }
+    else if(tab.kind==='history') {
+     if(typeof tab.projectId!=='string'||!tab.projectId||(tab.path!==undefined&&(typeof tab.path!=='string'||!tab.path))) throw new Error('Invalid history tab');
+    }
+    else if(tab.kind==='review') {
+     for(const key of ['projectId','path','sessionId','checkpointId']) if(typeof tab[key]!=='string'||!tab[key]) throw new Error('Invalid review tab');
+     if(tab.toCheckpointId!==undefined&&(typeof tab.toCheckpointId!=='string'||!tab.toCheckpointId)) throw new Error('Invalid review tab');
+    }
     else throw new Error('Invalid tab kind');
    }
    if(node.activeTabId!==null&&!tabs.has(String(node.activeTabId))) throw new Error('Invalid active tab');
@@ -310,9 +373,31 @@ export interface FileDocument { path:string; content:string; fingerprint:string;
 export interface Draft { id:string; projectId:string; worktreePath?:string; path:string; content:string; baseFingerprint:string; revision:number; updatedAt:string }
 export interface GitChange { path:string; originalPath?:string; indexStatus:string; worktreeStatus:string; untracked:boolean }
 export interface GitStatus { branch:string|null; upstream:string|null; ahead:number; behind:number; changes:GitChange[] }
-export interface GitDiff { path:string; staged:boolean; oldText:string; newText:string; binary:boolean; fingerprint:string }
+/** staged=false: index → working tree (fingerprint is the working file); staged=true: HEAD → index. indexFingerprint is null when the path has no stage-0 index entry. */
+export interface GitDiff { path:string; staged:boolean; oldText:string; newText:string; binary:boolean; fingerprint:string; indexFingerprint?:string|null; deleted?:boolean }
+export interface FileListResult { paths:string[]; truncated:boolean }
+export interface SearchQuery { query:string; regex?:boolean; caseSensitive?:boolean; wholeWord?:boolean; include?:string; exclude?:string }
+/** line is 1-based; column/length/previewColumn are UTF-16 code units (column 1-based). */
+export interface SearchMatch { line:number; column:number; length:number; preview:string; previewColumn:number }
+export interface SearchResult { files:{path:string;matches:SearchMatch[]}[]; truncated:boolean; searchedFiles:number }
+export interface GitCommitInfo { hash:string; parents:string[]; authorName:string; authorEmail:string; authoredAt:string; subject:string; refs:string[] }
+/** Commits in date order (children before parents). all=true lists every local/remote branch and tag (ignored for
+ * file history); scope echoes it and is missing from runtimes older than the commit graph. */
+export interface GitLog { commits:GitCommitInfo[]; hasMore:boolean; scope?:'head'|'all' }
+export interface GitCommitFile { path:string; originalPath?:string; status:string }
+export interface GitCommitDetail { commit:GitCommitInfo; body:string; files:GitCommitFile[] }
+export interface GitTextPair { path:string; oldText:string; newText:string; binary:boolean }
+/** Uncommitted lines use commit ''. Ranges are 1-based and cover the working file. */
+export interface GitBlame { path:string; ranges:{start:number;count:number;commit:string}[]; commits:Record<string,{authorName:string;authoredAt:string;summary:string}> }
+export interface GitBranch { name:string; remote:boolean; current:boolean; upstream?:string; ahead?:number; behind?:number; gone?:boolean; lastCommit?:{hash:string;subject:string;committedAt:string} }
+export interface GitBranches { current:string|null; detached:boolean; branches:GitBranch[] }
+export interface ReviewCheckpoint { id:string; sessionId:string; kind:'turn'|'launch'|'manual'|'baseline'; turnId?:string; label?:string; createdAt:string; status:'ready'|'failed'; error?:string; skipped:string[] }
+export interface ReviewState { available:boolean; reason?:string; projectId?:string; worktreePath?:string; checkpoints:ReviewCheckpoint[] }
+export interface ReviewFile { path:string; status:'A'|'M'|'D' }
+/** exists/fingerprint describe the current working file when `to` is omitted. */
+export interface ReviewDiff { path:string; oldText:string; newText:string; binary:boolean; exists:boolean; fingerprint?:string }
 export interface Worktree { id:string; projectId:string; path:string; branch:string|null; head:string; isMain:boolean; locked:boolean; missing:boolean; upstream?:string; lastCommit?:CommitSummary }
-export type ContentRef = {id:string;kind:'session';sessionId:string}|{id:string;kind:'file'|'diff'|'preview';projectId:string;worktreePath?:string;path:string};
+export type ContentRef = {id:string;kind:'session';sessionId:string}|{id:string;kind:'file'|'diff'|'preview';projectId:string;worktreePath?:string;path:string;assetKind?:'text'|'image';ownerSessionId?:string;staged?:boolean}|{id:string;kind:'history';projectId:string;worktreePath?:string;path?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'review';projectId:string;worktreePath?:string;path:string;sessionId:string;checkpointId:string;toCheckpointId?:string;ownerSessionId?:undefined;assetKind?:undefined};
 export type PaneLayout = {kind:'pane';id:string;tabs:ContentRef[];activeTabId:string|null}|{kind:'split';id:string;direction:'horizontal'|'vertical';ratio:number;first:PaneLayout;second:PaneLayout};
 export interface WorkspaceSave { id?:string;name:string;projectId?:string;worktreePath?:string;layout:PaneLayout;expectedRevision:number;operationId:string }
 

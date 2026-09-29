@@ -7,6 +7,22 @@
 @import url("../../reference/prototype/features/sessions.css");
 @import url("../../reference/prototype/features/settings.css");
 
+/* Status colours (user decision 2026-09-28, departs from the prototype): stalled was purple, next to the brand
+   indigo; it is orange now. Pill text is 80% status + 20% text so light pills reach 4.5:1 on their tint (they were
+   3.9-4.5:1); the dot keeps the pure status colour. Dark after light: both selectors match <html>. */
+:root, [data-theme="light"] { --st-stalled:#bc4c00; }
+[data-theme="dark"] { --st-stalled:#db6d28; }
+.chip.st-needs { color:color-mix(in srgb, var(--st-needs) 80%, var(--text)); }
+.chip.st-running { color:color-mix(in srgb, var(--st-running) 80%, var(--text)); }
+.chip.st-failed { color:color-mix(in srgb, var(--st-failed) 80%, var(--text)); }
+.chip.st-ended { color:color-mix(in srgb, var(--st-ended) 80%, var(--text)); }
+.chip.st-stalled { color:color-mix(in srgb, var(--st-stalled) 80%, var(--text)); }
+.chip.st-needs::before { background:var(--st-needs); }
+.chip.st-running::before { background:var(--st-running); }
+.chip.st-failed::before { background:var(--st-failed); }
+.chip.st-ended::before { background:var(--st-ended); }
+.chip.st-stalled::before { background:var(--st-stalled); }
+
 html, body, #root { height:100%; margin:0; }
 /* The desktop window is transparent (Windows 10 has no native corner rounding),
    so the shell paints its own rounded frame; maximized windows go full-bleed.
@@ -318,9 +334,16 @@ html[data-theme="dark"] { color-scheme:dark; }
 .codex-markdown { line-height:1.65; }
 .codex-markdown p { margin:0 0 12px; }
 .codex-markdown p:last-child { margin-bottom:0; }
-.codex-markdown code { padding:2px 5px; border-radius:4px; background:var(--soft); font:12px/1.4 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); }
-.codex-markdown pre { margin:12px 0; padding:10px 12px; overflow:auto; border:1px solid var(--border); border-radius:6px; background:var(--soft); }
-.codex-markdown pre code { padding:0; background:transparent; }
+/* Inline code scales with the surrounding prose; code blocks keep a fixed, readable metric. */
+.codex-markdown code { padding:.12em .38em; border-radius:4px; background:var(--soft); font:0.86em/1.4 var(--mono,ui-monospace,SFMono-Regular,Consolas,monospace); }
+.codex-markdown pre { margin:12px 0; padding:10px 12px; overflow:auto; border:1px solid var(--border); border-radius:8px; background:var(--soft); }
+.codex-markdown pre code { padding:0; background:transparent; font-size:12.5px; line-height:1.55; }
+.codex-markdown ul, .codex-markdown ol { margin:0 0 12px; padding-left:1.4em; }
+.codex-markdown li + li { margin-top:4px; }
+.codex-markdown h1, .codex-markdown h2, .codex-markdown h3, .codex-markdown h4 { margin:18px 0 8px; line-height:1.35; font-weight:600; }
+.codex-markdown h1 { font-size:1.3em; } .codex-markdown h2 { font-size:1.18em; } .codex-markdown h3 { font-size:1.06em; } .codex-markdown h4 { font-size:1em; }
+.codex-markdown > :first-child { margin-top:0; }
+.codex-markdown blockquote { margin:0 0 12px; padding:2px 0 2px 12px; border-left:3px solid var(--border); color:var(--muted); }
 .codex-markdown a { color:var(--primary); text-decoration:underline; text-underline-offset:2px; }
 .codex-tool-disclosure { margin:0; }
 .codex-tool-disclosure summary { display:flex; align-items:center; gap:7px; width:max-content; max-width:100%; cursor:pointer; list-style:none; font-size:13px; line-height:1.45; }
@@ -397,8 +420,11 @@ html[data-theme="dark"] { color-scheme:dark; }
   .chat-connect-wave { display:none; animation:none; }
   .chat-connect-logo > svg { opacity:.5; }
 }
-.chat-compose-shell { margin:12px 16px 16px; padding:4px 10px 10px 12px; border:1px solid var(--border); border-radius:24px; background:var(--surface); box-shadow:var(--shadow-soft, 0 8px 24px color-mix(in srgb, var(--text) 8%, transparent)); }
-.chat-compose-shell textarea { width:100%; min-height:52px; max-height:200px; padding:12px 6px 6px; border:0; resize:none; background:transparent; box-shadow:none; font-size:14px; line-height:1.5; overflow-y:auto; }
+/* The composer shares the transcript's 920px reading column so wide panes do not stretch it. */
+.chat-compose-shell { margin:8px max(16px, calc((100% - 920px) / 2)) 16px; padding:2px 8px 8px 12px; border:1px solid var(--border); border-radius:20px; background:var(--surface); box-shadow:var(--shadow-soft, 0 8px 24px color-mix(in srgb, var(--text) 8%, transparent)); transition:border-color .15s ease, box-shadow .15s ease; }
+.chat-compose-shell:focus-within { border-color:color-mix(in srgb, var(--primary) 45%, var(--border)); box-shadow:0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent), var(--shadow-soft, 0 8px 24px color-mix(in srgb, var(--text) 8%, transparent)); }
+.chat-compose-shell textarea { width:100%; min-height:44px; max-height:200px; padding:10px 6px 4px; border:0; resize:none; background:transparent; box-shadow:none; font-size:14px; line-height:1.55; overflow-y:auto; }
+.chat-compose-shell textarea::placeholder { color:color-mix(in srgb, var(--muted) 85%, transparent); }
 .chat-compose-shell textarea:focus { outline:none; }
 .chat-compose-bar { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .chat-compose-left, .chat-compose-right { display:flex; align-items:center; gap:6px; min-width:0; }
@@ -435,9 +461,16 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-slash b { font-size:12px; }
 .chat-slash span { color:var(--muted); font-size:11px; }
 .chat-slash-empty { margin:8px 10px; color:var(--muted); font-size:12px; }
-.v3-thinking { margin:0 0 8px; padding:6px 8px; border-left:2px solid var(--border); color:var(--muted); font-size:12px; line-height:1.45; }
-.v3-thinking summary { cursor:pointer; user-select:none; font-weight:600; }
+/* Thinking uses the same chevron language as the turn/tool disclosures instead of the native marker. */
+.v3-thinking { margin:0 0 10px; padding:2px 0 2px 12px; border-left:2px solid var(--border); color:var(--muted); font-size:13px; line-height:1.55; }
+.v3-thinking > summary { display:inline-flex; align-items:center; gap:7px; cursor:pointer; user-select:none; list-style:none; font-weight:500; border-radius:4px; }
+.v3-thinking > summary::-webkit-details-marker { display:none; }
+.v3-thinking > summary::before { content:""; flex:none; width:5px; height:5px; margin:0 1px 0 2px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(-45deg); transition:transform .15s ease; }
+.v3-thinking[open] > summary::before { transform:rotate(45deg); }
+.v3-thinking > summary:hover { color:var(--text); }
+.v3-thinking > summary:focus-visible { outline:2px solid var(--primary); outline-offset:3px; }
 .v3-thinking .v3-message-text { margin-top:6px; max-height:220px; overflow:auto; }
+@media (prefers-reduced-motion:reduce) { .v3-thinking > summary::before { transition:none; } }
 .chat-first-response-wait { display:flex; align-items:center; gap:6px; margin:0 0 24px; color:var(--muted); font-size:15px; line-height:1.6; }
 .chat-first-response-dots { display:inline-flex; align-items:center; gap:3px; min-width:18px; }
 .chat-first-response-dots i { width:4px; height:4px; border-radius:50%; background:currentColor; animation:chat-first-response-dot 1.05s ease-in-out infinite; }

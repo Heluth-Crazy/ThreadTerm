@@ -1,7 +1,7 @@
-.catalog-active-delete-dialog{width:min(520px,calc(100vw - 32px))!important;min-height:0!important;height:auto!important;max-height:calc(100vh - 32px)!important}
-.catalog-active-delete-dialog .dlg-head{padding:16px 20px!important}
-.catalog-active-delete-dialog .dlg-head h2{font-size:16px!important;line-height:1.35}
-.catalog-active-delete-dialog .dlg-body{min-height:0!important;flex:1 1 auto!important;padding:18px 20px!important;font-size:14px!important;line-height:1.6!important;overflow-y:auto!important}
-.catalog-active-delete-dialog .dlg-foot{flex:none!important;padding:12px 20px 16px!important}
-.catalog-active-delete-dialog .note{overflow-wrap:anywhere}
+.catalog-confirm-dialog{width:min(520px,calc(100vw - 32px))!important;min-height:0!important;height:auto!important;max-height:calc(100vh - 32px)!important}
+.catalog-confirm-dialog .dlg-head{padding:16px 20px!important}
+.catalog-confirm-dialog .dlg-head h2{font-size:16px!important;line-height:1.35}
+.catalog-confirm-dialog .sheet-head-text,.catalog-confirm-dialog .dlg-body>*{min-width:0;overflow-wrap:anywhere}
+.catalog-confirm-dialog .dlg-body{min-height:0!important;flex:1 1 auto!important;padding:18px 20px!important;font-size:14px!important;line-height:1.6!important;overflow-y:auto!important}
+.catalog-confirm-dialog .dlg-foot{flex:none!important;padding:12px 20px 16px!important}
 .catalog-active-delete-notice{border:1px solid var(--border);border-radius:var(--radius);background:var(--raised);color:var(--text);overflow-wrap:anywhere;padding:10px 12px;font-size:13px;line-height:1.5}

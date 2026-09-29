@@ -77,9 +77,12 @@ try{
   });
   await caseOf('dirty-project-archive-preserves-draft',async()=>{
     await page.locator('.proj-row').filter({hasText:'docs-site'}).click();await page.getByRole('button',{name:'项目操作',exact:true}).click();await page.locator('.project-tools-menu').getByRole('button',{name:'浏览文件',exact:true}).click();
-    await page.getByRole('button',{name:'浏览文件',exact:true}).click();await page.locator('.tt-file-tree').waitFor();
-    for(let attempt=0;attempt<10;attempt++){const closed=page.locator('.tt-file-tree details:not([open])>summary');if(!await closed.count())break;await closed.first().click();}
-    await page.locator('.tt-file-tree .file-link').first().click();const editor=page.locator('.tt-editor-shell .cm-content');await editor.waitFor();await editor.click();await page.keyboard.press('Control+End');await page.keyboard.type(' QA_CATALOG_DRAFT');await page.locator('[data-testid="editor-dirty"]:not([hidden])').waitFor();
+    // Standalone Files opens with its tools column (the shared workbench Explorer), so there is no empty-state
+    // Browse files button any more; tree rows are treeitems and folders carry aria-expanded.
+    const tree=page.locator('.tt-file-tree .wb-tree');await tree.locator('[role=treeitem]').first().waitFor();
+    const file=tree.locator('[role=treeitem]:not([aria-expanded])');
+    for(let attempt=0;attempt<10&&!await file.count();attempt++){await tree.locator('[role=treeitem][aria-expanded="false"]').first().click();await page.waitForTimeout(250);}
+    await file.first().click();const editor=page.locator('.tt-editor-shell .cm-content');await editor.waitFor();await editor.click();await page.keyboard.press('Control+End');await page.keyboard.type(' QA_CATALOG_DRAFT');await page.locator('[data-testid="editor-dirty"]:not([hidden])').waitFor();
     const before=await page.evaluate(()=>window.__parityFixture.calls.filter(call=>call.method==='catalog.visibility.update').length);
     await more('.proj-row-wrap','docs-site');await choose('归档');await confirm('确认归档');await page.getByRole('dialog').getByRole('alert').filter({hasText:'保存或关闭'}).waitFor();await confirm('取消');
     assert.ok((await editor.innerText()).includes('QA_CATALOG_DRAFT'));assert.equal(await page.evaluate(()=>window.__parityFixture.calls.filter(call=>call.method==='catalog.visibility.update').length),before);

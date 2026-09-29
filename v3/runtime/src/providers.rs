@@ -8,7 +8,7 @@ mod acp;
 mod approval;
 mod claude;
 mod codex;
-mod common;
+pub(crate) mod common;
 mod grok;
 mod kimi_plan_usage;
 pub(crate) mod network;
@@ -73,6 +73,9 @@ pub struct ProviderEvent {
     pub turn_id: Option<String>,
     pub kind: String,
     pub data: Value,
+    /// Runtime-only identity of the worker which produced this notification.
+    #[serde(skip)]
+    pub worker_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -198,6 +201,11 @@ pub(crate) trait ProviderAdapter: Send + Sync {
     fn prepare_terminal(&self, _cwd: &str) -> Result<Option<String>, ProviderError> {
         Ok(None)
     }
+    /// Read-only provider validation before reserving a terminal resume. Must
+    /// not create history, change identity, or submit a model/tool request.
+    fn preflight_terminal_resume(&self, _cwd: &str, _native_id: &str) -> Result<(), ProviderError> {
+        Ok(())
+    }
     fn history_list(
         &self,
         cursor: Option<&str>,
@@ -211,12 +219,30 @@ pub(crate) trait ProviderAdapter: Send + Sync {
         cwd: &str,
         native_id: Option<&str>,
     ) -> Result<Box<dyn ChatSession>, ProviderError>;
+
+    fn scopes_chat_events(&self) -> bool {
+        false
+    }
+
+    fn open_chat_scoped(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        _worker_token: &str,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.open_chat(session_id, cwd, native_id)
+    }
 }
 
 pub(crate) trait ChatSession: Send {
     fn native_id(&self) -> Option<String>;
     fn is_alive(&self) -> bool {
         true
+    }
+    /// Side-effect-free rejection before a user turn is durably recorded.
+    fn validate_send(&self, _text: &str) -> Result<(), ProviderError> {
+        Ok(())
     }
     fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError>;
     fn cancel(&mut self, turn_id: &str) -> Result<(), ProviderError>;
@@ -249,6 +275,8 @@ struct ChatSlot {
     error: Option<Value>,
     worker: Option<SharedChat>,
     connecting: bool,
+    worker_token: Option<String>,
+    requires_scoped_events: bool,
 }
 
 impl ChatSlot {
@@ -261,6 +289,8 @@ impl ChatSlot {
             error: None,
             worker: None,
             connecting: false,
+            worker_token: None,
+            requires_scoped_events: false,
         }
     }
 
@@ -271,14 +301,15 @@ impl ChatSlot {
             .unwrap_or(false)
     }
 
-    fn mark_disconnected(&mut self) {
-        self.worker = None;
+    fn mark_disconnected(&mut self) -> Option<SharedChat> {
+        let retired = self.worker.take();
         self.connecting = false;
         if self.phase != "failed" && self.phase != "unavailable" {
             self.phase = "disconnected";
         }
         self.generation = self.generation.saturating_add(1);
         self.revision = self.revision.saturating_add(1);
+        retired
     }
 
     fn wire(
@@ -392,6 +423,16 @@ impl Providers {
         self.adapter(provider)?.prepare_terminal(cwd)
     }
 
+    pub(crate) fn preflight_terminal_resume(
+        &self,
+        provider: &str,
+        cwd: &str,
+        native_id: &str,
+    ) -> Result<(), ProviderError> {
+        self.adapter(provider)?
+            .preflight_terminal_resume(cwd, native_id)
+    }
+
     fn worker_handle(&self, session_id: &str) -> Result<SharedChat, ProviderError> {
         let mut chats = self
             .chats
@@ -411,11 +452,12 @@ impl Providers {
         })?;
         let alive = worker.lock().ok().is_some_and(|chat| chat.is_alive());
         if !alive {
-            slot.mark_disconnected();
+            let retired = slot.mark_disconnected();
             self.connect_wait.notify_all();
             let state = slot.wire(session_id, "unknown", None);
             drop(chats);
             self.emit_connection(session_id, state);
+            drop(retired);
             return Err(ProviderError::new(
                 "provider_disconnected",
                 format!("provider Chat worker for session {session_id} is no longer alive"),
@@ -440,6 +482,93 @@ impl Providers {
 
     pub fn chat_is_open(&self, session_id: &str) -> bool {
         self.worker_handle(session_id).is_ok()
+    }
+
+    pub(crate) fn chat_send_recording(
+        &self,
+        session_id: &str,
+        text: &str,
+        operation_id: &str,
+        record: impl FnOnce() -> Result<(), ProviderError>,
+    ) -> Result<Value, ProviderError> {
+        if text.trim().is_empty() {
+            return Err(ProviderError::new(
+                "empty_message",
+                "Chat message cannot be empty",
+            ));
+        }
+        // Serialize validation, persistence and dispatch with other writes to
+        // this worker. A rejected local command must not become the UI's most
+        // recent turn or complete the active reply's streaming parts.
+        let result = self.chat(session_id, |chat| {
+            chat.validate_send(text)?;
+            record()?;
+            chat.send(text, operation_id)
+        });
+        match result {
+            Err(error) if error.code == "provider_disconnected" => {
+                let _ = self.chat_stop(session_id);
+                Err(error)
+            }
+            other => other,
+        }
+    }
+
+    /// A provider-reported internal session close (e.g. the Claude SDK query
+    /// ended while its host process is still alive). Invalidates the current
+    /// worker only when that worker no longer reports itself alive, so a late
+    /// close from a replaced generation can never tear down a healthy worker.
+    #[cfg(test)]
+    pub(crate) fn note_session_closed(&self, session_id: &str) {
+        self.note_session_closed_scoped(session_id, None);
+    }
+
+    pub(crate) fn note_session_closed_scoped(&self, session_id: &str, worker_token: Option<&str>) {
+        let mut chats = match self.chats.lock() {
+            Ok(chats) => chats,
+            Err(_) => return,
+        };
+        let Some(slot) = chats.get_mut(session_id) else {
+            return;
+        };
+        if worker_token.is_some() && slot.worker_token.as_deref() != worker_token {
+            return;
+        }
+        if slot.worker.is_none() || slot.worker_alive() {
+            return;
+        }
+        let retired = slot.mark_disconnected();
+        let state = slot.wire(session_id, "unknown", None);
+        drop(chats);
+        self.connect_wait.notify_all();
+        self.emit_connection(session_id, state);
+        drop(retired);
+    }
+
+    /// Projection and connection replacement share this short registry fence.
+    /// The callback may access the DB, but must never call a provider or reenter
+    /// Providers. No provider I/O is performed while holding this guard.
+    pub(crate) fn with_current_event<T>(
+        &self,
+        event: &ProviderEvent,
+        project: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let chats = self.chats.lock().ok()?;
+        let slot = chats.get(&event.session_id);
+        let current = if event.provider == "runtime" && event.kind == "chat.connection" {
+            slot.is_some_and(|slot| {
+                event
+                    .data
+                    .get("connectionGeneration")
+                    .and_then(Value::as_u64)
+                    == Some(slot.generation)
+            })
+        } else if let Some(token) = event.worker_token.as_deref() {
+            slot.is_some_and(|slot| slot.worker_token.as_deref() == Some(token))
+        } else {
+            !slot.is_some_and(|slot| slot.requires_scoped_events)
+        };
+        current.then(project)
     }
 
     fn emit_connection(&self, session_id: &str, mut data: Value) {
@@ -606,16 +735,19 @@ impl ProviderRuntime for Providers {
             }
             break;
         }
-        let generation = {
+        let worker_token = uuid::Uuid::new_v4().to_string();
+        let (generation, old_worker) = {
             let slot = chats
                 .entry(session_id.to_owned())
                 .or_insert_with(ChatSlot::new);
             slot.connecting = true;
             slot.phase = "connecting";
             slot.error = None;
+            slot.worker_token = Some(worker_token.clone());
+            slot.requires_scoped_events = adapter.scopes_chat_events();
             slot.generation = slot.generation.saturating_add(1);
             slot.revision = slot.revision.saturating_add(1);
-            slot.generation
+            (slot.generation, slot.worker.take())
         };
         let connecting = chats
             .get(session_id)
@@ -623,8 +755,9 @@ impl ProviderRuntime for Providers {
             .unwrap_or_else(|| json!({"sessionId":session_id,"phase":"connecting"}));
         drop(chats);
         self.emit_connection(session_id, connecting);
+        drop(old_worker);
 
-        let opened = adapter.open_chat(session_id, cwd, native_id);
+        let opened = adapter.open_chat_scoped(session_id, cwd, native_id, &worker_token);
         let mut chats = self
             .chats
             .lock()
@@ -633,16 +766,29 @@ impl ProviderRuntime for Providers {
             .entry(session_id.to_owned())
             .or_insert_with(ChatSlot::new);
         if slot.generation != generation {
+            drop(chats);
+            self.connect_wait.notify_all();
             if let Ok(mut worker) = opened {
                 let _ = worker.stop();
             }
-            self.connect_wait.notify_all();
             return Err(ProviderError::new(
                 "chat_connect_superseded",
                 "a newer Chat connection attempt replaced this one",
             ));
         }
         slot.connecting = false;
+        let mut rejected_worker = None;
+        let opened = opened.and_then(|worker| {
+            if worker.is_alive() {
+                Ok(worker)
+            } else {
+                rejected_worker = Some(worker);
+                Err(ProviderError::new(
+                    "provider_disconnected",
+                    "provider Chat ended before the connection handoff",
+                ))
+            }
+        });
         let result = match opened {
             Ok(worker) => {
                 let native = worker.native_id();
@@ -675,11 +821,17 @@ impl ProviderRuntime for Providers {
                 slot.phase = "failed";
                 slot.error = Some(Self::connection_error_value(&failed));
                 slot.worker = None;
+                slot.worker_token = None;
                 slot.revision = slot.revision.saturating_add(1);
                 let state = slot.wire(session_id, "error", slot.error.clone());
                 drop(chats);
                 self.connect_wait.notify_all();
                 self.emit_connection(session_id, state);
+                // Provider stop/drop may wait on native I/O. The registry is
+                // already released so unrelated sessions/projection stay live.
+                if let Some(mut worker) = rejected_worker {
+                    let _ = worker.stop();
+                }
                 return Err(failed);
             }
         };
@@ -696,19 +848,7 @@ impl ProviderRuntime for Providers {
         text: &str,
         operation_id: &str,
     ) -> Result<Value, ProviderError> {
-        if text.trim().is_empty() {
-            return Err(ProviderError::new(
-                "empty_message",
-                "Chat message cannot be empty",
-            ));
-        }
-        match self.chat(session_id, |chat| chat.send(text, operation_id)) {
-            Err(error) if error.code == "provider_disconnected" => {
-                let _ = self.chat_stop(session_id);
-                Err(error)
-            }
-            other => other,
-        }
+        self.chat_send_recording(session_id, text, operation_id, || Ok(()))
     }
 
     fn chat_cancel(&self, session_id: &str, turn_id: &str) -> Result<(), ProviderError> {
@@ -740,7 +880,11 @@ impl ProviderRuntime for Providers {
             return Ok(());
         };
         let worker = slot.worker.take();
-        slot.mark_disconnected();
+        // An explicit stop invalidates even notifications queued by a worker
+        // whose startup has not returned. Natural EOF keeps its token until
+        // replacement so already-queued final error/expiry events can settle.
+        slot.worker_token = None;
+        let _ = slot.mark_disconnected();
         let state = slot.wire(session_id, "unknown", None);
         drop(chats);
         self.connect_wait.notify_all();
@@ -797,11 +941,12 @@ impl ProviderRuntime for Providers {
         };
         if let Some(slot) = chats.get_mut(session_id) {
             if slot.worker.is_some() && !slot.worker_alive() {
-                slot.mark_disconnected();
+                let retired = slot.mark_disconnected();
                 let state = slot.wire(session_id, "unknown", None);
                 drop(chats);
                 self.connect_wait.notify_all();
                 self.emit_connection(session_id, state.clone());
+                drop(retired);
                 return state;
             }
             return slot.wire(session_id, "unknown", None);
@@ -843,6 +988,44 @@ impl Drop for Providers {
     }
 }
 
+/// Event destination bound once to a worker generation. Cloning this for an
+/// asynchronous callback cannot accidentally adopt a replacement worker token.
+#[derive(Clone)]
+pub(crate) struct ScopedProviderEvents {
+    events: broadcast::Sender<ProviderEvent>,
+    worker_token: String,
+}
+
+impl ScopedProviderEvents {
+    pub(crate) fn new(events: broadcast::Sender<ProviderEvent>, worker_token: &str) -> Self {
+        Self {
+            events,
+            worker_token: worker_token.to_owned(),
+        }
+    }
+}
+
+pub(crate) fn emit_bound(
+    events: &ScopedProviderEvents,
+    provider: &str,
+    session_id: &str,
+    native_id: Option<&str>,
+    turn_id: Option<&str>,
+    kind: &str,
+    data: Value,
+) {
+    emit_scoped(
+        &events.events,
+        provider,
+        session_id,
+        native_id,
+        turn_id,
+        kind,
+        data,
+        Some(&events.worker_token),
+    );
+}
+
 pub(crate) fn emit(
     events: &broadcast::Sender<ProviderEvent>,
     provider: &str,
@@ -852,6 +1035,22 @@ pub(crate) fn emit(
     kind: &str,
     data: Value,
 ) {
+    emit_scoped(
+        events, provider, session_id, native_id, turn_id, kind, data, None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_scoped(
+    events: &broadcast::Sender<ProviderEvent>,
+    provider: &str,
+    session_id: &str,
+    native_id: Option<&str>,
+    turn_id: Option<&str>,
+    kind: &str,
+    data: Value,
+    worker_token: Option<&str>,
+) {
     let _ = events.send(ProviderEvent {
         provider: provider.to_owned(),
         session_id: session_id.to_owned(),
@@ -859,5 +1058,162 @@ pub(crate) fn emit(
         turn_id: turn_id.map(ToOwned::to_owned),
         kind: kind.to_owned(),
         data,
+        worker_token: worker_token.map(ToOwned::to_owned),
     });
+}
+
+#[cfg(test)]
+mod registry_cleanup_tests {
+    use super::*;
+    use std::sync::{mpsc, Weak};
+
+    #[test]
+    fn every_production_adapter_fences_late_events_after_reconnect_and_stop() {
+        let providers = Providers::new();
+        assert_eq!(providers.adapters.len(), 6);
+        let mut receiver = providers.events.subscribe();
+        for (provider, adapter) in &providers.adapters {
+            assert!(
+                adapter.scopes_chat_events(),
+                "{provider} must opt in before accepting Chat events"
+            );
+            let mut slot = ChatSlot::new();
+            slot.requires_scoped_events = adapter.scopes_chat_events();
+            slot.worker_token = Some("new-worker".into());
+            slot.connecting = true;
+            providers.chats.lock().unwrap().insert("s".into(), slot);
+            let old = ScopedProviderEvents::new(providers.events.clone(), "old-worker");
+            let queued_callback = old.clone();
+            let current = ScopedProviderEvents::new(providers.events.clone(), "new-worker");
+            for kind in [
+                "session.ready",
+                "chat.delta",
+                "chat.ui",
+                "chat.approval",
+                "chat.approval.resolved",
+                "chat.error",
+                "chat.turn.completed",
+                "session.closed",
+            ] {
+                emit_bound(
+                    &queued_callback,
+                    provider,
+                    "s",
+                    Some("native"),
+                    Some("turn"),
+                    kind,
+                    json!({}),
+                );
+                let stale = receiver.try_recv().unwrap();
+                assert!(providers
+                    .with_current_event(&stale, || panic!("old callback entered projection"))
+                    .is_none());
+                emit(
+                    &providers.events,
+                    provider,
+                    "s",
+                    Some("native"),
+                    Some("turn"),
+                    kind,
+                    json!({}),
+                );
+                assert!(providers
+                    .with_current_event(&receiver.try_recv().unwrap(), || panic!(
+                        "unscoped event entered projection"
+                    ))
+                    .is_none());
+                emit_bound(
+                    &current,
+                    provider,
+                    "s",
+                    Some("native"),
+                    Some("turn"),
+                    kind,
+                    json!({}),
+                );
+                assert_eq!(
+                    providers.with_current_event(&receiver.try_recv().unwrap(), || "accepted"),
+                    Some("accepted"),
+                    "early current {provider}/{kind} must be accepted"
+                );
+            }
+            providers.chat_stop("s").unwrap();
+            emit_bound(
+                &current,
+                provider,
+                "s",
+                Some("native"),
+                None,
+                "chat.error",
+                json!({}),
+            );
+            // chat_stop also emits a runtime connection event.
+            while let Ok(event) = receiver.try_recv() {
+                if event.provider != "runtime" {
+                    assert!(providers
+                        .with_current_event(&event, || panic!("stopped worker entered projection"))
+                        .is_none());
+                }
+            }
+        }
+    }
+
+    struct DeadWorker {
+        registry: Weak<Providers>,
+        observed: mpsc::Sender<bool>,
+    }
+    impl Drop for DeadWorker {
+        fn drop(&mut self) {
+            let registry = self.registry.upgrade().unwrap();
+            let _ = self.observed.send(registry.chats.try_lock().is_ok());
+        }
+    }
+    impl ChatSession for DeadWorker {
+        fn native_id(&self) -> Option<String> {
+            None
+        }
+        fn is_alive(&self) -> bool {
+            false
+        }
+        fn send(&mut self, _: &str, _: &str) -> Result<Value, ProviderError> {
+            unreachable!()
+        }
+        fn cancel(&mut self, _: &str) -> Result<(), ProviderError> {
+            unreachable!()
+        }
+        fn approve(&mut self, _: &str, _: &str, _: &str, _: &str) -> Result<(), ProviderError> {
+            unreachable!()
+        }
+        fn stop(&mut self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn dead_worker_cleanup_releases_the_registry_before_provider_drop() {
+        for path in ["poll", "send", "closed"] {
+            let providers = Arc::new(Providers::for_test(vec![]));
+            let (observed, result) = mpsc::channel();
+            let mut slot = ChatSlot::new();
+            slot.phase = "ready";
+            slot.worker = Some(Arc::new(Mutex::new(Box::new(DeadWorker {
+                registry: Arc::downgrade(&providers),
+                observed,
+            }))));
+            providers.chats.lock().unwrap().insert("s".into(), slot);
+            match path {
+                "poll" => {
+                    providers.chat_connection("s");
+                }
+                "send" => {
+                    assert!(providers.worker_handle("s").is_err());
+                }
+                _ => providers.note_session_closed("s"),
+            }
+            assert!(
+                result.recv_timeout(Duration::from_secs(1)).unwrap(),
+                "{path}: provider cleanup held the shared registry"
+            );
+        }
+    }
 }

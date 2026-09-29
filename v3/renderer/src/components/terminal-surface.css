@@ -6,27 +6,59 @@
 .term-loading-overlay.is-failed { pointer-events:auto; }
 .term-loading-overlay .chat-connect-center { gap:12px; }
 .term-loading-overlay .chat-connect-status { max-width:min(460px, calc(100% - 32px)); overflow-wrap:anywhere; }
-.term-loading-overlay.is-failed .chat-connect-status { color:var(--danger); }
+.term-loading-overlay.is-failed .chat-connect-status { color:var(--text); font-weight:600; }
+.term-loading-overlay.is-failed .chat-connect-hint { max-width:min(400px, calc(100% - 32px)); }
+/* Technical cause of a failed screen recovery: collapsed under the plain-language reason. */
+.term-failure-details { display:grid; justify-items:center; gap:8px; max-width:100%; color:var(--muted); font-size:12px; }
+.term-failure-details summary { display:inline-flex; align-items:center; gap:4px; padding:2px 6px; border-radius:var(--radius); list-style:none; cursor:pointer; }
+.term-failure-details summary::-webkit-details-marker { display:none; }
+.term-failure-details summary:hover { color:var(--text); background:var(--soft); }
+.term-failure-details summary:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.term-failure-details summary .ico { width:14px; height:14px; transition:transform .15s ease; }
+.term-failure-details[open] summary .ico { transform:rotate(180deg); }
+.term-failure-details p { max-width:min(420px, calc(100vw - 64px)); margin:0; padding:8px 10px; border:1px solid var(--border); border-radius:var(--radius); background:var(--raised); color:var(--muted); font-family:var(--mono); font-size:11px; line-height:1.5; text-align:left; overflow-wrap:anywhere; user-select:text; }
 .term-starting { position:absolute; inset:0; z-index:20; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; min-width:0; min-height:0; padding:16px; background:color-mix(in srgb, var(--surface, Canvas) 92%, transparent); color:var(--text, CanvasText); pointer-events:none; }
-.terminal-host { flex:1; min-height:0; min-width:0; padding:10px 16px; }
+/* content-box: FitAddon reads the parent's computed width/height as usable space. Under the
+   prototype's global border-box that included this padding, so fit proposed ~2 extra columns and
+   sometimes an extra row that were then clipped under the scrollbar and bottom edge. */
+.terminal-host { flex:1; min-height:0; min-width:0; padding:10px 16px; box-sizing:content-box; }
 .terminal-host .xterm { height:100%; }
-.term-head .star { width:26px; height:26px; padding:0; color:var(--muted); }
-.term-head .star.on { color:var(--amber); }
+/* xterm 6 paints only .xterm-scrollable-element with the theme background; the viewport keeps
+   xterm.css's #000 and showed as a black strip below the last whole row. Let the card show through. */
+.terminal-host .xterm .xterm-viewport { background-color:transparent; }
+.star.on { color:var(--amber); }
 .term-stop { white-space:nowrap; }
 .term-modebar { display:flex; align-items:center; gap:6px; flex:0 0 auto; min-height:34px; padding:0 12px; border-bottom:1px solid var(--border); color:var(--muted); background:var(--surface); font-size:12px; }
 .term-modebar .grow { flex:1; }
 .term-modebar .btn { min-height:26px; padding:3px 8px; font-size:11px; }
-.term-foot { flex:0 0 auto; padding:7px 12px; border-top:1px solid var(--border); color:var(--muted); background:var(--surface); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.terminal-new-output { position:absolute;bottom:12px;right:18px;z-index:2;border:1px solid var(--border);border-radius:20px;background:var(--raised);color:var(--text);box-shadow:0 2px 8px #0003; }
+.terminal-new-output { position:absolute;bottom:12px;right:18px;z-index:2;display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:4px 12px;border:1px solid var(--border);border-radius:999px;background:var(--raised);color:var(--text);box-shadow:0 2px 8px #0003;font-size:12px;line-height:1.3;cursor:pointer; }
+.terminal-new-output:hover { border-color:color-mix(in srgb, var(--primary) 40%, var(--border)); }
+.terminal-new-output:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 .terminal-link-actions { display:flex;gap:8px;align-items:center;padding:8px;border-top:1px solid var(--border);background:var(--surface); }
 .terminal-link-actions span { flex:1;min-width:0;white-space:nowrap;text-overflow:ellipsis;overflow:hidden; }
 
-.terminal-inspect-selection {position:absolute;right:18px;top:8px;z-index:2;background:var(--raised);border:1px solid var(--border);border-radius:6px;}
+.terminal-selection-actions { position:absolute; top:8px; right:18px; z-index:2; display:flex; align-items:center; gap:6px; max-width:calc(100% - 36px); }
+.terminal-inspect-selection, .terminal-open-selection { min-height:26px; padding:3px 10px; background:var(--raised); color:var(--text); border:1px solid var(--border); border-radius:6px; font-size:12px; line-height:1.3; white-space:nowrap; box-shadow:0 1px 4px #0002; cursor:pointer; }
+.terminal-inspect-selection:hover, .terminal-open-selection:hover { border-color:color-mix(in srgb, var(--primary) 40%, var(--border)); }
+.terminal-inspect-selection:focus-visible, .terminal-open-selection:focus-visible { outline:2px solid var(--primary, #4f59c8); outline-offset:2px; }
 .terminal-completion-hint { position:absolute; right:18px; bottom:12px; z-index:2; border:1px solid var(--border); border-radius:6px; background:var(--raised); color:var(--muted); padding:5px 8px; font-size:12px; }
 .terminal-host.fixed-geometry { overflow:auto; }
 .terminal-host.fixed-geometry .xterm { height:auto; }
-.v3-session-controls { display:flex; flex:0 0 auto; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; min-height:30px; padding:4px 8px; }
-.v3-session-controls .grow { flex:1 1 8px; min-width:8px; }
-.v3-session-controls .v3-mode { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.v3-session-controls .btn { flex:0 0 auto; white-space:nowrap; }
-.term-legacy-note, .term-resume-note, .term-replay-note { flex:0 0 auto; min-width:0; margin:0; padding:6px 12px; border-bottom:1px solid var(--border); color:var(--muted); background:var(--surface); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+.terminal-host .xterm-screen > .terminal-file-link-hit-area { position:absolute; inset:0; z-index:8; pointer-events:none; }
+.terminal-host .terminal-file-link-hit { position:absolute; box-sizing:border-box; display:block; margin:0; padding:0; border:0; border-radius:2px; background:transparent; color:transparent; outline:0; }
+.terminal-host .terminal-file-link-hit-area.is-modifier-held { pointer-events:auto; }
+.terminal-host .terminal-file-link-hit-area.is-modifier-held .terminal-file-link-hit { cursor:pointer; background:color-mix(in srgb, var(--primary) 22%, transparent); box-shadow:inset 0 -1px 0 var(--primary); }
+.terminal-host .terminal-file-link-hit-area.is-modifier-held .terminal-file-link-hit:hover { background:color-mix(in srgb, var(--primary) 34%, transparent); box-shadow:inset 0 -2px 0 var(--primary); }
+.terminal-local-action-row { display:flex; flex:0 0 38px; align-items:center; gap:8px; min-width:0; height:38px; padding:0 10px; overflow-x:auto; overflow-y:hidden; border-bottom:1px solid var(--border); }
+.terminal-local-action-row:empty { display:none; }
+.terminal-local-action-row > .surface-local-actions { display:flex; flex:0 0 auto; align-items:center; gap:6px; white-space:nowrap; }
+.terminal-local-action-row > .surface-local-actions:empty { display:none; }
+.terminal-local-action-row > .surface-local-actions .btn { min-height:26px; padding:3px 8px; white-space:nowrap; }
+.term-legacy-note { flex:0 0 auto; min-width:0; margin:0; padding:6px 12px; border-bottom:1px solid var(--border); color:var(--muted); background:var(--surface); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+/* Ended / read-only footer: where input would go, says why there is none and offers the next step. */
+.term-ended-banner { display:flex; flex:0 0 auto; align-items:center; gap:10px; min-width:0; min-height:44px; padding:7px 10px 7px 16px; border-top:1px solid var(--border); background:var(--raised); font-size:12px; line-height:1.45; }
+.term-ended-dot { flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--st-ended); }
+.term-ended-banner p { display:flex; flex:1; flex-wrap:wrap; column-gap:8px; min-width:0; margin:0; }
+.term-ended-banner strong { color:var(--text); font-weight:600; white-space:nowrap; }
+.term-ended-banner span { min-width:0; color:var(--muted); overflow-wrap:anywhere; }
+.term-ended-banner .btn { flex:0 0 auto; min-height:28px; padding:3px 12px; white-space:nowrap; }

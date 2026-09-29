@@ -473,10 +473,34 @@
         "status": {
           "type": "string"
         },
-        "data": {}
+        "data": {},
+        "fileReferences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FileReference"
+          }
+        }
       },
       "required": [
         "type"
+      ],
+      "additionalProperties": false
+    },
+    "FileReference": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "number"
+        },
+        "column": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "path"
       ],
       "additionalProperties": false
     },
@@ -1004,6 +1028,19 @@
             },
             "path": {
               "type": "string"
+            },
+            "assetKind": {
+              "type": "string",
+              "enum": [
+                "text",
+                "image"
+              ]
+            },
+            "ownerSessionId": {
+              "type": "string"
+            },
+            "staged": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -1011,6 +1048,84 @@
             "kind",
             "projectId",
             "path"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "history"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "ownerSessionId": {
+              "not": {}
+            },
+            "assetKind": {
+              "not": {}
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "projectId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "review"
+            },
+            "projectId": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "checkpointId": {
+              "type": "string"
+            },
+            "toCheckpointId": {
+              "type": "string"
+            },
+            "ownerSessionId": {
+              "not": {}
+            },
+            "assetKind": {
+              "not": {}
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "projectId",
+            "path",
+            "sessionId",
+            "checkpointId"
           ],
           "additionalProperties": false
         }
@@ -2041,6 +2156,42 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"filesystem.resolve\">": {
+      "$ref": "#/definitions/ResolvedFileReference"
+    },
+    "ResolvedFileReference": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "number"
+        },
+        "column": {
+          "type": "number"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "text",
+            "image"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "path",
+        "projectId"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"filesystem.read\">": {
       "$ref": "#/definitions/FileDocument"
     },
@@ -2348,6 +2499,15 @@
         },
         "fingerprint": {
           "type": "string"
+        },
+        "indexFingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deleted": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -2358,7 +2518,655 @@
         "binary",
         "fingerprint"
       ],
+      "additionalProperties": false,
+      "description": "staged=false: index → working tree (fingerprint is the working file); staged=true: HEAD → index. indexFingerprint is null when the path has no stage-0 index entry."
+    },
+    "RequestResult<\"git.index.write\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "indexFingerprint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "indexFingerprint"
+      ],
       "additionalProperties": false
+    },
+    "RequestResult<\"git.discard\">": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recycled": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "paths",
+        "recycled"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.checkout\">": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "branch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.branch.delete\">": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "branch"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.branches\">": {
+      "$ref": "#/definitions/GitBranches"
+    },
+    "GitBranches": {
+      "type": "object",
+      "properties": {
+        "current": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "branches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitBranch"
+          }
+        }
+      },
+      "required": [
+        "current",
+        "detached",
+        "branches"
+      ],
+      "additionalProperties": false
+    },
+    "GitBranch": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "remote": {
+          "type": "boolean"
+        },
+        "current": {
+          "type": "boolean"
+        },
+        "upstream": {
+          "type": "string"
+        },
+        "ahead": {
+          "type": "number"
+        },
+        "behind": {
+          "type": "number"
+        },
+        "gone": {
+          "type": "boolean"
+        },
+        "lastCommit": {
+          "type": "object",
+          "properties": {
+            "hash": {
+              "type": "string"
+            },
+            "subject": {
+              "type": "string"
+            },
+            "committedAt": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "hash",
+            "subject",
+            "committedAt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "name",
+        "remote",
+        "current"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.log\">": {
+      "$ref": "#/definitions/GitLog"
+    },
+    "GitLog": {
+      "type": "object",
+      "properties": {
+        "commits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitCommitInfo"
+          }
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "head",
+            "all"
+          ]
+        }
+      },
+      "required": [
+        "commits",
+        "hasMore"
+      ],
+      "additionalProperties": false,
+      "description": "Commits in date order (children before parents). all=true lists every local/remote branch and tag (ignored for file history); scope echoes it and is missing from runtimes older than the commit graph."
+    },
+    "GitCommitInfo": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "parents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "authorName": {
+          "type": "string"
+        },
+        "authorEmail": {
+          "type": "string"
+        },
+        "authoredAt": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "hash",
+        "parents",
+        "authorName",
+        "authorEmail",
+        "authoredAt",
+        "subject",
+        "refs"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.commit.show\">": {
+      "$ref": "#/definitions/GitCommitDetail"
+    },
+    "GitCommitDetail": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "$ref": "#/definitions/GitCommitInfo"
+        },
+        "body": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GitCommitFile"
+          }
+        }
+      },
+      "required": [
+        "commit",
+        "body",
+        "files"
+      ],
+      "additionalProperties": false
+    },
+    "GitCommitFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "originalPath": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.commit.diff\">": {
+      "$ref": "#/definitions/GitTextPair"
+    },
+    "GitTextPair": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "oldText": {
+          "type": "string"
+        },
+        "newText": {
+          "type": "string"
+        },
+        "binary": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "oldText",
+        "newText",
+        "binary"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"git.blame\">": {
+      "$ref": "#/definitions/GitBlame"
+    },
+    "GitBlame": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "ranges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "start": {
+                "type": "number"
+              },
+              "count": {
+                "type": "number"
+              },
+              "commit": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "start",
+              "count",
+              "commit"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "commits": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "authorName": {
+                "type": "string"
+              },
+              "authoredAt": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "authorName",
+              "authoredAt",
+              "summary"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "path",
+        "ranges",
+        "commits"
+      ],
+      "additionalProperties": false,
+      "description": "Uncommitted lines use commit ''. Ranges are 1-based and cover the working file."
+    },
+    "RequestResult<\"filesystem.create\">": {
+      "$ref": "#/definitions/FileEntry"
+    },
+    "RequestResult<\"filesystem.rename\">": {
+      "$ref": "#/definitions/FileEntry"
+    },
+    "RequestResult<\"filesystem.delete\">": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "recycled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "recycled"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"filesystem.files\">": {
+      "$ref": "#/definitions/FileListResult"
+    },
+    "FileListResult": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "paths",
+        "truncated"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"filesystem.search\">": {
+      "$ref": "#/definitions/SearchResult"
+    },
+    "SearchResult": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "matches": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/SearchMatch"
+                }
+              }
+            },
+            "required": [
+              "path",
+              "matches"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "searchedFiles": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "files",
+        "truncated",
+        "searchedFiles"
+      ],
+      "additionalProperties": false
+    },
+    "SearchMatch": {
+      "type": "object",
+      "properties": {
+        "line": {
+          "type": "number"
+        },
+        "column": {
+          "type": "number"
+        },
+        "length": {
+          "type": "number"
+        },
+        "preview": {
+          "type": "string"
+        },
+        "previewColumn": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "line",
+        "column",
+        "length",
+        "preview",
+        "previewColumn"
+      ],
+      "additionalProperties": false,
+      "description": "line is 1-based; column/length/previewColumn are UTF-16 code units (column 1-based)."
+    },
+    "RequestResult<\"review.list\">": {
+      "$ref": "#/definitions/ReviewState"
+    },
+    "ReviewState": {
+      "type": "object",
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        },
+        "checkpoints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewCheckpoint"
+          }
+        }
+      },
+      "required": [
+        "available",
+        "checkpoints"
+      ],
+      "additionalProperties": false
+    },
+    "ReviewCheckpoint": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "turn",
+            "launch",
+            "manual",
+            "baseline"
+          ]
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "failed"
+          ]
+        },
+        "error": {
+          "type": "string"
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "sessionId",
+        "kind",
+        "createdAt",
+        "status",
+        "skipped"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"review.changes\">": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewFile"
+          }
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "additionalProperties": false
+    },
+    "ReviewFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "A",
+            "M",
+            "D"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"review.diff\">": {
+      "$ref": "#/definitions/ReviewDiff"
+    },
+    "ReviewDiff": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "oldText": {
+          "type": "string"
+        },
+        "newText": {
+          "type": "string"
+        },
+        "binary": {
+          "type": "boolean"
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "fingerprint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "oldText",
+        "newText",
+        "binary",
+        "exists"
+      ],
+      "additionalProperties": false,
+      "description": "exists/fingerprint describe the current working file when `to` is omitted."
+    },
+    "RequestResult<\"review.revert\">": {
+      "type": "object",
+      "properties": {
+        "restored": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recycled": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "restored",
+        "recycled"
+      ],
+      "additionalProperties": false
+    },
+    "RequestResult<\"review.checkpoint\">": {
+      "$ref": "#/definitions/ReviewCheckpoint"
     },
     "RequestResult<\"worktree.list\">": {
       "type": "array",
@@ -4192,6 +5000,32 @@
         },
         "method": {
           "type": "string",
+          "const": "filesystem.resolve"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.resolve%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
           "const": "filesystem.read"
         },
         "result": {
@@ -4586,6 +5420,500 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22git.diff%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.index.write"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.index.write%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.discard"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.discard%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.checkout"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.checkout%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.branch.delete"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.branch.delete%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.branches"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.branches%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.log"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.log%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.commit.show"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.commit.show%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.commit.diff"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.commit.diff%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "git.blame"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22git.blame%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.create"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.create%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.rename"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.rename%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.delete"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.delete%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.files"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.files%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "filesystem.search"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22filesystem.search%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "review.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22review.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "review.changes"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22review.changes%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "review.diff"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22review.diff%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "review.revert"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22review.revert%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "review.checkpoint"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22review.checkpoint%22%3E"
         }
       },
       "required": [

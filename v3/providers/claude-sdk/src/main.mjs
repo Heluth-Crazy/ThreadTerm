@@ -10,10 +10,12 @@ for (const level of ['log', 'info', 'warn', 'debug']) console[level] = (...args)
 process.stdout.on('error', () => {});
 const write = value => { try { process.stdout.write(`${JSON.stringify(value)}\n`); } catch {} };
 const settingSources = process.env.THREADTERM_CLAUDE_SETTING_SOURCES;
+const handshakeTimeoutMs = Number(process.env.THREADTERM_CLAUDE_HANDSHAKE_MS) || undefined;
 const bundledCli = join(dirname(fileURLToPath(import.meta.url)), `claude-sdk-cli${process.platform === 'win32' ? '.exe' : ''}`);
 const hostOptions = {
   pathToClaudeCodeExecutable: process.env.THREADTERM_CLAUDE_PATH || (existsSync(bundledCli) ? bundledCli : undefined),
   ...(settingSources === undefined ? {} : { settingSources: settingSources ? settingSources.split(',') : [] }),
+  ...(handshakeTimeoutMs ? { handshakeTimeoutMs } : {}),
 };
 const sessions = new Map();
 const get = cardId => { const session = sessions.get(cardId); if (!session) throw new Error(`no session for card: ${cardId}`); return session; };
@@ -36,8 +38,14 @@ async function handle(request) {
       if (sessions.has(request.cardId)) throw new Error(`session already exists: ${request.cardId}`);
       const session = new ClaudeSession({ cardId: request.cardId, sdk, write, hostOptions });
       sessions.set(request.cardId, session);
-      try { return { sessionId: session.start({ cwd: request.cwd, sessionId: request.sessionId }) }; }
-      catch (error) { sessions.delete(request.cardId); throw error; }
+      // start() resolves after the SDK control handshake; the reply therefore
+      // means the provider is genuinely ready, not merely spawned.
+      try { return { sessionId: await session.start({ cwd: request.cwd, sessionId: request.sessionId }) }; }
+      catch (error) {
+        if (sessions.get(request.cardId) === session) sessions.delete(request.cardId);
+        await session.stop().catch(() => {});
+        throw error;
+      }
     }
     case 'session.send': get(request.cardId).send(request.text, request.operationId); return {};
     case 'session.interrupt': await get(request.cardId).interrupt(); return {};

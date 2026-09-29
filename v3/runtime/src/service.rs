@@ -4,7 +4,7 @@ use crate::{
     domain::{RpcError, RpcRequest},
     leases::LeaseManager,
     output::OutputStore,
-    providers::{ProviderRuntime, Providers, TerminalCapture},
+    providers::{ProviderEvent, ProviderRuntime, Providers, TerminalCapture},
     pty::PtyManager,
     RUNTIME_VERSION,
 };
@@ -42,6 +42,39 @@ pub struct RuntimeService {
     settings_apply_gate: Mutex<()>,
     remote: OnceLock<Arc<crate::remote_access::RemoteAccess>>,
 }
+
+fn project_provider_event(db: &Database, providers: &Providers, event: &ProviderEvent) {
+    let accepted = providers.with_current_event(event, || {
+        if let Err(error) = db.bind_session(&event.session_id, None, event.native_id.as_deref()) {
+            eprintln!("chat bind failed for {}: {error}", event.session_id);
+            return false;
+        }
+        if let Err(error) = db.record_provider_event(
+            &event.session_id,
+            event.turn_id.as_deref(),
+            &event.kind,
+            &event.data,
+        ) {
+            eprintln!("chat projection failed for {}: {error}", event.session_id);
+            let reason = format!(
+                "Chat update could not be persisted; transcript may be incomplete ({error})"
+            );
+            let reason = if reason.len() > 240 {
+                format!("{}…", reason.chars().take(239).collect::<String>())
+            } else {
+                reason
+            };
+            if let Err(error) = db.mark_chat_degraded(Some(&event.session_id), &reason) {
+                eprintln!("could not persist degraded state: {error}");
+            }
+        }
+        true
+    });
+    if accepted == Some(true) && event.kind == "session.closed" {
+        providers.note_session_closed_scoped(&event.session_id, event.worker_token.as_deref());
+    }
+}
+
 impl RuntimeService {
     pub fn new(config: RuntimeConfig, db: Arc<Database>) -> Self {
         let output = Arc::new(OutputStore::default());
@@ -56,35 +89,11 @@ impl RuntimeService {
         }
         let mut events = providers.subscribe();
         let event_db = Arc::clone(&db);
+        let event_providers = Arc::clone(&providers);
         std::thread::spawn(move || loop {
             match events.blocking_recv() {
                 Ok(event) => {
-                    if let Err(error) =
-                        event_db.bind_session(&event.session_id, None, event.native_id.as_deref())
-                    {
-                        eprintln!("chat bind failed for {}: {error}", event.session_id);
-                    }
-                    if let Err(error) = event_db.record_provider_event(
-                        &event.session_id,
-                        event.turn_id.as_deref(),
-                        &event.kind,
-                        &event.data,
-                    ) {
-                        eprintln!("chat projection failed for {}: {error}", event.session_id);
-                        let reason = format!(
-                            "Chat update could not be persisted; transcript may be incomplete ({error})"
-                        );
-                        let reason = if reason.len() > 240 {
-                            format!("{}…", reason.chars().take(239).collect::<String>())
-                        } else {
-                            reason
-                        };
-                        if let Err(error) =
-                            event_db.mark_chat_degraded(Some(&event.session_id), &reason)
-                        {
-                            eprintln!("could not persist degraded state: {error}");
-                        }
-                    }
+                    project_provider_event(&event_db, &event_providers, &event);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                     eprintln!("chat projection lost {count} provider updates");
@@ -254,6 +263,18 @@ impl RuntimeService {
         } else {
             None
         };
+        if request.method == "filesystem.resolve" {
+            let p: FileResolve = parse(&request.params)
+                .map_err(|failure| error("invalid_request", &failure.to_string()))?;
+            return crate::workspace_services::resolve_file_reference(
+                &self.db,
+                &p.session_id,
+                &p.path,
+                p.line,
+                p.column,
+            )
+            .map_err(file_reference_rpc_error);
+        }
         let outcome = (|| -> Result<Value> {
             if request.method == "data.relocation.prepare"
                 && self.remote.get().is_some_and(|remote| remote.is_enabled())
@@ -291,6 +312,21 @@ impl RuntimeService {
             }
             if let Some(result) =
                 crate::git_actions::dispatch(&self.db, &request.method, &request.params)?
+            {
+                return Ok(result);
+            }
+            if let Some(result) =
+                crate::git_read::dispatch(&self.db, &request.method, &request.params)?
+            {
+                return Ok(result);
+            }
+            if let Some(result) =
+                crate::file_ops::dispatch(&self.db, &request.method, &request.params)?
+            {
+                return Ok(result);
+            }
+            if let Some(result) =
+                crate::review::dispatch(&self.db, &request.method, &request.params)?
             {
                 return Ok(result);
             }
@@ -571,19 +607,45 @@ impl RuntimeService {
                     if let Some(result) = self.db.operation(&p.operation_id)? {
                         return Ok(result);
                     }
-                    if !self.db.claim_external_operation(&p.operation_id)? {
-                        return Err(anyhow::anyhow!("operation_outcome_unknown"));
-                    }
-                    self.db.record_provider_event(
+                    // Review checkpoint before the provider can edit files; a
+                    // failed or unavailable snapshot never blocks the send.
+                    let checkpoint = crate::review::capture_before_turn(
+                        &self.db,
                         &p.session_id,
-                        Some(&p.operation_id),
-                        "message.user",
-                        &json!({"text":p.text,"operationId":p.operation_id}),
-                    )?;
+                        &p.operation_id,
+                        &p.text,
+                    );
                     let result = self
                         .providers
-                        .chat_send(&p.session_id, &p.text, &p.operation_id)
+                        .chat_send_recording(&p.session_id, &p.text, &p.operation_id, || {
+                            use crate::providers::ProviderError;
+                            if !self.db.claim_external_operation(&p.operation_id).map_err(
+                                |error| ProviderError::new("chat_persistence", error.to_string()),
+                            )? {
+                                return Err(ProviderError::new(
+                                    "operation_outcome_unknown",
+                                    "operation_outcome_unknown",
+                                ));
+                            }
+                            self.db
+                                .record_provider_event(
+                                    &p.session_id,
+                                    Some(&p.operation_id),
+                                    "message.user",
+                                    &json!({"text":p.text,"operationId":p.operation_id}),
+                                )
+                                .map_err(|error| {
+                                    ProviderError::new("chat_persistence", error.to_string())
+                                })
+                        })
                         .map_err(anyhow::Error::from)?;
+                    if let Some(checkpoint) = &checkpoint {
+                        crate::review::attach_turn(
+                            &self.db,
+                            checkpoint,
+                            result.get("turnId").and_then(Value::as_str),
+                        );
+                    }
                     self.db
                         .complete_operation(&p.operation_id, "chat.send", &result)?;
                     Ok(result)
@@ -997,6 +1059,11 @@ impl RuntimeService {
                 db.set_session_status(session_id, "error", None)?;
                 return Err(error);
             }
+            if agent_provider {
+                // Background snapshot keeps launch latency unchanged; an agent
+                // TUI needs a prompt before it edits files.
+                crate::review::capture_launch_in_background(Arc::clone(db), session_id.to_owned());
+            }
         } else {
             let opened =
                 match providers.chat_open(session_id, &p.provider, cwd, p.native_id.as_deref()) {
@@ -1287,6 +1354,12 @@ impl RuntimeService {
             .native_id
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("session_has_no_native_history"))?;
+        if existing.mode == "terminal" {
+            // Read-only validation must fail before reserving a launch or
+            // appending a run marker. Missing history is not a new conversation.
+            self.providers
+                .preflight_terminal_resume(&existing.provider, cwd, native_id)?;
+        }
         // The transcript pre-read only serves Chat history import. Terminal
         // resumes replay natively inside the provider TUI, and Codex validates
         // the exact thread when its terminal command is built.
@@ -1502,6 +1575,27 @@ fn error(code: &str, message: &str) -> RpcError {
         details: None,
     }
 }
+fn file_reference_rpc_error(failure: anyhow::Error) -> RpcError {
+    let message = failure.to_string();
+    match message.as_str() {
+        "file_reference_invalid_path"
+        | "file_reference_uri"
+        | "file_reference_invalid_position"
+        | "file_reference_session_not_found"
+        | "file_reference_config_missing"
+        | "file_reference_project_missing"
+        | "file_reference_cwd_unavailable"
+        | "file_reference_scope_mismatch"
+        | "file_reference_relative_requires_absolute"
+        | "file_reference_not_found"
+        | "file_reference_outside_scope"
+        | "file_reference_not_file"
+        | "file_too_large"
+        | "image_too_large"
+        | "unsupported_image" => error(&message, &message),
+        _ => error("file_reference_unavailable", "file_reference_unavailable"),
+    }
+}
 fn map_error(message: &str) -> RpcError {
     let code = match message {
         value if value.starts_with("operation_conflict:") => "operation_conflict",
@@ -1539,6 +1633,14 @@ struct ProjectAdd {
 struct ProjectRemove {
     id: String,
     operation_id: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FileResolve {
+    session_id: String,
+    path: String,
+    line: Option<u32>,
+    column: Option<u32>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1795,6 +1897,97 @@ mod tests {
                     },
                 )
                 .is_err());
+        }
+    }
+
+    #[test]
+    fn filesystem_resolve_is_a_session_scoped_read_only_rpc() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        let cwd = root.join("nested");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(root.join("hello.rs"), "fn main() {}\n").unwrap();
+        let db = Arc::new(Database::open(&temp.path().join("runtime.sqlite")).unwrap());
+        crate::workspace_services::initialize(&db).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        let project = db
+            .add_project(root.to_str().unwrap(), Some("repo"), "resolve-project")
+            .unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: Some(&project.id),
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                native_id: None,
+                operation_id: "resolve-session",
+            })
+            .unwrap();
+        db.bind_session(&session.id, Some(root.to_str().unwrap()), None)
+            .unwrap();
+        crate::session_configs::save_new(
+            &db,
+            &session.id,
+            &crate::session_configs::LaunchSpec {
+                provider: "codex".into(),
+                mode: "chat".into(),
+                cwd: cwd.to_string_lossy().into_owned(),
+                project_id: Some(project.id.clone()),
+                title: None,
+                executable: None,
+                args: Vec::new(),
+            },
+            None,
+        )
+        .unwrap();
+        let service = test_service(temp.path(), Arc::clone(&db));
+        let resolved = service
+            .dispatch(
+                "desktop",
+                RpcRequest {
+                    v: 1,
+                    id: "resolve".into(),
+                    method: "filesystem.resolve".into(),
+                    params: json!({"sessionId":session.id,"path":"../hello.rs","line":4,"column":2}),
+                },
+            )
+            .unwrap();
+        assert_eq!(resolved["projectId"], project.id);
+        assert_eq!(resolved["path"], "hello.rs");
+        assert_eq!(resolved["kind"], "text");
+        assert_eq!(resolved["line"], 4);
+        assert_eq!(resolved["column"], 2);
+
+        for (params, code) in [
+            (
+                json!({"sessionId":session.id,"path":"../missing.rs"}),
+                "file_reference_not_found",
+            ),
+            (
+                json!({"sessionId":session.id,"path":"../hello.rs","line":0}),
+                "file_reference_invalid_position",
+            ),
+            (
+                json!({"sessionId":session.id,"path":"../hello.rs","line":-1}),
+                "invalid_request",
+            ),
+            (
+                json!({"sessionId":session.id,"path":"../hello.rs","unexpected":true}),
+                "invalid_request",
+            ),
+        ] {
+            let failure = service
+                .dispatch(
+                    "desktop",
+                    RpcRequest {
+                        v: 1,
+                        id: format!("reject-{code}"),
+                        method: "filesystem.resolve".into(),
+                        params,
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(failure.code, code);
         }
     }
 

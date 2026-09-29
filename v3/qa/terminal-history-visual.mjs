@@ -248,7 +248,6 @@ try {
     await new Promise(resolve => setTimeout(resolve, 150));
     return before === window.qaTerminal;
   });
-  await page.getByText('History output · ended').waitFor();
   const resumeButton = page.getByRole('button', { name: 'Resume' });
   await resumeButton.waitFor();
   assert.equal(await resumeButton.isEnabled(), true, 'an ended session with a native identity must offer native resume');
@@ -266,7 +265,9 @@ try {
   const resizesBefore = await page.evaluate(() => window.qaBridgeMetrics.requests.filter(r => r.method === 'terminal.resize').length);
   await page.evaluate(() => { window.qaOriginalTerminal = window.qaTerminal; });
   await resumeButton.click();
-  await page.getByText('Live output · local session').waitFor();
+  await resumeButton.waitFor({state:'hidden'});
+  await page.waitForFunction(()=>window.qaStartingDisabled!==undefined);
+  assert.equal(await page.locator('.term-head,.v3-session-controls').count(),0,'live surface does not restore removed metadata bars');
   assert.equal(await page.evaluate(() => window.qaStartingDisabled), true, 'starting reservation must not enable input before a PTY exists');
   await page.waitForFunction(count => window.qaBridgeMetrics.requests.filter(r => r.method === 'terminal.resize').length > count, resizesBefore);
   assert.equal(await page.evaluate(() => window.qaTerminal === window.qaOriginalTerminal), true);

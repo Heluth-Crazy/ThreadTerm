@@ -8,8 +8,8 @@ use super::{
         encode_approval_id, history_page, insert_optional, validate_native_id, version_probe,
         CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
-    emit, ChatSession, ProviderAdapter, ProviderCapability, ProviderError, ProviderEvent,
-    TerminalCommand,
+    emit_bound as emit, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
+    ProviderEvent, ScopedProviderEvents, TerminalCommand,
 };
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -64,13 +64,13 @@ impl GrokAdapter {
         permissions: Arc<Mutex<HashMap<String, PermissionRequest>>>,
         ui: Arc<Mutex<GrokUiState>>,
         capture: Option<Arc<Mutex<Vec<Value>>>>,
+        events: ScopedProviderEvents,
         project_events: bool,
     ) -> Result<(JsonLineProcess, Value), ProviderError> {
         // `--no-leader` is an `grok agent` flag, not `grok agent stdio`.
         // Putting it after `stdio` makes the process exit immediately with
         // "unexpected argument" and Chat surfaces "grok-acp closed its output stream".
         let spec = CommandSpec::provider("grok", &["agent", "--no-leader", "stdio"])?;
-        let events = self.events.clone();
         let owned_session = session_id.to_owned();
         let responder = Arc::new(Mutex::new(None));
         let on_message = {
@@ -134,6 +134,7 @@ impl GrokAdapter {
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(GrokUiState::default())),
             capture,
+            ScopedProviderEvents::new(self.events.clone(), "history"),
             false,
         )
     }
@@ -173,7 +174,7 @@ impl ProviderAdapter for GrokAdapter {
             history,
             resume,
             terminal_resume_capture: self.terminal_capture().as_str(),
-            reason: protocol.err().or(probe_error),
+            reason: probe_error.or_else(|| protocol.err()),
             auth: grok_auth_state(),
         }
     }
@@ -203,7 +204,7 @@ impl ProviderAdapter for GrokAdapter {
         let path = super::common::find_executable("grok").ok_or_else(|| {
             ProviderError::unavailable("grok", "grok executable was not found on PATH")
         })?;
-        let spec = CommandSpec::from_path(path, args);
+        let spec = CommandSpec::from_path(path, args)?;
         Ok(TerminalCommand {
             program: spec.program,
             args: spec.args,
@@ -272,6 +273,26 @@ impl ProviderAdapter for GrokAdapter {
         cwd: &str,
         native_id: Option<&str>,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.open_chat_scoped(
+            session_id,
+            cwd,
+            native_id,
+            &uuid::Uuid::new_v4().to_string(),
+        )
+    }
+
+    fn scopes_chat_events(&self) -> bool {
+        true
+    }
+
+    fn open_chat_scoped(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        let events = ScopedProviderEvents::new(self.events.clone(), worker_token);
         let native = Arc::new(Mutex::new(None));
         let active_turn = Arc::new(Mutex::new(None));
         let permissions = Arc::new(Mutex::new(HashMap::new()));
@@ -283,6 +304,7 @@ impl ProviderAdapter for GrokAdapter {
             Arc::clone(&permissions),
             Arc::clone(&ui),
             None,
+            events.clone(),
             true,
         )?;
         let response = if let Some(id) = native_id {
@@ -319,9 +341,9 @@ impl ProviderAdapter for GrokAdapter {
             merge_grok_ui(&mut state, &response);
             merge_models_update(&mut state, &response);
         }
-        emit_chat_ui(&self.events, session_id, Some(&bound_id), &ui);
+        emit_chat_ui(&events, session_id, Some(&bound_id), &ui);
         emit(
-            &self.events,
+            &events,
             "grok",
             session_id,
             Some(&bound_id),
@@ -333,7 +355,7 @@ impl ProviderAdapter for GrokAdapter {
             process,
             session_id: session_id.to_owned(),
             native_id: bound_id,
-            events: self.events.clone(),
+            events,
             active_turn,
             permissions,
             ui,
@@ -362,7 +384,7 @@ struct GrokChat {
     process: JsonLineProcess,
     session_id: String,
     native_id: String,
-    events: broadcast::Sender<ProviderEvent>,
+    events: ScopedProviderEvents,
     active_turn: Arc<Mutex<Option<String>>>,
     permissions: Arc<Mutex<HashMap<String, PermissionRequest>>>,
     ui: Arc<Mutex<GrokUiState>>,
@@ -380,7 +402,7 @@ struct GrokUsageResults {
 /// Native callbacks and cancellation share the active-turn fence, so a late
 /// account response cannot append a card to a cancelled or newer turn.
 struct GrokUsageReply {
-    events: broadcast::Sender<ProviderEvent>,
+    events: ScopedProviderEvents,
     session_id: String,
     native_id: String,
     turn_id: String,
@@ -1205,7 +1227,7 @@ fn reject_unknown_grok_rpc(responder: &Mutex<Option<JsonLineResponder>>, raw: &V
 
 #[allow(clippy::too_many_arguments)]
 fn emit_grok_message(
-    events: &broadcast::Sender<ProviderEvent>,
+    events: &ScopedProviderEvents,
     session_id: &str,
     native: &Mutex<Option<String>>,
     active_turn: &Mutex<Option<String>>,
@@ -1344,7 +1366,7 @@ fn emit_grok_message(
 }
 
 fn emit_grok_retry(
-    events: &broadcast::Sender<ProviderEvent>,
+    events: &ScopedProviderEvents,
     session_id: &str,
     native_id: Option<&str>,
     turn_id: &str,
@@ -1443,11 +1465,12 @@ fn grok_tool_part(update: &Value, fallback_status: &str) -> Value {
     if let Some(output) = output {
         part["text"] = json!(output);
     }
+    crate::file_references::enrich_tool_part(&mut part, None);
     part
 }
 
 fn emit_chat_ui(
-    events: &broadcast::Sender<ProviderEvent>,
+    events: &ScopedProviderEvents,
     session_id: &str,
     native_id: Option<&str>,
     ui: &Mutex<GrokUiState>,
@@ -1717,7 +1740,7 @@ fn grok_history_item(row: &Value) -> Option<Value> {
 }
 
 fn grok_transcript(raw: &[Value]) -> Vec<Value> {
-    raw.iter()
+    let entries: Vec<Value> = raw.iter()
         .enumerate()
         .filter_map(|(index, message)| {
             let update = message.get("params")?.get("update")?;
@@ -1725,6 +1748,15 @@ fn grok_transcript(raw: &[Value]) -> Vec<Value> {
                 .get("sessionUpdate")
                 .or_else(|| update.get("type"))?
                 .as_str()?;
+            if kind == "tool_call" || kind == "tool_call_update" || kind.contains("toolCall") {
+                let tool_id = update.get("toolCallId").and_then(Value::as_str)?;
+                return Some(json!({
+                    "id":format!("grok-tool-{tool_id}"),
+                    "role":"tool",
+                    "parts":[grok_tool_part(update, if kind == "tool_call" { "running" } else { "complete" })],
+                    "createdAt":Utc::now().to_rfc3339()
+                }));
+            }
             let content = update.get("content").unwrap_or(update);
             let text = content.get("text").and_then(Value::as_str)?;
             let part_type = grok_part_type(kind).unwrap_or("text");
@@ -1741,7 +1773,16 @@ fn grok_transcript(raw: &[Value]) -> Vec<Value> {
             };
             Some(json!({"id":format!("grok-{index}"),"role":role,"parts":[{"type":part_type,"text":text}],"createdAt":Utc::now().to_rfc3339()}))
         })
-        .collect()
+        .collect();
+    let mut transcript = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if entry.get("role").and_then(Value::as_str) == Some("tool") {
+            crate::file_references::upsert_history_tool(&mut transcript, entry);
+        } else {
+            transcript.push(entry);
+        }
+    }
+    transcript
 }
 
 fn grok_billing_part(value: &Value) -> Option<Value> {
@@ -1918,6 +1959,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn grok_history_merges_native_tool_updates_and_failed_paths() {
+        let history = grok_transcript(&[
+            json!({"params":{"update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"Read","rawInput":{"path":"src/one.rs"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"failed","rawOutput":{"filePath":"src/two.rs"}}}}),
+        ]);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["parts"][0]["status"], "failed");
+        assert_eq!(
+            history[0]["parts"][0]["fileReferences"],
+            json!([
+                {"path":"src/one.rs"},{"path":"src/two.rs"}
+            ])
+        );
+    }
+
+    #[test]
     fn preassigned_identity_does_not_parse_exit_output() {
         let adapter = GrokAdapter::new(
             broadcast::channel(1).0,
@@ -2001,6 +2058,7 @@ mod tests {
 
     fn usage_reply_fixture() -> (GrokUsageReply, broadcast::Receiver<ProviderEvent>) {
         let (events, receiver) = broadcast::channel(16);
+        let events = ScopedProviderEvents::new(events, "test-worker");
         (
             GrokUsageReply {
                 events,
@@ -2015,6 +2073,60 @@ mod tests {
             },
             receiver,
         )
+    }
+
+    #[test]
+    fn usage_notifications_keep_the_originating_worker_token() {
+        let (reply, mut receiver) = usage_reply_fixture();
+        reply.record(false, Ok(json!({"usage":{}})));
+        reply.record(true, Ok(billing_fixture()));
+        for expected_kind in ["chat.item", "chat.turn.completed"] {
+            let event = receiver.try_recv().unwrap();
+            assert_eq!(event.kind, expected_kind);
+            assert_eq!(event.worker_token.as_deref(), Some("test-worker"));
+        }
+        let (reply, mut receiver) = usage_reply_fixture();
+        assert!(reply.cancel());
+        assert_eq!(
+            receiver.try_recv().unwrap().worker_token.as_deref(),
+            Some("test-worker")
+        );
+    }
+
+    #[test]
+    fn grok_native_notification_paths_keep_the_worker_token() {
+        let (sender, mut receiver) = broadcast::channel(32);
+        let events = ScopedProviderEvents::new(sender, "old-worker");
+        let native = Mutex::new(Some("native".to_owned()));
+        let active = Mutex::new(Some("turn".to_owned()));
+        let permissions = Mutex::new(HashMap::new());
+        let ui = Mutex::new(GrokUiState::default());
+        for raw in [
+            json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"agent_message_chunk","content":{"text":"answer"}}}}),
+            json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"agent_thought_chunk","content":{"text":"reasoning"}}}}),
+            json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"config_option_update","configOptions":[]}}}),
+            json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"retry_state","attempt":1}}}),
+            json!({"id":1,"method":"session/request_permission","params":{"sessionId":"native","options":[{"optionId":"deny","kind":"reject_once","name":"Deny"}]}}),
+            json!({"method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"tool_call","toolCallId":"tool"}}}),
+        ] {
+            emit_grok_message(
+                &events,
+                "session",
+                &native,
+                &active,
+                &permissions,
+                &ui,
+                &Mutex::new(None),
+                raw,
+            );
+            let mut count = 0;
+            while let Ok(event) = receiver.try_recv() {
+                count += 1;
+                assert_eq!(event.worker_token.as_deref(), Some("old-worker"));
+                assert_eq!(event.native_id.as_deref(), Some("native"));
+            }
+            assert!(count > 0);
+        }
     }
 
     #[test]

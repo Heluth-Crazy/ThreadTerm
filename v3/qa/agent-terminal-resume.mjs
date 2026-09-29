@@ -14,11 +14,11 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const exe = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target/debug/threadterm-v3-runtime.exe');
 const live = process.env.THREADTERM_QA_LIVE === '1';
-const selected = (process.env.THREADTERM_QA_PROVIDERS ?? 'codex,kimi,opencode').split(',');
+const selected = (process.env.THREADTERM_QA_PROVIDERS ?? 'codex,kimi,opencode').split(',').map(value => value.trim()).filter(Boolean);
 const scratch = await mkdtemp(join(tmpdir(), 'threadterm-v3-resume-'));
 const data = join(scratch, 'data');
 const pipe = `\\\\.\\pipe\\threadterm-v3-resume-${randomUUID()}`;
-const peers = new Set(); const checks = [];
+const peers = new Set(); const checks = []; const skips = [];
 let daemon; let peer;
 const note = text => { checks.push(text); console.log(`PASS ${text}`); };
 async function connect() {
@@ -30,7 +30,7 @@ async function connect() {
   peers.add(p); return p;
 }
 async function start() {
-  daemon = spawn(exe, [], { windowsHide: true, env: { ...process.env, THREADTERM_V3_DATA: data, THREADTERM_V3_PIPE: pipe }, stdio: 'ignore' });
+  daemon = spawn(exe, [], { windowsHide: true, env: { ...process.env, THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: join(scratch, 'user-data'), THREADTERM_V3_PIPE: pipe }, stdio: 'ignore' });
   for (let i = 0; i < 150; i++) {
     try { peer = await connect(); return; }
     catch { if (daemon.exitCode !== null || daemon.signalCode !== null) throw Error('daemon exited at startup'); await delay(100); }
@@ -66,8 +66,13 @@ async function settle(id) {
   await delay(2500);
   const text = (await output(id)).text;
   assert.equal((await session(id)).status, 'running', `native CLI exited: ${text.slice(-1600)}`);
-  if (/trust|信任|Yes, continue/i.test(text)) { await send(id, '\r'); await delay(2500); }
-  assert.equal((await session(id)).status, 'running', `native CLI exited: ${text.slice(-1600)}`);
+  // Never auto-approve trust/update prompts: report the provider as blocked so
+  // the result is recorded as unverified instead of silently consenting.
+  if (/trust|信任|Yes, continue/i.test(text)) {
+    const error = new Error(`${id} is blocked by a native trust/update prompt; QA does not approve prompts`);
+    error.code = 'native_prompt_blocked';
+    throw error;
+  }
 }
 async function history(provider, id) { return peer.request('history.read', { provider, nativeId: id }, 60000); }
 const assistantText = item => item.role === 'assistant' ? item.parts.filter(p => p.type === 'text').map(p => p.text ?? '').join('') : '';
@@ -81,9 +86,10 @@ try {
   await mkdir(data); await start();
   const caps = (await snapshot()).providers;
   for (const provider of selected) {
+    try {
     assert.ok(caps.find(p => p.id === provider)?.installed, `${provider} is not installed; cannot verify`);
     assert.equal(caps.find(p => p.id === provider)?.terminalResumeCapture, 'preassigned');
-    const cwd = join(scratch, provider); await mkdir(cwd);
+    const cwd = process.env[`THREADTERM_QA_CWD_${provider.toUpperCase()}`] ?? join(scratch, provider); await mkdir(cwd, { recursive: true });
     const s = await peer.request('session.create', { cwd, title: `QA resume ${provider}`, provider, mode: 'terminal', operationId: randomUUID() }, 90000);
     assert.ok(s.nativeId, `${provider}: native identity must be bound before create returns`);
     await settle(s.id);
@@ -118,6 +124,13 @@ try {
       await settle(s.id);
       const after = await output(s.id);
       assert.ok(after.nextCursor > before.nextCursor);
+      if (provider === 'claude' && process.env.THREADTERM_QA_EXPECT_NATIVE_RESUME === '1') {
+        const fresh = await peer.request('terminal.read', { sessionId: s.id, cursor: before.nextCursor, limit: 1048576 });
+        assert.ok(
+          Buffer.from(fresh.data, 'base64').toString().includes(`MOCK_CLAUDE_RESUME:${s.nativeId}:FIXTURE_HISTORY_MARKER`),
+          'the resumed native process did not receive the original session id or stored fixture history',
+        );
+      }
       if (provider !== 'codex') assert.ok(after.text.includes('ThreadTerm: session resumed at'));
       const retained = await peer.request('terminal.read', { sessionId: s.id, cursor: before.fromCursor, limit: Math.min(1048576, before.nextCursor - before.fromCursor) });
       assert.ok(Buffer.from(retained.data, 'base64').equals(Buffer.from(before.data, 'base64')), 'old output changed');
@@ -137,6 +150,14 @@ try {
     assert.notEqual(fresh.id, s.id); assert.notEqual(fresh.nativeId, s.nativeId);
     await peer.request('session.stop', { sessionId: fresh.id, force: true, operationId: randomUUID() });
     note(`${provider}: new-with-same-config uses a separate native identity`);
+    } catch (error) {
+      if (error?.code === 'native_prompt_blocked') {
+        skips.push(`${provider}: ${error.message}`);
+        console.log(`SKIP ${provider}: blocked by native trust/update prompt (not approved)`);
+      } else {
+        throw error;
+      }
+    }
   }
   const shell = await peer.request('session.create', { cwd: scratch, provider: 'custom', mode: 'terminal', executable: 'cmd.exe', args: ['/C', 'echo SHELL_RERUN_OK'], operationId: randomUUID() });
   await waitFor(async () => (await session(shell.id)).status === 'exited', 'shell did not exit');
@@ -145,7 +166,7 @@ try {
   assert.notEqual(rerun.id, shell.id);
   await waitFor(async () => (await output(rerun.id)).text.includes('SHELL_RERUN_OK'), 'rerun output missing');
   note('shell/custom rerun remains a new execution with preserved old output');
-  console.log(JSON.stringify({ passed: true, live, checks, scratch }));
+  console.log(JSON.stringify({ passed: true, live, checks, skips, scratch }));
 } finally {
   for (const p of peers) p.close();
   if (daemon?.exitCode === null) daemon.kill();

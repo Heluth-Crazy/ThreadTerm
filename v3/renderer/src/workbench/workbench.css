@@ -1,0 +1,318 @@
+/* Workbench side bar, Source Control, review/history tabs and editor gutters.
+   Colours come from the prototype tokens; syntax colours meet 4.5:1 on the editor surface. */
+:root {
+  --syn-keyword:#7c3aed; --syn-string:#15803d; --syn-number:#c2410c; --syn-comment:#6b7280;
+  --syn-function:#2563eb; --syn-type:#b45309; --syn-property:#0f766e; --syn-punct:#52525b;
+  --syn-meta:#4f46e5; --syn-deleted:#b91c1c;
+  --wb-added:var(--st-running,#1a7f37); --wb-modified:var(--amber,#9a6700); --wb-deleted:var(--danger,#cf222e);
+  /* Renamed keeps its own purple: it used to borrow --st-stalled, which is orange since 2026-09-28. */
+  --wb-renamed:#8250df; --wb-conflict:var(--danger,#cf222e);
+  /* Shared metrics: rows follow the app's nav rows (13px text, 6px radius), section labels follow
+     .side-label, inputs follow the prototype fields (9px radius, primary border + ring on focus). */
+  --wb-row:26px;
+  --wb-ring:0 0 0 2px color-mix(in srgb,var(--primary) 22%,transparent);
+  /* Commit graph lanes: eight distinct hues, 3:1+ against the surface in each theme. */
+  --wb-lane-0:#4f59c8; --wb-lane-1:#1a7f37; --wb-lane-2:#bc4c00; --wb-lane-3:#8250df;
+  --wb-lane-4:#0969da; --wb-lane-5:#bf3989; --wb-lane-6:#9a6700; --wb-lane-7:#1b7c83;
+}
+[data-theme="dark"] {
+  --syn-keyword:#c4b5fd; --syn-string:#86efac; --syn-number:#fdba74; --syn-comment:#8b93a7;
+  --syn-function:#93c5fd; --syn-type:#fcd34d; --syn-property:#5eead4; --syn-punct:#a1a1aa;
+  --syn-meta:#a5b4fc; --syn-deleted:#fca5a5; --wb-renamed:#a371f7;
+  --wb-lane-0:#8b93f0; --wb-lane-1:#3fb950; --wb-lane-2:#f0883e; --wb-lane-3:#bc8cff;
+  --wb-lane-4:#58a6ff; --wb-lane-5:#f778ba; --wb-lane-6:#d29922; --wb-lane-7:#39c5cf;
+}
+
+/* ---- Side bar shell ----
+   The view switcher sits at the start of the session tab bar row; the panel is a card in the pane
+   row with the same top/bottom edges, border, radius and 12px spacing as split panes. */
+.wb-tabrow { display:flex; flex:none; align-items:center; min-width:0; min-height:42px; border-bottom:1px solid var(--border); }
+.wb-tabrow > .workspace-toolbar-host { flex:1; min-width:0; }
+.wb-tabrow .workspace-tabbar.ws-strip { border-bottom:0; }
+/* The tab strip never grows a scrollbar row (that shifted the switcher and every pane down). */
+.wb-tabrow .workspace-tabs { scrollbar-width:none; }
+.wb-tabrow .workspace-tabs::-webkit-scrollbar { display:none; }
+.wb-switcher-host { display:flex; flex:none; align-self:stretch; }
+.wb-switcher-host:empty { display:none; }
+.wb-switcher { display:flex; align-items:center; gap:2px; padding:0 0 0 16px; }
+.wb-switcher::after { content:""; flex:none; width:1px; height:18px; margin-left:8px; background:var(--border); }
+.wb-switch-btn { position:relative; display:grid; place-items:center; width:30px; height:30px; padding:0; border:0; border-radius:7px; background:transparent; color:var(--muted); cursor:pointer; }
+.wb-switch-btn .ico { width:17px; height:17px; }
+.wb-switch-btn:hover { background:var(--soft); color:var(--text); }
+.wb-switch-btn.active { background:var(--primary-tint); color:var(--primary); }
+.wb-switch-btn:focus-visible { outline:2px solid var(--primary); outline-offset:1px; }
+.wb-switch-badge { position:absolute; top:1px; right:0; min-width:14px; height:14px; padding:0 3px; border-radius:999px; background:var(--primary); box-shadow:0 0 0 2px var(--bg); color:var(--primary-fg); font-size:9px; font-weight:600; line-height:14px; text-align:center; font-variant-numeric:tabular-nums; }
+.wb-sidebar { position:relative; display:flex; flex:none; min-width:0; min-height:0; margin-right:12px; }
+.ws-content.with-drawer > .wb-sidebar { margin-right:0; } /* the drawer row already has a 12px gap */
+.wb-panel { display:flex; flex:1; flex-direction:column; min-width:0; min-height:0; border:1px solid var(--border); border-radius:var(--radius-card); background:var(--surface); overflow:hidden; }
+.runtime-workspace.terminal-fullscreen .wb-tabrow, .runtime-workspace.terminal-fullscreen .wb-sidebar { display:none; }
+/* Same height as the file toolbar in the neighbouring card, so the header rules line up. */
+.wb-panel-head { display:flex; flex:none; align-items:center; gap:8px; height:38px; padding:0 6px 0 14px; border-bottom:1px solid var(--border); }
+.wb-panel-head strong { flex:1; min-width:0; overflow:hidden; color:var(--text); font-size:12.5px; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
+.wb-panel-actions { display:flex; flex:none; align-items:center; gap:1px; }
+.wb-panel-actions .icon-btn { width:26px; height:26px; }
+.wb-panel-actions .ico { width:16px; height:16px; }
+/* Close the panel (also Ctrl+B or clicking the active view icon); a hairline separates it from view actions. */
+.wb-panel-head .wb-panel-close { position:relative; flex:none; width:26px; height:26px; }
+.wb-panel-head .wb-panel-close .ico { width:14px; height:14px; }
+.wb-panel-actions:not(:empty) + .wb-panel-close { margin-left:5px; }
+.wb-panel-actions:not(:empty) + .wb-panel-close::before { content:""; position:absolute; top:6px; bottom:6px; left:-4px; width:1px; background:var(--border); }
+.wb-panel-body { position:relative; flex:1; min-height:0; overflow:hidden; }
+.wb-view { height:100%; overflow:auto; scrollbar-width:thin; }
+.wb-view[hidden] { display:none; }
+/* Fills the 12px gutter; the highlight matches the 4px pane divider. */
+.wb-resize { position:absolute; top:0; right:-12px; bottom:0; width:12px; cursor:col-resize; z-index:3; touch-action:none; outline:none; }
+.wb-resize:hover::after, .wb-resize:focus-visible::after { content:""; position:absolute; top:0; bottom:0; left:4px; width:4px; border-radius:4px; background:var(--primary); }
+
+/* ---- Standalone Files & Git column (project Files page, Settings → Tools) ----
+   Explorer and Source Control stack as content-sized sections in one scrolling column. */
+.file-list.wb-embedded-tools { overflow:hidden; background:var(--surface); }
+.wb-tools-head { display:flex; flex:none; align-items:center; gap:6px; height:38px; padding:0 6px 0 14px; border-bottom:1px solid var(--border); background:var(--surface); }
+.wb-tools-head strong { flex:1; min-width:0; overflow:hidden; color:var(--text); font-size:12.5px; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
+.wb-tools-head > .icon-btn { width:26px; height:26px; }
+.wb-tools-head > .icon-btn .ico { width:16px; height:16px; }
+.wb-tools-scroll { flex:1; min-height:0; overflow:auto; scrollbar-width:thin; }
+.wb-tools-scroll .wb-explorer, .wb-tools-scroll .wb-scm { min-height:0; }
+.wb-tools-scroll .wb-tree { padding-bottom:8px; }
+.wb-tools-section { border-top:1px solid var(--border); }
+.wb-tools-section > .wb-tools-head { position:sticky; top:0; z-index:1; }
+.wb-tools-scroll .git-merge-controls { display:flex; gap:6px; padding:2px 10px 14px 10px; }
+.wb-tools-scroll .git-merge-controls > button { display:inline-flex; align-items:center; height:28px; padding:0 12px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); color:var(--text); font:inherit; font-size:12.5px; cursor:pointer; }
+.wb-tools-scroll .git-merge-controls > button:hover:not(:disabled) { background:var(--soft); }
+
+/* ---- Shared pieces ---- */
+.wb-view-actions { display:flex; justify-content:flex-end; gap:1px; padding:6px 6px 2px; }
+.wb-view-actions .icon-btn, .wb-row-actions .icon-btn { width:26px; height:26px; }
+.wb-sync-actions .icon-btn { width:28px; height:28px; }
+.wb-view-actions .ico, .wb-sync-actions .ico { width:16px; height:16px; }
+.wb-row-actions .ico { width:15px; height:15px; }
+.wb-panel-actions .icon-btn:disabled, .wb-view-actions .icon-btn:disabled, .wb-row-actions .icon-btn:disabled, .wb-sync-actions .icon-btn:disabled { opacity:.4; cursor:default; background:transparent; }
+.wb-section-label { color:var(--muted); font-size:11px; font-weight:500; letter-spacing:.06em; text-transform:uppercase; }
+.wb-issue { display:flex; align-items:flex-start; gap:6px; margin:8px 10px; padding:7px 8px 7px 10px; border:1px solid color-mix(in srgb,var(--danger) 22%,transparent); border-radius:var(--radius); background:color-mix(in srgb,var(--danger) 7%,var(--surface)); color:var(--danger); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+.wb-issue .icon-btn { flex:none; width:20px; height:20px; margin:-2px -2px 0 auto; color:inherit; }
+.wb-issue .icon-btn .ico { width:13px; height:13px; }
+.wb-notice { margin:8px 10px; padding:7px 10px; border-radius:var(--radius); background:var(--primary-tint); color:var(--text); font-size:12px; line-height:1.45; }
+.wb-summary { margin:6px 14px; color:var(--muted); font-size:12px; }
+.wb-empty { margin:10px 14px; color:var(--muted); font-size:12px; line-height:1.5; }
+.wb-hint { margin:0 14px 8px; color:var(--faint); font-size:11.5px; line-height:1.5; }
+.wb-muted { color:var(--muted); font-size:12px; }
+.wb-warn { color:var(--amber); }
+.wb-empty-state { display:grid; justify-items:center; gap:6px; margin:32px 20px; color:var(--muted); font-size:12px; line-height:1.55; text-align:center; }
+.wb-empty-state .ico { width:26px; height:26px; margin-bottom:2px; color:var(--faint); }
+.wb-empty-state strong { color:var(--text); font-size:13px; font-weight:600; }
+.wb-empty-state p { margin:0; }
+.wb-chevron { display:inline-grid; flex:none; place-items:center; width:16px; height:16px; color:var(--faint); transition:transform .12s ease; }
+.wb-chevron .ico { width:12px; height:12px; stroke-width:2.2; }
+.wb-chevron.open { transform:rotate(90deg); }
+.wb-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wb-dir { min-width:0; overflow:hidden; color:var(--faint); font-size:11.5px; text-overflow:ellipsis; white-space:nowrap; }
+.wb-count { flex:none; min-width:18px; margin-left:6px; padding:0 6px; border-radius:999px; background:var(--soft); color:var(--muted); font-size:10.5px; font-weight:500; line-height:17px; letter-spacing:0; text-align:center; text-transform:none; font-variant-numeric:tabular-nums; }
+.wb-deco { flex:none; width:16px; font:600 11px/1 var(--mono); text-align:center; }
+.wb-deco-dot { flex:none; width:6px; height:6px; margin:0 5px; border-radius:50%; background:currentColor; opacity:.85; }
+.wb-badge-muted { color:var(--muted); font-size:11px; }
+.wb-time { flex:none; color:var(--faint); font-size:11px; white-space:nowrap; }
+.btn.btn-sm { height:26px; padding:0 10px; font-size:12px; }
+.btn.btn-sm .ico { width:14px; height:14px; }
+.tone-modified { --wb-tone:var(--wb-modified); }
+.tone-added, .tone-untracked { --wb-tone:var(--wb-added); }
+.tone-deleted { --wb-tone:var(--wb-deleted); }
+.tone-renamed { --wb-tone:var(--wb-renamed); }
+.tone-conflict { --wb-tone:var(--wb-conflict); }
+.wb-tree-row[class*="tone-"] .wb-name, .wb-change-row[class*="tone-"] .wb-name { color:var(--wb-tone); }
+.wb-tree-row.folder-tone .wb-name { color:inherit; }
+.wb-tree-row .wb-deco, .wb-tree-row .wb-deco-dot, .wb-change-row .wb-deco { color:var(--wb-tone); }
+.tone-deleted .wb-name { text-decoration:line-through; text-decoration-thickness:1px; }
+.menu-item kbd { margin-left:auto; padding:0 5px; border:1px solid var(--border); border-radius:4px; color:var(--faint); font:10px/16px var(--mono); }
+
+/* ---- Explorer ---- */
+.wb-explorer { display:flex; flex-direction:column; min-height:100%; }
+.wb-tree { padding:6px 6px 16px; font-size:13px; }
+.wb-tree-row { display:flex; align-items:center; gap:6px; height:var(--wb-row); padding-right:8px; border-radius:var(--radius); color:var(--text); cursor:pointer; outline:none; user-select:none; }
+.wb-tree-row > .ico { flex:none; width:15px; height:15px; color:var(--muted); }
+.wb-tree-row:hover { background:var(--soft); }
+.wb-tree-row.selected { background:var(--primary-tint); }
+.wb-tree-row:focus-visible { box-shadow:inset 0 0 0 1.5px var(--primary); }
+.wb-tree-row .wb-name { flex:1; }
+.wb-tree-row.editing { flex-wrap:wrap; height:auto; min-height:var(--wb-row); padding-top:3px; padding-bottom:3px; background:transparent; cursor:default; }
+.wb-tree .wb-inline-input { flex:1; min-width:80px; height:24px; padding:0 7px; border:1px solid var(--primary); border-radius:var(--radius); background:var(--surface); box-shadow:var(--wb-ring); color:var(--text); font:inherit; font-size:12.5px; outline:none; }
+.wb-inline-error { flex-basis:100%; margin:3px 0 0 22px; color:var(--danger); font-size:11.5px; line-height:1.4; }
+
+/* ---- Search ---- */
+.wb-search-box { display:grid; grid-template-columns:minmax(0,1fr); gap:6px; padding:10px 10px 6px; }
+.wb-search-field { display:flex; align-items:center; gap:4px; height:32px; padding:0 4px 0 10px; border:1px solid var(--border); border-radius:9px; background:var(--surface); }
+.wb-search-field:focus-within { border-color:var(--primary); box-shadow:var(--wb-ring); }
+.wb-search .wb-search-field input { flex:1; min-width:0; height:100%; padding:0; border:0; border-radius:0; background:transparent; box-shadow:none; color:var(--text); font:inherit; font-size:13px; outline:none; }
+.wb-toggles { display:flex; flex:none; gap:1px; }
+.wb-toggle { width:24px; height:22px; padding:0; border:1px solid transparent; border-radius:5px; background:transparent; color:var(--muted); font:600 11px/1 var(--mono); cursor:pointer; }
+.wb-toggle:hover { background:var(--soft); color:var(--text); }
+.wb-toggle.on { border-color:color-mix(in srgb,var(--primary) 45%,transparent); background:var(--primary-tint); color:var(--primary); }
+.wb-link-btn { justify-self:start; padding:0 2px; border:0; background:transparent; color:var(--muted); font-size:11.5px; cursor:pointer; }
+.wb-link-btn:hover, .wb-link-btn.on { color:var(--text); }
+.wb-search-filters { display:grid; grid-template-columns:minmax(0,1fr); gap:6px; }
+.wb-search .wb-search-filters input { height:30px; padding:0 10px; border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text); font-size:12.5px; outline:none; }
+.wb-search .wb-search-filters input:focus { border-color:var(--primary); box-shadow:var(--wb-ring); }
+.wb-results { padding:2px 6px 16px; }
+.wb-result-head, .wb-result-line { display:flex; align-items:center; gap:6px; width:100%; min-width:0; border:0; border-radius:var(--radius); background:transparent; color:var(--text); font:inherit; text-align:left; cursor:pointer; }
+.wb-result-head { height:var(--wb-row); padding:0 6px 0 2px; font-size:13px; }
+.wb-result-head > .ico { flex:none; width:15px; height:15px; color:var(--muted); }
+.wb-result-head .wb-dir { flex:1; }
+.wb-result-line { align-items:baseline; min-height:24px; padding:3px 6px 3px 24px; font-size:12px; }
+.wb-result-head:hover, .wb-result-line:hover { background:var(--soft); }
+.wb-line-no { flex:none; min-width:24px; color:var(--faint); font:11px var(--mono); text-align:right; font-variant-numeric:tabular-nums; }
+.wb-match-text { min-width:0; overflow:hidden; color:var(--muted); font-family:var(--mono); font-size:11.5px; text-overflow:ellipsis; white-space:pre; }
+.wb-match-text mark { border-radius:2px; background:color-mix(in srgb,var(--amber) 26%,transparent); color:var(--text); }
+
+/* ---- Source Control ---- */
+.wb-scm { display:flex; flex-direction:column; min-height:100%; }
+.wb-scm-bar { display:flex; align-items:center; gap:6px; padding:10px 8px 6px 10px; }
+.wb-branch-chip { display:inline-flex; flex:1; align-items:center; gap:6px; min-width:0; height:32px; padding:0 8px 0 10px; border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text); font:inherit; font-family:var(--mono); font-size:12px; text-align:left; cursor:pointer; }
+.wb-branch-chip .wb-name { flex:1; }
+.wb-branch-chip > .ico { flex:none; width:15px; height:15px; color:var(--muted); }
+.wb-branch-chip .wb-chip-caret { width:13px; height:13px; color:var(--faint); }
+.wb-branch-chip:hover { background:var(--soft); }
+.wb-branch-chip:focus-visible { border-color:var(--primary); box-shadow:var(--wb-ring); outline:none; }
+.wb-sync-actions { display:flex; flex:none; align-items:center; gap:1px; }
+.wb-sync-actions .wb-count-btn { width:auto; min-width:26px; padding:0 4px; grid-auto-flow:column; gap:2px; }
+.wb-btn-count { color:var(--text); font-size:10.5px; font-weight:600; font-variant-numeric:tabular-nums; }
+.wb-sync { flex:none; color:var(--muted); font:11px var(--mono); white-space:nowrap; }
+.wb-sync.muted { font-family:inherit; opacity:.8; }
+.wb-commit { display:grid; grid-template-columns:minmax(0,1fr); gap:6px; padding:0 8px 10px 10px; }
+.wb-commit textarea { width:100%; min-height:56px; max-height:180px; padding:7px 10px; border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text); font:inherit; font-size:12.5px; line-height:1.45; resize:vertical; }
+.wb-commit textarea:focus { border-color:var(--primary); box-shadow:var(--wb-ring); outline:none; }
+.wb-commit textarea::placeholder { color:var(--faint); }
+.wb-commit-actions { display:flex; gap:8px; }
+/* Commit keeps the prototype's 32px primary button; the options caret is a matching 32px square
+   secondary button, set apart by a real gap rather than glued on with mismatched height and corners.
+   Selectors carry the container class so they outrank .btn / .btn-primary, which load later. */
+.wb-commit .wb-commit-main { flex:1; justify-content:center; min-width:0; height:32px; }
+.wb-commit .wb-commit-more { display:inline-grid; flex:none; place-items:center; width:32px; height:32px; padding:0; }
+.wb-commit .wb-commit-more .ico { width:15px; height:15px; }
+.wb-changes { padding:4px 6px 16px; border-top:1px solid var(--border); }
+.wb-change-group + .wb-change-group { margin-top:4px; }
+.wb-group-head { display:flex; align-items:center; height:var(--wb-row); padding-right:4px; border-radius:var(--radius); }
+.wb-group-head:hover { background:var(--soft); }
+.wb-group-toggle { display:flex; flex:1; align-items:center; gap:4px; min-width:0; height:100%; padding:0 4px 0 2px; border:0; background:transparent; color:var(--muted); font:inherit; font-size:11px; font-weight:500; letter-spacing:.06em; text-transform:uppercase; cursor:pointer; }
+.wb-change-row { display:flex; align-items:center; gap:4px; min-height:var(--wb-row); padding:0 4px 0 22px; border-radius:var(--radius); font-size:13px; }
+button.wb-change-row { width:100%; border:0; background:transparent; color:var(--text); font:inherit; text-align:left; cursor:pointer; }
+.wb-change-row:hover, .wb-change-row.selected { background:var(--soft); }
+.wb-change-open { display:flex; flex:1; align-items:center; gap:6px; min-width:0; height:var(--wb-row); padding:0; border:0; background:transparent; color:var(--text); font:inherit; text-align:left; cursor:pointer; }
+.wb-change-open > .ico, .wb-change-row > .ico { flex:none; width:15px; height:15px; color:var(--muted); }
+.wb-change-open .wb-name { flex:none; max-width:70%; }
+.wb-change-open .wb-dir, .wb-change-row > .wb-dir { flex:1; }
+.wb-change-open:focus-visible { border-radius:4px; box-shadow:inset 0 0 0 1.5px var(--primary); outline:none; }
+.wb-row-actions { display:flex; flex:none; align-items:center; gap:0; }
+.wb-change-row .wb-row-actions, .wb-group-head .wb-row-actions { opacity:0; }
+.wb-change-row:hover .wb-row-actions, .wb-change-row:focus-within .wb-row-actions,
+.wb-group-head:hover .wb-row-actions, .wb-group-head:focus-within .wb-row-actions { opacity:1; }
+.wb-branch-menu { display:grid; gap:1px; width:min(340px,80vw); max-height:min(420px,70vh); overflow:auto; }
+.wb-branch-menu .wb-branch-filter { height:30px; margin:2px 2px 4px; padding:0 10px; border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text); font:inherit; font-size:12.5px; }
+.wb-branch-menu .wb-branch-filter:focus { border-color:var(--primary); box-shadow:var(--wb-ring); outline:none; }
+.wb-branch-item { display:flex; align-items:center; }
+.wb-branch-item .menu-item { flex:1; min-width:0; }
+.wb-branch-item .menu-item .wb-name { flex:1; font-family:var(--mono); font-size:12px; }
+.wb-branch-item .icon-btn { flex:none; width:26px; height:26px; }
+
+/* ---- Agent changes ---- */
+.wb-review { display:flex; flex-direction:column; min-height:100%; padding-bottom:16px; }
+.wb-session-select { margin:10px 10px 2px; }
+.wb-review-session { display:flex; align-items:center; gap:8px; margin:12px 14px 4px; color:var(--text); font-size:13px; font-weight:600; }
+.wb-review-session .brand-ico { width:16px; height:16px; }
+.wb-review-head { display:flex; align-items:center; gap:8px; margin:10px 8px 4px 14px; }
+.wb-review-title { display:grid; flex:1; gap:2px; min-width:0; }
+.wb-review .wb-change-row { margin:0 6px; padding-left:8px; }
+.wb-review-actions { display:flex; justify-content:flex-end; gap:6px; margin:8px 8px 4px; }
+.wb-checkpoints { margin:14px 6px 0; padding-top:10px; border-top:1px solid var(--border); }
+.wb-checkpoints > .wb-section-label { display:block; margin:0 8px 4px; }
+.wb-checkpoint { border-radius:var(--radius); }
+.wb-checkpoint-head { display:flex; align-items:center; gap:6px; width:100%; min-height:28px; padding:0 8px 0 2px; border:0; border-radius:var(--radius); background:transparent; color:var(--text); font:inherit; font-size:12.5px; text-align:left; cursor:pointer; }
+.wb-checkpoint-head:hover:not(:disabled) { background:var(--soft); }
+.wb-checkpoint-head:disabled { cursor:default; }
+.wb-checkpoint-kind { flex:none; color:var(--text); font-size:12.5px; }
+.wb-checkpoint-head .wb-name { flex:1; color:var(--muted); font-size:12px; }
+.wb-checkpoint.failed .wb-checkpoint-kind { color:var(--danger); }
+.wb-checkpoint > .wb-muted { margin:0 8px 4px 24px; font-size:11.5px; line-height:1.45; }
+.wb-checkpoint .wb-change-row { padding-left:24px; }
+.wb-checkpoint .wb-empty { margin:4px 8px 6px 24px; }
+
+/* ---- Tabs: history and review ---- */
+.wb-history { display:grid; grid-template-columns:minmax(240px,34%) minmax(0,1fr); height:100%; min-height:0; background:var(--surface); }
+.wb-history-list { min-height:0; padding:0 6px 12px; overflow:auto; border-right:1px solid var(--border); scrollbar-width:thin; }
+.wb-history-title { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px; height:38px; margin:0 -6px 4px; padding:0 14px; border-bottom:1px solid var(--border); background:var(--surface); font-size:12.5px; }
+.wb-history-title > .ico { width:16px; height:16px; color:var(--muted); }
+.wb-history-title strong { font-weight:600; }
+.wb-commit-row { display:flex; gap:10px; width:100%; padding:7px 8px; border:0; border-radius:var(--radius); background:transparent; color:var(--text); font:inherit; text-align:left; cursor:pointer; }
+.wb-commit-row:hover { background:var(--soft); }
+.wb-commit-row.selected { background:var(--primary-tint); }
+.wb-lane { flex:none; width:9px; height:9px; margin-top:4px; border:2px solid var(--primary); border-radius:50%; }
+.wb-lane.merge { background:var(--primary); }
+/* Commit graph: fixed-height rows so each row's SVG slice joins the next; a wider list column. */
+.wb-history.graph { grid-template-columns:minmax(320px,42%) minmax(0,1fr); }
+.wb-history.graph .wb-commit-row { height:44px; align-items:center; gap:4px; padding:0 8px 0 2px; }
+.wb-graph { flex:none; overflow:visible; }
+.wb-graph .lane-0 { --lane:var(--wb-lane-0); }
+.wb-graph .lane-1 { --lane:var(--wb-lane-1); }
+.wb-graph .lane-2 { --lane:var(--wb-lane-2); }
+.wb-graph .lane-3 { --lane:var(--wb-lane-3); }
+.wb-graph .lane-4 { --lane:var(--wb-lane-4); }
+.wb-graph .lane-5 { --lane:var(--wb-lane-5); }
+.wb-graph .lane-6 { --lane:var(--wb-lane-6); }
+.wb-graph .lane-7 { --lane:var(--wb-lane-7); }
+.wb-graph path { fill:none; stroke:var(--lane); stroke-width:2; stroke-linecap:round; }
+.wb-graph circle { fill:var(--lane); stroke:none; }
+/* The checked-out commit (HEAD) is a ring. */
+.wb-graph circle.head { fill:var(--surface); stroke:var(--lane); stroke-width:2.5; }
+/* Current / All branches: the prototype segmented control, compact to fit the 38px header. */
+.wb-history-title .wb-history-scope { margin-left:auto; border:1px solid var(--border); }
+.wb-history-title .wb-history-scope .seg-btn { height:26px; padding:0 10px; font-size:12px; }
+.wb-commit-text { display:grid; flex:1; gap:3px; min-width:0; }
+.wb-commit-line { display:flex; align-items:center; gap:4px; min-width:0; }
+.wb-commit-subject { flex:0 1 auto; min-width:0; overflow:hidden; font-size:13px; text-overflow:ellipsis; white-space:nowrap; }
+.wb-commit-meta { display:flex; flex-wrap:wrap; align-items:center; gap:4px; color:var(--muted); font-size:11.5px; }
+.wb-commit-meta code { color:var(--faint); font:11px var(--mono); }
+.wb-commit-meta .icon-btn { width:22px; height:22px; }
+.wb-ref { flex:none; max-width:120px; overflow:hidden; padding:0 6px; border:1px solid color-mix(in srgb,var(--primary) 30%,transparent); border-radius:999px; background:var(--primary-tint); color:var(--primary); font-size:10.5px; line-height:16px; text-overflow:ellipsis; white-space:nowrap; }
+.wb-ref.head { border-color:var(--primary); background:var(--primary); color:var(--primary-fg,#fff); font-weight:600; }
+.wb-ref.tag { border-color:color-mix(in srgb,var(--wb-modified) 35%,transparent); background:color-mix(in srgb,var(--wb-modified) 10%,transparent); color:var(--wb-modified); }
+.wb-ref.remote { border-color:var(--border); background:var(--soft); color:var(--muted); }
+.wb-history .wb-more { display:flex; margin:8px auto; }
+.wb-history-detail { display:flex; flex-direction:column; min-width:0; min-height:0; }
+.wb-commit-head { display:grid; gap:4px; padding:14px 16px 10px; border-bottom:1px solid var(--border); }
+.wb-commit-head strong { font-size:14px; font-weight:600; }
+.wb-commit-body { max-height:140px; margin:4px 0 0; overflow:auto; color:var(--muted); font-family:inherit; font-size:12px; line-height:1.5; white-space:pre-wrap; }
+.wb-commit-files { flex:none; max-height:30%; padding:6px; overflow:auto; border-bottom:1px solid var(--border); }
+.wb-commit-files .wb-change-row { padding-left:8px; }
+.wb-history-diff { display:flex; flex:1; flex-direction:column; min-height:0; }
+.wb-history-diff .merge-editor, .wb-review-diff .merge-editor { flex:1; min-height:0; overflow:auto; }
+.tt-diff-shell.wb-review-diff, .wb-review-diff > .file-bar, .wb-review-diff .tt-editor-state { background:var(--surface); }
+/* Selectors that restyle inputs are scoped one level deeper than the prototype's global input rules. */
+.wb-review-diff > .file-bar > .ico { flex:none; color:var(--muted); }
+.wb-review-diff > .wb-notice { margin:8px 12px 0; }
+.wb-quick-open .cmd-row b { font-weight:500; }
+.wb-quick-open .cmd-row mark { background:transparent; color:var(--primary); font-weight:700; }
+.wb-quick-open .cmd-row span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* ---- Editor gutters ---- */
+.cm-git-gutter { width:4px; }
+.cm-git-gutter .cm-gutterElement { padding:0 !important; }
+.cm-git-marker { width:3px; height:100%; margin-left:1px; border-radius:1px; }
+.cm-git-added { background:var(--wb-added); }
+.cm-git-modified { background:var(--wb-modified); }
+.cm-git-deleted { width:0; height:0; margin-top:-3px; border:3px solid transparent; border-left-color:var(--wb-deleted); border-radius:0; background:transparent; }
+.cm-blame-gutter { border-right:1px solid var(--border); background:var(--surface); }
+.cm-blame-gutter .cm-gutterElement { padding:0 10px; color:var(--muted); font-family:"Segoe UI","Microsoft YaHei UI",sans-serif; font-size:11px; white-space:nowrap; }
+.cm-blame-entry { max-width:180px; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
+.cm-blame-entry:hover { color:var(--primary); }
+.cm-blame-entry.uncommitted { color:var(--faint); font-style:italic; cursor:default; }
+.editor-toolbar-toggle[aria-pressed="true"] { border-color:color-mix(in srgb,var(--primary) 45%,var(--border)); background:var(--primary-tint); color:var(--primary); }
+
+/* ---- Diff tab toolbar ----
+   In narrow panes the actions wrap to a second row instead of squeezing the path or clipping. */
+.tt-diff-shell > .file-bar { flex-wrap:wrap; row-gap:6px; min-height:38px; padding-top:5px; padding-bottom:5px; }
+.tt-diff-shell > .file-bar .path { flex:0 1 auto; min-width:80px; }
+.wb-hunk-nav { display:inline-flex; flex:none; align-items:center; gap:2px; white-space:nowrap; }
+.wb-hunk-nav .icon-btn { width:26px; height:26px; }
+.wb-hunk-nav .icon-btn .ico { width:15px; height:15px; }
+.wb-hunk-count { min-width:34px; color:var(--muted); font:11px var(--mono); text-align:center; font-variant-numeric:tabular-nums; }
+.wb-hunk-nav .btn { margin-left:6px; }
+
+@media (prefers-reduced-motion:reduce) { .wb-chevron { transition:none; } }

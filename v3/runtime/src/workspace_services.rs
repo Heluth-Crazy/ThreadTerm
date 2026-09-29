@@ -11,11 +11,15 @@ use std::{
     collections::HashSet,
     ffi::OsString,
     fs,
+    io::Read,
     path::{Component, Path, PathBuf},
     process::Command,
 };
 
 pub const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
+const MAX_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_FILE_REFERENCE_PATH_BYTES: usize = 16 * 1024;
+const MAX_FILE_REFERENCE_POSITION: u32 = 1_000_000;
 
 pub fn initialize(db: &Database) -> Result<()> {
     db.transaction(|tx| { tx.execute_batch("CREATE TABLE IF NOT EXISTS drafts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, worktree_path TEXT NOT NULL DEFAULT '', path TEXT NOT NULL, content TEXT NOT NULL, base_fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id,worktree_path,path)); CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE SET NULL, worktree_path TEXT, revision INTEGER NOT NULL, layout TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS worktrees (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, path TEXT NOT NULL UNIQUE, branch TEXT, head TEXT NOT NULL, is_main INTEGER NOT NULL, locked INTEGER NOT NULL DEFAULT 0);")?; let columns:Vec<String>={let mut s=tx.prepare("PRAGMA table_info(drafts)")?;let values=s.query_map([],|r|r.get(1))?.collect::<rusqlite::Result<_>>()?;values};if !columns.iter().any(|x|x=="worktree_path"){tx.execute_batch("ALTER TABLE drafts RENAME TO drafts_legacy; CREATE TABLE drafts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, worktree_path TEXT NOT NULL DEFAULT '', path TEXT NOT NULL, content TEXT NOT NULL, base_fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id,worktree_path,path)); INSERT INTO drafts(id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at) SELECT id,project_id,'',path,content,base_fingerprint,revision,updated_at FROM drafts_legacy; DROP TABLE drafts_legacy;")?;} Ok(()) })
@@ -53,6 +57,33 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("invalid_request"))
     };
+    // Git reads resolve their root in a short transaction and run git after it. Inside the
+    // transaction the git process held the runtime's single connection, so every other
+    // request (terminal.read, output persistence, other clients) waited for `git status`.
+    if matches!(method, "git.status" | "git.diff" | "worktree.branches") {
+        let project_id = object
+            .get("projectId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("invalid_request"))?;
+        let worktree_path = object.get("worktreePath").and_then(Value::as_str);
+        let root = db.transaction(|tx| root_for(tx, project_id, worktree_path))?;
+        let result = match method {
+            "git.status" => git_status(&root)?,
+            "git.diff" => {
+                let path = object
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("invalid_path"))?;
+                let staged = object
+                    .get("staged")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| anyhow!("invalid_request"))?;
+                git_diff(&root, path, staged)?
+            }
+            _ => branches(&root)?,
+        };
+        return Ok(Some(result));
+    }
     let result = db.transaction(|tx| {
         let project_id = object.get("projectId").and_then(Value::as_str);
         let worktree_path = object.get("worktreePath").and_then(Value::as_str);
@@ -66,10 +97,7 @@ pub fn dispatch(db: &Database, method: &str, params: &Value) -> Result<Option<Va
             "draft.put" => { let id=project_id.ok_or_else(||anyhow!("invalid_request"))?; if worktree_path.is_some(){root_for(tx,id,worktree_path)?;} let scope=worktree_path.unwrap_or(""); let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let content=object.get("content").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_content"))?; if content.len()>MAX_DOCUMENT_BYTES||content.as_bytes().contains(&0){return Err(anyhow!("invalid_content"))} let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)? {return Ok(value)} let current:Option<(String,i64)>=tx.query_row("SELECT id,revision FROM drafts WHERE project_id=? AND worktree_path=? AND path=?",params![id,scope,path],|r|Ok((r.get(0)?,r.get(1)?))).optional()?; if current.as_ref().map(|x|x.1).unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))} let draft_id=current.map(|x|x.0).unwrap_or_else(||uuid::Uuid::new_v4().to_string()); let revision=expected+1; let base=object.get("baseFingerprint").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let now=Utc::now().to_rfc3339(); tx.execute("INSERT INTO drafts(id,project_id,worktree_path,path,content,base_fingerprint,revision,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id,worktree_path,path) DO UPDATE SET content=excluded.content,base_fingerprint=excluded.base_fingerprint,revision=excluded.revision,updated_at=excluded.updated_at",params![draft_id,id,scope,path,content,base,revision,now])?; complete(tx,op,method,&json!({"id":draft_id,"projectId":id,"worktreePath":scope,"path":path,"content":content,"baseFingerprint":base,"revision":revision,"updatedAt":now})) }
             "draft.delete"|"workspace.delete" => { let id=object.get("id").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let table=if method=="draft.delete"{"drafts"}else{"workspaces"}; let revision:i64=tx.query_row(&format!("SELECT revision FROM {table} WHERE id=?"),[id],|r|r.get(0))?; if revision!=expected{return Err(anyhow!("revision_conflict"))} tx.execute(&format!("DELETE FROM {table} WHERE id=?"),[id])?; complete(tx,op,method,&Value::Null) }
             "workspace.save" => { let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let id=object.get("id").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string()); let expected=object.get("expectedRevision").and_then(Value::as_i64).ok_or_else(||anyhow!("invalid_request"))?; let existing:Option<i64>=tx.query_row("SELECT revision FROM workspaces WHERE id=?",[&id],|r|r.get(0)).optional()?; if existing.unwrap_or(0)!=expected{return Err(anyhow!("revision_conflict"))} let name=object.get("name").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let layout=object.get("layout").ok_or_else(||anyhow!("invalid_request"))?; validate_layout(layout)?; let project=object.get("projectId").and_then(Value::as_str); let worktree=object.get("worktreePath").and_then(Value::as_str); if let Some(project)=project{root_for(tx,project,worktree)?;}else if worktree.is_some(){return Err(anyhow!("invalid_request"))} let next=expected+1; let now=Utc::now().to_rfc3339(); tx.execute("INSERT INTO workspaces(id,name,project_id,worktree_path,revision,layout,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,project_id=excluded.project_id,worktree_path=excluded.worktree_path,revision=excluded.revision,layout=excluded.layout,updated_at=excluded.updated_at",params![id,name,project,worktree,next,serde_json::to_string(layout)?,now])?; let mut value=serde_json::Map::new(); value.insert("id".into(),json!(id)); value.insert("name".into(),json!(name)); value.insert("revision".into(),json!(next)); value.insert("layout".into(),layout.clone()); if let Some(project)=project{value.insert("projectId".into(),json!(project));} if let Some(worktree)=worktree{value.insert("worktreePath".into(),json!(worktree));} complete(tx,op,method,&Value::Object(value)) }
-            "git.status" => { let root=root(project_id.ok_or_else(||anyhow!("invalid_request"))?)?; git_status(&root) }
-            "git.diff" => { let root=root(project_id.ok_or_else(||anyhow!("invalid_request"))?)?; let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let staged=object.get("staged").and_then(Value::as_bool).ok_or_else(||anyhow!("invalid_request"))?; git_diff(&root,path,staged) }
             "worktree.list" => { let project=project_id.ok_or_else(||anyhow!("invalid_request"))?; let root=root(project)?; reconcile_worktrees(tx,project,&root) }
-            "worktree.branches" => { let project=project_id.ok_or_else(||anyhow!("invalid_request"))?; let root=root(project)?; branches(&root) }
             "worktree.relocate" => relocate_worktree(tx, object, method),
             "worktree.create" => { let project=project_id.ok_or_else(||anyhow!("invalid_request"))?; let root=root(project)?; let op=operation("operationId")?; if let Some(value)=idempotent(tx,op)?{return Ok(value)} let path=object.get("path").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_path"))?; let branch=object.get("branch").and_then(Value::as_str).ok_or_else(||anyhow!("invalid_request"))?; let target=PathBuf::from(path); if !target.is_absolute()||target.exists()||target.parent().and_then(|parent|parent.canonicalize().ok()).is_none(){return Err(anyhow!("invalid_path"))} let create=object.get("createBranch").and_then(Value::as_bool).unwrap_or(false); if create { git(&root,&["worktree","add","-b",branch,path])?; } else { git(&root,&["worktree","add",path,branch])?; } let target=target.canonicalize().context("canonicalizing worktree")?.to_string_lossy().to_string(); let head=git(Path::new(&target),&["rev-parse","HEAD"]).unwrap_or_default(); let id=upsert_worktree(tx,project,&target,Some(branch),head.trim(),false,false)?; complete(tx,op,method,&worktree_json(&id,project,&target,Some(branch),head.trim(),false,false)) }
             "worktree.remove" => remove_worktree(tx, object, method),
@@ -141,6 +169,202 @@ pub fn workspace_root_for_cwd(db: &Database, project_id: &str, cwd: &str) -> Res
         };
         Ok(root.clone())
     })
+}
+
+/// Resolve a renderer-provided file candidate against the source session's
+/// persisted launch cwd and its closest currently registered root. This is a
+/// navigation lookup only: callers still use `filesystem.read` or
+/// `filesystem.image`, which repeat the scoped containment and content checks.
+pub fn resolve_file_reference(
+    db: &Database,
+    session_id: &str,
+    path: &str,
+    line: Option<u32>,
+    column: Option<u32>,
+) -> Result<Value> {
+    validate_file_reference_input(path, line, column)?;
+    let session = db
+        .session_by_id(session_id)?
+        .ok_or_else(|| anyhow!("file_reference_session_not_found"))?;
+    let config = crate::session_configs::read(db, session_id)?
+        .ok_or_else(|| anyhow!("file_reference_config_missing"))?;
+    let project_id = session
+        .project_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("file_reference_project_missing"))?;
+    if config.launch.project_id.as_deref() != Some(project_id)
+        || config.launch.provider != session.provider
+        || config.launch.mode != session.mode
+    {
+        return Err(anyhow!("file_reference_scope_mismatch"));
+    }
+    let cwd = Path::new(&config.launch.cwd);
+    if !cwd.is_absolute() || !cwd.is_dir() {
+        return Err(anyhow!("file_reference_cwd_unavailable"));
+    }
+    let root = workspace_root_for_cwd(db, project_id, &config.launch.cwd)
+        .map_err(|_| anyhow!("file_reference_scope_mismatch"))?
+        .canonicalize()
+        .map_err(|_| anyhow!("file_reference_scope_mismatch"))?;
+    if let Some(session_root) = session.worktree_path.as_deref() {
+        let session_root = Path::new(session_root)
+            .canonicalize()
+            .map_err(|_| anyhow!("file_reference_scope_mismatch"))?;
+        if !same_lexical_path(&session_root, &root)? {
+            return Err(anyhow!("file_reference_scope_mismatch"));
+        }
+    }
+
+    let requested = Path::new(path);
+    if !requested.is_absolute()
+        && requested
+            .components()
+            .any(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
+    {
+        return Err(anyhow!("file_reference_invalid_path"));
+    }
+    if !requested.is_absolute() && matches!(session.provider.as_str(), "shell" | "custom") {
+        return Err(anyhow!("file_reference_relative_requires_absolute"));
+    }
+    let candidate = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        cwd.join(requested)
+    };
+    let candidate = candidate
+        .canonicalize()
+        .map_err(|_| anyhow!("file_reference_not_found"))?;
+    if !path_is_within(&candidate, &root)? {
+        return Err(anyhow!("file_reference_outside_scope"));
+    }
+    let metadata = fs::metadata(&candidate).map_err(|_| anyhow!("file_reference_not_found"))?;
+    if !metadata.is_file() {
+        return Err(anyhow!("file_reference_not_file"));
+    }
+    let relative = relative_path_string(&root, &candidate)?;
+    let extension = candidate
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    let supported_image_extension = extension
+        .as_deref()
+        .is_some_and(|extension| matches!(extension, "png" | "jpg" | "jpeg" | "gif" | "webp"));
+    if extension.as_deref().is_some_and(|extension| {
+        matches!(
+            extension,
+            "avif" | "bmp" | "heic" | "heif" | "ico" | "tif" | "tiff"
+        )
+    }) {
+        return Err(anyhow!("unsupported_image"));
+    }
+    let mut prefix = [0u8; 12];
+    let read = fs::File::open(&candidate)
+        .and_then(|mut file| file.read(&mut prefix))
+        .map_err(|_| anyhow!("file_reference_not_found"))?;
+    let detected_image = image_mime(&prefix[..read]).is_some();
+    if supported_image_extension && !detected_image {
+        return Err(anyhow!("unsupported_image"));
+    }
+    let kind = if detected_image {
+        if metadata.len() > MAX_IMAGE_BYTES {
+            return Err(anyhow!("image_too_large"));
+        }
+        "image"
+    } else {
+        if metadata.len() > MAX_DOCUMENT_BYTES as u64 {
+            return Err(anyhow!("file_too_large"));
+        }
+        "text"
+    };
+
+    let mut value = serde_json::Map::new();
+    value.insert("projectId".into(), json!(project_id));
+    value.insert(
+        "worktreePath".into(),
+        json!(root
+            .to_str()
+            .ok_or_else(|| anyhow!("file_reference_invalid_path"))?),
+    );
+    value.insert("path".into(), json!(relative));
+    value.insert("kind".into(), json!(kind));
+    if let Some(line) = line {
+        value.insert("line".into(), json!(line));
+    }
+    if let Some(column) = column {
+        value.insert("column".into(), json!(column));
+    }
+    Ok(Value::Object(value))
+}
+
+fn validate_file_reference_input(path: &str, line: Option<u32>, column: Option<u32>) -> Result<()> {
+    if path.is_empty()
+        || path.len() > MAX_FILE_REFERENCE_PATH_BYTES
+        || path.contains('\0')
+        || has_forbidden_colon(path)
+        || looks_like_uri(path)
+    {
+        return Err(anyhow!(if looks_like_uri(path) {
+            "file_reference_uri"
+        } else {
+            "file_reference_invalid_path"
+        }));
+    }
+    if line.is_some_and(|value| value == 0 || value > MAX_FILE_REFERENCE_POSITION)
+        || column.is_some_and(|value| value == 0 || value > MAX_FILE_REFERENCE_POSITION)
+    {
+        return Err(anyhow!("file_reference_invalid_position"));
+    }
+    Ok(())
+}
+
+fn has_forbidden_colon(path: &str) -> bool {
+    let (drive_path, offset) = path
+        .strip_prefix(r"\\?\")
+        .or_else(|| path.strip_prefix("//?/"))
+        .map_or((path, 0), |plain| (plain, 4));
+    let drive_colon = drive_path
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphabetic)
+        && drive_path.as_bytes().get(1) == Some(&b':');
+    path.char_indices()
+        .any(|(index, character)| character == ':' && !(drive_colon && index == offset + 1))
+}
+
+fn looks_like_uri(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return false;
+    }
+    let Some(colon) = path.find(':') else {
+        return false;
+    };
+    colon > 0
+        && path[..colon].bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'+' | b'-' | b'.'))
+        })
+}
+
+fn relative_path_string(root: &Path, path: &Path) -> Result<String> {
+    let root = lexical_components(root)?;
+    let path = lexical_components(path)?;
+    if path.len() <= root.len()
+        || !path
+            .iter()
+            .zip(&root)
+            .all(|((path_key, _), (root_key, _))| path_key == root_key)
+    {
+        return Err(anyhow!("file_reference_outside_scope"));
+    }
+    path.into_iter()
+        .skip(root.len())
+        .map(|(_, component)| {
+            component
+                .into_string()
+                .map_err(|_| anyhow!("file_reference_invalid_path"))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|components| components.join("/"))
 }
 
 fn relocate_worktree(
@@ -606,7 +830,38 @@ pub fn validate_layout(layout: &Value) -> Result<()> {
                                 && tab
                                     .get("path")
                                     .and_then(Value::as_str)
-                                    .is_some_and(|path| !path.is_empty()) => {}
+                                    .is_some_and(|path| !path.is_empty()) =>
+                        {
+                            if let Some(owner) = tab.get("ownerSessionId") {
+                                let valid = owner.as_str().is_some_and(|owner| {
+                                    !owner.is_empty()
+                                        && owner.encode_utf16().count() <= 256
+                                        && !owner.chars().any(|c| c <= '\u{1f}' || c == '\u{7f}')
+                                });
+                                if !valid {
+                                    return Err(anyhow!("invalid_workspace_layout"));
+                                }
+                            }
+                        }
+                        Some("history")
+                            if tab
+                                .get("projectId")
+                                .and_then(Value::as_str)
+                                .is_some_and(|id| !id.is_empty())
+                                && tab.get("path").is_none_or(|path| {
+                                    path.as_str().is_some_and(|path| !path.is_empty())
+                                }) => {}
+                        Some("review")
+                            if ["projectId", "path", "sessionId", "checkpointId"]
+                                .iter()
+                                .all(|key| {
+                                    tab.get(*key)
+                                        .and_then(Value::as_str)
+                                        .is_some_and(|value| !value.is_empty())
+                                })
+                                && tab.get("toCheckpointId").is_none_or(|value| {
+                                    value.as_str().is_some_and(|value| !value.is_empty())
+                                }) => {}
                         _ => return Err(anyhow!("invalid_workspace_layout")),
                     }
                 }
@@ -788,22 +1043,26 @@ pub fn scoped_path(root: &Path, relative: &str, must_exist: bool) -> Result<Path
 pub fn read_image(root: &Path, relative: &str) -> Result<(&'static str, Vec<u8>)> {
     let path = scoped_path(root, relative, true)?;
     let metadata = fs::metadata(&path)?;
-    if metadata.len() > 4 * 1024 * 1024 {
+    if metadata.len() > MAX_IMAGE_BYTES {
         return Err(anyhow!("image_too_large"));
     }
     let bytes = fs::read(path)?;
-    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        "image/png"
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        "image/jpeg"
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        "image/gif"
-    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        "image/webp"
-    } else {
-        return Err(anyhow!("unsupported_image"));
-    };
+    let mime = image_mime(&bytes).ok_or_else(|| anyhow!("unsupported_image"))?;
     Ok((mime, bytes))
+}
+
+fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 pub fn read_document(root: &Path, relative: &str) -> Result<(String, String)> {
@@ -901,45 +1160,97 @@ pub fn git_status(root: &Path) -> Result<Value> {
     } else {
         (0, 0)
     };
-    let porcelain = git(root, &["status", "--porcelain=v1", "-z"])?;
+    // Porcelain paths are repository-relative; the registered root may be a
+    // subdirectory, so keep only entries below it and make them root-relative.
+    let prefix = crate::git_read::repo_prefix(root)?;
+    let porcelain = git(
+        root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
     let mut fields = porcelain.split('\0');
     let mut changes = Vec::new();
     while let Some(record) = fields.next() {
-        if record.len() < 3 {
+        if record.len() < 4 {
             continue;
         }
         let index = &record[..1];
         let worktree = &record[1..2];
-        let mut path = record[3..].to_owned();
-        if matches!(&record[..2], "R " | " R" | "C " | " C") {
-            if let Some(old) = fields.next() {
-                path = format!("{old} -> {path}");
-            }
+        // -z renames are "XY new\0old\0" for either column (e.g. "RM").
+        let original = if matches!(index, "R" | "C") || matches!(worktree, "R" | "C") {
+            fields.next()
+        } else {
+            None
+        };
+        let Some(path) = crate::git_read::strip_prefix(&prefix, &record[3..]) else {
+            continue;
+        };
+        let mut change = serde_json::Map::new();
+        change.insert("path".into(), json!(path));
+        if let Some(original) =
+            original.and_then(|value| crate::git_read::strip_prefix(&prefix, value))
+        {
+            change.insert("originalPath".into(), json!(original));
         }
-        changes.push(json!({"path":path,"indexStatus":index,"worktreeStatus":worktree,"untracked":record.starts_with("??")}));
+        change.insert("indexStatus".into(), json!(index));
+        change.insert("worktreeStatus".into(), json!(worktree));
+        change.insert("untracked".into(), json!(record.starts_with("??")));
+        changes.push(Value::Object(change));
     }
     Ok(
         json!({"branch":branch.as_deref().map(str::trim),"upstream":upstream.as_deref().map(str::trim),"ahead":ahead,"behind":behind,"changes":changes}),
     )
 }
 
+/// staged=false compares the index with the working file (editable side);
+/// staged=true compares HEAD with the index. A missing side is empty text.
 pub fn git_diff(root: &Path, path: &str, staged: bool) -> Result<Value> {
-    let target = scoped_path(root, path, true)?;
-    let bytes = fs::read(&target)?;
-    if bytes.contains(&0) {
-        return Ok(
-            json!({"path":path,"staged":staged,"oldText":"","newText":"","binary":true,"fingerprint":fingerprint(&bytes)}),
-        );
-    }
-    let old = if staged {
-        git(root, &["show", &format!(":{path}")]).unwrap_or_default()
-    } else {
-        git(root, &["show", &format!("HEAD:{path}")]).unwrap_or_default()
+    crate::git_read::validate_relative(path)?;
+    crate::git_read::repo_prefix(root)?;
+    let target = scoped_path(root, path, false)?;
+    let worktree = match fs::symlink_metadata(&target) {
+        Ok(meta) if meta.is_file() => {
+            // Re-check containment of an existing file through its canonical target.
+            let target = scoped_path(root, path, true)?;
+            if fs::metadata(&target)?.len() as usize > MAX_DOCUMENT_BYTES {
+                return Err(anyhow!("file_too_large"));
+            }
+            Some(fs::read(target)?)
+        }
+        Ok(_) => return Err(anyhow!("file_reference_not_file")),
+        Err(_) => None,
     };
-    let new = String::from_utf8(bytes.clone()).map_err(|_| anyhow!("binary_file"))?;
-    Ok(
-        json!({"path":path,"staged":staged,"oldText":old,"newText":new,"binary":false,"fingerprint":fingerprint(&bytes)}),
-    )
+    let unmerged = !git(root, &["ls-files", "-u", "-z", "--", path])?.is_empty();
+    let index = if unmerged {
+        None
+    } else {
+        crate::git_read::read_blob(root, "", path)?
+    };
+    let (old, new) = if staged {
+        (
+            crate::git_read::read_blob(root, "HEAD", path)?,
+            index.clone(),
+        )
+    } else if unmerged {
+        (
+            crate::git_read::read_blob(root, "HEAD", path)?,
+            worktree.clone(),
+        )
+    } else {
+        (index.clone(), worktree.clone())
+    };
+    let fingerprint_value = fingerprint(worktree.as_deref().unwrap_or_default());
+    let index_fingerprint = index.as_deref().map(fingerprint);
+    let deleted = new.is_none();
+    let old_text = crate::git_read::text_of(old.as_deref().unwrap_or_default());
+    let new_text = crate::git_read::text_of(new.as_deref().unwrap_or_default());
+    Ok(match (old_text, new_text) {
+        (Some(old), Some(new)) => {
+            json!({"path":path,"staged":staged,"oldText":old,"newText":new,"binary":false,"fingerprint":fingerprint_value,"indexFingerprint":index_fingerprint,"deleted":deleted})
+        }
+        _ => {
+            json!({"path":path,"staged":staged,"oldText":"","newText":"","binary":true,"fingerprint":fingerprint_value,"indexFingerprint":index_fingerprint,"deleted":deleted})
+        }
+    })
 }
 
 pub fn fingerprint(bytes: &[u8]) -> String {
@@ -950,6 +1261,356 @@ pub fn fingerprint(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::db::Database;
+
+    fn file_reference_session(
+        db: &Database,
+        project_id: &str,
+        cwd: &Path,
+        provider: &str,
+        operation_id: &str,
+    ) -> crate::domain::Session {
+        crate::session_configs::initialize(db).unwrap();
+        let session = db
+            .create_session(crate::db::CreateSession {
+                project_id: Some(project_id),
+                title: None,
+                provider,
+                mode: "chat",
+                native_id: None,
+                operation_id,
+            })
+            .unwrap();
+        let root = workspace_root_for_cwd(db, project_id, cwd.to_str().unwrap()).unwrap();
+        db.bind_session(&session.id, Some(root.to_str().unwrap()), None)
+            .unwrap();
+        crate::session_configs::save_new(
+            db,
+            &session.id,
+            &crate::session_configs::LaunchSpec {
+                provider: provider.into(),
+                mode: "chat".into(),
+                cwd: cwd.to_string_lossy().into_owned(),
+                project_id: Some(project_id.into()),
+                title: None,
+                executable: None,
+                args: Vec::new(),
+            },
+            None,
+        )
+        .unwrap();
+        db.session_by_id(&session.id).unwrap().unwrap()
+    }
+
+    #[test]
+    fn resolves_session_scoped_relative_absolute_text_and_image_references() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        let cwd = root.join("src");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(root.join("中文 空格.md"), "# hello").unwrap();
+        fs::write(root.join("page.html"), "<p>source only</p>").unwrap();
+        fs::write(root.join("vector.svg"), "<svg/>").unwrap();
+        fs::write(root.join("pixel.png"), b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        fs::write(root.join("extensionless"), b"GIF89afixture").unwrap();
+        let db = Database::open(&temp.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db
+            .add_project(root.to_str().unwrap(), Some("repo"), "resolve-project")
+            .unwrap();
+        let session = file_reference_session(&db, &project.id, &cwd, "codex", "resolve-session");
+
+        let relative =
+            resolve_file_reference(&db, &session.id, "../中文 空格.md", Some(7), Some(3)).unwrap();
+        assert_eq!(relative["projectId"], project.id);
+        assert_eq!(relative["path"], "中文 空格.md");
+        assert_eq!(relative["kind"], "text");
+        assert_eq!(relative["line"], 7);
+        assert_eq!(relative["column"], 3);
+        assert_eq!(
+            resolve_file_reference(
+                &db,
+                &session.id,
+                root.join("pixel.png").to_str().unwrap(),
+                None,
+                None,
+            )
+            .unwrap()["kind"],
+            "image"
+        );
+        assert_eq!(
+            resolve_file_reference(&db, &session.id, "../extensionless", None, None).unwrap()
+                ["kind"],
+            "image"
+        );
+        for path in ["../page.html", "../vector.svg"] {
+            assert_eq!(
+                resolve_file_reference(&db, &session.id, path, None, None).unwrap()["kind"],
+                "text"
+            );
+        }
+        let column_only =
+            resolve_file_reference(&db, &session.id, "../page.html", None, Some(6)).unwrap();
+        assert!(column_only.get("line").is_none());
+        assert_eq!(column_only["column"], 6);
+    }
+
+    #[test]
+    fn rejects_untrusted_or_unresolvable_file_references() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        let cwd = root.join("nested");
+        let outside = temp.path().join("outside.txt");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(&outside, "outside").unwrap();
+        fs::write(root.join("inside.txt"), "inside").unwrap();
+        let db = Database::open(&temp.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db
+            .add_project(root.to_str().unwrap(), Some("repo"), "reject-project")
+            .unwrap();
+        let session = file_reference_session(&db, &project.id, &cwd, "codex", "reject-session");
+
+        for (path, line, column, expected) in [
+            ("https://example.com/a.rs", None, None, "file_reference_uri"),
+            ("file:///C:/work/a.rs", None, None, "file_reference_uri"),
+            (
+                "../inside.txt:alternate",
+                None,
+                None,
+                "file_reference_invalid_path",
+            ),
+            ("missing.txt", None, None, "file_reference_not_found"),
+            (".", None, None, "file_reference_not_file"),
+            ("../..", None, None, "file_reference_outside_scope"),
+            (
+                "../inside.txt",
+                Some(0),
+                None,
+                "file_reference_invalid_position",
+            ),
+            (
+                "../inside.txt",
+                Some(1_000_001),
+                None,
+                "file_reference_invalid_position",
+            ),
+            (
+                "../inside.txt",
+                None,
+                Some(0),
+                "file_reference_invalid_position",
+            ),
+        ] {
+            assert_eq!(
+                resolve_file_reference(&db, &session.id, path, line, column)
+                    .unwrap_err()
+                    .to_string(),
+                expected
+            );
+        }
+        assert_eq!(
+            resolve_file_reference(&db, &session.id, outside.to_str().unwrap(), None, None,)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_outside_scope"
+        );
+        assert_eq!(
+            resolve_file_reference(&db, &session.id, "bad\0path", None, None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_invalid_path"
+        );
+        assert_eq!(
+            resolve_file_reference(&db, &session.id, &"x".repeat(16 * 1024 + 1), None, None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_invalid_path"
+        );
+    }
+
+    #[test]
+    fn relative_references_do_not_guess_shell_cwd_but_absolute_paths_still_resolve() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("shell.txt"), "shell").unwrap();
+        let db = Database::open(&temp.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db
+            .add_project(root.to_str().unwrap(), Some("repo"), "shell-project")
+            .unwrap();
+        let session = file_reference_session(&db, &project.id, &root, "shell", "shell-session");
+        assert_eq!(
+            resolve_file_reference(&db, &session.id, "shell.txt", None, None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_relative_requires_absolute"
+        );
+        assert_eq!(
+            resolve_file_reference(
+                &db,
+                &session.id,
+                root.join("shell.txt").to_str().unwrap(),
+                None,
+                None,
+            )
+            .unwrap()["path"],
+            "shell.txt"
+        );
+    }
+
+    #[test]
+    fn identical_relative_names_remain_bound_to_the_source_worktree() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        let first = root.join("tree-one");
+        let second = root.join("tree-two");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("same.txt"), "one").unwrap();
+        fs::write(second.join("same.txt"), "two").unwrap();
+        let db = Database::open(&temp.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db
+            .add_project(root.to_str().unwrap(), Some("repo"), "trees-project")
+            .unwrap();
+        db.transaction(|tx| {
+            for (id, path) in [("tree-one", &first), ("tree-two", &second)] {
+                tx.execute(
+                    "INSERT INTO worktrees(id,project_id,path,branch,head,is_main,locked) VALUES(?,?,?,'main','head',0,0)",
+                    params![id, project.id, path.to_string_lossy()],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let first_session =
+            file_reference_session(&db, &project.id, &first, "codex", "tree-session-one");
+        let second_session =
+            file_reference_session(&db, &project.id, &second, "codex", "tree-session-two");
+        let first_result =
+            resolve_file_reference(&db, &first_session.id, "same.txt", None, None).unwrap();
+        let second_result =
+            resolve_file_reference(&db, &second_session.id, "same.txt", None, None).unwrap();
+        assert_eq!(first_result["path"], "same.txt");
+        assert_eq!(second_result["path"], "same.txt");
+        assert_ne!(first_result["worktreePath"], second_result["worktreePath"]);
+        assert_eq!(
+            first_result["worktreePath"],
+            first.canonicalize().unwrap().to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            second_result["worktreePath"],
+            second.canonicalize().unwrap().to_string_lossy().as_ref()
+        );
+    }
+
+    #[test]
+    fn resolver_requires_a_project_and_a_trusted_launch_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Database::open(&temp.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        crate::session_configs::initialize(&db).unwrap();
+        let unconfigured = db
+            .create_session(crate::db::CreateSession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                native_id: None,
+                operation_id: "unconfigured",
+            })
+            .unwrap();
+        assert_eq!(
+            resolve_file_reference(&db, &unconfigured.id, "a.txt", None, None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_config_missing"
+        );
+        crate::session_configs::save_new(
+            &db,
+            &unconfigured.id,
+            &crate::session_configs::LaunchSpec {
+                provider: "codex".into(),
+                mode: "chat".into(),
+                cwd: temp.path().to_string_lossy().into_owned(),
+                project_id: None,
+                title: None,
+                executable: None,
+                args: Vec::new(),
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_file_reference(&db, &unconfigured.id, "a.txt", None, None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_project_missing"
+        );
+        assert_eq!(
+            resolve_file_reference(&db, "missing", "a.txt", None, None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_session_not_found"
+        );
+    }
+
+    #[test]
+    fn canonical_containment_rejects_a_link_outside_the_registered_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+        let link = root.join("escape");
+        #[cfg(windows)]
+        {
+            let status = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&outside)
+                .status()
+                .unwrap();
+            assert!(status.success(), "junction fixture must be created");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let db = Database::open(&temp.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let project = db
+            .add_project(root.to_str().unwrap(), Some("repo"), "link-project")
+            .unwrap();
+        let session = file_reference_session(&db, &project.id, &root, "codex", "link-session");
+        assert_eq!(
+            resolve_file_reference(&db, &session.id, "escape/secret.txt", None, None)
+                .unwrap_err()
+                .to_string(),
+            "file_reference_outside_scope"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_unc_and_verbatim_paths_are_not_misclassified_as_uris() {
+        for path in [
+            r"D:\Repo\中文 空格\file.rs",
+            r"\\server\share\Repo\file.rs",
+            r"\\?\D:\Repo\file.rs",
+            r"\\?\UNC\server\share\Repo\file.rs",
+        ] {
+            assert!(!looks_like_uri(path), "{path}");
+        }
+        assert_eq!(
+            lexical_components(Path::new(r"\\server\share\Repo\file.rs")).unwrap(),
+            lexical_components(Path::new(r"\\?\UNC\server\share\Repo\file.rs")).unwrap()
+        );
+        assert_eq!(
+            lexical_components(Path::new(r"D:\Repo\file.rs")).unwrap(),
+            lexical_components(Path::new(r"\\?\D:\Repo\file.rs")).unwrap()
+        );
+    }
     #[test]
     fn reports_non_repository_git_status_as_unavailable() {
         let temp = tempfile::tempdir().unwrap();
@@ -1163,6 +1824,27 @@ mod tests {
         assert!(validate_layout(&duplicate_ids).is_err());
         let invalid_tab = json!({"kind":"pane","id":"p","tabs":[{"id":"file","kind":"file","projectId":"p","path":""}],"activeTabId":"file"});
         assert!(validate_layout(&invalid_tab).is_err());
+    }
+    #[test]
+    fn session_file_owners_are_optional_validated_and_persisted() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Database::open(&temp.path().join("db.sqlite")).unwrap();
+        initialize(&db).unwrap();
+        let mut layout = json!({"kind":"pane","id":"p","tabs":[{"id":"f","kind":"preview","projectId":"p","path":"README.md"}],"activeTabId":"f"});
+        assert!(validate_layout(&layout).is_ok());
+        layout["tabs"][0]["ownerSessionId"] = json!("session-a");
+        let saved = dispatch(&db, "workspace.save", &json!({"name":"owned","layout":layout,"expectedRevision":0,"operationId":"owned-save"})).unwrap().unwrap();
+        assert_eq!(saved["layout"], layout);
+        for invalid in [
+            Value::Null,
+            json!(3),
+            json!(""),
+            json!("a\nb"),
+            json!("x".repeat(257)),
+        ] {
+            layout["tabs"][0]["ownerSessionId"] = invalid;
+            assert!(validate_layout(&layout).is_err());
+        }
     }
     #[test]
     fn creates_lists_and_removes_a_registered_worktree_idempotently() {

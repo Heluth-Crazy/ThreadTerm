@@ -10,3 +10,8 @@
 .terminals-page-menu .tt-select { min-width:190px; }
 .t-card .tc-actions .icon-btn { display:inline-grid; place-items:center; }
 .t-card .tc-actions .icon-btn > .ico { width:16px; height:16px; }
+/* The rail is only rendered for a selected card's summary or opened native history. */
+.terminals-page .t-split:not(.has-rail) { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr); }
+.t-rail-head .t-rail-head-actions { display:flex; flex:0 0 auto; align-items:center; gap:4px; }
+.t-rail-head-actions .icon-btn { display:inline-grid; place-items:center; }
+.t-rail-head-actions .icon-btn > .ico { width:14px; height:14px; }

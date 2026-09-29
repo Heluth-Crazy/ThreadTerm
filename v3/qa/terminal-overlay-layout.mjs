@@ -16,6 +16,7 @@ const entry = `
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { TerminalSurface } from './renderer/src/components/TerminalSurface';
+import { SessionSurfaceContext } from './renderer/src/components/SessionSurfaceContext';
 import { I18nProvider } from './renderer/src/i18n';
 import './renderer/src/styles.css';
 
@@ -32,14 +33,19 @@ window.threadterm = {
 };
 function Fixture() {
   const [theme, setTheme] = useState('light');
-  window.qaSetTheme = setTheme;
+  const [primaryHost,setPrimaryHost] = useState(null), [menuHost,setMenuHost] = useState(null);
+  window.qaSetTheme = nextTheme => {
+    document.documentElement.dataset.theme = nextTheme;
+    setTheme(nextTheme);
+  };
   const session = { id:'overlay-qa', title:'Overlay QA', provider:'codex', mode:'terminal',
     status:'interrupted', readOnly:false, worktreePath:'D:/project/ThreadTerm',
     createdAt:'now', updatedAt:'now', cols:120, rows:32 };
-  return <I18nProvider locale="zh-CN"><main className="qa-shell"><div className="qa-pane">
+  const presentation = { primaryHost, menuHost, focused:true };
+  return <I18nProvider locale="zh-CN"><SessionSurfaceContext.Provider value={presentation}><main className="qa-shell"><div className="qa-toolbar"><div id="primary" ref={setPrimaryHost}/><div id="menu" ref={setMenuHost}/></div><div className="qa-pane">
     <TerminalSurface sessionId="overlay-qa" session={session} provider="codex" theme={theme}
       terminalCompatibility={{}} onCloseView={() => {}} onConfigure={() => {}} />
-  </div></main></I18nProvider>;
+  </div></main></SessionSurfaceContext.Provider></I18nProvider>;
 }
 createRoot(document.getElementById('root')).render(<Fixture />);
 `;
@@ -52,12 +58,11 @@ await build({
 await writeFile(join(scratch, 'index.html'), `<!doctype html><meta charset="utf-8">
 <style>
 html,body,#root { width:100%; height:100%; margin:0; }
-.qa-shell { display:flex; box-sizing:border-box; width:100%; height:100%; padding:20px; background:#eef1f5; }
-.qa-pane { display:flex; flex:1; min-width:0; min-height:0; border:1px solid #cad1dc; background:#fff; }
+.qa-shell { display:flex; flex-direction:column; box-sizing:border-box; width:100%; height:100%; padding:20px; background:var(--bg); }
+.qa-toolbar { display:flex; flex:0 0 auto; align-items:center; gap:12px; min-height:34px; border:1px solid var(--border); background:var(--surface); }
+.qa-toolbar #primary,.qa-toolbar #menu { display:flex; align-items:center; gap:6px; }
+.qa-pane { display:flex; flex:1; width:100%; min-width:0; min-height:0; border:1px solid var(--border); background:var(--surface); }
 .qa-pane > .terminal-wrap { flex:1; min-width:0; min-height:0; }
-.term-head { display:flex; align-items:center; gap:8px; flex:0 0 auto; min-width:0; min-height:36px; padding:6px 12px; border-bottom:1px solid #d7dce5; }
-.term-head .grow { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.term-head .btn { flex:0 0 auto; }
 </style><link rel="stylesheet" href="qa.css"><div id="root"></div><script src="qa.js"></script>`);
 await writeFile(join(scratch, 'main.cjs'), `
 const { app, BrowserWindow } = require('electron');
@@ -91,7 +96,7 @@ try {
     await page.setViewportSize({ width, height:860 });
     await page.evaluate((nextPaneWidth) => {
       const scale = Number(getComputedStyle(document.documentElement).zoom) || 1;
-      document.querySelector('.qa-pane').style.flex = '0 0 ' + (nextPaneWidth / scale) + 'px';
+      document.querySelector('.qa-pane').style.width = (nextPaneWidth / scale) + 'px';
     }, paneWidth);
     await page.waitForTimeout(80);
     const geometry = await page.evaluate(() => {
@@ -101,26 +106,25 @@ try {
         const box = element.getBoundingClientRect();
         return { x:box.x, y:box.y, width:box.width, height:box.height };
       };
-      const controls = [...document.querySelectorAll('.v3-session-controls button')].map(button => {
+      const controls = [...document.querySelectorAll('.qa-toolbar button')].map(button => {
         const box = button.getBoundingClientRect();
         const point = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
         return { text:button.textContent, x:box.x, y:box.y, width:box.width, height:box.height,
           reachable:point === button || button.contains(point) };
       });
-      return { head:get('.term-head'), controlBar:get('.v3-session-controls'), content:get('.term-content'),
-        overlay:get('.term-loading-overlay'), host:get('.terminal-host'), foot:get('.term-foot'), controls,
+      return { toolbar:get('.qa-toolbar'), pane:get('.qa-pane'), content:get('.term-content'),
+        overlay:get('.term-loading-overlay'), host:get('.terminal-host'), controls,
         zoom:getComputedStyle(document.documentElement).zoom };
     });
     const content = rect(geometry.content), overlay = rect(geometry.overlay);
     assert.ok(overlay.left >= content.left && overlay.top >= content.top && overlay.right <= content.right && overlay.bottom <= content.bottom,
       `${label}: loading overlay escaped terminal content`);
-    assert.equal(intersects(rect(geometry.overlay), rect(geometry.head)), false, `${label}: loading overlay covers the header`);
-    assert.equal(intersects(rect(geometry.overlay), rect(geometry.controlBar)), false, `${label}: loading overlay covers session controls`);
-    assert.equal(intersects(rect(geometry.overlay), rect(geometry.foot)), false, `${label}: loading overlay covers footer`);
+    assert.equal(intersects(rect(geometry.overlay), rect(geometry.toolbar)), false, `${label}: loading overlay covers upper controls`);
+    assert.equal(await page.locator('.term-head,.v3-session-controls,.term-foot').count(),0,`${label}: redundant terminal rows returned`);
     assert.ok(geometry.host.width > 0 && geometry.host.height > 0, `${label}: xterm host is not measurable while masked`);
-    assert.ok(geometry.controls.every(control => control.reachable), `${label}: a visible session control is obscured`);
-    await page.locator('.v3-session-controls button').last().focus();
-    assert.equal(await page.locator('.v3-session-controls button').last().evaluate(button => document.activeElement === button), true,
+    assert.ok(geometry.controls.length >= 3 && geometry.controls.every(control => control.reachable), `${label}: a visible upper action is obscured`);
+    await page.locator('.qa-toolbar button').last().focus();
+    assert.equal(await page.locator('.qa-toolbar button').last().evaluate(button => document.activeElement === button), true,
       `${label}: keyboard focus cannot reach the final session control`);
     await page.screenshot({ path:join(out, `${label}.png`), animations:'disabled' });
     report.screenshots.push(`${label}.png`);
@@ -130,13 +134,17 @@ try {
   const normal = [];
   for (const width of [1280, 1440, 1920]) normal.push(await assertLayout(`light-${width}`, width, width - 40));
   const small = await assertLayout('light-small-pane', 1280, 320);
-  assert.ok(small.controlBar.height > normal[0].controlBar.height, 'small pane controls must wrap instead of overflowing below the overlay');
+  assert.ok(small.pane.width < normal[0].pane.width, 'small pane geometry must really shrink');
+  assert.equal(small.toolbar.height, normal[0].toolbar.height, 'upper controls must not consume narrow pane height');
   await page.evaluate(() => window.qaSetTheme('dark'));
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
   const dark = await assertLayout('dark-1440', 1440, 1400);
+  const paneBackground = await page.locator('.qa-pane').evaluate(element => getComputedStyle(element).backgroundColor);
+  assert.notEqual(paneBackground, 'rgb(255, 255, 255)', 'dark capture must use real dark theme tokens');
   assert.equal(dark.zoom, '1.25', '125% layout zoom was not applied');
   assert.deepEqual(errors, []);
   report.passed = true;
-  report.checks = ['overlay bounded by term-content', 'header/control/footer remain outside overlay', 'controls wrap and pass hit testing in a narrow pane', 'keyboard focus reaches controls', 'light/dark and 1.25 scale Electron captures'];
+  report.checks = ['overlay bounded by term-content', 'upper actions remain outside overlay', 'narrow pane keeps upper controls reachable', 'keyboard focus reaches controls', 'light/dark and 1.25 scale Electron captures'];
   await writeFile(join(out, 'report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ passed:true, out, checks:report.checks }));
 } catch (error) {

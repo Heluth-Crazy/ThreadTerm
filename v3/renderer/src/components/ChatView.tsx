@@ -1,7 +1,7 @@
-import { FormEvent, Fragment, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, Fragment, KeyboardEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import type { ChatPart, ChatSessionOption, ChatSlashCommand, ChatUiState, Session } from "@threadterm/protocol";
+import type { ChatPart, ChatSessionOption, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
 import { ChatItem, operationId, request, subscribeEvents } from "../bridge";
 import { restoreChat, upsertChatItem } from "../chatState";
 import { acquireControl } from '../controlLease';
@@ -16,9 +16,14 @@ import { connectionStatusText, emptyLink, overlayKind, reduceChatLink } from "..
 import { activeTurnId, chatCanControl, formatChatDuration, itemShowsStreaming, matchSlashCommands, partBody, partLabel, shouldRenderPart, slashQuery } from "../chatPresentation";
 import { groupCodexTranscript } from "../codexTranscript";
 import { createCodexStreamQueue } from "../codexStream";
+import { FileLinkedMarkdown, FileLinkedText, FileReferenceChips } from './FileReferenceText';
+import { parseMarkdownFileReference } from '../fileReferences';
+import { SessionSurfaceContext } from './SessionSurfaceContext';
+import { registerChatInputTarget } from '../terminalInputTargets';
+import { insertAtCaret } from '../workbench/agentReference';
 import "./chat-network-notice.css";
 
-function ThinkingPart({ part, streaming, copy }: { part: ChatPart; streaming: boolean; copy: (en: string, zh: string) => string }) {
+function ThinkingPart({ part, streaming, copy, openFile }: { part: ChatPart; streaming: boolean; copy: (en: string, zh: string) => string; openFile?: (reference: FileReference) => void }) {
   const [open, setOpen] = useState(streaming);
   useEffect(() => { setOpen(streaming); }, [streaming]);
   const body = partBody(part);
@@ -26,21 +31,31 @@ function ThinkingPart({ part, streaming, copy }: { part: ChatPart; streaming: bo
   return (
     <details className="v3-thinking" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>{streaming ? copy("Thinking…", "思考中…") : copy("Thought process", "思考过程")}</summary>
-      <div className="v3-message-text">{body}</div>
+      <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
+      <FileReferenceChips references={part.fileReferences} visibleText={body} openFile={openFile} />
     </details>
   );
 }
 
 function renderCodexMarkdown(text: string): string {
   const rendered = marked.parse(text, { gfm: true, breaks: true });
-  return DOMPurify.sanitize(typeof rendered === "string" ? rendered : "", {
+  const template = document.createElement('template');
+  template.innerHTML = typeof rendered === "string" ? rendered : "";
+  for (const element of Array.from(template.content.querySelectorAll('[data-threadterm-file-reference]'))) element.removeAttribute('data-threadterm-file-reference');
+  for (const anchor of Array.from(template.content.querySelectorAll('a[href]'))) {
+    const reference = parseMarkdownFileReference(anchor.getAttribute('href') ?? '');
+    if (!reference) continue;
+    anchor.removeAttribute('href');
+    anchor.setAttribute('data-threadterm-file-reference', JSON.stringify(reference));
+  }
+  return DOMPurify.sanitize(template.innerHTML, {
     FORBID_TAGS: ["script", "iframe", "object", "embed", "form", "input", "button", "link", "meta", "base", "svg", "math", "audio", "video", "source", "track"],
     FORBID_ATTR: ["style", "srcset", "background", "poster"],
     SANITIZE_NAMED_PROPS: true,
   });
 }
 
-function CodexToolPart({ part, copy }: { part: ChatPart; copy: (en: string, zh: string) => string }) {
+function CodexToolPart({ part, copy, openFile }: { part: ChatPart; copy: (en: string, zh: string) => string; openFile?: (reference: FileReference) => void }) {
   const name = (part.toolName ?? "").toLowerCase();
   const isFile = name.includes("file") || name.includes("patch") || name.includes("dir") || name.includes("read") || name.includes("write") || name.includes("edit");
   const isCommand = name.includes("command") || name.includes("shell") || name.includes("exec") || name.includes("bash");
@@ -58,7 +73,8 @@ function CodexToolPart({ part, copy }: { part: ChatPart; copy: (en: string, zh: 
   const running = part.status === "running" || part.status === "pending";
   return <details className="codex-tool-disclosure">
     <summary><Icon name={icon} /><span>{running ? copy("Running", "正在执行") + ": " : ""}{label}{failed ? ` · ${copy("failed", "失败")}` : ""}</span><Icon name="chevR" className="codex-tool-chevron" /></summary>
-    {body && <pre>{body}</pre>}
+    {body && <pre><FileLinkedText text={body} openFile={openFile} /></pre>}
+    <FileReferenceChips references={part.fileReferences} visibleText={body} openFile={openFile} />
   </details>;
 }
 
@@ -310,6 +326,7 @@ function isTerminalChatStatus(status: Session["status"]): boolean {
 
 export function ChatView({ session }: { session: Session }) {
   const { locale } = useTranslation();
+  const openFile = useContext(SessionSurfaceContext)?.openFile;
   const zh = locale === 'zh-CN';
   const copy = (en: string, cn: string) => zh ? cn : en;
   const recoveryKey = `threadterm.compose.${session.id}`;
@@ -372,6 +389,18 @@ export function ChatView({ session }: { session: Session }) {
     try { localStorage.setItem(recoveryKey, value); }
     catch { setError(copy('Local recovery is unavailable. Keep this view open until the draft is saved.', '本地恢复不可用，请在草稿保存成功前保持此视图打开。')); }
   }
+  const changeTextRef = useRef(changeText);
+  changeTextRef.current = changeText;
+  // Editor/file "Send to agent" inserts a reference at the caret; it never submits.
+  useEffect(() => registerChatInputTarget(session.id, {
+    visible: () => Boolean(composeRef.current && !composeRef.current.disabled && composeRef.current.getClientRects().length > 0),
+    insert: (reference) => {
+      const area = composeRef.current;
+      const next = insertAtCaret(currentText.current, area?.selectionStart ?? currentText.current.length, reference);
+      changeTextRef.current(next.text);
+      requestAnimationFrame(() => { area?.focus(); area?.setSelectionRange(next.caret, next.caret); });
+    },
+  }), [session.id]);
   async function retryDraft() {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined; if (!canControl || epoch === undefined) return;
     try {
@@ -701,7 +730,7 @@ export function ChatView({ session }: { session: Session }) {
       const live = itemShowsStreaming(item, items);
       return <article className={`v3-chat-message ${item.role} is-native is-${session.provider}`} key={item.id}>
       {item.parts.filter(shouldRenderPart).map((part, index) => {
-        if (part.type === "thinking") return <ThinkingPart key={`thinking-${index}`} part={part} streaming={live && part.status === "streaming"} copy={copy} />;
+        if (part.type === "thinking") return <ThinkingPart key={`thinking-${index}`} part={part} streaming={live && part.status === "streaming"} copy={copy} openFile={openFile} />;
         if (part.type === "status" && asRecord(part.data).kind === "providerRetry") {
           const retry = asRecord(part.data), state = asString(retry.state, "retrying");
           const count = typeof retry.attempt === "number" && typeof retry.maxRetries === "number" ? ` (${retry.attempt}/${retry.maxRetries})` : "";
@@ -724,12 +753,13 @@ export function ChatView({ session }: { session: Session }) {
         const foldedTool = part.type === "tool";
         const codexMarkdown = item.role !== "user" && part.type === "text";
         return <div className={`chat-part ${part.type}${part.type === 'tool' ? ` v3-tool-card ${part.status ?? ''}` : ''}`} key={`${part.type}-${index}`}>
-          {foldedTool ? <CodexToolPart part={part} copy={copy} /> : <>
+          {foldedTool ? <CodexToolPart part={part} copy={copy} openFile={openFile} /> : <>
             {label && <strong>{label}</strong>}
             {body ? codexMarkdown
-              ? <div className="v3-message-text codex-markdown" dangerouslySetInnerHTML={{ __html: renderCodexMarkdown(body) }} />
-              : <div className="v3-message-text">{body}</div>
+              ? <FileLinkedMarkdown sanitizedHtml={renderCodexMarkdown(body)} references={part.fileReferences} openFile={openFile} />
+              : <div className="v3-message-text"><FileLinkedText text={body} openFile={openFile} /></div>
               : null}
+            {!codexMarkdown && <FileReferenceChips references={part.fileReferences} visibleText={body} openFile={openFile} />}
           </>}
           {part.status && !foldedTool && part.type !== 'text' && part.status !== 'complete' && part.status !== 'streaming' && <small>{part.status}</small>}
         </div>;
@@ -737,7 +767,7 @@ export function ChatView({ session }: { session: Session }) {
     </article>;
   }
   return <section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
-    <header><b>Chat · {session.provider}</b><span>{writable ? copy('Live session', '实时会话') : ended ? copy('Read-only view', '只读视图') : connected ? copy('Read-only view', '只读视图') : copy('Connecting…', '正在连接…')}</span></header>
+    {ended && <p className="chat-history-note" role="note">{copy('Session ended · history is read-only.', '会话已结束 · 历史记录只读。')}</p>}
     {overlay === "banner" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={false} error={connection.error} variant="banner" onRetry={retryConnection} copy={copy} transportDown={link.transport !== "up"} />}
     {ui.loadState === "error" && ui.error && <p className="surface-error" role="alert">{ui.error.message} <button type="button" className="btn" disabled={!writable} onClick={() => void request("chat.options", { sessionId: session.id }).then(setUi).catch(caught => setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } })))}>{copy("Retry options", "重试读取选项")}</button></p>}
     {historyFailed && <p className="surface-error" role="alert">{copy("History could not be loaded.", "无法加载历史。")}</p>}

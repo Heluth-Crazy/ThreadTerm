@@ -6,6 +6,7 @@ import { useTranslation } from "../i18n";
 import { AgentIcon, Icon } from "./PrototypeIcon";
 import { CatalogActions, CatalogPopover, restoreCatalogTarget, type CatalogTarget } from "./CatalogActions";
 import "./project-catalog.css";
+import { sessionState, sessionStateLabel } from "../sessionState";
 
 type Props={selectedProjectId?:string;selectedWorktreePath?:string;selectedSessionId?:string;onAll:()=>void;onProject:(id:string)=>void;onWorktree?:(id:string,path?:string)=>void;sessions?:Session[];visibility?:CatalogVisibility[];onChanged?:()=>void;onSession?:(id:string)=>void;onNewSession?:(id?:string,path?:string)=>void;onScopeChange?:(id?:string)=>void;onAddProject?:()=>void};
 const stateClass=(session:Session)=>session.readOnly?"ended":session.status==="waiting"?"needs":session.status==="error"?"failed":session.status==="interrupted"?"stalled":session.status==="exited"?"ended":"running";
@@ -14,6 +15,13 @@ const treeState=(tree:Worktree,sessions:Session[])=>{
   const rank:Record<string,number>={ended:0,stalled:1,running:2,failed:3,needs:4};
   return sessions.map(stateClass).reduce((best,state)=>rank[state]>rank[best]?state:best,"ended");
 };
+
+/** Branch names shed their prefix (`feature/`) before the leaf, which is what tells branches apart. */
+function BranchName({name}:{name:string}){
+  const cut=name.lastIndexOf("/")+1;
+  if(cut<=0||cut>=name.length)return <span className="branch">{name}</span>;
+  return <span className="branch branch-split"><span className="branch-prefix">{name.slice(0,cut)}</span><span className="branch-leaf">{name.slice(cut)}</span></span>;
+}
 
 export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedSessionId,onAll,onProject,onWorktree,sessions=[],visibility=[],onChanged,onSession,onNewSession,onScopeChange,onAddProject}:Props){
   const {locale}=useTranslation(),zh=locale==="zh-CN",label=(en:string,cn:string)=>zh?cn:en;
@@ -60,10 +68,13 @@ export function ProjectCatalog({selectedProjectId,selectedWorktreePath,selectedS
         const treeSessions=projectSessions.filter(session=>sameCanonicalScope(session.worktreePath??item.path,tree.path));
         const selected=selectedProjectId===item.id&&Boolean(selectedWorktreePath)&&sameCanonicalScope(tree.path,selectedWorktreePath);
         const treeTarget:CatalogTarget={kind:"worktree",id:tree.id,name:tree.branch??label("Local directory","本地目录"),path:tree.path,projectId:item.id,worktreeId:tree.id};
-        return <div className="catalog-tree-group" key={tree.id}><div className={"tree-row-wrap"+(selected?" current":"")}><button type="button" className={"tree-row"+(selected?" active":"")} title={displayPath(tree.path)} onClick={()=>onWorktree?.(item.id,tree.path)}><span className="bico"><Icon name="branch"/><i className={"bico-dot st-"+treeState(tree,treeSessions)}/></span><span className="branch">{treeTarget.name}</span>{treeSessions.length>0&&<span className="badge">{treeSessions.length}</span>}</button>{actions(treeTarget)}</div>
-          {treeSessions.map(session=><div className="sess-row-wrap" key={session.id}><button type="button" className={"sess-row"+(session.id===selectedSessionId?" active":"")} title={session.title+" · "+session.status} onClick={()=>onSession?.(session.id)}><span className="bico"><AgentIcon provider={session.provider}/><i className={"bico-dot st-"+stateClass(session)}/></span><span className="grow">{session.title}</span>{session.followed&&<span className="follow-star" aria-label={label("Followed","已关注")}>★</span>}</button>{actions({...treeTarget,kind:"session",id:session.id,name:session.title})}</div>)}
+        // One filled row: a selected session owns the highlight; its branch only reads as current (brighter text).
+        const holdsSelection=selected&&treeSessions.some(session=>session.id===selectedSessionId);
+        return <div className="catalog-tree-group" key={tree.id}><div className={"tree-row-wrap"+(selected?" current":"")}><button type="button" className={"tree-row"+(selected&&!holdsSelection?" active":"")+(holdsSelection?" contains-active":"")} title={`${treeTarget.name}
+${displayPath(tree.path)}`} onClick={()=>onWorktree?.(item.id,tree.path)}><span className="bico"><Icon name="branch"/><i className={"bico-dot st-"+treeState(tree,treeSessions)}/></span><BranchName name={treeTarget.name}/>{treeSessions.length>0&&<span className="badge">{treeSessions.length}</span>}</button>{actions(treeTarget)}</div>
+          {treeSessions.map(session=><div className="sess-row-wrap" key={session.id}><button type="button" className={"sess-row"+(session.id===selectedSessionId?" active":"")} title={session.title+" · "+sessionStateLabel(sessionState(session),zh,session.readOnly)} onClick={()=>onSession?.(session.id)}><span className="bico"><AgentIcon provider={session.provider}/><i className={"bico-dot st-"+stateClass(session)}/></span><span className="grow">{session.title}</span>{session.followed&&<span className="follow-star" aria-label={label("Followed","已关注")}>★</span>}</button>{actions({...treeTarget,kind:"session",id:session.id,name:session.title})}</div>)}
         </div>;
-      })}{plainDirectorySessions.map(session=>{const sessionTarget:CatalogTarget={kind:"session",id:session.id,name:session.title,path:session.worktreePath??item.path,projectId:item.id};return <div className="sess-row-wrap" key={session.id}><button type="button" className={"sess-row"+(session.id===selectedSessionId?" active":"")} title={session.title+" · "+session.status} onClick={()=>onSession?.(session.id)}><span className="bico"><AgentIcon provider={session.provider}/><i className={"bico-dot st-"+stateClass(session)}/></span><span className="grow">{session.title}</span>{session.followed&&<span className="follow-star" aria-label={label("Followed","已关注")}>★</span>}</button>{actions(sessionTarget)}</div>;})}{ordered.length>8&&<button type="button" className="btn-subtle catalog-more-trees" onClick={()=>setShowAll(value=>({...value,[item.id]:!value[item.id]}))}>{showAll[item.id]?label("Collapse more worktrees","收起更多工作目录"):label("Show "+(ordered.length-8)+" more worktrees","显示其余 "+(ordered.length-8)+" 个工作目录")}</button>}</div>}</div>;
+      })}{plainDirectorySessions.map(session=>{const sessionTarget:CatalogTarget={kind:"session",id:session.id,name:session.title,path:session.worktreePath??item.path,projectId:item.id};return <div className="sess-row-wrap" key={session.id}><button type="button" className={"sess-row"+(session.id===selectedSessionId?" active":"")} title={session.title+" · "+sessionStateLabel(sessionState(session),zh,session.readOnly)} onClick={()=>onSession?.(session.id)}><span className="bico"><AgentIcon provider={session.provider}/><i className={"bico-dot st-"+stateClass(session)}/></span><span className="grow">{session.title}</span>{session.followed&&<span className="follow-star" aria-label={label("Followed","已关注")}>★</span>}</button>{actions(sessionTarget)}</div>;})}{ordered.length>8&&<button type="button" className="btn-subtle catalog-more-trees" onClick={()=>setShowAll(value=>({...value,[item.id]:!value[item.id]}))}>{showAll[item.id]?label("Collapse more worktrees","收起更多工作目录"):label("Show "+(ordered.length-8)+" more worktrees","显示其余 "+(ordered.length-8)+" 个工作目录")}</button>}</div>}</div>;
     })}</div>
     {!items.length&&!issue&&<p className="side-empty">{label("No projects yet. Add a directory to get started.","还没有项目，请先添加目录。")}</p>}{issue&&<p className="side-empty" role="alert">{issue}</p>}
     {menuAnchor&&<CatalogPopover anchor={menuAnchor} onClose={closeMenu} label={label("Project scope","项目范围")}>

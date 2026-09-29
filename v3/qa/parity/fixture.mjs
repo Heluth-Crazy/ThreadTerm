@@ -1,6 +1,9 @@
 // QA-only memory bridge. Never bundled into the app or written to a database.
 export function installVisualFixture({ seed, theme }) {
-  theme=new URLSearchParams(location.search).get('theme')??theme;
+  const query=new URLSearchParams(location.search);
+  theme=query.get('theme')??theme;
+  // UI review captures: ?lang=en for English, ?usage=1 for a week of token records (usage cards with data).
+  const language=query.get('lang')==='en'?'en':'zh-CN',withUsage=query.get('usage')==='1';
   const date = '2026-09-10T14:21:00.000Z';
   const sessionDate = time => { const value = new Date(); if(time.startsWith('昨天'))value.setDate(value.getDate()-1);const parts=time.match(/(\d{2}):(\d{2})/);value.setHours(Number(parts?.[1]??14),Number(parts?.[2]??21),0,0);return value.toISOString(); };
   localStorage.setItem('threadterm.v3.recent-session-ids',JSON.stringify(seed.store.recentSessionIds));
@@ -18,7 +21,7 @@ export function installVisualFixture({ seed, theme }) {
     {id:'docs',name:'文档整理',revision:1,sessions:[],commands:[],layout:pane('docs-pane',[sessionRef('docs-gemini')])},
   ];
   const inbox=[['orbit-approval-focus','orbit-claude','approval','确认焦点修复范围'],['orbit-input-checkout','orbit-claude','waiting','需要补充验收范围'],['pulse-failed-retry','pulse-codex','failed','重试连接已中断'],['docs-review-navigation','docs-gemini','review','导航文档待复核'],['orbit-stalled-server','orbit-shell','stalled','开发服务器长时间无新输出']].map(([id,sessionId,kind,title])=>({id,sessionId,kind,title,createdAt:date,read:false}));
-  const state={epoch:'visual-fixture',revision:1,projects,sessions,inbox,providers,settings:{revision:1,theme,language:'zh-CN',notifications:{native:true,attention:true,completed:true,sound:false},terminalCompatibility:{aiCompletionHints:true},customThemes:{'Ocean glass':{background:'#f7f8f8',surface:'#ffffff',text:'#282a30',muted:'#6b6f76',accent:'#5db9ff',border:'#eeeeee'}}},workspaces:[],presets};
+  const state={epoch:'visual-fixture',revision:1,projects,sessions,inbox,providers,settings:{revision:1,theme,language,notifications:{native:true,attention:true,completed:true,sound:false},terminalCompatibility:{aiCompletionHints:true},customThemes:{'Ocean glass':{background:'#f7f8f8',surface:'#ffffff',text:'#282a30',muted:'#6b6f76',accent:'#5db9ff',border:'#eeeeee'}}},workspaces:[],presets};
   const listeners=new Set(),calls=[];
   const changed=()=>listeners.forEach(fn=>fn({v:1,event:'state.changed',epoch:state.epoch,seq:++state.revision,data:{kind:'settings'}}));
   const output=id=>seed.sessions.find(s=>s.id===id)?.output.join('\r\n')||'';
@@ -43,7 +46,7 @@ export function installVisualFixture({ seed, theme }) {
       case 'filesystem.list':{const paths=seed.projects[params.projectId].files;const base=params.path?params.path.replace(/\/$/,'')+'/':'';const entries=new Map();for(const path of paths){if(!path.startsWith(base))continue;const rest=path.slice(base.length),part=rest.split('/')[0];entries.set(part,{name:part,path:base+part,kind:rest.includes('/')?'directory':'file',size:120});}return [...entries.values()];}
       case 'filesystem.read':{const content=seed.fileContents[params.projectId][params.path];if(content===undefined)throw new Error('Fixture file missing: '+params.path);return {path:params.path,content,fingerprint:'fixture',readonly:false,size:content.length,modifiedAt:date};}
       case 'git.diff':{const content=seed.fileContents[params.projectId][params.path];return {path:params.path,staged:!!params.staged,oldText:content.replace('focusFirstReachable(dialog)','dialog.focus()'),newText:content,binary:false,fingerprint:'fixture'};}
-      case 'usage.query':return {records:[],sessions:[],pricing:'unknown'};
+      case 'usage.query':{if(!withUsage)return {records:[],sessions:[],pricing:'unknown'};const records=[];sessions.filter(s=>s.provider!=='shell').forEach((s,i)=>{for(let day=0;day<7;day++){const at=new Date();at.setDate(at.getDate()-day);at.setHours(9+i%8,15,0,0);if(at>new Date())at.setHours(0,5,0,0);records.push({sessionId:s.id,provider:s.provider,recordedAt:at.toISOString(),inputTokens:40000+((i*7919+day*104729)%160000),outputTokens:3000+((i*31+day*17)%9000),estimatedCost:Number((0.4+((i*13+day*7)%30)/10).toFixed(2)),currency:'USD',source:'created',status:s.status});}});return {records:params.projectId?records.filter(r=>sessions.find(s=>s.id===r.sessionId)?.projectId===params.projectId):records,sessions:[],pricing:'estimated'};}
       case 'device.status':return {enabled:false,tlsFingerprint:'visual-fixture'};
       case 'git.status':return {branch:trees.find(t=>t.path===(params.worktreePath||projects.find(p=>p.id===params.projectId)?.path))?.branch||'main',upstream:null,ahead:0,behind:0,changes:seed.projects[params.projectId].files.map(path=>({path,indexStatus:' ',worktreeStatus:'M'}))};
       case 'session.claim':case 'session.renew':return {epoch:1,leaseEpoch:1,expiresAt:'2099-01-01T00:00:00.000Z'};

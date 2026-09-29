@@ -62,6 +62,12 @@ impl PtyManager {
             })
             .context("opening PTY")?;
         db.set_session_terminal_size(session_id, i32::from(cols), i32::from(rows))?;
+        // Reject script launches whose arguments cannot survive cmd.exe quoting
+        // here, before the bootstrap gate would hide the cause behind a timeout.
+        #[cfg(windows)]
+        if let Some(program) = executable {
+            crate::providers::common::windows_script_invocation(program, args)?;
+        }
         #[cfg(windows)]
         let gate = crate::bootstrap::BootstrapGate::new()?;
         #[cfg(windows)]
@@ -295,6 +301,100 @@ mod tests {
     use super::*;
     use crate::db::CreateSession;
     use std::time::{Duration, Instant};
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_script_receives_args_verbatim_through_bootstrap_pty() {
+        use crate::providers::common::windows_script_fixtures::{
+            fixture_dir, parse_echo_output, strip_ansi,
+        };
+        let (_root, script) = fixture_dir();
+        let cwd = script.parent().unwrap().to_string_lossy().into_owned();
+        // ConPTY may transcode non-ASCII output depending on the host codepage,
+        // so this path asserts the ASCII matrix; the plain-command and managed
+        // service tests cover non-ASCII arguments with explicit OEM decoding.
+        let args = vec![
+            "with space".to_owned(),
+            "a&b|c<d>e".to_owned(),
+            "caret^bang!".to_owned(),
+            "--session".to_owned(),
+            "ses_0123456789".to_owned(),
+        ];
+        let db = Arc::new(Database::open(&script.with_file_name("pty.sqlite")).unwrap());
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "pty-script-args",
+            })
+            .unwrap();
+        let manager = PtyManager::new(Arc::new(OutputStore::default()));
+        manager
+            .launch(
+                Arc::clone(&db),
+                &session.id,
+                &cwd,
+                Some(&script.to_string_lossy()),
+                &args,
+            )
+            .unwrap();
+        let mut output = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            output.clear();
+            for (_, bytes) in db.output_from(&session.id, 0, 64 * 1024).unwrap() {
+                output.extend(bytes);
+            }
+            if strip_ansi(&String::from_utf8_lossy(&output)).contains("DONE") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // ConPTY pads repainted rows with spaces; none of the matrix arguments
+        // end in a space, so trim that rendering artifact before comparing.
+        let parsed: Vec<String> = parse_echo_output(&strip_ansi(&String::from_utf8_lossy(&output)))
+            .into_iter()
+            .map(|value| value.trim_end().to_owned())
+            .collect();
+        assert_eq!(&parsed[..args.len()], args.as_slice());
+        manager.stop(&db, &session.id, true).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_script_launch_rejects_unsafe_args_before_the_gate() {
+        use crate::providers::common::windows_script_fixtures::fixture_dir;
+        let (_root, script) = fixture_dir();
+        let cwd = script.parent().unwrap().to_string_lossy().into_owned();
+        let db = Arc::new(Database::open(&script.with_file_name("pty-reject.sqlite")).unwrap());
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "shell",
+                mode: "terminal",
+                native_id: None,
+                operation_id: "pty-script-reject",
+            })
+            .unwrap();
+        let manager = PtyManager::new(Arc::new(OutputStore::default()));
+        let error = manager
+            .launch(
+                Arc::clone(&db),
+                &session.id,
+                &cwd,
+                Some(&script.to_string_lossy()),
+                &["%PATH%".to_owned()],
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("'%'"),
+            "unexpected error: {error}"
+        );
+    }
 
     #[test]
     fn captures_real_shell_output() {

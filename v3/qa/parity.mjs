@@ -41,8 +41,8 @@ async function productionRoute(page,route){
   if(route.startsWith('workspace')){await page.locator('.sess-row').filter({hasText:'开发服务器'}).click();await page.locator('.session-screen').waitFor();if(route.includes('-'))await page.locator('.ws-tabrow .tab').nth(route.endsWith('file')?1:2).click();}
   if(route==='presets')await page.locator('.side-nav button').filter({hasText:'工作预设'}).click();
   if(route==='creator')await page.locator('.nav-item.new').click();
-  if(route==='usage')await page.locator('.usage-card-head .brief-head-btn').click();
-  if(route==='follow')await page.locator('.brief-focus .brief-head-btn').click();
+  if(route==='usage')await page.locator('.ov-metric-more').click();
+  if(route==='follow')await page.locator('[data-testid="home-followed"] .ov-head-btn').click();
   if(route==='worktree')await page.locator('.page-actions button').filter({hasText:'新建工作树'}).click();
 }
 async function diagnosticClick(page,locator){try{await locator.click({timeout:2500});}catch(error){report.scenarios.at(-1).interactionErrors??=[];report.scenarios.at(-1).interactionErrors.push(error.message);await locator.evaluate(node=>node.click());}}

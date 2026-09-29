@@ -4,7 +4,7 @@
 .history-rail-heading > div:first-child { min-width:0; margin-right:auto; }
 .history-rail-heading h3 { margin:0; font-size:13px; line-height:1.35; }
 .history-rail-heading p { margin:4px 0 0; color:var(--muted); font-size:11px; line-height:1.45; }
-.history-scan { display:flex; gap:6px; padding:0 12px 10px; border-bottom:1px solid var(--border); }.history-scan .primary { width:100%; }.history-scan .primary + button { flex:0 0 auto; }
+.history-scan { display:flex; gap:6px; padding:0 12px 10px; border-bottom:1px solid var(--border); }.history-scan .history-scan-run { flex:1; justify-content:center; }.history-scan .history-scan-run + .btn { flex:0 0 auto; }
 .history-rail button { min-height:26px; padding:4px 7px; border:1px solid var(--border); border-radius:6px; color:var(--text); background:var(--surface); font:inherit; font-size:11px; cursor:pointer; }
 .history-rail button.primary { color:var(--primary-contrast,#fff); border-color:var(--primary); background:var(--primary); }
 .history-rail button:disabled { opacity:.5; cursor:default; }

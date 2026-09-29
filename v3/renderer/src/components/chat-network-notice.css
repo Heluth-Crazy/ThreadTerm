@@ -8,3 +8,9 @@
 }
 .chat-network-notice strong { font-weight: 600; }
 .chat-network-notice p { margin: 4px 0 0; color: var(--text-secondary); }
+.chat-history-note { flex:0 0 auto; margin:0; padding:5px 16px; border-bottom:1px solid var(--border); color:var(--muted); font-size:12px; }
+.file-reference-link { display:inline; max-width:100%; padding:0; border:0; border-bottom:1px dotted currentColor; border-radius:0; background:none; color:var(--primary, #4f59c8); font:inherit; text-align:left; text-decoration:none; overflow-wrap:anywhere; cursor:pointer; }
+.file-reference-link:hover { border-bottom-style:solid; }
+.file-reference-link:focus-visible { outline:2px solid var(--primary, #4f59c8); outline-offset:2px; border-radius:2px; }
+.file-reference-chips { display:flex; flex-wrap:wrap; gap:5px 10px; padding:6px 0 2px; font-size:12px; }
+.codex-tool-disclosure pre .file-reference-link { white-space:inherit; }
