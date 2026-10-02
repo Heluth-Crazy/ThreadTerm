@@ -13,6 +13,14 @@ build/
 out/
 target/
 
+# Application outputs (the application now lives at the repository root)
+/desktop-dist/
+/runtime/target-qa/
+/providers/claude-sdk/dist/
+/release/
+/release-*/
+/qa/results/
+
 # Environment variables
 .env
 .env.local
