@@ -1,7 +1,8 @@
 // Issue 9 (package B) end-to-end: real runtime + real bundled Claude SDK host.
 // The control handshake completes with NO prompt and NO model message.
-// The credential gate only checks env presence; ANTHROPIC_API_KEY here is a
-// placeholder and the SDK initialization is local control traffic.
+// With an empty CLAUDE_CONFIG_DIR, the placeholder ANTHROPIC_API_KEY makes the
+// handshake account report an API-key source, so the sidecar's signed-out check
+// passes; the SDK initialization is local control traffic and the key is never used.
 //   node qa/claude-chat-handshake.mjs
 import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile } from 'node:fs/promises';

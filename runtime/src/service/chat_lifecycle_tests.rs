@@ -25,6 +25,9 @@ struct FixtureAdapter {
     alive: Arc<Mutex<Arc<std::sync::atomic::AtomicBool>>>,
     worker_tokens: Arc<Mutex<Vec<String>>>,
     initial_liveness: bool,
+    /// Delegation tests run several chats at once; real providers give each a
+    /// distinct native id, which `accept_chat_connection` requires.
+    unique_native_ids: bool,
 }
 
 impl ProviderAdapter for FixtureAdapter {
@@ -108,7 +111,12 @@ impl ProviderAdapter for FixtureAdapter {
         _cwd: &str,
         _native_id: Option<&str>,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
-        self.opens.fetch_add(1, AtomicOrdering::SeqCst);
+        let open = self.opens.fetch_add(1, AtomicOrdering::SeqCst);
+        let native = if self.unique_native_ids {
+            format!("fixture-native-{open}")
+        } else {
+            "fixture-native".into()
+        };
         if let Some(gate) = &self.gate {
             gate.started
                 .send(())
@@ -132,6 +140,7 @@ impl ProviderAdapter for FixtureAdapter {
                 .map_err(|error| ProviderError::new("fixture_failed", error.to_string()))?;
         }
         Ok(Box::new(FixtureChat {
+            native,
             stops: Arc::clone(&self.stops),
             alive: {
                 let flag = Arc::new(std::sync::atomic::AtomicBool::new(self.initial_liveness));
@@ -143,13 +152,14 @@ impl ProviderAdapter for FixtureAdapter {
 }
 
 struct FixtureChat {
+    native: String,
     stops: Arc<AtomicUsize>,
     alive: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ChatSession for FixtureChat {
     fn native_id(&self) -> Option<String> {
-        Some("fixture-native".into())
+        Some(self.native.clone())
     }
 
     fn is_alive(&self) -> bool {
@@ -202,6 +212,20 @@ impl Fixture {
         failure: Option<ProviderError>,
         status_before_return: Option<&'static str>,
     ) -> Self {
+        Self::build(slow, failure, status_before_return, false)
+    }
+
+    /// Several concurrent chats (parent and delegates) with distinct native ids.
+    fn for_delegation() -> Self {
+        Self::build(false, None, None, true)
+    }
+
+    fn build(
+        slow: bool,
+        failure: Option<ProviderError>,
+        status_before_return: Option<&'static str>,
+        unique_native_ids: bool,
+    ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
         crate::session_configs::initialize(&db).unwrap();
@@ -226,6 +250,7 @@ impl Fixture {
             alive: Arc::clone(&alive),
             worker_tokens: Arc::clone(&worker_tokens),
             initial_liveness: true,
+            unique_native_ids,
         });
         let output = Arc::new(OutputStore::default());
         let service = Arc::new(RuntimeService {
@@ -247,6 +272,7 @@ impl Fixture {
             retry_gate: Mutex::new(()),
             settings_apply_gate: Mutex::new(()),
             remote: OnceLock::new(),
+            delegations: Arc::new(crate::delegation::Delegations::default()),
         });
         Self {
             root,
@@ -852,6 +878,7 @@ fn provider_handoff_does_not_publish_an_already_dead_worker() {
         )))),
         worker_tokens: Arc::new(Mutex::new(Vec::new())),
         initial_liveness: false,
+        unique_native_ids: false,
     };
     let providers = Providers::for_test(vec![Arc::new(adapter)]);
     assert_eq!(
@@ -974,4 +1001,571 @@ fn replacement_connecting_expires_old_cards_before_new_worker_cards_arrive() {
         fixture.db.session_by_id(id).unwrap().unwrap().status,
         "waiting"
     );
+}
+
+// ---- agent delegation ------------------------------------------------------
+// The fixture adapter is a parent-capable `grok` Chat, so these tests delegate
+// grok → grok. Provider events are fed through `record_provider_event`, the
+// projection entry point, instead of a live provider.
+
+fn rpc(fixture: &Fixture, method: &str, params: Value) -> Result<Value, RpcError> {
+    fixture.service.dispatch(
+        "mcp-test",
+        RpcRequest {
+            v: 1,
+            id: format!("request-{method}"),
+            method: method.into(),
+            params,
+        },
+    )
+}
+
+fn delegation_parent(fixture: &Fixture, operation_id: &str) -> (String, String) {
+    let parent = fixture.create(operation_id)["id"].as_str().unwrap().to_owned();
+    let token = fixture.service.delegations.issue_token(&parent);
+    (parent, token)
+}
+
+fn start_delegate(
+    fixture: &Fixture,
+    parent: &str,
+    token: &str,
+    operation_id: &str,
+) -> Result<Value, RpcError> {
+    rpc(
+        fixture,
+        "delegation.start",
+        json!({"callerSessionId":parent,"callerToken":token,"agent":"grok","prompt":"Summarise the README\nthen stop","operationId":operation_id}),
+    )
+}
+
+fn wait_for(mut check: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !check() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "condition not reached in time"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn delegation_state(fixture: &Fixture, child: &str) -> String {
+    fixture
+        .db
+        .session_by_id(child)
+        .unwrap()
+        .unwrap()
+        .delegation
+        .unwrap()
+        .state
+}
+
+fn activity_state(fixture: &Fixture, session: &str) -> String {
+    fixture
+        .db
+        .session_by_id(session)
+        .unwrap()
+        .unwrap()
+        .activity
+        .unwrap()
+        .state
+}
+
+fn running_delegate(fixture: &Fixture, parent: &str, token: &str, operation_id: &str) -> String {
+    let started = start_delegate(fixture, parent, token, operation_id).unwrap();
+    let child = started["sessionId"].as_str().unwrap().to_owned();
+    // Running starts when the prompt is recorded; the provider turn id is
+    // bound right after the send returns. Later events use that turn.
+    wait_for(|| {
+        delegation_state(fixture, &child) == "running"
+            && fixture
+                .db
+                .session_by_id(&child)
+                .unwrap()
+                .unwrap()
+                .activity
+                .and_then(|activity| activity.turn_id)
+                .as_deref()
+                == Some("fixture-turn")
+    });
+    child
+}
+
+fn parent_in_turn(fixture: &Fixture, parent: &str) {
+    fixture
+        .db
+        .record_provider_event(
+            parent,
+            Some("parent-turn"),
+            "message.user",
+            &json!({"text":"Lead the work"}),
+        )
+        .unwrap();
+}
+
+fn child_approval(fixture: &Fixture, child: &str, approval_id: &str) {
+    let payload = json!({
+        "approvalId":approval_id,"provider":"grok","requestType":"session/request_permission",
+        "title":"Run the tests","details":{},"turnId":"fixture-turn","interaction":"permission","submittable":true,
+        "choices":[
+            {"choiceId":"once","label":"Allow once","kind":"allow","scope":"once"},
+            {"choiceId":"always","label":"Always allow","kind":"allow","scope":"persistent"},
+            {"choiceId":"deny","label":"Deny","kind":"deny","scope":"once"}
+        ]
+    });
+    fixture
+        .db
+        .record_provider_event(
+            child,
+            Some("fixture-turn"),
+            "chat.approval",
+            &json!({"approvalId":approval_id,"part":{"type":"approval","approvalId":approval_id,"data":payload}}),
+        )
+        .unwrap();
+}
+
+fn approval_inbox_rows(fixture: &Fixture, session: &str) -> usize {
+    fixture
+        .db
+        .snapshot()
+        .unwrap()
+        .inbox
+        .iter()
+        .filter(|item| item["sessionId"] == session && item["kind"] == "approval")
+        .count()
+}
+
+fn approval_part(fixture: &Fixture, session: &str, approval_id: &str) -> Value {
+    fixture
+        .db
+        .chat_items(session)
+        .unwrap()
+        .into_iter()
+        .flat_map(|item| item.parts)
+        .find(|part| part["approvalId"] == approval_id)
+        .unwrap()
+}
+
+fn status_of(fixture: &Fixture, parent: &str, token: &str) -> Value {
+    rpc(
+        fixture,
+        "delegation.status",
+        json!({"callerSessionId":parent,"callerToken":token}),
+    )
+    .unwrap()
+}
+
+#[test]
+fn delegation_start_links_the_delegate_connects_it_and_auto_sends_the_prompt() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let started = start_delegate(&fixture, &parent, &token, "start-1").unwrap();
+    assert_eq!(started["state"], "starting");
+    assert_eq!(started["workspace"], "shared");
+    let child = started["sessionId"].as_str().unwrap().to_owned();
+    wait_for(|| delegation_state(&fixture, &child) == "running");
+
+    let session = fixture.db.session_by_id(&child).unwrap().unwrap();
+    assert_eq!(session.delegation.unwrap().parent_session_id, parent);
+    assert_eq!(session.title, "Summarise the README");
+    let items = fixture.db.chat_items(&child).unwrap();
+    assert_eq!(items[0].role, "user");
+    assert_eq!(items[0].parts[0]["text"], "Summarise the README\nthen stop");
+    // A retried start with the same operation id is answered from the record.
+    let replay = start_delegate(&fixture, &parent, &token, "start-1").unwrap();
+    assert_eq!(replay["sessionId"], started["sessionId"]);
+    let status = status_of(&fixture, &parent, &token);
+    assert_eq!(status["delegates"].as_array().unwrap().len(), 1);
+    assert_eq!(status["delegates"][0]["state"], "running");
+    assert_eq!(status["availableAgents"], json!(["grok"]));
+}
+
+#[test]
+fn delegation_rejects_wrong_tokens_and_delegates_that_try_to_delegate() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let wrong = start_delegate(&fixture, &parent, "not-the-token", "start-wrong").unwrap_err();
+    assert_eq!(wrong.code, "delegation_unauthorized");
+    let child = running_delegate(&fixture, &parent, &token, "start-1");
+    // Even holding a valid token for itself, a delegate cannot delegate.
+    let child_token = fixture.service.delegations.issue_token(&child);
+    let nested = start_delegate(&fixture, &child, &child_token, "start-nested").unwrap_err();
+    assert_eq!(nested.code, "delegation_nested");
+    // A reconnect rotates the token; the old one stops working.
+    let rotated = fixture.service.delegations.issue_token(&parent);
+    assert!(rpc(
+        &fixture,
+        "delegation.status",
+        json!({"callerSessionId":parent,"callerToken":token})
+    )
+    .is_err());
+    assert!(rpc(
+        &fixture,
+        "delegation.status",
+        json!({"callerSessionId":parent,"callerToken":rotated})
+    )
+    .is_ok());
+}
+
+#[test]
+fn delegation_caps_active_delegates_per_parent() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    for index in 0..crate::delegation::MAX_ACTIVE_DELEGATES {
+        running_delegate(&fixture, &parent, &token, &format!("start-{index}"));
+    }
+    let over = start_delegate(&fixture, &parent, &token, "start-over").unwrap_err();
+    assert_eq!(over.code, "delegation_limit_reached");
+    // Cancelling one frees a slot.
+    let first = status_of(&fixture, &parent, &token)["delegates"][0]["delegationId"].clone();
+    let cancelled = rpc(
+        &fixture,
+        "delegation.cancel",
+        json!({"callerSessionId":parent,"callerToken":token,"id":first}),
+    )
+    .unwrap();
+    assert_eq!(cancelled["state"], "cancelled");
+    assert!(start_delegate(&fixture, &parent, &token, "start-after-cancel").is_ok());
+}
+
+#[test]
+fn delegate_approvals_go_to_an_active_parent_which_answers_without_user_only_choices() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let child = running_delegate(&fixture, &parent, &token, "start-1");
+    parent_in_turn(&fixture, &parent);
+    child_approval(&fixture, &child, "a1");
+
+    assert_eq!(approval_inbox_rows(&fixture, &child), 0, "the user is not interrupted");
+    assert_eq!(activity_state(&fixture, &child), "awaiting_parent");
+    assert_eq!(delegation_state(&fixture, &child), "awaiting_parent");
+    assert_eq!(
+        approval_part(&fixture, &child, "a1")["data"]["delegation"]["route"],
+        "parent"
+    );
+    let status = status_of(&fixture, &parent, &token);
+    let request = &status["delegates"][0]["pendingRequests"][0];
+    assert_eq!(request["requestId"], "a1");
+    let offered: Vec<_> = request["choices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|choice| choice["choiceId"].clone())
+        .collect();
+    assert_eq!(
+        offered,
+        vec![json!("once"), json!("deny")],
+        "persistent choices stay with the user"
+    );
+
+    let id = status["delegates"][0]["delegationId"].clone();
+    let respond = |choice: &str, operation: &str| {
+        rpc(
+            &fixture,
+            "delegation.respond",
+            json!({"callerSessionId":parent,"callerToken":token,"id":id,"requestId":"a1","choiceId":choice,"operationId":operation}),
+        )
+    };
+    let reserved = respond("always", "respond-always").unwrap_err();
+    assert_eq!(reserved.code, "choice_reserved_for_user");
+    assert_eq!(respond("once", "respond-once").unwrap()["accepted"], true);
+    // The provider then reports the resolution; the delegate runs on.
+    fixture
+        .db
+        .record_provider_event(
+            &child,
+            Some("fixture-turn"),
+            "chat.approval.resolved",
+            &json!({"approvalId":"a1","status":"resolved"}),
+        )
+        .unwrap();
+    assert_eq!(activity_state(&fixture, &child), "running");
+    assert_eq!(delegation_state(&fixture, &child), "running");
+}
+
+#[test]
+fn a_parent_turn_ending_escalates_its_delegates_requests_to_the_user() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let child = running_delegate(&fixture, &parent, &token, "start-1");
+    parent_in_turn(&fixture, &parent);
+    child_approval(&fixture, &child, "a1");
+    assert_eq!(approval_inbox_rows(&fixture, &child), 0);
+
+    fixture
+        .db
+        .record_provider_event(
+            &parent,
+            Some("parent-turn"),
+            "chat.turn.completed",
+            &json!({"status":"completed"}),
+        )
+        .unwrap();
+    assert_eq!(
+        approval_inbox_rows(&fixture, &child),
+        1,
+        "escalated as a normal approval"
+    );
+    assert_eq!(activity_state(&fixture, &child), "awaiting_approval");
+    assert_eq!(delegation_state(&fixture, &child), "awaiting_user");
+    let part = approval_part(&fixture, &child, "a1");
+    assert_eq!(part["status"], "pending");
+    assert_eq!(part["data"]["delegation"]["route"], "user");
+    assert_eq!(part["data"]["delegation"]["escalated"], true);
+    // Escalation is one-way: the parent can no longer answer.
+    let id = fixture
+        .db
+        .session_by_id(&child)
+        .unwrap()
+        .unwrap()
+        .delegation
+        .unwrap()
+        .id;
+    let late = rpc(
+        &fixture,
+        "delegation.respond",
+        json!({"callerSessionId":parent,"callerToken":token,"id":id,"requestId":"a1","choiceId":"once","operationId":"respond-late"}),
+    )
+    .unwrap_err();
+    assert_eq!(late.code, "delegation_not_awaiting_parent");
+}
+
+#[test]
+fn delegate_requests_go_straight_to_the_user_while_the_parent_is_idle() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let child = running_delegate(&fixture, &parent, &token, "start-1");
+    child_approval(&fixture, &child, "a1");
+    assert_eq!(approval_inbox_rows(&fixture, &child), 1);
+    assert_eq!(activity_state(&fixture, &child), "awaiting_approval");
+    assert_eq!(delegation_state(&fixture, &child), "awaiting_user");
+}
+
+#[test]
+fn a_stopped_parent_escalates_and_a_stopped_delegate_is_cancelled() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let child = running_delegate(&fixture, &parent, &token, "start-1");
+    let other = running_delegate(&fixture, &parent, &token, "start-2");
+    parent_in_turn(&fixture, &parent);
+    child_approval(&fixture, &child, "a1");
+    rpc(
+        &fixture,
+        "session.stop",
+        json!({"sessionId":parent,"operationId":"stop-parent"}),
+    )
+    .unwrap();
+    assert_eq!(approval_inbox_rows(&fixture, &child), 1);
+    assert_eq!(delegation_state(&fixture, &child), "awaiting_user");
+    rpc(
+        &fixture,
+        "session.stop",
+        json!({"sessionId":other,"operationId":"stop-delegate"}),
+    )
+    .unwrap();
+    assert_eq!(delegation_state(&fixture, &other), "cancelled");
+}
+
+#[test]
+fn the_delegated_turn_result_is_recorded_once_and_later_turns_do_not_change_it() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let child = running_delegate(&fixture, &parent, &token, "start-1");
+    fixture
+        .db
+        .record_provider_event(
+            &child,
+            Some("fixture-turn"),
+            "chat.item",
+            &json!({"raw":{"params":{"item":{"id":"answer","type":"agentMessage","text":"The README explains setup."}}}}),
+        )
+        .unwrap();
+    fixture
+        .db
+        .record_provider_event(
+            &child,
+            Some("fixture-turn"),
+            "chat.turn.completed",
+            &json!({"status":"completed"}),
+        )
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &child), "completed");
+    // The user keeps chatting with the delegate; the delegation stays final.
+    fixture
+        .db
+        .record_provider_event(
+            &child,
+            Some("later"),
+            "chat.error",
+            &json!({"message":"later failure"}),
+        )
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &child), "completed");
+    let id = fixture
+        .db
+        .session_by_id(&child)
+        .unwrap()
+        .unwrap()
+        .delegation
+        .unwrap()
+        .id;
+    let result = rpc(
+        &fixture,
+        "delegation.result",
+        json!({"callerSessionId":parent,"callerToken":token,"id":id}),
+    )
+    .unwrap();
+    assert_eq!(result["state"], "completed");
+    assert_eq!(result["finalAnswer"], "The README explains setup.");
+    assert!(result["error"].is_null());
+    // Another parent cannot read it.
+    let (stranger, stranger_token) = delegation_parent(&fixture, "stranger-create");
+    let denied = rpc(
+        &fixture,
+        "delegation.result",
+        json!({"callerSessionId":stranger,"callerToken":stranger_token,"id":id}),
+    )
+    .unwrap_err();
+    assert_eq!(denied.code, "delegation_not_found");
+}
+
+#[test]
+fn delegated_failures_and_cancellations_are_final_states() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let failed = running_delegate(&fixture, &parent, &token, "start-1");
+    fixture
+        .db
+        .record_provider_event(
+            &failed,
+            Some("fixture-turn"),
+            "chat.turn.completed",
+            &json!({"status":"failed","message":"model error"}),
+        )
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &failed), "failed");
+    let cancelled = running_delegate(&fixture, &parent, &token, "start-2");
+    fixture
+        .db
+        .record_provider_event(
+            &cancelled,
+            Some("fixture-turn"),
+            "chat.turn.completed",
+            &json!({"status":"interrupted"}),
+        )
+        .unwrap();
+    assert_eq!(delegation_state(&fixture, &cancelled), "cancelled");
+}
+
+fn git(cwd: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(["-c", "user.name=ThreadTerm QA", "-c", "user.email=qa@threadterm.invalid"])
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+#[test]
+fn a_worktree_delegate_gets_its_own_branch_from_the_parents_commit_in_a_sibling_folder() {
+    let fixture = Fixture::for_delegation();
+    crate::workspace_services::initialize(&fixture.db).unwrap();
+    crate::project_catalog::initialize(&fixture.db).unwrap();
+    crate::review::initialize(&fixture.db).unwrap();
+    let repo = fixture.root.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("README.md"), "fixture\n").unwrap();
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "fixture"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    // Uncommitted parent work is not part of the delegate's branch.
+    std::fs::write(repo.join("draft.txt"), "uncommitted\n").unwrap();
+    let project = rpc(
+        &fixture,
+        "project.add",
+        json!({"path":repo,"operationId":"project-add"}),
+    )
+    .unwrap();
+    let parent = rpc(
+        &fixture,
+        "session.create",
+        json!({"projectId":project["id"],"cwd":repo,"provider":"grok","mode":"chat","operationId":"parent-create"}),
+    )
+    .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = fixture.service.delegations.issue_token(&parent);
+    let started = rpc(
+        &fixture,
+        "delegation.start",
+        json!({"callerSessionId":parent,"callerToken":token,"agent":"grok","prompt":"Work on your own branch","workspace":"worktree","operationId":"start-worktree"}),
+    )
+    .unwrap();
+    let path = started["workspacePath"].as_str().unwrap().to_owned();
+    assert!(!path.starts_with(r"\\?\"), "git and the agent get a plain path: {path}");
+    let branch = started["branch"].as_str().unwrap().to_owned();
+    assert!(branch.starts_with("threadterm/delegate-grok-"), "{branch}");
+    let folder = std::path::Path::new(&path);
+    assert_eq!(folder.parent().unwrap().file_name().unwrap(), "repo.delegates");
+    assert_eq!(git(folder, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(folder, &["branch", "--show-current"]), branch);
+    assert!(!folder.join("draft.txt").exists());
+    // The parent's own branch and folder are untouched.
+    assert_ne!(git(&repo, &["branch", "--show-current"]), branch);
+    let child = started["sessionId"].as_str().unwrap().to_owned();
+    wait_for(|| delegation_state(&fixture, &child) == "running");
+    let link = fixture.db.session_by_id(&child).unwrap().unwrap().delegation.unwrap();
+    assert_eq!(link.workspace, "worktree");
+    assert_eq!(link.branch.as_deref(), Some(branch.as_str()));
+    let config = crate::session_configs::read(&fixture.db, &child).unwrap().unwrap();
+    assert_eq!(config.launch.cwd, path);
+}
+
+#[test]
+fn only_top_level_chats_of_verified_parents_get_the_delegation_tool_server() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    let child = running_delegate(&fixture, &parent, &token, "start-1");
+    let executable = fixture.root.path().join("threadterm-v3-mcp.exe");
+    std::fs::write(&executable, b"").unwrap();
+    let delegations = Arc::new(crate::delegation::Delegations::default());
+    let resolve = crate::delegation::tool_server_resolver(
+        Arc::clone(&fixture.db),
+        Arc::clone(&delegations),
+        fixture.service.config.clone(),
+        Some(executable.clone()),
+    );
+    let server = resolve(&parent, "grok").expect("a top-level grok Chat gets the server");
+    assert_eq!(server.name, "threadterm");
+    assert_eq!(server.command, executable.to_string_lossy());
+    let env: std::collections::HashMap<_, _> = server.env.iter().cloned().collect();
+    assert_eq!(env["THREADTERM_MCP_PROFILE"], "delegation");
+    assert_eq!(env["THREADTERM_SESSION_ID"], parent);
+    assert!(delegations
+        .authorize(&fixture.db, &parent, &env["THREADTERM_SESSION_TOKEN"])
+        .is_ok());
+    assert!(
+        resolve(&child, "grok").is_none(),
+        "delegates never get delegation tools"
+    );
+    assert!(
+        resolve(&parent, "opencode").is_none(),
+        "unverified agents are not parents"
+    );
+    let missing = crate::delegation::tool_server_resolver(
+        Arc::clone(&fixture.db),
+        delegations,
+        fixture.service.config.clone(),
+        None,
+    );
+    assert!(missing(&parent, "grok").is_none(), "no MCP host binary, no server");
 }

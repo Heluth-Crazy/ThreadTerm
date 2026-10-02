@@ -8,8 +8,9 @@ use super::{
         encode_approval_id, history_page, insert_optional, validate_native_id, version_probe,
         CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
-    emit_bound as emit, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
-    ProviderEvent, ScopedProviderEvents, TerminalCommand,
+    acp_mcp_servers, approve_threadterm_tool, emit_bound as emit, ChatSession, ChatToolServer,
+    ProviderAdapter, ProviderCapability, ProviderError, ProviderEvent, ScopedProviderEvents,
+    TerminalCommand,
 };
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -66,6 +67,7 @@ impl GrokAdapter {
         capture: Option<Arc<Mutex<Vec<Value>>>>,
         events: ScopedProviderEvents,
         project_events: bool,
+        delegation_tools: bool,
     ) -> Result<(JsonLineProcess, Value), ProviderError> {
         // `--no-leader` is an `grok agent` flag, not `grok agent stdio`.
         // Putting it after `stdio` makes the process exit immediately with
@@ -80,6 +82,11 @@ impl GrokAdapter {
                     if let Ok(mut values) = capture.lock() {
                         values.push(raw.clone());
                     }
+                }
+                // The parent's calls to ThreadTerm's own delegation tools are
+                // approved here (Grok names them `threadterm__<tool>`).
+                if delegation_tools && approve_threadterm_tool(&responder, &raw) {
+                    return;
                 }
                 if project_events {
                     emit_grok_message(
@@ -135,6 +142,7 @@ impl GrokAdapter {
             Arc::new(Mutex::new(GrokUiState::default())),
             capture,
             ScopedProviderEvents::new(self.events.clone(), "history"),
+            false,
             false,
         )
     }
@@ -292,11 +300,24 @@ impl ProviderAdapter for GrokAdapter {
         native_id: Option<&str>,
         worker_token: &str,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.open_chat_with_tools(session_id, cwd, native_id, worker_token, None)
+    }
+
+    fn open_chat_with_tools(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+        tools: Option<&ChatToolServer>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
         let events = ScopedProviderEvents::new(self.events.clone(), worker_token);
         let native = Arc::new(Mutex::new(None));
         let active_turn = Arc::new(Mutex::new(None));
         let permissions = Arc::new(Mutex::new(HashMap::new()));
         let ui = Arc::new(Mutex::new(GrokUiState::default()));
+        // Passed on new and on load (verified with Grok 1.0.41).
+        let mcp_servers = acp_mcp_servers(tools);
         let (process, initialized) = self.spawn(
             session_id,
             Arc::clone(&native),
@@ -306,13 +327,14 @@ impl ProviderAdapter for GrokAdapter {
             None,
             events.clone(),
             true,
+            tools.is_some(),
         )?;
         let response = if let Some(id) = native_id {
             validate_native_id(id)?;
             if has_capability(&initialized, "load") {
                 process.request(
                     "session/load",
-                    json!({"sessionId":id,"cwd":cwd,"mcpServers":[]}),
+                    json!({"sessionId":id,"cwd":cwd,"mcpServers":mcp_servers}),
                 )?
             } else if has_capability(&initialized, "resume") {
                 process.request("session/resume", json!({"sessionId":id,"cwd":cwd}))?
@@ -323,7 +345,7 @@ impl ProviderAdapter for GrokAdapter {
                 ));
             }
         } else {
-            process.request("session/new", json!({"cwd":cwd,"mcpServers":[]}))?
+            process.request("session/new", json!({"cwd":cwd,"mcpServers":mcp_servers}))?
         };
         let bound_id = response
             .get("sessionId")

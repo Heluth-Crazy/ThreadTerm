@@ -1,0 +1,8 @@
+.chat-image-draft { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px 16px 0; }
+.chat-image-draft figure { position:relative; margin:0; }
+.chat-image-draft img { display:block; width:72px; height:72px; object-fit:contain; border:1px solid var(--border); border-radius:8px; background:var(--surface); }
+.chat-image-draft button { position:absolute; top:-8px; right:-8px; min-width:28px; min-height:28px; border:1px solid var(--border); border-radius:50%; background:var(--surface); color:var(--text); cursor:pointer; }
+.chat-image-draft button:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.chat-image-draft-note { font-size:12px; color:var(--muted); }
+.chat-message-images { display:flex; gap:10px; flex-wrap:wrap; margin:8px 0; }
+.chat-message-images img { display:block; max-width:min(240px,100%); max-height:180px; object-fit:contain; border:1px solid var(--border); border-radius:8px; }

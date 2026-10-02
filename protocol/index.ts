@@ -11,7 +11,12 @@ export interface CommitSummary { id:string; subject:string; committedAt:string }
 export interface ProjectCatalogItem extends Project { revision:number; pinned:boolean; sortOrder:number; git:{available:boolean;branch?:string;upstream?:string;lastCommit?:CommitSummary} }
 export interface CatalogVisibility { kind:'project'|'worktree'|'session'; id:string; visibility:'active'|'archived'|'removed'; revision:number; projectId?:string; worktreePath?:string }
 export interface LocalBranch { name:string; current:boolean; upstream?:string; lastCommit:CommitSummary }
-export interface Session { id:string; projectId?:string; worktreePath?:string; title:string; provider:ProviderId; mode:SessionMode; status:SessionStatus; createdAt:string; updatedAt:string; nativeId?:string; exitCode?:number; cols?:number; rows?:number; followed?:boolean; readOnly?:boolean; archived?:boolean; pinned?:boolean; bookmarked?:boolean; intent?:'review'|'fix'|'research'|'test'|'docs'; sortOrder?:number; organizationRevision?:number }
+// awaiting_parent: a delegated session's request is waiting for the agent that delegated it, not the user.
+export interface SessionActivity { state:'running'|'awaiting_approval'|'awaiting_parent'|'awaiting_input'|'idle'|'unknown'; revision:number; turnId?:string; reason?:string }
+export type SessionDelegationState = 'starting'|'running'|'awaiting_parent'|'awaiting_user'|'completed'|'failed'|'cancelled';
+// Present on a Chat session that another agent started through ThreadTerm delegation.
+export interface SessionDelegation { id:string; parentSessionId:string; workspace:'shared'|'worktree'; branch?:string; state:SessionDelegationState }
+export interface Session { id:string; projectId?:string; worktreePath?:string; title:string; provider:ProviderId; mode:SessionMode; status:SessionStatus; createdAt:string; updatedAt:string; nativeId?:string; exitCode?:number; cols?:number; rows?:number; followed?:boolean; readOnly?:boolean; activity?:SessionActivity; delegation?:SessionDelegation; archived?:boolean; pinned?:boolean; bookmarked?:boolean; intent?:'review'|'fix'|'research'|'test'|'docs'; sortOrder?:number; organizationRevision?:number }
 export interface SessionConfig { sessionId:string; revision:number; provider:ProviderId; mode:SessionMode; cwd:string; projectId?:string; title?:string; executable?:string; args:string[]; sourceSessionId?:string }
 export interface SessionRetryAttempt { id:string; sourceSessionId:string; attempt:number; dueAt:string; status:'pending'|'claimed'|'cancelled'|'completed'|'exhausted'; operationId:string; createdAt:string }
 export interface SessionRetryState { sessionId:string; revision:number; enabled:boolean; maxRetries:number; delaySeconds:number; attempts:SessionRetryAttempt[] }
@@ -33,6 +38,7 @@ export type ChatOptionsLoadState = 'idle'|'loading'|'ready'|'empty'|'error'|'unk
 export interface ChatUiState {
  options:ChatSessionOption[];
  commands:ChatSlashCommand[];
+ inputCapabilities?:{images?:boolean};
  loadState?:ChatOptionsLoadState;
  error?:{code:string;message:string};
 }
@@ -136,6 +142,7 @@ export interface RequestMap {
  'session.stop': [{sessionId:string;operationId:string;force?:boolean},null];
  'session.organize': [{sessionId:string;archived?:boolean;pinned?:boolean;bookmarked?:boolean;intent?:'review'|'fix'|'research'|'test'|'docs'|'none';sortOrder?:number;expectedRevision:number;operationId:string},Session];
  'session.update': [{sessionId:string;title?:string;followed?:boolean;operationId:string},Session];
+ 'session.attention.acknowledge': [{sessionId:string;expectedRevision:number;operationId:string},Session];
  'session.claim': [{sessionId:string;clientId:string},{leaseEpoch:number}];
  'session.renew': [{sessionId:string;leaseEpoch:number},{leaseEpoch:number}];
  'session.release': [{sessionId:string;leaseEpoch:number},null];
@@ -145,7 +152,7 @@ export interface RequestMap {
  'provider.list': [{},ProviderCapability[]];
  'history.list': [{provider:ProviderId;cursor?:string;limit?:number;cwd?:string},{items:NativeHistoryItem[];nextCursor?:string}];
  'history.read': [{provider:ProviderId;nativeId:string},ChatItem[]];
- 'chat.send': [{sessionId:string;text:string;operationId:string;leaseEpoch:number},{turnId:string}];
+ 'chat.send': [{sessionId:string;text:string;images?:string[];operationId:string;leaseEpoch:number},{turnId:string}];
  'chat.cancel': [{sessionId:string;turnId:string;leaseEpoch:number},null];
  'chat.approve': [{sessionId:string;turnId:string;approvalId:string;choiceId:string;leaseEpoch:number;operationId:string},null];
  'chat.options': [{sessionId:string},ChatUiState];
@@ -223,7 +230,7 @@ export interface ThreadTermBridge {
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint'] as const satisfies readonly Method[];
+export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint'] as const satisfies readonly Method[];
 const stringFields: Partial<Record<Method,readonly string[]>> = {
  'filesystem.resolve':['sessionId','path'],
  'session.launch.read':['sessionId'],
@@ -239,7 +246,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'runtime.shutdown':['operationId'],
  'project.add':['path','operationId'],'project.remove':['id','operationId'],
  'session.create':['cwd','provider','mode','operationId'],'history.import':['cwd','provider','nativeId','mode','operationId'],'session.config.read':['sessionId'],'session.config.save':['sessionId','cwd','provider','mode','operationId'],'session.retry.read':['sessionId'],'session.retry.update':['sessionId','operationId'],'session.stop':['sessionId','operationId'],
- 'session.update':['sessionId','operationId'],'session.claim':['sessionId','clientId'],'session.release':['sessionId'],
+ 'session.update':['sessionId','operationId'],'session.attention.acknowledge':['sessionId','operationId'],'session.claim':['sessionId','clientId'],'session.release':['sessionId'],
  'session.renew':['sessionId'],
  'terminal.input':['sessionId','data'],'terminal.resize':['sessionId'],
  'settings.update':['operationId'],'history.list':['provider'],'history.read':['provider','nativeId'],
@@ -265,7 +272,10 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(!isRecord(params)) throw new Error('Request parameters must be an object');
  if(!validateWireRequest({v:1,id:'boundary',method,params})) throw new Error('Request does not match the protocol schema');
  const m=method as Method;
- for(const key of stringFields[m]??[]) if(typeof params[key]!=='string'||(key!=='data'&&params[key]==='')) throw new Error(`Invalid ${key}`);
+ for(const key of stringFields[m]??[]) {
+  const imageOnlyText=m==='chat.send'&&key==='text'&&Array.isArray(params.images)&&params.images.length>0;
+  if(typeof params[key]!=='string'||(key!=='data'&&!imageOnlyText&&params[key]==='')) throw new Error(`Invalid ${key}`);
+ }
  if(m==='device.pairing.create'&&!['readonly','fullcontrol'].includes(String(params.permission))) throw new Error('Invalid device permission');
  if(m==='catalog.visibility.update') {
   if(!['project','worktree','session'].includes(String(params.kind))) throw new Error('Invalid catalog kind');
@@ -292,7 +302,7 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
   for(const key of ['line','column']) if(params[key]!==undefined&&(!Number.isSafeInteger(params[key])||Number(params[key])<1||Number(params[key])>1_000_000)) throw new Error(`Invalid ${key}`);
  }
  if(['filesystem.write','draft.put'].includes(m) && (typeof params.content!=='string'||params.content.length>1024*1024)) throw new Error('Invalid file content');
- if(['catalog.visibility.update','session.organize','project.update','draft.put','draft.delete','workspace.save','workspace.delete','settings.import.apply','preset.save','preset.delete','session.config.save','session.retry.update'].includes(m)&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<0)) throw new Error('Invalid revision');
+ if(['catalog.visibility.update','session.organize','project.update','draft.put','draft.delete','workspace.save','workspace.delete','settings.import.apply','preset.save','preset.delete','session.config.save','session.retry.update','session.attention.acknowledge'].includes(m)&&(!Number.isSafeInteger(params.expectedRevision)||Number(params.expectedRevision)<0)) throw new Error('Invalid revision');
  if(m==='git.diff'&&typeof params.staged!=='boolean') throw new Error('Invalid diff mode');
  const pathOk=(value:unknown)=>typeof value==='string'&&value.length>0&&value.length<=4096&&!value.includes('\0');
  if(['filesystem.create','filesystem.rename','filesystem.delete','git.index.write','git.blame','git.commit.diff','review.diff'].includes(m)&&!pathOk(params.path)) throw new Error('Invalid path');

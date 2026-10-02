@@ -18,10 +18,94 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Condvar, Mutex, RwLock},
     time::{Duration, Instant},
 };
 use tokio::sync::broadcast;
+
+/// A stdio MCP server attached to one Chat session when it opens (ThreadTerm's
+/// own delegation tools). `env` carries that session's identity, so a fresh
+/// spec is resolved for every open, including reconnects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatToolServer {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+}
+
+/// Decides, per `(session_id, provider)`, whether a Chat gets a tool server.
+pub type ToolServerResolver = Arc<dyn Fn(&str, &str) -> Option<ChatToolServer> + Send + Sync>;
+
+/// True only for the exact names agents give ThreadTerm's own delegation tools
+/// (`mcp__threadterm__<tool>` for Claude and Kimi, `threadterm__<tool>` for
+/// Grok). Never a prefix match: a shell command titled with the prefix must
+/// still go through normal approval.
+pub(crate) fn is_threadterm_tool(name: &str) -> bool {
+    name.strip_prefix("mcp__threadterm__")
+        .or_else(|| name.strip_prefix("threadterm__"))
+        .is_some_and(|tool| crate::delegation::TOOL_NAMES.contains(&tool))
+}
+
+/// ACP `session/new` / `session/load` `mcpServers` for an optional tool server.
+pub(crate) fn acp_mcp_servers(tools: Option<&ChatToolServer>) -> Value {
+    match tools {
+        None => json!([]),
+        Some(tools) => json!([{
+            "name": tools.name,
+            "command": tools.command,
+            "args": tools.args,
+            "env": tools.env.iter().map(|(name, value)| json!({"name":name,"value":value})).collect::<Vec<_>>(),
+        }]),
+    }
+}
+
+/// For an ACP `session/request_permission` about one of ThreadTerm's own
+/// delegation tools, the once-only allow option to answer with. Requires the
+/// exact tool title and a non-file, non-shell tool kind.
+pub(crate) fn acp_threadterm_permission_option(params: &Value) -> Option<String> {
+    let call = params.get("toolCall")?;
+    let title = call.get("title").and_then(Value::as_str)?;
+    let kind = call.get("kind").and_then(Value::as_str);
+    if !is_threadterm_tool(title)
+        || matches!(kind, Some("read" | "edit" | "delete" | "move" | "execute" | "fetch"))
+    {
+        return None;
+    }
+    params
+        .get("options")?
+        .as_array()?
+        .iter()
+        .find(|option| option.get("kind").and_then(Value::as_str) == Some("allow_once"))
+        .and_then(|option| option.get("optionId").and_then(Value::as_str))
+        .map(str::to_owned)
+}
+
+/// Answers an ACP permission request for one of ThreadTerm's delegation tools
+/// with its once-only allow option (Kimi, Gemini, Grok parent Chats only).
+/// Returns false, leaving normal handling, for anything else.
+pub(crate) fn approve_threadterm_tool(
+    responder: &Mutex<Option<common::JsonLineResponder>>,
+    raw: &Value,
+) -> bool {
+    if raw.get("method").and_then(Value::as_str) != Some("session/request_permission") {
+        return false;
+    }
+    let (Some(id), Some(option)) = (
+        raw.get("id"),
+        raw.get("params").and_then(acp_threadterm_permission_option),
+    ) else {
+        return false;
+    };
+    let Ok(slot) = responder.lock() else {
+        return false;
+    };
+    slot.as_ref().is_some_and(|responder| {
+        responder
+            .respond(id.clone(), json!({"outcome":{"outcome":"selected","optionId":option}}))
+            .is_ok()
+    })
+}
 
 pub const SUPPORTED_PROVIDERS: [&str; 6] =
     ["codex", "claude", "kimi", "gemini", "opencode", "grok"];
@@ -233,6 +317,20 @@ pub(crate) trait ProviderAdapter: Send + Sync {
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
         self.open_chat(session_id, cwd, native_id)
     }
+
+    /// Opens a Chat with an optional session-bound tool server. Adapters that
+    /// cannot inject one keep this default and ignore `tools`.
+    fn open_chat_with_tools(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+        tools: Option<&ChatToolServer>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        let _ = tools;
+        self.open_chat_scoped(session_id, cwd, native_id, worker_token)
+    }
 }
 
 pub(crate) trait ChatSession: Send {
@@ -243,6 +341,36 @@ pub(crate) trait ChatSession: Send {
     /// Side-effect-free rejection before a user turn is durably recorded.
     fn validate_send(&self, _text: &str) -> Result<(), ProviderError> {
         Ok(())
+    }
+    /// Side-effect-free validation before a user turn is durably recorded.
+    /// Providers that do not opt in reject image inputs without changing their
+    /// existing adapter implementation.
+    fn validate_images(&self, images: &[String]) -> Result<(), ProviderError> {
+        if images.is_empty() {
+            Ok(())
+        } else {
+            Err(ProviderError::new(
+                "images_unsupported",
+                "This provider does not support chat images. / 此 Provider 不支持聊天图片。",
+            ))
+        }
+    }
+    fn validate_send_with_images(
+        &self,
+        text: &str,
+        images: &[String],
+    ) -> Result<(), ProviderError> {
+        let _ = text;
+        self.validate_images(images)
+    }
+    fn send_with_images(
+        &mut self,
+        text: &str,
+        images: &[String],
+        operation_id: &str,
+    ) -> Result<Value, ProviderError> {
+        self.validate_images(images)?;
+        self.send(text, operation_id)
     }
     fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError>;
     fn cancel(&mut self, turn_id: &str) -> Result<(), ProviderError>;
@@ -342,9 +470,31 @@ pub struct Providers {
     adapters: HashMap<&'static str, Arc<dyn ProviderAdapter>>,
     chats: Mutex<HashMap<String, ChatSlot>>,
     connect_wait: Condvar,
-    capability_cache: Mutex<Option<(Instant, Vec<Value>)>>,
+    capability_cache: Arc<Mutex<CapabilityCache>>,
     events: broadcast::Sender<ProviderEvent>,
     network: network::NetworkSettings,
+    tool_servers: RwLock<Option<ToolServerResolver>>,
+}
+
+/// Last provider capability probe. Probing runs every provider CLI and takes
+/// seconds, while `runtime.snapshot`/`provider.list` share the ordered request
+/// lane with `chat.send`. After expiry, callers get the previous values while
+/// one background thread re-probes, so a send never queues behind the probes.
+#[derive(Default)]
+struct CapabilityCache {
+    values: Option<(Instant, Vec<Value>)>,
+    refreshing: bool,
+    /// Bumped by `refresh_capabilities`; an older background probe is discarded.
+    generation: u64,
+}
+
+const CAPABILITY_TTL: Duration = Duration::from_secs(30);
+
+fn probe_capabilities(adapters: &[Arc<dyn ProviderAdapter>]) -> Vec<Value> {
+    adapters
+        .iter()
+        .filter_map(|adapter| serde_json::to_value(adapter.capability()).ok())
+        .collect()
 }
 
 impl Providers {
@@ -374,10 +524,23 @@ impl Providers {
                 .collect(),
             chats: Mutex::new(HashMap::new()),
             connect_wait: Condvar::new(),
-            capability_cache: Mutex::new(None),
+            capability_cache: Arc::new(Mutex::new(CapabilityCache::default())),
             events,
             network,
+            tool_servers: RwLock::new(None),
         }
+    }
+
+    /// Installed once by the runtime service; consulted on every Chat open.
+    pub fn set_tool_server_resolver(&self, resolver: ToolServerResolver) {
+        if let Ok(mut slot) = self.tool_servers.write() {
+            *slot = Some(resolver);
+        }
+    }
+
+    fn tool_server(&self, session_id: &str, provider: &str) -> Option<ChatToolServer> {
+        let resolver = self.tool_servers.read().ok()?.clone()?;
+        resolver(session_id, provider)
     }
 
     #[cfg(test)]
@@ -394,8 +557,17 @@ impl Providers {
     /// short-lived cache; setup UI can call this after login or installation.
     pub fn refresh_capabilities(&self) {
         if let Ok(mut cache) = self.capability_cache.lock() {
-            *cache = None;
+            cache.values = None;
+            cache.refreshing = false;
+            cache.generation += 1;
         }
+    }
+
+    fn supported_adapters(&self) -> Vec<Arc<dyn ProviderAdapter>> {
+        SUPPORTED_PROVIDERS
+            .iter()
+            .filter_map(|id| self.adapters.get(id).cloned())
+            .collect()
     }
 
     fn adapter(&self, provider: &str) -> Result<&Arc<dyn ProviderAdapter>, ProviderError> {
@@ -488,10 +660,11 @@ impl Providers {
         &self,
         session_id: &str,
         text: &str,
+        images: &[String],
         operation_id: &str,
         record: impl FnOnce() -> Result<(), ProviderError>,
     ) -> Result<Value, ProviderError> {
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && images.is_empty() {
             return Err(ProviderError::new(
                 "empty_message",
                 "Chat message cannot be empty",
@@ -502,8 +675,9 @@ impl Providers {
         // recent turn or complete the active reply's streaming parts.
         let result = self.chat(session_id, |chat| {
             chat.validate_send(text)?;
+            chat.validate_send_with_images(text, images)?;
             record()?;
-            chat.send(text, operation_id)
+            chat.send_with_images(text, images, operation_id)
         });
         match result {
             Err(error) if error.code == "provider_disconnected" => {
@@ -624,21 +798,37 @@ impl Default for Providers {
 
 impl ProviderRuntime for Providers {
     fn capabilities(&self) -> Vec<Value> {
-        const CAPABILITY_TTL: Duration = Duration::from_secs(30);
-        if let Ok(cache) = self.capability_cache.lock() {
-            if let Some((created, values)) = cache.as_ref() {
-                if created.elapsed() < CAPABILITY_TTL {
-                    return values.clone();
+        if let Ok(mut cache) = self.capability_cache.lock() {
+            if let Some((created, values)) = cache.values.as_ref() {
+                let values = values.clone();
+                if created.elapsed() >= CAPABILITY_TTL && !cache.refreshing {
+                    cache.refreshing = true;
+                    let generation = cache.generation;
+                    let shared = Arc::clone(&self.capability_cache);
+                    let adapters = self.supported_adapters();
+                    let spawned = std::thread::Builder::new()
+                        .name("provider-capabilities".into())
+                        .spawn(move || {
+                            let fresh = probe_capabilities(&adapters);
+                            if let Ok(mut cache) = shared.lock() {
+                                if cache.generation == generation {
+                                    cache.values = Some((Instant::now(), fresh));
+                                    cache.refreshing = false;
+                                }
+                            }
+                        });
+                    if spawned.is_err() {
+                        cache.refreshing = false;
+                    }
                 }
+                return values;
             }
         }
-        let values = SUPPORTED_PROVIDERS
-            .iter()
-            .filter_map(|id| self.adapters.get(id))
-            .filter_map(|adapter| serde_json::to_value(adapter.capability()).ok())
-            .collect::<Vec<_>>();
+        // First probe, or the first after an explicit refresh: callers need real
+        // values, so this one runs synchronously.
+        let values = probe_capabilities(&self.supported_adapters());
         if let Ok(mut cache) = self.capability_cache.lock() {
-            *cache = Some((Instant::now(), values.clone()));
+            cache.values = Some((Instant::now(), values.clone()));
         }
         values
     }
@@ -757,7 +947,10 @@ impl ProviderRuntime for Providers {
         self.emit_connection(session_id, connecting);
         drop(old_worker);
 
-        let opened = adapter.open_chat_scoped(session_id, cwd, native_id, &worker_token);
+        // Resolved per open: reconnects rotate the session token.
+        let tools = self.tool_server(session_id, provider);
+        let opened =
+            adapter.open_chat_with_tools(session_id, cwd, native_id, &worker_token, tools.as_ref());
         let mut chats = self
             .chats
             .lock()
@@ -848,7 +1041,7 @@ impl ProviderRuntime for Providers {
         text: &str,
         operation_id: &str,
     ) -> Result<Value, ProviderError> {
-        self.chat_send_recording(session_id, text, operation_id, || Ok(()))
+        self.chat_send_recording(session_id, text, &[], operation_id, || Ok(()))
     }
 
     fn chat_cancel(&self, session_id: &str, turn_id: &str) -> Result<(), ProviderError> {
@@ -1189,6 +1382,34 @@ mod registry_cleanup_tests {
         }
     }
 
+    struct UnsupportedImageWorker;
+    impl ChatSession for UnsupportedImageWorker {
+        fn native_id(&self) -> Option<String> {
+            None
+        }
+        fn send(&mut self, _: &str, _: &str) -> Result<Value, ProviderError> {
+            Ok(json!({}))
+        }
+        fn cancel(&mut self, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn approve(&mut self, _: &str, _: &str, _: &str, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn default_chat_session_rejects_images_before_send() {
+        let worker = UnsupportedImageWorker;
+        let error = worker
+            .validate_send_with_images("", &["data:image/png;base64,cG5n".to_owned()])
+            .unwrap_err();
+        assert_eq!(error.code, "images_unsupported");
+    }
+
     #[test]
     fn dead_worker_cleanup_releases_the_registry_before_provider_drop() {
         for path in ["poll", "send", "closed"] {
@@ -1215,5 +1436,176 @@ mod registry_cleanup_tests {
                 "{path}: provider cleanup held the shared registry"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod capability_cache_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+    /// A provider whose capability probe is slow and numbered.
+    struct SlowProbe {
+        probes: Arc<AtomicUsize>,
+    }
+
+    impl ProviderAdapter for SlowProbe {
+        fn id(&self) -> &'static str {
+            "codex"
+        }
+        fn capability(&self) -> ProviderCapability {
+            let probe = self.probes.fetch_add(1, SeqCst) + 1;
+            std::thread::sleep(Duration::from_millis(300));
+            ProviderCapability {
+                id: "codex".into(),
+                name: format!("probe {probe}"),
+                installed: true,
+                version: None,
+                terminal: false,
+                chat: false,
+                history: false,
+                resume: false,
+                terminal_resume_capture: "none",
+                reason: None,
+                auth: "unknown".into(),
+            }
+        }
+        fn terminal_command(
+            &self,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<TerminalCommand, ProviderError> {
+            Err(ProviderError::new("unsupported", "capability fixture"))
+        }
+        fn history_list(
+            &self,
+            _: Option<&str>,
+            _: u32,
+            _: Option<&str>,
+        ) -> Result<Value, ProviderError> {
+            Ok(json!({}))
+        }
+        fn history_read(&self, _: &str) -> Result<Value, ProviderError> {
+            Ok(json!([]))
+        }
+        fn open_chat(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<Box<dyn ChatSession>, ProviderError> {
+            Err(ProviderError::new("unsupported", "capability fixture"))
+        }
+    }
+
+    fn name(values: &[Value]) -> String {
+        values[0]["name"].as_str().unwrap().to_owned()
+    }
+
+    fn expire(providers: &Providers) {
+        let expired = Instant::now()
+            .checked_sub(CAPABILITY_TTL + Duration::from_secs(1))
+            .unwrap();
+        let mut cache = providers.capability_cache.lock().unwrap();
+        cache.values.as_mut().unwrap().0 = expired;
+    }
+
+    #[test]
+    fn expired_capabilities_answer_immediately_and_refresh_once_in_the_background() {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let providers = Providers::for_test(vec![Arc::new(SlowProbe {
+            probes: Arc::clone(&probes),
+        })]);
+        // First probe is synchronous; fresh values are cached.
+        assert_eq!(name(&providers.capabilities()), "probe 1");
+        assert_eq!(name(&providers.capabilities()), "probe 1");
+        assert_eq!(probes.load(SeqCst), 1);
+
+        // Expired values still answer, without waiting for the probes.
+        expire(&providers);
+        let started = Instant::now();
+        assert_eq!(name(&providers.capabilities()), "probe 1");
+        assert_eq!(name(&providers.capabilities()), "probe 1");
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "an expired cache must not make the caller wait for the probes"
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while name(&providers.capabilities()) != "probe 2" && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(name(&providers.capabilities()), "probe 2");
+        // Repeated expired reads started a single refresh.
+        assert_eq!(probes.load(SeqCst), 2);
+
+        // An explicit refresh probes synchronously; the in-flight background
+        // probe it superseded must not overwrite the newer values later.
+        expire(&providers);
+        let _ = providers.capabilities();
+        providers.refresh_capabilities();
+        let current = name(&providers.capabilities());
+        std::thread::sleep(Duration::from_millis(600));
+        assert_eq!(probes.load(SeqCst), 4);
+        assert_eq!(name(&providers.capabilities()), current);
+    }
+}
+
+#[cfg(test)]
+mod delegation_tool_tests {
+    use super::*;
+
+    #[test]
+    fn only_exact_delegation_tool_names_are_threadterm_tools() {
+        assert!(is_threadterm_tool("mcp__threadterm__delegate_start"));
+        assert!(is_threadterm_tool("threadterm__delegate_wait"));
+        assert!(!is_threadterm_tool("mcp__threadterm__terminal_create"));
+        assert!(!is_threadterm_tool("mcp__threadterm__delegate_start; rm -rf ."));
+        assert!(!is_threadterm_tool("Shell: mcp__threadterm__delegate_start"));
+        assert!(!is_threadterm_tool("mcp__other__delegate_start"));
+    }
+
+    #[test]
+    fn acp_servers_carry_the_session_identity_as_name_value_env() {
+        assert_eq!(acp_mcp_servers(None), json!([]));
+        let tools = ChatToolServer {
+            name: "threadterm".into(),
+            command: "C:/rt/threadterm-v3-mcp.exe".into(),
+            args: Vec::new(),
+            env: vec![("THREADTERM_SESSION_ID".into(), "s-1".into())],
+        };
+        assert_eq!(
+            acp_mcp_servers(Some(&tools)),
+            json!([{"name":"threadterm","command":"C:/rt/threadterm-v3-mcp.exe","args":[],"env":[{"name":"THREADTERM_SESSION_ID","value":"s-1"}]}])
+        );
+    }
+
+    #[test]
+    fn acp_permissions_for_delegation_tools_pick_allow_once_only() {
+        let request = |title: &str, kind: &str| {
+            json!({"toolCall":{"title":title,"kind":kind},"options":[
+                {"optionId":"approve_once","kind":"allow_once"},
+                {"optionId":"approve_always","kind":"allow_always"},
+                {"optionId":"reject","kind":"reject_once"}
+            ]})
+        };
+        assert_eq!(
+            acp_threadterm_permission_option(&request("mcp__threadterm__delegate_start", "other")),
+            Some("approve_once".into())
+        );
+        assert_eq!(
+            acp_threadterm_permission_option(&request("threadterm__delegate_wait", "other")),
+            Some("approve_once".into())
+        );
+        assert_eq!(
+            acp_threadterm_permission_option(&request("mcp__threadterm__delegate_start", "execute")),
+            None,
+            "a shell call is never auto-approved, whatever its title"
+        );
+        assert_eq!(
+            acp_threadterm_permission_option(&request("mcp__codegraph__search", "other")),
+            None
+        );
+        let no_once = json!({"toolCall":{"title":"mcp__threadterm__delegate_start","kind":"other"},"options":[{"optionId":"approve_always","kind":"allow_always"}]});
+        assert_eq!(acp_threadterm_permission_option(&no_once), None);
     }
 }

@@ -16,6 +16,7 @@ const hostOptions = {
   pathToClaudeCodeExecutable: process.env.THREADTERM_CLAUDE_PATH || (existsSync(bundledCli) ? bundledCli : undefined),
   ...(settingSources === undefined ? {} : { settingSources: settingSources ? settingSources.split(',') : [] }),
   ...(handshakeTimeoutMs ? { handshakeTimeoutMs } : {}),
+  ...(process.env.THREADTERM_CLAUDE_WARMUP === '0' ? { warmUp: false } : {}),
 };
 const sessions = new Map();
 const get = cardId => { const session = sessions.get(cardId); if (!session) throw new Error(`no session for card: ${cardId}`); return session; };
@@ -40,7 +41,10 @@ async function handle(request) {
       sessions.set(request.cardId, session);
       // start() resolves after the SDK control handshake; the reply therefore
       // means the provider is genuinely ready, not merely spawned.
-      try { return { sessionId: await session.start({ cwd: request.cwd, sessionId: request.sessionId }) }; }
+      try {
+        const sessionId = await session.start({ cwd: request.cwd, sessionId: request.sessionId, mcpServers: request.mcpServers });
+        return { sessionId, ui: session.uiState() };
+      }
       catch (error) {
         if (sessions.get(request.cardId) === session) sessions.delete(request.cardId);
         await session.stop().catch(() => {});
@@ -50,6 +54,7 @@ async function handle(request) {
     case 'session.send': get(request.cardId).send(request.text, request.operationId); return {};
     case 'session.interrupt': await get(request.cardId).interrupt(); return {};
     case 'session.decision': get(request.cardId).decide(request.requestId, request.behavior); return {};
+    case 'session.set_option': return { ui: await get(request.cardId).setOption(request.optionId, request.value) };
     case 'session.stop': { const session = sessions.get(request.cardId); sessions.delete(request.cardId); if (session) await session.stop(); return {}; }
     default: throw new Error(`unhandled op: ${request.op}`);
   }

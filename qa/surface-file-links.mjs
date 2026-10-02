@@ -48,6 +48,10 @@ window.threadterm={
     {type:'tool',toolName:'Read',status:'failed',text:'Could not read src/missing.ts:4',fileReferences:[{path:'src/missing.ts',line:4},{path:'src/extra.ts',line:9},{path:'file:///C:/repo/native.rs',line:11},{path:'image',line:5,column:3},{path:'https://example.com/image'},{path:'bad'+String.fromCharCode(0)+'path'},{path:'file:///C:/repo/%2e%2e/secret'}]}
    ]}
   ]};
+  if(method==='filesystem.resolve'&&window.qaFiles){
+   if(window.qaFiles.includes(params.path))return {path:params.path,kind:'text'};
+   throw new Error('file_reference_not_found');
+  }
   if(method==='chat.draft.read')return {text:'',revision:0};
   if(method==='chat.options')return {options:[],commands:[]};
   if(method==='terminal.read')return {nextCursor:0};
@@ -233,6 +237,34 @@ try {
  });
  assert.ok(longWrapped.physicalLines>8,'fixture exceeds the bounded logical-line scan');
  assert.equal(longWrapped.links,0,'incomplete 8-line windows must not expose a truncated file path');
+ // Ctrl highlights only files the runtime finds: the tool-call wrapper, the number and the
+ // missing path are not links, and a path the TUI hard-wrapped is highlighted on both rows.
+ const wrappedFile='D:/repo/src/components/terminalFileLinks.ts';
+ await page.evaluate(async files=>{
+  window.qaFiles=files;
+  const term=window.term;term.reset();
+  await new Promise(resolve=>term.write('⏺ Update(src/tool.tsx) pi 3.14 src/gone.ts\r\nx Read(D:/repo/src/components/terminal\r\n  FileLinks.ts)',resolve));
+ },['src/tool.tsx',wrappedFile]);
+ await page.keyboard.down('Control');
+ await page.waitForFunction(()=>document.querySelectorAll('.terminal-file-link-hit').length>=3);
+ await page.waitForTimeout(100);
+ const highlighted=await page.evaluate(()=>{
+  const term=window.term,buffer=term.buffer.active,cell=(value,count)=>Math.round(parseFloat(value)/100*count);
+  return [...document.querySelectorAll('.terminal-file-link-hit')].map(hit=>{
+   const x=cell(hit.style.left,term.cols),y=cell(hit.style.top,term.rows);
+   return {y,text:buffer.getLine(buffer.viewportY+y).translateToString(false,x,x+cell(hit.style.width,term.cols))};
+  }).sort((a,b)=>a.y-b.y);
+ });
+ assert.deepEqual(highlighted,[{y:0,text:'src/tool.tsx'},{y:1,text:'D:/repo/src/components/terminal'},{y:2,text:'FileLinks.ts'}],'Ctrl highlights exactly the existing paths');
+ await page.screenshot({path:join(out,'ctrl-validated-links.png')});
+ const continuation=await page.evaluate(()=>{
+  const term=window.term,hit=[...document.querySelectorAll('.terminal-file-link-hit')].find(item=>Math.round(parseFloat(item.style.top)/100*term.rows)===2);
+  const box=hit.getBoundingClientRect();return {x:box.left+box.width/2,y:box.top+box.height/2};
+ });
+ await page.mouse.click(continuation.x,continuation.y);
+ await page.keyboard.up('Control');
+ assert.deepEqual((await page.evaluate(()=>window.opened)).at(-1),{path:wrappedFile},'Ctrl-click on the continuation row opens the whole path');
+ await page.evaluate(()=>{window.qaFiles=undefined;});
  const providerChecks=[];
  for(const provider of ['codex','claude','kimi','grok']){
   await page.evaluate(next=>{

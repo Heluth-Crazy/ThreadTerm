@@ -40,6 +40,20 @@
 .project-catalog .tree-row .branch.branch-split { display:flex; min-width:0; }
 .project-catalog .branch-split .branch-prefix { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--faint); }
 .project-catalog .tree-row:hover .branch-prefix, .project-catalog .tree-row.active .branch-prefix, .project-catalog .tree-row.contains-active .branch-prefix { color:var(--muted); }
+/* Agent delegation: a delegate sits indented under the session that started it. */
+.project-catalog .sess-row-wrap.is-delegate { padding-left:14px; }
+.project-catalog .sess-row-wrap.is-delegate::before { content:""; position:absolute; left:9px; top:5px; bottom:5px; width:1px; background:var(--border); }
+.project-catalog .delegate-chip { flex:none; display:inline-flex; align-items:center; gap:3px; margin-left:4px; padding:0 4px; border-radius:var(--radius); background:var(--soft); color:var(--muted); font-size:10px; line-height:16px; white-space:nowrap; }
+.project-catalog .delegate-chip .ico { width:11px; height:11px; }
 /* The leaf keeps its full width (flex-shrink 0: a shrinkable leaf lost ~0.1px to rounding at 125% and showed an
    ellipsis while it fit); it truncates only when it alone is wider than the row, leaving 2ch for the prefix. */
 .project-catalog .branch-split .branch-leaf { flex:0 0 auto; max-width:calc(100% - 2ch); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.project-catalog .session-agent-icon { position:relative; display:grid; place-items:center; width:16px; height:16px; }
+.project-catalog .sess-row .bico { display:inline-flex; flex:0 0 36px; align-items:center; gap:2px; width:36px; min-width:36px; height:16px; vertical-align:middle; }
+.project-catalog .sess-row .bico-dot { flex:none; }
+.project-catalog .session-attention-ring { position:absolute; inset:-3px; border:2px solid transparent; border-top-color:var(--st-running); border-right-color:var(--st-running); border-radius:50%; pointer-events:none; animation:session-attention-ring 1.2s linear infinite; }
+.project-catalog .session-attention-icon { flex:none; width:11px; height:11px; margin:0; color:#bc7900; }
+.project-catalog .session-attention-bar { position:absolute; z-index:1; top:5px; bottom:5px; left:37px; width:3px; border-radius:2px; background:#bc7900; pointer-events:none; animation:session-attention-bar 2.4s ease-in-out infinite; }
+@keyframes session-attention-ring { to { transform:rotate(360deg); } }
+@keyframes session-attention-bar { 50% { opacity:.38; } }
+@media (prefers-reduced-motion:reduce) { .project-catalog .session-attention-ring, .project-catalog .session-attention-bar { animation:none; } }

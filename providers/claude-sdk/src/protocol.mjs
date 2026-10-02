@@ -1,6 +1,6 @@
 export const OPS = new Set([
   'host.ping', 'history.list', 'history.read', 'session.start', 'session.send',
-  'session.interrupt', 'session.decision', 'session.stop',
+  'session.interrupt', 'session.decision', 'session.set_option', 'session.stop',
 ]);
 
 export function parseLine(line) {

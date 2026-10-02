@@ -7,11 +7,31 @@
 @import url("../../reference/prototype/features/sessions.css");
 @import url("../../reference/prototype/features/settings.css");
 
+/* App palette "A · Warm" (user decision 2026-09-29, Claude Desktop direction; departs from the prototype's cool greys):
+   ivory canvas, a slightly deeper warm sidebar, near-white warm cards, warm greys for text and hairlines; dark is a
+   soft warm charcoal instead of near-black. The brand indigo (--primary and its aliases) stays the prototype's.
+   Terminals match their cards: keep --term-bg in step with terminalTheme.ts. Custom themes set inline tokens and win. */
+:root, [data-theme="light"] {
+  --bg:#f5f4ef; --side:#eeede6; --surface:#fefdfb; --raised:#f8f7f3;
+  --soft:rgba(64,52,28,.055); --border:rgba(64,52,28,.115);
+  --text:#23221f; --muted:#6c6961; --faint:#9a968d;
+  --term-bg:#fefdfb; --term-fg:#23221f; --term-line:rgba(64,52,28,.115);
+  --shadow:0 16px 48px rgba(48,38,18,.12); --shadow-soft:0 8px 24px rgba(48,38,18,.08); --app-window-stroke:rgba(64,52,28,.14);
+}
+[data-theme="dark"] {
+  --bg:#262624; --side:#1f1e1d; --surface:#2c2c2a; --raised:#33332f;
+  --soft:rgba(250,244,228,.055); --border:rgba(250,244,228,.10);
+  --text:#ecebe5; --muted:#a8a59c; --faint:#77746c;
+  --term-bg:#2c2c2a; --term-fg:#ecebe5; --term-line:rgba(250,244,228,.10);
+  --shadow:0 16px 48px rgba(0,0,0,.42); --shadow-soft:0 8px 24px rgba(0,0,0,.32); --app-window-stroke:rgba(250,244,228,.12);
+}
+
 /* Status colours (user decision 2026-09-28, departs from the prototype): stalled was purple, next to the brand
    indigo; it is orange now. Pill text is 80% status + 20% text so light pills reach 4.5:1 on their tint (they were
-   3.9-4.5:1); the dot keeps the pure status colour. Dark after light: both selectors match <html>. */
+   3.9-4.5:1); the dot keeps the pure status colour. Dark after light: both selectors match <html>. Dark stalled is
+   #e27a36 since the warm palette: #db6d28 measured 4.44:1 as a pill on the lighter charcoal cards (now 4.83:1). */
 :root, [data-theme="light"] { --st-stalled:#bc4c00; }
-[data-theme="dark"] { --st-stalled:#db6d28; }
+[data-theme="dark"] { --st-stalled:#e27a36; }
 .chip.st-needs { color:color-mix(in srgb, var(--st-needs) 80%, var(--text)); }
 .chip.st-running { color:color-mix(in srgb, var(--st-running) 80%, var(--text)); }
 .chip.st-failed { color:color-mix(in srgb, var(--st-failed) 80%, var(--text)); }
@@ -408,7 +428,8 @@ html[data-theme="dark"] { color-scheme:dark; }
 .chat-approval-card { display:grid; gap:8px; }
 .chat-approval-card small.chat-approval-type { display:block; color:var(--muted); font-size:11px; }
 .chat-approval-actions { display:flex; flex-wrap:wrap; gap:8px; }
-.chat-approval-choice { display:grid; justify-items:start; gap:2px; text-align:left; }
+/* Two lines (choice + scope): the shared .btn height would clip the scope line. */
+.chat-approval-choice { display:grid; justify-items:start; gap:2px; height:auto; min-height:28px; padding:4px 12px; text-align:left; }
 .chat-approval-choice small { color:var(--muted); font-size:10px; }
 .chat-approval-stale { margin:0; color:var(--muted); font-size:12px; }
 .chat-approval-details { color:var(--muted); font-size:12px; }

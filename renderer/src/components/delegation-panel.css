@@ -1,0 +1,19 @@
+/* Agent delegation strip at the top of a Chat (DelegationPanel.tsx). */
+.delegation-panel { flex:0 0 auto; display:grid; gap:6px; padding:6px 16px; border-bottom:1px solid var(--border); font-size:12px; }
+.delegation-origin { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin:0; color:var(--muted); }
+.delegation-link { display:inline-flex; align-items:center; gap:4px; min-width:0; padding:0; border:0; background:none; color:var(--text); font:inherit; cursor:pointer; text-align:left; }
+.delegation-link:hover { text-decoration:underline; }
+.delegation-state { flex:none; padding:0 6px; border-radius:var(--radius); background:var(--soft); color:var(--muted); font-size:11px; line-height:18px; }
+.delegation-state.st-running, .delegation-state.st-starting, .delegation-state.st-awaiting_parent { color:var(--text); }
+.delegation-state.st-awaiting_user { background:rgba(214,153,41,.16); color:var(--text); }
+.delegation-state.st-failed { background:rgba(204,72,60,.14); color:var(--text); }
+.delegation-branch { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--faint); font-family:var(--mono, ui-monospace, monospace); font-size:11px; }
+.delegation-cards { display:grid; gap:6px; }
+.delegation-cards > header { color:var(--muted); font-weight:600; }
+.delegate-card { display:grid; gap:3px; padding:6px 8px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); }
+.delegate-card-head { display:flex; align-items:center; gap:6px; min-width:0; }
+.delegate-card-title { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
+.delegate-stop { flex:none; padding:0 8px; font-size:11px; line-height:20px; }
+.delegate-card-preview { margin:0; color:var(--muted); white-space:pre-wrap; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.delegate-card-preview.is-error { color:var(--danger); }
+.chat-approval-delegated { color:var(--muted); font-size:12px; }

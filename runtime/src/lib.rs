@@ -7,6 +7,7 @@
 pub mod bootstrap;
 pub mod config;
 pub mod db;
+pub mod delegation;
 pub mod devices;
 pub mod domain;
 pub mod file_ops;
@@ -23,6 +24,7 @@ pub mod remote_access;
 pub mod retry_scheduler;
 pub mod review;
 pub mod service;
+pub mod session_activity;
 pub mod session_configs;
 pub mod session_metrics;
 pub mod settings_services;
@@ -38,6 +40,7 @@ pub const PROTOCOL_CONTRACT: u32 = 2;
 pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod local_client;
+pub mod mcp_delegation;
 pub mod mcp_host;
 
 pub mod chat_projection;

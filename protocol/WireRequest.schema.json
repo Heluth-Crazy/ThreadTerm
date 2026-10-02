@@ -1149,6 +1149,26 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"session.attention.acknowledge\">": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"session.claim\">": {
       "type": "object",
       "properties": {
@@ -1311,6 +1331,12 @@
         },
         "text": {
           "type": "string"
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "operationId": {
           "type": "string"
@@ -3732,6 +3758,32 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22session.update%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.attention.acknowledge"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22session.attention.acknowledge%22%3E"
         }
       },
       "required": [

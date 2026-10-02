@@ -30,7 +30,9 @@ import {SessionWorkspace} from './renderer/src/components/SessionWorkspace';
 import {I18nProvider} from './renderer/src/i18n';import './renderer/src/styles.css';
 const provider=new URLSearchParams(location.search).get('provider')??'codex';
 const session={id:'chat-'+provider,title:'Chat '+provider,provider,mode:'chat',status:'idle',readOnly:false,projectId:'project',worktreePath:'D:/fixture',createdAt:'now',updatedAt:'now'};
-const initial={kind:'pane',id:'chat-pane',tabs:[{id:'session-chat',kind:'session',sessionId:session.id}],activeTabId:'session-chat'};
+// ?mixed: an earlier narrow open left a Chat-owned file tab inside the Chat pane.
+const mixed=new URLSearchParams(location.search).has('mixed');
+const initial={kind:'pane',id:'chat-pane',tabs:[{id:'session-chat',kind:'session',sessionId:session.id},...(mixed?[{id:'old-file',kind:'file',projectId:'project',worktreePath:'D:/fixture',path:'README.md',ownerSessionId:session.id}]:[])],activeTabId:'session-chat'};
 const files={'AGENTS.md':'one\\ntwo\\nthree\\nfour\\nfive\\nsix\\nseven\\neight\\nnine\\nten\\neleven\\ntwelve\\n','src/main.ts':'one\\ntwo\\nthree\\nfour\\nfive\\nsix\\nseven\\n','README.md':'one\\ntwo\\nthree\\nfour\\n','sample.md':'# Sample\\n\\nLive provider fixture.\\n','tool.ts':'one\\ntwo\\nthree\\nfour\\nfive\\n','updated.md':'# Updated\\n'};
 const chatOptions={options:[],commands:[],loadState:'ready'};
 const liveSamples=${JSON.stringify(liveSamples)};
@@ -80,7 +82,7 @@ try{
   const composer=page.locator('.chat-compose textarea:visible');
   await composer.waitFor();assert.equal(await composer.inputValue(),'draft stays');
   assert.equal(await page.getByRole('tab').count(),1);
-  assert.ok(await page.locator('.ws-content > .ws-pane').evaluate(element=>element.clientWidth)>=900,'pane area must be wide enough to split');
+  assert.ok(await page.locator('.ws-content > .ws-pane').evaluate(element=>element.clientWidth)>=692,'pane area must be wide enough to split (two 340 px panes)');
   const before=await page.evaluate(()=>{const node=document.querySelector('[data-testid^="session-chat-"]');window.qaChatNode=node;return{snapshots:window.qaCalls.filter(call=>call.method==='chat.snapshot').length,events:window.qaEvents};});
 
   await page.getByRole('button',{name:'absolute',exact:true}).click();
@@ -154,8 +156,29 @@ try{
   assert.equal(await page.getByRole('tab',{name:'missing.ts',exact:true}).count(),0);
   assert.equal(await composer.inputValue(),'draft stays');
  }
+ // The default 1440 px app window with the Files side panel open leaves an 854 px pane area,
+ // under the former 900 px rule. A Chat link must open beside Chat, also when an earlier
+ // narrow open left a file tab inside the Chat pane.
+ const splitChecks=[];
+ for(const mixed of [false,true]){
+  await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setContentSize(1400,900));
+  await page.goto(pathToFileURL(join(scratch,'index.html')).href+'?provider=codex'+(mixed?'&mixed=1':''));
+  await page.locator('.chat-compose textarea:visible').waitFor();
+  if(!await page.locator('.wb-sidebar').count())await page.locator('.wb-switcher .wb-switch-btn').first().click();
+  await page.locator('.wb-sidebar').waitFor();
+  const wide=await page.locator('.ws-content > .ws-pane').evaluate(element=>element.clientWidth);
+  await app.evaluate(({BrowserWindow},width)=>BrowserWindow.getAllWindows()[0].setContentSize(width,900),1400-(wide-854));
+  await page.waitForFunction(()=>Math.abs(document.querySelector('.ws-content > .ws-pane').clientWidth-854)<=2);
+  await page.getByRole('button',{name:'absolute',exact:true}).click();
+  await page.getByRole('button',{name:'Close file preview',exact:true}).waitFor();
+  const placed=await page.evaluate(()=>({panes:document.querySelectorAll('[data-pane-id]').length,chatWidth:Math.round(document.querySelector('.chat-compose textarea')?.getBoundingClientRect().width??0)}));
+  assert.equal(placed.panes,2,`${mixed?'mixed':'fresh'}: an 854 px pane area opens the file beside Chat`);
+  assert.ok(placed.chatWidth>250,`${mixed?'mixed':'fresh'}: Chat stays visible, not covered by the file`);
+  splitChecks.push({mixed,...placed});
+  if(!mixed)await page.screenshot({path:resolve('qa/results/chat-file-navigation-854.png')});
+ }
  assert.deepEqual(errors,[]);
- const report={passed:true,checks:['Codex/Claude/Kimi/Grok body click and retained chat draft/subscription','A/B session-owned same-path previews and retained hidden chat/composer/subscriptions','single-pane first navigation creates sibling without remount','non-focused pane click retains the original button through pointerdown/click','Markdown text updates still replace rendered content','encoded absolute Markdown href','relative #L/C anchor','inline code','Kimi/Grok captured provider samples (no live call this run)','structured tool chip','HTTP remains external','resolver failure visible','inert pre-sanitize HTML and forged metadata rejection'],liveSampleProviders:Object.keys(liveSamples),screenshot:resolve('qa/results/chat-file-navigation.png'),scratch};
+ const report={passed:true,checks:['Codex/Claude/Kimi/Grok body click and retained chat draft/subscription','A/B session-owned same-path previews and retained hidden chat/composer/subscriptions','single-pane first navigation creates sibling without remount','non-focused pane click retains the original button through pointerdown/click','Markdown text updates still replace rendered content','encoded absolute Markdown href','relative #L/C anchor','inline code','Kimi/Grok captured provider samples (no live call this run)','structured tool chip','HTTP remains external','resolver failure visible','inert pre-sanitize HTML and forged metadata rejection'],liveSampleProviders:Object.keys(liveSamples),splitChecks,screenshot:resolve('qa/results/chat-file-navigation.png'),scratch};
  await writeFile(resolve('qa/results/chat-file-navigation.json'),JSON.stringify(report,null,2)+'\n');
  console.log(JSON.stringify(report));
 }catch(error){console.error(error);if(page)console.error(await page.evaluate(()=>({calls:window.qaCalls,pointerEvents:window.qaPointerEvents,buttons:[...document.querySelectorAll('button[data-file-reference]')].map(element=>({text:element.textContent,data:element.getAttribute('data-file-reference')})),alerts:[...document.querySelectorAll('[role=alert]')].map(element=>element.textContent)})));process.exitCode=1;}

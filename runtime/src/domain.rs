@@ -1,3 +1,4 @@
+use crate::session_activity::SessionActivity;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -35,12 +36,32 @@ pub struct Session {
     pub followed: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub read_only: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<SessionActivity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<SessionDelegation>,
     #[serde(flatten, default)]
     pub organization: SessionOrganization,
 }
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// Present on a Chat session that another agent started through ThreadTerm
+/// delegation. `state` follows the delegated turn only; later turns the user
+/// sends to the delegate do not change it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDelegation {
+    pub id: String,
+    pub parent_session_id: String,
+    /// `shared` (the parent's folder) or `worktree`.
+    pub workspace: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// starting | running | awaiting_parent | awaiting_user | completed | failed | cancelled
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]

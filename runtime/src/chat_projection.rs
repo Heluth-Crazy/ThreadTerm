@@ -181,10 +181,18 @@ pub fn record(
   let mut item=previous.and_then(|s|serde_json::from_str::<ChatItem>(&s).ok()).unwrap_or(ChatItem{id:id.clone(),role:if category=="user"{"user"}else{"assistant"}.into(),parts:Vec::new(),created_at:now.clone(),turn_id:turn.map(str::to_owned),elapsed_ms:None});
   let mut changed=false;
   let mut resolved_pending_approval=false;
+  // Agent delegation: while the parent agent is inside a turn, a delegated
+  // session's requests go to it instead of the user, and its replies and
+  // errors raise no notices. Otherwise everything behaves as usual.
+  let delegation=crate::delegation::active_link(tx,session_id)?;
+  let quiet=match &delegation {Some(link)=>crate::delegation::parent_turn_active(tx,&link.parent_session_id)?,None=>false};
+  let mut routed_to_parent=false;
   match kind {
    "message.user"=>{
     complete_streaming_items(tx,session_id,&now)?;
-    item.parts=vec![json!({"type":"text","text":data.get("text").and_then(Value::as_str).unwrap_or("")})];changed=true;
+    let mut part=json!({"type":"text","text":data.get("text").and_then(Value::as_str).unwrap_or("")});
+    if let Some(images)=data.get("images").filter(|images| images.as_array().is_some_and(|items| !items.is_empty())) { part["data"]=json!({"images":images}); }
+    item.parts=vec![part];changed=true;
    }
    "chat.delta"=>{
     let part_type=match data.pointer("/part/type").and_then(Value::as_str) { Some("thinking")=>"thinking", _=>"text" };
@@ -218,10 +226,17 @@ pub fn record(
    }
    "chat.approval"=>{
     if let Some(approval)=approval_id {
-     let payload=data.get("part").and_then(|part|part.get("data")).cloned().unwrap_or_else(||data.clone());
+     let mut payload=data.get("part").and_then(|part|part.get("data")).cloned().unwrap_or_else(||data.clone());
+     if let Some(link)=&delegation {
+      // Requests ThreadTerm cannot answer by choice always stay with the user.
+      routed_to_parent=quiet&&payload.get("submittable").and_then(Value::as_bool)!=Some(false);
+      if let Some(object)=payload.as_object_mut() {object.insert("delegation".into(),json!({"parentSessionId":link.parent_session_id,"route":if routed_to_parent{"parent"}else{"user"}}));}
+     }
      item.parts=vec![json!({"type":"approval","approvalId":approval,"status":"pending","data":payload})];changed=true;
-     insert_attention(tx,&id,session_id,turn,"approval",data,&now)?;
-     tx.execute("UPDATE inbox SET data=?,resolved=0 WHERE id=?",params![serde_json::to_string(data)?,id])?;
+     if !routed_to_parent {
+      insert_attention(tx,&id,session_id,turn,"approval",data,&now)?;
+      tx.execute("UPDATE inbox SET data=?,resolved=0 WHERE id=?",params![serde_json::to_string(data)?,id])?;
+     }
     }
    }
    "chat.approval.resolved"=>{
@@ -263,9 +278,10 @@ pub fn record(
     for part in &mut item.parts {
      if part.get("status").and_then(Value::as_str)==Some("streaming") {part["status"]=json!("complete");changed=true;}
     }
-    notify_reply(tx,session_id,turn,data,&now)?;
+    // Reply notices are already-read and excluded from snapshot Inbox rows.
+    if !quiet {notify_reply(tx,session_id,turn,data,&now)?;}
    }
-   "chat.error"=>{item.parts.push(json!({"type":"error","text":data.get("message").and_then(Value::as_str).unwrap_or("Provider request failed"),"data":data}));changed=true;insert_attention(tx,&format!("{session_id}:error:{turn_key}"),session_id,turn,"error",data,&now)?;}
+   "chat.error"=>{item.parts.push(json!({"type":"error","text":data.get("message").and_then(Value::as_str).unwrap_or("Provider request failed"),"data":data}));changed=true;if !quiet {insert_attention(tx,&format!("{session_id}:error:{turn_key}"),session_id,turn,"error",data,&now)?;}}
    "chat.ui"=>{
     tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('chat.ui',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"options":data.get("options").cloned().unwrap_or_else(||json!([])),"commands":data.get("commands").cloned().unwrap_or_else(||json!([]))}))?,now])?;
    }
@@ -283,6 +299,12 @@ pub fn record(
    // projecting transcript and usage data, but never resurrect that session.
    tx.execute("UPDATE sessions SET status=?,updated_at=? WHERE id=? AND status NOT IN ('exited','interrupted')",params![status,now,session_id])?;
   }
+  if let Some(activity) = project_activity(tx, session_id, turn, kind, data, resolved_pending_approval, routed_to_parent)? {
+   tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('session.activity',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"activity":activity}))?,now])?;
+  }
+  if let Some(link)=&delegation {crate::delegation::project_child_event(tx,link,kind,data)?;}
+  // A parent whose turn ends can no longer answer: its delegates' requests go to the user.
+  if matches!(kind,"chat.turn.completed"|"chat.error") {escalate_parent_requests(tx,session_id,&now)?;}
   let usage=data.get("usage").or_else(||data.pointer("/raw/params/usage")).or_else(||data.pointer("/raw/params/tokenUsage/last"));
   if let Some(usage)=usage {
    let input=usage.get("inputTokens").or_else(||usage.get("input_tokens")).or_else(||usage.get("prompt_tokens")).and_then(Value::as_u64);
@@ -296,6 +318,89 @@ pub fn record(
   if status.is_some()||usage.is_some() {tx.execute("INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",params![serde_json::to_string(&json!({"sessionId":session_id,"kind":kind}))?,now])?;}
   Ok(())
  })
+}
+
+fn project_activity(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    turn_id: Option<&str>,
+    kind: &str,
+    data: &Value,
+    resolved_pending_approval: bool,
+    routed_to_parent: bool,
+) -> Result<Option<crate::session_activity::SessionActivity>> {
+    let current = crate::db::session_activity_tx(tx, session_id)?;
+    let same_turn = current
+        .as_ref()
+        .is_none_or(|activity| activity.turn_id.as_deref() == turn_id);
+    let live_turn = current.as_ref().is_some_and(|activity| {
+        matches!(
+            activity.state.as_str(),
+            "running" | "awaiting_approval" | "awaiting_parent"
+        ) && same_turn
+    });
+    let transition = match kind {
+        // This record is accepted under the provider worker lock, so it is
+        // the only event allowed to begin a new attention generation.
+        "message.user" => Some(("running", turn_id, None)),
+        // Native start can replace the client operation id with the canonical
+        // native turn id, but never revives an already completed turn.
+        "chat.turn.started"
+            if current.as_ref().is_some_and(|activity| {
+                activity.state == "running" && activity.turn_id.as_deref() == turn_id
+            }) =>
+        {
+            Some(("running", turn_id, None))
+        }
+        // A resumed provider can deliver its authoritative pending permission
+        // before replaying a local user/start record. Only an explicit idle
+        // activity has that admission path; a completed awaiting-input turn
+        // remains fenced against late approvals.
+        "chat.approval"
+            if live_turn
+                || current
+                    .as_ref()
+                    .is_none_or(|activity| activity.state == "idle") =>
+        {
+            // The user's attention state, unless this request (and every
+            // other pending one) waits for the delegating parent agent.
+            match pending_approval_route(tx, session_id)? {
+                Some("parent") if routed_to_parent => Some(("awaiting_parent", turn_id, None)),
+                _ => Some(("awaiting_approval", turn_id, None)),
+            }
+        }
+        "chat.approval.resolved"
+            if resolved_pending_approval
+                && data.get("status").and_then(Value::as_str) != Some("expired")
+                && same_turn
+                && current.as_ref().is_some_and(|activity| {
+                    matches!(activity.state.as_str(), "awaiting_approval" | "awaiting_parent")
+                }) =>
+        {
+            match pending_approval_route(tx, session_id)? {
+                Some("parent") => Some(("awaiting_parent", turn_id, None)),
+                Some(_) => Some(("awaiting_approval", turn_id, None)),
+                None => Some(("running", turn_id, None)),
+            }
+        }
+        "chat.turn.completed" if live_turn && completion_is_actionable(data) => {
+            Some(("awaiting_input", turn_id, None))
+        }
+        "chat.turn.completed" if live_turn => Some(("idle", turn_id, Some("terminal"))),
+        "chat.error" if live_turn => Some(("idle", turn_id, Some("error"))),
+        _ => None,
+    };
+    let Some((state, turn_id, reason)) = transition else {
+        return Ok(None);
+    };
+    crate::db::set_session_activity_tx(tx, session_id, state, turn_id, reason)
+}
+
+fn completion_is_actionable(data: &Value) -> bool {
+    !matches!(
+        data.get("status").and_then(Value::as_str),
+        Some("failed" | "error" | "cancelled" | "canceled" | "interrupted")
+    )
 }
 
 fn has_pending_approval(tx: &rusqlite::Transaction<'_>, session_id: &str) -> Result<bool> {
@@ -314,6 +419,136 @@ fn has_pending_approval(tx: &rusqlite::Transaction<'_>, session_id: &str) -> Res
         }
     }
     Ok(false)
+}
+
+/// Who the session's pending approvals wait for: `Some("parent")` when every
+/// pending request was routed to the delegating parent agent, `Some("user")`
+/// when at least one waits for the user, `None` when nothing is pending.
+pub(crate) fn pending_approval_route(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+) -> Result<Option<&'static str>> {
+    let mut statement = tx.prepare("SELECT data FROM chat_items WHERE session_id=?")?;
+    let rows = statement.query_map([session_id], |row| row.get::<_, String>(0))?;
+    let mut route = None;
+    for row in rows {
+        let item: ChatItem = serde_json::from_str(&row?)?;
+        for part in &item.parts {
+            if part.get("type").and_then(Value::as_str) != Some("approval")
+                || !matches!(
+                    part.get("status").and_then(Value::as_str),
+                    Some("pending" | "submitting")
+                )
+            {
+                continue;
+            }
+            if part.pointer("/data/delegation/route").and_then(Value::as_str) == Some("parent") {
+                route.get_or_insert("parent");
+            } else {
+                return Ok(Some("user"));
+            }
+        }
+    }
+    Ok(route)
+}
+
+/// Hands every request a parent agent was asked to answer back to the user,
+/// as a normal approval with an Inbox notice. Called when the parent's turn
+/// ends or the parent stops; escalation is one-way.
+pub(crate) fn escalate_parent_requests(
+    tx: &rusqlite::Transaction<'_>,
+    parent_session_id: &str,
+    now: &str,
+) -> Result<()> {
+    for child in crate::delegation::active_children(tx, parent_session_id)? {
+        let mut statement =
+            tx.prepare("SELECT id, turn_id, data FROM chat_items WHERE session_id=?")?;
+        let rows = statement
+            .query_map([&child], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        let mut escalated_turn = None;
+        for (id, item_turn, data) in rows {
+            let Ok(mut item) = serde_json::from_str::<ChatItem>(&data) else {
+                continue;
+            };
+            let mut notices = Vec::new();
+            for part in &mut item.parts {
+                if part.get("type").and_then(Value::as_str) == Some("approval")
+                    && matches!(
+                        part.get("status").and_then(Value::as_str),
+                        Some("pending" | "submitting")
+                    )
+                    && part.pointer("/data/delegation/route").and_then(Value::as_str)
+                        == Some("parent")
+                {
+                    if let Some(delegation) = part
+                        .pointer_mut("/data/delegation")
+                        .and_then(Value::as_object_mut)
+                    {
+                        delegation.insert("route".into(), json!("user"));
+                        delegation.insert("escalated".into(), json!(true));
+                    }
+                    notices.push(part.get("data").cloned().unwrap_or(Value::Null));
+                }
+            }
+            if notices.is_empty() {
+                continue;
+            }
+            tx.execute(
+                "UPDATE chat_items SET data=? WHERE id=?",
+                params![serde_json::to_string(&item)?, id],
+            )?;
+            tx.execute(
+                "INSERT INTO outbox(event,data,created_at) VALUES ('chat.item',?,?)",
+                params![
+                    serde_json::to_string(&json!({"sessionId":child,"item":item}))?,
+                    now
+                ],
+            )?;
+            for notice in notices {
+                insert_attention(tx, &id, &child, item_turn.as_deref(), "approval", &notice, now)?;
+            }
+            escalated_turn = Some(item_turn);
+        }
+        let Some(item_turn) = escalated_turn else {
+            continue;
+        };
+        let turn = crate::db::session_activity_tx(tx, &child)?
+            .and_then(|activity| activity.turn_id)
+            .or(item_turn);
+        if let Some(activity) = crate::db::set_session_activity_tx(
+            tx,
+            &child,
+            "awaiting_approval",
+            turn.as_deref(),
+            None,
+        )? {
+            tx.execute(
+                "INSERT INTO outbox(event,data,created_at) VALUES ('session.activity',?,?)",
+                params![
+                    serde_json::to_string(&json!({"sessionId":child,"activity":activity}))?,
+                    now
+                ],
+            )?;
+        }
+        if let Some(link) = crate::delegation::active_link(tx, &child)? {
+            crate::delegation::set_state(tx, &link.id, "awaiting_user", None, None)?;
+        }
+    }
+    Ok(())
+}
+
+/// Parent-stop hook (`session.stop`): escalate outside a provider event.
+pub fn escalate_parent_requests_now(db: &Database, parent_session_id: &str) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    db.transaction(|tx| escalate_parent_requests(tx, parent_session_id, &now))
 }
 
 pub fn expire_pending_approvals(db: &Database, session_id: &str) -> Result<()> {
@@ -546,6 +781,99 @@ mod tests {
             .inbox
             .iter()
             .all(|item| item.get("kind").and_then(Value::as_str) != Some("reply")));
+    }
+    #[test]
+    fn activity_tracks_pending_completion_and_rejects_late_turns() {
+        let db = db();
+        record(
+            &db,
+            "s",
+            Some("one"),
+            "message.user",
+            &json!({"text":"one"}),
+        )
+        .unwrap();
+        record(&db, "s", Some("one"), "chat.turn.started", &json!({})).unwrap();
+        record(&db, "s", Some("one"), "chat.turn.completed", &json!({})).unwrap();
+        let pending = db.session_by_id("s").unwrap().unwrap().activity.unwrap();
+        assert_eq!(pending.state, "awaiting_input");
+        assert_eq!(pending.turn_id.as_deref(), Some("one"));
+
+        // A delayed old worker event cannot replace a completion that the
+        // renderer still needs to acknowledge.
+        record(&db, "s", Some("old"), "chat.turn.started", &json!({})).unwrap();
+        assert_eq!(
+            db.session_by_id("s").unwrap().unwrap().activity.unwrap(),
+            pending
+        );
+        record(
+            &db,
+            "s",
+            Some("two"),
+            "message.user",
+            &json!({"text":"two"}),
+        )
+        .unwrap();
+        assert_eq!(
+            db.session_by_id("s")
+                .unwrap()
+                .unwrap()
+                .activity
+                .unwrap()
+                .state,
+            "running"
+        );
+    }
+    #[test]
+    fn resumed_pending_approval_is_admitted_from_idle_but_not_after_completion() {
+        let db = db();
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO session_activity(session_id,state,revision) VALUES ('s','idle',1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        record(
+            &db,
+            "s",
+            Some("resume"),
+            "chat.approval",
+            &json!({"approvalId":"resume-card"}),
+        )
+        .unwrap();
+        assert_eq!(
+            db.session_by_id("s")
+                .unwrap()
+                .unwrap()
+                .activity
+                .unwrap()
+                .state,
+            "awaiting_approval"
+        );
+        record(
+            &db,
+            "s",
+            Some("resume"),
+            "chat.approval.resolved",
+            &json!({"approvalId":"resume-card"}),
+        )
+        .unwrap();
+        record(&db, "s", Some("resume"), "chat.turn.completed", &json!({})).unwrap();
+        let completed = db.session_by_id("s").unwrap().unwrap().activity.unwrap();
+        record(
+            &db,
+            "s",
+            Some("late"),
+            "chat.approval",
+            &json!({"approvalId":"late-card"}),
+        )
+        .unwrap();
+        assert_eq!(
+            db.session_by_id("s").unwrap().unwrap().activity.unwrap(),
+            completed
+        );
     }
     #[test]
     fn late_provider_status_cannot_resurrect_terminal_sessions() {

@@ -537,7 +537,7 @@ async function authenticate(connection: LengthPrefixedSocket, token: string, cli
 }
 async function launchRuntimeIfNeeded(): Promise<void> {
   const { spawn } = await import('node:child_process');
-  const { openSync } = await import('node:fs');
+  const { mkdirSync, openSync } = await import('node:fs');
   const executable = resolveRuntimeExecutable();
   const runtimeEnv: NodeJS.ProcessEnv = { ...env, THREADTERM_V3_DATA: v3DataDirectory() };
   if (env.THREADTERM_CLAUDE_NODE) {
@@ -547,7 +547,9 @@ async function launchRuntimeIfNeeded(): Promise<void> {
     runtimeEnv.THREADTERM_CLAUDE_ELECTRON_NODE = '1';
   }
   // The runtime is otherwise a silent detached daemon; keep its stderr on file
-  // so projection and bind failures stay diagnosable after the fact.
+  // so projection and bind failures stay diagnosable after the fact. On a first
+  // launch the data folder does not exist yet (the runtime creates its own files).
+  mkdirSync(v3DataDirectory(), { recursive: true });
   const logPath = join(v3DataDirectory(), 'runtime.log');
   const log = openSync(logPath, 'a');
   const child = executable.kind === 'cargo'

@@ -5,10 +5,11 @@ use super::{
     },
     common::{
         command_output, encode_approval_id, history_page, insert_optional, validate_native_id,
-        version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess,
+        version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
-    emit_bound as emit, ChatSession, ProviderAdapter, ProviderCapability, ProviderError,
-    ProviderEvent, ScopedProviderEvents, TerminalCommand,
+    acp_mcp_servers, approve_threadterm_tool, emit_bound as emit, ChatSession, ChatToolServer,
+    ProviderAdapter, ProviderCapability, ProviderError, ProviderEvent, ScopedProviderEvents,
+    TerminalCommand,
 };
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -83,16 +84,24 @@ impl AcpAdapter {
         replay_gate: Arc<AtomicBool>,
         events: ScopedProviderEvents,
         project_events: bool,
+        delegation_tools: bool,
     ) -> Result<(JsonLineProcess, Value), ProviderError> {
         let spec = CommandSpec::provider(self.kind.command(), self.kind.acp_args())?;
         let provider = self.kind.id();
         let owned_session = session_id.to_owned();
         let think_open = Arc::new(Mutex::new(false));
+        let responder: Arc<Mutex<Option<JsonLineResponder>>> = Arc::new(Mutex::new(None));
+        let auto_responder = Arc::clone(&responder);
         let on_message = Arc::new(move |raw: Value| {
             if let Some(capture) = &capture {
                 if let Ok(mut values) = capture.lock() {
                     values.push(raw.clone());
                 }
+            }
+            // The parent's calls to ThreadTerm's own delegation tools are
+            // approved here; every other permission still reaches the user.
+            if delegation_tools && approve_threadterm_tool(&auto_responder, &raw) {
+                return;
             }
             // While session/load or session/resume is in flight the agent
             // replays the transcript as session/update notifications; they
@@ -120,6 +129,9 @@ impl AcpAdapter {
             EnvelopeStyle::JsonRpc2,
             on_message,
         )?;
+        if let Ok(mut slot) = responder.lock() {
+            *slot = Some(process.responder());
+        }
         let initialized = process.request("initialize", json!({
             "protocolVersion": 1,
             "clientCapabilities": {"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},
@@ -142,6 +154,7 @@ impl AcpAdapter {
             capture,
             Arc::new(AtomicBool::new(false)),
             ScopedProviderEvents::new(self.events.clone(), "history"),
+            false,
             false,
         )
     }
@@ -334,10 +347,24 @@ impl ProviderAdapter for AcpAdapter {
         native_id: Option<&str>,
         worker_token: &str,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.open_chat_with_tools(session_id, cwd, native_id, worker_token, None)
+    }
+
+    fn open_chat_with_tools(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+        tools: Option<&ChatToolServer>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
         let events = ScopedProviderEvents::new(self.events.clone(), worker_token);
         if matches!(self.kind, AcpKind::Kimi) {
             super::kimi_plan_usage::prefetch();
         }
+        // Passed on new and on load: a reconnect must re-attach the server
+        // with this open's identity (verified with Kimi 2.0.2).
+        let mcp_servers = acp_mcp_servers(tools);
         let native = Arc::new(Mutex::new(None));
         let active_turn = Arc::new(Mutex::new(None));
         let permissions = Arc::new(Mutex::new(HashMap::new()));
@@ -353,6 +380,7 @@ impl ProviderAdapter for AcpAdapter {
             Arc::clone(&replay_gate),
             events.clone(),
             true,
+            tools.is_some(),
         )?;
         let response = if let Some(id) = native_id {
             validate_native_id(id)?;
@@ -360,7 +388,7 @@ impl ProviderAdapter for AcpAdapter {
             let loaded = if has_capability(&initialized, "load") {
                 process.request(
                     "session/load",
-                    json!({"sessionId":id,"cwd":cwd,"mcpServers":[]}),
+                    json!({"sessionId":id,"cwd":cwd,"mcpServers":mcp_servers}),
                 )
             } else if has_capability(&initialized, "resume") {
                 process.request("session/resume", json!({"sessionId":id,"cwd":cwd}))
@@ -376,7 +404,7 @@ impl ProviderAdapter for AcpAdapter {
             replay_gate.store(false, Ordering::SeqCst);
             loaded?
         } else {
-            process.request("session/new", json!({"cwd":cwd,"mcpServers":[]}))?
+            process.request("session/new", json!({"cwd":cwd,"mcpServers":mcp_servers}))?
         };
         let bound_id = response
             .get("sessionId")

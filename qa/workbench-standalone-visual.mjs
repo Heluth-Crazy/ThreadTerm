@@ -63,6 +63,23 @@ try {
  await size(1920);await shot('dark-1920-project-changes.png');
  await setSettings({theme:'light'});await size(1280);
 
+ // ---- Branch home → Git card (real git.status + git.log: no upstream, one edit, one untracked, one commit) ----
+ await page.locator('.project-file-page .ws-back').click();
+ await page.locator('.tree-row',{hasText:'main'}).first().click();
+ const gitCard=page.locator('[data-testid="home-git"]');
+ await gitCard.locator('.ov-git-commit').first().waitFor();
+ assert.match(await gitCard.locator('[data-testid="home-git-sync"]').innerText(),/Not published/);
+ assert.deepEqual(await gitCard.locator('.ov-git-file .ov-git-name').allInnerTexts(),['main.ts','notes.txt'],'tracked edits first, untracked last');
+ assert.deepEqual(await gitCard.locator('.ov-git-file .wb-deco').allInnerTexts(),['M','U']);
+ assert.match(await gitCard.locator('.ov-git-commit').first().innerText(),/initial/);
+ await shot('light-1280-branch-git.png');
+ await gitCard.locator('.ov-git-file',{hasText:'main.ts'}).click();
+ await page.locator('.project-file-page .tt-diff-shell').waitFor();
+ assert.equal((await page.locator('.project-file-page .ws-back').innerText()).trim(),'main','the Changes page returns to the branch it came from');
+ await page.locator('.project-file-page .ws-back').click();
+ await gitCard.waitFor();
+ report.checks.push('branch home Git card: not published, M main.ts + U notes.txt, the initial commit; a file opens its diff and Back returns to the branch home');
+
  // ---- Settings → Tools → Open files & changes (dialog) ----
  await page.getByRole('button',{name:/Local user/}).click();
  await page.getByRole('button',{name:'Settings',exact:true}).click();
