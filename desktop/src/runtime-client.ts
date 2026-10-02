@@ -551,7 +551,7 @@ async function launchRuntimeIfNeeded(): Promise<void> {
   const logPath = join(v3DataDirectory(), 'runtime.log');
   const log = openSync(logPath, 'a');
   const child = executable.kind === 'cargo'
-    ? spawn('cargo', ['run', '--manifest-path', executable.path, '--bin', 'threadterm-v3-runtime'], { cwd: resolve(app.getAppPath(), '..'), detached: true, stdio: ['ignore', log, log], windowsHide: true, env: runtimeEnv })
+    ? spawn('cargo', ['run', '--manifest-path', executable.path, '--bin', 'threadterm-v3-runtime'], { cwd: app.getAppPath(), detached: true, stdio: ['ignore', log, log], windowsHide: true, env: runtimeEnv })
     : spawn(executable.path, [], { detached: true, stdio: ['ignore', log, log], windowsHide: true, env: runtimeEnv });
   child.unref();
 }

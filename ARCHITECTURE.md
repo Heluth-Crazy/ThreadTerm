@@ -1,12 +1,12 @@
 # V3 architecture and initial wire contract
 
 ## Ownership and layout
-- v3/runtime/: standalone Cargo Rust daemon, sole SQLite writer and canonical state authority. Modular monolith.
-- v3/desktop/: Electron main/preload, build/package configuration. OS integration, start/discover/reconnect runtime, validated IPC proxy only.
-- v3/renderer/: React feature UI, no Node APIs, narrow window.threadterm facade.
-- v3/protocol/: shared TypeScript contracts/runtime validators and protocol schema. Main coordinator owns this directory.
-- v3/providers/: supervised minimal Node Claude SDK sidecar; native provider process protocols handled by runtime adapters.
-- v3/reference/prototype/: immutable latest prototype reference.
+- runtime/: standalone Cargo Rust daemon, sole SQLite writer and canonical state authority. Modular monolith.
+- desktop/: Electron main/preload, build/package configuration. OS integration, start/discover/reconnect runtime, validated IPC proxy only.
+- renderer/: React feature UI, no Node APIs, narrow window.threadterm facade.
+- protocol/: shared TypeScript contracts/runtime validators and protocol schema. Main coordinator owns this directory.
+- providers/: supervised minimal Node Claude SDK sidecar; native provider process protocols handled by runtime adapters.
+- reference/prototype/: immutable latest prototype reference.
 
 Electron sandbox/contextIsolation true, nodeIntegration false. No raw ipcRenderer or channels exposed. Runtime is on-demand per-user singleton; Windows named pipe per-user ACL and credential handshake; UDS later. Separate control and binary output connections; length-prefixed frames (u32 little endian length, then payload), max 8 MiB. Pipe base configurable via THREADTERM_V3_PIPE, default \\.\pipe\threadterm-v3-<user hash>. Bootstrap credential stored in restricted V3 data directory, never renderer/argv. Handshake before any commands. IPC protocol version 1. Never use unauthenticated TCP as fallback.
 
@@ -33,7 +33,7 @@ Facade window.threadterm: request(method,params):Promise<unknown> (method allowl
 
 Provider native-first adapters: Codex app-server stdio JSONL; Claude official Agent SDK standalone Node worker with supported authentication; Kimi ACP; Gemini --acp; OpenCode authenticated localhost HTTP/SSE server. No ANSI-to-Chat imitation. Probe installed versions/capabilities/auth, missing setup explicit. Runtime owns worker lifespan and serializes turns. One native account/provider/session owner with fenced lease, many viewers. Pending approval bound to turn/id/epoch, accepted once. Persist intent, unknown provider outcomes never blindly retry.
 
-SQLite WAL, current-state tables and transactional outbox, one writer. Files and Git authoritative; native history provider-owned. No V2 data reads. Data relocation needs quiesce + SQLite backup + atomic switch. Daemon shutdown terminates supervised jobs; UI exit alone does not. Windows helpers hidden, PTY only visible in app. Package npm workspaces under v3, Vite/esbuild/electron-builder with pinned dependencies, no Tauri dependencies.
+SQLite WAL, current-state tables and transactional outbox, one writer. Files and Git authoritative; native history provider-owned. No V2 data reads. Data relocation needs quiesce + SQLite backup + atomic switch. Daemon shutdown terminates supervised jobs; UI exit alone does not. Windows helpers hidden, PTY only visible in app. Package npm workspaces at the repository root, Vite/esbuild/electron-builder with pinned dependencies, no Tauri dependencies.
 
 ## Clarifications from integration review
 - Deliberate application Quit: if live jobs exist, confirm ending them. Confirmed Quit invokes runtime.shutdown {operationId}, waits for graceful child cleanup, then exits Electron. Cancel keeps running. Closing the main window goes to tray; renderer/main crashes detach without shutting runtime down.
