@@ -7,8 +7,8 @@ use super::{
         encode_approval_id, history_page, insert_optional, validate_native_id, version_probe,
         CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
-    emit_scoped, ChatSession, ProviderAdapter, ProviderCapability, ProviderError, ProviderEvent,
-    TerminalCommand,
+    emit_scoped, ChatSession, ChatToolServer, ProviderAdapter, ProviderCapability, ProviderError,
+    ProviderEvent, TerminalCommand,
 };
 use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
@@ -39,12 +39,23 @@ impl CodexAdapter {
         responder: Arc<Mutex<Option<JsonLineResponder>>>,
         project_events: bool,
         worker_token: &str,
+        tools: Option<&ChatToolServer>,
     ) -> Result<JsonLineProcess, ProviderError> {
-        let spec = CommandSpec::provider("codex", &["app-server", "--stdio"])?;
+        // Stdio is the native default, including releases predating --stdio.
+        // One app-server per Chat, so `-c` overrides attach this session's
+        // tool server without touching the user's config.toml.
+        let mut args = codex_tool_server_overrides(tools);
+        args.push("app-server".into());
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let spec = CommandSpec::provider("codex", &args)?;
         let events = self.events.clone();
         let owned_session_id = session_id.to_owned();
         let worker_token = worker_token.to_owned();
+        let delegation_tools = tools.is_some();
         let on_message = Arc::new(move |raw: Value| {
+            if delegation_tools && approve_threadterm_elicitation(&responder, &raw) {
+                return;
+            }
             if project_events {
                 emit_codex_message(
                     &events,
@@ -67,7 +78,8 @@ impl CodexAdapter {
             EnvelopeStyle::Codex,
             on_message,
         )?;
-        process.request(
+        codex_request(
+            &process,
             "initialize",
             json!({
                 "clientInfo": {"name":"threadterm","title":"ThreadTerm","version":env!("CARGO_PKG_VERSION")},
@@ -88,8 +100,41 @@ impl CodexAdapter {
             Arc::new(Mutex::new(None)),
             false,
             "",
+            None,
         )
     }
+}
+
+/// `-c mcp_servers.<name>.*` overrides for a session's tool server. Values
+/// are TOML literal strings (Windows backslashes kept), or JSON-escaped
+/// basic strings when a value contains a quote or newline.
+fn codex_tool_server_overrides(tools: Option<&ChatToolServer>) -> Vec<String> {
+    let Some(tools) = tools else {
+        return Vec::new();
+    };
+    let toml = |value: &str| {
+        if value.contains('\'') || value.contains('\n') {
+            serde_json::to_string(value).unwrap_or_default()
+        } else {
+            format!("'{value}'")
+        }
+    };
+    let prefix = format!("mcp_servers.{}", tools.name);
+    let args = tools.args.iter().map(|arg| toml(arg)).collect::<Vec<_>>().join(",");
+    let env = tools
+        .env
+        .iter()
+        .map(|(key, value)| format!("{key}={}", toml(value)))
+        .collect::<Vec<_>>()
+        .join(",");
+    vec![
+        "-c".into(),
+        format!("{prefix}.command={}", toml(&tools.command)),
+        "-c".into(),
+        format!("{prefix}.args=[{args}]"),
+        "-c".into(),
+        format!("{prefix}.env={{{env}}}"),
+    ]
 }
 
 impl ProviderAdapter for CodexAdapter {
@@ -144,6 +189,17 @@ impl ProviderAdapter for CodexAdapter {
             args.extend(["resume".to_owned(), native_id.to_owned()]);
         }
         args.push("--no-alt-screen".to_owned());
+        let help_spec = CommandSpec::provider("codex", &["--help"])?;
+        let help = super::common::command_output(&help_spec, Duration::from_secs(5))?;
+        if !help.contains("--no-alt-screen") {
+            return Err(ProviderError::new("provider_version_unsupported", "This Codex CLI does not support --no-alt-screen. Update Codex before opening a terminal. / 当前 Codex 版本不支持 --no-alt-screen，请更新后打开终端。"));
+        }
+        // Keep the native server inside the runtime-owned PTY lifetime. Newer
+        // CLIs otherwise attach to a shared daemon, which can fail at resume
+        // before the TUI can handle input (including clipboard shortcuts).
+        if help.contains("--no-daemon") {
+            args.push("--no-daemon".to_owned());
+        }
         let path = super::common::find_executable("codex").ok_or_else(|| {
             ProviderError::unavailable("codex", "Codex executable was not found on PATH")
         })?;
@@ -175,7 +231,8 @@ impl ProviderAdapter for CodexAdapter {
         // thread/start allocates an id but Codex does not persist an empty
         // rollout. Materialize it through the native history API without a
         // model turn, user message, or additional developer instructions.
-        process.request(
+        codex_request(
+            &process,
             "thread/inject_items",
             json!({"threadId":native_id,"items":[{"type":"message","role":"developer","content":[]}]}),
         )?;
@@ -244,6 +301,17 @@ impl ProviderAdapter for CodexAdapter {
         native_id: Option<&str>,
         worker_token: &str,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
+        self.open_chat_with_tools(session_id, cwd, native_id, worker_token, None)
+    }
+
+    fn open_chat_with_tools(
+        &self,
+        session_id: &str,
+        cwd: &str,
+        native_id: Option<&str>,
+        worker_token: &str,
+        tools: Option<&ChatToolServer>,
+    ) -> Result<Box<dyn ChatSession>, ProviderError> {
         let native = Arc::new(Mutex::new(None));
         let approvals = Arc::new(Mutex::new(HashMap::new()));
         let active_turn = new_codex_turn_state();
@@ -258,6 +326,7 @@ impl ProviderAdapter for CodexAdapter {
             Arc::clone(&responder),
             true,
             worker_token,
+            tools,
         )?;
         if let Ok(mut slot) = responder.lock() {
             *slot = Some(process.responder());
@@ -403,6 +472,100 @@ impl ChatSession for CodexChat {
         self.validate_active_turn()
     }
 
+    fn validate_images(&self, images: &[String]) -> Result<(), ProviderError> {
+        for image in images {
+            if !image.starts_with("data:image/") || !image.contains(";base64,") {
+                return Err(ProviderError::new(
+                    "invalid_image",
+                    "Codex requires base64 image data URLs. / Codex 图片必须使用 base64 data URL。",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_send_with_images(
+        &self,
+        text: &str,
+        images: &[String],
+    ) -> Result<(), ProviderError> {
+        self.validate_images(images)?;
+        if !images.is_empty() {
+            if let Some((name, _)) = parse_slash(text.trim()) {
+                if is_codex_local_command(name)
+                    || matches!(
+                        name,
+                        "model"
+                            | "plan"
+                            | "approvals"
+                            | "sandbox"
+                            | "status"
+                            | "usage"
+                            | "compact"
+                            | "review"
+                    )
+                {
+                    return Err(ProviderError::new(
+                        "images_not_supported_for_command",
+                        format!(
+                            "/{name} does not accept image attachments. / /{name} 不接受图片附件。"
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn send_with_images(
+        &mut self,
+        text: &str,
+        images: &[String],
+        operation_id: &str,
+    ) -> Result<Value, ProviderError> {
+        validate_native_id(operation_id)?;
+        self.validate_send(text)?;
+        self.validate_send_with_images(text, images)?;
+        if images.is_empty() {
+            return self.send(text, operation_id);
+        }
+        if let Some((name, args)) = parse_slash(text.trim()) {
+            if is_codex_local_command(name)
+                || matches!(
+                    name,
+                    "model"
+                        | "plan"
+                        | "approvals"
+                        | "sandbox"
+                        | "status"
+                        | "usage"
+                        | "compact"
+                        | "review"
+                )
+            {
+                return Err(ProviderError::new(
+                    "images_not_supported_for_command",
+                    format!(
+                        "/{name} does not accept image attachments. / /{name} 不接受图片附件。"
+                    ),
+                ));
+            }
+            if let Some(skill) = self.skill_named(name) {
+                let mut input = vec![json!({"type":"skill","name":skill.name,"path":skill.path})];
+                input.extend(native_image_inputs(images));
+                if !args.is_empty() {
+                    input.push(json!({"type":"text","text":args}));
+                }
+                return self.start_turn(operation_id, input);
+            }
+        }
+        let mut input = native_image_inputs(images);
+        if !text.trim().is_empty() {
+            input.push(json!({"type":"text","text":text}));
+        }
+        self.start_turn(operation_id, input)
+    }
+
     fn send(&mut self, text: &str, operation_id: &str) -> Result<Value, ProviderError> {
         validate_native_id(operation_id)?;
         self.validate_send(text)?;
@@ -411,7 +574,7 @@ impl ChatSession for CodexChat {
         }
         let input = {
             let ui = self.ui.lock().ok();
-            turn_input_for(text, ui.as_deref())
+            turn_input_for(text, ui.as_deref())?
         };
         self.start_turn(operation_id, input)
     }
@@ -585,6 +748,21 @@ impl CodexChat {
         operation_id: &str,
         input: Vec<Value>,
     ) -> Result<Value, ProviderError> {
+        self.start_native_turn(
+            operation_id,
+            "turn/start",
+            json!({
+                "threadId":self.native_id,"clientUserMessageId":operation_id,"input":input
+            }),
+        )
+    }
+
+    fn start_native_turn(
+        &mut self,
+        operation_id: &str,
+        method: &'static str,
+        params: Value,
+    ) -> Result<Value, ProviderError> {
         {
             let (active, _) = &*self.active_turn;
             let mut active = active
@@ -610,36 +788,25 @@ impl CodexChat {
         let native_id = self.native_id.clone();
         let approvals = Arc::clone(&self.approvals);
         let worker_token = self.worker_token.clone();
-        let request = self.process.request_async(
-            "turn/start",
-            json!({
-                "threadId":self.native_id,
-                "clientUserMessageId":operation_id,
-                "input":input
-            }),
-            move |result| {
-                if let Err(error) = result {
-                    clear_codex_turn(&active_turn, &public_id);
-                    if let Ok(mut pending) = approvals.lock() {
-                        drain_inactive_approvals(
-                            &mut pending,
-                            |item| item.turn_id.as_deref(),
-                            None,
-                        );
-                    }
-                    emit_scoped(
-                        &events,
-                        "codex",
-                        &session_id,
-                        Some(&native_id),
-                        Some(&public_id),
-                        "chat.error",
-                        json!({"code":error.code,"message":error.message,"details":error.details}),
-                        Some(&worker_token),
-                    );
+        let request = self.process.request_async(method, params, move |result| {
+            if let Err(error) = result {
+                let error = codex_protocol_error(method, error);
+                clear_codex_turn(&active_turn, &public_id);
+                if let Ok(mut pending) = approvals.lock() {
+                    drain_inactive_approvals(&mut pending, |item| item.turn_id.as_deref(), None);
                 }
-            },
-        );
+                emit_scoped(
+                    &events,
+                    "codex",
+                    &session_id,
+                    Some(&native_id),
+                    Some(&public_id),
+                    "chat.error",
+                    json!({"code":error.code,"message":error.message,"details":error.details}),
+                    Some(&worker_token),
+                );
+            }
+        });
         if let Err(error) = request {
             clear_codex_turn(&self.active_turn, operation_id);
             if let Ok(mut pending) = self.approvals.lock() {
@@ -659,7 +826,9 @@ impl CodexChat {
             return Ok(None);
         };
         match name {
-            "model" | "plan" => Ok(Some(self.setting_command(name, args, operation_id))),
+            "model" | "plan" | "approvals" | "sandbox" => {
+                Ok(Some(self.setting_command(name, args, operation_id)))
+            }
             "status" | "usage" => {
                 // Emit the cached report first, then refresh account/quota
                 // data. Each callback replaces this same chat item so a
@@ -705,34 +874,28 @@ impl CodexChat {
                 schedule_codex_status_reads(&self.process, &self.ui, Some(refresh));
                 Ok(Some(json!({"turnId":operation_id})))
             }
-            "compact" => {
-                self.process
-                    .request("thread/compact/start", json!({"threadId":self.native_id}))?;
-                emit_scoped(
-                    &self.events,
-                    "codex",
-                    &self.session_id,
-                    Some(&self.native_id),
-                    Some(operation_id),
-                    "chat.turn.completed",
-                    json!({"command":"compact"}),
-                    Some(&self.worker_token),
-                );
-                Ok(Some(json!({"turnId":operation_id})))
-            }
+            "compact" => Ok(Some(self.start_native_turn(
+                operation_id,
+                "thread/compact/start",
+                json!({"threadId":self.native_id}),
+            )?)),
             "review" => {
                 let target = if args.is_empty() {
                     json!({"type":"uncommittedChanges"})
                 } else {
                     json!({"type":"custom","instructions":args})
                 };
-                self.process.request(
+                Ok(Some(self.start_native_turn(
+                    operation_id,
                     "review/start",
-                    json!({"threadId":self.native_id,"target":target}),
-                )?;
-                Ok(Some(json!({"turnId":operation_id})))
+                    json!({"threadId":self.native_id,"target":target,"delivery":"inline"}),
+                )?))
             }
             _ => {
+                if is_codex_local_command(name) {
+                    let (en, zh) = codex_local_command_text(name, self.ui.lock().ok().as_deref());
+                    return Ok(Some(self.local_command_reply(name, operation_id, &en, &zh)));
+                }
                 if let Some(skill) = self.skill_named(name) {
                     let mut input =
                         vec![json!({"type":"skill","name":skill.name,"path":skill.path})];
@@ -744,6 +907,30 @@ impl CodexChat {
                 Ok(None)
             }
         }
+    }
+
+    fn local_command_reply(&self, name: &str, operation_id: &str, en: &str, zh: &str) -> Value {
+        emit_scoped(
+            &self.events,
+            "codex",
+            &self.session_id,
+            Some(&self.native_id),
+            Some(operation_id),
+            "chat.item",
+            json!({"parts":[{"type":"text","text":en,"status":"complete", "data":{"localizedText":{"en":en,"zh-CN":zh}}}],"command":name}),
+            Some(&self.worker_token),
+        );
+        emit_scoped(
+            &self.events,
+            "codex",
+            &self.session_id,
+            Some(&self.native_id),
+            Some(operation_id),
+            "chat.turn.completed",
+            json!({"command":name}),
+            Some(&self.worker_token),
+        );
+        json!({"turnId":operation_id})
     }
 
     fn skill_named(&self, name: &str) -> Option<CodexSkill> {
@@ -788,7 +975,7 @@ impl CodexChat {
             )),
             "plan" if matches!(args, "?" | "status") => Ok(format!(
                 "Mode: {}",
-                self.current_setting("mode")
+                self.current_setting("collaboration")
                     .unwrap_or_else(|| "unavailable".to_owned())
             )),
             "plan" => {
@@ -801,14 +988,41 @@ impl CodexChat {
                     )),
                 };
                 mode.and_then(|mode| {
-                    self.apply_option("mode", mode).map(|_| {
+                    self.apply_option("collaboration", mode).map(|_| {
                         format!(
                             "Mode: {}",
-                            self.current_setting("mode")
+                            self.current_setting("collaboration")
                                 .unwrap_or_else(|| mode.to_owned())
                         )
                     })
                 })
+            }
+            "approvals" | "sandbox" => {
+                let option_id = if name == "approvals" {
+                    "mode"
+                } else {
+                    "sandbox"
+                };
+                let label = if name == "approvals" {
+                    "Approval policy"
+                } else {
+                    "Sandbox"
+                };
+                if args.is_empty() || matches!(args, "?" | "status") {
+                    Ok(format!(
+                        "{label}: {}",
+                        self.current_setting(option_id)
+                            .unwrap_or_else(|| "unavailable".to_owned())
+                    ))
+                } else {
+                    self.apply_option(option_id, args).map(|_| {
+                        format!(
+                            "{label}: {}",
+                            self.current_setting(option_id)
+                                .unwrap_or_else(|| "unavailable".to_owned())
+                        )
+                    })
+                }
             }
             _ => unreachable!(),
         };
@@ -820,7 +1034,7 @@ impl CodexChat {
                 Some(&self.native_id),
                 Some(operation_id),
                 "chat.item",
-                json!({"parts":[{"type":"text","text":text,"status":"complete"}],"command":name}),
+                json!({"parts":[{"type":"text","text":text,"status":"complete","data":{"localizedText":{"en":text,"zh-CN":codex_setting_text_zh(name, &text)}}}],"command":name}),
                 Some(&self.worker_token),
             ),
             Err(error) => emit_scoped(
@@ -863,30 +1077,32 @@ impl CodexChat {
                     format!("Codex has no live option {option_id}"),
                 )
             })?;
-        self.process.request("thread/settings/update", params)?;
-        let thread_response = self.process.request(
-            "thread/read",
-            json!({"threadId":self.native_id,"includeTurns":false}),
-        )?;
-        let thread = thread_response
-            .get("thread")
-            .cloned()
-            .unwrap_or_else(|| thread_response.clone());
-        if let Ok(mut state) = self.ui.lock() {
-            refresh_codex_ui(
-                &mut state,
-                &self.process,
-                &thread,
-                &thread_response,
-                &self.cwd,
-            );
-            if let Some(option) = state
-                .options
-                .iter_mut()
-                .find(|option| option.get("id").and_then(Value::as_str) == Some(option_id))
-            {
-                option["value"] = json!(value);
+        let generation = current
+            .as_ref()
+            .map(|state| state.settings_generation)
+            .unwrap_or(0);
+        let response = codex_request(&self.process, "thread/settings/update", params.clone())?;
+        // Native 0.159.1 returns {} and confirms through a notification. Some
+        // versions return threadSettings directly. Neither thread/read nor an
+        // empty success response is evidence that an unknown field was applied.
+        if let Some(settings) = response.get("threadSettings") {
+            if let Ok(mut state) = self.ui.lock() {
+                adopt_codex_settings(&mut state, settings);
             }
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let confirmed = self.ui.lock().ok().is_some_and(|state| {
+                state.settings_generation > generation
+                    && codex_settings_confirmed(&state.status.thread_settings, &params)
+            });
+            if confirmed {
+                break;
+            }
+            if Instant::now() >= deadline || !self.process.is_alive() {
+                return Err(ProviderError::new("provider_settings_unconfirmed", "Codex did not confirm the requested setting. This CLI may not support it; reconnect to read native settings. / Codex 未确认此设置，当前版本可能不支持；请重新连接以读取原生设置。"));
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
         emit_chat_ui(
             &self.events,
@@ -910,6 +1126,7 @@ const CODEX_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("plan", "Switch to plan mode"),
     ("model", "Switch model"),
     ("approvals", "Change the approval policy"),
+    ("sandbox", "Change the sandbox"),
     ("usage", "Show token usage"),
     ("memory", "Show memory"),
     ("undo", "Undo the last turn"),
@@ -923,6 +1140,9 @@ struct CodexUiState {
     skills: Vec<CodexSkill>,
     catalog: Value,
     status: CodexStatusState,
+    settings_generation: u64,
+    skills_error: Option<String>,
+    options_error: Option<ProviderError>,
 }
 
 #[derive(Clone, Default)]
@@ -963,7 +1183,12 @@ struct CodexSkill {
 
 impl CodexUiState {
     fn wire(&self) -> Value {
-        json!({"options":self.options.clone(),"commands":self.commands.clone()})
+        let mut wire = json!({"options":self.options.clone(),"commands":self.commands.clone(),"inputCapabilities":{"images":true}});
+        if let Some(error) = &self.options_error {
+            wire["loadState"] = json!("error");
+            wire["error"] = json!({"code":error.code,"message":error.message});
+        }
+        wire
     }
 }
 
@@ -979,8 +1204,113 @@ fn parse_slash(text: &str) -> Option<(&str, &str)> {
     }
 }
 
-fn turn_input_for(text: &str, ui: Option<&CodexUiState>) -> Vec<Value> {
+fn is_codex_local_command(name: &str) -> bool {
+    matches!(
+        name,
+        "diff" | "init" | "mcp" | "skills" | "memory" | "undo" | "help"
+    )
+}
+
+fn codex_setting_text_zh(name: &str, text: &str) -> String {
+    let label = match name {
+        "model" => "模型",
+        "plan" => "协作模式",
+        "approvals" => "审批策略",
+        "sandbox" => "沙箱",
+        _ => return text.to_owned(),
+    };
+    format!(
+        "{label}：{}",
+        text.split_once(": ")
+            .map(|(_, value)| value)
+            .unwrap_or(text)
+    )
+}
+
+fn codex_local_command_text(name: &str, ui: Option<&CodexUiState>) -> (String, String) {
+    match name {
+        "help" => {
+            let commands = ui.map(|state| &state.commands).into_iter().flatten()
+                .filter_map(|command| command.get("name").and_then(Value::as_str))
+                .map(|name| format!("/{name}")).collect::<Vec<_>>().join("  ");
+            (format!("Chat commands: {commands}\n/approvals [on-request|never]; /sandbox [read-only|workspace-write|danger-full-access]. /diff, /init, /mcp, /memory and /undo provide local guidance; use Codex Terminal for these actions."),
+             format!("聊天命令：{commands}\n/approvals [on-request|never]；/sandbox [read-only|workspace-write|danger-full-access]。/diff、/init、/mcp、/memory 和 /undo 显示本地说明；请在 Codex 终端中执行这些操作。"))
+        }
+        "skills" => {
+            if let Some(error) = ui.and_then(|state| state.skills_error.as_ref()) {
+                return (format!("Skills could not be loaded: {error}"), format!("无法读取技能：{error}"));
+            }
+            let skills = ui.map(|state| &state.skills).into_iter().flatten()
+                .map(|skill| format!("/{} — {}", skill.name, skill.path)).collect::<Vec<_>>().join("\n");
+            if skills.is_empty() {
+                ("No enabled native skills were found for this project.".to_owned(), "此项目未发现已启用的原生技能。".to_owned())
+            } else {
+                (format!("Native skills (select /name to invoke):\n{skills}"), format!("原生技能（选择 /技能名 执行）：\n{skills}"))
+            }
+        }
+        _ => (format!("/{name} is not implemented in Chat. Use Codex Terminal for this action. No model prompt or workspace change was submitted."),
+              format!("聊天模式尚未实现 /{name}。请在 Codex 终端中执行此操作。未向模型发送提示词，也未修改工作区。")),
+    }
+}
+
+fn codex_protocol_error(method: &str, error: ProviderError) -> ProviderError {
+    let code = error
+        .details
+        .as_ref()
+        .and_then(|details| details.get("code"))
+        .and_then(Value::as_i64);
+    if code == Some(-32601)
+        || (code == Some(-32600)
+            && error.message.contains("unknown variant")
+            && error.message.contains(&format!("`{method}`")))
+    {
+        ProviderError::new("provider_method_unsupported", format!("This Codex CLI does not support {method}. Update Codex to use this feature. / 当前 Codex 版本不支持 {method}，请更新 Codex 后使用此功能。"))
+            .with_details(json!({"method":method,"nativeError":error.details}))
+    } else {
+        error
+    }
+}
+
+fn codex_request(
+    process: &JsonLineProcess,
+    method: &str,
+    params: Value,
+) -> Result<Value, ProviderError> {
+    process
+        .request(method, params)
+        .map_err(|error| codex_protocol_error(method, error))
+}
+
+fn adopt_codex_settings(state: &mut CodexUiState, settings: &Value) {
+    merge_json_values(&mut state.status.thread_settings, settings);
+    state.options = codex_options_from_catalog(&state.catalog, &state.status.thread_settings);
+    state.settings_generation = state.settings_generation.wrapping_add(1);
+}
+
+fn codex_settings_confirmed(settings: &Value, requested: &Value) -> bool {
+    requested.as_object().is_some_and(|fields| {
+        fields.iter().all(|(key, value)| match key.as_str() {
+            "threadId" => true,
+            // Native collaboration settings include generated developer instructions.
+            "collaborationMode" => settings.pointer("/collaborationMode/mode") == value.get("mode"),
+            "sandboxPolicy" => value.as_object().is_some_and(|fields| {
+                fields.iter().all(|(field, expected)| {
+                    settings.get(key).and_then(|policy| policy.get(field)) == Some(expected)
+                })
+            }),
+            _ => settings.get(key) == Some(value),
+        })
+    })
+}
+
+fn turn_input_for(text: &str, ui: Option<&CodexUiState>) -> Result<Vec<Value>, ProviderError> {
     if let Some((name, args)) = parse_slash(text) {
+        if CODEX_SLASH_COMMANDS
+            .iter()
+            .any(|(command, _)| *command == name)
+        {
+            return Err(ProviderError::new("invalid_command", format!("/{name} must be handled as a Chat command, not a model prompt. / /{name} 必须作为聊天命令处理，不能作为模型提示词发送。")));
+        }
         if let Some(skill) = ui.and_then(|state| {
             state
                 .skills
@@ -991,15 +1321,21 @@ fn turn_input_for(text: &str, ui: Option<&CodexUiState>) -> Vec<Value> {
             if !args.is_empty() {
                 input.push(json!({"type":"text","text":args}));
             }
-            return input;
+            return Ok(input);
         }
     }
-    vec![json!({"type":"text","text":text})]
+    Ok(vec![json!({"type":"text","text":text})])
 }
 
-// Codex app-server 0.153.x: thread/settings/update takes `model` and `effort`
-// (the reasoning effort); unknown fields are silently ignored, so the pair is
-// built explicitly instead of forwarding renderer input verbatim.
+fn native_image_inputs(images: &[String]) -> Vec<Value> {
+    images
+        .iter()
+        .map(|url| json!({"type":"image","url":url}))
+        .collect()
+}
+
+// Verified against Codex 0.159.1. Confirm the canonical settings notification
+// after every update: native deserialization can silently ignore unknown fields.
 fn codex_settings_params(
     option_id: &str,
     thread_id: &str,
@@ -1015,9 +1351,10 @@ fn codex_settings_params(
             Some(params)
         }
         "thinking" => Some(json!({"threadId":thread_id,"effort":value})),
-        "mode" => {
-            let model = option_value(ui, "model").unwrap_or_else(|| value.to_owned());
-            let mut settings = json!({"model":model});
+        "collaboration" if matches!(value, "default" | "plan") => {
+            let model = option_value(ui, "model")?;
+            let mut settings =
+                json!({"model":model,"reasoning_effort":null,"developer_instructions":null});
             if let Some(effort) = option_value(ui, "thinking") {
                 settings["reasoning_effort"] = json!(effort);
             }
@@ -1025,6 +1362,20 @@ fn codex_settings_params(
                 "threadId":thread_id,
                 "collaborationMode":{"mode":value,"settings":settings}
             }))
+        }
+        "mode" if matches!(value, "on-request" | "never") => {
+            Some(json!({"threadId":thread_id,"approvalPolicy":value}))
+        }
+        "sandbox" => {
+            let policy = match value {
+                "read-only" => json!({"type":"readOnly","networkAccess":false}),
+                "workspace-write" => {
+                    json!({"type":"workspaceWrite","networkAccess":false,"writableRoots":[]})
+                }
+                "danger-full-access" => json!({"type":"dangerFullAccess"}),
+                _ => return None,
+            };
+            Some(json!({"threadId":thread_id,"sandboxPolicy":policy}))
         }
         _ => None,
     }
@@ -1067,7 +1418,7 @@ fn codex_status_report(
             )
         })
         .unwrap_or_else(|| "unavailable".to_owned());
-    let mode = option_value(ui, "mode")
+    let mode = option_value(ui, "collaboration")
         .or_else(|| {
             settings
                 .pointer("/collaborationMode/mode")
@@ -1248,6 +1599,21 @@ fn codex_status_text_from_report(report: &Value) -> String {
         string("/reasoningEffort", "unavailable")
     ));
     lines.push(format!("Mode: {}", string("/collaborationMode", "default")));
+    if let Some(policy) = report
+        .get("approvalPolicy")
+        .filter(|value| !value.is_null())
+    {
+        lines.push(format!(
+            "Approval policy: {}",
+            policy
+                .as_str()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| policy.to_string())
+        ));
+    }
+    if let Some(sandbox) = report.get("sandbox").filter(|value| !value.is_null()) {
+        lines.push(format!("Sandbox: {sandbox}"));
+    }
     lines.push(format!("Turn: {turn}{turn_id}"));
     if let Some(context) = report.get("context") {
         if let (Some(used), Some(window)) = (
@@ -1442,35 +1808,28 @@ fn load_codex_ui(
     thread_response: &Value,
     cwd: &str,
 ) -> CodexUiState {
+    let skills_result = list_codex_skills(process, cwd);
+    let catalog_result = model_catalog(process);
     let mut state = CodexUiState {
-        catalog: model_catalog(process).unwrap_or_else(|_| json!({"data":[]})),
-        skills: list_codex_skills(process, cwd),
+        catalog: catalog_result
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|_| json!({"data":[]})),
+        options_error: catalog_result.err(),
+        skills: skills_result.as_ref().cloned().unwrap_or_default(),
+        skills_error: skills_result.err().map(|error| error.message),
         status: codex_status_state(thread, thread_response, cwd),
         ..CodexUiState::default()
     };
-    state.options = codex_options_from_catalog(&state.catalog, thread);
+    // thread/start and thread/resume return model/permissions beside `thread`.
+    let mut settings = thread.clone();
+    merge_json_values(&mut settings, thread_response);
+    if let Some(native_settings) = thread_response.get("threadSettings") {
+        merge_json_values(&mut settings, native_settings);
+    }
+    adopt_codex_settings(&mut state, &settings);
     state.commands = merge_codex_commands(&state.skills);
     state
-}
-
-fn refresh_codex_ui(
-    state: &mut CodexUiState,
-    process: &JsonLineProcess,
-    thread: &Value,
-    thread_response: &Value,
-    cwd: &str,
-) {
-    if let Ok(catalog) = model_catalog(process) {
-        state.catalog = catalog;
-    }
-    state.skills = list_codex_skills(process, cwd);
-    state.options = codex_options_from_catalog(&state.catalog, thread);
-    state.commands = merge_codex_commands(&state.skills);
-    state.status.thread = thread.clone();
-    merge_json_values(&mut state.status.thread_response, thread_response);
-    if let Some(settings) = thread_response.get("threadSettings") {
-        merge_json_values(&mut state.status.thread_settings, settings);
-    }
 }
 
 fn codex_status_state(thread: &Value, thread_response: &Value, cwd: &str) -> CodexStatusState {
@@ -1578,7 +1937,7 @@ fn model_catalog(process: &JsonLineProcess) -> Result<Value, ProviderError> {
         if let Some(cursor) = &cursor {
             params.insert("cursor".to_owned(), json!(cursor));
         }
-        let page = process.request("model/list", Value::Object(params))?;
+        let page = codex_request(process, "model/list", Value::Object(params))?;
         if let Some(data) = page.get("data").and_then(Value::as_array) {
             models.extend(data.iter().cloned());
         }
@@ -1593,12 +1952,12 @@ fn model_catalog(process: &JsonLineProcess) -> Result<Value, ProviderError> {
     Ok(json!({"data":models}))
 }
 
-fn list_codex_skills(process: &JsonLineProcess, cwd: &str) -> Vec<CodexSkill> {
-    let result = process.request("skills/list", json!({"cwds":[cwd]}));
-    let Ok(result) = result else {
-        return Vec::new();
-    };
-    result
+fn list_codex_skills(
+    process: &JsonLineProcess,
+    cwd: &str,
+) -> Result<Vec<CodexSkill>, ProviderError> {
+    let result = codex_request(process, "skills/list", json!({"cwds":[cwd]}))?;
+    Ok(result
         .get("data")
         .and_then(Value::as_array)
         .into_iter()
@@ -1617,7 +1976,7 @@ fn list_codex_skills(process: &JsonLineProcess, cwd: &str) -> Vec<CodexSkill> {
                 path: skill.get("path").and_then(Value::as_str)?.to_owned(),
             })
         })
-        .collect()
+        .collect())
 }
 
 fn merge_codex_commands(skills: &[CodexSkill]) -> Vec<Value> {
@@ -1641,6 +2000,7 @@ fn merge_codex_commands(skills: &[CodexSkill]) -> Vec<Value> {
 }
 
 fn codex_options_from_catalog(catalog: &Value, thread: &Value) -> Vec<Value> {
+    let current_model = thread_model(thread);
     let models = catalog
         .get("data")
         .and_then(Value::as_array)
@@ -1650,14 +2010,9 @@ fn codex_options_from_catalog(catalog: &Value, thread: &Value) -> Vec<Value> {
         .iter()
         .filter(|model| {
             let id = model.get("id").and_then(Value::as_str).unwrap_or_default();
-            model.get("hidden").and_then(Value::as_bool) != Some(true)
-                || id.eq_ignore_ascii_case("gpt-5.5-luna")
+            model.get("hidden").and_then(Value::as_bool) != Some(true) || id == current_model
         })
         .collect();
-    if visible.is_empty() {
-        return Vec::new();
-    }
-    let current_model = thread_model(thread);
     let current_effort = thread_effort(thread);
     let current_mode = thread_mode(thread);
     let mut model_choices: Vec<Value> = visible
@@ -1705,8 +2060,31 @@ fn codex_options_from_catalog(catalog: &Value, thread: &Value) -> Vec<Value> {
         }));
     }
     options.push(json!({
-        "id":"mode","name":"Mode","value":current_mode,
+        "id":"collaboration","name":"Collaboration","value":current_mode,
         "choices":[{"value":"default","name":"Default"},{"value":"plan","name":"Plan"}]
+    }));
+    let approval = thread
+        .get("approvalPolicy")
+        .and_then(Value::as_str)
+        .unwrap_or("unavailable");
+    options.push(json!({
+        "id":"mode","name":"Approval policy","value":approval,
+        "choices":[{"value":"on-request","name":"Ask as needed"},{"value":"never","name":"Never ask"}]
+    }));
+    let sandbox = thread
+        .get("sandboxPolicy")
+        .or_else(|| thread.get("sandbox"))
+        .and_then(|policy| policy.get("type"))
+        .and_then(Value::as_str);
+    let sandbox = match sandbox {
+        Some("readOnly") => "read-only",
+        Some("workspaceWrite") => "workspace-write",
+        Some("dangerFullAccess") => "danger-full-access",
+        _ => "unavailable",
+    };
+    options.push(json!({
+        "id":"sandbox","name":"Sandbox","value":sandbox,
+        "choices":[{"value":"read-only","name":"Read only"},{"value":"workspace-write","name":"Workspace write"},{"value":"danger-full-access","name":"Full access"}]
     }));
     options
 }
@@ -1762,7 +2140,9 @@ fn emit_chat_ui(
         .lock()
         .ok()
         .map(|state| {
-            json!({"sessionId":session_id,"options":state.options.clone(),"commands":state.commands.clone()})
+            let mut wire = state.wire();
+            wire["sessionId"] = json!(session_id);
+            wire
         })
         .unwrap_or_else(|| json!({"sessionId":session_id,"options":[],"commands":[]}));
     emit_scoped(
@@ -2043,17 +2423,19 @@ fn emit_codex_message(
         return;
     }
     if method == "thread/settings/updated" {
+        if params
+            .get("threadId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| Some(id) != native_id.as_deref())
+        {
+            return;
+        }
         if let Ok(mut state) = ui.lock() {
             let settings = params
                 .get("threadSettings")
                 .or_else(|| params.get("settings"))
                 .unwrap_or(&params);
-            state.options = codex_options_from_catalog(&state.catalog, settings);
-            if state.options.is_empty() {
-                state.options = codex_options_from_catalog(&state.catalog, &params);
-            }
-            state.status.thread_settings = settings.clone();
-            merge_json_values(&mut state.status.thread_response, settings);
+            adopt_codex_settings(&mut state, settings);
         }
         emit_chat_ui(events, session_id, native_id.as_deref(), ui, worker_token);
         return;
@@ -2155,6 +2537,34 @@ fn emit_codex_message(
             }
         }
     }
+}
+
+/// Codex asks (`mcpServer/elicitation/request`) before every MCP tool call. In
+/// a parent Chat, calls to ThreadTerm's own delegation server are accepted
+/// here; URL elicitations and every other server still reach the user.
+fn approve_threadterm_elicitation(
+    responder: &Mutex<Option<JsonLineResponder>>,
+    raw: &Value,
+) -> bool {
+    let Some(id) = raw.get("id").filter(|_| is_threadterm_elicitation(raw)) else {
+        return false;
+    };
+    let Ok(slot) = responder.lock() else {
+        return false;
+    };
+    slot.as_ref().is_some_and(|responder| {
+        responder
+            .respond(id.clone(), json!({"action":"accept","content":{}}))
+            .is_ok()
+    })
+}
+
+fn is_threadterm_elicitation(raw: &Value) -> bool {
+    raw.get("id").is_some()
+        && raw.get("method").and_then(Value::as_str) == Some("mcpServer/elicitation/request")
+        && raw.pointer("/params/serverName").and_then(Value::as_str)
+            == Some(crate::delegation::TOOL_SERVER_NAME)
+        && raw.pointer("/params/mode").and_then(Value::as_str) != Some("url")
 }
 
 fn auto_respond_codex(
@@ -2420,7 +2830,7 @@ mod tests {
             ui: Arc::new(Mutex::new(CodexUiState {
                 options: vec![
                     json!({"id":"model","value":"qa-model-a"}),
-                    json!({"id":"mode","value":"default"}),
+                    json!({"id":"collaboration","value":"default"}),
                 ],
                 ..CodexUiState::default()
             })),
@@ -2475,6 +2885,33 @@ mod tests {
             "cached status and both async account callbacks"
         );
         let before = std::fs::read_to_string(&log).unwrap();
+        let image = vec!["data:image/png;base64,cG5n".to_owned()];
+        for (command, _) in CODEX_SLASH_COMMANDS {
+            let error = chat
+                .validate_send_with_images(&format!("/{command}"), &image)
+                .unwrap_err();
+            assert_eq!(error.code, "images_not_supported_for_command", "/{command}");
+        }
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), before);
+        chat.ui.lock().unwrap().skills.push(CodexSkill {
+            name: "probe".to_owned(),
+            path: "/tmp/probe".to_owned(),
+        });
+        chat.send_with_images("/probe inspect", &image, "skill-image-turn")
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(25));
+        let requests = std::fs::read_to_string(&log).unwrap();
+        assert!(requests.contains("\"type\":\"skill\""));
+        assert!(requests.contains("\"type\":\"image\",\"url\":\"data:image/png;base64,cG5n\""));
+        let (active, _) = &*active_turn;
+        *active.lock().unwrap() = None;
+        chat.send_with_images("", &image, "image-only-turn")
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(25));
+        let requests = std::fs::read_to_string(&log).unwrap();
+        assert!(requests.contains("\"clientUserMessageId\":\"image-only-turn\",\"input\":[{\"type\":\"image\",\"url\":\"data:image/png;base64,cG5n\"}]"));
+        *active.lock().unwrap() = None;
+        let before_conflict = std::fs::read_to_string(&log).unwrap();
         {
             let (active, _) = &*active_turn;
             *active.lock().unwrap() = Some(ActiveCodexTurn {
@@ -2493,7 +2930,7 @@ mod tests {
             "turn_in_progress"
         );
         assert!(received.try_recv().is_err());
-        assert_eq!(std::fs::read_to_string(&log).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), before_conflict);
         let (active, _) = &*active_turn;
         assert_eq!(
             active.lock().unwrap().as_ref().unwrap().public_id,
@@ -2598,8 +3035,16 @@ mod tests {
             json!({"threadId":"thr","effort":"high"})
         );
         assert_eq!(
-            codex_settings_params("mode", "thr", "plan", None).unwrap()["collaborationMode"]
-                ["mode"],
+            codex_settings_params(
+                "collaboration",
+                "thr",
+                "plan",
+                Some(&CodexUiState {
+                    options: vec![json!({"id":"model","value":"catalog-model"})],
+                    ..CodexUiState::default()
+                })
+            )
+            .unwrap()["collaborationMode"]["mode"],
             "plan"
         );
         assert!(codex_settings_params("unknown", "thr", "auto", None).is_none());
@@ -2622,14 +3067,14 @@ mod tests {
             &process_input,
             &json!({"model":"gpt-5.5-luna","reasoningEffort":"xhigh"}),
         );
-        assert_eq!(options.len(), 3);
+        assert_eq!(options.len(), 5);
         assert_eq!(options[0]["id"], "model");
         assert_eq!(options[0]["value"], "gpt-5.5-luna");
         assert_eq!(options[0]["choices"].as_array().unwrap().len(), 2);
         assert_eq!(options[1]["id"], "thinking");
         assert_eq!(options[1]["value"], "xhigh");
         assert_eq!(options[1]["choices"][1]["name"], "Xhigh");
-        assert_eq!(options[2]["id"], "mode");
+        assert_eq!(options[2]["id"], "collaboration");
         assert_eq!(options[2]["value"], "default");
     }
 
@@ -2644,9 +3089,9 @@ mod tests {
             &process_input,
             &json!({"model":"custom-model","reasoningEffort":"low"}),
         );
-        assert_eq!(options.len(), 2);
+        assert_eq!(options.len(), 4);
         assert_eq!(options[0]["value"], "custom-model");
-        assert_eq!(options[1]["id"], "mode");
+        assert_eq!(options[1]["id"], "collaboration");
     }
 
     #[test]
@@ -2692,7 +3137,7 @@ mod tests {
             ..CodexUiState::default()
         };
         assert_eq!(
-            turn_input_for("/demo-skill now", Some(&ui)),
+            turn_input_for("/demo-skill now", Some(&ui)).unwrap(),
             vec![
                 json!({"type":"skill","name":"demo-skill","path":"/tmp/demo"}),
                 json!({"type":"text","text":"now"})
@@ -2706,7 +3151,7 @@ mod tests {
             options: vec![
                 json!({"id":"model","value":"gpt-5.5-luna"}),
                 json!({"id":"thinking","value":"high"}),
-                json!({"id":"mode","value":"plan"}),
+                json!({"id":"collaboration","value":"plan"}),
             ],
             ..CodexUiState::default()
         };
@@ -2753,7 +3198,7 @@ mod tests {
             options: vec![
                 json!({"id":"model","value":"gpt-5.5-luna"}),
                 json!({"id":"thinking","value":"high"}),
-                json!({"id":"mode","value":"plan"}),
+                json!({"id":"collaboration","value":"plan"}),
             ],
             status: CodexStatusState {
                 thread: json!({
@@ -2960,5 +3405,188 @@ mod tests {
         };
         let params = codex_settings_params("model", "thr", "gpt-5.5-luna", Some(&ui)).unwrap();
         assert_eq!(params["effort"], "xhigh");
+    }
+
+    #[test]
+    fn every_advertised_command_is_blocked_from_plain_model_input() {
+        for (command, _) in CODEX_SLASH_COMMANDS {
+            assert!(
+                turn_input_for(&format!("/{command}"), None).is_err(),
+                "{command}"
+            );
+            assert!(
+                turn_input_for(&format!("/{command} args"), None).is_err(),
+                "{command} with arguments"
+            );
+            assert!(
+                is_codex_local_command(command)
+                    || matches!(
+                        *command,
+                        "model"
+                            | "plan"
+                            | "approvals"
+                            | "sandbox"
+                            | "status"
+                            | "usage"
+                            | "compact"
+                            | "review"
+                    ),
+                "{command} has no dispatcher route"
+            );
+        }
+        assert_eq!(
+            turn_input_for("/tmp/example.rs", None).unwrap(),
+            vec![json!({"type":"text","text":"/tmp/example.rs"})]
+        );
+    }
+
+    #[test]
+    fn permissions_use_native_fields_and_collaboration_stays_separate() {
+        let mut ui = CodexUiState {
+            catalog: json!({"data":[]}),
+            ..CodexUiState::default()
+        };
+        let settings = json!({"model":"current-hidden-model","approvalPolicy":"on-request","sandboxPolicy":{"type":"readOnly","networkAccess":false},"collaborationMode":{"mode":"plan"}});
+        adopt_codex_settings(&mut ui, &settings);
+        assert_eq!(
+            option_value(Some(&ui), "mode").as_deref(),
+            Some("on-request")
+        );
+        assert_eq!(
+            option_value(Some(&ui), "collaboration").as_deref(),
+            Some("plan")
+        );
+        assert_eq!(
+            option_value(Some(&ui), "sandbox").as_deref(),
+            Some("read-only")
+        );
+        let params = codex_settings_params("mode", "thr", "never", Some(&ui)).unwrap();
+        assert_eq!(params, json!({"threadId":"thr","approvalPolicy":"never"}));
+        assert!(!codex_settings_confirmed(&settings, &params));
+        assert!(codex_settings_params("mode", "thr", "plan", Some(&ui)).is_none());
+        let sandbox =
+            codex_settings_params("sandbox", "thr", "workspace-write", Some(&ui)).unwrap();
+        assert_eq!(sandbox["sandboxPolicy"]["type"], "workspaceWrite");
+        assert_eq!(sandbox["sandboxPolicy"]["networkAccess"], false);
+        assert!(codex_settings_confirmed(
+            &json!({"sandboxPolicy":{"type":"workspaceWrite","networkAccess":false,"writableRoots":[],"excludeSlashTmp":false}}),
+            &sandbox
+        ));
+    }
+
+    #[test]
+    fn ignored_settings_are_not_confirmation_and_errors_do_not_trigger_fallback() {
+        let params = json!({"threadId":"thr","approvalPolicy":"never"});
+        assert!(!codex_settings_confirmed(&json!({}), &params));
+        assert!(!codex_settings_confirmed(
+            &json!({"approvalPolicy":"on-request"}),
+            &params
+        ));
+        assert!(codex_settings_confirmed(
+            &json!({"approvalPolicy":"never"}),
+            &params
+        ));
+        for (code, message) in [
+            (-32601, "Method not found"),
+            (
+                -32600,
+                "Invalid request: unknown variant `thread/settings/update`, expected one of ...",
+            ),
+        ] {
+            let error = codex_protocol_error(
+                "thread/settings/update",
+                ProviderError::new("provider_error", message).with_details(json!({"code":code})),
+            );
+            assert_eq!(error.code, "provider_method_unsupported");
+            assert!(error.message.contains("Update Codex"));
+        }
+        let error = codex_protocol_error(
+            "thread/settings/update",
+            ProviderError::new("provider_error", "unknown variant `invalid-policy`")
+                .with_details(json!({"code":-32600})),
+        );
+        assert_eq!(error.code, "provider_error");
+    }
+
+    #[test]
+    fn arbitrary_current_hidden_model_remains_selectable_without_pinned_ids() {
+        let options = codex_options_from_catalog(
+            &json!({"data":[{"id":"hidden-current","hidden":true,"supportedReasoningEfforts":[{"reasoningEffort":"high"}]},{"id":"hidden-other","hidden":true}]}),
+            &json!({"model":"hidden-current","effort":"high"}),
+        );
+        assert_eq!(
+            options[0]["choices"],
+            json!([{"value":"hidden-current","name":"hidden-current"}])
+        );
+        assert_eq!(options[1]["id"], "thinking");
+    }
+
+    #[test]
+    fn native_images_keep_data_urls_as_native_image_items() {
+        let image = "data:image/png;base64,cG5n".to_owned();
+        assert_eq!(
+            native_image_inputs(std::slice::from_ref(&image)),
+            vec![json!({"type":"image","url":image})]
+        );
+        let mut text_and_image = native_image_inputs(std::slice::from_ref(&image));
+        text_and_image.push(json!({"type":"text","text":"describe this"}));
+        assert_eq!(
+            text_and_image,
+            vec![
+                json!({"type":"image","url":image}),
+                json!({"type":"text","text":"describe this"})
+            ]
+        );
+    }
+
+    #[test]
+    fn delegation_tool_server_becomes_per_process_config_overrides() {
+        assert!(codex_tool_server_overrides(None).is_empty());
+        let tools = ChatToolServer {
+            name: "threadterm".into(),
+            command: r"C:\Program Files\ThreadTerm\runtime\threadterm-v3-mcp.exe".into(),
+            args: Vec::new(),
+            env: vec![
+                ("THREADTERM_SESSION_ID".into(), "s-1".into()),
+                ("THREADTERM_V3_PIPE".into(), r"\\.\pipe\threadterm-v3-x".into()),
+                ("ODD".into(), "it's".into()),
+            ],
+        };
+        assert_eq!(
+            codex_tool_server_overrides(Some(&tools)),
+            vec![
+                "-c",
+                r"mcp_servers.threadterm.command='C:\Program Files\ThreadTerm\runtime\threadterm-v3-mcp.exe'",
+                "-c",
+                "mcp_servers.threadterm.args=[]",
+                "-c",
+                r#"mcp_servers.threadterm.env={THREADTERM_SESSION_ID='s-1',THREADTERM_V3_PIPE='\\.\pipe\threadterm-v3-x',ODD="it's"}"#,
+            ]
+        );
+    }
+
+    #[test]
+    fn only_threadterm_form_elicitations_are_accepted_automatically() {
+        let request = |params: Value| {
+            json!({"id":1,"method":"mcpServer/elicitation/request","params":params})
+        };
+        assert!(is_threadterm_elicitation(&request(
+            json!({"serverName":"threadterm","threadId":"t","mode":"form","message":"Allow?"})
+        )));
+        assert!(!is_threadterm_elicitation(&request(
+            json!({"serverName":"codegraph","threadId":"t","mode":"form"})
+        )));
+        assert!(!is_threadterm_elicitation(&request(
+            json!({"serverName":"threadterm","threadId":"t","mode":"url","url":"https://example.com"})
+        )));
+        assert!(!is_threadterm_elicitation(
+            &json!({"id":2,"method":"item/tool/call","params":{"serverName":"threadterm"}})
+        ));
+        // Without a live responder nothing is claimed, so the request still
+        // reaches normal handling.
+        assert!(!approve_threadterm_elicitation(
+            &Mutex::new(None),
+            &request(json!({"serverName":"threadterm","threadId":"t","mode":"form"}))
+        ));
     }
 }

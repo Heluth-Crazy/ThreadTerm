@@ -43,6 +43,24 @@ export function kindLabel(kind: ChatApprovalKind, copy: (en: string, zh: string)
   return copy("Other", "其他");
 }
 
+// Runtime choice labels are English; translate the known ones, keep the rest as sent.
+const CHOICE_LABELS_ZH: Record<string, string> = {
+  "Allow": "允许",
+  "Allow once": "允许一次",
+  "Allow for this session": "本次会话中允许",
+  "Allow all edits this session": "本次会话中允许所有编辑",
+  "Always allow in this project": "在此项目中始终允许",
+  "Always allow everywhere": "在所有项目中始终允许",
+  "Deny": "拒绝",
+  "Cancel": "取消",
+};
+
+export function choiceLabel(choice: ChatApprovalChoice, copy: (en: string, zh: string) => string): string {
+  if (!choice.label) return kindLabel(choice.kind, copy);
+  const zh = CHOICE_LABELS_ZH[choice.label];
+  return zh ? copy(choice.label, zh) : choice.label;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

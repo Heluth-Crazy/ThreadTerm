@@ -311,6 +311,12 @@
         "readOnly": {
           "type": "boolean"
         },
+        "activity": {
+          "$ref": "#/definitions/SessionActivity"
+        },
+        "delegation": {
+          "$ref": "#/definitions/SessionDelegation"
+        },
         "archived": {
           "type": "boolean"
         },
@@ -378,6 +384,79 @@
         "exited",
         "interrupted",
         "error"
+      ]
+    },
+    "SessionActivity": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "running",
+            "awaiting_approval",
+            "awaiting_parent",
+            "awaiting_input",
+            "idle",
+            "unknown"
+          ]
+        },
+        "revision": {
+          "type": "number"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "SessionDelegation": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "parentSessionId": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "string",
+          "enum": [
+            "shared",
+            "worktree"
+          ]
+        },
+        "branch": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/SessionDelegationState"
+        }
+      },
+      "required": [
+        "id",
+        "parentSessionId",
+        "workspace",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "SessionDelegationState": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "running",
+        "awaiting_parent",
+        "awaiting_user",
+        "completed",
+        "failed",
+        "cancelled"
       ]
     },
     "RequestResult<\"session.resume\">": {
@@ -1786,6 +1865,9 @@
     "RequestResult<\"session.update\">": {
       "$ref": "#/definitions/Session"
     },
+    "RequestResult<\"session.attention.acknowledge\">": {
+      "$ref": "#/definitions/Session"
+    },
     "RequestResult<\"session.claim\">": {
       "type": "object",
       "properties": {
@@ -1921,6 +2003,15 @@
           "items": {
             "$ref": "#/definitions/ChatSlashCommand"
           }
+        },
+        "inputCapabilities": {
+          "type": "object",
+          "properties": {
+            "images": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
         },
         "loadState": {
           "$ref": "#/definitions/ChatOptionsLoadState"
@@ -4536,6 +4627,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22session.update%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "session.attention.acknowledge"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22session.attention.acknowledge%22%3E"
         }
       },
       "required": [

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fileSelectionKey, visibleSessionLayout, sessionWorkspaceKey, workspaceNavigationLayout, workspaceNavigationTarget, withSessionCompanions, removeClosedViews, fileViewPlacement } from '../renderer/src/sessionFileViews.ts';
+import { fileSelectionKey, visibleSessionLayout, sessionWorkspaceKey, workspaceNavigationLayout, workspaceNavigationTarget, withSessionCompanions, removeClosedViews, fileViewPlacement, canSplitPaneArea, MIN_SPLIT_PANE_WIDTH } from '../renderer/src/sessionFileViews.ts';
 import { workspaceTabs, focusedWorkspaceTab, tabCloseTargets } from '../renderer/src/workspaceTabs.ts';
 
 const file=(id,ownerSessionId)=>({id,kind:'preview',path:id+'.md',projectId:'p',...(ownerSessionId?{ownerSessionId}:{})});
@@ -74,6 +74,23 @@ test('full and narrow layouts place inspector files in their owner session, not 
  const independent=split(source,pane('independent',[file('independent')]));
  assert.deepEqual(fileViewPlacement(independent,'a',undefined,true),{paneId:'source',split:true},'independent column is not silently repurposed');
  assert.deepEqual(fileViewPlacement(independent,undefined,undefined,true),{paneId:'independent',split:false});
+});
+
+test('a file left in the Chat pane by a narrow open does not keep covering Chat once a split fits',()=>{
+ const mixed=pane('source',[sessions.tabs[0],file('a-file','a')],'a-file');
+ assert.deepEqual(fileViewPlacement(mixed,'a',undefined,true),{paneId:'source',split:true},'wide: open beside the session');
+ assert.deepEqual(fileViewPlacement(mixed,'a',undefined,false),{paneId:'source',split:false},'narrow: stay in the session pane');
+ const ownerless=pane('source',[sessions.tabs[0],file('loose')],'loose');
+ assert.deepEqual(fileViewPlacement(ownerless,undefined,undefined,true),{paneId:'source',split:false},'side-bar opens keep reusing their pane');
+});
+
+test('the pane area splits when both halves stay usable',()=>{
+ // Default 1440 px window with the Files side panel open measures 854 px; 960 px minimum window about 406 px.
+ assert.equal(canSplitPaneArea(854),true);
+ assert.equal(canSplitPaneArea(1146),true);
+ assert.equal(canSplitPaneArea(2*MIN_SPLIT_PANE_WIDTH+12),true);
+ assert.equal(canSplitPaneArea(2*MIN_SPLIT_PANE_WIDTH+11),false);
+ assert.equal(canSplitPaneArea(406),false);
 });
 
 test('only current owner files are visible, original saved layout is unchanged',()=>{

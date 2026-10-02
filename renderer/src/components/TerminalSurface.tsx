@@ -14,7 +14,7 @@ import { AgentIcon, Icon } from './PrototypeIcon';
 import { AgentLoadingMark } from './AgentLoadingMark';
 import { SessionSurfaceContext, SurfaceActions } from './SessionSurfaceContext';
 import { parseFileReference } from '../fileReferences';
-import { createTerminalFileLinkHitArea, createTerminalFileLinkInteraction, terminalFileLinks } from './terminalFileLinks';
+import { createFileLinkValidator, createTerminalFileLinkHitArea, createTerminalFileLinkInteraction, fileLinkStatusOf, provideTerminalFileLinks } from './terminalFileLinks';
 import type { ProviderId, Session, TerminalLaunchState } from "@threadterm/protocol";
 import {
   aiCompletionHintsEnabled,
@@ -233,10 +233,13 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     };
     terminal.loadAddon(new WebLinksAddon((_event, url) => setSelectedLink(url)));
     const fileLinkInteraction = createTerminalFileLinkInteraction(element);
+    // Link only what the session's runtime can find, so `3.14` or half of a wrapped path is not offered.
+    const fileLinkValidator = createFileLinkValidator(path => request('filesystem.resolve', { sessionId, path }).then(() => 'exists' as const, fileLinkStatusOf));
     const fileLinkDisposable = terminal.registerLinkProvider({ provideLinks: (line, callback) => {
-      callback(openFileRef.current ? terminalFileLinks(terminal, line, reference => openFileRef.current?.(reference), fileLinkInteraction) : undefined);
+      if (!openFileRef.current) { callback(undefined); return; }
+      void provideTerminalFileLinks(terminal, line, reference => openFileRef.current?.(reference), fileLinkInteraction, fileLinkValidator).then(callback, () => callback(undefined));
     } });
-    const fileLinkHitArea = openFileRef.current ? createTerminalFileLinkHitArea(terminal, reference => openFileRef.current?.(reference)) : undefined;
+    const fileLinkHitArea = openFileRef.current ? createTerminalFileLinkHitArea(terminal, reference => openFileRef.current?.(reference), fileLinkValidator) : undefined;
     const selectionDisposable=terminal.onSelectionChange(()=>{
       setHasSelection(terminal.hasSelection());
       setSelectionFile(parseFileReference(terminal.getSelection().trim()));

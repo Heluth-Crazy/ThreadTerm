@@ -1,4 +1,4 @@
-import { FormEvent, Fragment, KeyboardEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import type { ChatPart, ChatSessionOption, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
@@ -10,6 +10,8 @@ import { useTranslation } from '../i18n';
 import { Icon } from "./PrototypeIcon";
 import { ChatApprovalCard } from "./ChatApprovalCard";
 import { ChatConnectOverlay } from "./ChatConnectOverlay";
+import { DelegationPanel } from "./DelegationPanel";
+import { delegationTool, delegationToolLabel } from "../delegation";
 import { UsageCard } from './UsageCard';
 import { usageCardsForItems } from '../usageCard';
 import { connectionStatusText, emptyLink, overlayKind, reduceChatLink } from "../chatConnection";
@@ -22,6 +24,8 @@ import { SessionSurfaceContext } from './SessionSurfaceContext';
 import { registerChatInputTarget } from '../terminalInputTargets';
 import { insertAtCaret } from '../workbench/agentReference';
 import "./chat-network-notice.css";
+import { isChatImage, readClipboardImage, validateChatImages } from '../chatImages';
+import './chat-images.css';
 
 function ThinkingPart({ part, streaming, copy, openFile }: { part: ChatPart; streaming: boolean; copy: (en: string, zh: string) => string; openFile?: (reference: FileReference) => void }) {
   const [open, setOpen] = useState(streaming);
@@ -56,12 +60,15 @@ function renderCodexMarkdown(text: string): string {
 }
 
 function CodexToolPart({ part, copy, openFile }: { part: ChatPart; copy: (en: string, zh: string) => string; openFile?: (reference: FileReference) => void }) {
-  const name = (part.toolName ?? "").toLowerCase();
+  const delegation = delegationTool(part);
+  // MCP tools are named mcp__<server>__<tool>: classify by the tool alone (a server such
+  // as "threadterm" must not read as a file tool).
+  const name = (part.toolName ?? "").split("__").pop()!.toLowerCase();
   const isFile = name.includes("file") || name.includes("patch") || name.includes("dir") || name.includes("read") || name.includes("write") || name.includes("edit");
   const isCommand = name.includes("command") || name.includes("shell") || name.includes("exec") || name.includes("bash");
   const isSearch = name.includes("search") || name.includes("web") || name.includes("grep") || name.includes("glob") || name.includes("fetch");
-  const icon = isFile ? "file" : isCommand ? "terminal" : isSearch ? "search" : "spark";
-  const label = (isFile
+  const icon = delegation ? "export" : isFile ? "file" : isCommand ? "terminal" : isSearch ? "search" : "spark";
+  const label = delegation ? delegationToolLabel(delegation, copy) : (isFile
       ? copy("Accessed files", "已处理文件")
       : isCommand
         ? copy("Ran a command", "已运行命令")
@@ -287,7 +294,7 @@ const asUserError = (caught: unknown, fallback: string) => {
   return message.replace(/^Error invoking remote method '[^']+': (?:Error:\s*)?/, "") || fallback;
 };
 // Provider option ids are provider-defined (kimi ACP: model/thinking/mode); labels localize known values and fall back to the provider's own names.
-const MODE_LABELS: Record<string, [string, string]> = { default: ["Default", "默认"], plan: ["Plan", "规划"], auto: ["Auto", "自动"], yolo: ["Full access", "完全访问"], acceptedits: ["Accept edits", "接受编辑"], dontask: ["Don't ask", "不问"], bypasspermissions: ["Bypass", "跳过权限"] };
+const MODE_LABELS: Record<string, [string, string]> = { default: ["Default", "默认"], plan: ["Plan", "规划"], onrequest: ["Ask as needed", "按需询问"], never: ["Never ask", "从不询问"], onfailure: ["On failure", "失败时询问"], untrusted: ["Untrusted", "不受信任的"], readonly: ["Read only", "只读"], workspacewrite: ["Workspace write", "工作区可写"], dangerfullaccess: ["Full access", "完全访问"], auto: ["Auto", "自动"], yolo: ["Full access", "完全访问"], acceptedits: ["Accept edits", "接受编辑"], dontask: ["Don't ask", "不问"], bypasspermissions: ["Bypass", "跳过权限"] };
 const THINKING_LABELS: Record<string, [string, string]> = { off: ["Off", "关"], none: ["Off", "关"], minimal: ["Minimal", "最低"], low: ["Low", "低"], on: ["On", "开"], medium: ["Medium", "中"], high: ["High", "高"], xhigh: ["Xhigh", "超高"], max: ["Max", "Max"], ultra: ["Ultra", "Ultra"] };
 const currentChoiceName = (option: ChatSessionOption) => option.choices.find(choice => choice.value === option.value)?.name ?? option.value;
 const shortThinking = (option: ChatSessionOption, zh: boolean) => {
@@ -296,13 +303,17 @@ const shortThinking = (option: ChatSessionOption, zh: boolean) => {
   return currentChoiceName(option).replace(/^thinking\s+/i, "") || option.value;
 };
 const modeText = (option: ChatSessionOption, zh: boolean) => {
-  const known = MODE_LABELS[option.value.toLowerCase()];
+  const known = MODE_LABELS[option.value.toLowerCase().replace(/[^a-z0-9]/g, "")];
   if (known) return zh ? known[1] : known[0];
   return currentChoiceName(option) || option.value;
 };
+const isNativeOption = (option: ChatSessionOption) => /^(collaboration|approvalpolicy|sandbox)$/i.test(option.id) || (/^mode$/i.test(option.id) && /^approval policy$/i.test(option.name));
 const optionTitle = (option: ChatSessionOption, copy: (en: string, zh: string) => string) => {
   if (/^model$/i.test(option.id)) return copy("Model", "模型");
   if (/think/i.test(option.id)) return copy("Thinking level", "思考程度");
+  if (/^collaboration$/i.test(option.id)) return copy("Collaboration", "协作模式");
+  if (/^approvalpolicy$/i.test(option.id) || (/^mode$/i.test(option.id) && /^approval policy$/i.test(option.name))) return copy("Approval policy", "审批策略");
+  if (/^sandbox$/i.test(option.id)) return copy("Sandbox", "沙箱");
   if (/^mode$/i.test(option.id)) return copy("Permission mode", "权限模式");
   return option.name;
 };
@@ -324,7 +335,7 @@ function isTerminalChatStatus(status: Session["status"]): boolean {
   return status === "idle" || status === "error" || status === "exited" || status === "interrupted";
 }
 
-export function ChatView({ session }: { session: Session }) {
+export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }: { session: Session; delegates?: Session[]; delegatedBy?: Session; onOpenSession?: (sessionId: string) => void }) {
   const { locale } = useTranslation();
   const openFile = useContext(SessionSurfaceContext)?.openFile;
   const zh = locale === 'zh-CN';
@@ -333,6 +344,9 @@ export function ChatView({ session }: { session: Session }) {
   const canControl = chatCanControl(session);
   const ended = isEnded(session);
   const [items, setItems] = useState<ChatItem[]>([]); const [text, setText] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>(); const [controlIssue, setControlIssue] = useState<string>(); const [controllable, setControllable] = useState(false);
+  // Presentation only: keep the recoverable draft until runtime acceptance.
+  // This preview never becomes a canonical ChatItem or an active-turn source.
+  const [submissionPreview, setSubmissionPreview] = useState<{ token: string; text: string; images: string[] }>();
   const itemsRef = useRef(items); itemsRef.current = items;
   const [firstResponseWait, setFirstResponseWait] = useState<FirstResponseWait | undefined>(undefined);
   const firstResponseWaitRef = useRef<FirstResponseWait | undefined>(undefined);
@@ -354,6 +368,19 @@ export function ChatView({ session }: { session: Session }) {
   const connectInFlight = useRef(false);
   const transportGeneration = useRef(0);
   const [ui, setUi] = useState<ChatUiState>({ options: [], commands: [] });
+  const [images, setImages] = useState<string[]>([]);
+  const [imageReading, setImageReading] = useState(false);
+  const imageReadingRef = useRef(false);
+  const imageDraftKey = `threadterm.compose.images.${session.id}`;
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(imageDraftKey);
+      setImages(stored ? validateChatImages(JSON.parse(stored)) : []);
+    } catch {
+      setImages([]);
+      setError(copy('Image draft could not be loaded.', '无法加载图片草稿。'));
+    }
+  }, [imageDraftKey]);
   const [approvalBusy, setApprovalBusy] = useState<string>();
   const [slashIndex, setSlashIndex] = useState(0);
   const composeRef = useRef<HTMLTextAreaElement>(null);
@@ -423,6 +450,7 @@ export function ChatView({ session }: { session: Session }) {
       : undefined;
     transportGeneration.current = 0;
     clearFirstResponseWait();
+    setSubmissionPreview(undefined);
     setItems([]); setText(''); setBusy(false); setDraftLoaded(false); setHistoryLoaded(false); setHistoryFailed(false); setLink(emptyLink(session.id, canControl && !ended ? "connecting" : "unavailable")); setConnectSlow(false); setError(undefined);draftReady.current=false;writer.current=undefined;setDraftFailed(false);setRecovery(undefined);setMenuOpen(null);setApprovalBusy(undefined);
     const unsubscribe = subscribeEvents(event => {
       if (disposed || !event.data || typeof event.data !== 'object') return;
@@ -491,7 +519,10 @@ export function ChatView({ session }: { session: Session }) {
     if (pending?.turnId && session.updatedAt !== pending.sessionUpdatedAt && isTerminalChatStatus(session.status)) clearFirstResponseWait(pending.token);
   }, [firstResponseWait, items, session.status, session.updatedAt]);
   useEffect(() => {
-    if (ended || connection.phase === "failed") clearFirstResponseWait();
+    if (ended || connection.phase === "failed") {
+      clearFirstResponseWait();
+      setSubmissionPreview(undefined);
+    }
   }, [connection.phase, ended]);
   useEffect(() => {
     let disposed = false;
@@ -607,18 +638,22 @@ export function ChatView({ session }: { session: Session }) {
   },[text,writable,recovery,draftFailed]);
   async function submit(event: FormEvent) {
     event.preventDefault();const value=text.trim(),epoch=leaseSessionId.current === session.id ? lease.current : undefined;
-    if(!value||epoch===undefined||!writable||!draftLoaded||busy||firstResponseWaitRef.current||activeTurnId(itemsRef.current,session.status))return;
+    if((!value&&!images.length)||imageReading||epoch===undefined||!writable||!draftLoaded||busy||firstResponseWaitRef.current||activeTurnId(itemsRef.current,session.status))return;
     const submittingLifecycle = lifecycle.current;
     const token = operationId();
     const pendingStart = { token, sessionUpdatedAt: session.updatedAt };
+    setSubmissionPreview({ token, text: value, images });
     firstResponseWaitRef.current = pendingStart;
     setFirstResponseWait(pendingStart);
     setBusy(true);setError(undefined);
+    let accepted = false;
     try{
       await persistCompose(text,epoch);
       if (lifecycle.current !== submittingLifecycle) return;
-      const sent = await request('chat.send',{sessionId:session.id,text:value,operationId:token,leaseEpoch:epoch});
+      const sent = await request('chat.send',{sessionId:session.id,text:value,...(images.length ? {images} : {}),operationId:token,leaseEpoch:epoch});
       if (lifecycle.current !== submittingLifecycle) return;
+      accepted = true;
+      setSubmissionPreview(undefined);
       if (firstResponseWaitRef.current?.token === token) {
         const pending = { token, sessionUpdatedAt: session.updatedAt, turnId: sent.turnId };
         firstResponseWaitRef.current = pending;
@@ -626,14 +661,48 @@ export function ChatView({ session }: { session: Session }) {
         if (hasVisibleAssistantResponse(itemsRef.current, sent.turnId)) clearFirstResponseWait(token);
       }
       changeText('');
+      setImages([]);
+      try { localStorage.removeItem(imageDraftKey); } catch { /* The accepted message is already durable. */ }
       await persistCompose('',epoch);
     }catch(caught){
       if (lifecycle.current === submittingLifecycle) {
-        clearFirstResponseWait(token);
-        setError(asUserError(caught,'Message was not sent.'));
+        setSubmissionPreview(undefined);
+        if (accepted) {
+          setDraftFailed(true);
+          setDraftNotice(copy('Draft not saved', '草稿未保存'));
+          setError(asUserError(caught, copy('Message sent, but the draft could not be cleared. Retry draft save.', '消息已发送，但草稿未能清空。请重试保存草稿。')));
+        } else {
+          clearFirstResponseWait(token);
+          setError(asUserError(caught, copy('Message was not sent.', '消息未发送。')));
+        }
       }
     }
     finally{if (lifecycle.current === submittingLifecycle) setBusy(false);}
+  }
+  function updateImages(next: string[]) {
+    try {
+      if (next.length) localStorage.setItem(imageDraftKey, JSON.stringify(validateChatImages(next)));
+      else localStorage.removeItem(imageDraftKey);
+      setImages(next);
+    } catch {
+      setError(copy('Image draft could not be saved. Remove an image or free device storage and paste again.', '无法保存图片草稿。请移除图片或释放设备存储空间后重新粘贴。'));
+    }
+  }
+  async function pasteImages(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.files).filter(file => file.type.startsWith('image/'));
+    if (!files.length || !ui.inputCapabilities?.images) return;
+    event.preventDefault();
+    if (!writable || busy || imageReadingRef.current) return;
+    const target = lifecycle.current;
+    imageReadingRef.current = true; setImageReading(true); setError(undefined);
+    try {
+      const pasted = await Promise.all(files.map(readClipboardImage));
+      if (lifecycle.current !== target) return;
+      const next = validateChatImages([...images, ...pasted]);
+      updateImages(next);
+    } catch (caught) {
+      if (lifecycle.current === target) setError(asUserError(caught, copy('Image was not pasted.', '图片未能粘贴。')));
+    } finally { imageReadingRef.current = false; setImageReading(false); }
   }
   async function approval(turnId:string,approvalId:string,choiceId:string){
     const epoch=leaseSessionId.current===session.id?lease.current:undefined;
@@ -688,7 +757,7 @@ export function ChatView({ session }: { session: Session }) {
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-  }, [text]);
+  }, [text, submissionPreview]);
   useEffect(() => {
     const el = logRef.current;
     if (!el) return;
@@ -703,8 +772,14 @@ export function ChatView({ session }: { session: Session }) {
   function renderMenuRows(option: ChatSessionOption) {
     const choices = option.choices.length ? option.choices : [{ value: option.value, name: option.value || copy("Current", "当前") }];
     return choices.map(choice => <button type="button" key={choice.value} role="menuitemradio" aria-checked={choice.value === option.value} className={`chat-menu-item${choice.value === option.value ? " active" : ""}`} disabled={!writable || busy} onClick={() => { setMenuOpen(null); void setOption(option, choice.value); }}>
-      <Icon name="check" className="chat-menu-check" /><span>{choice.name}</span>
+      <Icon name="check" className="chat-menu-check" /><span>{menuChoiceText(option, choice)}</span>
     </button>);
+  }
+  function menuChoiceText(option: ChatSessionOption, choice: ChatSessionOption["choices"][number]) {
+    if (isNativeOption(option)) return modeText({ ...option, value: choice.value }, zh);
+    // Providers name mode/thinking choices in English; in Chinese, translate the known values like their chips.
+    const known = option === modeOption ? MODE_LABELS[choice.value.toLowerCase().replace(/[^a-z0-9]/g, "")] : option === thinkingOption ? THINKING_LABELS[choice.value.toLowerCase()] : undefined;
+    return zh && known ? known[1] : choice.name;
   }
   function applySlash(command: ChatSlashCommand) {
     if (command.name === "stop" && liveTurn) { void cancel(liveTurn); changeText(""); return; }
@@ -729,7 +804,7 @@ export function ChatView({ session }: { session: Session }) {
       if (usage) return <article className={`v3-chat-message assistant is-native is-${session.provider} is-usage`} key={item.id}><UsageCard model={usage} zh={zh} /></article>;
       const live = itemShowsStreaming(item, items);
       return <article className={`v3-chat-message ${item.role} is-native is-${session.provider}`} key={item.id}>
-      {item.parts.filter(shouldRenderPart).map((part, index) => {
+      {item.parts.filter(part => shouldRenderPart(part) || (Array.isArray(asRecord(part.data).images) && (asRecord(part.data).images as unknown[]).some(isChatImage))).map((part, index) => {
         if (part.type === "thinking") return <ThinkingPart key={`thinking-${index}`} part={part} streaming={live && part.status === "streaming"} copy={copy} openFile={openFile} />;
         if (part.type === "status" && asRecord(part.data).kind === "providerRetry") {
           const retry = asRecord(part.data), state = asString(retry.state, "retrying");
@@ -749,10 +824,14 @@ export function ChatView({ session }: { session: Session }) {
           <ChatApprovalCard part={part} writable={writable && !busy} submitting={approvalBusy?.startsWith(`${part.approvalId ?? ""}:`) ? approvalBusy.slice((part.approvalId ?? "").length + 1) : undefined} onChoose={choiceId => { if (item.turnId && part.approvalId) void approval(item.turnId, part.approvalId, choiceId); }} copy={copy} />
         </div>;
         const label = partLabel(part, copy);
-        const body = partBody(part);
+        const localizedText = asRecord(asRecord(part.data).localizedText);
+        const body = asString(localizedText[zh ? "zh-CN" : "en"], partBody(part));
+        const partImages = asRecord(part.data).images;
+        const messageImages = Array.isArray(partImages) ? partImages.filter(isChatImage) : [];
         const foldedTool = part.type === "tool";
         const codexMarkdown = item.role !== "user" && part.type === "text";
         return <div className={`chat-part ${part.type}${part.type === 'tool' ? ` v3-tool-card ${part.status ?? ''}` : ''}`} key={`${part.type}-${index}`}>
+          {!!messageImages.length && <div className="chat-message-images">{messageImages.map((image, imageIndex) => <img key={imageIndex} src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${imageIndex + 1}`} loading="lazy" />)}</div>}
           {foldedTool ? <CodexToolPart part={part} copy={copy} openFile={openFile} /> : <>
             {label && <strong>{label}</strong>}
             {body ? codexMarkdown
@@ -768,6 +847,7 @@ export function ChatView({ session }: { session: Session }) {
   }
   return <section className={`chat-view v3-session-chat${overlay === "full" ? " is-connecting" : ""}`} data-provider={session.provider} data-testid={`session-chat-${session.id}`} aria-label={copy('Structured chat', '图形聊天')}>
     {ended && <p className="chat-history-note" role="note">{copy('Session ended · history is read-only.', '会话已结束 · 历史记录只读。')}</p>}
+    <DelegationPanel session={session} delegates={delegates} delegatedBy={delegatedBy} onOpenSession={onOpenSession} copy={copy} zh={zh} />
     {overlay === "banner" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={false} error={connection.error} variant="banner" onRetry={retryConnection} copy={copy} transportDown={link.transport !== "up"} />}
     {ui.loadState === "error" && ui.error && <p className="surface-error" role="alert">{ui.error.message} <button type="button" className="btn" disabled={!writable} onClick={() => void request("chat.options", { sessionId: session.id }).then(setUi).catch(caught => setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } })))}>{copy("Retry options", "重试读取选项")}</button></p>}
     {historyFailed && <p className="surface-error" role="alert">{copy("History could not be loaded.", "无法加载历史。")}</p>}
@@ -784,7 +864,13 @@ export function ChatView({ session }: { session: Session }) {
       </details>}
       {group.response.map(renderItem)}
     </section>) : firstResponseWait ? null : <div className="empty v3-empty"><strong>{copy('No messages yet.', '暂无消息。')}</strong><p>{copy('Send a message to start working with this provider.', '发送消息，开始与此提供方协作。')}</p></div>}
-      {firstResponseWait && <div className="chat-first-response-wait" role="status" aria-live="polite" aria-label={copy("Thinking", "思考中")}><span>{copy("Thinking", "思考中")}</span><span className="chat-first-response-dots" aria-hidden="true"><i /><i /><i /></span></div>}
+      {submissionPreview && !items.some(item => item.role === 'user' && item.turnId === submissionPreview.token) && <article className={`v3-chat-message user is-native is-${session.provider} chat-pending-submission`} aria-label={copy('Message being sent', '正在发送的消息')}>
+        <div className="chat-part text">
+          {!!submissionPreview.images.length && <div className="chat-message-images">{submissionPreview.images.map((image, index) => <img key={index} src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} />)}</div>}
+          {!!submissionPreview.text && <div className="v3-message-text">{submissionPreview.text}</div>}
+        </div>
+      </article>}
+      {firstResponseWait && <div className="chat-first-response-wait" role="status" aria-live="polite" aria-label={submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}><span>{submissionPreview && busy ? copy('Sending…', '正在发送…') : copy("Thinking", "思考中")}</span><span className="chat-first-response-dots" aria-hidden="true"><i /><i /><i /></span></div>}
     </div>
     {recovery !== undefined && <div role="alert" className="surface-error">
       <p>{copy('An unsaved draft is available on this device.', '此设备上有一份未保存的草稿。')}</p>
@@ -811,11 +897,12 @@ export function ChatView({ session }: { session: Session }) {
         {renderMenuRows(modeOption)}
       </div>}
       <label className="sr-only" htmlFor={`chat-message-${session.id}`}>{copy('Message', '消息')}</label>
-      <textarea id={`chat-message-${session.id}`} ref={composeRef} value={text} onChange={event => { changeText(event.target.value); setSlashIndex(0); }} onKeyDown={onComposeKey} placeholder={copy('Message the provider, or type / for commands', '发送消息，或输入 / 唤出命令')} rows={1} disabled={busy || ended || !writable || overlay === "full" || !draftLoaded} />
+      {!!images.length && !submissionPreview && <div className="chat-image-draft" aria-label={copy('Image attachments', '图片附件')}>{images.map((image, index) => <figure key={index}><img src={image} alt={`${copy('Pasted image', '已粘贴图片')} ${index + 1}`} /><button type="button" disabled={busy || imageReading || !writable} aria-label={`${copy('Remove image', '移除图片')} ${index + 1}`} onClick={() => updateImages(images.filter((_, imageIndex) => imageIndex !== index))}>×</button></figure>)}<span className="chat-image-draft-note">{copy('Images saved on this device', '图片已保存在此设备')}</span></div>}
+      <textarea id={`chat-message-${session.id}`} ref={composeRef} value={submissionPreview ? '' : text} onChange={event => { changeText(event.target.value); setSlashIndex(0); }} onPaste={pasteImages} onKeyDown={onComposeKey} placeholder={copy('Message the provider, or type / for commands', '发送消息，或输入 / 唤出命令')} rows={1} disabled={busy || ended || !writable || overlay === "full" || !draftLoaded} />
       <div className="chat-compose-bar">
         <div className="chat-compose-left">
-          <button type="button" className="chat-compose-icon" disabled={ended || !writable} aria-label={copy("Commands", "命令")} title={copy("Commands", "命令")} onClick={() => { changeText(text.startsWith("/") ? text : "/"); composeRef.current?.focus(); }}><Icon name="plus" /></button>
-          {modeOption && <button type="button" className={`chat-compose-chip chat-mode-chip mode-${modeOption.value.replace(/[^a-z0-9]/gi, "") || "unknown"}`} data-menu-trigger="mode" aria-haspopup="menu" aria-expanded={menuOpen === "mode"} disabled={ended || !writable} title={currentChoiceName(modeOption) || modeOption.name} onClick={() => setMenuOpen(menuOpen === "mode" ? null : "mode")}>
+          <button type="button" className="chat-compose-icon" disabled={busy || ended || !writable} aria-label={copy("Commands", "命令")} title={copy("Commands", "命令")} onClick={() => { changeText(text.startsWith("/") ? text : "/"); composeRef.current?.focus(); }}><Icon name="plus" /></button>
+          {modeOption && <button type="button" className={`chat-compose-chip chat-mode-chip mode-${modeOption.value.replace(/[^a-z0-9]/gi, "") || "unknown"}`} data-menu-trigger="mode" aria-haspopup="menu" aria-expanded={menuOpen === "mode"} disabled={ended || !writable} title={isNativeOption(modeOption) ? modeText(modeOption, zh) : currentChoiceName(modeOption) || modeOption.name} onClick={() => setMenuOpen(menuOpen === "mode" ? null : "mode")}>
             <Icon name="shield" /><span>{modeText(modeOption, zh)}</span>
           </button>}
         </div>
@@ -829,7 +916,7 @@ export function ChatView({ session }: { session: Session }) {
           </button>}
           {liveTurn
             ? <button type="button" className="chat-compose-send is-stop" disabled={!writable || busy} onClick={() => void cancel(liveTurn)} aria-label={copy('Stop', '停止')} title={copy('Stop', '停止')}><span className="chat-stop-square" /></button>
-            : <button className="chat-compose-send" type="submit" disabled={!text.trim() || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} aria-label={busy ? copy('Sending…', '正在发送…') : copy('Send', '发送')}><Icon name="arrowUp" /></button>}
+            : <button className="chat-compose-send" type="submit" disabled={(!text.trim() && !images.length) || imageReading || busy || !writable || !draftLoaded || draftFailed || recovery !== undefined} aria-label={busy ? copy('Sending…', '正在发送…') : copy('Send', '发送')}><Icon name="arrowUp" /></button>}
         </div>
       </div>
     </form>

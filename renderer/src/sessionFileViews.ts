@@ -1,4 +1,5 @@
 import type { PaneLayout, Session, Snapshot } from '@threadterm/protocol';
+import { PANE_DIVIDER_SIZE, PANE_GAP } from './paneGeometry';
 import { canonicalScopePath } from './projectScope';
 import { removeWorkspaceTabs, workspaceTabs, type WorkspaceTab, type WorkspaceTabTarget } from './workspaceTabs';
 import { closePane, paneCount, paneIdsIn } from './workspaceLayout';
@@ -78,8 +79,19 @@ export function fileViewPlacement(layout: PaneLayout, ownerSessionId: string | u
   const dedicated = tabs.find(item => item.tab.kind !== 'session' && Boolean(item.tab.ownerSessionId) === Boolean(ownerSessionId)
     && !tabs.some(other => other.paneId === item.paneId && other.tab.kind === 'session'));
   const mixed = tabs.find(item => item.tab.kind !== 'session' && item.tab.ownerSessionId === ownerSessionId && (!ownerSessionId || item.paneId === source));
-  const filePane = dedicated?.paneId ?? mixed?.paneId;
-  return {paneId: filePane ?? source ?? paneIdsIn(layout)[0], split: !filePane && allowSplit && paneCount(layout) < 4};
+  const splittable = allowSplit && paneCount(layout) < 4;
+  // A session's file tab left in its own pane by an earlier narrow open is reused only while
+  // no split is possible; otherwise every later link would keep covering the Chat/Terminal.
+  const filePane = dedicated?.paneId ?? (ownerSessionId && splittable ? undefined : mixed?.paneId);
+  return {paneId: filePane ?? source ?? paneIdsIn(layout)[0], split: !filePane && splittable};
+}
+
+/** Narrowest pane a split may create, so Chat or Terminal stays usable beside a file. */
+export const MIN_SPLIT_PANE_WIDTH = 340;
+
+/** Whether the session pane area (`.ws-content > .ws-pane`) fits two panes side by side. */
+export function canSplitPaneArea(width: number): boolean {
+  return (width - PANE_GAP * 2 - PANE_DIVIDER_SIZE) / 2 >= MIN_SPLIT_PANE_WIDTH;
 }
 
 /** Must match the SessionWorkspace React key; different scopes still need a dirty-close guard. */

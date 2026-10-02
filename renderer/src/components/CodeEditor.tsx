@@ -1,5 +1,6 @@
+import { autocompletion, completeAnyWord, type CompletionSource } from "@codemirror/autocomplete";
 import { history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import { foldGutter, indentOnInput } from "@codemirror/language";
+import { foldGutter, indentOnInput, language as languageFacet, syntaxTree } from "@codemirror/language";
 import { Chunk } from "@codemirror/merge";
 import { gotoLine, searchKeymap } from "@codemirror/search";
 import {
@@ -26,6 +27,21 @@ import {
 import type { GitBlame } from "@threadterm/protocol";
 import { useEffect, useRef } from "react";
 import { editorHighlight, loadLanguage } from "../workbench/languages";
+
+// Grammars with their own completion (TS/JS, Python, Go, CSS, HTML, SQL…) keep it alone.
+// Other code (Rust, Java, C/C++, JSON, YAML, legacy modes) completes words already in the
+// file; plain text, comments and strings get nothing, so writing prose never pops a list.
+const fileWords: CompletionSource = (context) => {
+  if (!context.state.facet(languageFacet)) return null;
+  if (context.state.languageDataAt("autocomplete", context.pos).some((source) => source !== fileWords)) return null;
+  if (/comment|string/i.test(syntaxTree(context.state).resolveInner(context.pos, -1).name)) return null;
+  return completeAnyWord(context);
+};
+
+const completion: Extension = [
+  autocompletion(),
+  EditorState.languageData.of(() => [{ autocomplete: fileWords }]),
+];
 
 /** Loads the grammar for `path` into `compartment` once its chunk arrives. */
 export function attachLanguage(
@@ -284,6 +300,7 @@ export function CodeEditor({
         indentOnInput(),
         language.of([]),
         editorHighlight,
+        readOnly ? [] : completion,
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(!readOnly),
         EditorView.theme({
@@ -302,6 +319,27 @@ export function CodeEditor({
             borderRight: "1px solid var(--border)",
           },
           ".cm-cursor": { borderLeftColor: "currentColor" },
+          // Suggestion popups use the app palette; CodeMirror's default is light grey in both themes.
+          "&.cm-editor .cm-tooltip.cm-tooltip-autocomplete, &.cm-editor .cm-tooltip.cm-completionInfo": {
+            backgroundColor: "var(--raised)",
+            color: "var(--text)",
+            border: "1px solid var(--border)",
+            borderRadius: "6px",
+            boxShadow: "var(--shadow-soft)",
+          },
+          "&.cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul": {
+            fontFamily: '"Cascadia Code",Consolas,monospace',
+          },
+          "&.cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]": {
+            backgroundColor: "color-mix(in srgb, var(--primary) 24%, transparent)",
+            color: "var(--text)",
+          },
+          "&.cm-editor .cm-completionMatchedText": {
+            textDecoration: "none",
+            fontWeight: 600,
+            color: "var(--primary)",
+          },
+          "&.cm-editor .cm-completionDetail": { color: "var(--muted)" },
         }),
         keymap.of([
           ...historyKeymap,

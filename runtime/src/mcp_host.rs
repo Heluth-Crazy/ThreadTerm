@@ -11,6 +11,11 @@ const MCP_VERSION: &str = "2025-06-18";
 
 pub async fn run_stdio() -> Result<()> {
     let config = RuntimeConfig::load()?;
+    // ThreadTerm attaches this binary to parent Chat sessions in the
+    // `delegation` profile; without it, the terminal host below is unchanged.
+    if std::env::var("THREADTERM_MCP_PROFILE").as_deref() == Ok("delegation") {
+        return crate::mcp_delegation::run_stdio(config).await;
+    }
     let mut lifecycle = Lifecycle::AwaitInitialize;
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();

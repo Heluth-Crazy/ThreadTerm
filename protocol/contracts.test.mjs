@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {validateRequest,validateResult,validateLayout,METHODS,isRuntimeEvent,PROTOCOL_CONTRACT,PROTOCOL_VERSION,protocolIncompatibleReason} from './index.ts';
 
+test('chat allows image-only input while retaining empty-message and type guards',()=>{
+ const base={sessionId:'s',text:'',operationId:'image-op',leaseEpoch:1};
+ assert.throws(()=>validateRequest('chat.send',base),/Invalid text/);
+ assert.throws(()=>validateRequest('chat.send',{...base,images:[]}),/Invalid text/);
+ validateRequest('chat.send',{...base,images:['data:image/png;base64,aGVsbG8=']});
+ validateRequest('chat.send',{...base,text:'describe',images:['data:image/png;base64,aGVsbG8=']});
+ validateRequest('chat.send',{...base,text:'existing text-only call'});
+ assert.throws(()=>validateRequest('chat.send',{...base,images:[2]}));
+ assert.throws(()=>validateRequest('chat.send',{...base,text:2,images:['image']}));
+});
+
 test('file preview owners are additive and validated without changing file scope',()=>{
  const file={id:'file',kind:'preview',projectId:'p',path:'README.md'};
  const layout={kind:'pane',id:'pane',tabs:[file],activeTabId:'file'};
@@ -79,6 +90,14 @@ test('mutation boundary requires conflict and idempotency fields',()=>{
  validateRequest('terminal.read',{sessionId:'s',tail:true,limit:8192});
  validateRequest('session.stop',{sessionId:'s',operationId:'o',force:true});
  assert.throws(()=>validateRequest('session.stop',{sessionId:'s',operationId:'o',force:'yes'}));
+ validateRequest('session.attention.acknowledge',{sessionId:'s',expectedRevision:3,operationId:'handled'});
+ assert.throws(()=>validateRequest('session.attention.acknowledge',{sessionId:'s',expectedRevision:-1,operationId:'handled'}));
+ assert.throws(()=>validateRequest('session.attention.acknowledge',{sessionId:'s',expectedRevision:3}));
+});
+test('session activity is additive and limited to its canonical states',()=>{
+ const session={id:'s',title:'Chat',provider:'codex',mode:'chat',status:'idle',createdAt:'now',updatedAt:'now',activity:{state:'awaiting_input',revision:2,turnId:'turn'}};
+ validateResult('session.attention.acknowledge',{...session,activity:{state:'idle',revision:3,turnId:'turn'}});
+ assert.throws(()=>validateResult('session.attention.acknowledge',{...session,activity:{state:'done',revision:3}}));
 });
 test('catalog and device admin results keep scope metadata additive and credentials write-only',()=>{
  const visibility={kind:'worktree',id:'w',visibility:'archived',revision:1,projectId:'p',worktreePath:'C:\\repo\\tree'};

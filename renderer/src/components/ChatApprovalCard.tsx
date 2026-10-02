@@ -1,5 +1,5 @@
 import type { ChatApprovalChoice, ChatPart } from "@threadterm/protocol";
-import { approvalButtonsEnabled, approvalData, kindLabel, scopeLabel } from "../chatApproval";
+import { approvalButtonsEnabled, approvalData, choiceLabel, scopeLabel } from "../chatApproval";
 
 export function ChatApprovalCard({
   part,
@@ -24,10 +24,16 @@ export function ChatApprovalCard({
   const title = data.title || copy("Approval required", "需要批准");
   const unsupported = data.interaction === "userInput" || data.submittable === false;
   const details = detailsText(data.details);
+  // Set by the runtime on a delegated session's requests (agent delegation): the
+  // delegating agent decides, or the user does once that agent's turn is over
+  // (escalated, or the request arrived after the turn had ended).
+  const delegation = (part.data as { delegation?: { route?: string } } | undefined)?.delegation;
   return (
-    <div className={`chat-approval-card ${part.status ?? "pending"}`}>
+    <div className={`chat-approval-card ${part.status ?? "pending"}${delegation?.route === "parent" ? " is-delegated" : ""}`}>
       <strong>{title}</strong>
       {data.requestType && <small className="chat-approval-type">{data.requestType}</small>}
+      {part.status === "pending" && delegation?.route === "parent" && <p className="chat-approval-delegated">{copy("The agent that delegated this session decides this request. You can still answer it yourself.", "此请求由委派这个会话的代理决定。你也可以直接处理。")}</p>}
+      {part.status === "pending" && delegation?.route === "user" && !unsupported && <p className="chat-approval-delegated">{copy("The delegating agent is no longer in its turn, so this request is yours to decide.", "委派方已结束当前轮次，此请求需要你来决定。")}</p>}
       {details && <details className="chat-approval-details"><summary>{copy("Request details", "请求详情")}</summary><pre>{details}</pre></details>}
       {unsupported && <p>{copy("This request is a native prompt and cannot be answered as Allow or Deny.", "这是原生问答请求，不能压缩成允许或拒绝。")}</p>}
       {expired && <p>{copy("This request is no longer active and cannot grant permission.", "该请求已失效，不能再授权。")}</p>}
@@ -67,10 +73,10 @@ function ApprovalButton({
       type="button"
       className={`btn chat-approval-choice kind-${choice.kind}`}
       disabled={disabled}
-      aria-label={`${choice.label}. ${scopeLabel(choice.scope, copy)}`}
+      aria-label={`${choiceLabel(choice, copy)}. ${scopeLabel(choice.scope, copy)}`}
       onClick={() => onChoose(choice.choiceId)}
     >
-      <span>{busy ? copy("Submitting…", "提交中…") : choice.label || kindLabel(choice.kind, copy)}</span>
+      <span>{busy ? copy("Submitting…", "提交中…") : choiceLabel(choice, copy)}</span>
       <small>{scopeLabel(choice.scope, copy)}</small>
     </button>
   );

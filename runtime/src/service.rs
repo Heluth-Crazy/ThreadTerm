@@ -41,6 +41,164 @@ pub struct RuntimeService {
     retry_gate: Mutex<()>,
     settings_apply_gate: Mutex<()>,
     remote: OnceLock<Arc<crate::remote_access::RemoteAccess>>,
+    delegations: Arc<crate::delegation::Delegations>,
+}
+
+/// Opens a session's provider Chat. Shared by `chat.connect` (after the
+/// ChatView lease check) and the runtime-owned delegation start.
+pub(crate) fn connect_chat_session(
+    db: &Database,
+    providers: &Providers,
+    session_id: &str,
+) -> Result<()> {
+    let session = db
+        .session_by_id(session_id)?
+        .ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
+    if session.mode != "chat" {
+        return Err(anyhow::anyhow!("chat_unavailable"));
+    }
+    if session.read_only || session.status == "exited" {
+        return Err(anyhow::anyhow!("session_read_only_resume_required"));
+    }
+    let connected = ensure_chat_session_open(db, providers, session_id);
+    if connected.is_err() {
+        // Preserve the previous synchronous-create failure contract in
+        // durable session state. The provider connection snapshot carries
+        // the structured error used by the overlay, while this transition
+        // prevents a failed initial launch or explicit retry from remaining
+        // "starting" forever. The conditional database update preserves a
+        // concurrent stop or another provider-owned lifecycle transition.
+        db.fail_starting_session(session_id)?;
+    }
+    connected
+}
+
+fn ensure_chat_session_open(db: &Database, providers: &Providers, session_id: &str) -> Result<()> {
+    if providers.chat_is_open(session_id) {
+        return Ok(());
+    }
+    let session = db
+        .session_by_id(session_id)?
+        .ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
+    if session.mode != "chat" {
+        return Ok(());
+    }
+    if session.read_only || session.status == "exited" {
+        return Err(anyhow::anyhow!("session_read_only_resume_required"));
+    }
+    let config = crate::session_configs::read(db, session_id)?;
+    let cwd = config
+        .as_ref()
+        .map(|value| value.launch.cwd.as_str())
+        .or(session.worktree_path.as_deref())
+        .ok_or_else(|| anyhow::anyhow!("cwd_required"))?;
+    let cwd_path = std::path::Path::new(cwd);
+    if !cwd_path.is_absolute() || !cwd_path.is_dir() {
+        return Err(anyhow::anyhow!("cwd_missing_choose_relocation"));
+    }
+    if !db.begin_chat_connection(session_id)? {
+        return Err(anyhow::anyhow!("session_read_only_resume_required"));
+    }
+    let opened = providers
+        .chat_open(
+            session_id,
+            &session.provider,
+            cwd,
+            session.native_id.as_deref(),
+        )
+        .map_err(anyhow::Error::from)?;
+    let accepted =
+        db.accept_chat_connection(session_id, opened.get("nativeId").and_then(Value::as_str));
+    if !matches!(accepted, Ok(true)) {
+        let _ = providers.chat_stop(session_id);
+    }
+    match accepted {
+        Ok(true) => {}
+        Ok(false) => return Err(anyhow::anyhow!("chat_connect_superseded")),
+        Err(error) => return Err(error),
+    }
+    let _ = crate::chat_projection::expire_pending_approvals(db, session_id);
+    Ok(())
+}
+
+/// Sends one user message to an open Chat. Shared by `chat.send` (after the
+/// ChatView lease check) and the runtime-owned delegation start.
+pub(crate) fn send_chat_message(
+    db: &Database,
+    providers: &Providers,
+    session_id: &str,
+    text: &str,
+    images: &[String],
+    operation_id: &str,
+) -> Result<Value> {
+    db.require_interactive(session_id)?;
+    if !providers.chat_is_open(session_id) {
+        return Err(anyhow::anyhow!("chat_not_open"));
+    }
+    validate_chat_images(images)?;
+    if (text.trim().is_empty() && images.is_empty()) || text.len() > 1024 * 1024 {
+        return Err(anyhow::anyhow!("invalid_message"));
+    }
+    if let Some(result) = db.operation(operation_id)? {
+        return Ok(result);
+    }
+    // Review checkpoint before the provider can edit files; a
+    // failed or unavailable snapshot never blocks the send.
+    let checkpoint = crate::review::capture_before_turn(db, session_id, operation_id, text);
+    let result = providers
+        .chat_send_recording(session_id, text, images, operation_id, || {
+            use crate::providers::ProviderError;
+            if !db
+                .claim_external_operation(operation_id)
+                .map_err(|error| ProviderError::new("chat_persistence", error.to_string()))?
+            {
+                return Err(ProviderError::new(
+                    "operation_outcome_unknown",
+                    "operation_outcome_unknown",
+                ));
+            }
+            db.record_provider_event(
+                session_id,
+                Some(operation_id),
+                "message.user",
+                &json!({"text":text,"images":images,"operationId":operation_id}),
+            )
+            .map_err(|error| ProviderError::new("chat_persistence", error.to_string()))
+        })
+        .map_err(anyhow::Error::from)?;
+    if let Some(turn_id) = result.get("turnId").and_then(Value::as_str) {
+        db.bind_chat_activity_turn(session_id, operation_id, turn_id)?;
+    }
+    if let Some(checkpoint) = &checkpoint {
+        crate::review::attach_turn(db, checkpoint, result.get("turnId").and_then(Value::as_str));
+    }
+    db.complete_operation(operation_id, "chat.send", &result)?;
+    Ok(result)
+}
+
+/// Answers one pending Chat approval. Shared by `chat.approve` (after the
+/// ChatView lease check) and a parent agent's `delegation.respond`.
+pub(crate) fn approve_chat_request(
+    db: &Database,
+    providers: &Providers,
+    session_id: &str,
+    turn_id: &str,
+    approval_id: &str,
+    choice_id: &str,
+    operation_id: &str,
+) -> Result<Value> {
+    db.require_interactive(session_id)?;
+    if let Some(result) = db.operation(operation_id)? {
+        return Ok(result);
+    }
+    if !db.claim_external_operation(operation_id)? {
+        return Err(anyhow::anyhow!("operation_outcome_unknown"));
+    }
+    providers
+        .chat_approve(session_id, turn_id, approval_id, choice_id, operation_id)
+        .map_err(anyhow::Error::from)?;
+    db.complete_null_operation(operation_id, "chat.approve")?;
+    Ok(Value::Null)
 }
 
 fn project_provider_event(db: &Database, providers: &Providers, event: &ProviderEvent) {
@@ -87,6 +245,13 @@ impl RuntimeService {
             }
             Err(error) => eprintln!("provider network settings could not be read: {error}"),
         }
+        let delegations = Arc::new(crate::delegation::Delegations::default());
+        providers.set_tool_server_resolver(crate::delegation::tool_server_resolver(
+            Arc::clone(&db),
+            Arc::clone(&delegations),
+            config.clone(),
+            crate::delegation::default_mcp_executable(),
+        ));
         let mut events = providers.subscribe();
         let event_db = Arc::clone(&db);
         let event_providers = Arc::clone(&providers);
@@ -116,6 +281,7 @@ impl RuntimeService {
             retry_gate: Mutex::new(()),
             settings_apply_gate: Mutex::new(()),
             remote: OnceLock::new(),
+            delegations,
         }
     }
     pub fn start_retry_scheduler(self: &Arc<Self>) {
@@ -348,6 +514,19 @@ impl RuntimeService {
             )? {
                 return Ok(result);
             }
+            // Agent delegation, called by the MCP host on a parent's behalf.
+            if request.method == "delegation.start" {
+                return self.start_delegation(&request.params);
+            }
+            if let Some(result) = crate::delegation::dispatch(
+                &self.delegations,
+                &self.db,
+                &self.providers,
+                &request.method,
+                &request.params,
+            )? {
+                return Ok(result);
+            }
             match request.method.as_str() {
                 "inbox.read" => {
                     #[derive(Deserialize)]
@@ -505,6 +684,10 @@ impl RuntimeService {
                             self.pty.stop(&self.db, &p.session_id, p.force)?;
                         }
                     }
+                    // A stopped parent can no longer answer its delegates; a
+                    // stopped delegate ends its delegation.
+                    crate::chat_projection::escalate_parent_requests_now(&self.db, &p.session_id)?;
+                    crate::delegation::cancel_stopped(&self.db, &p.session_id)?;
                     self.record_null(&p.operation_id, "session.stop")?;
                     Ok(Value::Null)
                 }
@@ -520,6 +703,16 @@ impl RuntimeService {
                 "session.organize" => {
                     let p: crate::domain::SessionOrganize = parse(&request.params)?;
                     Ok(serde_json::to_value(self.db.organize_session(&p)?)?)
+                }
+                "session.attention.acknowledge" => {
+                    let p: SessionAttentionAcknowledge = parse(&request.params)?;
+                    Ok(serde_json::to_value(
+                        self.db.acknowledge_session_attention(
+                            &p.session_id,
+                            p.expected_revision,
+                            &p.operation_id,
+                        )?,
+                    )?)
                 }
                 "session.resume" => self.resume_native(&request.params),
                 "session.claim" => {
@@ -597,58 +790,14 @@ impl RuntimeService {
                     let p: ChatSend = parse(&request.params)?;
                     self.leases
                         .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
-                    self.db.require_interactive(&p.session_id)?;
-                    if !self.providers.chat_is_open(&p.session_id) {
-                        return Err(anyhow::anyhow!("chat_not_open"));
-                    }
-                    if p.text.trim().is_empty() || p.text.len() > 1024 * 1024 {
-                        return Err(anyhow::anyhow!("invalid_message"));
-                    }
-                    if let Some(result) = self.db.operation(&p.operation_id)? {
-                        return Ok(result);
-                    }
-                    // Review checkpoint before the provider can edit files; a
-                    // failed or unavailable snapshot never blocks the send.
-                    let checkpoint = crate::review::capture_before_turn(
+                    send_chat_message(
                         &self.db,
+                        &self.providers,
                         &p.session_id,
-                        &p.operation_id,
                         &p.text,
-                    );
-                    let result = self
-                        .providers
-                        .chat_send_recording(&p.session_id, &p.text, &p.operation_id, || {
-                            use crate::providers::ProviderError;
-                            if !self.db.claim_external_operation(&p.operation_id).map_err(
-                                |error| ProviderError::new("chat_persistence", error.to_string()),
-                            )? {
-                                return Err(ProviderError::new(
-                                    "operation_outcome_unknown",
-                                    "operation_outcome_unknown",
-                                ));
-                            }
-                            self.db
-                                .record_provider_event(
-                                    &p.session_id,
-                                    Some(&p.operation_id),
-                                    "message.user",
-                                    &json!({"text":p.text,"operationId":p.operation_id}),
-                                )
-                                .map_err(|error| {
-                                    ProviderError::new("chat_persistence", error.to_string())
-                                })
-                        })
-                        .map_err(anyhow::Error::from)?;
-                    if let Some(checkpoint) = &checkpoint {
-                        crate::review::attach_turn(
-                            &self.db,
-                            checkpoint,
-                            result.get("turnId").and_then(Value::as_str),
-                        );
-                    }
-                    self.db
-                        .complete_operation(&p.operation_id, "chat.send", &result)?;
-                    Ok(result)
+                        &p.images.unwrap_or_default(),
+                        &p.operation_id,
+                    )
                 }
                 "chat.read" => {
                     let p: ChatRead = parse(&request.params)?;
@@ -697,27 +846,15 @@ impl RuntimeService {
                     let p: ChatApprove = parse(&request.params)?;
                     self.leases
                         .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
-                    self.db.require_interactive(&p.session_id)?;
-                    if let Some(result) = self.db.operation(&p.operation_id)? {
-                        return Ok(result);
-                    }
-                    if !self.db.claim_external_operation(&p.operation_id)? {
-                        return Err(anyhow::anyhow!("operation_outcome_unknown"));
-                    }
-                    match self.providers.chat_approve(
+                    approve_chat_request(
+                        &self.db,
+                        &self.providers,
                         &p.session_id,
                         &p.turn_id,
                         &p.approval_id,
                         &p.choice_id,
                         &p.operation_id,
-                    ) {
-                        Ok(()) => {
-                            self.record_null(&p.operation_id, "chat.approve")?;
-                            Ok(Value::Null)
-                        }
-                        Err(error) if error.code == "approval_outcome_unknown" => Err(error.into()),
-                        Err(error) => Err(error.into()),
-                    }
+                    )
                 }
                 "chat.options" => {
                     let p: ChatRead = parse(&request.params)?;
@@ -782,6 +919,113 @@ impl RuntimeService {
     fn record_null(&self, operation_id: &str, method: &str) -> Result<()> {
         self.db.complete_null_operation(operation_id, method)?;
         Ok(())
+    }
+    /// `delegation.start`: creates the delegate's Chat session linked to the
+    /// calling parent and returns at once; a worker connects it and auto-sends
+    /// the prompt.
+    fn start_delegation(&self, params: &Value) -> Result<Value> {
+        let p: crate::delegation::StartRequest = parse(params)?;
+        let parent =
+            self.delegations
+                .authorize(&self.db, &p.caller_session_id, &p.caller_token)?;
+        if let Some(result) = self.db.operation(&p.operation_id)? {
+            return Ok(result);
+        }
+        let _gate = self
+            .delegations
+            .start_gate
+            .lock()
+            .map_err(|_| anyhow::anyhow!("delegation gate poisoned"))?;
+        crate::delegation::validate_start(&self.db, &self.providers, &parent, &p)?;
+        let parent_cwd = crate::delegation::session_cwd(&self.db, &parent)?;
+        let delegation_id = uuid::Uuid::new_v4().to_string();
+        let short = &delegation_id[..8];
+        let workspace = p.workspace.as_deref().unwrap_or("shared");
+        let (cwd, branch) = if workspace == "worktree" {
+            let (path, branch) = crate::delegation::create_worktree(
+                &self.db,
+                &parent,
+                &parent_cwd,
+                &p.agent,
+                short,
+                &p.operation_id,
+            )?;
+            (path, Some(branch))
+        } else {
+            (parent_cwd, None)
+        };
+        let title = p
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(|title| title.chars().take(120).collect::<String>())
+            .unwrap_or_else(|| {
+                let first = p.prompt.lines().find(|line| !line.trim().is_empty()).unwrap_or("");
+                first.trim().chars().take(60).collect()
+            });
+        let created = self.create_session(
+            &SessionCreate {
+                project_id: parent.project_id.clone(),
+                cwd: Some(cwd.clone()),
+                title: Some(title),
+                provider: p.agent.clone(),
+                mode: "chat".into(),
+                executable: None,
+                args: Vec::new(),
+                native_id: None,
+                operation_id: format!("{}:session", p.operation_id),
+                defer_launch: false,
+            },
+            None,
+        )?;
+        let child_id = created
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("session_create_failed"))?
+            .to_owned();
+        let send_operation_id = format!("{}:send", p.operation_id);
+        crate::delegation::insert(
+            &self.db,
+            &crate::delegation::NewDelegation {
+                id: &delegation_id,
+                parent_session_id: &parent.id,
+                child_session_id: &child_id,
+                agent: &p.agent,
+                workspace,
+                workspace_path: &cwd,
+                branch: branch.as_deref(),
+                prompt: &p.prompt,
+                operation_id: &send_operation_id,
+            },
+        )?;
+        let (db, providers) = (Arc::clone(&self.db), Arc::clone(&self.providers));
+        let (worker_delegation, worker_child, prompt) =
+            (delegation_id.clone(), child_id.clone(), p.prompt.clone());
+        std::thread::Builder::new()
+            .name(format!("delegate-{short}"))
+            .spawn(move || {
+                crate::delegation::run_start(
+                    &db,
+                    &providers,
+                    &worker_delegation,
+                    &worker_child,
+                    &prompt,
+                    &send_operation_id,
+                )
+            })?;
+        let result = json!({
+            "delegationId": delegation_id,
+            "sessionId": child_id,
+            "agent": p.agent,
+            "state": "starting",
+            "workspace": workspace,
+            "workspacePath": cwd,
+            "branch": branch,
+        });
+        self.db
+            .complete_operation(&p.operation_id, "delegation.start", &result)?;
+        Ok(result)
     }
     fn create_session(&self, p: &SessionCreate, source_session_id: Option<&str>) -> Result<Value> {
         validate_provider(&p.provider)?;
@@ -1112,77 +1356,7 @@ impl RuntimeService {
         Ok(state)
     }
     fn connect_chat(&self, session_id: &str) -> Result<()> {
-        let session = self
-            .db
-            .session_by_id(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
-        if session.mode != "chat" {
-            return Err(anyhow::anyhow!("chat_unavailable"));
-        }
-        if session.read_only || session.status == "exited" {
-            return Err(anyhow::anyhow!("session_read_only_resume_required"));
-        }
-        let connected = self.ensure_chat_open(session_id);
-        if connected.is_err() {
-            // Preserve the previous synchronous-create failure contract in
-            // durable session state. The provider connection snapshot carries
-            // the structured error used by the overlay, while this transition
-            // prevents a failed initial launch or explicit retry from remaining
-            // "starting" forever. The conditional database update preserves a
-            // concurrent stop or another provider-owned lifecycle transition.
-            self.db.fail_starting_session(session_id)?;
-        }
-        connected
-    }
-    fn ensure_chat_open(&self, session_id: &str) -> Result<()> {
-        if self.providers.chat_is_open(session_id) {
-            return Ok(());
-        }
-        let session = self
-            .db
-            .session_by_id(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("session_not_found"))?;
-        if session.mode != "chat" {
-            return Ok(());
-        }
-        if session.read_only || session.status == "exited" {
-            return Err(anyhow::anyhow!("session_read_only_resume_required"));
-        }
-        let config = crate::session_configs::read(&self.db, session_id)?;
-        let cwd = config
-            .as_ref()
-            .map(|value| value.launch.cwd.as_str())
-            .or(session.worktree_path.as_deref())
-            .ok_or_else(|| anyhow::anyhow!("cwd_required"))?;
-        let cwd_path = std::path::Path::new(cwd);
-        if !cwd_path.is_absolute() || !cwd_path.is_dir() {
-            return Err(anyhow::anyhow!("cwd_missing_choose_relocation"));
-        }
-        if !self.db.begin_chat_connection(session_id)? {
-            return Err(anyhow::anyhow!("session_read_only_resume_required"));
-        }
-        let opened = self
-            .providers
-            .chat_open(
-                session_id,
-                &session.provider,
-                cwd,
-                session.native_id.as_deref(),
-            )
-            .map_err(anyhow::Error::from)?;
-        let accepted = self
-            .db
-            .accept_chat_connection(session_id, opened.get("nativeId").and_then(Value::as_str));
-        if !matches!(accepted, Ok(true)) {
-            let _ = self.providers.chat_stop(session_id);
-        }
-        match accepted {
-            Ok(true) => {}
-            Ok(false) => return Err(anyhow::anyhow!("chat_connect_superseded")),
-            Err(error) => return Err(error),
-        }
-        let _ = crate::chat_projection::expire_pending_approvals(&self.db, session_id);
-        Ok(())
+        connect_chat_session(&self.db, &self.providers, session_id)
     }
     fn import_native_history(&self, params: &Value) -> Result<Value> {
         #[derive(Deserialize)]
@@ -1617,6 +1791,7 @@ fn map_error(message: &str) -> RpcError {
         "cwd_required" | "cwd_missing_choose_relocation" => "cwd_missing",
         "native_identity_conflict" => "native_identity_conflict",
         "operation_outcome_unknown" => "operation_outcome_unknown",
+        value if crate::delegation::ERROR_CODES.contains(&value) => value,
         _ => "invalid_request",
     };
     error(code, message)
@@ -1731,8 +1906,57 @@ struct HistoryRead {
 struct ChatSend {
     session_id: String,
     text: String,
+    #[serde(default)]
+    images: Option<Vec<String>>,
     operation_id: String,
     lease_epoch: i64,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionAttentionAcknowledge {
+    session_id: String,
+    expected_revision: i64,
+    operation_id: String,
+}
+
+const MAX_CHAT_IMAGES: usize = 4;
+const MAX_CHAT_IMAGE_ENCODED_BYTES: usize = 4 * 1024 * 1024;
+
+fn validate_chat_images(images: &[String]) -> Result<()> {
+    if images.len() > MAX_CHAT_IMAGES {
+        return Err(anyhow::anyhow!("too_many_images: at most {MAX_CHAT_IMAGES} images are supported / 最多支持 {MAX_CHAT_IMAGES} 张图片"));
+    }
+    let mut encoded_bytes = 0usize;
+    for image in images {
+        let Some((header, encoded)) = image.split_once(',') else {
+            return Err(anyhow::anyhow!(
+                "invalid_image: expected a base64 data URL / 图片必须是 base64 data URL"
+            ));
+        };
+        if !matches!(
+            header,
+            "data:image/png;base64"
+                | "data:image/jpeg;base64"
+                | "data:image/webp;base64"
+                | "data:image/gif;base64"
+        ) {
+            return Err(anyhow::anyhow!("unsupported_image: supported formats are PNG, JPEG, WebP, and GIF / 支持 PNG、JPEG、WebP 和 GIF"));
+        }
+        encoded_bytes = encoded_bytes.saturating_add(image.len());
+        if encoded_bytes > MAX_CHAT_IMAGE_ENCODED_BYTES {
+            return Err(anyhow::anyhow!("images_too_large: total encoded image data must not exceed 4 MiB / 图片编码总大小不能超过 4 MiB"));
+        }
+        if encoded.is_empty()
+            || base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .is_err()
+        {
+            return Err(anyhow::anyhow!(
+                "invalid_image: image data is not valid base64 / 图片数据不是有效的 base64"
+            ));
+        }
+    }
+    Ok(())
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2644,3 +2868,23 @@ mod tests {
 
 #[cfg(test)]
 mod chat_lifecycle_tests;
+
+#[cfg(test)]
+mod chat_image_tests {
+    use super::*;
+
+    const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL8YQAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn validates_supported_images_and_limits() {
+        assert!(validate_chat_images(&vec![PNG.to_owned(); 4]).is_ok());
+        assert!(validate_chat_images(&vec![PNG.to_owned(); 5]).is_err());
+        assert!(validate_chat_images(&["data:image/svg+xml;base64,PHN2Zy8+".to_owned()]).is_err());
+        assert!(validate_chat_images(&["data:image/png;base64,%%%".to_owned()]).is_err());
+        let oversized = format!(
+            "data:image/png;base64,{}",
+            "A".repeat(MAX_CHAT_IMAGE_ENCODED_BYTES + 1)
+        );
+        assert!(validate_chat_images(&[oversized]).is_err());
+    }
+}

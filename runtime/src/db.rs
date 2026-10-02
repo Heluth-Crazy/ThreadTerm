@@ -1,6 +1,8 @@
 use crate::domain::{
-    ChatItem, Project, Session, SessionOrganization, SessionOrganize, Settings, Snapshot,
+    ChatItem, Project, Session, SessionDelegation, SessionOrganization, SessionOrganize, Settings,
+    Snapshot,
 };
+use crate::session_activity::SessionActivity;
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -42,10 +44,17 @@ impl Database {
              CREATE TABLE IF NOT EXISTS chat_items (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS chat_drafts (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, revision INTEGER NOT NULL, text TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS session_organization (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS session_activity (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, state TEXT NOT NULL, revision INTEGER NOT NULL, turn_id TEXT, reason TEXT);
              CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
              INSERT OR IGNORE INTO settings(singleton,revision,value) VALUES (1,0,'{}');"
         )?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE SET NULL, worktree_path TEXT, revision INTEGER NOT NULL, layout TEXT NOT NULL, updated_at TEXT NOT NULL);")?;
+        // Agent delegation: one row per delegated Chat session. Deleting either
+        // session drops the link; the other session stays a normal session.
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS delegations (id TEXT PRIMARY KEY, parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, child_session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE, agent TEXT NOT NULL, workspace TEXT NOT NULL, workspace_path TEXT NOT NULL, branch TEXT, prompt TEXT NOT NULL, operation_id TEXT NOT NULL, turn_id TEXT, state TEXT NOT NULL, result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             CREATE INDEX IF NOT EXISTS delegations_parent ON delegations(parent_session_id);",
+        )?;
         let has_read = connection
             .prepare("PRAGMA table_info(inbox)")?
             .query_map([], |r| r.get::<_, String>(1))?
@@ -188,6 +197,120 @@ impl Database {
     }
     pub fn acknowledge_session_replies(&self, session_id: &str) -> Result<()> {
         self.transaction(|tx| acknowledge_session_replies_tx(tx, session_id))
+    }
+    pub fn acknowledge_session_attention(
+        &self,
+        session_id: &str,
+        expected_revision: i64,
+        operation_id: &str,
+    ) -> Result<Session> {
+        self.transaction(|tx| {
+            if let Some(value) = operation_tx(tx, operation_id)? {
+                return serde_json::from_value(value).map_err(Into::into);
+            }
+            let activity = session_activity_tx(tx, session_id)?
+                .ok_or_else(|| anyhow!("attention_not_found"))?;
+            if activity.revision != expected_revision {
+                return Err(anyhow!("revision_conflict"));
+            }
+            if activity.state != "awaiting_input" {
+                return Err(anyhow!("attention_not_actionable"));
+            }
+            if has_pending_attention_approval_tx(tx, session_id)? {
+                return Err(anyhow!("attention_approval_pending"));
+            }
+            let next = SessionActivity::new(
+                "idle",
+                activity.revision + 1,
+                activity.turn_id.as_deref(),
+                None,
+            );
+            let changed = tx.execute(
+                "UPDATE session_activity SET state=?,revision=?,turn_id=?,reason=NULL WHERE session_id=? AND revision=? AND state='awaiting_input'",
+                params![&next.state, next.revision, &next.turn_id, session_id, expected_revision],
+            )?;
+            if changed != 1 { return Err(anyhow!("revision_conflict")); }
+            let session = session_tx(tx, session_id)?;
+            complete(tx, operation_id, "session.attention.acknowledge", &session)?;
+            emit(
+                tx,
+                "session.activity",
+                json!({"sessionId":session_id,"activity":next}),
+            )?;
+            emit(
+                tx,
+                "state.changed",
+                json!({"sessionId":session_id,"kind":"session.activity"}),
+            )?;
+            Ok(session)
+        })
+    }
+    /// Native hook workers may report only authoritative activity. The durable
+    /// native-id check fences a recycled terminal/session pair before it can
+    /// affect the renderer snapshot.
+    pub fn apply_native_session_activity(
+        &self,
+        session_id: &str,
+        native_id: &str,
+        state: &str,
+        turn_id: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<Option<SessionActivity>> {
+        if !matches!(
+            state,
+            "running" | "awaiting_approval" | "awaiting_input" | "idle" | "unknown"
+        ) {
+            return Err(anyhow!("invalid_activity_state"));
+        }
+        self.transaction(|tx| {
+            let owner: Option<(Option<String>, String, bool, String)> = tx.query_row(
+                "SELECT native_id,mode,read_only,status FROM sessions WHERE id=?",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ).optional()?;
+            let Some((owner_native_id, mode, read_only, status)) = owner else { return Ok(None); };
+            if mode != "terminal" || read_only || owner_native_id.as_deref() != Some(native_id)
+                || matches!(status.as_str(), "exited" | "interrupted" | "error") {
+                return Ok(None);
+            }
+            let current = session_activity_tx(tx, session_id)?;
+            if current.as_ref().is_some_and(|activity| activity.state == state && activity.turn_id.as_deref() == turn_id && activity.reason.as_deref() == reason) {
+                return Ok(current);
+            }
+            let next = SessionActivity::new(state, current.as_ref().map_or(1, |activity| activity.revision + 1), turn_id, reason);
+            tx.execute(
+                "INSERT INTO session_activity(session_id,state,revision,turn_id,reason) VALUES (?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET state=excluded.state,revision=excluded.revision,turn_id=excluded.turn_id,reason=excluded.reason",
+                params![session_id, &next.state, next.revision, &next.turn_id, &next.reason],
+            )?;
+            emit(tx, "session.activity", json!({"sessionId":session_id,"activity":next}))?;
+            emit(tx, "state.changed", json!({"sessionId":session_id,"kind":"session.activity"}))?;
+            session_activity_tx(tx, session_id)
+        })
+    }
+    /// Replaces the client operation id with the provider's canonical turn id
+    /// after a successful send. A prior/late turn cannot overwrite a newer
+    /// accepted user operation.
+    pub fn bind_chat_activity_turn(
+        &self,
+        session_id: &str,
+        operation_id: &str,
+        turn_id: &str,
+    ) -> Result<Option<SessionActivity>> {
+        self.transaction(|tx| {
+            let current = session_activity_tx(tx, session_id)?;
+            let Some(activity) = current else { return Ok(None); };
+            if activity.state != "running" || activity.turn_id.as_deref() != Some(operation_id) {
+                return Ok(None);
+            }
+            let next = SessionActivity::new("running", activity.revision + 1, Some(turn_id), None);
+            tx.execute(
+                "UPDATE session_activity SET state=?,revision=?,turn_id=?,reason=NULL WHERE session_id=? AND revision=? AND state='running' AND turn_id=?",
+                params![&next.state, next.revision, &next.turn_id, session_id, activity.revision, operation_id],
+            )?;
+            emit(tx, "session.activity", json!({"sessionId":session_id,"activity":next}))?;
+            emit(tx, "state.changed", json!({"sessionId":session_id,"kind":"session.activity"}))?;
+            session_activity_tx(tx, session_id)
+        })
     }
     pub fn epoch(&self) -> Result<String> {
         self.value("epoch")
@@ -627,7 +750,7 @@ impl Database {
                 return Err(anyhow!("invalid_history_transcript"));
             }
             let timestamp=now();
-            let session=Session { id:Uuid::new_v4().to_string(), project_id:request.project_id.map(str::to_owned), worktree_path:Some(request.cwd.to_owned()), title:request.title.unwrap_or(request.provider).to_owned(), provider:request.provider.to_owned(), mode:request.mode.to_owned(), status:"idle".into(), created_at:timestamp.clone(), updated_at:timestamp, native_id:Some(request.native_id.to_owned()), exit_code:None, cols:None, rows:None, followed:false, read_only:true, organization:SessionOrganization::default() };
+            let session=Session { id:Uuid::new_v4().to_string(), project_id:request.project_id.map(str::to_owned), worktree_path:Some(request.cwd.to_owned()), title:request.title.unwrap_or(request.provider).to_owned(), provider:request.provider.to_owned(), mode:request.mode.to_owned(), status:"idle".into(), created_at:timestamp.clone(), updated_at:timestamp, native_id:Some(request.native_id.to_owned()), exit_code:None, cols:None, rows:None, followed:false, read_only:true, activity:None, delegation:None, organization:SessionOrganization::default() };
             tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)",params![session.id,session.project_id,session.worktree_path,session.title,session.provider,session.mode,session.status,session.created_at,session.updated_at,session.native_id,session.exit_code,session.followed])?;
             tx.execute(
                 "INSERT INTO session_launch_configs(session_id,revision,provider,mode,cwd,project_id,title,executable,args_json,source_session_id) VALUES(?,1,?,?,?,?,?,NULL,'[]',NULL)",
@@ -775,7 +898,7 @@ impl Database {
             }
         }
         let now = now();
-        let session = Session {
+        let mut session = Session {
             id: Uuid::new_v4().to_string(),
             project_id: request.project_id.map(str::to_owned),
             worktree_path: None,
@@ -791,9 +914,23 @@ impl Database {
             rows: None,
             followed: false,
             read_only: false,
+            activity: None,
+            delegation: None,
             organization: SessionOrganization::default(),
         };
         tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", params![session.id,session.project_id,session.worktree_path,session.title,session.provider,session.mode,session.status,session.created_at,session.updated_at,session.native_id,session.exit_code,session.followed])?;
+        let activity = SessionActivity::new(
+            if request.mode == "chat" {
+                "idle"
+            } else {
+                "unknown"
+            },
+            1,
+            None,
+            None,
+        );
+        tx.execute("INSERT INTO session_activity(session_id,state,revision,turn_id,reason) VALUES (?,?,?,?,?)",params![session.id,activity.state,activity.revision,activity.turn_id,activity.reason])?;
+        session.activity = Some(activity);
         if let Some(cwd) = deferred_cwd {
             if request.provider != "codex"
                 || request.mode != "terminal"
@@ -892,6 +1029,26 @@ impl Database {
             let (previous,prior_code,mode):(String,Option<i32>,String)=tx.query_row("SELECT status,exit_code,mode FROM sessions WHERE id=?",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
             if previous==status&&prior_code==exit_code{return Ok(());}
             tx.execute("UPDATE sessions SET status=?,exit_code=?,updated_at=? WHERE id=?",params![status,exit_code,now(),id])?;
+            if matches!(status, "exited" | "interrupted" | "error") {
+                if let Some(activity) = session_activity_tx(tx, id)? {
+                    // A completed Chat reply remains a durable user decision,
+                    // even if its connection dies before acknowledgement.
+                    // Terminal liveness is only observational, so a stopped
+                    // native process becomes unknown rather than a completion.
+                    let next_state = if mode == "chat" && activity.state == "awaiting_input" {
+                        None
+                    } else if mode == "terminal" {
+                        Some("unknown")
+                    } else {
+                        Some("idle")
+                    };
+                    if let Some(next_state) = next_state {
+                        let next = SessionActivity::new(next_state, activity.revision + 1, activity.turn_id.as_deref(), Some(status));
+                        tx.execute("UPDATE session_activity SET state=?,revision=?,turn_id=?,reason=? WHERE session_id=?",params![&next.state,next.revision,&next.turn_id,&next.reason,id])?;
+                        emit(tx,"session.activity",json!({"sessionId":id,"activity":next}))?;
+                    }
+                }
+            }
             let data=json!({"sessionId":id,"status":status,"previousStatus":previous,"exitCode":exit_code});
             emit(tx,"session.status",data.clone())?;
             emit(tx,"state.changed",data)?;
@@ -920,6 +1077,16 @@ impl Database {
                 params![now(), id],
             )?;
             if changed == 0 { return Ok(false); }
+            let mode: String = tx.query_row("SELECT mode FROM sessions WHERE id=?", [id], |row| row.get(0))?;
+            if let Some(activity) = session_activity_tx(tx, id)? {
+                let next_state = if mode == "terminal" { "unknown" } else { "idle" };
+                if !(mode == "chat" && activity.state == "awaiting_input")
+                    && (activity.state != next_state || activity.reason.as_deref() != Some("error")) {
+                    let next = SessionActivity::new(next_state, activity.revision + 1, activity.turn_id.as_deref(), Some("error"));
+                    tx.execute("UPDATE session_activity SET state=?,revision=?,turn_id=?,reason=? WHERE session_id=?",params![&next.state,next.revision,&next.turn_id,&next.reason,id])?;
+                    emit(tx,"session.activity",json!({"sessionId":id,"activity":next}))?;
+                }
+            }
             let data = json!({"sessionId":id,"status":"error","previousStatus":"starting","exitCode":null});
             emit(tx, "session.status", data.clone())?;
             emit(tx, "state.changed", data)?;
@@ -1125,8 +1292,16 @@ impl Database {
         self.transaction(|tx| {
             let timestamp = now();
             tx.execute(
-                "UPDATE sessions SET status='interrupted',updated_at=? WHERE read_only=0 AND status IN ('starting','running','idle','waiting')",
+                "UPDATE sessions SET status='interrupted',updated_at=? WHERE read_only=0 AND status IN ('starting','running','idle','waiting') AND NOT EXISTS (SELECT 1 FROM session_activity WHERE session_activity.session_id=sessions.id AND state='awaiting_input')",
                 [&timestamp],
+            )?;
+            tx.execute(
+                "UPDATE session_activity SET state='unknown',revision=revision+1,reason='runtime_interrupted' WHERE session_id IN (SELECT id FROM sessions WHERE status='interrupted' AND mode='terminal') AND (state<>'unknown' OR COALESCE(reason,'')<>'runtime_interrupted')",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE session_activity SET state='idle',revision=revision+1,reason='runtime_interrupted' WHERE session_id IN (SELECT id FROM sessions WHERE status='interrupted' AND mode='chat') AND state NOT IN ('idle','awaiting_input')",
+                [],
             )?;
             tx.execute(
                 "UPDATE deferred_codex_launches SET phase='failed',error_code='runtime_interrupted',error_message='Runtime stopped during Codex startup; retry this session' WHERE phase IN ('preparing','launching') AND session_id IN (SELECT id FROM sessions WHERE status='interrupted')",
@@ -1306,12 +1481,16 @@ fn collect_sessions(conn: &Connection) -> Result<Vec<Session>> {
             read_only: r.get(12)?,
             cols: r.get(13)?,
             rows: r.get(14)?,
+            activity: None,
+            delegation: None,
             organization: SessionOrganization::default(),
         })
     })?;
     let mut sessions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     for session in &mut sessions {
         session.organization = session_organization(conn, &session.id)?;
+        session.activity = session_activity(conn, &session.id)?;
+        session.delegation = session_delegation(conn, &session.id)?;
     }
     Ok(sessions)
 }
@@ -1379,9 +1558,119 @@ fn session_organization(conn: &Connection, id: &str) -> Result<SessionOrganizati
     data.map(|raw| serde_json::from_str(&raw).map_err(Into::into))
         .unwrap_or_else(|| Ok(SessionOrganization::default()))
 }
+fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDelegation>> {
+    conn.query_row(
+        "SELECT id,parent_session_id,workspace,branch,state FROM delegations WHERE child_session_id=?",
+        [id],
+        |row| {
+            Ok(SessionDelegation {
+                id: row.get(0)?,
+                parent_session_id: row.get(1)?,
+                workspace: row.get(2)?,
+                branch: row.get(3)?,
+                state: row.get(4)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+fn session_activity(conn: &Connection, id: &str) -> Result<Option<SessionActivity>> {
+    conn.query_row(
+        "SELECT state,revision,turn_id,reason FROM session_activity WHERE session_id=?",
+        [id],
+        |row| {
+            Ok(SessionActivity {
+                state: row.get(0)?,
+                revision: row.get(1)?,
+                turn_id: row.get(2)?,
+                reason: row.get(3)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn has_pending_attention_approval_tx(
+    tx: &Transaction<'_>,
+    session_id: &str,
+) -> Result<bool> {
+    let mut statement = tx.prepare("SELECT data FROM chat_items WHERE session_id=?")?;
+    let rows = statement.query_map([session_id], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        let item: ChatItem = serde_json::from_str(&row?)?;
+        if item.parts.iter().any(|part| {
+            part.get("type").and_then(Value::as_str) == Some("approval")
+                && matches!(part.get("status").and_then(Value::as_str), Some("pending" | "submitting"))
+        }) {
+            return Ok(true);
+        }
+    }
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM inbox WHERE session_id=? AND kind='approval' AND resolved=0)",
+        [session_id],
+        |row| row.get(0),
+    )?)
+}
+
+pub(crate) fn session_activity_tx(
+    tx: &Transaction<'_>,
+    session_id: &str,
+) -> Result<Option<SessionActivity>> {
+    session_activity(tx, session_id)
+}
+
+/// Writes a canonical activity transition inside the caller's transaction.
+/// Terminal/read-only/ended sessions intentionally have no activity row, so a
+/// delayed provider event cannot make them actionable again.
+pub(crate) fn set_session_activity_tx(
+    tx: &Transaction<'_>,
+    session_id: &str,
+    state: &str,
+    turn_id: Option<&str>,
+    reason: Option<&str>,
+) -> Result<Option<SessionActivity>> {
+    let session: Option<(String, bool, String)> = tx
+        .query_row(
+            "SELECT mode,read_only,status FROM sessions WHERE id=?",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((mode, read_only, status)) = session else {
+        return Ok(None);
+    };
+    if mode != "chat" || read_only || matches!(status.as_str(), "exited" | "interrupted") {
+        return Ok(None);
+    }
+    let current = session_activity_tx(tx, session_id)?;
+    if current.as_ref().is_some_and(|activity| {
+        activity.state == state
+            && activity.turn_id.as_deref() == turn_id
+            && activity.reason.as_deref() == reason
+    }) {
+        return Ok(current);
+    }
+    let next = SessionActivity::new(
+        state,
+        current.as_ref().map_or(1, |activity| activity.revision + 1),
+        turn_id,
+        reason,
+    );
+    tx.execute(
+        "INSERT INTO session_activity(session_id,state,revision,turn_id,reason) VALUES (?,?,?,?,?) \
+         ON CONFLICT(session_id) DO UPDATE SET state=excluded.state,revision=excluded.revision,turn_id=excluded.turn_id,reason=excluded.reason",
+        params![session_id, next.state, next.revision, next.turn_id, next.reason],
+    )?;
+    Ok(Some(next))
+}
+
 fn read_session(conn: &Connection, id: &str) -> Result<Session> {
-    let mut session = conn.query_row("SELECT id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only,cols,rows FROM sessions WHERE id=?",[id],|r|Ok(Session{id:r.get(0)?,project_id:r.get(1)?,worktree_path:r.get(2)?,title:r.get(3)?,provider:r.get(4)?,mode:r.get(5)?,status:r.get(6)?,created_at:r.get(7)?,updated_at:r.get(8)?,native_id:r.get(9)?,exit_code:r.get(10)?,followed:r.get(11)?,read_only:r.get(12)?,cols:r.get(13)?,rows:r.get(14)?,organization:SessionOrganization::default()}))?;
+    let mut session = conn.query_row("SELECT id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only,cols,rows FROM sessions WHERE id=?",[id],|r|Ok(Session{id:r.get(0)?,project_id:r.get(1)?,worktree_path:r.get(2)?,title:r.get(3)?,provider:r.get(4)?,mode:r.get(5)?,status:r.get(6)?,created_at:r.get(7)?,updated_at:r.get(8)?,native_id:r.get(9)?,exit_code:r.get(10)?,followed:r.get(11)?,read_only:r.get(12)?,cols:r.get(13)?,rows:r.get(14)?,activity:None,delegation:None,organization:SessionOrganization::default()}))?;
     session.organization = session_organization(conn, id)?;
+    session.activity = session_activity(conn, id)?;
+    session.delegation = session_delegation(conn, id)?;
     Ok(session)
 }
 fn session_tx(tx: &Transaction<'_>, id: &str) -> Result<Session> {
@@ -2225,5 +2514,181 @@ mod tests {
         let items = db.chat_items(&session.id).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].parts[0]["text"], "AB");
+    }
+    #[test]
+    fn attention_acknowledgement_is_revision_fenced_idempotent_and_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        let db = Database::open(&path).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                native_id: None,
+                operation_id: "attention-create",
+            })
+            .unwrap();
+        db.record_provider_event(
+            &session.id,
+            Some("turn"),
+            "message.user",
+            &json!({"text":"hi"}),
+        )
+        .unwrap();
+        db.bind_chat_activity_turn(&session.id, "turn", "turn")
+            .unwrap();
+        db.record_provider_event(&session.id, Some("turn"), "chat.turn.completed", &json!({}))
+            .unwrap();
+        let pending = db
+            .session_by_id(&session.id)
+            .unwrap()
+            .unwrap()
+            .activity
+            .unwrap();
+        assert_eq!(pending.state, "awaiting_input");
+        assert!(db
+            .acknowledge_session_attention(&session.id, pending.revision - 1, "stale")
+            .is_err());
+        let handled = db
+            .acknowledge_session_attention(&session.id, pending.revision, "handled")
+            .unwrap();
+        assert_eq!(handled.activity.as_ref().unwrap().state, "idle");
+        assert_eq!(
+            db.acknowledge_session_attention(&session.id, pending.revision, "handled")
+                .unwrap(),
+            handled
+        );
+        drop(db);
+        assert_eq!(
+            Database::open(&path)
+                .unwrap()
+                .session_by_id(&session.id)
+                .unwrap()
+                .unwrap()
+                .activity
+                .unwrap()
+                .state,
+            "idle"
+        );
+    }
+    #[test]
+    fn completed_chat_attention_survives_terminal_status_and_runtime_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                native_id: None,
+                operation_id: "completed-chat",
+            })
+            .unwrap();
+        db.record_provider_event(&session.id, Some("turn"), "message.user", &json!({"text":"hi"})).unwrap();
+        db.bind_chat_activity_turn(&session.id, "turn", "turn").unwrap();
+        db.record_provider_event(&session.id, Some("turn"), "chat.turn.completed", &json!({})).unwrap();
+        let pending = db.session_by_id(&session.id).unwrap().unwrap().activity.unwrap();
+        db.set_session_status(&session.id, "error", None).unwrap();
+        assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().activity.unwrap(), pending);
+
+        let second = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                native_id: None,
+                operation_id: "completed-chat-recovery",
+            })
+            .unwrap();
+        db.record_provider_event(&second.id, Some("turn"), "message.user", &json!({"text":"hi"})).unwrap();
+        db.bind_chat_activity_turn(&second.id, "turn", "turn").unwrap();
+        db.record_provider_event(&second.id, Some("turn"), "chat.turn.completed", &json!({})).unwrap();
+        let pending_recovery = db.session_by_id(&second.id).unwrap().unwrap().activity.unwrap();
+        db.mark_live_sessions_interrupted().unwrap();
+        let after = db.session_by_id(&second.id).unwrap().unwrap();
+        assert_eq!(after.status, "idle");
+        assert_eq!(after.activity.unwrap(), pending_recovery);
+    }
+    #[test]
+    fn terminal_loss_is_unknown_not_a_completed_attention_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "terminal",
+                native_id: Some("native-terminal"),
+                operation_id: "terminal-loss",
+            })
+            .unwrap();
+        db.set_session_status(&session.id, "running", None).unwrap();
+        db.mark_live_sessions_interrupted().unwrap();
+        let after = db.session_by_id(&session.id).unwrap().unwrap();
+        assert_eq!(after.status, "interrupted");
+        let activity = after.activity.unwrap();
+        assert_eq!(activity.state, "unknown");
+        assert_eq!(activity.reason.as_deref(), Some("runtime_interrupted"));
+    }
+    #[test]
+    fn completed_chat_attention_survives_failed_reconnect_and_already_interrupted_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                native_id: None,
+                operation_id: "failed-reconnect",
+            })
+            .unwrap();
+        db.record_provider_event(&session.id, Some("turn"), "message.user", &json!({"text":"hi"})).unwrap();
+        db.bind_chat_activity_turn(&session.id, "turn", "turn").unwrap();
+        db.record_provider_event(&session.id, Some("turn"), "chat.turn.completed", &json!({})).unwrap();
+        let pending = db.session_by_id(&session.id).unwrap().unwrap().activity.unwrap();
+        db.transaction(|tx| {
+            tx.execute("UPDATE sessions SET status='starting' WHERE id=?", [&session.id])?;
+            Ok(())
+        }).unwrap();
+        assert!(db.fail_starting_session(&session.id).unwrap());
+        assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().activity.unwrap(), pending);
+        db.set_session_status(&session.id, "interrupted", None).unwrap();
+        db.mark_live_sessions_interrupted().unwrap();
+        assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().activity.unwrap(), pending);
+    }
+    #[test]
+    fn acknowledgement_rejects_pending_persisted_approval_even_when_activity_is_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                native_id: None,
+                operation_id: "approval-ack-race",
+            })
+            .unwrap();
+        db.record_provider_event(&session.id, Some("turn"), "message.user", &json!({"text":"hi"})).unwrap();
+        db.bind_chat_activity_turn(&session.id, "turn", "turn").unwrap();
+        db.record_provider_event(&session.id, Some("turn"), "chat.turn.completed", &json!({})).unwrap();
+        let pending = db.session_by_id(&session.id).unwrap().unwrap().activity.unwrap();
+        // The completed turn fences activity back to awaiting-input, but the
+        // persisted approval card still wins over a mark-handled request.
+        db.record_provider_event(&session.id, Some("late"), "chat.approval", &json!({"approvalId":"late"})).unwrap();
+        assert!(db
+            .acknowledge_session_attention(&session.id, pending.revision, "blocked-by-approval")
+            .unwrap_err()
+            .to_string()
+            .contains("attention_approval_pending"));
+        assert_eq!(db.session_by_id(&session.id).unwrap().unwrap().activity.unwrap(), pending);
     }
 }

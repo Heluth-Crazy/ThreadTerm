@@ -8,7 +8,7 @@ import { addSessionTab } from '../presentation';
 import { displayPath, sameCanonicalScope } from '../projectScope';
 import { activate, addPane, addTabToPane, closePane, reconcileSessionLayout, sessionIdsIn, sessionOnlyLayout } from '../workspaceLayout';
 import { isFileTab, removeWorkspaceTabs, workspaceTabs, type FileTab } from '../workspaceTabs';
-import { fileViewPlacement, visibleSessionLayout } from '../sessionFileViews';
+import { canSplitPaneArea, fileViewPlacement, visibleSessionLayout } from '../sessionFileViews';
 import { PaneWorkspace, type PaneWorkbench } from './PaneWorkspace';
 import { WorkbenchSideBar, type WorkbenchCommand, type WorkbenchView } from './WorkbenchSideBar';
 import { QuickOpen, invalidateQuickOpen } from './QuickOpen';
@@ -57,7 +57,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const latestLayout=useRef(layout);latestLayout.current=layout;
  const [toolbarHost,setToolbarHost]=useState<HTMLDivElement|null>(null),[switcherHost,setSwitcherHost]=useState<HTMLDivElement|null>(null);
  // Split decisions use the space the panes actually get (the side bar and inspector take their own share).
- const paneArea=useRef<HTMLDivElement>(null),wideForSplit=()=>Boolean(paneArea.current&&paneArea.current.clientWidth>=900);
+ const paneArea=useRef<HTMLDivElement>(null),wideForSplit=()=>Boolean(paneArea.current&&canSplitPaneArea(paneArea.current.clientWidth));
  const [focusTarget,setFocusTarget]=useState<{paneId:string;tabId:string;key:string}|undefined>(()=>{const target=workspaceTabs(layout).find(item=>item.tab.kind==='session'&&item.tab.sessionId===session.id);return target?{paneId:target.paneId,tabId:target.tab.id,key:'initial'}:undefined;});
  const [fileReveal,setFileReveal]=useState<{tabId:string;line:number;column?:number;key:string}>();
  const fileOpenGeneration=useRef(0),live=useRef(true);

@@ -9,10 +9,11 @@ import { Icon } from './PrototypeIcon';
 import { SurfaceDialog } from './SurfaceDialog';
 import './catalog-active-delete-dialog.css';
 import './project-catalog.css';
+import { canAcknowledgeActivity } from '../sessionActivity';
 
 type Kind=CatalogVisibility['kind'];
 export type CatalogTarget={kind:Kind;id:string;name:string;path:string;projectId:string;worktreeId?:string};
-type Props={target:CatalogTarget;projects:ProjectCatalogItem[];trees:Worktree[];sessions:Session[];visibility:CatalogVisibility[];onChanged:()=>void;onHidden:()=>void;onWorktree?:(id:string,path?:string)=>void;onNewSession?:(id?:string,path?:string)=>void};
+type Props={target:CatalogTarget;projects:ProjectCatalogItem[];trees:Worktree[];sessions:Session[];visibility:CatalogVisibility[];onChanged:()=>void;onHidden:()=>void;onWorktree?:(id:string,path?:string)=>void;onNewSession?:(id?:string,path?:string)=>void;onMenuOpenChange?:(open:boolean)=>void};
 type Dialog='rename'|'archive'|'remove'|'remove-active'|'discover';
 type DeleteNotice='scope-changed'|'stop-failed';
 
@@ -24,15 +25,17 @@ export async function restoreCatalogTarget(target:CatalogTarget,visibility:Catal
   await request('catalog.visibility.update',{kind:target.kind,id:target.id,visibility:'active',expectedRevision:entry?.revision??session?.organizationRevision??0,operationId:operationId()});
 }
 
-export function CatalogActions({target,projects,trees,sessions,visibility,onChanged,onHidden,onWorktree,onNewSession}:Props){
+export function CatalogActions({target,projects,trees,sessions,visibility,onChanged,onHidden,onWorktree,onNewSession,onMenuOpenChange}:Props){
   const {locale}=useTranslation(),zh=locale==='zh-CN',text=(en:string,cn:string)=>zh?cn:en;
   const [anchor,setAnchor]=useState<HTMLElement>(),[dialog,setDialog]=useState<Dialog>(),[sessionsToEnd,setSessionsToEnd]=useState<Session[]>(),[deleteNotice,setDeleteNotice]=useState<DeleteNotice>();
   const [name,setName]=useState(target.name),[issue,setIssue]=useState<string>(),[busy,setBusy]=useState(false),locked=useRef(false);
+  const menuOpenChange=useRef(onMenuOpenChange),ownsOpenMenu=useRef(false);menuOpenChange.current=onMenuOpenChange;
+  useEffect(()=>()=>{if(ownsOpenMenu.current)menuOpenChange.current?.(false);},[]);
   const project=projects.find(row=>row.id===target.projectId),session=target.kind==='session'?sessions.find(row=>row.id===target.id):undefined;
   const entry=visibility.find(row=>row.kind===target.kind&&row.id===target.id);
   const archived=entry?.visibility==='archived'||Boolean(session?.archived);
   const scopedSessions=sessionsInCatalogScope(target,sessions,project?.path),activeSessions=scopedSessions.filter(isActiveSession),deleteActiveSessions=sessionsToEnd??activeSessions;
-  const close=()=>setAnchor(undefined);
+  const close=()=>{setAnchor(undefined);ownsOpenMenu.current=false;onMenuOpenChange?.(false);};
   const run=async(action:()=>Promise<void>)=>{if(locked.current)return;locked.current=true;setBusy(true);setIssue(undefined);try{await action();}catch(error){setIssue(error instanceof Error?error.message:String(error));}finally{locked.current=false;setBusy(false);}};
   const updateProject=async(patch:{name?:string;pinned?:boolean;sortOrder?:number})=>{if(!project)return;await request('project.update',{id:project.id,...patch,expectedRevision:project.revision,operationId:operationId()});onChanged();};
   const move=async(direction:-1|1)=>{
@@ -82,10 +85,11 @@ export function CatalogActions({target,projects,trees,sessions,visibility,onChan
   const begin=(next:Dialog)=>{close();setIssue(undefined);setDeleteNotice(undefined);setName(target.name);setSessionsToEnd(undefined);setDialog(next);};
   const rename=async()=>{if(!name.trim())return;if(target.kind==='project')await updateProject({name:name.trim()});else await request('session.update',{sessionId:target.id,title:name.trim(),operationId:operationId()});setDialog(undefined);onChanged();};
   const organize=async(patch:{pinned?:boolean;bookmarked?:boolean})=>{if(!session)return;await request('session.organize',{sessionId:session.id,...patch,expectedRevision:session.organizationRevision??0,operationId:operationId()});onChanged();close();};
+  const acknowledgeAttention=async()=>{if(!session?.activity||!canAcknowledgeActivity(session))return;try{await request('session.attention.acknowledge',{sessionId:session.id,expectedRevision:session.activity.revision,operationId:operationId()});}catch(error){const message=error instanceof Error?error.message:String(error);if(['attention_not_actionable','attention_not_found','activity_revision_conflict'].some(code=>message.includes(code)))throw new Error(text('Session status changed; review it and try again.','会话状态已更新，请查看后重试。'));throw error;}onChanged();close();};
   const item=(label:string,icon:string,action:()=>void,danger=false,disabled=false)=><button type="button" role="menuitem" className={`menu-item${danger?' danger':''}`} disabled={busy||disabled} onClick={action}><Icon name={icon}/>{label}</button>;
   const archivedTargets:CatalogTarget[]=target.kind==='project'?trees.filter(tree=>visibility.some(row=>row.kind==='worktree'&&row.id===tree.id&&row.visibility==='archived')).map(tree=>({kind:'worktree',id:tree.id,name:tree.branch??text('Local directory','本地目录'),path:tree.path,projectId:tree.projectId,worktreeId:tree.id})):target.kind==='worktree'?sessions.filter(row=>row.projectId===target.projectId&&sameCanonicalScope(row.worktreePath??project?.path,target.path)&&(row.archived||visibility.some(entry=>entry.kind==='session'&&entry.id===row.id&&entry.visibility==='archived'))).map(row=>({...target,kind:'session',id:row.id,name:row.title})):[];
   return <>
-    <button type="button" className="icon-btn row-more" aria-label={`${target.name} ${text('Manage','管理')}`} aria-expanded={Boolean(anchor)} onClick={event=>setAnchor(anchor?undefined:event.currentTarget)}><Icon name="more"/></button>
+    <button type="button" className="icon-btn row-more" aria-label={`${target.name} ${text('Manage','管理')}`} aria-expanded={Boolean(anchor)} onClick={event=>{const next=anchor?undefined:event.currentTarget;ownsOpenMenu.current=Boolean(next);setAnchor(next);onMenuOpenChange?.(Boolean(next));}}><Icon name="more"/></button>
     {anchor&&<CatalogPopover anchor={anchor} onClose={close} label={target.name}>
       <div className="menu-label">{target.name}</div>
       {item(text('Copy directory path','复制目录路径'),'file',()=>void run(async()=>{await navigator.clipboard.writeText(displayPath(target.path));close();}))}
@@ -106,6 +110,7 @@ export function CatalogActions({target,projects,trees,sessions,visibility,onChan
       <div className="menu-sep"/>
       {target.kind!=='session'&&onNewSession&&item(text('New terminal','新建终端'),'plus',()=>{close();onNewSession(target.projectId,target.path);})}
       {session&&<>
+        {canAcknowledgeActivity(session)&&item(text('Mark handled','标记已处理'),'check',()=>void run(acknowledgeAttention))}
         {item(session.followed?text('Unfollow','取消关注'):text('Follow','关注'),'star',()=>void run(async()=>{await request('session.update',{sessionId:session.id,followed:!session.followed,operationId:operationId()});onChanged();close();}))}
         {item(session.bookmarked?text('Remove bookmark','移除书签'):text('Bookmark','添加书签'),'bookmark',()=>void run(()=>organize({bookmarked:!session.bookmarked})))}
         {item(text('Rename session','重命名会话'),'file',()=>begin('rename'))}

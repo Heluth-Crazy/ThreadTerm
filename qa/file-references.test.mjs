@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {extractFileReferences,parseFileReference,parseMarkdownFileReference} from '../renderer/src/fileReferences.ts';
+import {extractFileReferences,fileReferenceCandidates,parseFileReference,parseMarkdownFileReference} from '../renderer/src/fileReferences.ts';
 
 test('parses bounded local paths with positions',()=>{
  assert.deepEqual(parseFileReference('C:\\work\\中文 文件.ts:12:4'),{path:'C:\\work\\中文 文件.ts',line:12,column:4});
@@ -61,4 +61,39 @@ test('scans long non-path tokens in near-linear bounded time',()=>{
  assert.ok(trailingDot<1_000,`trailing-dot token took ${trailingDot.toFixed(1)}ms`);
  assert.ok(unclosedQuote<1_000,`unclosed quote took ${unclosedQuote.toFixed(1)}ms`);
  assert.ok(slash200<slash100*6+100,`growth was not near-linear: 100k=${slash100.toFixed(1)}ms, 200k=${slash200.toFixed(1)}ms`);
+});
+test('terminal spans exclude wrappers, prefixes and trailing punctuation',()=>{
+ const spans=text=>extractFileReferences(text).map(item=>[text.slice(item.start,item.end),item.path,item.line??null,item.column??null]);
+ assert.deepEqual(spans('⏺ Update(src/components/Foo.tsx)'),[['src/components/Foo.tsx','src/components/Foo.tsx',null,null]]);
+ assert.deepEqual(spans('src/foo.ts:10:5: error: expected'),[['src/foo.ts:10:5','src/foo.ts',10,5]]);
+ assert.deepEqual(spans('src/foo.ts(10,5): error TS2345'),[['src/foo.ts(10,5)','src/foo.ts',10,5]]);
+ assert.deepEqual(spans(String.raw`at Object.<anonymous> (D:\repo\bar.js:10:5)`),[[String.raw`D:\repo\bar.js:10:5`,String.raw`D:\repo\bar.js`,10,5]]);
+ assert.deepEqual(spans('at foo (file:///D:/repo/a.js:3:9)'),[['file:///D:/repo/a.js:3:9','D:/repo/a.js',3,9]]);
+ assert.deepEqual(spans('see src/foo.ts, and README.md.'),[['src/foo.ts','src/foo.ts',null,null],['README.md','README.md',null,null]]);
+ assert.deepEqual(spans('--config=./tsconfig.json <src/a.ts> @src/b.ts │src/c.ts│'),[['./tsconfig.json','./tsconfig.json',null,null],['src/a.ts','src/a.ts',null,null],['src/b.ts','src/b.ts',null,null],['src/c.ts','src/c.ts',null,null]]);
+ assert.deepEqual(spans(String.raw`  File "D:\repo\x.py", line 10, in <module>`),[[String.raw`D:\repo\x.py`,String.raw`D:\repo\x.py`,10,null]]);
+ assert.deepEqual(spans('src/a.ts#L10-L20 src/b.ts:3-9'),[['src/a.ts#L10-L20','src/a.ts',10,null],['src/b.ts:3-9','src/b.ts',3,null]]);
+});
+test('Chinese punctuation and words next to a path are not part of it',()=>{
+ const spans=text=>extractFileReferences(text).map(item=>text.slice(item.start,item.end));
+ // "Modified src/foo.ts." / "Changed src/foo.ts: line 3" / "(see src/foo.ts)" / "File: src/foo.ts"
+ assert.deepEqual(spans('已修改 src/foo.ts。'),['src/foo.ts']);
+ assert.deepEqual(spans('修改了 src/foo.ts：第 3 行'),['src/foo.ts']);
+ assert.deepEqual(spans('（见 src/foo.ts）'),['src/foo.ts']);
+ assert.deepEqual(spans('文件：src/foo.ts'),['src/foo.ts']);
+ // "changed the src/a.ts file" / "in docs/说明.md" / "link:src/a.ts"
+ assert.deepEqual(spans('修改了src/a.ts文件'),['src/a.ts']);
+ assert.deepEqual(spans('在docs/说明.md中'),['docs/说明.md']);
+ assert.deepEqual(spans('链接:src/a.ts'),['src/a.ts']);
+});
+test('bracketed directory names and numbers keep their meaning',()=>{
+ const spans=text=>extractFileReferences(text).map(item=>text.slice(item.start,item.end));
+ assert.deepEqual(spans('app/(auth)/login/page.tsx pages/[...slug].tsx Read(app/(auth)/page.tsx) report(1).pdf'),['app/(auth)/login/page.tsx','pages/[...slug].tsx','app/(auth)/page.tsx','report(1).pdf']);
+ assert.deepEqual(spans('v1.2.3 and 3.14 https://x.com/search?q=src/a.ts error:src/a.ts foo.bar(src);'),[]);
+});
+test('speculative readings wait for the runtime and never replace the default',()=>{
+ const groups=text=>fileReferenceCandidates(text).map(group=>group.map(item=>`${text.slice(item.start,item.end)}${item.speculative?'?':''}`));
+ assert.deepEqual(groups(String.raw`C:\Program Files\nodejs\node.exe --version`),[[String.raw`C:\Program Files\nodejs\node.exe?`,String.raw`C:\Program`],[String.raw`Files\nodejs\node.exe`]]);
+ assert.deepEqual(groups('diff --git a/src/foo.ts b/src/foo.ts'),[['a/src/foo.ts','src/foo.ts?'],['b/src/foo.ts','src/foo.ts?']]);
+ assert.deepEqual(extractFileReferences(String.raw`C:\Program Files\x.exe`).map(item=>item.path),[String.raw`C:\Program`,String.raw`Files\x.exe`]);
 });
