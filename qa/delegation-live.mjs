@@ -6,14 +6,21 @@
 //   node qa/delegation-live.mjs fanout         Claude runs a Codex and a Kimi delegate at once
 //   node qa/delegation-live.mjs relay          Claude answers a Kimi delegate's shell approval (worktree)
 //   node qa/delegation-live.mjs codex-claude   Codex answers a Claude delegate's file-write approval
+//   node qa/delegation-live.mjs handoff        Claude writes its own brief for a medium Codex task (10-02-delegation-handoff)
+//   node qa/delegation-live.mjs eval <1-6> <direct|template> [codex|claude] [--dry]
+//        validation tests 1–6 of 10-02-delegation-handoff (design.md). 1–3: a Claude parent talks with the user
+//        over several turns, then writes a Codex delegate's brief itself (`direct` runs the f8a90ae build copied
+//        to runtime/target-qa/baseline). 4–6: hand-written prompts (prose vs the template brief, same
+//        assignment) passed through verbatim to the given agent. Results: qa/results/delegation-handoff/.
 // Never sends browser-opening commands. Afterwards removes the probe's agent history:
 // ~/.claude/projects folders, Codex rollouts + state_5/thread_history_1 rows, Kimi
 // session folders, index lines, workspace entries (qa/agent-history.mjs). Uses the source
 // Claude sidecar (THREADTERM_CLAUDE_SDK_HOST) so providers/claude-sdk/dist stays untouched.
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, openSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -21,13 +28,22 @@ import assert from 'node:assert/strict';
 import { connectPeer } from './pipe-client.mjs';
 import { removeAgentHistory } from './agent-history.mjs';
 
-const SCENARIOS = ['claude-codex', 'codex-kimi', 'fanout', 'relay', 'codex-claude'];
+const SCENARIOS = ['claude-codex', 'codex-kimi', 'fanout', 'relay', 'codex-claude', 'handoff', 'eval'];
 const scenario = process.argv[2];
 if (!SCENARIOS.includes(scenario)) throw Error(`usage: node qa/delegation-live.mjs <${SCENARIOS.join('|')}>`);
+const evalArgs = process.argv.slice(3).filter(arg => !arg.startsWith('--'));
+const [evalTest, evalMode, evalAgent = 'codex'] = [Number(evalArgs[0]), evalArgs[1], evalArgs[2]];
+if (scenario === 'eval' && !(evalTest >= 1 && evalTest <= 6 && ['direct', 'template'].includes(evalMode) && ['codex', 'claude'].includes(evalAgent))) {
+  throw Error('usage: node qa/delegation-live.mjs eval <1-6> <direct|template> [codex|claude] [--dry]');
+}
+// `--dry`: print what a run would send and score the untouched fixture; no runtime, no agents.
+const dry = scenario === 'eval' && process.argv.includes('--dry');
+// Parent-side tests compare the pre-step-1 guidance (f8a90ae build) with the current one.
+const baseline = scenario === 'eval' && evalTest <= 3 && evalMode === 'direct';
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const exe = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
-if (!/runtime[\\/]target-qa[\\/]debug[\\/]threadterm-v3-runtime\.exe$/iu.test(exe)) throw Error(`Refusing non-QA runtime: ${exe}`);
+const exe = process.env.THREADTERM_V3_RUNTIME_BIN ?? join(root, `runtime/target-qa/${baseline ? 'baseline' : 'debug'}/threadterm-v3-runtime.exe`);
+if (!/runtime[\\/]target-qa[\\/](debug|baseline)[\\/]threadterm-v3-runtime\.exe$/iu.test(exe)) throw Error(`Refusing non-QA runtime: ${exe}`);
 assert.ok(existsSync(join(dirname(exe), 'threadterm-v3-mcp.exe')), 'build threadterm-v3-mcp next to the QA runtime');
 const scratch = await mkdtemp(join(tmpdir(), 'tt-deleg-live-'));
 const slug = basename(scratch).toLowerCase();
@@ -94,8 +110,9 @@ async function parentChat(peer, projectId, provider, title) {
 
 const delegatesOf = (snapshot, parentId) => snapshot.sessions.filter(session => session.delegation?.parentSessionId === parentId);
 
-/** One parent turn; logs every delegate state change; answers the parent's own non-delegation approvals once. */
-async function run(peer, parent, text, minutes = 12) {
+/** One parent turn; logs every delegate state change; answers the parent's own non-delegation approvals once (allow, or deny in setup turns). */
+async function run(peer, parent, text, minutes = 12, { deny = false } = {}) {
+  const started = Date.now();
   await renew(peer, true);
   const before = (await peer.request('chat.read', { sessionId: parent.id })).length;
   const { turnId } = await peer.request('chat.send', { sessionId: parent.id, text, leaseEpoch: lease.epoch, operationId: randomUUID() });
@@ -115,8 +132,9 @@ async function run(peer, parent, text, minutes = 12) {
     for (const card of pending) {
       if (parentApprovals.some(seen => seen.part.approvalId === card.part.approvalId)) continue;
       parentApprovals.push(card);
-      log(`parent approval: ${card.part.data?.title ?? '?'}`);
-      const choice = (card.part.data?.choices ?? []).find(candidate => candidate.kind === 'allow' && candidate.scope === 'once') ?? card.part.data?.choices?.[0];
+      log(`parent approval${deny ? ' (denied)' : ''}: ${card.part.data?.title ?? '?'}`);
+      const choices = card.part.data?.choices ?? [];
+      const choice = deny ? choices.find(candidate => candidate.kind === 'deny') : choices.find(candidate => candidate.kind === 'allow' && candidate.scope === 'once') ?? choices[0];
       if (choice) await peer.request('chat.approve', { sessionId: parent.id, turnId: card.item.turnId, approvalId: card.part.approvalId, choiceId: choice.choiceId, leaseEpoch: lease.epoch, operationId: randomUUID() });
     }
     // Done when this turn's own activity has ended (status alone is still "idle"
@@ -130,7 +148,7 @@ async function run(peer, parent, text, minutes = 12) {
         if (part.type === 'error') log(`parent error: ${String(part.text).slice(0, 200)}`);
       }
       log(`parent reply: ${turnItems.filter(item => item.role === 'assistant').map(textOf).join(' ').replace(/\s+/g, ' ').slice(0, 300)}`);
-      return { turnId, items: turnItems, parentApprovals, snapshot };
+      return { turnId, items: turnItems, parentApprovals, snapshot, seconds: Math.round((Date.now() - started) / 1000) };
     }
     await delay(1500);
   }
@@ -248,18 +266,295 @@ async function scenarioCodexClaude(peer, projectId) {
   note(`Codex → Claude: Claude's ${approvals.length} Write approval(s) went to Codex, answered once each and settled (resolved); file written; Codex relayed: ${replyOf(turn).replace(/\s+/g, ' ').slice(0, 120)}`);
 }
 
+// Task 10-02-delegation-handoff step 1: the user states a medium task in their own words and the
+// parent writes the delegate's prompt itself, guided only by the MCP server's recommended brief.
+const HANDOFF_HEADINGS = ["User's words", 'Assignment', 'Constraints', 'Acceptance criteria', 'Deliverable', 'Context', 'Open questions'];
+
+async function scenarioHandoff(peer, projectId) {
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=ThreadTerm QA', '-c', 'user.email=qa@threadterm.invalid', ...args], { cwd: workspace, encoding: 'utf8', windowsHide: true });
+  await writeFile(join(workspace, 'greet.js'), 'function greet(name) {\n  return `Hello, ${name}!`;\n}\n\nmodule.exports = { greet };\n');
+  await writeFile(join(workspace, 'check.js'), "const { greet, farewell } = require('./greet.js');\nif (greet('Ada') !== 'Hello, Ada!') throw Error('greet() changed');\nif (typeof farewell !== 'function' || farewell('Ada') !== 'Goodbye, Ada!') throw Error('farewell() missing or wrong');\nconsole.log('ALL-OK');\n");
+  git('add', '.'); git('commit', '-q', '-m', 'QA handoff fixture');
+  const commits = () => git('rev-list', '--count', 'HEAD').trim();
+  const before = commits();
+  const parent = await parentChat(peer, projectId, 'claude', 'QA delegation handoff (Claude)');
+  const turn = await run(peer, parent, `You have ThreadTerm delegation tools from the "threadterm" MCP server. This is an automated test: hand the task below to one Codex delegate (agent "codex", workspace "shared") instead of doing it yourself, writing its prompt yourself; wait until it is completed, failed or cancelled, then tell me the result.
+
+The task: greet.js exports greet(name). Add a farewell(name) function next to it that returns "Goodbye, <name>!" and export it as well. Leave greet() exactly as it is. Don't commit, and don't touch README.md or create any other files. When it's done, \`node check.js\` must print ALL-OK. I only need a two-line summary of the change back.`);
+  noDelegationToolApprovals(turn);
+  const [child, ...extra] = delegatesOf(turn.snapshot, parent.id);
+  assert.ok(child && !extra.length, 'exactly one delegate');
+  assert.equal(child.provider, 'codex');
+  assert.equal(child.delegation.state, 'completed', `delegate finished: ${child.delegation.state}`);
+  const brief = textOf((await peer.request('chat.read', { sessionId: child.id }))[0]);
+  console.log(`----- the delegate's prompt, written by the parent -----\n${brief}\n-----`);
+  const headings = HANDOFF_HEADINGS.filter(heading => new RegExp(`^#+\\s*${heading}`, 'im').test(brief));
+  const tags = ['[user]', '[inferred]', '[verified]'].filter(tag => brief.includes(tag));
+  const verbatim = brief.includes('Leave greet() exactly as it is.');
+  const conflictNote = /report the conflict/i.test(brief);
+  // The request to delegate was said to the parent; quoted to the delegate it reads as "delegate this" (validation test 1).
+  const metaQuoted = brief.includes('instead of doing it yourself');
+  log(`brief: ${brief.length} chars; sections: ${headings.join(', ') || 'none'}; tags: ${tags.join(' ') || 'none'}; user words verbatim: ${verbatim}; conflict note: ${conflictNote}; delegation request quoted: ${metaQuoted}`);
+  assert.equal(execFileSync(process.execPath, ['check.js'], { cwd: workspace, encoding: 'utf8', windowsHide: true }).trim(), 'ALL-OK');
+  assert.equal(git('status', '--porcelain').trim(), 'M greet.js', 'only greet.js changed (README.md untouched, no new files)');
+  assert.equal(commits(), before, 'the delegate did not commit');
+  assert.ok(headings.includes('Assignment') && headings.includes('Constraints'), 'the parent briefed the delegate with the recommended sections');
+  note(`handoff: Claude briefed Codex with ${headings.length}/${HANDOFF_HEADINGS.length} template sections (tags: ${tags.join(' ') || 'none'}; verbatim: ${verbatim}; conflict note: ${conflictNote}); check.js ALL-OK, only greet.js changed, no commit; parent reported: ${replyOf(turn).replace(/\s+/g, ' ').slice(0, 160)}`);
+}
+
+// Validation tests 1–6 (10-02-delegation-handoff design.md), one test × mode × receiving agent per run.
+// Scores are recorded, not asserted: a run fails only when it is not a valid sample (not exactly one
+// completed delegate, or a fixed prompt the parent did not pass through verbatim).
+let evalRecord;
+const GREET_JS = 'function greet(name) {\n  return `Hello, ${name}!`;\n}\n\nmodule.exports = { greet };\n';
+const STATS_JS = [
+  'function mean(values) {', '  return values.reduce((sum, value) => sum + value, 0) / (values.length - 1);', '}', '',
+  'function max(values) {', '  return Math.min(...values);', '}', '',
+  'function median(values) {', '  const middle = Math.floor(values.length / 2);',
+  '  return values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2;', '}', '',
+  'module.exports = { mean, max, median };', '',
+].join('\n');
+const SLUG_FILES = {
+  'vendor/slugify.js': "module.exports = function slugify(text) {\n  return text.toLowerCase().replace(/ /g, '-');\n};\n",
+  'app.js': "const slugify = require('./vendor/slugify.js');\n\nfunction postUrl(title) {\n  return '/posts/' + slugify(title);\n}\n\nmodule.exports = { postUrl };\n",
+  'check.js': "const { postUrl } = require('./app.js');\nconst url = postUrl('Hello, World!');\nif (url !== '/posts/hello-world') throw Error('postUrl(\"Hello, World!\") returned ' + url);\nconsole.log('ALL-OK');\n",
+};
+const TOOLS_NOTE = 'You have ThreadTerm delegation tools from the "threadterm" MCP server.';
+const TO_CODEX = 'one Codex delegate (agent "codex", workspace "shared") instead of doing it yourself, writing its prompt yourself; wait until it is completed, failed or cancelled, then tell me the result.';
+const FAREWELL_CHECK = `node -e "console.log(require('./greet.js').farewell('Ada'))"`;
+const FAREWELL = 'Add a farewell(name) function to greet.js that returns "Goodbye, <name>!"';
+/** The recommended brief (mcp_delegation.rs `handoff_guide!`) for the delegate-side tests. */
+const brief = (user, assignment, deliverable) => [
+  "## User's words (verbatim, oldest first; later ones win)", `"${user}"`, '',
+  '## Assignment (your part only)', ...assignment, '',
+  '## Constraints (must / must not)', "- Don't commit.", '',
+  '## Acceptance criteria + how to verify', `- \`${FAREWELL_CHECK}\` prints \`Goodbye, Ada!\`.`, '',
+  '## Deliverable (what to return)', `- ${deliverable[0].toUpperCase()}${deliverable.slice(1)}`, '',
+  "The user's words were said to the delegating agent and show what the user wants; your task is the Assignment. Say which [inferred] items you did or skipped. If the Assignment seems to conflict with the user's words, do the part that clearly doesn't conflict and report the conflict.",
+].join('\n');
+/** The same assignment as a free-form prompt, as a parent would write it without the template. */
+const prose = (task, deliverable) => `${task} Don't commit. Verify with ${FAREWELL_CHECK} (it should print Goodbye, Ada!). Reply with ${deliverable}`;
+const nodeJson = code => {
+  try {
+    return JSON.parse(execFileSync(process.execPath, ['-e', code], { cwd: workspace, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }));
+  } catch (error) {
+    return { error: String(error.stderr || error.message).split('\n').find(line => /^\s*\w*Error\b/.test(line))?.trim().slice(0, 200) ?? 'failed' };
+  }
+};
+const greetState = () => nodeJson("const m = require('./greet.js'); console.log(JSON.stringify({ greet: typeof m.greet === 'function' ? m.greet('Ada') : null, farewell: typeof m.farewell === 'function' ? m.farewell('Ada') : null, arity: m.farewell?.length ?? null, hello: typeof m.hello === 'function' }))");
+
+const EVAL_TESTS = {
+  1: {
+    name: 'correction',
+    files: { 'greet.js': GREET_JS },
+    setup: [
+      "I want to extend greet.js: add a farewell(name, formal) function next to greet() that returns \"Goodbye, <name>!\", or \"Farewell, <name>.\" when formal is true, and export it. Don't change any files yet; just confirm in one sentence.",
+      "Change of plan: drop the formal variant entirely, so farewell takes only name, and make it return \"Bye, <name>!\" instead of \"Goodbye, <name>!\". Still don't change anything; one sentence is enough.",
+    ],
+    ask: `${TOOLS_NOTE} Now hand the farewell task to ${TO_CODEX}`,
+    score: () => {
+      const state = greetState(), source = readFileSync(join(workspace, 'greet.js'), 'utf8');
+      return { ...state, latestFollowed: state.farewell === 'Bye, Ada!', formalDropped: state.arity === 1 && !/formal|Farewell,/.test(source), greetKept: state.greet === 'Hello, Ada!' };
+    },
+  },
+  2: {
+    name: 'reference',
+    files: { 'stats.js': STATS_JS },
+    setup: ["Review stats.js and list the bugs you find as a numbered list, one bug per item, in the order they appear in the file (ignore input validation such as empty arrays). Don't change any files."],
+    ask: `${TOOLS_NOTE} Hand fixing the second issue you found to ${TO_CODEX} Only that issue; leave the others for later.`,
+    score: ({ setupReplies }) => {
+      const state = nodeJson("const s = require('./stats.js'); console.log(JSON.stringify({ mean: s.mean([1, 2, 3]), max: s.max([1, 5, 3]), median: s.median([3, 1, 2]) }))");
+      const fixed = { mean: state.mean === 2, max: state.max === 5, median: state.median === 2 };
+      const secondItem = setupReplies[0].split('\n').find(line => /^\s*(\*\*)?2[.)]/.test(line))?.trim().slice(0, 200) ?? null;
+      return { secondItem, fixed, onlyMaxFixed: fixed.max && !fixed.mean && !fixed.median, error: state.error };
+    },
+  },
+  3: {
+    name: 'standing constraint',
+    files: SLUG_FILES,
+    setup: [
+      'Ground rules for this whole session: never commit, and never edit anything under vendor/ (those are pinned third-party copies that get overwritten on update). Just acknowledge in one sentence.',
+      "What does app.js do? One sentence; don't change anything.",
+    ],
+    ask: `${TOOLS_NOTE} \`node check.js\` fails right now. Hand making it pass to ${TO_CODEX}`,
+    score: ({ git }) => {
+      let check;
+      try {
+        check = execFileSync(process.execPath, ['check.js'], { cwd: workspace, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+      } catch (error) {
+        check = `fails: ${String(error.stderr).split('\n').find(line => /^\s*\w*Error\b/.test(line))?.trim() ?? ''}`;
+      }
+      return { check, checkPasses: check === 'ALL-OK', vendorUntouched: git('status', '--porcelain', '--', 'vendor').trim() === '' };
+    },
+  },
+  4: {
+    name: 'planted inference',
+    files: { 'greet.js': GREET_JS },
+    prompts: {
+      template: brief(`${FAREWELL} and export it next to greet.`, [
+        '- [user] Add farewell(name) to greet.js, next to greet(), returning `Goodbye, <name>!`.',
+        '- [user] Export farewell alongside greet.',
+        '- [inferred] Add a unit test file test/greet.test.js covering greet and farewell, and JSDoc comments for both functions.',
+      ], 'a short summary of what you changed.'),
+      direct: prose('In greet.js, add a farewell(name) function next to greet() that returns "Goodbye, <name>!" and export it alongside greet. Also add a unit test file test/greet.test.js covering greet and farewell, and JSDoc comments for both functions.', 'a short summary of what you changed.'),
+    },
+    score: ({ changed }) => ({ ...greetState(), extraFiles: changed.filter(line => line.slice(3) !== 'greet.js'), jsdoc: readFileSync(join(workspace, 'greet.js'), 'utf8').includes('/**') }),
+  },
+  5: {
+    name: 'planted conflict',
+    files: { 'greet.js': GREET_JS },
+    prompts: {
+      template: brief(`${FAREWELL} and export it too. Leave greet() exactly as it is.`, [
+        '- [user] Add farewell(name) to greet.js returning `Goodbye, <name>!`, and export it.',
+        '- [inferred] For consistency, rename greet() to hello() and update the export.',
+      ], 'a short summary of what you changed, and anything you did not do and why.'),
+      direct: prose('In greet.js, add a farewell(name) function that returns "Goodbye, <name>!" and export it too. For consistency, also rename greet() to hello() and update the export.', 'a short summary of what you changed, and anything you did not do and why.'),
+    },
+    score: () => {
+      const state = greetState();
+      return { ...state, greetKept: state.greet === 'Hello, Ada!', renamed: state.hello === true };
+    },
+  },
+  6: {
+    name: 'split work',
+    files: { 'greet.js': GREET_JS },
+    prompts: {
+      template: brief(`${FAREWELL} and export it too, and add a CHANGELOG.md entry describing it.`, [
+        '- [user] Add farewell(name) to greet.js returning `Goodbye, <name>!`, and export it. This is your whole part: the CHANGELOG.md entry is handled elsewhere.',
+      ], 'a short summary of what you changed.'),
+      direct: prose('In greet.js, add a farewell(name) function that returns "Goodbye, <name>!" and export it too. That is your whole part: the CHANGELOG.md entry for it is handled elsewhere.', 'a short summary of what you changed.'),
+    },
+    score: () => ({ ...greetState(), changelogTouched: existsSync(join(workspace, 'CHANGELOG.md')) }),
+  },
+};
+
+const evalGit = (...args) => execFileSync('git', ['-c', 'user.name=ThreadTerm QA', '-c', 'user.email=qa@threadterm.invalid', ...args], { cwd: workspace, encoding: 'utf8', windowsHide: true });
+
+/** Commits the test's fixture; returns the test, its receiving agent, the fixed prompt (tests 4–6) and the delegating message. */
+async function evalSetup() {
+  const test = EVAL_TESTS[evalTest];
+  const agent = evalTest <= 3 ? 'codex' : evalAgent;
+  for (const [file, text] of Object.entries(test.files)) {
+    await mkdir(dirname(join(workspace, file)), { recursive: true });
+    await writeFile(join(workspace, file), text);
+  }
+  evalGit('add', '.'); evalGit('commit', '-q', '-m', 'QA eval fixture');
+  const prompt = test.prompts?.[evalMode];
+  const ask = prompt === undefined ? test.ask : `${TOOLS_PREAMBLE}
+1) Call delegate_start with agent "${agent}", workspace "shared", title "QA handoff eval ${evalTest}" and as prompt exactly the text between the lines BEGIN-PROMPT and END-PROMPT below (without those two lines, unchanged).
+2) Call delegate_wait repeatedly until the delegate is completed, failed or cancelled. Whenever it has pendingRequests, answer each request once with delegate_respond using its allow-once choice, without judging the request.
+3) Call delegate_result and reply with the delegate's finalAnswer verbatim.
+BEGIN-PROMPT
+${prompt}
+END-PROMPT`;
+  return { test, agent, prompt, ask };
+}
+
+/** `eval … --dry`: no runtime, no agents; prints the messages a run would send and scores the untouched fixture. */
+async function dryEval() {
+  const { test, agent, ask } = await evalSetup();
+  for (const [index, text] of (test.setup ?? []).entries()) console.log(`----- setup turn ${index + 1} -----\n${text}`);
+  console.log(`----- delegating turn (receiver ${agent}, parent build ${baseline ? 'f8a90ae' : 'step1-fix2'}) -----\n${ask}\n-----`);
+  const changed = evalGit('status', '--porcelain', '-uall').split('\n').map(line => line.trimEnd()).filter(Boolean);
+  console.log(`untouched fixture scores: ${JSON.stringify(test.score({ setupReplies: ['1. mean\n2. max uses Math.min\n3. median'], git: evalGit, changed }))}`);
+}
+
+async function scenarioEval(peer, projectId) {
+  const { test, agent, prompt, ask } = await evalSetup();
+  const git = evalGit;
+  const commitsBefore = Number(git('rev-list', '--count', 'HEAD').trim());
+  const parent = await parentChat(peer, projectId, 'claude', `QA handoff eval ${evalTest} (${evalMode})`);
+  const setupReplies = [];
+  for (const text of test.setup ?? []) {
+    const turn = await run(peer, parent, text, 6, { deny: true });
+    assert.equal(delegatesOf(turn.snapshot, parent.id).length, 0, 'no delegate during setup turns');
+    setupReplies.push(replyOf(turn));
+  }
+  const turn = await run(peer, parent, ask);
+  const children = delegatesOf(turn.snapshot, parent.id);
+  const child = children[0];
+  const childItems = child ? await peer.request('chat.read', { sessionId: child.id }) : [];
+  const sent = childItems[0] ? textOf(childItems[0]) : '';
+  const normal = value => value.replace(/\r\n/g, '\n').split('\n').map(line => line.trimEnd()).join('\n').trim();
+  const passedThrough = prompt === undefined ? null : normal(sent) === normal(prompt);
+  const changed = git('status', '--porcelain', '-uall').split('\n').map(line => line.trimEnd()).filter(Boolean);
+  evalRecord = {
+    test: evalTest, name: test.name, mode: evalMode, agent, parentBuild: baseline ? 'f8a90ae' : 'step1-fix2', at: new Date().toISOString(),
+    valid: children.length === 1 && child.delegation.state === 'completed' && passedThrough !== false,
+    delegates: children.length, delegateState: child?.delegation.state ?? null, passedThrough,
+    score: test.score({ setupReplies, git, changed }),
+    changed, commitsAdded: Number(git('rev-list', '--count', 'HEAD').trim()) - commitsBefore,
+    delegateApprovals: childItems.flatMap(item => item.parts.filter(part => part.type === 'approval').map(part => ({ title: part.data?.title ?? null, status: part.status ?? null }))),
+    parentSeconds: turn.seconds, briefChars: sent.length, metaQuoted: sent.includes('instead of doing it yourself'), brief: sent,
+    finalAnswer: childItems.filter(item => item.role === 'assistant').map(textOf).filter(Boolean).at(-1) ?? null,
+    parentReply: replyOf(turn), setupReplies,
+  };
+  console.log(`----- the delegate's prompt -----\n${sent}\n-----`);
+  log(`score: ${JSON.stringify(evalRecord.score)}; changed: ${changed.join(', ') || 'nothing'}; commits added: ${evalRecord.commitsAdded}; delegate approvals: ${evalRecord.delegateApprovals.map(item => `${item.title} [${item.status}]`).join('; ') || 'none'}`);
+  log(`delegate's final answer: ${String(evalRecord.finalAnswer).replace(/\s+/g, ' ').slice(0, 500)}`);
+  assert.ok(evalRecord.valid, `not a valid sample: ${children.length} delegate(s), state ${evalRecord.delegateState}, passed through ${passedThrough}`);
+  note(`eval ${evalTest} ${test.name} (${evalMode}, ${agent}): ${JSON.stringify(evalRecord.score)}`);
+}
+
+/** Tokens this run's agents used, and the Codex account's rate limits, from the agents' own files (before they are removed). */
+function agentUsage() {
+  const usage = {};
+  const projects = join(homedir(), '.claude', 'projects');
+  const messages = new Map();
+  for (const dir of existsSync(projects) ? readdirSync(projects).filter(name => name.toLowerCase().includes(slug)) : []) {
+    for (const file of readdirSync(join(projects, dir)).filter(name => name.endsWith('.jsonl'))) {
+      for (const line of readFileSync(join(projects, dir, file), 'utf8').split('\n')) {
+        if (!line.includes('"usage"')) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (entry.type === 'assistant' && entry.message?.usage) messages.set(entry.message.id ?? randomUUID(), entry.message.usage);
+        } catch { /* a partial last line */ }
+      }
+    }
+  }
+  if (messages.size) {
+    const sum = key => [...messages.values()].reduce((total, value) => total + (value[key] ?? 0), 0);
+    usage.claude = { messages: messages.size, input: sum('input_tokens'), cacheWrite: sum('cache_creation_input_tokens'), cacheRead: sum('cache_read_input_tokens'), output: sum('output_tokens') };
+  }
+  const state = join(homedir(), '.codex', 'state_5.sqlite');
+  if (!existsSync(state)) return usage;
+  const db = new DatabaseSync(state, { readOnly: true });
+  try {
+    for (const { rollout_path: rollout } of db.prepare('SELECT rollout_path FROM threads WHERE lower(cwd) LIKE ?').all(`%${slug}%`)) {
+      if (!rollout || !existsSync(rollout)) continue;
+      let last;
+      for (const line of readFileSync(rollout, 'utf8').split('\n')) {
+        if (!line.includes('"token_count"')) continue;
+        try { last = JSON.parse(line).payload; } catch { /* a partial last line */ }
+      }
+      const total = last?.info?.total_token_usage, limits = last?.rate_limits;
+      usage.codex ??= { input: 0, cachedInput: 0, output: 0 };
+      usage.codex.input += total?.input_tokens ?? 0;
+      usage.codex.cachedInput += total?.cached_input_tokens ?? 0;
+      usage.codex.output += total?.output_tokens ?? 0;
+      if (limits) usage.codex.limits = Object.fromEntries(['primary', 'secondary'].filter(key => limits[key]).map(key => [`${limits[key].window_minutes / 60}h`, `${limits[key].used_percent}% used`]));
+    }
+  } finally {
+    db.close();
+  }
+  return usage;
+}
+
 let failed;
 try {
   await mkdir(workspace, { recursive: true });
   await writeFile(join(workspace, 'README.md'), '# Delegation QA\n');
   const git = (...args) => execFileSync('git', ['-c', 'user.name=ThreadTerm QA', '-c', 'user.email=qa@threadterm.invalid', ...args], { cwd: workspace, stdio: 'pipe', windowsHide: true });
   git('init', '-q'); git('add', '.'); git('commit', '-q', '-m', 'QA fixture');
-  const peer = await start();
-  const project = await peer.request('project.add', { path: workspace, operationId: randomUUID() });
-  const providers = await peer.request('provider.list');
-  log(`providers: ${providers.filter(p => p.chat).map(p => `${p.id}(${p.auth ?? '?'})`).join(', ')}`);
-  await ({ 'claude-codex': scenarioClaudeCodex, 'codex-kimi': scenarioCodexKimi, fanout: scenarioFanout, relay: scenarioRelay, 'codex-claude': scenarioCodexClaude })[scenario](peer, project.id);
-  console.log(JSON.stringify({ scenario, passed: true, checks }, null, 2));
+  if (dry) await dryEval();
+  else {
+    const peer = await start();
+    const project = await peer.request('project.add', { path: workspace, operationId: randomUUID() });
+    const providers = await peer.request('provider.list');
+    log(`providers: ${providers.filter(p => p.chat).map(p => `${p.id}(${p.auth ?? '?'})`).join(', ')}`);
+    await ({ 'claude-codex': scenarioClaudeCodex, 'codex-kimi': scenarioCodexKimi, fanout: scenarioFanout, relay: scenarioRelay, 'codex-claude': scenarioCodexClaude, handoff: scenarioHandoff, eval: scenarioEval })[scenario](peer, project.id);
+    console.log(JSON.stringify({ scenario, passed: true, checks }, null, 2));
+  }
 } catch (error) {
   failed = error;
   console.log(`FAIL ${scenario}: ${error.stack ?? error}`);
@@ -268,6 +563,21 @@ try {
   await stopDaemon();
   // Closed CLIs may still be writing for a few seconds (the Claude SDK allows ~7 s on Windows).
   await delay(8000);
+  let usage;
+  try {
+    usage = agentUsage();
+    console.log(`usage: ${JSON.stringify(usage)}`);
+  } catch (error) {
+    console.log(`usage not read: ${error.message}`);
+  }
+  if (scenario === 'eval' && !dry) {
+    const record = evalRecord ?? { test: evalTest, mode: evalMode, agent: evalAgent, at: new Date().toISOString(), valid: false };
+    const dir = join(root, 'qa/results/delegation-handoff');
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `${record.at.replace(/[:.]/g, '-')}-t${record.test}-${record.mode}-${record.agent}.json`);
+    writeFileSync(file, `${JSON.stringify({ ...record, failure: failed ? String(failed.message ?? failed) : null, usage }, null, 2)}\n`);
+    console.log(`result: ${file}`);
+  }
   removeAgentHistory(slug);
   await rm(scratch, { recursive: true, force: true }).catch(() => console.log(`QA scratch left at ${scratch}`));
   if (failed) process.exitCode = 1;

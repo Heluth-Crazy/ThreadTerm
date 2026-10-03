@@ -30,11 +30,41 @@ const POLL_INTERVAL: Duration = Duration::from_millis(1000);
 const AGENTS: [&str; 6] = ["claude", "codex", "kimi", "grok", "gemini", "opencode"];
 const TERMINAL_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
 
-const INSTRUCTIONS: &str = "ThreadTerm delegation: start other coding agents as visible ThreadTerm Chat sessions \
+/// How to brief a delegate (guidance only; nothing checks it). Shared by
+/// `INSTRUCTIONS` and the `delegate_start` `prompt` description: agents that
+/// ignore server instructions still read tool descriptions.
+macro_rules! handoff_guide {
+    () => {
+        "A delegate sees only its prompt, not your conversation. One line is fine for a small task; for anything \
+larger write a brief with these headings as written (leave out sections that don't apply; write \"none known\" \
+rather than inventing content):\n```\n\
+## User's words (verbatim, oldest first; later ones win)\n\
+## Assignment (your part only)\n\
+## Constraints (must / must not)\n\
+## Acceptance criteria + how to verify\n\
+## Deliverable (what to return)\n\
+## Context (pointers; re-check before relying on them)\n\
+## Open questions + decision policy (stop | assume and flag)\n\
+```\nUnder User's words copy, word for word, the user's sentences about this task (requests, corrections, rules); \
+leave out sentences about how you handle it, such as \"hand this to a delegate\", \"don't change anything yet\" or \
+\"tell me the result\". Tag each Assignment line [user] (the user asked \
+for it), [inferred] (your reading) or [verified] (you checked it); [inferred] lines are not pass/fail criteria. \
+Give the delegate only its part and say what is handled elsewhere. End the brief with: \"The user's words were \
+said to the delegating agent and show what the user wants; your task is the Assignment. Say which [inferred] items \
+you did or skipped. If the Assignment seems to conflict with the user's words, do the part that clearly doesn't \
+conflict and report the conflict.\""
+    };
+}
+
+/// Claude Code truncates server instructions after 2048 characters.
+const INSTRUCTIONS: &str = concat!(
+    "ThreadTerm delegation: start other coding agents as visible ThreadTerm Chat sessions \
 and follow them. Workflow: delegate_start (one call per task; up to 4 at once) → delegate_wait repeatedly until \
 every delegate is completed, failed or cancelled → delegate_result for each answer. When a delegate is \
 awaiting_parent it needs your decision: answer its pendingRequests with delegate_respond. Stay in your turn while \
-delegates run; if your turn ends, their requests go to the user instead. Delegates cannot delegate further.";
+delegates run; if your turn ends, their requests go to the user instead. Delegates cannot delegate further.\n\n",
+    handoff_guide!()
+);
 
 #[derive(Clone)]
 struct Caller {
@@ -187,10 +217,10 @@ fn tools() -> Vec<Value> {
     vec![
         tool(
             "delegate_start",
-            "Start another coding agent as a visible ThreadTerm Chat session that works on `prompt`. The delegate does not see your conversation, so make the prompt a self-contained task (goal, files, constraints, what to report back). Returns at once with a delegationId; then call delegate_wait. workspace `shared` (default) works in your folder; `worktree` gives the delegate its own git branch and folder created from your current commit (your uncommitted changes are not included) — use it when several delegates edit files in parallel. At most 4 active delegates; delegates cannot delegate.",
+            "Start another coding agent as a visible ThreadTerm Chat session that works on `prompt`. The delegate does not see your conversation, so make the prompt self-contained (its description gives the recommended brief). Returns at once with a delegationId; then call delegate_wait. workspace `shared` (default) works in your folder; `worktree` gives the delegate its own git branch and folder created from your current commit (your uncommitted changes are not included) — use it when several delegates edit files in parallel. At most 4 active delegates; delegates cannot delegate.",
             json!({"type":"object","additionalProperties":false,"required":["agent","prompt"],"properties":{
                 "agent":{"type":"string","enum":AGENTS,"description":"Agent to delegate to; delegate_status lists the available ones."},
-                "prompt":{"type":"string","minLength":1,"description":"Self-contained task for the delegate."},
+                "prompt":{"type":"string","minLength":1,"description":concat!("Self-contained task for the delegate. ", handoff_guide!())},
                 "title":{"type":"string","maxLength":120,"description":"Short session title shown in ThreadTerm."},
                 "workspace":{"type":"string","enum":["shared","worktree"]}
             }}),
@@ -416,6 +446,24 @@ mod tests {
         // Adapters auto-approve exactly `delegation::TOOL_NAMES`; keep them in sync.
         assert_eq!(names, crate::delegation::TOOL_NAMES);
         assert!(names.iter().all(|name| !name.starts_with("terminal_")));
+    }
+
+    #[test]
+    fn recommends_the_handoff_brief_without_changing_the_schema() {
+        let start = &tools()[0];
+        let prompt = start["inputSchema"]["properties"]["prompt"]["description"].as_str().unwrap();
+        for heading in ["## User's words", "## Assignment", "## Constraints", "## Acceptance criteria", "## Deliverable", "## Context", "## Open questions"] {
+            assert!(INSTRUCTIONS.contains(heading) && prompt.contains(heading), "{heading}");
+        }
+        // Validation test 1: a quoted "delegate this" made a delegate edit nothing ("narrower reading").
+        assert!(prompt.contains("leave out sentences about how you handle it") && prompt.contains("do the part that clearly doesn't conflict"));
+        assert!(!prompt.contains("narrower reading"));
+        assert!(INSTRUCTIONS.chars().count() <= 2048, "{} chars would be truncated", INSTRUCTIONS.chars().count());
+        // Guidance only: `prompt` stays one free-form string.
+        assert_eq!(start["inputSchema"]["required"], json!(["agent", "prompt"]));
+        assert_eq!(start["inputSchema"]["properties"]["prompt"]["type"], "string");
+        let fields: Vec<_> = start["inputSchema"]["properties"].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(fields, ["agent", "prompt", "title", "workspace"]);
     }
 
     #[test]
