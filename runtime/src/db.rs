@@ -52,9 +52,21 @@ impl Database {
         // Agent delegation: one row per delegated Chat session. Deleting either
         // session drops the link; the other session stays a normal session.
         connection.execute_batch(
-            "CREATE TABLE IF NOT EXISTS delegations (id TEXT PRIMARY KEY, parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, child_session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE, agent TEXT NOT NULL, workspace TEXT NOT NULL, workspace_path TEXT NOT NULL, branch TEXT, prompt TEXT NOT NULL, operation_id TEXT NOT NULL, turn_id TEXT, state TEXT NOT NULL, result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+            "CREATE TABLE IF NOT EXISTS delegations (id TEXT PRIMARY KEY, parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, child_session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE, agent TEXT NOT NULL, workspace TEXT NOT NULL, workspace_path TEXT NOT NULL, branch TEXT, prompt TEXT NOT NULL, user_messages INTEGER NOT NULL DEFAULT 0, operation_id TEXT NOT NULL, turn_id TEXT, state TEXT NOT NULL, result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS delegations_parent ON delegations(parent_session_id);",
         )?;
+        let has_user_messages = connection
+            .prepare("PRAGMA table_info(delegations)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "user_messages");
+        if !has_user_messages {
+            connection.execute(
+                "ALTER TABLE delegations ADD COLUMN user_messages INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
         let has_read = connection
             .prepare("PRAGMA table_info(inbox)")?
             .query_map([], |r| r.get::<_, String>(1))?
@@ -1560,7 +1572,7 @@ fn session_organization(conn: &Connection, id: &str) -> Result<SessionOrganizati
 }
 fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDelegation>> {
     conn.query_row(
-        "SELECT id,parent_session_id,workspace,branch,state FROM delegations WHERE child_session_id=?",
+        "SELECT id,parent_session_id,workspace,branch,state,user_messages FROM delegations WHERE child_session_id=?",
         [id],
         |row| {
             Ok(SessionDelegation {
@@ -1569,6 +1581,7 @@ fn session_delegation(conn: &Connection, id: &str) -> Result<Option<SessionDeleg
                 workspace: row.get(2)?,
                 branch: row.get(3)?,
                 state: row.get(4)?,
+                user_messages: row.get(5)?,
             })
         },
     )

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ChatItem, Session } from '@threadterm/protocol';
-import { delegateOutcomePreview, delegationActive, delegationTool, delegationToolLabel, delegationStateLabel, nestedDelegateIds, withDelegates } from './delegation';
+import { attachedMessagesLabel, delegateOutcomePreview, delegationActive, delegationTool, delegationToolLabel, delegationStateLabel, nestedDelegateIds, withDelegates } from './delegation';
 
 const session = (id: string, createdAt: string, parent?: string, branch?: string): Session => ({
   id, title: id, provider: 'codex', mode: 'chat', status: 'running', createdAt, updatedAt: createdAt,
@@ -33,6 +33,14 @@ test('delegation states are bilingual and only unfinished ones are active', () =
   assert.ok(delegationActive('awaiting_user'));
   assert.ok(!delegationActive('completed'));
   assert.ok(!delegationActive('cancelled'));
+});
+
+test("a delegate card says how many of the user's messages were attached, in both languages", () => {
+  const en = (english: string) => english, zh = (_english: string, chinese: string) => chinese;
+  assert.equal(attachedMessagesLabel(3, en).label, '3 of your messages attached');
+  assert.equal(attachedMessagesLabel(1, zh).label, '已附上你的 1 条消息');
+  assert.match(attachedMessagesLabel(2, en).title, /word for word/);
+  assert.match(attachedMessagesLabel(2, zh).title, /原样/);
 });
 
 test('a finished delegate previews its answer, or the error it failed with', () => {

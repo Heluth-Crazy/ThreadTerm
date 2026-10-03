@@ -985,6 +985,14 @@ impl RuntimeService {
             .ok_or_else(|| anyhow::anyhow!("session_create_failed"))?
             .to_owned();
         let send_operation_id = format!("{}:send", p.operation_id);
+        // The user's own words from the parent chat, copied by the runtime so
+        // the delegating agent cannot paraphrase them (task 10-02-delegation-handoff).
+        let (words, left_out) = crate::delegation::user_words(
+            &self.db.chat_items(&parent.id)?,
+            p.user_messages
+                .unwrap_or(crate::delegation::DEFAULT_USER_MESSAGES),
+        );
+        let first_message = crate::delegation::first_message(&words, left_out, &p.prompt);
         crate::delegation::insert(
             &self.db,
             &crate::delegation::NewDelegation {
@@ -996,12 +1004,13 @@ impl RuntimeService {
                 workspace_path: &cwd,
                 branch: branch.as_deref(),
                 prompt: &p.prompt,
+                user_messages: words.len() as u32,
                 operation_id: &send_operation_id,
             },
         )?;
         let (db, providers) = (Arc::clone(&self.db), Arc::clone(&self.providers));
         let (worker_delegation, worker_child, prompt) =
-            (delegation_id.clone(), child_id.clone(), p.prompt.clone());
+            (delegation_id.clone(), child_id.clone(), first_message);
         std::thread::Builder::new()
             .name(format!("delegate-{short}"))
             .spawn(move || {

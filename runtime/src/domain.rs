@@ -62,6 +62,14 @@ pub struct SessionDelegation {
     pub branch: Option<String>,
     /// starting | running | awaiting_parent | awaiting_user | completed | failed | cancelled
     pub state: String,
+    /// How many of the user's messages from the parent chat ThreadTerm
+    /// attached to the delegate's first message (sent only when some were).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub user_messages: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
