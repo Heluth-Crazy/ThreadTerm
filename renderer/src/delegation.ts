@@ -39,6 +39,20 @@ export function delegationStateLabel(state: SessionDelegationState, zh: boolean)
 }
 
 /**
+ * A delegate card's note that ThreadTerm sent some of the user's own messages
+ * from this chat, word for word, to the delegate (its first message shows them).
+ */
+export function attachedMessagesLabel(count: number, copy: (en: string, zh: string) => string): { label: string; title: string } {
+  return {
+    label: copy(`${count} of your messages attached`, `已附上你的 ${count} 条消息`),
+    title: copy(
+      'ThreadTerm sent these messages from this chat to the delegate word for word. Open the delegate to read them.',
+      'ThreadTerm 已把本对话中的这些消息原样发给委派代理。打开委派会话即可查看。',
+    ),
+  };
+}
+
+/**
  * What a finished delegate's card previews from its chat: its last assistant
  * text, or the error it failed with (its last text when it has no error).
  */

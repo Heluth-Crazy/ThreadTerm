@@ -6,7 +6,7 @@
 //   node qa/delegation-live.mjs fanout         Claude runs a Codex and a Kimi delegate at once
 //   node qa/delegation-live.mjs relay          Claude answers a Kimi delegate's shell approval (worktree)
 //   node qa/delegation-live.mjs codex-claude   Codex answers a Claude delegate's file-write approval
-//   node qa/delegation-live.mjs handoff        Claude writes its own brief for a medium Codex task (10-02-delegation-handoff)
+//   node qa/delegation-live.mjs handoff        Claude writes its own brief for a medium Codex task; ThreadTerm attaches the user's words (10-02-delegation-handoff)
 //   node qa/delegation-live.mjs eval <1-6> <direct|template> [codex|claude] [--dry]
 //        validation tests 1–6 of 10-02-delegation-handoff (design.md). 1–3: a Claude parent talks with the user
 //        over several turns, then writes a Codex delegate's brief itself (`direct` runs the f8a90ae build copied
@@ -50,7 +50,8 @@ const slug = basename(scratch).toLowerCase();
 const workspace = join(scratch, `${basename(scratch)}-ws`);
 const checks = [];
 const note = text => { checks.push(text); console.log(`PASS ${text}`); };
-const log = text => console.log(`  … ${text}`);
+const startedAt = Date.now();
+const log = text => console.log(`  … [${Math.round((Date.now() - startedAt) / 1000)}s] ${text}`);
 
 // The desktop starts the runtime outside any Claude Code session.
 const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
@@ -294,7 +295,9 @@ The task: greet.js exports greet(name). Add a farewell(name) function next to it
   const conflictNote = /report the conflict/i.test(brief);
   // The request to delegate was said to the parent; quoted to the delegate it reads as "delegate this" (validation test 1).
   const metaQuoted = brief.includes('instead of doing it yourself');
-  log(`brief: ${brief.length} chars; sections: ${headings.join(', ') || 'none'}; tags: ${tags.join(' ') || 'none'}; user words verbatim: ${verbatim}; conflict note: ${conflictNote}; delegation request quoted: ${metaQuoted}`);
+  log(`brief: ${brief.length} chars; sections: ${headings.join(', ') || 'none'}; tags: ${tags.join(' ') || 'none'}; user words verbatim: ${verbatim}; conflict note: ${conflictNote}; delegation request quoted: ${metaQuoted}; user messages attached by ThreadTerm: ${child.delegation.userMessages ?? 0}`);
+  // Step 3: the runtime, not the parent, quotes the user (at least the message that started the turn).
+  assert.ok((child.delegation.userMessages ?? 0) >= 1 && brief.includes('attached by ThreadTerm') && verbatim, "ThreadTerm attached the user's words");
   assert.equal(execFileSync(process.execPath, ['check.js'], { cwd: workspace, encoding: 'utf8', windowsHide: true }).trim(), 'ALL-OK');
   assert.equal(git('status', '--porcelain').trim(), 'M greet.js', 'only greet.js changed (README.md untouched, no new files)');
   assert.equal(commits(), before, 'the delegate did not commit');
@@ -441,7 +444,7 @@ async function evalSetup() {
   evalGit('add', '.'); evalGit('commit', '-q', '-m', 'QA eval fixture');
   const prompt = test.prompts?.[evalMode];
   const ask = prompt === undefined ? test.ask : `${TOOLS_PREAMBLE}
-1) Call delegate_start with agent "${agent}", workspace "shared", title "QA handoff eval ${evalTest}" and as prompt exactly the text between the lines BEGIN-PROMPT and END-PROMPT below (without those two lines, unchanged).
+1) Call delegate_start with agent "${agent}", workspace "shared", title "QA handoff eval ${evalTest}", userMessages 0, and as prompt exactly the text between the lines BEGIN-PROMPT and END-PROMPT below (without those two lines, unchanged).
 2) Call delegate_wait repeatedly until the delegate is completed, failed or cancelled. Whenever it has pendingRequests, answer each request once with delegate_respond using its allow-once choice, without judging the request.
 3) Call delegate_result and reply with the delegate's finalAnswer verbatim.
 BEGIN-PROMPT
@@ -454,7 +457,7 @@ END-PROMPT`;
 async function dryEval() {
   const { test, agent, ask } = await evalSetup();
   for (const [index, text] of (test.setup ?? []).entries()) console.log(`----- setup turn ${index + 1} -----\n${text}`);
-  console.log(`----- delegating turn (receiver ${agent}, parent build ${baseline ? 'f8a90ae' : 'step1-fix2'}) -----\n${ask}\n-----`);
+  console.log(`----- delegating turn (receiver ${agent}, parent build ${baseline ? 'f8a90ae' : 'step3'}) -----\n${ask}\n-----`);
   const changed = evalGit('status', '--porcelain', '-uall').split('\n').map(line => line.trimEnd()).filter(Boolean);
   console.log(`untouched fixture scores: ${JSON.stringify(test.score({ setupReplies: ['1. mean\n2. max uses Math.min\n3. median'], git: evalGit, changed }))}`);
 }
@@ -479,9 +482,9 @@ async function scenarioEval(peer, projectId) {
   const passedThrough = prompt === undefined ? null : normal(sent) === normal(prompt);
   const changed = git('status', '--porcelain', '-uall').split('\n').map(line => line.trimEnd()).filter(Boolean);
   evalRecord = {
-    test: evalTest, name: test.name, mode: evalMode, agent, parentBuild: baseline ? 'f8a90ae' : 'step1-fix2', at: new Date().toISOString(),
+    test: evalTest, name: test.name, mode: evalMode, agent, parentBuild: baseline ? 'f8a90ae' : 'step3', at: new Date().toISOString(),
     valid: children.length === 1 && child.delegation.state === 'completed' && passedThrough !== false,
-    delegates: children.length, delegateState: child?.delegation.state ?? null, passedThrough,
+    delegates: children.length, delegateState: child?.delegation.state ?? null, passedThrough, userMessages: child?.delegation.userMessages ?? 0,
     score: test.score({ setupReplies, git, changed }),
     changed, commitsAdded: Number(git('rev-list', '--count', 'HEAD').trim()) - commitsBefore,
     delegateApprovals: childItems.flatMap(item => item.parts.filter(part => part.type === 'approval').map(part => ({ title: part.data?.title ?? null, status: part.status ?? null }))),
@@ -494,6 +497,29 @@ async function scenarioEval(peer, projectId) {
   log(`delegate's final answer: ${String(evalRecord.finalAnswer).replace(/\s+/g, ' ').slice(0, 500)}`);
   assert.ok(evalRecord.valid, `not a valid sample: ${children.length} delegate(s), state ${evalRecord.delegateState}, passed through ${passedThrough}`);
   note(`eval ${evalTest} ${test.name} (${evalMode}, ${agent}): ${JSON.stringify(evalRecord.score)}`);
+}
+
+/** When each Claude message and tool call happened (seconds from the first): tells model latency from slow tools. */
+function claudeTimeline() {
+  const projects = join(homedir(), '.claude', 'projects');
+  const entries = [];
+  for (const dir of existsSync(projects) ? readdirSync(projects).filter(name => name.toLowerCase().includes(slug)) : []) {
+    for (const file of readdirSync(join(projects, dir)).filter(name => name.endsWith('.jsonl'))) {
+      for (const line of readFileSync(join(projects, dir, file), 'utf8').split('\n')) {
+        try {
+          const entry = JSON.parse(line);
+          if (!entry.timestamp || !['user', 'assistant'].includes(entry.type)) continue;
+          const blocks = Array.isArray(entry.message?.content) ? entry.message.content : [{ type: 'text', text: String(entry.message?.content ?? '') }];
+          const what = blocks.map(block => block.type === 'tool_use' ? `call ${String(block.name).replace('mcp__threadterm__', '')}`
+            : block.type === 'tool_result' ? `result${block.is_error ? ' (error)' : ''}`
+            : block.type === 'text' ? `text "${String(block.text).replace(/\s+/g, ' ').slice(0, 50)}"` : block.type).join(', ');
+          entries.push([Date.parse(entry.timestamp), `${entry.type}: ${what}`]);
+        } catch { /* a partial last line */ }
+      }
+    }
+  }
+  entries.sort((left, right) => left[0] - right[0]);
+  return entries.map(([time, what]) => `${Math.round((time - entries[0][0]) / 1000)}s ${what}`);
 }
 
 /** Tokens this run's agents used, and the Codex account's rate limits, from the agents' own files (before they are removed). */
@@ -571,7 +597,10 @@ try {
     console.log(`usage not read: ${error.message}`);
   }
   if (scenario === 'eval' && !dry) {
-    const record = evalRecord ?? { test: evalTest, mode: evalMode, agent: evalAgent, at: new Date().toISOString(), valid: false };
+    let timeline = [];
+    try { timeline = claudeTimeline(); } catch (error) { console.log(`Claude timeline not read: ${error.message}`); }
+    console.log(`Claude timeline:\n${timeline.map(line => `  ${line}`).join('\n')}`);
+    const record = { ...(evalRecord ?? { test: evalTest, mode: evalMode, agent: evalAgent, at: new Date().toISOString(), valid: false }), claudeTimeline: timeline };
     const dir = join(root, 'qa/results/delegation-handoff');
     mkdirSync(dir, { recursive: true });
     const file = join(dir, `${record.at.replace(/[:.]/g, '-')}-t${record.test}-${record.mode}-${record.agent}.json`);

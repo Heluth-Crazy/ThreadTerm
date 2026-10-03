@@ -44,7 +44,7 @@ pub const TOOL_NAMES: [&str; 6] = [
 ];
 const ACTIVE_STATES: &str = "('starting','running','awaiting_parent','awaiting_user')";
 /// Error messages that are also the RPC error code the MCP host reports.
-pub const ERROR_CODES: [&str; 16] = [
+pub const ERROR_CODES: [&str; 17] = [
     "delegation_unauthorized",
     "delegation_nested",
     "delegation_limit_reached",
@@ -57,6 +57,7 @@ pub const ERROR_CODES: [&str; 16] = [
     "unknown_agent",
     "agent_unavailable",
     "invalid_prompt",
+    "invalid_user_messages",
     "invalid_workspace",
     "worktree_requires_project",
     "worktree_requires_git",
@@ -64,6 +65,17 @@ pub const ERROR_CODES: [&str; 16] = [
 ];
 const MAX_PROMPT_BYTES: usize = 256 * 1024;
 const MAX_RESULT_CHARS: usize = 64 * 1024;
+/// The user's latest messages from the parent chat that a delegate's first
+/// message carries word for word (`userMessages`): by default the one that
+/// started the parent's turn, at most this many, within these sizes.
+pub const DEFAULT_USER_MESSAGES: u32 = 1;
+pub const MAX_USER_MESSAGES: u32 = 10;
+const MAX_USER_WORDS_CHARS: usize = 8_000;
+const MAX_USER_MESSAGE_CHARS: usize = 4_000;
+/// Closes a first message that carries the user's words. Validation (task
+/// 10-02-delegation-handoff): quoted to a delegate, the user's "delegate this"
+/// read as its own instruction, and "take the narrower reading" as "do nothing".
+const DELEGATE_NOTE: &str = "Note from ThreadTerm: the user's words above were said to the delegating agent and show what the user wants; your task is what the delegating agent asks of you. Say which [inferred] items you did or skipped. If that seems to conflict with the user's words, do the part that clearly doesn't conflict and report the conflict.";
 
 /// Runtime-side delegation state shared by the service and the resolver.
 #[derive(Default)]
@@ -297,6 +309,8 @@ pub(crate) struct NewDelegation<'a> {
     pub workspace_path: &'a str,
     pub branch: Option<&'a str>,
     pub prompt: &'a str,
+    /// How many of the user's messages the first message carries.
+    pub user_messages: u32,
     pub operation_id: &'a str,
 }
 
@@ -304,8 +318,8 @@ pub(crate) fn insert(db: &Database, row: &NewDelegation<'_>) -> Result<()> {
     db.transaction(|tx| {
         let now = Utc::now().to_rfc3339();
         tx.execute(
-            "INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,branch,prompt,operation_id,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'starting',?,?)",
-            params![row.id, row.parent_session_id, row.child_session_id, row.agent, row.workspace, row.workspace_path, row.branch, row.prompt, row.operation_id, now, now],
+            "INSERT INTO delegations(id,parent_session_id,child_session_id,agent,workspace,workspace_path,branch,prompt,user_messages,operation_id,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,'starting',?,?)",
+            params![row.id, row.parent_session_id, row.child_session_id, row.agent, row.workspace, row.workspace_path, row.branch, row.prompt, row.user_messages, row.operation_id, now, now],
         )?;
         tx.execute(
             "INSERT INTO outbox(event,data,created_at) VALUES ('state.changed',?,?)",
@@ -386,6 +400,8 @@ pub(crate) struct StartRequest {
     pub prompt: String,
     pub title: Option<String>,
     pub workspace: Option<String>,
+    /// The user's latest messages to attach (`DEFAULT_USER_MESSAGES` when absent).
+    pub user_messages: Option<u32>,
     pub operation_id: String,
 }
 
@@ -406,6 +422,9 @@ pub(crate) fn validate_start(db: &Database, providers: &Providers, parent: &Sess
     if request.prompt.trim().is_empty() || request.prompt.len() > MAX_PROMPT_BYTES {
         return Err(anyhow!("invalid_prompt"));
     }
+    if request.user_messages.is_some_and(|count| count > MAX_USER_MESSAGES) {
+        return Err(anyhow!("invalid_user_messages"));
+    }
     if !matches!(request.workspace.as_deref(), None | Some("shared" | "worktree")) {
         return Err(anyhow!("invalid_workspace"));
     }
@@ -419,6 +438,72 @@ pub(crate) fn validate_start(db: &Database, providers: &Providers, parent: &Sess
         return Err(anyhow!("delegation_limit_reached"));
     }
     Ok(())
+}
+
+/// The user's own words for a delegate: the latest `count` user messages of the
+/// parent chat (their text parts; an image-only message adds nothing), oldest
+/// first. Newer messages claim the size budget first, so older ones are left
+/// out first; returns how many were.
+pub(crate) fn user_words(items: &[crate::domain::ChatItem], count: u32) -> (Vec<String>, usize) {
+    let messages: Vec<Option<String>> = items
+        .iter()
+        .filter(|item| item.role == "user")
+        .map(|item| {
+            let text = item
+                .parts
+                .iter()
+                .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let text = text.trim();
+            (!text.is_empty()).then(|| text.to_owned())
+        })
+        .collect();
+    let latest: Vec<&String> = messages[messages.len().saturating_sub(count as usize)..].iter().flatten().collect();
+    let (mut words, mut total) = (Vec::new(), 0);
+    for message in latest.iter().rev() {
+        let text = if message.chars().count() > MAX_USER_MESSAGE_CHARS {
+            message.chars().take(MAX_USER_MESSAGE_CHARS).collect::<String>() + "\n…(truncated)"
+        } else {
+            (*message).clone()
+        };
+        let size = text.chars().count();
+        if total + size > MAX_USER_WORDS_CHARS {
+            break;
+        }
+        total += size;
+        words.push(text);
+    }
+    let left_out = latest.len() - words.len();
+    words.reverse();
+    (words, left_out)
+}
+
+/// The delegate's first message: the user's words quoted above the delegating
+/// agent's prompt, and how to read the two together. Without words it is the
+/// prompt unchanged.
+pub(crate) fn first_message(words: &[String], left_out: usize, prompt: &str) -> String {
+    if words.is_empty() {
+        return prompt.to_owned();
+    }
+    let mut text = String::from("## User's words (attached by ThreadTerm from the delegating chat; verbatim, oldest first; later ones win)\n\n");
+    if left_out > 0 {
+        text.push_str(&format!("({left_out} earlier message(s) left out to stay within {MAX_USER_WORDS_CHARS} characters.)\n\n"));
+    }
+    for message in words {
+        for line in message.lines() {
+            text.push_str("> ");
+            text.push_str(line);
+            text.push('\n');
+        }
+        text.push('\n');
+    }
+    text.push_str("## From the delegating agent\n\n");
+    text.push_str(prompt.trim_end());
+    text.push_str("\n\n---\n");
+    text.push_str(DELEGATE_NOTE);
+    text
 }
 
 /// The folder the parent agent works in.
@@ -767,5 +852,65 @@ mod tests {
         assert!(constant_time_eq(b"abc", b"abc"));
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"ab"));
+    }
+
+    fn item(role: &str, parts: Value) -> crate::domain::ChatItem {
+        crate::domain::ChatItem {
+            id: uuid::Uuid::new_v4().to_string(),
+            role: role.into(),
+            parts: parts.as_array().unwrap().clone(),
+            created_at: String::new(),
+            turn_id: None,
+            elapsed_ms: None,
+        }
+    }
+
+    #[test]
+    fn the_correction_case_reaches_the_delegate_word_for_word_with_the_later_message_last() {
+        let items = [
+            item("user", json!([{"type":"text","text":"Add farewell(name) returning \"Goodbye, <name>!\"."}])),
+            item("assistant", json!([{"type":"text","text":"Understood."}])),
+            item("user", json!([{"type":"text","text":"Change of plan: return \"Bye, <name>!\" instead."}])),
+            item("user", json!([{"type":"text","text":"Now hand it to a delegate."}])),
+        ];
+        let (words, left_out) = user_words(&items, 3);
+        assert_eq!(left_out, 0);
+        assert_eq!(words, ["Add farewell(name) returning \"Goodbye, <name>!\".", "Change of plan: return \"Bye, <name>!\" instead.", "Now hand it to a delegate."]);
+        let text = first_message(&words, left_out, "## Assignment\n- [user] Add farewell(name).\n");
+        let position = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("missing {needle}"));
+        assert!(text.starts_with("## User's words (attached by ThreadTerm"));
+        assert!(position("> Add farewell") < position("> Change of plan"));
+        assert!(position("> Change of plan") < position("## From the delegating agent"));
+        assert!(position("## Assignment\n- [user] Add farewell(name).") < position(DELEGATE_NOTE));
+        // Assistant replies are never attached; the default is the latest message only.
+        assert_eq!(user_words(&items, DEFAULT_USER_MESSAGES).0, ["Now hand it to a delegate."]);
+        // Validation test 1: "take the narrower reading" made a delegate do nothing.
+        assert!(DELEGATE_NOTE.contains("do the part that clearly doesn't conflict") && !DELEGATE_NOTE.contains("narrower reading"));
+    }
+
+    #[test]
+    fn no_words_leave_the_prompt_unchanged() {
+        let items = [item("user", json!([{"type":"text","text":"Do it"}])), item("user", json!([{"type":"image","data":"x"}]))];
+        assert_eq!(user_words(&items, 0), (Vec::<String>::new(), 0));
+        // An image-only message has no words; the text one before it is not pulled in.
+        assert_eq!(user_words(&items, 1), (Vec::<String>::new(), 0));
+        assert_eq!(first_message(&[], 0, "Reply OK"), "Reply OK");
+    }
+
+    #[test]
+    fn long_words_are_cut_and_the_oldest_left_out_first() {
+        let long = |mark: char| item("user", json!([{"type":"text","text":mark.to_string().repeat(MAX_USER_MESSAGE_CHARS + 50)}]));
+        let items = [long('a'), long('b'), long('c'), item("user", json!([{"type":"text","text":"short\n\nsecond paragraph"}]))];
+        let (words, left_out) = user_words(&items, 4);
+        // "short…", one cut message (4,000 + marker) — a second would pass 8,000.
+        assert_eq!(words.len(), 2);
+        assert_eq!(left_out, 2);
+        assert!(words[0].starts_with('c') && words[0].ends_with("\n…(truncated)"));
+        assert_eq!(words[1], "short\n\nsecond paragraph");
+        let text = first_message(&words, left_out, "Go");
+        assert!(text.contains("(2 earlier message(s) left out to stay within 8000 characters.)"));
+        // Every line stays inside the quote, blank lines included.
+        assert!(text.contains("> short\n> \n> second paragraph\n"));
+        assert!(words.iter().map(|word| word.chars().count()).sum::<usize>() <= MAX_USER_WORDS_CHARS);
     }
 }

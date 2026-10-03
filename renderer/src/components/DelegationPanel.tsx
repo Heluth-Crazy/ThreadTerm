@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Session } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
-import { delegateOutcomePreview, delegationActive, delegationStateLabel } from "../delegation";
+import { attachedMessagesLabel, delegateOutcomePreview, delegationActive, delegationStateLabel } from "../delegation";
 import { AgentIcon } from "./PrototypeIcon";
 import "./delegation-panel.css";
 
@@ -42,6 +42,7 @@ function DelegateCard({ delegate, onOpenSession, copy, zh }: { delegate: Session
   const [preview, setPreview] = useState<string>();
   const [issue, setIssue] = useState<string>();
   const [stopping, setStopping] = useState(false);
+  const attached = delegate.delegation!.userMessages ? attachedMessagesLabel(delegate.delegation!.userMessages, copy) : undefined;
   useEffect(() => {
     if (active) { setPreview(undefined); return; }
     let disposed = false;
@@ -65,6 +66,7 @@ function DelegateCard({ delegate, onOpenSession, copy, zh }: { delegate: Session
       {active && <button type="button" className="btn btn-subtle delegate-stop" disabled={stopping} onClick={stop}>{stopping ? copy("Stopping…", "停止中…") : copy("Stop", "停止")}</button>}
     </div>
     {delegate.delegation!.branch && <small className="delegation-branch" title={delegate.delegation!.branch}>{delegate.delegation!.branch}</small>}
+    {attached && <small className="delegate-card-attached" title={attached.title}>{attached.label}</small>}
     {preview && <p className={`delegate-card-preview${failed ? " is-error" : ""}`}>{preview}</p>}
     {issue && <p className="surface-error" role="alert">{issue}</p>}
   </article>;

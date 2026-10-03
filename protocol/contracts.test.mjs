@@ -99,6 +99,15 @@ test('session activity is additive and limited to its canonical states',()=>{
  validateResult('session.attention.acknowledge',{...session,activity:{state:'idle',revision:3,turnId:'turn'}});
  assert.throws(()=>validateResult('session.attention.acknowledge',{...session,activity:{state:'done',revision:3}}));
 });
+
+test('a delegation may say how many of the user\'s messages were attached, and nothing else new',()=>{
+ const delegation={id:'d',parentSessionId:'p',workspace:'shared',state:'running'};
+ const session={id:'s',title:'Chat',provider:'codex',mode:'chat',status:'idle',createdAt:'now',updatedAt:'now',delegation};
+ validateResult('session.attention.acknowledge',session);
+ validateResult('session.attention.acknowledge',{...session,delegation:{...delegation,userMessages:3}});
+ assert.throws(()=>validateResult('session.attention.acknowledge',{...session,delegation:{...delegation,userMessages:'3'}}));
+ assert.throws(()=>validateResult('session.attention.acknowledge',{...session,delegation:{...delegation,attachedMessages:3}}));
+});
 test('catalog and device admin results keep scope metadata additive and credentials write-only',()=>{
  const visibility={kind:'worktree',id:'w',visibility:'archived',revision:1,projectId:'p',worktreePath:'C:\\repo\\tree'};
  validateResult('catalog.visibility.list',[visibility]);

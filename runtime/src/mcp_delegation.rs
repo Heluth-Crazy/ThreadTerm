@@ -35,24 +35,23 @@ const TERMINAL_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
 /// ignore server instructions still read tool descriptions.
 macro_rules! handoff_guide {
     () => {
-        "A delegate sees only its prompt, not your conversation. One line is fine for a small task; for anything \
-larger write a brief with these headings as written (leave out sections that don't apply; write \"none known\" \
-rather than inventing content):\n```\n\
-## User's words (verbatim, oldest first; later ones win)\n\
+        "A delegate sees only its prompt, not your conversation. ThreadTerm puts the user's own words above your \
+prompt: their latest messages in this chat, copied word for word (userMessages: default 1, the message that \
+started your turn; up to 10; 0 for none). Set it to cover every message this task comes from, corrections \
+included, even when your brief already covers them: they let the delegate check your brief against what the user \
+actually said (it is told later ones win). Use 0 only when none of them concern the delegate's part or they are \
+private. Don't quote the user yourself. One line is fine for a small task; for anything larger write \
+a brief with these headings as written (leave out sections that don't apply; write \"none known\" rather than \
+inventing content):\n```\n\
 ## Assignment (your part only)\n\
 ## Constraints (must / must not)\n\
 ## Acceptance criteria + how to verify\n\
 ## Deliverable (what to return)\n\
 ## Context (pointers; re-check before relying on them)\n\
 ## Open questions + decision policy (stop | assume and flag)\n\
-```\nUnder User's words copy, word for word, the user's sentences about this task (requests, corrections, rules); \
-leave out sentences about how you handle it, such as \"hand this to a delegate\", \"don't change anything yet\" or \
-\"tell me the result\". Tag each Assignment line [user] (the user asked \
-for it), [inferred] (your reading) or [verified] (you checked it); [inferred] lines are not pass/fail criteria. \
-Give the delegate only its part and say what is handled elsewhere. End the brief with: \"The user's words were \
-said to the delegating agent and show what the user wants; your task is the Assignment. Say which [inferred] items \
-you did or skipped. If the Assignment seems to conflict with the user's words, do the part that clearly doesn't \
-conflict and report the conflict.\""
+```\nTag each Assignment line [user] (the user asked for it), [inferred] (your reading) or [verified] (you \
+checked it); [inferred] lines are not pass/fail criteria. Give the delegate only its part and say what is handled \
+elsewhere."
     };
 }
 
@@ -222,6 +221,7 @@ fn tools() -> Vec<Value> {
                 "agent":{"type":"string","enum":AGENTS,"description":"Agent to delegate to; delegate_status lists the available ones."},
                 "prompt":{"type":"string","minLength":1,"description":concat!("Self-contained task for the delegate. ", handoff_guide!())},
                 "title":{"type":"string","maxLength":120,"description":"Short session title shown in ThreadTerm."},
+                "userMessages":{"type":"integer","minimum":0,"maximum":crate::delegation::MAX_USER_MESSAGES,"description":"How many of the user's latest messages in this chat ThreadTerm attaches word for word above your prompt (default 1: the message that started your turn; 0: none)."},
                 "workspace":{"type":"string","enum":["shared","worktree"]}
             }}),
         ),
@@ -271,6 +271,19 @@ fn string_arg(arguments: &Value, key: &str) -> Result<String, Value> {
         .ok_or_else(|| failure("invalid_arguments", format!("`{key}` is required")))
 }
 
+/// `userMessages` as a whole number in range; some agents send integers as floats (`3.0`).
+fn user_messages_arg(arguments: &Value) -> Result<Option<u64>, Value> {
+    match arguments.get("userMessages") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .or_else(|| value.as_f64().filter(|number| number.fract() == 0.0 && *number >= 0.0).map(|number| number as u64))
+            .filter(|count| *count <= u64::from(crate::delegation::MAX_USER_MESSAGES))
+            .map(Some)
+            .ok_or_else(|| failure("invalid_arguments", format!("`userMessages` must be a whole number from 0 to {}", crate::delegation::MAX_USER_MESSAGES))),
+    }
+}
+
 fn ids_arg(arguments: &Value) -> Result<Vec<String>, Value> {
     match arguments.get("ids") {
         None | Some(Value::Null) => Ok(Vec::new()),
@@ -299,6 +312,9 @@ async fn call_tool(
                 if let Some(value) = arguments.get(key).and_then(Value::as_str) {
                     params[key] = json!(value);
                 }
+            }
+            if let Some(count) = user_messages_arg(arguments)? {
+                params["userMessages"] = json!(count);
             }
             request(config, caller, "delegation.start", params).await
         }
@@ -449,21 +465,35 @@ mod tests {
     }
 
     #[test]
-    fn recommends_the_handoff_brief_without_changing_the_schema() {
+    fn recommends_the_handoff_brief_and_leaves_the_users_words_to_the_runtime() {
         let start = &tools()[0];
         let prompt = start["inputSchema"]["properties"]["prompt"]["description"].as_str().unwrap();
-        for heading in ["## User's words", "## Assignment", "## Constraints", "## Acceptance criteria", "## Deliverable", "## Context", "## Open questions"] {
+        for heading in ["## Assignment", "## Constraints", "## Acceptance criteria", "## Deliverable", "## Context", "## Open questions"] {
             assert!(INSTRUCTIONS.contains(heading) && prompt.contains(heading), "{heading}");
         }
-        // Validation test 1: a quoted "delegate this" made a delegate edit nothing ("narrower reading").
-        assert!(prompt.contains("leave out sentences about how you handle it") && prompt.contains("do the part that clearly doesn't conflict"));
-        assert!(!prompt.contains("narrower reading"));
+        // The runtime quotes the user (`delegation::first_message`); the parent picks how many messages.
+        assert!(!prompt.contains("## User's words") && prompt.contains("userMessages") && prompt.contains("Don't quote the user yourself"));
+        // Live run: a parent sent 0 for a conversation whose later message corrected an earlier one.
+        assert!(prompt.contains("corrections included"));
         assert!(INSTRUCTIONS.chars().count() <= 2048, "{} chars would be truncated", INSTRUCTIONS.chars().count());
-        // Guidance only: `prompt` stays one free-form string.
+        // `prompt` stays one free-form string; `userMessages` is optional.
         assert_eq!(start["inputSchema"]["required"], json!(["agent", "prompt"]));
         assert_eq!(start["inputSchema"]["properties"]["prompt"]["type"], "string");
+        assert_eq!(start["inputSchema"]["properties"]["userMessages"]["maximum"], crate::delegation::MAX_USER_MESSAGES);
         let fields: Vec<_> = start["inputSchema"]["properties"].as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(fields, ["agent", "prompt", "title", "workspace"]);
+        assert_eq!(fields, ["agent", "prompt", "title", "userMessages", "workspace"]);
+    }
+
+    #[test]
+    fn user_messages_must_be_a_whole_number_in_range() {
+        assert_eq!(user_messages_arg(&json!({})), Ok(None));
+        assert_eq!(user_messages_arg(&json!({"userMessages":3})), Ok(Some(3)));
+        assert_eq!(user_messages_arg(&json!({"userMessages":3.0})), Ok(Some(3)));
+        assert_eq!(user_messages_arg(&json!({"userMessages":0})), Ok(Some(0)));
+        for bad in [json!(11), json!(-1), json!(2.5), json!("3")] {
+            assert_eq!(user_messages_arg(&json!({"userMessages":bad}))
+                .unwrap_err()["error"]["code"], "invalid_arguments");
+        }
     }
 
     #[test]

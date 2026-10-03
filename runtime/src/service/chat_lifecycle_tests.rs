@@ -1182,6 +1182,64 @@ fn delegation_start_links_the_delegate_connects_it_and_auto_sends_the_prompt() {
 }
 
 #[test]
+fn delegation_start_attaches_the_users_latest_words_verbatim() {
+    let fixture = Fixture::for_delegation();
+    let (parent, token) = delegation_parent(&fixture, "parent-create");
+    // The correction case: a later message changes an earlier one.
+    for (turn, text) in [
+        ("turn-1", "Add farewell(name) returning \"Goodbye, <name>!\"."),
+        ("turn-2", "Change of plan: return \"Bye, <name>!\" instead."),
+        ("turn-3", "Now hand it to a delegate."),
+    ] {
+        fixture
+            .db
+            .record_provider_event(&parent, Some(turn), "message.user", &json!({"text":text}))
+            .unwrap();
+    }
+    let prompt = "## Assignment\n- [user] Add farewell(name).";
+    let start = |operation_id: &str, count: Option<u32>| {
+        let mut params = json!({"callerSessionId":parent,"callerToken":token,"agent":"grok","prompt":prompt,"operationId":operation_id});
+        if let Some(count) = count {
+            params["userMessages"] = json!(count);
+        }
+        rpc(&fixture, "delegation.start", params)
+    };
+    let delegate = |started: Value| {
+        let child = started["sessionId"].as_str().unwrap().to_owned();
+        wait_for(|| delegation_state(&fixture, &child) == "running");
+        let session = fixture.db.session_by_id(&child).unwrap().unwrap();
+        let first = fixture.db.chat_items(&child).unwrap()[0].parts[0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (session, first)
+    };
+
+    let (session, first) = delegate(start("start-three", Some(3)).unwrap());
+    let position = |needle: &str| first.find(needle).unwrap_or_else(|| panic!("missing {needle} in {first}"));
+    assert!(position("> Add farewell(name) returning \"Goodbye, <name>!\".") < position("> Change of plan"));
+    assert!(position("> Change of plan") < position("> Now hand it to a delegate."));
+    assert!(position("> Now hand it to a delegate.") < position(prompt));
+    assert!(!session.title.contains("User's words"), "the title comes from the agent's prompt");
+    let shown = serde_json::to_value(&session).unwrap();
+    assert_eq!(shown["delegation"]["userMessages"], 3);
+
+    // By default only the message that started the parent's turn.
+    let (session, first) = delegate(start("start-default", None).unwrap());
+    assert!(first.contains("> Now hand it to a delegate.") && !first.contains("> Change of plan"));
+    assert_eq!(session.delegation.unwrap().user_messages, 1);
+
+    // None: the prompt as written, and nothing extra for the card.
+    let (session, first) = delegate(start("start-none", Some(0)).unwrap());
+    assert_eq!(first, prompt);
+    let shown = serde_json::to_value(&session).unwrap();
+    assert!(shown["delegation"].get("userMessages").is_none());
+
+    let over = start("start-over", Some(crate::delegation::MAX_USER_MESSAGES + 1)).unwrap_err();
+    assert_eq!(over.code, "invalid_user_messages");
+}
+
+#[test]
 fn delegation_rejects_wrong_tokens_and_delegates_that_try_to_delegate() {
     let fixture = Fixture::for_delegation();
     let (parent, token) = delegation_parent(&fixture, "parent-create");
