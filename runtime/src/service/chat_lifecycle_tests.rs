@@ -1186,8 +1186,10 @@ fn terminal_host_reports_the_console_host_in_use() {
     // Tests never select a host, so the in-box ConPTY is what portable-pty uses here.
     let fixture = Fixture::for_delegation();
     let host = rpc(&fixture, "terminal.host", json!({})).unwrap();
-    assert_eq!(host, json!({"conptyHost": crate::conpty::active().as_str()}));
+    assert_eq!(host["conptyHost"], crate::conpty::active().as_str());
     assert_eq!(host["conptyHost"], "system");
+    // The test binary ships no pair beside it.
+    assert_eq!(host["bundledAvailable"], false);
 }
 
 #[test]

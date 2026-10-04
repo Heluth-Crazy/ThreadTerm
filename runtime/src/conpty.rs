@@ -41,12 +41,18 @@ pub fn active() -> Backend {
 }
 
 /// The preferred host: `THREADTERM_V3_CONPTY` (QA, `system` | `bundled`) over the `conptyHost` setting.
+/// Bundled is the default (user decision 2026-10-03, after the soak); only `system` opts out.
 pub fn preference(settings: &Value) -> Backend {
     let chosen = std::env::var("THREADTERM_V3_CONPTY").ok().or_else(|| settings.get("conptyHost").and_then(Value::as_str).map(str::to_owned));
     match chosen.as_deref() {
-        Some("bundled") => Backend::Bundled,
-        _ => Backend::System,
+        Some("system") => Backend::System,
+        _ => Backend::Bundled,
     }
+}
+
+/// Whether this build ships the complete pair (`npm run prepare:conpty`); without it `bundled` falls back.
+pub fn bundled_available() -> bool {
+    bundled_dir().is_some()
 }
 
 /// Selects the host once, before the first PTY; later calls return the first choice.
@@ -188,12 +194,12 @@ mod tests {
     }
 
     #[test]
-    fn the_setting_chooses_the_host_and_only_bundled_is_special() {
+    fn bundled_is_the_default_and_only_system_opts_out() {
         std::env::remove_var("THREADTERM_V3_CONPTY");
+        assert_eq!(preference(&json!({})), Backend::Bundled);
         assert_eq!(preference(&json!({"conptyHost":"bundled"})), Backend::Bundled);
         assert_eq!(preference(&json!({"conptyHost":"system"})), Backend::System);
-        assert_eq!(preference(&json!({})), Backend::System);
-        assert_eq!(preference(&json!({"conptyHost":"anything"})), Backend::System);
+        assert_eq!(preference(&json!({"conptyHost":"anything"})), Backend::Bundled);
     }
 
     #[test]

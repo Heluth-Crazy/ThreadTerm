@@ -1,8 +1,11 @@
 // Real-app check of the console host choice (task 10-03-windows-terminal-hardening): the target-qa Rust
 // runtime + RuntimeClient + the sandboxed preload (built from source into scratch) + production React
 // TerminalSurface and SettingsControls. Shell terminal only — no agent CLI is started.
-//   node qa/conpty-host-visual.mjs <bundled|system> [selected=bundled]
-// `bundled` needs runtime/target-qa/debug/conpty/ (node runtime/conpty/prepare.mjs --out ...).
+//   node qa/conpty-host-visual.mjs <bundled|system|default> [selected: bundled|system|default]
+// `bundled` / `system` force the host (THREADTERM_V3_CONPTY); `default` uses the runtime's own choice (no
+// override, no setting → bundled when runtime/target-qa/debug/conpty/ holds the pair, else the built-in host).
+// `selected` is the Settings value shown (`default` = not set). Prepare the pair with
+// node runtime/conpty/prepare.mjs --out runtime/target-qa/debug/conpty
 // Screenshots (en + zh-CN): qa/results/conpty-host-visual/.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -15,17 +18,22 @@ import { build } from 'esbuild';
 import { _electron as electron } from '@playwright/test';
 import { terminalWindowArguments } from '../desktop/src/terminalEnvironment.ts';
 
-const [host = 'bundled', selected = 'bundled'] = process.argv.slice(2);
-assert.ok(['bundled', 'system'].includes(host) && ['bundled', 'system'].includes(selected), 'usage: node qa/conpty-host-visual.mjs <bundled|system> [bundled|system]');
+const [mode = 'default', selected = 'default'] = process.argv.slice(2);
+assert.ok(['bundled', 'system', 'default'].includes(mode) && ['bundled', 'system', 'default'].includes(selected), 'usage: node qa/conpty-host-visual.mjs <bundled|system|default> [bundled|system|default]');
 const root = resolve('.');
 const exe = join(root, 'runtime/target-qa/debug/threadterm-v3-runtime.exe');
-if (host === 'bundled') assert.ok(existsSync(join(root, 'runtime/target-qa/debug/conpty/OpenConsole.exe')), 'prepare runtime/target-qa/debug/conpty first');
+const pairPresent = existsSync(join(root, 'runtime/target-qa/debug/conpty/OpenConsole.exe')) && existsSync(join(root, 'runtime/target-qa/debug/conpty/conpty.dll'));
+if (mode === 'bundled') assert.ok(pairPresent, 'prepare runtime/target-qa/debug/conpty first');
+/** The host the runtime should end up using, and what the Settings value means. */
+const host = mode === 'default' ? (pairPresent ? 'bundled' : 'system') : mode;
+const chosen = selected === 'system' ? 'system' : 'bundled';
 const out = join(root, 'qa/results/conpty-host-visual');
 await mkdir(out, { recursive: true });
 const scratch = await mkdtemp(join(tmpdir(), 'tt-conpty-host-'));
 const data = join(scratch, 'data'); await mkdir(data);
 const pipe = `\\\\.\\pipe\\tt-conpty-host-${randomUUID()}`;
-const runtimeEnv = { ...process.env, THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: join(scratch, 'user'), THREADTERM_V3_PIPE: pipe, THREADTERM_V3_RUNTIME: exe, THREADTERM_V3_CONPTY: host };
+const { THREADTERM_V3_CONPTY: _inherited, ...parentEnv } = process.env;
+const runtimeEnv = { ...parentEnv, THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: join(scratch, 'user'), THREADTERM_V3_PIPE: pipe, THREADTERM_V3_RUNTIME: exe, ...(mode === 'default' ? {} : { THREADTERM_V3_CONPTY: mode }) };
 const checks = [];
 const note = text => { checks.push(text); console.log(`PASS ${text}`); };
 
@@ -41,7 +49,7 @@ const open = Terminal.prototype.open;
 Terminal.prototype.open = function (element) { window.term = this; return open.call(this, element); };
 function Fixture() {
   const [session, setSession] = useState(), [zh, setZh] = useState(false);
-  const [settings, setSettings] = useState({ revision: 0, conptyHost: ${JSON.stringify(selected)} });
+  const [settings, setSettings] = useState(${JSON.stringify(selected === 'default' ? { revision: 0 } : { revision: 0, conptyHost: selected })});
   window.showSession = setSession; window.setZh = setZh;
   useEffect(() => { if (!session) return; const timer = setInterval(() => window.threadterm.request('runtime.snapshot', {}).then(snapshot => setSession(old => snapshot.sessions.find(item => item.id === old?.id) ?? old)), 500); return () => clearInterval(timer); }, [session?.id]);
   return <I18nProvider locale={zh ? 'zh-CN' : 'en'}><div className="fixture">
@@ -120,12 +128,17 @@ try {
     const settingsText = await page.locator('.qa-settings').innerText();
     const expectInUse = host === 'bundled' ? (zh ? '随附的 OpenConsole' : 'the bundled OpenConsole') : (zh ? 'Windows 自带的控制台主机' : 'the Windows built-in console host');
     assert.ok(settingsText.includes(expectInUse), `settings must name the host in use (${expectInUse})`);
+    const missing = chosen === 'bundled' && !pairPresent;
+    const missingNote = zh ? '此版本未附带 OpenConsole' : 'does not include the OpenConsole files';
+    assert.equal(settingsText.includes(missingNote), missing, 'the "not in this build" note exactly when bundled is chosen but the pair is missing');
     const restartNote = zh ? '重新启动 ThreadTerm' : 'Takes effect after ThreadTerm';
-    assert.equal(settingsText.includes(restartNote), host !== selected, 'restart note only when the choice differs from the host in use');
+    assert.equal(settingsText.includes(restartNote), !missing && host !== chosen, 'restart note only when the choice differs from the host in use');
+    const checked = await page.locator('.qa-settings .compatibility-settings').last().locator('input[type=checkbox]').isChecked();
+    assert.equal(checked, chosen === 'bundled', 'the switch shows the choice (bundled unless set to system)');
     await page.locator('.qa-settings').evaluate(element => { element.scrollTop = element.scrollHeight; });
-    const name = `${host}-selected-${selected}-${zh ? 'zh-CN' : 'en'}.png`;
+    const name = `${mode}-selected-${selected}${pairPresent ? '' : '-no-pair'}-${zh ? 'zh-CN' : 'en'}.png`;
     await page.screenshot({ path: join(out, name) });
-    note(`settings (${zh ? 'zh-CN' : 'en'}) name the host in use${host !== selected ? ' and say a restart is needed' : ''} → ${name}`);
+    note(`settings (${zh ? 'zh-CN' : 'en'}): switch ${checked ? 'on' : 'off'}, host in use named${missing ? ', "not in this build" note' : host !== chosen ? ', restart note' : ''} → ${name}`);
   }
   assert.deepEqual(errors, [], 'no page errors');
   await request('session.stop', { sessionId: session.id, force: true, operationId: randomUUID() }).catch(() => {});

@@ -457,6 +457,61 @@ mod tests {
         panic!("PTY did not capture shell output");
     }
 
+    /// The desktop starts the runtime detached, i.e. in a new process group, which ignores Ctrl+C —
+    /// and that is inherited by every process it starts. The PTY bootstrap must hand the terminal's
+    /// program normal Ctrl+C handling back, or Ctrl+C cannot stop a running command.
+    #[cfg(windows)]
+    #[test]
+    fn ctrl_c_interrupts_a_running_command_even_when_the_runtime_ignores_it() {
+        use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                unsafe { SetConsoleCtrlHandler(None, 0) };
+            }
+        }
+        unsafe { SetConsoleCtrlHandler(None, 1) }; // like the detached runtime
+        let _restore = Restore;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+        let session = db
+            .create_session(CreateSession { project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None, operation_id: "pty-ctrl-c" })
+            .unwrap();
+        let manager = PtyManager::new(Arc::new(OutputStore::default()));
+        let args = ["/d".to_owned(), "/k".to_owned(), "prompt READY$G".to_owned()];
+        manager.launch(Arc::clone(&db), &session.id, dir.path().to_str().unwrap(), Some("cmd.exe"), &args).unwrap();
+        let text = || {
+            let mut output = Vec::new();
+            for (_, bytes) in db.output_from(&session.id, 0, 1024 * 1024).unwrap() {
+                output.extend(bytes);
+            }
+            String::from_utf8_lossy(&output).into_owned()
+        };
+        let wait = |check: &dyn Fn(&str) -> bool, what: &str| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !check(&text()) {
+                assert!(Instant::now() < deadline, "{what}; output: {}", text());
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        wait(&|output| output.contains("READY>"), "cmd prompt did not appear");
+        manager.input(&session.id, b"ping -n 30 127.0.0.1\r").unwrap();
+        wait(&|output| output.matches("127.0.0.1").count() >= 4, "ping did not start");
+        manager.input(&session.id, b"\x03").unwrap();
+        // The prompt comes back long before ping's 30 seconds are over.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let output = text();
+            let after_ping = output.rfind("127.0.0.1").map(|at| &output[at..]).unwrap_or("");
+            if after_ping.contains("READY>") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "Ctrl+C did not interrupt ping; output: {output}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        manager.stop(&db, &session.id, true).unwrap();
+    }
+
     #[test]
     fn force_stop_returns_immediately_and_leaves_other_sessions_live() {
         let dir = tempfile::tempdir().unwrap();
