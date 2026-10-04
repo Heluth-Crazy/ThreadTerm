@@ -89,6 +89,9 @@ impl PtyManager {
             }
             command
         };
+        // The user's current Windows environment rather than the long-lived runtime's
+        // (environment.rs); the session's own variables below still win.
+        crate::environment::apply(&mut command);
         if db
             .session_by_id(session_id)?
             .is_some_and(|session| session.provider == "grok")

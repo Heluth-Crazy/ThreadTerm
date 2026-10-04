@@ -11,6 +11,8 @@ async fn main() -> Result<()> {
     if std::env::args().any(|argument| argument == "--pty-bootstrap") {
         std::process::exit(threadterm_v3_runtime::bootstrap::run()?);
     }
+    // First: what Windows defined when this environment was inherited (environment.rs).
+    threadterm_v3_runtime::environment::initialize();
     let config = RuntimeConfig::load()?;
     let _singleton = RuntimeLock::acquire(&format!(
         "Local\\ThreadTermV3-{}",

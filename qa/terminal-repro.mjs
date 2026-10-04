@@ -28,7 +28,7 @@ const { Terminal } = xterm;
 const [mode, backend, agent] = process.argv.slice(2);
 // kimi / grok / opencode: `--look` only until their composer is known (READY below) — never type into an
 // unknown screen.
-if (!['input', 'resize', 'startup', 'da1', 'reflow', 'pwsh', 'ctrlc'].includes(mode) || !['inbox', 'openconsole'].includes(backend) || (!['startup', 'da1', 'reflow', 'pwsh', 'ctrlc'].includes(mode) && !['claude', 'codex', 'kimi', 'grok', 'opencode'].includes(agent))) {
+if (!['input', 'resize', 'startup', 'da1', 'reflow', 'pwsh', 'ctrlc', 'env'].includes(mode) || !['inbox', 'openconsole'].includes(backend) || (!['startup', 'da1', 'reflow', 'pwsh', 'ctrlc', 'env'].includes(mode) &&!['claude', 'codex', 'kimi', 'grok', 'opencode'].includes(agent))) {
   throw Error('usage: node qa/terminal-repro.mjs <input|resize> <inbox|openconsole> <claude|codex> | startup <inbox|openconsole>');
 }
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -46,7 +46,7 @@ const data = join(scratch, 'data');
 const pipe = `\\\\.\\pipe\\tt-term-repro-${randomUUID()}`;
 const peers = new Set();
 const sessions = [];
-let daemon;
+let daemon, runtimeEnv;
 
 /**
  * Concurrent requests on one connection, routed by id like the desktop's runtime client
@@ -81,7 +81,8 @@ async function start() {
   // Claude CLI in these terminals turn transcript saving off (seen in the first run).
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CLAUDECODE|CLAUDE_CODE_|CLAUDE_PID|CLAUDE_EFFORT)/.test(key)));
   // Detached like desktop/src/runtime-client.ts: a new process group, which ignores Ctrl+C (inherited).
-  daemon = spawn(exe, [], { detached: true, windowsHide: true, env: { ...env, THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: join(scratch, 'user'), THREADTERM_V3_PIPE: pipe, THREADTERM_V3_CONPTY: backend === 'openconsole' ? 'bundled' : 'system' }, stdio: 'ignore' });
+  runtimeEnv = { ...env, ...(mode === 'env' ? launcherEnv : {}), THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: join(scratch, 'user'), THREADTERM_V3_PIPE: pipe, THREADTERM_V3_CONPTY: backend === 'openconsole' ? 'bundled' : 'system' };
+  daemon = spawn(exe, [], { detached: true, windowsHide: true, env: runtimeEnv, stdio: 'ignore' });
   for (let i = 0; i < 150; i++) {
     try {
       const peer = await connectPeer(`${pipe}-control`);
@@ -413,6 +414,41 @@ async function ctrlcMode(peer) {
   return { interrupted };
 }
 
+// ---------- env: what a new terminal's environment is made of (runtime/src/environment.rs) ----------
+// The runtime is started like a QA run that isolates a home: USERPROFILE and APPDATA point into the
+// scratch folder, a launcher-only variable is set and a fake bin is put first on PATH. Read-only for the
+// registry; the terminal writes `set` into the scratch folder.
+const launcherEnv = { USERPROFILE: join(scratch, 'home'), APPDATA: join(scratch, 'appdata'), TT_ENV_PROBE: 'launcher', PATH: `${join(scratch, 'bin')};${process.env.PATH}` };
+async function envMode(peer) {
+  const file = join(scratch, 'env.txt');
+  const created = await peer.request('session.create', { cwd: scratch, title: 'QA env', provider: 'shell', mode: 'terminal', executable: 'cmd.exe', args: ['/d', '/c', `set>${file}`], operationId: randomUUID() }, 60000);
+  sessions.push(created);
+  await waitFor(() => existsSync(file) && statSync(file).size > 0, 'the terminal did not write its environment', 30000);
+  await delay(500);
+  const vars = new Map(readFileSync(file, 'latin1').split(/\r?\n/).filter(Boolean).map(line => { const at = line.indexOf('=', 1); return [line.slice(0, at).toUpperCase(), line.slice(at + 1)]; }));
+  const path = (vars.get('PATH') ?? '').split(';').filter(Boolean);
+  const inScratch = value => value?.toLowerCase().startsWith(scratch.toLowerCase());
+  const result = {
+    count: vars.size,
+    launcherOnlyKept: vars.get('TT_ENV_PROBE') === 'launcher',
+    userprofileKept: vars.get('USERPROFILE') === launcherEnv.USERPROFILE,
+    appdataKept: vars.get('APPDATA') === launcherEnv.APPDATA,
+    temp: vars.get('TEMP'),
+    tempIsReal: vars.get('TEMP') === process.env.TEMP && !inScratch(vars.get('TEMP')),
+    pathEntriesInScratch: path.filter(inScratch),
+    pathGitBashEntries: path.filter(entry => /\\Git\\(usr|mingw64)\\/i.test(entry)).length,
+    logonServer: vars.has('LOGONSERVER'),
+    bootstrapVarsLeft: [...vars.keys()].filter(name => name.startsWith('THREADTERM_V3_BOOTSTRAP')),
+  };
+  // Names only: what the terminal has that the runtime was not given, and the reverse.
+  const given = new Set(Object.keys(runtimeEnv).map(name => name.toUpperCase()));
+  result.notFromLauncher = [...vars.keys()].filter(name => !given.has(name)).sort();
+  result.launcherDropped = [...given].filter(name => !vars.has(name)).sort();
+  log(JSON.stringify(result));
+  await peer.request('session.stop', { sessionId: created.id, force: true, operationId: randomUUID() }).catch(() => {});
+  return result;
+}
+
 // ---------- pwsh: PowerShell soak (TT_SHELL=pwsh.exe | powershell.exe) ----------
 async function pwshMode(peer) {
   const shell = process.env.TT_SHELL ?? 'pwsh.exe';
@@ -531,7 +567,7 @@ try {
     console.log(view.screen().filter(line => line.trim()).join('\n'));
     await view.stop();
     await peer.request('session.stop', { sessionId: session.id, force: true, operationId: randomUUID() }).catch(() => {});
-  } else result = mode === 'input' ? await inputMode(peer) : mode === 'resize' ? await resizeMode(peer) : mode === 'da1' ? await da1Mode(peer) : mode === 'reflow' ? await reflowMode(peer) : mode === 'pwsh' ? await pwshMode(peer) : mode === 'ctrlc' ? await ctrlcMode(peer) : await startupMode(peer);
+  } else result = mode === 'input' ? await inputMode(peer) : mode === 'resize' ? await resizeMode(peer) : mode === 'da1' ? await da1Mode(peer) : mode === 'reflow' ? await reflowMode(peer) : mode === 'pwsh' ? await pwshMode(peer) : mode === 'ctrlc' ? await ctrlcMode(peer) : mode === 'env' ? await envMode(peer) : await startupMode(peer);
   // Final native ids (Codex learns its thread id after start).
   const snapshot = await peer.request('runtime.snapshot');
   for (const session of sessions) session.nativeId = snapshot.sessions.find(item => item.id === session.id)?.nativeId ?? session.nativeId;
