@@ -47,6 +47,15 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 [dev-dependencies]
 tempfile = "3.14"
 
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Diagnostics_ToolHelp"] }
+
 [[bin]]
 name = "threadterm-v3-mcp"
 path = "src/bin/threadterm-v3-mcp.rs"
+
+# Its own process (handle and child-process counts) and its own main (it is also the PTY bootstrap).
+[[test]]
+name = "pty_lifecycle"
+path = "tests/pty_lifecycle.rs"
+harness = false
