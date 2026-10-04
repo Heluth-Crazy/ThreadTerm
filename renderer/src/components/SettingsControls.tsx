@@ -1,7 +1,8 @@
-import { useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { Settings } from "@threadterm/protocol";
 import { desktopPreferences, testNotification } from "../bridge";
 import { parseSupervision } from "../supervision";
+import { conptyHost, type ConptyHost } from "../terminalHost";
 
 const defaults = { showMainWindow: "CommandOrControl+Shift+Space", floatLastSession: "CommandOrControl+Shift+O" };
 const displayKey = (value: string) => value.replace(/CommandOrControl/g, navigator.platform.includes("Mac") ? "Cmd" : "Ctrl");
@@ -54,6 +55,24 @@ export function SettingsControls({ settings, zh, update, counts }: { settings: S
     <p className="hint">{text("本窗口每分钟检查会话输出。达到观察时长且连续检查无变化时提醒；不会自动回复或审批。", "This window checks session output every minute and reports repeated inactivity after the observation range. It never replies or approves automatically.")}</p>
     <div className="supervisor-launch-counts"><div className="setting-divider" /><p className="hint">{text("本次启动监督计数", "Supervisor counters for this launch")}: {counts.checks} {text("次检查", "checks")} · {counts.alertCount} {text("个警示", "alerts")}。{text("它们不会作为历史审计保存。", "They are not retained as historical audit data.")}</p></div>
     <div className="compatibility-settings"><div className="setting-divider" /><h4>{text("AI 补全兼容性", "AI completion compatibility")}</h4><SettingsSwitch disabled={busy} checked={record(settings.terminalCompatibility).aiCompletionHints === true} onChange={aiCompletionHints => save({ terminalCompatibility: { aiCompletionHints } })}>{text("启用补全兼容启发式", "Enable completion compatibility heuristic")}</SettingsSwitch><p className="hint">{text("控制终端补全的输入兼容策略，不启用监督或后台检查。", "Controls terminal completion input compatibility without enabling supervision or background checks.")}</p><div className="setting-divider" /><p className="hint" role="status">{receipt ?? text("尚未发送通知测试。", "No notification test sent.")}</p></div>
+    {window.threadterm.windowsPty && <ConptyHostSetting selected={settings.conptyHost === "bundled" ? "bundled" : "system"} disabled={busy} text={text} onChange={host => save({ conptyHost: host })} />}
     {issue && <p className="surface-error" role="alert">{issue}</p>}
   </>;
+}
+
+/** Windows only: which console host terminals run on (runtime/src/conpty.rs); read when the runtime starts. */
+function ConptyHostSetting({ selected, disabled, text, onChange }: { selected: ConptyHost; disabled: boolean; text: (cn: string, en: string) => string; onChange: (host: ConptyHost) => void }) {
+  const [active, setActive] = useState<ConptyHost>();
+  useEffect(() => {
+    let live = true;
+    void conptyHost().then(host => { if (live) setActive(host); });
+    return () => { live = false; };
+  }, []);
+  const name = (host: ConptyHost) => host === "bundled" ? text("随附的 OpenConsole", "the bundled OpenConsole") : text("Windows 自带的控制台主机", "the Windows built-in console host");
+  return <div className="compatibility-settings"><div className="setting-divider" />
+    <h4>{text("终端控制台主机", "Terminal console host")}</h4>
+    <SettingsSwitch disabled={disabled} checked={selected === "bundled"} onChange={value => onChange(value ? "bundled" : "system")}>{text("使用随附的 OpenConsole", "Use the bundled OpenConsole")}</SettingsSwitch>
+    <p className="hint">{text("ThreadTerm 随附的 Microsoft OpenConsole 1.24 比旧版 Windows 自带的控制台主机更新：拖动分隔线后不会在回滚区留下重复画面，调整终端宽度时占满整行的文字也不会和下一行粘连。", "Microsoft's OpenConsole 1.24, shipped with ThreadTerm, is newer than the console host in older Windows: dragging a divider leaves no stray copies of the screen in the scrollback, and lines that fill the full width stay separate when a terminal is resized.")}</p>
+    {active && <p className="hint">{text(`当前使用：${name(active)}。`, `In use: ${name(active)}.`)}{active !== selected && text("重新启动 ThreadTerm（包括后台运行时）后生效。", " Takes effect after ThreadTerm, including its background runtime, restarts.")}</p>}
+  </div>;
 }

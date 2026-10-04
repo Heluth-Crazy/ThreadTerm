@@ -6,6 +6,7 @@
 #[cfg(windows)]
 pub mod bootstrap;
 pub mod config;
+pub mod conpty;
 pub mod db;
 pub mod delegation;
 pub mod devices;

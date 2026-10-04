@@ -30,6 +30,8 @@ async fn main() -> Result<()> {
     threadterm_v3_runtime::workspace_services::initialize(&db)?;
     threadterm_v3_runtime::project_catalog::initialize(&db)?;
     threadterm_v3_runtime::settings_services::initialize(&db)?;
+    // Before any PTY: the console host is fixed for the life of this process (conpty.rs).
+    threadterm_v3_runtime::conpty::initialize(threadterm_v3_runtime::conpty::preference(&db.settings_value()?));
     threadterm_v3_runtime::session_configs::initialize(&db)?;
     threadterm_v3_runtime::retry_scheduler::initialize(&db)?;
     threadterm_v3_runtime::review::initialize(&db)?;

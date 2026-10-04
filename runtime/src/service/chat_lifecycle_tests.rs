@@ -1182,6 +1182,15 @@ fn delegation_start_links_the_delegate_connects_it_and_auto_sends_the_prompt() {
 }
 
 #[test]
+fn terminal_host_reports_the_console_host_in_use() {
+    // Tests never select a host, so the in-box ConPTY is what portable-pty uses here.
+    let fixture = Fixture::for_delegation();
+    let host = rpc(&fixture, "terminal.host", json!({})).unwrap();
+    assert_eq!(host, json!({"conptyHost": crate::conpty::active().as_str()}));
+    assert_eq!(host["conptyHost"], "system");
+}
+
+#[test]
 fn delegation_start_attaches_the_users_latest_words_verbatim() {
     let fixture = Fixture::for_delegation();
     let (parent, token) = delegation_parent(&fixture, "parent-create");

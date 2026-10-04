@@ -108,6 +108,11 @@ try {
   assert.ok(before.caretCell?.bgMode, 'Claude-painted caret cell must remain in the native buffer');
   assert.equal(before.hostCursor, false, 'Claude hid the host cursor; renderer must not reveal a second one');
   assert.deepEqual(inputs.slice(0, 2), ['h', '\x7f'], 'xterm must forward the typed character and DEL Backspace byte unchanged');
+  // Shift+Enter is a newline for Claude (ESC CR, renderer/src/terminalKeys.ts); plain Enter stays CR.
+  await page.keyboard.press('Shift+Enter');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.qaInputs.length >= 4, null, { timeout: 10_000 });
+  assert.deepEqual((await page.evaluate(() => window.qaInputs)).slice(2, 4), ['\x1b\r', '\r'], 'Shift+Enter must send ESC CR (newline) and Enter must stay CR (submit)');
   await page.evaluate(async () => window.qaEmit('\x1b[?25h'));
   await page.waitForFunction(() => Boolean(document.querySelector('.terminal-host .xterm-cursor')), null, { timeout: 3000 });
   await page.evaluate(async () => window.qaEmit('\x1b[?25l'));

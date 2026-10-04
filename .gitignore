@@ -16,6 +16,8 @@ target/
 # Application outputs (the application now lives at the repository root)
 /desktop-dist/
 /runtime/target-qa/
+# Pinned Microsoft ConPTY pair, fetched and verified by `npm run prepare:conpty`
+/runtime/vendor/
 /providers/claude-sdk/dist/
 /release/
 /release-*/

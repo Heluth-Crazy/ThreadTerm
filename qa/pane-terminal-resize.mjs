@@ -251,8 +251,11 @@ try {
     const workspace = await page.locator('.pane-workspace').boundingBox();
     fraction = Math.min(0.9, Math.max(0.1, (78 * (narrowed.left.paneWidth / narrowed.left.cols)) / workspace.width));
   }
-  narrowed = { left: await terminalState('left'), right: await terminalState('right') };
+  // The PTY follows once the drag has been quiet (renderer/src/terminalResize.ts), so read the
+  // panes after both providers repainted at their final width.
   await waitForFrame('left');
+  await waitForFrame('right');
+  narrowed = { left: await terminalState('left'), right: await terminalState('right') };
   assert.ok(Math.abs(narrowed.left.cols - 78) <= 6, `left pane should land near 78 columns, got ${narrowed.left.cols}`);
   assert.ok(narrowed.left.paneWidth < before.left.paneWidth - 40, 'left pane DOM width did not shrink');
   assert.ok(narrowed.left.hostWidth < before.left.hostWidth - 40, 'left terminal host width did not shrink');
@@ -283,6 +286,7 @@ try {
   // Phase 3: drag back wider; the active prompt frame must repaint at the larger width.
   await dragDivider(page, 0.62);
   await waitForFrame('left');
+  await waitForFrame('right');
   const widened = { left: await terminalState('left'), right: await terminalState('right') };
   assert.ok(widened.left.cols > narrowed.left.cols, 'narrow->wide drag did not increase left cols');
   await assertFinalConsistency('narrow to wide drag', ['left', 'right']);
@@ -294,6 +298,7 @@ try {
   // Phase 4: rapid consecutive drags keep the final size and never duplicate RPCs.
   for (const fraction of [0.3, 0.75, 0.5]) await dragDivider(page, fraction);
   await waitForFrame('left');
+  await waitForFrame('right');
   await assertFinalConsistency('rapid drags', ['left', 'right']);
   const rapidCalls = await resizeCalls('qa-resize-left');
   for (let index = 1; index < rapidCalls.length; index += 1) {
