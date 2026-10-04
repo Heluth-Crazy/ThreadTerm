@@ -11,6 +11,7 @@ pub mod db;
 pub mod delegation;
 pub mod devices;
 pub mod domain;
+pub mod environment;
 pub mod file_ops;
 pub mod file_references;
 pub mod git_actions;
