@@ -61,6 +61,14 @@ impl PtyManager {
                 pixel_height: 0,
             })
             .context("opening PTY")?;
+        // The bundled console host waits ~3 s for an answer to its startup DA1 query: answer it before
+        // the child starts, and keep that query from the clients (conpty.rs).
+        let bundled_host = crate::conpty::active() == crate::conpty::Backend::Bundled;
+        let mut writer = pair.master.take_writer().context("opening PTY writer")?;
+        if bundled_host {
+            writer.write_all(crate::conpty::DA1_REPLY).context("answering the console host")?;
+            writer.flush().context("answering the console host")?;
+        }
         db.set_session_terminal_size(session_id, i32::from(cols), i32::from(rows))?;
         // Reject script launches whose arguments cannot survive cmd.exe quoting
         // here, before the bootstrap gate would hide the cause behind a timeout.
@@ -110,7 +118,6 @@ impl PtyManager {
             let _ = child.kill();
             return Err(error);
         }
-        let writer = pair.master.take_writer().context("opening PTY writer")?;
         let mut reader = pair
             .master
             .try_clone_reader()
@@ -123,16 +130,22 @@ impl PtyManager {
             .name(format!("pty-reader-{id}"))
             .spawn(move || {
                 let mut buffer = [0u8; 8192];
+                let mut startup = crate::conpty::StartupQueryFilter::new(bundled_host);
                 loop {
                     match reader.read(&mut buffer) {
                         Ok(0) => break,
                         Ok(len) => {
-                            if output.append(&reader_db, &id, &buffer[..len]).is_err() {
+                            let data = startup.feed(&buffer[..len]);
+                            if !data.is_empty() && output.append(&reader_db, &id, &data).is_err() {
                                 break;
                             }
                         }
                         Err(_) => break,
                     }
+                }
+                let rest = startup.finish();
+                if !rest.is_empty() {
+                    let _ = output.append(&reader_db, &id, &rest);
                 }
             })?;
         let live = Arc::new(LivePty {

@@ -23,12 +23,14 @@
     "build:desktop": "esbuild desktop/src/main.ts --bundle --platform=node --target=node22 --format=cjs --external:electron --outfile=desktop-dist/main.cjs && esbuild desktop/src/preload.ts --bundle --platform=node --target=node22 --format=cjs --external:electron --outfile=desktop-dist/preload.cjs",
     "build:renderer": "vite build --config vite.config.ts",
     "build:runtime": "cargo build --manifest-path runtime/Cargo.toml --release --bins",
+    "prepare:conpty": "node runtime/conpty/prepare.mjs --out runtime/vendor/conpty/x64 --arch x64",
+    "prepare:conpty:dev": "node runtime/conpty/prepare.mjs --out runtime/target/debug/conpty --arch x64",
     "typecheck": "npm run typecheck:desktop && npm run typecheck:renderer",
     "typecheck:desktop": "tsc --noEmit -p tsconfig.desktop.json",
     "typecheck:renderer": "npm --workspace @threadterm/v3-renderer run typecheck",
     "test:terminal": "esbuild desktop/test/terminal-environment.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/terminal-environment.test.cjs && node --test desktop-dist/terminal-environment.test.cjs desktop/test/terminal-buffer-semantics.test.cjs && node --experimental-strip-types --test qa/control-lease.test.ts",
     "test:desktop": "esbuild desktop/test/output-fanout.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/output-fanout.test.cjs && esbuild desktop/src/stdioGuards.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/stdioGuards.test.cjs && esbuild desktop/src/windowChrome.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/windowChrome.test.cjs && esbuild desktop/src/runtime-handshake.test.ts --bundle --platform=node --format=cjs --outfile=desktop-dist/runtime-handshake.test.cjs && esbuild desktop/test/runtime-client-replay.test.ts --bundle --platform=node --format=cjs --external:electron --outfile=desktop-dist/runtime-client-replay.test.cjs && node --test desktop-dist/runtime-client-replay.test.cjs desktop-dist/output-fanout.test.cjs desktop-dist/stdioGuards.test.cjs desktop-dist/windowChrome.test.cjs desktop-dist/runtime-handshake.test.cjs desktop/test/terminal-buffer-semantics.test.cjs",
-    "dist:win": "npm run build && npm run build:runtime && electron-builder --win nsis",
+    "dist:win": "npm run build && npm run build:runtime && npm run prepare:conpty && electron-builder --win nsis",
     "start": "electron ."
   },
   "build": {
@@ -60,6 +62,11 @@
       {
         "from": "runtime/target/release/threadterm-v3-mcp.exe",
         "to": "runtime/threadterm-v3-mcp.exe"
+      },
+      {
+        "from": "runtime/vendor/conpty/x64",
+        "to": "runtime/conpty",
+        "filter": ["conpty.dll", "OpenConsole.exe", "VERSION.txt"]
       }
     ],
     "nsis": {

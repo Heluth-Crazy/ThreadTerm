@@ -8,6 +8,9 @@ import { acquireControl } from '../controlLease';
 import { registerTerminalInputTarget } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
 import { terminalTheme } from '../terminalTheme';
+import { shiftEnterBytes } from '../terminalKeys';
+import { createResizeScheduler, RESIZE_QUIET_MS } from '../terminalResize';
+import { conptyHost, windowsPtyFor } from '../terminalHost';
 import './terminal-surface.css';
 import {BlockInspector} from './BlockInspector';
 import { AgentIcon, Icon } from './PrototypeIcon';
@@ -199,14 +202,23 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     };
     const pendingWrites = new Set<() => void>();
     let controlGeneration = 0;
-    let lastResize: string | undefined;
     let resizeRetried: string | undefined;
     const resizeFailureNote = "Terminal resize was rejected; the provider may keep using the previous size until the next successful resize.";
     const terminal = new Terminal({ ...(fixedSize ? { cols: fixedSize.cols, rows: fixedSize.rows } : {}), cursorBlink: true, fontFamily: '"Cascadia Code", Consolas, monospace', fontSize: 13, lineHeight: 1.35, minimumContrastRatio: 4.5, scrollback: 10000, scrollOnEraseInDisplay: false, windowsPty: window.threadterm.windowsPty, theme: terminalTheme(theme) });
     terminalRef.current = terminal;
+    // xterm's Windows heuristics must match the console host the runtime really uses (terminalHost.ts).
+    void conptyHost().then(host => { if (!disposed) terminal.options.windowsPty = windowsPtyFor(window.threadterm.windowsPty, host); });
     const nativeCursor = nativeCursorVisibility();
     nativeCursorRef.current = nativeCursor;
     const fit = new FitAddon(); terminal.loadAddon(fit); terminal.open(element);
+    // Shift+Enter as a newline for AI CLIs (xterm would send Enter); through onData, so lease and
+    // read-only checks still apply.
+    terminal.attachCustomKeyEventHandler(event => {
+      const bytes = shiftEnterBytes(provider, event);
+      if (bytes === undefined) return true;
+      if (event.type === "keydown") { event.preventDefault(); terminal.input(bytes); }
+      return false;
+    });
     const noteRenderedStartupFrame = (cursor: number, chunk: import("@threadterm/protocol").OutputChunk) => {
       // This is presentation evidence only, never a claim that Codex is ready:
       // wait until a post-launch byte has actually rendered a non-empty xterm
@@ -251,6 +263,21 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     // Legacy records have no trustworthy geometry. Keep their documented
     // best-effort current-pane replay instead of inventing an 80x24 history.
     if (!fixedSize) { try { fit.fit(); } catch { /* host may not be measurable yet */ } }
+    // xterm reflows at once; the PTY follows once a drag pauses (terminalResize.ts).
+    const resizeScheduler = createResizeScheduler(size => request('terminal.resize', { sessionId, cols: size.cols, rows: size.rows, leaseEpoch: size.epoch }).then(() => {
+      if (disposed) return;
+      resizeRetried = undefined;
+      setIssue(current => current === resizeFailureNote ? undefined : current);
+    }, () => {
+      if (disposed) return;
+      // Forget the failed size so the next observer pass sends it again.
+      resizeScheduler.reset();
+      const key = `${size.epoch}:${size.cols}:${size.rows}`;
+      if (resizeRetried === key) { setIssue(current => current ?? resizeFailureNote); return; }
+      // Re-validate once after the layout settles so a failed final resize is not lost.
+      resizeRetried = key;
+      requestAnimationFrame(() => resize());
+    }), { quietMs: RESIZE_QUIET_MS });
     const resize = () => {
       if (disposed || element.clientWidth === 0 || element.clientHeight === 0) return;
       if (!replayComplete) return;
@@ -258,21 +285,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
       try {
         fit.fit();
         if (!leaseEpoch) return;
-        const size = `${leaseEpoch}:${terminal.cols}:${terminal.rows}`;
-        if (lastResize === size) return;
-        lastResize = size;
-        void request('terminal.resize', { sessionId, cols: terminal.cols, rows: terminal.rows, leaseEpoch }).then(() => {
-          if (disposed) return;
-          resizeRetried = undefined;
-          setIssue(current => current === resizeFailureNote ? undefined : current);
-        }, () => {
-          if (disposed) return;
-          if (lastResize === size) lastResize = undefined;
-          if (resizeRetried === size) { setIssue(current => current ?? resizeFailureNote); return; }
-          // Re-validate once after the layout settles so a failed final resize is not lost.
-          resizeRetried = size;
-          requestAnimationFrame(() => resize());
-        });
+        resizeScheduler.request({ cols: terminal.cols, rows: terminal.rows, epoch: leaseEpoch });
       } catch { /* xterm host is not yet measurable. */ }
     };
     let replayComplete = false;
@@ -284,7 +297,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     } });
     const setControl = (enabled: boolean) => {
       const generation = ++controlGeneration;
-      releaseControl?.(); releaseControl = undefined; leaseEpoch = undefined; lastResize = undefined; resizeRetried = undefined;
+      releaseControl?.(); releaseControl = undefined; leaseEpoch = undefined; resizeScheduler.reset(); resizeRetried = undefined;
       if (!disposed) terminal.options.disableStdin = true;
       if (!enabled || disposed) return;
       void acquireControl(sessionId, () => {
@@ -401,7 +414,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
         failReplay(message.includes("terminal_history_gap") ? "gap" : "error", message);
       }
     })();
-    return () => { disposed = true; resumeFrameProbeRef.current?.dispose(); resumeFrameProbeRef.current = undefined; window.clearInterval(replayTimer); for (const settle of pendingWrites) settle(); setControl(false); unregisterInput(); observer.disconnect(); dataDisposable.dispose(); scrollDisposable.dispose(); selectionDisposable.dispose(); fileLinkDisposable.dispose(); fileLinkHitArea?.dispose(); fileLinkInteraction.dispose(); unsubscribeOutput?.(); terminal.dispose(); if (terminalRef.current === terminal) terminalRef.current = undefined; if (nativeCursorRef.current === nativeCursor) nativeCursorRef.current = undefined; if (controlRef.current === setControl) controlRef.current = undefined; };
+    return () => { disposed = true; resumeFrameProbeRef.current?.dispose(); resumeFrameProbeRef.current = undefined; window.clearInterval(replayTimer); for (const settle of pendingWrites) settle(); setControl(false); unregisterInput(); observer.disconnect(); resizeScheduler.dispose(); dataDisposable.dispose(); scrollDisposable.dispose(); selectionDisposable.dispose(); fileLinkDisposable.dispose(); fileLinkHitArea?.dispose(); fileLinkInteraction.dispose(); unsubscribeOutput?.(); terminal.dispose(); if (terminalRef.current === terminal) terminalRef.current = undefined; if (nativeCursorRef.current === nativeCursor) nativeCursorRef.current = undefined; if (controlRef.current === setControl) controlRef.current = undefined; };
   }, [provider, sessionId, replayAttempt]);
   useEffect(() => {
     const setControl = controlRef.current;

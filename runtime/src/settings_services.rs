@@ -39,6 +39,8 @@ const RUNTIME_SETTINGS: &[&str] = &[
     "floatMode",
     "supervision",
     "providerNetwork",
+    // Machine-specific (not exported): the console host for Windows terminals (conpty.rs); read at runtime start.
+    "conptyHost",
 ];
 struct RelocationReservation {
     operation_id: String,
@@ -63,6 +65,7 @@ pub fn relocation_blocks(config: &RuntimeConfig, method: &str) -> Result<bool> {
     let pure = matches!(
         method,
         "runtime.health"
+            | "terminal.host"
             | "runtime.snapshot"
             | "catalog.visibility.list"
             | "data.status"
@@ -743,6 +746,7 @@ fn valid_setting(key: &str, value: &Value) -> Result<()> {
         }
         "modelPrices" if valid_model_prices(value) => Ok(()),
         "electronCacheCleanup" if valid_cache_cleanup(value) => Ok(()),
+        "conptyHost" if matches!(value.as_str(), Some("system" | "bundled")) => Ok(()),
         "floatMode" if matches!(value.as_str(), Some("manual" | "tile" | "cycle")) => Ok(()),
         "supervision"
             if value.as_object().is_some_and(|supervision| {
@@ -887,6 +891,10 @@ mod tests {
         )
         .is_err());
         assert!(valid_runtime_patch(&json!({"modelPrices":{"codex/gpt-5":{"input":-1}}})).is_err());
+        assert!(valid_runtime_patch(&json!({"conptyHost":"bundled"})).is_ok());
+        assert!(valid_runtime_patch(&json!({"conptyHost":"system"})).is_ok());
+        assert!(valid_runtime_patch(&json!({"conptyHost":"winpty"})).is_err());
+        assert!(valid_runtime_patch(&json!({"conptyHost":true})).is_err());
         assert!(valid_runtime_patch(
             &json!({"supervision":{"enabled":true,"rangeMinutes":5,"threshold":1}})
         )

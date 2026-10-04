@@ -1412,6 +1412,22 @@
       ],
       "additionalProperties": false
     },
+    "RequestResult<\"terminal.host\">": {
+      "type": "object",
+      "properties": {
+        "conptyHost": {
+          "type": "string",
+          "enum": [
+            "system",
+            "bundled"
+          ]
+        }
+      },
+      "required": [
+        "conptyHost"
+      ],
+      "additionalProperties": false
+    },
     "RequestResult<\"runtime.shutdown\">": {
       "type": "null"
     },
@@ -4240,6 +4256,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22runtime.health%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "terminal.host"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22terminal.host%22%3E"
         }
       },
       "required": [
