@@ -546,7 +546,7 @@ impl RuntimeService {
                     json!({"version":RUNTIME_VERSION,"epoch":self.db.epoch()?,"contract":crate::PROTOCOL_CONTRACT}),
                 ),
                 // The console host actually in use (conpty.rs), so xterm's Windows heuristics match it.
-                "terminal.host" => Ok(json!({"conptyHost": crate::conpty::active().as_str()})),
+                "terminal.host" => Ok(json!({"conptyHost": crate::conpty::active().as_str(), "bundledAvailable": crate::conpty::bundled_available()})),
                 "runtime.snapshot" => {
                     let mut snapshot = self.db.snapshot()?;
                     snapshot.providers = self.providers.capabilities();

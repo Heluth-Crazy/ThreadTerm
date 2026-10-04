@@ -103,10 +103,11 @@ test('session activity is additive and limited to its canonical states',()=>{
 test('terminal.host reports only the two console hosts',()=>{
  assert.ok(METHODS.includes('terminal.host'));
  validateRequest('terminal.host',{});
- validateResult('terminal.host',{conptyHost:'system'});
- validateResult('terminal.host',{conptyHost:'bundled'});
- assert.throws(()=>validateResult('terminal.host',{conptyHost:'winpty'}));
- assert.throws(()=>validateResult('terminal.host',{conptyHost:'bundled',build:1}));
+ validateResult('terminal.host',{conptyHost:'system',bundledAvailable:false});
+ validateResult('terminal.host',{conptyHost:'bundled',bundledAvailable:true});
+ assert.throws(()=>validateResult('terminal.host',{conptyHost:'winpty',bundledAvailable:true}));
+ assert.throws(()=>validateResult('terminal.host',{conptyHost:'bundled'}),'bundledAvailable is required');
+ assert.throws(()=>validateResult('terminal.host',{conptyHost:'bundled',bundledAvailable:true,build:1}));
 });
 
 test('a delegation may say how many of the user\'s messages were attached, and nothing else new',()=>{

@@ -175,9 +175,14 @@ pub fn run() -> Result<i32> {
         bail!("invalid PTY bootstrap release")
     }
     drop(pipe);
-    // The actual application still receives console control events. The helper
-    // survives Ctrl-C long enough to wait for its child and forward its exit code.
-    if !config.hidden && unsafe { SetConsoleCtrlHandler(Some(keep_bootstrap_alive), 1) } == 0 {
+    // The desktop starts the runtime detached, i.e. in a new process group, which ignores Ctrl-C,
+    // and that setting is inherited by every process started after it. Restore normal Ctrl-C
+    // processing so the terminal's application (and what it starts) can be interrupted again; the
+    // helper itself survives Ctrl-C long enough to wait for its child and forward its exit code.
+    if !config.hidden
+        && (unsafe { SetConsoleCtrlHandler(None, 0) } == 0
+            || unsafe { SetConsoleCtrlHandler(Some(keep_bootstrap_alive), 1) } == 0)
+    {
         return Err(std::io::Error::last_os_error().into());
     }
     let mut command =

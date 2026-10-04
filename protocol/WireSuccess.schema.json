@@ -1421,10 +1421,14 @@
             "system",
             "bundled"
           ]
+        },
+        "bundledAvailable": {
+          "type": "boolean"
         }
       },
       "required": [
-        "conptyHost"
+        "conptyHost",
+        "bundledAvailable"
       ],
       "additionalProperties": false
     },

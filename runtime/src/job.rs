@@ -108,8 +108,17 @@ mod tests {
             std::thread::sleep(Duration::from_millis(25));
         }
         assert!(pids.exists(), "parent did not create descendant");
-        let text = fs::read_to_string(&pids).unwrap();
-        let ids: Vec<u32> = text.trim().split(',').map(|v| v.parse().unwrap()).collect();
+        // PowerShell may still hold the file open (OS error 32) right after it appears: retry the read.
+        let ids: Vec<u32> = loop {
+            let parsed = fs::read_to_string(&pids).ok().and_then(|text| {
+                text.trim().split(',').map(|value| value.parse().ok()).collect::<Option<Vec<u32>>>().filter(|ids| ids.len() == 2)
+            });
+            if let Some(ids) = parsed {
+                break ids;
+            }
+            assert!(Instant::now() < deadline, "the pid file never became readable");
+            std::thread::sleep(Duration::from_millis(25));
+        };
         assert_eq!(ids[0], parent_pid);
         assert!(running(ids[1]));
         drop(job);

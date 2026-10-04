@@ -15,19 +15,20 @@ import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import assert from 'node:assert/strict';
 import xterm from '@xterm/xterm';
 import { connectPeer } from './pipe-client.mjs';
+import { removeAgentHistory } from './agent-history.mjs';
 const { Terminal } = xterm;
 
 const [mode, backend, agent] = process.argv.slice(2);
 // kimi / grok / opencode: `--look` only until their composer is known (READY below) — never type into an
 // unknown screen.
-if (!['input', 'resize', 'startup', 'da1', 'reflow'].includes(mode) || !['inbox', 'openconsole'].includes(backend) || (!['startup', 'da1', 'reflow'].includes(mode) && !['claude', 'codex', 'kimi', 'grok', 'opencode'].includes(agent))) {
+if (!['input', 'resize', 'startup', 'da1', 'reflow', 'pwsh', 'ctrlc'].includes(mode) || !['inbox', 'openconsole'].includes(backend) || (!['startup', 'da1', 'reflow', 'pwsh', 'ctrlc'].includes(mode) && !['claude', 'codex', 'kimi', 'grok', 'opencode'].includes(agent))) {
   throw Error('usage: node qa/terminal-repro.mjs <input|resize> <inbox|openconsole> <claude|codex> | startup <inbox|openconsole>');
 }
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -79,7 +80,8 @@ async function start() {
   // The desktop starts the runtime outside any Claude Code session; inherited markers would make the
   // Claude CLI in these terminals turn transcript saving off (seen in the first run).
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CLAUDECODE|CLAUDE_CODE_|CLAUDE_PID|CLAUDE_EFFORT)/.test(key)));
-  daemon = spawn(exe, [], { windowsHide: true, env: { ...env, THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: join(scratch, 'user'), THREADTERM_V3_PIPE: pipe, THREADTERM_V3_CONPTY: backend === 'openconsole' ? 'bundled' : 'system' }, stdio: 'ignore' });
+  // Detached like desktop/src/runtime-client.ts: a new process group, which ignores Ctrl+C (inherited).
+  daemon = spawn(exe, [], { detached: true, windowsHide: true, env: { ...env, THREADTERM_V3_DATA: data, THREADTERM_V3_USER_DATA: join(scratch, 'user'), THREADTERM_V3_PIPE: pipe, THREADTERM_V3_CONPTY: backend === 'openconsole' ? 'bundled' : 'system' }, stdio: 'ignore' });
   for (let i = 0; i < 150; i++) {
     try {
       const peer = await connectPeer(`${pipe}-control`);
@@ -141,7 +143,10 @@ const TRUST = /trust the (files|contents)|Do you trust|信任/i;
 const UPDATE_MENU = /Update available|Update now|Skip until next version/i;
 
 async function openCli(peer, cols, rows) {
-  const created = await peer.request('session.create', { cwd: TRUSTED_CWD, title: `QA repro ${agent}`, provider: agent, mode: 'terminal', operationId: randomUUID() }, 120000);
+  // --scratch-cwd: a throwaway folder (history removable by folder name; a CLI may show a trust prompt — never answered).
+  const cwd = process.argv.includes('--scratch-cwd') ? join(scratch, `${basename(scratch)}-ws`) : TRUSTED_CWD;
+  mkdirSync(cwd, { recursive: true });
+  const created = await peer.request('session.create', { cwd, title: `QA repro ${agent}`, provider: agent, mode: 'terminal', operationId: randomUUID() }, 120000);
   sessions.push(created);
   const view = mirror(peer, created.id, cols, rows);
   await withLease(peer, created.id, epoch => peer.request('terminal.resize', { sessionId: created.id, cols, rows, leaseEpoch: epoch }));
@@ -386,6 +391,82 @@ async function reflowMode(peer) {
   return result;
 }
 
+// ---------- ctrlc: does Ctrl+C interrupt a running cmd.exe command? ----------
+async function ctrlcMode(peer) {
+  const created = await peer.request('session.create', { cwd: scratch, title: 'QA ctrl-c', provider: 'shell', mode: 'terminal', executable: 'cmd.exe', args: ['/d', '/k', 'prompt READY$G'], operationId: randomUUID() }, 60000);
+  sessions.push(created);
+  const view = mirror(peer, created.id, 100, 24);
+  const lines = () => view.all().filter(line => line.trim());
+  await waitFor(() => lines().some(line => line.includes('READY>')), 'cmd prompt did not appear', 30000);
+  let interrupted = false;
+  await withLease(peer, created.id, async epoch => {
+    const send = data => peer.request('terminal.input', { sessionId: created.id, data, leaseEpoch: epoch });
+    await send('ping -n 30 127.0.0.1\r');
+    await waitFor(() => lines().filter(line => /127\.0\.0\.1/.test(line)).length >= 3, 'ping did not start', 15000);
+    await send('\x03');
+    interrupted = await waitFor(() => lines().at(-1)?.trim() === 'READY>', 'prompt did not return', 5000).then(() => true, () => false);
+  });
+  log(`cmd: Ctrl+C interrupted ping: ${interrupted}`);
+  if (!interrupted) console.log(lines().slice(-6).map(line => `    | ${line}`).join('\n'));
+  await view.stop();
+  await peer.request('session.stop', { sessionId: created.id, force: true, operationId: randomUUID() }).catch(() => {});
+  return { interrupted };
+}
+
+// ---------- pwsh: PowerShell soak (TT_SHELL=pwsh.exe | powershell.exe) ----------
+async function pwshMode(peer) {
+  const shell = process.env.TT_SHELL ?? 'pwsh.exe';
+  const t0 = Date.now();
+  const created = await peer.request('session.create', { cwd: scratch, title: 'QA pwsh', provider: 'shell', mode: 'terminal', executable: shell, args: ['-NoLogo', '-NoProfile'], operationId: randomUUID() }, 60000);
+  const createMs = Date.now() - t0;
+  sessions.push(created);
+  const view = mirror(peer, created.id, 120, 24);
+  const screenText = () => view.all().filter(line => line.trim()).join('\n');
+  const has = (pattern, count = 1) => screenText().split('\n').filter(line => pattern.test(line)).length >= count;
+  const result = { shell, createMs };
+  await withLease(peer, created.id, async epoch => {
+    const send = data => peer.request('terminal.input', { sessionId: created.id, data, leaseEpoch: epoch });
+    await peer.request('terminal.resize', { sessionId: created.id, cols: 120, rows: 24, leaseEpoch: epoch });
+    await waitFor(() => has(/^PS .*>/), 'PowerShell prompt did not appear', 30000);
+    result.promptMs = Date.now() - t0;
+    await send('Write-Output "PWSH-OK $((1..3) -join \',\')"\r');
+    await waitFor(() => has(/^PWSH-OK 1,2,3\s*$/), 'typed command did not run', 15000);
+    result.command = true;
+    await send('\x1b[A'); // Up arrow: PSReadLine history
+    await delay(400);
+    await send('\r');
+    await waitFor(() => has(/^PWSH-OK 1,2,3\s*$/, 2), 'Up-arrow history did not recall the command', 15000);
+    result.history = true;
+    await send('Start-Sleep -Seconds 20\r');
+    await delay(1200);
+    await send('\x03'); // Ctrl+C
+    await delay(600);
+    await send('Write-Output AFTER-CTRL-C\r');
+    await waitFor(() => has(/^AFTER-CTRL-C\s*$/), 'Ctrl+C did not interrupt Start-Sleep', 10000)
+      .catch(error => { console.log(screenText().split('\n').slice(-8).map(line => `    | ${line}`).join('\n')); throw error; });
+    result.ctrlC = true;
+    await send(`Clear-Host; Write-Output ('=' * 120); Write-Output NEXT-LINE\r`);
+    await waitFor(() => has(/^NEXT-LINE\s*$/), 'border test did not print', 15000);
+    for (const cols of [60, 120]) {
+      view.term.resize(cols, 24);
+      await peer.request('terminal.resize', { sessionId: created.id, cols, rows: 24, leaseEpoch: epoch });
+      await delay(1200);
+    }
+    const buffer = view.term.buffer.active, logical = [];
+    for (let y = 0; y < buffer.length; y++) {
+      const line = buffer.getLine(y);
+      if (line?.isWrapped && logical.length) logical[logical.length - 1] += line.translateToString(true);
+      else logical.push(line?.translateToString(true) ?? '');
+    }
+    result.borderGlued = logical.some(line => line.includes('=====') && line.includes('NEXT-LINE') && !line.includes('Write-Output'));
+  });
+  result.strayReply = /\[\?1;2c|\[\?61c|\^\[\[/.test(screenText());
+  log(`${shell}: create ${result.createMs} ms, prompt ${result.promptMs} ms; command ${result.command}; history ${result.history}; Ctrl+C ${result.ctrlC}; full-width line glued ${result.borderGlued}; stray reply ${result.strayReply}`);
+  await view.stop();
+  await peer.request('session.stop', { sessionId: created.id, force: true, operationId: randomUUID() }).catch(() => {});
+  return result;
+}
+
 // ---------- cleanup of exactly these sessions' agent history ----------
 function codexThreads() {
   const state = join(homedir(), '.codex', 'state_5.sqlite');
@@ -420,6 +501,22 @@ function cleanup() {
     if (ids.has(thread.id)) { removeCodexThread(thread.id, thread.rollout_path); removed.push(`codex thread ${thread.id}`); }
     else listed.push(`codex thread ${thread.id} (created during the run, not ours by id — left alone)`);
   }
+  if (process.argv.includes('--scratch-cwd')) {
+    // Everything that names this run's scratch folder: Claude/Codex/Kimi (agent-history.mjs) and Grok.
+    const slug = basename(scratch).toLowerCase();
+    const left = removeAgentHistory(slug);
+    if (left.length) listed.push(...left.map(item => `left: ${item}`));
+    const grokSessions = join(homedir(), '.grok', 'sessions');
+    for (const name of existsSync(grokSessions) ? readdirSync(grokSessions) : []) {
+      if (decodeURIComponent(name).toLowerCase().includes(slug)) { rmSync(join(grokSessions, name), { recursive: true, force: true }); removed.push(`grok sessions/${name}`); }
+    }
+    const active = join(homedir(), '.grok', 'active_sessions.json');
+    if (existsSync(active)) {
+      const entries = JSON.parse(readFileSync(active, 'utf8'));
+      const kept = entries.filter(entry => !String(entry.cwd ?? '').toLowerCase().includes(slug));
+      if (kept.length !== entries.length) { writeFileSync(active, `${JSON.stringify(kept, null, 2)}\n`); removed.push('grok active_sessions entry'); }
+    }
+  }
   return { removed, listed };
 }
 
@@ -434,7 +531,7 @@ try {
     console.log(view.screen().filter(line => line.trim()).join('\n'));
     await view.stop();
     await peer.request('session.stop', { sessionId: session.id, force: true, operationId: randomUUID() }).catch(() => {});
-  } else result = mode === 'input' ? await inputMode(peer) : mode === 'resize' ? await resizeMode(peer) : mode === 'da1' ? await da1Mode(peer) : mode === 'reflow' ? await reflowMode(peer) : await startupMode(peer);
+  } else result = mode === 'input' ? await inputMode(peer) : mode === 'resize' ? await resizeMode(peer) : mode === 'da1' ? await da1Mode(peer) : mode === 'reflow' ? await reflowMode(peer) : mode === 'pwsh' ? await pwshMode(peer) : mode === 'ctrlc' ? await ctrlcMode(peer) : await startupMode(peer);
   // Final native ids (Codex learns its thread id after start).
   const snapshot = await peer.request('runtime.snapshot');
   for (const session of sessions) session.nativeId = snapshot.sessions.find(item => item.id === session.id)?.nativeId ?? session.nativeId;

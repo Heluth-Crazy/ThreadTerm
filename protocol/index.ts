@@ -128,7 +128,7 @@ export interface RequestMap {
 
  'runtime.health': [{},{version:string;epoch:string;contract:number}];
  /** Which console host Windows terminals run on: the in-box ConPTY or ThreadTerm's bundled OpenConsole. */
- 'terminal.host': [{},{conptyHost:'system'|'bundled'}];
+ 'terminal.host': [{},{conptyHost:'system'|'bundled';bundledAvailable:boolean}];
  'runtime.shutdown': [{operationId:string},null];
  'runtime.snapshot': [{},Snapshot];
  'project.add': [{path:string;name?:string;operationId:string},Project];

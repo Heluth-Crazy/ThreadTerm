@@ -19,10 +19,22 @@ export function windowsPtyFor(os: IWindowsPty | undefined, host: ConptyHost | un
   return os;
 }
 
-let known: Promise<ConptyHost | undefined> | undefined;
+export interface TerminalHostInfo { conptyHost: ConptyHost; bundledAvailable: boolean }
 
-/** The runtime's console host, asked once; undefined when the runtime predates `terminal.host`. */
-export function conptyHost(): Promise<ConptyHost | undefined> {
-  known ??= request('terminal.host', {}).then(result => result.conptyHost, () => undefined);
+let known: Promise<TerminalHostInfo | undefined> | undefined;
+
+/** What the runtime uses and ships, asked once; undefined when the runtime predates `terminal.host`. */
+export function terminalHostInfo(): Promise<TerminalHostInfo | undefined> {
+  known ??= request('terminal.host', {}).then(result => result, () => undefined);
   return known;
+}
+
+/** The runtime's console host; undefined when the runtime predates `terminal.host`. */
+export function conptyHost(): Promise<ConptyHost | undefined> {
+  return terminalHostInfo().then(info => info?.conptyHost);
+}
+
+/** The `conptyHost` setting as chosen: bundled unless the user opted out (the runtime's default). */
+export function selectedConptyHost(setting: unknown): ConptyHost {
+  return setting === 'system' ? 'system' : 'bundled';
 }
