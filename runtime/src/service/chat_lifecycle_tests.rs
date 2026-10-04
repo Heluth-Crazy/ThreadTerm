@@ -1188,8 +1188,9 @@ fn terminal_host_reports_the_console_host_in_use() {
     let host = rpc(&fixture, "terminal.host", json!({})).unwrap();
     assert_eq!(host["conptyHost"], crate::conpty::active().as_str());
     assert_eq!(host["conptyHost"], "system");
-    // The test binary ships no pair beside it.
-    assert_eq!(host["bundledAvailable"], false);
+    // Whether a pair sits beside the test binary depends on the build folder (tests/pty_lifecycle.rs
+    // uses one there); the answer must match what the host loader would find.
+    assert_eq!(host["bundledAvailable"], crate::conpty::bundled_available());
 }
 
 #[test]

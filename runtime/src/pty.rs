@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use portable_pty::CommandBuilder;
 use portable_pty::{MasterPty, PtySize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{Read, Write},
     sync::{Arc, Mutex},
     thread,
@@ -12,7 +12,21 @@ use std::{
 
 pub struct PtyManager {
     sessions: Arc<Mutex<HashMap<String, Arc<LivePty>>>>,
+    /// Sessions inside `launch`, not yet in `sessions`.
+    starting: Mutex<HashSet<String>>,
     output: Arc<OutputStore>,
+}
+/// Holds a session's place in `PtyManager::starting` for the duration of one launch.
+struct Starting<'a> {
+    starting: &'a Mutex<HashSet<String>>,
+    id: String,
+}
+impl Drop for Starting<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut starting) = self.starting.lock() {
+            starting.remove(&self.id);
+        }
+    }
 }
 struct LivePty {
     master: Mutex<Box<dyn MasterPty + Send>>,
@@ -28,8 +42,28 @@ impl PtyManager {
     pub fn new(output: Arc<OutputStore>) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            starting: Mutex::new(HashSet::new()),
             output,
         }
+    }
+    /// Refuses a session that is live or already being launched. A second console for it would paint
+    /// into the live session's output (clear screen, title) before the late check below refused it.
+    fn reserve(&self, session_id: &str) -> Result<Starting<'_>> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| anyhow!("PTY registry lock poisoned"))?;
+        let mut starting = self
+            .starting
+            .lock()
+            .map_err(|_| anyhow!("PTY registry lock poisoned"))?;
+        if sessions.contains_key(session_id) || !starting.insert(session_id.to_owned()) {
+            return Err(anyhow!("session already has a live PTY"));
+        }
+        Ok(Starting {
+            starting: &self.starting,
+            id: session_id.to_owned(),
+        })
     }
     pub fn launch(
         &self,
@@ -39,6 +73,14 @@ impl PtyManager {
         executable: Option<&str>,
         args: &[String],
     ) -> Result<()> {
+        // Everything that can refuse the launch comes before the console is opened.
+        let _starting = self.reserve(session_id)?;
+        // Reject script launches whose arguments cannot survive cmd.exe quoting
+        // here, before the bootstrap gate would hide the cause behind a timeout.
+        #[cfg(windows)]
+        if let Some(program) = executable {
+            crate::providers::common::windows_script_invocation(program, args)?;
+        }
         let pty_system = portable_pty::native_pty_system();
         // A resumed process must start in the geometry of the retained screen,
         // not draw its first frames at 80x24 into a differently-sized xterm.
@@ -70,12 +112,6 @@ impl PtyManager {
             writer.flush().context("answering the console host")?;
         }
         db.set_session_terminal_size(session_id, i32::from(cols), i32::from(rows))?;
-        // Reject script launches whose arguments cannot survive cmd.exe quoting
-        // here, before the bootstrap gate would hide the cause behind a timeout.
-        #[cfg(windows)]
-        if let Some(program) = executable {
-            crate::providers::common::windows_script_invocation(program, args)?;
-        }
         #[cfg(windows)]
         let gate = crate::bootstrap::BootstrapGate::new()?;
         #[cfg(windows)]
@@ -163,6 +199,7 @@ impl PtyManager {
             .sessions
             .lock()
             .map_err(|_| anyhow!("PTY registry lock poisoned"))?;
+        // Unreachable while `reserve` holds the session; kept as the registry's own guard.
         if sessions.contains_key(session_id) {
             return Err(anyhow!("session already has a live PTY"));
         };
@@ -512,6 +549,38 @@ mod tests {
             assert!(Instant::now() < deadline, "Ctrl+C did not interrupt ping; output: {output}");
             std::thread::sleep(Duration::from_millis(50));
         }
+        manager.stop(&db, &session.id, true).unwrap();
+    }
+
+    /// A refused second launch used to start its own console first, whose opening frame (clear
+    /// screen, title) landed in the live session's output (tests/pty_lifecycle.rs found it).
+    #[cfg(windows)]
+    #[test]
+    fn a_second_launch_for_a_live_session_is_refused_before_it_opens_a_console() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("runtime.sqlite")).unwrap());
+        let session = db
+            .create_session(CreateSession { project_id: None, title: None, provider: "shell", mode: "terminal", native_id: None, operation_id: "pty-twice" })
+            .unwrap();
+        let manager = PtyManager::new(Arc::new(OutputStore::default()));
+        let cwd = dir.path().to_str().unwrap();
+        let args = ["/d".to_owned(), "/k".to_owned(), "prompt READY$G".to_owned()];
+        manager.launch(Arc::clone(&db), &session.id, cwd, Some("cmd.exe"), &args).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let text = || {
+            let output: Vec<u8> = db.output_from(&session.id, 0, 1 << 20).unwrap().into_iter().flat_map(|(_, bytes)| bytes).collect();
+            String::from_utf8_lossy(&output).into_owned()
+        };
+        while !text().contains("READY>") {
+            assert!(Instant::now() < deadline, "cmd prompt did not appear");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let before = db.output_end(&session.id).unwrap();
+        let error = manager.launch(Arc::clone(&db), &session.id, cwd, Some("cmd.exe"), &args).unwrap_err();
+        assert!(error.to_string().contains("already has a live PTY"), "{error:#}");
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(db.output_end(&session.id).unwrap(), before, "the refused launch wrote into the live session: {:?}", text());
+        assert!(manager.live(&session.id).is_ok());
         manager.stop(&db, &session.id, true).unwrap();
     }
 
