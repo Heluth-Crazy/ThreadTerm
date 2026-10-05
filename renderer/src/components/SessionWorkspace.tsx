@@ -2,7 +2,7 @@ import { Select } from "./ui/Select";
 import { useEffect, useRef, useState } from 'react';
 import type { ContentRef, Draft, FileReference, GitStatus, PaneLayout, Session, Snapshot, Worktree } from '@threadterm/protocol';
 import { operationId, request } from '../bridge';
-import { insertSessionText, insertTerminalText } from '../terminalInputTargets';
+import { insertChatText, insertSessionText, insertTerminalText } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
 import { addSessionTab } from '../presentation';
 import { displayPath, sameCanonicalScope } from '../projectScope';
@@ -21,6 +21,7 @@ import { SessionActions } from './SessionActions';
 import { SessionConfigDialog } from './SessionConfigDialog';
 import { SurfaceDialog } from './SurfaceDialog';
 import './session-workspace.css';
+import type { FileCommentsHost } from '../fileCommentsHost';
 
 const providerName=(id:string)=>({claude:'Claude',codex:'Codex',opencode:'OpenCode',shell:'Shell',kimi:'Kimi',gemini:'Gemini',grok:'Grok',custom:'Custom'}[id]??id);
 const working=(s:Session)=>!s.readOnly&&['starting','running','idle','waiting'].includes(s.status);
@@ -209,19 +210,44 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    catch(error){const reason=String(error);setIssue(/terminal_command_requires_single_line/.test(reason)?(zh?'引用包含换行，无法插入终端。':'The reference contains a line break and cannot go to a terminal.'):/unavailable/.test(reason)?(zh?'该会话当前不能接收输入（可能是只读历史或尚未取得控制权）。':'That session cannot take input right now (read-only history or no input control).'):workbenchError(error,zh));}
   }));
  };
- // Review comments: like sendToAgent, but multi-line, for an explicit session, and reporting the outcome to the caller
- // (which keeps its comments when the text could not be inserted). Only a Chat message box takes several lines.
+ // File comments (fileCommentsHost.ts): any working Chat session of this folder or open in this workspace can receive
+ // them; the current session is the default. Unlike sendToAgent the text is multi-line and the outcome goes back to the
+ // caller, which keeps its comments when nothing was inserted. Only a Chat message box takes several lines.
+ const commentReceivers=[...treeSessions,...data.sessions.filter(candidate=>sessionIdsIn(layout).includes(candidate.id))]
+  .filter((candidate,index,list)=>candidate.mode==='chat'&&working(candidate)&&list.findIndex(other=>other.id===candidate.id)===index)
+  .sort((left,right)=>Number(right.id===previewSessionId)-Number(left.id===previewSessionId));
  const insertIntoSession=(sessionId:string,text:string)=>new Promise<void>((resolve,reject)=>{
   const receiver=data.sessions.find(candidate=>candidate.id===sessionId);
-  if(!receiver||!working(receiver)){reject(new Error(zh?'做出这些改动的 Agent 会话已结束，无法接收输入。可以先复制审查意见。':'The agent session that made these changes has ended and cannot take input. Copy the comments instead.'));return;}
-  const tab=workspaceTabs(latestLayout.current).find(item=>item.tab.kind==='session'&&item.tab.sessionId===receiver.id);
-  if(!tab){reject(new Error(zh?'请先在此工作区打开做出这些改动的 Agent 会话。':'Open the agent session that made these changes in this workspace first.'));return;}
+  if(!receiver||!working(receiver)||receiver.mode!=='chat'){reject(new Error(zh?'该会话已结束或不是聊天会话，无法接收审查意见。可以先复制。':'That session has ended or is not a Chat, so it cannot take the comments. Copy them instead.'));return;}
+  // Open the receiver beside the current session when it is not in the workspace yet, then show it.
+  let tab=workspaceTabs(latestLayout.current).find(item=>item.tab.kind==='session'&&item.tab.sessionId===receiver.id);
+  if(!tab){
+   const current=workspaceTabs(latestLayout.current).find(item=>item.tab.kind==='session'&&item.tab.sessionId===previewSessionId)??workspaceTabs(latestLayout.current)[0];
+   const updated=current?addTabToPane(latestLayout.current,current.paneId,tabFor(receiver)):addPane(latestLayout.current,tabFor(receiver));
+   save(updated);
+   tab=workspaceTabs(updated).find(item=>item.tab.kind==='session'&&item.tab.sessionId===receiver.id);
+   if(!tab){reject(new Error(zh?'无法在此工作区打开该会话。':'That session could not be opened in this workspace.'));return;}
+  }
   save(activate(latestLayout.current,tab.paneId,tab.tab.id));setFocusTarget({paneId:tab.paneId,tabId:tab.tab.id,key:crypto.randomUUID()});
-  requestAnimationFrame(()=>requestAnimationFrame(()=>{
-   try{insertSessionText(receiver.id,text);resolve();}
-   catch(error){const reason=String(error);reject(new Error(/terminal_command_requires_single_line/.test(reason)?(zh?'终端会话一次只接收一行。请复制审查意见后自行粘贴。':'A terminal session takes one line at a time. Copy the comments and paste them yourself.'):/unavailable/.test(reason)?(zh?'该会话当前不能接收输入（可能是只读历史或尚未取得控制权）。':'That session cannot take input right now (read-only history or no input control).'):workbenchError(error,zh)));}
-  }));
+  // A freshly opened Chat registers its message box only after it connected: try for up to 10 s.
+  const until=Date.now()+10_000;
+  const attempt=()=>{
+   try{insertChatText(receiver.id,text);resolve();}
+   catch(error){
+    const reason=String(error);
+    if(/chat_view_unavailable/.test(reason)&&Date.now()<until){setTimeout(attempt,150);return;}
+    reject(new Error(/unavailable/.test(reason)?(zh?'该会话当前不能接收输入（可能是只读历史或尚未取得控制权）。':'That session cannot take input right now (read-only history or no input control).'):workbenchError(error,zh)));
+   }
+  };
+  requestAnimationFrame(()=>requestAnimationFrame(attempt));
  });
+ const projectRootOf=(projectId:string)=>data.projects.find(candidate=>candidate.id===projectId)?.path;
+ const commentsHost:FileCommentsHost={
+  projectRoot:projectRootOf,
+  receivers:commentReceivers.map(candidate=>({id:candidate.id,title:candidate.title,provider:candidate.provider,root:candidate.worktreePath??projectRootOf(candidate.projectId??'')??''})),
+  defaultReceiverId:commentReceivers.some(candidate=>candidate.id===previewSessionId)?previewSessionId:undefined,
+  insert:insertIntoSession,
+ };
  const workbenchActions:WorkbenchActions|undefined=workbenchScope&&project?{
   openFile:(file,position)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),line:position?.line,column:position?.column}).catch(fail),
   openBeside:file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),ownerSessionId:previewSessionId}).catch(fail),
@@ -244,7 +270,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   },
  }:undefined;
  const paneWorkbench:PaneWorkbench={
-  sendToAgent,openHistory,insertText:insertIntoSession,
+  sendToAgent,openHistory,comments:commentsHost,
   // Like review/history tabs: an independent tab placed beside the sessions, one per address.
   openWeb:url=>{if(isWebTabUrl(url))openWorkbenchTab({id:crypto.randomUUID(),kind:'web',url},candidate=>candidate.kind==='web'&&candidate.url===url);},
   openFile:target=>void openScopedFile({...target,kind:previewKind(target.path)}).catch(fail),

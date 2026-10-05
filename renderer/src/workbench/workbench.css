@@ -289,12 +289,13 @@ button.wb-change-row { width:100%; border:0; background:transparent; color:var(-
 .wb-review-diff > .wb-notice { margin:8px 12px 0; }
 /* Review comments (ReviewDiffView): marked lines, the comment form and the pending-comments strip. */
 /* Right edge: the merge view already marks changes on the left. */
-.wb-review-diff .cm-review-commented { box-shadow:inset -3px 0 0 var(--primary); }
+.wb-review-diff .cm-review-commented, .tt-editor-host .cm-review-commented, .tt-diff-shell .cm-review-commented, .wb-history .cm-review-commented { box-shadow:inset -3px 0 0 var(--primary); }
 .wb-review-comment-buttons { display:inline-flex; gap:6px; margin-left:auto; }
 .wb-review-comment-form, .wb-review-comments { display:flex; flex-direction:column; gap:6px; margin:8px 12px 0; padding:8px 10px; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg); font-size:12px; }
 .wb-review-comment-form textarea { min-height:56px; resize:vertical; font:inherit; }
 .wb-review-comment-where { color:var(--muted); font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .wb-review-comment-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.wb-review-comment-form .grow { flex:1; }
 .wb-review-comment-form .dim, .wb-review-comments .dim { color:var(--muted); }
 .wb-review-comments p { margin:0; }
 .wb-review-comments ul { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:2px; max-height:140px; overflow:auto; }

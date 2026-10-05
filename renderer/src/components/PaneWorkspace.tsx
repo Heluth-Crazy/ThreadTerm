@@ -28,6 +28,7 @@ import { paneGeometry, paneRectStyle, PANE_GAP, PANE_DIVIDER_SIZE } from '../pan
 import { fileSelectionKey, visibleSessionLayout, workspaceNavigationLayout, workspaceNavigationTarget, withSessionCompanions, removeClosedViews } from '../sessionFileViews';
 import "./workspace-parity.css";
 import { FILE_DRAG_TYPE, readFileDrag } from "../fileDrag";
+import type { FileCommentsHost } from "../fileCommentsHost";
 
 type Props = {
   layout: PaneLayout;
@@ -58,8 +59,8 @@ export type PaneWorkbench = {
   openFile?:(target:{projectId:string;worktreePath?:string;path:string})=>void;
   /** Opens an http(s) page as an independent tab (terminal link bar → Open in preview). */
   openWeb?:(url:string)=>void;
-  /** Inserts multi-line text into a session's Chat message box without sending (review comments). */
-  insertText?:(sessionId:string,text:string)=>Promise<void>;
+  /** Comments on any file view, added to a chosen session's message box (fileCommentsHost.ts). */
+  comments?:FileCommentsHost;
   /** One-shot request to select a commit in a history tab (blame click). */
   historyFocus?:{tabId:string;commit:string;key:string};
 };
@@ -364,18 +365,20 @@ function Pane({
   ) : item.kind === "history" ? (
     <GitHistoryView projectId={item.projectId} worktreePath={item.worktreePath} path={item.path} zh={zh}
       focusCommit={workbench?.historyFocus?.tabId===item.id?workbench.historyFocus.commit:undefined}
-      onOpenFile={workbench?.openFile?path=>workbench.openFile?.({projectId:item.projectId,worktreePath:item.worktreePath,path}):undefined}/>
+      onOpenFile={workbench?.openFile?path=>workbench.openFile?.({projectId:item.projectId,worktreePath:item.worktreePath,path}):undefined}
+      comments={workbench?.comments}/>
   ) : item.kind === "review" ? (
     <ReviewDiffView projectId={item.projectId} worktreePath={item.worktreePath} path={item.path} sessionId={item.sessionId}
       checkpointId={item.checkpointId} toCheckpointId={item.toCheckpointId} editorId={editorId(node.id, item)} zh={zh}
       onOpenFile={workbench?.openFile?path=>workbench.openFile?.({projectId:item.projectId,worktreePath:item.worktreePath,path}):undefined}
-      onAddToMessage={workbench?.insertText?text=>workbench.insertText!(item.sessionId,text):undefined}/>
+      comments={workbench?.comments}/>
   ) : item.kind === "web" ? (
     <WebPreview url={item.url} zh={zh}/>
   ) : isFileTab(item) ? (
     <FileWorkspace
       projectId={item.projectId}
       worktreePath={item.worktreePath}
+      comments={workbench?.comments}
       initialStaged={item.kind === "diff" ? item.staged : undefined}
       onSendToAgent={workbench?.sendToAgent?lines=>workbench.sendToAgent?.({projectId:item.projectId,worktreePath:item.worktreePath,...lines}):undefined}
       onOpenHistory={workbench?.openHistory?target=>workbench.openHistory?.({projectId:item.projectId,worktreePath:item.worktreePath,...target}):undefined}

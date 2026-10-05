@@ -2,11 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GitCommitDetail, GitCommitInfo, GitTextPair } from '@threadterm/protocol';
 import { request } from '../bridge';
 import { Icon } from './PrototypeIcon';
-import { MergeEditor } from './MergeEditor';
+import { MergeEditor, type MergeSelection } from './MergeEditor';
 import { relativeTime } from './CodeEditor';
 import { workbenchError } from '../workbench/errors';
 import { baseName, parentPath } from '../workbench/types';
 import { commitGraph, refBadge, type GraphRow } from '../workbench/gitGraph';
+import type { FileCommentsHost } from '../fileCommentsHost';
+import { sameCommentVersion, type CommentScope } from '../reviewComments';
+import { CommentForm, PendingComments, useFileComments } from './FileComments';
 import '../workbench/workbench.css';
 
 const PAGE = 100;
@@ -27,14 +30,21 @@ function GraphCell({row, width, head}:{row:GraphRow;width:number;head:boolean}) 
  </svg>;
 }
 
-export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, onOpenFile}:{projectId:string;worktreePath?:string;path?:string;focusCommit?:string;zh:boolean;onOpenFile?:(path:string)=>void}) {
+export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, onOpenFile, comments:commentsHost}:{projectId:string;worktreePath?:string;path?:string;focusCommit?:string;zh:boolean;onOpenFile?:(path:string)=>void;comments?:FileCommentsHost}) {
  const scope = {projectId, ...(worktreePath ? {worktreePath} : {})};
+ const root = commentsHost ? worktreePath ?? commentsHost.projectRoot(projectId) : undefined;
+ const commentScope:CommentScope|undefined = root ? {projectId, root} : undefined;
+ const comments = useFileComments(commentScope);
  const [commits, setCommits] = useState<GitCommitInfo[]>([]);
  const [hasMore, setHasMore] = useState(false);
  const [selected, setSelected] = useState<string>();
  const [detail, setDetail] = useState<GitCommitDetail>();
+ const [detailSelection, setDetailSelection] = useState<string>();
  const [file, setFile] = useState<{path:string;originalPath?:string}>();
  const [pair, setPair] = useState<GitTextPair>();
+ const [pairCommit, setPairCommit] = useState<string>();
+ const [selection, setSelection] = useState<MergeSelection>();
+ const [draft, setDraft] = useState<MergeSelection>();
  const [issue, setIssue] = useState<string>();
  const [loading, setLoading] = useState(false);
  // Repository history is drawn as a graph of the current branch or of every branch; file history is a plain list.
@@ -75,24 +85,31 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
  useEffect(() => {
   if(!selected) return;
   const ticket = ++generation.current;
-  setDetail(undefined); setPair(undefined); setFile(undefined);
+  setDetail(undefined); setDetailSelection(undefined); setPair(undefined); setPairCommit(undefined); setFile(undefined);
   void request('git.commit.show', {...scope, commit:selected}).then(value => {
    if(ticket !== generation.current) return;
-   setDetail(value);
+   setDetail(value); setDetailSelection(selected);
    // File history opens the followed file directly; otherwise the first changed file.
    const initial = (path && value.files.find(candidate => candidate.path === path)) || value.files[0];
    if(initial) setFile({path:initial.path, originalPath:initial.originalPath});
   }).catch(error => { if(ticket === generation.current) setIssue(workbenchError(error, zh)); });
  }, [selected, projectId, worktreePath]);
+ const info = detail?.commit;
+ // The diff loads from the selected row as before; comments wait for the full hash (a blame click may select a short
+ // one), so a comment always names the same commit.
+ const commit = detailSelection === selected ? info?.hash : undefined;
  useEffect(() => {
   if(!selected || !file) return;
   const ticket = ++fileGeneration.current;
-  setPair(undefined);
+  setPair(undefined); setPairCommit(undefined);
   void request('git.commit.diff', {...scope, commit:selected, path:file.path, ...(file.originalPath ? {originalPath:file.originalPath} : {})})
-   .then(value => { if(ticket === fileGeneration.current) setPair(value); })
+   .then(value => { if(ticket === fileGeneration.current) { setPair(value); setPairCommit(selected); } })
    .catch(error => { if(ticket === fileGeneration.current) setIssue(workbenchError(error, zh)); });
  }, [selected, file?.path]);
- const info = detail?.commit;
+ useEffect(() => { setSelection(undefined); setDraft(undefined); }, [selected, file?.path, commentScope?.projectId, commentScope?.root]);
+ const version = pair && !pair.binary && commit && pairCommit === selected ? {kind:'commit' as const, commit} : undefined;
+ const marks = useMemo(() => !version || !pair ? [] : comments.filter(comment => comment.path === pair.path && sameCommentVersion(comment.version, version))
+  .map(({side, startLine, endLine}) => ({side, startLine, endLine})), [comments, pair, version?.commit]);
  return <section className={`wb-history${graph ? ' graph' : ''}`} aria-label={path ? text(`History of ${path}`, `${path} 的历史`) : text('Git history', 'Git 历史')}>
   <div className="wb-history-list" role="listbox" aria-label={text('Commits', '提交')}>
    <header className="wb-history-title"><Icon name="clock"/><strong>{path ? baseName(path) : text('History', '提交历史')}</strong>{path && <span className="wb-dir" title={path}>{parentPath(path)}</span>}
@@ -131,9 +148,11 @@ export function GitHistoryView({projectId, worktreePath, path, focusCommit, zh, 
      {detail && !detail.files.length && <p className="wb-empty">{text('No file changes in this folder.', '此目录中没有文件更改。')}</p>}
     </div>
     <div className="wb-history-diff">
-     {file && <div className="file-bar"><span className="path" title={file.path}>{file.path}</span><span className="grow"/>{onOpenFile && <button type="button" className="btn btn-sm" onClick={() => onOpenFile(file.path)}>{text('Open current file', '打开当前文件')}</button>}</div>}
+     {file && <div className="file-bar"><span className="path" title={file.path}>{file.path}</span><span className="grow"/>{commentScope && version && <button type="button" className="btn btn-sm" disabled={!selection || Boolean(draft)} title={selection ? text('Comment on the selected lines', '评论选中的行') : text('Select lines (or put the cursor on a line) on either side first', '请先在任一侧选中行（或将光标放在某行）')} onClick={() => selection && setDraft(selection)}>{text('Comment', '评论')}</button>}{onOpenFile && <button type="button" className="btn btn-sm" onClick={() => onOpenFile(file.path)}>{text('Open current file', '打开当前文件')}</button>}</div>}
+     {commentScope && version && pair && draft && <CommentForm scope={commentScope} path={pair.path} version={version} selection={draft} zh={zh} onCancel={() => setDraft(undefined)} onAdded={() => setDraft(undefined)}/>}
+     {commentScope && commentsHost && <PendingComments scope={commentScope} host={commentsHost} comments={comments} zh={zh}/>}
      {pair?.binary ? <p className="tt-editor-state">{text('Binary file — no text diff.', '二进制文件，无法显示文本对比。')}</p>
-      : pair ? <MergeEditor path={pair.path} oldText={pair.oldText} newText={pair.newText} readOnly onChange={() => {}} onSave={() => {}}/>
+      : pair ? <MergeEditor path={pair.path} oldText={pair.oldText} newText={pair.newText} readOnly onChange={() => {}} onSave={() => {}} onSelection={commentScope ? setSelection : undefined} marks={commentScope ? marks : undefined}/>
       : file ? <p className="tt-editor-state">{text('Loading diff…', '正在读取对比…')}</p> : null}
     </div>
    </> : <p className="tt-editor-state">{selected ? text('Loading commit…', '正在读取提交…') : text('Select a commit.', '选择一个提交。')}</p>}

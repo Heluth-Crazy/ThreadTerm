@@ -1,6 +1,6 @@
 import { Select } from "./ui/Select";
 import { Icon } from "./PrototypeIcon";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   Draft,
   FileDocument,
@@ -9,7 +9,10 @@ import type {
 } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
 import { CodeEditor } from "./CodeEditor";
-import { MergeEditor, type MergeEditorHandle } from "./MergeEditor";
+import { MergeEditor, type MergeEditorHandle, type MergeSelection } from "./MergeEditor";
+import { CommentForm, PendingComments, useFileComments } from "./FileComments";
+import type { FileCommentsHost } from "../fileCommentsHost";
+import { fileCommentPlace, sameCommentVersion, type CommentVersion } from "../reviewComments";
 import { GitMergeControls } from "./GitMergeControls";
 import { SurfaceDialog } from "./SurfaceDialog";
 import { FilePreview } from "./FilePreview";
@@ -51,6 +54,7 @@ type Props = {
   rootPath?: string;
   onSendToAgent?: (target: { path: string; startLine?: number; endLine?: number }) => void;
   onOpenHistory?: (target: { path?: string; commit?: string }) => void;
+  comments?: FileCommentsHost;
 };
 const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
@@ -79,6 +83,7 @@ function FileWorkspaceInstance({
   rootPath,
   onSendToAgent,
   onOpenHistory,
+  comments: commentsHost,
 }: Props) {
   const scope = { projectId, worktreePath };
   // A standalone workspace opened without a file (project Files page, Settings → Tools dialog) has
@@ -133,6 +138,13 @@ function FileWorkspaceInstance({
   const generation = useRef(0);
   const dirty = !!document && text !== document.content;
   const zh = globalThis.document.documentElement.lang === "zh-CN";
+  const commentScope = useMemo(() => {
+    const root = worktreePath ?? commentsHost?.projectRoot(projectId);
+    return commentsHost && root ? { projectId, root } : undefined;
+  }, [commentsHost, projectId, worktreePath]);
+  const fileComments = useFileComments(commentScope);
+  const [commentSelection, setCommentSelection] = useState<MergeSelection>();
+  const [commentDraft, setCommentDraft] = useState<MergeSelection>();
   const copy = zh
     ? {
         files: "文件",
@@ -186,6 +198,42 @@ function FileWorkspaceInstance({
       };
 
   const gitState = useGitStatus(scope, toolsOpen, zh);
+  const plainCommentVersion: CommentVersion = { kind: "file" };
+  const diffCommentVersion: CommentVersion = { kind: "git", staged };
+  const plainCommentMarks = useMemo(
+    () =>
+      document
+        ? fileComments
+            .filter(
+              (comment) =>
+                comment.path === document.path &&
+                comment.side === "new" &&
+                sameCommentVersion(comment.version, plainCommentVersion),
+            )
+            .map(({ startLine, endLine }) => ({ startLine, endLine }))
+        : [],
+    [document?.path, fileComments],
+  );
+  const diffCommentMarks = useMemo(
+    () =>
+      document
+        ? fileComments
+            .filter(
+              (comment) =>
+                comment.path === document.path &&
+                sameCommentVersion(comment.version, diffCommentVersion),
+            )
+            .map(({ side, startLine, endLine }) => ({ side, startLine, endLine }))
+        : [],
+    [document?.path, fileComments, staged],
+  );
+  useEffect(() => {
+    setCommentSelection(undefined);
+    setCommentDraft(undefined);
+  }, [commentScope?.projectId, commentScope?.root, document?.path, view, staged]);
+  useEffect(() => {
+    if (dirty) setCommentDraft(undefined);
+  }, [dirty]);
   async function refreshGit() {
     await gitState.refresh();
   }
@@ -789,6 +837,9 @@ function FileWorkspaceInstance({
                     <Icon name="spark" />
                   </button>
                 )}
+                {view === "file" && commentScope && commentsHost && !image && (
+                  <button type="button" className="btn btn-sm" disabled={dirty || !commentSelection || Boolean(commentDraft)} title={dirty ? (zh ? "请先保存或放弃修改：修改会让行号变化。" : "Save or discard your edits first: they move the lines.") : !commentSelection ? (zh ? "请先选中行（或将光标放在某行）" : "Select lines (or put the cursor on a line) first") : commentDraft ? (zh ? "请先完成当前评论" : "Finish the current comment first") : zh ? `评论 ${fileCommentPlace({path:document.path, version:plainCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh)}` : `Comment on ${fileCommentPlace({path:document.path, version:plainCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh)}`} onClick={() => commentSelection && setCommentDraft(commentSelection)}>{zh ? "评论" : "Comment"}</button>
+                )}
                 {embedded && (
                   <button
                     className="btn"
@@ -822,6 +873,10 @@ function FileWorkspaceInstance({
                 )}
               </div>
             )}
+            {view === "file" && commentScope && commentsHost && !image && <>
+              {commentDraft && !dirty && <CommentForm scope={commentScope} path={document.path} version={plainCommentVersion} selection={commentDraft} zh={zh} onCancel={() => setCommentDraft(undefined)} onAdded={() => setCommentDraft(undefined)} />}
+              <PendingComments scope={commentScope} host={commentsHost} comments={fileComments} zh={zh} />
+            </>}
             {view === "diff" ? (
               <section className="tt-diff-shell">
                 <div className="file-bar">
@@ -909,8 +964,15 @@ function FileWorkspaceInstance({
                       </Select>
                     </>
                   )}
+                  {commentScope && commentsHost && diff && !diff.binary && (
+                    <button type="button" className="btn btn-sm" disabled={dirty || !commentSelection || Boolean(commentDraft)} title={dirty ? (zh ? "请先保存或放弃修改：修改会让行号变化。" : "Save or discard your edits first: they move the lines.") : !commentSelection ? (zh ? "请先在任一侧选中行（或将光标放在某行）" : "Select lines (or put the cursor on a line) on either side first") : commentDraft ? (zh ? "请先完成当前评论" : "Finish the current comment first") : zh ? `评论 ${fileCommentPlace({path:document.path, version:diffCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh)}` : `Comment on ${fileCommentPlace({path:document.path, version:diffCommentVersion, ...commentSelection}, {fileRoot:commentScope.root, sessionRoot:commentScope.root}, zh)}`} onClick={() => commentSelection && setCommentDraft(commentSelection)}>{zh ? "评论" : "Comment"}</button>
+                  )}
                   {embeddedClose()}
                 </div>
+                {commentScope && commentsHost && diff && !diff.binary && <>
+                  {commentDraft && !dirty && <CommentForm scope={commentScope} path={document.path} version={diffCommentVersion} selection={commentDraft} zh={zh} onCancel={() => setCommentDraft(undefined)} onAdded={() => setCommentDraft(undefined)} />}
+                  <PendingComments scope={commentScope} host={commentsHost} comments={fileComments} zh={zh} />
+                </>}
                 {diff?.binary ? (
                   <p className="tt-editor-state">
                     {zh
@@ -927,6 +989,8 @@ function FileWorkspaceInstance({
                     onChange={setText}
                     onSave={() => void saveFile()}
                     onChunks={setHunkCount}
+                    onSelection={commentScope ? setCommentSelection : undefined}
+                    marks={commentScope ? diffCommentMarks : undefined}
                   />
                 ) : (
                   <p className="tt-editor-state">
@@ -1011,6 +1075,8 @@ function FileWorkspaceInstance({
                     blame={blameOn && !dirty ? blame : undefined}
                     onBlameCommit={onOpenHistory ? (commit) => onOpenHistory({ path: document.path, commit }) : undefined}
                     onSendToAgent={onSendToAgent ? (lines) => onSendToAgent({ path: document.path, ...lines }) : undefined}
+                    onSelection={commentScope ? (selection) => setCommentSelection({ side: "new", ...selection }) : undefined}
+                    marks={commentScope ? plainCommentMarks : undefined}
                   />
                 </section>
               </>
