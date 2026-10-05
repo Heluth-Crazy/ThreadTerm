@@ -49,8 +49,15 @@ function extensions() {
 }
 
 async function closeAll() { for (const app of apps.splice(0)) await app.close().catch(() => {}); }
+let languagePinned = false;
 async function reset(page, url) {
   await page.goto(url);
+  if (!languagePinned) {
+    const { settings } = await page.evaluate(() => window.threadterm.request('runtime.snapshot', {}));
+    await page.evaluate(([revision, id]) => window.threadterm.request('settings.update', { patch: { language: 'zh-CN' }, expectedRevision: revision, operationId: id }), [settings.revision, crypto.randomUUID()]);
+    await page.waitForFunction(() => document.body.innerText.includes('所有终端'));
+    languagePinned = true;
+  }
   await page.locator('.proj-row').first().waitFor();
   await page.locator('.sess-row').first().click();
   await page.locator('.session-screen.runtime-workspace').waitFor();

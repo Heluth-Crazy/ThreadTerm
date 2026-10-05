@@ -1,3 +1,4 @@
+import { localeFromSettings } from "../i18n";
 import { Select } from "./ui/Select";
 import { useEffect, useMemo, useState } from "react";
 import type { Preset, ProviderId, Session, Snapshot, Worktree } from "@threadterm/protocol";
@@ -15,7 +16,7 @@ const stateClass = (session: Session) => session.readOnly ? "st-ended" : ({ star
 const statusLabel = (session: Session, zh: boolean) => session.readOnly ? (zh ? "只读" : "Read-only") : zh ? ({ starting: "启动中", running: "运行中", idle: "空闲", waiting: "需要你", exited: "已结束", interrupted: "停滞", error: "失败" })[session.status] : session.status;
 
 export function WorkbenchPage({ data, recentIds = [], onSession, onCreate, onAddProject, onAll, onInbox, onPresets }: Props) {
-  const zh = data.settings.language !== "en";
+  const zh = localeFromSettings(data.settings) === "zh-CN";
   const agents = useMemo(() => workbenchAgents(data.providers, zh), [data.providers, zh]);
   const [projectId, setProjectId] = useState(data.projects[0]?.id ?? "");
   const [trees, setTrees] = useState<Worktree[]>([]);

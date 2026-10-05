@@ -7,8 +7,8 @@ import { readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, stat
 import { validateRequest, type Method, type RequestParams, type RuntimeEvent } from '@threadterm/protocol';
 import { RuntimeClient, runtimePipeIsOpen } from './runtime-client.js';
 import { floatIdentity, nextFloatKey, tiledFloatBounds, type FloatMode } from './floatingWindows.js';
-import { notificationPreferences, shouldShowNativeNotification, type NotificationKind } from './notificationPreferences.js';
-import { inboxNotificationCopy, type InboxNotice } from './inboxNotification.js';
+import { nativeDelivery, type NotificationKind } from './notificationPreferences.js';
+import { inboxNotificationCopy, notificationLocale, terminalNotificationCopy, terminalNotificationKind, testNotificationCopy, type InboxNotice, type NotificationLocale } from './inboxNotification.js';
 import { ignoreBrokenStdio, isBrokenPipeError } from './stdioGuards.js';
 import { resolveWindowChrome } from './windowChrome.js';
 import { terminalWindowArguments } from './terminalEnvironment.js';
@@ -38,6 +38,9 @@ let activeFloatKey: string | undefined;
 const windowChrome = resolveWindowChrome(process.platform, release(), process.env.THREADTERM_V3_WINDOW_CHROME);
 
 app.setName('ThreadTerm');
+// Windows attributes toasts to an AppUserModelID: the installer's Start-menu shortcut carries build.appId
+// (package.json); an unpackaged run uses its executable path.
+if (process.platform === 'win32') app.setAppUserModelId(app.isPackaged ? 'com.threadterm.v3' : process.execPath);
 // Test-only isolated Electron profile. Production launchers never set this.
 if (process.env.THREADTERM_V3_USER_DATA) app.setPath('userData', process.env.THREADTERM_V3_USER_DATA);
 app.on('window-all-closed', () => undefined);
@@ -46,10 +49,12 @@ app.on('will-quit', () => { adminRuntime.dispose(); for (const client of windowR
 
 void app.whenReady().then(async () => {
   registerIpc();
-  await runScheduledElectronCacheCleanup();
-  void refreshDesktopPreferences();
+  // The window and its launch screen come up at once and cover the runtime start. A scheduled cache cleanup needs
+  // the runtime's settings, so it runs alongside instead of keeping the window back until the runtime answers.
   mainWindow = createWindow();
   createTray();
+  void refreshDesktopPreferences();
+  await runScheduledElectronCacheCleanup();
 });
 
 function createAdminRuntime(): RuntimeClient {
@@ -208,17 +213,18 @@ async function refreshDesktopPreferences(): Promise<{ shortcuts: Record<string, 
   return { shortcuts: result };
 }
 function isTerminalCompletion(value: unknown): value is { sessionId: string; status: string } { return !!value && typeof value === 'object' && typeof (value as Record<string, unknown>).sessionId === 'string' && ['exited', 'error', 'interrupted'].includes(String((value as Record<string, unknown>).status)); }
-function completionMessage(value: { status: string }): string { return value.status === 'exited' ? 'A terminal session finished.' : value.status === 'error' ? 'A terminal session failed.' : 'A terminal session was interrupted.'; }
 async function notifyTerminalCompletion(event: RuntimeEvent): Promise<void> {
   const completion = event.data;
   if (!isTerminalCompletion(completion) || event.seq <= lastNotificationSeq) return;
   try {
     const snapshot = await adminRuntime.request('runtime.snapshot', {});
-    if (snapshot.sessions.find((session) => session.id === completion.sessionId)?.mode !== 'terminal') return;
+    const session = snapshot.sessions.find((item) => item.id === completion.sessionId);
+    if (session?.mode !== 'terminal') return;
     if (event.seq <= lastNotificationSeq) return;
     lastNotificationSeq = event.seq;
-    const kind: NotificationKind = completion.status === 'exited' ? 'completed' : 'attention';
-    void notifyNative(kind, kind === 'completed' ? 'ThreadTerm session completed' : 'ThreadTerm needs attention', completionMessage(completion));
+    const exitCode = (completion as { exitCode?: unknown }).exitCode;
+    const notice = { status: completion.status, exitCode: typeof exitCode === 'number' ? exitCode : session.exitCode, title: session.title, provider: session.provider };
+    void notifyNative(terminalNotificationKind(notice), (locale) => terminalNotificationCopy(notice, locale), { sessionId: completion.sessionId });
   } catch { /* A later inbox event remains the authoritative chat notification. */ }
 }
 function stateChangeKind(value: unknown): string | undefined { return value && typeof value === 'object' && !Array.isArray(value) && typeof (value as Record<string, unknown>).kind === 'string' ? (value as Record<string, unknown>).kind as string : undefined; }
@@ -234,18 +240,36 @@ async function presentInboxNotification(value: InboxNotice): Promise<void> {
     const session = notice.sessionId ? snapshot.sessions.find((item) => item.id === notice.sessionId) : undefined;
     if (session) notice = { ...notice, title: notice.title || session.title, provider: notice.provider || session.provider };
   } catch { /* Kind-only payload is still enough to notify. */ }
-  const copy = inboxNotificationCopy(notice);
-  void notifyNative(inboxNotificationKind(notice), copy.title, copy.body);
+  void notifyNative(inboxNotificationKind(notice), (locale) => inboxNotificationCopy(notice, locale), { sessionId: notice.sessionId });
 }
-async function notifyNative(kind: NotificationKind, title: string, body: string): Promise<{ sent: boolean; reason?: string }> {
-  if (!Notification.isSupported()) return { sent: false, reason: 'Native notifications are unsupported on this system' };
+/** Recent notifications stay referenced, so a click (also later from the Action Center) still reaches its handler. */
+const recentNotifications: Notification[] = [];
+/** Shows an OS notification for a session event or a Settings test, as nativeDelivery decides, in the app language.
+ * A click brings ThreadTerm forward on the session. Never throws: session events arrive via the admin runtime's
+ * event handler. Resolves once Windows has shown the toast (or reported it failed). */
+async function notifyNative(kind: NotificationKind, copy: (locale: NotificationLocale) => { title: string; body: string }, options: { sessionId?: string; test?: boolean } = {}): Promise<{ sent: boolean; reason?: string }> {
+  let locale: NotificationLocale = 'en';
   try {
-    const snapshot = await adminRuntime.request('runtime.snapshot', {});
-    if (!shouldShowNativeNotification(snapshot.settings.notifications, kind)) return { sent: false, reason: 'Native notifications are disabled in settings' };
-    const preferences = notificationPreferences(snapshot.settings.notifications);
-    new Notification({ title, body, silent: !preferences.sound }).show();
-    return { sent: true };
-  } catch { return { sent: false, reason: 'Native notification preferences are unavailable' }; }
+    const { settings } = await adminRuntime.request('runtime.snapshot', {});
+    locale = notificationLocale(settings);
+    const zh = locale === 'zh-CN';
+    if (!Notification.isSupported()) return { sent: false, reason: zh ? '此系统不支持系统通知。' : 'This system does not support native notifications.' };
+    // A minimized or tray-hidden window can still report focus on Windows; neither is the user looking at ThreadTerm.
+    const focused = BrowserWindow.getFocusedWindow();
+    const delivery = nativeDelivery(settings.notifications, kind, { appFocused: !!focused && focused.isVisible() && !focused.isMinimized(), test: options.test });
+    if (!delivery.deliver) return { sent: false, reason: delivery.reason === 'disabled' ? (zh ? '请先开启“允许系统通知”。' : 'Turn on "Allow system notifications" first.') : delivery.reason };
+    const notification = new Notification({ ...copy(locale), silent: delivery.silent });
+    recentNotifications.push(notification);
+    if (recentNotifications.length > 20) recentNotifications.shift();
+    notification.on('click', () => { if (options.sessionId) routeMainWindow({ sessionId: options.sessionId }); else showMainWindow(); });
+    const shown = new Promise<{ sent: boolean; reason?: string }>((resolvePromise) => {
+      const timer = setTimeout(() => resolvePromise({ sent: true }), 4000);
+      notification.once('show', () => { clearTimeout(timer); resolvePromise({ sent: true }); });
+      notification.once('failed', (_event, error) => { clearTimeout(timer); resolvePromise({ sent: false, reason: error }); });
+    });
+    notification.show();
+    return await shown;
+  } catch { return { sent: false, reason: locale === 'zh-CN' ? '暂时无法读取通知设置。' : 'Notification settings are unavailable right now.' }; }
 }
 
 function registerIpc(): void {
@@ -303,6 +327,22 @@ function registerIpc(): void {
     const result = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
     return result.canceled ? null : (result.filePath ?? null);
   });
+  ipcMain.handle('threadterm:export-file', async (event, kind: unknown) => {
+    assertTrustedRenderer(event);
+    if (kind !== 'settings' && kind !== 'theme') throw new Error('Unsupported export kind');
+    const content = kind === 'settings' ? await adminRuntime.request('settings.export', {}) : (await adminRuntime.request('runtime.snapshot', {})).settings.customThemes;
+    if (kind === 'theme' && (!content || typeof content !== 'object' || Array.isArray(content) || Object.keys(content).length === 0)) throw new Error('There are no custom themes to export');
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: kind === 'settings' ? 'Save ThreadTerm settings' : 'Export ThreadTerm themes',
+      defaultPath: kind === 'settings' ? 'threadterm-v3-settings.json' : 'threadterm-v3-themes.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    } satisfies Electron.SaveDialogOptions;
+    const saved = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+    if (saved.canceled || !saved.filePath) return null;
+    writeFileSync(saved.filePath, JSON.stringify(content, null, 2) + '\n');
+    return { path: saved.filePath };
+  });
   ipcMain.handle('threadterm:window-action', async (event, action: unknown) => { assertTrustedRenderer(event); return windowAction(event, action); });
   ipcMain.handle('threadterm:window-state', (event) => { assertTrustedRenderer(event); return { maximized: BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false }; });
   ipcMain.handle('threadterm:open-window', async (_event, options: unknown) => {
@@ -330,7 +370,7 @@ function registerIpc(): void {
     if (error) throw new Error(error);
   });
   ipcMain.handle('threadterm:export-diagnostics', async (event) => { assertTrustedRenderer(event); const owner=BrowserWindow.fromWebContents(event.sender); const saved=owner?await dialog.showSaveDialog(owner,{defaultPath:'threadterm-v3-diagnostics.json',filters:[{name:'JSON',extensions:['json']}]}):await dialog.showSaveDialog({defaultPath:'threadterm-v3-diagnostics.json'}); if(saved.canceled||!saved.filePath)return null; const snapshot=await adminRuntime.request('runtime.snapshot',{}); const health=await adminRuntime.request('runtime.health',{}); const report={version:app.getVersion(),platform:process.platform,runtime:health,counts:{projects:snapshot.projects.length,sessions:snapshot.sessions.length,providers:snapshot.providers.length},providers:snapshot.providers.map(p=>({id:p.id,installed:p.installed,version:p.version,terminal:p.terminal,chat:p.chat}))}; writeFileSync(saved.filePath,JSON.stringify(report,null,2)); return saved.filePath; });
-  ipcMain.handle('threadterm:test-notification', async (event) => { assertTrustedRenderer(event); return notifyNative('attention', 'ThreadTerm', 'Native notifications are enabled.'); });
+  ipcMain.handle('threadterm:test-notification', async (event) => { assertTrustedRenderer(event); return notifyNative('attention', testNotificationCopy, { test: true }); });
   ipcMain.handle('threadterm:schedule-electron-cache-cleanup', async (event, schedule: unknown) => {
     assertTrustedRenderer(event);
     if (typeof schedule !== 'boolean') throw new Error('Invalid cleanup schedule');

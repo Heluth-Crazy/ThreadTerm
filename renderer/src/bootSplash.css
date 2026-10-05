@@ -1,0 +1,54 @@
+/* Launch screen (prototypes/app-loading). index.html links this sheet so the screen is in the window's very first
+   paint, before the app bundle runs; bootSplash.ts drives it. It sits exactly over .app-shell (same inset, radius and
+   stroke; full-bleed for native chrome or a maximized window) and uses the app palette (styles.css, "A · Warm"; keep
+   the values in step) so fading it out reveals the already-rendered shell without a seam. A custom theme's colours
+   arrive as inline --splash-* values from the pre-paint script. Initial values here are the timeline's frame 0. */
+#boot-splash {
+  --splash-bg:#f5f4ef; --splash-surface:#fefdfb; --splash-text:#23221f; --splash-muted:#6c6961;
+  --splash-border:rgba(64,52,28,.115); --splash-stroke:rgba(64,52,28,.14); --splash-shadow:rgba(48,38,18,.08);
+  position:fixed; inset:10px; z-index:2147483000; overflow:hidden; isolation:isolate; contain:strict;
+  border:1px solid var(--splash-stroke); border-radius:14px; background:var(--splash-bg); color:var(--splash-text);
+  font-family:"Inter", -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  cursor:default; user-select:none; -webkit-user-select:none;
+}
+#boot-splash[data-theme="dark"] {
+  --splash-bg:#262624; --splash-surface:#2c2c2a; --splash-text:#ecebe5; --splash-muted:#a8a59c;
+  --splash-border:rgba(250,244,228,.10); --splash-stroke:rgba(250,244,228,.12); --splash-shadow:rgba(0,0,0,.3);
+  color-scheme:dark;
+}
+#boot-splash[data-chrome="native"], #root:has(.app-shell.is-maximized) ~ #boot-splash { inset:0; border:0; border-radius:0; }
+#boot-splash .bs-stage { position:absolute; inset:0; transform-origin:50% 43%; }
+#boot-splash .bs-atmosphere { position:absolute; inset:0; background:radial-gradient(ellipse at 50% 43%, rgba(116,136,238,.08), transparent 49%); }
+#boot-splash .bs-grain { position:absolute; inset:0; opacity:.025; background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath filter='url(%23n)' opacity='.6' d='M0 0h180v180H0z'/%3E%3C/svg%3E"); }
+#boot-splash .bs-dust { position:absolute; inset:0; width:100%; height:100%; }
+#boot-splash .bs-hub { position:absolute; left:50%; top:43%; z-index:3; width:112px; height:112px; transform:translate(-50%, -50%); }
+#boot-splash .bs-halo { position:absolute; inset:-75px; border-radius:50%; background:radial-gradient(circle, rgba(137,151,255,.23), rgba(170,189,255,.08) 40%, transparent 67%); opacity:0; transform:scale(.7); will-change:transform, opacity; }
+#boot-splash .bs-core { position:relative; width:112px; height:112px; display:grid; place-items:center; overflow:hidden; border-radius:30px; background:linear-gradient(155deg, #aab5ff 0%, #728afb 34%, #5a67dc 73%, #8a82e7 100%); box-shadow:inset 0 1px 1px rgba(255,255,255,.7), inset 0 -2px 5px rgba(41,42,122,.15), 0 22px 60px rgba(92,106,188,.15); opacity:.28; transform:scale(.84); will-change:transform, opacity; }
+#boot-splash .bs-core::before { content:""; position:absolute; inset:1px; border-radius:29px; border:1px solid rgba(255,255,255,.15); background:linear-gradient(140deg, rgba(255,255,255,.32), transparent 46%); }
+#boot-splash .bs-core::after { content:""; position:absolute; inset:-40%; background:linear-gradient(110deg, transparent 36%, rgba(255,255,255,.3) 49%, transparent 62%); opacity:0; transform:translateX(-85%); }
+#boot-splash .bs-core.lit::after { animation:bs-sheen .8s ease-out forwards; }
+@keyframes bs-sheen { 0% { opacity:0; transform:translateX(-85%); } 20% { opacity:.75; } 100% { opacity:0; transform:translateX(85%); } }
+#boot-splash .bs-core svg { width:56px; height:56px; fill:none; stroke:#fff; stroke-width:1.55; stroke-linecap:round; stroke-linejoin:round; filter:drop-shadow(0 2px 3px rgba(53,57,128,.15)); }
+#boot-splash .bs-ring { position:absolute; inset:-10px; border:1px solid rgba(127,148,248,.32); border-radius:40px; opacity:0; will-change:transform, opacity; }
+#boot-splash .bs-agents { position:absolute; left:50%; top:43%; z-index:2; }
+#boot-splash .bs-agent { position:absolute; left:-32px; top:-32px; width:64px; height:64px; display:grid; place-items:center; border-radius:19px; background:color-mix(in srgb, var(--splash-surface) 86%, transparent); border:1px solid var(--splash-border); box-shadow:0 10px 35px var(--splash-shadow), inset 0 1px 0 rgba(255,255,255,.12); opacity:0; visibility:hidden; will-change:transform, opacity, filter; }
+#boot-splash .bs-agent svg { width:32px; height:32px; color:var(--splash-text); }
+#boot-splash .bs-agent span { position:absolute; top:76px; white-space:nowrap; font-size:11px; letter-spacing:.015em; color:var(--splash-muted); }
+#boot-splash .bs-identity { position:absolute; top:calc(43% + 96px); left:0; right:0; text-align:center; }
+#boot-splash .bs-wordmark { margin:0; font-size:30px; line-height:1.2; letter-spacing:-1.15px; font-weight:560; color:var(--splash-text); opacity:0; transform:translateY(8px); }
+#boot-splash .bs-subline { margin:14px 0 0; font-size:13px; letter-spacing:.025em; color:var(--splash-muted); opacity:0; transform:translateY(6px); }
+#boot-splash .bs-status { position:absolute; top:calc(43% + 186px); left:0; right:0; display:flex; align-items:center; justify-content:center; gap:9px; font-size:12px; color:var(--splash-muted); opacity:0; }
+#boot-splash .bs-dot { width:5px; height:5px; border-radius:50%; background:#8798e7; box-shadow:0 0 8px rgba(135,152,231,.3); }
+#boot-splash[data-phase="hold"] .bs-dot { animation:bs-pulse 1.4s ease-in-out infinite; }
+@keyframes bs-pulse { 50% { opacity:.35; } }
+#boot-splash .bs-progress { position:absolute; top:calc(43% + 219px); left:calc(50% - 50px); width:100px; height:2px; overflow:hidden; border-radius:4px; background:var(--splash-border); opacity:0; }
+#boot-splash .bs-progress i { display:block; width:100%; height:100%; border-radius:4px; background:linear-gradient(90deg, #bac4f8, #748bef); transform:scaleX(0); transform-origin:left; }
+/* Frameless window: the launch screen covers the title bar, so it keeps the window draggable. */
+#boot-splash .bs-drag { position:absolute; top:0; left:0; right:0; height:36px; -webkit-app-region:drag; }
+/* Reduced motion: the still composition (the timeline at the gate) is already in the first paint. */
+#boot-splash[data-motion="reduced"] .bs-core { opacity:.64; }
+#boot-splash[data-motion="reduced"] .bs-halo { opacity:.22; }
+#boot-splash[data-motion="reduced"] :is(.bs-wordmark, .bs-subline) { opacity:1; transform:none; }
+#boot-splash[data-motion="reduced"] .bs-progress { opacity:1; }
+#boot-splash[data-motion="reduced"] .bs-progress i { transform:scaleX(.78); }
+@media (prefers-reduced-motion:reduce) { #boot-splash .bs-core.lit::after, #boot-splash[data-phase="hold"] .bs-dot { animation:none; } }

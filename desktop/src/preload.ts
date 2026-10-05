@@ -58,6 +58,7 @@ const bridge: ThreadTermBridge = {
   },
   chooseDirectory: (): Promise<string | null> => ipcRenderer.invoke('threadterm:choose-directory') as Promise<string | null>,
   chooseSavePath: (kind): Promise<string | null> => ipcRenderer.invoke('threadterm:choose-save-path', kind) as Promise<string | null>,
+  exportFile: (kind) => ipcRenderer.invoke('threadterm:export-file', kind) as Promise<{ path: string } | null>,
   activateDataRelocation: (prepared) => ipcRenderer.invoke('threadterm:activate-data-relocation', prepared) as Promise<{ activated: boolean }>,
   windowAction: (action) => ipcRenderer.invoke('threadterm:window-action', action) as Promise<void>,
   openWindow: (options) => ipcRenderer.invoke('threadterm:open-window', options) as Promise<void>,

@@ -45,10 +45,11 @@ import {
   upsertSession,
 } from "./presentation";
 import { applyThemeTokens, customTheme } from "./themes";
+import { rememberBootAppearance, settleBootSplash } from "./bootSplash";
 import { PresetRestoreDialog } from "./components/PresetRestoreDialog";
 import { sessionIds as presetSessionIds } from "./presetRestore";
 import { SettingsDialog } from "./components/SettingsDialog";
-import { I18nProvider, translate, useTranslation, type Locale } from "./i18n";
+import { I18nProvider, localeFromSettings, translate, useTranslation, type Locale } from "./i18n";
 import { confirmCloseEditors } from "./dirtyEditors";
 import { argumentLines, commandLines, commandPreset, commandPresets, type CommandPresetId } from "./commandPresets";
 import { attentionFromEvent, shouldPresentAttention, type Attention } from "./attentionState";
@@ -226,7 +227,7 @@ export function App() {
         : systemDark
           ? "dark"
           : "light";
-  const locale: Locale = data?.settings.language === "en" ? "en" : "zh-CN";
+  const locale: Locale = localeFromSettings(data?.settings);
   const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
   const themeTokens = data ? customTheme(data.settings) : undefined;
   useEffect(() => {
@@ -237,6 +238,11 @@ export function App() {
     document.documentElement.lang = locale;
     applyThemeTokens(themeTokens);
   }, [locale, theme, themeTokens]);
+  const loaded = data !== undefined;
+  const themeSetting = data?.settings.theme === "light" || data?.settings.theme === "dark" ? data.settings.theme : "system";
+  useEffect(() => { if (loaded) rememberBootAppearance({ theme: themeSetting, tokens: themeTokens, locale }); }, [loaded, themeSetting, themeTokens, locale]);
+  // The launch screen holds until the first snapshot (or the runtime error screen) has rendered behind it.
+  useEffect(() => { if (loaded) settleBootSplash("ready"); else if (error) settleBootSplash("failed"); }, [loaded, error]);
   const scopeSessions = data?.sessions.filter(item=>!scopeProjectId||item.projectId===scopeProjectId)??[];
   const scopeSessionIds = new Set(scopeSessions.map(item=>item.id));
   const scopedData = data&&scopeProjectId?{...data,sessions:scopeSessions,inbox:data.inbox.filter(item=>scopeSessionIds.has(item.sessionId))}:data;

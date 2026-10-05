@@ -1,3 +1,4 @@
+import { localeFromSettings } from "../i18n";
 import { Select } from "./ui/Select";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProviderCapability, Session, Snapshot } from "@threadterm/protocol";
@@ -17,7 +18,7 @@ export function ProviderSettingsPanel({ data, onCreated }: Props) {
   const [message, setMessage] = useState<string>();
   const [issue, setIssue] = useState<string>();
   const refreshSequence = useRef(0);
-  const copy = data.settings.language === "zh-CN" ? zh : en;
+  const copy = localeFromSettings(data.settings) === "zh-CN" ? zh : en;
 
   const refresh = useCallback(async () => {
     const sequence = ++refreshSequence.current;

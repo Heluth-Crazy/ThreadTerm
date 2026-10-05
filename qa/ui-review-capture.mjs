@@ -68,6 +68,10 @@ try {
   for (const [width, height] of sizes) for (const theme of themes) for (const lang of langs) for (const name of routes) {
     await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(...size), [width, height]);
     await page.goto(`${productionServer.origin}/?theme=${theme}&lang=${lang}${usage ? '&usage=1' : ''}`);
+    const { settings } = await page.evaluate(() => window.threadterm.request('runtime.snapshot', {}));
+    const language = lang === 'zh' ? 'zh-CN' : 'en';
+    await page.evaluate(([language, revision, id]) => window.threadterm.request('settings.update', { patch: { language }, expectedRevision: revision, operationId: id }), [language, settings.revision, crypto.randomUUID()]);
+    await page.waitForFunction(language => document.body.innerText.includes(language === 'zh-CN' ? '所有终端' : 'All terminals'), language);
     await page.addStyleTag({ content: '.titlebar.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr) 24px!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}.app-shell>.statusbar{grid-row:2!important}*,*::before,*::after{animation:none!important;transition:none!important}' });
     await page.locator('.proj-row').first().waitFor();
     await page.waitForFunction(theme => document.documentElement.dataset.theme === theme, theme);

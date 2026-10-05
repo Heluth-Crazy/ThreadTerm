@@ -50,7 +50,10 @@ try{
   app=await electron.launch({args:[join(here,'parity/electron-static.cjs')],env:{...process.env,TT_PARITY_PROFILE:profile},timeout:15000});
   page=await app.firstWindow();page.setDefaultTimeout(6000);
   await page.addInitScript(installVisualFixture,{seed,theme:'light'});await page.addInitScript(extendCatalog);
-  server=await startReadonlyReferenceServer(join(root,'desktop-dist/renderer'));await page.goto(server.origin+'/?theme=light');await page.locator('.proj-row').first().waitFor();
+  server=await startReadonlyReferenceServer(join(root,'desktop-dist/renderer'));await page.goto(server.origin+'/?theme=light');
+  const { settings } = await page.evaluate(() => window.threadterm.request('runtime.snapshot', {}));
+  await page.evaluate(([revision, id]) => window.threadterm.request('settings.update', { patch: { language: 'zh-CN' }, expectedRevision: revision, operationId: id }), [settings.revision, crypto.randomUUID()]);
+  await page.waitForFunction(() => document.body.innerText.includes('所有终端'));await page.locator('.proj-row').first().waitFor();
   const menu=()=>page.locator('.catalogue-popover');
   const more=async(selector,title)=>{const row=page.locator(selector).filter({hasText:title});await row.hover();await row.locator('.row-more').click();await menu().waitFor();};
   const choose=async(name)=>menu().getByRole('menuitem',{name,exact:true}).click();

@@ -222,6 +222,7 @@ export interface ThreadTermBridge {
  subscribeOutput(sessionId:string,cursor:number,onChunk:(chunk:OutputChunk)=>void|Promise<void>):Promise<()=>void>;
  chooseDirectory():Promise<string|null>;
  chooseSavePath(kind:'database'|'settings'|'theme'):Promise<string|null>;
+ exportFile(kind:'settings'|'theme'):Promise<{path:string}|null>;
  activateDataRelocation(prepared:DataRelocationPrepared):Promise<{activated:boolean}>;
  windowAction(action:'minimize'|'maximize'|'close'|'quit'):Promise<void>;
  openWindow(options:{sessionId?:string;workspaceId?:string}):Promise<void>;

@@ -19,6 +19,9 @@ try{
   page=await app.firstWindow();page.setDefaultTimeout(8000);
   await page.addInitScript(installVisualFixture,{seed,theme:'light'});
   await page.goto('http://127.0.0.1:5173/?theme=light');
+  const { settings } = await page.evaluate(() => window.threadterm.request('runtime.snapshot', {}));
+  await page.evaluate(([revision, id]) => window.threadterm.request('settings.update', { patch: { language: 'zh-CN' }, expectedRevision: revision, operationId: id }), [settings.revision, crypto.randomUUID()]);
+  await page.waitForFunction(() => document.body.innerText.includes('所有终端'));
   await page.locator('.side-scope').waitFor();
   await page.locator('.side-scope').click();
   await page.getByRole('menuitem',{name:'添加项目'}).click();

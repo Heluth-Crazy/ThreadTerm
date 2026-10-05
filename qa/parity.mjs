@@ -22,6 +22,7 @@ const report={startedAt:new Date().toISOString(),visualFixture:true,backendVerif
 ]};
 async function runBuild(){await new Promise((done,fail)=>{const p=spawn('npm',['run','build:renderer'],{cwd:v3Root,shell:process.platform==='win32',stdio:'inherit'});p.once('error',fail);p.once('exit',code=>code===0?done():fail(new Error('Renderer build failed: '+code)));});}
 async function openStatic(profile){const app=await electron.launch({args:[join(here,'parity/electron-static.cjs')],env:{...process.env,TT_PARITY_PROFILE:profile},timeout:30000});return {app,page:await app.firstWindow()};}
+let productionLanguagePinned=false;
 const referenceFrame=`html,body,.desktop{width:100%!important;height:100%!important;overflow:hidden!important}.desktop{padding:0!important;background:none!important}.app-window{width:100%!important;max-width:none!important;height:100%!important;max-height:none!important;margin:0!important;border:0!important;border-radius:0!important;box-shadow:none!important}.app-chrome{display:none!important}.app-stage{width:100%!important;max-width:none!important;height:100%!important}`;
 const productionFrame=`.titlebar.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr) 24px!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}.app-shell>.statusbar{grid-row:2!important}`;
 async function referenceRoute(page,route,theme){
@@ -68,7 +69,7 @@ try{
     if(prodPage){
       await prodApp.evaluate(({BrowserWindow},size)=>BrowserWindow.getAllWindows()[0].setContentSize(...size),[width,height]);
       const errors=[],onError=e=>errors.push(e.message);prodPage.on('pageerror',onError);
-      await prodPage.goto(prodServer.origin+'/?theme='+theme);await prodPage.addStyleTag({content:productionFrame});await prodPage.locator('.proj-row').first().waitFor();await prodPage.waitForFunction(theme=>document.documentElement.dataset.theme===theme,theme);await productionRoute(prodPage,route);
+      await prodPage.goto(prodServer.origin+'/?theme='+theme);if(!productionLanguagePinned){const {settings}=await prodPage.evaluate(()=>window.threadterm.request('runtime.snapshot',{}));await prodPage.evaluate(([revision,id])=>window.threadterm.request('settings.update',{patch:{language:'zh-CN'},expectedRevision:revision,operationId:id}),[settings.revision,crypto.randomUUID()]);await prodPage.waitForFunction(()=>document.body.innerText.includes('所有终端'));productionLanguagePinned=true;}await prodPage.addStyleTag({content:productionFrame});await prodPage.locator('.proj-row').first().waitFor();await prodPage.waitForFunction(theme=>document.documentElement.dataset.theme===theme,theme);await productionRoute(prodPage,route);
       scenario.production={screenshot:'production/'+name,metrics:await capture(prodPage,join(runRoot,'production',name)),errors,calls:await prodPage.evaluate(()=>window.__parityFixture.calls)};prodPage.off('pageerror',onError);scenario.deviations=compareMetrics(scenario.reference.metrics,scenario.production.metrics);
     }
     console.log(JSON.stringify({route,theme,width,height,deviations:scenario.deviations.length}));

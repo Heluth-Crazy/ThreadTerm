@@ -51,7 +51,12 @@ try {
   await page.evaluate(() => window.threadterm.scheduleElectronCacheCleanup(true));
   assert.equal((await snapshot()).settings.electronCacheCleanup?.state, 'scheduled');
   await stop(); await launch();
-  const after = await snapshot();
+  // The window (with its launch screen) opens before the runtime answers; the scheduled cleanup runs alongside.
+  let after = await snapshot();
+  for (const deadline = Date.now() + 15000; after.settings.electronCacheCleanup?.state === 'scheduled' && Date.now() < deadline;) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    after = await snapshot();
+  }
   assert.equal(after.projects.find(item => item.id === project.id)?.name, 'Cache QA');
   const kept = await page.evaluate(projectId => window.threadterm.request('draft.list', { projectId }), project.id);
   assert.ok(kept.some(item => item.id === draft.id && item.content === 'business-data'));

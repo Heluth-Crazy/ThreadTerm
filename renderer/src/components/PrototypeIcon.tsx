@@ -49,6 +49,8 @@ const aliases: Record<string,string> = {settings:'gear',chevron:'chevD',grid:'te
 export function Icon({name,className,...props}:{name:string;className?:string}&SVGProps<SVGSVGElement>){
   return <svg className={['ico',className].filter(Boolean).join(' ')} viewBox="0 0 24 24" aria-hidden="true" {...props} dangerouslySetInnerHTML={{__html:icons[aliases[name]??name]??icons.file}}/>;
 }
+/** Raw SVG body of an agent's brand mark for non-React surfaces (the launch screen); static constants only. */
+export function agentIconMarkup(provider:string):string|undefined{return brands[provider];}
 export function AgentIcon({provider,size}:{provider:string;size?:number}){
   const name=provider.toLowerCase().replace(' code',''); const body=brands[name];
   if(!body)return <Icon name="terminal" className="brand-ico" style={size === undefined ? undefined : {width:size,height:size}}/>;

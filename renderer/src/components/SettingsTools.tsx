@@ -1,3 +1,4 @@
+import { localeFromSettings } from "../i18n";
 import { Select } from "./ui/Select";
 import { useEffect, useRef, useState } from "react";
 import type { Session, Snapshot, Worktree } from "@threadterm/protocol";
@@ -30,7 +31,7 @@ function savedRuns(): Map<string, ToolRun> {
 function persistRuns(runs: Map<string, ToolRun>) { try { localStorage.setItem(RUNS_KEY, JSON.stringify([...runs.values()])); } catch { /* Storage is only a convenience index. */ } }
 
 export function SettingsTools({ data, onSaved }: Props) {
-  const zh = data.settings.language !== "en";
+  const zh = localeFromSettings(data.settings) === "zh-CN";
   const copy = zh ? cn : en;
   const [projectId, setProjectId] = useState(() => data.projects[0]?.id ?? "");
   const [cwd, setCwd] = useState(() => data.projects[0]?.path ?? "");

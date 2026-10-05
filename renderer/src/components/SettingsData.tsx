@@ -1,14 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { DataRelocationPrepared, DataStatus, Settings } from "@threadterm/protocol";
-import { activateDataRelocation, chooseDirectory, chooseSavePath, exportDiagnostics, operationId, request, scheduleElectronCacheCleanup } from "../bridge";
+import { activateDataRelocation, chooseDirectory, chooseSavePath, exportDiagnostics, exportFile, operationId, request, scheduleElectronCacheCleanup } from "../bridge";
 import { SurfaceDialog } from "./SurfaceDialog";
 import { SettingsSwitch } from "./SettingsControls";
 
-function download(value: unknown) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
-  const link = document.createElement("a"); link.href = url; link.download = "threadterm-settings.json"; link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-}
 const showValue = (value: unknown) => value === undefined ? "—" : JSON.stringify(value, null, 2);
 const bytes = (value: number) => value < 1024 ? `${value} B` : value < 1048576 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1048576).toFixed(1)} MB`;
 export function SettingsData({ settings, zh, onSaved }: { settings: Settings; zh: boolean; onSaved: () => Promise<void> }) {
@@ -47,7 +42,7 @@ export function SettingsData({ settings, zh, onSaved }: { settings: Settings; zh
     {cache?.state === "failed" && <p className="surface-error">{cache.message}</p>}
     <div className="setting-divider" />
     <p>{text("设置包包含主题、语言、通知、快捷键与终端兼容偏好；不包含会话、输出、密钥、配对设备或审计记录。", "Settings bundles include themes, language, notifications, shortcuts and terminal compatibility. They exclude sessions, output, keys, paired devices and audit history.")}</p>
-    <button className="btn-subtle" disabled={busy} onClick={() => run(async () => { download(await request("settings.export", {})); setNotice(text("已下载设置 JSON。", "Settings JSON downloaded.")); })}>{text("下载设置 JSON", "Download settings JSON")}</button>
+    <button className="btn-subtle" disabled={busy} onClick={() => run(async () => { setNotice(undefined); const saved = await exportFile("settings"); if (saved) setNotice(`${text("设置 JSON 已保存到", "Settings JSON saved to")}: ${saved.path}`); })}>{text("下载设置 JSON", "Download settings JSON")}</button>
     <label>{text("粘贴设置 JSON 以导入", "Paste settings JSON to import")}<textarea value={bundle} onChange={event => { setBundle(event.target.value); setPreview(undefined); setSelected([]); }} placeholder='{"marker":"threadterm-v3-settings", ...}' /></label>
     <button className="btn-subtle" disabled={busy || !bundle.trim()} onClick={() => run(async () => { const value = await request("settings.import.preview", { bundle }); setPreview(value); setSelected(value.valid ? value.changes.map(change => change.key) : []); })}>{text("验证并查看差异", "Validate & preview differences")}</button>
     {preview && <div className="import-preview">{preview.valid ? <><p>{preview.changes.length ? text("选择要导入的栏目。", "Select the sections to import.") : text("设置没有差异。", "There are no settings differences.")}</p>{preview.changes.map(change => <label key={change.key}><span><input type="checkbox" checked={selected.includes(change.key)} onChange={() => setSelected(items => items.includes(change.key) ? items.filter(key => key !== change.key) : [...items, change.key])} />{change.key}</span><div className="settings-import-diff"><pre>{showValue(change.current)}</pre><span>→</span><pre>{showValue(change.incoming)}</pre></div></label>)}<button className="btn-subtle" disabled={busy || !selected.length} onClick={() => run(async () => { await request("settings.import.apply", { bundle, selected, expectedRevision: preview.currentRevision, operationId: operationId() }); setPreview(undefined); setSelected([]); await onSaved(); setNotice(text("已应用所选栏目。", "Selected sections applied.")); })}>{text("应用所选栏目", "Apply selected sections")}</button></> : <p className="surface-error" role="alert">{preview.issues.join(" · ")}</p>} <button className="btn-subtle" disabled={busy} onClick={() => { setPreview(undefined); setSelected([]); }}>{text("取消", "Cancel")}</button></div>}

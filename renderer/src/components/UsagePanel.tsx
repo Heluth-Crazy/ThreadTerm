@@ -1,3 +1,4 @@
+import { localeFromSettings } from "../i18n";
 import { Select } from "./ui/Select";
 import { useEffect, useMemo, useState } from "react";
 import type { ProviderId, SessionStatus, Snapshot, UsageRecord, UsageSource } from "@threadterm/protocol";
@@ -12,7 +13,7 @@ type Range = "all" | "today" | "7d";
 
 /** Reference-shaped usage details. Values come only from usage.query records. */
 export function UsagePanel({ data, initialProjectId }: { data: Snapshot; initialProjectId?: string }) {
-  const zh = data.settings.language === "zh-CN";
+  const zh = localeFromSettings(data.settings) === "zh-CN";
   const copy = zh ? zhCopy : en;
   const configuredPrices = useMemo(() => savedPrices(data.settings.modelPrices), [data.settings.modelPrices]);
   const [prices, setPrices] = useState(() => JSON.stringify(configuredPrices, null, 2));
