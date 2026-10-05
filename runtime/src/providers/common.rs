@@ -445,6 +445,9 @@ pub fn spawn_managed_service(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // The user's current Windows environment rather than the long-lived runtime's, as for a
+    // terminal (environment.rs); the provider's own variables below still win.
+    crate::environment::apply_to_service(&mut command);
     for (name, value) in envs {
         command.env(name, value);
     }

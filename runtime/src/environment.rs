@@ -7,7 +7,8 @@
 //! (logon) variables. Windows' own `CreateEnvironmentBlock` builds what a new logon gets — machine,
 //! user and volatile variables, expanded in order, the user Path appended to the machine Path — and
 //! [`merge`] combines it with the runtime's environment so variables its launcher set on purpose
-//! (QA's isolated homes, ThreadTerm's own settings) survive.
+//! (QA's isolated homes, ThreadTerm's own settings) survive. Chat providers' background processes
+//! start from the same environment ([`apply_to_service`]).
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     ffi::{OsStr, OsString},
@@ -30,7 +31,7 @@ static START: OnceLock<Option<Vars>> = OnceLock::new();
 pub fn initialize() {
     START.get_or_init(|| {
         block()
-            .map_err(|error| eprintln!("terminal environment: keeping the inherited one: {error:#}"))
+            .map_err(|error| eprintln!("child environment: keeping the inherited one: {error:#}"))
             .ok()
     });
 }
@@ -45,7 +46,7 @@ fn compose(start: &[(OsString, OsString)], now: impl FnOnce() -> anyhow::Result<
     match now() {
         Ok(now) => Some(merge(&now, start, &std::env::vars_os().collect::<Vars>())),
         Err(error) => {
-            eprintln!("terminal environment: keeping the inherited one: {error:#}");
+            eprintln!("child environment: keeping the inherited one: {error:#}");
             None
         }
     }
@@ -70,6 +71,29 @@ fn replace(command: &mut portable_pty::CommandBuilder, vars: Vars) {
     }
     for (name, value) in own {
         command.env(name, value);
+    }
+}
+
+/// [`apply`] for a background process (a chat provider): it starts from the same environment as a
+/// new terminal, keeping the variables already set or removed on it (the bootstrap gate).
+/// The provider's own variables are set after this.
+pub fn apply_to_service(command: &mut std::process::Command) {
+    if let Some(vars) = for_terminal() {
+        replace_service(command, vars);
+    }
+}
+
+fn replace_service(command: &mut std::process::Command, vars: Vars) {
+    let own: Vec<(OsString, Option<OsString>)> = command
+        .get_envs()
+        .map(|(name, value)| (name.to_owned(), value.map(OsStr::to_owned)))
+        .collect();
+    command.env_clear().envs(vars);
+    for (name, value) in own {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
     }
 }
 
@@ -323,6 +347,69 @@ mod tests {
         assert_eq!(command.get_env("Fresh"), Some(OsStr::new("1")));
         assert_eq!(command.get_env("THREADTERM_V3_BOOTSTRAP_GATE"), Some(OsStr::new("gate")));
         assert_eq!(command.get_env("SystemRoot"), None);
+    }
+
+    #[cfg(windows)]
+    fn cmd_set(command: &mut std::process::Command) -> HashMap<String, String> {
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, value)| (name.to_uppercase(), value.to_owned()))
+            .collect()
+    }
+
+    #[cfg(windows)]
+    fn cmd() -> std::process::Command {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+        let mut command = std::process::Command::new(format!(r"{root}\System32\cmd.exe"));
+        command.args(["/d", "/c", "set"]);
+        command
+    }
+
+    #[test]
+    fn a_service_keeps_its_own_variables_and_removals() {
+        let mut command = std::process::Command::new("node");
+        command.env("THREADTERM_V3_BOOTSTRAP_GATE", "gate").env_remove("REMOVED");
+        replace_service(&mut command, vars(&[("Fresh", "1"), ("THREADTERM_V3_BOOTSTRAP_GATE", "stale"), ("REMOVED", "1")]));
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.contains(&(OsStr::new("Fresh"), Some(OsStr::new("1")))));
+        assert!(envs.contains(&(OsStr::new("THREADTERM_V3_BOOTSTRAP_GATE"), Some(OsStr::new("gate")))));
+        // After `env_clear` a removed variable is simply absent.
+        assert!(!envs.iter().any(|(name, value)| *name == "REMOVED" && value.is_some()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_service_starts_with_only_the_given_environment() {
+        let root = std::env::var("SystemRoot").unwrap();
+        let mut command = cmd();
+        command.env("THREADTERM_V3_BOOTSTRAP_GATE", "gate").env_remove("REMOVED");
+        // A drive's current folder (`=C:`) is part of a runtime started from cmd.exe.
+        replace_service(&mut command, vars(&[("SystemRoot", &root), ("Fresh", "1"), ("REMOVED", "1"), ("=C:", r"C:\")]));
+        let child = cmd_set(&mut command);
+        assert_eq!(child.get("FRESH").map(String::as_str), Some("1"));
+        assert_eq!(child.get("THREADTERM_V3_BOOTSTRAP_GATE").map(String::as_str), Some("gate"));
+        // cmd.exe adds these three itself when they are missing.
+        let mut names: Vec<_> =
+            child.keys().map(String::as_str).filter(|name| !["PROMPT", "COMSPEC", "PATHEXT"].contains(name)).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["FRESH", "SYSTEMROOT", "THREADTERM_V3_BOOTSTRAP_GATE"], "inherited and removed variables are gone");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_service_keeps_the_inherited_environment_on_failure() {
+        // Unit tests never call `initialize`, like a runtime whose start-time snapshot failed.
+        let mut command = cmd();
+        command.env("THREADTERM_V3_BOOTSTRAP_GATE", "gate");
+        apply_to_service(&mut command);
+        let envs: Vec<_> = command.get_envs().collect();
+        assert_eq!(envs, [(OsStr::new("THREADTERM_V3_BOOTSTRAP_GATE"), Some(OsStr::new("gate")))]);
+        let child = cmd_set(&mut command);
+        assert_eq!(child.get("SYSTEMROOT"), std::env::var("SystemRoot").ok().as_ref());
+        assert_eq!(child.get("THREADTERM_V3_BOOTSTRAP_GATE").map(String::as_str), Some("gate"));
     }
 
     #[cfg(windows)]
