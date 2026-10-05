@@ -5,11 +5,22 @@ export type FileTab = Extract<ContentRef,{kind:'file'|'diff'|'preview'}>;
 export const isFileTab = (tab:ContentRef):tab is FileTab => tab.kind==='file'||tab.kind==='diff'||tab.kind==='preview';
 const baseName = (path:string) => path.split(/[\\/]/).at(-1) || path;
 /** Full title (tooltip) and short tab label for any non-session content. */
+/** Whether a link can open as a web tab. Same rule as the protocol's `isWebPreviewUrl` (kept out of the renderer
+ * bundle, which imports only protocol types); the desktop and the runtime validate the saved layout again. */
+export function isWebTabUrl(url:string):boolean {
+ if(!url||url.length>2048||/[\s\u0000-\u001f\u007f-\u009f]/.test(url)) return false;
+ try { const parsed = new URL(url); return (parsed.protocol==='http:'||parsed.protocol==='https:')&&Boolean(parsed.hostname); } catch { return false; }
+}
+/** "localhost:5173" for a web tab: the host is what tells development pages apart. */
+export function webTabLabel(url:string):string {
+ try { return new URL(url).host || url; } catch { return url; }
+}
 export function contentTitle(tab:Exclude<ContentRef,{kind:'session'}>,zh:boolean):{title:string;label:string} {
  if(tab.kind==='history') return tab.path
   ? {title:`${zh?'文件历史':'File history'} · ${tab.path}`,label:`${baseName(tab.path)} · ${zh?'历史':'history'}`}
   : {title:zh?'Git 历史':'Git history',label:zh?'Git 历史':'Git history'};
  if(tab.kind==='review') return {title:`${zh?'检查点以来的改动':'Changes since checkpoint'} · ${tab.path}`,label:`${baseName(tab.path)} · ${zh?'审查':'review'}`};
+ if(tab.kind==='web') return {title:tab.url,label:webTabLabel(tab.url)};
  // Diff tabs sit next to the plain file tab of the same path; say which side of Git they show.
  if(tab.kind==='diff') return tab.staged
   ? {title:`${zh?'已暂存的更改':'Staged changes'} · ${tab.path}`,label:`${baseName(tab.path)} · ${zh?'已暂存':'staged'}`}

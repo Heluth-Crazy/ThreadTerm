@@ -8,6 +8,7 @@ import { decorationIndex } from '../workbench/gitDecorations';
 import { workbenchError } from '../workbench/errors';
 import { createPortal } from 'react-dom';
 import { WbIcon } from '../workbench/icons';
+import { FILE_DRAG_TYPE, fileDragData } from '../fileDrag';
 import { absolutePath, baseName, coveredBy, joinPath, parentPath, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 
 type Editing = { mode:'rename'|'file'|'directory'; dir:string; target?:string; value:string; error?:string };
@@ -196,6 +197,9 @@ export function ExplorerView({scope, actions, git, zh, activePath, focusKey, too
       style={{paddingLeft:8 + depth * 14}} title={entry.path}
       onClick={() => { setSelected(entry.path); if(isDir) void toggle(entry.path); else actions.openFile(entry.path); }}
       onContextMenu={event => { event.preventDefault(); setSelected(entry.path); setMenu({anchor:event.currentTarget, entry}); }}
+      // Same reference as "Send to agent", dropped on a session pane; only where that action exists.
+      draggable={entry.kind === 'file' && !!actions.sendToAgent}
+      onDragStart={event => { if(entry.kind !== 'file' || !actions.sendToAgent) return; event.dataTransfer.setData(FILE_DRAG_TYPE, fileDragData({projectId:scope.projectId, worktreePath:scope.worktreePath, path:entry.path})); event.dataTransfer.effectAllowed = 'copy'; }}
       onKeyDown={event => onKey(event, row, index)}>
       <span className={`wb-chevron${open ? ' open' : ''}`} aria-hidden="true">{isDir && <Icon name="chevR"/>}</span>
       <Icon name={isDir ? 'folder' : 'file'}/>

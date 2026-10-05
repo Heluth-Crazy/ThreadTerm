@@ -25,6 +25,23 @@ test('file preview owners are additive and validated without changing file scope
  for(const ownerSessionId of ['',null,2,'a\nb','x'.repeat(257)])assert.throws(()=>validateRequest('workspace.save',{...params,layout:{...layout,tabs:[{...file,ownerSessionId}]}}));
 });
 
+test('web preview tabs show only http(s) pages and belong to no session',()=>{
+ const web={id:'web',kind:'web',url:'http://localhost:5173/'};
+ const layout={kind:'pane',id:'pane',tabs:[web],activeTabId:'web'};
+ const params={name:'Web',layout,expectedRevision:0,operationId:'web'};
+ validateRequest('workspace.save',params);
+ validateRequest('preset.save',{name:'Web',sessions:[],layout,commands:[],expectedRevision:0,operationId:'web-preset'});
+ validateResult('workspace.save',{id:'workspace',name:'Web',revision:1,layout});
+ validateRequest('workspace.save',{...params,layout:{...layout,tabs:[{id:'web',kind:'web',url:'https://[::1]:8443/app?x=1#top'}]}});
+ for(const url of ['file:///C:/Windows/win.ini','javascript:alert(1)','localhost:3000','http://','http://local host/','http://x/\u0085',`http://localhost/${'a'.repeat(2048)}`,'',3,undefined])
+  assert.throws(()=>validateRequest('workspace.save',{...params,layout:{...layout,tabs:[{...web,url}]}}),undefined,String(url).slice(0,40));
+ // Owned views are reached only through a file header, which a web page does not have.
+ assert.throws(()=>validateRequest('workspace.save',{...params,layout:{...layout,tabs:[{...web,ownerSessionId:'session-a'}]}}));
+ assert.throws(()=>validateLayout({...layout,tabs:[{...web,ownerSessionId:'session-a'}]}));
+ // Fields of file tabs do not belong on a web tab (the schema forbids unknown and file-only properties).
+ assert.throws(()=>validateRequest('workspace.save',{...params,layout:{...layout,tabs:[{...web,projectId:'p',path:'README.md'}]}}));
+});
+
 test('file references are additive, scoped by session, and bounded at the request boundary',()=>{
  validateRequest('filesystem.resolve',{sessionId:'s',path:'src/main.ts',line:5,column:2});
  validateRequest('filesystem.resolve',{sessionId:'s',path:'src/main.ts',column:2});

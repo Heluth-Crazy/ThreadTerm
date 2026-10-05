@@ -1,4 +1,4 @@
-import { type CSSProperties, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type DragEvent as ReactDragEvent, useEffect, useRef, useState } from "react";
 import { createPortal } from 'react-dom';
 import type { ContentRef, FileReference, PaneLayout, ProviderCapability, Session } from "@threadterm/protocol";
 import { confirmCloseEditors } from "../dirtyEditors";
@@ -17,6 +17,7 @@ import { ChatView } from "./ChatView";
 import { FileWorkspace } from "./FileWorkspace";
 import { GitHistoryView } from "./GitHistoryView";
 import { ReviewDiffView } from "./ReviewDiffView";
+import { WebPreview } from "./WebPreview";
 import { AgentIcon, Icon } from "./PrototypeIcon";
 import { ImportedHistoryView } from "./ImportedHistoryView";
 import { CatalogPopover } from './CatalogActions';
@@ -26,6 +27,7 @@ import { contentTitle, focusedWorkspaceTab, isFileTab, tabCloseTargets, workspac
 import { paneGeometry, paneRectStyle, PANE_GAP, PANE_DIVIDER_SIZE } from '../paneGeometry';
 import { fileSelectionKey, visibleSessionLayout, workspaceNavigationLayout, workspaceNavigationTarget, withSessionCompanions, removeClosedViews } from '../sessionFileViews';
 import "./workspace-parity.css";
+import { FILE_DRAG_TYPE, readFileDrag } from "../fileDrag";
 
 type Props = {
   layout: PaneLayout;
@@ -50,9 +52,14 @@ type Props = {
 };
 /** Host callbacks for workbench content inside panes; absent → panes behave as before. */
 export type PaneWorkbench = {
-  sendToAgent?:(target:{projectId:string;worktreePath?:string;path:string;startLine?:number;endLine?:number})=>void;
+  /** `sessionId` picks the receiving session (a file dropped on its pane); otherwise the workspace's current one. */
+  sendToAgent?:(target:{projectId:string;worktreePath?:string;path:string;startLine?:number;endLine?:number;sessionId?:string})=>void;
   openHistory?:(target:{projectId:string;worktreePath?:string;path?:string;commit?:string})=>void;
   openFile?:(target:{projectId:string;worktreePath?:string;path:string})=>void;
+  /** Opens an http(s) page as an independent tab (terminal link bar → Open in preview). */
+  openWeb?:(url:string)=>void;
+  /** Inserts multi-line text into a session's Chat message box without sending (review comments). */
+  insertText?:(sessionId:string,text:string)=>Promise<void>;
   /** One-shot request to select a commit in a history tab (blame click). */
   historyFocus?:{tabId:string;commit:string;key:string};
 };
@@ -314,6 +321,7 @@ function Pane({
   if(tab)visited.current.add(tab.id);
   for(const id of visited.current)if(!node.tabs.some(item=>item.id===id))visited.current.delete(id);
   const [issue, setIssue] = useState<string>();
+  const [fileDropTarget, setFileDropTarget] = useState<string>();
   const session =
     tab?.kind === "session"
       ? sessions.find((item) => item.id === tab.sessionId)
@@ -336,8 +344,15 @@ function Pane({
   const content = node.tabs.filter(item=>visited.current.has(item.id)).map(item=>{
     const active=Boolean(visibleNode)&&item.id===tab?.id;
     const itemSession=item.kind==='session'?sessions.find(candidate=>candidate.id===item.sessionId):undefined;
-    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined}}>
-    <div className="pane-tab-surface" data-content-id={item.id} hidden={!active} inert={!active}>
+    return <SessionSurfaceContext.Provider key={item.id} value={{primaryHost,menuHost,focused:selected&&active,openFile:itemSession&&onFileReference?reference=>onFileReference(itemSession.id,reference):undefined,openWeb:workbench?.openWeb}}>
+    <div className={`pane-tab-surface${fileDropTarget===item.id?" file-drop-target":""}`} data-content-id={item.id} hidden={!active} inert={!active}
+     {...(itemSession&&!itemSession.readOnly&&workbench?.sendToAgent&&["starting","running","idle","waiting"].includes(itemSession.status)?{
+      // An Explorer file dropped here inserts the same reference as "Send to agent", into this session.
+      "data-drop-label":zh?"松开以插入文件引用（不会发送）":"Drop to insert the file reference (not sent)",
+      onDragOver:(event:ReactDragEvent<HTMLDivElement>)=>{if(!event.dataTransfer.types.includes(FILE_DRAG_TYPE))return;event.preventDefault();event.dataTransfer.dropEffect="copy";if(fileDropTarget!==item.id)setFileDropTarget(item.id);},
+      onDragLeave:(event:ReactDragEvent<HTMLDivElement>)=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setFileDropTarget(undefined);},
+      onDrop:(event:ReactDragEvent<HTMLDivElement>)=>{if(!event.dataTransfer.types.includes(FILE_DRAG_TYPE))return;event.preventDefault();setFileDropTarget(undefined);const file=readFileDrag(event.dataTransfer.getData(FILE_DRAG_TYPE));if(file)workbench.sendToAgent?.({...file,sessionId:itemSession.id});},
+     }:{})}>
     {itemSession?.readOnly && !resumedSessionIds.has(itemSession.id) ? (
     <ImportedHistoryView session={itemSession} onResumed={() => onResumed(itemSession.id)} />
   ) : itemSession ? (
@@ -353,7 +368,10 @@ function Pane({
   ) : item.kind === "review" ? (
     <ReviewDiffView projectId={item.projectId} worktreePath={item.worktreePath} path={item.path} sessionId={item.sessionId}
       checkpointId={item.checkpointId} toCheckpointId={item.toCheckpointId} editorId={editorId(node.id, item)} zh={zh}
-      onOpenFile={workbench?.openFile?path=>workbench.openFile?.({projectId:item.projectId,worktreePath:item.worktreePath,path}):undefined}/>
+      onOpenFile={workbench?.openFile?path=>workbench.openFile?.({projectId:item.projectId,worktreePath:item.worktreePath,path}):undefined}
+      onAddToMessage={workbench?.insertText?text=>workbench.insertText!(item.sessionId,text):undefined}/>
+  ) : item.kind === "web" ? (
+    <WebPreview url={item.url} zh={zh}/>
   ) : isFileTab(item) ? (
     <FileWorkspace
       projectId={item.projectId}
@@ -383,7 +401,7 @@ function Pane({
     ? sessions.find(candidate => candidate.id === item.sessionId)?.title ?? (zh?"终端":"Terminal")
     : contentTitle(item, zh).label;
   return (
-    <SessionSurfaceContext.Provider value={{primaryHost,menuHost,focused:selected,openFile:session&&onFileReference?reference=>onFileReference(session.id,reference):undefined}}>
+    <SessionSurfaceContext.Provider value={{primaryHost,menuHost,focused:selected,openFile:session&&onFileReference?reference=>onFileReference(session.id,reference):undefined,openWeb:workbench?.openWeb}}>
     <section data-pane-id={node.id} hidden={!visibleNode} inert={!visibleNode} style={style} className={`workspace-pane ws-pane ${fullscreen ? "fullscreen" : ""}${selected ? " selected" : ""}`} onPointerDown={event=>{if(event.currentTarget.contains(event.target as Node))onFocus();}}>
       {!lastPane&&session&&tab&&<div className="pane-identity"><AgentIcon provider={session.provider}/><span>{tabLabel(tab)}</span></div>}
       <SurfaceActions slot="menu">

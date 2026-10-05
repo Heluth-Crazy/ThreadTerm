@@ -1,1 +1,4 @@
 .shell-palette-scrim { z-index:80; align-items:start; padding-top:min(18vh,150px); }.palette { width:min(620px,calc(100vw - 32px)); max-height:min(560px,calc(100vh - 64px)); display:flex; flex-direction:column; overflow:hidden; }.palette-empty { padding:18px; color:var(--muted); font-size:13px; }
+/* Session rows: the detail (state dot · provider · state · project · worktree) shrinks before the title does. */
+.palette .cmd-row span { flex:0 1 auto; min-width:0; max-width:62%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.palette .cmd-row span .dot { width:7px; height:7px; margin-right:6px; vertical-align:1px; }

@@ -72,7 +72,7 @@ export function WorkspaceTabBar({layout,sessions,active,busy,onActivate,onClose,
         if(from>=0&&to>=0)onReorder(paneId,from,to);
        }catch{/* Ignore foreign drag data. */}
       }}>
-      {session?<AgentIcon provider={session.provider}/>:<Icon name="file"/>}<span>{label}</span>
+      {session?<AgentIcon provider={session.provider}/>:<Icon name={tab.kind==='web'?'popout':'file'}/>}<span>{label}</span>
      </button>
      <button type="button" className="workspace-tab-close" disabled={busy} title={zh?'关闭标签':'Close tab'} aria-label={`${zh?'关闭标签':'Close tab'} ${title}`} onClick={()=>onClose(target,'current')}><Icon name="close"/></button>
     </div>;

@@ -7,6 +7,8 @@ export type SessionSurfacePresentation = {
  menuHost:HTMLElement|null;
  focused:boolean;
  openFile?:(reference:FileReference)=>void;
+ /** Opens an http(s) page in a tab beside the session (terminal link bar). */
+ openWeb?:(url:string)=>void;
 };
 export const SessionSurfaceContext=createContext<SessionSurfacePresentation|undefined>(undefined);
 export function SurfaceActions({slot,children}:{slot:'primary'|'menu';children:ReactNode}) {
