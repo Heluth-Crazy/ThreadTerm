@@ -67,7 +67,8 @@ await writeFile(join(bin, 'shim.rs'), 'fn main(){let status=std::process::Comman
 const compiled = spawnSync('rustc', [join(bin, 'shim.rs'), '-o', join(bin, 'grok.exe')], {encoding:'utf8', windowsHide:true});
 assert.equal(compiled.status, 0, compiled.stderr);
 const runtimeBin = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || (existsSync(resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe')) ? resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe') : resolve('runtime/target/debug/threadterm-v3-runtime.exe'));
-const environment = {...process.env, Path:[bin, dirname(process.execPath), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'), THREADTERM_V3_DATA:data, THREADTERM_V3_PIPE:pipe, TT_QA_NODE:process.execPath, TT_QA_SCRIPT:join(bin, 'fake-grok.mjs'), TT_QA_FRAMES:frames};
+// Every case of PATH goes (Git Bash passes `PATH`): a second key would let the runtime find the real CLIs.
+const environment = {...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path')), Path:[bin, dirname(process.execPath), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'), THREADTERM_V3_DATA:data, THREADTERM_V3_PIPE:pipe, TT_QA_NODE:process.execPath, TT_QA_SCRIPT:join(bin, 'fake-grok.mjs'), TT_QA_FRAMES:frames};
 const daemon = spawn(runtimeBin, [], {env:environment, windowsHide:true, stdio:['ignore', 'ignore', 'pipe']});
 let diagnostic = '', peer, clientId, sessionId;
 daemon.stderr.on('data', bytes => { diagnostic += bytes.toString(); });

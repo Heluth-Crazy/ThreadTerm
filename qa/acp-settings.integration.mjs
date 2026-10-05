@@ -26,7 +26,8 @@ for (const provider of ['kimi', 'gemini']) {
 }
 const runtime = process.env.THREADTERM_QA_RUNTIME_EXE || process.env.THREADTERM_V3_RUNTIME_BIN || (existsSync(resolve('runtime/target/debug/threadterm-v3-runtime.exe')) ? resolve('runtime/target/debug/threadterm-v3-runtime.exe') : resolve('runtime/target-qa/debug/threadterm-v3-runtime.exe'));
 const env = {
-  ...process.env,
+  // Every case of PATH goes (Git Bash passes `PATH`): a second key would let the runtime find the real CLIs.
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path')),
   Path: [bin, dirname(process.execPath), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'),
   THREADTERM_V3_DATA: data,
   THREADTERM_V3_PIPE: pipe,

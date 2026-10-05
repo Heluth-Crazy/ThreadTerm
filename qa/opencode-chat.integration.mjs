@@ -29,7 +29,8 @@ assert.ok(existsSync(runtimeBin), `runtime binary missing: ${runtimeBin}`);
 const runtimeCopy = join(root, 'runtime.exe');
 await copyFile(runtimeBin, runtimeCopy);
 const environment = {
-  ...process.env,
+  // Every case of PATH goes (Git Bash passes `PATH`): a second key would let the runtime find the real CLIs.
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path')),
   Path: [bin, dirname(process.execPath), join(process.env.SystemRoot || 'C:\\Windows', 'System32')].join(';'),
   THREADTERM_V3_DATA: data,
   THREADTERM_V3_PIPE: pipe,
