@@ -16,12 +16,14 @@ import {
   type Extension,
 } from "@codemirror/state";
 import {
+  Decoration,
   EditorView,
   GutterMarker,
   ViewPlugin,
   gutter,
   keymap,
   lineNumbers,
+  type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
 import type { GitBlame } from "@threadterm/protocol";
@@ -241,6 +243,31 @@ function blameGutter(
 }
 
 export type EditorSelectionLines = { startLine: number; endLine: number };
+export type CodeSelection = EditorSelectionLines & { text: string };
+export type CodeMark = EditorSelectionLines;
+
+const setCommentMarks = StateEffect.define<DecorationSet>();
+const commentMarks = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(value, transaction) {
+    for (const effect of transaction.effects)
+      if (effect.is(setCommentMarks)) return effect.value;
+    return value.map(transaction.changes);
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+const commentedLine = Decoration.line({ class: "cm-review-commented" });
+function selectionReport(report: { current?: (selection: CodeSelection) => void }) {
+  return EditorView.updateListener.of((update) => {
+    if (!(update.selectionSet || update.focusChanged || update.docChanged) || !update.view.hasFocus) return;
+    const { state } = update, range = state.selection.main, first = state.doc.lineAt(range.from);
+    let last = state.doc.lineAt(range.to);
+    // A whole-line selection ends at the next line's start, which is not selected.
+    if (range.to > range.from && range.to === last.from && last.number > first.number)
+      last = state.doc.line(last.number - 1);
+    report.current?.({ startLine: first.number, endLine: last.number, text: state.sliceDoc(first.from, last.to) });
+  });
+}
 
 export function CodeEditor({
   path,
@@ -254,6 +281,8 @@ export function CodeEditor({
   blame,
   onBlameCommit,
   onSendToAgent,
+  onSelection,
+  marks,
 }: {
   path: string;
   value: string;
@@ -268,6 +297,9 @@ export function CodeEditor({
   onBlameCommit?: (commit: string) => void;
   /** Mod-L: hand the selected lines (or the cursor line) to an agent session. */
   onSendToAgent?: (lines: EditorSelectionLines) => void;
+  /** Comment capture and line marks are installed only when selection reporting is enabled at mount. */
+  onSelection?: (selection: CodeSelection) => void;
+  marks?: readonly CodeMark[];
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | undefined>(undefined);
@@ -277,6 +309,8 @@ export function CodeEditor({
   save.current = onSave;
   const send = useRef(onSendToAgent);
   send.current = onSendToAgent;
+  const selected = useRef(onSelection);
+  selected.current = onSelection;
   const blameCommit = useRef(onBlameCommit);
   blameCommit.current = onBlameCommit;
   const compartments = useRef({
@@ -288,6 +322,7 @@ export function CodeEditor({
   useEffect(() => {
     if (!host.current) return;
     const { language, base, blame: blameSlot } = compartments.current;
+    const comments = Boolean(selected.current);
     const state = EditorState.create({
       doc: value,
       extensions: [
@@ -300,9 +335,10 @@ export function CodeEditor({
         indentOnInput(),
         language.of([]),
         editorHighlight,
+        ...(comments ? [commentMarks, selectionReport(selected)] : []),
         readOnly ? [] : completion,
         EditorState.readOnly.of(readOnly),
-        EditorView.editable.of(!readOnly),
+        EditorView.editable.of(comments || !readOnly),
         EditorView.theme({
           "&": {
             height: "100%",
@@ -388,6 +424,20 @@ export function CodeEditor({
         changes: { from: 0, to: current.state.doc.length, insert: value },
       });
   }, [value]);
+  useEffect(() => {
+    const current = view.current;
+    if (!current || !marks || !current.state.field(commentMarks, false)) return;
+    const lines = new Set<number>();
+    for (const mark of marks)
+      for (let line = mark.startLine; line <= Math.min(mark.endLine, current.state.doc.lines); line++)
+        lines.add(line);
+    const builder = new RangeSetBuilder<Decoration>();
+    for (const line of [...lines].sort((left, right) => left - right)) {
+      const at = current.state.doc.line(line).from;
+      builder.add(at, at, commentedLine);
+    }
+    current.dispatch({ effects: setCommentMarks.of(builder.finish()) });
+  }, [marks, value, path, readOnly, resetKey]);
   useEffect(() => {
     view.current?.dispatch({
       effects: compartments.current.base.reconfigure(gitBase.of(gitBaseText ?? null)),

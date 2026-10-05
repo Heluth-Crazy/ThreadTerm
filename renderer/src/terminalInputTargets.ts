@@ -19,6 +19,13 @@ export function insertTerminalText(sessionId:string,text:string){
   if(!target)throw new Error('terminal_view_unavailable');
   target.insert(text);
 }
+/** Inserts (multi-line) text into the session's visible Chat composer only; `chat_view_unavailable` while it has
+ * none (not shown, or still connecting). File comments use this: a terminal takes one line at a time. */
+export function insertChatText(sessionId:string,text:string){
+  const chat=visibleTarget(chatTargets,sessionId);
+  if(!chat)throw new Error('chat_view_unavailable');
+  chat.insert(text);
+}
 /** Inserts a one-line reference into whichever input the session shows (Chat composer or terminal). */
 export function insertSessionText(sessionId:string,text:string){
   const chat=visibleTarget(chatTargets,sessionId);
