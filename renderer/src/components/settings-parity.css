@@ -55,3 +55,7 @@
 .settings-drawer .settings-panel { width:min(820px, 100%); height:min(640px, 100%); }
 .settings-drawer header .settings-close { flex:0 0 auto; }
 .settings-drawer header .settings-close .ico { width:16px; height:16px; }
+/* The prototype switch has no disabled look; a locked or dependent switch must not look clickable. */
+.settings-drawer .setting-switch { transition:opacity .12s; }
+/* Delayed, so the brief disable while a save is in flight never flickers; leaving the state is immediate. */
+.settings-drawer .setting-switch:has(input:disabled) { cursor:not-allowed; opacity:.5; transition-delay:.25s; }

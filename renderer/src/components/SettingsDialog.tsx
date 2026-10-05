@@ -1,3 +1,4 @@
+import { localeFromSettings } from "../i18n";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Preset, Snapshot } from "@threadterm/protocol";
@@ -20,7 +21,7 @@ export function SettingsDialog({ data, onClose, onSaved, onSessionCreated, super
   const panel = useRef<HTMLElement>(null), revision = useRef(data.settings.revision);
   useModalFocus(panel, onClose);
   useEffect(() => { revision.current = data.settings.revision; }, [data.settings.revision]);
-  const zh = data.settings.language !== "en";
+  const zh = localeFromSettings(data.settings) === "zh-CN";
   const update = async (patch: Record<string, unknown>) => {
     const next = await request("settings.update", { patch, expectedRevision: revision.current, operationId: operationId() });
     revision.current = next.revision;

@@ -44,10 +44,17 @@ try {
     { theme: 'light', width: 640, height: 520, scale: 1.25 },
     { theme: 'dark', width: 640, height: 520, scale: 1.25 },
   ];
+  let languagePinned = false;
   for (const config of process.env.TT_LAYOUT_SMOKE ? cases.slice(0, 1) : process.env.TT_LAYOUT_NARROW ? cases.slice(-2) : cases) {
     await page.setViewportSize({ width: config.width, height: config.height });
     await app.evaluate(({ BrowserWindow }, scale) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(scale), config.scale);
     await page.goto(`${server.origin}/?theme=${config.theme}`);
+    if (!languagePinned) {
+      const { settings } = await page.evaluate(() => window.threadterm.request('runtime.snapshot', {}));
+      await page.evaluate(([revision, id]) => window.threadterm.request('settings.update', { patch: { language: 'zh-CN' }, expectedRevision: revision, operationId: id }), [settings.revision, crypto.randomUUID()]);
+      await page.waitForFunction(() => document.body.innerText.includes('所有终端'));
+      languagePinned = true;
+    }
     await page.evaluate(error => { window.__catalogLayoutError = error; }, longError);
     await page.locator('.proj-row').first().waitFor();
     for (const kind of ['remove', 'archive', 'remove-active']) {

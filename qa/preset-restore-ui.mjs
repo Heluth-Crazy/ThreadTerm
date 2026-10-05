@@ -26,7 +26,10 @@ await referenceApp.close();await referenceServer.close();
 const server=await startReadonlyReferenceServer(join(root,'desktop-dist/renderer'));
 const app=await launch(join(await mkdtemp(join(tmpdir(),'preset-production-')),'profile'));
 try{
- const page=await app.firstWindow();await page.addInitScript(installVisualFixture,{seed,theme:'light'});await page.goto(server.origin+'/?theme=light');await page.locator('.proj-row').first().waitFor();await page.addStyleTag({content:'.titlebar.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr) 24px!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}.app-shell>.statusbar{grid-row:2!important}'});
+ const page=await app.firstWindow();await page.addInitScript(installVisualFixture,{seed,theme:'light'});await page.goto(server.origin+'/?theme=light');
+ const { settings } = await page.evaluate(() => window.threadterm.request('runtime.snapshot', {}));
+ await page.evaluate(([revision, id]) => window.threadterm.request('settings.update', { patch: { language: 'zh-CN' }, expectedRevision: revision, operationId: id }), [settings.revision, crypto.randomUUID()]);
+ await page.waitForFunction(() => document.body.innerText.includes('所有终端'));await page.locator('.proj-row').first().waitFor();await page.addStyleTag({content:'.titlebar.app-chrome{display:none!important}.app-shell{grid-template-rows:minmax(0,1fr) 24px!important}.app-shell>.sidebar,.app-shell>.content.main{grid-row:1!important}.app-shell>.statusbar{grid-row:2!important}'});
  await page.locator('.side-nav button').filter({hasText:'工作预设'}).click();
  await page.screenshot({path:join(out,'production-preset-cards.png'),animations:'disabled'});
  await page.locator('.preset-card-main').filter({hasText:'结账功能与支付热修并行复核'}).click();

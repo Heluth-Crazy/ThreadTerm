@@ -1,6 +1,10 @@
 import { createContext, useContext, type ReactNode } from "react";
 
 export type Locale = "en" | "zh-CN";
+
+export function localeFromSettings(settings: { language?: unknown } | undefined): Locale {
+  return settings?.language === "zh-CN" ? "zh-CN" : "en";
+}
 export const messages = {
   en: {
     newSession: "New session",
