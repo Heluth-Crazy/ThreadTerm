@@ -629,11 +629,11 @@ mod tests {
 
     #[test]
     fn approval_resolution_keeps_sibling_waiting_and_ignores_late_unknown_replies() {
-        for provider in crate::providers::SUPPORTED_PROVIDERS {
+        for provider in crate::providers::Providers::new().registered_ids() {
             let root = tempfile::tempdir().unwrap();
             let db = Database::open(&root.path().join("approvals.sqlite")).unwrap();
             db.transaction(|tx| {
-                tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('s','test',?,'chat','running','now','now')", [provider])?;
+                tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('s','test',?,'chat','running','now','now')", [provider.as_str()])?;
                 Ok(())
             }).unwrap();
             for id in ["one", "two"] {

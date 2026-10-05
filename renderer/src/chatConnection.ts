@@ -1,4 +1,5 @@
-import type { ChatConnectionPhase, ChatConnectionState } from "@threadterm/protocol";
+import { agentName } from "./agents";
+import type { ChatConnectionPhase, ChatConnectionState, ProviderCapability } from "@threadterm/protocol";
 
 export type ChatOverlayKind = "none" | "full" | "banner";
 export type TransportStatus = "up" | "down" | "syncing";
@@ -125,21 +126,15 @@ export function connectionStatusText(
   phase: ChatConnectionPhase,
   copy: (en: string, zh: string) => string,
   transportDown = false,
+  capabilities: readonly ProviderCapability[] = [],
 ): string {
   if (transportDown) return copy("Runtime connection lost. Messages stay readable; writes wait until the pipe returns.", "与运行时的连接已断开。消息仍可阅读，恢复前不能写入。");
-  const name = providerLabel(provider);
+  const name = providerLabel(provider, capabilities);
   if (phase === "failed") return copy(`Could not connect to ${name}.`, `无法连接到 ${name}。`);
   if (phase === "disconnected") return copy(`Reconnecting to ${name}…`, `正在重新连接 ${name}…`);
   return copy(`Connecting to ${name}…`, `正在连接 ${name}…`);
 }
 
-export function providerLabel(provider: string): string {
-  const name = provider.toLowerCase();
-  if (name === "kimi") return "Kimi";
-  if (name === "codex") return "Codex";
-  if (name === "grok") return "Grok";
-  if (name === "claude") return "Claude";
-  if (name === "gemini") return "Gemini";
-  if (name === "opencode") return "OpenCode";
-  return provider;
+export function providerLabel(provider: string, capabilities: readonly ProviderCapability[] = []): string {
+  return agentName(provider, capabilities);
 }

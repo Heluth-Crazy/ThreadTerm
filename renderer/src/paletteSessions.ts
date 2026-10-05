@@ -1,4 +1,4 @@
-import type { Project, Session } from "@threadterm/protocol";
+import type { Project, ProviderCapability, Session } from "@threadterm/protocol";
 import { providerLabel } from "./attentionState";
 import { displayPath, sameCanonicalScope } from "./projectScope";
 import { isTerminalAttentionSession, sessionActivity, sessionActivityLabel, sortSessionsByActivity } from "./sessionActivity";
@@ -35,10 +35,10 @@ export function paletteSessionState(session: Session, zh: boolean): { tone: Sess
 
 /** "Codex · Awaiting approval · ThreadTerm · feature-x": provider, state, project, and the worktree folder when the
  * session works outside the project's main folder. */
-export function paletteSessionDetail(session: Session, projects: readonly Project[], zh: boolean): string {
+export function paletteSessionDetail(session: Session, projects: readonly Project[], zh: boolean, capabilities: readonly ProviderCapability[] = []): string {
   const project = projects.find(candidate => candidate.id === session.projectId);
   const worktree = session.worktreePath && !(project && sameCanonicalScope(session.worktreePath, project.path))
     ? displayPath(session.worktreePath).replace(/[\\/]+$/, "").split(/[\\/]/).at(-1)
     : undefined;
-  return [providerLabel(session.provider), paletteSessionState(session, zh).label, project?.name, worktree].filter(Boolean).join(" · ");
+  return [providerLabel(session.provider, capabilities), paletteSessionState(session, zh).label, project?.name, worktree].filter(Boolean).join(" · ");
 }

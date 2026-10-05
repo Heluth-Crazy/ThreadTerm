@@ -170,7 +170,7 @@ test('handshake rejects old and mismatched Chat approval contracts without imply
  assert.equal(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:PROTOCOL_CONTRACT}),undefined);
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION}),/older and was left running/);
  assert.match(protocolIncompatibleReason({kind:'auth',clientId:'c',protocol:PROTOCOL_VERSION,nonce:'n',hmac:'00'},'runtime'),/Running jobs were not stopped/);
- assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:1}),/contract 2/);
+ assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:PROTOCOL_VERSION,contract:1}),new RegExp('contract '+PROTOCOL_CONTRACT));
  assert.match(protocolIncompatibleReason({kind:'challenge',nonce:'n',protocol:99,contract:PROTOCOL_CONTRACT}),/wire protocol/);
  validateResult('runtime.health',{version:'0.1.0',epoch:'e',contract:PROTOCOL_CONTRACT});
  assert.throws(()=>validateResult('runtime.health',{version:'0.1.0',epoch:'e'}));
@@ -199,4 +199,10 @@ test('chat protocol preserves structured Codex status parts',()=>{
    type:'status',status:'complete',text:'Codex session status',data:{model:'gpt-5.5-luna',rateLimits:[],context:{modelContextWindow:258000}}
   }]
  }]);
+});
+
+test('agent ids are checked for shape only; the runtime registry decides which agents exist',()=>{
+ for(const provider of ['codex','shell','echo','qwen-code']) validateRequest('session.create',{cwd:'C:\repo',provider,mode:'chat',operationId:'o'});
+ for(const provider of ['','Echo','1agent','a','x'.repeat(40),'../codex']) assert.throws(()=>validateRequest('session.create',{cwd:'C:\repo',provider,mode:'chat',operationId:'o'}),/Invalid provider/);
+ assert.throws(()=>validateRequest('session.create',{cwd:'C:\repo',provider:7,mode:'chat',operationId:'o'}),/protocol schema/);
 });

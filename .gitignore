@@ -173,6 +173,7 @@ docs/*
 !docs/windows-lightweight-feasibility-report.md
 !docs/local-and-windows-test-checklist.md
 !docs/windows-performance-functional-impact-review-and-optimization-plan.md
+!docs/plugins.md
 !docs/first-run.md
 !docs/first-run.zh-CN.md
 !docs/build-release.md

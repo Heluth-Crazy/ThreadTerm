@@ -173,8 +173,13 @@ impl ProviderAdapter for GrokAdapter {
             })
             .unwrap_or((false, false, false));
         ProviderCapability {
+            source: "builtin",
+            plugin_id: None,
+            icon: None,
+            sign_in: super::builtin_sign_in("grok"),
+            homepage: None,
             id: "grok".to_owned(),
-            name: "Grok".to_owned(),
+            name: super::builtin_name("grok").to_owned(),
             installed,
             version,
             terminal: installed,

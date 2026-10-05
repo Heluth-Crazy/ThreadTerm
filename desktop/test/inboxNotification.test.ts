@@ -29,6 +29,11 @@ test("English inbox copy is unchanged for existing callers", () => {
   assert.deepEqual(inboxNotificationCopy({ kind: "reply" }), { title: "ThreadTerm reply ready", body: "A provider reply is ready." });
 });
 
+test("notifications use the registry provider name when it is available", () => {
+  assert.deepEqual(inboxNotificationCopy({ kind: "reply", title: "Echo", provider: "echo", providerName: "Echo (ACP example)" }), { title: "Echo", body: "Echo (ACP example) · Echo has a new structured reply." });
+  assert.deepEqual(terminalNotificationCopy({ status: "exited", exitCode: 0, title: "Echo", provider: "echo", providerName: "Echo (ACP example)" }), { title: "Echo", body: "Echo (ACP example) · Echo finished." });
+});
+
 test("terminal notices name the session and say how it ended, like the runtime's exit inbox kinds", () => {
   const clean = { status: "exited", exitCode: 0, title: "npm test", provider: "shell" };
   assert.deepEqual(terminalNotificationCopy(clean), { title: "npm test", body: "Shell · npm test finished." });

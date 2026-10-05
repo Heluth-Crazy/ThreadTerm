@@ -795,16 +795,7 @@
     },
     "ProviderId": {
       "type": "string",
-      "enum": [
-        "codex",
-        "claude",
-        "kimi",
-        "gemini",
-        "opencode",
-        "shell",
-        "grok",
-        "custom"
-      ]
+      "description": "Any agent id in the runtime's agent registry: a built-in id or one contributed by an enabled plugin (`^[a-z][a-z0-9-]{1,31}$`). The runtime rejects ids it does not know; `provider.list` is the source of truth."
     },
     "SessionStatus": {
       "type": "string",
@@ -1324,6 +1315,42 @@
     },
     "RequestParams<\"provider.list\">": {
       "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"plugin.list\">": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RequestParams<\"plugin.setEnabled\">": {
+      "type": "object",
+      "properties": {
+        "pluginId": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pluginId",
+        "enabled",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"plugin.reload\">": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId"
+      ],
       "additionalProperties": false
     },
     "RequestParams<\"history.list\">": {
@@ -4032,6 +4059,84 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22provider.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "plugin.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22plugin.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "plugin.setEnabled"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22plugin.setEnabled%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "plugin.reload"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22plugin.reload%22%3E"
         }
       },
       "required": [

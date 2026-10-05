@@ -1,16 +1,18 @@
 use super::{
+    acp_mcp_servers,
     approval::{
         acp_choices, acp_title, approval_payload, drain_inactive_approvals, find_choice,
         validate_turn, write_failed_not_sent, ApprovalChoice, PendingApprovalState,
     },
+    approve_threadterm_tool,
     common::{
         command_output, encode_approval_id, history_page, insert_optional, validate_native_id,
         version_probe, CommandSpec, EnvelopeStyle, JsonLineProcess, JsonLineResponder,
     },
-    acp_mcp_servers, approve_threadterm_tool, emit_bound as emit, ChatSession, ChatToolServer,
-    ProviderAdapter, ProviderCapability, ProviderError, ProviderEvent, ScopedProviderEvents,
-    TerminalCommand,
+    emit_bound as emit, ChatSession, ChatToolServer, ProviderAdapter, ProviderCapability,
+    ProviderError, ProviderEvent, ScopedProviderEvents, TerminalCommand,
 };
+use crate::plugins::{AgentDescriptor, TerminalConfig};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::{
@@ -23,51 +25,44 @@ use std::{
 };
 use tokio::sync::broadcast;
 
-#[derive(Clone, Copy)]
-enum AcpKind {
-    Kimi,
-    Gemini,
-}
-
-impl AcpKind {
-    fn id(self) -> &'static str {
-        match self {
-            Self::Kimi => "kimi",
-            Self::Gemini => "gemini",
-        }
-    }
-    fn name(self) -> &'static str {
-        match self {
-            Self::Kimi => "Kimi",
-            Self::Gemini => "Gemini",
-        }
-    }
-    fn command(self) -> &'static str {
-        self.id()
-    }
-    fn acp_args(self) -> &'static [&'static str] {
-        match self {
-            Self::Kimi => &["acp"],
-            Self::Gemini => &["--acp"],
-        }
-    }
-}
-
 pub struct AcpAdapter {
-    kind: AcpKind,
+    descriptor: AgentDescriptor,
+    kimi_native: bool,
     events: broadcast::Sender<ProviderEvent>,
 }
 
 impl AcpAdapter {
     pub fn kimi(events: broadcast::Sender<ProviderEvent>) -> Self {
         Self {
-            kind: AcpKind::Kimi,
+            descriptor: AgentDescriptor {
+                id: "kimi".into(),
+                name: super::builtin_name("kimi").into(),
+                plugin_id: None,
+                icon: None,
+                homepage: None,
+                command: "kimi".into(),
+                args: Vec::new(),
+                version_args: vec!["--version".into()],
+                terminal: Some(TerminalConfig {
+                    args: Vec::new(),
+                    resume_args: vec!["--session".into(), "{sessionId}".into()],
+                }),
+                chat_args: Some(vec!["acp".into()]),
+                sign_in_args: Some(vec!["login".into()]),
+                plugin_dir: None,
+            },
+            kimi_native: true,
             events,
         }
     }
-    pub fn gemini(events: broadcast::Sender<ProviderEvent>) -> Self {
+
+    pub fn from_descriptor(
+        descriptor: AgentDescriptor,
+        events: broadcast::Sender<ProviderEvent>,
+    ) -> Self {
         Self {
-            kind: AcpKind::Gemini,
+            descriptor,
+            kimi_native: false,
             events,
         }
     }
@@ -86,8 +81,10 @@ impl AcpAdapter {
         project_events: bool,
         delegation_tools: bool,
     ) -> Result<(JsonLineProcess, Value), ProviderError> {
-        let spec = CommandSpec::provider(self.kind.command(), self.kind.acp_args())?;
-        let provider = self.kind.id();
+        let spec = self
+            .descriptor
+            .command_spec(self.descriptor.chat_args.as_deref().unwrap_or(&[]))?;
+        let provider = self.descriptor.id.clone();
         let owned_session = session_id.to_owned();
         let think_open = Arc::new(Mutex::new(false));
         let responder: Arc<Mutex<Option<JsonLineResponder>>> = Arc::new(Mutex::new(None));
@@ -110,7 +107,7 @@ impl AcpAdapter {
             if project_events && !replay_gate.load(Ordering::SeqCst) {
                 emit_acp_message(
                     &events,
-                    provider,
+                    &provider,
                     &owned_session,
                     &native,
                     &active_turn,
@@ -122,7 +119,7 @@ impl AcpAdapter {
             }
         });
         let process = JsonLineProcess::spawn(
-            format!("{}-acp", self.kind.id()),
+            format!("{}-acp", self.descriptor.id),
             &spec,
             None,
             &[],
@@ -161,19 +158,19 @@ impl AcpAdapter {
 }
 
 impl ProviderAdapter for AcpAdapter {
-    fn id(&self) -> &'static str {
-        self.kind.id()
+    fn id(&self) -> &str {
+        &self.descriptor.id
     }
 
     fn capability(&self) -> ProviderCapability {
-        let (installed, version, probe_error) = version_probe(self.kind.command());
+        let (installed, version, probe_error) = self.descriptor.version_probe();
         let protocol = if installed {
             self.temporary(None)
                 .map(|(_, initialized)| initialized)
                 .map_err(|error| error.message)
         } else {
             Err(acp_probe_failure_reason(
-                self.kind.name(),
+                &self.descriptor.name,
                 probe_error.clone(),
             ))
         };
@@ -188,17 +185,26 @@ impl ProviderAdapter for AcpAdapter {
             })
             .unwrap_or((false, false, false));
         ProviderCapability {
-            id: self.kind.id().to_owned(),
-            name: self.kind.name().to_owned(),
+            id: self.descriptor.id.clone(),
+            name: self.descriptor.name.clone(),
             installed,
             version,
-            terminal: installed,
+            terminal: installed && self.descriptor.terminal.is_some(),
             chat,
             history,
             resume,
             terminal_resume_capture: self.terminal_capture().as_str(),
             reason: protocol.err().or(probe_error),
             auth: "unknown".to_owned(),
+            source: if self.kimi_native {
+                "builtin"
+            } else {
+                "plugin"
+            },
+            plugin_id: self.descriptor.plugin_id.clone(),
+            icon: self.descriptor.icon.clone(),
+            sign_in: self.descriptor.sign_in(),
+            homepage: self.descriptor.homepage.clone(),
         }
     }
 
@@ -207,41 +213,30 @@ impl ProviderAdapter for AcpAdapter {
         resume_id: Option<&str>,
         assign_id: Option<&str>,
     ) -> Result<TerminalCommand, ProviderError> {
-        let args = match (self.kind, resume_id.or(assign_id)) {
-            (AcpKind::Kimi, Some(id)) => {
-                validate_native_id(id)?;
-                vec!["--session".to_owned(), id.to_owned()]
-            }
-            (AcpKind::Gemini, Some(id)) => {
-                validate_native_id(id)?;
-                vec!["--resume".to_owned(), id.to_owned()]
-            }
-            (_, None) => Vec::new(),
-        };
-        let path =
-            crate::providers::common::find_executable(self.kind.command()).ok_or_else(|| {
-                ProviderError::unavailable(
-                    self.kind.id(),
-                    format!("{} executable was not found on PATH", self.kind.command()),
-                )
-            })?;
-        let spec = CommandSpec::from_path(path, args)?;
-        Ok(TerminalCommand {
-            program: spec.program,
-            args: spec.args,
-            display: spec.display,
-        })
+        if resume_id.is_some() && assign_id.is_some() {
+            return Err(ProviderError::new(
+                "provider_invalid_request",
+                "terminal resume and assignment cannot both be requested",
+            ));
+        }
+        if self.kimi_native {
+            return self
+                .descriptor
+                .terminal_command(resume_id.or(assign_id), None);
+        }
+        self.descriptor.terminal_command(resume_id, assign_id)
     }
 
     fn terminal_capture(&self) -> super::TerminalCapture {
-        match self.kind {
-            AcpKind::Kimi => super::TerminalCapture::PreAssigned,
-            AcpKind::Gemini => super::TerminalCapture::None,
+        if self.kimi_native {
+            super::TerminalCapture::PreAssigned
+        } else {
+            super::TerminalCapture::None
         }
     }
 
     fn prepare_terminal(&self, cwd: &str) -> Result<Option<String>, ProviderError> {
-        if !matches!(self.kind, AcpKind::Kimi) {
+        if !self.kimi_native {
             return Ok(None);
         }
         // Kimi's TUI uses process.cwd(), which omits Windows verbatim prefixes.
@@ -289,7 +284,7 @@ impl ProviderAdapter for AcpAdapter {
         let items = sessions
             .into_iter()
             .take(limit as usize)
-            .filter_map(|row| acp_history_item(self.kind.id(), &row))
+            .filter_map(|row| acp_history_item(&self.descriptor.id, &row))
             .collect::<Vec<_>>();
         let next_cursor = result
             .get("nextCursor")
@@ -359,7 +354,7 @@ impl ProviderAdapter for AcpAdapter {
         tools: Option<&ChatToolServer>,
     ) -> Result<Box<dyn ChatSession>, ProviderError> {
         let events = ScopedProviderEvents::new(self.events.clone(), worker_token);
-        if matches!(self.kind, AcpKind::Kimi) {
+        if self.kimi_native {
             super::kimi_plan_usage::prefetch();
         }
         // Passed on new and on load: a reconnect must re-attach the server
@@ -397,7 +392,7 @@ impl ProviderAdapter for AcpAdapter {
                     "resume_unsupported",
                     format!(
                         "{} ACP agent does not advertise session resume",
-                        self.kind.name()
+                        self.descriptor.name
                     ),
                 ))
             };
@@ -421,10 +416,16 @@ impl ProviderAdapter for AcpAdapter {
             merge_acp_ui(&mut state, &response);
             merge_acp_ui(&mut state, &initialized);
         }
-        emit_chat_ui(&events, self.kind.id(), session_id, Some(&bound_id), &ui);
+        emit_chat_ui(
+            &events,
+            &self.descriptor.id,
+            session_id,
+            Some(&bound_id),
+            &ui,
+        );
         emit(
             &events,
-            self.kind.id(),
+            &self.descriptor.id,
             session_id,
             Some(&bound_id),
             None,
@@ -432,7 +433,7 @@ impl ProviderAdapter for AcpAdapter {
             json!({"nativeId":bound_id}),
         );
         Ok(Box::new(AcpChat {
-            provider: self.kind.id(),
+            provider: self.descriptor.id.clone(),
             process,
             session_id: session_id.to_owned(),
             native_id: bound_id,
@@ -550,7 +551,7 @@ impl UsageReplyContext {
 }
 
 struct AcpChat {
-    provider: &'static str,
+    provider: String,
     process: JsonLineProcess,
     session_id: String,
     native_id: String,
@@ -698,7 +699,7 @@ impl AcpChat {
     fn reply_command(&mut self, operation_id: &str, text: &str) {
         emit(
             &self.events,
-            self.provider,
+            &self.provider,
             &self.session_id,
             Some(&self.native_id),
             Some(operation_id),
@@ -890,7 +891,7 @@ impl AcpChat {
             *active = Some(operation_id.to_owned());
         }
         let events = self.events.clone();
-        let provider = self.provider;
+        let provider = self.provider.clone();
         let session_id = self.session_id.clone();
         let native_id = self.native_id.clone();
         let turn_id = operation_id.to_owned();
@@ -913,7 +914,7 @@ impl AcpChat {
                     Ok(value) => {
                         emit(
                             &events,
-                            provider,
+                            &provider,
                             &session_id,
                             Some(&native_id),
                             Some(&turn_id),
@@ -923,7 +924,7 @@ impl AcpChat {
                     }
                     Err(error) => emit(
                         &events,
-                        provider,
+                        &provider,
                         &session_id,
                         Some(&native_id),
                         Some(&turn_id),
@@ -944,7 +945,7 @@ impl AcpChat {
         }
         emit(
             &self.events,
-            self.provider,
+            &self.provider,
             &self.session_id,
             Some(&self.native_id),
             Some(operation_id),
@@ -1057,7 +1058,7 @@ impl ChatSession for AcpChat {
                 permissions.remove(approval_id);
                 emit(
                     &self.events,
-                    self.provider,
+                    &self.provider,
                     &self.session_id,
                     Some(&self.native_id),
                     Some(turn_id),
@@ -1078,7 +1079,7 @@ impl ChatSession for AcpChat {
                 }
                 emit(
                     &self.events,
-                    self.provider,
+                    &self.provider,
                     &self.session_id,
                     Some(&self.native_id),
                     Some(turn_id),
@@ -1150,7 +1151,7 @@ impl ChatSession for AcpChat {
                 drop(state);
                 emit_chat_ui(
                     &self.events,
-                    self.provider,
+                    &self.provider,
                     &self.session_id,
                     Some(&self.native_id),
                     &self.ui,
@@ -1198,7 +1199,7 @@ impl ChatSession for AcpChat {
         }
         emit_chat_ui(
             &self.events,
-            self.provider,
+            &self.provider,
             &self.session_id,
             Some(&self.native_id),
             &self.ui,
@@ -1899,6 +1900,18 @@ fn kimi_terminal_cwd(cwd: &str) -> std::borrow::Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::PluginRegistry;
+
+    fn gemini(events: broadcast::Sender<ProviderEvent>) -> AcpAdapter {
+        let data_dir = tempfile::tempdir().unwrap();
+        let registry = PluginRegistry::discover_with_roots(data_dir.path(), &json!({}), &[]);
+        let descriptor = registry
+            .agents
+            .into_iter()
+            .find(|agent| agent.id == "gemini")
+            .expect("bundled Gemini descriptor");
+        AcpAdapter::from_descriptor(descriptor, events)
+    }
 
     #[test]
     fn kimi_and_gemini_tool_updates_keep_native_identity_and_file_candidates() {
@@ -1997,7 +2010,7 @@ mod tests {
         }
         let (events, _) = broadcast::channel(4);
         assert!(AcpAdapter::kimi(events.clone()).scopes_chat_events());
-        assert!(AcpAdapter::gemini(events).scopes_chat_events());
+        assert!(gemini(events).scopes_chat_events());
     }
 
     #[test]
@@ -2114,7 +2127,7 @@ mod tests {
         merge_acp_ui(&mut ui.lock().unwrap(), &opened);
         SettingsFixture {
             chat: AcpChat {
-                provider,
+                provider: provider.to_owned(),
                 process,
                 session_id: "settings-qa".to_owned(),
                 native_id: "qa-acp-settings-session".to_owned(),
@@ -2416,9 +2429,43 @@ mod tests {
             super::super::TerminalCapture::PreAssigned
         );
         assert_eq!(
-            AcpAdapter::gemini(broadcast::channel(1).0).terminal_capture(),
+            gemini(broadcast::channel(1).0).terminal_capture(),
             super::super::TerminalCapture::None
         );
+    }
+
+    #[test]
+    fn bundled_gemini_descriptor_keeps_its_acp_and_terminal_commands() {
+        let adapter = gemini(broadcast::channel(1).0);
+        assert_eq!(adapter.id(), "gemini");
+        assert_eq!(adapter.descriptor.command, "gemini");
+        assert_eq!(
+            adapter.descriptor.chat_args.as_deref(),
+            Some(&["--acp".into()][..])
+        );
+        assert_eq!(
+            adapter
+                .descriptor
+                .terminal
+                .as_ref()
+                .map(|terminal| terminal.resume_args.as_slice()),
+            Some(&["--resume".into(), "{sessionId}".into()][..])
+        );
+    }
+
+    #[test]
+    fn kimi_terminal_assignment_uses_its_preassigned_session_flag() {
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let executable = directory.path().join("kimi-test.cmd");
+        #[cfg(not(windows))]
+        let executable = directory.path().join("kimi-test");
+        std::fs::write(&executable, "placeholder").unwrap();
+        let mut adapter = AcpAdapter::kimi(broadcast::channel(1).0);
+        adapter.descriptor.command = executable.to_string_lossy().into_owned();
+
+        let command = adapter.terminal_command(None, Some("native-123")).unwrap();
+        assert_eq!(command.args, vec!["--session", "native-123"]);
     }
     #[test]
     fn history_item_never_serializes_optional_nulls() {
@@ -2511,7 +2558,7 @@ createInterface({{ input: process.stdin, crlfDelay: Infinity }}).on('line', line
         .unwrap();
         let (events, _) = broadcast::channel(16);
         Some(AcpChat {
-            provider: "kimi",
+            provider: "kimi".into(),
             process,
             session_id: "s".into(),
             native_id: "n".into(),

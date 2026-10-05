@@ -1,5 +1,6 @@
 //! Persisted, revision-fenced launch specifications for explicit session reruns.
 use crate::db::Database;
+use crate::providers::Providers;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -81,7 +82,12 @@ pub fn link_source(db: &Database, session_id: &str, source_session_id: &str) -> 
     })
 }
 
-pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Option<Value>> {
+pub fn dispatch(
+    db: &Database,
+    providers: &Providers,
+    method: &str,
+    params_value: &Value,
+) -> Result<Option<Value>> {
     if !matches!(method, "session.config.read" | "session.config.save") {
         return Ok(None);
     }
@@ -104,6 +110,9 @@ pub fn dispatch(db: &Database, method: &str, params_value: &Value) -> Result<Opt
                 .filter(|revision| *revision >= 0)
                 .ok_or_else(|| anyhow!("invalid_revision"))?;
             let launch = launch_from(params)?;
+            if !matches!(launch.provider.as_str(), "shell" | "custom") {
+                providers.require_agent(&launch.provider)?;
+            }
             validate(&launch)?;
             let config = db.transaction(|tx| {
                 let existing = read_tx(tx, session_id)?.ok_or_else(|| anyhow!("launch_config_missing"))?;
@@ -164,10 +173,8 @@ fn string<'a>(params: &'a serde_json::Map<String, Value>, key: &str) -> Result<&
         .ok_or_else(|| anyhow!("invalid_request"))
 }
 fn validate(launch: &LaunchSpec) -> Result<()> {
-    if !matches!(
-        launch.provider.as_str(),
-        "codex" | "claude" | "kimi" | "gemini" | "opencode" | "shell" | "grok" | "custom"
-    ) || !matches!(launch.mode.as_str(), "terminal" | "chat")
+    if launch.provider.is_empty()
+        || !matches!(launch.mode.as_str(), "terminal" | "chat")
         || !Path::new(&launch.cwd).is_absolute()
         || launch.args.len() > MAX_ARGS
         || launch.args.iter().any(|arg| arg.len() > MAX_ARGUMENT_BYTES)
@@ -241,9 +248,10 @@ mod tests {
             read(&db, &rerun.id).unwrap().unwrap().source_session_id,
             Some(source.id.clone())
         );
-        let saved=dispatch(&db,"session.config.save",&json!({"sessionId":source.id,"provider":"shell","mode":"terminal","cwd":temp.path(),"title":"edited","executable":"cmd.exe","args":["/D"],"expectedRevision":1,"operationId":"edit"})).unwrap().unwrap();
+        let providers = Providers::for_test(vec![]);
+        let saved=dispatch(&db,&providers,"session.config.save",&json!({"sessionId":source.id,"provider":"shell","mode":"terminal","cwd":temp.path(),"title":"edited","executable":"cmd.exe","args":["/D"],"expectedRevision":1,"operationId":"edit"})).unwrap().unwrap();
         assert_eq!(saved["revision"], 2);
         assert_eq!(saved["title"], "edited");
-        assert!(dispatch(&db,"session.config.save",&json!({"sessionId":source.id,"provider":"shell","mode":"terminal","cwd":temp.path(),"expectedRevision":1,"operationId":"stale"})).is_err());
+        assert!(dispatch(&db,&providers,"session.config.save",&json!({"sessionId":source.id,"provider":"shell","mode":"terminal","cwd":temp.path(),"expectedRevision":1,"operationId":"stale"})).is_err());
     }
 }

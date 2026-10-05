@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { release } from 'node:os';
-import { readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync } from 'node:fs';
+import { readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, statSync, mkdirSync } from 'node:fs';
 import { validateRequest, type Method, type RequestParams, type RuntimeEvent } from '@threadterm/protocol';
 import { RuntimeClient, runtimePipeIsOpen } from './runtime-client.js';
 import { floatIdentity, nextFloatKey, tiledFloatBounds, type FloatMode } from './floatingWindows.js';
@@ -223,14 +223,14 @@ async function notifyTerminalCompletion(event: RuntimeEvent): Promise<void> {
     if (event.seq <= lastNotificationSeq) return;
     lastNotificationSeq = event.seq;
     const exitCode = (completion as { exitCode?: unknown }).exitCode;
-    const notice = { status: completion.status, exitCode: typeof exitCode === 'number' ? exitCode : session.exitCode, title: session.title, provider: session.provider };
+    const notice = { status: completion.status, exitCode: typeof exitCode === 'number' ? exitCode : session.exitCode, title: session.title, provider: session.provider, providerName: snapshot.providers.find((provider) => provider.id === session.provider)?.name };
     void notifyNative(terminalNotificationKind(notice), (locale) => terminalNotificationCopy(notice, locale), { sessionId: completion.sessionId });
   } catch { /* A later inbox event remains the authoritative chat notification. */ }
 }
 function stateChangeKind(value: unknown): string | undefined { return value && typeof value === 'object' && !Array.isArray(value) && typeof (value as Record<string, unknown>).kind === 'string' ? (value as Record<string, unknown>).kind as string : undefined; }
 function isInboxNotification(value: unknown): value is InboxNotice { const kind = stateChangeKind(value); return kind === 'approval' || kind === 'reply' || kind === 'error' || kind === 'waiting'; }
 function inboxNoticeFromEvent(value: InboxNotice): InboxNotice {
-  return { kind: value.kind, sessionId: value.sessionId, title: value.title, provider: value.provider };
+  return { kind: value.kind, sessionId: value.sessionId, title: value.title, provider: value.provider, providerName: value.providerName };
 }
 function inboxNotificationKind(value: InboxNotice): NotificationKind { return value.kind === 'reply' ? 'completed' : 'attention'; }
 async function presentInboxNotification(value: InboxNotice): Promise<void> {
@@ -238,7 +238,7 @@ async function presentInboxNotification(value: InboxNotice): Promise<void> {
   try {
     const snapshot = await adminRuntime.request('runtime.snapshot', {});
     const session = notice.sessionId ? snapshot.sessions.find((item) => item.id === notice.sessionId) : undefined;
-    if (session) notice = { ...notice, title: notice.title || session.title, provider: notice.provider || session.provider };
+    if (session) notice = { ...notice, title: notice.title || session.title, provider: notice.provider || session.provider, providerName: snapshot.providers.find((provider) => provider.id === session.provider)?.name };
   } catch { /* Kind-only payload is still enough to notify. */ }
   void notifyNative(inboxNotificationKind(notice), (locale) => inboxNotificationCopy(notice, locale), { sessionId: notice.sessionId });
 }
@@ -366,6 +366,13 @@ function registerIpc(): void {
       directory = tree.path;
     }
     if (!statSync(directory).isDirectory()) throw new Error('Directory is unavailable');
+    const error = await shell.openPath(directory);
+    if (error) throw new Error(error);
+  });
+  ipcMain.handle('threadterm:open-plugins-folder', async (event) => {
+    assertTrustedRenderer(event);
+    const { directory } = await adminRuntime.request('plugin.list', {});
+    mkdirSync(directory, { recursive: true });
     const error = await shell.openPath(directory);
     if (error) throw new Error(error);
   });

@@ -13,15 +13,16 @@ import { WorktreeManager } from './WorktreeManager';
 import './project-overview.css';
 import { sessionTime } from '../sessionTime';
 import { sessionState, sessionStateLabel, type SessionViewState } from '../sessionState';
+import { agentName } from '../agents';
 
 type Props={projectId:string;data:Snapshot;initialWorktreePath?:string;onScopeChange:(path?:string)=>void;onSession:(id:string)=>void;onRemoved:()=>void;onCreate:(projectId:string,path:string)=>void;onInbox:()=>void;onChanged:()=>void};
 type ViewState=SessionViewState;
 const stateOf=sessionState,badgeText=(value:ViewState,zh:boolean)=>sessionStateLabel(value,zh);
-const providerName=(id:string)=>id==='claude'?'Claude':id==='opencode'?'OpenCode':id[0].toUpperCase()+id.slice(1);
 function priority(list:Session[]):ViewState{return (['needs','failed','running','stalled','ended'] as const).find(state=>list.some(item=>stateOf(item)===state))??'ended';}
 function Spark({values,fill=false}:{values:number[];fill?:boolean}){const max=Math.max(1,...values),width=180,height=20;const points=values.map((value,index)=>`${index*width/Math.max(1,values.length-1)},${height-2-value/max*(height-4)}`).join(' ');return <svg className="spark" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">{fill&&<polygon points={`0,${height} ${points} ${width},${height}`} fill="currentColor" opacity=".16"/>}<polyline points={points} stroke="currentColor" strokeWidth="1.7" fill="none" vectorEffect="non-scaling-stroke"/>{values.length>0&&<circle cx={width} cy={height-2-values.at(-1)!/max*(height-4)} r="1.8" fill="currentColor"/>}</svg>;}
 
 export function ProjectOverview({projectId,data,initialWorktreePath,onScopeChange,onSession,onRemoved,onCreate,onInbox,onChanged}:Props){
+  const providerName=(id:string)=>agentName(id,data.providers);
   const {locale,formatDate}=useTranslation(),zh=locale==='zh-CN',project=data.projects.find(p=>p.id===projectId)!;
   const [trees,setTrees]=useState<Worktree[]>([]),[usage,setUsage]=useState<UsageResult>(),[issue,setIssue]=useState<string>(),[dialog,setDialog]=useState<'usage'|'follow'|'activity'|'tree'|'manage'|undefined>(),[fileView,setFileView]=useState<'file'|'diff'|undefined>();
   const [followQuery,setFollowQuery]=useState(''),[picked,setPicked]=useState<Set<string>>(new Set()),[busy,setBusy]=useState(false),[menu,setMenu]=useState(false),[activityPage,setActivityPage]=useState(0),[fileTarget,setFileTarget]=useState<{path:string;staged:boolean}>();

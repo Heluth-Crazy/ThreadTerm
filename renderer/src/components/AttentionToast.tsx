@@ -1,21 +1,23 @@
-import type { Session } from "@threadterm/protocol";
+import type { ProviderCapability, Session } from "@threadterm/protocol";
 import { attentionNotice, type Attention } from "../attentionState";
 
 export function AttentionToast({
   attention,
+  capabilities,
   session,
   locale,
   onOpen,
   onClose,
 }: {
   attention: Attention;
+  capabilities?: readonly ProviderCapability[];
   session?: Session;
   locale: "en" | "zh-CN";
   onOpen: () => void;
   onClose: () => void;
 }) {
   const zh = locale === "zh-CN";
-  const notice = attentionNotice(attention, locale, session);
+  const notice = attentionNotice(attention, locale, session, capabilities);
   return (
     <aside className="attention-toast" role="status" aria-live="polite">
       <div>

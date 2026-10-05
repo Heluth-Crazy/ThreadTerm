@@ -263,8 +263,13 @@ impl ProviderAdapter for ClaudeAdapter {
         };
         let auth = auth.as_str().to_owned();
         ProviderCapability {
+            source: "builtin",
+            plugin_id: None,
+            icon: None,
+            sign_in: super::builtin_sign_in("claude"),
+            homepage: None,
             id: "claude".to_owned(),
-            name: "Claude".to_owned(),
+            name: super::builtin_name("claude").to_owned(),
             installed,
             version,
             terminal: installed,

@@ -5,6 +5,7 @@ import type { ProviderCapability, Session, Snapshot } from "@threadterm/protocol
 import { chooseDirectory, operationId, request } from "../bridge";
 import { displayPath } from "../projectScope";
 import { accountProviders, signInTerminal } from "./providerSettings";
+import { agentName } from "../agents";
 
 type Props = {
   data: Snapshot;
@@ -31,6 +32,7 @@ export function ProviderSettingsPanel({ data, onCreated }: Props) {
     }
   }, [copy.runtimeUnavailable]);
 
+  useEffect(() => { refreshSequence.current++; setCapabilities(data.providers); }, [data.providers]);
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
     if (projectId && !data.projects.some((project) => project.id === projectId)) {
@@ -39,7 +41,7 @@ export function ProviderSettingsPanel({ data, onCreated }: Props) {
   }, [data.projects, projectId]);
 
   const openSignIn = async (capability: ProviderCapability) => {
-    const command = signInTerminal(capability.id);
+    const command = signInTerminal(capability);
     if (!command || !capability.installed) return;
     setBusyProvider(capability.id);
     setIssue(undefined);
@@ -51,7 +53,7 @@ export function ProviderSettingsPanel({ data, onCreated }: Props) {
       const session = await request("session.create", {
         cwd,
         projectId: project?.id,
-        title: `${capability.name} sign-in`,
+        title: `${agentName(capability.id, capabilities)} ${copy.signIn}`,
         provider: command.provider,
         mode: "terminal",
         executable: command.executable,
@@ -75,7 +77,7 @@ export function ProviderSettingsPanel({ data, onCreated }: Props) {
     </Select></label>
     <div className="settings-table" role="list" aria-label={copy.statusLabel}>
       {accountProviders(capabilities).map((capability) => {
-        const command = signInTerminal(capability.id);
+        const command = signInTerminal(capability);
         const canOpen = Boolean(command && capability.installed && !busyProvider);
         return <article key={capability.id} role="listitem" className="tool-row">
           <div><strong>{capability.name}</strong><p>{capability.installed ? `${copy.installed}${capability.version ? ` · ${capability.version}` : ""}` : copy.notInstalled} · {copy.authentication}: {capability.auth ?? copy.unknown}</p>
@@ -91,7 +93,7 @@ export function ProviderSettingsPanel({ data, onCreated }: Props) {
 }
 
 type Copy = typeof en;
-const en = { title: "Provider accounts", managed: "Authentication and status are managed by each provider CLI.", folder: "Terminal folder", chooseFolder: "Choose a folder when opening a sign-in terminal", refresh: "Refresh provider status", statusLabel: "Provider account status", installed: "Installed", notInstalled: "Not installed", authentication: "authentication", unknown: "unknown", terminal: "Terminal", chat: "Chat", history: "History", resume: "Resume", available: "available", unavailable: "unavailable", open: "Open sign-in terminal", opening: "Opening…", created: (name: string) => `${name} sign-in terminal created. Complete sign-in in that terminal, then refresh status.`, runtimeUnavailable: "The runtime could not complete this provider action." };
-const zh: Copy = { title: "提供商账户", managed: "认证和状态由各提供商 CLI 管理。", folder: "终端文件夹", chooseFolder: "打开登录终端时选择文件夹", refresh: "刷新提供商状态", statusLabel: "提供商账户状态", installed: "已安装", notInstalled: "未安装", authentication: "认证", unknown: "未知", terminal: "终端", chat: "聊天", history: "历史", resume: "恢复", available: "可用", unavailable: "不可用", open: "打开登录终端", opening: "正在打开…", created: (name: string) => `已创建 ${name} 登录终端。请在该终端中完成登录，然后刷新状态。`, runtimeUnavailable: "运行时无法完成此提供商操作。" };
+const en = { title: "Provider accounts", signIn: "sign-in", managed: "Authentication and status are managed by each provider CLI.", folder: "Terminal folder", chooseFolder: "Choose a folder when opening a sign-in terminal", refresh: "Refresh provider status", statusLabel: "Provider account status", installed: "Installed", notInstalled: "Not installed", authentication: "authentication", unknown: "unknown", terminal: "Terminal", chat: "Chat", history: "History", resume: "Resume", available: "available", unavailable: "unavailable", open: "Open sign-in terminal", opening: "Opening…", created: (name: string) => `${name} sign-in terminal created. Complete sign-in in that terminal, then refresh status.`, runtimeUnavailable: "The runtime could not complete this provider action." };
+const zh: Copy = { title: "提供商账户", signIn: "登录", managed: "认证和状态由各提供商 CLI 管理。", folder: "终端文件夹", chooseFolder: "打开登录终端时选择文件夹", refresh: "刷新提供商状态", statusLabel: "提供商账户状态", installed: "已安装", notInstalled: "未安装", authentication: "认证", unknown: "未知", terminal: "终端", chat: "聊天", history: "历史", resume: "恢复", available: "可用", unavailable: "不可用", open: "打开登录终端", opening: "正在打开…", created: (name: string) => `已创建 ${name} 登录终端。请在该终端中完成登录，然后刷新状态。`, runtimeUnavailable: "运行时无法完成此提供商操作。" };
 function yesNo(value: boolean, copy: Copy): string { return value ? copy.available : copy.unavailable; }
 function errorMessage(error: unknown, fallback: string): string { return error instanceof Error ? error.message : fallback; }

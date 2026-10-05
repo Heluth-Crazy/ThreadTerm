@@ -17,6 +17,7 @@ export const exportDiagnostics = () => facade().exportDiagnostics();
 export const testNotification = () => facade().testNotification();
 export const scheduleElectronCacheCleanup = (schedule: boolean) => facade().scheduleElectronCacheCleanup(schedule);
 export const openExternal = (url: string) => facade().openExternal(url);
+export const openPluginsFolder = () => facade().openPluginsFolder();
 export const openDirectory = (projectId: string, worktreeId?: string) => facade().openDirectory(projectId, worktreeId);
 export const openWindow = (options: { sessionId?: string; workspaceId?: string }) => facade().openWindow(options);
 export const windowAction = (action: "minimize" | "maximize" | "close") => facade().windowAction(action);

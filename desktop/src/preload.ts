@@ -63,6 +63,7 @@ const bridge: ThreadTermBridge = {
   windowAction: (action) => ipcRenderer.invoke('threadterm:window-action', action) as Promise<void>,
   openWindow: (options) => ipcRenderer.invoke('threadterm:open-window', options) as Promise<void>,
   openExternal: (url) => ipcRenderer.invoke('threadterm:open-external', url) as Promise<void>,
+  openPluginsFolder: () => ipcRenderer.invoke('threadterm:open-plugins-folder') as Promise<void>,
   openDirectory: (projectId, worktreeId) => ipcRenderer.invoke('threadterm:open-directory', projectId, worktreeId) as Promise<void>,
   desktopPreferences: () => ipcRenderer.invoke('threadterm:desktop-preferences') as Promise<{ shortcuts: Record<string, string> }>,
   exportDiagnostics: () => ipcRenderer.invoke('threadterm:export-diagnostics') as Promise<string | null>,

@@ -22,8 +22,8 @@ import { SessionConfigDialog } from './SessionConfigDialog';
 import { SurfaceDialog } from './SurfaceDialog';
 import './session-workspace.css';
 import type { FileCommentsHost } from '../fileCommentsHost';
+import { agentName } from '../agents';
 
-const providerName=(id:string)=>({claude:'Claude',codex:'Codex',opencode:'OpenCode',shell:'Shell',kimi:'Kimi',gemini:'Gemini',grok:'Grok',custom:'Custom'}[id]??id);
 const working=(s:Session)=>!s.readOnly&&['starting','running','idle','waiting'].includes(s.status);
 const tabFor=(s:Session)=>({id:`session-${s.id}`,kind:'session' as const,sessionId:s.id});
 const initialFor=(s:Session):PaneLayout=>({kind:'pane',id:`pane-${s.id}`,tabs:[tabFor(s)],activeTabId:tabFor(s).id});
@@ -40,6 +40,7 @@ const unsavedTabIds=(tabs:readonly ContentRef[],unsaved:(tab:FileTab)=>boolean)=
 
 type Props={session:Session;data:Snapshot;theme:'light'|'dark';onBack:()=>void;onSelect:(id:string)=>void;onProject:(id:string,path?:string)=>void;onChanged:()=>void;initialLayout?:PaneLayout;backgroundPresentation?:string;onBackgroundPresented:()=>void;pendingCommands?:string[];onClearCommands?:()=>void;navigationKey?:unknown;onActiveSession?:(id:string)=>void};
 export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,onChanged,initialLayout,backgroundPresentation,onBackgroundPresented,pendingCommands=[],onClearCommands,navigationKey,onActiveSession}:Props){
+ const providerName=(id:string)=>agentName(id,data.providers);
  const {locale}=useTranslation(),zh=locale==='zh-CN';
  const project=data.projects.find(p=>p.id===session.projectId),path=session.worktreePath??project?.path;
  const restored=data.workspaces.find(w=>w.projectId===session.projectId&&sameCanonicalScope(w.worktreePath??project?.path,path));
@@ -330,7 +331,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    </div></aside>}</div>
   </div></div>
   {picker&&<SurfaceDialog title={zh?(picker.mode==='switch'?'切换会话':picker.mode==='add'?'选择并排会话':'选择会话'):(picker.mode==='switch'?'Switch session':picker.mode==='add'?'Choose session for split':'Choose session')} onClose={cancelPicker} size="sm"><div className="switcher"><div className="tools"><div className="input-wrap"><Icon name="search"/><input autoFocus value={query} onChange={event=>setQuery(event.target.value)} placeholder={zh?'搜索会话':'Search sessions'}/></div>{picker.mode==='switch'&&<Select value={allProjects?'all':'tree'} onChange={event=>setAllProjects(event.target.value==='all')}><option value="tree">{zh?'当前工作树':'Current worktree'}</option><option value="all">{zh?'全部项目':'All projects'}</option></Select>}</div><div className="switcher-list">{available.filter(s=>`${s.title} ${s.provider}`.toLowerCase().includes(query.toLowerCase())).map(s=><button className="switcher-row" key={s.id} onClick={()=>{if(picker.mode==='switch'){setPicker(undefined);onSelect(s.id);}else if(picker.mode==='add')addSessionPane(s);else fillPane(s);}}><AgentIcon provider={s.provider}/>{s.title}<small>{providerName(s.provider)}</small></button>)}</div>{!available.length&&<p className="note">{zh?'没有其他可选会话。':'No other sessions are available.'}</p>}</div></SurfaceDialog>}
-  {configOpen&&<SessionConfigDialog session={session} onClose={()=>setConfigOpen(false)} onRerun={onSelect}/>}
+  {configOpen&&<SessionConfigDialog session={session} data={data} onClose={()=>setConfigOpen(false)} onRerun={onSelect}/>}
   {quickOpen&&workbenchScope&&workbenchActions&&<QuickOpen scope={workbenchScope} zh={zh} onClose={()=>setQuickOpen(false)} onOpen={(file,position)=>workbenchActions.openFile(file,position)}/>}
  </section>;
 }

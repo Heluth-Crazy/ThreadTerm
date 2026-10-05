@@ -1,9 +1,13 @@
 import { validateWireRequest, validateWireSuccess } from './generated-validators.js';
 export const PROTOCOL_VERSION = 1 as const;
 /** Semantic contract for Chat approvals (`choiceId`) and connection status. Framing/HMAC still use PROTOCOL_VERSION. */
-export const PROTOCOL_CONTRACT = 2 as const;
+export const PROTOCOL_CONTRACT = 3 as const;
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
-export type ProviderId = 'codex'|'claude'|'kimi'|'gemini'|'opencode'|'shell'|'grok'|'custom';
+/** Agents that ship with ThreadTerm (native adapters, or `shell` / `custom` commands). */
+export type BuiltinProviderId = 'codex'|'claude'|'kimi'|'gemini'|'opencode'|'shell'|'grok'|'custom';
+/** Any agent id in the runtime's agent registry: a built-in id or one contributed by an enabled plugin
+ * (`^[a-z][a-z0-9-]{1,31}$`). The runtime rejects ids it does not know; `provider.list` is the source of truth. */
+export type ProviderId = string;
 export type SessionMode = 'terminal'|'chat';
 export type SessionStatus = 'starting'|'running'|'idle'|'waiting'|'exited'|'interrupted'|'error';
 export interface Project { id:string; name:string; path:string; createdAt:string }
@@ -20,7 +24,23 @@ export interface Session { id:string; projectId?:string; worktreePath?:string; t
 export interface SessionConfig { sessionId:string; revision:number; provider:ProviderId; mode:SessionMode; cwd:string; projectId?:string; title?:string; executable?:string; args:string[]; sourceSessionId?:string }
 export interface SessionRetryAttempt { id:string; sourceSessionId:string; attempt:number; dueAt:string; status:'pending'|'claimed'|'cancelled'|'completed'|'exhausted'; operationId:string; createdAt:string }
 export interface SessionRetryState { sessionId:string; revision:number; enabled:boolean; maxRetries:number; delaySeconds:number; attempts:SessionRetryAttempt[] }
-export interface ProviderCapability { id:ProviderId; name:string; installed:boolean; version?:string; terminal:boolean; chat:boolean; history:boolean; resume:boolean; terminalResumeCapture?:'preassigned'|'none'; reason?:string; auth?:'authenticated'|'unauthenticated'|'unknown' }
+export interface ProviderCapability { id:ProviderId; name:string; installed:boolean; version?:string; terminal:boolean; chat:boolean; history:boolean; resume:boolean; terminalResumeCapture?:'preassigned'|'none'; reason?:string; auth?:'authenticated'|'unauthenticated'|'unknown';
+ /** Where the agent comes from: built into ThreadTerm, or contributed by a plugin (see `plugin.list`). Absent = builtin. */
+ source?:'builtin'|'plugin'; pluginId?:string;
+ /** Plugin agents: the plugin's SVG icon as a `data:image/svg+xml;base64,` URL. Render it with <img>, never as markup. */
+ icon?:string;
+ /** The agent's interactive sign-in command, run in a terminal session; `display` is the command line to show. */
+ signIn?:{ executable:string; args:string[]; display:string };
+ homepage?:string }
+/** One agent a plugin contributes. `commands` are the command lines it may run (version probe, terminal, ACP chat,
+ * sign-in), shown to the user before the plugin is enabled. */
+export interface PluginAgentInfo { id:ProviderId; name:string; terminal:boolean; chat:boolean; commands:string[] }
+/** A plugin folder found by the runtime. `bundled` plugins ship with ThreadTerm and are enabled by default; `user`
+ * plugins live in the plugins directory and stay disabled until the user enables them. `issues` lists problems:
+ * an unloadable manifest or an invalid agent (bad id or command, id collision, icon outside the folder, …) means
+ * that part contributes nothing; a warning such as an unknown contribution type does not block the agents. */
+export interface PluginInfo { id:string; name:string; version:string; publisher?:string; description?:string; homepage?:string; source:'bundled'|'user'; enabled:boolean; path?:string; agents:PluginAgentInfo[]; issues:string[] }
+export interface PluginList { /** Where user plugins are installed (one folder per plugin, each with threadterm-plugin.json). */ directory:string; plugins:PluginInfo[] }
 export interface Settings { revision:number; theme?:'light'|'dark'|'system'; language?:'zh-CN'|'en'; [key:string]:unknown }
 export interface Workspace { id:string; name:string; revision:number; layout:PaneLayout; projectId?:string; worktreePath?:string }
 export interface Preset { id:string; name:string; revision:number; sessions:unknown[]; layout:PaneLayout; commands:string[] }
@@ -152,6 +172,9 @@ export interface RequestMap {
  'terminal.resize': [{sessionId:string;cols:number;rows:number;leaseEpoch:number},null];
  'settings.update': [{patch:Record<string,unknown>;expectedRevision:number;operationId:string},Settings];
  'provider.list': [{},ProviderCapability[]];
+ 'plugin.list': [{},PluginList];
+ 'plugin.setEnabled': [{pluginId:string;enabled:boolean;operationId:string},PluginList];
+ 'plugin.reload': [{operationId:string},PluginList];
  'history.list': [{provider:ProviderId;cursor?:string;limit?:number;cwd?:string},{items:NativeHistoryItem[];nextCursor?:string}];
  'history.read': [{provider:ProviderId;nativeId:string},ChatItem[]];
  'chat.send': [{sessionId:string;text:string;images?:string[];operationId:string;leaseEpoch:number},{turnId:string}];
@@ -227,13 +250,15 @@ export interface ThreadTermBridge {
  windowAction(action:'minimize'|'maximize'|'close'|'quit'):Promise<void>;
  openWindow(options:{sessionId?:string;workspaceId?:string}):Promise<void>;
  openExternal(url:string):Promise<void>;
+ /** Opens the user plugins directory (`PluginList.directory`) in the file manager, creating it if needed. */
+ openPluginsFolder():Promise<void>;
  openDirectory(projectId:string,worktreeId?:string):Promise<void>;
  desktopPreferences():Promise<{shortcuts:Record<string,string>}>;
  testNotification():Promise<{sent:boolean;reason?:string}>;
  exportDiagnostics():Promise<string|null>;
  scheduleElectronCacheCleanup(schedule:boolean):Promise<{scheduled:boolean;available:boolean;result?:string}>;
 }
-export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint'] as const satisfies readonly Method[];
+export const METHODS = ['filesystem.resolve','session.launch.read','catalog.visibility.list','catalog.visibility.update','session.resume','session.organize','git.merge','git.merge.abort','project.catalog.list','project.update','worktree.branches','worktree.relocate','session.rerun','git.fetch','git.pull','git.push','session.config.read','session.config.save','session.retry.read','session.retry.update','chat.draft.read','chat.draft.save','device.status','device.enable','device.disable','device.pairing.create','device.pairing.cancel','device.list','device.rename','device.renew','device.revoke','git.stage','git.unstage','git.commit','filesystem.image','chat.snapshot','terminal.read','session.lookup','session.present','chat.read','data.status','data.backup','data.relocation.status','data.relocation.prepare','data.relocation.cancel','settings.export','settings.import.preview','settings.import.apply','preset.list','preset.save','preset.delete','usage.query','runtime.health','terminal.host','runtime.shutdown','runtime.snapshot','project.add','project.remove','session.create','history.import','session.stop','session.update','session.attention.acknowledge','session.claim','session.renew','session.release','terminal.input','terminal.resize','settings.update','provider.list','plugin.list','plugin.setEnabled','plugin.reload','history.list','history.read','chat.send','chat.cancel','chat.approve','chat.options','chat.option.set','chat.connection','chat.connect','filesystem.list','filesystem.read','filesystem.write','draft.list','draft.put','draft.delete','git.status','git.diff','worktree.list','worktree.create','worktree.remove','workspace.save','workspace.delete','inbox.read','git.index.write','git.discard','git.checkout','git.branch.delete','git.branches','git.log','git.commit.show','git.commit.diff','git.blame','filesystem.create','filesystem.rename','filesystem.delete','filesystem.files','filesystem.search','review.list','review.changes','review.diff','review.revert','review.checkpoint'] as const satisfies readonly Method[];
 const stringFields: Partial<Record<Method,readonly string[]>> = {
  'filesystem.resolve':['sessionId','path'],
  'session.launch.read':['sessionId'],
@@ -252,7 +277,7 @@ const stringFields: Partial<Record<Method,readonly string[]>> = {
  'session.update':['sessionId','operationId'],'session.attention.acknowledge':['sessionId','operationId'],'session.claim':['sessionId','clientId'],'session.release':['sessionId'],
  'session.renew':['sessionId'],
  'terminal.input':['sessionId','data'],'terminal.resize':['sessionId'],
- 'settings.update':['operationId'],'history.list':['provider'],'history.read':['provider','nativeId'],
+ 'settings.update':['operationId'],'plugin.setEnabled':['pluginId','operationId'],'plugin.reload':['operationId'],'history.list':['provider'],'history.read':['provider','nativeId'],
  'chat.send':['sessionId','text','operationId'],'chat.cancel':['sessionId','turnId'],
  'chat.approve':['sessionId','turnId','approvalId','choiceId','operationId'],
  'chat.options':['sessionId'],'chat.option.set':['sessionId','optionId','value','operationId'],
@@ -293,7 +318,8 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
  if(['session.renew','session.release','terminal.input','terminal.resize','chat.send','chat.cancel','chat.approve','chat.option.set','chat.connect'].includes(m)&&!('leaseEpoch' in params)) throw new Error('Missing leaseEpoch');
  if(m==='terminal.resize') for(const key of ['cols','rows']) if(!Number.isInteger(params[key])||Number(params[key])<1||Number(params[key])>1000) throw new Error(`Invalid ${key}`);
  if(m==='session.create'||m==='history.import'||m==='session.config.save') {
-  if(!['codex','claude','kimi','gemini','opencode','shell','grok','custom'].includes(String(params.provider))) throw new Error('Invalid provider');
+  // Shape only: the runtime's agent registry (built-ins + enabled plugins) decides whether the agent exists.
+  if(typeof params.provider!=='string'||!/^[a-z][a-z0-9-]{1,31}$/.test(params.provider)) throw new Error('Invalid provider');
   if(!['terminal','chat'].includes(String(params.mode))) throw new Error('Invalid mode');
   if(params.args!==undefined&&(!Array.isArray(params.args)||params.args.some(x=>typeof x!=='string'))) throw new Error('Invalid args');
  }

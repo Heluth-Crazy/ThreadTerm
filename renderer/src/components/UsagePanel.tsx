@@ -4,8 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import type { ProviderId, SessionStatus, Snapshot, UsageRecord, UsageSource } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
 import { endOfUtcDay, estimatedCost, knownTokenTrend, parsePrices, savedPrices, type ModelPrices } from "./usageMetrics";
+import { agentIds, agentName } from "../agents";
 
-const providers: ProviderId[] = ["codex", "claude", "kimi", "gemini", "opencode", "shell", "grok", "custom"];
 const statuses: SessionStatus[] = ["starting", "running", "idle", "waiting", "exited", "interrupted", "error"];
 const sources: UsageSource[] = ["created", "native-history", "rerun"];
 const pageSize = 5;
@@ -15,6 +15,7 @@ type Range = "all" | "today" | "7d";
 export function UsagePanel({ data, initialProjectId }: { data: Snapshot; initialProjectId?: string }) {
   const zh = localeFromSettings(data.settings) === "zh-CN";
   const copy = zh ? zhCopy : en;
+  const providers = [...agentIds(data.providers), "shell", "custom"];
   const configuredPrices = useMemo(() => savedPrices(data.settings.modelPrices), [data.settings.modelPrices]);
   const [prices, setPrices] = useState(() => JSON.stringify(configuredPrices, null, 2));
   const [activePrices, setActivePrices] = useState<ModelPrices>(configuredPrices);
@@ -59,7 +60,7 @@ export function UsagePanel({ data, initialProjectId }: { data: Snapshot; initial
       <div className="sheet-chip-row" role="group" aria-label={copy.timeRange}>{(["all", "today", "7d"] as Range[]).map(value => <button key={value} type="button" className="sheet-chip" aria-pressed={range === value} onClick={() => changeRange(value)}>{copy.range[value]}</button>)}</div>
       <div className="sheet-filter-grid">
         {!initialProjectId && <Select value={projectId} aria-label={copy.project} onChange={event => { setProjectId(event.target.value); setPage(0); }}><option value="">{copy.allProjects}</option>{data.projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</Select>}
-        <Select value={provider} aria-label={copy.provider} onChange={event => { setProvider(event.target.value as ProviderId | ""); setPage(0); }}><option value="">{copy.allProviders}</option>{providers.map(value => <option value={value} key={value}>{value}</option>)}</Select>
+        <Select value={provider} aria-label={copy.provider} onChange={event => { setProvider(event.target.value as ProviderId | ""); setPage(0); }}><option value="">{copy.allProviders}</option>{providers.map(value => <option value={value} key={value}>{agentName(value, data.providers)}</option>)}</Select>
         <Select value={model} aria-label={copy.model} onChange={event => { setModel(event.target.value); setPage(0); }}><option value="">{copy.allModels}</option>{models.map(value => <option value={value} key={value}>{value}</option>)}</Select>
         <Select value={status} aria-label={copy.result} onChange={event => { setStatus(event.target.value as SessionStatus | ""); setPage(0); }}><option value="">{copy.allResults}</option>{statuses.map(value => <option value={value} key={value}>{value}</option>)}</Select>
         <Select value={source} aria-label={copy.source} onChange={event => { setSource(event.target.value as UsageSource | ""); setPage(0); }}><option value="">{copy.allSources}</option>{sources.map(value => <option value={value} key={value}>{value}</option>)}</Select>

@@ -1,15 +1,5 @@
 import type { ProviderCapability, ProviderId } from "@threadterm/protocol";
-
-export const WORKBENCH_AGENTS: ProviderId[] = [
-  "codex",
-  "claude",
-  "kimi",
-  "gemini",
-  "opencode",
-  "grok",
-  "shell",
-  "custom",
-];
+import { agentIds, agentName } from "../agents";
 
 export type WorkbenchAgent = {
   id: ProviderId;
@@ -18,11 +8,9 @@ export type WorkbenchAgent = {
   hint?: string;
 };
 
-export function workbenchAgentName(id: ProviderId, zh: boolean): string {
+export function workbenchAgentName(id: ProviderId, zh: boolean, capabilities: readonly ProviderCapability[] = []): string {
   if (id === "custom") return zh ? "预设" : "Preset";
-  if (id === "claude") return "Claude";
-  if (id === "opencode") return "OpenCode";
-  return id[0].toUpperCase() + id.slice(1);
+  return agentName(id, capabilities);
 }
 
 export function workbenchAgents(
@@ -30,21 +18,18 @@ export function workbenchAgents(
   zh: boolean,
 ): WorkbenchAgent[] {
   const indexed = new Map(capabilities.map((capability) => [capability.id, capability]));
-  return WORKBENCH_AGENTS.map((id) => {
-    const name = workbenchAgentName(id, zh);
+  return [...agentIds(capabilities), "shell", "custom"].map((id) => {
+    const name = workbenchAgentName(id, zh, capabilities);
     if (id === "shell" || id === "custom") return { id, name, available: true };
     const capability = indexed.get(id);
-    if (capability?.installed) {
-      return { id, name: capability.name || name, available: true };
-    }
-    if (id === "grok" && !capability) {
-      return { id, name, available: false, hint: zh ? "即将支持" : "Coming soon" };
+    if (capability?.installed && capability.terminal) {
+      return { id, name, available: true };
     }
     return {
       id,
-      name: capability?.name || name,
+      name,
       available: false,
-      hint: zh ? "未安装" : "Not installed",
+      hint: capability?.installed ? (zh ? "不支持终端" : "Terminal unavailable") : (zh ? "未安装" : "Not installed"),
     };
   });
 }

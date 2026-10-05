@@ -156,8 +156,13 @@ impl ProviderAdapter for CodexAdapter {
             "unknown".to_owned()
         };
         ProviderCapability {
+            source: "builtin",
+            plugin_id: None,
+            icon: None,
+            sign_in: super::builtin_sign_in("codex"),
+            homepage: None,
             id: "codex".to_owned(),
-            name: "Codex".to_owned(),
+            name: super::builtin_name("codex").to_owned(),
             installed,
             version,
             terminal: installed,

@@ -40,6 +40,7 @@ pub struct RuntimeService {
     relocation_gate: RwLock<()>,
     retry_gate: Mutex<()>,
     settings_apply_gate: Mutex<()>,
+    plugin_gate: Mutex<()>,
     remote: OnceLock<Arc<crate::remote_access::RemoteAccess>>,
     delegations: Arc<crate::delegation::Delegations>,
 }
@@ -236,7 +237,7 @@ fn project_provider_event(db: &Database, providers: &Providers, event: &Provider
 impl RuntimeService {
     pub fn new(config: RuntimeConfig, db: Arc<Database>) -> Self {
         let output = Arc::new(OutputStore::default());
-        let providers = Arc::new(Providers::new());
+        let providers = Arc::new(Providers::with_plugins(&config.data_dir, &db.settings_value().unwrap_or_else(|_| json!({}))));
         match db.settings_value() {
             Ok(settings) => {
                 if let Err(error) = providers.configure_network(&settings) {
@@ -280,6 +281,7 @@ impl RuntimeService {
             relocation_gate: RwLock::new(()),
             retry_gate: Mutex::new(()),
             settings_apply_gate: Mutex::new(()),
+            plugin_gate: Mutex::new(()),
             remote: OnceLock::new(),
             delegations,
         }
@@ -442,6 +444,7 @@ impl RuntimeService {
             .map_err(file_reference_rpc_error);
         }
         let outcome = (|| -> Result<Value> {
+            crate::plugin_services::validate(&request.method, &request.params)?;
             if request.method == "data.relocation.prepare"
                 && self.remote.get().is_some_and(|remote| remote.is_enabled())
             {
@@ -472,7 +475,7 @@ impl RuntimeService {
                 return Ok(result);
             }
             if let Some(result) =
-                crate::session_configs::dispatch(&self.db, &request.method, &request.params)?
+                crate::session_configs::dispatch(&self.db, &self.providers, &request.method, &request.params)?
             {
                 return Ok(result);
             }
@@ -771,6 +774,11 @@ impl RuntimeService {
                     Ok(serde_json::to_value(settings)?)
                 }
                 "provider.list" => Ok(Value::Array(self.providers.capabilities())),
+                "plugin.list" | "plugin.setEnabled" | "plugin.reload" => {
+                    let _plugins = self.plugin_gate.lock().map_err(|_| anyhow::anyhow!("plugin registry lock poisoned"))?;
+                    let _settings = self.settings_apply_gate.lock().map_err(|_| anyhow::anyhow!("settings apply lock poisoned"))?;
+                    crate::plugin_services::dispatch(&self.config, &self.db, &self.providers, &request.method, &request.params)
+                }
                 "history.list" => {
                     let p: HistoryList = parse(&request.params)?;
                     self.providers
@@ -1039,7 +1047,7 @@ impl RuntimeService {
         Ok(result)
     }
     fn create_session(&self, p: &SessionCreate, source_session_id: Option<&str>) -> Result<Value> {
-        validate_provider(&p.provider)?;
+        validate_provider(&self.providers, &p.provider)?;
         validate_mode(&p.mode)?;
         if p.defer_launch
             && (p.provider != "codex"
@@ -1074,7 +1082,7 @@ impl RuntimeService {
             )?);
         }
         let history = if let Some(native_id) = &p.native_id {
-            if !crate::providers::SUPPORTED_PROVIDERS.contains(&p.provider.as_str()) {
+            if !self.providers.contains(&p.provider) {
                 return Err(anyhow::anyhow!("provider_has_no_native_history"));
             }
             if let Some(owner) = self.db.native_owner(&p.provider, native_id)? {
@@ -1382,9 +1390,9 @@ impl RuntimeService {
             operation_id: String,
         }
         let p: HistoryImport = parse(params)?;
-        validate_provider(&p.provider)?;
+        validate_provider(&self.providers, &p.provider)?;
         validate_mode(&p.mode)?;
-        if !crate::providers::SUPPORTED_PROVIDERS.contains(&p.provider.as_str()) {
+        if !self.providers.contains(&p.provider) {
             return Err(anyhow::anyhow!("provider_has_no_native_history"));
         }
         if let Some(result) = self.db.operation(&p.operation_id)? {
@@ -1462,7 +1470,8 @@ impl RuntimeService {
         {
             return Err(anyhow::anyhow!("session_already_active"));
         }
-        if !crate::providers::SUPPORTED_PROVIDERS.contains(&existing.provider.as_str()) {
+        if !self.providers.contains(&existing.provider) {
+            self.providers.require_agent(&existing.provider)?;
             return Err(anyhow::anyhow!("provider_has_no_native_history"));
         }
         let deferred_codex = existing.provider == "codex"
@@ -1736,15 +1745,9 @@ fn parse<T: for<'a> Deserialize<'a>>(value: &Value) -> Result<T> {
     Ok(serde_json::from_value(value.clone())?)
 }
 
-fn validate_provider(p: &str) -> Result<()> {
-    if matches!(
-        p,
-        "codex" | "claude" | "kimi" | "gemini" | "opencode" | "shell" | "grok" | "custom"
-    ) {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("invalid_provider"))
-    }
+fn validate_provider(providers: &Providers, provider: &str) -> Result<()> {
+    if matches!(provider, "shell" | "custom") { return Ok(()); }
+    providers.require_agent(provider).map_err(Into::into)
 }
 fn validate_mode(p: &str) -> Result<()> {
     if matches!(p, "terminal" | "chat") {
@@ -2059,6 +2062,9 @@ fn retry_runner(service: Weak<RuntimeService>, cursor: &mut i64) {
         }
     }
 }
+
+#[cfg(test)]
+mod plugin_tests;
 
 #[cfg(test)]
 mod tests {

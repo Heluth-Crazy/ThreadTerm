@@ -88,5 +88,5 @@ function stringField(value: unknown): string | undefined {
 }
 
 function isProvider(value: unknown): value is ChatApprovalData["provider"] {
-  return value === "codex" || value === "claude" || value === "kimi" || value === "gemini" || value === "opencode" || value === "grok" || value === "shell" || value === "custom";
+  return typeof value === "string" && value.trim().length > 0;
 }
