@@ -2,7 +2,7 @@ import { ClipboardEvent, FormEvent, Fragment, KeyboardEvent, useContext, useEffe
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import type { ChatPart, ChatSessionOption, ChatSlashCommand, ChatUiState, FileReference, Session } from "@threadterm/protocol";
-import { ChatItem, operationId, request, subscribeEvents } from "../bridge";
+import { ChatItem, openExternal, operationId, request, subscribeEvents } from "../bridge";
 import { restoreChat, upsertChatItem } from "../chatState";
 import { acquireControl } from '../controlLease';
 import { createDraftWriter } from '../chatDraft';
@@ -21,6 +21,8 @@ import { createCodexStreamQueue } from "../codexStream";
 import { FileLinkedMarkdown, FileLinkedText, FileReferenceChips } from './FileReferenceText';
 import { parseMarkdownFileReference } from '../fileReferences';
 import { SessionSurfaceContext } from './SessionSurfaceContext';
+import { CatalogPopover } from './CatalogActions';
+import { isWebTabUrl } from '../workspaceTabs';
 import { registerChatInputTarget } from '../terminalInputTargets';
 import { insertAtCaret } from '../workbench/agentReference';
 import "./chat-network-notice.css";
@@ -337,9 +339,13 @@ function isTerminalChatStatus(status: Session["status"]): boolean {
 
 export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }: { session: Session; delegates?: Session[]; delegatedBy?: Session; onOpenSession?: (sessionId: string) => void }) {
   const { locale } = useTranslation();
-  const openFile = useContext(SessionSurfaceContext)?.openFile;
+  const surface = useContext(SessionSurfaceContext);
+  const openFile = surface?.openFile;
   const zh = locale === 'zh-CN';
   const copy = (en: string, cn: string) => zh ? cn : en;
+  // A clicked http(s) link in the transcript: the same actions as the terminal's link bar, as a menu at the link.
+  const [linkMenu, setLinkMenu] = useState<{ anchor: HTMLElement; url: string }>();
+  const [linkIssue, setLinkIssue] = useState<string>();
   const recoveryKey = `threadterm.compose.${session.id}`;
   const canControl = chatCanControl(session);
   const ended = isEnded(session);
@@ -851,7 +857,21 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     {overlay === "banner" && <ChatConnectOverlay provider={session.provider} phase={connection.phase} slow={false} error={connection.error} variant="banner" onRetry={retryConnection} copy={copy} transportDown={link.transport !== "up"} />}
     {ui.loadState === "error" && ui.error && <p className="surface-error" role="alert">{ui.error.message} <button type="button" className="btn" disabled={!writable} onClick={() => void request("chat.options", { sessionId: session.id }).then(setUi).catch(caught => setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } })))}>{copy("Retry options", "重试读取选项")}</button></p>}
     {historyFailed && <p className="surface-error" role="alert">{copy("History could not be loaded.", "无法加载历史。")}</p>}
-    <div className="chat-scroll v3-chat-log" data-chat-log={session.id} ref={logRef} inert={overlay === "full" || undefined} onScroll={event => {
+    {linkIssue && <p className="surface-error" role="alert">{linkIssue}</p>}
+    {linkMenu && <CatalogPopover anchor={linkMenu.anchor} label={copy("Link", "链接")} onClose={() => setLinkMenu(undefined)}>
+      <div className="menu-label chat-link-menu-url" title={linkMenu.url}>{linkMenu.url}</div>
+      {surface?.openWeb && <button type="button" role="menuitem" className="menu-item" onClick={() => { surface.openWeb?.(linkMenu.url); setLinkMenu(undefined); }}><Icon name="split" />{copy("Open in preview", "在预览中打开")}</button>}
+      <button type="button" role="menuitem" className="menu-item" onClick={() => { const url = linkMenu.url; setLinkMenu(undefined); void openExternal(url).catch(error => setLinkIssue(String(error))); }}><Icon name="popout" />{copy("Open in browser", "在浏览器中打开")}</button>
+      <button type="button" role="menuitem" className="menu-item" onClick={() => { const url = linkMenu.url; setLinkMenu(undefined); void navigator.clipboard.writeText(url).catch(error => setLinkIssue(String(error))); }}><Icon name="export" />{copy("Copy link", "复制链接")}</button>
+    </CatalogPopover>}
+    <div className="chat-scroll v3-chat-log" data-chat-log={session.id} ref={logRef} inert={overlay === "full" || undefined} onClick={event => {
+      // Links never navigate the app window (the desktop blocks that, so they used to do nothing).
+      const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
+      if (!anchor || !event.currentTarget.contains(anchor)) return;
+      event.preventDefault();
+      const url = anchor.getAttribute('href') ?? '';
+      if (isWebTabUrl(url)) { setLinkIssue(undefined); setLinkMenu({ anchor, url }); }
+    }} onScroll={event => {
       const el = event.currentTarget;
       const follow = el.scrollHeight - el.scrollTop - el.clientHeight < CHAT_FOLLOW_THRESHOLD;
       followRef.current = follow;

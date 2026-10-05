@@ -745,6 +745,15 @@ pub(crate) fn root_for(
 /// Validates the persisted workspace-pane tree used by both saved workspaces
 /// and preset layouts.
 pub fn validate_layout(layout: &Value) -> Result<()> {
+    /// Same rule as the protocol's `isWebPreviewUrl`: absolute http(s) with a host, at most 2048 characters.
+    fn valid_web_url(url: &str) -> bool {
+        !url.is_empty()
+            && url.encode_utf16().count() <= 2048
+            && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+            && reqwest::Url::parse(url).is_ok_and(|url| {
+                matches!(url.scheme(), "http" | "https") && url.host_str().is_some_and(|host| !host.is_empty())
+            })
+    }
     fn visit(
         node: &Value,
         depth: usize,
@@ -843,6 +852,10 @@ pub fn validate_layout(layout: &Value) -> Result<()> {
                                 }
                             }
                         }
+                        // An independent tab: owned views are reached only through a file header.
+                        Some("web")
+                            if tab.get("url").and_then(Value::as_str).is_some_and(valid_web_url)
+                                && tab.get("ownerSessionId").is_none() => {}
                         Some("history")
                             if tab
                                 .get("projectId")
@@ -1824,6 +1837,20 @@ mod tests {
         assert!(validate_layout(&duplicate_ids).is_err());
         let invalid_tab = json!({"kind":"pane","id":"p","tabs":[{"id":"file","kind":"file","projectId":"p","path":""}],"activeTabId":"file"});
         assert!(validate_layout(&invalid_tab).is_err());
+    }
+    #[test]
+    fn web_tabs_accept_only_http_pages_without_an_owner() {
+        let layout = |tab: Value| json!({"kind":"pane","id":"p","tabs":[tab],"activeTabId":"w"});
+        for url in ["http://localhost:5173/", "https://127.0.0.1:8443/app?x=1#top", "http://[::1]:3000"] {
+            assert!(validate_layout(&layout(json!({"id":"w","kind":"web","url":url}))).is_ok(), "{url}");
+        }
+        let long = format!("http://localhost/{}", "a".repeat(2048));
+        for url in [json!("file:///C:/Windows/win.ini"), json!("javascript:alert(1)"), json!("localhost:3000"), json!("http://"), json!("http://local host/"), json!("http://x/\u{85}"), json!(long), json!(""), json!(3), Value::Null] {
+            assert!(validate_layout(&layout(json!({"id":"w","kind":"web","url":url}))).is_err(), "{url}");
+        }
+        assert!(validate_layout(&layout(json!({"id":"w","kind":"web"}))).is_err());
+        // Owned views are reached only through a file header, which a web page does not have.
+        assert!(validate_layout(&layout(json!({"id":"w","kind":"web","url":"http://localhost:3000","ownerSessionId":"session-a"}))).is_err());
     }
     #[test]
     fn session_file_owners_are_optional_validated_and_persisted() {

@@ -60,3 +60,8 @@
 .pane-empty .note { margin:0; font-size:12px; }
 /* Tabs cut by a strip edge keep their label but not their close button (no lone × in the edge fade). */
 .workspace-tab[data-clipped] .workspace-tab-close { visibility:hidden; }
+/* An Explorer file dragged over a session that can take input (PaneWorkspace, fileDrag.ts). */
+.pane-tab-surface.file-drop-target { position:relative; }
+/* A positioned frame above the pane content (the content's own layers cover a plain outline). */
+.pane-tab-surface.file-drop-target::before { content:""; position:absolute; inset:3px; z-index:5; border:2px dashed var(--primary); border-radius:var(--radius); pointer-events:none; }
+.pane-tab-surface.file-drop-target::after { content:attr(data-drop-label); position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:5; padding:4px 12px; border:1px solid var(--primary); border-radius:999px; background:var(--primary-tint); color:var(--text); font-size:12px; white-space:nowrap; pointer-events:none; box-shadow:var(--shadow-soft); }

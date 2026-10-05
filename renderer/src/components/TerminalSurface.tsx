@@ -17,6 +17,7 @@ import { AgentIcon, Icon } from './PrototypeIcon';
 import { AgentLoadingMark } from './AgentLoadingMark';
 import { SessionSurfaceContext, SurfaceActions } from './SessionSurfaceContext';
 import { parseFileReference } from '../fileReferences';
+import { isWebTabUrl } from '../workspaceTabs';
 import { createFileLinkValidator, createTerminalFileLinkHitArea, createTerminalFileLinkInteraction, fileLinkStatusOf, provideTerminalFileLinks } from './terminalFileLinks';
 import type { ProviderId, Session, TerminalLaunchState } from "@threadterm/protocol";
 import {
@@ -603,7 +604,7 @@ export function TerminalSurface({ sessionId, provider, theme, terminalCompatibil
     {inspected!==undefined&&<BlockInspector sessionId={sessionId} text={inspected} onClose={()=>setInspected(undefined)}/>}
     {unread > 0 && <button className="terminal-new-output" onClick={() => {terminalRef.current?.scrollToBottom();setUnread(0);}}>{zh ? `${unread} 批新输出 · 回到底部` : `${unread} new ${unread === 1 ? 'update' : 'updates'} · Back to bottom`}</button>}
     {completionHints && completionHint && <p className="terminal-completion-hint" role="status">{zh ? "可能已准备好输入" : "Possibly ready for input"}</p>}
-    {selectedLink && <div className="terminal-link-actions"><span title={selectedLink}>{selectedLink}</span><button onClick={() => void openExternal(selectedLink).catch(error => setIssue(String(error)))}>{zh ? '在浏览器中打开' : 'Open in browser'}</button><button onClick={() => void navigator.clipboard.writeText(selectedLink).catch(error => setIssue(String(error)))}>{zh ? '复制链接' : 'Copy link'}</button><button onClick={() => setSelectedLink(undefined)}>{zh ? '关闭' : 'Close'}</button></div>}
+    {selectedLink && <div className="terminal-link-actions"><span title={selectedLink}>{selectedLink}</span>{surface?.openWeb && isWebTabUrl(selectedLink) && <button onClick={() => { surface.openWeb?.(selectedLink); setSelectedLink(undefined); }}>{zh ? '在预览中打开' : 'Open in preview'}</button>}<button onClick={() => void openExternal(selectedLink).catch(error => setIssue(String(error)))}>{zh ? '在浏览器中打开' : 'Open in browser'}</button><button onClick={() => void navigator.clipboard.writeText(selectedLink).catch(error => setIssue(String(error)))}>{zh ? '复制链接' : 'Copy link'}</button><button onClick={() => setSelectedLink(undefined)}>{zh ? '关闭' : 'Close'}</button></div>}
     {issue && !replayFailed && <div className="surface-error" role="alert">{issue}</div>}
     {(replaying || replayFailed || launchFailed || (launchPending && !showTerminal)) && <div className={`term-loading-overlay${replaying ? " term-replaying" : ""}${replayFailed || launchFailed ? " is-failed" : ""}`} role={replayFailed || launchFailed ? "alert" : "status"} aria-live="polite" aria-label={replayFailed ? (zh ? "无法显示终端画面" : "Couldn't show the terminal screen") : loadingStatus}>
       <div className="chat-connect-center">

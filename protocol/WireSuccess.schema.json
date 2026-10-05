@@ -1210,6 +1210,42 @@
             "checkpointId"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "web"
+            },
+            "url": {
+              "type": "string"
+            },
+            "ownerSessionId": {
+              "not": {}
+            },
+            "projectId": {
+              "not": {}
+            },
+            "worktreePath": {
+              "not": {}
+            },
+            "path": {
+              "not": {}
+            },
+            "assetKind": {
+              "not": {}
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "url"
+          ],
+          "additionalProperties": false
         }
       ]
     },

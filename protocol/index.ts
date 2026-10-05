@@ -342,6 +342,11 @@ export function validateRequest(method:unknown,params:unknown):asserts method is
 export function validateResult<M extends Method>(method:M,result:unknown):asserts result is RequestResult<M> {
  if(!validateWireSuccess({v:1,id:'boundary',method,result})) throw new Error(`Invalid runtime result for ${method}`);
 }
+/** A page a `web` tab may show: an absolute http(s) URL of at most 2048 characters, no whitespace or control characters. */
+export function isWebPreviewUrl(value:unknown):value is string {
+ if(typeof value!=='string'||!value||value.length>2048||/[\s\u0000-\u001f\u007f-\u009f]/.test(value)) return false;
+ try { const url=new URL(value); return (url.protocol==='http:'||url.protocol==='https:')&&Boolean(url.hostname); } catch { return false; }
+}
 export function validateLayout(value:unknown):asserts value is PaneLayout {
  let panes=0; const ids=new Set<string>();
  function visit(node:unknown,depth:number):void {
@@ -368,6 +373,8 @@ export function validateLayout(value:unknown):asserts value is PaneLayout {
      for(const key of ['projectId','path','sessionId','checkpointId']) if(typeof tab[key]!=='string'||!tab[key]) throw new Error('Invalid review tab');
      if(tab.toCheckpointId!==undefined&&(typeof tab.toCheckpointId!=='string'||!tab.toCheckpointId)) throw new Error('Invalid review tab');
     }
+    // A web page is an independent tab (no session owner): owned views are reached only through a file header.
+    else if(tab.kind==='web') { if(!isWebPreviewUrl(tab.url)||tab.ownerSessionId!==undefined) throw new Error('Invalid web tab'); }
     else throw new Error('Invalid tab kind');
    }
    if(node.activeTabId!==null&&!tabs.has(String(node.activeTabId))) throw new Error('Invalid active tab');
@@ -409,7 +416,7 @@ export interface ReviewFile { path:string; status:'A'|'M'|'D' }
 /** exists/fingerprint describe the current working file when `to` is omitted. */
 export interface ReviewDiff { path:string; oldText:string; newText:string; binary:boolean; exists:boolean; fingerprint?:string }
 export interface Worktree { id:string; projectId:string; path:string; branch:string|null; head:string; isMain:boolean; locked:boolean; missing:boolean; upstream?:string; lastCommit?:CommitSummary }
-export type ContentRef = {id:string;kind:'session';sessionId:string}|{id:string;kind:'file'|'diff'|'preview';projectId:string;worktreePath?:string;path:string;assetKind?:'text'|'image';ownerSessionId?:string;staged?:boolean}|{id:string;kind:'history';projectId:string;worktreePath?:string;path?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'review';projectId:string;worktreePath?:string;path:string;sessionId:string;checkpointId:string;toCheckpointId?:string;ownerSessionId?:undefined;assetKind?:undefined};
+export type ContentRef = {id:string;kind:'session';sessionId:string}|{id:string;kind:'file'|'diff'|'preview';projectId:string;worktreePath?:string;path:string;assetKind?:'text'|'image';ownerSessionId?:string;staged?:boolean}|{id:string;kind:'history';projectId:string;worktreePath?:string;path?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'review';projectId:string;worktreePath?:string;path:string;sessionId:string;checkpointId:string;toCheckpointId?:string;ownerSessionId?:undefined;assetKind?:undefined}|{id:string;kind:'web';url:string;ownerSessionId?:undefined;projectId?:undefined;worktreePath?:undefined;path?:undefined;assetKind?:undefined};
 export type PaneLayout = {kind:'pane';id:string;tabs:ContentRef[];activeTabId:string|null}|{kind:'split';id:string;direction:'horizontal'|'vertical';ratio:number;first:PaneLayout;second:PaneLayout};
 export interface WorkspaceSave { id?:string;name:string;projectId?:string;worktreePath?:string;layout:PaneLayout;expectedRevision:number;operationId:string }
 

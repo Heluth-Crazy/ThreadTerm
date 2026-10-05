@@ -7,7 +7,7 @@ import { useTranslation } from '../i18n';
 import { addSessionTab } from '../presentation';
 import { displayPath, sameCanonicalScope } from '../projectScope';
 import { activate, addPane, addTabToPane, closePane, reconcileSessionLayout, sessionIdsIn, sessionOnlyLayout } from '../workspaceLayout';
-import { isFileTab, removeWorkspaceTabs, workspaceTabs, type FileTab } from '../workspaceTabs';
+import { isFileTab, isWebTabUrl, removeWorkspaceTabs, workspaceTabs, type FileTab } from '../workspaceTabs';
 import { canSplitPaneArea, fileViewPlacement, visibleSessionLayout } from '../sessionFileViews';
 import { PaneWorkspace, type PaneWorkbench } from './PaneWorkspace';
 import { WorkbenchSideBar, type WorkbenchCommand, type WorkbenchView } from './WorkbenchSideBar';
@@ -195,8 +195,8 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    candidate=>candidate.kind==='history'&&candidate.projectId===target.projectId&&sameCanonicalScope(candidate.worktreePath??project?.path,target.worktreePath??project?.path)&&(candidate.path??'')===(target.path??''));
   if(tabId&&target.commit)setHistoryFocus({tabId,commit:target.commit,key:crypto.randomUUID()});
  };
- const sendToAgent=(target:{projectId:string;worktreePath?:string;path:string;startLine?:number;endLine?:number})=>{
-  const receiver=data.sessions.find(candidate=>candidate.id===previewSessionId);
+ const sendToAgent=(target:{projectId:string;worktreePath?:string;path:string;startLine?:number;endLine?:number;sessionId?:string})=>{
+  const receiver=data.sessions.find(candidate=>candidate.id===(target.sessionId??previewSessionId));
   if(!receiver||!working(receiver)){setIssue(zh?'请先在此工作区打开一个运行中的 Agent 会话，再发送文件引用。':'Open a running agent session in this workspace to send file references.');return;}
   const fileRoot=target.worktreePath??data.projects.find(candidate=>candidate.id===target.projectId)?.path??'';
   const sessionRoot=receiver.worktreePath??data.projects.find(candidate=>candidate.id===receiver.projectId)?.path;
@@ -209,6 +209,19 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    catch(error){const reason=String(error);setIssue(/terminal_command_requires_single_line/.test(reason)?(zh?'引用包含换行，无法插入终端。':'The reference contains a line break and cannot go to a terminal.'):/unavailable/.test(reason)?(zh?'该会话当前不能接收输入（可能是只读历史或尚未取得控制权）。':'That session cannot take input right now (read-only history or no input control).'):workbenchError(error,zh));}
   }));
  };
+ // Review comments: like sendToAgent, but multi-line, for an explicit session, and reporting the outcome to the caller
+ // (which keeps its comments when the text could not be inserted). Only a Chat message box takes several lines.
+ const insertIntoSession=(sessionId:string,text:string)=>new Promise<void>((resolve,reject)=>{
+  const receiver=data.sessions.find(candidate=>candidate.id===sessionId);
+  if(!receiver||!working(receiver)){reject(new Error(zh?'做出这些改动的 Agent 会话已结束，无法接收输入。可以先复制审查意见。':'The agent session that made these changes has ended and cannot take input. Copy the comments instead.'));return;}
+  const tab=workspaceTabs(latestLayout.current).find(item=>item.tab.kind==='session'&&item.tab.sessionId===receiver.id);
+  if(!tab){reject(new Error(zh?'请先在此工作区打开做出这些改动的 Agent 会话。':'Open the agent session that made these changes in this workspace first.'));return;}
+  save(activate(latestLayout.current,tab.paneId,tab.tab.id));setFocusTarget({paneId:tab.paneId,tabId:tab.tab.id,key:crypto.randomUUID()});
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+   try{insertSessionText(receiver.id,text);resolve();}
+   catch(error){const reason=String(error);reject(new Error(/terminal_command_requires_single_line/.test(reason)?(zh?'终端会话一次只接收一行。请复制审查意见后自行粘贴。':'A terminal session takes one line at a time. Copy the comments and paste them yourself.'):/unavailable/.test(reason)?(zh?'该会话当前不能接收输入（可能是只读历史或尚未取得控制权）。':'That session cannot take input right now (read-only history or no input control).'):workbenchError(error,zh)));}
+  }));
+ });
  const workbenchActions:WorkbenchActions|undefined=workbenchScope&&project?{
   openFile:(file,position)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),line:position?.line,column:position?.column}).catch(fail),
   openBeside:file=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),ownerSessionId:previewSessionId}).catch(fail),
@@ -231,7 +244,9 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   },
  }:undefined;
  const paneWorkbench:PaneWorkbench={
-  sendToAgent,openHistory,
+  sendToAgent,openHistory,insertText:insertIntoSession,
+  // Like review/history tabs: an independent tab placed beside the sessions, one per address.
+  openWeb:url=>{if(isWebTabUrl(url))openWorkbenchTab({id:crypto.randomUUID(),kind:'web',url},candidate=>candidate.kind==='web'&&candidate.url===url);},
   openFile:target=>void openScopedFile({...target,kind:previewKind(target.path)}).catch(fail),
   historyFocus,
  };

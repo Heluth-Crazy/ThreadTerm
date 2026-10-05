@@ -167,6 +167,8 @@ html[data-theme="dark"] { color-scheme:dark; }
 .attention-toast-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; }
 .chat-view.v3-session-chat, .v3-chat-log { min-width:0; }
 .v3-chat-log { overflow-x:hidden; }
+/* Link menu of a clicked http(s) link in a Chat transcript (ChatView): the address on one line above the actions. */
+.chat-link-menu-url { max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono); }
 .v3-chat-message { box-sizing:border-box; width:fit-content; max-width:min(780px,100%); min-width:0; overflow:hidden; }
 .v3-chat-message.user { max-width:min(80%,100%); }
 .v3-chat-message .v3-message-text, .v3-chat-message .chat-part { min-width:0; overflow-wrap:anywhere; white-space:pre-wrap; }

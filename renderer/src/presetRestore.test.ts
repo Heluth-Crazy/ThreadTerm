@@ -5,6 +5,13 @@ import {restorePreset,selectPresetLayout,sessionIds} from './presetRestore';
 
 const layout:PaneLayout={kind:'split',id:'split',direction:'horizontal',ratio:0.5,first:{kind:'pane',id:'a-pane',activeTabId:'a-session',tabs:[{id:'a-session',kind:'session',sessionId:'a'},{id:'a-file',kind:'file',projectId:'p',worktreePath:'C:/project/a',path:'README.md'}]},second:{kind:'pane',id:'b-pane',activeTabId:'b-file',tabs:[{id:'b-session',kind:'session',sessionId:'b'},{id:'b-file',kind:'diff',projectId:'p',worktreePath:'C:/project/b',path:'index.ts'}]}};
 const scopes=[{sessionId:'a',projectId:'p',cwd:'C:/project/a'},{sessionId:'b',projectId:'p',cwd:'C:/project/b'}];
+test('a web page belongs to no session or folder and restores with any selection',()=>{
+  const web:PaneLayout={kind:'pane',id:'pane',activeTabId:'web',tabs:[{id:'a-session',kind:'session',sessionId:'a'},{id:'web',kind:'web',url:'http://localhost:5173/'}]};
+  const selected=selectPresetLayout(web,new Set(['a']),scopes);
+  assert.deepEqual(selected?.kind==='pane'&&selected.tabs.map(tab=>tab.id),['a-session','web']);
+  assert.equal(selected?.kind==='pane'&&selected.activeTabId,'web');
+  assert.equal(selectPresetLayout(web,new Set(),scopes),null);
+});
 test('choosing one tree removes unchecked sessions and its file scope, collapses the split',()=>{
   const selected=selectPresetLayout(layout,new Set(['a']),scopes);
   assert.equal(selected?.kind,'pane');assert.deepEqual(selected&&sessionIds(selected),['a']);

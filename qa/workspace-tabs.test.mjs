@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { contentTitle, workspaceTabs, focusedWorkspaceTab, removeWorkspaceTabs, tabCloseTargets } from '../renderer/src/workspaceTabs.ts';
+import { contentTitle, isWebTabUrl, workspaceTabs, focusedWorkspaceTab, removeWorkspaceTabs, tabCloseTargets } from '../renderer/src/workspaceTabs.ts';
 
 const tab = id => ({id,kind:'session',sessionId:id});
 const pane = (id,ids,active=ids[0]) => ({kind:'pane',id,tabs:ids.map(tab),activeTabId:active??null});
@@ -56,4 +56,11 @@ test('content tab labels say which view they show, without glyph prefixes', () =
   assert.equal(contentTitle({id:'d',kind:'diff',projectId:'p',path:'src/app.ts'},false).label,'app.ts · changes');
   assert.equal(contentTitle({id:'d',kind:'diff',projectId:'p',path:'src/app.ts',staged:true},true).label,'app.ts · 已暂存');
   assert.equal(contentTitle({id:'h',kind:'history',projectId:'p'},false).label,'Git history');
+  // A web page is told apart by its host; the full address is the title.
+  assert.deepEqual(contentTitle({id:'w',kind:'web',url:'http://localhost:5173/app?x=1'},false),{title:'http://localhost:5173/app?x=1',label:'localhost:5173'});
+});
+
+test('only http(s) links open as web tabs (same rule as the protocol)', () => {
+  for (const url of ['http://localhost:5173/', 'https://127.0.0.1:8443/a?b=1#c', 'http://[::1]:3000']) assert.equal(isWebTabUrl(url), true, url);
+  for (const url of ['', 'file:///C:/x.html', 'javascript:alert(1)', 'localhost:3000', 'http://', 'http://local host/', 'http://x/\u0085', `http://localhost/${'a'.repeat(2048)}`]) assert.equal(isWebTabUrl(url), false, url);
 });
