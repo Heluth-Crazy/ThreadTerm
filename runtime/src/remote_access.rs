@@ -1116,6 +1116,9 @@ mod tests {
         for denied in [
             "runtime.shutdown",
             "settings.update",
+            "plugin.list",
+            "plugin.setEnabled",
+            "plugin.reload",
             "filesystem.resolve",
             "filesystem.read",
             "git.status",

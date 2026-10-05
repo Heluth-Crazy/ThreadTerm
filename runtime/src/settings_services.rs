@@ -74,6 +74,7 @@ pub fn relocation_blocks(config: &RuntimeConfig, method: &str) -> Result<bool> {
             | "data.relocation.prepare"
             | "runtime.shutdown"
             | "provider.list"
+            | "plugin.list"
             | "history.list"
             | "history.read"
             | "chat.read"
@@ -1254,5 +1255,28 @@ mod tests {
                 "{field} must be omitted instead of null"
             );
         }
+    }
+
+    #[test]
+    fn plugin_list_is_pure_during_relocation_but_plugin_mutations_are_fenced() {
+        let root = tempfile::tempdir().unwrap();
+        let config = RuntimeConfig {
+            data_dir: root.path().to_owned(),
+            database_path: root.path().join("db"),
+            credential_path: root.path().join("credential"),
+            pipe_base: "plugins-relocation".into(),
+        };
+        let key = relocation_key(&config).unwrap();
+        relocations().lock().unwrap().insert(
+            key,
+            RelocationReservation {
+                operation_id: "prepare".into(),
+                target_root: "target".into(),
+            },
+        );
+        assert!(!relocation_blocks(&config, "plugin.list").unwrap());
+        assert!(relocation_blocks(&config, "plugin.setEnabled").unwrap());
+        assert!(relocation_blocks(&config, "plugin.reload").unwrap());
+        release_relocation(&config).unwrap();
     }
 }

@@ -67,6 +67,7 @@ impl ProviderAdapter for FixtureAdapter {
 
     fn capability(&self) -> ProviderCapability {
         ProviderCapability {
+            source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
             id: "grok".into(),
             name: "Lifecycle fixture".into(),
             installed: true,
@@ -271,6 +272,7 @@ impl Fixture {
             relocation_gate: RwLock::new(()),
             retry_gate: Mutex::new(()),
             settings_apply_gate: Mutex::new(()),
+            plugin_gate: Mutex::new(()),
             remote: OnceLock::new(),
             delegations: Arc::new(crate::delegation::Delegations::default()),
         });

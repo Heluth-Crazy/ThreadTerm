@@ -57,8 +57,13 @@ impl ProviderAdapter for OpenCodeAdapter {
             "unknown".to_owned()
         };
         ProviderCapability {
+            source: "builtin",
+            plugin_id: None,
+            icon: None,
+            sign_in: super::builtin_sign_in("opencode"),
+            homepage: None,
             id: "opencode".to_owned(),
-            name: "OpenCode".to_owned(),
+            name: super::builtin_name("opencode").to_owned(),
             installed,
             version,
             terminal: installed,

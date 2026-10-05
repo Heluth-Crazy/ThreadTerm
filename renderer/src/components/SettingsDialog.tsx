@@ -11,10 +11,11 @@ import { DeviceSettings } from "./DeviceSettings";
 import { SettingsAppearance } from "./SettingsAppearance";
 import { SettingsControls } from "./SettingsControls";
 import { SettingsData } from "./SettingsData";
+import { SettingsPlugins } from "./SettingsPlugins";
 import "../../../reference/prototype/features/settings.css";
 import "./settings-parity.css";
 
-type Tab = "appearance" | "controls" | "data" | "mobile" | "tools";
+type Tab = "appearance" | "controls" | "data" | "mobile" | "tools" | "plugins";
 type Props = { data: Snapshot; currentWorkspace?: Pick<Preset, "layout" | "sessions">; onClose: () => void; onSaved: () => Promise<void>; onSessionCreated?: (id: string) => void | Promise<void>; supervisionCounts: { checks: number; alertCount: number } };
 export function SettingsDialog({ data, onClose, onSaved, onSessionCreated, supervisionCounts }: Props) {
   const [tab, setTab] = useState<Tab>("appearance");
@@ -27,7 +28,7 @@ export function SettingsDialog({ data, onClose, onSaved, onSessionCreated, super
     revision.current = next.revision;
     await onSaved();
   };
-  const names: Record<Tab, string> = zh ? { appearance: "外观", controls: "快捷键", data: "数据", mobile: "移动", tools: "工具" } : { appearance: "Appearance", controls: "Shortcuts", data: "Data", mobile: "Mobile", tools: "Tools" };
+  const names: Record<Tab, string> = zh ? { appearance: "外观", controls: "快捷键", data: "数据", mobile: "移动", tools: "工具", plugins: "插件" } : { appearance: "Appearance", controls: "Shortcuts", data: "Data", mobile: "Mobile", tools: "Tools", plugins: "Plugins" };
   return createPortal(<div className="settings-drawer" onMouseDown={event => { if (event.currentTarget === event.target) onClose(); }}><section ref={panel} tabIndex={-1} className="settings-panel" role="dialog" aria-modal="true" aria-label={zh ? "设置" : "Settings"}>
     <header><div className="settings-brand"><span className="settings-brand-ico"><Icon name="settings" /></span><div><p>ThreadTerm</p><h2>{zh ? "设置" : "Settings"}</h2></div></div><button type="button" className="icon-btn settings-close" onClick={onClose} aria-label={zh ? "关闭设置" : "Close settings"} title={zh ? "关闭" : "Close"}><Icon name="close" /></button></header>
     <div className="settings-layout"><nav role="tablist">{(Object.keys(names) as Tab[]).map(item => <button key={item} role="tab" className={tab === item ? "active" : ""} aria-selected={tab === item} onClick={() => setTab(item)}>{names[item]}</button>)}</nav><div className="settings-scroll">
@@ -36,6 +37,7 @@ export function SettingsDialog({ data, onClose, onSaved, onSessionCreated, super
       <section className={`settings-group ${tab === "data" ? "active" : ""}`}><SettingsData settings={data.settings} zh={zh} onSaved={onSaved} /></section>
       <section className={`settings-group ${tab === "mobile" ? "active" : ""}`}><DeviceSettings language={zh ? "zh-CN" : "en"} /></section>
       <section className={`settings-group ${tab === "tools" ? "active" : ""}`}><ProviderNetworkSettings settings={data.settings} zh={zh} update={update} /><SettingsTools data={data} onSaved={onSaved} /></section>
+      {tab === "plugins" && <section className="settings-group active"><SettingsPlugins zh={zh} onSaved={onSaved} /></section>}
     </div></div>
   </section></div>, document.body);
 }

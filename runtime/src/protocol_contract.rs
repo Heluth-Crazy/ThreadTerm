@@ -20,18 +20,18 @@ pub fn incompatible_reason(peer: &Value, role: ContractRole) -> Option<String> {
         Some(contract) if contract == PROTOCOL_CONTRACT => None,
         Some(contract) => Some(match role {
             ContractRole::Runtime => format!(
-                "This runtime requires desktop contract {PROTOCOL_CONTRACT} for choice-based Chat approvals, but the desktop uses {contract}. Running jobs were not stopped."
+                "This runtime requires desktop contract {PROTOCOL_CONTRACT} for the agent registry and choice-based Chat approvals, but the desktop uses {contract}. Running jobs were not stopped."
             ),
             ContractRole::Desktop => format!(
-                "This desktop requires runtime contract {PROTOCOL_CONTRACT} for choice-based Chat approvals, but the runtime uses {contract}. The existing runtime was left running."
+                "This desktop requires runtime contract {PROTOCOL_CONTRACT} for the agent registry and choice-based Chat approvals, but the runtime uses {contract}. The existing runtime was left running."
             ),
         }),
         None => Some(match role {
             ContractRole::Runtime => format!(
-                "This runtime requires desktop contract {PROTOCOL_CONTRACT} for choice-based Chat approvals. This client is older. Update the ThreadTerm desktop. Running jobs were not stopped."
+                "This runtime requires desktop contract {PROTOCOL_CONTRACT} for the agent registry and choice-based Chat approvals. This client is older. Update the ThreadTerm desktop. Running jobs were not stopped."
             ),
             ContractRole::Desktop => format!(
-                "This desktop requires runtime contract {PROTOCOL_CONTRACT} for choice-based Chat approvals. The connected runtime is older and was left running. Update ThreadTerm, or quit the old runtime from the tray before retrying."
+                "This desktop requires runtime contract {PROTOCOL_CONTRACT} for the agent registry and choice-based Chat approvals. The connected runtime is older and was left running. Update ThreadTerm, or quit the old runtime from the tray before retrying."
             ),
         }),
     }
@@ -82,6 +82,19 @@ mod tests {
         assert!(reason.contains("left running"));
         assert!(
             require_peer_contract(&json!({"protocol":1,"contract":1}), ContractRole::Runtime)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn registry_contract_rejects_contract_two() {
+        assert_eq!(PROTOCOL_CONTRACT, 3);
+        assert!(
+            require_peer_contract(&json!({"protocol":1,"contract":2}), ContractRole::Runtime)
+                .is_err()
+        );
+        assert!(
+            require_peer_contract(&json!({"protocol":1,"contract":2}), ContractRole::Desktop)
                 .is_err()
         );
     }

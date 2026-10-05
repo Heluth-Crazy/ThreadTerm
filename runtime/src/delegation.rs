@@ -428,7 +428,7 @@ pub(crate) fn validate_start(db: &Database, providers: &Providers, parent: &Sess
     if !matches!(request.workspace.as_deref(), None | Some("shared" | "worktree")) {
         return Err(anyhow!("invalid_workspace"));
     }
-    if !crate::providers::SUPPORTED_PROVIDERS.contains(&request.agent.as_str()) {
+    if !providers.contains(&request.agent) {
         return Err(anyhow!("unknown_agent"));
     }
     if !available_agents(providers).contains(&request.agent) {

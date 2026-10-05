@@ -1,3 +1,6 @@
+import type { ProviderCapability } from "@threadterm/protocol";
+import { agentName } from "./agents";
+
 export type Attention = { id: string; sessionId: string; kind: string; title?: string; provider?: string };
 
 export function attentionFromEvent(event: { event: string; data: unknown }): Attention | undefined {
@@ -28,19 +31,19 @@ export function shouldPresentAttention(options: {
   return true;
 }
 
-export function providerLabel(provider?: string): string {
-  if (!provider) return "";
-  return provider === "claude" ? "Claude Code" : provider === "opencode" ? "OpenCode" : provider[0].toUpperCase() + provider.slice(1);
+export function providerLabel(provider?: string, capabilities: readonly ProviderCapability[] = []): string {
+  return provider ? agentName(provider, capabilities) : "";
 }
 
 export function attentionNotice(
   attention: Attention,
   locale: "en" | "zh-CN",
   session?: { title?: string; provider?: string },
+  capabilities: readonly ProviderCapability[] = [],
 ): { heading: string; detail: string; action: string } {
   const zh = locale === "zh-CN";
   const heading = session?.title?.trim() || attention.title?.trim() || (zh ? "未命名会话" : "Untitled session");
-  const provider = providerLabel(session?.provider || attention.provider);
+  const provider = providerLabel(session?.provider || attention.provider, capabilities);
   const reason = attention.kind === "reply"
     ? (zh ? "有新的结构化回复，需要你查看。" : "has a new structured reply.")
     : attention.kind === "approval" || attention.kind === "waiting"

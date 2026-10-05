@@ -9,7 +9,6 @@ import {
 } from "react";
 import type {
   CatalogVisibility,
-  ProviderCapability,
   ProviderId,
   Session,
   Snapshot,
@@ -65,7 +64,7 @@ import {
 } from "./navigation";
 import { isActionableInboxItem } from "./inboxVisibility";
 import { sessionsInProjectScope, unreadInboxInScope } from "./projectScope";
-import { AgentIcon, Icon } from "./components/PrototypeIcon";
+import { AgentIconsProvider, AgentIcon, Icon } from "./components/PrototypeIcon";
 import { UsagePanel } from "./components/UsagePanel";
 import { ProjectOverview } from "./components/ProjectOverview";
 import { AllTerminalsPage } from "./components/AllTerminalsPage";
@@ -96,24 +95,8 @@ type Route = {
   scope?: SessionScope;
   worktreePath?: string;
 };
-const PROVIDERS: ProviderId[] = [
-  "codex",
-  "claude",
-  "kimi",
-  "gemini",
-  "opencode",
-  "shell",
-  "grok",
-  "custom",
-];
 const active = (status: Session["status"]) =>
   ["starting", "running", "idle", "waiting"].includes(status);
-const displayProvider = (provider: string) =>
-  provider === "claude"
-    ? "Claude Code"
-    : provider === "opencode"
-      ? "OpenCode"
-      : provider[0].toUpperCase() + provider.slice(1);
 const formatDate = (value: string) =>
   new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
@@ -360,6 +343,7 @@ export function App() {
   }, [data?.sessions, navigate, recentIds, routeSessionId]);
   return (
     <I18nProvider locale={locale}>
+      <AgentIconsProvider providers={data?.providers ?? []}>
       <div className={`${floatingWindow ? "app-shell floating-shell" : "app-shell"}${windowMaximized ? " is-maximized" : ""}${nativeChrome ? " native-chrome" : ""}`}>
         <header className="titlebar app-chrome">
           <div className="drag-region"><span className="chrome-title">ThreadTerm</span></div>
@@ -571,7 +555,7 @@ export function App() {
             onClose={() => setCompanionOpen(false)}
           />
         )}
-        {attention && <AttentionToast attention={attention} session={data?.sessions.find(candidate => candidate.id === attention.sessionId)} locale={locale} onClose={() => setAttention(undefined)} onOpen={() => { setAttention(undefined); void navigate({ kind: "session", id: attention.sessionId }); }} />}
+        {attention && <AttentionToast attention={attention} capabilities={data?.providers} session={data?.sessions.find(candidate => candidate.id === attention.sessionId)} locale={locale} onClose={() => setAttention(undefined)} onOpen={() => { setAttention(undefined); void navigate({ kind: "session", id: attention.sessionId }); }} />}
         {!floatingWindow && route.kind === "all" && sessionHistoryOpen && data && (
           <SessionHistoryRail
             data={data}
@@ -659,6 +643,7 @@ export function App() {
           />
         )}
       </div>
+      </AgentIconsProvider>
     </I18nProvider>
   );
 }

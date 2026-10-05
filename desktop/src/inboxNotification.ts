@@ -3,8 +3,9 @@ export type InboxNotice = {
   sessionId?: string;
   title?: string;
   provider?: string;
+  providerName?: string;
 };
-export type TerminalNotice = { status: string; exitCode?: number | null; title?: string; provider?: string };
+export type TerminalNotice = { status: string; exitCode?: number | null; title?: string; provider?: string; providerName?: string };
 export type NotificationLocale = "en" | "zh-CN";
 
 /** Same rule as the renderer: Chinese only when the user chose it, English otherwise (the default). */
@@ -13,14 +14,15 @@ export function notificationLocale(settings: unknown): NotificationLocale {
   return language === "zh-CN" ? "zh-CN" : "en";
 }
 
-function providerLabel(provider?: string): string {
+function providerLabel(provider?: string, providerName?: string): string {
+  if (providerName) return providerName;
   if (!provider) return "";
   return provider === "claude" ? "Claude Code" : provider === "opencode" ? "OpenCode" : provider[0].toUpperCase() + provider.slice(1);
 }
 
 export function inboxNotificationCopy(value: InboxNotice, locale: NotificationLocale = "en"): { title: string; body: string } {
   const session = value.title?.trim();
-  const provider = providerLabel(value.provider);
+  const provider = providerLabel(value.provider, value.providerName);
   const who = [provider, session].filter(Boolean).join(" · ");
   if (locale === "zh-CN") {
     const title = session || (value.kind === "reply" ? "ThreadTerm 有新回复" : "ThreadTerm 需要你处理");
@@ -47,7 +49,7 @@ export function terminalNotificationKind(value: TerminalNotice): "completed" | "
 }
 export function terminalNotificationCopy(value: TerminalNotice, locale: NotificationLocale = "en"): { title: string; body: string } {
   const session = value.title?.trim();
-  const who = [providerLabel(value.provider), session].filter(Boolean).join(" · ");
+  const who = [providerLabel(value.provider, value.providerName), session].filter(Boolean).join(" · ");
   const outcome = terminalOutcome(value), code = typeof value.exitCode === "number" ? value.exitCode : undefined;
   if (locale === "zh-CN") {
     const reason = outcome === "finished" ? "已结束。" : outcome === "interrupted" ? "被中断。" : code === undefined ? "运行失败。" : `以退出码 ${code} 结束。`;

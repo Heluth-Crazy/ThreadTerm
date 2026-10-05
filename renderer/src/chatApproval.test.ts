@@ -18,3 +18,12 @@ test('known approval choice labels are bilingual; native labels stay verbatim', 
   assert.deepEqual(choices.map(choice => choiceLabel(choice, zh)), ['允许一次', '在此项目中始终允许', '本次会话中允许所有编辑', '拒绝', 'Proceed with sandbox']);
   assert.deepEqual(choices.map(choice => choiceLabel(choice, en)), ['Allow once', 'Always allow in this project', 'Allow all edits this session', 'Deny', 'Proceed with sandbox']);
 });
+
+
+test('approval data accepts plugin provider ids and rejects non-string or empty values', () => {
+  const part = (provider: unknown): ChatPart => ({ type: 'approval', approvalId: 'a', data: { provider, choices: [] } });
+  assert.equal(approvalData(part('echo'))?.provider, 'echo');
+  assert.equal(approvalData(part('codex'))?.provider, 'codex');
+  assert.equal(approvalData(part(' '))?.provider, undefined);
+  assert.equal(approvalData(part(12))?.provider, undefined);
+});

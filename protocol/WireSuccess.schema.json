@@ -356,16 +356,7 @@
     },
     "ProviderId": {
       "type": "string",
-      "enum": [
-        "codex",
-        "claude",
-        "kimi",
-        "gemini",
-        "opencode",
-        "shell",
-        "grok",
-        "custom"
-      ]
+      "description": "Any agent id in the runtime's agent registry: a built-in id or one contributed by an enabled plugin (`^[a-z][a-z0-9-]{1,31}$`). The runtime rejects ids it does not know; `provider.list` is the source of truth."
     },
     "SessionMode": {
       "type": "string",
@@ -1666,6 +1657,48 @@
             "unauthenticated",
             "unknown"
           ]
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "builtin",
+            "plugin"
+          ],
+          "description": "Where the agent comes from: built into ThreadTerm, or contributed by a plugin (see `plugin.list`). Absent = builtin."
+        },
+        "pluginId": {
+          "type": "string"
+        },
+        "icon": {
+          "type": "string",
+          "description": "Plugin agents: the plugin's SVG icon as a `data:image/svg+xml;base64,` URL. Render it with <img>, never as markup."
+        },
+        "signIn": {
+          "type": "object",
+          "properties": {
+            "executable": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "display": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "executable",
+            "args",
+            "display"
+          ],
+          "additionalProperties": false,
+          "description": "The agent's interactive sign-in command, run in a terminal session; `display` is the command line to show."
+        },
+        "homepage": {
+          "type": "string"
         }
       },
       "required": [
@@ -1968,6 +2001,125 @@
       "items": {
         "$ref": "#/definitions/ProviderCapability"
       }
+    },
+    "RequestResult<\"plugin.list\">": {
+      "$ref": "#/definitions/PluginList"
+    },
+    "PluginList": {
+      "type": "object",
+      "properties": {
+        "directory": {
+          "type": "string"
+        },
+        "plugins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginInfo"
+          }
+        }
+      },
+      "required": [
+        "directory",
+        "plugins"
+      ],
+      "additionalProperties": false
+    },
+    "PluginInfo": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "publisher": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "homepage": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "bundled",
+            "user"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginAgentInfo"
+          }
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "version",
+        "source",
+        "enabled",
+        "agents",
+        "issues"
+      ],
+      "additionalProperties": false,
+      "description": "A plugin folder found by the runtime. `bundled` plugins ship with ThreadTerm and are enabled by default; `user` plugins live in the plugins directory and stay disabled until the user enables them. `issues` lists problems: an unloadable manifest or an invalid agent (bad id or command, id collision, icon outside the folder, …) means that part contributes nothing; a warning such as an unknown contribution type does not block the agents."
+    },
+    "PluginAgentInfo": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/ProviderId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "terminal": {
+          "type": "boolean"
+        },
+        "chat": {
+          "type": "boolean"
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "terminal",
+        "chat",
+        "commands"
+      ],
+      "additionalProperties": false,
+      "description": "One agent a plugin contributes. `commands` are the command lines it may run (version probe, terminal, ACP chat, sign-in), shown to the user before the plugin is enabled."
+    },
+    "RequestResult<\"plugin.setEnabled\">": {
+      "$ref": "#/definitions/PluginList"
+    },
+    "RequestResult<\"plugin.reload\">": {
+      "$ref": "#/definitions/PluginList"
     },
     "RequestResult<\"history.list\">": {
       "type": "object",
@@ -4920,6 +5072,84 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22provider.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "plugin.list"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22plugin.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "plugin.setEnabled"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22plugin.setEnabled%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "plugin.reload"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22plugin.reload%22%3E"
         }
       },
       "required": [

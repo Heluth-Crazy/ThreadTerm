@@ -1,32 +1,25 @@
 import { Select } from "./ui/Select";
 import { FormEvent, useEffect, useState } from "react";
-import type { ProviderId, Session, SessionConfig } from "@threadterm/protocol";
+import type { ProviderId, Session, SessionConfig, Snapshot } from "@threadterm/protocol";
 import { operationId, request } from "../bridge";
 import { displayPath } from "../projectScope";
 import { RetrySettings } from "./RetrySettings";
-
-const providers: ProviderId[] = [
-  "codex",
-  "claude",
-  "kimi",
-  "gemini",
-  "opencode",
-  "shell",
-  "grok",
-  "custom",
-];
+import { agentIds, agentName } from "../agents";
 const isActive = (session: Session) =>
   !session.readOnly && ["starting", "running", "idle", "waiting"].includes(session.status);
 
 export function SessionConfigDialog({
   session,
+  data,
   onClose,
   onRerun,
 }: {
   session: Session;
+  data: Snapshot;
   onClose: () => void;
   onRerun: (id: string) => void;
 }) {
+  const providers = [...agentIds(data.providers), "shell", "custom"];
   const [config, setConfig] = useState<SessionConfig>();
   const [args, setArgs] = useState("");
   const [issue, setIssue] = useState<string>();
@@ -144,7 +137,7 @@ export function SessionConfigDialog({
                 }
               >
                 {providers.map((provider) => (
-                  <option key={provider}>{provider}</option>
+                  <option key={provider} value={provider} disabled={Boolean(data.providers.find(item => item.id === provider && !item.installed))}>{agentName(provider, data.providers)}</option>
                 ))}
               </Select>
             </label>

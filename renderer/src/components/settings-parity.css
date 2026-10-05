@@ -59,3 +59,9 @@
 .settings-drawer .setting-switch { transition:opacity .12s; }
 /* Delayed, so the brief disable while a save is in flight never flickers; leaving the state is immediate. */
 .settings-drawer .setting-switch:has(input:disabled) { cursor:not-allowed; opacity:.5; transition-delay:.25s; }
+.settings-drawer .settings-plugins { display:grid; gap:16px; min-width:0; }
+.settings-drawer .settings-plugins .settings-card { display:grid; gap:12px; }
+.settings-drawer .settings-plugins .settings-card-row > div { min-width:0; }
+.settings-drawer .settings-plugins code, .plugin-trust code { display:block; white-space:pre-wrap; overflow-wrap:anywhere; }
+/* Sheet dialogs leave body padding to their content; the trust confirmation is plain text and code lines. */
+.dialog.sheet.plugin-trust .dlg-body { padding:16px 20px; gap:8px; overflow-y:auto; }

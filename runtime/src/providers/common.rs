@@ -191,11 +191,11 @@ pub fn find_executable(command: &str) -> Option<PathBuf> {
     }
     let path = env::var_os("PATH")?;
     #[cfg(windows)]
-    let extensions = ["exe", "cmd", "bat", "ps1", ""];
+    let extensions = executable_extensions(env::var("PATHEXT").ok().as_deref());
     #[cfg(not(windows))]
-    let extensions = [""];
+    let extensions = vec![String::new()];
     for directory in env::split_paths(&path) {
-        for extension in extensions {
+        for extension in &extensions {
             let name = if extension.is_empty() {
                 command.to_owned()
             } else {
@@ -208,6 +208,25 @@ pub fn find_executable(command: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(windows)]
+fn executable_extensions(pathext: Option<&str>) -> Vec<String> {
+    let mut extensions = ["exe", "cmd", "bat", "ps1"].map(str::to_owned).to_vec();
+    for extension in pathext.unwrap_or(".COM;.EXE;.BAT;.CMD").split(';') {
+        let extension = extension
+            .trim()
+            .trim_start_matches('.')
+            .to_ascii_lowercase();
+        if !extension.is_empty()
+            && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            && !extensions.contains(&extension)
+        {
+            extensions.push(extension);
+        }
+    }
+    extensions.push(String::new());
+    extensions
 }
 
 fn prefer_native_opencode(path: PathBuf) -> PathBuf {
@@ -1287,5 +1306,21 @@ mod windows_script_tests {
             started.elapsed() < Duration::from_secs(1),
             "timed-out probe waited for a background descendant's output pipe"
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod extension_tests {
+    use super::*;
+
+    #[test]
+    fn pathext_adds_safe_extensions_without_changing_native_and_npm_priority() {
+        let extensions = executable_extensions(Some(".COM;.EXE;.CMD;.OTHER;.BAD/PATH"));
+        assert_eq!(&extensions[..4], &["exe", "cmd", "bat", "ps1"]);
+        assert!(extensions.contains(&"com".to_owned()));
+        assert!(extensions.contains(&"other".to_owned()));
+        assert!(!extensions.contains(&"bad/path".to_owned()));
+        assert_eq!(extensions.iter().filter(|ext| *ext == "exe").count(), 1);
+        assert_eq!(extensions.last().unwrap(), "");
     }
 }

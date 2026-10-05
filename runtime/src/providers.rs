@@ -107,8 +107,38 @@ pub(crate) fn approve_threadterm_tool(
     })
 }
 
-pub const SUPPORTED_PROVIDERS: [&str; 6] =
-    ["codex", "claude", "kimi", "gemini", "opencode", "grok"];
+pub(crate) struct BuiltinDescriptor {
+    pub id: &'static str,
+    pub name: &'static str,
+    sign_in_args: &'static [&'static str],
+}
+
+pub(crate) const BUILTIN_AGENTS: &[BuiltinDescriptor] = &[
+    BuiltinDescriptor { id: "codex", name: "Codex", sign_in_args: &["login"] },
+    BuiltinDescriptor { id: "claude", name: "Claude Code", sign_in_args: &["auth", "login"] },
+    BuiltinDescriptor { id: "kimi", name: "Kimi", sign_in_args: &["login"] },
+    BuiltinDescriptor { id: "opencode", name: "OpenCode", sign_in_args: &["providers", "login"] },
+    BuiltinDescriptor { id: "grok", name: "Grok", sign_in_args: &[] },
+];
+
+pub(crate) fn builtin_name(id: &str) -> &str {
+    BUILTIN_AGENTS.iter().find(|agent| agent.id == id).map(|agent| agent.name).unwrap_or(id)
+}
+
+pub(crate) fn builtin_sign_in(id: &str) -> Option<ProviderSignIn> {
+    let descriptor = BUILTIN_AGENTS.iter().find(|agent| agent.id == id)?;
+    if descriptor.sign_in_args.is_empty() { return None; }
+    let spec = common::CommandSpec::provider(id, descriptor.sign_in_args).ok()?;
+    Some(ProviderSignIn { executable: spec.program, args: spec.args, display: spec.display })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSignIn {
+    pub executable: String,
+    pub args: Vec<String>,
+    pub display: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -165,6 +195,15 @@ pub struct ProviderEvent {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCapability {
+    pub source: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sign_in: Option<ProviderSignIn>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub homepage: Option<String>,
     pub id: String,
     pub name: String,
     pub installed: bool,
@@ -262,7 +301,7 @@ pub trait ProviderRuntime: Send + Sync {
 }
 
 pub(crate) trait ProviderAdapter: Send + Sync {
-    fn id(&self) -> &'static str;
+    fn id(&self) -> &str;
     fn capability(&self) -> ProviderCapability;
     /// Builds the PTY launch command. `resume_id` continues an existing native
     /// conversation; `assign_id` identifies a NEW conversation, either prepared
@@ -467,7 +506,8 @@ impl ChatSlot {
 }
 
 pub struct Providers {
-    adapters: HashMap<&'static str, Arc<dyn ProviderAdapter>>,
+    adapters: RwLock<HashMap<String, Arc<dyn ProviderAdapter>>>,
+    plugins: RwLock<Option<crate::plugins::PluginRegistry>>,
     chats: Mutex<HashMap<String, ChatSlot>>,
     connect_wait: Condvar,
     capability_cache: Arc<Mutex<CapabilityCache>>,
@@ -499,17 +539,67 @@ fn probe_capabilities(adapters: &[Arc<dyn ProviderAdapter>]) -> Vec<Value> {
 
 impl Providers {
     pub fn new() -> Self {
+        let providers = Self::native();
+        providers.rebuild_plugins(crate::plugins::PluginRegistry::bundled());
+        providers
+    }
+
+    fn native() -> Self {
         let (events, _) = broadcast::channel(1_024);
         let network = network::NetworkSettings::default();
         let adapters: Vec<Arc<dyn ProviderAdapter>> = vec![
             Arc::new(codex::CodexAdapter::new(events.clone())),
             Arc::new(claude::ClaudeAdapter::new(events.clone())),
             Arc::new(acp::AcpAdapter::kimi(events.clone())),
-            Arc::new(acp::AcpAdapter::gemini(events.clone())),
             Arc::new(opencode::OpenCodeAdapter::new(events.clone())),
             Arc::new(grok::GrokAdapter::new(events.clone(), network.clone())),
         ];
         Self::from_adapters(events, adapters, network)
+    }
+
+    pub fn with_plugins(data_dir: &std::path::Path, settings: &Value) -> Self {
+        let providers = Self::native();
+        providers.rebuild_plugins(crate::plugins::PluginRegistry::discover(data_dir, settings));
+        providers
+    }
+
+    pub(crate) fn rebuild_plugins(&self, registry: crate::plugins::PluginRegistry) {
+        let plugins = registry.agents.iter().cloned().map(|descriptor| {
+            let id = descriptor.id.clone();
+            let adapter: Arc<dyn ProviderAdapter> = if descriptor.chat_args.is_some() {
+                Arc::new(acp::AcpAdapter::from_descriptor(descriptor, self.events.clone()))
+            } else {
+                Arc::new(crate::plugins::ManifestTerminalAdapter::new(descriptor))
+            };
+            (id, adapter)
+        }).collect::<Vec<_>>();
+        if let Ok(mut adapters) = self.adapters.write() {
+            adapters.retain(|id, _| BUILTIN_AGENTS.iter().any(|agent| agent.id == id));
+            adapters.extend(plugins);
+        }
+        if let Ok(mut current) = self.plugins.write() { *current = Some(registry); }
+        self.refresh_capabilities();
+    }
+
+    pub(crate) fn plugin_registry(&self) -> Option<crate::plugins::PluginRegistry> {
+        self.plugins.read().ok()?.clone()
+    }
+
+    pub(crate) fn plugin_list(&self) -> Option<crate::plugins::PluginList> {
+        self.plugins.read().ok()?.as_ref().map(|registry| registry.list.clone())
+    }
+
+    pub(crate) fn contains(&self, provider: &str) -> bool {
+        self.adapters.read().is_ok_and(|adapters| adapters.contains_key(provider))
+    }
+
+    pub(crate) fn require_agent(&self, provider: &str) -> Result<(), ProviderError> {
+        self.adapter(provider).map(|_| ())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registered_ids(&self) -> Vec<String> {
+        self.supported_adapters().iter().map(|adapter| adapter.id().to_owned()).collect()
     }
 
     fn from_adapters(
@@ -518,10 +608,11 @@ impl Providers {
         network: network::NetworkSettings,
     ) -> Self {
         Self {
-            adapters: adapters
+            adapters: RwLock::new(adapters
                 .into_iter()
-                .map(|adapter| (adapter.id(), adapter))
-                .collect(),
+                .map(|adapter| (adapter.id().to_owned(), adapter))
+                .collect()),
+            plugins: RwLock::new(None),
             chats: Mutex::new(HashMap::new()),
             connect_wait: Condvar::new(),
             capability_cache: Arc::new(Mutex::new(CapabilityCache::default())),
@@ -564,19 +655,29 @@ impl Providers {
     }
 
     fn supported_adapters(&self) -> Vec<Arc<dyn ProviderAdapter>> {
-        SUPPORTED_PROVIDERS
-            .iter()
-            .filter_map(|id| self.adapters.get(id).cloned())
-            .collect()
+        let mut adapters = self.adapters.read().map(|adapters| adapters.values().cloned().collect::<Vec<_>>()).unwrap_or_default();
+        adapters.sort_by_key(|adapter| {
+            let id = adapter.id();
+            let order = match id {
+                "codex" => 0, "claude" => 1, "kimi" => 2, "gemini" => 3,
+                "opencode" => 4, "grok" => 5, _ => 6,
+            };
+            (order, id.to_owned())
+        });
+        adapters
     }
 
-    fn adapter(&self, provider: &str) -> Result<&Arc<dyn ProviderAdapter>, ProviderError> {
-        self.adapters.get(provider).ok_or_else(|| {
-            ProviderError::new(
-                "unsupported_provider",
-                format!("{provider} has no structured Chat adapter"),
-            )
-        })
+    fn adapter(&self, provider: &str) -> Result<Arc<dyn ProviderAdapter>, ProviderError> {
+        if let Some(adapter) = self.adapters.read().map_err(|_| ProviderError::new("provider_internal", "agent registry lock poisoned"))?.get(provider).cloned() {
+            return Ok(adapter);
+        }
+        let plugin = self.plugins.read().ok().and_then(|registry| {
+            registry.as_ref()?.list.plugins.iter().find(|plugin| plugin.agents.iter().any(|agent| agent.id == provider)).map(|plugin| plugin.id.clone())
+        });
+        Err(ProviderError::new("unsupported_provider", match plugin {
+            Some(plugin) => format!("Agent {provider} is unavailable. Enable plugin {plugin} in Settings → Plugins and resolve any listed issues."),
+            None => format!("Unknown agent {provider}; no enabled adapter is registered"),
+        }))
     }
 
     /// How a provider's native conversation id becomes known for a new
@@ -826,9 +927,12 @@ impl ProviderRuntime for Providers {
         }
         // First probe, or the first after an explicit refresh: callers need real
         // values, so this one runs synchronously.
+        let generation = self.capability_cache.lock().map(|cache| cache.generation).unwrap_or(0);
         let values = probe_capabilities(&self.supported_adapters());
         if let Ok(mut cache) = self.capability_cache.lock() {
-            cache.values = Some((Instant::now(), values.clone()));
+            if cache.generation == generation {
+                cache.values = Some((Instant::now(), values.clone()));
+            }
         }
         values
     }
@@ -1263,9 +1367,9 @@ mod registry_cleanup_tests {
     #[test]
     fn every_production_adapter_fences_late_events_after_reconnect_and_stop() {
         let providers = Providers::new();
-        assert_eq!(providers.adapters.len(), 6);
+        assert_eq!(providers.adapters.read().unwrap().len(), 6);
         let mut receiver = providers.events.subscribe();
-        for (provider, adapter) in &providers.adapters {
+        for (provider, adapter) in providers.adapters.read().unwrap().iter() {
             assert!(
                 adapter.scopes_chat_events(),
                 "{provider} must opt in before accepting Chat events"
@@ -1457,6 +1561,7 @@ mod capability_cache_tests {
             let probe = self.probes.fetch_add(1, SeqCst) + 1;
             std::thread::sleep(Duration::from_millis(300));
             ProviderCapability {
+                source: "builtin", plugin_id: None, icon: None, sign_in: None, homepage: None,
                 id: "codex".into(),
                 name: format!("probe {probe}"),
                 installed: true,

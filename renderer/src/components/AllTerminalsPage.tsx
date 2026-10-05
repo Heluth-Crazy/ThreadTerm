@@ -9,6 +9,7 @@ import { AgentIcon, Icon } from "./PrototypeIcon";
 import { HistoryRail } from "./HistoryRail";
 import "./all-terminals.css";
 import { sessionState, sessionStateLabel } from "../sessionState";
+import { agentName } from "../agents";
 
 export type SessionScope = "all" | "active" | "recent" | "followed" | "bookmarked" | "archived";
 type Layout = "cards" | "list";
@@ -22,7 +23,6 @@ type Props = {
 const active = (session: Session) => !session.readOnly && ["starting", "running", "idle", "waiting"].includes(session.status);
 const statusClass = (session: Session) => session.readOnly ? "st-ended" : ({ starting: "st-running", running: "st-running", idle: "st-running", waiting: "st-needs", exited: "st-ended", interrupted: "st-stalled", error: "st-failed" }[session.status]);
 const activityRank = (session: Session) => session.readOnly ? 4 : ({ waiting: 0, error: 1, starting: 2, running: 2, idle: 2, interrupted: 3, exited: 4 }[session.status]);
-const displayProvider = (provider: string) => provider === "claude" ? "Claude Code" : provider === "codex" ? "Codex" : provider[0].toUpperCase() + provider.slice(1);
 const decode = (value: string) => new TextDecoder().decode(Uint8Array.from(atob(value), char => char.charCodeAt(0)));
 const latestText = (text: string) => text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).at(-1) ?? "";
 const chatText = (snapshot: Awaited<ReturnType<typeof request<"chat.snapshot">>>) => snapshot.items.flatMap(item => item.parts.map(part => typeof part.text === "string" ? part.text : typeof part.data === "string" ? part.data : "")).filter(Boolean).slice(-8).join("\n");
@@ -44,6 +44,7 @@ async function boundedMap<T, R>(values: T[], limit: number, fn: (value: T) => Pr
 }
 
 export function AllTerminalsPage({ data, recentIds, initialScope = "all", highlightedSessionId, onSession, onChanged, historyOpen, onCloseHistory, onOpenHistory, onLocalHistory }: Props) {
+  const displayProvider = (provider: string) => agentName(provider, data.providers);
   const { locale, formatDate } = useTranslation();
   const zh = locale === "zh-CN";
   const copy = (en: string, cn: string) => zh ? cn : en;

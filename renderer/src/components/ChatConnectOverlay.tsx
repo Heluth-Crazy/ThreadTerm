@@ -1,6 +1,6 @@
 import type { ChatConnectionError, ChatConnectionPhase, ProviderId } from "@threadterm/protocol";
 import { connectionStatusText } from "../chatConnection";
-import { AgentIcon } from "./PrototypeIcon";
+import { AgentIcon, useAgentCapabilities } from "./PrototypeIcon";
 import { AgentLoadingMark } from "./AgentLoadingMark";
 
 export function ChatConnectOverlay({
@@ -22,8 +22,9 @@ export function ChatConnectOverlay({
   copy: (en: string, zh: string) => string;
   transportDown?: boolean;
 }) {
+  const capabilities = useAgentCapabilities();
   const failed = phase === "failed" && !transportDown;
-  const status = transportDown ? connectionStatusText(provider, phase, copy, true) : (error?.message || connectionStatusText(provider, phase, copy));
+  const status = transportDown ? connectionStatusText(provider, phase, copy, true, capabilities) : (error?.message || connectionStatusText(provider, phase, copy, false, capabilities));
   const retryable = failed ? error?.retryable !== false && Boolean(onRetry) : false;
   if (variant === "banner") {
     return (

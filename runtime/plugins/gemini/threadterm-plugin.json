@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "gemini",
+  "name": "Gemini",
+  "version": "1.0.0",
+  "publisher": "ThreadTerm",
+  "description": "Gemini CLI integration through Agent Client Protocol.",
+  "contributes": {
+    "agents": [{
+      "id": "gemini",
+      "name": "Gemini",
+      "icon": "icon.svg",
+      "command": "gemini",
+      "args": [],
+      "versionArgs": ["--version"],
+      "terminal": { "args": [], "resumeArgs": ["--resume", "{sessionId}"] },
+      "chat": { "protocol": "acp", "args": ["--acp"] }
+    }]
+  }
+}
