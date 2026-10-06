@@ -8,3 +8,6 @@
 .workspace-file-error { display:flex; flex:none; align-items:center; gap:8px; padding:6px 12px; color:var(--text); background:var(--surface); font-size:12px; }
 .workspace-file-error > span { flex:1; min-width:0; overflow-wrap:anywhere; }
 .workspace-file-error code { color:var(--muted); }
+/* Transient workspace notice: floats over the panes so showing/hiding it never shifts the layout. */
+.runtime-workspace .ws-notice-anchor { position:relative; height:0; z-index:30; }
+.runtime-workspace .ws-notice-anchor > p { position:absolute; top:8px; left:50%; transform:translateX(-50%); width:max-content; max-width:min(560px,calc(100% - 32px)); margin:0; padding:7px 12px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); box-shadow:var(--shadow); color:var(--text); font-size:12px; line-height:1.45; }

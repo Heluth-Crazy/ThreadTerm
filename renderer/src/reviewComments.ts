@@ -1,5 +1,7 @@
 import { canonicalScopePath } from "./projectScope";
 import { formatAgentReference, referencePath } from "./workbench/agentReference";
+import type { PagePick, PageTargetRef } from "@threadterm/protocol";
+import { deletePageShots } from "./bridge";
 
 export type CommentVersion =
   | { kind: "file" }
@@ -8,6 +10,9 @@ export type CommentVersion =
   | { kind: "commit"; commit: string };
 export type CommentScope = { projectId: string; root: string };
 export type FileComment = { id: string; projectId: string; root: string; path: string; version: CommentVersion; side: "old" | "new"; startLine: number; endLine: number; excerpt: string; body: string; createdAt: string };
+export type PageComment = PagePick & CommentScope & { kind: "page"; id: string; body: string; createdAt: string };
+export type ReviewComment = FileComment | PageComment;
+export type DeletePageShots = (ids: string[]) => void | Promise<void>;
 
 export const MAX_FILE_COMMENTS = 200;
 export const MAX_REVIEW_COMMENT_BODY = 4000;
@@ -45,10 +50,29 @@ function valid(value: unknown, scope: CommentScope): value is FileComment {
     && typeof item.excerpt === "string" && typeof item.body === "string" && !!item.body.trim() && item.body.length <= MAX_REVIEW_COMMENT_BODY && typeof item.createdAt === "string" && Number.isFinite(Date.parse(item.createdAt));
 }
 
-export function loadFileComments(scope: CommentScope, store: Store | undefined = storage()): FileComment[] {
-  try { const value: unknown = JSON.parse(store?.getItem(key(scope)) ?? "[]"); return Array.isArray(value) ? value.filter(item => valid(item, scope)).slice(0, MAX_FILE_COMMENTS) : []; } catch { return []; }
+function validPage(value: unknown, scope: CommentScope): value is PageComment {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>, finite = (number: unknown): number is number => typeof number === "number" && Number.isFinite(number), text = (value: unknown, limit: number): value is string => typeof value === "string" && value.length <= limit;
+  const root = typeof item.root === "string" ? item.root : "", url = typeof item.url === "string" ? item.url : "", body = typeof item.body === "string" ? item.body : "";
+  const viewport = item.viewport as Record<string, unknown> | undefined;
+  if (item.kind !== "page" || !text(item.id, 200) || !item.id || item.projectId !== scope.projectId || !root || canonicalScopePath(root) !== canonicalScopePath(scope.root) || !text(url, 2048) || !/^https?:\/\//i.test(url) || !text(item.title, 200) || !viewport || !finite(viewport.width) || !finite(viewport.height) || viewport.width <= 0 || viewport.height <= 0 || viewport.width > 10000 || viewport.height > 10000 || !item.target || typeof item.target !== "object" || !text(body, MAX_REVIEW_COMMENT_BODY) || !body.trim() || typeof item.createdAt !== "string" || !Number.isFinite(Date.parse(item.createdAt))) return false;
+  const target = item.target as Record<string, unknown>, rect = target.rect as Record<string, unknown> | undefined, shot = item.shot as Record<string, unknown> | undefined, source = target.source as Record<string, unknown> | undefined;
+  if (!rect || !finite(rect.x) || !finite(rect.y) || !finite(rect.width) || !finite(rect.height)) return false;
+  if (shot && (!text(shot.id, 200) || !shot.id || !text(shot.path, 2048) || !shot.path || !text(shot.thumbnail, 350000) || !/^data:image\/(?:jpeg|png);base64,/i.test(shot.thumbnail) || !finite(shot.width) || !finite(shot.height) || shot.width <= 0 || shot.height <= 0)) return false;
+  if (source && (!text(source.file, 400) || !source.file || !["react", "vue", "svelte", "attribute"].includes(String(source.framework)) || (source.line !== undefined && (!Number.isSafeInteger(source.line) || (source.line as number) < 1)) || (source.column !== undefined && (!Number.isSafeInteger(source.column) || (source.column as number) < 1)))) return false;
+  if (target.components !== undefined && (!Array.isArray(target.components) || target.components.length > 6 || !target.components.every(item => text(item, 80) && !!item))) return false;
+  if (target.type === "element") return text(target.selector, 500) && !!target.selector && text(target.tag, 80) && !!target.tag && text(target.label, 160) && !!target.label && text(target.html, 600) && !!target.attributes && typeof target.attributes === "object" && !Array.isArray(target.attributes) && Object.entries(target.attributes as Record<string, unknown>).every(([key, value]) => text(key, 80) && text(value, 300));
+  return target.type === "area" && Array.isArray(target.elements) && target.elements.length <= 8 && target.elements.every(item => text(item, 160) && !!item);
 }
-function persist(scope: CommentScope, comments: FileComment[], store: Store | undefined) {
+function load(scope: CommentScope, store: Store | undefined = storage()): ReviewComment[] {
+  try { const value: unknown = JSON.parse(store?.getItem(key(scope)) ?? "[]"); return Array.isArray(value) ? value.filter(item => item && typeof item === "object" && (item as Record<string, unknown>).kind === "page" ? validPage(item, scope) : valid(item, scope)).slice(0, MAX_FILE_COMMENTS) : []; } catch { return []; }
+}
+
+export function loadFileComments(scope: CommentScope, store: Store | undefined = storage()): FileComment[] {
+  return load(scope, store).filter((comment): comment is FileComment => !isPageComment(comment));
+}
+export function loadReviewComments(scope: CommentScope, store: Store | undefined = storage()): ReviewComment[] { return load(scope, store); }
+function persist(scope: CommentScope, comments: ReviewComment[], store: Store | undefined) {
   if (!store) throw new Error("review_comments_unavailable");
   const storageKey = key(scope);
   if (comments.length) store.setItem(storageKey, JSON.stringify(comments)); else store.removeItem(storageKey);
@@ -58,13 +82,34 @@ export function addFileComment(input: Omit<FileComment, "id" | "createdAt" | "ex
   const body = input.body.trim();
   if (!body) throw new Error("review_comment_empty");
   if (body.length > MAX_REVIEW_COMMENT_BODY) throw new Error("review_comment_too_long");
-  const scope = { projectId: input.projectId, root: input.root }, comments = loadFileComments(scope, store);
+  const scope = { projectId: input.projectId, root: input.root }, comments = load(scope, store);
   if (comments.length >= MAX_FILE_COMMENTS) throw new Error("review_comments_full");
   const { text, ...rest } = input, comment: FileComment = { ...rest, body, excerpt: reviewExcerpt(text), id: crypto.randomUUID(), createdAt: new Date().toISOString() }, next = [...comments, comment];
-  persist(scope, next, store); return next;
+  persist(scope, next, store); return next.filter((item): item is FileComment => !isPageComment(item));
 }
 export function removeFileComments(scope: CommentScope, ids: readonly string[], store: Store | undefined = storage()): FileComment[] {
-  const next = loadFileComments(scope, store).filter(comment => !ids.includes(comment.id)); persist(scope, next, store); return next;
+  const next = load(scope, store).filter(comment => isPageComment(comment) || !ids.includes(comment.id)); persist(scope, next, store); return next.filter((item): item is FileComment => !isPageComment(item));
+}
+export function isPageComment(comment: ReviewComment): comment is PageComment { return "kind" in comment && comment.kind === "page"; }
+export function addPageComment(input: CommentScope & PagePick & { body: string }, store: Store | undefined = storage()): ReviewComment[] {
+  const body = input.body.trim();
+  if (!body) throw new Error("review_comment_empty");
+  if (body.length > MAX_REVIEW_COMMENT_BODY) throw new Error("review_comment_too_long");
+  const scope = { projectId: input.projectId, root: input.root }, comments = load(scope, store);
+  if (comments.length >= MAX_FILE_COMMENTS) throw new Error("review_comments_full");
+  const { body: _body, ...pick } = input, comment: PageComment = { ...pick, kind: "page", body, id: crypto.randomUUID(), createdAt: new Date().toISOString() }, next = [...comments, comment];
+  persist(scope, next, store); return next;
+}
+export function removeReviewComments(scope: CommentScope, ids: readonly string[], store: Store | undefined = storage(), deleteShots: DeletePageShots = deletePageShots): ReviewComment[] {
+  const removed = load(scope, store).filter(comment => ids.includes(comment.id)), next = load(scope, store).filter(comment => !ids.includes(comment.id));
+  persist(scope, next, store);
+  const shots = removed.filter(isPageComment).flatMap(comment => comment.shot ? [comment.shot.id] : []);
+  if (shots.length) void deleteShots?.(shots);
+  return next;
+}
+/** Remove comments after their screenshot files have been transferred to a chat composer. */
+export function releaseReviewComments(scope: CommentScope, ids: readonly string[], store: Store | undefined = storage()): ReviewComment[] {
+  const next = load(scope, store).filter(comment => !ids.includes(comment.id)); persist(scope, next, store); return next;
 }
 export function subscribeFileComments(scope: CommentScope, listener: () => void): () => void {
   const storageKey = key(scope), local = (event: Event) => { if ((event as CustomEvent<{ key?: string }>).detail?.key === storageKey) listener(); }, shared = (event: StorageEvent) => { if (event.key === storageKey) listener(); };
@@ -109,4 +154,48 @@ export function formatFileComments(comments: readonly FileComment[], roots: Root
     if (comment.excerpt) output.push(`  > ${comment.excerpt}`);
   }
   return output.join("\n");
+}
+
+export function pageCommentLabel(target: PageComment["target"], zh: boolean): string {
+  if (target.type === "element") return target.label || target.tag;
+  return zh ? `区域 ${Math.round(target.rect.width)}×${Math.round(target.rect.height)}` : `Area ${Math.round(target.rect.width)}×${Math.round(target.rect.height)}`;
+}
+export function pageCommentLocation(url: string): string {
+  try { const parsed = new URL(url); return `${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`; } catch { return url; }
+}
+export function pageTargetRef(target: PageComment["target"]): PageTargetRef {
+  return target.type === "element" ? { selector: target.selector, rect: target.rect } : { rect: target.rect };
+}
+function formatPageComment(comment: PageComment, zh: boolean, reference: string): string[] {
+  const { target } = comment, rect = target.rect, position = `${Math.round(rect.width)}×${Math.round(rect.height)} ${zh ? "位于" : "at"} (${Math.round(rect.x)}, ${Math.round(rect.y)})`, shot = comment.shot ? `${zh ? " · 截图：" : " · Screenshot: "}${comment.shot.path}` : "";
+  if (target.type === "area") {
+    const contains = target.elements.length ? (zh ? `。包含：${target.elements.map(item => `“${item}”`).join("、")}` : `. Contains: ${target.elements.map(item => `"${item}"`).join(", ")}`) : "";
+    return [`- [${reference}] ${pageCommentLabel(target, zh)} ${zh ? "位于" : "at"} (${Math.round(rect.x)}, ${Math.round(rect.y)})${contains}`, `  ${zh ? "截图：" : "Screenshot: "}${comment.shot?.path ?? (zh ? "无" : "none")}`];
+  }
+  const output = [`- [${reference}] ${pageCommentLabel(target, zh)} (${target.selector})`];
+  if (target.source) {
+    const source = `${target.source.file}${target.source.line ? `:${target.source.line}${target.source.column ? `:${target.source.column}` : ""}` : ""}`, components = target.components?.length ? ` (${target.source.framework === "react" ? "React" : target.source.framework === "vue" ? "Vue" : target.source.framework === "svelte" ? "Svelte" : target.source.framework}: ${target.components.join(" › ")})` : "";
+    output.push(`  ${zh ? "来源：" : "Source: "}${source}${components}`);
+  }
+  else if (target.components?.length) output.push(`  ${zh ? "组件：" : "Components: "}${target.components.join(" › ")}`);
+  const attributes = Object.entries(target.attributes).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(" ");
+  if (attributes) output.push(`  ${zh ? "属性：" : "Attributes: "}${attributes}`);
+  output.push(`  HTML: ${target.html}`, `  ${zh ? "边框：" : "Box: "}${position}${shot}`);
+  return output;
+}
+/** Formats mixed comments while preserving the historic formatter byte-for-byte for file-only input. */
+export function formatReviewComments(comments: readonly ReviewComment[], roots: Roots, zh: boolean): string {
+  const files = comments.filter((comment): comment is FileComment => !isPageComment(comment)), pages = comments.filter(isPageComment);
+  if (!pages.length) return formatFileComments(files, roots, zh);
+  const output = files.length ? [formatFileComments(files, roots, zh)] : [];
+  const numbered = pages.map((comment, index) => ({ comment, reference: `P${index + 1}` }));
+  for (const url of new Set(pages.map(comment => comment.url))) {
+    const group = numbered.filter(({ comment }) => comment.url === url), first = group[0].comment;
+    output.push([`${zh ? "页面信息" : "Page context"} — ${url}${first.title ? (zh ? `（“${first.title}”）` : ` (${JSON.stringify(first.title)})`) : ""}${zh ? "，视口" : ", viewport"} ${Math.round(first.viewport.width)}×${Math.round(first.viewport.height)}:`, ...group.flatMap(({ comment, reference }) => formatPageComment(comment, zh, reference))].join("\n"));
+  }
+  output.push([zh ? "页面评论 / 修改要求（对应上面的编号）：" : "Page comments / requested changes (match the references above):", ...numbered.flatMap(({ comment, reference }) => {
+    const [body, ...continuation] = comment.body.split(/\r?\n/);
+    return [`- [${reference}] ${body}`, ...continuation.map(line => `  ${line}`)];
+  })].join("\n"));
+  return output.join("\n\n");
 }

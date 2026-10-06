@@ -2,7 +2,7 @@ import { Select } from "./ui/Select";
 import { useEffect, useRef, useState } from 'react';
 import type { ContentRef, Draft, FileReference, GitStatus, PaneLayout, Session, Snapshot, Worktree } from '@threadterm/protocol';
 import { operationId, request } from '../bridge';
-import { insertChatText, insertSessionText, insertTerminalText } from '../terminalInputTargets';
+import { attachChatImages, insertChatText, insertSessionText, insertTerminalText } from '../terminalInputTargets';
 import { useTranslation } from '../i18n';
 import { addSessionTab } from '../presentation';
 import { displayPath, sameCanonicalScope } from '../projectScope';
@@ -73,6 +73,8 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const fillCommand=(command:string)=>{try{insertTerminalText(commandTarget,command);setCommandNotice(zh?'已填入终端，请检查后按回车执行。':'Inserted into the terminal. Review it before pressing Enter.');}catch(error){setIssue(zh?'请先打开目标会话的终端窗格并取得输入控制权。命令只能包含一行。':String(error));}};
  const [configOpen,setConfigOpen]=useState(false);
  const [issue,setIssue]=useState<string>(),[fullscreen,setFullscreen]=useState(false);
+ const [commentNotice,setCommentNotice]=useState<string>();
+ useEffect(()=>{if(!commentNotice)return;const timer=setTimeout(()=>setCommentNotice(undefined),6000);return()=>clearTimeout(timer);},[commentNotice]);
  const [fileIssue,setFileIssue]=useState<{path:string;message:string}>();
  const saving=useRef(Promise.resolve()),saved=useRef({id:restored?.id,revision:restored?.revision??0});
  const persistedLayout=useRef<PaneLayout|undefined>(undefined);
@@ -217,7 +219,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
  const commentReceivers=[...treeSessions,...data.sessions.filter(candidate=>sessionIdsIn(layout).includes(candidate.id))]
   .filter((candidate,index,list)=>candidate.mode==='chat'&&working(candidate)&&list.findIndex(other=>other.id===candidate.id)===index)
   .sort((left,right)=>Number(right.id===previewSessionId)-Number(left.id===previewSessionId));
- const insertIntoSession=(sessionId:string,text:string)=>new Promise<void>((resolve,reject)=>{
+ const insertIntoSession=(sessionId:string,text:string,images?:string[])=>new Promise<void|number>((resolve,reject)=>{
   const receiver=data.sessions.find(candidate=>candidate.id===sessionId);
   if(!receiver||!working(receiver)||receiver.mode!=='chat'){reject(new Error(zh?'该会话已结束或不是聊天会话，无法接收审查意见。可以先复制。':'That session has ended or is not a Chat, so it cannot take the comments. Copy them instead.'));return;}
   // Open the receiver beside the current session when it is not in the workspace yet, then show it.
@@ -233,7 +235,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   // A freshly opened Chat registers its message box only after it connected: try for up to 10 s.
   const until=Date.now()+10_000;
   const attempt=()=>{
-   try{insertChatText(receiver.id,text);resolve();}
+   try{insertChatText(receiver.id,text);resolve(images?.length?attachChatImages(receiver.id,images):undefined);}
    catch(error){
     const reason=String(error);
     if(/chat_view_unavailable/.test(reason)&&Date.now()<until){setTimeout(attempt,150);return;}
@@ -247,7 +249,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   projectRoot:projectRootOf,
   receivers:commentReceivers.map(candidate=>({id:candidate.id,title:candidate.title,provider:candidate.provider,root:candidate.worktreePath??projectRootOf(candidate.projectId??'')??''})),
   defaultReceiverId:commentReceivers.some(candidate=>candidate.id===previewSessionId)?previewSessionId:undefined,
-  insert:insertIntoSession,
+  insert:insertIntoSession,notice:setCommentNotice,
  };
  const workbenchActions:WorkbenchActions|undefined=workbenchScope&&project?{
   openFile:(file,position)=>void openScopedFile({projectId:project.id,worktreePath:path,path:file,kind:previewKind(file),line:position?.line,column:position?.column}).catch(fail),
@@ -271,7 +273,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   },
  }:undefined;
  const paneWorkbench:PaneWorkbench={
-  sendToAgent,openHistory,comments:commentsHost,
+  sendToAgent,openHistory,comments:commentsHost,commentScope:project&&path?{projectId:project.id,root:path}:undefined,
   // Like review/history tabs: an independent tab placed beside the sessions, one per address.
   openWeb:url=>{if(isWebTabUrl(url))openWorkbenchTab({id:crypto.randomUUID(),kind:'web',url},candidate=>candidate.kind==='web'&&candidate.url===url);},
   openFile:target=>void openScopedFile({...target,kind:previewKind(target.path)}).catch(fail),
@@ -307,6 +309,7 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
   <div className="ws-body"><div className="ws-center">
    <div className="wb-tabrow"><div className="wb-switcher-host" ref={setSwitcherHost}/><div className="workspace-toolbar-host" ref={setToolbarHost}/></div>
    {issue&&<p className="surface-error" role="alert">{issue}</p>}
+   {commentNotice&&<div className="ws-notice-anchor"><p role="status">{commentNotice}</p></div>}
    {fileIssue&&<div className="workspace-file-error" role="alert"><span>{fileIssue.message} <code>{fileIssue.path}</code></span><button type="button" className="btn" onClick={()=>void navigator.clipboard.writeText(fileIssue.path).catch(fail)}>{zh?'复制路径':'Copy path'}</button><button type="button" className="icon-btn" aria-label={zh?'关闭提示':'Dismiss notice'} onClick={()=>setFileIssue(undefined)}><Icon name="close"/></button></div>}
    <div className={`ws-content${inspector?' with-drawer':''}`}>{workbenchScope&&workbenchActions&&<WorkbenchSideBar scope={workbenchScope} actions={workbenchActions} sessions={workspaceSessions} activeSessionId={previewSessionId} activePath={activeFilePath} command={workbenchCommand} switcherHost={switcherHost} zh={zh}/>}<div className="ws-pane" ref={paneArea}>
     <div className="workspace-content-host">

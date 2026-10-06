@@ -1,4 +1,4 @@
-import type { ChatItem, Method, NativeHistoryItem, OutputChunk, ProviderId, RequestParams, RequestResult, RuntimeEvent, Snapshot } from "@threadterm/protocol";
+import type { PageRect, PageTargetRef, ChatItem, Method, NativeHistoryItem, OutputChunk, ProviderId, RequestParams, RequestResult, RuntimeEvent, Snapshot } from "@threadterm/protocol";
 export type { ChatItem, NativeHistoryItem, ProviderId, Snapshot } from "@threadterm/protocol";
 
 function facade() { return window.threadterm; }
@@ -24,3 +24,8 @@ export const windowAction = (action: "minimize" | "maximize" | "close") => facad
 export const outputSubscription = (sessionId: string, cursor: number, listener: (chunk: OutputChunk) => void) => facade().subscribeOutput(sessionId, cursor, listener);
 export const outputText = (chunk: OutputChunk) => new TextDecoder().decode(chunk.data);
 export const operationId = () => crypto.randomUUID();
+export const pickPageTarget = (request: { frameName: string; frameRect: PageRect }) => facade().pickPageTarget(request);
+export const cancelPagePick = (frameName: string) => facade().cancelPagePick(frameName);
+export const markPageTarget = (request: { frameName: string; target?: PageTargetRef; flash?: boolean }) => facade().markPageTarget(request);
+export const readPageShot = (shotId: string) => facade().readPageShot(shotId);
+export const deletePageShots = (shotIds: string[]) => facade().deletePageShots(shotIds);

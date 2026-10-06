@@ -13,5 +13,7 @@ export type FileCommentsHost = {
   defaultReceiverId?: string;
   /** Inserts `text` into the session's message box without sending, opening its tab when needed. Rejects with a
    * readable (already localized) reason. */
-  insert: (sessionId: string, text: string) => Promise<void>;
+  insert: (sessionId: string, text: string, images?: string[]) => Promise<void | number>;
+  /** Shows a transfer outcome after the receiver tab becomes visible. */
+  notice?: (text: string) => void;
 };

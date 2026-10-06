@@ -61,6 +61,7 @@ export type PaneWorkbench = {
   openWeb?:(url:string)=>void;
   /** Comments on any file view, added to a chosen session's message box (fileCommentsHost.ts). */
   comments?:FileCommentsHost;
+  commentScope?:{projectId:string;root:string};
   /** One-shot request to select a commit in a history tab (blame click). */
   historyFocus?:{tabId:string;commit:string;key:string};
 };
@@ -373,7 +374,7 @@ function Pane({
       onOpenFile={workbench?.openFile?path=>workbench.openFile?.({projectId:item.projectId,worktreePath:item.worktreePath,path}):undefined}
       comments={workbench?.comments}/>
   ) : item.kind === "web" ? (
-    <WebPreview url={item.url} zh={zh}/>
+    <WebPreview url={item.url} zh={zh} commentScope={workbench?.commentScope} commentsHost={workbench?.comments}/>
   ) : isFileTab(item) ? (
     <FileWorkspace
       projectId={item.projectId}

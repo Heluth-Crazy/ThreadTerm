@@ -26,7 +26,7 @@ import { isWebTabUrl } from '../workspaceTabs';
 import { registerChatInputTarget } from '../terminalInputTargets';
 import { insertAtCaret } from '../workbench/agentReference';
 import "./chat-network-notice.css";
-import { isChatImage, readClipboardImage, validateChatImages } from '../chatImages';
+import { isChatImage, readClipboardImage, selectChatImageAttachments, validateChatImages } from '../chatImages';
 import './chat-images.css';
 
 function ThinkingPart({ part, streaming, copy, openFile }: { part: ChatPart; streaming: boolean; copy: (en: string, zh: string) => string; openFile?: (reference: FileReference) => void }) {
@@ -375,6 +375,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   const transportGeneration = useRef(0);
   const [ui, setUi] = useState<ChatUiState>({ options: [], commands: [] });
   const [images, setImages] = useState<string[]>([]);
+  const imagesRef=useRef(images); imagesRef.current=images;
   const [imageReading, setImageReading] = useState(false);
   const imageReadingRef = useRef(false);
   const imageDraftKey = `threadterm.compose.images.${session.id}`;
@@ -424,9 +425,11 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
   }
   const changeTextRef = useRef(changeText);
   changeTextRef.current = changeText;
+  const attachImagesRef=useRef<(incoming:string[])=>number>(()=>0);
   // Editor/file "Send to agent" inserts a reference at the caret; it never submits.
   useEffect(() => registerChatInputTarget(session.id, {
     visible: () => Boolean(composeRef.current && !composeRef.current.disabled && composeRef.current.getClientRects().length > 0),
+    attachImages: incoming => attachImagesRef.current(incoming),
     insert: (reference) => {
       const area = composeRef.current;
       const next = insertAtCaret(currentText.current, area?.selectionStart ?? currentText.current.length, reference);
@@ -694,6 +697,18 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       setError(copy('Image draft could not be saved. Remove an image or free device storage and paste again.', '无法保存图片草稿。请移除图片或释放设备存储空间后重新粘贴。'));
     }
   }
+  attachImagesRef.current=(incoming:string[])=>{
+    if(!writable||busy||imageReadingRef.current||!composeRef.current||composeRef.current.disabled) return 0;
+    const accepted=selectChatImageAttachments(imagesRef.current,incoming,Boolean(ui.inputCapabilities?.images));
+    if(!accepted.length) return 0;
+    const next=[...imagesRef.current,...accepted];
+    try {
+      localStorage.setItem(imageDraftKey,JSON.stringify(validateChatImages(next)));
+      imagesRef.current=next; setImages(next); return accepted.length;
+    } catch {
+      setError(copy('Image draft could not be saved. Screenshots are available by their file paths.', '无法保存图片草稿。截图可通过文件路径读取。')); return 0;
+    }
+  };
   async function pasteImages(event: ClipboardEvent<HTMLTextAreaElement>) {
     const files = Array.from(event.clipboardData.files).filter(file => file.type.startsWith('image/'));
     if (!files.length || !ui.inputCapabilities?.images) return;

@@ -1,4 +1,4 @@
-type Target={visible:()=>boolean;insert:(text:string)=>void};
+type Target={visible:()=>boolean;insert:(text:string)=>void;attachImages?:(images:string[])=>number};
 const targets=new Map<string,Set<Target>>();
 const chatTargets=new Map<string,Set<Target>>();
 const register=(registry:Map<string,Set<Target>>,sessionId:string,target:Target)=>{
@@ -31,4 +31,9 @@ export function insertSessionText(sessionId:string,text:string){
   const chat=visibleTarget(chatTargets,sessionId);
   if(chat){chat.insert(text);return;}
   insertTerminalText(sessionId,text);
+}
+/** Attaches images to the same visible Chat used for text insertion; unsupported receivers use paths only. */
+export function attachChatImages(sessionId:string,images:string[]):number {
+  const chat=visibleTarget(chatTargets,sessionId);
+  return chat?.attachImages?.(images)??0;
 }
