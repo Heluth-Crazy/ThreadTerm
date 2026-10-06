@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { openExternal, request } from '../bridge';
+import type { FileCommentsHost } from '../fileCommentsHost';
+import type { CommentScope } from '../reviewComments';
+import { PageCommentControls, PageCommentForm, usePageCommentPreview } from './PageComments';
+import { PendingComments, useReviewComments } from './FileComments';
 
 export function withoutYamlFrontMatter(content:string):string {
   const match=/^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/.exec(content);
@@ -23,14 +27,17 @@ export function relativeAsset(documentPath:string,source:string):string|undefine
   }
   return parts.join('/');
 }
-export function FilePreview({projectId,worktreePath,path,content,savedContent,image,embedded=false}:{projectId:string;worktreePath?:string;path:string;content:string;savedContent:string;image?:{mime:string;data:string};embedded?:boolean}) {
+export function FilePreview({projectId,worktreePath,path,content,savedContent,image,embedded=false,commentScope,commentsHost}:{projectId:string;worktreePath?:string;path:string;content:string;savedContent:string;image?:{mime:string;data:string};embedded?:boolean;commentScope?:CommentScope;commentsHost?:FileCommentsHost}) {
   const [html,setHtml]=useState('');const [issue,setIssue]=useState<string>();const [loadedImage,setLoadedImage]=useState<{mime:string;data:string}>();
   const [address,setAddress]=useState('');const [liveUrl,setLiveUrl]=useState<string>();
   const markdown=/\.mdx?$/i.test(path),staticHtml=/\.html?$/i.test(path);
   const imageFile=/\.(?:png|jpe?g|gif|webp)$/i.test(path);
   const zh=document.documentElement.lang==='zh-CN';
+  const pagePreview=usePageCommentPreview(liveUrl??'',commentScope,commentsHost,zh);
+  const comments=useReviewComments(commentScope);
   useEffect(()=>{setLoadedImage(undefined);},[projectId,worktreePath,path]);
   useEffect(()=>{
+    pagePreview.cancel();
     let active=true;setIssue(undefined);setLiveUrl(undefined);
     void (async()=>{
       const markdownContent=withoutYamlFrontMatter(content);
@@ -54,7 +61,7 @@ export function FilePreview({projectId,worktreePath,path,content,savedContent,im
     return()=>{active=false;};
   },[projectId,worktreePath,path,markdown,content,savedContent]);
   useEffect(()=>{if(!imageFile||image)return;let active=true;void request('filesystem.image',{projectId,worktreePath,path}).then(asset=>{if(active)setLoadedImage(asset);}).catch(error=>{if(active)setIssue(error instanceof Error?error.message:String(error));});return()=>{active=false;};},[projectId,worktreePath,path,imageFile,image]);
-  function previewAddress(){try{const url=new URL(address);if(!['http:','https:'].includes(url.protocol))throw Error('Use an HTTP or HTTPS address.');setLiveUrl(url.href);setIssue(undefined);}catch(error){setIssue(String(error));}}
+  function previewAddress(){try{const url=new URL(address);if(!['http:','https:'].includes(url.protocol))throw Error();pagePreview.cancel();setLiveUrl(url.href);setIssue(undefined);}catch{setIssue(zh?'请输入 HTTP 或 HTTPS 地址。':'Use an HTTP or HTTPS address.');}}
   const isImage=Boolean(image)||imageFile;const asset=isImage?(image??loadedImage):undefined;
-  return <section className="file-preview">{asset?<div className="file-image-preview"><img alt={path.split(/[\\/]/).at(-1)??'Image'} src={`data:${asset.mime};base64,${asset.data}`}/></div>:markdown?<div className="markdown-preview tt-preview-markdown" onClick={event=>{const anchor=(event.target as Element).closest('a');if(!anchor)return;const href=anchor.getAttribute('href');if(href&&/^https?:\/\//i.test(href)){event.preventDefault();void openExternal(href).catch(error=>setIssue(String(error)));}}} dangerouslySetInnerHTML={{__html:html}}/>:staticHtml?<><p>{zh?'静态 HTML 显示已保存的文件。':'Static HTML displays the saved file.'}</p><iframe className="tt-preview-frame" title="Saved HTML preview" sandbox="" srcDoc={`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'"></head><body>${html}</body></html>`}/></>:<p className="tt-editor-state">{zh?'此文件不支持文档预览。':'Document preview is unavailable for this file type.'}</p>}{!embedded&&!asset&&!isImage&&<div className="preview-address"><input aria-label={zh?'开发服务地址':'Development preview address'} placeholder="http://localhost:3000" value={address} onChange={event=>setAddress(event.target.value)}/><button onClick={previewAddress}>{zh?'预览地址':'Preview address'}</button></div>}{liveUrl&&<iframe className="tt-preview-frame" title="Development service preview" sandbox="allow-scripts allow-forms" src={liveUrl}/>} {issue&&<p role="alert">{issue}</p>}</section>;
+  return <section className="file-preview">{asset?<div className="file-image-preview"><img alt={path.split(/[\\/]/).at(-1)??'Image'} src={`data:${asset.mime};base64,${asset.data}`}/></div>:markdown?<div className="markdown-preview tt-preview-markdown" onClick={event=>{const anchor=(event.target as Element).closest('a');if(!anchor)return;const href=anchor.getAttribute('href');if(href&&/^https?:\/\//i.test(href)){event.preventDefault();void openExternal(href).catch(error=>setIssue(String(error)));}}} dangerouslySetInnerHTML={{__html:html}}/>:staticHtml?<><p>{zh?'静态 HTML 显示已保存的文件。':'Static HTML displays the saved file.'}</p><iframe className="tt-preview-frame" title="Saved HTML preview" sandbox="" srcDoc={`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'"></head><body>${html}</body></html>`}/></>:<p className="tt-editor-state">{zh?'此文件不支持文档预览。':'Document preview is unavailable for this file type.'}</p>}{(!embedded||Boolean(commentScope&&commentsHost))&&!asset&&!isImage&&<div className="preview-address"><input aria-label={zh?'开发服务地址':'Development preview address'} placeholder="http://localhost:3000" value={address} onChange={event=>setAddress(event.target.value)}/><button type="button" onClick={previewAddress}>{zh?'预览地址':'Preview address'}</button>{liveUrl&&<PageCommentControls preview={pagePreview} zh={zh}/>}</div>}{liveUrl&&<iframe ref={pagePreview.iframe} name={pagePreview.frameName} className="tt-preview-frame" title={zh?'开发服务预览':'Development service preview'} sandbox="allow-scripts allow-forms" src={liveUrl} onLoad={()=>{if(pagePreview.pick||pagePreview.picking)pagePreview.cancel();}}/>}<PageCommentForm preview={pagePreview} scope={commentScope} zh={zh}/>{commentScope&&commentsHost&&<PendingComments scope={commentScope} host={commentsHost} comments={comments} zh={zh}/>} {issue&&<p role="alert">{issue}</p>}{pagePreview.issue&&<p className="wb-issue" role="alert">{pagePreview.issue}</p>}</section>;
 }

@@ -1006,6 +1006,8 @@ function FileWorkspaceInstance({
                 content={text}
                 image={image}
                 embedded={embedded}
+                commentScope={commentScope}
+                commentsHost={commentsHost}
               />
             ) : (
               <>

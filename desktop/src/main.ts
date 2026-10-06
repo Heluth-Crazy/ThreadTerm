@@ -12,6 +12,7 @@ import { inboxNotificationCopy, notificationLocale, terminalNotificationCopy, te
 import { ignoreBrokenStdio, isBrokenPipeError } from './stdioGuards.js';
 import { resolveWindowChrome } from './windowChrome.js';
 import { terminalWindowArguments } from './terminalEnvironment.js';
+import { registerPageComments } from './pageComments.js';
 
 ignoreBrokenStdio();
 process.on('uncaughtException', (error) => {
@@ -273,6 +274,7 @@ async function notifyNative(kind: NotificationKind, copy: (locale: NotificationL
 }
 
 function registerIpc(): void {
+  registerPageComments(assertTrustedRenderer);
   ipcMain.handle('threadterm:request', async (event, method: unknown, params: unknown) => {
     assertTrustedRenderer(event);
     validateRequest(method, params);

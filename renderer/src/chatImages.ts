@@ -22,3 +22,15 @@ export function readClipboardImage(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
+/** Takes as many supported screenshots as fit the composer's existing count and data-URL byte budget. */
+export function selectChatImageAttachments(existing:readonly string[], incoming:readonly string[], supported:boolean):string[] {
+  if(!supported) return [];
+  const accepted:string[]=[];
+  let bytes=existing.reduce((size,image)=>size+image.length,0);
+  for(const image of incoming) {
+    if(existing.length+accepted.length>=MAX_CHAT_IMAGES) break;
+    if(!isChatImage(image)||bytes+image.length>MAX_CHAT_IMAGE_BYTES) continue;
+    accepted.push(image); bytes+=image.length;
+  }
+  return accepted;
+}
