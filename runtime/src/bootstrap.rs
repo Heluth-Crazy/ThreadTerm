@@ -23,6 +23,10 @@ use windows_sys::Win32::{
 };
 const GATE_ENV: &str = "THREADTERM_V3_BOOTSTRAP_GATE";
 const COMMAND_ENV: &str = "THREADTERM_V3_BOOTSTRAP_COMMAND";
+const ENV_REF_PREFIX: &str = "THREADTERM_V3_BOOTSTRAP_ENV_";
+#[cfg(test)]
+#[path = "bootstrap_test_support.rs"]
+pub(crate) mod test_support;
 #[derive(Serialize, Deserialize)]
 struct Launch {
     program: String,
@@ -30,6 +34,10 @@ struct Launch {
     cwd: String,
     #[serde(default)]
     hidden: bool,
+    #[serde(default)]
+    env_refs: Vec<(String, String)>,
+    #[serde(default)]
+    payload_ref: Option<String>,
 }
 
 pub struct BootstrapGate {
@@ -82,8 +90,12 @@ impl BootstrapGate {
                 args: args.to_vec(),
                 cwd: cwd.to_owned(),
                 hidden: false,
+                env_refs: Vec::new(),
+                payload_ref: None,
             })?,
         );
+        #[cfg(test)]
+        test_support::prepare_initial_pty(&mut command);
         Ok(command)
     }
     pub fn service_command(
@@ -109,9 +121,13 @@ impl BootstrapGate {
                 args: args.to_vec(),
                 cwd: cwd.to_owned(),
                 hidden: true,
+                env_refs: Vec::new(),
+                payload_ref: None,
             })?,
         );
         command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        #[cfg(test)]
+        test_support::prepare_service(&mut command);
         Ok(command)
     }
     /// Only the exact trusted child PID may receive the release byte.
@@ -154,6 +170,58 @@ impl Drop for BootstrapGate {
 unsafe extern "system" fn keep_bootstrap_alive(signal: u32) -> i32 {
     i32::from(signal == CTRL_C_EVENT || signal == CTRL_BREAK_EVENT)
 }
+
+fn direct_cmd_payload<'a>(program: &str, args: &'a [String]) -> Option<(&'a [String], &'a str)> {
+    let is_cmd = program
+        .rsplit(['\\', '/'])
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case("cmd.exe"));
+    let command_index = args
+        .iter()
+        .position(|arg| arg.eq_ignore_ascii_case("/c"))?;
+    if !is_cmd
+        || !args[..command_index]
+            .iter()
+            .any(|arg| arg.eq_ignore_ascii_case("/s"))
+        || command_index + 2 != args.len()
+    {
+        return None;
+    }
+    Some((&args[..=command_index], &args[command_index + 1]))
+}
+
+pub(crate) fn application_environment(
+    command: &mut CommandBuilder,
+    overrides: &[(String, String)],
+) -> Result<()> {
+    let config = command
+        .get_env(COMMAND_ENV)
+        .and_then(|value| value.to_str())
+        .context("missing PTY bootstrap command")?;
+    let mut launch: Launch = serde_json::from_str(config)?;
+    launch.env_refs.clear();
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    if launch.payload_ref.is_none() && direct_cmd_payload(&launch.program, &launch.args).is_some() {
+        let reference = format!("{ENV_REF_PREFIX}{nonce}_payload");
+        if let Some(payload) = launch.args.last_mut() {
+            command.env(&reference, &*payload);
+            payload.clear();
+            launch.payload_ref = Some(reference);
+        }
+    }
+    for (index, (name, value)) in overrides.iter().enumerate() {
+        let reference = format!("{ENV_REF_PREFIX}{nonce}_{index}");
+        command.env(&reference, value);
+        launch.env_refs.push((name.clone(), reference));
+    }
+    command.env(COMMAND_ENV, serde_json::to_string(&launch)?);
+    Ok(())
+}
+
+pub(crate) fn is_control_environment_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case(GATE_ENV) || name.eq_ignore_ascii_case(COMMAND_ENV)
+}
+
 pub fn run() -> Result<i32> {
     let gate = std::env::var(GATE_ENV).context("missing PTY bootstrap gate")?;
     if !gate.starts_with(r"\\.\pipe\threadterm-v3-bootstrap-") {
@@ -163,7 +231,24 @@ pub fn run() -> Result<i32> {
     if config.len() > 128 * 1024 {
         bail!("PTY bootstrap command is too large")
     }
-    let config: Launch = serde_json::from_str(&config)?;
+    let mut config: Launch = serde_json::from_str(&config)?;
+    if let Some(reference) = &config.payload_ref {
+        if !reference.starts_with(ENV_REF_PREFIX) { bail!("invalid PTY bootstrap payload reference"); }
+        let payload = std::env::var(reference).context("missing PTY bootstrap payload carrier")?;
+        *config.args.last_mut().context("missing PTY bootstrap payload argument")? = payload;
+    }
+    let environment: Vec<_> = config
+        .env_refs
+        .iter()
+        .map(|(name, reference)| {
+            if !reference.starts_with(ENV_REF_PREFIX) {
+                bail!("invalid PTY bootstrap environment reference")
+            }
+            let value = std::env::var(reference)
+                .with_context(|| format!("missing PTY bootstrap environment value for {name}"))?;
+            Ok((name.clone(), reference.clone(), value))
+        })
+        .collect::<Result<_>>()?;
     let mut pipe = OpenOptions::new()
         .read(true)
         .open(&gate)
@@ -197,8 +282,16 @@ pub fn run() -> Result<i32> {
                 command
             }
             None => {
+                use std::os::windows::process::CommandExt;
                 let mut command = std::process::Command::new(&config.program);
-                command.args(&config.args);
+                if let Some((flags, payload)) = direct_cmd_payload(&config.program, &config.args) {
+                    command.args(flags);
+                    // `/S` strips these outer quotes before cmd.exe parses the
+                    // command, leaving the payload's own quotes unchanged.
+                    command.raw_arg(format!(" \"{payload}\""));
+                } else {
+                    command.args(&config.args);
+                }
                 command
             }
         };
@@ -206,6 +299,21 @@ pub fn run() -> Result<i32> {
         .current_dir(&config.cwd)
         .env_remove(GATE_ENV)
         .env_remove(COMMAND_ENV);
+    if let Some(reference) = &config.payload_ref { command.env_remove(reference); }
+    for (_, reference, _) in &environment {
+        command.env_remove(reference);
+    }
+    for (name, _) in std::env::vars_os() {
+        if name
+            .to_str()
+            .is_some_and(|name| environment.iter().any(|(key, _, _)| key.eq_ignore_ascii_case(name)))
+        {
+            command.env_remove(name);
+        }
+    }
+    for (name, _, value) in environment {
+        command.env(name, value);
+    }
     if config.hidden {
         use std::os::windows::process::CommandExt;
         command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
@@ -220,6 +328,7 @@ mod tests {
     #[test]
     fn bootstrap_helper() {
         if std::env::var_os(super::GATE_ENV).is_some() {
+            super::test_support::restore_term();
             match super::run() {
                 Ok(code) => std::process::exit(code),
                 Err(error) => {
@@ -235,6 +344,7 @@ mod tests {
 mod lifetime_tests {
     use super::*;
     use crate::job::SessionJob;
+    use std::io::Read;
     use windows_sys::Win32::{
         Foundation::WAIT_OBJECT_0,
         System::Threading::{OpenProcess, WaitForSingleObject},
@@ -302,5 +412,51 @@ mod lifetime_tests {
             "Job close left bootstrap or immediate descendants alive"
         );
         let _ = child.wait();
+    }
+
+    #[test]
+    fn direct_cmd_payload_survives_the_real_bootstrap_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("快速 启动");
+        std::fs::create_dir(&cwd).unwrap();
+        let payload = "set PERCENT=VALUE& echo __QT_CWD__%CD% & echo __QT_QUOTED__\"a b\" & echo __QT_PERCENT__100%PERCENT%|findstr __QT_PERCENT__";
+        let args = vec![
+            "/D".to_owned(),
+            "/S".to_owned(),
+            "/C".to_owned(),
+            payload.to_owned(),
+        ];
+        let gate = BootstrapGate::new().unwrap();
+        let command = gate.command("cmd.exe", &args, cwd.to_str().unwrap()).unwrap();
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let mut child = pair.slave.spawn_command(command).unwrap();
+        let pid = child.process_id().unwrap();
+        gate.release(pid).unwrap();
+        assert_eq!(child.wait().unwrap().exit_code(), 0);
+        drop(pair.slave);
+        drop(pair.master);
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).unwrap();
+        let output = String::from_utf8_lossy(&output);
+        assert!(
+            output.contains(&format!("__QT_CWD__{}", cwd.display())),
+            "CJK cwd was changed: {output:?}"
+        );
+        assert!(
+            output.contains("__QT_QUOTED__\"a b\""),
+            "quotes reached cmd with extra escaping: {output:?}"
+        );
+        assert!(
+            output.contains("__QT_PERCENT__100VALUE"),
+            "&, |, or %VAR% did not survive: {output:?}"
+        );
     }
 }

@@ -21,6 +21,7 @@ pub mod leases;
 pub mod output;
 pub mod project_catalog;
 pub mod providers;
+pub mod quick_launch;
 pub mod plugins;
 mod plugin_services;
 pub mod pty;
@@ -39,8 +40,8 @@ pub mod windows_security;
 pub mod workspace_services;
 
 pub const PROTOCOL_VERSION: u32 = 1;
-/// Semantic Chat contract (choiceId approvals and connection status). Wire HMAC still uses PROTOCOL_VERSION.
-pub const PROTOCOL_CONTRACT: u32 = 3;
+/// Semantic contract for Chat plus Quick Launch. Wire HMAC still uses PROTOCOL_VERSION.
+pub const PROTOCOL_CONTRACT: u32 = 4;
 pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod local_client;

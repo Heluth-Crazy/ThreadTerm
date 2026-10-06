@@ -445,6 +445,7 @@ impl RuntimeService {
         }
         let outcome = (|| -> Result<Value> {
             crate::plugin_services::validate(&request.method, &request.params)?;
+            crate::quick_launch::validate(&request.method, &request.params)?;
             if request.method == "data.relocation.prepare"
                 && self.remote.get().is_some_and(|remote| remote.is_enabled())
             {
@@ -468,6 +469,9 @@ impl RuntimeService {
                 if let Some(result) = remote.dispatch(&request.method, &request.params)? {
                     return Ok(result);
                 }
+            }
+            if crate::quick_launch::handles(&request.method) {
+                return crate::quick_launch::dispatch(&self.db, &self.pty, &request.method, &request.params);
             }
             if let Some(result) =
                 crate::retry_scheduler::dispatch(&self.db, &request.method, &request.params)?
@@ -660,6 +664,9 @@ impl RuntimeService {
                         return Ok(Value::Null);
                     }
                     crate::retry_scheduler::cancel_session(&self.db, &p.session_id)?;
+                    if session.run.is_some() {
+                        crate::quick_launch::request_stop(&self.db, &p.session_id)?;
+                    }
                     let cancelled_pending = {
                         let mut gate = self
                             .deferred_launch
@@ -1641,6 +1648,9 @@ impl RuntimeService {
         result
     }
     fn rerun(&self, params: &Value) -> Result<Value> {
+        if let Some(result) = crate::quick_launch::rerun(&self.db, &self.pty, params)? {
+            return Ok(result);
+        }
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Rerun {
@@ -1806,6 +1816,7 @@ fn map_error(message: &str) -> RpcError {
         "native_identity_conflict" => "native_identity_conflict",
         "operation_outcome_unknown" => "operation_outcome_unknown",
         value if crate::delegation::ERROR_CODES.contains(&value) => value,
+        value if crate::quick_launch::ERROR_CODES.contains(&value) => value,
         _ => "invalid_request",
     };
     error(code, message)

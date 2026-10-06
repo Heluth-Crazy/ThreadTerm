@@ -126,6 +126,7 @@ impl Database {
                 [Uuid::new_v4().to_string()],
             )?;
         }
+        crate::quick_launch::initialize_connection(&connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
             path: path.to_owned(),
@@ -762,7 +763,7 @@ impl Database {
                 return Err(anyhow!("invalid_history_transcript"));
             }
             let timestamp=now();
-            let session=Session { id:Uuid::new_v4().to_string(), project_id:request.project_id.map(str::to_owned), worktree_path:Some(request.cwd.to_owned()), title:request.title.unwrap_or(request.provider).to_owned(), provider:request.provider.to_owned(), mode:request.mode.to_owned(), status:"idle".into(), created_at:timestamp.clone(), updated_at:timestamp, native_id:Some(request.native_id.to_owned()), exit_code:None, cols:None, rows:None, followed:false, read_only:true, activity:None, delegation:None, organization:SessionOrganization::default() };
+            let session=Session { id:Uuid::new_v4().to_string(), project_id:request.project_id.map(str::to_owned), worktree_path:Some(request.cwd.to_owned()), title:request.title.unwrap_or(request.provider).to_owned(), provider:request.provider.to_owned(), mode:request.mode.to_owned(), status:"idle".into(), created_at:timestamp.clone(), updated_at:timestamp, native_id:Some(request.native_id.to_owned()), exit_code:None, cols:None, rows:None, followed:false, read_only:true, activity:None, delegation:None, run:None, organization:SessionOrganization::default() };
             tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)",params![session.id,session.project_id,session.worktree_path,session.title,session.provider,session.mode,session.status,session.created_at,session.updated_at,session.native_id,session.exit_code,session.followed])?;
             tx.execute(
                 "INSERT INTO session_launch_configs(session_id,revision,provider,mode,cwd,project_id,title,executable,args_json,source_session_id) VALUES(?,1,?,?,?,?,?,NULL,'[]',NULL)",
@@ -928,6 +929,7 @@ impl Database {
             read_only: false,
             activity: None,
             delegation: None,
+            run: None,
             organization: SessionOrganization::default(),
         };
         tx.execute("INSERT INTO sessions(id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", params![session.id,session.project_id,session.worktree_path,session.title,session.provider,session.mode,session.status,session.created_at,session.updated_at,session.native_id,session.exit_code,session.followed])?;
@@ -1064,7 +1066,7 @@ impl Database {
             let data=json!({"sessionId":id,"status":status,"previousStatus":previous,"exitCode":exit_code});
             emit(tx,"session.status",data.clone())?;
             emit(tx,"state.changed",data)?;
-            if mode=="terminal"&&status=="exited"&&previous!="exited" {
+            if mode=="terminal"&&status=="exited"&&previous!="exited"&&!crate::quick_launch::stop_requested_tx(tx,id)? {
                 let kind=match exit_code{Some(0)=>"completed",Some(_)=>"failed",None=>"interrupted"};
                 tx.execute("INSERT OR IGNORE INTO inbox(id,session_id,kind,data,resolved,created_at) VALUES (?,?,?,?,1,?)",params![format!("{id}:exit"),id,kind,json!({"exitCode":exit_code}).to_string(),now()])?;
             }
@@ -1475,7 +1477,7 @@ fn collect_projects(conn: &Connection) -> Result<Vec<Project>> {
     Ok(projects)
 }
 fn collect_sessions(conn: &Connection) -> Result<Vec<Session>> {
-    let mut stmt=conn.prepare("SELECT id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only,cols,rows FROM sessions ORDER BY created_at")?;
+    let mut stmt=conn.prepare("SELECT sessions.id,sessions.project_id,sessions.worktree_path,sessions.title,sessions.provider,sessions.mode,sessions.status,sessions.created_at,sessions.updated_at,sessions.native_id,sessions.exit_code,sessions.followed,sessions.read_only,sessions.cols,sessions.rows,quick_launch_runs.snapshot_json,quick_launch_runs.url,quick_launch_runs.url_source,quick_launch_runs.stop_requested FROM sessions LEFT JOIN quick_launch_runs ON quick_launch_runs.session_id=sessions.id ORDER BY sessions.created_at")?;
     let rows = stmt.query_map([], |r| {
         Ok(Session {
             id: r.get(0)?,
@@ -1495,6 +1497,7 @@ fn collect_sessions(conn: &Connection) -> Result<Vec<Session>> {
             rows: r.get(14)?,
             activity: None,
             delegation: None,
+            run: crate::quick_launch::run_from_row(r, 15)?,
             organization: SessionOrganization::default(),
         })
     })?;
@@ -1680,7 +1683,7 @@ pub(crate) fn set_session_activity_tx(
 }
 
 fn read_session(conn: &Connection, id: &str) -> Result<Session> {
-    let mut session = conn.query_row("SELECT id,project_id,worktree_path,title,provider,mode,status,created_at,updated_at,native_id,exit_code,followed,read_only,cols,rows FROM sessions WHERE id=?",[id],|r|Ok(Session{id:r.get(0)?,project_id:r.get(1)?,worktree_path:r.get(2)?,title:r.get(3)?,provider:r.get(4)?,mode:r.get(5)?,status:r.get(6)?,created_at:r.get(7)?,updated_at:r.get(8)?,native_id:r.get(9)?,exit_code:r.get(10)?,followed:r.get(11)?,read_only:r.get(12)?,cols:r.get(13)?,rows:r.get(14)?,activity:None,delegation:None,organization:SessionOrganization::default()}))?;
+    let mut session = conn.query_row("SELECT sessions.id,sessions.project_id,sessions.worktree_path,sessions.title,sessions.provider,sessions.mode,sessions.status,sessions.created_at,sessions.updated_at,sessions.native_id,sessions.exit_code,sessions.followed,sessions.read_only,sessions.cols,sessions.rows,quick_launch_runs.snapshot_json,quick_launch_runs.url,quick_launch_runs.url_source,quick_launch_runs.stop_requested FROM sessions LEFT JOIN quick_launch_runs ON quick_launch_runs.session_id=sessions.id WHERE sessions.id=?",[id],|r|Ok(Session{id:r.get(0)?,project_id:r.get(1)?,worktree_path:r.get(2)?,title:r.get(3)?,provider:r.get(4)?,mode:r.get(5)?,status:r.get(6)?,created_at:r.get(7)?,updated_at:r.get(8)?,native_id:r.get(9)?,exit_code:r.get(10)?,followed:r.get(11)?,read_only:r.get(12)?,cols:r.get(13)?,rows:r.get(14)?,activity:None,delegation:None,run:crate::quick_launch::run_from_row(r,15)?,organization:SessionOrganization::default()}))?;
     session.organization = session_organization(conn, id)?;
     session.activity = session_activity(conn, id)?;
     session.delegation = session_delegation(conn, id)?;

@@ -40,6 +40,8 @@ pub struct Session {
     pub activity: Option<SessionActivity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation: Option<SessionDelegation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<crate::quick_launch::SessionRun>,
     #[serde(flatten, default)]
     pub organization: SessionOrganization,
 }

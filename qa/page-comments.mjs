@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { _electron as electron } from '@playwright/test';
+import { electron } from './lib/desktop1.mjs'; // opens on virtual Desktop 1 without focus
 import { build as esbuild } from 'esbuild';
 import { build as viteBuild } from 'vite';
 
