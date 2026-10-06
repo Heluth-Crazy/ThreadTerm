@@ -206,3 +206,23 @@ test('agent ids are checked for shape only; the runtime registry decides which a
  for(const provider of ['','Echo','1agent','a','x'.repeat(40),'../codex']) assert.throws(()=>validateRequest('session.create',{cwd:'C:\repo',provider,mode:'chat',operationId:'o'}),/Invalid provider/);
  assert.throws(()=>validateRequest('session.create',{cwd:'C:\repo',provider:7,mode:'chat',operationId:'o'}),/protocol schema/);
 });
+
+test('quick launch commands are bounded: relative cwd inside the root, known shells, unique env names, revisioned updates',()=>{
+ const base={projectId:'p',name:'Web dev server',command:'npm run dev',shell:'cmd',cwd:'',kind:'service',env:[],operationId:'o'};
+ validateRequest('quickLaunch.save',base);
+ validateRequest('quickLaunch.save',{...base,cwd:'packages\\web',shell:'pwsh',kind:'task',env:[{name:'JAVA_HOME',value:'C:\\jdk'},{name:'Path',value:'C:\\tools;%PATH%'}],previewUrl:'http://localhost:5173/'});
+ validateRequest('quickLaunch.save',{...base,id:'c',expectedRevision:2,command:'Write-Host "a b"\nnpm test'});
+ for(const cwd of ['..','a/../..','..\\x','C:\\repo','/abs','\\\\server\\share','a|b']) assert.throws(()=>validateRequest('quickLaunch.save',{...base,cwd}),/Invalid working directory/);
+ // Enums: the generated schema rejects these first; the explicit checks back it up.
+ assert.throws(()=>validateRequest('quickLaunch.save',{...base,shell:'bash'}),/Invalid shell|protocol schema/);
+ assert.throws(()=>validateRequest('quickLaunch.save',{...base,kind:'daemon'}),/Invalid command kind|protocol schema/);
+ assert.throws(()=>validateRequest('quickLaunch.save',{...base,name:'   '}),/Invalid command name/);
+ assert.throws(()=>validateRequest('quickLaunch.save',{...base,command:'x'.repeat(8001)}),/Invalid command text/);
+ assert.throws(()=>validateRequest('quickLaunch.save',{...base,env:[{name:'A',value:'1'},{name:'a',value:'2'}]}),/Invalid environment overrides/);
+ assert.throws(()=>validateRequest('quickLaunch.save',{...base,env:[{name:'1BAD',value:''}]}),/Invalid environment overrides/);
+ assert.throws(()=>validateRequest('quickLaunch.save',{...base,previewUrl:'file:///C:/x.html'}),/Invalid preview address/);
+ assert.throws(()=>validateRequest('quickLaunch.save',{...base,id:'c'}),/Invalid command revision/);
+ assert.throws(()=>validateRequest('quickLaunch.delete',{id:'c',expectedRevision:0,operationId:'o'}),/Invalid command revision/);
+ validateRequest('quickLaunch.run',{commandId:'c',cwd:'C:\\repo',operationId:'o'});
+ validateResult('quickLaunch.run',{existing:false,session:{id:'s',title:'Web dev server',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'c',name:'Web dev server',kind:'service',shell:'cmd',url:'http://localhost:5174/',urlSource:'output'}}});
+});

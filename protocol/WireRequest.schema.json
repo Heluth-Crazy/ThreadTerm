@@ -1353,6 +1353,143 @@
       ],
       "additionalProperties": false
     },
+    "RequestParams<\"quickLaunch.list\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"quickLaunch.save\">": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "shell": {
+          "$ref": "#/definitions/QuickLaunchShell"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/QuickLaunchKind"
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QuickLaunchEnvVar"
+          }
+        },
+        "previewUrl": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId",
+        "name",
+        "command",
+        "shell",
+        "cwd",
+        "kind",
+        "env",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "QuickLaunchShell": {
+      "type": "string",
+      "enum": [
+        "cmd",
+        "powershell",
+        "pwsh"
+      ],
+      "description": "Quick Launch: per-project saved commands, each run as an ordinary managed terminal session in a chosen worktree. One active run per command and worktree root (the runtime admits atomically and returns the existing run)."
+    },
+    "QuickLaunchKind": {
+      "type": "string",
+      "enum": [
+        "service",
+        "task"
+      ],
+      "description": "`service` keeps running (dev server, API); `task` is expected to exit (build, test). Only changes wording/defaults."
+    },
+    "QuickLaunchEnvVar": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"quickLaunch.delete\">": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "number"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "expectedRevision",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
+    "RequestParams<\"quickLaunch.run\">": {
+      "type": "object",
+      "properties": {
+        "commandId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "commandId",
+        "cwd",
+        "operationId"
+      ],
+      "additionalProperties": false
+    },
     "RequestParams<\"history.list\">": {
       "type": "object",
       "properties": {
@@ -4137,6 +4274,110 @@
         },
         "params": {
           "$ref": "#/definitions/RequestParams%3C%22plugin.reload%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.list"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.list%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.save"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.save%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.delete"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.delete%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.run"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestParams%3C%22quickLaunch.run%22%3E"
         }
       },
       "required": [

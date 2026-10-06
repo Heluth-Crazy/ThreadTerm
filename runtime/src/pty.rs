@@ -128,6 +128,9 @@ impl PtyManager {
         // The user's current Windows environment rather than the long-lived runtime's
         // (environment.rs); the session's own variables below still win.
         crate::environment::apply(&mut command);
+        if session.run.is_some() {
+            crate::quick_launch::apply_environment(&db, session_id, &mut command)?;
+        }
         if db
             .session_by_id(session_id)?
             .is_some_and(|session| session.provider == "grok")
@@ -138,6 +141,8 @@ impl PtyManager {
                 command.env(name, value);
             }
         }
+        #[cfg(all(test, windows))]
+        crate::bootstrap::test_support::prepare_pty(&mut command);
         let mut child = pair
             .slave
             .spawn_command(command)
@@ -165,6 +170,7 @@ impl PtyManager {
         let output = Arc::clone(&self.output);
         let id = session_id.to_owned();
         let reader_db = Arc::clone(&db);
+        let mut run_observer = session.run.as_ref().map(|_| crate::quick_launch::OutputObserver::default());
         let handle = thread::Builder::new()
             .name(format!("pty-reader-{id}"))
             .spawn(move || {
@@ -175,6 +181,12 @@ impl PtyManager {
                         Ok(0) => break,
                         Ok(len) => {
                             let data = startup.feed(&buffer[..len]);
+                            if let Some(observer) = run_observer.as_mut() {
+                                if let Some(url) = observer.feed(&data) {
+                                    let _ = crate::quick_launch::observe_output(&reader_db, &id, &url);
+                                }
+                                if observer.is_done() { run_observer = None; }
+                            }
                             if !data.is_empty() && output.append(&reader_db, &id, &data).is_err() {
                                 break;
                             }
@@ -183,6 +195,11 @@ impl PtyManager {
                     }
                 }
                 let rest = startup.finish();
+                if let Some(observer) = run_observer.as_mut() {
+                    if let Some(url) = observer.feed(&rest).or_else(|| observer.finish()) {
+                        let _ = crate::quick_launch::observe_output(&reader_db, &id, &url);
+                    }
+                }
                 if !rest.is_empty() {
                     let _ = output.append(&reader_db, &id, &rest);
                 }

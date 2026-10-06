@@ -18,6 +18,7 @@ import { workbenchError } from '../workbench/errors';
 import { coveredBy, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
 import { AgentIcon, Icon } from './PrototypeIcon';
 import { SessionActions } from './SessionActions';
+import { QuickLaunchMenu, QuickLaunchRunChip } from './QuickLaunch';
 import { SessionConfigDialog } from './SessionConfigDialog';
 import { SurfaceDialog } from './SurfaceDialog';
 import './session-workspace.css';
@@ -303,6 +304,8 @@ export function SessionWorkspace({session,data,theme,onBack,onSelect,onProject,o
    <button className="ws-back" onClick={onBack} title={backTitle} aria-label={backTitle}><Icon name="back"/><span>{zh?'返回':'Back'}</span></button>
    {project&&<button className="ws-chip" onClick={()=>onProject(project.id)}><span className="dot primary"/>{project.name}</button>}
    {project&&<button className="ws-chip branch" title={displayPath(path)} onClick={()=>onProject(project.id,path)}><Icon name="branch"/>{currentTree?.branch??git?.branch??displayPath(path)?.split(/[\\/]/).at(-1)}</button>}
+   {project&&path&&<QuickLaunchMenu key={`${project.id}:${path}`} projectId={project.id} root={path} data={data} onOpenSession={onSelect} onOpenPreview={paneWorkbench.openWeb}/>}
+   {session.run&&<QuickLaunchRunChip session={session} onOpenPreview={paneWorkbench.openWeb}/>}
    <div className="top-spacer"/>
    <button className="icon-btn" onClick={()=>setInspector(value=>!value)} aria-pressed={inspector} aria-label={zh?'会话详情面板':'Session details'}><Icon name="panel"/></button>
   </header>
