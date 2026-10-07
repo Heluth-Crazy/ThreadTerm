@@ -9,6 +9,8 @@ import { SurfaceDialog } from './SurfaceDialog';
 import { changeGroups, decorationFor, type ChangeGroup } from '../workbench/gitDecorations';
 import { workbenchError } from '../workbench/errors';
 import { baseName, parentPath, scopeParams, type GitState, type WorkbenchActions, type WorkbenchScope } from '../workbench/types';
+import { ContextSendAction } from './ContextSendAction';
+import { changedFileContext } from './GitContextActions';
 
 type Confirm =
  | {kind:'discard';paths:string[];untracked:number}
@@ -113,6 +115,7 @@ export function SourceControlView({scope, actions, git, zh, compact = false, too
    </button>
    <span className="wb-row-actions">
     <button type="button" className="icon-btn" title={text('Open file', '打开文件')} aria-label={text('Open file', '打开文件')} onClick={() => actions.openFile(change.path)}><Icon name="file"/></button>
+    {actions.comments?.attachContext && <ContextSendAction host={actions.comments} item={() => changedFileContext(params, change.path, staged, zh)} sourceRoot={scope.rootPath} zh={zh} label={text('Send diff to agent', '将差异发送给 Agent')} iconOnly testId="source-control-send-diff"/>}
     {(group === 'changes' || group === 'untracked') && <button type="button" className="icon-btn" title={text('Discard changes', '丢弃更改')} aria-label={text('Discard changes', '丢弃更改')} disabled={!!busy} onClick={() => discard([change])}><WbIcon name="undo"/></button>}
     {staged
      ? <button type="button" className="icon-btn" title={text('Unstage', '取消暂存')} aria-label={text('Unstage', '取消暂存')} disabled={!!busy} onClick={() => void unstage([change.path])}><WbIcon name="minus"/></button>

@@ -1,4 +1,5 @@
-type Target={visible:()=>boolean;insert:(text:string)=>void;attachImages?:(images:string[])=>number};
+import type { ContextItem } from './chatContext';
+type Target={visible:()=>boolean;insert:(text:string)=>void;attachImages?:(images:string[])=>number;attachContext?:(item:ContextItem)=>boolean};
 const targets=new Map<string,Set<Target>>();
 const chatTargets=new Map<string,Set<Target>>();
 const register=(registry:Map<string,Set<Target>>,sessionId:string,target:Target)=>{
@@ -36,4 +37,11 @@ export function insertSessionText(sessionId:string,text:string){
 export function attachChatImages(sessionId:string,images:string[]):number {
   const chat=visibleTarget(chatTargets,sessionId);
   return chat?.attachImages?.(images)??0;
+}
+
+/** Context belongs to Chat drafts only. Terminal insertion deliberately remains unchanged. */
+export function attachChatContext(sessionId:string,item:ContextItem):boolean {
+  const chat=visibleTarget(chatTargets,sessionId);
+  if(!chat?.attachContext)throw new Error('chat_view_unavailable');
+  return chat.attachContext(item);
 }
