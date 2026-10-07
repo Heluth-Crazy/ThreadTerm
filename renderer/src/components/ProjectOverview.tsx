@@ -1,12 +1,12 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import type { Session, Snapshot, UsageRecord, UsageResult, Worktree } from '@threadterm/protocol';
-import { operationId, request } from '../bridge';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import type { Session, Snapshot, UsageRecord, UsageResult, Worktree, WorktreeSetupRun } from '@threadterm/protocol';
+import { operationId, request, subscribeEvents } from '../bridge';
 import { isActionableInboxItem } from '../inboxVisibility';
 import { displayPath, sameCanonicalScope } from '../projectScope';
 import { useTranslation } from '../i18n';
 import { AgentIcon, Icon } from './PrototypeIcon';
 import { BranchGitCard } from './BranchGitCard';
-import { QuickLaunchMenu } from './QuickLaunch';
+import { QuickLaunchMenu, WorktreeSetupCard, WorktreeSetupChip } from './QuickLaunch';
 import { FileWorkspace } from './FileWorkspace';
 import { UsagePanel } from './UsagePanel';
 import { SurfaceDialog } from './SurfaceDialog';
@@ -15,6 +15,8 @@ import './project-overview.css';
 import { sessionTime } from '../sessionTime';
 import { sessionState, sessionStateLabel, type SessionViewState } from '../sessionState';
 import { agentName } from '../agents';
+import { setupForRoot } from '../worktreeSetup';
+import { quickLaunchError } from '../quickLaunch';
 
 type Props={projectId:string;data:Snapshot;initialWorktreePath?:string;onScopeChange:(path?:string)=>void;onSession:(id:string)=>void;onRemoved:()=>void;onCreate:(projectId:string,path:string)=>void;onInbox:()=>void;onChanged:()=>void};
 type ViewState=SessionViewState;
@@ -25,9 +27,11 @@ function Spark({values,fill=false}:{values:number[];fill?:boolean}){const max=Ma
 export function ProjectOverview({projectId,data,initialWorktreePath,onScopeChange,onSession,onRemoved,onCreate,onInbox,onChanged}:Props){
   const providerName=(id:string)=>agentName(id,data.providers);
   const {locale,formatDate}=useTranslation(),zh=locale==='zh-CN',project=data.projects.find(p=>p.id===projectId)!;
-  const [trees,setTrees]=useState<Worktree[]>([]),[usage,setUsage]=useState<UsageResult>(),[issue,setIssue]=useState<string>(),[dialog,setDialog]=useState<'usage'|'follow'|'activity'|'tree'|'manage'|undefined>(),[fileView,setFileView]=useState<'file'|'diff'|undefined>();
+   const [trees,setTrees]=useState<Worktree[]>([]),[usage,setUsage]=useState<UsageResult>(),[setupRuns,setSetupRuns]=useState<WorktreeSetupRun[]>([]),[issue,setIssue]=useState<string>(),[dialog,setDialog]=useState<'usage'|'follow'|'activity'|'tree'|'manage'|undefined>(),[fileView,setFileView]=useState<'file'|'diff'|undefined>();
+   const setupGeneration=useRef(0);
   const [followQuery,setFollowQuery]=useState(''),[picked,setPicked]=useState<Set<string>>(new Set()),[busy,setBusy]=useState(false),[menu,setMenu]=useState(false),[activityPage,setActivityPage]=useState(0),[fileTarget,setFileTarget]=useState<{path:string;staged:boolean}>();
-  useEffect(()=>{let current=true;setIssue(undefined);void request('worktree.list',{projectId}).then(value=>{if(current)setTrees(value);}).catch(error=>{if(current)setIssue(String(error));});void request('usage.query',{projectId}).then(value=>{if(current)setUsage(value);}).catch(()=>{if(current)setUsage(undefined);});return()=>{current=false;};},[projectId,data.revision]);
+   useEffect(()=>{let current=true;setIssue(undefined);void request('worktree.list',{projectId}).then(value=>{if(current)setTrees(value);}).catch(error=>{if(current)setIssue(String(error));});void request('usage.query',{projectId}).then(value=>{if(current)setUsage(value);}).catch(()=>{if(current)setUsage(undefined);});return()=>{current=false;};},[projectId,data.revision]);
+   useEffect(()=>{const reload=()=>{const token=++setupGeneration.current;void request('quickLaunch.setup.status',{projectId}).then(value=>{if(token===setupGeneration.current)setSetupRuns(value);}).catch(error=>{if(token===setupGeneration.current)setIssue(quickLaunchError(error,zh));});};reload();const unsubscribe=subscribeEvents(event=>{const detail=event.data as {kind?:unknown;projectId?:unknown}|null;if(event.event==='state.changed'&&detail?.kind==='quickLaunch.setup'&&detail.projectId===projectId)reload();});return()=>{setupGeneration.current++;unsubscribe();};},[projectId,zh]);
   const tree=trees.find(t=>sameCanonicalScope(t.path,initialWorktreePath));
   const sessions=data.sessions.filter(s=>s.projectId===projectId&&!s.archived&&(!initialWorktreePath||sameCanonicalScope(s.worktreePath??project.path,initialWorktreePath)));
   const allProjectSessions=data.sessions.filter(s=>s.projectId===projectId&&!s.archived);
@@ -75,9 +79,10 @@ export function ProjectOverview({projectId,data,initialWorktreePath,onScopeChang
         <button type="button" className="ov-metric ov-metric-more" onClick={()=>setDialog('usage')} title={zh?'用量明细':'Usage details'}><span>{zh?'明细':'Details'}</span><Icon name="chevR"/></button></div>
     </div>
     <div className="ov-body"><div className="ov-main">
+      <WorktreeSetupCard projectId={projectId} root={path} run={setupForRoot(setupRuns,path)} data={data} onOpenSession={onSession}/>
       {scopeBranch
         ?section('active',zh?'进行中的会话':'Active sessions',activeSessions.length,null,activeSessions.length?<div className="ov-list">{activeSessions.map(s=>sessionRow(s,`${providerName(s.provider)} · ${time(s.updatedAt)}`))}</div>:empty(zh?'没有进行中的会话。新建终端开始工作。':'No active sessions. Start a new terminal to begin.'))
-        :section('active',zh?'进行中的工作树':'Active worktrees',activeTrees.length,null,activeTrees.length?<div className="ov-list">{activeTrees.map(t=>{const running=allProjectSessions.filter(s=>sameCanonicalScope(s.worktreePath??project.path,t.path)&&live(s));const st=t.missing?'stalled':priority(running),pending=running.filter(s=>stateOf(s)==='needs'||stateOf(s)==='failed').length;return <button type="button" className="ov-row ov-tree-row" data-testid="home-tree-row" key={t.id} onClick={()=>onScopeChange(t.path)}><Icon name="branch"/><span className="ov-row-main"><span className="ov-row-title">{t.branch??(zh?'项目目录':'Project directory')}</span><span className="ov-row-ctx">{displayPath(t.path)}{running[0]?` · ${time(running[0].updatedAt)}`:''}</span></span><span className={`chip st-${st}`}>{pending?`${pending} ${zh?'个待处理':'pending'}`:st==='running'?`${running.filter(s=>stateOf(s)==='running').length} ${zh?'个运行中':'running'}`:badgeText(st,zh)}</span><Icon name="chevR" className="ov-row-go"/></button>;})}</div>:empty(zh?'没有进行中的工作树。':'No active worktrees.'))}
+        :section('active',zh?'进行中的工作树':'Active worktrees',activeTrees.length,null,activeTrees.length?<div className="ov-list">{activeTrees.map(t=>{const running=allProjectSessions.filter(s=>sameCanonicalScope(s.worktreePath??project.path,t.path)&&live(s));const st=t.missing?'stalled':priority(running),pending=running.filter(s=>stateOf(s)==='needs'||stateOf(s)==='failed').length;return <button type="button" className="ov-row ov-tree-row" data-testid="home-tree-row" key={t.id} onClick={()=>onScopeChange(t.path)}><Icon name="branch"/><span className="ov-row-main"><span className="ov-row-title">{t.branch??(zh?'项目目录':'Project directory')}</span><span className="ov-row-ctx">{displayPath(t.path)}{running[0]?` · ${time(running[0].updatedAt)}`:''}</span></span><WorktreeSetupChip run={setupForRoot(setupRuns,t.path)}/><span className={`chip st-${st}`}>{pending?`${pending} ${zh?'个待处理':'pending'}`:st==='running'?`${running.filter(s=>stateOf(s)==='running').length} ${zh?'个运行中':'running'}`:badgeText(st,zh)}</span><Icon name="chevR" className="ov-row-go"/></button>;})}</div>:empty(zh?'没有进行中的工作树。':'No active worktrees.'))}
       {scopeBranch&&!tree?.missing&&<BranchGitCard projectId={projectId} worktreePath={path} revision={data.revision} zh={zh} onOpenChanges={target=>{setFileTarget(target);setFileView('diff');}}/>}
       {!scopeBranch&&recentSection}
     </div><div className="ov-side">

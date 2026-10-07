@@ -24,7 +24,15 @@ pub(crate) const ERROR_CODES: &[&str] = &[
     "cwd_outside_root",
     "cwd_missing",
     "shell_unavailable",
+    "setup_empty",
+    "invalid_step",
+    "not_a_task",
 ];
+
+#[path = "quick_launch_setup.rs"]
+mod setup;
+pub use setup::{mark_setup_runs_interrupted, setup_after_worktree_create};
+pub(crate) use setup::{setup_terminal_exited, start_next_setup_step};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -64,6 +72,8 @@ pub struct SessionRun {
     pub url_source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_requested: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup: Option<setup::SetupStep>,
 }
 
 pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
@@ -79,7 +89,19 @@ pub(crate) fn initialize_connection(conn: &Connection) -> Result<()> {
          command_id TEXT NOT NULL, project_id TEXT NOT NULL, root TEXT NOT NULL,
          snapshot_json TEXT NOT NULL, url TEXT, url_source TEXT,
          stop_requested INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL);
-         CREATE INDEX IF NOT EXISTS quick_launch_admission ON quick_launch_runs(command_id,root);"
+         CREATE INDEX IF NOT EXISTS quick_launch_admission ON quick_launch_runs(command_id,root);
+         CREATE TABLE IF NOT EXISTS quick_launch_setup (
+         project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+         revision INTEGER NOT NULL, command_ids_json TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS quick_launch_setup_runs (
+         id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+         root TEXT NOT NULL, command_ids_json TEXT NOT NULL, names_json TEXT NOT NULL,
+         snapshots_json TEXT NOT NULL, step INTEGER NOT NULL, state TEXT NOT NULL,
+         session_ids_json TEXT NOT NULL, exit_code INTEGER, trigger TEXT NOT NULL,
+         created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+         CREATE INDEX IF NOT EXISTS quick_launch_setup_root ON quick_launch_setup_runs(project_id,root,created_at);
+         CREATE INDEX IF NOT EXISTS quick_launch_setup_creations ON operations(method) WHERE method='worktree.create';
+         CREATE UNIQUE INDEX IF NOT EXISTS quick_launch_setup_active ON quick_launch_setup_runs(project_id,root) WHERE state='running';"
     )?;
     Ok(())
 }
@@ -88,15 +110,17 @@ pub(crate) fn run_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<Opt
     let Some(raw) = row.get::<_, Option<String>>(offset)? else {
         return Ok(None);
     };
-    let snapshot: QuickLaunchCommand = serde_json::from_str(&raw).map_err(|e| {
+    let (snapshot, setup) = setup::decode_snapshot(&raw).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(offset, rusqlite::types::Type::Text, Box::new(e))
     })?;
-    Ok(Some(projection(
+    let mut run = projection(
         &snapshot,
         row.get(offset + 1)?,
         row.get(offset + 2)?,
         row.get::<_, bool>(offset + 3)?,
-    )))
+    );
+    run.setup = setup;
+    Ok(Some(run))
 }
 fn projection(
     snapshot: &QuickLaunchCommand,
@@ -112,6 +136,7 @@ fn projection(
         url,
         url_source,
         stop_requested: stopped.then_some(true),
+        setup: None,
     }
 }
 
@@ -160,6 +185,7 @@ pub(crate) fn handles(method: &str) -> bool {
     matches!(
         method,
         "quickLaunch.list" | "quickLaunch.save" | "quickLaunch.delete" | "quickLaunch.run"
+        | "quickLaunch.setup.read" | "quickLaunch.setup.save" | "quickLaunch.setup.run" | "quickLaunch.setup.status"
     )
 }
 fn required(value: &str) -> Result<()> {
@@ -205,6 +231,9 @@ fn preview_url(value: &str) -> bool {
             .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
 }
 pub(crate) fn validate(method: &str, value: &Value) -> Result<()> {
+    if method.starts_with("quickLaunch.setup.") {
+        return setup::validate_setup(method, value);
+    }
     match method {
         "quickLaunch.list" => {
             let p: List = serde_json::from_value(value.clone())?;
@@ -347,6 +376,9 @@ pub(crate) fn dispatch(
     value: &Value,
 ) -> Result<Value> {
     validate(method, value)?;
+    if method.starts_with("quickLaunch.setup.") {
+        return setup::dispatch_setup(db, pty, method, value);
+    }
     match method {
         "quickLaunch.list" => {
             let p: List = serde_json::from_value(value.clone())?;
@@ -374,6 +406,7 @@ pub(crate) fn dispatch(
                 &p.cwd,
                 &p.operation_id,
                 "quickLaunch.run",
+                None,
                 None,
             )
         }
@@ -420,6 +453,7 @@ fn delete(db: &Database, p: Delete) -> Result<Value> {
         if found != p.expected_revision {
             return Err(anyhow!("revision_conflict"));
         }
+        setup::remove_command(tx, &p.id)?;
         tx.execute("DELETE FROM quick_launch_commands WHERE id=?", [&p.id])?;
         complete(tx, &p.operation_id, "quickLaunch.delete", &Value::Null)?;
         changed(tx, "quickLaunch.commands", None)?;
@@ -513,25 +547,9 @@ fn start(
     operation: &str,
     method: &str,
     source: Option<&str>,
+    setup: Option<&setup::SetupStep>,
 ) -> Result<Value> {
-    if !Path::new(cwd).is_absolute() || !Path::new(cwd).is_dir() {
-        return Err(anyhow!("cwd_missing"));
-    }
-    let root = crate::workspace_services::workspace_root_for_cwd(db, &snapshot.project_id, cwd)
-        .map_err(|error| match error.to_string().as_str() {
-            "invalid_cwd" => anyhow!("cwd_missing"),
-            "cwd_not_in_registered_project" | "selected_project_mismatch" => {
-                anyhow!("cwd_outside_root")
-            }
-            _ => error,
-        })?;
-    if Path::new(cwd)
-        .canonicalize()
-        .map_err(|_| anyhow!("cwd_missing"))?
-        != root
-    {
-        return Err(anyhow!("cwd_outside_root"));
-    }
+    let root = setup::root_for_setup(db, &snapshot.project_id, cwd)?;
     let directory = launch_directory(&root, &snapshot.cwd)?;
     // Persist the canonical operational path, including Windows' verbatim
     // prefix and Unicode spelling, so reruns reopen exactly this worktree.
@@ -540,6 +558,9 @@ fn start(
         Ok(tx.query_row("SELECT q.session_id FROM quick_launch_runs q JOIN sessions s ON s.id=q.session_id LEFT JOIN session_organization o ON o.session_id=s.id WHERE q.command_id=? AND q.root=? AND s.status IN ('starting','running','idle','waiting') AND COALESCE(json_extract(o.data,'$.archived'),0)=0 LIMIT 1", params![snapshot.id,root_key], |r| r.get::<_,String>(0)).optional()?)
     })?;
     if let Some(id) = active {
+        if let Some(step) = setup {
+            db.transaction(|tx| setup::attach_session(tx, step, &id))?;
+        }
         let session = db
             .session_by_id(&id)?
             .ok_or_else(|| anyhow!("session_not_found"))?;
@@ -570,6 +591,7 @@ fn start(
         tx.execute("INSERT INTO session_activity(session_id,state,revision) VALUES(?,'unknown',1)", [&id])?;
         tx.execute("INSERT INTO session_launch_configs(session_id,revision,provider,mode,cwd,project_id,title,executable,args_json,source_session_id) VALUES(?,1,'custom','terminal',?,?,?,?,?,?)", params![id,launch.cwd,launch.project_id,launch.title,launch.executable,serde_json::to_string(&args)?,source])?;
         tx.execute("INSERT INTO quick_launch_runs(session_id,command_id,project_id,root,snapshot_json,url,url_source,stop_requested,started_at) VALUES(?,?,?,?,?,?,?,0,?)", params![id,snapshot.id,snapshot.project_id,root_key,serde_json::to_string(snapshot)?,snapshot.preview_url,snapshot.preview_url.as_ref().map(|_| "configured"),now])?;
+        if let Some(step) = setup { setup::attach_session(tx, step, &id)?; }
         changed(tx, "session.run", Some(&id))?;
         // Reserve replay before the external side effect. A runtime crash leaves
         // this exact interrupted run, never a second implicitly started process.
@@ -662,7 +684,7 @@ pub(crate) fn rerun(db: &Arc<Database>, pty: &PtyManager, value: &Value) -> Resu
     ) {
         return Err(anyhow!("End the current session before rerunning it"));
     }
-    let snapshot: QuickLaunchCommand = serde_json::from_str(&raw)?;
+    let (snapshot, _) = setup::decode_snapshot(&raw)?;
     Ok(Some(start(
         db,
         pty,
@@ -671,6 +693,7 @@ pub(crate) fn rerun(db: &Arc<Database>, pty: &PtyManager, value: &Value) -> Resu
         &p.operation_id,
         "session.rerun",
         Some(&p.session_id),
+        None,
     )?))
 }
 pub(crate) fn request_stop(db: &Database, id: &str) -> Result<()> {
@@ -729,7 +752,7 @@ pub(crate) fn apply_environment(
             |r| r.get(0),
         )?)
     })?;
-    let snapshot: QuickLaunchCommand = serde_json::from_str(&raw)?;
+    let (snapshot, _) = setup::decode_snapshot(&raw)?;
     // Snapshot once: every override expands against the composed inherited
     // environment, rather than against overrides ordered earlier in the form.
     let inherited: Vec<_> = command
@@ -936,3 +959,7 @@ pub(crate) fn observe_output(db: &Database, id: &str, url: &str) -> Result<()> {
 #[cfg(test)]
 #[path = "quick_launch_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "quick_launch_setup_tests.rs"]
+mod setup_tests;

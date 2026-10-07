@@ -1,0 +1,29 @@
+.ql-setup-status { display:grid; gap:7px; padding:10px 12px; border-bottom:1px solid var(--border); background:var(--soft); }
+.ql-setup-status > p { margin:0; overflow:hidden; color:var(--text); font-size:12px; line-height:18px; text-overflow:ellipsis; white-space:nowrap; }
+.ql-setup-actions { display:flex; flex-wrap:wrap; gap:4px; }
+.ql-setup-actions .btn { min-height:26px; padding:3px 8px; font-size:11px; }
+.ql-setup-editor { display:grid; gap:12px; }
+.ql-setup-consent { margin:0; color:var(--muted); font-size:13px; line-height:1.5; }
+.ql-setup-list { display:grid; gap:6px; max-height:320px; overflow:auto; }
+.ql-setup-row { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:8px; padding:8px; border:1px solid var(--border); border-radius:var(--radius); }
+.ql-setup-row > label { display:contents; }
+.ql-setup-row strong, .ql-setup-row code { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ql-setup-row strong { font-size:13px; }
+.ql-setup-ordinal { color:var(--muted); font-variant-numeric:tabular-nums; }
+.ql-setup-row code { display:block; margin-top:2px; color:var(--muted); font-size:11px; }
+.ql-setup-order { display:flex; gap:4px; }
+.ql-setup-order .icon-btn { min-width:28px; min-height:28px; }
+.ql-setup-empty { margin:0; color:var(--muted); font-size:13px; line-height:1.5; }
+.ql-setup-chip { max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ql-setup-chip.ql-failed { color:var(--danger); }
+.ql-setup-chip.ql-running { color:var(--primary); }
+.ql-setup-chip.ql-completed { color:var(--muted); }
+.ql-menu button:focus-visible,.ql-setup-row input:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.ql-setup-card .ql-setup-status { padding:0; border:0; background:none; }
+.ql-setup-card .ql-setup-status > p { font-size:13px; white-space:normal; }
+/* The heading stays neutral; only the status line carries the state colour. */
+.ql-setup-card .ql-setup-status { color:inherit; }
+.ql-setup-card.is-failed .ql-setup-status > p, .ql-setup-card.is-interrupted .ql-setup-status > p { color:var(--danger); }
+.ql-setup-card.is-running .ql-setup-status > p { color:var(--primary); }
+.ql-setup-card.is-cancelled .ql-setup-status > p { color:var(--muted); }
+.ql-setup-card .ql-setup-actions .btn { min-height:28px; padding:4px 10px; font-size:12px; }

@@ -10,10 +10,11 @@ use std::{
     thread,
 };
 
+#[derive(Clone)]
 pub struct PtyManager {
     sessions: Arc<Mutex<HashMap<String, Arc<LivePty>>>>,
     /// Sessions inside `launch`, not yet in `sessions`.
-    starting: Mutex<HashSet<String>>,
+    starting: Arc<Mutex<HashSet<String>>>,
     output: Arc<OutputStore>,
 }
 /// Holds a session's place in `PtyManager::starting` for the duration of one launch.
@@ -42,7 +43,7 @@ impl PtyManager {
     pub fn new(output: Arc<OutputStore>) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            starting: Mutex::new(HashSet::new()),
+            starting: Arc::new(Mutex::new(HashSet::new())),
             output,
         }
     }
@@ -224,6 +225,7 @@ impl PtyManager {
         drop(sessions);
         let wait_sessions = Arc::clone(&self.sessions);
         let wait_id = session_id.to_owned();
+        let setup_pty = self.clone();
         thread::spawn(move || {
             // Never hold the child mutex across a blocking wait: stop must be
             // able to issue its bounded force fallback while the child runs.
@@ -246,6 +248,7 @@ impl PtyManager {
             // generation's waiter wakes up. Only the owning generation may
             // remove the entry or finalize the durable session state; an old
             // waiter must never mark a newly launched PTY exited.
+            let mut finalized = false;
             if let Ok(mut registry) = wait_sessions.lock() {
                 if registry
                     .get(&wait_id)
@@ -253,8 +256,18 @@ impl PtyManager {
                 {
                     // Keep ownership through the status write: stop must not
                     // release this id for relaunch between check and finalize.
-                    let _ = db.set_session_status(&wait_id, "exited", code);
+                    match db.set_session_status(&wait_id, "exited", code) {
+                        Ok(()) => finalized = true,
+                        Err(error) => eprintln!("PTY exit for {wait_id} could not be finalized: {error}"),
+                    }
                     registry.remove(&wait_id);
+                }
+            }
+            if finalized {
+                match crate::quick_launch::setup_terminal_exited(&db, &wait_id, code, false) {
+                    Ok(Some(run_id)) => crate::quick_launch::start_next_setup_step(db, setup_pty, run_id),
+                    Ok(None) => {},
+                    Err(error) => eprintln!("Worktree setup exit for {wait_id} failed: {error}"),
                 }
             }
         });
@@ -307,6 +320,7 @@ impl PtyManager {
                 let _ = child.kill();
             }
             db.set_session_status(session_id, "exited", None)?;
+            crate::quick_launch::setup_terminal_exited(db, session_id, None, true)?;
             return Ok(());
         }
         // A cooperative interrupt gives shells and native agents a bounded
@@ -336,9 +350,13 @@ impl PtyManager {
             exit = Some(child.wait()?.exit_code() as i32);
         }
         db.set_session_status(session_id, "exited", exit)?;
+        crate::quick_launch::setup_terminal_exited(db, session_id, exit, true)?;
         Ok(())
     }
     pub fn terminate_all(&self, db: &Database) {
+        if let Err(error) = crate::quick_launch::mark_setup_runs_interrupted(db) {
+            eprintln!("Worktree setup shutdown recovery failed: {error}");
+        }
         let ids: Vec<_> = self
             .sessions
             .lock()

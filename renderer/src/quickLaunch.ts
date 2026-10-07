@@ -42,6 +42,7 @@ const errors: Record<string,[string,string]> = {
  invalid_preview_url:['Enter an http:// or https:// preview address.','请输入 http:// 或 https:// 预览地址。'],
  invalid_name:['Use a name of up to 80 characters without control characters.','名称最多 80 个字符，不能包含控制字符。'], invalid_command:['Enter command text of up to 8,000 characters.','请输入最多 8,000 个字符的命令。'], invalid_cwd:['Use a relative directory inside this worktree (up to 260 characters).','请使用此工作树内的相对目录（最多 260 个字符）。'],
  project_not_found:['This project no longer exists.','此项目已不存在。'], worktree_missing:['This worktree directory is missing.','此工作树目录已丢失。'], workspace_read_only:['This workspace is read-only.','此工作区为只读。'], workspace_archived:['Restore this archived workspace before running a command.','请恢复此已归档的工作区后再运行命令。'],
+ setup_empty:['Choose at least one Task command in Worktree setup before running it.','请先在工作树初始化中选择至少一个任务命令。'], invalid_step:['This setup step is no longer available. Reopen the Run menu and try again.','此初始化步骤已不可用。请重新打开运行菜单后重试。'], not_a_task:['Only Task commands can be setup steps.','只有任务命令可以作为初始化步骤。'],
 };
 export function quickLaunchError(error: unknown, zh: boolean): string {
  const message = error instanceof Error ? error.message : String(error);

@@ -246,7 +246,26 @@ test('agent reviews take a shape-checked agent and a checkpoint or uncommitted s
  assert.throws(()=>validateResult('agentReview.list',[{...completed,findings:[{...findings[0],severity:'critical'}]}]));
  assert.throws(()=>validateResult('agentReview.list',[{...completed,findings:[{...findings[0],state:'resolved'}]}]));
  assert.throws(()=>validateResult('agentReview.start',{...started,extra:1}));
- assert.equal(PROTOCOL_CONTRACT,6);
+});
+
+test('worktree setup saves an ordered unique list of up to 20 commands and runs from a bounded step',()=>{
+ validateRequest('quickLaunch.setup.read',{projectId:'p'});
+ validateRequest('quickLaunch.setup.save',{projectId:'p',commandIds:['install','build'],expectedRevision:0,operationId:'o'});
+ validateRequest('quickLaunch.setup.save',{projectId:'p',commandIds:[],expectedRevision:3,operationId:'o'});
+ for(const commandIds of [['a','a'],[''],Array.from({length:21},(_,index)=>`c${index}`),'install'])
+  assert.throws(()=>validateRequest('quickLaunch.setup.save',{projectId:'p',commandIds,expectedRevision:0,operationId:'o'}),/Invalid setup commands|protocol schema/);
+ for(const expectedRevision of [-1,1.5]) assert.throws(()=>validateRequest('quickLaunch.setup.save',{projectId:'p',commandIds:[],expectedRevision,operationId:'o'}),/Invalid setup revision|protocol schema/);
+ validateRequest('quickLaunch.setup.run',{projectId:'p',cwd:'C:\\repo-wt',operationId:'o'});
+ validateRequest('quickLaunch.setup.run',{projectId:'p',cwd:'C:\\repo-wt',fromStep:2,operationId:'o'});
+ for(const fromStep of [-1,20,0.5]) assert.throws(()=>validateRequest('quickLaunch.setup.run',{projectId:'p',cwd:'C:\\repo-wt',fromStep,operationId:'o'}),/Invalid setup step|protocol schema/);
+ validateResult('quickLaunch.setup.read',{projectId:'p',revision:0,commandIds:[]});
+ const run={id:'s',projectId:'p',root:'C:\\repo-wt',commandIds:['install','build'],names:['Install','Build'],step:1,state:'failed',sessionIds:['t1','t2'],exitCode:1,trigger:'worktree.create',createdAt:'t',updatedAt:'t'};
+ validateResult('quickLaunch.setup.run',run);
+ validateResult('quickLaunch.setup.status',[run,{...run,id:'s2',state:'interrupted',exitCode:undefined,trigger:'retry'}].map(({exitCode,...rest})=>exitCode===undefined?rest:{...rest,exitCode}));
+ assert.throws(()=>validateResult('quickLaunch.setup.run',{...run,state:'paused'}));
+ assert.throws(()=>validateResult('quickLaunch.setup.run',{...run,trigger:'startup'}));
+ validateResult('quickLaunch.run',{existing:false,session:{id:'t1',title:'Install',provider:'custom',mode:'terminal',status:'running',createdAt:'t',updatedAt:'t',run:{commandId:'install',name:'Install',kind:'task',shell:'cmd',setup:{runId:'s',step:0,total:2}}}});
+ assert.equal(PROTOCOL_CONTRACT,7);
 });
 
 test('quick launch commands are bounded: relative cwd inside the root, known shells, unique env names, revisioned updates',()=>{

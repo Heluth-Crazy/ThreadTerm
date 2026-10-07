@@ -533,6 +533,7 @@ impl RuntimeService {
             if let Some(result) =
                 crate::workspace_services::dispatch(&self.db, &request.method, &request.params)?
             {
+                if request.method == "worktree.create" { crate::quick_launch::setup_after_worktree_create(&self.db, &self.pty, &result); }
                 return Ok(result);
             }
             if let Some(result) = crate::settings_services::dispatch(
@@ -993,6 +994,7 @@ impl RuntimeService {
                 short,
                 &p.operation_id,
             )?;
+            crate::quick_launch::setup_after_worktree_create(&self.db, &self.pty, &json!({"projectId":parent.project_id,"path":path}));
             (path, Some(branch))
         } else {
             (parent_cwd, None)
