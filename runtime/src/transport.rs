@@ -28,6 +28,8 @@ fn advance_cursor_past_history_gap(cursor: &mut i64, durable_end: i64) {
 
 #[cfg(windows)]
 pub async fn serve(service: Arc<RuntimeService>, credential: String) -> Result<()> {
+    // Before the first connection, so every live lease still belongs to a client of a previous runtime.
+    service.leases.adopt_previous(&service.db)?;
     tokio::try_join!(
         accept_control(Arc::clone(&service), credential.clone()),
         accept_output(Arc::clone(&service), credential)
@@ -236,6 +238,8 @@ async fn serve_control(
     credential: &str,
 ) -> Result<()> {
     let principal = authenticate(&mut pipe, credential, &service.db.epoch()?).await?;
+    // Leases follow the principal's control connections; this one counts until serve_control returns.
+    let _presence = service.leases.connect(&principal);
     let mut sent_seq = service.db.snapshot()?.revision;
     let (mut reader, mut writer) = tokio::io::split(pipe);
     let mut decoder = FrameDecoder::default();
