@@ -48,7 +48,11 @@ function ThinkingPart({ part, streaming, copy, openFile }: { part: ChatPart; str
   );
 }
 
+const codexMarkdownCache = new Map<string, string>();
+const codexMarkdownCacheLimit = 300;
 function renderCodexMarkdown(text: string): string {
+  const cached = codexMarkdownCache.get(text);
+  if (cached !== undefined) return cached;
   const rendered = marked.parse(text, { gfm: true, breaks: true });
   const template = document.createElement('template');
   template.innerHTML = typeof rendered === "string" ? rendered : "";
@@ -59,11 +63,14 @@ function renderCodexMarkdown(text: string): string {
     anchor.removeAttribute('href');
     anchor.setAttribute('data-threadterm-file-reference', JSON.stringify(reference));
   }
-  return DOMPurify.sanitize(template.innerHTML, {
+  const sanitized = DOMPurify.sanitize(template.innerHTML, {
     FORBID_TAGS: ["script", "iframe", "object", "embed", "form", "input", "button", "link", "meta", "base", "svg", "math", "audio", "video", "source", "track"],
     FORBID_ATTR: ["style", "srcset", "background", "poster"],
     SANITIZE_NAMED_PROPS: true,
   });
+  codexMarkdownCache.set(text, sanitized);
+  if (codexMarkdownCache.size > codexMarkdownCacheLimit) codexMarkdownCache.delete(codexMarkdownCache.keys().next().value!);
+  return sanitized;
 }
 
 function CodexToolPart({ part, copy, openFile }: { part: ChatPart; copy: (en: string, zh: string) => string; openFile?: (reference: FileReference) => void }) {
@@ -618,7 +625,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       if (!disposed) setLink(current => reduceChatLink(current, { type: "connect-failed", message: asUserError(caught, copy("Could not connect.", "无法连接。")) }));
     }).finally(() => { connectInFlight.current = false; });
     return () => { disposed = true; };
-  }, [canControl, ended, controllable, connected, connection.phase, link.transport, session.id, copy]);
+  }, [canControl, ended, controllable, connected, connection.phase, link.transport, session.id, zh]);
   useEffect(() => {
     if (!connected) return;
     let disposed = false;
@@ -626,7 +633,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
       if (!disposed) setUi(current => ({ ...current, loadState: "error", error: { code: "options_failed", message: asUserError(caught, copy("Options could not be loaded.", "无法读取选项。")) } }));
     });
     return () => { disposed = true; };
-  }, [connected, session.id, copy]);
+  }, [connected, session.id, zh]);
   const overlay = overlayKind({
     ended,
     canControl,
@@ -779,7 +786,7 @@ export function ChatView({ session, delegates = [], delegatedBy, onOpenSession }
     const commands: ChatSlashCommand[] = [...ui.commands];
     if (liveTurn && !commands.some(command => command.name === "stop")) commands.unshift({ name: "stop", description: copy("Stop this turn", "停止此轮") });
     return slash === undefined ? [] : matchSlashCommands(slash, commands);
-  }, [copy, liveTurn, slash, ui.commands]);
+  }, [zh, liveTurn, slash, ui.commands]);
   async function setOption(option: ChatSessionOption, value: string) {
     const epoch = leaseSessionId.current === session.id ? lease.current : undefined;
     if (!writable || epoch === undefined) return;

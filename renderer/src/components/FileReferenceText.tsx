@@ -30,8 +30,8 @@ function structuredPath(path: string): string | undefined {
 }
 
 export function FileLinkedText({ text, openFile }: { text: string; openFile?: OpenFile }) {
+  const candidates = useMemo(() => extractFileReferences(text), [text]);
   if (!openFile) return text;
-  const candidates = extractFileReferences(text);
   if (!candidates.length) return text;
   const pieces: ReactNode[] = [];
   let offset = 0;
