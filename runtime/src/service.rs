@@ -4,7 +4,7 @@ use crate::{
     domain::{RpcError, RpcRequest},
     leases::LeaseManager,
     output::OutputStore,
-    providers::{ProviderEvent, ProviderRuntime, Providers, TerminalCapture},
+    providers::{NativeSessionRef, ProviderEvent, ProviderRuntime, Providers, TerminalCapture},
     pty::PtyManager,
     RUNTIME_VERSION,
 };
@@ -909,6 +909,10 @@ impl RuntimeService {
                 "chat.read" => {
                     let p: ChatRead = parse(&request.params)?;
                     Ok(serde_json::to_value(self.db.chat_items(&p.session_id)?)?)
+                }
+                "chat.subagent.read" => {
+                    let p: ChatSubagentRead = parse(&request.params)?;
+                    Ok(read_subagent_transcript(&self.db, &self.providers, p)?)
                 }
                 "chat.draft.read" => {
                     let p: ChatRead = parse(&request.params)?;
@@ -2111,6 +2115,95 @@ struct ChatRead {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChatSubagentRead {
+    session_id: String,
+    key: String,
+    after_rev: Option<i64>,
+}
+
+fn read_subagent_transcript(
+    db: &Database,
+    providers: &Providers,
+    request: ChatSubagentRead,
+) -> Result<Value> {
+    let empty = |source: &str, error: Option<String>| {
+        let mut value = json!({"items":[],"rev":0,"truncated":false,"source":source});
+        if let Some(error) = error {
+            value["error"] = json!(error);
+        }
+        value
+    };
+    let card = match db.subagent_card(&request.session_id, &request.key) {
+        Ok(card) => card,
+        Err(error) => return Ok(empty("none", Some(error.to_string()))),
+    };
+    let Some(card) = card else {
+        return Ok(empty("none", None));
+    };
+    let Some(info) = card
+        .parts
+        .iter()
+        .find(|part| part.get("type").and_then(Value::as_str) == Some("subagent"))
+        .and_then(|part| part.get("data"))
+    else {
+        return Ok(empty("none", None));
+    };
+    let source = info
+        .get("transcript")
+        .and_then(Value::as_str)
+        .unwrap_or("none");
+    match source {
+        "live" => match db.subagent_items_after(
+            &request.session_id,
+            &request.key,
+            request.after_rev.unwrap_or(0),
+        ) {
+            Ok((items, rev, truncated)) => Ok(json!({
+                "items": items,
+                "rev": rev,
+                "truncated": truncated,
+                "source": "live",
+            })),
+            Err(error) => Ok(empty("live", Some(error.to_string()))),
+        },
+        "native" => {
+            let session = match db.session_by_id(&request.session_id) {
+                Ok(Some(session)) => session,
+                Ok(None) => return Ok(empty("native", Some("Session not found".into()))),
+                Err(error) => return Ok(empty("native", Some(error.to_string()))),
+            };
+            let Some(native_id) = session.native_id else {
+                return Ok(empty("native", Some("Native session id is unavailable".into())));
+            };
+            let cwd = match crate::session_configs::read(db, &request.session_id) {
+                Ok(config) => config
+                    .as_ref()
+                    .map(|value| value.launch.cwd.clone())
+                    .or(session.worktree_path),
+                Err(error) => return Ok(empty("native", Some(error.to_string()))),
+            };
+            let Some(cwd) = cwd else {
+                return Ok(empty("native", Some("Session working directory is unavailable".into())));
+            };
+            match providers.subagent_transcript(
+                &session.provider,
+                &NativeSessionRef { native_id, cwd },
+                info,
+            ) {
+                Ok(items) => Ok(json!({
+                    "items": items,
+                    "rev": 0,
+                    "truncated": false,
+                    "source": "native",
+                })),
+                Err(error) => Ok(empty("native", Some(error.message))),
+            }
+        }
+        _ => Ok(empty("none", None)),
+    }
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TerminalRead {
     session_id: String,
     cursor: Option<i64>,
@@ -2188,6 +2281,87 @@ mod tests {
             },
             db,
         )
+    }
+
+    #[test]
+    fn chat_subagent_read_is_incremental_and_reports_native_errors() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
+        crate::session_configs::initialize(&db).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                native_id: Some("native-session"),
+                operation_id: "subagent-session",
+            })
+            .unwrap();
+        db.bind_session(
+            &session.id,
+            Some(root.path().to_str().unwrap()),
+            None,
+        )
+        .unwrap();
+        db.record_provider_event(
+            &session.id,
+            Some("turn"),
+            "chat.subagent",
+            &json!({"key":"live","info":{"status":"running","transcript":"live"}}),
+        )
+        .unwrap();
+        for (id, text) in [("one", "first"), ("two", "second")] {
+            db.record_provider_event(
+                &session.id,
+                Some("turn"),
+                "chat.subagent.item",
+                &json!({"key":"live","item":{"id":id,"role":"assistant","parts":[{"type":"text","text":text}]}}),
+            )
+            .unwrap();
+        }
+        db.record_provider_event(
+            &session.id,
+            Some("turn"),
+            "chat.subagent",
+            &json!({"key":"native","info":{"status":"completed","transcript":"native"}}),
+        )
+        .unwrap();
+        db.record_provider_event(
+            &session.id,
+            Some("turn"),
+            "chat.subagent",
+            &json!({"key":"none","info":{"status":"completed","transcript":"none"}}),
+        )
+        .unwrap();
+        db.set_session_status(&session.id, "exited", Some(0)).unwrap();
+        let service = test_service(root.path(), Arc::clone(&db));
+        let read = |key: &str, after_rev: Option<i64>| {
+            service
+                .dispatch(
+                    "desktop",
+                    RpcRequest {
+                        v: 1,
+                        id: format!("subagent-{key}"),
+                        method: "chat.subagent.read".into(),
+                        params: json!({"sessionId":session.id,"key":key,"afterRev":after_rev}),
+                    },
+                )
+                .unwrap()
+        };
+        let live = read("live", None);
+        assert_eq!(live["source"], "live");
+        assert_eq!(live["items"].as_array().unwrap().len(), 2);
+        assert_eq!(live["rev"], 2);
+        let after = read("live", Some(1));
+        assert_eq!(after["items"].as_array().unwrap().len(), 1);
+        assert_eq!(after["items"][0]["id"], "two");
+        let native = read("native", None);
+        assert_eq!(native["source"], "native");
+        assert_eq!(native["items"], json!([]));
+        assert_eq!(native["error"], "This agent does not expose subagent transcripts");
+        let none = read("none", None);
+        assert_eq!(none, json!({"items":[],"rev":0,"truncated":false,"source":"none"}));
     }
 
     #[test]

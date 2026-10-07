@@ -15,7 +15,7 @@ use super::{
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
@@ -408,6 +408,393 @@ struct GrokUiState {
     options: Vec<Value>,
     commands: Vec<Value>,
     retry: Option<Value>,
+    subagents: GrokSubagents,
+}
+
+#[derive(Clone, Default)]
+struct GrokSubagents {
+    calls: HashMap<String, GrokSubagentCall>,
+    pending_spawns: VecDeque<String>,
+    children: HashMap<String, GrokSubagentChild>,
+    sessions: HashMap<String, String>,
+    pending_frames: HashMap<String, VecDeque<Value>>,
+}
+
+#[derive(Clone)]
+struct GrokSubagentCall {
+    info: Value,
+    turn_id: Option<String>,
+}
+
+#[derive(Clone)]
+struct GrokSubagentChild {
+    key: String,
+    next_message: u64,
+    parts: Vec<Value>,
+    tools: HashMap<String, Value>,
+}
+
+struct GrokSubagentEvents<'a> {
+    events: &'a ScopedProviderEvents,
+    session_id: &'a str,
+    native_id: Option<&'a str>,
+}
+
+impl GrokSubagentEvents<'_> {
+    fn emit(&self, turn: Option<&str>, kind: &str, data: Value) {
+        emit(
+            self.events,
+            "grok",
+            self.session_id,
+            self.native_id,
+            turn,
+            kind,
+            data,
+        );
+    }
+}
+
+fn grok_spawn_update(
+    state: &mut GrokSubagents,
+    update: &Value,
+    turn: Option<&str>,
+) -> Option<String> {
+    let key = update.get("toolCallId")?.as_str()?;
+    if !state.calls.contains_key(key) {
+        if update
+            .pointer("/_meta/x.ai~1tool/name")
+            .and_then(Value::as_str)
+            != Some("spawn_subagent")
+        {
+            return None;
+        }
+        state.pending_spawns.push_back(key.into());
+        state.calls.insert(
+            key.into(),
+            GrokSubagentCall {
+                info: json!({"status":"running","transcript":"live"}),
+                turn_id: turn.map(str::to_owned),
+            },
+        );
+    }
+    let info = &mut state.calls.get_mut(key)?.info;
+    let input = update.get("rawInput").unwrap_or(&Value::Null);
+    for (field, value) in [
+        ("description", input.get("description")),
+        ("prompt", input.get("prompt")),
+        ("agentType", input.get("subagent_type")),
+    ] {
+        insert_optional(info, field, value.filter(|v| !v.is_null()).cloned());
+    }
+    if input.get("background").is_some() || input.get("run_in_background").is_some() {
+        info["background"] = json!(
+            input.get("background").and_then(Value::as_bool) == Some(true)
+                || input.get("run_in_background").and_then(Value::as_bool) == Some(true)
+        );
+    }
+    let output = update.get("rawOutput").unwrap_or(&Value::Null);
+    if output.get("type").and_then(Value::as_str) == Some("SubagentCompleted") {
+        info["status"] = json!("completed");
+        insert_optional(info, "summary", output.get("output").cloned());
+        insert_optional(info, "agentType", output.get("subagent_type").cloned());
+        grok_subagent_usage(info, output);
+    }
+    if let Some(id) = output.get("subagent_id").and_then(Value::as_str) {
+        info["native"] = json!({"kind":"grok-subagent","id":id});
+    }
+    if matches!(
+        update.get("status").and_then(Value::as_str),
+        Some("failed" | "error")
+    ) {
+        info["status"] = json!("failed");
+    }
+    // A completed spawn tool can merely acknowledge a background task's ID.
+    // Only SubagentCompleted or subagent_finished settles that task.
+    crate::db::bound_json(info);
+    Some(key.into())
+}
+
+fn grok_subagent_usage(info: &mut Value, update: &Value) {
+    let mut usage = info.get("usage").cloned().unwrap_or_else(|| json!({}));
+    for (field, value) in [
+        ("totalTokens", update.get("tokens_used")),
+        (
+            "toolUses",
+            update
+                .get("tool_call_count")
+                .or_else(|| update.get("tool_calls")),
+        ),
+        ("durationMs", update.get("duration_ms")),
+    ] {
+        insert_optional(&mut usage, field, value.filter(|v| v.is_u64()).cloned());
+    }
+    if usage.as_object().is_some_and(|usage| !usage.is_empty()) {
+        info["usage"] = usage;
+    }
+}
+
+impl GrokSubagents {
+    fn emit_card(&self, sink: &GrokSubagentEvents<'_>, key: &str) {
+        if let Some(call) = self.calls.get(key) {
+            sink.emit(
+                call.turn_id.as_deref(),
+                "chat.subagent",
+                json!({"key":key,"info":call.info}),
+            );
+        }
+    }
+
+    fn notification(
+        &mut self,
+        sink: &GrokSubagentEvents<'_>,
+        kind: &str,
+        update: &Value,
+        turn: Option<&str>,
+    ) {
+        let id = update.get("subagent_id").and_then(Value::as_str);
+        let child = update
+            .get("child_session_id")
+            .and_then(Value::as_str)
+            .or(id);
+        let Some(child) = child else { return };
+        if kind == "subagent_spawned" {
+            let existing = self
+                .sessions
+                .get(child)
+                .and_then(|session| self.children.get(session))
+                .map(|child| child.key.clone());
+            let key = existing.unwrap_or_else(|| {
+                let matching = self.pending_spawns.iter().position(|key| {
+                    self.calls
+                        .get(key)
+                        .and_then(|call| call.info.get("description"))
+                        .and_then(Value::as_str)
+                        == update.get("description").and_then(Value::as_str)
+                });
+                matching
+                    .and_then(|index| self.pending_spawns.remove(index))
+                    .or_else(|| self.pending_spawns.pop_front())
+                    .unwrap_or_else(|| id.unwrap_or(child).to_owned())
+            });
+            let call = self
+                .calls
+                .entry(key.clone())
+                .or_insert_with(|| GrokSubagentCall {
+                    info: json!({"status":"running","transcript":"live"}),
+                    turn_id: turn.map(str::to_owned),
+                });
+            for (field, value) in [
+                ("description", update.get("description")),
+                ("agentType", update.get("subagent_type")),
+                ("model", update.get("model")),
+            ] {
+                insert_optional(
+                    &mut call.info,
+                    field,
+                    value.filter(|v| !v.is_null()).cloned(),
+                );
+            }
+            call.info["native"] = json!({"kind":"grok-subagent","id":id.unwrap_or(child)});
+            self.children
+                .entry(child.into())
+                .or_insert_with(|| GrokSubagentChild {
+                    key: key.clone(),
+                    next_message: 0,
+                    parts: Vec::new(),
+                    tools: HashMap::new(),
+                });
+            self.sessions.insert(child.into(), child.into());
+            if let Some(id) = id {
+                self.sessions.insert(id.into(), child.into());
+            }
+            self.emit_card(sink, &key);
+            if let Some(frames) = self.pending_frames.remove(child) {
+                for frame in frames {
+                    self.child_frame(sink, child, frame);
+                }
+            }
+            return;
+        }
+        let Some(session) = self
+            .sessions
+            .get(child)
+            .or_else(|| id.and_then(|id| self.sessions.get(id)))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(key) = self.children.get(&session).map(|child| child.key.clone()) else {
+            return;
+        };
+        if kind == "subagent_finished" {
+            self.flush_child(sink, &session);
+        }
+        if let Some(call) = self.calls.get_mut(&key) {
+            grok_subagent_usage(&mut call.info, update);
+            if kind == "subagent_finished" {
+                call.info["status"] = json!(match update.get("status").and_then(Value::as_str) {
+                    Some("completed") => "completed",
+                    Some("failed") => "failed",
+                    Some("cancelled") => "cancelled",
+                    _ => "unknown",
+                });
+                insert_optional(&mut call.info, "summary", update.get("output").cloned());
+            }
+            crate::db::bound_json(&mut call.info);
+        }
+        self.emit_card(sink, &key);
+    }
+
+    fn flush_child(&mut self, sink: &GrokSubagentEvents<'_>, session: &str) {
+        let Some(child) = self.children.get_mut(session) else {
+            return;
+        };
+        if child.parts.is_empty() {
+            return;
+        }
+        let parts = std::mem::take(&mut child.parts);
+        let item_id = format!("{session}:m{}", child.next_message);
+        child.next_message += 1;
+        let turn = self
+            .calls
+            .get(&child.key)
+            .and_then(|call| call.turn_id.as_deref());
+        sink.emit(
+            turn,
+            "chat.subagent.item",
+            json!({"key":child.key,
+            "item":{"id":item_id,"role":"assistant","parts":parts}}),
+        );
+    }
+
+    fn child_frame(&mut self, sink: &GrokSubagentEvents<'_>, session: &str, raw: Value) {
+        let Some(bound) = self.sessions.get(session).cloned() else {
+            let frames = self.pending_frames.entry(session.into()).or_default();
+            if frames.len() >= 200 {
+                frames.pop_front();
+            }
+            frames.push_back(raw);
+            return;
+        };
+        let method = raw
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let Some(update) = raw.pointer("/params/update") else {
+            return;
+        };
+        let kind = update
+            .get("sessionUpdate")
+            .or_else(|| update.get("type"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if (method == "session/update" && kind == "tool_call")
+            || (method == "_x.ai/session_notification"
+                && matches!(
+                    kind,
+                    "response_completed" | "turn_completed" | "subagent_finished"
+                ))
+        {
+            self.flush_child(sink, &bound);
+        }
+        if method != "session/update" {
+            return;
+        }
+        let Some(child) = self.children.get_mut(&bound) else {
+            return;
+        };
+        match kind {
+            "agent_message_chunk" | "agent_thought_chunk" => {
+                if let Some(text) = grok_update_text(update) {
+                    let part_type = grok_part_type(kind).unwrap_or("text");
+                    if let Some(part) = child
+                        .parts
+                        .last_mut()
+                        .filter(|part| part["type"] == part_type)
+                    {
+                        if let Some(prior) = part["text"].as_str() {
+                            part["text"] = json!(format!("{prior}{text}"));
+                        }
+                    } else {
+                        child.parts.push(json!({"type":part_type,"text":text}));
+                    }
+                }
+            }
+            "user_message_chunk" => {
+                if let Some(text) = grok_update_text(update) {
+                    let item_id = format!("{bound}:m{}", child.next_message);
+                    child.next_message += 1;
+                    let turn = self
+                        .calls
+                        .get(&child.key)
+                        .and_then(|call| call.turn_id.as_deref());
+                    sink.emit(
+                        turn,
+                        "chat.subagent.item",
+                        json!({"key":child.key,
+                        "item":{"id":item_id,"role":"user","parts":[{"type":"text","text":text}]}}),
+                    );
+                }
+            }
+            "tool_call" | "tool_call_update" => {
+                let Some(id) = update.get("toolCallId").and_then(Value::as_str) else {
+                    return;
+                };
+                let prior = child.tools.get(id);
+                let status = update
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        prior
+                            .and_then(|prior| prior.get("status"))
+                            .and_then(Value::as_str)
+                    })
+                    .unwrap_or("running");
+                let prior_status = prior
+                    .and_then(|prior| prior.get("status"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("running");
+                if prior.is_some()
+                    && status == prior_status
+                    && !matches!(
+                        status,
+                        "completed" | "complete" | "success" | "failed" | "error"
+                    )
+                {
+                    return;
+                }
+                let mut tool = prior.cloned().unwrap_or_else(|| json!({}));
+                if let Some(fields) = update.as_object() {
+                    for (field, value) in fields {
+                        tool[field] = value.clone();
+                    }
+                }
+                if let Some(output) = tool
+                    .pointer_mut("/rawOutput/output")
+                    .filter(|v| v.is_array())
+                {
+                    *output = json!([]);
+                }
+                crate::db::bound_json(&mut tool);
+                if prior == Some(&tool) {
+                    return;
+                }
+                let part = grok_tool_part(&tool, "running");
+                child.tools.insert(id.into(), tool);
+                let turn = self
+                    .calls
+                    .get(&child.key)
+                    .and_then(|call| call.turn_id.as_deref());
+                sink.emit(
+                    turn,
+                    "chat.subagent.item",
+                    json!({"key":child.key,"merge":true,
+                    "item":{"id":format!("{bound}:{id}"),"role":"tool","parts":[part]}}),
+                );
+            }
+            _ => {}
+        }
+    }
 }
 
 struct GrokChat {
@@ -1266,25 +1653,62 @@ fn emit_grok_message(
     responder: &Mutex<Option<JsonLineResponder>>,
     raw: Value,
 ) {
-    if reject_unknown_grok_rpc(responder, &raw) {
-        return;
-    }
-    let native_id = raw
-        .get("params")
-        .and_then(|params| params.get("sessionId"))
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .or_else(|| native.lock().ok().and_then(|value| value.clone()));
     let method = raw
         .get("method")
         .and_then(Value::as_str)
         .unwrap_or("provider.event");
+    let update_session_id = raw
+        .get("params")
+        .and_then(|params| params.get("sessionId"))
+        .and_then(Value::as_str);
+    let parent_native_id = native.lock().ok().and_then(|value| value.clone());
+    if grok_reverse_rpc(&raw).is_none() && update_session_id.is_some_and(|update_id| {
+            parent_native_id
+                .as_deref()
+                .is_some_and(|parent| parent != update_id)
+        })
+    {
+        if let Ok(mut state) = ui.lock() {
+            let child_session = update_session_id.unwrap_or_default().to_owned();
+            state.subagents.child_frame(&GrokSubagentEvents {
+                events, session_id, native_id: parent_native_id.as_deref(),
+            }, &child_session, raw);
+        }
+        return;
+    }
+    // Reverse RPCs from a bound child belong to the parent Chat lifecycle.
+    // In particular, a child's turn/session ID must not rebind the parent
+    // session or make its approval impossible to submit.
+    let child_request = update_session_id.and_then(|id| {
+        ui.lock().ok().and_then(|state| {
+            let child = state.subagents.children.get(id)?;
+            let call = state.subagents.calls.get(&child.key)?;
+            Some((child.key.clone(), call.info.clone(), call.turn_id.clone()))
+        })
+    });
+    if reject_unknown_grok_rpc(responder, &raw) {
+        return;
+    }
+    let native_id = if child_request.is_some() {
+        parent_native_id.clone()
+    } else {
+        raw.get("params")
+            .and_then(|params| params.get("sessionId"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or(parent_native_id)
+    };
     let params = raw.get("params").cloned().unwrap_or_else(|| raw.clone());
-    let turn_id = params
-        .get("turnId")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .or_else(|| active_turn.lock().ok().and_then(|value| value.clone()));
+    let turn_id = if let Some((_, _, turn)) = &child_request {
+        turn.clone()
+            .or_else(|| active_turn.lock().ok().and_then(|value| value.clone()))
+    } else {
+        params
+            .get("turnId")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| active_turn.lock().ok().and_then(|value| value.clone()))
+    };
     if method == "session/request_permission" && raw.get("id").is_some() {
         let rpc_id = raw.get("id").cloned().unwrap_or(Value::Null);
         let approval_id = encode_approval_id(&rpc_id);
@@ -1305,7 +1729,7 @@ fn emit_grok_message(
                 },
             );
         }
-        let payload = approval_payload(
+        let mut payload = approval_payload(
             &approval_id,
             "grok",
             "session/request_permission",
@@ -1315,6 +1739,15 @@ fn emit_grok_message(
             turn_id.as_deref(),
             !choices.is_empty(),
         );
+        if let Some((key, info, _)) = &child_request {
+            let label = info
+                .get("description")
+                .and_then(Value::as_str)
+                .filter(|label| !label.is_empty())
+                .or_else(|| info.get("agentType").and_then(Value::as_str))
+                .unwrap_or("Subagent");
+            payload["subagent"] = json!({"key":key,"label":label});
+        }
         emit(
             events,
             "grok",
@@ -1344,6 +1777,16 @@ fn emit_grok_message(
         .or_else(|| update.get("type"))
         .and_then(Value::as_str)
         .unwrap_or(method);
+    if method == "_x.ai/session_notification"
+        && matches!(kind, "subagent_spawned" | "subagent_progress" | "subagent_finished")
+    {
+        if let Ok(mut state) = ui.lock() {
+            state.subagents.notification(&GrokSubagentEvents {
+                events, session_id, native_id: native_id.as_deref(),
+            }, kind, update, turn_id.as_deref());
+        }
+        return;
+    }
     if kind == "retry_state" {
         if let Some(turn_id) = turn_id.as_deref() {
             let retry = json!({
@@ -1369,6 +1812,14 @@ fn emit_grok_message(
         return;
     }
     if kind == "tool_call" || kind == "tool_call_update" || kind.contains("toolCall") {
+        if let Ok(mut state) = ui.lock() {
+            if let Some(key) = grok_spawn_update(&mut state.subagents, update, turn_id.as_deref()) {
+                state.subagents.emit_card(&GrokSubagentEvents {
+                    events, session_id, native_id: native_id.as_deref(),
+                }, &key);
+                return;
+            }
+        }
         emit(
             events,
             "grok",
@@ -1770,15 +2221,35 @@ fn grok_history_item(row: &Value) -> Option<Value> {
 }
 
 fn grok_transcript(raw: &[Value]) -> Vec<Value> {
+    let parent = raw.iter().find_map(|message| message.pointer("/result/sessionId").and_then(Value::as_str))
+        .or_else(|| raw.iter().find_map(|message| {
+            (message.pointer("/params/update/_meta/x.ai~1tool/name").and_then(Value::as_str)
+                == Some("spawn_subagent"))
+                .then(|| message.pointer("/params/sessionId").and_then(Value::as_str)).flatten()
+        }));
+    let mut subagents = GrokSubagents::default();
     let entries: Vec<Value> = raw.iter()
         .enumerate()
         .filter_map(|(index, message)| {
+            if parent.is_some_and(|parent| message.pointer("/params/sessionId")
+                .and_then(Value::as_str).is_some_and(|session| session != parent)) {
+                return None;
+            }
             let update = message.get("params")?.get("update")?;
             let kind = update
                 .get("sessionUpdate")
                 .or_else(|| update.get("type"))?
                 .as_str()?;
             if kind == "tool_call" || kind == "tool_call_update" || kind.contains("toolCall") {
+                if let Some(key) = grok_spawn_update(&mut subagents, update, None) {
+                    let mut info = subagents.calls.get(&key)?.info.clone();
+                    info["key"] = json!(key);
+                    info["provider"] = json!("grok");
+                    info["transcript"] = json!("none");
+                    return Some(json!({"id":format!("grok-subagent-{key}"),"role":"assistant",
+                        "parts":[{"type":"subagent","toolId":key,"status":info["status"],"data":info}],
+                        "createdAt":Utc::now().to_rfc3339()}));
+                }
                 let tool_id = update.get("toolCallId").and_then(Value::as_str)?;
                 return Some(json!({
                     "id":format!("grok-tool-{tool_id}"),
@@ -1806,7 +2277,13 @@ fn grok_transcript(raw: &[Value]) -> Vec<Value> {
         .collect();
     let mut transcript = Vec::with_capacity(entries.len());
     for entry in entries {
-        if entry.get("role").and_then(Value::as_str) == Some("tool") {
+        if entry.pointer("/parts/0/type").and_then(Value::as_str) == Some("subagent") {
+            if let Some(item) = transcript.iter_mut().find(|item: &&mut Value| item["id"] == entry["id"]) {
+                item["parts"] = entry["parts"].clone();
+            } else {
+                transcript.push(entry);
+            }
+        } else if entry.get("role").and_then(Value::as_str) == Some("tool") {
             crate::file_references::upsert_history_tool(&mut transcript, entry);
         } else {
             transcript.push(entry);
@@ -2123,6 +2600,655 @@ mod tests {
         );
     }
 
+    const GROK_PROBE_PARENT: &str = "01a116d7-5d4a-7051-a77a-012ab1f9e5bd";
+    const GROK_PROBE_CHILD: &str = "01a116d7-a2bc-7cd2-9b24-6460dc1f32df";
+    const GROK_PROBE_SPAWN: &str = "call-3656ca5d-0fff-4f26-918c-7d2207728185-0";
+
+    fn grok_probe_frames() -> Vec<Value> {
+        include_str!("../../tests/fixtures/grok-subagent-frames.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|row| row["direction"] == "in")
+            .map(|row| row["frame"].clone())
+            .collect()
+    }
+
+    struct GrokSubagentReplay {
+        events: ScopedProviderEvents,
+        received: broadcast::Receiver<ProviderEvent>,
+        native: Mutex<Option<String>>,
+        active: Mutex<Option<String>>,
+        permissions: Mutex<HashMap<String, PermissionRequest>>,
+        ui: Mutex<GrokUiState>,
+    }
+
+    impl GrokSubagentReplay {
+        fn new() -> Self {
+            let (sender, received) = crate::provider_events::tap_channel(512);
+            Self {
+                events: ScopedProviderEvents::new(sender, "subagent-worker"),
+                received,
+                native: Mutex::new(Some(GROK_PROBE_PARENT.into())),
+                active: Mutex::new(Some("parent-turn".into())),
+                permissions: Mutex::new(HashMap::new()),
+                ui: Mutex::new(GrokUiState::default()),
+            }
+        }
+
+        fn raw(&self, raw: Value) {
+            emit_grok_message(
+                &self.events,
+                "grok-chat",
+                &self.native,
+                &self.active,
+                &self.permissions,
+                &self.ui,
+                &Mutex::new(None),
+                raw,
+            );
+        }
+
+        fn update(&self, session: &str, update: Value) {
+            self.raw(
+                json!({"method":"session/update","params":{"sessionId":session,"update":update}}),
+            );
+        }
+
+        fn notification(&self, update: Value) {
+            self.raw(json!({"method":"_x.ai/session_notification","params":{
+                "sessionId":GROK_PROBE_PARENT,"update":update}}));
+        }
+
+        fn spawn(&self, key: &str, description: &str) {
+            self.update(GROK_PROBE_PARENT, json!({"sessionUpdate":"tool_call","toolCallId":key,
+                "_meta":{"x.ai/tool":{"name":"spawn_subagent"}},
+                "rawInput":{"description":description,"prompt":"Inspect files","subagent_type":"explore"}}));
+        }
+
+        fn bind(&self, child: &str, description: &str) {
+            self.notification(json!({"sessionUpdate":"subagent_spawned","subagent_id":child,
+                "child_session_id":child,"description":description,"subagent_type":"explore","model":"grok-4.6"}));
+        }
+
+        fn drain(&mut self) -> Vec<ProviderEvent> {
+            std::iter::from_fn(|| self.received.try_recv().ok()).collect()
+        }
+    }
+
+    #[test]
+    fn grok_child_permission_uses_normal_request_path_with_subagent_label() {
+        let mut replay = GrokSubagentReplay::new();
+        replay.spawn("spawn", "Count files");
+        replay.bind("child", "Count files");
+        replay.drain();
+        replay.raw(json!({"id":42,"method":"session/request_permission","params":{
+            "sessionId":"child","toolCall":{"title":"Read files"},
+            "options":[{"optionId":"allow","kind":"allow_once","name":"Allow"}]}}));
+        let events = replay.drain();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "chat.approval");
+        assert_eq!(events[0].native_id.as_deref(), Some(GROK_PROBE_PARENT));
+        assert_eq!(events[0].turn_id.as_deref(), Some("parent-turn"));
+        assert_eq!(events[0].data["part"]["data"]["subagent"],
+            json!({"key":"spawn","label":"Count files"}));
+        let permissions = replay.permissions.lock().unwrap();
+        let pending = permissions.values().next().unwrap();
+        assert_eq!(pending.rpc_id, json!(42));
+        assert_eq!(pending.choices[0].choice_id, "allow");
+        drop(permissions);
+        assert!(replay.ui.lock().unwrap().subagents.pending_frames.is_empty());
+        replay.update("child", json!({"sessionUpdate":"user_message_chunk","content":{"text":"child prompt"}}));
+        let notifications = replay.drain();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].kind, "chat.subagent.item");
+        assert_eq!(notifications[0].data["key"], "spawn");
+        replay.raw(json!({"id":43,"method":"_x.ai/ask_user_question","params":{"sessionId":"child"}}));
+        assert!(replay.ui.lock().unwrap().subagents.pending_frames.is_empty());
+        assert!(replay.drain().is_empty());
+        assert_eq!(replay.active.lock().unwrap().as_deref(), Some("parent-turn"));
+        assert_eq!(replay.native.lock().unwrap().as_deref(), Some(GROK_PROBE_PARENT));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn grok_child_permission_approve_writes_selected_rpc_response() {
+        let output_dir = tempfile::tempdir().unwrap();
+        let output = output_dir.path().join("responses.jsonl");
+        let output_path = output.to_string_lossy().replace('\'', "''");
+        let script = format!(
+            "$ErrorActionPreference='Stop'; Get-ChildItem Env: | Where-Object {{ $_.Name -ieq 'PATH' }} | Remove-Item; if (Get-ChildItem Env: | Where-Object {{ $_.Name -ieq 'PATH' }}) {{ exit 3 }}; $start=[Console]::In.ReadLine(); if ($null -eq $start) {{ exit 2 }}; [Console]::Out.WriteLine('{{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"session/request_permission\",\"params\":{{\"sessionId\":\"child\",\"turnId\":\"child-turn\",\"toolCall\":{{\"title\":\"Read files\"}},\"options\":[{{\"optionId\":\"allow\",\"kind\":\"allow_once\",\"name\":\"Allow\"}}]}}}}'); [Console]::Out.Flush(); $permission=[Console]::In.ReadLine(); [Console]::Out.WriteLine('{{\"jsonrpc\":\"2.0\",\"id\":43,\"method\":\"_x.ai/ask_user_question\",\"params\":{{\"sessionId\":\"child\"}}}}'); [Console]::Out.Flush(); $question=[Console]::In.ReadLine(); [System.IO.File]::WriteAllText('{}', ($permission + \"`n\" + $question))",
+            output_path
+        );
+        let spec = CommandSpec::from_path(
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+                .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+            vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), script],
+        )
+        .unwrap();
+        let (sender, mut received) = crate::provider_events::tap_channel(16);
+        let events = ScopedProviderEvents::new(sender, "grok-approval-test");
+        let native = Arc::new(Mutex::new(Some(GROK_PROBE_PARENT.into())));
+        let active_turn = Arc::new(Mutex::new(Some("parent-turn".into())));
+        let permissions = Arc::new(Mutex::new(HashMap::new()));
+        let ui = Arc::new(Mutex::new(GrokUiState::default()));
+        let responder = Arc::new(Mutex::new(None));
+        emit_grok_message(
+            &events,
+            "grok-chat",
+            &native,
+            &active_turn,
+            &permissions,
+            &ui,
+            &responder,
+            json!({"method":"session/update","params":{"sessionId":GROK_PROBE_PARENT,"update":{"sessionUpdate":"tool_call","toolCallId":"spawn","_meta":{"x.ai/tool":{"name":"spawn_subagent"}},"rawInput":{"description":"Count files","prompt":"Inspect files","subagent_type":"explore"}}}}),
+        );
+        emit_grok_message(
+            &events,
+            "grok-chat",
+            &native,
+            &active_turn,
+            &permissions,
+            &ui,
+            &responder,
+            json!({"method":"_x.ai/session_notification","params":{"sessionId":GROK_PROBE_PARENT,"update":{"sessionUpdate":"subagent_spawned","subagent_id":"child","child_session_id":"child","description":"Count files"}}}),
+        );
+        while received.try_recv().is_ok() {}
+        let callback_events = events.clone();
+        let callback_native = Arc::clone(&native);
+        let callback_turn = Arc::clone(&active_turn);
+        let callback_permissions = Arc::clone(&permissions);
+        let callback_ui = Arc::clone(&ui);
+        let callback_responder = Arc::clone(&responder);
+        let process = JsonLineProcess::spawn(
+            "fake-grok-child-permission",
+            &spec,
+            None,
+            &[],
+            EnvelopeStyle::JsonRpc2,
+            Arc::new(move |raw| {
+                emit_grok_message(
+                    &callback_events,
+                    "grok-chat",
+                    &callback_native,
+                    &callback_turn,
+                    &callback_permissions,
+                    &callback_ui,
+                    &callback_responder,
+                    raw,
+                );
+            }),
+        )
+        .unwrap();
+        *responder.lock().unwrap() = Some(process.responder());
+        let mut chat = GrokChat {
+            process,
+            session_id: "grok-chat".into(),
+            native_id: GROK_PROBE_PARENT.into(),
+            events,
+            active_turn,
+            permissions,
+            ui,
+            turn_started: Arc::new(Mutex::new(None)),
+            usage_reply: None,
+        };
+        chat.process.notification("qa/start", json!({})).unwrap();
+        let approval = (0..250)
+            .find_map(|_| match received.try_recv() {
+                Ok(event) if event.kind == "chat.approval" => Some(event),
+                Ok(_) | Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                    None
+                }
+                Err(error) => panic!("fake provider event stream failed: {error}"),
+            })
+            .expect("child permission reached normal request handling");
+        assert_eq!(approval.kind, "chat.approval");
+        assert_eq!(approval.native_id.as_deref(), Some(GROK_PROBE_PARENT));
+        assert_eq!(approval.turn_id.as_deref(), Some("parent-turn"));
+        assert_eq!(
+            approval.data["part"]["data"]["subagent"],
+            json!({"key":"spawn","label":"Count files"})
+        );
+        let approval_id = encode_approval_id(&json!(42));
+        chat.approve("parent-turn", &approval_id, "allow", "approve-child")
+            .unwrap();
+        let mut responses = None;
+        for _ in 0..50 {
+            let text = std::fs::read_to_string(&output).unwrap_or_default();
+            if !text.is_empty() {
+                responses = Some(
+                    text.lines()
+                        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                        .collect::<Vec<_>>(),
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            responses.as_ref().unwrap()[0],
+            json!({"jsonrpc":"2.0","id":42,"result":{"outcome":{"outcome":"selected","optionId":"allow"}}})
+        );
+        assert_eq!(
+            responses.unwrap()[1],
+            json!({"jsonrpc":"2.0","id":43,"error":{"code":-32601,"message":"Method not found"}})
+        );
+    }
+
+    #[test]
+    fn grok_subagent_probe_replay_keeps_parent_turn_and_projects_child_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Database::open(&dir.path().join("runtime.sqlite")).unwrap();
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO sessions(id,title,provider,mode,status,created_at,updated_at) VALUES ('grok-chat','test','grok','chat','running','now','now')", [])?;
+            Ok(())
+        }).unwrap();
+        let mut replay = GrokSubagentReplay::new();
+        let mut observed = Vec::new();
+        for raw in grok_probe_frames() {
+            let child =
+                raw.pointer("/params/sessionId").and_then(Value::as_str) == Some(GROK_PROBE_CHILD);
+            replay.raw(raw);
+            assert_eq!(
+                replay.active.lock().unwrap().as_deref(),
+                Some("parent-turn")
+            );
+            assert_eq!(
+                replay.native.lock().unwrap().as_deref(),
+                Some(GROK_PROBE_PARENT)
+            );
+            let events = replay.drain();
+            if child {
+                assert!(events
+                    .iter()
+                    .all(|event| event.kind == "chat.subagent.item"));
+            }
+            for event in events {
+                assert_eq!(event.native_id.as_deref(), Some(GROK_PROBE_PARENT));
+                assert_eq!(event.worker_token.as_deref(), Some("subagent-worker"));
+                assert_eq!(
+                    event.turn_id.as_deref(),
+                    if event.kind == "chat.ui" {
+                        None
+                    } else {
+                        Some("parent-turn")
+                    }
+                );
+                if event.kind == "chat.subagent.item" {
+                    let tool = event.data["item"]["role"] == "tool";
+                    assert_eq!(
+                        event.data.get("merge").and_then(Value::as_bool),
+                        tool.then_some(true)
+                    );
+                }
+                db.record_provider_event(
+                    "grok-chat",
+                    event.turn_id.as_deref(),
+                    &event.kind,
+                    &event.data,
+                )
+                .unwrap();
+                observed.push(event);
+            }
+        }
+        let cards: Vec<_> = observed
+            .iter()
+            .filter(|event| event.kind == "chat.subagent")
+            .collect();
+        assert_eq!(cards.first().unwrap().data["info"]["status"], "running");
+        assert_eq!(cards.first().unwrap().data["info"]["background"], false);
+        assert!(cards
+            .iter()
+            .all(|event| event.data["key"] == GROK_PROBE_SPAWN));
+        let info = &cards.last().unwrap().data["info"];
+        assert_eq!(info["status"], "completed");
+        assert_eq!(info["description"], "Count files");
+        assert_eq!(info["agentType"], "general-purpose");
+        assert_eq!(
+            info["native"],
+            json!({"kind":"grok-subagent","id":GROK_PROBE_CHILD})
+        );
+        assert!(info["summary"].as_str().unwrap().contains("**3 items**"));
+        assert_eq!(
+            info["usage"],
+            json!({"totalTokens":10548,"toolUses":2,"durationMs":20161})
+        );
+        let (items, _, truncated) = db
+            .subagent_items_after("grok-chat", GROK_PROBE_SPAWN, 0)
+            .unwrap();
+        assert!(!truncated);
+        assert_eq!(items.iter().filter(|item| item.role == "user").count(), 1);
+        assert!((1..=2).contains(
+            &items
+                .iter()
+                .filter(|item| item.role == "assistant"
+                    && item.parts.iter().any(|part| part["type"] == "text"))
+                .count()
+        ));
+        let tools: Vec<_> = items
+            .iter()
+            .flat_map(|item| item.parts.iter())
+            .filter(|part| part["type"] == "tool")
+            .collect();
+        assert_eq!(tools.len(), 2);
+        assert!(tools.iter().all(|part| part["status"] == "complete"));
+        for name in ["list_dir", "run_terminal_command"] {
+            assert!(tools
+                .iter()
+                .any(|part| part.pointer("/data/_meta/x.ai~1tool/name") == Some(&json!(name))));
+        }
+        assert_eq!(
+            tools
+                .iter()
+                .find(|part| part.pointer("/data/rawOutput/type") == Some(&json!("Bash")))
+                .unwrap()
+                .pointer("/data/rawOutput/output"),
+            Some(&json!([]))
+        );
+        let parent = db.chat_items("grok-chat").unwrap();
+        assert_eq!(
+            parent
+                .iter()
+                .flat_map(|item| &item.parts)
+                .filter(|part| part["type"] == "subagent")
+                .count(),
+            1
+        );
+        assert!(parent
+            .iter()
+            .flat_map(|item| &item.parts)
+            .all(|part| part["type"] != "tool"));
+        assert_eq!(
+            parent
+                .iter()
+                .flat_map(|item| &item.parts)
+                .filter_map(|part| part["text"].as_str())
+                .collect::<String>(),
+            "3"
+        );
+        assert!(!observed
+            .iter()
+            .any(|event| event.kind.starts_with("chat.turn.")));
+    }
+
+    #[test]
+    fn grok_subagent_buffers_probe_child_frames_until_binding() {
+        let frames = grok_probe_frames();
+        let mut replay = GrokSubagentReplay::new();
+        replay.spawn(GROK_PROBE_SPAWN, "Count files");
+        replay.drain();
+        for frame in frames
+            .iter()
+            .filter(|frame| frame.pointer("/params/sessionId") == Some(&json!(GROK_PROBE_CHILD)))
+        {
+            replay.raw(frame.clone());
+        }
+        assert!(replay.drain().is_empty());
+        replay.bind(GROK_PROBE_CHILD, "Count files");
+        let events = replay.drain();
+        assert_eq!(events[0].kind, "chat.subagent");
+        assert!(events.iter().skip(1).all(
+            |event| event.kind == "chat.subagent.item" && event.data["key"] == GROK_PROBE_SPAWN
+        ));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.data["item"]["role"] == "user")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.data["item"]["role"] == "tool"
+                    && event.data["item"]["parts"][0]["status"] == "complete")
+                .count(),
+            2
+        );
+        assert!(replay
+            .ui
+            .lock()
+            .unwrap()
+            .subagents
+            .pending_frames
+            .is_empty());
+    }
+
+    #[test]
+    fn grok_foreign_frames_never_reach_parent_and_buffer_drops_oldest() {
+        let mut replay = GrokSubagentReplay::new();
+        for index in 0..205 {
+            replay.update(
+                "unknown",
+                json!({"sessionUpdate":"user_message_chunk","content":{"text":index.to_string()}}),
+            );
+        }
+        for method in [
+            "_x.ai/session_notification",
+            "_x.ai/queue/changed",
+            "_x.ai/mcp_initialized",
+            "_x.ai/models/update",
+            "session/request_permission",
+        ] {
+            replay.raw(
+                json!({"method":method,"params":{"sessionId":"foreign",
+                "turnId":"child-turn","update":{"sessionUpdate":"turn_completed"},"options":[]}}),
+            );
+        }
+        assert!(replay.drain().is_empty());
+        assert_eq!(
+            replay.active.lock().unwrap().as_deref(),
+            Some("parent-turn")
+        );
+        assert_eq!(
+            replay.native.lock().unwrap().as_deref(),
+            Some(GROK_PROBE_PARENT)
+        );
+        assert!(replay.permissions.lock().unwrap().is_empty());
+        assert!(replay.ui.lock().unwrap().options.is_empty());
+        let ui = replay.ui.lock().unwrap();
+        let buffered = &ui.subagents.pending_frames["unknown"];
+        assert_eq!(buffered.len(), 200);
+        assert_eq!(
+            buffered.front().unwrap()["params"]["update"]["content"]["text"],
+            "5"
+        );
+        drop(ui);
+        replay.bind("unknown", "No matching spawn");
+        let events = replay.drain();
+        assert_eq!(events.len(), 201);
+        assert_eq!(events[0].data["key"], "unknown");
+        assert_eq!(events[1].data["item"]["parts"][0]["text"], "5");
+    }
+
+    #[test]
+    fn grok_subagent_binding_matches_description_then_spawn_order() {
+        let replay = GrokSubagentReplay::new();
+        for (key, description) in [("a", "Same"), ("b", "Other"), ("c", "Same")] {
+            replay.spawn(key, description);
+        }
+        for (child, description) in [
+            ("child-b", "Other"),
+            ("child-a", "Same"),
+            ("child-c", "Unmatched"),
+            ("orphan", "New"),
+        ] {
+            replay.bind(child, description);
+        }
+        replay.bind("child-b", "Other");
+        let ui = replay.ui.lock().unwrap();
+        for (child, key) in [
+            ("child-b", "b"),
+            ("child-a", "a"),
+            ("child-c", "c"),
+            ("orphan", "orphan"),
+        ] {
+            assert_eq!(ui.subagents.children[child].key, key);
+        }
+        assert!(ui.subagents.pending_spawns.is_empty());
+    }
+
+    #[test]
+    fn grok_subagent_chunks_flush_as_full_items_at_each_boundary() {
+        for boundary in [
+            "tool_call",
+            "response_completed",
+            "turn_completed",
+            "subagent_finished",
+        ] {
+            let mut replay = GrokSubagentReplay::new();
+            replay.spawn("spawn", "Inspect");
+            replay.bind("child", "Inspect");
+            replay.drain();
+            for (kind, text) in [
+                ("agent_thought_chunk", "Think"),
+                ("agent_message_chunk", "Hello "),
+                ("agent_message_chunk", "world"),
+            ] {
+                replay.update(
+                    "child",
+                    json!({"sessionUpdate":kind,"content":{"text":text}}),
+                );
+            }
+            assert!(replay.drain().is_empty());
+            if boundary == "tool_call" {
+                replay.update(
+                    "child",
+                    json!({"sessionUpdate":boundary,"toolCallId":"tool"}),
+                );
+            } else if boundary == "subagent_finished" {
+                replay.notification(json!({"sessionUpdate":boundary,"child_session_id":"child","status":"completed"}));
+            } else {
+                replay.raw(json!({"method":"_x.ai/session_notification","params":{"sessionId":"child","update":{"sessionUpdate":boundary}}}));
+            }
+            let events = replay.drain();
+            assert_eq!(events[0].kind, "chat.subagent.item");
+            assert!(events[0].data.get("merge").is_none());
+            assert_eq!(events[0].data["item"]["id"], "child:m0");
+            assert_eq!(
+                events[0].data["item"]["parts"],
+                json!([
+                {"type":"thinking","text":"Think"},{"type":"text","text":"Hello world"}])
+            );
+        }
+    }
+
+    #[test]
+    fn grok_subagent_tool_status_filter_strips_bytes_and_preserves_input() {
+        let mut replay = GrokSubagentReplay::new();
+        replay.spawn("spawn", "Inspect");
+        replay.bind("child", "Inspect");
+        replay.drain();
+        replay.update("child", json!({"sessionUpdate":"tool_call","toolCallId":"tool",
+            "_meta":{"x.ai/tool":{"name":"run_terminal_command","label":"Run Command"}},"rawInput":{"command":"echo test"}}));
+        for status in ["in_progress", "in_progress", "in_progress", "failed", "failed"] {
+            replay.update(
+                "child",
+                json!({"sessionUpdate":"tool_call_update","toolCallId":"tool","status":status,
+                "rawOutput":{"type":"Bash","output":[1,2,3],"output_for_prompt":"test"}}),
+            );
+        }
+        let events = replay.drain();
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|event| event.data["merge"] == true));
+        let tool = &events.last().unwrap().data["item"]["parts"][0];
+        assert_eq!(tool["status"], "failed");
+        assert_eq!(tool["toolName"], "Run Command");
+        assert_eq!(tool["data"]["rawInput"]["command"], "echo test");
+        assert_eq!(tool["data"]["rawOutput"]["output"], json!([]));
+        assert_eq!(tool["data"]["rawOutput"]["output_for_prompt"], "test");
+        replay.update("child", json!({"sessionUpdate":"tool_call_update","toolCallId":"tool","status":"failed",
+            "rawOutput":{"type":"Bash","output":[4,5,6],"output_for_prompt":"final error"}}));
+        let enriched = replay.drain();
+        assert_eq!(enriched.len(), 1);
+        assert_eq!(enriched[0].data["item"]["parts"][0]["data"]["rawOutput"]["output_for_prompt"], "final error");
+    }
+
+    #[test]
+    fn grok_background_spawn_waits_for_finished_and_keeps_original_turn() {
+        let mut replay = GrokSubagentReplay::new();
+        replay.spawn("spawn", "Inspect");
+        replay.update(GROK_PROBE_PARENT, json!({"sessionUpdate":"tool_call_update","toolCallId":"spawn",
+            "rawInput":{"run_in_background":true},"status":"completed","rawOutput":{"subagent_id":"child"}}));
+        replay.bind("child", "Inspect");
+        assert!(replay.drain().iter().all(
+            |event| event.kind == "chat.subagent" && event.data["info"]["status"] == "running"
+        ));
+        *replay.active.lock().unwrap() = Some("new-turn".into());
+        replay.notification(
+            json!({"sessionUpdate":"subagent_progress","subagent_id":"child",
+            "tokens_used":12,"tool_call_count":2,"duration_ms":34}),
+        );
+        replay.notification(
+            json!({"sessionUpdate":"subagent_finished","subagent_id":"child",
+            "status":"completed","output":"Done","tool_calls":2,"duration_ms":45}),
+        );
+        let events = replay.drain();
+        assert!(events
+            .iter()
+            .all(|event| event.turn_id.as_deref() == Some("parent-turn")));
+        assert_eq!(events.last().unwrap().data["info"]["status"], "completed");
+        assert_eq!(events.last().unwrap().data["info"]["background"], true);
+        assert_eq!(
+            events.last().unwrap().data["info"]["usage"],
+            json!({"totalTokens":12,"toolUses":2,"durationMs":45})
+        );
+        assert_eq!(replay.active.lock().unwrap().as_deref(), Some("new-turn"));
+    }
+
+    #[test]
+    fn grok_subagent_finished_maps_terminal_and_unknown_statuses() {
+        for (status, expected) in [
+            ("completed", "completed"),
+            ("failed", "failed"),
+            ("cancelled", "cancelled"),
+            ("other", "unknown"),
+        ] {
+            let mut replay = GrokSubagentReplay::new();
+            replay.bind("child", "Inspect");
+            replay.drain();
+            replay.notification(json!({"sessionUpdate":"subagent_finished","subagent_id":"child","status":status,"output":"Result"}));
+            let events = replay.drain();
+            assert_eq!(events[0].data["info"]["status"], expected);
+            assert_eq!(events[0].data["info"]["summary"], "Result");
+        }
+        let mut replay = GrokSubagentReplay::new();
+        replay.spawn("failed", "Inspect");
+        replay.update(
+            GROK_PROBE_PARENT,
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"failed","status":"failed"}),
+        );
+        assert_eq!(
+            replay.drain().last().unwrap().data["info"]["status"],
+            "failed"
+        );
+    }
+
+    #[test]
+    fn grok_subagent_history_replaces_spawn_tool_with_static_card() {
+        let transcript = grok_transcript(&grok_probe_frames());
+        let cards: Vec<_> = transcript
+            .iter()
+            .filter(|item| item["parts"][0]["type"] == "subagent")
+            .collect();
+        assert_eq!(cards.len(), 1);
+        let info = &cards[0]["parts"][0]["data"];
+        assert_eq!(info["key"], GROK_PROBE_SPAWN);
+        assert_eq!(info["provider"], "grok");
+        assert_eq!(info["status"], "completed");
+        assert_eq!(info["transcript"], "none");
+        assert!(info["summary"].as_str().unwrap().contains("**3 items**"));
+        assert!(transcript.iter().all(|item| item["role"] != "tool"));
+        assert_eq!(
+            transcript
+                .iter()
+                .flat_map(|item| item["parts"].as_array().unwrap())
+                .filter_map(|part| part["text"].as_str())
+                .collect::<String>(),
+            "3"
+        );
+    }
+
     #[test]
     fn grok_native_notification_paths_keep_the_worker_token() {
         let (sender, mut receiver) = crate::provider_events::tap_channel(32);
@@ -2157,6 +3283,45 @@ mod tests {
             }
             assert!(count > 0);
         }
+    }
+
+    #[test]
+    fn grok_session_update_rejects_foreign_and_accepts_matching_or_missing_session_id() {
+        let (sender, mut receiver) = crate::provider_events::tap_channel(4);
+        let events = ScopedProviderEvents::new(sender, "test-worker");
+        let native = Mutex::new(Some("parent".to_owned()));
+        let active = Mutex::new(Some("turn".to_owned()));
+        let permissions = Mutex::new(HashMap::new());
+        let ui = Mutex::new(GrokUiState::default());
+        for raw in [
+            json!({"method":"session/update","params":{"sessionId":"parent","update":{"sessionUpdate":"agent_message_chunk","content":{"text":"matching"}}}}),
+            json!({"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"missing"}}}}),
+        ] {
+            emit_grok_message(
+                &events,
+                "session",
+                &native,
+                &active,
+                &permissions,
+                &ui,
+                &Mutex::new(None),
+                raw,
+            );
+            let event = receiver.try_recv().unwrap();
+            assert_eq!(event.kind, "chat.delta");
+            assert_eq!(event.native_id.as_deref(), Some("parent"));
+        }
+        emit_grok_message(
+            &events,
+            "session",
+            &native,
+            &active,
+            &permissions,
+            &ui,
+            &Mutex::new(None),
+            json!({"method":"session/update","params":{"sessionId":"child","update":{"sessionUpdate":"agent_message_chunk","content":{"text":"foreign"}}}}),
+        );
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]

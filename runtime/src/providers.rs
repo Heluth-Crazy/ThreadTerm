@@ -251,6 +251,15 @@ pub struct TerminalCommand {
     pub display: String,
 }
 
+/// Durable native identity used by provider readers that run without a live
+/// Chat worker. This deliberately contains only the persisted session values
+/// needed to locate provider-owned transcript files.
+#[derive(Debug, Clone)]
+pub(crate) struct NativeSessionRef {
+    pub(crate) native_id: String,
+    pub(crate) cwd: String,
+}
+
 pub trait ProviderRuntime: Send + Sync {
     fn capabilities(&self) -> Vec<Value>;
     fn terminal_command(
@@ -337,6 +346,16 @@ pub(crate) trait ProviderAdapter: Send + Sync {
         cwd: Option<&str>,
     ) -> Result<Value, ProviderError>;
     fn history_read(&self, native_id: &str) -> Result<Value, ProviderError>;
+    fn subagent_transcript(
+        &self,
+        _session: &NativeSessionRef,
+        _info: &Value,
+    ) -> Result<Vec<Value>, ProviderError> {
+        Err(ProviderError::new(
+            "unsupported",
+            "This agent does not expose subagent transcripts",
+        ))
+    }
     fn open_chat(
         &self,
         session_id: &str,
@@ -719,6 +738,15 @@ impl Providers {
     ) -> Result<(), ProviderError> {
         self.adapter(provider)?
             .preflight_terminal_resume(cwd, native_id)
+    }
+
+    pub(crate) fn subagent_transcript(
+        &self,
+        provider: &str,
+        session: &NativeSessionRef,
+        info: &Value,
+    ) -> Result<Vec<Value>, ProviderError> {
+        self.adapter(provider)?.subagent_transcript(session, info)
     }
 
     fn worker_handle(&self, session_id: &str) -> Result<SharedChat, ProviderError> {

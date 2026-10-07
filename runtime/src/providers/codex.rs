@@ -53,6 +53,7 @@ impl CodexAdapter {
         let owned_session_id = session_id.to_owned();
         let worker_token = worker_token.to_owned();
         let delegation_tools = tools.is_some();
+        let subagents = Mutex::new(CodexSubagents::default());
         let on_message = Arc::new(move |raw: Value| {
             if delegation_tools && approve_threadterm_elicitation(&responder, &raw) {
                 return;
@@ -67,6 +68,7 @@ impl CodexAdapter {
                     &ui,
                     &responder,
                     &worker_token,
+                    &subagents,
                     raw,
                 );
             }
@@ -2274,6 +2276,313 @@ fn wait_for_codex_native_turn(
     }
 }
 
+#[derive(Clone)]
+struct CodexChildThread {
+    key: String,
+    label: String,
+    turn_id: Option<String>,
+}
+
+#[derive(Default)]
+struct CodexSubagents {
+    children: HashMap<String, CodexChildThread>,
+    // Child notifications must not even read ActiveCodexTurn. Remember the
+    // parent's public turn here, including for background and nested children.
+    parent_turn_id: Option<String>,
+}
+
+impl CodexSubagents {
+    fn child(
+        &mut self,
+        id: &str,
+        params: &Value,
+        parent: Option<&str>,
+    ) -> Option<CodexChildThread> {
+        let thread = params.get("thread").unwrap_or(params);
+        let source = thread.get("source");
+        let subagent = source.and_then(|source| {
+            source
+                .get("subAgent")
+                .or_else(|| source.get("subagent"))
+                .or_else(|| source.get("sub_agent"))
+        });
+        let spawn = subagent.and_then(|source| source.get("thread_spawn"));
+        let parent_id = thread
+            .get("parentThreadId")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                spawn
+                    .and_then(|spawn| spawn.get("parent_thread_id"))
+                    .and_then(Value::as_str)
+            });
+        let root = parent_id
+            .and_then(|parent| self.children.get(parent))
+            .cloned();
+        let known = self.children.get(id).cloned();
+        if known.is_none()
+            && root.is_none()
+            && !parent_id.is_some_and(|id| Some(id) == parent && parent.is_some())
+            && subagent.is_none()
+            && !source
+                .and_then(Value::as_str)
+                .is_some_and(|source| source.to_ascii_lowercase().starts_with("subagent"))
+        {
+            return None;
+        }
+        let label = codex_child_field(thread, spawn, "agentNickname", "agent_nickname")
+            .or_else(|| codex_child_field(thread, spawn, "agentRole", "agent_role"))
+            .or_else(|| codex_child_field(thread, spawn, "agentPath", "agent_path"));
+        let child = CodexChildThread {
+            key: root
+                .as_ref()
+                .map(|root| root.key.clone())
+                .or_else(|| known.as_ref().map(|child| child.key.clone()))
+                .unwrap_or_else(|| id.into()),
+            label: label
+                .map(str::to_owned)
+                .or_else(|| known.as_ref().map(|child| child.label.clone()))
+                .unwrap_or_else(|| id.into()),
+            turn_id: root
+                .and_then(|root| root.turn_id)
+                .or_else(|| known.and_then(|child| child.turn_id))
+                .or_else(|| self.parent_turn_id.clone()),
+        };
+        self.children.insert(id.into(), child.clone());
+        Some(child)
+    }
+}
+
+fn codex_child_field<'a>(
+    thread: &'a Value,
+    spawn: Option<&'a Value>,
+    field: &str,
+    legacy: &str,
+) -> Option<&'a str> {
+    thread
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            spawn
+                .and_then(|spawn| spawn.get(legacy))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+        })
+}
+
+fn codex_subagent_updates(item: &Value) -> Vec<Value> {
+    let update = |key: &str| json!({"key":key,"info":{"native":{"kind":"codex-thread","id":key},"transcript":"live"}});
+    match item.get("type").and_then(Value::as_str) {
+        Some("subAgentActivity") => {
+            let Some(key) = item.get("agentThreadId").and_then(Value::as_str) else {
+                return Vec::new();
+            };
+            let mut data = update(key);
+            if let Some(path) = item.get("agentPath").and_then(Value::as_str) {
+                data["info"]["name"] = json!(path);
+            }
+            match item.get("kind").and_then(Value::as_str) {
+                Some("started") => {
+                    data["info"]["status"] = json!("running");
+                    data["reopen"] = json!(true);
+                }
+                Some("interacted") => {
+                    data["info"]["lastActivity"] =
+                        json!(
+                            if item.get("agentPath").and_then(Value::as_str) == Some("/root") {
+                                "Exchanged messages with the main agent"
+                            } else {
+                                "Main agent sent a message"
+                            }
+                        );
+                }
+                Some("interrupted") => data["info"]["status"] = json!("cancelled"),
+                Some("completed") => data["info"]["status"] = json!("completed"),
+                _ => {}
+            }
+            vec![data]
+        }
+        Some("collabAgentToolCall") => item
+            .get("receiverThreadIds")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|key| {
+                let mut data = update(key);
+                if item.get("tool").and_then(Value::as_str) == Some("spawnAgent") {
+                    for field in ["prompt", "model"] {
+                        if let Some(value) = item.get(field).filter(|value| !value.is_null()) {
+                            data["info"][field] = value.clone();
+                        }
+                    }
+                }
+                if let Some(state) = item.get("agentsStates").and_then(|states| states.get(key)) {
+                    data["info"]["status"] =
+                        json!(match state.get("status").and_then(Value::as_str) {
+                            Some("pendingInit" | "running") => "running",
+                            Some("completed") => "completed",
+                            Some("errored") => "failed",
+                            Some("interrupted" | "shutdown") => "cancelled",
+                            _ => "unknown",
+                        });
+                }
+                data
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn codex_child_item(item: &Value, started: bool) -> Option<Value> {
+    let id = item.get("id").and_then(Value::as_str)?;
+    let kind = item
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    if matches!(kind, "subAgentActivity" | "collabAgentToolCall")
+        || (started && matches!(kind, "agentMessage" | "reasoning" | "userMessage"))
+    {
+        return None;
+    }
+    let (role, part) = match kind {
+        "agentMessage" => (
+            "assistant",
+            json!({"type":"text","text":extract_text(item)}),
+        ),
+        "userMessage" => ("user", json!({"type":"text","text":extract_text(item)})),
+        "reasoning" => {
+            let text = item
+                .get("summary")
+                .and_then(Value::as_array)
+                .map(|summary| {
+                    summary
+                        .iter()
+                        .filter_map(|part| {
+                            part.as_str()
+                                .or_else(|| part.get("text").and_then(Value::as_str))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_else(|| extract_text(item));
+            (
+                "assistant",
+                json!({"type":"thinking","text":text,"status":"complete"}),
+            )
+        }
+        _ => (
+            "tool",
+            json!({"type":"tool","toolName":kind,"toolId":id,
+            "status":if started { "running" } else { item.get("status").and_then(Value::as_str).unwrap_or("running") },"data":item}),
+        ),
+    };
+    let mut data = json!({"item":{"id":id,"role":role,"parts":[part]}});
+    if role == "tool" {
+        data["merge"] = json!(true);
+    }
+    Some(data)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_codex_child_notification(
+    events: &crate::provider_events::Sender,
+    session_id: &str,
+    native_id: Option<&str>,
+    worker_token: &str,
+    thread_id: &str,
+    child: &CodexChildThread,
+    method: &str,
+    params: &Value,
+) {
+    let (kind, mut data) = match method {
+        "thread/started" => {
+            let thread = params.get("thread").unwrap_or(params);
+            let spawn = thread
+                .pointer("/source/subAgent/thread_spawn")
+                .or_else(|| thread.pointer("/source/subagent/thread_spawn"))
+                .or_else(|| thread.pointer("/source/sub_agent/thread_spawn"));
+            let mut info = json!({"native":{"kind":"codex-thread","id":child.key},"transcript":"live","status":"running"});
+            // Nested threads share the root card; keep its identity and title.
+            if thread_id == child.key {
+                if let Some(name) =
+                    codex_child_field(thread, spawn, "agentNickname", "agent_nickname")
+                        .or_else(|| codex_child_field(thread, spawn, "agentPath", "agent_path"))
+                {
+                    info["name"] = json!(name);
+                }
+                if let Some(role) = codex_child_field(thread, spawn, "agentRole", "agent_role") {
+                    info["agentType"] = json!(role);
+                }
+                if let Some(depth) = thread
+                    .get("depth")
+                    .filter(|value| value.is_number())
+                    .or_else(|| spawn.and_then(|spawn| spawn.get("depth")))
+                {
+                    info["depth"] = depth.clone();
+                }
+            }
+            ("chat.subagent", json!({"info":info}))
+        }
+        "turn/started" if thread_id == child.key => (
+            "chat.subagent",
+            json!({"info":{"status":"running"},"reopen":true}),
+        ),
+        "turn/completed" if thread_id == child.key => (
+            "chat.subagent",
+            json!({"info":{"status":match params.pointer("/turn/status").and_then(Value::as_str) {
+                Some("completed") => "completed", Some("interrupted") => "cancelled", Some("failed") => "failed", _ => "unknown"
+            }}}),
+        ),
+        "turn/completed" => (
+            "chat.subagent",
+            json!({"info":{"lastActivity":"Nested agent finished"}}),
+        ),
+        "item/completed" if params.pointer("/item/type").and_then(Value::as_str)
+            .is_some_and(|kind| matches!(kind, "subAgentActivity" | "collabAgentToolCall")) => (
+            "chat.subagent",
+            json!({"info":{"lastActivity":if params.pointer("/item/agentPath").and_then(Value::as_str) == Some("/root") {
+                "Sent a message to the main agent"
+            } else {
+                "Messaged another agent"
+            }}}),
+        ),
+        "item/started" | "item/completed" => {
+            let Some(data) = params
+                .get("item")
+                .and_then(|item| codex_child_item(item, method == "item/started"))
+            else {
+                return;
+            };
+            ("chat.subagent.item", data)
+        }
+        "error" => (
+            "chat.subagent.item",
+            json!({"item":{
+                "id":format!("{thread_id}:error:{}", params.get("turnId").and_then(Value::as_str).unwrap_or("unknown")),
+                "role":"assistant","parts":[{"type":"error","text":params.pointer("/error/message").or_else(|| params.get("message"))
+                    .and_then(Value::as_str).unwrap_or("Codex subagent failed"),"data":params.get("error")}]
+            }}),
+        ),
+        "serverRequest/resolved" => (
+            "chat.approval.resolved",
+            json!({"raw":{"method":method,"params":params}}),
+        ),
+        _ => return,
+    };
+    data["key"] = json!(child.key);
+    emit_scoped(
+        events,
+        "codex",
+        session_id,
+        native_id,
+        child.turn_id.as_deref(),
+        kind,
+        data,
+        Some(worker_token),
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_codex_message(
     events: &crate::provider_events::Sender,
@@ -2284,6 +2593,7 @@ fn emit_codex_message(
     ui: &Mutex<CodexUiState>,
     responder: &Mutex<Option<JsonLineResponder>>,
     worker_token: &str,
+    subagents: &Mutex<CodexSubagents>,
     raw: Value,
 ) {
     let native_id = native.lock().ok().and_then(|value| value.clone());
@@ -2303,6 +2613,35 @@ fn emit_codex_message(
         return;
     }
     let params = raw.get("params").cloned().unwrap_or_else(|| raw.clone());
+    let thread_id = params
+        .get("threadId")
+        .and_then(Value::as_str)
+        .or_else(|| params.pointer("/thread/id").and_then(Value::as_str));
+    let child = if let Some(thread_id) = thread_id.filter(|id| Some(*id) != native_id.as_deref()) {
+        let child = subagents
+            .lock()
+            .ok()
+            .and_then(|mut state| state.child(thread_id, &params, native_id.as_deref()));
+        let Some(child) = child else {
+            return;
+        };
+        if raw.get("id").is_none() {
+            emit_codex_child_notification(
+                events,
+                session_id,
+                native_id.as_deref(),
+                worker_token,
+                thread_id,
+                &child,
+                method,
+                &params,
+            );
+            return;
+        }
+        Some(child)
+    } else {
+        None
+    };
     let provider_turn_id = params
         .get("turnId")
         .or_else(|| params.get("turn").and_then(|turn| turn.get("id")))
@@ -2344,6 +2683,11 @@ fn emit_codex_message(
     } else {
         None
     };
+    if method == "turn/started" {
+        if let Ok(mut state) = subagents.lock() {
+            state.parent_turn_id = turn_id.clone();
+        }
+    }
     let assistant_item_id = if method == "turn/completed" {
         turn_id
             .as_deref()
@@ -2411,7 +2755,7 @@ fn emit_codex_message(
             .or_else(|| params.get("reason"))
             .and_then(Value::as_str)
             .unwrap_or(method);
-        let payload = approval_payload(
+        let mut payload = approval_payload(
             &approval_id,
             "codex",
             method,
@@ -2421,6 +2765,9 @@ fn emit_codex_message(
             turn_id.as_deref(),
             submittable,
         );
+        if let Some(child) = child {
+            payload["subagent"] = json!({"key":child.key,"label":child.label});
+        }
         emit_scoped(
             events,
             "codex",
@@ -2437,6 +2784,35 @@ fn emit_codex_message(
             }),
             Some(worker_token),
         );
+        return;
+    }
+    if matches!(method, "item/started" | "item/completed")
+        && matches!(
+            provider_item_type,
+            Some("subAgentActivity" | "collabAgentToolCall")
+        )
+    {
+        for data in codex_subagent_updates(params.get("item").unwrap_or(&Value::Null)) {
+            if let (Some(key), Ok(mut state)) =
+                (data.get("key").and_then(Value::as_str), subagents.lock())
+            {
+                state.children.entry(key.into()).or_insert_with(|| CodexChildThread {
+                    key: key.into(),
+                    label: data.pointer("/info/name").and_then(Value::as_str).unwrap_or(key).into(),
+                    turn_id: turn_id.clone(),
+                });
+            }
+            emit_scoped(
+                events,
+                "codex",
+                session_id,
+                native_id.as_deref(),
+                turn_id.as_deref(),
+                "chat.subagent",
+                data,
+                Some(worker_token),
+            );
+        }
         return;
     }
     if method == "thread/settings/updated" {
@@ -2696,6 +3072,22 @@ fn codex_transcript_items(thread: &Value) -> Vec<Value> {
                     "assistant",
                     vec![json!({"type":"text","text":extract_text(item)})],
                 ),
+                "subAgentActivity" | "collabAgentToolCall" => (
+                    "assistant",
+                    codex_subagent_updates(item)
+                        .into_iter()
+                        .map(|data| {
+                            let mut info = data["info"].clone();
+                            info["key"] = data["key"].clone();
+                            info["provider"] = json!("codex");
+                            info["transcript"] = json!("none");
+                            if info.get("status").is_none() {
+                                info["status"] = json!("unknown");
+                            }
+                            json!({"type":"subagent","toolId":info["key"],"status":info["status"],"data":info})
+                        })
+                        .collect(),
+                ),
                 _ => {
                     let mut part = json!({
                         "type":"tool",
@@ -2755,6 +3147,587 @@ fn extract_text(item: &Value) -> String {
 mod tests {
     use super::*;
 
+    const SUBAGENT_PARENT: &str = "01a10cc5-adcf-7532-8366-f82284f88ff9";
+    const SUBAGENT_CHILD: &str = "01a10cc7-8abd-7a53-83bd-bd40920e71cf";
+
+    struct CodexSubagentReplay {
+        events: crate::provider_events::Sender,
+        received: broadcast::Receiver<super::super::ProviderEvent>,
+        native: Mutex<Option<String>>,
+        approvals: Mutex<HashMap<String, PendingCodexApproval>>,
+        active: CodexTurnState,
+        ui: Mutex<CodexUiState>,
+        subagents: Mutex<CodexSubagents>,
+    }
+
+    impl CodexSubagentReplay {
+        fn new() -> Self {
+            let (events, received) = crate::provider_events::tap_channel(256);
+            let active = new_codex_turn_state();
+            active.0.lock().unwrap().replace(ActiveCodexTurn {
+                public_id: "public-turn".into(),
+                native_id: None,
+                assistant_item_id: None,
+                started_at: Instant::now(),
+            });
+            let replay = Self {
+                events,
+                received,
+                active,
+                native: Mutex::new(Some(SUBAGENT_PARENT.into())),
+                approvals: Mutex::new(HashMap::new()),
+                ui: Mutex::new(CodexUiState::default()),
+                subagents: Mutex::new(CodexSubagents::default()),
+            };
+            replay.emit(
+                "turn/started",
+                json!({"threadId":SUBAGENT_PARENT,"turn":{"id":"parent-turn"}}),
+            );
+            replay
+        }
+
+        fn raw(&self, raw: Value) {
+            emit_codex_message(
+                &self.events,
+                "d6696f72-47c2-43c2-93d0-8b161293fd83",
+                &self.native,
+                &self.approvals,
+                &self.active,
+                &self.ui,
+                &Mutex::new(None),
+                "subagent-worker",
+                &self.subagents,
+                raw,
+            );
+        }
+
+        fn emit(&self, method: &str, params: Value) {
+            self.raw(json!({"method":method,"params":params}));
+        }
+
+        fn child(&self) {
+            self.emit(
+                "thread/started",
+                json!({"thread":{
+                    "id":SUBAGENT_CHILD,"parentThreadId":SUBAGENT_PARENT,
+                    "agentNickname":"Kant","agentRole":"standard_worker",
+                    "source":{"subAgent":{"thread_spawn":{"parent_thread_id":SUBAGENT_PARENT,
+                        "depth":1,"agent_path":"/root/approval_ui_trace"}}}
+                }}),
+            );
+        }
+
+        fn stop_target(&self) {
+            assert_eq!(
+                wait_for_codex_native_turn(&self.active, "public-turn")
+                    .unwrap()
+                    .as_deref(),
+                Some("parent-turn")
+            );
+            let active = self.active.0.lock().unwrap();
+            assert_eq!(
+                active.as_ref().unwrap().native_id.as_deref(),
+                Some("parent-turn")
+            );
+        }
+
+        fn drain(&mut self) -> Vec<super::super::ProviderEvent> {
+            std::iter::from_fn(|| self.received.try_recv().ok()).collect()
+        }
+    }
+
+    #[test]
+    fn child_thread_replay_keeps_parent_transcript_and_stop_target() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.child();
+        for (method, params) in [
+            (
+                "turn/started",
+                json!({"threadId":SUBAGENT_CHILD,"turn":{"id":"child-turn"}}),
+            ),
+            (
+                "item/started",
+                json!({"threadId":SUBAGENT_CHILD,"turnId":"child-turn","item":{
+                "id":"child-command","type":"commandExecution","command":"Get-Content -Raw '.agents/skills/trellis-before-dev/SKILL.md'","status":"inProgress"}}),
+            ),
+            (
+                "item/completed",
+                json!({"threadId":SUBAGENT_CHILD,"turnId":"child-turn","item":{
+                "id":"child-command","type":"commandExecution","status":"completed","aggregatedOutput":"child output"}}),
+            ),
+            (
+                "item/started",
+                json!({"threadId":SUBAGENT_CHILD,"item":{"id":"child-answer","type":"agentMessage"}}),
+            ),
+            (
+                "item/agentMessage/delta",
+                json!({"threadId":SUBAGENT_CHILD,"itemId":"child-answer","delta":"child delta"}),
+            ),
+            (
+                "item/reasoning/textDelta",
+                json!({"threadId":SUBAGENT_CHILD,"itemId":"child-reasoning","delta":"private delta"}),
+            ),
+            (
+                "item/completed",
+                json!({"threadId":SUBAGENT_CHILD,"item":{"id":"child-answer","type":"agentMessage","text":"child report"}}),
+            ),
+            (
+                "turn/completed",
+                json!({"threadId":SUBAGENT_CHILD,"turn":{"id":"child-turn","status":"completed"}}),
+            ),
+        ] {
+            replay.emit(method, params);
+            replay.stop_target();
+            assert!(replay
+                .active
+                .0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .assistant_item_id
+                .is_none());
+        }
+        for kind in ["started", "completed"] {
+            replay.emit(
+                "item/completed",
+                json!({"threadId":SUBAGENT_PARENT,"item":{
+                "id":format!("activity-{kind}"),"type":"subAgentActivity","kind":kind,
+                "agentThreadId":SUBAGENT_CHILD,"agentPath":"/root/approval_ui_trace"}}),
+            );
+        }
+        replay.emit(
+            "item/agentMessage/delta",
+            json!({"threadId":SUBAGENT_PARENT,"itemId":"parent-answer","delta":"parent delta"}),
+        );
+        replay.emit(
+            "item/completed",
+            json!({"threadId":SUBAGENT_PARENT,"item":{
+            "id":"parent-answer","type":"agentMessage","text":"parent report"}}),
+        );
+        replay.stop_target();
+        replay.emit(
+            "turn/completed",
+            json!({"threadId":SUBAGENT_PARENT,"turn":{"id":"parent-turn","status":"completed"}}),
+        );
+        assert!(replay.active.0.lock().unwrap().is_none());
+        let observed = replay.drain();
+        assert_eq!(
+            observed
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "chat.turn.started",
+                "chat.subagent",
+                "chat.subagent",
+                "chat.subagent.item",
+                "chat.subagent.item",
+                "chat.subagent.item",
+                "chat.subagent",
+                "chat.subagent",
+                "chat.subagent",
+                "chat.delta",
+                "chat.item",
+                "chat.turn.completed",
+            ]
+        );
+        assert!(observed
+            .iter()
+            .all(|event| event.native_id.as_deref() == Some(SUBAGENT_PARENT)
+                && event.turn_id.as_deref() == Some("public-turn")
+                && event.worker_token.as_deref() == Some("subagent-worker")));
+        assert_eq!(observed[1].data["info"]["name"], "Kant");
+        assert_eq!(observed[1].data["info"]["agentType"], "standard_worker");
+        assert_eq!(observed[1].data["info"]["depth"], 1);
+        assert_eq!(observed[1].data["info"]["native"]["id"], SUBAGENT_CHILD);
+        assert_eq!(observed[2].data["reopen"], true);
+        assert_eq!(observed[3].data["item"]["parts"][0]["status"], "running");
+        assert_eq!(
+            observed[4].data["item"]["parts"][0]["toolId"],
+            "child-command"
+        );
+        assert_eq!(
+            observed[4].data["item"]["parts"][0]["data"]["aggregatedOutput"],
+            "child output"
+        );
+        assert_eq!(observed[4].data["merge"], true);
+        assert_eq!(observed[5].data["item"]["parts"][0]["text"], "child report");
+        assert!(observed[5].data.get("merge").is_none());
+        assert_eq!(observed[6].data["info"]["status"], "completed");
+        assert_eq!(observed[9].data["part"]["text"], "parent delta");
+        assert_eq!(
+            observed[10].data["raw"]["params"]["item"]["text"],
+            "parent report"
+        );
+        assert_eq!(observed[11].data["item"]["id"], "parent-answer");
+    }
+
+    #[test]
+    fn child_approval_retains_parent_binding_and_native_reply() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.child();
+        let params = json!({"threadId":SUBAGENT_CHILD,"turnId":"child-turn","itemId":"command","command":"echo qa"});
+        replay
+            .raw(json!({"id":99,"method":"item/commandExecution/requestApproval","params":params}));
+        let pending = replay.approvals.lock().unwrap();
+        let request = pending.get(&encode_approval_id(&json!(99))).unwrap();
+        assert_eq!(request.params, params);
+        assert_eq!(request.turn_id.as_deref(), Some("public-turn"));
+        assert!(request.submittable);
+        validate_codex_turn(
+            request.turn_id.as_deref(),
+            Some("public-turn"),
+            Some("parent-turn"),
+            "public-turn",
+        )
+        .unwrap();
+        assert!(codex_response(
+            &request.method,
+            &request.choices[0].choice_id,
+            &request.params
+        )
+        .is_ok());
+        drop(pending);
+        replay.stop_target();
+        replay.emit(
+            "serverRequest/resolved",
+            json!({"threadId":SUBAGENT_CHILD,"requestId":99}),
+        );
+        replay.raw(json!({"id":100,"method":"item/commandExecution/requestApproval","params":{"threadId":SUBAGENT_PARENT,"command":"echo parent"}}));
+        let observed = replay.drain();
+        assert_eq!(observed[2].kind, "chat.approval");
+        assert_eq!(
+            observed[2].data["part"]["data"]["subagent"],
+            json!({"key":SUBAGENT_CHILD,"label":"Kant"})
+        );
+        assert_eq!(observed[3].kind, "chat.approval.resolved");
+        assert_eq!(observed[3].data["raw"]["params"]["requestId"], 99);
+        assert!(observed[4].data["part"]["data"].get("subagent").is_none());
+    }
+
+    #[test]
+    fn nested_child_uses_root_key_and_keeps_root_metadata() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.child();
+        replay.emit("thread/started", json!({"thread":{"id":"nested","parentThreadId":SUBAGENT_CHILD,
+            "agentNickname":"Nested","agentRole":"explorer","source":{"subAgent":{"thread_spawn":{"depth":2}}}}}));
+        replay.emit("item/completed", json!({"threadId":"nested","item":{"id":"nested-answer","type":"agentMessage","text":"nested report"}}));
+        replay.raw(json!({"id":101,"method":"item/fileChange/requestApproval","params":{"threadId":"nested","turnId":"nested-turn"}}));
+        replay.stop_target();
+        let observed = replay.drain();
+        assert_eq!(observed[2].data["key"], SUBAGENT_CHILD);
+        assert_eq!(observed[2].data["info"]["native"]["id"], SUBAGENT_CHILD);
+        assert!(observed[2].data["info"].get("name").is_none());
+        assert_eq!(observed[3].kind, "chat.subagent.item");
+        assert_eq!(observed[3].data["key"], SUBAGENT_CHILD);
+        assert_eq!(
+            observed[4].data["part"]["data"]["subagent"],
+            json!({"key":SUBAGENT_CHILD,"label":"Nested"})
+        );
+    }
+
+    #[test]
+    fn nested_turn_lifecycle_does_not_complete_or_reopen_root() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.child();
+        replay.emit(
+            "thread/started",
+            json!({"thread":{"id":"nested","parentThreadId":SUBAGENT_CHILD,
+            "source":{"subAgent":{"thread_spawn":{"parent_thread_id":SUBAGENT_CHILD}}}}}),
+        );
+        replay.drain();
+        replay.emit(
+            "turn/started",
+            json!({"threadId":"nested","turn":{"id":"nested-turn"}}),
+        );
+        assert!(replay.drain().is_empty());
+        replay.emit(
+            "turn/completed",
+            json!({"threadId":"nested","turn":{"status":"completed"}}),
+        );
+        let observed = replay.drain();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].kind, "chat.subagent");
+        assert_eq!(observed[0].data["key"], SUBAGENT_CHILD);
+        assert_eq!(
+            observed[0].data["info"],
+            json!({"lastActivity":"Nested agent finished"})
+        );
+        assert!(observed[0].data.get("reopen").is_none());
+        replay.stop_target();
+    }
+
+    #[test]
+    fn child_agent_messages_update_activity_without_transcript_tools() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.child();
+        replay.drain();
+        for kind in ["subAgentActivity", "collabAgentToolCall"] {
+            for path in ["/root", "/root/peer"] {
+                let item = json!({"id":"message","type":kind,"agentPath":path});
+                assert!(codex_child_item(&item, true).is_none());
+                assert!(codex_child_item(&item, false).is_none());
+                replay.emit(
+                    "item/started",
+                    json!({"threadId":SUBAGENT_CHILD,"item":item}),
+                );
+                assert!(replay.drain().is_empty());
+                replay.emit(
+                    "item/completed",
+                    json!({"threadId":SUBAGENT_CHILD,"item":item}),
+                );
+                let observed = replay.drain();
+                assert_eq!(observed.len(), 1);
+                assert_eq!(observed[0].kind, "chat.subagent");
+                assert_eq!(
+                    observed[0].data["info"]["lastActivity"],
+                    if path == "/root" {
+                        "Sent a message to the main agent"
+                    } else {
+                        "Messaged another agent"
+                    }
+                );
+                assert!(observed[0].data["info"].get("status").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn child_turn_reopens_and_retains_original_parent_turn() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.child();
+        replay.emit(
+            "turn/completed",
+            json!({"threadId":SUBAGENT_CHILD,"turn":{"id":"child-one","status":"completed"}}),
+        );
+        replay.emit(
+            "turn/completed",
+            json!({"threadId":SUBAGENT_PARENT,"turn":{"id":"parent-turn","status":"completed"}}),
+        );
+        replay.active.0.lock().unwrap().replace(ActiveCodexTurn {
+            public_id: "public-two".into(),
+            native_id: None,
+            assistant_item_id: None,
+            started_at: Instant::now(),
+        });
+        replay.emit(
+            "turn/started",
+            json!({"threadId":SUBAGENT_PARENT,"turn":{"id":"parent-two"}}),
+        );
+        replay.emit(
+            "turn/started",
+            json!({"threadId":SUBAGENT_CHILD,"turn":{"id":"child-two"}}),
+        );
+        replay.emit(
+            "turn/completed",
+            json!({"threadId":SUBAGENT_CHILD,"turn":{"id":"child-two","status":"interrupted"}}),
+        );
+        assert_eq!(
+            wait_for_codex_native_turn(&replay.active, "public-two")
+                .unwrap()
+                .as_deref(),
+            Some("parent-two")
+        );
+        let observed = replay.drain();
+        assert_eq!(observed[5].kind, "chat.subagent");
+        assert_eq!(observed[5].data["reopen"], true);
+        assert_eq!(observed[5].data["info"]["status"], "running");
+        assert_eq!(observed[5].turn_id.as_deref(), Some("public-turn"));
+        assert_eq!(observed[6].data["info"]["status"], "cancelled");
+    }
+
+    #[test]
+    fn foreign_threads_require_subagent_evidence_and_ignore_child_ui_and_deltas() {
+        let mut replay = CodexSubagentReplay::new();
+        for raw in [
+            json!({"method":"thread/started","params":{"thread":{"id":"foreign","source":"cli"}}}),
+            json!({"method":"turn/started","params":{"threadId":"foreign","turn":{"id":"foreign-turn"}}}),
+            json!({"method":"item/completed","params":{"threadId":"foreign","item":{"id":"foreign-item","type":"agentMessage","text":"foreign"}}}),
+            json!({"method":"turn/completed","params":{"threadId":"foreign","turn":{"id":"foreign-turn","status":"completed"}}}),
+        ] {
+            replay.raw(raw);
+            replay.stop_target();
+        }
+        replay.emit("thread/started", json!({"thread":{"id":"orphan","source":{"subagent":{"thread_spawn":{
+            "parent_thread_id":"unknown-parent","depth":3,"agent_path":"/root/orphan","agent_role":"worker"}}}}}));
+        for method in [
+            "item/agentMessage/delta",
+            "item/reasoning/summaryPartAdded",
+            "item/commandExecution/outputDelta",
+            "thread/tokenUsage/updated",
+            "thread/settings/updated",
+            "thread/name/updated",
+            "thread/status/changed",
+            "thread/compacted",
+        ] {
+            replay.emit(method, json!({"threadId":"orphan","delta":"ignored","tokenUsage":{"last":{"inputTokens":7}},
+                "threadSettings":{"model":"wrong-model"},"threadName":"wrong-name","status":"idle"}));
+            replay.stop_target();
+        }
+        let observed = replay.drain();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[1].data["key"], "orphan");
+        assert_eq!(observed[1].data["info"]["name"], "/root/orphan");
+        assert_eq!(observed[1].data["info"]["agentType"], "worker");
+        assert_eq!(observed[1].data["info"]["depth"], 3);
+        assert!(replay.ui.lock().unwrap().status.token_usage.is_null());
+        assert!(replay.ui.lock().unwrap().options.is_empty());
+    }
+
+    #[test]
+    fn child_completed_messages_replace_parts_and_errors_stay_in_transcript() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.child();
+        for item in [
+            json!({"id":"reasoning","type":"reasoning","summary":["one","two"],"content":["hidden"]}),
+            json!({"id":"reasoning","type":"reasoning","summary":["replacement"]}),
+            json!({"id":"user","type":"userMessage","content":[{"type":"text","text":"child prompt"}]}),
+        ] {
+            replay.emit(
+                "item/completed",
+                json!({"threadId":SUBAGENT_CHILD,"item":item}),
+            );
+        }
+        replay.emit("error", json!({"threadId":SUBAGENT_CHILD,"turnId":"child-turn","error":{"message":"child failed"},"willRetry":false}));
+        replay.stop_target();
+        let observed = replay.drain();
+        assert_eq!(observed[2].data["item"]["parts"][0]["type"], "thinking");
+        assert_eq!(observed[2].data["item"]["parts"][0]["text"], "one\ntwo");
+        assert_eq!(observed[3].data["item"]["parts"][0]["text"], "replacement");
+        assert_eq!(observed[4].data["item"]["role"], "user");
+        assert_eq!(observed[4].data["item"]["parts"][0]["text"], "child prompt");
+        assert_eq!(observed[5].data["item"]["parts"][0]["type"], "error");
+        assert_eq!(observed[5].data["item"]["parts"][0]["text"], "child failed");
+        assert!(observed[2..]
+            .iter()
+            .all(|event| event.kind == "chat.subagent.item" && event.data.get("merge").is_none()));
+    }
+
+    #[test]
+    fn parent_subagent_activity_maps_lifecycle_and_interactions() {
+        let mut replay = CodexSubagentReplay::new();
+        for (kind, path) in [
+            ("started", "/root/child"),
+            ("interacted", "/root"),
+            ("interacted", "/root/child"),
+            ("interrupted", "/root/child"),
+            ("completed", "/root/child"),
+        ] {
+            for method in ["item/started", "item/completed"] {
+                replay.emit(method, json!({"threadId":SUBAGENT_PARENT,"item":{"id":"activity","type":"subAgentActivity",
+                    "kind":kind,"agentThreadId":SUBAGENT_CHILD,"agentPath":path}}));
+            }
+        }
+        let observed = replay.drain();
+        assert!(observed[1..]
+            .iter()
+            .all(|event| event.kind == "chat.subagent"));
+        assert_eq!(observed[1].data["reopen"], true);
+        assert_eq!(
+            observed[3].data["info"]["lastActivity"],
+            "Exchanged messages with the main agent"
+        );
+        assert!(observed[3].data["info"].get("status").is_none());
+        assert_eq!(
+            observed[5].data["info"]["lastActivity"],
+            "Main agent sent a message"
+        );
+        assert_eq!(observed[7].data["info"]["status"], "cancelled");
+        assert_eq!(observed[9].data["info"]["status"], "completed");
+        replay.stop_target();
+    }
+
+    #[test]
+    fn collab_agent_tool_call_maps_receivers_states_and_spawn_details() {
+        let mut replay = CodexSubagentReplay::new();
+        let statuses = [
+            ("pendingInit", "running"),
+            ("running", "running"),
+            ("completed", "completed"),
+            ("errored", "failed"),
+            ("interrupted", "cancelled"),
+            ("shutdown", "cancelled"),
+            ("notFound", "unknown"),
+            ("future", "unknown"),
+        ];
+        let states: serde_json::Map<String, Value> = statuses
+            .iter()
+            .map(|(native, _)| (native.to_string(), json!({"status":native,"message":null})))
+            .collect();
+        for method in ["item/started", "item/completed"] {
+            replay.emit(
+                method,
+                json!({"threadId":SUBAGENT_PARENT,"item":{"id":"spawn","type":"collabAgentToolCall",
+                "tool":"spawnAgent","status":"completed","senderThreadId":SUBAGENT_PARENT,
+                "receiverThreadIds":statuses.iter().map(|(native, _)| *native).collect::<Vec<_>>(),
+                "agentsStates":states,"prompt":"inspect approval","model":"test-model"}}),
+            );
+        }
+        replay.emit("item/completed", json!({"threadId":"running","item":{"id":"child-tool","type":"commandExecution","status":"completed"}}));
+        replay.stop_target();
+        let observed = replay.drain();
+        for (index, (key, status)) in statuses.iter().cycle().take(16).enumerate() {
+            let event = &observed[index + 1];
+            assert_eq!(event.kind, "chat.subagent");
+            assert_eq!(event.data["key"], *key);
+            assert_eq!(event.data["info"]["status"], *status);
+            assert_eq!(event.data["info"]["prompt"], "inspect approval");
+            assert_eq!(event.data["info"]["model"], "test-model");
+        }
+        assert_eq!(observed[17].kind, "chat.subagent.item");
+        assert_eq!(observed[17].data["key"], "running");
+    }
+
+    #[test]
+    fn history_subagent_items_use_static_parts_instead_of_tools() {
+        let items = codex_transcript_items(&json!({"turns":[{"id":"history-turn","items":[
+            {"id":"activity","type":"subAgentActivity","kind":"completed","agentThreadId":"child","agentPath":"/root/child"},
+            {"id":"collab","type":"collabAgentToolCall","tool":"spawnAgent","receiverThreadIds":["one","two"],
+                "prompt":"task","model":"test-model","agentsStates":{"one":{"status":"errored"},"two":{"status":"shutdown"}}},
+            {"id":"answer","type":"agentMessage","text":"parent answer"}
+        ]}]}));
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["parts"][0]["status"], "completed");
+        assert_eq!(items[1]["parts"][0]["status"], "failed");
+        assert_eq!(items[1]["parts"][1]["status"], "cancelled");
+        for part in items[..2]
+            .iter()
+            .flat_map(|item| item["parts"].as_array().unwrap())
+        {
+            assert_eq!(part["type"], "subagent");
+            assert_eq!(part["data"]["provider"], "codex");
+            assert_eq!(part["data"]["transcript"], "none");
+            assert_eq!(part["data"]["native"]["kind"], "codex-thread");
+            assert_eq!(part["data"]["native"]["id"], part["toolId"]);
+        }
+        assert_eq!(items[2]["parts"][0]["text"], "parent answer");
+    }
+
+    #[test]
+    fn child_completion_statuses_do_not_settle_parent_turn() {
+        let mut replay = CodexSubagentReplay::new();
+        replay.child();
+        for status in ["completed", "interrupted", "failed", "inProgress", "future"] {
+            replay.emit(
+                "turn/completed",
+                json!({"threadId":SUBAGENT_CHILD,"turn":{"id":"child-turn","status":status}}),
+            );
+            replay.stop_target();
+        }
+        let observed = replay.drain();
+        assert_eq!(
+            observed[2..]
+                .iter()
+                .map(|event| event.data["info"]["status"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["completed", "cancelled", "failed", "unknown", "unknown"]
+        );
+        assert!(observed[2..]
+            .iter()
+            .all(|event| event.kind == "chat.subagent"));
+    }
+
     #[test]
     fn large_command_output_notifications_do_not_displace_transcript_or_completion() {
         let (events, mut received) = crate::provider_events::tap_channel(16);
@@ -2767,8 +3740,9 @@ mod tests {
         });
         let ui = Mutex::new(CodexUiState::default());
         let responder = Mutex::new(None);
+        let subagents = Mutex::new(CodexSubagents::default());
         let emit = |raw| emit_codex_message(&events, "session", &native, &approvals,
-            &active_turn, &ui, &responder, "worker", raw);
+            &active_turn, &ui, &responder, "worker", &subagents, raw);
         emit(json!({"method":"turn/started","params":{"turn":{"id":"native-turn"}}}));
         for index in 0..8192 {
             emit(json!({"method":"item/commandExecution/outputDelta","params":{"itemId":"command","delta":"x".repeat(128)}}));
@@ -2805,6 +3779,7 @@ mod tests {
         let active_turn = new_codex_turn_state();
         let ui = Mutex::new(CodexUiState::default());
         let responder = Mutex::new(None);
+        let subagents = Mutex::new(CodexSubagents::default());
         for raw in [
             json!({"method":"turn/started","params":{"turn":{"id":"native-turn"}}}),
             json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"command":"echo qa"}}),
@@ -2820,6 +3795,7 @@ mod tests {
                 &ui,
                 &responder,
                 "reserved-token",
+                &subagents,
                 raw,
             );
         }

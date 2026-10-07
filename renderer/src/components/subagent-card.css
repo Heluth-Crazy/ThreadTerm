@@ -1,0 +1,34 @@
+.v3-chat-message.chat-subagent-card { width:100%; max-width:100%; min-width:0; margin:0 0 16px; padding:0; border:1px solid var(--border); border-radius:10px; background:var(--soft); font-size:13px; line-height:1.5; white-space:normal; container-type:inline-size; }
+.chat-subagent-card > details > summary { display:flex; flex-direction:column; gap:6px; padding:12px 14px; cursor:pointer; list-style:none; }
+.chat-subagent-card > details > summary::-webkit-details-marker { display:none; }
+.chat-subagent-card summary:focus-visible, .chat-subagent-card button:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; border-radius:6px; }
+.chat-subagent-heading { display:flex; align-items:center; gap:7px; min-width:0; }
+.chat-subagent-heading > svg, .chat-subagent-heading > .ico { flex:none; width:16px; height:16px; }
+.chat-subagent-chip { display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; border:1px solid var(--border); border-radius:5px; padding:1px 6px; color:var(--muted); font-size:11px; }
+.chat-approval-card > .chat-subagent-chip { display:block; width:fit-content; max-width:100%; margin-bottom:7px; }
+.chat-subagent-description { flex:1; min-width:0; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; white-space:normal; color:var(--text); font-weight:600; }
+.chat-subagent-status { display:flex; align-items:center; gap:4px; flex:none; border-radius:5px; padding:1px 6px; font-size:11px; white-space:nowrap; color:color-mix(in srgb,var(--primary) 65%,var(--text)); background:var(--bg); }
+.chat-subagent-card.is-completed .chat-subagent-status { color:color-mix(in srgb,var(--success,var(--primary)) 65%,var(--text)); }
+.chat-subagent-card.is-failed .chat-subagent-status, .chat-subagent-card.is-cancelled .chat-subagent-status, .chat-subagent-error { color:var(--danger,var(--text)); }
+.chat-subagent-status .chat-connect-mark { width:14px; height:14px; }
+.chat-subagent-status .chat-connect-logo { width:14px; height:14px; }
+/* AgentLoadingMark's shared brand component has a 64px inline size. */
+.chat-subagent-status .brand-ico { width:14px !important; height:14px !important; }
+.chat-subagent-card details[open] > summary .chat-subagent-chevron { transform:rotate(90deg); }
+.chat-subagent-meta, .chat-subagent-current { color:var(--muted); font-size:12px; }
+.chat-subagent-meta { display:flex; flex-wrap:wrap; align-items:center; gap:4px 6px; min-width:0; }
+.chat-subagent-meta-item { white-space:nowrap; }
+.chat-subagent-meta-item::before { content:"·"; margin-right:6px; }
+.chat-subagent-current { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-subagent-preview { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; white-space:pre-wrap; }
+.chat-subagent-body { min-width:0; border-top:1px solid var(--border); padding:12px 14px; }
+.chat-subagent-task > summary { cursor:pointer; color:var(--muted); font-size:12px; }
+.chat-subagent-prompt { margin:8px 0; white-space:pre-wrap; overflow-wrap:anywhere; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:12; overflow:hidden; }
+.chat-subagent-prompt.is-expanded { display:block; }
+.chat-subagent-note { color:var(--muted); font-size:12px; margin:8px 0; overflow-wrap:anywhere; }
+.chat-subagent-transcript { max-height:420px; overflow:auto; min-width:0; margin-top:10px; }
+.chat-subagent-transcript .v3-chat-message { max-width:100%; }
+.chat-subagent-transcript .v3-chat-message.is-native.assistant { margin-bottom:14px; font-size:13px; }
+.chat-subagent-transcript .v3-chat-message.is-native.user { width:100%; max-width:100%; margin:8px 0; padding:6px 8px; border-radius:6px; font-size:12px; line-height:1.5; }
+.chat-subagent-nested { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+@container (max-width:420px) { .chat-subagent-card > details > summary, .chat-subagent-body { padding:10px; } .chat-subagent-heading { gap:5px; } .chat-subagent-status { gap:3px; padding:1px 3px; font-size:10px; } }

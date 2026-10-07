@@ -62,6 +62,19 @@ test('a pre-cancelled permission request resolves deny immediately without publi
   assert.equal(events.filter(e => e.ev === 'session.request_cancelled').length, 0, 'an unpublished request must not fabricate a completion notice');
 });
 
+test('a subagent permission request preserves the SDK agent and tool identities', async () => {
+  const { session, events } = harness();
+  const pending = session.requestPermission('Bash', { command: 'pwd' }, {
+    agentID: 'agent-7',
+    toolUseID: 'tool-9',
+  });
+  const request = events.find(event => event.ev === 'session.request');
+  assert.equal(request.agentId, 'agent-7');
+  assert.equal(request.toolUseId, 'tool-9');
+  session.decide(request.requestId, 'allow');
+  assert.deepEqual(await within(200, pending, 'subagent permission request must settle'), { behavior: 'allow' });
+});
+
 test('cancelling a published request resolves deny once and reports the original request and turn', async () => {
   const { session, events } = harness();
   session.send('hello', 'op-7');

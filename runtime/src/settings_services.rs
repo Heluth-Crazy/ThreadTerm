@@ -78,6 +78,7 @@ pub fn relocation_blocks(config: &RuntimeConfig, method: &str) -> Result<bool> {
             | "history.list"
             | "history.read"
             | "chat.read"
+            | "chat.subagent.read"
             | "terminal.read"
             | "session.lookup"
     );

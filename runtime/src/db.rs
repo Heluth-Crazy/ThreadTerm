@@ -44,6 +44,8 @@ impl Database {
              CREATE TABLE IF NOT EXISTS deferred_codex_launches (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, phase TEXT NOT NULL, error_code TEXT, error_message TEXT, cwd TEXT);
              CREATE TABLE IF NOT EXISTS chat_items (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS chat_items_session ON chat_items(session_id, created_at, id);
+             CREATE TABLE IF NOT EXISTS subagent_items (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, subagent_key TEXT NOT NULL, item_id TEXT NOT NULL, seq INTEGER NOT NULL, rev INTEGER NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (session_id, subagent_key, item_id));
+             CREATE INDEX IF NOT EXISTS subagent_items_rev ON subagent_items(session_id, subagent_key, rev);
              CREATE TABLE IF NOT EXISTS chat_drafts (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, revision INTEGER NOT NULL, text TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS session_organization (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS session_activity (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, state TEXT NOT NULL, revision INTEGER NOT NULL, turn_id TEXT, reason TEXT);
@@ -403,6 +405,17 @@ impl Database {
     }
     pub fn chat_items(&self, session_id: &str) -> Result<Vec<ChatItem>> {
         Ok(self.chat_snapshot(session_id)?.0)
+    }
+    pub fn subagent_card(&self, session_id: &str, key: &str) -> Result<Option<ChatItem>> {
+        self.transaction(|tx| subagent_card_tx(tx, session_id, key))
+    }
+    pub fn subagent_items_after(
+        &self,
+        session_id: &str,
+        key: &str,
+        after_rev: i64,
+    ) -> Result<(Vec<ChatItem>, i64, bool)> {
+        self.transaction(|tx| subagent_items_after_tx(tx, session_id, key, after_rev))
     }
     pub fn chat_draft(&self, session_id: &str) -> Result<Value> {
         self.transaction(|tx| {
@@ -1429,6 +1442,170 @@ pub struct ImportHistorySession<'a> {
 fn now() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
+pub(crate) fn subagent_card_tx(
+    tx: &Transaction<'_>,
+    session: &str,
+    key: &str,
+) -> Result<Option<ChatItem>> {
+    let data: Option<String> = tx
+        .query_row(
+            "SELECT data FROM chat_items WHERE session_id=? AND id=?",
+            params![session, format!("{session}:assistant:subagent:{key}")],
+            |r| r.get(0),
+        )
+        .optional()?;
+    data.map(|data| serde_json::from_str(&data).map_err(Into::into))
+        .transpose()
+}
+
+/// Bound every string by UTF-8 bytes, retaining a visible truncation marker.
+pub(crate) fn bound_json(value: &mut Value) {
+    const LIMIT: usize = 16 * 1024;
+    const SUFFIX: &str = "…[truncated]";
+    match value {
+        Value::String(text) if text.len() > LIMIT => {
+            let mut end = LIMIT - SUFFIX.len();
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+            text.push_str(SUFFIX);
+        }
+        Value::Array(items) => items.iter_mut().for_each(bound_json),
+        Value::Object(fields) => fields.values_mut().for_each(bound_json),
+        _ => {}
+    }
+}
+
+pub(crate) fn upsert_subagent_item(
+    tx: &Transaction<'_>,
+    session: &str,
+    key: &str,
+    item: &ChatItem,
+    merge: bool,
+) -> Result<i64> {
+    let previous: Option<String> = tx
+        .query_row(
+            "SELECT data FROM subagent_items WHERE session_id=? AND subagent_key=? AND item_id=?",
+            params![session, key, item.id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let mut stored = item.clone();
+    if let Some(previous) = previous {
+        let previous: ChatItem = serde_json::from_str(&previous)?;
+        stored.created_at = previous.created_at;
+        if merge {
+            let incoming = std::mem::replace(&mut stored.parts, previous.parts);
+            for mut part in incoming {
+                let existing = part.get("toolId").and_then(Value::as_str).and_then(|id| {
+                    stored
+                        .parts
+                        .iter_mut()
+                        .find(|p| p.get("toolId").and_then(Value::as_str) == Some(id))
+                });
+                if let Some(existing) = existing {
+                    crate::file_references::enrich_tool_part(&mut part, Some(existing));
+                    if let (Some(target), Some(source)) =
+                        (existing.as_object_mut(), part.as_object())
+                    {
+                        for (field, value) in source {
+                            target.insert(field.clone(), value.clone());
+                        }
+                    }
+                } else {
+                    crate::file_references::enrich_tool_part(&mut part, None);
+                    stored.parts.push(part);
+                }
+            }
+        }
+    }
+    stored.parts.truncate(64);
+    let mut data = serde_json::to_value(&stored)?;
+    bound_json(&mut data);
+    let (seq, rev): (i64, i64) = tx.query_row(
+        "SELECT COALESCE(MAX(seq),0)+1,COALESCE(MAX(rev),0)+1 FROM subagent_items WHERE session_id=? AND subagent_key=?",
+        params![session, key], |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    tx.execute(
+        "INSERT INTO subagent_items(session_id,subagent_key,item_id,seq,rev,data,created_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(session_id,subagent_key,item_id) DO UPDATE SET rev=excluded.rev,data=excluded.data",
+        params![session, key, item.id, seq, rev, serde_json::to_string(&data)?, stored.created_at],
+    )?;
+    let dropped = tx.execute(
+        "DELETE FROM subagent_items WHERE session_id=? AND subagent_key=? AND item_id IN (SELECT item_id FROM subagent_items WHERE session_id=? AND subagent_key=? ORDER BY seq DESC LIMIT -1 OFFSET 500)",
+        params![session, key, session, key],
+    )?;
+    if dropped > 0 {
+        tx.execute(
+            "UPDATE chat_items SET data=json_set(data,'$.parts[0].data.truncated',json('true')) WHERE session_id=? AND id=?",
+            params![session, format!("{session}:assistant:subagent:{key}")],
+        )?;
+    }
+    Ok(rev)
+}
+
+pub(crate) fn subagent_items_after_tx(
+    tx: &Transaction<'_>,
+    session: &str,
+    key: &str,
+    after_rev: i64,
+) -> Result<(Vec<ChatItem>, i64, bool)> {
+    let mut statement = tx.prepare(
+        "SELECT data FROM subagent_items WHERE session_id=? AND subagent_key=? AND rev>? ORDER BY seq",
+    )?;
+    let rows = statement.query_map(params![session, key, after_rev], |r| r.get::<_, String>(0))?;
+    let mut items = Vec::new();
+    for row in rows {
+        items.push(serde_json::from_str(&row?)?);
+    }
+    let rev = tx.query_row(
+        "SELECT COALESCE(MAX(rev),0) FROM subagent_items WHERE session_id=? AND subagent_key=?",
+        params![session, key],
+        |r| r.get(0),
+    )?;
+    let truncated = subagent_card_tx(tx, session, key)?.is_some_and(|card| {
+        card.parts
+            .first()
+            .and_then(|part| part.pointer("/data/truncated"))
+            .and_then(Value::as_bool)
+            == Some(true)
+    });
+    Ok((items, rev, truncated))
+}
+
+pub(crate) fn subagent_item_projection_tx(
+    tx: &Transaction<'_>,
+    session: &str,
+    key: &str,
+) -> Result<(i64, i64, Option<ChatItem>, bool)> {
+    let item_count = tx.query_row(
+        "SELECT COUNT(*) FROM subagent_items WHERE session_id=? AND subagent_key=?",
+        params![session, key],
+        |r| r.get(0),
+    )?;
+    let tool_count = tx.query_row(
+        "SELECT COUNT(DISTINCT CASE WHEN json_type(p.value,'$.toolId')='text' THEN json_extract(p.value,'$.toolId') ELSE s.item_id||':'||p.key END) FROM subagent_items s, json_each(s.data,'$.parts') p WHERE s.session_id=? AND s.subagent_key=? AND json_extract(p.value,'$.type')='tool'",
+        params![session, key],
+        |r| r.get(0),
+    )?;
+    let newest: Option<String> = tx
+        .query_row(
+            "SELECT data FROM subagent_items WHERE session_id=? AND subagent_key=? ORDER BY seq DESC LIMIT 1",
+            params![session, key],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let newest: Option<ChatItem> = newest
+        .map(|data| serde_json::from_str(&data).map_err(anyhow::Error::from))
+        .transpose()?;
+    let truncated = tx.query_row(
+        "SELECT COALESCE(json_extract(data,'$.parts[0].data.truncated'),0) FROM chat_items WHERE session_id=? AND id=?",
+        params![session, format!("{session}:assistant:subagent:{key}")],
+        |r| r.get::<_, bool>(0),
+    ).optional()?.unwrap_or(false);
+    Ok((item_count, tool_count, newest, truncated))
+}
+
 fn complete<T: serde::Serialize>(
     tx: &Transaction<'_>,
     id: &str,
@@ -1734,6 +1911,136 @@ fn merge(base: &mut Value, patch: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subagent_rows_are_revisioned_isolated_ordered_and_cascade_on_session_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("subagents.sqlite")).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                native_id: None,
+                operation_id: "subagent-session",
+            })
+            .unwrap();
+        let item = |id: &str| ChatItem {
+            id: id.into(),
+            role: "assistant".into(),
+            parts: vec![json!({"type":"text","text":id})],
+            created_at: "first".into(),
+            turn_id: None,
+            elapsed_ms: None,
+        };
+        db.transaction(|tx| {
+            assert_eq!(
+                upsert_subagent_item(tx, &session.id, "a", &item("one"), false)?,
+                1
+            );
+            assert_eq!(
+                upsert_subagent_item(tx, &session.id, "a", &item("two"), false)?,
+                2
+            );
+            assert_eq!(
+                upsert_subagent_item(tx, &session.id, "b", &item("one"), false)?,
+                1
+            );
+            let mut changed = item("one");
+            changed.created_at = "later".into();
+            changed.parts = vec![json!({"type":"text","text":"updated"})];
+            assert_eq!(
+                upsert_subagent_item(tx, &session.id, "a", &changed, false)?,
+                3
+            );
+            Ok(())
+        })
+        .unwrap();
+        let (rows, rev, truncated) = db.subagent_items_after(&session.id, "a", 0).unwrap();
+        assert_eq!(
+            rows.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            ["one", "two"]
+        );
+        assert_eq!(rows[0].created_at, "first");
+        assert_eq!(rev, 3);
+        assert!(!truncated);
+        assert_eq!(
+            db.subagent_items_after(&session.id, "a", 2).unwrap().0,
+            vec![rows[0].clone()]
+        );
+        assert!(db
+            .subagent_items_after(&session.id, "a", 3)
+            .unwrap()
+            .0
+            .is_empty());
+        assert_eq!(db.subagent_items_after(&session.id, "b", 0).unwrap().1, 1);
+        db.transaction(|tx| {
+            tx.execute("DELETE FROM sessions WHERE id=?", [&session.id])?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            db.subagent_items_after(&session.id, "a", 0).unwrap(),
+            (Vec::new(), 0, false)
+        );
+        assert!(db
+            .subagent_items_after(&session.id, "b", 0)
+            .unwrap()
+            .0
+            .is_empty());
+    }
+
+    #[test]
+    fn subagent_projection_counts_merged_tools_and_respects_item_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("subagent-counts.sqlite")).unwrap();
+        let session = db
+            .create_session(CreateSession {
+                project_id: None,
+                title: None,
+                provider: "codex",
+                mode: "chat",
+                native_id: None,
+                operation_id: "subagent-counts",
+            })
+            .unwrap();
+        let make_item = |id: String| ChatItem {
+            id,
+            role: "assistant".into(),
+            parts: vec![
+                json!({"type":"tool","toolId":"shared","toolName":"shell","data":{"command":"run"}}),
+                json!({"type":"tool","toolName":"shell","data":{"command":"run"}}),
+            ],
+            created_at: "now".into(),
+            turn_id: None,
+            elapsed_ms: None,
+        };
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO chat_items(id,session_id,turn_id,kind,data,created_at) VALUES (?,?,NULL,'message',?,'now')",
+                params![format!("{}:assistant:subagent:child", session.id), session.id, r#"{"parts":[{"data":{"truncated":false}}]}"#],
+            )?;
+            let first = make_item("item-0".into());
+            upsert_subagent_item(tx, &session.id, "child", &first, false)?;
+            let mut merge = first;
+            merge.parts = vec![json!({"type":"tool","toolId":"shared","toolName":"shell","data":{"command":"run","output":"done"}})];
+            upsert_subagent_item(tx, &session.id, "child", &merge, true)?;
+            let (_, tools, newest, _) = subagent_item_projection_tx(tx, &session.id, "child")?;
+            assert_eq!(tools, 2, "same toolId merges; tool parts without ids use item/index");
+            assert_eq!(newest.unwrap().id, "item-0");
+            for index in 1..=500 {
+                upsert_subagent_item(tx, &session.id, "child", &make_item(format!("item-{index}")), false)?;
+            }
+            let (items, tools, newest, truncated) = subagent_item_projection_tx(tx, &session.id, "child")?;
+            assert_eq!(items, 500);
+            assert_eq!(tools, 501, "one shared id plus one unkeyed tool per retained item");
+            assert_eq!(newest.unwrap().id, "item-500");
+            assert!(truncated);
+            Ok(())
+        })
+        .unwrap();
+    }
 
     #[test]
     fn repeated_worker_identity_binding_does_not_rewrite_session() {

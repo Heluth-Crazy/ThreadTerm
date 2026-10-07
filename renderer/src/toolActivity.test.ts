@@ -104,3 +104,11 @@ test('all provider input shapes describe commands and browser operations without
   assert.equal(describeTool(tool('x', 'mcp__custom__get_execution_history'), en).kind, 'mcp');
   assert.deepEqual(describeTool(tool('x', 'fileChange', 'running', { changes: [{ path: 'a.ts' }, { path: 'b.ts' }] }), en), { kind: 'file', name: 'Files', action: 'Applying changes', detail: 'a.ts (+1)' });
 });
+
+test('a retracted parent tool snapshot no longer contributes to the drawer', () => {
+  const before = row('spawn', [tool('spawn', 'Agent')]);
+  const retracted = { ...before, parts: [] };
+  assert.equal(toolEntriesForItems([before]).length, 1);
+  assert.equal(toolEntriesForItems([retracted]).length, 0);
+  assert.equal(groupToolActivity([retracted]).filter(entry => entry.type === 'tools').length, 0);
+});

@@ -11,6 +11,7 @@ type Copy = (en: string, zh: string) => string;
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const string = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value.trim() : undefined;
 const compact = (value: string | undefined): string | undefined => value?.replace(/\s+/g, ' ').slice(0, 160);
+const hiddenSubagentTool = (part: ChatPart): boolean => part.toolName === 'subAgentActivity' || part.toolName === 'collabAgentToolCall';
 
 function toolEntry(item: ChatItem, part: ChatPart, index: number): ToolActivityEntry {
   return { id: `${item.id}:${part.toolId ? `tool:${part.toolId}` : `part:${index}`}`, itemId: item.id, part };
@@ -22,7 +23,7 @@ export function toolEntriesForItems(items: readonly ChatItem[]): ToolActivityEnt
   for (const item of items) {
     if (item.role === 'user' || item.role === 'system') continue;
     item.parts.forEach((part, index) => {
-      if (part.type !== 'tool') return;
+      if (part.type !== 'tool' || hiddenSubagentTool(part)) return;
       const entry = toolEntry(item, part, index);
       if (ids.has(entry.id)) entry.id += `:${index}`;
       ids.add(entry.id);
@@ -64,6 +65,7 @@ export function groupToolActivity(items: readonly ChatItem[]): ToolPresentation[
       }
     };
     item.parts.forEach((part, index) => {
+      if (part.type === 'tool' && hiddenSubagentTool(part)) return;
       if (part.type !== 'tool') {
         if (!parts.length) start = index;
         parts.push(part);

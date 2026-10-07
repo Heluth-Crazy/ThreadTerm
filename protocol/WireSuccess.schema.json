@@ -608,7 +608,8 @@
             "approval",
             "usage",
             "error",
-            "status"
+            "status",
+            "subagent"
           ]
         },
         "text": {
@@ -656,6 +657,47 @@
         "path"
       ],
       "additionalProperties": false
+    },
+    "RequestResult<\"chat.subagent.read\">": {
+      "$ref": "#/definitions/SubagentTranscriptRead"
+    },
+    "SubagentTranscriptRead": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChatItem"
+          }
+        },
+        "rev": {
+          "type": "number"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "source": {
+          "$ref": "#/definitions/SubagentTranscript"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "items",
+        "rev",
+        "truncated",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "SubagentTranscript": {
+      "type": "string",
+      "enum": [
+        "live",
+        "native",
+        "none"
+      ]
     },
     "RequestResult<\"chat.snapshot\">": {
       "type": "object",
@@ -4659,6 +4701,32 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22chat.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "chat.subagent.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22chat.subagent.read%22%3E"
         }
       },
       "required": [
