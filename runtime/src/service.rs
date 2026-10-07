@@ -43,6 +43,7 @@ pub struct RuntimeService {
     plugin_gate: Mutex<()>,
     remote: OnceLock<Arc<crate::remote_access::RemoteAccess>>,
     delegations: Arc<crate::delegation::Delegations>,
+    chat_queues: Arc<crate::chat_queue::ChatQueues>,
 }
 
 /// Opens a session's provider Chat. Shared by `chat.connect` (after the
@@ -202,10 +203,11 @@ pub(crate) fn approve_chat_request(
     Ok(Value::Null)
 }
 
-fn project_provider_event(db: &Database, providers: &Providers, event: &ProviderEvent) {
+fn project_provider_event(db: &Database, providers: &Providers, event: &ProviderEvent) -> bool {
     let accepted = providers.with_current_event(event, || {
         if let Err(error) = db.bind_session(&event.session_id, None, event.native_id.as_deref()) {
             eprintln!("chat bind failed for {}: {error}", event.session_id);
+            let _ = crate::chat_queue::pause(db, &event.session_id, "failed");
             return false;
         }
         if let Err(error) = db.record_provider_event(
@@ -226,16 +228,21 @@ fn project_provider_event(db: &Database, providers: &Providers, event: &Provider
             if let Err(error) = db.mark_chat_degraded(Some(&event.session_id), &reason) {
                 eprintln!("could not persist degraded state: {error}");
             }
+            let _ = crate::chat_queue::pause(db, &event.session_id, "failed");
+            return false;
         }
         true
     });
     if accepted == Some(true) && event.kind == "session.closed" {
         providers.note_session_closed_scoped(&event.session_id, event.worker_token.as_deref());
     }
+    accepted == Some(true)
 }
 
 impl RuntimeService {
     pub fn new(config: RuntimeConfig, db: Arc<Database>) -> Self {
+        crate::chat_queue::initialize(&db).expect("initialize durable prompt queues");
+        let chat_queues = Arc::new(crate::chat_queue::ChatQueues::default());
         let output = Arc::new(OutputStore::default());
         let providers = Arc::new(Providers::with_plugins(&config.data_dir, &db.settings_value().unwrap_or_else(|_| json!({}))));
         match db.settings_value() {
@@ -256,16 +263,24 @@ impl RuntimeService {
         let mut events = providers.subscribe();
         let event_db = Arc::clone(&db);
         let event_providers = Arc::clone(&providers);
+        let event_queues = Arc::clone(&chat_queues);
         std::thread::spawn(move || loop {
             match events.blocking_recv() {
                 Ok(event) => {
-                    project_provider_event(&event_db, &event_providers, &event);
+                    if project_provider_event(&event_db, &event_providers, &event) {
+                        event_queues.provider_event(&event_db, &event_providers, &event);
+                    }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    // Lost updates leave turn state uncertain: queued prompts must not be sent on a guess.
+                    event_queues.projection_failed(&event_db);
                     eprintln!("chat projection lost {count} provider updates");
                     if let Err(error)=event_db.mark_chat_degraded(None,"Chat update buffer overflowed; reload native history to verify the transcript") { eprintln!("could not persist degraded state: {error}"); }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    event_queues.projection_failed(&event_db);
+                    break;
+                }
             }
         });
         Self {
@@ -284,6 +299,7 @@ impl RuntimeService {
             plugin_gate: Mutex::new(()),
             remote: OnceLock::new(),
             delegations,
+            chat_queues,
         }
     }
     pub fn start_retry_scheduler(self: &Arc<Self>) {
@@ -444,6 +460,12 @@ impl RuntimeService {
             .map_err(file_reference_rpc_error);
         }
         let outcome = (|| -> Result<Value> {
+            if request.method.starts_with("chat.queue.") {
+                if let Some(operation_id) = request.params.get("operationId").and_then(Value::as_str) {
+                    self.db.bind_operation(operation_id, &request.method, &request.params)?;
+                }
+                return self.chat_queues.dispatch(&self.db, &self.providers, &self.leases, principal, &request.method, &request.params);
+            }
             crate::plugin_services::validate(&request.method, &request.params)?;
             crate::quick_launch::validate(&request.method, &request.params)?;
             if request.method == "data.relocation.prepare"
@@ -854,6 +876,7 @@ impl RuntimeService {
                     let p: ChatCancel = parse(&request.params)?;
                     self.leases
                         .require(&self.db, &p.session_id, principal, p.lease_epoch)?;
+                    self.chat_queues.pause_dispatch(&self.db, &p.session_id, "stopped")?;
                     self.providers
                         .chat_cancel(&p.session_id, &p.turn_id)
                         .map_err(anyhow::Error::from)?;
@@ -1947,7 +1970,7 @@ struct SessionAttentionAcknowledge {
 const MAX_CHAT_IMAGES: usize = 4;
 const MAX_CHAT_IMAGE_ENCODED_BYTES: usize = 4 * 1024 * 1024;
 
-fn validate_chat_images(images: &[String]) -> Result<()> {
+pub(crate) fn validate_chat_images(images: &[String]) -> Result<()> {
     if images.len() > MAX_CHAT_IMAGES {
         return Err(anyhow::anyhow!("too_many_images: at most {MAX_CHAT_IMAGES} images are supported / 最多支持 {MAX_CHAT_IMAGES} 张图片"));
     }

@@ -6,6 +6,9 @@
 #[cfg(windows)]
 pub mod bootstrap;
 pub mod config;
+mod chat_queue;
+#[cfg(test)]
+mod chat_queue_tests;
 pub mod conpty;
 pub mod db;
 pub mod delegation;
@@ -41,7 +44,7 @@ pub mod workspace_services;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 /// Semantic contract for Chat plus Quick Launch. Wire HMAC still uses PROTOCOL_VERSION.
-pub const PROTOCOL_CONTRACT: u32 = 4;
+pub const PROTOCOL_CONTRACT: u32 = 5;
 pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod local_client;

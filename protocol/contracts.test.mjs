@@ -207,6 +207,23 @@ test('agent ids are checked for shape only; the runtime registry decides which a
  assert.throws(()=>validateRequest('session.create',{cwd:'C:\repo',provider:7,mode:'chat',operationId:'o'}),/protocol schema/);
 });
 
+test('prompt queue mutations need the Chat lease and bounded positions; image-only items are allowed like chat.send',()=>{
+ const lease={sessionId:'s',operationId:'o',leaseEpoch:1};
+ validateRequest('chat.queue.read',{sessionId:'s'});
+ validateRequest('chat.queue.add',{...lease,text:'next step'});
+ validateRequest('chat.queue.add',{...lease,text:'',images:['data:image/png;base64,AAAA']});
+ assert.throws(()=>validateRequest('chat.queue.add',{...lease,text:''}),/Invalid text/);
+ assert.throws(()=>validateRequest('chat.queue.add',{sessionId:'s',operationId:'o',text:'x'}),/Missing leaseEpoch|protocol schema/);
+ validateRequest('chat.queue.update',{...lease,itemId:'i',text:'edited',expectedRevision:2});
+ assert.throws(()=>validateRequest('chat.queue.update',{...lease,itemId:'i',text:'edited',expectedRevision:0}),/Invalid queue item revision/);
+ validateRequest('chat.queue.move',{...lease,itemId:'i',toIndex:0});
+ for(const toIndex of [-1,20,1.5]) assert.throws(()=>validateRequest('chat.queue.move',{...lease,itemId:'i',toIndex}),/Invalid queue position|protocol schema/);
+ for(const m of ['chat.queue.pause','chat.queue.resume']) validateRequest(m,lease);
+ validateRequest('chat.queue.send',{...lease,itemId:'i'});
+ validateResult('chat.queue.read',{sessionId:'s',paused:true,pauseReason:'restarted',items:[{id:'i',text:'t',images:[],revision:1,createdAt:'c',updatedAt:'u',state:'failed',error:'e'}]});
+ assert.equal(PROTOCOL_CONTRACT,5);
+});
+
 test('quick launch commands are bounded: relative cwd inside the root, known shells, unique env names, revisioned updates',()=>{
  const base={projectId:'p',name:'Web dev server',command:'npm run dev',shell:'cmd',cwd:'',kind:'service',env:[],operationId:'o'};
  validateRequest('quickLaunch.save',base);

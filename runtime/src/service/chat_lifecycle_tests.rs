@@ -231,6 +231,7 @@ impl Fixture {
         let db = Arc::new(Database::open(&root.path().join("runtime.sqlite")).unwrap());
         crate::session_configs::initialize(&db).unwrap();
         crate::retry_scheduler::initialize(&db).unwrap();
+        crate::chat_queue::initialize(&db).unwrap();
         let opens = Arc::new(AtomicUsize::new(0));
         let stops = Arc::new(AtomicUsize::new(0));
         let worker_tokens = Arc::new(Mutex::new(Vec::new()));
@@ -275,6 +276,7 @@ impl Fixture {
             plugin_gate: Mutex::new(()),
             remote: OnceLock::new(),
             delegations: Arc::new(crate::delegation::Delegations::default()),
+            chat_queues: Arc::new(crate::chat_queue::ChatQueues::default()),
         });
         Self {
             root,
