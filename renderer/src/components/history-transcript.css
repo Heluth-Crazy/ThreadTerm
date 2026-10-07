@@ -1,0 +1,23 @@
+.history-transcript { display:flex; flex-direction:column; gap:18px; min-width:0; width:min(100%,780px); margin:0 auto; padding:4px 0 20px; box-sizing:border-box; }
+.history-transcript-item { flex:none; min-width:0; color:var(--text); font-size:14px; line-height:1.65; overflow-wrap:anywhere; }
+.history-message-user { align-self:flex-end; max-width:90%; padding:10px 14px; border:1px solid color-mix(in srgb,var(--primary) 18%,var(--border)); border-radius:12px; background:color-mix(in srgb,var(--primary) 8%,var(--surface)); }
+.history-message-plain { white-space:pre-wrap; }
+.history-message-error { color:var(--danger); }
+.history-transcript .codex-markdown { white-space:normal; font:inherit; }
+.history-transcript .codex-markdown > :first-child { margin-top:0; }
+.history-transcript .codex-markdown > :last-child { margin-bottom:0; }
+.history-transcript .codex-markdown p { margin:0 0 10px; }
+.history-transcript .codex-markdown pre, .history-transcript-tool pre { margin:8px 0; padding:10px; border:1px solid var(--border); border-radius:6px; overflow:auto; background:color-mix(in srgb,var(--text) 4%,var(--surface)); white-space:pre-wrap; font:12px/1.5 "Cascadia Code",Consolas,monospace; }
+.history-transcript .codex-markdown img { max-width:100%; height:auto; }
+.history-transcript .codex-markdown table { display:block; max-width:100%; overflow:auto; border-collapse:collapse; }
+.history-transcript .codex-markdown th, .history-transcript .codex-markdown td { padding:5px 8px; border:1px solid var(--border); }
+.history-transcript-thinking, .history-transcript-tool, .history-tool-line { margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
+.history-transcript-item > * + .history-transcript-thinking, .history-transcript-item > * + .history-transcript-tool, .history-transcript-item > * + .history-tool-line { margin-top:6px; }
+.history-transcript summary { cursor:pointer; padding:2px 0; }
+.history-transcript summary:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.history-tool-status { margin-left:8px; font-size:11px; }
+.history-transcript-thinking > .history-message-plain { margin-top:6px; }
+.history-transcript-compact { gap:12px; padding-bottom:12px; }
+.history-transcript-compact .history-transcript-item { font-size:12px; line-height:1.6; }
+.history-transcript-compact .history-message-user { max-width:95%; padding:8px 10px; }
+.history-transcript-empty { margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
