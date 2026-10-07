@@ -30,7 +30,7 @@ struct DeferredLaunchGate {
 pub struct RuntimeService {
     pub config: RuntimeConfig,
     pub db: Arc<Database>,
-    leases: LeaseManager,
+    pub(crate) leases: LeaseManager,
     output: Arc<OutputStore>,
     providers: Arc<Providers>,
     pty: Arc<PtyManager>,
