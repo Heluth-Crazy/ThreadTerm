@@ -484,6 +484,27 @@
         "stopRequested": {
           "type": "boolean",
           "description": "The user asked to stop it: an exit after this reads as \"Stopped\", not as a failure."
+        },
+        "setup": {
+          "type": "object",
+          "properties": {
+            "runId": {
+              "type": "string"
+            },
+            "step": {
+              "type": "number"
+            },
+            "total": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "runId",
+            "step",
+            "total"
+          ],
+          "additionalProperties": false,
+          "description": "Present when a worktree setup sequence started this run: its id, 0-based step and step count."
         }
       },
       "required": [
@@ -2389,6 +2410,125 @@
         "existing"
       ],
       "additionalProperties": false
+    },
+    "RequestResult<\"quickLaunch.setup.read\">": {
+      "$ref": "#/definitions/QuickLaunchSetup"
+    },
+    "QuickLaunchSetup": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "number"
+        },
+        "commandIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "projectId",
+        "revision",
+        "commandIds"
+      ],
+      "additionalProperties": false,
+      "description": "Worktree setup (Quick Launch): a project's chosen `task` commands, run in order in every new worktree of the project and on request. Saving a non-empty list is the user's consent to run it automatically. Revision 0 = never saved."
+    },
+    "RequestResult<\"quickLaunch.setup.save\">": {
+      "$ref": "#/definitions/QuickLaunchSetup"
+    },
+    "RequestResult<\"quickLaunch.setup.run\">": {
+      "$ref": "#/definitions/WorktreeSetupRun"
+    },
+    "WorktreeSetupRun": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "commandIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "step": {
+          "type": "number"
+        },
+        "state": {
+          "$ref": "#/definitions/WorktreeSetupState"
+        },
+        "sessionIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exitCode": {
+          "type": "number"
+        },
+        "trigger": {
+          "type": "string",
+          "enum": [
+            "worktree.create",
+            "manual",
+            "retry"
+          ]
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "root",
+        "commandIds",
+        "names",
+        "step",
+        "state",
+        "sessionIds",
+        "trigger",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false,
+      "description": "One sequence in one worktree. `commandIds`/`names` are snapshots taken at start. `step` is the step running now, or the one that failed / was cancelled / was interrupted. `sessionIds` holds the terminal of every step started so far. `exitCode` is the failed step's exit code. A runtime restart turns `running` into `interrupted`; it never resumes."
+    },
+    "WorktreeSetupState": {
+      "type": "string",
+      "enum": [
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ]
+    },
+    "RequestResult<\"quickLaunch.setup.status\">": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/WorktreeSetupRun"
+      }
     },
     "RequestResult<\"history.list\">": {
       "type": "object",
@@ -5908,6 +6048,110 @@
         },
         "result": {
           "$ref": "#/definitions/RequestResult%3C%22quickLaunch.run%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.setup.read"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.setup.read%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.setup.save"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.setup.save%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.setup.run"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.setup.run%22%3E"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "method",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "const": "quickLaunch.setup.status"
+        },
+        "result": {
+          "$ref": "#/definitions/RequestResult%3C%22quickLaunch.setup.status%22%3E"
         }
       },
       "required": [
